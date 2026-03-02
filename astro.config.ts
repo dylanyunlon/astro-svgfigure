@@ -128,5 +128,13 @@ export default defineConfig({
         subsets: ['latin']
       }
     ]
+  },
+
+  // [Vite] ELK.js bundled needs explicit optimizeDeps
+  // Ref: https://github.com/kieler/elkjs
+  vite: {
+    optimizeDeps: {
+      include: ['elkjs/lib/elk.bundled.js']
+    }
   }
 })

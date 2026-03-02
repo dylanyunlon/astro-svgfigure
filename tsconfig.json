@@ -23,7 +23,10 @@
       "@/plugins/*": ["src/plugins/*"],
       "@/pages/*": ["src/pages/*"],
       "@/types": ["src/types/index.ts"],
-      "@/site-config": ["src/site.config.ts"]
+      "@/site-config": ["src/site.config.ts"],
+      "@elk/*": ["src/lib/elk/*"],
+      "@pipeline/*": ["src/lib/pipeline/*"],
+      "@ai/*": ["src/lib/ai/*"]
     }
   },
   "exclude": ["node_modules", "**/node_modules/*", ".vscode", "dist", "public/scripts/*", "test/*"]

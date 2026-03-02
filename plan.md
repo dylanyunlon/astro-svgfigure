@@ -1119,3 +1119,249 @@ npx vercel --prod
 8. **Phase 7**: 内容 & 文档 — 098~106
 9. **Phase 8**: 静态资源 & 部署 — 107~111
 10. **Phase 9**: 集成测试 + diff 校验
+
+
+04更新：
+
+# plan.md — astro-svgfigure v2: ELK.js + NanoBanana 正向 Pipeline
+
+> **核心理念**: AutoFigure-Edit 是逆向流程（图→SAM3分割→SVG），我们做正向流程（文本→拓扑JSON→ELK布局→NanoBanana SVG）
+> **技术栈**: Astro 5 + astro-pure 主题 + UnoCSS + ELK.js + Gemini NanoBanana + Python 后端
+> **关键洞察**: NanoBanana 生成的图片如此完美以至于让拓扑学家像个小丑——ELK.js 只负责骨架坐标，最终以 JSON 脚手架向 NanoBanana 请求神经网络级 SVG
+> **AI请求模式**: 参照 skynetCheapBuy 的 `app/core/ai_engine.py` 多 Provider 抽象工厂模式
+
+---
+
+## 0. 项目现状（基于 main 分支）
+
+```
+astro-svgfigure/  (base: 3f5faab)
+├── packages/pure/           # astro-pure 主题包（workspace link）
+│   ├── components/basic/    # Header, Footer, ThemeProvider
+│   ├── components/user/     # Button, Card, Collapse, Aside, Steps, Tabs, Timeline, Icon, Spoiler, Svg, Label
+│   ├── components/advanced/ # GithubCard, LinkPreview, MediumZoom, Quote, QRCode
+│   ├── components/pages/    # Hero, PostPreview, Paginator, TOC, BackToTop, PFSearch
+│   ├── utils/               # clsx, toast, theme, date, reading-time
+│   └── types/               # TS 类型
+├── src/
+│   ├── components/home/     # Section, SkillLayout, ProjectCard
+│   ├── content/blog/        # 博客文章
+│   ├── content/docs/        # 文档
+│   ├── layouts/             # BaseLayout, ContentLayout, BlogPost, CommonPage
+│   ├── pages/               # index, blog, docs, projects, links, about, search, tags, 404
+│   ├── assets/styles/       # global.css, app.css
+│   └── site.config.ts
+├── autofigure2.py           # 逆向脚本参考 (2793行, 不动)
+├── server.py                # FastAPI 后端 (522行)
+├── astro.config.ts          # vercel adapter + server output
+├── package.json             # astro 5 + astro-pure
+└── requirements.txt
+```
+
+---
+
+## 1. 四步正向 Pipeline 架构
+
+```
+[用户输入 method text]
+       │
+       ▼
+Step 1: LLM 拓扑推理 ──────── GitHub: ResearAI/AutoFigure, dylanyunlon/skynetCheapBuy
+       │ topology.json (零坐标 ELK graph)
+       ▼
+Step 2: ELK.js 约束布局 ───── GitHub: kieler/elkjs, xyflow/xyflow, EmilStenstrom/elkjs-svg
+       │ layouted.json (精确像素 x,y,w,h)
+       ▼
+Step 3: NanoBanana 美化 ───── GitHub: gemini-cli-extensions/nanobanana, ZeroLu/awesome-nanobanana-pro
+       │ final.svg (神经网络级学术图)
+       ▼
+Step 4: Astro 前端展示 ────── GitHub: cworld1/astro-theme-pure, withastro/astro
+```
+
+后端 AI Engine (仿 skynetCheapBuy):
+- AIProvider 基类 → OpenAIProvider / AnthropicProvider / GoogleProvider / ClaudeCompatibleProvider
+- AIEngine._get_provider(model) 自动路由
+
+---
+
+## 2. 111 文件变更清单
+
+🆕=新增 ✏️=修改 📌=不动
+
+### A. 根目录配置 (10)
+
+| # | 文件 | Op | 说明 |
+|---|------|---|------|
+| 001 | package.json | ✏️ | +elkjs +@google/generative-ai +zod +openai |
+| 002 | astro.config.ts | ✏️ | +vite.optimizeDeps elkjs |
+| 003 | uno.config.ts | ✏️ | +pipeline shortcuts |
+| 004 | tsconfig.json | ✏️ | +paths @elk @pipeline @ai |
+| 005 | requirements.txt | ✏️ | +google-generativeai +openai +anthropic +lxml +cairosvg +httpx +pydantic-settings |
+| 006 | plan.md | ✏️ | 本文件 |
+| 007 | tree.txt | ✏️ | 更新结构 |
+| 008 | README.md | ✏️ | 更新说明 |
+| 009 | bun.lock | ✏️ | 自动 |
+| 010 | .env.example | 🆕 | API keys |
+
+### B. Python 后端 AI Engine (12)
+
+| # | 文件 | Op | 说明 |
+|---|------|---|------|
+| 011 | server.py | ✏️ | +/api/topology +/api/beautify +/api/export +/api/validate +/api/models |
+| 012 | autofigure2.py | 📌 | 不动 |
+| 013 | backend/__init__.py | 🆕 | 包入口 |
+| 014 | backend/config.py | 🆕 | Settings (pydantic-settings) 仿 skynetCheapBuy |
+| 015 | backend/ai_engine.py | 🆕 | 多Provider工厂 |
+| 016 | backend/schemas.py | 🆕 | Pydantic models |
+| 017 | backend/pipeline/__init__.py | 🆕 | 子包 |
+| 018 | backend/pipeline/topology_gen.py | 🆕 | 拓扑生成 |
+| 019 | backend/pipeline/nanobanana_bridge.py | 🆕 | NanoBanana桥接 |
+| 020 | backend/pipeline/svg_validator.py | 🆕 | SVG验证+LLM修复 |
+| 021 | backend/pipeline/scaffold_builder.py | 🆕 | ELK→脚手架 |
+| 022 | backend/pipeline/svg_scaler.py | 🆕 | SVG缩放 |
+
+### C. Astro 页面 (14)
+
+| # | 文件 | Op | 说明 |
+|---|------|---|------|
+| 023 | src/pages/index.astro | ✏️ | Hero+特性+Pipeline Steps |
+| 024 | src/pages/generate/index.astro | 🆕 | 核心Pipeline生成页 |
+| 025 | src/pages/gallery/index.astro | 🆕 | 画廊 |
+| 026 | src/pages/playground/index.astro | 🆕 | ELK实验场 |
+| 027 | src/pages/about/index.astro | ✏️ | +技术架构 |
+| 028 | src/pages/api/topology.ts | 🆕 | POST text→topology |
+| 029 | src/pages/api/layout.ts | 🆕 | POST topology→ELK |
+| 030 | src/pages/api/beautify.ts | 🆕 | POST layouted→SVG |
+| 031 | src/pages/api/export.ts | 🆕 | POST SVG→PNG/PDF |
+| 032 | src/pages/api/validate.ts | 🆕 | POST SVG校验 |
+| 033 | src/pages/api/models.ts | 🆕 | GET 模型列表 |
+| 034 | src/pages/docs/[...id].astro | ✏️ | 兼容新docs |
+| 035 | src/pages/projects/index.astro | ✏️ | +项目卡片 |
+| 036 | src/pages/404.astro | 📌 | 不动 |
+
+### D. 布局 (4)
+
+| # | 文件 | Op | 说明 |
+|---|------|---|------|
+| 037 | src/layouts/BaseLayout.astro | ✏️ | 可选elkjs CDN |
+| 038 | src/layouts/GenerateLayout.astro | 🆕 | 三栏面板 |
+| 039 | src/layouts/FullWidthLayout.astro | 🆕 | 全宽 |
+| 040 | src/layouts/ContentLayout.astro | 📌 | 不动 |
+
+### E. Pipeline组件 (16)
+
+| # | 文件 | Op |
+|---|------|---|
+| 041 | src/components/pipeline/PipelineSteps.astro | 🆕 |
+| 042 | src/components/pipeline/TextInput.astro | 🆕 |
+| 043 | src/components/pipeline/TopologyPreview.astro | 🆕 |
+| 044 | src/components/pipeline/ElkPreview.astro | 🆕 |
+| 045 | src/components/pipeline/SvgPreview.astro | 🆕 |
+| 046 | src/components/pipeline/GenerateButton.astro | 🆕 |
+| 047 | src/components/pipeline/ExportPanel.astro | 🆕 |
+| 048 | src/components/pipeline/StatusBar.astro | 🆕 |
+| 049 | src/components/pipeline/JsonEditor.astro | 🆕 |
+| 050 | src/components/pipeline/ElkOptions.astro | 🆕 |
+| 051 | src/components/pipeline/HistoryList.astro | 🆕 |
+| 052 | src/components/pipeline/ErrorDisplay.astro | 🆕 |
+| 053 | src/components/pipeline/PromptPreview.astro | 🆕 |
+| 054 | src/components/pipeline/ScaffoldView.astro | 🆕 |
+| 055 | src/components/pipeline/CompareView.astro | 🆕 |
+| 056 | src/components/pipeline/ModelSelector.astro | 🆕 |
+
+### F. Gallery组件 (8)
+
+| # | 文件 | Op |
+|---|------|---|
+| 057-064 | src/components/gallery/*.astro | 🆕 |
+
+### G. 首页&通用组件 (10)
+
+| # | 文件 | Op |
+|---|------|---|
+| 065-074 | src/components/home/*.astro + src/components/common/*.astro | 🆕/✏️ |
+
+### H. ELK TS库 (10)
+
+| # | 文件 | Op |
+|---|------|---|
+| 075 | src/lib/elk/index.ts | 🆕 |
+| 076 | src/lib/elk/layout.ts | 🆕 |
+| 077 | src/lib/elk/algorithms.ts | 🆕 |
+| 078 | src/lib/elk/to-svg.ts | 🆕 |
+| 079 | src/lib/elk/to-scaffold.ts | 🆕 |
+| 080 | src/lib/elk/presets.ts | 🆕 |
+| 081 | src/lib/elk/types.ts | 🆕 |
+| 082 | src/lib/elk/validator.ts | 🆕 |
+| 083 | src/lib/elk/examples.ts | 🆕 |
+| 084 | src/lib/elk/constants.ts | 🆕 |
+
+### I. Pipeline TS库 (10)
+
+| # | 文件 | Op |
+|---|------|---|
+| 085-094 | src/lib/pipeline/*.ts | 🆕 |
+
+### J. AI Client (3)
+
+| # | 文件 | Op |
+|---|------|---|
+| 095-097 | src/lib/ai/*.ts | 🆕 |
+
+### K. 内容&文档 (9)
+
+| # | 文件 | Op |
+|---|------|---|
+| 098 | src/content.config.ts | ✏️ |
+| 099-106 | src/content/docs/svgfigure/*.mdx + src/content/gallery/*.json | 🆕 |
+
+### L. 静态资源&部署 (5)
+
+| # | 文件 | Op |
+|---|------|---|
+| 107-109 | public/examples/*.svg | 🆕 |
+| 110 | src/site.config.ts | ✏️ |
+| 111 | Dockerfile | 🆕 |
+
+统计: 🆕80 ✏️20 📌3 = 111 total
+
+---
+
+## 3. 部署命令
+
+```bash
+# 开发
+git clone https://github.com/dylanyunlon/astro-svgfigure.git && cd astro-svgfigure
+bun install && pip install -r requirements.txt
+cp .env.example .env  # 填入 API keys
+bun run dev            # Astro :4321
+python server.py       # FastAPI :8000
+
+# Docker
+docker build -t astro-svgfigure .
+docker run -p 4321:4321 -p 8000:8000 -e GEMINI_API_KEY=xxx astro-svgfigure
+
+# Vercel (前端) + Railway/Fly.io (后端)
+npx vercel --prod
+```
+
+---
+
+## 4. GitHub 背书 (20)
+
+| Step | 项目 |
+|------|------|
+| 1 拓扑 | ResearAI/AutoFigure, ResearAI/AutoFigure-Edit, dylanyunlon/skynetCheapBuy |
+| 2 ELK | kieler/elkjs, EmilStenstrom/elkjs-svg, xyflow/xyflow, cytoscape/cytoscape.js-elk, davidthings/hdelk, eclipse.org/elk, elklive |
+| 3 NanoBanana | gemini-cli-extensions/nanobanana, ZeroLu/awesome-nanobanana-pro, aaronkwhite/nanobanana-studio-web, GeminiGenAI/Free-Nano-Banana-Pro-API |
+| 4 前端 | cworld1/astro-theme-pure, withastro/astro, natemoo-re/astro-icon, svgdotjs/svg.js |
+| 后端SDK | openai/openai-python, anthropics/anthropic-sdk-python |
+
+---
+
+## 5. 并行开发分工
+
+**Claude (本轮)**: Phase 0 配置 (001-010) + ELK核心 (076,081,084)
+**Codex (并行)**: Phase 1 后端 AI Engine (013-022)
+
+后续 Phase 按需分配。每个 Phase 完成后 `git diff` 校验。
