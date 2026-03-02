@@ -1275,6 +1275,8 @@ Step 4: Astro 前端展示 ────── GitHub: cworld1/astro-theme-pure, 
 |---|------|---|
 | 057-064 | src/components/gallery/*.astro | 🆕 |
 
+
+
 ### G. 首页&通用组件 (10)
 
 | # | 文件 | Op |
@@ -1362,6 +1364,9 @@ npx vercel --prod
 ## 5. 并行开发分工
 
 **Claude (本轮)**: Phase 0 配置 (001-010) + ELK核心 (076,081,084)
+
+  git commit -m  "完成的 10 个任务:,111文件清单+并行分工,.env.example,GEMINI/OPENAI/ANTHROPIC API keys 模板,package.json, >+elkjs, @google/generative-ai, zod, openai, 4,astro.config.ts, >+vite.optimizeDeps: elkjs/lib/elk.bundled.js, 5,tsconfig.json, >+paths: @elk/<em>, @pipeline/</em>, @ai/*, 6,+anthropic, httpx, pydantic-settings, google-generativeai, 7,src/site.config.ts, >+Generate/Gallery/Playground 菜单, 8,src/lib/elk/types.ts,ElkGraph, LayoutResult, NanoBananaScaffold, PipelineState 等完整类型, 9,src/lib/elk/constants.ts,9种算法配置, 默认布局选项, SVG骨架常量, 配色方案, 10,src/lib/elk/layout.ts, + ,presets.ts,核心,: layoutGraph(), layoutWithPreset(), quickLayout() + 7个预设 "
+
 **Codex (并行)**: Phase 1 后端 AI Engine (013-022)
 
 后续 Phase 按需分配。每个 Phase 完成后 `git diff` 校验。
