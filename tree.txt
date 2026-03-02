@@ -1,0 +1,85 @@
+(.venv) root@iZ7xv051npomtfakwd4555Z:~/dylan/skynetCheapBuy/netlistsvg# tree
+.
+├── appveyor.yml
+├── bin
+│   ├── exportLayout.js
+│   └── netlistsvg.js
+├── built
+│   ├── Cell.js
+│   ├── draw.js
+│   ├── drawModule.js
+│   ├── elkGraph.js
+│   ├── FlatModule.js
+│   ├── index.js
+│   ├── netlistsvg.bundle.js
+│   ├── Port.js
+│   ├── Skin.js
+│   └── YosysModel.js
+├── demo
+│   ├── demo.js
+│   └── index.html
+├── doc
+│   ├── and.svg
+│   ├── common_emitter_full.svg
+│   ├── generics.svg
+│   ├── hyperedges.svg
+│   ├── mcu.svg
+│   ├── mux4.svg
+│   ├── ports_splitjoin.svg
+│   ├── resistor_divider.svg
+│   ├── up3down5.svg
+│   └── vcc_and_gnd.svg
+├── examples
+│   ├── carry4bits.v
+│   ├── carry4whole.v
+│   ├── dff.v
+│   ├── Makefile
+│   ├── muxcy.v
+│   └── xorcy.v
+├── jest.config.js
+├── jsmodule
+│   └── index.js
+├── lib
+│   ├── analog.svg
+│   ├── Cell.ts
+│   ├── default.svg
+│   ├── drawModule.ts
+│   ├── elkGraph.ts
+│   ├── FlatModule.ts
+│   ├── index.ts
+│   ├── Port.ts
+│   ├── Skin.ts
+│   ├── @types
+│   │   ├── elkjs
+│   │   │   └── index.d.ts
+│   │   └── onml
+│   │       └── index.d.ts
+│   ├── YosysModel.ts
+│   └── yosys.schema.json5
+├── LICENSE
+├── package.json
+├── README.md
+├── test
+│   ├── analog
+│   │   ├── and.json
+│   │   ├── common_emitter_full.json
+│   │   ├── makefile
+│   │   ├── mcu.json
+│   │   ├── resistor_divider.json
+│   │   └── vcc_and_gnd.json
+│   ├── Cell.test.ts
+│   ├── digital
+│   │   ├── generics.json
+│   │   ├── hyperedges.json
+│   │   ├── mux4.json
+│   │   ├── pc.json
+│   │   ├── ports_splitjoin.json
+│   │   └── up3down5.json
+│   ├── drawModule.test.ts
+│   ├── FlatModule.test.ts
+│   └── test-all.js
+├── tsconfig.json
+└── tslint.json
+
+13 directories, 67 files
+(.venv) root@iZ7xv051npomtfakwd4555Z:~/dylan/skynetCheapBuy/netlistsvg# 
