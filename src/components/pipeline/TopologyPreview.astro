@@ -1,0 +1,164 @@
+---
+/**
+ * TopologyPreview.astro — Topology JSON preview component
+ *
+ * Displays the generated topology JSON in a collapsible, syntax-highlighted view.
+ * Shows node/edge count and validates structure.
+ * Uses astro-pure Collapse, Label components.
+ *
+ * GitHub 背书: cworld1/astro-theme-pure, EmilStenstrom/elkjs-svg
+ */
+import { Collapse, Label } from 'astro-pure/user'
+---
+
+<div id='topology-preview' class='flex flex-col gap-y-2'>
+  {/* Header with stats */}
+  <div class='flex items-center justify-between'>
+    <span class='text-xs font-medium text-muted-foreground'>Topology JSON</span>
+    <div class='flex gap-1.5' id='topo-stats'>
+      <Label>nodes: <span id='topo-node-count'>0</span></Label>
+      <Label>edges: <span id='topo-edge-count'>0</span></Label>
+    </div>
+  </div>
+
+  {/* Status indicator */}
+  <div id='topo-status' class='hidden rounded-lg border px-3 py-1.5 text-xs'>
+    <span id='topo-status-text'></span>
+  </div>
+
+  {/* JSON display */}
+  <div class='relative'>
+    <pre
+      id='topo-json-display'
+      class='max-h-72 overflow-auto rounded-lg border bg-zinc-50 dark:bg-zinc-800/50 p-3 font-mono text-xs leading-relaxed'
+    >
+      <code class='text-muted-foreground'>
+        Topology will appear here after Step 1 completes...
+      </code>
+    </pre>
+
+    {/* Copy button */}
+    <button
+      id='topo-copy-btn'
+      class='absolute right-2 top-2 rounded border bg-background px-2 py-0.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:bg-muted'
+      title='Copy JSON'
+    >
+      Copy
+    </button>
+  </div>
+
+  {/* Validation */}
+  <div id='topo-validation' class='hidden text-xs text-muted-foreground'>
+    <span id='topo-valid-icon'>✓</span>
+    <span id='topo-valid-text'>Valid ELK topology</span>
+  </div>
+</div>
+
+<style>
+  #topology-preview:hover #topo-copy-btn {
+    opacity: 1;
+  }
+</style>
+
+<script>
+  const display = document.getElementById('topo-json-display')
+  const copyBtn = document.getElementById('topo-copy-btn')
+  const nodeCount = document.getElementById('topo-node-count')
+  const edgeCount = document.getElementById('topo-edge-count')
+  const statusEl = document.getElementById('topo-status')
+  const statusText = document.getElementById('topo-status-text')
+  const validationEl = document.getElementById('topo-validation')
+  const validIcon = document.getElementById('topo-valid-icon')
+  const validText = document.getElementById('topo-valid-text')
+
+  let currentJson = ''
+
+  // Listen for topology updates from the pipeline
+  window.addEventListener('topology-update', ((e: CustomEvent) => {
+    const { topology, error } = e.detail
+
+    if (error) {
+      showStatus('error', error)
+      return
+    }
+
+    if (topology) {
+      currentJson = JSON.stringify(topology, null, 2)
+
+      if (display) {
+        display.innerHTML = `<code>${syntaxHighlight(currentJson)}</code>`
+      }
+
+      // Update stats
+      const nodes = topology.children?.length || 0
+      const edges = topology.edges?.length || 0
+      if (nodeCount) nodeCount.textContent = String(nodes)
+      if (edgeCount) edgeCount.textContent = String(edges)
+
+      // Validate
+      validateTopology(topology)
+    }
+  }) as EventListener)
+
+  window.addEventListener('topology-loading', () => {
+    showStatus('loading', 'Generating topology...')
+  })
+
+  copyBtn?.addEventListener('click', () => {
+    if (currentJson) {
+      navigator.clipboard.writeText(currentJson)
+      if (copyBtn) copyBtn.textContent = 'Copied!'
+      setTimeout(() => {
+        if (copyBtn) copyBtn.textContent = 'Copy'
+      }, 1500)
+    }
+  })
+
+  function showStatus(type: 'loading' | 'error' | 'success', message: string) {
+    if (!statusEl || !statusText) return
+    statusEl.classList.remove('hidden', 'border-yellow-300', 'border-red-300', 'border-green-300',
+      'bg-yellow-50', 'bg-red-50', 'bg-green-50',
+      'dark:bg-yellow-900/20', 'dark:bg-red-900/20', 'dark:bg-green-900/20')
+
+    const colors = {
+      loading: ['border-yellow-300', 'bg-yellow-50', 'dark:bg-yellow-900/20'],
+      error: ['border-red-300', 'bg-red-50', 'dark:bg-red-900/20'],
+      success: ['border-green-300', 'bg-green-50', 'dark:bg-green-900/20'],
+    }
+    statusEl.classList.add(...colors[type])
+    statusText.textContent = message
+  }
+
+  function validateTopology(topology: any) {
+    if (!validationEl || !validIcon || !validText) return
+    validationEl.classList.remove('hidden')
+
+    const hasId = !!topology.id
+    const hasChildren = Array.isArray(topology.children) && topology.children.length > 0
+    const hasEdges = Array.isArray(topology.edges)
+
+    if (hasId && hasChildren && hasEdges) {
+      validIcon.textContent = '✓'
+      validIcon.className = 'text-green-600'
+      validText.textContent = 'Valid ELK topology'
+    } else {
+      validIcon.textContent = '✗'
+      validIcon.className = 'text-red-500'
+      const missing = []
+      if (!hasId) missing.push('id')
+      if (!hasChildren) missing.push('children')
+      if (!hasEdges) missing.push('edges')
+      validText.textContent = `Missing: ${missing.join(', ')}`
+    }
+  }
+
+  function syntaxHighlight(json: string): string {
+    return json
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"([^"]+)":/g, '<span class="text-indigo-600 dark:text-indigo-400">"$1"</span>:')
+      .replace(/"([^"]+)"/g, '<span class="text-emerald-600 dark:text-emerald-400">"$1"</span>')
+      .replace(/\b(\d+\.?\d*)\b/g, '<span class="text-amber-600 dark:text-amber-400">$1</span>')
+  }
+</script>

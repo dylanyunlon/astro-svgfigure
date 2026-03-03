@@ -11,6 +11,7 @@
     "dev:backend": "python server.py",
     "dev:check": "astro check --watch & astro dev",
     "build": "astro-pure check && astro check && astro build",
+    "build:web": "astro build && cp -r dist/* web/ 2>/dev/null || (mkdir -p web && cp -r dist/* web/)",
     "preview": "astro preview",
     "sync": "astro sync",
     "check": "astro check",

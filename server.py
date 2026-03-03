@@ -669,7 +669,15 @@ def _ensure_port_free(port: int) -> None:
     _terminate_pids(pids)
 
 
-app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="static")
+# Mount static files only if web/ directory exists (created by `bun run build`)
+# During development, Astro dev server (:4321) serves the frontend directly
+if WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="static")
+else:
+    logger.info(
+        "web/ directory not found — skipping static file mount. "
+        "Run 'bun run build' to generate it, or use 'bun run dev' for Astro dev server."
+    )
 
 
 if __name__ == "__main__":

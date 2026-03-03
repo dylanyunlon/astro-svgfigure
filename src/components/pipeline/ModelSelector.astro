@@ -1,0 +1,125 @@
+---
+/**
+ * ModelSelector.astro — AI model selector component
+ *
+ * Fetches available models from /api/models and displays grouped options.
+ * Supports Gemini, OpenAI, Claude providers.
+ * Uses astro-pure Label component for provider badges.
+ *
+ * GitHub 背书: cworld1/astro-theme-pure, dylanyunlon/skynetCheapBuy (multi-provider)
+ */
+import { Label } from 'astro-pure/user'
+
+interface Props {
+  defaultModel?: string
+  class?: string
+}
+
+const { defaultModel = 'gemini-2.5-flash', class: className } = Astro.props
+---
+
+<div id='model-selector' class:list={['flex flex-col gap-y-1.5', className]}>
+  <label class='text-xs font-medium text-muted-foreground' for='model-select'>
+    AI Model
+  </label>
+  <select
+    id='model-select'
+    class='rounded-lg border bg-background px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/30'
+    data-default={defaultModel}
+  >
+    {/* Default option while loading */}
+    <option value={defaultModel} selected>{defaultModel}</option>
+  </select>
+
+  {/* Provider badges */}
+  <div id='model-providers' class='flex flex-wrap gap-1'>
+    <Label>loading models...</Label>
+  </div>
+</div>
+
+<script>
+  const select = document.getElementById('model-select') as HTMLSelectElement
+  const providersEl = document.getElementById('model-providers')
+  const defaultModel = select?.dataset.default || 'gemini-2.5-flash'
+
+  async function loadModels() {
+    try {
+      const res = await fetch('/api/models')
+      const data = await res.json()
+
+      if (!select) return
+
+      // Clear existing options
+      select.innerHTML = ''
+
+      const providerColors: Record<string, string> = {
+        gemini: '🟢',
+        openai: '🔵',
+        anthropic: '🟠',
+        claude_compatible: '🟣',
+      }
+
+      let hasDefault = false
+      const providerNames: string[] = []
+
+      for (const [provider, models] of Object.entries(data)) {
+        if (provider.startsWith('_')) continue // skip _fallback, _hint
+
+        const group = document.createElement('optgroup')
+        group.label = `${providerColors[provider] || '⚪'} ${provider.charAt(0).toUpperCase() + provider.slice(1)}`
+        providerNames.push(provider)
+
+        for (const model of models as any[]) {
+          const option = document.createElement('option')
+          option.value = model.id
+          option.textContent = model.name
+          if (model.id === defaultModel) {
+            option.selected = true
+            hasDefault = true
+          }
+          group.appendChild(option)
+        }
+
+        select.appendChild(group)
+      }
+
+      // If default model wasn't found, select first option
+      if (!hasDefault && select.options.length > 0) {
+        select.options[0].selected = true
+      }
+
+      // Update provider badges
+      if (providersEl) {
+        providersEl.innerHTML = providerNames
+          .map((p) => {
+            const icon = providerColors[p] || '⚪'
+            return `<span class="inline-flex items-center gap-x-0.5 rounded-xl border px-2 py-0.5 text-xs text-muted-foreground">${icon} ${p}</span>`
+          })
+          .join('')
+
+        if (data._fallback) {
+          providersEl.innerHTML += '<span class="text-xs text-amber-600">⚠ Backend offline</span>'
+        }
+      }
+    } catch (err) {
+      // Keep default option
+      if (providersEl) {
+        providersEl.innerHTML =
+          '<span class="text-xs text-amber-600">⚠ Could not load models</span>'
+      }
+    }
+  }
+
+  // Dispatch model change event
+  select?.addEventListener('change', () => {
+    window.dispatchEvent(
+      new CustomEvent('model-change', { detail: { model: select.value } })
+    )
+  })
+
+  // Expose getter
+  ;(window as any).getSelectedModel = () => select?.value || defaultModel
+
+  // Load on page ready
+  loadModels()
+</script>

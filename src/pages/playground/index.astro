@@ -1,0 +1,363 @@
+---
+/**
+ * /playground — ELK.js Layout Playground
+ *
+ * Interactive playground for experimenting with ELK.js graph layouts.
+ * Users can edit topology JSON and see real-time layout results.
+ * Uses astro-pure Card, Tabs, TabItem, Button, Collapse, Label components.
+ *
+ * GitHub 背书: kieler/elkjs, xyflow/xyflow, rtsys.informatik.uni-kiel.de/elklive
+ */
+export const prerender = false
+
+import { Card, Tabs, TabItem, Button, Collapse, Label } from 'astro-pure/user'
+import GenerateLayout from '@/layouts/GenerateLayout.astro'
+
+const defaultTopology = JSON.stringify({
+  id: 'root',
+  layoutOptions: {
+    'elk.algorithm': 'layered',
+    'elk.direction': 'DOWN',
+    'elk.layered.spacing.nodeNodeBetweenLayers': '80',
+    'elk.spacing.nodeNode': '60',
+  },
+  children: [
+    { id: 'input', width: 140, height: 45, labels: [{ text: 'Input Data' }] },
+    { id: 'encoder', width: 140, height: 45, labels: [{ text: 'Encoder' }] },
+    { id: 'attention', width: 160, height: 45, labels: [{ text: 'Self-Attention' }] },
+    { id: 'decoder', width: 140, height: 45, labels: [{ text: 'Decoder' }] },
+    { id: 'output', width: 140, height: 45, labels: [{ text: 'Output' }] },
+  ],
+  edges: [
+    { id: 'e1', sources: ['input'], targets: ['encoder'] },
+    { id: 'e2', sources: ['encoder'], targets: ['attention'] },
+    { id: 'e3', sources: ['attention'], targets: ['decoder'] },
+    { id: 'e4', sources: ['decoder'], targets: ['output'] },
+  ],
+}, null, 2)
+
+const algorithms = [
+  { id: 'layered', name: 'Layered (Sugiyama)', desc: 'Best for DAGs & flowcharts' },
+  { id: 'mrtree', name: 'Mr. Tree', desc: 'Tree-like hierarchies' },
+  { id: 'force', name: 'Force-Directed', desc: 'Physics-based spring model' },
+  { id: 'stress', name: 'Stress Minimization', desc: 'Minimizes edge stress' },
+  { id: 'radial', name: 'Radial', desc: 'Root at center, layers as rings' },
+]
+
+const presets = [
+  { id: 'academic-flow', name: 'Academic Pipeline', desc: 'Top-down architecture diagram' },
+  { id: 'neural-network', name: 'Neural Network', desc: 'Layered network topology' },
+  { id: 'tree-hierarchy', name: 'Tree Hierarchy', desc: 'Hierarchical tree layout' },
+]
+---
+
+<GenerateLayout meta={{ title: 'ELK Playground — Layout Experimentation' }} highlightColor='#059669'>
+  <main class='flex w-full flex-col gap-y-6 py-6'>
+    {/* Header */}
+    <div class='flex flex-col items-center gap-y-2 text-center'>
+      <h1 class='text-2xl font-medium'>ELK.js Playground</h1>
+      <p class='text-sm text-muted-foreground max-w-xl'>
+        Experiment with ELK.js layout algorithms. Edit the topology JSON on the left,
+        choose an algorithm, and see the computed layout rendered as SVG.
+      </p>
+      <div class='flex gap-2'>
+        <Label>kieler/elkjs</Label>
+        <Label>5 algorithms</Label>
+        <Label>real-time</Label>
+      </div>
+    </div>
+
+    {/* Main layout: editor on left, preview on right */}
+    <div class='grid grid-cols-1 gap-4 lg:grid-cols-2'>
+
+      {/* Left: JSON editor + options */}
+      <div class='flex flex-col gap-y-4'>
+        <Card heading='Topology JSON'>
+          <textarea
+            id='playground-json'
+            class='w-full rounded-lg border bg-background p-3 font-mono text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/30'
+            rows='20'
+            spellcheck='false'
+            set:text={defaultTopology}
+          />
+        </Card>
+
+        {/* Algorithm selector */}
+        <Card heading='Algorithm'>
+          <div class='flex flex-col gap-y-2'>
+            {algorithms.map((alg) => (
+              <label class='flex items-center gap-x-2 cursor-pointer rounded-lg border px-3 py-2 transition-all hover:bg-muted'>
+                <input
+                  type='radio'
+                  name='elk-algorithm'
+                  value={alg.id}
+                  checked={alg.id === 'layered'}
+                  class='accent-primary'
+                />
+                <div class='flex flex-col'>
+                  <span class='text-sm font-medium'>{alg.name}</span>
+                  <span class='text-xs text-muted-foreground'>{alg.desc}</span>
+                </div>
+              </label>
+            ))}
+          </div>
+        </Card>
+
+        {/* Presets */}
+        <Collapse title='Presets'>
+          <div class='flex flex-col gap-y-2 pb-2'>
+            {presets.map((p) => (
+              <button
+                class='flex flex-col rounded-lg border px-3 py-2 text-left transition-all hover:bg-muted'
+                data-preset={p.id}
+              >
+                <span class='text-sm font-medium'>{p.name}</span>
+                <span class='text-xs text-muted-foreground'>{p.desc}</span>
+              </button>
+            ))}
+          </div>
+        </Collapse>
+
+        {/* Layout button */}
+        <button
+          id='layout-btn'
+          class='flex w-full items-center justify-center gap-x-2 rounded-xl border bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:opacity-90'
+        >
+          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+            <rect x='3' y='3' width='7' height='7' />
+            <rect x='14' y='3' width='7' height='7' />
+            <rect x='14' y='14' width='7' height='7' />
+            <rect x='3' y='14' width='7' height='7' />
+          </svg>
+          Compute Layout
+        </button>
+      </div>
+
+      {/* Right: SVG preview + layouted JSON */}
+      <div class='flex flex-col gap-y-4'>
+        <Card heading='Layout Preview'>
+          <div
+            id='playground-svg-container'
+            class='flex aspect-[4/3] items-center justify-center rounded-lg border bg-white dark:bg-zinc-900 overflow-auto'
+          >
+            <div class='flex flex-col items-center gap-y-2 text-muted-foreground'>
+              <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+                <rect x='3' y='3' width='7' height='7' rx='1' />
+                <rect x='14' y='3' width='7' height='7' rx='1' />
+                <rect x='8.5' y='14' width='7' height='7' rx='1' />
+                <line x1='6.5' y1='10' x2='6.5' y2='14' stroke='currentColor' stroke-dasharray='2' />
+                <line x1='17.5' y1='10' x2='17.5' y2='14' stroke='currentColor' stroke-dasharray='2' />
+              </svg>
+              <span class='text-sm'>Click "Compute Layout" to see results</span>
+            </div>
+          </div>
+        </Card>
+
+        <Collapse title='Layouted JSON (with coordinates)'>
+          <pre
+            id='playground-layouted'
+            class='max-h-64 overflow-auto rounded-lg bg-zinc-100 dark:bg-zinc-800 p-3 font-mono text-xs'
+          >
+            {/* Will be populated by JS */}
+            Computed layout will appear here...
+          </pre>
+        </Collapse>
+
+        {/* Stats */}
+        <Card heading='Layout Stats'>
+          <div id='playground-stats' class='flex flex-wrap gap-2 text-sm text-muted-foreground'>
+            <span>Nodes: <strong id='stat-nodes'>0</strong></span>
+            <span>Edges: <strong id='stat-edges'>0</strong></span>
+            <span>Canvas: <strong id='stat-canvas'>-</strong></span>
+            <span>Time: <strong id='stat-time'>-</strong></span>
+          </div>
+        </Card>
+
+        {/* Actions */}
+        <div class='flex gap-2'>
+          <Button href='/generate' variant='pill'>
+            <span slot='before'>→</span>
+            Send to Generate
+          </Button>
+          <button
+            id='copy-layout-btn'
+            class='inline-flex items-center gap-x-1 rounded-xl border bg-muted px-3 py-1 text-sm text-muted-foreground transition-all hover:bg-card'
+          >
+            Copy Layout JSON
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  {/* Client-side ELK.js layout computation */}
+  <script>
+    import ELK from 'elkjs/lib/elk.bundled.js'
+
+    const elk = new ELK()
+
+    const jsonInput = document.getElementById('playground-json') as HTMLTextAreaElement
+    const layoutBtn = document.getElementById('layout-btn')
+    const svgContainer = document.getElementById('playground-svg-container')
+    const layoutedPre = document.getElementById('playground-layouted')
+    const copyBtn = document.getElementById('copy-layout-btn')
+
+    // Stats elements
+    const statNodes = document.getElementById('stat-nodes')
+    const statEdges = document.getElementById('stat-edges')
+    const statCanvas = document.getElementById('stat-canvas')
+    const statTime = document.getElementById('stat-time')
+
+    let lastLayouted: any = null
+
+    layoutBtn?.addEventListener('click', async () => {
+      try {
+        const topology = JSON.parse(jsonInput.value)
+
+        // Get selected algorithm
+        const algoRadio = document.querySelector('input[name="elk-algorithm"]:checked') as HTMLInputElement
+        if (algoRadio) {
+          topology.layoutOptions = topology.layoutOptions || {}
+          topology.layoutOptions['elk.algorithm'] = algoRadio.value
+        }
+
+        const t0 = performance.now()
+        const layouted = await elk.layout(topology)
+        const elapsed = (performance.now() - t0).toFixed(1)
+
+        lastLayouted = layouted
+
+        // Update stats
+        const nodes = layouted.children?.length || 0
+        const edges = layouted.edges?.length || 0
+        if (statNodes) statNodes.textContent = String(nodes)
+        if (statEdges) statEdges.textContent = String(edges)
+        if (statCanvas) statCanvas.textContent = `${Math.round(layouted.width || 0)}×${Math.round(layouted.height || 0)}`
+        if (statTime) statTime.textContent = `${elapsed}ms`
+
+        // Render SVG
+        if (svgContainer) {
+          svgContainer.innerHTML = renderElkSvg(layouted)
+        }
+
+        // Show layouted JSON
+        if (layoutedPre) {
+          layoutedPre.textContent = JSON.stringify(layouted, null, 2)
+        }
+      } catch (err: any) {
+        if (svgContainer) {
+          svgContainer.innerHTML = `<div class="text-red-500 text-sm p-4">${err.message}</div>`
+        }
+      }
+    })
+
+    copyBtn?.addEventListener('click', () => {
+      if (lastLayouted) {
+        navigator.clipboard.writeText(JSON.stringify(lastLayouted, null, 2))
+      }
+    })
+
+    // Preset buttons
+    document.querySelectorAll('[data-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const presetId = (btn as HTMLElement).dataset.preset
+        const presetJson = getPresetTopology(presetId || '')
+        if (presetJson) jsonInput.value = JSON.stringify(presetJson, null, 2)
+      })
+    })
+
+    function renderElkSvg(layouted: any): string {
+      const w = Math.round(layouted.width || 400)
+      const h = Math.round(layouted.height || 300)
+      const pad = 20
+
+      let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-pad} ${-pad} ${w + pad * 2} ${h + pad * 2}" class="w-full h-full">`
+
+      // Edges
+      for (const edge of layouted.edges || []) {
+        for (const section of edge.sections || []) {
+          const points = [section.startPoint, ...(section.bendPoints || []), section.endPoint]
+          const d = points.map((p: any, i: number) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ')
+          svg += `<path d="${d}" fill="none" stroke="#6B7280" stroke-width="1.5" marker-end="url(#arrow)"/>`
+        }
+      }
+
+      // Nodes
+      for (const node of layouted.children || []) {
+        const x = Math.round(node.x || 0)
+        const y = Math.round(node.y || 0)
+        const nw = Math.round(node.width || 100)
+        const nh = Math.round(node.height || 40)
+        const label = node.labels?.[0]?.text || node.id
+
+        svg += `<rect x="${x}" y="${y}" width="${nw}" height="${nh}" rx="6" fill="#E0E7FF" stroke="#4F46E5" stroke-width="1.5"/>`
+        svg += `<text x="${x + nw / 2}" y="${y + nh / 2 + 4}" text-anchor="middle" font-size="12" fill="#1E1B4B" font-family="system-ui">${label}</text>`
+      }
+
+      // Arrow marker
+      svg += `<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 Z" fill="#6B7280"/></marker></defs>`
+      svg += '</svg>'
+      return svg
+    }
+
+    function getPresetTopology(id: string): any {
+      const presets: Record<string, any> = {
+        'academic-flow': {
+          id: 'root',
+          layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'DOWN' },
+          children: [
+            { id: 'input', width: 140, height: 45, labels: [{ text: 'Input' }] },
+            { id: 'preprocess', width: 140, height: 45, labels: [{ text: 'Preprocessing' }] },
+            { id: 'model', width: 160, height: 50, labels: [{ text: 'Model' }] },
+            { id: 'loss', width: 140, height: 45, labels: [{ text: 'Loss Function' }] },
+            { id: 'output', width: 140, height: 45, labels: [{ text: 'Output' }] },
+          ],
+          edges: [
+            { id: 'e1', sources: ['input'], targets: ['preprocess'] },
+            { id: 'e2', sources: ['preprocess'], targets: ['model'] },
+            { id: 'e3', sources: ['model'], targets: ['loss'] },
+            { id: 'e4', sources: ['model'], targets: ['output'] },
+          ],
+        },
+        'neural-network': {
+          id: 'root',
+          layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT' },
+          children: [
+            { id: 'x', width: 50, height: 50, labels: [{ text: 'X' }] },
+            { id: 'h1', width: 60, height: 50, labels: [{ text: 'H1' }] },
+            { id: 'h2', width: 60, height: 50, labels: [{ text: 'H2' }] },
+            { id: 'h3', width: 60, height: 50, labels: [{ text: 'H3' }] },
+            { id: 'y', width: 50, height: 50, labels: [{ text: 'Y' }] },
+          ],
+          edges: [
+            { id: 'e1', sources: ['x'], targets: ['h1'] },
+            { id: 'e2', sources: ['x'], targets: ['h2'] },
+            { id: 'e3', sources: ['h1'], targets: ['h3'] },
+            { id: 'e4', sources: ['h2'], targets: ['h3'] },
+            { id: 'e5', sources: ['h3'], targets: ['y'] },
+          ],
+        },
+        'tree-hierarchy': {
+          id: 'root',
+          layoutOptions: { 'elk.algorithm': 'mrtree', 'elk.direction': 'DOWN' },
+          children: [
+            { id: 'root_node', width: 120, height: 40, labels: [{ text: 'Root' }] },
+            { id: 'child1', width: 100, height: 40, labels: [{ text: 'Branch A' }] },
+            { id: 'child2', width: 100, height: 40, labels: [{ text: 'Branch B' }] },
+            { id: 'leaf1', width: 90, height: 35, labels: [{ text: 'Leaf 1' }] },
+            { id: 'leaf2', width: 90, height: 35, labels: [{ text: 'Leaf 2' }] },
+            { id: 'leaf3', width: 90, height: 35, labels: [{ text: 'Leaf 3' }] },
+          ],
+          edges: [
+            { id: 'e1', sources: ['root_node'], targets: ['child1'] },
+            { id: 'e2', sources: ['root_node'], targets: ['child2'] },
+            { id: 'e3', sources: ['child1'], targets: ['leaf1'] },
+            { id: 'e4', sources: ['child1'], targets: ['leaf2'] },
+            { id: 'e5', sources: ['child2'], targets: ['leaf3'] },
+          ],
+        },
+      }
+      return presets[id] || null
+    }
+  </script>
+</GenerateLayout>

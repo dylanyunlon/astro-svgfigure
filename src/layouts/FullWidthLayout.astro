@@ -1,0 +1,81 @@
+---
+/**
+ * FullWidthLayout.astro — Full-width page layout
+ *
+ * Extends GenerateLayout but with an explicit max-width control option.
+ * Used for Gallery (wide grid) and Playground (side-by-side panels).
+ * Inherits Header/Footer/ThemeProvider from astro-pure.
+ *
+ * GitHub 背书: cworld1/astro-theme-pure (layout system)
+ */
+import { Footer, Header, ThemeProvider } from 'astro-pure/components/basic'
+import type { SiteMeta } from 'astro-pure/types'
+import BaseHead from '@/components/BaseHead.astro'
+import config from '@/site-config'
+
+import '@/assets/styles/global.css'
+import '@/assets/styles/app.css'
+
+interface Props {
+  meta: SiteMeta
+  highlightColor?: string
+  maxWidth?: string
+}
+
+const {
+  meta: { articleDate, description = config.description, ogImage, title },
+  highlightColor,
+  maxWidth = '90rem',
+  ...props
+} = Astro.props
+---
+
+<html lang={config.locale.lang}>
+  <head>
+    <BaseHead {articleDate} {description} {ogImage} {title} />
+    <ThemeProvider />
+  </head>
+
+  <body class='flex justify-center bg-background text-foreground' {...props}>
+    {
+      highlightColor && (
+        <div
+          id='highlight-gradient'
+          class='pointer-events-none absolute start-0 top-0 z-0 h-screen w-full opacity-25'
+          style={`background-image:linear-gradient(${highlightColor},transparent)`}
+        />
+      )
+    }
+    <div
+      id='main-container'
+      class='w-full min-h-[100dvh] flex flex-col justify-between'
+      style={`max-width:${maxWidth}`}
+    >
+      <Header />
+      <div class='flex-1 w-full'>
+        <slot />
+      </div>
+      <Footer />
+    </div>
+
+    <style>
+      #main-container {
+        padding-top: env(safe-area-inset-top);
+        padding-left: calc(0.75rem + env(safe-area-inset-left));
+        padding-right: calc(0.75rem + env(safe-area-inset-right));
+      }
+      @media (min-width: 640px) {
+        #main-container {
+          padding-left: calc(1.25rem + env(safe-area-inset-left));
+          padding-right: calc(1.25rem + env(safe-area-inset-right));
+        }
+      }
+      @media (min-width: 1024px) {
+        #main-container {
+          padding-left: calc(1.5rem + env(safe-area-inset-left));
+          padding-right: calc(1.5rem + env(safe-area-inset-right));
+        }
+      }
+    </style>
+  </body>
+</html>

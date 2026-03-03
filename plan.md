@@ -1785,3 +1785,160 @@ Changes:
 - ✏️ `plan.md` — 更新 v6
 
 **Codex 并行工作请注意**: 本 PR 修改了 server.py 核心文件, Codex 的 Phase 4 应基于此 PR merge 后的代码。
+
+
+07更新：
+# plan.md — astro-svgfigure v2: Phase 4 更新 (07版)
+
+> **核心理念**: AutoFigure-Edit 是逆向流程（图→SAM3分割→SVG），我们做正向流程（文本→拓扑JSON→ELK布局→NanoBanana SVG）
+> **技术栈**: Astro 5 + astro-pure 主题 + UnoCSS + ELK.js + Gemini NanoBanana + Python 后端
+> **关键洞察**: NanoBanana 生成的图片如此完美以至于让拓扑学家像个小丑——ELK.js 只负责骨架坐标，最终以 JSON 脚手架向 NanoBanana 请求神经网络级 SVG
+
+---
+
+## 0. 项目现状 (基于 commit 6633c01)
+
+### 已完成 Phase
+
+| Phase | 内容 | Commit | 状态 |
+|-------|------|--------|------|
+| Phase 0 | 配置+ELK核心 (001-010) | af3fb7a | ✅ |
+| Phase 1 | Backend AI Engine (013-022) | 45df633 | ✅ |
+| Phase 2 | Generate页面+Pipeline组件 (023-032) | bb857aa | ✅ |
+| Phase 3 | 修复502+Pipeline联调 (T1-T10) | 6633c01 | ✅ |
+| **Phase 4** | **Gallery+Playground+补全API (T1-T10)** | **本轮** | **🔄 进行中** |
+
+### 🔴 已修复 Bug: server.py "web directory does not exist"
+
+**根因**: `server.py` 第672行 `app.mount("/", StaticFiles(directory=WEB_DIR))` 硬编码挂载 `web/` 目录，但该目录仅在 `bun run build` 后才存在。开发模式下 Astro 自带 dev server (:4321)，不需要 Python 后端 serve 静态文件。
+
+**修复**: 改为条件挂载 — `if WEB_DIR.is_dir()` 才挂载，否则打印提示信息。
+同时添加 `build:web` 脚本: `astro build && cp -r dist/* web/` 用于生产部署。
+
+---
+
+## 1. Phase 4: Claude 本轮 10 任务清单
+
+| # | 文件 | Op | 说明 | GitHub 背书 |
+|---|------|---|------|-------------|
+| T1 | `server.py` | ✏️ | **修复**: web/ 目录不存在时跳过 StaticFiles 挂载 | withastro/astro |
+| T2a | `src/pages/api/export.ts` | 🆕 | SVG→PNG/PDF 导出 API 代理 | withastro/astro |
+| T2b | `src/pages/api/validate.ts` | 🆕 | SVG 语法校验 API 代理 | withastro/astro |
+| T3 | `src/pages/api/models.ts` | 🆕 | GET 可用 AI 模型列表 (fallback 支持) | dylanyunlon/skynetCheapBuy |
+| T4 | `src/pages/gallery/index.astro` | 🆕 | 画廊页: 示例SVG展示+分类筛选+Card+Label | cworld1/astro-theme-pure |
+| T5 | `src/pages/playground/index.astro` | 🆕 | ELK Playground: JSON编辑+实时布局+SVG渲染 | kieler/elkjs |
+| T6 | `src/components/pipeline/TopologyPreview.astro` | 🆕 | 拓扑JSON预览: 语法高亮+统计+校验 | EmilStenstrom/elkjs-svg |
+| T7 | `src/components/pipeline/ElkOptions.astro` | 🆕 | ELK参数面板: 算法/方向/间距配置 | kieler/elkjs, eclipse/elk |
+| T8 | `src/components/pipeline/ModelSelector.astro` | 🆕 | AI模型选择器: 从/api/models动态加载 | dylanyunlon/skynetCheapBuy |
+| T9 | `src/layouts/FullWidthLayout.astro` | 🆕 | 全宽布局: Gallery/Playground共用 | cworld1/astro-theme-pure |
+| T10 | `plan.md` | ✏️ | 更新为本文件 (v7) | - |
+| T10b | `package.json` | ✏️ | +build:web 脚本 (Astro build → web/) | withastro/astro |
+
+### diff 汇总
+
+**server.py (T1)**: 
+```diff
+-app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="static")
++if WEB_DIR.is_dir():
++    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="static")
++else:
++    logger.info("web/ directory not found — skipping static file mount.")
+```
+
+**package.json (T10b)**:
+```diff
++    "build:web": "astro build && cp -r dist/* web/ 2>/dev/null || (mkdir -p web && cp -r dist/* web/)",
+```
+
+---
+
+## 2. Phase 5: Codex 并行 10 任务 (下一轮)
+
+| # | 文件 | Op | 说明 | GitHub 背书 |
+|---|------|---|------|-------------|
+| T11 | `src/components/pipeline/JsonEditor.astro` | 🆕 | JSON编辑器: 编辑拓扑/脚手架 | cworld1/astro-theme-pure |
+| T12 | `src/components/pipeline/CompareView.astro` | 🆕 | 骨架vs最终SVG对比 | cworld1/astro-theme-pure |
+| T13 | `src/components/pipeline/ScaffoldView.astro` | 🆕 | NanoBanana脚手架预览 | gemini-cli-extensions/nanobanana |
+| T14 | `src/components/pipeline/HistoryList.astro` | 🆕 | 生成历史 (Timeline) | cworld1/astro-theme-pure |
+| T15 | `src/components/pipeline/ErrorDisplay.astro` | 🆕 | 错误展示 (Aside danger) | cworld1/astro-theme-pure |
+| T16 | `src/components/pipeline/PromptPreview.astro` | 🆕 | NanoBanana prompt预览 | ZeroLu/awesome-nanobanana-pro |
+| T17 | `src/content/docs/svgfigure/getting-started.mdx` | 🆕 | 快速开始文档 | withastro/astro |
+| T18 | `src/content/docs/svgfigure/pipeline-overview.mdx` | 🆕 | Pipeline架构文档 | withastro/astro |
+| T19 | `public/examples/transformer.svg` | 🆕 | 示例SVG: Transformer | - |
+| T20 | `Dockerfile` | 🆕 | 多阶段构建 | docker/docker |
+
+---
+
+## 3. 部署命令
+
+```bash
+# 开发 (推荐: 双服务)
+git clone https://github.com/dylanyunlon/astro-svgfigure.git && cd astro-svgfigure
+bun install && pip install -r requirements.txt
+cp .env.example .env  # 填入 GEMINI_API_KEY
+bun run dev            # 终端 1: Astro :4321
+python server.py       # 终端 2: FastAPI :8000
+
+# 一键启动 (需要 concurrently)
+bun run dev:all
+
+# 生产构建 (Astro输出到web/供Python server serve)
+bun run build:web && python server.py
+
+# Docker
+docker build -t astro-svgfigure .
+docker run -p 4321:4321 -p 8000:8000 --env-file .env astro-svgfigure
+
+# Vercel (前端) + Railway/Fly.io (后端)
+npx vercel --prod
+```
+
+---
+
+## 4. PR 说明
+
+**Phase 4 PR**: `feat(frontend): Gallery页+Playground页+Pipeline组件补全+web目录修复 (Tasks T1-T10)`
+
+Changes:
+- ✏️ `server.py` — **修复**: web/目录不存在时条件跳过StaticFiles挂载
+- ✏️ `package.json` — +build:web脚本
+- 🆕 `src/pages/api/export.ts` — SVG→PNG/PDF导出API
+- 🆕 `src/pages/api/validate.ts` — SVG语法校验API
+- 🆕 `src/pages/api/models.ts` — AI模型列表API (带fallback)
+- 🆕 `src/pages/gallery/index.astro` — 画廊页 (Card+Label+Button)
+- 🆕 `src/pages/playground/index.astro` — ELK Playground (实时布局+SVG)
+- 🆕 `src/components/pipeline/TopologyPreview.astro` — 拓扑JSON预览
+- 🆕 `src/components/pipeline/ElkOptions.astro` — ELK算法参数面板
+- 🆕 `src/components/pipeline/ModelSelector.astro` — AI模型选择器
+- 🆕 `src/layouts/FullWidthLayout.astro` — 全宽布局
+- ✏️ `plan.md` — 更新v7
+
+所有样式使用 astro-pure 组件 (Card/Button/Collapse/Label/Icon/Tabs), 不自创文件和样式。
+**Codex 并行注意**: 本 PR 不修改 backend/ 目录任何文件(除 server.py 一行条件挂载), Codex 可安全并行开发 T11-T20。
+
+---
+
+## 5. GitHub 背书 (20)
+
+| Step | 项目 | 用途 |
+|------|------|------|
+| 拓扑 | ResearAI/AutoFigure | LLM→学术图拓扑 |
+| 拓扑 | ResearAI/AutoFigure-Edit | SAM3逆向参考 |
+| 后端 | dylanyunlon/skynetCheapBuy | AI Engine多Provider |
+| ELK | kieler/elkjs | 约束布局引擎 |
+| ELK | EmilStenstrom/elkjs-svg | ELK→SVG渲染 |
+| ELK | xyflow/xyflow | ReactFlow ELK集成 |
+| ELK | eclipse/elk | ELK算法参考 |
+| NanoBanana | gemini-cli-extensions/nanobanana | 核心 |
+| NanoBanana | ZeroLu/awesome-nanobanana-pro | prompt工程 |
+| NanoBanana | aaronkwhite/nanobanana-studio-web | Web版 |
+| 前端 | cworld1/astro-theme-pure | Astro主题 |
+| 前端 | withastro/astro | Astro框架 |
+| SVG | svgdotjs/svg.js | SVG操作 |
+| SDK | openai/openai-python | OpenAI |
+| SDK | anthropics/anthropic-sdk-python | Claude |
+| SDK | google/generative-ai-python | Gemini |
+| 部署 | docker/docker | 容器化 |
+| CI/CD | actions/checkout | GitHub Actions |
+| 测试 | pytest-dev/pytest | Python测试 |
+| 启动 | open-cli-tools/concurrently | 双服务启动 |

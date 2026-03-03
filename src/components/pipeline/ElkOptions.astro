@@ -1,0 +1,177 @@
+---
+/**
+ * ElkOptions.astro — ELK.js layout parameters panel
+ *
+ * Allows selecting algorithm, direction, and spacing options for ELK layout.
+ * Uses astro-pure Tabs, TabItem, Collapse, Label components.
+ *
+ * GitHub 背书: kieler/elkjs, eclipse.org/elk (algorithm reference)
+ */
+import { Collapse, Label } from 'astro-pure/user'
+
+const algorithms = [
+  { id: 'layered', name: 'Layered', desc: 'Sugiyama-style, best for DAGs', icon: '▤' },
+  { id: 'mrtree', name: 'Mr. Tree', desc: 'Tree hierarchies', icon: '🌲' },
+  { id: 'force', name: 'Force', desc: 'Spring model', icon: '⚡' },
+  { id: 'stress', name: 'Stress', desc: 'Stress minimization', icon: '◎' },
+  { id: 'radial', name: 'Radial', desc: 'Ring layout', icon: '◉' },
+]
+
+const directions = [
+  { id: 'DOWN', label: '↓ Top to Bottom' },
+  { id: 'RIGHT', label: '→ Left to Right' },
+  { id: 'UP', label: '↑ Bottom to Top' },
+  { id: 'LEFT', label: '← Right to Left' },
+]
+---
+
+<div id='elk-options' class='flex flex-col gap-y-3'>
+  {/* Algorithm selector */}
+  <div class='flex flex-col gap-y-1.5'>
+    <label class='text-xs font-medium text-muted-foreground'>Algorithm</label>
+    <div class='flex flex-col gap-y-1'>
+      {algorithms.map((alg) => (
+        <label class='flex items-center gap-x-2 cursor-pointer rounded-lg border px-2.5 py-1.5 text-xs transition-all hover:bg-muted'>
+          <input
+            type='radio'
+            name='elk-algo'
+            value={alg.id}
+            checked={alg.id === 'layered'}
+            class='accent-primary'
+          />
+          <span class='flex-1'>
+            <span class='font-medium'>{alg.icon} {alg.name}</span>
+            <span class='text-muted-foreground ml-1'>— {alg.desc}</span>
+          </span>
+        </label>
+      ))}
+    </div>
+  </div>
+
+  {/* Direction */}
+  <div class='flex flex-col gap-y-1.5'>
+    <label class='text-xs font-medium text-muted-foreground'>Direction</label>
+    <select
+      id='elk-direction'
+      class='rounded-lg border bg-background px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/30'
+    >
+      {directions.map((dir) => (
+        <option value={dir.id} selected={dir.id === 'DOWN'}>
+          {dir.label}
+        </option>
+      ))}
+    </select>
+  </div>
+
+  {/* Spacing */}
+  <Collapse title='Spacing Options'>
+    <div class='flex flex-col gap-y-2 pb-2'>
+      <div class='flex flex-col gap-y-1'>
+        <label class='text-xs text-muted-foreground' for='elk-node-spacing'>
+          Node spacing: <span id='elk-node-spacing-val'>60</span>px
+        </label>
+        <input
+          type='range'
+          id='elk-node-spacing'
+          min='20'
+          max='200'
+          value='60'
+          class='w-full accent-primary'
+        />
+      </div>
+      <div class='flex flex-col gap-y-1'>
+        <label class='text-xs text-muted-foreground' for='elk-layer-spacing'>
+          Layer spacing: <span id='elk-layer-spacing-val'>80</span>px
+        </label>
+        <input
+          type='range'
+          id='elk-layer-spacing'
+          min='30'
+          max='300'
+          value='80'
+          class='w-full accent-primary'
+        />
+      </div>
+      <div class='flex flex-col gap-y-1'>
+        <label class='text-xs text-muted-foreground' for='elk-edge-spacing'>
+          Edge-edge spacing: <span id='elk-edge-spacing-val'>10</span>px
+        </label>
+        <input
+          type='range'
+          id='elk-edge-spacing'
+          min='5'
+          max='50'
+          value='10'
+          class='w-full accent-primary'
+        />
+      </div>
+    </div>
+  </Collapse>
+
+  {/* Current config summary */}
+  <div class='flex flex-wrap gap-1'>
+    <Label><span id='elk-summary-algo'>layered</span></Label>
+    <Label><span id='elk-summary-dir'>DOWN</span></Label>
+  </div>
+</div>
+
+<script>
+  // Slider value display
+  const sliders = [
+    { input: 'elk-node-spacing', display: 'elk-node-spacing-val' },
+    { input: 'elk-layer-spacing', display: 'elk-layer-spacing-val' },
+    { input: 'elk-edge-spacing', display: 'elk-edge-spacing-val' },
+  ]
+
+  for (const { input, display } of sliders) {
+    const el = document.getElementById(input) as HTMLInputElement
+    const val = document.getElementById(display)
+    el?.addEventListener('input', () => {
+      if (val) val.textContent = el.value
+      dispatchOptionsChange()
+    })
+  }
+
+  // Algorithm radio
+  document.querySelectorAll('input[name="elk-algo"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+      const selected = (radio as HTMLInputElement).value
+      const summaryAlgo = document.getElementById('elk-summary-algo')
+      if (summaryAlgo) summaryAlgo.textContent = selected
+      dispatchOptionsChange()
+    })
+  })
+
+  // Direction select
+  const dirSelect = document.getElementById('elk-direction') as HTMLSelectElement
+  dirSelect?.addEventListener('change', () => {
+    const summaryDir = document.getElementById('elk-summary-dir')
+    if (summaryDir) summaryDir.textContent = dirSelect.value
+    dispatchOptionsChange()
+  })
+
+  function getElkOptions() {
+    const algo = (document.querySelector('input[name="elk-algo"]:checked') as HTMLInputElement)?.value || 'layered'
+    const dir = (document.getElementById('elk-direction') as HTMLSelectElement)?.value || 'DOWN'
+    const nodeSpacing = (document.getElementById('elk-node-spacing') as HTMLInputElement)?.value || '60'
+    const layerSpacing = (document.getElementById('elk-layer-spacing') as HTMLInputElement)?.value || '80'
+    const edgeSpacing = (document.getElementById('elk-edge-spacing') as HTMLInputElement)?.value || '10'
+
+    return {
+      'elk.algorithm': algo,
+      'elk.direction': dir,
+      'elk.spacing.nodeNode': nodeSpacing,
+      'elk.layered.spacing.nodeNodeBetweenLayers': layerSpacing,
+      'elk.spacing.edgeEdge': edgeSpacing,
+    }
+  }
+
+  function dispatchOptionsChange() {
+    window.dispatchEvent(
+      new CustomEvent('elk-options-change', { detail: getElkOptions() })
+    )
+  }
+
+  // Expose globally for pipeline use
+  ;(window as any).getElkOptions = getElkOptions
+</script>
