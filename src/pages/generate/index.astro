@@ -255,11 +255,11 @@ import ExportPanel from '@/components/pipeline/ExportPanel.astro'
       // Show detailed error with hints
       let errorMsg = err.message || 'Unknown error'
       if (errorMsg.includes('502') || errorMsg.includes('Failed to connect')) {
-        errorMsg += '\n💡 Hint: Make sure Python backend is running: python server.py'
+        errorMsg += '\n Hint: Make sure Python backend is running: python server.py'
       } else if (errorMsg.includes('500') || errorMsg.includes('API_KEY')) {
-        errorMsg += '\n💡 Hint: Check GEMINI_API_KEY in .env file'
+        errorMsg += '\n Hint: Check GEMINI_API_KEY in .env file'
       } else if (errorMsg.includes('504') || errorMsg.includes('timed out')) {
-        errorMsg += '\n💡 Hint: Try a faster model like gemini-2.0-flash'
+        errorMsg += '\n Hint: Try a faster model like gemini-2.0-flash'
       }
       statusText.textContent = `Error: ${errorMsg}`
       statusText.style.color = 'var(--color-danger, #ef4444)'
