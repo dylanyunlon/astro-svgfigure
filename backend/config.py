@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     DEFAULT_BEAUTIFY_MODEL: str = "gemini-2.5-flash"
     DEFAULT_VALIDATOR_MODEL: str = "gemini-2.5-flash"
 
+    # ── Step 5: Image Generation ─────────────────────────────────────────
+    DEFAULT_PROMPT_MODEL: str = "grok-4"        # Grok 4 for prompt engineering
+    DEFAULT_IMAGE_MODEL: str = "gemini-3-pro-image-preview"  # Gemini 3 for image gen
+
     # ── Server ──────────────────────────────────────────────────────────
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -86,6 +90,7 @@ class Settings(BaseSettings):
 
         if self.GEMINI_API_KEY:
             models["gemini"] = [
+                {"id": "gemini-3-pro-image-preview", "name": "Gemini 3 Pro Image (figure gen)"},
                 {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro (strongest)"},
                 {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash (fast)"},
                 {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash"},
@@ -93,6 +98,7 @@ class Settings(BaseSettings):
 
         if self.OPENAI_API_KEY:
             models["openai"] = [
+                {"id": "grok-4", "name": "Grok 4 (prompt engineering)"},
                 {"id": "gpt-4o", "name": "GPT-4o"},
                 {"id": "gpt-4o-mini", "name": "GPT-4o Mini"},
                 {"id": "o3-mini", "name": "o3-mini"},

@@ -273,6 +273,122 @@ async def api_models() -> JSONResponse:
     return JSONResponse(_settings.AVAILABLE_MODELS)
 
 
+# ── Step 5: Gemini 3 Pro Image Generation ────────────────────────────────
+
+from backend.pipeline.gemini_image_gen import (
+    generate_scientific_figure,
+    generate_prompt_with_grok,
+    generate_image_with_gemini,
+)
+
+
+@app.post("/api/generate-image")
+async def api_generate_image(request_data: dict) -> JSONResponse:
+    """
+    POST /api/generate-image — Step 5: SVG → Gemini 3 Pro Image
+
+    Flow:
+      a) Grok 4 reverse-engineers a professional prompt (optional)
+      b) Gemini 3 Pro Image generates the scientific figure
+
+    Request body:
+      - svg_content (str): The ELK-generated SVG (required)
+      - method_text (str): Paper method description (required)
+      - reference_image_b64 (str, optional): Base64 reference image
+      - prompt_model (str, optional): Model for prompt engineering (default: grok-4)
+      - image_model (str, optional): Gemini image model (default: gemini-3-pro-image-preview)
+      - aspect_ratio (str, optional): Image aspect ratio (default: 16:9)
+      - image_size (str, optional): Image size (default: 4K)
+      - custom_prompt (str, optional): Skip Grok, use this prompt directly
+
+    Returns:
+      - success (bool)
+      - image_b64 (str): Base64-encoded image
+      - mime_type (str): e.g. "image/png"
+      - prompt (str): The prompt used
+      - prompt_model_used (str)
+      - image_model_used (str)
+    """
+    try:
+        svg_content = request_data.get("svg_content", "")
+        method_text = request_data.get("method_text", "")
+
+        if not svg_content:
+            return JSONResponse(
+                {"error": "svg_content is required"}, status_code=400
+            )
+        if not method_text:
+            return JSONResponse(
+                {"error": "method_text is required"}, status_code=400
+            )
+
+        engine = _get_ai_engine()
+
+        result = await generate_scientific_figure(
+            ai_engine=engine,
+            method_text=method_text,
+            svg_content=svg_content,
+            reference_image_b64=request_data.get("reference_image_b64"),
+            prompt_model=request_data.get("prompt_model"),
+            image_model=request_data.get("image_model", "gemini-3-pro-image-preview"),
+            aspect_ratio=request_data.get("aspect_ratio", "16:9"),
+            image_size=request_data.get("image_size", "4K"),
+            custom_prompt=request_data.get("custom_prompt"),
+        )
+
+        return JSONResponse(result)
+
+    except Exception as e:
+        logger.exception("api_generate_image error")
+        return JSONResponse(
+            {"success": False, "error": str(e)}, status_code=500
+        )
+
+
+@app.post("/api/generate-prompt")
+async def api_generate_prompt(request_data: dict) -> JSONResponse:
+    """
+    POST /api/generate-prompt — Grok 4 prompt engineering only
+
+    Use this to get the prompt for review before generating the image.
+
+    Request body:
+      - method_text (str): Paper method description
+      - svg_content (str): The ELK-generated SVG
+      - model (str, optional): Model for prompt engineering
+
+    Returns:
+      - success (bool)
+      - prompt (str): The generated prompt
+    """
+    try:
+        method_text = request_data.get("method_text", "")
+        svg_content = request_data.get("svg_content", "")
+
+        if not method_text or not svg_content:
+            return JSONResponse(
+                {"error": "method_text and svg_content are required"},
+                status_code=400,
+            )
+
+        engine = _get_ai_engine()
+        result = await generate_prompt_with_grok(
+            ai_engine=engine,
+            method_text=method_text,
+            svg_content=svg_content,
+            model=request_data.get("model"),
+            reference_image_b64=request_data.get("reference_image_b64"),
+        )
+
+        return JSONResponse(result)
+
+    except Exception as e:
+        logger.exception("api_generate_prompt error")
+        return JSONResponse(
+            {"success": False, "error": str(e)}, status_code=500
+        )
+
+
 JOBS: dict[str, Job] = {}
 
 

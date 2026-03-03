@@ -2280,3 +2280,204 @@ git diff <filename>
 | P1 (重要) | T24, T25, T31 | 改善开发体验和错误诊断 |
 | P2 (正常) | T27, T32, T33, T34, T35 | 功能完善 |
 | P3 (低) | T28, T29, T30, T36-T40 | 文档、测试、打磨 |
+
+
+10更新：
+# plan.md — astro-svgfigure v2: Phase 5 更新 (10版)
+
+> **核心理念**: AutoFigure-Edit 是逆向流程（图→SAM3分割→SVG），我们做正向流程（文本→拓扑JSON→ELK布局→NanoBanana SVG→Gemini 3 科研图）
+> **技术栈**: Astro 5 + astro-pure 主题 + UnoCSS + ELK.js + Grok 4 + Gemini 3 Pro Image + Python 后端
+> **关键洞察**: NanoBanana 生成的图片如此完美以至于让拓扑学家像个小丑——ELK.js 只负责骨架坐标，最终用 Grok 4 反推 prompt + Gemini 3 生成科研级别图片
+
+---
+
+## 0. 项目现状 (基于 commit 2631634)
+
+### 已完成 Phase
+
+| Phase | 内容 | 状态 |
+|-------|------|------|
+| Phase 0 | 配置+ELK核心 (001-010) | ✅ |
+| Phase 1 | Backend AI Engine (013-022) | ✅ |
+| Phase 2 | Generate页面+Pipeline组件 (023-032) | ✅ |
+| Phase 3 | 修复502+Pipeline联调 (T1-T10) | ✅ |
+| Phase 4 | Gallery+Playground+补全API (T1-T10) | ✅ |
+| Phase 4.5 | 修复ELK layout 500 + topology验证 (T21-T26) | ✅ |
+| **Phase 5** | **Step 5: Grok 4 + Gemini 3 Image (本轮)** | **🔄 进行中** |
+
+---
+
+## 1. 五步正向 Pipeline 架构 (更新)
+
+```
+[用户输入 method text]
+         │
+         ▼
+┌─── Step 1: LLM 拓扑推理 ───┐
+│  Claude Opus 4.6 解析文本    │
+│  输出 ELK JSON (零坐标)      │
+└──────────┬──────────────────┘
+           │ topology.json
+           ▼
+┌─── Step 2: ELK.js 约束布局 ─┐
+│  elkjs 分层算法               │
+│  计算每个节点 (x,y,w,h)     │
+└──────────┬──────────────────┘
+           │ layouted.json + skeleton SVG
+           ▼
+┌─── Step 3: NanoBanana 美化 ─┐
+│  Grok 4 生成 JSON 脚手架     │
+│  Gemini NanoBanana → SVG     │
+└──────────┬──────────────────┘
+           │ final.svg
+           ▼
+┌─── Step 4: SVG 渲染展示 ────┐
+│  astro-pure 组件渲染         │
+│  用户确认 SVG 无缺失组件     │
+└──────────┬──────────────────┘
+           │ 用户确认 ✅
+           ▼
+┌─── Step 5: 科研级图片生成 ──┐   ← 🆕 本轮新增
+│  a) Grok 4 反推专业 prompt   │
+│  b) Gemini 3 Pro Image 生图  │
+│  输出: publication-quality   │
+│  科研级 PNG (4K)             │
+└─────────────────────────────┘
+```
+
+### Step 5 详细流程
+
+```
+Grok 4 + Gemini 3 结合高效生成科研绘图:
+
+Step a: Grok 4 反推专业提示词 (Prompt)
+  - 输入: paper method text + ELK SVG 布局 + (可选) 参考图片
+  - Grok 4 分析 SVG 结构,从画面风格、布局、核心元素、配色方案等多维度描述
+  - 输出: 200-400 词的详细 AI 绘图提示词
+
+Step b: Gemini 3 Pro Image 生成科研图
+  - 输入: Grok 4 生成的 prompt + SVG 布局 (作为空间参考)
+  - API: Gemini native v1beta/models/gemini-3-pro-image-preview:generateContent
+  - responseModalities: ["TEXT", "IMAGE"]
+  - imageConfig: { aspectRatio: "16:9", imageSize: "4K" }
+  - 输出: base64 encoded PNG 图片
+
+tryallai.com 代理配置:
+  - Gemini Image: GEMINI_API_BASE + /v1beta/models/{model}:generateContent
+  - Grok 4: OPENAI_API_BASE + /v1/chat/completions (model: grok-4)
+```
+
+---
+
+## 2. Phase 5: Claude 本轮 10 任务清单
+
+| # | 文件 | Op | 说明 |
+|---|------|---|------|
+| T1 | `backend/pipeline/gemini_image_gen.py` | 🆕 | **核心**: Grok 4 prompt + Gemini 3 Image 生成模块 |
+| T2 | `server.py` | ✏️ | +/api/generate-image +/api/generate-prompt 端点 |
+| T3 | `src/pages/api/generate-image.ts` | 🆕 | Astro API proxy → Python /api/generate-image |
+| T4 | `src/pages/api/generate-prompt.ts` | 🆕 | Astro API proxy → Python /api/generate-prompt |
+| T5 | `src/components/pipeline/ImageGenPanel.astro` | 🆕 | Step 5 前端组件: 确认→prompt→生成→预览→下载 |
+| T6 | `src/pages/generate/index.astro` | ✏️ | 集成 ImageGenPanel + pipeline 状态联动 |
+| T7 | `src/components/pipeline/PipelineSteps.astro` | ✏️ | +Step 5 进度条 |
+| T8 | `backend/config.py` | ✏️ | +DEFAULT_PROMPT_MODEL +DEFAULT_IMAGE_MODEL +新模型列表 |
+| T9 | `.env.example` | ✏️ | +tryallai 说明 +Step 5 配置 |
+| T10 | `plan.md` | ✏️ | 更新为本文件 (v10) |
+
+---
+
+## 3. 新增文件位置
+
+```
+astro-svgfigure/
+├── backend/pipeline/
+│   └── gemini_image_gen.py          ← 🆕 Step 5 核心模块
+├── src/pages/api/
+│   ├── generate-image.ts            ← 🆕 Astro API proxy
+│   └── generate-prompt.ts           ← 🆕 Astro API proxy
+├── src/components/pipeline/
+│   └── ImageGenPanel.astro          ← 🆕 Step 5 前端组件
+└── (修改的文件保持原位)
+```
+
+---
+
+## 4. API 接口文档
+
+### POST /api/generate-image
+
+Step 5 完整流程: Grok 4 prompt → Gemini 3 Image
+
+Request:
+```json
+{
+  "svg_content": "<svg ...>...</svg>",
+  "method_text": "Our model uses a transformer encoder...",
+  "reference_image_b64": null,
+  "prompt_model": "grok-4",
+  "image_model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "16:9",
+  "image_size": "4K",
+  "custom_prompt": null
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "image_b64": "iVBORw0KGgo...",
+  "mime_type": "image/png",
+  "prompt": "Create a high-quality scientific...",
+  "prompt_model_used": "grok-4",
+  "image_model_used": "gemini-3-pro-image-preview"
+}
+```
+
+### POST /api/generate-prompt
+
+Step a only: Grok 4 prompt engineering
+
+---
+
+## 5. 部署命令
+
+
+---
+
+## 6. PR 说明
+
+**Phase 5 PR**: `feat(step5): Grok 4 + Gemini 3 Pro Image `
+
+Branch: `claude/step5-gemini-image-gen`
+
+Changes:
+- 🆕 `backend/pipeline/gemini_image_gen.py` — Step 5 核心
+- ✏️ `server.py` — +/api/generate-image +/api/generate-prompt
+- 🆕 `src/pages/api/generate-image.ts` — Astro API proxy
+- 🆕 `src/pages/api/generate-prompt.ts` — Astro API proxy
+- 🆕 `src/components/pipeline/ImageGenPanel.astro` — Step 5 前端组件
+- ✏️ `src/pages/generate/index.astro` — 集成 ImageGenPanel
+- ✏️ `src/components/pipeline/PipelineSteps.astro` — +Step 5
+- ✏️ `backend/config.py` — +新模型配置
+- ✏️ `.env.example` — +tryallai + Step 5
+- ✏️ `plan.md` — v10
+
+**Codex 并行注意**: 本 PR 新增文件不与现有 Steps 1-4 冲突。server.py 仅新增端点。
+
+---
+
+## 7. GitHub 背书 (22)
+
+| Step | 项目 | 用途 |
+|------|------|------|
+| 拓扑 | ResearAI/AutoFigure | LLM→学术图拓扑 |
+| 后端 | dylanyunlon/skynetCheapBuy | AI Engine多Provider |
+| ELK | kieler/elkjs | 约束布局引擎 |
+| NanoBanana | gemini-cli-extensions/nanobanana | 核心 |
+| NanoBanana | ZeroLu/awesome-nanobanana-pro | prompt工程 |
+| 前端 | cworld1/astro-theme-pure | Astro主题 |
+| 前端 | withastro/astro | Astro框架 |
+| Step 5 | xAI/grok | Grok 4 prompt engineering |
+| Step 5 | google/gemini-api | Gemini 3 Pro Image |
+| 代理 | tryallai.com | API 代理 (无需翻墙) |

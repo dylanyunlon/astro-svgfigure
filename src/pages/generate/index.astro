@@ -18,6 +18,7 @@ import SvgPreview from '@/components/pipeline/SvgPreview.astro'
 import ExportPanel from '@/components/pipeline/ExportPanel.astro'
 import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
 import HealthCheck from '@/components/pipeline/HealthCheck.astro'
+import ImageGenPanel from '@/components/pipeline/ImageGenPanel.astro'
 ---
 
 <GenerateLayout meta={{ title: 'Generate Figure' }} highlightColor='#4F46E5'>
@@ -102,6 +103,10 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
           <ExportPanel />
         </Card>
 
+        <Card heading='Step 5: Scientific Figure'>
+          <ImageGenPanel />
+        </Card>
+
         <Collapse title='Topology JSON'>
           <pre id='topology-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>
             {/* Will be populated dynamically */}
@@ -142,6 +147,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
   const exportPanel = (window as any).__exportPanel
 
   const errorDisplay = (window as any).__errorDisplay
+  const imageGenPanel = (window as any).__imageGenPanel
 
   let running = false
   let startTime = 0
@@ -177,6 +183,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
     preview?.clear()
     exportPanel?.disable()
     errorDisplay?.hide()
+    imageGenPanel?.disable()
     startTimer()
 
     const model = (document.getElementById('opt-model') as HTMLSelectElement)?.value
@@ -254,6 +261,9 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       if (svg) {
         preview?.show(svg)
         exportPanel?.enable()
+        // Enable Step 5: Scientific figure generation
+        const methodText = textarea?.value?.trim() || ''
+        imageGenPanel?.enable(svg, methodText)
       }
 
       steps?.setStatus('step-output', 'done')
