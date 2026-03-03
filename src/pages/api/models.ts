@@ -49,9 +49,14 @@ export const GET: APIRoute = async () => {
     // Fallback: return default models when backend is unavailable
     return new Response(
       JSON.stringify({
+        anthropic: [
+          { id: 'claude-opus-4-6', name: 'Claude Opus 4.6 (topology)' },
+        ],
+        openai: [
+          { id: 'grok-4', name: 'Grok 4 (prompt engineering)' },
+        ],
         gemini: [
-          { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (default)' },
-          { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+          { id: 'gemini-3-pro-image-preview', name: 'Gemini 3 Pro Image (figure gen)' },
         ],
         _fallback: true,
         _hint: 'Backend unavailable. Start with: python server.py',

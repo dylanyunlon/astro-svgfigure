@@ -32,7 +32,7 @@ export const POST: APIRoute = async ({ request }) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         layouted,
-        model: model || 'gemini-2.0-flash',
+        model: model || undefined,
         style: style || 'academic',
         optimize_iterations: optimize_iterations ?? 1,
       }),

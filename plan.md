@@ -780,7 +780,6 @@ astro-svgfigure/  (commit: 3f5faab)
 +     { title: 'Playground', link: '/playground' },
       { title: 'Projects', link: '/projects' },
 -     { title: 'Links', link: '/links' },
-      { title: 'About', link: '/about' }
     ],
   },
 ```
@@ -2481,3 +2480,60 @@ Changes:
 | Step 5 | xAI/grok | Grok 4 prompt engineering |
 | Step 5 | google/gemini-api | Gemini 3 Pro Image |
 | 代理 | tryallai.com | API 代理 (无需翻墙) |
+
+11更新：
+Pipeline 重构 + 修复 503 model_not_found
+
+## 问题
+
+1. **503 错误**: 前端硬编码发送 `gemini-2.5-flash`，tryallai 代理无此渠道
+2. **流程不对**: 旧 5-step Pipeline 中 Step 3 (NanoBanana/beautify) 只是用 LLM 重写 SVG 标签，本质还是矩形+箭头，并未实现"科研级图片生成"
+3. **多处残留**: `index.astro`、`ai_engine.py`、`config.py`、`models.ts` 仍引用旧流程和不存在的模型
+
+## 改动
+
+### 新 3-Step Pipeline
+
+| Step | 模型 | 输入 → 输出 |
+|------|------|------------|
+| 1. Topology + ELK Layout | `claude-opus-4-6` (.env) | 论文 method text → 拓扑 JSON → ELK.js 约束布局 → 骨架 SVG |
+| 2. Grok 4 Prompt | `grok-4` (.env) | 骨架 SVG + method text → 200-400 词专业绘图 prompt |
+| 3. Gemini 3 Image | `gemini-3-pro-image-preview` (.env) | prompt → 4K PNG 科研级图片 |
+
+用户在 Step 1 后确认骨架组件无缺失，再触发 Step 2→3。Step 2 生成的 prompt 可编辑后再送 Step 3。
+
+### 修改文件 (9个)
+
+**前端 (5个)**
+
+| 文件 | 改动 |
+|------|------|
+| `src/pages/generate/index.astro` | 全面重写: 去掉 model 下拉框和 NanoBanana 调用, 改为两个按钮 (Step 1 / Step 2→3), 新增 Grok prompt 编辑区 + 最终图片预览/下载 |
+| `src/components/pipeline/PipelineSteps.astro` | 5 步 → 3 步 (Topology+ELK / Grok 4 Prompt / Gemini 3 Image) |
+| `src/pages/index.astro` | 删除旧 4-step 流程副本, 改为重定向到 `/generate` |
+| `src/pages/api/topology.ts` | 移除硬编码 `model: 'gemini-2.5-flash'`, 改为 `undefined` 由后端 .env 决定 |
+| `src/pages/api/beautify.ts` | 同上 |
+| `src/pages/api/models.ts` | fallback 模型列表从 `gemini-2.5-flash` 改为 `claude-opus-4-6` / `grok-4` / `gemini-3-pro-image-preview` |
+
+**后端 (3个)**
+
+| 文件 | 改动 |
+|------|------|
+| `backend/config.py` | `DEFAULT_AI_MODEL` / `DEFAULT_TOPOLOGY_MODEL` 从 `gemini-2.5-flash` → `claude-opus-4-6`; 注释更新为 3-Step |
+| `backend/ai_engine.py` | `DEFAULT_MODEL` 改为从 `settings.DEFAULT_AI_MODEL` 读取; `is_openai_model()` 新增 `grok-` 前缀路由 |
+| `backend/pipeline/gemini_image_gen.py` | 修复 tryallai endpoint URL (加 trailing `/`); 修复 Bearer auth 逻辑; 新增 `_extract_svg_structure()` 避免给 image model 喂 raw SVG XML |
+
+### 未改动的文件
+
+`server.py`、`generate-image.ts`、`generate-prompt.ts`、`ImageGenPanel.astro` 等上一轮已提交的文件保持不变，本次不涉及。
+
+## 503 根因
+
+```
+topology.ts 发送 { model: "gemini-2.5-flash" }
+  → server.py 用该 model 调 ai_engine
+    → ai_engine 路由到 gemini provider
+      → tryallai 代理返回 503: 分组 画图分组 下模型 gemini-2.5-flash 无可用渠道
+```
+
+修复后: 前端不再发送 model 字段 → 后端从 .env 读取 `DEFAULT_TOPOLOGY_MODEL=claude-opus-4-6`

@@ -52,8 +52,7 @@ export const theme: ThemeUserConfig = {
       { title: 'Gallery', link: '/gallery' },
       { title: 'Playground', link: '/playground' },
       { title: 'Blog', link: '/blog' },
-      { title: 'Docs', link: '/docs' },
-      { title: 'About', link: '/about' }
+      { title: 'Docs', link: '/docs' }
     ]
   },
 

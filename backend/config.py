@@ -56,14 +56,18 @@ class Settings(BaseSettings):
     CLAUDE_COMPATIBLE_API_BASE: str = ""
 
     # ── Pipeline defaults ───────────────────────────────────────────────
-    DEFAULT_AI_MODEL: str = "gemini-2.5-flash"
-    DEFAULT_TOPOLOGY_MODEL: str = "gemini-2.5-flash"
-    DEFAULT_BEAUTIFY_MODEL: str = "gemini-2.5-flash"
-    DEFAULT_VALIDATOR_MODEL: str = "gemini-2.5-flash"
+    # 3-Step Pipeline:
+    #   Step 1: Topology + ELK Layout (DEFAULT_TOPOLOGY_MODEL)
+    #   Step 2: Grok 4 prompt engineering (DEFAULT_PROMPT_MODEL)
+    #   Step 3: Gemini 3 image generation (DEFAULT_IMAGE_MODEL)
+    DEFAULT_AI_MODEL: str = "claude-opus-4-6"
+    DEFAULT_TOPOLOGY_MODEL: str = "claude-opus-4-6"
+    DEFAULT_BEAUTIFY_MODEL: str = "grok-4"         # Legacy, kept for backward compat
+    DEFAULT_VALIDATOR_MODEL: str = "claude-opus-4-6"
 
-    # ── Step 5: Image Generation ─────────────────────────────────────────
-    DEFAULT_PROMPT_MODEL: str = "grok-4"        # Grok 4 for prompt engineering
-    DEFAULT_IMAGE_MODEL: str = "gemini-3-pro-image-preview"  # Gemini 3 for image gen
+    # ── Step 2+3: Image Generation ───────────────────────────────────────
+    DEFAULT_PROMPT_MODEL: str = "grok-4"                    # Grok 4 反推 prompt
+    DEFAULT_IMAGE_MODEL: str = "gemini-3-pro-image-preview" # Gemini 3 生成图片
 
     # ── Server ──────────────────────────────────────────────────────────
     HOST: str = "0.0.0.0"

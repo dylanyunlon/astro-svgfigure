@@ -191,25 +191,23 @@ async def generate_image_with_gemini(
         return {"success": False, "error": "GEMINI_API_KEY not configured"}
 
     # Determine endpoint
-    # tryallai uses OpenAI-compatible base but Gemini native format needs v1beta path
-    if api_base and "tryallai" in api_base:
-        # tryallai.com proxy: use v1beta native Gemini format
-        base_url = api_base.rstrip("/").replace("/v1", "")
-        endpoint = f"{base_url}/v1beta/models/{model}:generateContent"
-    elif api_base:
+    # tryallai.com proxy: /v1beta/models/{model}:generateContent/ (trailing slash per spec)
+    if api_base:
         base_url = api_base.rstrip("/")
-        endpoint = f"{base_url}/v1beta/models/{model}:generateContent"
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        endpoint = f"{base_url}/v1beta/models/{model}:generateContent/"
     else:
         # Direct Google API
         endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     # Build the request body (Gemini native format)
-    # Combine SVG context with the generation prompt
+    # Extract meaningful layout info instead of dumping raw SVG XML
+    svg_summary = _extract_svg_structure(svg_content)
     combined_prompt = (
         f"{prompt}\n\n"
-        f"The figure should match this SVG layout structure:\n"
-        f"```svg\n{svg_content[:6000]}\n```\n\n"
-        f"Generate a high-quality scientific figure image based on the above."
+        f"Layout structure reference:\n{svg_summary}\n\n"
+        f"Generate a high-quality, publication-ready scientific figure image."
     )
 
     request_body = {
@@ -235,9 +233,9 @@ async def generate_image_with_gemini(
         "Authorization": f"Bearer {api_key}",
     }
 
-    # For direct Google API, use query param instead of header
+    # For direct Google API (no api_base), use query param instead
     params = {}
-    if not api_base or "googleapis" in (api_base or ""):
+    if not api_base:
         headers.pop("Authorization", None)
         params["key"] = api_key
 
@@ -445,3 +443,38 @@ def _build_fallback_prompt(method_text: str, svg_content: str) -> str:
         f"smooth directional arrows for data flow. "
         f"The figure should be immediately understandable and visually striking."
     )
+
+
+def _extract_svg_structure(svg_content: str) -> str:
+    """
+    Extract meaningful layout info from SVG for the image generation prompt.
+    Converts SVG XML into human-readable description (image models work better
+    with natural language than raw markup).
+    """
+    labels = re.findall(r'>([^<]{2,50})<', svg_content)
+    unique_labels = list(dict.fromkeys(l.strip() for l in labels if l.strip()))[:30]
+
+    rects = re.findall(
+        r'<rect[^>]*x="([^"]*)"[^>]*y="([^"]*)"[^>]*width="([^"]*)"[^>]*height="([^"]*)"',
+        svg_content
+    )
+
+    viewbox = re.search(r'viewBox="0 0 (\d+) (\d+)"', svg_content)
+    canvas_w = viewbox.group(1) if viewbox else "800"
+    canvas_h = viewbox.group(2) if viewbox else "600"
+
+    arrow_count = svg_content.count('marker-end')
+    node_count = max(0, len(rects) - 1)  # subtract background rect
+
+    parts = [
+        f"Canvas: {canvas_w}x{canvas_h} pixels",
+        f"Components ({node_count}): {', '.join(unique_labels[:15])}",
+        f"Connections: {arrow_count} directional arrows",
+    ]
+
+    if rects and len(rects) > 2:
+        ys = sorted(set(float(r[1]) for r in rects[1:]))
+        if len(ys) > 1:
+            parts.append(f"Layout: {len(ys)} layers arranged vertically (top to bottom flow)")
+
+    return "\n".join(parts)

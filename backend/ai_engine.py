@@ -41,9 +41,9 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 def is_openai_model(model: str) -> bool:
-    """Check if model is an OpenAI model (gpt-*, o1-*, o3-*)."""
+    """Check if model is an OpenAI-compatible model (gpt-*, o1-*, o3-*, grok-*)."""
     m = model.lower()
-    return m.startswith(("gpt-", "o1-", "o3-"))
+    return m.startswith(("gpt-", "o1-", "o3-", "grok-"))
 
 
 def is_claude_model(model: str) -> bool:
@@ -795,10 +795,11 @@ class AIEngine:
         assert "stop_reason" in result
     """
 
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    DEFAULT_MODEL = "claude-opus-4-6"
 
     def __init__(self, settings: Optional[Settings] = None):
         self._settings = settings or get_settings()
+        self.DEFAULT_MODEL = self._settings.DEFAULT_AI_MODEL or "claude-opus-4-6"
         self._providers: Dict[str, AIProvider] = {}
         self._init_providers()
 

@@ -34,7 +34,7 @@ export const POST: APIRoute = async ({ request }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: text.trim(),
-          model: model || 'gemini-2.0-flash',
+          model: model || undefined,
           algorithm: algorithm || 'layered',
           direction: direction || 'DOWN',
         }),
