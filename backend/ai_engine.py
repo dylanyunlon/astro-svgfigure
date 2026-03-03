@@ -819,10 +819,19 @@ class AIEngine:
                 logger.warning(f"Anthropic provider unavailable: {e}")
 
         if s.GEMINI_API_KEY:
-            try:
-                self._providers["gemini"] = GoogleProvider(s.GEMINI_API_KEY)
-            except ImportError as e:
-                logger.warning(f"Gemini provider unavailable: {e}")
+            if s.GEMINI_API_BASE:
+                # Proxy mode (e.g. tryallai): use OpenAI-compatible format for Gemini
+                try:
+                    self._providers["gemini"] = OpenAIProvider(s.GEMINI_API_KEY, s.GEMINI_API_BASE)
+                    logger.info(f"Gemini via OpenAI-compatible proxy: {s.GEMINI_API_BASE}")
+                except ImportError as e:
+                    logger.warning(f"OpenAI provider unavailable for Gemini proxy: {e}")
+            else:
+                # Direct mode: use google-generativeai SDK
+                try:
+                    self._providers["gemini"] = GoogleProvider(s.GEMINI_API_KEY)
+                except ImportError as e:
+                    logger.warning(f"Gemini provider unavailable: {e}")
 
         if s.CLAUDE_COMPATIBLE_API_KEY and s.CLAUDE_COMPATIBLE_API_BASE:
             self._providers["claude_compatible"] = ClaudeCompatibleProvider(
@@ -853,7 +862,9 @@ class AIEngine:
             elif is_openai_model(model):
                 return OpenAIProvider(api_key, api_url or "https://api.openai.com/v1")
             elif is_gemini_model(model):
-                return GoogleProvider(api_key)
+                if api_url:
+                    return OpenAIProvider(api_key, api_url)  # Proxy mode
+                return GoogleProvider(api_key)  # Direct mode
             else:
                 return OpenAIProvider(api_key, api_url or "https://api.openai.com/v1")
 

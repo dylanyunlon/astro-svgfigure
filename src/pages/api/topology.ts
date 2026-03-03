@@ -10,7 +10,7 @@ import type { APIRoute } from 'astro'
 
 export const prerender = false
 
-const BACKEND_URL = import.meta.env.BACKEND_URL || 'http://localhost:8000'
+const BACKEND_URL = import.meta.env.PYTHON_BACKEND_URL || import.meta.env.BACKEND_URL || 'http://localhost:8000'
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -86,6 +86,10 @@ export const POST: APIRoute = async ({ request }) => {
         error: 'Failed to connect to backend',
         details: err.message,
         hint: 'Make sure Python backend is running: python server.py',
+        debug: {
+          backend_url: BACKEND_URL,
+          target: `${BACKEND_URL}/api/topology`,
+        },
       }),
       { status: 502, headers: { 'Content-Type': 'application/json' } }
     )

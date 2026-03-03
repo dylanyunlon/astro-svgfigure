@@ -48,6 +48,7 @@ class Settings(BaseSettings):
 
     # ── Google Gemini provider ──────────────────────────────────────────
     GEMINI_API_KEY: str = ""
+    GEMINI_API_BASE: str = ""  # If set, use OpenAI-compatible format via proxy (e.g. tryallai)
     GEMINI_DEFAULT_MODEL: str = "gemini-2.5-flash"
 
     # ── Claude-Compatible (third-party /v1/messages endpoint) ───────────
@@ -126,7 +127,7 @@ class Settings(BaseSettings):
         """Return the appropriate API base URL for a given model name."""
         m = model.lower()
         if m.startswith("gemini"):
-            return ""  # Gemini uses SDK, no base URL
+            return self.GEMINI_API_BASE  # Empty = use SDK; set = use OpenAI-compatible proxy
         if m.startswith(("claude-", "claude_")):
             if self.ANTHROPIC_API_KEY:
                 return self.ANTHROPIC_API_BASE

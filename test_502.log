@@ -1,0 +1,88 @@
+(.venv) root@iZ7xv051npomtfakwd4555Z:~/dylan/skynetCheapBuy/astro-svgfigure# python test_502.py 
+📂 加载环境变量:
+  ✅ 加载 /root/dylan/skynetCheapBuy/astro-svgfigure/.env (20 vars)
+  ✅ 加载 /root/dylan/CheapBuy/.env (35 vars)
+============================================================
+🔧 astro-svgfigure 502 诊断 v2
+📁 /root/dylan/skynetCheapBuy/astro-svgfigure
+============================================================
+
+============================================================
+🧪 测试 0: API Key 检查
+============================================================
+  ✅ GEMINI_API_KEY = sk-p9b...Zw7E
+  ✅ OPENAI_API_KEY = sk-p9b...Zw7E
+  ✅ OPENAI_API_BASE = https://api.tryallai.com/v1
+  ✅ ANTHROPIC_API_KEY = sk-p9b...Zw7E
+  ✅ CLAUDE_COMPATIBLE_API_KEY = sk-p9b...Zw7E
+  ✅ CLAUDE_COMPATIBLE_API_BASE = https://api.tryallai.com
+
+============================================================
+🧪 测试 1: backend/config.py
+============================================================
+  ✅ Settings OK
+  GEMINI_API_KEY: ✅
+  OPENAI_API_KEY: ✅ base=https://api.tryallai.com/v1
+  ANTHROPIC_API_KEY: ✅
+  CLAUDE_COMPATIBLE: ✅ base=https://api.tryallai.com
+  DEFAULT_AI_MODEL: gemini-2.5-flash
+  AVAILABLE_MODELS: ['gemini', 'openai', 'anthropic', 'claude_compatible'] (9 total)
+
+============================================================
+🧪 测试 2: AIEngine 初始化
+============================================================
+2026-03-03 11:20:54,426 [INFO] backend.ai_engine: OpenAIProvider initialized (base_url=https://api.tryallai.com/v1)
+2026-03-03 11:20:54,492 [INFO] backend.ai_engine: AnthropicProvider initialized (base_url=https://api.tryallai.com)
+2026-03-03 11:20:54,506 [INFO] backend.ai_engine: OpenAIProvider initialized (base_url=https://api.tryallai.com/v1)
+2026-03-03 11:20:54,507 [INFO] backend.ai_engine: Gemini via OpenAI-compatible proxy: https://api.tryallai.com/v1
+2026-03-03 11:20:54,521 [INFO] backend.ai_engine: ClaudeCompatibleProvider initialized (base_url=https://api.tryallai.com)
+2026-03-03 11:20:54,521 [INFO] backend.ai_engine: AIEngine initialized with providers: ['openai', 'anthropic', 'gemini', 'claude_compatible']
+  ✅ Providers: ['openai', 'anthropic', 'gemini', 'claude_compatible']
+
+============================================================
+🧪 测试 3: LLM 简单调用
+============================================================
+2026-03-03 11:20:54,521 [INFO] backend.ai_engine: get_completion: model=gemini-2.5-flash, provider=OpenAIProvider
+2026-03-03 11:20:57,450 [INFO] httpx: HTTP Request: POST https://api.tryallai.com/v1/chat/completions "HTTP/1.1 200 OK"
+  ✅ model=gemini-2.5-flash
+  ✅ content=
+
+============================================================
+🧪 测试 4: topology_gen 端到端
+============================================================
+/root/dylan/skynetCheapBuy/skynetCheapBuy/.venv/lib/python3.10/site-packages/pydantic/_internal/_fields.py:149: UserWarning: Field "model_used" has conflict with protected namespace "model_".
+
+You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+  warnings.warn(
+  📝 Input: A simple encoder-decoder with attention mechanism
+  ⏳ 生成中 (5-15s)...
+2026-03-03 11:20:57,513 [INFO] backend.pipeline.topology_gen: Generating topology with model=default
+2026-03-03 11:20:57,514 [INFO] backend.ai_engine: get_completion: model=gemini-2.5-flash, provider=OpenAIProvider
+2026-03-03 11:21:08,985 [INFO] httpx: HTTP Request: POST https://api.tryallai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-03 11:21:08,995 [INFO] backend.pipeline.topology_gen: Topology generated: 5 nodes, 11 edges
+  ✅ 成功! model=gemini-2.5-flash, nodes=5, edges=11
+  📋 nodes: ['input_sequence', 'encoder', 'encoder_output_states', 'decoder', 'output_sequence']
+
+  💡 测试 5 需后端在另一终端运行
+
+============================================================
+🧪 测试 5: HTTP localhost:8000 连通性
+============================================================
+  ✅ GET /api/models → ['gemini', 'openai', 'anthropic', 'claude_compatible']
+  ✅ POST /api/topology → success=True
+     nodes=5, edges=4
+
+============================================================
+🧪 测试 6: tryallai.com 直连
+============================================================
+  📡 测试 OpenAI 格式: https://api.tryallai.com/v1/chat/completions
+  ✅ OpenAI格式成功: OK
+  📡 测试 Claude 格式: https://api.tryallai.com/v1/messages
+  ✅ Claude格式成功: OK
+
+============================================================
+📊 结论
+============================================================
+  ✅ Pipeline 正常! 502 = 启动顺序问题
+  → 先: python server.py  再: bun dev
+(.venv) root@iZ7xv051npomtfakwd4555Z:~/dylan/skynetCheapBuy/astro-svgfigure# 
