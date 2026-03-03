@@ -273,6 +273,14 @@ class AnthropicProvider(AIProvider):
             raise ImportError("anthropic package required: pip install anthropic")
 
         self._client = AsyncAnthropic(api_key=api_key, base_url=base_url)
+
+        # Defensive check: verify the SDK version supports the messages resource
+        if not hasattr(self._client, "messages"):
+            raise ImportError(
+                "Installed anthropic package does not support client.messages. "
+                "Please upgrade: pip install --upgrade 'anthropic>=0.40'"
+            )
+
         logger.info(f"AnthropicProvider initialized (base_url={base_url})")
 
     async def get_completion(
@@ -814,10 +822,28 @@ class AIEngine:
                 logger.warning(f"OpenAI provider unavailable: {e}")
 
         if s.ANTHROPIC_API_KEY:
-            try:
-                self._providers["anthropic"] = AnthropicProvider(s.ANTHROPIC_API_KEY, s.ANTHROPIC_API_BASE)
-            except ImportError as e:
-                logger.warning(f"Anthropic provider unavailable: {e}")
+            # If using a third-party proxy (not official api.anthropic.com),
+            # use ClaudeCompatibleProvider (raw httpx) instead of native SDK
+            # to avoid SDK compatibility issues with proxy endpoints.
+            _is_official = (
+                not s.ANTHROPIC_API_BASE
+                or "api.anthropic.com" in s.ANTHROPIC_API_BASE
+            )
+            if _is_official:
+                try:
+                    self._providers["anthropic"] = AnthropicProvider(
+                        s.ANTHROPIC_API_KEY, s.ANTHROPIC_API_BASE
+                    )
+                except ImportError as e:
+                    logger.warning(f"Anthropic provider unavailable: {e}")
+            else:
+                # Third-party proxy: use httpx-based ClaudeCompatibleProvider
+                self._providers["anthropic"] = ClaudeCompatibleProvider(
+                    s.ANTHROPIC_API_KEY, s.ANTHROPIC_API_BASE
+                )
+                logger.info(
+                    f"Anthropic via ClaudeCompatibleProvider (proxy: {s.ANTHROPIC_API_BASE})"
+                )
 
         if s.GEMINI_API_KEY:
             if s.GEMINI_API_BASE:
