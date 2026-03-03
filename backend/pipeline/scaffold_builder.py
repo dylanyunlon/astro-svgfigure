@@ -70,7 +70,7 @@ BORDER_COLORS = [
 # ============================================================================
 
 def build_scaffold(
-    layouted: ElkGraph,
+    layouted,
     *,
     padding: float = 40.0,
     style_hints: Optional[Dict[str, Any]] = None,
@@ -79,32 +79,48 @@ def build_scaffold(
     Convert ELK layouted graph to NanoBanana scaffold.
 
     Args:
-        layouted: ElkGraph with computed x, y coordinates (from ELK.js)
+        layouted: ElkGraph or dict with computed x, y coordinates (from ELK.js)
         padding: Canvas padding around the graph bounds
         style_hints: Optional style customization
 
     Returns:
         NanoBananaScaffold ready for NanoBanana SVG generation
     """
+    # Normalize input: accept both ElkGraph and dict
+    if isinstance(layouted, dict):
+        children = layouted.get("children", [])
+        edges = layouted.get("edges", [])
+    else:
+        children = layouted.children
+        edges = layouted.edges
+
     elements: List[ScaffoldElement] = []
     connections: List[ScaffoldConnection] = []
 
-    # Build node ID → index mapping for coloring
-    node_ids = [child.id for child in layouted.children]
+    total_nodes = len(children)
 
     # ── Convert nodes to scaffold elements ──────────────────────────────
-    for i, node in enumerate(layouted.children):
-        x = node.x if node.x is not None else 0
-        y = node.y if node.y is not None else 0
-        w = node.width
-        h = node.height
-        label = node.labels[0].text if node.labels else node.id
+    for i, node in enumerate(children):
+        if isinstance(node, dict):
+            node_id = node.get("id", f"node_{i}")
+            x = node.get("x", 0) or 0
+            y = node.get("y", 0) or 0
+            w = node.get("width", 150)
+            h = node.get("height", 50)
+            labels = node.get("labels", [])
+            label = labels[0].get("text", node_id) if labels else node_id
+        else:
+            node_id = node.id
+            x = node.x if node.x is not None else 0
+            y = node.y if node.y is not None else 0
+            w = node.width
+            h = node.height
+            label = node.labels[0].text if node.labels else node.id
 
-        # Determine node type from position (heuristic)
-        node_type = _classify_node(node.id, i, len(layouted.children))
+        node_type = _classify_node(node_id, i, total_nodes)
 
         elements.append(ScaffoldElement(
-            id=node.id,
+            id=node_id,
             type=node_type,
             label=label,
             x=x + padding,
@@ -116,12 +132,18 @@ def build_scaffold(
         ))
 
     # ── Convert edges to scaffold connections ───────────────────────────
-    for edge in layouted.edges:
-        source = edge.sources[0] if edge.sources else ""
-        target = edge.targets[0] if edge.targets else ""
+    for edge in edges:
+        if isinstance(edge, dict):
+            source = (edge.get("sources") or [""])[0]
+            target = (edge.get("targets") or [""])[0]
+            sections = edge.get("sections", [])
+        else:
+            source = edge.sources[0] if edge.sources else ""
+            target = edge.targets[0] if edge.targets else ""
+            sections = getattr(edge, "sections", [])
 
-        # Extract routing points from ELK edge sections
-        points = _extract_edge_points(edge, layouted, padding)
+        # Extract routing points
+        points = _extract_edge_points_from_sections(sections, padding)
 
         # If no routing points, compute simple center-to-center connection
         if not points:
@@ -188,43 +210,40 @@ def _classify_node(node_id: str, index: int, total: int) -> str:
     return "processing"
 
 
-def _extract_edge_points(
-    edge: Any,
-    graph: ElkGraph,
+def _extract_edge_points_from_sections(
+    sections: Any,
     padding: float,
 ) -> List[Dict[str, float]]:
     """
     Extract routing points from ELK edge sections.
-
-    ELK stores edge routing in:
-      edge.sections[i].startPoint, endPoint, bendPoints[]
+    Accepts both list of dicts and list of objects.
     """
     points: List[Dict[str, float]] = []
 
-    # ELK edge sections (if available after layout)
-    sections = getattr(edge, "sections", None)
-    if sections and isinstance(sections, list):
-        for section in sections:
-            if isinstance(section, dict):
-                start = section.get("startPoint")
-                if start:
-                    points.append({
-                        "x": start.get("x", 0) + padding,
-                        "y": start.get("y", 0) + padding,
-                    })
+    if not sections or not isinstance(sections, list):
+        return points
 
-                for bp in section.get("bendPoints", []):
-                    points.append({
-                        "x": bp.get("x", 0) + padding,
-                        "y": bp.get("y", 0) + padding,
-                    })
+    for section in sections:
+        if isinstance(section, dict):
+            start = section.get("startPoint")
+            if start:
+                points.append({
+                    "x": start.get("x", 0) + padding,
+                    "y": start.get("y", 0) + padding,
+                })
 
-                end = section.get("endPoint")
-                if end:
-                    points.append({
-                        "x": end.get("x", 0) + padding,
-                        "y": end.get("y", 0) + padding,
-                    })
+            for bp in section.get("bendPoints", []):
+                points.append({
+                    "x": bp.get("x", 0) + padding,
+                    "y": bp.get("y", 0) + padding,
+                })
+
+            end = section.get("endPoint")
+            if end:
+                points.append({
+                    "x": end.get("x", 0) + padding,
+                    "y": end.get("y", 0) + padding,
+                })
 
     return points
 

@@ -24,31 +24,62 @@ export const POST: APIRoute = async ({ request }) => {
       )
     }
 
-    // Forward to Python backend
-    const backendRes = await fetch(`${BACKEND_URL}/api/topology`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: text.trim(),
-        model: model || 'gemini-2.0-flash',
-        algorithm: algorithm || 'layered',
-        direction: direction || 'DOWN',
-      }),
-    })
+    // Forward to Python backend with timeout
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 60000) // 60s timeout
 
-    if (!backendRes.ok) {
-      const errorText = await backendRes.text()
-      return new Response(
-        JSON.stringify({ error: `Backend error: ${backendRes.status}`, details: errorText }),
-        { status: backendRes.status, headers: { 'Content-Type': 'application/json' } }
-      )
+    try {
+      const backendRes = await fetch(`${BACKEND_URL}/api/topology`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: text.trim(),
+          model: model || 'gemini-2.0-flash',
+          algorithm: algorithm || 'layered',
+          direction: direction || 'DOWN',
+        }),
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeout)
+
+      if (!backendRes.ok) {
+        const errorText = await backendRes.text()
+        let errorDetail: string
+        try {
+          const errorJson = JSON.parse(errorText)
+          errorDetail = errorJson.error || errorJson.detail || errorText
+        } catch {
+          errorDetail = errorText
+        }
+        return new Response(
+          JSON.stringify({
+            error: `Backend error: ${backendRes.status}`,
+            details: errorDetail,
+            hint: backendRes.status === 500 ? 'Check GEMINI_API_KEY in .env' : undefined,
+          }),
+          { status: backendRes.status, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+
+      const data = await backendRes.json()
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch (fetchErr: any) {
+      clearTimeout(timeout)
+      if (fetchErr.name === 'AbortError') {
+        return new Response(
+          JSON.stringify({
+            error: 'Request timed out (60s)',
+            hint: 'The LLM may be slow. Try a faster model like gemini-2.0-flash.',
+          }),
+          { status: 504, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      throw fetchErr
     }
-
-    const data = await backendRes.json()
-    return new Response(JSON.stringify(data), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
   } catch (err: any) {
     return new Response(
       JSON.stringify({

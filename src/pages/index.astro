@@ -1,168 +1,274 @@
 ---
 /**
- * index.astro — 产品着陆页 + Generate 入口
+ * /generate — 核心 Pipeline 生成页
  *
- * 解决问题: 用户访问 :4321 看到博客首页, Generate 功能不可见
- * 方案: Hero 展示 SVGFigure + Pipeline四步特性 + Generate CTA
- *       博客列表降级到底部 section
+ * 正向流程: Text → Topology → ELK Layout → NanoBanana SVG
+ * 使用 astro-pure 组件 (Card, Button, Collapse, Label)
+ * 使用 GenerateLayout 全宽布局
  *
- * 保留所有 astro-pure 导入, 不自创样式
- * GitHub 背书: cworld1/astro-theme-pure, withastro/astro
+ * GitHub 背书: withastro/astro, cworld1/astro-theme-pure, kieler/elkjs
  */
-import { Image } from 'astro:assets'
+export const prerender = false
 
-import { Quote } from 'astro-pure/advanced'
-import { PostPreview } from 'astro-pure/components/pages'
-import { getBlogCollection, sortMDByDate } from 'astro-pure/server'
-import { Button, Card, Icon, Label } from 'astro-pure/user'
-import PageLayout from '@/layouts/BaseLayout.astro'
-import ProjectCard from '@/components/home/ProjectCard.astro'
-import Section from '@/components/home/Section.astro'
-import config from '@/site-config'
-
-const MAX_POSTS = 5
-const allPosts = await getBlogCollection()
-const allPostsByDate = sortMDByDate(allPosts).slice(0, MAX_POSTS)
-
-const imagePath = config.logo.src
-const images = import.meta.glob<{ default: ImageMetadata }>(
-  '/src/assets/*.{jpeg,jpg,png,gif,avif,webp}'
-)
-if (!images[imagePath])
-  throw new Error(
-    `"${imagePath}" does not exist in glob: "src/assets/*.{jpeg,jpg,png,gif,avif,webp}"`
-  )
+import { Button, Card, Collapse, Label } from 'astro-pure/user'
+import GenerateLayout from '@/layouts/GenerateLayout.astro'
+import TextInput from '@/components/pipeline/TextInput.astro'
+import PipelineSteps from '@/components/pipeline/PipelineSteps.astro'
+import SvgPreview from '@/components/pipeline/SvgPreview.astro'
+import ExportPanel from '@/components/pipeline/ExportPanel.astro'
 ---
 
-<PageLayout meta={{ title: 'Home' }} highlightColor='#4F46E5'>
-  <main class='flex w-full flex-col items-center'>
-    {/* ===== Hero: SVGFigure Product ===== */}
-    <section class='animate mb-10 flex flex-col items-center gap-y-7' id='content-header'>
-      <Image
-        src={images[imagePath]()}
-        alt={config.logo.alt || 'SVGFigure'}
-        class='h-28 w-auto rounded-full border p-1'
-        loading='eager'
-        fetchpriority='high'
-      />
+<GenerateLayout meta={{ title: 'Generate Figure' }} highlightColor='#4F46E5'>
+  <main class='flex w-full flex-col gap-y-6 py-6'>
+    {/* Page header */}
+    <div class='flex flex-col items-center gap-y-2 text-center'>
+      <h1 class='text-2xl font-medium'>Generate Academic Figure</h1>
+      <p class='text-sm text-muted-foreground max-w-xl'>
+        Describe your paper method, and we'll generate a publication-quality SVG figure
+        using ELK.js constraint layout + Gemini NanoBanana.
+      </p>
+    </div>
 
-      <div class='flex flex-col items-center gap-y-4'>
-        <h1 class='text-3xl font-medium'>SVGFigure</h1>
-        <p class='max-w-lg text-center text-muted-foreground'>
-          Generate publication-quality academic figures from text descriptions.
-          Powered by ELK.js constraint layout + Gemini NanoBanana.
-        </p>
-        <div class='flex flex-wrap justify-center gap-x-7 gap-y-3'>
-          <Label title='ELK.js Layout'>
-            <Icon name='grid' class='size-5' slot='icon' />
-          </Label>
-          <Label title='NanoBanana SVG'>
-            <Icon name='heart' class='size-5' slot='icon' />
-          </Label>
-          <Label
-            title='GitHub'
-            as='a'
-            href='https://github.com/dylanyunlon/astro-svgfigure'
-            target='_blank'
-          >
-            <Icon name='github' class='size-5' slot='icon' />
-          </Label>
-        </div>
+    {/* Main grid: 3 columns on desktop, stacked on mobile */}
+    <div class='grid grid-cols-1 gap-4 lg:grid-cols-12'>
+
+      {/* Left panel: Input + Controls */}
+      <div class='flex flex-col gap-y-4 lg:col-span-3'>
+        <Card heading='Input'>
+          <TextInput />
+        </Card>
+
+        <Card heading='Pipeline'>
+          <PipelineSteps />
+        </Card>
+
+        {/* Generate button */}
+        <button
+          id='generate-btn'
+          class='group flex w-full items-center justify-center gap-x-2 rounded-xl border bg-primary px-4 py-2.5 text-sm font-medium text-white transition-all hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed'
+        >
+          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+            <polygon points='5 3 19 12 5 21 5 3' />
+          </svg>
+          <span id='generate-btn-text'>Generate Figure</span>
+        </button>
+
+        {/* Options */}
+        <Collapse title='Advanced Options'>
+          <div class='flex flex-col gap-y-3 pb-2'>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='opt-model'>Model</label>
+              <select id='opt-model' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+                <option value='gemini-2.5-pro'>Gemini 2.5 Pro (strongest)</option>
+                <option value='gemini-2.5-flash' selected>Gemini 2.5 Flash (fast)</option>
+                <option value='gemini-2.0-flash'>Gemini 2.0 Flash</option>
+                <option value='claude-sonnet-4-20250514'>Claude Sonnet 4</option>
+                <option value='gpt-4o'>GPT-4o</option>
+              </select>
+            </div>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='opt-preset'>Layout Preset</label>
+              <select id='opt-preset' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+                <option value='academic-paper'>Academic Paper</option>
+                <option value='neural-network'>Neural Network</option>
+                <option value='flowchart'>Flowchart</option>
+              </select>
+            </div>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='opt-direction'>Direction</label>
+              <select id='opt-direction' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+                <option value='DOWN'>Top → Bottom</option>
+                <option value='RIGHT'>Left → Right</option>
+                <option value='UP'>Bottom → Top</option>
+                <option value='LEFT'>Right → Left</option>
+              </select>
+            </div>
+          </div>
+        </Collapse>
       </div>
 
-      {/* CTA: Go to Generate page */}
-      <a
-        href='/generate'
-        class='flex flex-row items-center gap-x-3 rounded-full border bg-background px-6 py-2.5 text-sm shadow-sm transition-shadow hover:shadow-md'
-      >
-        <span class='relative flex items-center justify-center'>
-          <span
-            class='absolute size-2 animate-ping rounded-full border border-green-400 bg-green-400 opacity-75'
-          ></span>
-          <span class='size-2 rounded-full bg-green-400'></span>
-        </span>
-        <p class='font-medium text-foreground'>Start Generating</p>
-      </a>
-    </section>
+      {/* Center panel: SVG Preview (takes most space) */}
+      <div class='flex flex-col gap-y-4 lg:col-span-6'>
+        <SvgPreview />
+      </div>
 
-    <div id='content' class='animate flex flex-col gap-y-10 md:w-4/5 lg:w-5/6'>
-      {/* ===== Pipeline Overview ===== */}
-      <Section title='Pipeline'>
-        <p class='text-muted-foreground'>
-          A four-step forward pipeline that transforms paper method descriptions into
-          beautiful SVG figures. Unlike the reverse approach (image → SAM3 → SVG),
-          we go forward: text → topology → layout → SVG.
-        </p>
-        <div class='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-          <Card
-            heading='1. LLM Topology'
-            subheading='Gemini analyzes your text and extracts the computational flow as structured ELK JSON with zero coordinates.'
-          />
-          <Card
-            heading='2. ELK.js Layout'
-            subheading='The constraint solver computes precise pixel positions (x, y, width, height) for every node and edge routing.'
-          />
-          <Card
-            heading='3. NanoBanana'
-            subheading='The layouted JSON scaffold is sent to Gemini NanoBanana to generate neural-network-level beautiful SVG.'
-          />
-          <Card
-            heading='4. SVG Output'
-            subheading='The final SVG is rendered in the browser with zoom controls, export to SVG/PNG, and clipboard copy.'
-          />
-        </div>
-        <Button title='Try it now' class='w-fit self-end' href='/generate' variant='ahead' />
-      </Section>
+      {/* Right panel: Export + JSON preview */}
+      <div class='flex flex-col gap-y-4 lg:col-span-3'>
+        <Card heading='Export'>
+          <ExportPanel />
+        </Card>
 
-      {/* ===== Tech Stack ===== */}
-      <Section title='Stack'>
-        <p class='text-muted-foreground'>
-          Built on proven open-source foundations with GitHub backing.
-        </p>
-        <div class='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-          <ProjectCard
-            href='https://github.com/kieler/elkjs'
-            heading='ELK.js'
-            subheading='Eclipse Layout Kernel — constraint-based graph layout'
-            imagePath='/src/assets/projects/1.avif'
-          />
-          <ProjectCard
-            href='https://github.com/cworld1/astro-theme-pure'
-            heading='Astro Pure'
-            subheading='Beautiful Astro theme with extensive component library'
-            imagePath='/src/assets/projects/2.avif'
-          />
-          <ProjectCard
-            href='https://github.com/ResearAI/AutoFigure'
-            heading='AutoFigure'
-            subheading='LLM-driven academic figure generation research'
-            imagePath='/src/assets/projects/3.avif'
-          />
-          <ProjectCard
-            href='/generate'
-            heading='Generate Now →'
-            subheading='Create your first academic figure in seconds'
-            imagePath='/src/assets/projects/4.avif'
-          />
-        </div>
-      </Section>
+        <Collapse title='Topology JSON'>
+          <pre id='topology-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>
+            {/* Will be populated dynamically */}
+            Waiting for generation...
+          </pre>
+        </Collapse>
 
-      {/* ===== Blog Posts (降级到底部) ===== */}
-      {
-        allPostsByDate.length > 0 && (
-          <Section title='Posts'>
-            <ul class='flex flex-col gap-y-1.5 sm:gap-y-2'>
-              {allPostsByDate.map((p) => (
-                <li class='flex flex-col gap-x-2 sm:flex-row'>
-                  <PostPreview post={p} />
-                </li>
-              ))}
-            </ul>
-            <Button title='More posts' class='w-fit self-end' href='/blog' variant='ahead' />
-          </Section>
-        )
-      }
+        <Collapse title='ELK Layouted JSON'>
+          <pre id='layouted-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>
+            Waiting for generation...
+          </pre>
+        </Collapse>
+      </div>
     </div>
-    <Quote class='mt-12' />
   </main>
-</PageLayout>
+</GenerateLayout>
+
+<script>
+  /**
+   * Pipeline orchestrator — runs the 4-step forward pipeline
+   *
+   * Step 1: Text → Topology JSON (via /api/topology → Python backend)
+   * Step 2: Topology → ELK Layout (via /api/layout → elkjs on server)
+   * Step 3: Layouted → NanoBanana SVG (via /api/beautify → Python backend)
+   * Step 4: Render SVG in preview
+   */
+
+  const generateBtn = document.getElementById('generate-btn') as HTMLButtonElement
+  const generateBtnText = document.getElementById('generate-btn-text') as HTMLSpanElement
+  const textarea = document.getElementById('method-text') as HTMLTextAreaElement
+  const statusText = document.getElementById('pipeline-status-text') as HTMLElement
+  const elapsedEl = document.getElementById('pipeline-elapsed') as HTMLElement
+  const topologyPre = document.getElementById('topology-json') as HTMLPreElement
+  const layoutedPre = document.getElementById('layouted-json') as HTMLPreElement
+
+  const steps = (window as any).__pipelineSteps
+  const preview = (window as any).__svgPreview
+  const exportPanel = (window as any).__exportPanel
+
+  let running = false
+  let startTime = 0
+  let timerInterval: number | null = null
+
+  function startTimer() {
+    startTime = Date.now()
+    timerInterval = window.setInterval(() => {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+      if (elapsedEl) elapsedEl.textContent = `${elapsed}s`
+    }, 100)
+  }
+
+  function stopTimer() {
+    if (timerInterval) {
+      clearInterval(timerInterval)
+      timerInterval = null
+    }
+  }
+
+  generateBtn?.addEventListener('click', async () => {
+    if (running) return
+    const text = textarea?.value?.trim()
+    if (!text) {
+      textarea?.focus()
+      return
+    }
+
+    running = true
+    generateBtn.disabled = true
+    generateBtnText.textContent = 'Generating...'
+    steps?.resetAll()
+    preview?.clear()
+    exportPanel?.disable()
+    startTimer()
+
+    const model = (document.getElementById('opt-model') as HTMLSelectElement)?.value
+    const preset = (document.getElementById('opt-preset') as HTMLSelectElement)?.value
+    const direction = (document.getElementById('opt-direction') as HTMLSelectElement)?.value
+
+    try {
+      // === Step 1: Topology ===
+      steps?.setStatus('step-topology', 'running')
+      statusText.textContent = 'Step 1: Generating topology...'
+
+      const topoRes = await fetch('/api/topology', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, model, direction }),
+      })
+
+      if (!topoRes.ok) {
+        const err = await topoRes.json()
+        throw new Error(`Topology: ${err.error || 'Failed'}`)
+      }
+
+      const topoData = await topoRes.json()
+      const topology = topoData.topology || topoData.graph || topoData
+      topologyPre.textContent = JSON.stringify(topology, null, 2)
+      steps?.setStatus('step-topology', 'done')
+
+      // === Step 2: ELK Layout ===
+      steps?.setStatus('step-elk', 'running')
+      statusText.textContent = 'Step 2: Computing ELK layout...'
+
+      const layoutRes = await fetch('/api/layout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ graph: topology, preset, options: { direction } }),
+      })
+
+      if (!layoutRes.ok) {
+        const err = await layoutRes.json()
+        throw new Error(`Layout: ${err.error || 'Failed'}`)
+      }
+
+      const layoutData = await layoutRes.json()
+      const layouted = layoutData.layouted
+      layoutedPre.textContent = JSON.stringify(layouted, null, 2)
+      steps?.setStatus('step-elk', 'done')
+
+      // === Step 3: NanoBanana SVG ===
+      steps?.setStatus('step-nanobanana', 'running')
+      statusText.textContent = 'Step 3: NanoBanana generating SVG...'
+
+      const beautyRes = await fetch('/api/beautify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layouted, model }),
+      })
+
+      if (!beautyRes.ok) {
+        const err = await beautyRes.json()
+        throw new Error(`Beautify: ${err.error || 'Failed'}`)
+      }
+
+      const beautyData = await beautyRes.json()
+      const svg = beautyData.svg || beautyData.content || ''
+      steps?.setStatus('step-nanobanana', 'done')
+
+      // === Step 4: Render ===
+      steps?.setStatus('step-output', 'running')
+      statusText.textContent = 'Step 4: Rendering SVG...'
+
+      if (svg) {
+        preview?.show(svg)
+        exportPanel?.enable()
+      }
+
+      steps?.setStatus('step-output', 'done')
+      statusText.textContent = 'Done!'
+    } catch (err: any) {
+      // Mark current running step as error
+      document.querySelectorAll('.pipeline-step[data-status="running"]').forEach((el) => {
+        ;(el as HTMLElement).dataset.status = 'error'
+      })
+      // Show detailed error with hints
+      let errorMsg = err.message || 'Unknown error'
+      if (errorMsg.includes('502') || errorMsg.includes('Failed to connect')) {
+        errorMsg += '\n💡 Hint: Make sure Python backend is running: python server.py'
+      } else if (errorMsg.includes('500') || errorMsg.includes('API_KEY')) {
+        errorMsg += '\n💡 Hint: Check GEMINI_API_KEY in .env file'
+      } else if (errorMsg.includes('504') || errorMsg.includes('timed out')) {
+        errorMsg += '\n💡 Hint: Try a faster model like gemini-2.0-flash'
+      }
+      statusText.textContent = `Error: ${errorMsg}`
+      statusText.style.color = 'var(--color-danger, #ef4444)'
+      console.error('Pipeline error:', err)
+    } finally {
+      stopTimer()
+      running = false
+      generateBtn.disabled = false
+      generateBtnText.textContent = 'Generate Figure'
+    }
+  })
+</script>

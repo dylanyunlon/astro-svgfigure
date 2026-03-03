@@ -92,6 +92,18 @@
   .pipeline-step[data-status='error'] .step-error {
     display: block;
   }
+  .pipeline-step[data-status='error'] {
+    border-color: hsl(0 72.2% 50.6% / 0.5);
+    background-color: hsl(0 72.2% 50.6% / 0.05);
+    animation: shake 0.4s ease-in-out;
+  }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-4px); }
+    40% { transform: translateX(4px); }
+    60% { transform: translateX(-2px); }
+    80% { transform: translateX(2px); }
+  }
 </style>
 
 <script>
@@ -113,7 +125,10 @@
       })
       const statusText = document.getElementById('pipeline-status-text')
       const elapsed = document.getElementById('pipeline-elapsed')
-      if (statusText) statusText.textContent = 'Ready'
+      if (statusText) {
+        statusText.textContent = 'Ready'
+        statusText.style.color = ''
+      }
       if (elapsed) elapsed.textContent = '0.0s'
     },
   }

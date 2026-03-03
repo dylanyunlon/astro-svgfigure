@@ -86,39 +86,51 @@ Generate the complete SVG:"""
 
 async def beautify_with_nanobanana(
     ai_engine: AIEngine,
-    layouted: ElkGraph,
-    scaffold: Optional[NanoBananaScaffold] = None,
+    layouted,
+    scaffold=None,
     model: Optional[str] = None,
     style: str = "academic",
-) -> BeautifyResponse:
+) -> Dict[str, Any]:
     """
     Generate beautiful SVG from ELK layouted graph via NanoBanana (Gemini).
 
     Args:
         ai_engine: Initialized AIEngine
-        layouted: ELK graph with computed coordinates
-        scaffold: Pre-built scaffold (or auto-built from layouted)
+        layouted: ELK graph with computed coordinates (ElkGraph or dict)
+        scaffold: Pre-built scaffold (NanoBananaScaffold or dict or None)
         model: LLM model (defaults to Gemini for NanoBanana)
         style: Visual style hint
 
     Returns:
-        BeautifyResponse with SVG string or error
+        dict with success, svg, error, model_used keys
     """
     # Build scaffold if not provided
     if scaffold is None:
         from .scaffold_builder import build_scaffold
         scaffold = build_scaffold(layouted)
 
-    scaffold_dict = scaffold.model_dump(by_alias=True)
+    # Handle both NanoBananaScaffold and dict
+    if hasattr(scaffold, "model_dump"):
+        scaffold_dict = scaffold.model_dump(by_alias=True)
+    elif isinstance(scaffold, dict):
+        scaffold_dict = scaffold
+    else:
+        scaffold_dict = {"elements": [], "connections": [], "canvas": {"width": 800, "height": 600}}
+
     scaffold_json = json.dumps(scaffold_dict, indent=2, ensure_ascii=False)
+
+    # Extract canvas dimensions
+    canvas = scaffold_dict.get("canvas", {})
+    elements = scaffold_dict.get("elements", [])
+    connections = scaffold_dict.get("connections", [])
 
     prompt = NANOBANANA_USER_PROMPT_TEMPLATE.format(
         scaffold_json=scaffold_json,
         style=style,
-        width=scaffold.canvas.get("width", 800),
-        height=scaffold.canvas.get("height", 600),
-        node_count=len(scaffold.elements),
-        edge_count=len(scaffold.connections),
+        width=canvas.get("width", 800),
+        height=canvas.get("height", 600),
+        node_count=len(elements),
+        edge_count=len(connections),
     )
 
     try:
@@ -141,26 +153,39 @@ async def beautify_with_nanobanana(
         svg = _extract_svg(raw_svg)
 
         if not svg:
-            return BeautifyResponse(
-                success=False,
-                error="LLM did not produce valid SVG markup",
-                model_used=result.get("model"),
-            )
+            return {
+                "success": False,
+                "error": "LLM did not produce valid SVG markup",
+                "model_used": result.get("model"),
+            }
 
         logger.info(f"NanoBanana SVG generated: {len(svg)} bytes")
 
-        return BeautifyResponse(
-            success=True,
-            svg=svg,
-            model_used=result.get("model"),
-        )
+        return {
+            "success": True,
+            "svg": svg,
+            "model_used": result.get("model"),
+        }
 
     except Exception as e:
         logger.error(f"NanoBanana beautify failed: {e}")
-        return BeautifyResponse(
-            success=False,
-            error=str(e),
-        )
+        # Fallback: generate skeleton SVG without LLM
+        try:
+            from .scaffold_builder import build_scaffold
+            if scaffold is None:
+                scaffold = build_scaffold(layouted)
+            fallback_svg = generate_skeleton_svg(scaffold if hasattr(scaffold, 'elements') else NanoBananaScaffold(**scaffold) if isinstance(scaffold, dict) else scaffold)
+            return {
+                "success": True,
+                "svg": fallback_svg,
+                "model_used": "skeleton-fallback",
+                "warning": f"LLM failed ({str(e)}), using skeleton SVG",
+            }
+        except Exception as fallback_err:
+            return {
+                "success": False,
+                "error": f"LLM: {str(e)}, Fallback: {str(fallback_err)}",
+            }
 
 
 # ============================================================================

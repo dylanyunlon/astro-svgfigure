@@ -44,6 +44,15 @@
       <p class='text-sm text-muted-foreground'>Enter text and click Generate to create an academic figure</p>
     </div>
 
+    {/* Loading state */}
+    <div id='svg-loading' class='hidden flex flex-col items-center gap-y-3 py-12 text-center'>
+      <svg class='size-12 animate-spin text-primary opacity-60' xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24'>
+        <circle class='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' stroke-width='4' />
+        <path class='opacity-75' fill='currentColor' d='M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z' />
+      </svg>
+      <p class='text-sm text-muted-foreground'>Generating your academic figure...</p>
+    </div>
+
     {/* SVG render area */}
     <div id='svg-render' class='hidden p-4' style='transform-origin: center center;'>
     </div>
@@ -82,7 +91,9 @@
   ;(window as any).__svgPreview = {
     show(svgContent: string) {
       const empty = document.getElementById('svg-empty')
+      const loading = document.getElementById('svg-loading')
       if (empty) empty.classList.add('hidden')
+      if (loading) loading.classList.add('hidden')
       if (svgRender) {
         svgRender.classList.remove('hidden')
         svgRender.innerHTML = svgContent
@@ -90,11 +101,32 @@
     },
     clear() {
       const empty = document.getElementById('svg-empty')
+      const loading = document.getElementById('svg-loading')
       if (empty) empty.classList.remove('hidden')
+      if (loading) loading.classList.add('hidden')
       if (svgRender) {
         svgRender.classList.add('hidden')
         svgRender.innerHTML = ''
       }
+    },
+    showLoading() {
+      const empty = document.getElementById('svg-empty')
+      const loading = document.getElementById('svg-loading')
+      if (empty) empty.classList.add('hidden')
+      if (loading) loading.classList.remove('hidden')
+      if (svgRender) svgRender.classList.add('hidden')
+    },
+    showError(message: string) {
+      const empty = document.getElementById('svg-empty')
+      if (empty) {
+        empty.classList.remove('hidden')
+        const p = empty.querySelector('p')
+        if (p) {
+          p.textContent = message
+          p.style.color = 'var(--color-danger, #ef4444)'
+        }
+      }
+      if (svgRender) svgRender.classList.add('hidden')
     },
     getSvg(): string {
       return svgRender?.innerHTML || ''

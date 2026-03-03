@@ -48,6 +48,12 @@ Example: Our model consists of three main components: (1) a CNN-based feature ex
     </button>
     <button
       class='example-btn inline-flex items-center rounded-lg border bg-muted px-2 py-0.5 text-xs text-muted-foreground transition-all hover:bg-card hover:text-foreground'
+      data-text='The Transformer architecture consists of an encoder-decoder structure. The encoder has 6 identical layers, each containing multi-head self-attention and position-wise feed-forward networks with residual connections and layer normalization. The decoder similarly has 6 layers with an additional cross-attention sublayer attending to encoder output. Input tokens are first converted to embeddings and combined with sinusoidal positional encodings. The final decoder output passes through a linear projection and softmax to produce output probabilities.'
+    >
+      Transformer
+    </button>
+    <button
+      class='example-btn inline-flex items-center rounded-lg border bg-muted px-2 py-0.5 text-xs text-muted-foreground transition-all hover:bg-card hover:text-foreground'
       data-text='Our text-to-image generation model follows a cascaded diffusion architecture. Stage 1: A frozen CLIP text encoder produces text embeddings. Stage 2: A base U-Net diffusion model generates 64x64 images conditioned on text embeddings via cross-attention. Stage 3: Two super-resolution U-Net models progressively upscale to 256x256 and then 1024x1024. Each stage uses classifier-free guidance with adaptive noise scheduling.'
     >
       Diffusion Model

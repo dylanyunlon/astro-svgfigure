@@ -7,6 +7,8 @@
   "version": "4.1.2",
   "scripts": {
     "dev": "astro dev",
+    "dev:all": "npx concurrently -n astro,python -c blue,green \"astro dev\" \"python server.py\"",
+    "dev:backend": "python server.py",
     "dev:check": "astro check --watch & astro dev",
     "build": "astro-pure check && astro check && astro build",
     "preview": "astro preview",

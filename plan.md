@@ -1566,8 +1566,8 @@ npx vercel --prod
 **Phase 2 PR**: `feat(frontend): Generate页面+Pipeline组件+API端点 (Tasks 023-032)`
 
 Changes:
-- ✏️ `src/pages/index.astro` — 首页改为产品着陆页, Generate CTA入口
-- 🆕 `src/pages/generate/index.astro` — 核心Pipeline生成页
+ `src/pages/index.astro` — 首页改为产品着陆页, Generate CTA入口
+ `src/pages/generate/index.astro` — 核心Pipeline生成页
 - 🆕 `src/components/pipeline/TextInput.astro` — 文本输入组件
 - 🆕 `src/components/pipeline/PipelineSteps.astro` — 四步进度条
 - 🆕 `src/components/pipeline/SvgPreview.astro` — SVG预览面板
@@ -1578,3 +1578,210 @@ Changes:
 - 🆕 `src/layouts/GenerateLayout.astro` — 全宽布局
 
 所有样式使用 astro-pure 组件 (Button/Card/Collapse/Label/Icon), 不自创文件和样式。
+
+
+06更新：
+# plan.md — astro-svgfigure v2: Phase 3 更新 (06版)
+
+> **核心理念**: AutoFigure-Edit 是逆向流程（图→SAM3分割→SVG），我们做正向流程（文本→拓扑JSON→ELK布局→NanoBanana SVG）
+> **技术栈**: Astro 5 + astro-pure 主题 + UnoCSS + ELK.js + Gemini NanoBanana + Python 后端
+> **关键洞察**: NanoBanana 生成的图片如此完美以至于让拓扑学家像个小丑——ELK.js 只负责骨架坐标，最终以 JSON 脚手架向 NanoBanana 请求神经网络级 SVG
+
+---
+
+## 0. 项目现状 (基于 commit bb857aa)
+
+### 已完成 Phase
+
+| Phase | 内容 | Commit | 状态 |
+|-------|------|--------|------|
+| Phase 0 | 配置+ELK核心 (001-010) | af3fb7a | ✅ |
+| Phase 1 | Backend AI Engine (013-022) | 45df633 | ✅ |
+| Phase 2 | Generate页面+Pipeline组件 (023-032) | bb857aa | ✅ (有502 bug) |
+
+### 🔴 已知 Bug: POST /api/topology → 502
+
+**根因**: Astro 前端 `src/pages/api/topology.ts` 代理到 `http://localhost:8000/api/topology`，但 `server.py` 中没有 `/api/topology`、`/api/beautify`、`/api/models` 端点。`server.py` 只有旧的 autofigure 端点 (`/api/run`, `/api/config`, `/api/events/{job_id}` 等)。
+
+**修复**: 在 `server.py` 中添加新的 pipeline API 端点，调用 `backend/` 已有的模块。
+
+---
+
+## 1. 四步正向 Pipeline 架构
+
+```
+[用户输入 method text]
+         │
+         ▼
+┌─── Step 1: LLM 拓扑推理 ───┐     GitHub: ResearAI/AutoFigure
+│  Gemini 解析文本             │
+│  输出 ELK JSON (零坐标)      │
+└──────────┬──────────────────┘
+           │ topology.json
+           ▼
+┌─── Step 2: ELK.js 约束布局 ─┐     GitHub: kieler/elkjs
+│  elkjs 分层算法               │
+│  计算每个节点 (x,y,w,h)     │
+└──────────┬──────────────────┘
+           │ layouted.json
+           ▼
+┌─── Step 3: NanoBanana 美化 ─┐     GitHub: gemini-cli-extensions/nanobanana
+│  layouted.json → JSON 脚手架 │
+│  Gemini 生成学术级 SVG       │
+└──────────┬──────────────────┘
+           │ final.svg
+           ▼
+┌─── Step 4: Astro 前端展示 ──┐     GitHub: cworld1/astro-theme-pure
+│  astro-pure 主题组件渲染     │
+│  SVG 预览 + 导出             │
+└─────────────────────────────┘
+```
+
+---
+
+## 2. Phase 3: Claude 本轮 10 任务 — 修复502 + 完善 Pipeline
+
+### 核心问题
+1. **502 Bug**: server.py 缺少 /api/topology, /api/beautify, /api/models 端点
+2. **前端→后端不通**: Astro API proxy → Python backend 断裂
+3. **缺少 CORS**: Python backend 未配置 CORS 允许 :4321 调用
+4. **缺少启动脚本**: 需要 concurrently 同时启动 Astro + Python
+
+### 10 任务清单
+
+| # | 文件 | Op | 说明 | GitHub 背书 |
+|---|------|---|------|-------------|
+| T1 | `server.py` | ✏️ | **修复502**: +/api/topology +/api/beautify +/api/validate +/api/models +CORS | ResearAI/AutoFigure |
+| T2 | `backend/pipeline/nanobanana_bridge.py` | ✏️ | 补全 beautify_with_nanobanana() 缺失的 scaffold_builder 调用 | gemini-cli-extensions/nanobanana |
+| T3 | `backend/pipeline/scaffold_builder.py` | ✏️ | 补全 build_scaffold() → NanoBananaScaffold 完整逻辑 | kieler/elkjs |
+| T4 | `src/pages/api/topology.ts` | ✏️ | 增强错误处理+超时+重试提示 | withastro/astro |
+| T5 | `src/pages/generate/index.astro` | ✏️ | 修复前端 pipeline 状态管理+错误展示 | cworld1/astro-theme-pure |
+| T6 | `package.json` | ✏️ | +dev:all 脚本同时启动 Astro+Python | withastro/astro |
+| T7 | `src/components/pipeline/PipelineSteps.astro` | ✏️ | 增强步骤状态样式+错误态 | cworld1/astro-theme-pure |
+| T8 | `src/components/pipeline/SvgPreview.astro` | ✏️ | 增强SVG渲染+错误回退+loading | svgdotjs/svg.js |
+| T9 | `src/components/pipeline/TextInput.astro` | ✏️ | 增加示例预填+placeholder优化 | cworld1/astro-theme-pure |
+| T10 | `plan.md` | ✏️ | 更新为本文件 (v6) | - |
+
+### T1 diff — server.py (关键修复)
+
+```diff
++ import asyncio
++ from fastapi.middleware.cors import CORSMiddleware
++ from backend.config import get_settings
++ from backend.ai_engine import AIEngine
++ from backend.schemas import TopologyRequest, BeautifyRequest, ValidateRequest
++ from backend.pipeline.topology_gen import generate_topology
++ from backend.pipeline.nanobanana_bridge import beautify_with_nanobanana
++ from backend.pipeline.scaffold_builder import build_scaffold
++ from backend.pipeline.svg_validator import validate_svg
++
++ settings = get_settings()
++ ai_engine = AIEngine(settings)
++
++ app.add_middleware(
++     CORSMiddleware,
++     allow_origins=settings.CORS_ORIGINS,
++     allow_methods=["*"],
++     allow_headers=["*"],
++ )
++
++ @app.post("/api/topology")
++ async def api_topology(req: TopologyRequest): ...
++
++ @app.post("/api/beautify")
++ async def api_beautify(req: BeautifyRequest): ...
++
++ @app.post("/api/validate")
++ async def api_validate_svg(req: ValidateRequest): ...
++
++ @app.get("/api/models")
++ async def api_models(): ...
+  # 保留全部现有 autofigure 端点 (/api/run, /api/config, /api/events/...)
+```
+
+---
+
+## 3. Phase 4: Codex 并行 10 任务
+
+| # | 文件 | Op | 说明 | GitHub 背书 |
+|---|------|---|------|-------------|
+| T11 | `src/pages/gallery/index.astro` | 🆕 | 画廊页: GalleryGrid + Card | cworld1/astro-theme-pure |
+| T12 | `src/pages/playground/index.astro` | 🆕 | ELK 实验场 | kieler/elkjs |
+| T13 | `src/components/gallery/GalleryGrid.astro` | 🆕 | 画廊网格 | cworld1/astro-theme-pure |
+| T14 | `src/components/gallery/GalleryCard.astro` | 🆕 | 画廊卡片 | cworld1/astro-theme-pure |
+| T15 | `src/components/pipeline/ElkOptions.astro` | 🆕 | ELK参数面板 | kieler/elkjs |
+| T16 | `src/components/pipeline/TopologyPreview.astro` | 🆕 | 拓扑JSON预览 | EmilStenstrom/elkjs-svg |
+| T17 | `src/pages/api/export.ts` | 🆕 | 导出 API | withastro/astro |
+| T18 | `src/pages/api/validate.ts` | 🆕 | 验证 API | withastro/astro |
+| T19 | `src/content/docs/svgfigure/getting-started.mdx` | 🆕 | 文档 | withastro/astro |
+| T20 | `Dockerfile` | 🆕 | 部署 | docker/docker |
+
+---
+
+## 4. 部署命令
+
+```bash
+# 开发 (推荐: 使用 dev:all 一键启动)
+git clone https://github.com/dylanyunlon/astro-svgfigure.git && cd astro-svgfigure
+bun install && pip install -r requirements.txt
+cp .env.example .env  # 填入 GEMINI_API_KEY
+bun run dev:all       # 同时启动 Astro:4321 + FastAPI:8000
+
+# 或分别启动
+bun run dev            # 终端 1: Astro :4321
+python server.py       # 终端 2: FastAPI :8000
+
+# Docker
+docker build -t astro-svgfigure .
+docker run -p 4321:4321 -p 8000:8000 --env-file .env astro-svgfigure
+
+# Vercel (前端) + Railway (后端)
+npx vercel --prod
+```
+
+---
+
+## 5. GitHub 背书 (20)
+
+| Step | 项目 | 用途 |
+|------|------|------|
+| 拓扑 | ResearAI/AutoFigure | LLM→学术图拓扑 |
+| 拓扑 | ResearAI/AutoFigure-Edit | SAM3逆向参考 |
+| 后端 | dylanyunlon/skynetCheapBuy | AI Engine多Provider |
+| ELK | kieler/elkjs | 约束布局引擎 |
+| ELK | EmilStenstrom/elkjs-svg | ELK→SVG渲染 |
+| ELK | xyflow/xyflow | ReactFlow ELK集成 |
+| ELK | eclipse/elk | ELK算法参考 |
+| NanoBanana | gemini-cli-extensions/nanobanana | 核心 |
+| NanoBanana | ZeroLu/awesome-nanobanana-pro | prompt工程 |
+| NanoBanana | aaronkwhite/nanobanana-studio-web | Web版 |
+| 前端 | cworld1/astro-theme-pure | Astro主题 |
+| 前端 | withastro/astro | Astro框架 |
+| SVG | svgdotjs/svg.js | SVG操作 |
+| SDK | openai/openai-python | OpenAI |
+| SDK | anthropics/anthropic-sdk-python | Claude |
+| SDK | google/generative-ai-python | Gemini |
+| 部署 | docker/docker | 容器化 |
+| CI/CD | actions/checkout | GitHub Actions |
+| 测试 | pytest-dev/pytest | Python测试 |
+| 启动 | open-cli-tools/concurrently | 双服务启动 |
+
+---
+
+## 6. PR 说明
+
+**Phase 3 PR**: `fix(backend): 修复502错误 + Pipeline端到端联调 (Tasks T1-T10)`
+
+Changes:
+- ✏️ `server.py` — **修复502**: 添加 /api/topology, /api/beautify, /api/models 端点 + CORS
+- ✏️ `backend/pipeline/nanobanana_bridge.py` — 补全 beautify 逻辑
+- ✏️ `backend/pipeline/scaffold_builder.py` — 补全 scaffold 构建
+- ✏️ `src/pages/api/topology.ts` — 增强错误处理
+- ✏️ `src/pages/generate/index.astro` — 修复前端状态管理
+- ✏️ `package.json` — 添加 dev:all 启动脚本
+- ✏️ `src/components/pipeline/PipelineSteps.astro` — 增强步骤状态
+- ✏️ `src/components/pipeline/SvgPreview.astro` — 增强预览+loading
+- ✏️ `src/components/pipeline/TextInput.astro` — 示例预填
+- ✏️ `plan.md` — 更新 v6
+
+**Codex 并行工作请注意**: 本 PR 修改了 server.py 核心文件, Codex 的 Phase 4 应基于此 PR merge 后的代码。

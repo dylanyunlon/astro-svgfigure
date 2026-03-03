@@ -16,11 +16,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import asyncio
+import logging
+
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+# Pipeline imports (Phase 1 backend modules)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backend.config import get_settings
+from backend.ai_engine import AIEngine
+from backend.schemas import (
+    TopologyRequest,
+    BeautifyRequest,
+    ValidateRequest,
+    TopologyResponse,
+    BeautifyResponse,
+)
+from backend.pipeline.topology_gen import generate_topology
+from backend.pipeline.scaffold_builder import build_scaffold
+from backend.pipeline.nanobanana_bridge import beautify_with_nanobanana
+from backend.pipeline.svg_validator import validate_svg as validate_svg_func
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
@@ -87,6 +108,170 @@ class RunRequest(BaseModel):
 
 
 app = FastAPI()
+
+# ── CORS (allow Astro frontend at :4321 to call us) ───────────────────
+_settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_settings.CORS_ORIGINS + ["http://localhost:4321", "http://127.0.0.1:4321"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── AI Engine singleton ───────────────────────────────────────────────
+_ai_engine: AIEngine | None = None
+
+def _get_ai_engine() -> AIEngine:
+    global _ai_engine
+    if _ai_engine is None:
+        _ai_engine = AIEngine(_settings)
+    return _ai_engine
+
+
+# ============================================================================
+# Pipeline API Endpoints (fixing 502 error)
+# These endpoints are called by Astro frontend at :4321 → proxy → :8000
+# ============================================================================
+
+@app.post("/api/topology")
+async def api_topology(request_data: dict) -> JSONResponse:
+    """
+    POST /api/topology — Text → ELK Topology JSON
+    Called by: src/pages/api/topology.ts (Astro proxy)
+    GitHub: ResearAI/AutoFigure, kieler/elkjs
+    """
+    try:
+        text = request_data.get("text", "").strip()
+        if not text:
+            return JSONResponse(
+                {"error": "text field is required"},
+                status_code=400,
+            )
+
+        model = request_data.get("model")
+        algorithm = request_data.get("algorithm", "layered")
+        direction = request_data.get("direction", "DOWN")
+
+        ai_engine = _get_ai_engine()
+
+        from backend.schemas import ElkAlgorithm, ElkDirection
+        result = await generate_topology(
+            ai_engine=ai_engine,
+            text=text,
+            model=model,
+            algorithm=ElkAlgorithm(algorithm) if algorithm else ElkAlgorithm.LAYERED,
+            direction=ElkDirection(direction) if direction else ElkDirection.DOWN,
+        )
+
+        if result.success:
+            return JSONResponse({
+                "success": True,
+                "topology": result.topology.model_dump() if result.topology else None,
+                "model_used": result.model_used,
+            })
+        else:
+            return JSONResponse(
+                {"error": result.error or "Topology generation failed"},
+                status_code=500,
+            )
+
+    except Exception as e:
+        logger.exception("api_topology error")
+        return JSONResponse(
+            {"error": str(e), "hint": "Check GEMINI_API_KEY in .env"},
+            status_code=500,
+        )
+
+
+@app.post("/api/beautify")
+async def api_beautify(request_data: dict) -> JSONResponse:
+    """
+    POST /api/beautify — ELK Layouted JSON → NanoBanana SVG
+    Called by: src/pages/api/beautify.ts (Astro proxy)
+    GitHub: gemini-cli-extensions/nanobanana
+    """
+    try:
+        layouted = request_data.get("layouted")
+        if not layouted:
+            return JSONResponse(
+                {"error": "layouted field is required"},
+                status_code=400,
+            )
+
+        model = request_data.get("model")
+        style = request_data.get("style", "academic")
+
+        ai_engine = _get_ai_engine()
+
+        # Build scaffold from layouted graph
+        scaffold = build_scaffold(layouted)
+
+        # Generate SVG via NanoBanana bridge
+        result = await beautify_with_nanobanana(
+            ai_engine=ai_engine,
+            layouted=layouted,
+            scaffold=scaffold,
+            model=model,
+            style=style,
+        )
+
+        if result.get("success"):
+            return JSONResponse(result)
+        else:
+            return JSONResponse(
+                {"error": result.get("error", "Beautify failed")},
+                status_code=500,
+            )
+
+    except Exception as e:
+        logger.exception("api_beautify error")
+        return JSONResponse(
+            {"error": str(e), "hint": "Check GEMINI_API_KEY in .env"},
+            status_code=500,
+        )
+
+
+@app.post("/api/validate")
+async def api_validate_svg(request_data: dict) -> JSONResponse:
+    """
+    POST /api/validate — SVG syntax validation + LLM fix
+    GitHub: withastro/astro
+    """
+    try:
+        svg = request_data.get("svg", "")
+        if not svg:
+            return JSONResponse(
+                {"error": "svg field is required"},
+                status_code=400,
+            )
+
+        auto_fix = request_data.get("auto_fix", True)
+        model = request_data.get("model")
+
+        ai_engine = _get_ai_engine() if auto_fix else None
+        result = await validate_svg_func(
+            svg=svg,
+            ai_engine=ai_engine,
+            auto_fix=auto_fix,
+            model=model,
+        )
+
+        # Convert ValidateResponse to dict
+        return JSONResponse(result.model_dump() if hasattr(result, 'model_dump') else result)
+
+    except Exception as e:
+        logger.exception("api_validate error")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/models")
+async def api_models() -> JSONResponse:
+    """
+    GET /api/models — List available AI models
+    """
+    return JSONResponse(_settings.AVAILABLE_MODELS)
+
 
 JOBS: dict[str, Job] = {}
 
