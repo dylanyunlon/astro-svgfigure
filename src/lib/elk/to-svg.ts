@@ -59,8 +59,11 @@ const PADDING = 20
 
 /**
  * Convert an ELK layouted graph to a skeleton SVG string.
+ * Includes defensive checks for null/undefined properties from LLM-generated topologies.
  */
 export function elkToSvg(graph: ElkGraph): string {
+  if (!graph) return ''
+
   const width = (graph.width || 800) + PADDING * 2
   const height = (graph.height || 600) + PADDING * 2
 
@@ -84,16 +87,23 @@ export function elkToSvg(graph: ElkGraph): string {
   parts.push(`  <rect width="${width}" height="${height}" fill="#FAFAFA" rx="4" />`)
 
   // Render edges first (behind nodes)
-  if (graph.edges) {
+  if (Array.isArray(graph.edges)) {
     for (const edge of graph.edges) {
-      parts.push(renderEdge(edge))
+      if (edge) {
+        const edgeSvg = renderEdge(edge)
+        if (edgeSvg) parts.push(edgeSvg)
+      }
     }
   }
 
-  // Render nodes
-  if (graph.children) {
-    graph.children.forEach((node, i) => {
-      parts.push(renderNode(node, i))
+  // Render nodes (limit to 100 to prevent oversized SVG from LLM hallucinations)
+  const MAX_NODES = 100
+  if (Array.isArray(graph.children)) {
+    const nodes = graph.children.slice(0, MAX_NODES)
+    nodes.forEach((node, i) => {
+      if (node) {
+        parts.push(renderNode(node, i))
+      }
     })
   }
 
@@ -133,25 +143,29 @@ function renderNode(node: ElkNode, index: number): string {
 }
 
 function renderEdge(edge: ElkEdge): string {
-  if (!edge.sections || edge.sections.length === 0) {
+  if (!edge || !edge.sections || !Array.isArray(edge.sections) || edge.sections.length === 0) {
     return ''
   }
 
   let svg = ''
   for (const section of edge.sections) {
+    if (!section || !section.startPoint || !section.endPoint) continue
+
     const points: { x: number; y: number }[] = []
     points.push({
-      x: section.startPoint.x + PADDING,
-      y: section.startPoint.y + PADDING,
+      x: (section.startPoint.x ?? 0) + PADDING,
+      y: (section.startPoint.y ?? 0) + PADDING,
     })
-    if (section.bendPoints) {
+    if (Array.isArray(section.bendPoints)) {
       for (const bp of section.bendPoints) {
-        points.push({ x: bp.x + PADDING, y: bp.y + PADDING })
+        if (bp && typeof bp.x === 'number' && typeof bp.y === 'number') {
+          points.push({ x: bp.x + PADDING, y: bp.y + PADDING })
+        }
       }
     }
     points.push({
-      x: section.endPoint.x + PADDING,
-      y: section.endPoint.y + PADDING,
+      x: (section.endPoint.x ?? 0) + PADDING,
+      y: (section.endPoint.y ?? 0) + PADDING,
     })
 
     if (points.length === 2) {

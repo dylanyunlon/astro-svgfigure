@@ -22,6 +22,20 @@ export const POST: APIRoute = async ({ request }) => {
       )
     }
 
+    // ── Validate & sanitize graph before passing to ELK ──────────────
+    const children = Array.isArray(graph.children) ? graph.children : []
+    const edges = Array.isArray(graph.edges) ? graph.edges : []
+
+    if (children.length === 0) {
+      return new Response(
+        JSON.stringify({
+          error: 'graph.children is empty — need at least one node',
+          debug: { receivedKeys: Object.keys(graph) },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
     // Dynamic import to avoid bundling issues
     const ELK = (await import('elkjs/lib/elk.bundled.js')).default
     const elk = new ELK()
@@ -60,27 +74,75 @@ export const POST: APIRoute = async ({ request }) => {
 
     const layoutOptions = {
       ...defaultOptions,
+      // Also merge any layoutOptions the LLM put on the graph itself
+      ...(graph.layoutOptions || {}),
       ...(preset && presetOverrides[preset] ? presetOverrides[preset] : {}),
     }
 
-    // Ensure nodes have dimensions
+    // Collect valid node IDs for edge validation
+    const nodeIds = new Set<string>()
+
+    // Sanitize nodes: ensure every child has id, width, height
+    const sanitizedChildren = children.map((node: any, i: number) => {
+      const id = node.id || `node_${i}`
+      nodeIds.add(id)
+      return {
+        id,
+        width: Number(node.width) || 160,
+        height: Number(node.height) || 60,
+        labels: Array.isArray(node.labels) && node.labels.length > 0
+          ? node.labels
+          : [{ text: id }],
+        // Preserve any nested children
+        ...(Array.isArray(node.children) && node.children.length > 0
+          ? { children: node.children }
+          : {}),
+      }
+    })
+
+    // Sanitize edges: ensure sources/targets are valid arrays referencing existing nodes
+    const seenEdgeIds = new Set<string>()
+    const sanitizedEdges = edges
+      .filter((edge: any) => {
+        const sources = Array.isArray(edge.sources) ? edge.sources : []
+        const targets = Array.isArray(edge.targets) ? edge.targets : []
+        // Skip edges with no valid endpoints
+        if (sources.length === 0 || targets.length === 0) return false
+        // Skip edges referencing non-existent nodes
+        const allValid = sources.every((s: string) => nodeIds.has(s)) &&
+                         targets.every((t: string) => nodeIds.has(t))
+        return allValid
+      })
+      .map((edge: any, i: number) => {
+        let id = edge.id || `e_${i}`
+        // Deduplicate edge IDs
+        if (seenEdgeIds.has(id)) {
+          id = `${id}_dup_${i}`
+        }
+        seenEdgeIds.add(id)
+        return {
+          id,
+          sources: Array.isArray(edge.sources) ? edge.sources : [],
+          targets: Array.isArray(edge.targets) ? edge.targets : [],
+        }
+      })
+
     const processedGraph = {
-      ...graph,
+      id: graph.id || 'root',
       layoutOptions,
-      children: (graph.children || []).map((node: any) => ({
-        width: 160,
-        height: 60,
-        ...node,
-      })),
+      children: sanitizedChildren,
+      edges: sanitizedEdges,
     }
 
     const layouted = await elk.layout(processedGraph)
 
-    // Generate skeleton SVG from layouted graph
-    const { elkToSvg } = await import('@/lib/elk/to-svg')
+    // Generate skeleton SVG from layouted graph (non-fatal if it fails)
     let skeletonSvg = ''
     try {
-      skeletonSvg = elkToSvg(layouted)
+      const { elkToSvg } = await import('@/lib/elk/to-svg')
+      if (layouted && layouted.children && layouted.children.length > 0) {
+        skeletonSvg = elkToSvg(layouted)
+      }
     } catch (svgErr: any) {
       console.warn('Skeleton SVG generation failed (non-fatal):', svgErr.message)
     }
@@ -98,8 +160,13 @@ export const POST: APIRoute = async ({ request }) => {
       }
     )
   } catch (err: any) {
+    console.error('ELK layout error:', err)
     return new Response(
-      JSON.stringify({ error: 'ELK layout failed', details: err.message }),
+      JSON.stringify({
+        error: 'ELK layout failed',
+        details: err.message,
+        hint: 'The topology JSON may have invalid node/edge format. Check that all edge sources/targets reference valid node IDs.',
+      }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     )
   }

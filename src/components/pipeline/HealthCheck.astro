@@ -1,0 +1,61 @@
+---
+/**
+ * HealthCheck.astro — Backend connection status indicator
+ *
+ * Shows a small status dot + text indicating whether the Python backend
+ * is reachable. Auto-checks on page load.
+ *
+ * GitHub 背书: cworld1/astro-theme-pure (component patterns)
+ */
+---
+
+<div id="health-check" class="flex items-center gap-x-2 text-xs text-muted-foreground">
+  <span
+    id="health-dot"
+    class="inline-block h-2 w-2 rounded-full bg-muted"
+    title="Checking..."
+  ></span>
+  <span id="health-text">Checking backend...</span>
+</div>
+
+<script>
+  ;(async () => {
+    const dot = document.getElementById('health-dot') as HTMLElement
+    const text = document.getElementById('health-text') as HTMLElement
+    const btn = document.getElementById('generate-btn') as HTMLButtonElement | null
+
+    try {
+      const res = await fetch('/api/health')
+      const data = await res.json()
+
+      if (data.backend) {
+        dot.classList.remove('bg-muted')
+        dot.classList.add('bg-green-500')
+        dot.title = 'Backend connected'
+
+        // Count available model providers
+        const modelCount = data.models
+          ? Object.values(data.models).flat().length
+          : 0
+        text.textContent = `Backend OK · ${modelCount} model${modelCount !== 1 ? 's' : ''}`
+      } else {
+        dot.classList.remove('bg-muted')
+        dot.classList.add('bg-red-500')
+        dot.title = `Backend error: ${data.backendError || 'unreachable'}`
+        text.textContent = 'Backend offline — run: python server.py'
+        text.classList.add('text-red-500')
+
+        // Disable generate button if backend is down
+        if (btn) {
+          btn.disabled = true
+          btn.title = 'Python backend is not running'
+        }
+      }
+    } catch {
+      dot.classList.remove('bg-muted')
+      dot.classList.add('bg-yellow-500')
+      dot.title = 'Health check failed'
+      text.textContent = 'Health check failed'
+    }
+  })()
+</script>

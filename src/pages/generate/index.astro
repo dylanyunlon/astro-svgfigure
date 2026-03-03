@@ -17,6 +17,7 @@ import PipelineSteps from '@/components/pipeline/PipelineSteps.astro'
 import SvgPreview from '@/components/pipeline/SvgPreview.astro'
 import ExportPanel from '@/components/pipeline/ExportPanel.astro'
 import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
+import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 ---
 
 <GenerateLayout meta={{ title: 'Generate Figure' }} highlightColor='#4F46E5'>
@@ -28,6 +29,7 @@ import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
         Describe your paper method, and we'll generate a publication-quality SVG figure
         using ELK.js constraint layout + Gemini NanoBanana.
       </p>
+      <HealthCheck />
     </div>
 
     {/* Main grid: 3 columns on desktop, stacked on mobile */}
@@ -272,10 +274,16 @@ import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
 
       if (errorMsg.includes('502') || errorMsg.includes('Failed to connect')) {
         hint = 'Make sure Python backend is running: python server.py'
+      } else if (errorMsg.includes('ELK layout failed')) {
+        hint = 'The topology JSON may have invalid format. Try a different model or simpler description.'
       } else if (errorMsg.includes('500') || errorMsg.includes('API_KEY')) {
         hint = 'Check GEMINI_API_KEY in .env file'
       } else if (errorMsg.includes('504') || errorMsg.includes('timed out')) {
         hint = 'Try a faster model like gemini-2.0-flash'
+      } else if (errorMsg.includes('Beautify') || errorMsg.includes('NanoBanana')) {
+        hint = 'NanoBanana SVG generation failed. The layout was successful — try regenerating.'
+      } else if (errorMsg.includes('401') || errorMsg.includes('403')) {
+        hint = 'API key is invalid or expired. Check your .env configuration.'
       }
 
       errorDisplay?.show({ title: 'Pipeline Error', message: errorMsg, hint, step })

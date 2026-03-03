@@ -282,6 +282,21 @@ def get_config() -> JSONResponse:
     return JSONResponse({"svgEditAvailable": available, "svgEditPath": rel_path})
 
 
+@app.get("/api/health")
+def health_check() -> JSONResponse:
+    """
+    GET /api/health — Backend health check
+    Returns server status, available providers, and model list.
+    """
+    providers = _get_ai_engine().available_providers if _ai_engine else []
+    return JSONResponse({
+        "status": "ok",
+        "providers": providers,
+        "python": PYTHON_EXECUTABLE,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
 @app.post("/api/run")
 def run_job(req: RunRequest) -> JSONResponse:
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]

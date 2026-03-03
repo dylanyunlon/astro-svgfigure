@@ -1977,3 +1977,306 @@ Changes:
 - T17: Docker
 - T18: 暗色模式
 - T19: 示例数据
+
+09更新：
+# astro-svgfigure — 第二阶段开发计划 (plan.md)
+
+> **基于最新提交树** `31f830b feat: T01-T20 大批量更新`
+> **目标**: 修复当前 Bug + 完善正向 Pipeline + 前端界面打磨
+> **分工**: Claude 完成 T21-T30, Codex 并行完成 T31-T40
+
+---
+
+## 一、当前问题诊断
+
+### Bug 1: `[500] POST /api/layout 860ms` — ELK layout failed
+
+**根因**: `src/pages/api/layout.ts` 中 `elkToSvg(layouted)` 导入路径使用 `@/lib/elk/to-svg`，但 ELK 的 `layout()` 返回结果的 `edges` 可能没有 `sections` 字段（当拓扑 JSON 的 edge 格式不规范时），导致 `elkToSvg` 内部抛异常。虽然有 `try/catch` 包裹 skeletonSvg 生成，但真正的问题在于 **topology → ELK 的 graph 格式不兼容**：LLM 返回的 `layoutOptions` 键名与 ELK 期望的不一致（如 `elk.algorithm` vs `"elk.algorithm"` 字符串键），或 `children` 节点缺少必要的 `width/height`。
+
+**修复方案**:
+1. `layout.ts` 增加更健壮的 graph 预处理（确保 children 有 width/height，edges 有正确格式）
+2. `topology_gen.py` 的 LLM prompt 增加更严格的格式要求
+3. `layout.ts` 的 `elkToSvg` 调用增加 null check
+
+### Bug 2: 前端 Pipeline 步骤 2 报 "ELK layout failed"
+
+**关联 Bug 1**: 是同一个问题的前端表现。topology API 成功返回后，layout API 收到的 graph 可能不符合 ELK 要求。
+
+---
+
+## 二、文件变更清单
+
+### 修改文件 (MODIFY) — 必须与源文件 diff 确认
+
+| # | 文件路径 | 变更说明 |
+|---|---------|---------|
+| M1 | `src/pages/api/layout.ts` | 修复 ELK layout 500 错误：增强 graph 预处理、容错处理 |
+| M2 | `backend/pipeline/topology_gen.py` | 优化 LLM prompt，确保输出严格 ELK 格式；增加后处理验证 |
+| M3 | `backend/pipeline/nanobanana_bridge.py` | 修复 `scaffold.elements` 属性访问（dict vs object）|
+| M4 | `src/pages/generate/index.astro` | 修复 Pipeline 错误处理、增加 loading 状态、改善 UX |
+| M5 | `src/components/pipeline/PipelineSteps.astro` | 增加动画过渡、步骤详情展示 |
+| M6 | `src/components/pipeline/SvgPreview.astro` | 增加缩放控制、skeleton → final 过渡动画 |
+| M7 | `src/components/pipeline/ErrorDisplay.astro` | 增加具体错误诊断提示和重试按钮 |
+| M8 | `src/components/pipeline/ExportPanel.astro` | 修复导出按钮状态、增加 PNG 导出 |
+| M9 | `server.py` | 增加 `/api/health` 端点；增加启动时 provider 检测日志 |
+| M10 | `backend/config.py` | 增加 `GEMINI_API_BASE` 的 tryallai 代理支持说明 |
+| M11 | `src/pages/playground/index.astro` | 修复 playground 与 layout API 的交互 |
+| M12 | `src/lib/elk/to-svg.ts` | 增加 null/undefined 防御性检查 |
+| M13 | `package.json` | 增加 `concurrently` devDependency |
+| M14 | `.env.example` | 增加 `GEMINI_API_BASE` 示例和 tryallai 说明 |
+
+### 新增文件 (ADD)
+
+| # | 文件路径 | 说明 |
+|---|---------|------|
+| A1 | `src/pages/api/health.ts` | 健康检查端点：检测 Python 后端连通性 |
+| A2 | `src/components/pipeline/HealthCheck.astro` | 后端连接状态指示器组件 |
+| A3 | `src/components/pipeline/ModelStatus.astro` | 当前模型/API 状态显示 |
+| A4 | `backend/pipeline/__tests__/test_topology.py` | topology_gen 单元测试 |
+| A5 | `backend/pipeline/__tests__/test_scaffold.py` | scaffold_builder 单元测试 |
+| A6 | `backend/pipeline/__tests__/__init__.py` | 测试包初始化 |
+| A7 | `docs/ARCHITECTURE.md` | 项目架构文档 |
+| A8 | `docs/API.md` | API 接口文档 |
+| A9 | `scripts/dev.sh` | 一键启动开发环境脚本 |
+
+
+---
+
+## 三、任务分解 (T21-T40)
+
+### Claude 负责: T21-T30
+
+#### T21: 修复 ELK Layout 500 错误 (Critical Bug Fix)
+- **修改**: `src/pages/api/layout.ts`
+- **内容**:
+  1. 增强 `processedGraph` 预处理：验证 children 数组非空、每个 node 有 id/width/height
+  2. edges 预处理：确保 sources/targets 是数组、id 唯一
+  3. layoutOptions 规范化：统一使用 `elk.` 前缀字符串键
+  4. `elkToSvg` 调用前检查 layouted 有效性
+  5. 错误响应增加 `debug` 字段返回实际收到的 graph 结构
+- **PR 说明**: `fix(api): 修复 /api/layout ELK 500 错误 — 增强 graph 预处理和容错`
+
+#### T22: 优化 Topology LLM Prompt
+- **修改**: `backend/pipeline/topology_gen.py`
+- **内容**:
+  1. prompt 增加更严格的 JSON Schema 示例
+  2. 增加 `_validate_topology()` 后处理函数：验证 id 唯一性、edge 引用有效性
+  3. 增加 `_fix_topology()` 自动修复常见问题（缺少 width/height 的 node、重复 edge id）
+  4. 增加 few-shot 示例（transformer、diffusion 各一个）
+- **PR 说明**: `fix(backend): 优化 topology LLM prompt + 增加后处理验证`
+
+#### T23: 修复 NanoBanana Bridge dict/object 兼容
+- **修改**: `backend/pipeline/nanobanana_bridge.py`
+- **内容**:
+  1. `beautify_with_nanobanana()` 内 `scaffold.elements` 属性访问改为安全访问
+  2. 统一 scaffold 为 dict 处理路径，避免 `hasattr` 判断不准确
+  3. fallback SVG 生成路径修复 NanoBananaScaffold 构造
+- **PR 说明**: `fix(backend): 修复 nanobanana_bridge scaffold dict/object 兼容性`
+
+#### T24: 增加 /api/health 健康检查
+- **新增**: `src/pages/api/health.ts`
+- **新增**: `src/components/pipeline/HealthCheck.astro`
+- **修改**: `src/pages/generate/index.astro` — 引入 HealthCheck 组件
+- **内容**:
+  1. `/api/health` 检测 Python 后端连通性（fetch `BACKEND_URL/api/models`）
+  2. 返回 `{ astro: true, backend: true/false, models: [...] }`
+  3. HealthCheck 组件：页面加载时自动检测，显示绿/红状态灯
+  4. 后端不可用时禁用 Generate 按钮并提示用户启动 `python server.py`
+- **PR 说明**: `feat(api): 增加 /api/health 健康检查 + 前端状态指示器`
+
+#### T25: 改善 Generate 页面 UX
+- **修改**: `src/pages/generate/index.astro`
+- **修改**: `src/components/pipeline/ErrorDisplay.astro`
+- **内容**:
+  1. Pipeline 错误时显示具体诊断：区分"后端未启动"、"API Key 缺失"、"ELK 格式错误"
+  2. 增加"重试"按钮
+  3. 成功时增加完成动画
+  4. textarea 增加 placeholder 示例文本
+  5. 步骤进度增加百分比或时间估算
+- **PR 说明**: `improve(frontend): Generate 页面 UX 增强 — 错误诊断、重试、进度指示`
+
+#### T26: 增加 to-svg.ts 防御性检查
+- **修改**: `src/lib/elk/to-svg.ts`
+- **内容**:
+  1. `renderEdge` 增加 section.startPoint/endPoint null 检查
+  2. `renderNode` 增加 label 安全转义
+  3. `elkToSvg` 增加 graph.children/edges 空数组检查
+  4. 增加最大节点数限制（防止 LLM 生成过大拓扑导致 SVG 过大）
+- **PR 说明**: `fix(elk): to-svg.ts 增加防御性检查，防止 undefined 属性访问`
+
+#### T27: 修复 ExportPanel SVG/PNG 导出
+- **修改**: `src/components/pipeline/ExportPanel.astro`
+- **修改**: `src/pages/api/export.ts`
+- **内容**:
+  1. SVG 导出：从 preview 容器提取 SVG 内容，创建 Blob 下载
+  2. PNG 导出：使用 Canvas API 将 SVG 渲染为 PNG
+  3. 导出按钮状态跟随 pipeline 完成状态
+  4. 增加尺寸选择（1x, 2x, 4x）
+- **PR 说明**: `feat(export): 修复并增强 SVG/PNG 导出功能`
+
+
+#### T29: 清理调试文件 + 更新 .env.example
+- **删除**: `test_502.py`, `test_502.log`, `tree.txt`
+- **修改**: `.env.example`
+- **内容**:
+  1. 移除已完成使命的调试文件
+  2. `.env.example` 增加 `GEMINI_API_BASE=https://api.tryallai.com/v1` 示例
+  3. 增加各 provider 的 tryallai 代理配置说明
+- **PR 说明**: `chore: 清理调试文件 + 完善 .env.example 配置说明`
+
+#### T30: 增加 Pipeline 单元测试
+- **新增**: `backend/pipeline/__tests__/test_topology.py`
+- **新增**: `backend/pipeline/__tests__/test_scaffold.py`
+- **新增**: `backend/pipeline/__tests__/__init__.py`
+- **内容**:
+  1. test_topology: 测试 `_parse_topology_json`、`_validate_topology`（新增）、`create_example_topology`
+  2. test_scaffold: 测试 `build_scaffold` 输入 dict 和 ElkGraph 两种情况
+  3. 测试 edge case: 空 children、无 edges、嵌套子图
+- **PR 说明**: `test: 增加 topology_gen + scaffold_builder 单元测试`
+
+---
+
+### Codex 负责: T31-T40
+
+#### T31: server.py 增加 /api/health + 启动检测
+- **修改**: `server.py`
+- **PR 说明**: `feat(server): 增加 /api/health + 启动时 provider 检测`
+
+#### T32: Playground 页面修复
+- **修改**: `src/pages/playground/index.astro`
+- **PR 说明**: `fix(playground): 修复 Playground 页面 layout 交互`
+
+#### T33: Gallery 页面展示生成历史
+- **修改**: `src/pages/gallery/index.astro`
+- **PR 说明**: `feat(gallery): Gallery 页面展示生成历史`
+
+#### T34: ModelSelector 组件联动
+- **修改**: `src/components/pipeline/ModelSelector.astro`
+- **PR 说明**: `feat(component): ModelSelector 动态模型列表`
+
+#### T35: TopologyPreview 可视化
+- **修改**: `src/components/pipeline/TopologyPreview.astro`
+- **PR 说明**: `feat(component): TopologyPreview 拓扑 JSON 可视化`
+
+#### T36: ElkOptions 高级选项面板
+- **修改**: `src/components/pipeline/ElkOptions.astro`
+- **PR 说明**: `feat(component): ElkOptions 高级选项面板`
+
+#### T37: SVG 验证 + 自动修复前端集成
+- **修改**: `src/pages/api/validate.ts`
+- **PR 说明**: `feat(pipeline): SVG 验证 + 自动修复前端集成`
+
+
+#### T39: 响应式布局优化
+- **修改**: `src/pages/generate/index.astro`, `src/pages/playground/index.astro`
+- **PR 说明**: `style: Generate + Playground 响应式布局优化`
+
+#### T40: E2E Pipeline 集成测试
+- **新增**: `tests/e2e/pipeline.test.ts`
+- **PR 说明**: `test: E2E pipeline 集成测试`
+
+---
+
+## 四、Git 操作规范
+
+### 分支策略
+```
+main
+ ├── fix/elk-layout-500          (T21, T22, T23, T26) ← Claude
+ ├── feat/health-check           (T24) ← Claude
+ ├── improve/generate-ux         (T25, T27) ← Claude
+ ├── docs/architecture           (T28, T29) ← Claude
+ ├── test/pipeline-unit          (T30) ← Claude
+ ├── feat/server-health          (T31) ← Codex
+ ├── fix/playground              (T32) ← Codex
+ ├── feat/gallery-history        (T33) ← Codex
+ ├── feat/model-selector         (T34) ← Codex
+ ├── feat/topology-preview       (T35) ← Codex
+ ├── feat/elk-options            (T36) ← Codex
+ ├── feat/svg-validate-ui        (T37) ← Codex
+ ├── style/dark-mode             (T38) ← Codex
+ ├── style/responsive            (T39) ← Codex
+ └── test/e2e                    (T40) ← Codex
+```
+
+### Commit 格式
+```
+<type>(<scope>): <subject>
+
+Types: fix, feat, improve, docs, test, chore, style
+Scopes: api, backend, frontend, elk, pipeline, component, server
+```
+
+### PR 流程
+1. 每个任务（或相关任务组）一个 PR
+2. PR 标题使用上面各任务的 "PR 说明"
+3. PR 描述包含：变更文件列表、测试方法、与源文件的 diff 摘要
+4. Claude 和 Codex 的 PR 不应有文件冲突（按上面分工划分）
+
+### Diff 检查 (必须！)
+**每次修改文件后，运行:**
+```bash
+git diff <filename>
+```
+确保：
+- 没有误删原有功能代码
+- 没有覆盖其他任务的修改
+- import 语句完整
+- 类型定义一致
+
+---
+
+## 五、架构概览
+
+```
+正向 Pipeline 流程:
+
+  用户输入 (Paper Method Text)
+       │
+       ▼
+  ┌─────────────────┐
+  │ Step 1: Topology │  POST /api/topology → Python backend
+  │ LLM → ELK JSON  │  (topology_gen.py → AIEngine → Gemini)
+  └────────┬────────┘
+           │ ELK Graph JSON (零坐标)
+           ▼
+  ┌─────────────────┐
+  │ Step 2: Layout   │  POST /api/layout → Astro SSR
+  │ ELK.js 约束求解  │  (elkjs → computed x,y)
+  └────────┬────────┘
+           │ Layouted Graph + Skeleton SVG
+           ▼
+  ┌─────────────────┐
+  │ Step 3: Beautify │  POST /api/beautify → Python backend
+  │ NanoBanana SVG   │  (scaffold_builder → nanobanana_bridge → Gemini)
+  └────────┬────────┘
+           │ Publication-quality SVG
+           ▼
+  ┌─────────────────┐
+  │ Step 4: Render   │  前端渲染 + 导出
+  │ SVG Preview      │
+  └─────────────────┘
+
+前端技术栈:
+  - Astro 5 + astro-pure theme (Card, Button, Collapse, Label, Tabs)
+  - ELK.js (约束布局引擎)
+  - UnoCSS (样式)
+  - 组件全部使用 astro-pure，不自创文件自创样式
+
+后端技术栈:
+  - FastAPI + Uvicorn (server.py, port 8000)
+  - AIEngine (multi-provider: Gemini/OpenAI/Anthropic/Claude-Compatible)
+  - pydantic-settings (.env 配置)
+  - tryallai.com 代理支持
+```
+
+---
+
+## 六、优先级
+
+| 优先级 | 任务 | 原因 |
+|--------|------|------|
+| P0 (立即) | T21, T22, T23, T26 | 修复 Pipeline 核心 Bug，当前无法正常运行 |
+| P1 (重要) | T24, T25, T31 | 改善开发体验和错误诊断 |
+| P2 (正常) | T27, T32, T33, T34, T35 | 功能完善 |
+| P3 (低) | T28, T29, T30, T36-T40 | 文档、测试、打磨 |

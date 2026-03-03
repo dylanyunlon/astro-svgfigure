@@ -135,7 +135,7 @@ async def beautify_with_nanobanana(
 
     try:
         logger.info(
-            f"NanoBanana beautify: {len(scaffold.elements)} elements, "
+            f"NanoBanana beautify: {len(elements)} elements, "
             f"model={model or 'default'}, style={style}"
         )
 
@@ -171,10 +171,17 @@ async def beautify_with_nanobanana(
         logger.error(f"NanoBanana beautify failed: {e}")
         # Fallback: generate skeleton SVG without LLM
         try:
-            from .scaffold_builder import build_scaffold
+            from .scaffold_builder import build_scaffold as _build_scaffold
             if scaffold is None:
-                scaffold = build_scaffold(layouted)
-            fallback_svg = generate_skeleton_svg(scaffold if hasattr(scaffold, 'elements') else NanoBananaScaffold(**scaffold) if isinstance(scaffold, dict) else scaffold)
+                scaffold = _build_scaffold(layouted)
+            # Ensure scaffold is a NanoBananaScaffold for skeleton generation
+            if isinstance(scaffold, dict):
+                fallback_scaffold = NanoBananaScaffold(**scaffold)
+            elif hasattr(scaffold, 'elements'):
+                fallback_scaffold = scaffold
+            else:
+                fallback_scaffold = NanoBananaScaffold(**scaffold_dict)
+            fallback_svg = generate_skeleton_svg(fallback_scaffold)
             return {
                 "success": True,
                 "svg": fallback_svg,

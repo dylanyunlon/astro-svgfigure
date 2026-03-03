@@ -41,7 +41,7 @@ Your output must be valid ELK JSON (Eclipse Layout Kernel format) with:
 - id: "root"
 - children: array of nodes, each with {id, width, height, labels: [{text}]}
 - edges: array of connections, each with {id, sources: [nodeId], targets: [nodeId]}
-- layoutOptions: {elk.algorithm, elk.direction}
+- layoutOptions: {"elk.algorithm": "layered", "elk.direction": "DOWN"}
 
 Rules:
 1. Each major component/step/module becomes a node.
@@ -52,7 +52,24 @@ Rules:
    width=200, height=60 for complex nodes.
 6. Do NOT include x, y coordinates — ELK will compute them.
 7. For hierarchical structures, use nested children (compound nodes).
-8. Output ONLY the JSON object, no markdown fences, no explanation.
+8. Every edge's sources and targets MUST reference existing node IDs from children.
+9. Edge IDs must be unique strings (e.g., "e1", "e2", "e3").
+10. Output ONLY the JSON object, no markdown fences, no explanation.
+
+Example output:
+{
+  "id": "root",
+  "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "DOWN"},
+  "children": [
+    {"id": "input", "width": 150, "height": 50, "labels": [{"text": "Input"}]},
+    {"id": "encoder", "width": 160, "height": 50, "labels": [{"text": "Encoder"}]},
+    {"id": "output", "width": 150, "height": 50, "labels": [{"text": "Output"}]}
+  ],
+  "edges": [
+    {"id": "e1", "sources": ["input"], "targets": ["encoder"]},
+    {"id": "e2", "sources": ["encoder"], "targets": ["output"]}
+  ]
+}
 """
 
 TOPOLOGY_USER_PROMPT_TEMPLATE = """\
@@ -118,6 +135,9 @@ async def generate_topology(
 
         # Parse the JSON response
         topology_dict = _parse_topology_json(raw_output)
+
+        # Validate and auto-fix common LLM output issues
+        topology_dict = _validate_and_fix_topology(topology_dict)
 
         # Inject layout options if not present
         if "layoutOptions" not in topology_dict or not topology_dict["layoutOptions"]:
@@ -191,6 +211,113 @@ def _parse_topology_json(raw: str) -> Dict[str, Any]:
             pass
 
     raise json.JSONDecodeError("Could not extract JSON from LLM output", text, 0)
+
+
+def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate and auto-fix common topology issues from LLM output.
+
+    Fixes:
+      - Missing/empty children
+      - Nodes without width/height
+      - Nodes without labels
+      - Duplicate node IDs
+      - Edges referencing non-existent nodes
+      - Duplicate edge IDs
+      - Missing layoutOptions
+    """
+    # Ensure children exist
+    children = topology.get("children", [])
+    if not isinstance(children, list) or len(children) == 0:
+        logger.warning("Topology has no children — cannot fix")
+        return topology
+
+    # Fix nodes
+    seen_ids: set = set()
+    fixed_children = []
+    for i, node in enumerate(children):
+        if not isinstance(node, dict):
+            continue
+
+        node_id = node.get("id", f"node_{i}")
+        # Deduplicate IDs
+        if node_id in seen_ids:
+            node_id = f"{node_id}_{i}"
+        seen_ids.add(node_id)
+
+        fixed_node = {
+            "id": node_id,
+            "width": node.get("width") or 150,
+            "height": node.get("height") or 50,
+        }
+
+        # Ensure labels
+        labels = node.get("labels", [])
+        if isinstance(labels, list) and len(labels) > 0:
+            fixed_node["labels"] = labels
+        else:
+            # Use id as label, replacing underscores with spaces
+            fixed_node["labels"] = [{"text": node_id.replace("_", " ").title()}]
+
+        # Preserve nested children if any
+        if "children" in node and isinstance(node["children"], list):
+            fixed_node["children"] = node["children"]
+
+        fixed_children.append(fixed_node)
+
+    topology["children"] = fixed_children
+    valid_ids = seen_ids
+
+    # Fix edges
+    edges = topology.get("edges", [])
+    if not isinstance(edges, list):
+        edges = []
+
+    seen_edge_ids: set = set()
+    fixed_edges = []
+    for i, edge in enumerate(edges):
+        if not isinstance(edge, dict):
+            continue
+
+        sources = edge.get("sources", [])
+        targets = edge.get("targets", [])
+
+        # Ensure sources/targets are lists
+        if isinstance(sources, str):
+            sources = [sources]
+        if isinstance(targets, str):
+            targets = [targets]
+
+        if not isinstance(sources, list) or not isinstance(targets, list):
+            continue
+
+        # Filter to valid node references
+        valid_sources = [s for s in sources if s in valid_ids]
+        valid_targets = [t for t in targets if t in valid_ids]
+
+        if not valid_sources or not valid_targets:
+            logger.debug(f"Dropping edge {edge.get('id', i)}: invalid sources={sources} or targets={targets}")
+            continue
+
+        edge_id = edge.get("id", f"e_{i}")
+        if edge_id in seen_edge_ids:
+            edge_id = f"{edge_id}_{i}"
+        seen_edge_ids.add(edge_id)
+
+        fixed_edges.append({
+            "id": edge_id,
+            "sources": valid_sources,
+            "targets": valid_targets,
+        })
+
+    topology["edges"] = fixed_edges
+
+    logger.info(
+        f"Topology validated: {len(fixed_children)} nodes, {len(fixed_edges)} edges "
+        f"(dropped {len(children) - len(fixed_children)} nodes, {len(edges) - len(fixed_edges)} edges)"
+    )
+
+    return topology
 
 
 def create_example_topology(
