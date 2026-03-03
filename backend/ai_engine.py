@@ -256,6 +256,169 @@ class OpenAIProvider(AIProvider):
 
 
 # ============================================================================
+# Provider: OpenAI-Compatible (third-party proxy via raw httpx)
+# ============================================================================
+
+class OpenAICompatibleProvider(AIProvider):
+    """
+    OpenAI-compatible provider via raw httpx for third-party proxies.
+    Used when the openai SDK fails with non-standard proxy responses
+    (e.g., tryallai.com returning raw strings instead of SDK objects).
+    """
+
+    def __init__(self, api_key: str, base_url: str):
+        if not base_url:
+            raise ValueError("OpenAICompatibleProvider requires base_url")
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(timeout=120.0)
+        logger.info(f"OpenAICompatibleProvider initialized (base_url={self._base_url})")
+
+    async def get_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        *,
+        tools: Optional[List[Dict]] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        if tools:
+            openai_tools = []
+            for t in tools:
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "parameters": t.get("input_schema", t.get("parameters", {})),
+                    },
+                })
+            payload["tools"] = openai_tools
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+
+        url = f"{self._base_url}/chat/completions"
+        response = await self._client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        # Parse OpenAI-format response
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        content = message.get("content", "") or ""
+
+        content_blocks = []
+        tool_uses = []
+
+        if content:
+            content_blocks.append({"type": "text", "text": content})
+
+        tool_calls_raw = message.get("tool_calls", [])
+        if tool_calls_raw:
+            for tc in tool_calls_raw:
+                func = tc.get("function", {})
+                args_str = func.get("arguments", "{}")
+                try:
+                    args = json.loads(args_str) if args_str else {}
+                except json.JSONDecodeError:
+                    args = {}
+                tool_block = {
+                    "type": "tool_use",
+                    "id": tc.get("id", ""),
+                    "name": func.get("name", ""),
+                    "input": args,
+                }
+                content_blocks.append(tool_block)
+                tool_uses.append(tool_block)
+
+        usage = data.get("usage", {})
+        return {
+            "content": content,
+            "content_blocks": content_blocks,
+            "tool_uses": tool_uses,
+            "tool_calls": tool_uses if tool_uses else None,
+            "stop_reason": choice.get("finish_reason", "stop"),
+            "model": data.get("model", model),
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+            },
+        }
+
+    async def stream_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        *,
+        tools: Optional[List[Dict]] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        **kwargs,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+
+        if tools:
+            openai_tools = []
+            for t in tools:
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "parameters": t.get("input_schema", t.get("parameters", {})),
+                    },
+                })
+            payload["tools"] = openai_tools
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+
+        url = f"{self._base_url}/chat/completions"
+        async with self._client.stream("POST", url, json=payload, headers=headers) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    yield {"type": "done", "stop_reason": "stop"}
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    choices = chunk.get("choices", [])
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
+                    if delta.get("content"):
+                        yield {"type": "text_delta", "content": delta["content"]}
+                    finish = choices[0].get("finish_reason")
+                    if finish:
+                        yield {"type": "done", "stop_reason": finish}
+                except json.JSONDecodeError:
+                    continue
+
+
+# ============================================================================
 # Provider: Anthropic (native SDK)
 # ============================================================================
 
@@ -816,10 +979,24 @@ class AIEngine:
         s = self._settings
 
         if s.OPENAI_API_KEY:
-            try:
-                self._providers["openai"] = OpenAIProvider(s.OPENAI_API_KEY, s.OPENAI_API_BASE)
-            except ImportError as e:
-                logger.warning(f"OpenAI provider unavailable: {e}")
+            # If using a third-party proxy (not official api.openai.com),
+            # use OpenAICompatibleProvider (raw httpx) to avoid SDK compat issues
+            _is_official_openai = (
+                not s.OPENAI_API_BASE
+                or "api.openai.com" in s.OPENAI_API_BASE
+            )
+            if _is_official_openai:
+                try:
+                    self._providers["openai"] = OpenAIProvider(s.OPENAI_API_KEY, s.OPENAI_API_BASE)
+                except ImportError as e:
+                    logger.warning(f"OpenAI provider unavailable: {e}")
+            else:
+                self._providers["openai"] = OpenAICompatibleProvider(
+                    s.OPENAI_API_KEY, s.OPENAI_API_BASE
+                )
+                logger.info(
+                    f"OpenAI via OpenAICompatibleProvider (proxy: {s.OPENAI_API_BASE})"
+                )
 
         if s.ANTHROPIC_API_KEY:
             # If using a third-party proxy (not official api.anthropic.com),
@@ -847,12 +1024,11 @@ class AIEngine:
 
         if s.GEMINI_API_KEY:
             if s.GEMINI_API_BASE:
-                # Proxy mode (e.g. tryallai): use OpenAI-compatible format for Gemini
-                try:
-                    self._providers["gemini"] = OpenAIProvider(s.GEMINI_API_KEY, s.GEMINI_API_BASE)
-                    logger.info(f"Gemini via OpenAI-compatible proxy: {s.GEMINI_API_BASE}")
-                except ImportError as e:
-                    logger.warning(f"OpenAI provider unavailable for Gemini proxy: {e}")
+                # Proxy mode (e.g. tryallai): use raw httpx for OpenAI-compatible format
+                self._providers["gemini"] = OpenAICompatibleProvider(
+                    s.GEMINI_API_KEY, s.GEMINI_API_BASE
+                )
+                logger.info(f"Gemini via OpenAICompatibleProvider (proxy: {s.GEMINI_API_BASE})")
             else:
                 # Direct mode: use google-generativeai SDK
                 try:
