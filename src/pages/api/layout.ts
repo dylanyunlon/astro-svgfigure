@@ -139,7 +139,7 @@ export const POST: APIRoute = async ({ request }) => {
     // Generate skeleton SVG from layouted graph (non-fatal if it fails)
     let skeletonSvg = ''
     try {
-      const { elkToSvg } = await import('@/lib/elk/to-svg')
+      const { elkToSvg } = await import('@elk/to-svg')
       if (layouted && layouted.children && layouted.children.length > 0) {
         skeletonSvg = elkToSvg(layouted)
       }
