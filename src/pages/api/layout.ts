@@ -48,6 +48,10 @@ export const POST: APIRoute = async ({ request }) => {
       'elk.layered.spacing.nodeNodeBetweenLayers': String(options?.layerSpacing || 80),
       'elk.spacing.edgeNode': String(options?.edgeNodeSpacing || 30),
       'elk.edgeRouting': options?.edgeRouting || 'ORTHOGONAL',
+      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
     }
 
     // Apply preset overrides
@@ -124,6 +128,8 @@ export const POST: APIRoute = async ({ request }) => {
           id,
           sources: Array.isArray(edge.sources) ? edge.sources : [],
           targets: Array.isArray(edge.targets) ? edge.targets : [],
+          ...(edge.advanced ? { advanced: edge.advanced } : {}),
+          ...(edge.labels ? { labels: edge.labels } : {}),
         }
       })
 

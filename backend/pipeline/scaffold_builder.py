@@ -149,9 +149,27 @@ def build_scaffold(
         if not points:
             points = _compute_simple_connection(source, target, elements)
 
+# Determine edge style from advanced properties
+        edge_style = "arrow"
+        edge_label = None
+        adv = edge.get("advanced") if isinstance(edge, dict) else getattr(edge, "advanced", None)
+        if adv and isinstance(adv, dict):
+            sem = adv.get("semanticType", "")
+            ls = adv.get("lineStyle", "")
+            if ls == "dashed" or sem in ("gradient_flow", "optional_path", "inference_only", "feedback"):
+                edge_style = "dashed"
+            elif ls == "dotted" or sem == "attention":
+                edge_style = "dotted"
+            elif adv.get("directionality") == "bidirectional":
+                edge_style = "bidirectional"
+            lbls = adv.get("edgeLabels", [])
+            if lbls and isinstance(lbls, list) and len(lbls) > 0:
+                fl = lbls[0] if isinstance(lbls[0], dict) else {}
+                edge_label = fl.get("text")
+
         connections.append(ScaffoldConnection(
             **{"from": source, "to": target},
-            style="arrow",
+            style=edge_style,
             points=points,
         ))
 

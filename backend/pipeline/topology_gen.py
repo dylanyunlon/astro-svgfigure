@@ -19,6 +19,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from ..ai_engine import AIEngine
+from .edge_routing_prompts import get_topology_prompt_with_edge_routing
 from ..schemas import (
     ElkAlgorithm,
     ElkDirection,
@@ -122,7 +123,7 @@ async def generate_topology(
 
         result = await ai_engine.get_completion(
             messages=[
-                {"role": "system", "content": TOPOLOGY_SYSTEM_PROMPT},
+                {"role": "system", "content": get_topology_prompt_with_edge_routing(TOPOLOGY_SYSTEM_PROMPT)},
                 {"role": "user", "content": prompt},
             ],
             model=model,

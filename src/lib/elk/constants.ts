@@ -192,3 +192,48 @@ export const SCAFFOLD_DEFAULTS = {
     }
   }
 } as const
+
+
+// ============================================================
+// Advanced Edge Routing Constants
+// ============================================================
+
+export const EDGE_ROUTING_MODES = {
+  ORTHOGONAL: 'ORTHOGONAL',
+  SPLINES: 'SPLINES',
+  POLYLINE: 'POLYLINE',
+  UNDEFINED: 'UNDEFINED',
+} as const
+
+export const EDGE_SEMANTIC_COLORS: Record<string, string> = {
+  data_flow: '#78909C',
+  gradient_flow: '#E57373',
+  skip_connection: '#4CAF50',
+  optional_path: '#9E9E9E',
+  inference_only: '#7986CB',
+  fan_out: '#FF9800',
+  fan_in: '#2196F3',
+  feedback: '#AB47BC',
+  attention: '#F44336',
+  concatenation: '#009688',
+  residual: '#4CAF50',
+  cross_boundary: '#607D8B',
+} as const
+
+export const EDGE_DASH_PATTERNS: Record<string, string> = {
+  solid: '',
+  dashed: '8,4',
+  dotted: '2,4',
+  double: '10,3,3,3',
+  gradient_flow: '8,4',
+  inference_only: '10,3,3,3',
+  feedback: '6,3',
+  attention: '2,4',
+} as const
+
+export const HIERARCHY_LAYOUT_OPTIONS: Record<string, string> = {
+  'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+  'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+  'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+  'elk.edgeRouting': 'ORTHOGONAL',
+} as const

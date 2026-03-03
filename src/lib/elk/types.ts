@@ -1,23 +1,15 @@
 /**
- * ELK.js TypeScript 类型定义
- *
- * 基于 kieler/elkjs (https://github.com/kieler/elkjs) 的 typings/elk-api.d.ts
- * 以及 Eclipse ELK 图结构规范
- *
- * 这些类型用于:
- * 1. LLM 输出的零坐标拓扑 JSON (topology.json)
- * 2. ELK.js 布局后的精确坐标 JSON (layouted.json)
- * 3. NanoBanana 脚手架 JSON (scaffold.json)
+ * ELK.js TypeScript Type Definitions
+ * Enhanced with advanced edge routing for neural-network-level diagrams
+ * GitHub: kieler/elkjs, EmilStenstrom/elkjs-svg
  */
 
 // ============================================================
-// ELK Graph 核心类型 (与 elkjs 兼容)
+// ELK Graph Core Types (elkjs compatible)
 // ============================================================
 
-/** ELK 布局选项 — 键值对形式 */
 export type ElkLayoutOptions = Record<string, string>
 
-/** ELK 标签 */
 export interface ElkLabel {
   id?: string
   text: string
@@ -28,7 +20,6 @@ export interface ElkLabel {
   layoutOptions?: ElkLayoutOptions
 }
 
-/** ELK 端口 — 节点边界上的连接点 */
 export interface ElkPort {
   id: string
   x?: number
@@ -39,7 +30,6 @@ export interface ElkPort {
   layoutOptions?: ElkLayoutOptions
 }
 
-/** 边的路由段 */
 export interface ElkEdgeSection {
   id: string
   startPoint: ElkPoint
@@ -51,13 +41,8 @@ export interface ElkEdgeSection {
   outgoingSections?: string[]
 }
 
-/** 坐标点 */
-export interface ElkPoint {
-  x: number
-  y: number
-}
+export interface ElkPoint { x: number; y: number }
 
-/** ELK 节点 — 可包含子节点 (compound graph) */
 export interface ElkNode {
   id: string
   x?: number
@@ -69,11 +54,69 @@ export interface ElkNode {
   children?: ElkNode[]
   edges?: ElkEdge[]
   layoutOptions?: ElkLayoutOptions
-  /** 自定义属性: 节点类型 (用于渲染和脚手架) */
   properties?: Record<string, unknown>
 }
 
-/** ELK 边 */
+// ============================================================
+// Advanced Edge Routing Types -- Neural-Network Level Arrow System
+// ============================================================
+
+/** Edge routing mode */
+export type EdgeRoutingMode = 'ORTHOGONAL' | 'SPLINES' | 'POLYLINE' | 'UNDEFINED'
+
+/** Edge visual line style */
+export type EdgeLineStyle = 'solid' | 'dashed' | 'dotted' | 'double'
+
+/** Edge arrow type */
+export type EdgeArrowType = 'arrow' | 'none' | 'diamond' | 'circle' | 'open'
+
+/** Edge directionality */
+export type EdgeDirectionality = 'directed' | 'bidirectional' | 'undirected'
+
+/** Edge semantic type -- common arrow semantics in academic figures */
+export type EdgeSemanticType =
+  | 'data_flow'
+  | 'gradient_flow'
+  | 'skip_connection'
+  | 'optional_path'
+  | 'inference_only'
+  | 'fan_out'
+  | 'fan_in'
+  | 'feedback'
+  | 'attention'
+  | 'concatenation'
+  | 'residual'
+  | 'cross_boundary'
+
+/** Edge label configuration */
+export interface EdgeLabelConfig {
+  text: string
+  /** Label position on edge: 0.0 (source) ~ 1.0 (target), default 0.5 */
+  position?: number
+  /** Label rotation angle (degrees), 'auto' = follow edge direction */
+  rotation?: number | 'auto'
+  fontSize?: number
+  backgroundColor?: string
+}
+
+/** Advanced edge properties -- neural-network level rendering control */
+export interface AdvancedEdgeProperties {
+  routing?: EdgeRoutingMode
+  lineStyle?: EdgeLineStyle
+  strokeDasharray?: string
+  strokeWidth?: number
+  strokeColor?: string
+  sourceArrow?: EdgeArrowType
+  targetArrow?: EdgeArrowType
+  directionality?: EdgeDirectionality
+  semanticType?: EdgeSemanticType
+  edgeLabels?: EdgeLabelConfig[]
+  crossesGroupBoundary?: boolean
+  curvature?: number
+  priority?: number
+}
+
+/** ELK edge -- with advanced routing properties */
 export interface ElkEdge {
   id: string
   sources: string[]
@@ -81,11 +124,12 @@ export interface ElkEdge {
   labels?: ElkLabel[]
   sections?: ElkEdgeSection[]
   layoutOptions?: ElkLayoutOptions
-  /** 自定义属性: 边的样式 */
   properties?: Record<string, unknown>
+  /** Advanced edge properties -- neural-network level rendering control */
+  advanced?: AdvancedEdgeProperties
 }
 
-/** ELK 根图 — 传给 elk.layout() 的顶层对象 */
+/** ELK root graph -- top-level object passed to elk.layout() */
 export interface ElkGraph extends ElkNode {
   id: string
   children: ElkNode[]
@@ -93,10 +137,9 @@ export interface ElkGraph extends ElkNode {
 }
 
 // ============================================================
-// 布局结果类型
+// Layout Result Types
 // ============================================================
 
-/** 布局后的节点 — 保证有 x, y 坐标 */
 export interface LayoutedNode extends ElkNode {
   x: number
   y: number
@@ -104,135 +147,110 @@ export interface LayoutedNode extends ElkNode {
   height: number
 }
 
-/** 布局后的边 — 保证有 sections 路由信息 */
 export interface LayoutedEdge extends ElkEdge {
   sections: ElkEdgeSection[]
 }
 
-/** 布局后的完整图 */
 export interface LayoutedGraph extends ElkGraph {
   children: LayoutedNode[]
   edges: LayoutedEdge[]
 }
 
-/** 布局结果封装 */
 export interface LayoutResult {
   graph: LayoutedGraph
-  /** 布局耗时 (ms) */
   duration: number
-  /** 使用的算法 */
   algorithm: ElkAlgorithm
-  /** 画布尺寸 (所有节点的包围盒) */
-  bounds: {
-    x: number
-    y: number
-    width: number
-    height: number
-  }
+  bounds: { x: number; y: number; width: number; height: number }
 }
 
 // ============================================================
-// 算法与预设类型
+// Algorithm & Preset Types
 // ============================================================
 
-/** ELK 支持的布局算法 */
 export type ElkAlgorithm = 'layered' | 'stress' | 'mrtree' | 'radial' | 'force' | 'disco' | 'box' | 'fixed' | 'random'
-
-/** 布局方向 */
 export type ElkDirection = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT'
 
-/** 预设配置 */
 export interface ElkPreset {
   name: string
   description: string
   layoutOptions: ElkLayoutOptions
-  /** 默认节点尺寸 */
   defaultNodeSize: { width: number; height: number }
-  /** 推荐用途 */
   tags: string[]
 }
 
 // ============================================================
-// NanoBanana 脚手架类型
+// NanoBanana Scaffold Types
 // ============================================================
 
-/** 脚手架中的元素 */
 export interface ScaffoldElement {
   id: string
   type: 'box' | 'circle' | 'diamond' | 'parallelogram' | 'cylinder' | 'group'
   label: string
-  x: number
-  y: number
-  width: number
-  height: number
-  style?: string
-  fill?: string
-  stroke?: string
-  fontSize?: number
-  /** 子元素 (用于 group 类型) */
+  x: number; y: number; width: number; height: number
+  style?: string; fill?: string; stroke?: string; fontSize?: number
   children?: ScaffoldElement[]
 }
 
-/** 脚手架中的连接 */
 export interface ScaffoldConnection {
-  from: string
-  to: string
+  from: string; to: string
   style: 'arrow' | 'dashed' | 'dotted' | 'thick' | 'bidirectional'
-  label?: string
-  points?: ElkPoint[]
-  color?: string
+  label?: string; points?: ElkPoint[]; color?: string
+  /** Advanced routing properties carried from topology */
+  advanced?: AdvancedEdgeProperties
 }
 
-/** NanoBanana JSON 脚手架 — 传给 Gemini 生成 SVG */
 export interface NanoBananaScaffold {
   figure_type: string
-  canvas: {
-    width: number
-    height: number
-    padding?: number
-  }
+  canvas: { width: number; height: number; padding?: number }
   elements: ScaffoldElement[]
   connections: ScaffoldConnection[]
-  /** 发给 Gemini 的附加指令 */
   request?: string
-  /** 配色方案 */
   colorScheme?: 'academic' | 'tech' | 'minimal' | 'vibrant' | 'custom'
-  /** 自定义配色 */
   customColors?: Record<string, string>
 }
 
 // ============================================================
-// Pipeline 流程类型
+// Pipeline Flow Types
 // ============================================================
 
-/** Pipeline 步骤状态 */
 export type StepStatus = 'idle' | 'running' | 'success' | 'error'
 
-/** Pipeline 整体状态 */
 export interface PipelineState {
   currentStep: 0 | 1 | 2 | 3 | 4
   steps: {
     topology: { status: StepStatus; data?: ElkGraph; error?: string }
     layout: { status: StepStatus; data?: LayoutedGraph; error?: string }
-    beautify: { status: StepStatus; data?: string; error?: string }  // SVG string
+    beautify: { status: StepStatus; data?: string; error?: string }
     display: { status: StepStatus; error?: string }
   }
 }
 
-/** 生成选项 */
 export interface GenerateOptions {
-  /** 输入的 method 文本 */
   text: string
-  /** AI 模型 */
   model?: string
-  /** ELK 布局算法 */
   algorithm?: ElkAlgorithm
-  /** ELK 布局方向 */
   direction?: ElkDirection
-  /** ELK 预设名称 */
   preset?: string
-  /** NanoBanana 配色 */
   colorScheme?: string
-  /** 是否跳过 NanoBanana 美化 (只输出骨架 SVG) */
   skeletonOnly?: boolean
+  edgeRouting?: EdgeRoutingMode
+}
+
+// ============================================================
+// Semantic Edge Style Defaults
+// ============================================================
+
+export const EDGE_SEMANTIC_DEFAULTS: Record<EdgeSemanticType, Partial<AdvancedEdgeProperties>> = {
+  data_flow: { lineStyle: 'solid', targetArrow: 'arrow', strokeWidth: 1.5, strokeColor: '#78909C' },
+  gradient_flow: { lineStyle: 'dashed', strokeDasharray: '8,4', targetArrow: 'arrow', strokeWidth: 1.5, strokeColor: '#E57373' },
+  skip_connection: { lineStyle: 'solid', routing: 'SPLINES', targetArrow: 'arrow', strokeWidth: 2, strokeColor: '#4CAF50', curvature: 0.8 },
+  optional_path: { lineStyle: 'dashed', strokeDasharray: '5,5', targetArrow: 'arrow', strokeWidth: 1, strokeColor: '#9E9E9E' },
+  inference_only: { lineStyle: 'dashed', strokeDasharray: '10,3,3,3', targetArrow: 'arrow', strokeWidth: 1.5, strokeColor: '#7986CB' },
+  fan_out: { lineStyle: 'solid', targetArrow: 'arrow', strokeWidth: 1.5, strokeColor: '#FF9800' },
+  fan_in: { lineStyle: 'solid', targetArrow: 'arrow', strokeWidth: 1.5, strokeColor: '#2196F3' },
+  feedback: { lineStyle: 'dashed', strokeDasharray: '6,3', targetArrow: 'arrow', strokeWidth: 1.5, strokeColor: '#AB47BC', routing: 'SPLINES' },
+  attention: { lineStyle: 'dotted', strokeDasharray: '2,4', targetArrow: 'arrow', strokeWidth: 2, strokeColor: '#F44336' },
+  concatenation: { lineStyle: 'solid', targetArrow: 'arrow', strokeWidth: 2, strokeColor: '#009688' },
+  residual: { lineStyle: 'solid', routing: 'SPLINES', targetArrow: 'arrow', strokeWidth: 2, strokeColor: '#4CAF50', curvature: 0.6 },
+  cross_boundary: { lineStyle: 'solid', targetArrow: 'arrow', strokeWidth: 1.5, strokeColor: '#607D8B', crossesGroupBoundary: true },
 }
