@@ -1,0 +1,4252 @@
+# ChatCompletions格式
+
+## OpenAPI Specification
+
+```yaml
+openapi: 3.0.1
+info:
+  title: ''
+  description: ''
+  version: 1.0.0
+paths:
+  /v1/chat/completions:
+    post:
+      summary: ChatCompletions格式
+      deprecated: false
+      description: |
+        根据对话历史创建模型响应。支持流式和非流式响应。
+
+        兼容 OpenAI Chat Completions API。
+      operationId: createChatCompletion
+      tags:
+        - AI模型接口/聊天（Chat）/原生OpenAI格式
+        - 聊天（Chat）/原生OpenAI格式
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: 成功创建响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+          headers: {}
+          x-apifox-name: 成功
+        '400':
+          description: 请求参数错误
+          content:
+            application/json:
+              schema: &ref_0
+                $ref: '#/components/schemas/ErrorResponse'
+          headers: {}
+          x-apifox-name: 请求有误
+        '429':
+          description: 请求频率限制
+          content:
+            application/json:
+              schema: *ref_0
+          headers: {}
+          x-apifox-name: ''
+      security:
+        - BearerAuth: []
+          x-apifox:
+            schemeGroups:
+              - id: jwrCZj4thx9ahcLD3WQGo
+                schemeIds:
+                  - BearerAuth
+            required: true
+            use:
+              id: jwrCZj4thx9ahcLD3WQGo
+            scopes:
+              jwrCZj4thx9ahcLD3WQGo:
+                BearerAuth: []
+      x-apifox-folder: AI模型接口/聊天（Chat）/原生OpenAI格式
+      x-apifox-status: released
+      x-run-in-apifox: https://app.apifox.com/web/project/7484041/apis/api-383826473-run
+components:
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: 模型 ID
+          examples:
+            - gpt-4
+        messages:
+          type: array
+          items: &ref_1
+            $ref: '#/components/schemas/Message'
+          description: 对话消息列表
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 1
+          description: 采样温度
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1
+          description: 核采样参数
+        'n':
+          type: integer
+          minimum: 1
+          default: 1
+          description: 生成数量
+        stream:
+          type: boolean
+          default: false
+          description: 是否流式响应
+        stream_options:
+          type: object
+          properties:
+            include_usage:
+              type: boolean
+          x-apifox-orders:
+            - include_usage
+          x-apifox-ignore-properties: []
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: 停止序列
+        max_tokens:
+          type: integer
+          description: 最大生成 Token 数
+        max_completion_tokens:
+          type: integer
+          description: 最大补全 Token 数
+        presence_penalty:
+          type: number
+          minimum: -2
+          maximum: 2
+          default: 0
+        frequency_penalty:
+          type: number
+          minimum: -2
+          maximum: 2
+          default: 0
+        logit_bias:
+          type: object
+          additionalProperties:
+            type: number
+          properties: {}
+          x-apifox-orders: []
+          x-apifox-ignore-properties: []
+        user:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
+        tool_choice:
+          oneOf:
+            - type: string
+              enum:
+                - none
+                - auto
+                - required
+            - type: object
+              properties:
+                type:
+                  type: string
+                function:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                  x-apifox-orders:
+                    - name
+                  x-apifox-ignore-properties: []
+              x-apifox-orders:
+                - type
+                - function
+              x-apifox-ignore-properties: []
+        response_format:
+          $ref: '#/components/schemas/ResponseFormat'
+        seed:
+          type: integer
+        reasoning_effort:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+          description: 推理强度 (用于支持推理的模型)
+        modalities:
+          type: array
+          items:
+            type: string
+            enum:
+              - text
+              - audio
+        audio:
+          type: object
+          properties:
+            voice:
+              type: string
+            format:
+              type: string
+          x-apifox-orders:
+            - voice
+            - format
+          x-apifox-ignore-properties: []
+      x-apifox-orders:
+        - model
+        - messages
+        - temperature
+        - top_p
+        - 'n'
+        - stream
+        - stream_options
+        - stop
+        - max_tokens
+        - max_completion_tokens
+        - presence_penalty
+        - frequency_penalty
+        - logit_bias
+        - user
+        - tools
+        - tool_choice
+        - response_format
+        - seed
+        - reasoning_effort
+        - modalities
+        - audio
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+    ResponseFormat:
+      type: object
+      properties:
+        type:
+          type: string
+          enum:
+            - text
+            - json_object
+            - json_schema
+        json_schema:
+          type: object
+          description: JSON Schema 定义
+          properties: {}
+          x-apifox-orders: []
+          x-apifox-ignore-properties: []
+      x-apifox-orders:
+        - type
+        - json_schema
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+    Tool:
+      type: object
+      properties:
+        type:
+          type: string
+          examples:
+            - function
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+              description: JSON Schema 格式的参数定义
+              properties: {}
+              x-apifox-orders: []
+              x-apifox-ignore-properties: []
+          x-apifox-orders:
+            - name
+            - description
+            - parameters
+          x-apifox-ignore-properties: []
+      x-apifox-orders:
+        - type
+        - function
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+    Message:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum:
+            - system
+            - user
+            - assistant
+            - tool
+            - developer
+          description: 消息角色
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: '#/components/schemas/MessageContent'
+          description: 消息内容
+        name:
+          type: string
+          description: 发送者名称
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+        tool_call_id:
+          type: string
+          description: 工具调用 ID（用于 tool 角色消息）
+        reasoning_content:
+          type: string
+          description: 推理内容
+      x-apifox-orders:
+        - role
+        - content
+        - name
+        - tool_calls
+        - tool_call_id
+        - reasoning_content
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+    ToolCall:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          examples:
+            - function
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+          x-apifox-orders:
+            - name
+            - arguments
+          x-apifox-ignore-properties: []
+      x-apifox-orders:
+        - id
+        - type
+        - function
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+    MessageContent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum:
+            - text
+            - image_url
+            - input_audio
+            - file
+            - video_url
+        text:
+          type: string
+        image_url:
+          type: object
+          properties:
+            url:
+              type: string
+              description: 图片 URL 或 base64
+            detail:
+              type: string
+              enum:
+                - low
+                - high
+                - auto
+          x-apifox-orders:
+            - url
+            - detail
+          x-apifox-ignore-properties: []
+        input_audio:
+          type: object
+          properties:
+            data:
+              type: string
+              description: Base64 编码的音频数据
+            format:
+              type: string
+              enum:
+                - wav
+                - mp3
+          x-apifox-orders:
+            - data
+            - format
+          x-apifox-ignore-properties: []
+        file:
+          type: object
+          properties:
+            filename:
+              type: string
+            file_data:
+              type: string
+            file_id:
+              type: string
+          x-apifox-orders:
+            - filename
+            - file_data
+            - file_id
+          x-apifox-ignore-properties: []
+        video_url:
+          type: object
+          properties:
+            url:
+              type: string
+          x-apifox-orders:
+            - url
+          x-apifox-ignore-properties: []
+      x-apifox-orders:
+        - type
+        - text
+        - image_url
+        - input_audio
+        - file
+        - video_url
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          examples:
+            - chat.completion
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message: *ref_1
+              finish_reason:
+                type: string
+                enum:
+                  - stop
+                  - length
+                  - tool_calls
+                  - content_filter
+            x-apifox-orders:
+              - index
+              - message
+              - finish_reason
+            x-apifox-ignore-properties: []
+        usage:
+          $ref: '#/components/schemas/Usage'
+        system_fingerprint:
+          type: string
+      x-apifox-orders:
+        - id
+        - object
+        - created
+        - model
+        - choices
+        - usage
+        - system_fingerprint
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+          description: 提示词 Token 数
+        completion_tokens:
+          type: integer
+          description: 补全 Token 数
+        total_tokens:
+          type: integer
+          description: 总 Token 数
+        prompt_tokens_details:
+          type: object
+          properties:
+            cached_tokens:
+              type: integer
+            text_tokens:
+              type: integer
+            audio_tokens:
+              type: integer
+            image_tokens:
+              type: integer
+          x-apifox-orders:
+            - cached_tokens
+            - text_tokens
+            - audio_tokens
+            - image_tokens
+          x-apifox-ignore-properties: []
+        completion_tokens_details:
+          type: object
+          properties:
+            text_tokens:
+              type: integer
+            audio_tokens:
+              type: integer
+            reasoning_tokens:
+              type: integer
+          x-apifox-orders:
+            - text_tokens
+            - audio_tokens
+            - reasoning_tokens
+          x-apifox-ignore-properties: []
+      x-apifox-orders:
+        - prompt_tokens
+        - completion_tokens
+        - total_tokens
+        - prompt_tokens_details
+        - completion_tokens_details
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+              description: 错误信息
+            type:
+              type: string
+              description: 错误类型
+            param:
+              type: string
+              description: 相关参数
+              nullable: true
+            code:
+              type: string
+              description: 错误代码
+              nullable: true
+          x-apifox-orders:
+            - message
+            - type
+            - param
+            - code
+          x-apifox-ignore-properties: []
+      x-apifox-orders:
+        - error
+      x-apifox-ignore-properties: []
+      x-apifox-folder: ''
+  securitySchemes:
+    BearerAuth:
+      type: bearer
+      scheme: bearer
+      description: |
+        使用 Bearer Token 认证。
+        格式: `Authorization: Bearer sk-xxxxxx`
+    SessionAuth:
+      type: apikey
+      in: cookie
+      name: session
+      description: Session认证，通过登录接口获取
+    AccessToken:
+      type: apikey
+      in: header
+      name: Authorization
+      description: 'Access Token认证，格式: Bearer {access_token}，通过 /api/user/token 接口生成'
+    NewApiUser:
+      type: apikey
+      in: header
+      name: New-Api-User
+      description: 用户ID请求头，必须与当前登录用户ID匹配，使用Session或AccessToken认证时必须提供
+    Combination:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination3:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination12:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination4:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination13:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination5:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination14:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination6:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination15:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination7:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination16:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination8:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination17:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination9:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination18:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination10:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination19:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination20:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination110:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination21:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination111:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination22:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination112:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination23:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination113:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination24:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination114:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination25:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination115:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination26:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination116:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination27:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination117:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination28:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination118:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination29:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination119:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination30:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination120:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination31:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination121:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination32:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination122:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination33:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination123:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination34:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination124:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination35:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination125:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination36:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination126:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination37:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination127:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination38:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination128:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination39:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination129:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination40:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination130:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination41:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination131:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination42:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination132:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination43:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination133:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination44:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination134:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination45:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination135:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination46:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination136:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination47:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination137:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination48:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination138:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination49:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination139:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination50:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination140:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination51:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination141:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination52:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination142:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination53:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination143:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination54:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination144:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination55:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination145:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination56:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination146:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination57:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination147:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination58:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination148:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination59:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination149:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination60:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination150:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination61:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination151:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination62:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination152:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination63:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination153:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination64:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination154:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination65:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination155:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination66:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination156:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination67:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination157:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination68:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination158:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination69:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination159:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination70:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination160:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination71:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination161:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination72:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination162:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination73:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination163:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination74:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination164:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination75:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination165:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination76:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination166:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination77:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination167:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination78:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination168:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination79:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination169:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination80:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination170:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination81:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination171:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination82:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination172:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination83:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination173:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination84:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination174:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination85:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination175:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination86:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination176:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination87:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination177:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination88:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination178:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination89:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination179:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination90:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination180:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination91:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination181:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination92:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination182:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination93:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination183:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination94:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination184:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination95:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination185:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination96:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination186:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination97:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination187:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination98:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination188:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination99:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination189:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination100:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination190:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination101:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination191:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination102:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination192:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination103:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination193:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination104:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination194:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination105:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination195:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination106:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination196:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination107:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination197:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination108:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination198:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination109:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination199:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination200:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1100:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination201:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1101:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination202:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1102:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination203:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1103:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination204:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1104:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination205:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1105:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination206:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1106:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination207:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1107:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination208:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1108:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination209:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1109:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination210:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1110:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination211:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1111:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination212:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1112:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination213:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1113:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination214:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1114:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination215:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1115:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination216:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1116:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination217:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1117:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination218:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1118:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination219:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1119:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination220:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1120:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination221:
+      group:
+        - id: 573419
+        - id: 573421
+      type: combination
+    Combination1121:
+      group:
+        - id: 573420
+        - id: 573421
+      type: combination
+    SessionAuth1:
+      type: apikey
+      in: cookie
+      name: session
+      description: Session认证，通过登录接口获取
+    AccessToken1:
+      type: apikey
+      in: header
+      name: Authorization
+      description: 'Access Token认证，格式: Bearer {access_token}，通过 /api/user/token 接口生成'
+    NewApiUser1:
+      type: apikey
+      in: header
+      name: New-Api-User
+      description: 用户ID请求头，必须与当前登录用户ID匹配，使用Session或AccessToken认证时必须提供
+    Combination222:
+      group:
+        - id: 573666
+        - id: 573668
+      type: combination
+    Combination1122:
+      group:
+        - id: 573667
+        - id: 573668
+      type: combination
+    Combination223:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1123:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination224:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1124:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination225:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1125:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination226:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1126:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination227:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1127:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination228:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1128:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination229:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1129:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination230:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1130:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination231:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1131:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination232:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1132:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination233:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1133:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination234:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1134:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination235:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1135:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination236:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1136:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination237:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1137:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination238:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1138:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination239:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1139:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination240:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1140:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination241:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1141:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination242:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1142:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination243:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1143:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination244:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1144:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination245:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1145:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination246:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1146:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination247:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1147:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination248:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1148:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination249:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1149:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination250:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1150:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination251:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1151:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination252:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1152:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination253:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1153:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination254:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1154:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination255:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1155:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination256:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1156:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination257:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1157:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination258:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1158:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination259:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1159:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination260:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1160:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination261:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1161:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination262:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1162:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination263:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1163:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination264:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1164:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination265:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1165:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination266:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1166:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination267:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1167:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination268:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1168:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination269:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1169:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination270:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1170:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination271:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1171:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination272:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1172:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination273:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1173:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination274:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1174:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination275:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1175:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination276:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1176:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination277:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1177:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination278:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1178:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination279:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1179:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination280:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1180:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination281:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1181:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination282:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1182:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination283:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1183:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination284:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1184:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination285:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1185:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination286:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1186:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination287:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1187:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination288:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1188:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination289:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1189:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination290:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1190:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination291:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1191:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination292:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1192:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination293:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1193:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination294:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1194:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination295:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1195:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination296:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1196:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination297:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1197:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination298:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1198:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination299:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1199:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination300:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1200:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination301:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1201:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination302:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1202:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination303:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1203:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination304:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1204:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination305:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1205:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination306:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1206:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination307:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1207:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination308:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1208:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination309:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1209:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination310:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1210:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination311:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1211:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination312:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1212:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination313:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1213:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination314:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1214:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination315:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1215:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination316:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1216:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination317:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1217:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination318:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1218:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination319:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1219:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination320:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1220:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination321:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1221:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination322:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1222:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination323:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1223:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination324:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1224:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination325:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1225:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination326:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1226:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination327:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1227:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination328:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1228:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination329:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1229:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination330:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1230:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination331:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1231:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination332:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1232:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination333:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1233:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination334:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1234:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination335:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1235:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination336:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1236:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination337:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1237:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination338:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1238:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination339:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1239:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination340:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1240:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination341:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1241:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination342:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: combination
+    Combination1242:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: combination
+    Combination343:
+      group:
+        - id: 573666
+        - id: 573668
+      type: combination
+    Combination1243:
+      group:
+        - id: 573667
+        - id: 573668
+      type: combination
+    Combination2100:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11100:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination344:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1244:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination410:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1310:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination510:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1410:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination610:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1510:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination710:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1610:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination810:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1710:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination910:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1810:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1010:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1910:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2010:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11010:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2110:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11110:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2210:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11210:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2310:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11310:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2410:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11410:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2510:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11510:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2610:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11610:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2710:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11710:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2810:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11810:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2910:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11910:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination3010:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination12010:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination3110:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination12110:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination3210:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination12210:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination3310:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination12310:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination345:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1245:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination351:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1251:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination361:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1261:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination371:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1271:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination381:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1281:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination391:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1291:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination401:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1301:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination411:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1311:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination421:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1321:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination431:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1331:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination441:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1341:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination451:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1351:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination461:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1361:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination471:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1371:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination481:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1381:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination491:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1391:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination501:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1401:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination511:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1411:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination521:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1421:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination531:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1431:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination541:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1441:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination551:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1451:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination561:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1461:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination571:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1471:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination581:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1481:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination591:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1491:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination601:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1501:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination611:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1511:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination621:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1521:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination631:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1531:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination641:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1541:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination651:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1551:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination661:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1561:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination671:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1571:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination681:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1581:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination691:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1591:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination701:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1601:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination711:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1611:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination721:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1621:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination731:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1631:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination741:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1641:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination751:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1651:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination761:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1661:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination771:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1671:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination781:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1681:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination791:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1691:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination801:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1701:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination811:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1711:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination821:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1721:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination831:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1731:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination841:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1741:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination851:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1751:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination861:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1761:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination871:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1771:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination881:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1781:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination891:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1791:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination901:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1801:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination911:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1811:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination921:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1821:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination931:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1831:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination941:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1841:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination951:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1851:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination961:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1861:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination971:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1871:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination981:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1881:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination991:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1891:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1001:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1901:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1011:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1911:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1021:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1921:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1031:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1931:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1041:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1941:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1051:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1951:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1061:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1961:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1071:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1971:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1081:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1981:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination1091:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination1991:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2001:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11001:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2011:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11011:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2021:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11021:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2031:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11031:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2041:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11041:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2051:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11051:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2061:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11061:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2071:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11071:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2081:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11081:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2091:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11091:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2101:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11101:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2111:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11111:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2121:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11121:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2131:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11131:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2141:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11141:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2151:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11151:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2161:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11161:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2171:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11171:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2181:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11181:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2191:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11191:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Combination2201:
+      group:
+        - id: SessionAuth
+        - id: NewApiUser
+      type: customize
+    Combination11201:
+      group:
+        - id: AccessToken
+        - id: NewApiUser
+      type: customize
+    Bearer:
+      type: bearer
+      scheme: bearer
+    SessionAuth2:
+      group:
+        - id: 573668
+        - id: 573666
+      type: combination
+servers: []
+security:
+  - BearerAuth: []
+    x-apifox:
+      schemeGroups:
+        - id: jwrCZj4thx9ahcLD3WQGo
+          schemeIds:
+            - BearerAuth
+      required: true
+      use:
+        id: jwrCZj4thx9ahcLD3WQGo
+      scopes:
+        jwrCZj4thx9ahcLD3WQGo:
+          BearerAuth: []
+
+```
