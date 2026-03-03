@@ -1,0 +1,120 @@
+---
+/**
+ * PipelineSteps.astro — 四步 Pipeline 进度条
+ *
+ * Steps: 拓扑推理 → ELK布局 → NanoBanana美化 → SVG输出
+ * 使用 astro-pure 的 Label 组件风格
+ *
+ * GitHub 背书: cworld1/astro-theme-pure, kieler/elkjs
+ */
+---
+
+<div class='flex flex-col gap-y-2' id='pipeline-steps'>
+  <div class='flex items-center gap-x-2 text-sm font-medium text-muted-foreground'>
+    <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' class='size-4'>
+      <polyline points='22 12 18 12 15 21 9 3 6 12 2 12' />
+    </svg>
+    Pipeline Progress
+  </div>
+
+  <div class='flex flex-col gap-y-1'>
+    {[
+      { id: 'step-topology', num: '1', label: 'LLM Topology', desc: 'Text → ELK JSON', icon: 'M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18' },
+      { id: 'step-elk', num: '2', label: 'ELK Layout', desc: 'Constraint solving', icon: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z' },
+      { id: 'step-nanobanana', num: '3', label: 'NanoBanana', desc: 'Neural SVG gen', icon: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5' },
+      { id: 'step-output', num: '4', label: 'SVG Output', desc: 'Final render', icon: 'M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z' },
+    ].map((step) => (
+      <div
+        id={step.id}
+        class='pipeline-step flex items-center gap-x-3 rounded-xl border bg-muted px-3 py-2 transition-all'
+        data-status='idle'
+      >
+        <div class='step-indicator flex size-7 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium text-muted-foreground transition-colors'>
+          {step.num}
+        </div>
+        <div class='flex flex-1 flex-col'>
+          <span class='text-sm font-medium'>{step.label}</span>
+          <span class='text-xs text-muted-foreground'>{step.desc}</span>
+        </div>
+        <div class='step-status'>
+          {/* Spinner (hidden by default) */}
+          <svg class='step-spinner hidden size-4 animate-spin text-primary' xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24'>
+            <circle class='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' stroke-width='4' />
+            <path class='opacity-75' fill='currentColor' d='M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z' />
+          </svg>
+          {/* Check (hidden by default) */}
+          <svg class='step-check hidden size-4 text-green-500' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+            <polyline points='20 6 9 17 4 12' />
+          </svg>
+          {/* Error (hidden by default) */}
+          <svg class='step-error hidden size-4 text-red-500' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+            <line x1='18' y1='6' x2='6' y2='18' />
+            <line x1='6' y1='6' x2='18' y2='18' />
+          </svg>
+        </div>
+      </div>
+    ))}
+  </div>
+
+  {/* Elapsed time */}
+  <div class='flex items-center justify-between text-xs text-muted-foreground'>
+    <span id='pipeline-status-text'>Ready</span>
+    <span id='pipeline-elapsed'>0.0s</span>
+  </div>
+</div>
+
+<style>
+  .pipeline-step[data-status='running'] {
+    border-color: hsl(var(--primary) / 0.5);
+    background-color: hsl(var(--primary) / 0.05);
+  }
+  .pipeline-step[data-status='running'] .step-indicator {
+    background-color: hsl(var(--primary));
+    color: white;
+    border-color: hsl(var(--primary));
+  }
+  .pipeline-step[data-status='running'] .step-spinner {
+    display: block;
+  }
+  .pipeline-step[data-status='done'] .step-indicator {
+    background-color: hsl(142.1 76.2% 36.3%);
+    color: white;
+    border-color: hsl(142.1 76.2% 36.3%);
+  }
+  .pipeline-step[data-status='done'] .step-check {
+    display: block;
+  }
+  .pipeline-step[data-status='error'] .step-indicator {
+    background-color: hsl(0 72.2% 50.6%);
+    color: white;
+    border-color: hsl(0 72.2% 50.6%);
+  }
+  .pipeline-step[data-status='error'] .step-error {
+    display: block;
+  }
+</style>
+
+<script>
+  // Pipeline state manager — exposed globally for Generate page
+  ;(window as any).__pipelineSteps = {
+    setStatus(stepId: string, status: 'idle' | 'running' | 'done' | 'error') {
+      const el = document.getElementById(stepId)
+      if (!el) return
+      el.dataset.status = status
+      // Hide all status icons first
+      el.querySelector('.step-spinner')?.classList.add('hidden')
+      el.querySelector('.step-check')?.classList.add('hidden')
+      el.querySelector('.step-error')?.classList.add('hidden')
+      // Show the right one (CSS handles via data-status)
+    },
+    resetAll() {
+      document.querySelectorAll('.pipeline-step').forEach((el) => {
+        ;(el as HTMLElement).dataset.status = 'idle'
+      })
+      const statusText = document.getElementById('pipeline-status-text')
+      const elapsed = document.getElementById('pipeline-elapsed')
+      if (statusText) statusText.textContent = 'Ready'
+      if (elapsed) elapsed.textContent = '0.0s'
+    },
+  }
+</script>

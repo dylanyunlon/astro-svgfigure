@@ -1,0 +1,103 @@
+---
+/**
+ * SvgPreview.astro — SVG 预览面板
+ *
+ * 渲染生成的 SVG + 缩放控制 + 暗色/亮色背景切换
+ * GitHub 背书: svgdotjs/svg.js, cworld1/astro-theme-pure
+ */
+---
+
+<div class='flex flex-col gap-y-2' id='svg-preview-section'>
+  {/* Toolbar */}
+  <div class='flex items-center justify-between'>
+    <span class='text-sm font-medium text-muted-foreground'>SVG Preview</span>
+    <div class='flex items-center gap-x-1'>
+      <button id='zoom-out' class='inline-flex items-center justify-center size-7 rounded-lg border bg-muted text-muted-foreground transition-all hover:bg-card hover:text-foreground' title='Zoom out'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><line x1='5' y1='12' x2='19' y2='12' /></svg>
+      </button>
+      <span id='zoom-level' class='text-xs text-muted-foreground w-10 text-center'>100%</span>
+      <button id='zoom-in' class='inline-flex items-center justify-center size-7 rounded-lg border bg-muted text-muted-foreground transition-all hover:bg-card hover:text-foreground' title='Zoom in'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><line x1='12' y1='5' x2='12' y2='19' /><line x1='5' y1='12' x2='19' y2='12' /></svg>
+      </button>
+      <button id='zoom-fit' class='inline-flex items-center justify-center size-7 rounded-lg border bg-muted text-muted-foreground transition-all hover:bg-card hover:text-foreground' title='Fit to view'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7' /></svg>
+      </button>
+      <button id='toggle-bg' class='inline-flex items-center justify-center size-7 rounded-lg border bg-muted text-muted-foreground transition-all hover:bg-card hover:text-foreground' title='Toggle background'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='5' /><path d='M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42' /></svg>
+      </button>
+    </div>
+  </div>
+
+  {/* Preview container */}
+  <div
+    id='svg-canvas'
+    class='relative flex items-center justify-center overflow-auto rounded-xl border bg-muted'
+    style='min-height: 320px; background-image: linear-gradient(45deg, hsl(var(--border)) 25%, transparent 25%), linear-gradient(-45deg, hsl(var(--border)) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, hsl(var(--border)) 75%), linear-gradient(-45deg, transparent 75%, hsl(var(--border)) 75%); background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0px;'
+  >
+    {/* Empty state */}
+    <div id='svg-empty' class='flex flex-col items-center gap-y-3 py-12 text-center'>
+      <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1' class='text-muted-foreground opacity-40'>
+        <rect x='3' y='3' width='18' height='18' rx='2' ry='2' />
+        <circle cx='8.5' cy='8.5' r='1.5' />
+        <polyline points='21 15 16 10 5 21' />
+      </svg>
+      <p class='text-sm text-muted-foreground'>Enter text and click Generate to create an academic figure</p>
+    </div>
+
+    {/* SVG render area */}
+    <div id='svg-render' class='hidden p-4' style='transform-origin: center center;'>
+    </div>
+  </div>
+</div>
+
+<script>
+  let currentZoom = 100
+  const zoomIn = document.getElementById('zoom-in')
+  const zoomOut = document.getElementById('zoom-out')
+  const zoomFit = document.getElementById('zoom-fit')
+  const toggleBg = document.getElementById('toggle-bg')
+  const zoomLevel = document.getElementById('zoom-level')
+  const svgRender = document.getElementById('svg-render')
+  const svgCanvas = document.getElementById('svg-canvas')
+
+  function setZoom(val: number) {
+    currentZoom = Math.max(25, Math.min(300, val))
+    if (zoomLevel) zoomLevel.textContent = `${currentZoom}%`
+    if (svgRender) svgRender.style.transform = `scale(${currentZoom / 100})`
+  }
+
+  zoomIn?.addEventListener('click', () => setZoom(currentZoom + 25))
+  zoomOut?.addEventListener('click', () => setZoom(currentZoom - 25))
+  zoomFit?.addEventListener('click', () => setZoom(100))
+
+  let darkBg = false
+  toggleBg?.addEventListener('click', () => {
+    darkBg = !darkBg
+    if (svgCanvas) {
+      svgCanvas.style.backgroundColor = darkBg ? 'hsl(0 0% 10%)' : ''
+    }
+  })
+
+  // Expose globally for Generate page
+  ;(window as any).__svgPreview = {
+    show(svgContent: string) {
+      const empty = document.getElementById('svg-empty')
+      if (empty) empty.classList.add('hidden')
+      if (svgRender) {
+        svgRender.classList.remove('hidden')
+        svgRender.innerHTML = svgContent
+      }
+    },
+    clear() {
+      const empty = document.getElementById('svg-empty')
+      if (empty) empty.classList.remove('hidden')
+      if (svgRender) {
+        svgRender.classList.add('hidden')
+        svgRender.innerHTML = ''
+      }
+    },
+    getSvg(): string {
+      return svgRender?.innerHTML || ''
+    },
+  }
+</script>

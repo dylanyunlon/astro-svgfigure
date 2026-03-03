@@ -1,0 +1,74 @@
+---
+/**
+ * TextInput.astro — Paper method 文本输入组件
+ *
+ * 使用 astro-pure 的 Button / Label 组件
+ * GitHub 背书: cworld1/astro-theme-pure
+ */
+import { Button, Label } from 'astro-pure/user'
+---
+
+<div class='flex flex-col gap-y-3' id='text-input-section'>
+  <div class='flex items-center justify-between'>
+    <Label title='Paper Method Description'>
+      <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='size-4' slot='icon'>
+        <path d='M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z' />
+        <polyline points='14 2 14 8 20 8' />
+        <line x1='16' y1='13' x2='8' y2='13' />
+        <line x1='16' y1='17' x2='8' y2='17' />
+        <line x1='10' y1='9' x2='8' y2='9' />
+      </svg>
+    </Label>
+    <span id='char-count' class='text-xs text-muted-foreground'>0 / 5000</span>
+  </div>
+
+  <textarea
+    id='method-text'
+    class='w-full rounded-xl border bg-muted px-4 py-3 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors'
+    rows='8'
+    maxlength='5000'
+    placeholder='Describe your paper method here...
+
+Example: Our model consists of three main components: (1) a CNN-based feature extractor that processes the input image, (2) a transformer encoder that captures long-range dependencies, and (3) a multi-head attention decoder that generates the final prediction...'
+  ></textarea>
+
+  <div class='flex flex-wrap gap-2'>
+    <span class='text-xs text-muted-foreground'>Examples:</span>
+    <button
+      class='example-btn inline-flex items-center rounded-lg border bg-muted px-2 py-0.5 text-xs text-muted-foreground transition-all hover:bg-card hover:text-foreground'
+      data-text='Our proposed framework consists of three stages: First, a ResNet-50 backbone extracts multi-scale feature maps from input images. Second, a Feature Pyramid Network (FPN) aggregates features across scales. Third, a Region Proposal Network (RPN) generates candidate bounding boxes, which are refined by an ROI Align layer and two fully-connected heads for classification and regression.'
+    >
+      Object Detection
+    </button>
+    <button
+      class='example-btn inline-flex items-center rounded-lg border bg-muted px-2 py-0.5 text-xs text-muted-foreground transition-all hover:bg-card hover:text-foreground'
+      data-text='The training pipeline has four components: (1) Data Augmentation module applies random cropping, color jittering, and mixup. (2) The encoder uses a Vision Transformer (ViT-L/16) with patch embedding and positional encoding. (3) A contrastive learning head computes InfoNCE loss between augmented views. (4) A linear probe classifier is trained on frozen features for downstream evaluation.'
+    >
+      Contrastive Learning
+    </button>
+    <button
+      class='example-btn inline-flex items-center rounded-lg border bg-muted px-2 py-0.5 text-xs text-muted-foreground transition-all hover:bg-card hover:text-foreground'
+      data-text='Our text-to-image generation model follows a cascaded diffusion architecture. Stage 1: A frozen CLIP text encoder produces text embeddings. Stage 2: A base U-Net diffusion model generates 64x64 images conditioned on text embeddings via cross-attention. Stage 3: Two super-resolution U-Net models progressively upscale to 256x256 and then 1024x1024. Each stage uses classifier-free guidance with adaptive noise scheduling.'
+    >
+      Diffusion Model
+    </button>
+  </div>
+</div>
+
+<script>
+  const textarea = document.getElementById('method-text') as HTMLTextAreaElement
+  const charCount = document.getElementById('char-count') as HTMLSpanElement
+  const exampleBtns = document.querySelectorAll('.example-btn')
+
+  textarea?.addEventListener('input', () => {
+    charCount.textContent = `${textarea.value.length} / 5000`
+  })
+
+  exampleBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const text = (btn as HTMLElement).dataset.text || ''
+      textarea.value = text
+      textarea.dispatchEvent(new Event('input'))
+    })
+  })
+</script>
