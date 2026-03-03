@@ -1,4 +1,4 @@
-# Gemini媒体识别
+# Gemini原生格式
 
 ## OpenAPI Specification
 
@@ -9,85 +9,128 @@ info:
   description: ''
   version: 1.0.0
 paths:
-  /v1beta/models/{model}:generateContent:
+  /v1beta/models/{model}:generateContent/:
     post:
-      summary: Gemini媒体识别
+      summary: Gemini原生格式
       deprecated: false
-      description: >-
-        Gemini图像、PDF、音频、视频识别请求
-
-
-        ⚠️注意：仅支持通过 inlineData 以 base64 方式上传图像、PDF、音频、视频，不支持 fileData.fileUri 或
-        File API。
+      description: Gemini 图片生成
       operationId: geminiRelayV1Beta
       tags:
-        - AI模型接口/聊天（Chat）/原生Gemini格式
-        - 聊天（Chat）/原生Gemini格式
+        - AI模型接口/图像（Images）/Nano Banana
+        - 图像（Images）/原生Gemini格式
       parameters:
         - name: model
           in: path
           description: 模型名称
           required: true
+          example: gemini-3-pro-image-preview
           schema:
             type: string
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GeminiRequest'
+              type: object
+              properties:
+                contents:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                      parts:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            text:
+                              type: string
+                          x-apifox-orders:
+                            - text
+                          x-apifox-ignore-properties: []
+                    x-apifox-orders:
+                      - role
+                      - parts
+                    x-apifox-ignore-properties: []
+                generationConfig:
+                  type: object
+                  properties:
+                    thinkingConfig:
+                      type: object
+                      properties:
+                        includeThoughts:
+                          type: boolean
+                          description: 是否返回思考内容
+                      required:
+                        - includeThoughts
+                      x-apifox-orders:
+                        - includeThoughts
+                      x-apifox-ignore-properties: []
+                    responseModalities:
+                      type: array
+                      items:
+                        type: string
+                    imageConfig:
+                      type: object
+                      properties:
+                        aspectRatio:
+                          type: string
+                        imageSize:
+                          type: string
+                      required:
+                        - aspectRatio
+                        - imageSize
+                      x-apifox-orders:
+                        - aspectRatio
+                        - imageSize
+                      x-apifox-ignore-properties: []
+                  required:
+                    - responseModalities
+                    - imageConfig
+                  x-apifox-orders:
+                    - thinkingConfig
+                    - responseModalities
+                    - imageConfig
+                  x-apifox-ignore-properties: []
+              required:
+                - contents
+                - generationConfig
+              x-apifox-orders:
+                - contents
+                - generationConfig
+              x-apifox-ignore-properties: []
             examples:
               '1':
                 value:
                   contents:
                     - role: user
                       parts:
-                        - text: Tell me about this instrument
-                        - inlineData:
-                            mimeType: image/jpeg
-                            data: 图片base64
-                summary: 图片识别
+                        - text: draw a cat
+                  generationConfig:
+                    responseModalities:
+                      - TEXT
+                      - IMAGE
+                    imageConfig:
+                      aspectRatio: '16:9'
+                      imageSize: 4K
+                summary: 绘图
               '2':
                 value:
                   contents:
                     - role: user
                       parts:
-                        - text: Can you add a few more lines to this poem?
-                        - inlineData:
-                            mimeType: application/pdf
-                            data: PDF文件base64
-                summary: PDF识别
-              '3':
-                value:
-                  contents:
-                    - role: user
-                      parts:
-                        - text: >-
-                            Transcribe the audio from this video and provide
-                            visual descriptions.
-                        - inlineData:
-                            mimeType: video/mp4
-                            data: 视频Base64
-                summary: 视频识别
-              '4':
-                value:
-                  contents:
-                    - role: user
-                      parts:
-                        - text: Please describe this audio file.
-                        - inlineData:
-                            mimeType: audio/mpeg
-                            data: 音频base64
-                summary: 音频识别
-              '5':
-                value:
-                  contents:
-                    - role: user
-                      parts:
-                        - text: Please summarize the video in 3 sentences.
-                        - fileData:
-                            fileUri: https://www.youtube.com/watch?v=9hE5-98ZeCg
-                            mimeType: video/webm
-                summary: Youtube视频
+                        - text: draw a cat
+                  generationConfig:
+                    thinkingConfig:
+                      includeThoughts: true
+                    responseModalities:
+                      - TEXT
+                      - IMAGE
+                    imageConfig:
+                      aspectRatio: '16:9'
+                      imageSize: 4K
+                summary: 返回思考内容
       responses:
         '200':
           description: 成功
@@ -110,113 +153,11 @@ paths:
             scopes:
               jwrCZj4thx9ahcLD3WQGo:
                 BearerAuth: []
-      x-apifox-folder: AI模型接口/聊天（Chat）/原生Gemini格式
+      x-apifox-folder: AI模型接口/图像（Images）/Nano Banana
       x-apifox-status: released
-      x-run-in-apifox: https://app.apifox.com/web/project/7484041/apis/api-391536411-run
+      x-run-in-apifox: https://app.apifox.com/web/project/7484041/apis/api-383837589-run
 components:
   schemas:
-    GeminiRequest:
-      type: object
-      properties:
-        contents:
-          type: array
-          items:
-            type: object
-            properties:
-              role:
-                type: string
-                enum:
-                  - user
-                  - model
-              parts:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    text:
-                      type: string
-                    inlineData:
-                      type: object
-                      properties:
-                        mimeType:
-                          type: string
-                        data:
-                          type: string
-                      x-apifox-orders:
-                        - mimeType
-                        - data
-                      x-apifox-ignore-properties: []
-                  x-apifox-orders:
-                    - text
-                    - inlineData
-                  x-apifox-ignore-properties: []
-            x-apifox-orders:
-              - role
-              - parts
-            x-apifox-ignore-properties: []
-        generationConfig:
-          type: object
-          properties:
-            temperature:
-              type: number
-            topP:
-              type: number
-            topK:
-              type: integer
-            maxOutputTokens:
-              type: integer
-            stopSequences:
-              type: array
-              items:
-                type: string
-          x-apifox-orders:
-            - temperature
-            - topP
-            - topK
-            - maxOutputTokens
-            - stopSequences
-          x-apifox-ignore-properties: []
-        safetySettings:
-          type: array
-          items:
-            type: object
-            properties:
-              category:
-                type: string
-              threshold:
-                type: string
-            x-apifox-orders:
-              - category
-              - threshold
-            x-apifox-ignore-properties: []
-        tools:
-          type: array
-          items:
-            type: object
-            properties: {}
-            x-apifox-orders: []
-            x-apifox-ignore-properties: []
-        systemInstruction:
-          type: object
-          properties:
-            parts:
-              type: array
-              items:
-                type: object
-                properties: {}
-                x-apifox-orders: []
-                x-apifox-ignore-properties: []
-          x-apifox-orders:
-            - parts
-          x-apifox-ignore-properties: []
-      x-apifox-orders:
-        - contents
-        - generationConfig
-        - safetySettings
-        - tools
-        - systemInstruction
-      x-apifox-ignore-properties: []
-      x-apifox-folder: ''
     GeminiResponse:
       type: object
       properties:
