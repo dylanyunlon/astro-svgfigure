@@ -2537,3 +2537,74 @@ topology.ts 发送 { model: "gemini-2.5-flash" }
 ```
 
 修复后: 前端不再发送 model 字段 → 后端从 .env 读取 `DEFAULT_TOPOLOGY_MODEL=claude-opus-4-6`
+
+12更新：
+
+> **PR Title**: feat(edge-routing): Neural-network level advanced edge routing system + Grok/topology prompt enhancement
+> **Parallel Note**: Claude (this PR) handles Tasks T1-T10 (edge routing core). Codex handles T11-T20 (frontend polish + docs).
+
+---
+
+## Completed in This PR (T1-T10)
+
+### T1: Enhanced Edge Schema (types.ts) -- DONE
+- **File**: `src/lib/elk/types.ts` (MODIFIED)
+- Added: `EdgeRoutingMode`, `EdgeLineStyle`, `EdgeArrowType`, `EdgeDirectionality`, `EdgeSemanticType`
+- Added: `AdvancedEdgeProperties` interface (routing, lineStyle, strokeDasharray, edgeLabels, curvature, etc.)
+- Added: `EdgeLabelConfig` interface for math labels on arrows
+- Added: `EDGE_SEMANTIC_DEFAULTS` mapping semantic types to visual styles
+- Enhanced `ElkEdge` with optional `advanced?: AdvancedEdgeProperties`
+- Enhanced `ScaffoldConnection` with optional `advanced?: AdvancedEdgeProperties`
+
+### T2: Advanced Topology System Prompt -- DONE
+- **File**: `backend/pipeline/edge_routing_prompts.py` (NEW)
+- **File**: `backend/pipeline/topology_gen.py` (MODIFIED)
+- Created `ADVANCED_EDGE_ROUTING_SYSTEM_PROMPT` with:
+  - 12 semantic edge types (data_flow, gradient_flow, skip_connection, fan_out, fan_in, etc.)
+  - Full "advanced" field schema documentation
+  - JSON examples for skip connections, gradient flow, labeled edges, bidirectional, fan-out
+  - Compound node (group) with hierarchy instructions
+  - Rules: every non-trivial edge MUST have advanced field
+- Integrated into `generate_topology()` via `get_topology_prompt_with_edge_routing()`
+
+### T3: Enhanced Grok Prompt Engineering -- DONE
+- **File**: `backend/pipeline/edge_routing_prompts.py` (NEW)
+- **File**: `backend/pipeline/gemini_image_gen.py` (MODIFIED)
+- Created `GROK_EDGE_ROUTING_SYSTEM_ADDON` with precise arrow rendering instructions:
+  - Orthogonal routing description for image prompts
+  - Fan-out/fan-in visual descriptions
+  - Dashed/dotted arrow descriptions
+  - Bidirectional arrow descriptions
+  - Curved/spline arrow descriptions
+  - Labeled arrow descriptions with positioning
+  - Cross-boundary arrow descriptions
+- Integrated into `generate_prompt_with_grok()` via `get_grok_prompt_with_edge_routing()`
+
+### T4: ELK Layout API Enhancement -- DONE
+- **File**: `src/pages/api/layout.ts` (MODIFIED)
+- Added `elk.hierarchyHandling: INCLUDE_CHILDREN` for cross-boundary edges
+- Added `elk.layered.crossingMinimization.strategy: LAYER_SWEEP`
+- Added `elk.layered.nodePlacement.strategy: NETWORK_SIMPLEX`
+- Added `elk.layered.considerModelOrder.strategy: NODES_AND_EDGES`
+- Edge sanitization now preserves `advanced` and `labels` properties
+
+### T5: Enhanced Skeleton SVG Renderer (to-svg.ts) -- DONE
+- **File**: `src/lib/elk/to-svg.ts` (MODIFIED - full rewrite)
+- Renders dashed edges (gradient_flow, optional_path, inference_only)
+- Renders dotted edges (attention)
+- Renders bidirectional arrows (double arrowheads)
+- Renders curved edges using quadratic bezier (skip_connection, residual)
+- Renders edge labels with background rectangles
+- Dynamic SVG marker generation per edge color
+- Semantic type -> visual style mapping
+
+### T6: Scaffold Builder Edge Properties -- DONE
+- **File**: `backend/pipeline/scaffold_builder.py` (MODIFIED)
+- Extracts `advanced` properties from topology edges
+- Maps semantic types to scaffold connection styles (arrow/dashed/dotted/bidirectional)
+- Extracts edge labels for scaffold connections
+
+### T7: Verification & Diff Review -- DONE
+- All 6 modified files verified with `git diff --stat`
+- 1 new file (`edge_routing_prompts.py`) verified
+- No content from previous version lost

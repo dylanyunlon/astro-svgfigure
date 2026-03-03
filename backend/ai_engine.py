@@ -289,6 +289,7 @@ class OpenAICompatibleProvider(AIProvider):
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "stream": False,
         }
 
         if tools:
@@ -312,9 +313,67 @@ class OpenAICompatibleProvider(AIProvider):
         url = f"{self._base_url}/chat/completions"
         response = await self._client.post(url, json=payload, headers=headers)
         response.raise_for_status()
-        data = response.json()
 
-        # Parse OpenAI-format response
+        raw_text = response.text.strip()
+        content_type = response.headers.get("content-type", "")
+
+        # Some proxies (e.g. tryallai) force streaming even when stream=False.
+        # Detect SSE format and reassemble the full response from deltas.
+        if raw_text.startswith("data: ") or "text/event-stream" in content_type:
+            return self._parse_sse_to_completion(raw_text, model)
+
+        # Normal JSON response
+        data = json.loads(raw_text)
+        return self._parse_json_response(data, model)
+
+    def _parse_sse_to_completion(self, raw_text: str, model: str) -> Dict[str, Any]:
+        """Reassemble a streaming SSE response into a single completion result."""
+        text_parts: List[str] = []
+        finish_reason = "stop"
+        resp_model = model
+        usage = {}
+
+        for line in raw_text.split("\n"):
+            line = line.strip()
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:]
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+                resp_model = chunk.get("model", resp_model)
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                choices = chunk.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+                if delta.get("content"):
+                    text_parts.append(delta["content"])
+                if choices[0].get("finish_reason"):
+                    finish_reason = choices[0]["finish_reason"]
+            except json.JSONDecodeError:
+                continue
+
+        content = "".join(text_parts)
+        content_blocks = [{"type": "text", "text": content}] if content else []
+
+        return {
+            "content": content,
+            "content_blocks": content_blocks,
+            "tool_uses": [],
+            "tool_calls": None,
+            "stop_reason": finish_reason,
+            "model": resp_model,
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+            },
+        }
+
+    def _parse_json_response(self, data: Dict, model: str) -> Dict[str, Any]:
+        """Parse a standard OpenAI JSON response."""
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})
         content = message.get("content", "") or ""

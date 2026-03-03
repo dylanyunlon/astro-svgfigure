@@ -246,7 +246,7 @@ async def generate_image_with_gemini(
             f"endpoint={endpoint[:60]}..."
         )
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
                 endpoint,
                 json=request_body,
@@ -283,23 +283,16 @@ async def generate_image_with_gemini(
 
 def _parse_gemini_image_response(data: dict, model: str) -> Dict[str, Any]:
     """
-    Parse Gemini generateContent response which may contain both text and image parts.
+    Parse Gemini generateContent response containing text and/or image parts.
 
-    Response format:
-    {
-      "candidates": [{
-        "content": {
-          "role": "model",
-          "parts": [
-            { "text": "..." },
-            { "inlineData": { "mimeType": "image/png", "data": "base64..." } }
-          ]
-        }
-      }]
-    }
+    Handles three image formats:
+    1. Official: inlineData { mimeType, data }
+    2. snake_case: inline_data { mime_type, data }
+    3. tryallai proxy: text field with ![image](data:image/jpeg;base64,...)
     """
     candidates = data.get("candidates", [])
     if not candidates:
+        logger.error(f"Gemini no candidates. Response keys: {list(data.keys())}")
         return {
             "success": False,
             "error": "Gemini returned no candidates",
@@ -316,23 +309,45 @@ def _parse_gemini_image_response(data: dict, model: str) -> Dict[str, Any]:
     for part in parts:
         if "text" in part:
             text_response += part["text"]
+
+        # Format 1: Official camelCase
         if "inlineData" in part:
             inline = part["inlineData"]
             image_b64 = inline.get("data", "")
             mime_type = inline.get("mimeType", "image/png")
 
+        # Format 2: snake_case variant
+        if "inline_data" in part:
+            inline = part["inline_data"]
+            image_b64 = inline.get("data", "")
+            mime_type = inline.get("mime_type", inline.get("mimeType", "image/png"))
+
+    # Format 3: tryallai proxy embeds image as Markdown data URI in text
+    # e.g. ![image](data:image/jpeg;base64,/9j/4AAQ...)
+    if not image_b64 and text_response:
+        match = re.search(
+            r'!\[.*?\]\(data:(image/[a-zA-Z]+);base64,([A-Za-z0-9+/=\s]+)\)',
+            text_response,
+            re.DOTALL,
+        )
+        if match:
+            mime_type = match.group(1)
+            image_b64 = match.group(2).replace("\n", "").replace("\r", "").replace(" ", "")
+            # Remove the image markdown from text_response
+            text_response = text_response[:match.start()] + text_response[match.end():]
+            text_response = text_response.strip()
+            logger.info(f"Extracted image from Markdown data URI: mime={mime_type}, {len(image_b64)} chars")
+
     if not image_b64:
+        logger.error(f"Gemini no image. Text response: {text_response[:500]}")
         return {
             "success": False,
-            "error": "Gemini response contained no image data",
+            "error": f"Gemini returned no image. Model said: {text_response[:300]}" if text_response else "Gemini returned empty response",
             "text_response": text_response,
             "model_used": model,
         }
 
-    logger.info(
-        f"Gemini image generated: {len(image_b64)} base64 chars, "
-        f"mime={mime_type}"
-    )
+    logger.info(f"Gemini image generated: {len(image_b64)} base64 chars, mime={mime_type}")
 
     return {
         "success": True,
