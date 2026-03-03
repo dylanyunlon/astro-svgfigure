@@ -182,6 +182,8 @@ class ExportRequest(BaseModel):
 
 class TopologyResponse(BaseModel):
     """Response from /api/topology."""
+    model_config = {"protected_namespaces": ()}
+
     success: bool
     topology: Optional[ElkGraph] = None
     raw_llm_output: Optional[str] = None
@@ -199,6 +201,8 @@ class LayoutResponse(BaseModel):
 
 class BeautifyResponse(BaseModel):
     """Response from /api/beautify."""
+    model_config = {"protected_namespaces": ()}
+
     success: bool
     svg: Optional[str] = None
     error: Optional[str] = None

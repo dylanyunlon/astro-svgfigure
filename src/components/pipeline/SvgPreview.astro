@@ -10,7 +10,14 @@
 <div class='flex flex-col gap-y-2' id='svg-preview-section'>
   {/* Toolbar */}
   <div class='flex items-center justify-between'>
-    <span class='text-sm font-medium text-muted-foreground'>SVG Preview</span>
+    <div class='flex items-center gap-x-2'>
+      <span class='text-sm font-medium text-muted-foreground'>SVG Preview</span>
+      {/* Tab toggle: Skeleton vs Final */}
+      <div class='flex items-center rounded-lg border bg-muted p-0.5'>
+        <button id='tab-skeleton' class='preview-tab rounded-md px-2 py-0.5 text-xs font-medium text-muted-foreground transition-all hover:text-foreground' data-tab='skeleton'>Skeleton</button>
+        <button id='tab-final' class='preview-tab rounded-md px-2 py-0.5 text-xs font-medium bg-background text-foreground shadow-sm' data-tab='final'>Final</button>
+      </div>
+    </div>
     <div class='flex items-center gap-x-1'>
       <button id='zoom-out' class='inline-flex items-center justify-center size-7 rounded-lg border bg-muted text-muted-foreground transition-all hover:bg-card hover:text-foreground' title='Zoom out'>
         <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><line x1='5' y1='12' x2='19' y2='12' /></svg>
@@ -88,21 +95,83 @@
   })
 
   // Expose globally for Generate page
+  let skeletonSvg = ''
+  let finalSvg = ''
+  let activeTab = 'final'
+
+  // Tab switching
+  document.querySelectorAll('.preview-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const t = (tab as HTMLElement).dataset.tab || 'final'
+      activeTab = t
+      // Update tab styles
+      document.querySelectorAll('.preview-tab').forEach((btn) => {
+        btn.classList.remove('bg-background', 'text-foreground', 'shadow-sm')
+        btn.classList.add('text-muted-foreground')
+      })
+      tab.classList.add('bg-background', 'text-foreground', 'shadow-sm')
+      tab.classList.remove('text-muted-foreground')
+      // Show appropriate SVG
+      const content = t === 'skeleton' ? skeletonSvg : finalSvg
+      if (content && svgRender) {
+        svgRender.classList.remove('hidden')
+        svgRender.innerHTML = content
+        document.getElementById('svg-empty')?.classList.add('hidden')
+      } else if (!content && svgRender) {
+        svgRender.classList.add('hidden')
+        const empty = document.getElementById('svg-empty')
+        if (empty) {
+          empty.classList.remove('hidden')
+          const p = empty.querySelector('p')
+          if (p) {
+            p.textContent = t === 'skeleton'
+              ? 'Skeleton SVG will appear after ELK layout (Step 2)'
+              : 'Final SVG will appear after NanoBanana generation (Step 3)'
+            p.style.color = ''
+          }
+        }
+      }
+    })
+  })
+
   ;(window as any).__svgPreview = {
     show(svgContent: string) {
-      const empty = document.getElementById('svg-empty')
-      const loading = document.getElementById('svg-loading')
-      if (empty) empty.classList.add('hidden')
-      if (loading) loading.classList.add('hidden')
-      if (svgRender) {
+      finalSvg = svgContent
+      if (activeTab === 'final') {
+        const empty = document.getElementById('svg-empty')
+        const loading = document.getElementById('svg-loading')
+        if (empty) empty.classList.add('hidden')
+        if (loading) loading.classList.add('hidden')
+        if (svgRender) {
+          svgRender.classList.remove('hidden')
+          svgRender.innerHTML = svgContent
+        }
+      }
+    },
+    showSkeleton(svgContent: string) {
+      skeletonSvg = svgContent
+      if (activeTab === 'skeleton' && svgRender) {
+        const empty = document.getElementById('svg-empty')
+        const loading = document.getElementById('svg-loading')
+        if (empty) empty.classList.add('hidden')
+        if (loading) loading.classList.add('hidden')
         svgRender.classList.remove('hidden')
         svgRender.innerHTML = svgContent
       }
     },
     clear() {
+      skeletonSvg = ''
+      finalSvg = ''
       const empty = document.getElementById('svg-empty')
       const loading = document.getElementById('svg-loading')
-      if (empty) empty.classList.remove('hidden')
+      if (empty) {
+        empty.classList.remove('hidden')
+        const p = empty.querySelector('p')
+        if (p) {
+          p.textContent = 'Enter text and click Generate to create an academic figure'
+          p.style.color = ''
+        }
+      }
       if (loading) loading.classList.add('hidden')
       if (svgRender) {
         svgRender.classList.add('hidden')
@@ -129,7 +198,10 @@
       if (svgRender) svgRender.classList.add('hidden')
     },
     getSvg(): string {
-      return svgRender?.innerHTML || ''
+      return finalSvg || svgRender?.innerHTML || ''
+    },
+    getSkeletonSvg(): string {
+      return skeletonSvg
     },
   }
 </script>

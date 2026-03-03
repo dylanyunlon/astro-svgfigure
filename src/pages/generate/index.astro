@@ -16,6 +16,7 @@ import TextInput from '@/components/pipeline/TextInput.astro'
 import PipelineSteps from '@/components/pipeline/PipelineSteps.astro'
 import SvgPreview from '@/components/pipeline/SvgPreview.astro'
 import ExportPanel from '@/components/pipeline/ExportPanel.astro'
+import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
 ---
 
 <GenerateLayout meta={{ title: 'Generate Figure' }} highlightColor='#4F46E5'>
@@ -89,6 +90,7 @@ import ExportPanel from '@/components/pipeline/ExportPanel.astro'
 
       {/* Center panel: SVG Preview (takes most space) */}
       <div class='flex flex-col gap-y-4 lg:col-span-6'>
+        <ErrorDisplay />
         <SvgPreview />
       </div>
 
@@ -137,6 +139,8 @@ import ExportPanel from '@/components/pipeline/ExportPanel.astro'
   const preview = (window as any).__svgPreview
   const exportPanel = (window as any).__exportPanel
 
+  const errorDisplay = (window as any).__errorDisplay
+
   let running = false
   let startTime = 0
   let timerInterval: number | null = null
@@ -170,6 +174,7 @@ import ExportPanel from '@/components/pipeline/ExportPanel.astro'
     steps?.resetAll()
     preview?.clear()
     exportPanel?.disable()
+    errorDisplay?.hide()
     startTimer()
 
     const model = (document.getElementById('opt-model') as HTMLSelectElement)?.value
@@ -214,7 +219,11 @@ import ExportPanel from '@/components/pipeline/ExportPanel.astro'
 
       const layoutData = await layoutRes.json()
       const layouted = layoutData.layouted
+      const skeletonSvg = layoutData.skeletonSvg
       layoutedPre.textContent = JSON.stringify(layouted, null, 2)
+      if (skeletonSvg) {
+        preview?.showSkeleton(skeletonSvg)
+      }
       steps?.setStatus('step-elk', 'done')
 
       // === Step 3: NanoBanana SVG ===
@@ -252,15 +261,24 @@ import ExportPanel from '@/components/pipeline/ExportPanel.astro'
       document.querySelectorAll('.pipeline-step[data-status="running"]').forEach((el) => {
         ;(el as HTMLElement).dataset.status = 'error'
       })
-      // Show detailed error with hints
+      // Parse error for structured display
       let errorMsg = err.message || 'Unknown error'
+      let hint = ''
+      let step = ''
+      if (errorMsg.includes('Topology')) step = 'Step 1 (Topology)'
+      else if (errorMsg.includes('Layout')) step = 'Step 2 (ELK Layout)'
+      else if (errorMsg.includes('Beautify')) step = 'Step 3 (NanoBanana)'
+      else step = 'Step 4 (Render)'
+
       if (errorMsg.includes('502') || errorMsg.includes('Failed to connect')) {
-        errorMsg += '\n Hint: Make sure Python backend is running: python server.py'
+        hint = 'Make sure Python backend is running: python server.py'
       } else if (errorMsg.includes('500') || errorMsg.includes('API_KEY')) {
-        errorMsg += '\n Hint: Check GEMINI_API_KEY in .env file'
+        hint = 'Check GEMINI_API_KEY in .env file'
       } else if (errorMsg.includes('504') || errorMsg.includes('timed out')) {
-        errorMsg += '\n Hint: Try a faster model like gemini-2.0-flash'
+        hint = 'Try a faster model like gemini-2.0-flash'
       }
+
+      errorDisplay?.show({ title: 'Pipeline Error', message: errorMsg, hint, step })
       statusText.textContent = `Error: ${errorMsg}`
       statusText.style.color = 'var(--color-danger, #ef4444)'
       console.error('Pipeline error:', err)

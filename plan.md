@@ -1943,3 +1943,37 @@ Changes:
 | 测试 | pytest-dev/pytest | Python测试 |
 | 启动 | open-cli-tools/concurrently | 双服务启动 |
 
+08更新：
+
+**Claude 的 PR** (T01-T10):
+```
+Title: fix(502) + feat(pipeline): 修复代理错误 + 前端组件增强 (T01-T10)
+Branch: claude/fix-502-and-enhance-pipeline
+
+Changes:
+- T01: 修复 IPv6 502 错误 (localhost → 127.0.0.1)
+- T02: 修复 Pydantic model_ 命名空间警告
+- T03: /api/layout 增加骨架 SVG 输出
+- T04: SvgPreview 双视图 Tab 切换
+- T05: 结构化错误显示组件
+- T06: scaffold_builder 完善
+- T07: nanobanana_bridge 实现
+- T08: Gallery 页面重构
+- T09: Playground 页面重构
+- T10: 首页重构
+```
+
+**Codex 的 PR** (T11-T20):
+```
+Title: feat(backend+docs): 验证/导出/文档/Docker (T11-T20)
+Branch: codex/backend-and-docs
+
+Changes:
+- T11: svg_validator 完善
+- T12: svg_scaler 完善
+- T13-T14: 导出功能前后端
+- T15: ELK 类型/常量/预设
+- T16: 文档页面
+- T17: Docker
+- T18: 暗色模式
+- T19: 示例数据

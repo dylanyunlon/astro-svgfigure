@@ -9,7 +9,7 @@ import type { APIRoute } from 'astro'
 
 export const prerender = false
 
-const BACKEND_URL = import.meta.env.PYTHON_BACKEND_URL || import.meta.env.BACKEND_URL || 'http://localhost:8000'
+const BACKEND_URL = import.meta.env.PYTHON_BACKEND_URL || import.meta.env.BACKEND_URL || 'http://127.0.0.1:8000'
 
 export const GET: APIRoute = async () => {
   try {

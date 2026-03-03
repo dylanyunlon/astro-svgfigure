@@ -76,10 +76,20 @@ export const POST: APIRoute = async ({ request }) => {
 
     const layouted = await elk.layout(processedGraph)
 
+    // Generate skeleton SVG from layouted graph
+    const { elkToSvg } = await import('@/lib/elk/to-svg')
+    let skeletonSvg = ''
+    try {
+      skeletonSvg = elkToSvg(layouted)
+    } catch (svgErr: any) {
+      console.warn('Skeleton SVG generation failed (non-fatal):', svgErr.message)
+    }
+
     return new Response(
       JSON.stringify({
         success: true,
         layouted,
+        skeletonSvg,
         options: layoutOptions,
       }),
       {

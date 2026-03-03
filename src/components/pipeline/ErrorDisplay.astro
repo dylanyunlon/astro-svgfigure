@@ -1,0 +1,101 @@
+---
+/**
+ * ErrorDisplay.astro — 结构化错误显示组件
+ *
+ * 替代纯文本错误, 提供:
+ * - 错误标题 + 详情
+ * - 修复建议 (Hint)
+ * - 重试按钮
+ *
+ * 使用 astro-pure Card/Aside 风格
+ * GitHub 背书: cworld1/astro-theme-pure
+ */
+---
+
+<div id='pipeline-error' class='hidden'>
+  <div class='rounded-xl border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/30'>
+    {/* Error header */}
+    <div class='flex items-start gap-x-3'>
+      <div class='flex size-8 shrink-0 items-center justify-center rounded-lg bg-red-100 dark:bg-red-900/50'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' class='text-red-600 dark:text-red-400'>
+          <circle cx='12' cy='12' r='10' />
+          <line x1='12' y1='8' x2='12' y2='12' />
+          <line x1='12' y1='16' x2='12.01' y2='16' />
+        </svg>
+      </div>
+      <div class='flex-1'>
+        <h4 id='error-title' class='text-sm font-semibold text-red-800 dark:text-red-300'>Pipeline Error</h4>
+        <p id='error-message' class='mt-1 text-sm text-red-700 dark:text-red-400'>An error occurred during generation.</p>
+      </div>
+      <button id='error-close' class='size-6 rounded-lg text-red-400 transition-colors hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-900/50' title='Dismiss'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+          <line x1='18' y1='6' x2='6' y2='18' /><line x1='6' y1='6' x2='18' y2='18' />
+        </svg>
+      </button>
+    </div>
+
+    {/* Hint */}
+    <div id='error-hint-box' class='mt-3 hidden rounded-lg bg-amber-50 px-3 py-2 dark:bg-amber-900/20'>
+      <p class='flex items-center gap-x-1.5 text-xs text-amber-800 dark:text-amber-300'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+          <circle cx='12' cy='12' r='10' /><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3' /><line x1='12' y1='17' x2='12.01' y2='17' />
+        </svg>
+        <span id='error-hint'>Hint will appear here</span>
+      </p>
+    </div>
+
+    {/* Retry button */}
+    <div class='mt-3 flex items-center gap-x-2'>
+      <button
+        id='error-retry'
+        class='inline-flex items-center gap-x-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition-all hover:bg-red-50 dark:border-red-800 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900/50'
+      >
+        <svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+          <polyline points='23 4 23 10 17 10' /><path d='M20.49 15a9 9 0 1 1-2.12-9.36L23 10' />
+        </svg>
+        Retry
+      </button>
+      <span id='error-step' class='text-xs text-red-400'>Failed at Step 1</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Expose globally for Generate page
+  ;(window as any).__errorDisplay = {
+    show({ title, message, hint, step }: { title?: string; message: string; hint?: string; step?: string }) {
+      const container = document.getElementById('pipeline-error')
+      const titleEl = document.getElementById('error-title')
+      const messageEl = document.getElementById('error-message')
+      const hintBox = document.getElementById('error-hint-box')
+      const hintEl = document.getElementById('error-hint')
+      const stepEl = document.getElementById('error-step')
+
+      if (container) container.classList.remove('hidden')
+      if (titleEl) titleEl.textContent = title || 'Pipeline Error'
+      if (messageEl) messageEl.textContent = message
+      if (hint && hintBox && hintEl) {
+        hintBox.classList.remove('hidden')
+        hintEl.textContent = hint
+      } else if (hintBox) {
+        hintBox.classList.add('hidden')
+      }
+      if (stepEl) stepEl.textContent = step ? `Failed at ${step}` : ''
+    },
+    hide() {
+      const container = document.getElementById('pipeline-error')
+      if (container) container.classList.add('hidden')
+    },
+  }
+
+  // Close button
+  document.getElementById('error-close')?.addEventListener('click', () => {
+    ;(window as any).__errorDisplay?.hide()
+  })
+
+  // Retry button triggers generate
+  document.getElementById('error-retry')?.addEventListener('click', () => {
+    ;(window as any).__errorDisplay?.hide()
+    document.getElementById('generate-btn')?.click()
+  })
+</script>
