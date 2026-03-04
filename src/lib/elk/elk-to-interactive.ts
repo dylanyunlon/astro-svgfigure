@@ -7,8 +7,8 @@
 
 import type { InteractiveGraph, InteractiveNode, InteractiveEdge } from './interactive-svg'
 
-const NODE_COLORS = ['#E3F2FD', '#F3E5F5', '#E8F5E9', '#FFF3E0', '#FCE4EC', '#E0F7FA', '#FFF8E1', '#F1F8E9']
-const DEFAULT_EDGE_COLOR = '#78909C'
+const NODE_FILL_NEUTRAL = '#F8FAFC' // Will be overridden by interactive-svg theme
+const DEFAULT_EDGE_COLOR = '#94A3B8'
 
 interface ElkLayouted {
   id: string
@@ -50,23 +50,34 @@ interface ElkLayoutedEdge {
 
 /**
  * Convert ELK layouted JSON → InteractiveGraph
+ * T5: Defensive handling of zero coords, empty children, null sections
  */
 export function elkToInteractive(layouted: ElkLayouted): InteractiveGraph {
   const nodes: InteractiveNode[] = []
   const edges: InteractiveEdge[] = []
 
+  if (!layouted) {
+    console.warn('[elkToInteractive] layouted is null/undefined')
+    return { nodes: [], edges: [], width: 800, height: 600 }
+  }
+
   // Flatten nodes (including nested children)
-  if (Array.isArray(layouted.children)) {
+  if (Array.isArray(layouted.children) && layouted.children.length > 0) {
     layouted.children.forEach((child, i) => {
-      flattenNode(child, i, nodes)
+      if (child) flattenNode(child, i, nodes)
     })
   }
 
-  // Convert edges
+  // Convert edges — need node lookup map for center-to-center fallback
+  const nodeMap = new Map<string, InteractiveNode>()
+  for (const n of nodes) nodeMap.set(n.id, n)
+
   if (Array.isArray(layouted.edges)) {
     layouted.edges.forEach((edge, i) => {
-      const ie = convertEdge(edge, i)
-      if (ie) edges.push(ie)
+      if (edge) {
+        const ie = convertEdge(edge, i, nodeMap)
+        if (ie) edges.push(ie)
+      }
     })
   }
 
@@ -97,7 +108,7 @@ function flattenNode(node: ElkLayoutedNode, index: number, out: InteractiveNode[
     width: node.width || 160,
     height: node.height || 60,
     label: node.labels?.[0]?.text || node.id,
-    fill: NODE_COLORS[index % NODE_COLORS.length],
+    fill: NODE_FILL_NEUTRAL,
     isGroup: hasChildren,
   })
 
@@ -114,7 +125,7 @@ function flattenNode(node: ElkLayoutedNode, index: number, out: InteractiveNode[
   }
 }
 
-function convertEdge(edge: ElkLayoutedEdge, index: number): InteractiveEdge | null {
+function convertEdge(edge: ElkLayoutedEdge, index: number, nodeMap: Map<string, InteractiveNode>): InteractiveEdge | null {
   const sourceId = edge.sources?.[0]
   const targetId = edge.targets?.[0]
   if (!sourceId || !targetId) return null
@@ -133,10 +144,21 @@ function convertEdge(edge: ElkLayoutedEdge, index: number): InteractiveEdge | nu
     }
   }
 
-  // Fallback: if no sections, create simple straight line
+  // T5: If no sections/points, compute center-to-center from node positions
   if (points.length < 2) {
-    points.push({ x: 0, y: 0 })
-    points.push({ x: 100, y: 100 })
+    const src = nodeMap.get(sourceId)
+    const tgt = nodeMap.get(targetId)
+    if (src && tgt) {
+      // Source: bottom center, Target: top center (standard top-to-bottom flow)
+      points.length = 0
+      points.push({ x: src.x + src.width / 2, y: src.y + src.height })
+      points.push({ x: tgt.x + tgt.width / 2, y: tgt.y })
+    } else {
+      // Absolute fallback
+      points.length = 0
+      points.push({ x: 0, y: 0 })
+      points.push({ x: 100, y: 100 })
+    }
   }
 
   return {

@@ -29,10 +29,13 @@ interface ElkGraph {
   children?: ElkNode[]; edges?: ElkEdge[]
 }
 
-const NODE_COLORS = ['#E3F2FD','#F3E5F5','#E8F5E9','#FFF3E0','#FCE4EC','#E0F7FA','#FFF8E1','#F1F8E9']
-const STROKE_COLOR = '#37474F'
-const TEXT_COLOR = '#263238'
-const DEFAULT_EDGE_COLOR = '#78909C'
+// T4: Clean neutral colors — no rainbow, ReactFlow-inspired
+// All nodes use same neutral fill; selection handled by interactive editor
+const NODE_FILL = '#F8FAFC'
+const NODE_FILL_GROUP = '#F8FAFC80'
+const STROKE_COLOR = '#E2E8F0'
+const TEXT_COLOR = '#1E293B'
+const DEFAULT_EDGE_COLOR = '#94A3B8'
 const ARROW_SIZE = 8
 const PADDING = 20
 
@@ -129,7 +132,7 @@ function renderNode(node: ElkNode, index: number, depth: number = 0): string {
   const x = (node.x || 0) + PADDING, y = (node.y || 0) + PADDING
   const w = node.width || 160, h = node.height || 60
   const isGroup = Array.isArray(node.children) && node.children.length > 0
-  const fill = isGroup ? `${NODE_COLORS[index % NODE_COLORS.length]}80` : NODE_COLORS[index % NODE_COLORS.length]
+  const fill = isGroup ? NODE_FILL_GROUP : NODE_FILL
   const strokeW = isGroup ? 2 : 1.5
   const strokeDash = isGroup ? ' stroke-dasharray="6,3"' : ''
   const label = node.labels?.[0]?.text || node.id

@@ -3065,3 +3065,9 @@ ReactFlow 的做法：
 | Phase 4.5 | 修复ELK layout 500 + topology验证 | ✅ |
 | Phase 5 | Grok 4 + Gemini 3 Image (步骤5) | ✅ |
 | **Phase 6** | **Interactive ELK Editor (本轮)** | **🔄 进行中** |
+
+
+14更新：
+编辑确认 + 主题色统一
+
+涉及: interactive-svg.ts, elk-to-interactive.ts, to-svg.ts, SvgPreview.astro, SvgEditor.astro, PipelineSteps.astro, generate/index.astro

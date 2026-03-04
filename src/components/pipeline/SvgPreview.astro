@@ -175,7 +175,34 @@
   function initInteractiveEditor(layouted: any) {
     if (!svgRender) return
     try {
+      // Defensive: validate layouted has children
+      if (!layouted || !layouted.children || !Array.isArray(layouted.children) || layouted.children.length === 0) {
+        console.warn('[SvgPreview] layouted has no children, falling back to static SVG')
+        if (skeletonSvg) {
+          editor?.destroy()
+          editor = null
+          svgRender.innerHTML = skeletonSvg
+          svgRender.classList.remove('hidden')
+        } else {
+          showEmptyState('Layout returned no nodes — try a different description')
+        }
+        return
+      }
+
       const graph: InteractiveGraph = elkToInteractive(layouted)
+
+      // Defensive: check graph has nodes
+      if (!graph.nodes || graph.nodes.length === 0) {
+        console.warn('[SvgPreview] elkToInteractive returned empty nodes')
+        if (skeletonSvg) {
+          editor?.destroy()
+          editor = null
+          svgRender.innerHTML = skeletonSvg
+          svgRender.classList.remove('hidden')
+        }
+        return
+      }
+
       editor?.destroy()
       svgRender.innerHTML = ''
       svgRender.style.transform = ''
@@ -192,12 +219,21 @@
         },
       })
       svgRender.classList.remove('hidden')
+
+      // Auto fit-view after initialization
+      requestAnimationFrame(() => {
+        if (editor) editor.fitView()
+      })
     } catch (err) {
       console.error('Failed to init interactive editor:', err)
       // Fallback to static SVG
+      editor?.destroy()
+      editor = null
       if (skeletonSvg) {
         svgRender.innerHTML = skeletonSvg
         svgRender.classList.remove('hidden')
+      } else {
+        showEmptyState(`Editor error: ${err instanceof Error ? err.message : 'Unknown'}`)
       }
     }
   }

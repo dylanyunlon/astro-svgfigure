@@ -189,6 +189,8 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
     errorDisplay?.hide()
     finalImageSection?.classList.add('hidden')
     promptTextarea.value = ''
+    // Reset confirm button
+    ;(window as any).__svgEditor?.resetConfirm()
     startTimer()
 
     const preset = (document.getElementById('opt-preset') as HTMLSelectElement)?.value
@@ -236,9 +238,10 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 
       steps?.setStatus('step-topology', 'done')
       steps?.setStatus('step-edit', 'running')
-      statusText.textContent = `Step 1 done (${elapsed()}s) — Edit skeleton below, then click "Step 2→3"`
+      statusText.textContent = `Step 1 done (${elapsed()}s) — Edit skeleton below, then click "Confirm Edit" → "Step 2→3"`
       statusText.style.color = ''
-      generateFigureBtn.disabled = false
+      // Step 2→3 stays disabled until user clicks "Confirm Edit"
+      generateFigureBtn.disabled = true
 
     } catch (err: any) {
       document.querySelectorAll('.pipeline-step[data-status="running"]').forEach(el => {
@@ -442,6 +445,26 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
   document.getElementById('chk-snap-grid')?.addEventListener('change', (e) => {
     // Note: snap-to-grid is set at editor init time; toggle requires re-init
     // For now, this is a visual indicator only
+  })
+
+  // ===== CONFIRM EDIT =====
+  document.getElementById('btn-confirm-edit')?.addEventListener('click', () => {
+    const editor = preview?.getEditor()
+    if (editor) {
+      // Lock the editor
+      editor.confirmEdit()
+      // Update skeleton SVG from editor
+      currentSkeletonSvg = editor.toStaticSvg() || currentSkeletonSvg
+      // Visual feedback
+      const svgEditor = (window as any).__svgEditor
+      svgEditor?.setConfirmed(true)
+      // Mark edit step as done
+      steps?.setStatus('step-edit', 'done')
+      // Enable Step 2→3 button
+      generateFigureBtn.disabled = false
+      statusText.textContent = 'Skeleton confirmed! Click "Step 2→3" to generate figure.'
+      statusText.style.color = ''
+    }
   })
 
   // Update currentSkeletonSvg from editor when Step 2 is about to run

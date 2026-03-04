@@ -72,11 +72,31 @@ const DEFAULTS: Required<InteractiveSvgOptions> = {
   onGraphChange: () => {},
 }
 
-const NODE_COLORS = ['#E3F2FD', '#F3E5F5', '#E8F5E9', '#FFF3E0', '#FCE4EC', '#E0F7FA', '#FFF8E1', '#F1F8E9']
-const STROKE_COLOR = '#37474F'
-const TEXT_COLOR = '#263238'
-const EDGE_COLOR = '#78909C'
-const SELECTION_COLOR = '#4F46E5'
+// ──── Theme-aware Colors (astro-pure compatible) ────────
+// Use CSS custom properties at runtime; fallback to neutral tones
+// References: reactflow.dev/examples/layout/elkjs (clean, no random colors)
+function getCSSVar(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const val = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return val || fallback
+}
+
+function getThemeColors() {
+  return {
+    nodeFill: getCSSVar('--color-muted', '#F8FAFC'),
+    nodeStroke: getCSSVar('--color-border', '#E2E8F0'),
+    textColor: getCSSVar('--color-foreground', '#1E293B'),
+    edgeColor: getCSSVar('--color-muted-foreground', '#94A3B8'),
+    selectionColor: getCSSVar('--color-primary', '#4F46E5'),
+    background: getCSSVar('--color-background', '#FFFFFF'),
+  }
+}
+
+// Static fallbacks used during SSR or when CSS vars unavailable
+const STROKE_COLOR_FALLBACK = '#E2E8F0'
+const TEXT_COLOR_FALLBACK = '#1E293B'
+const EDGE_COLOR_FALLBACK = '#94A3B8'
+const SELECTION_COLOR_FALLBACK = '#4F46E5'
 const HANDLE_SIZE = 8
 const ARROW_SIZE = 8
 
@@ -87,6 +107,16 @@ export class InteractiveSvgEditor {
   private graph: InteractiveGraph
   private opts: Required<InteractiveSvgOptions>
 
+  // Theme colors resolved at runtime
+  private theme = {
+    nodeFill: '#F8FAFC',
+    nodeStroke: '#E2E8F0',
+    textColor: '#1E293B',
+    edgeColor: '#94A3B8',
+    selectionColor: '#4F46E5',
+    background: '#FFFFFF',
+  }
+
   // State
   private selectedNodeId: string | null = null
   private dragging: { nodeId: string; offsetX: number; offsetY: number } | null = null
@@ -95,12 +125,35 @@ export class InteractiveSvgEditor {
   private viewBox = { x: 0, y: 0, w: 0, h: 0 }
   private zoom = 1
   private editingLabelId: string | null = null
+  private undoStack: string[] = []
+  private confirmed = false
 
   constructor(container: HTMLElement, graph: InteractiveGraph, options?: InteractiveSvgOptions) {
     this.container = container
     this.graph = JSON.parse(JSON.stringify(graph)) // deep clone
     this.opts = { ...DEFAULTS, ...options }
-    this.init()
+
+    // Resolve theme colors from CSS vars
+    try {
+      this.theme = getThemeColors()
+    } catch (_) { /* use defaults */ }
+
+    // Defensive: ensure graph has valid structure
+    if (!this.graph.nodes) this.graph.nodes = []
+    if (!this.graph.edges) this.graph.edges = []
+    if (!this.graph.width || this.graph.width <= 0) this.graph.width = 800
+    if (!this.graph.height || this.graph.height <= 0) this.graph.height = 600
+
+    try {
+      this.init()
+    } catch (err) {
+      console.error('[InteractiveSvgEditor] init failed:', err)
+      // Fallback: show error message in container
+      this.container.innerHTML = `<div style="padding:2rem;text-align:center;color:${this.theme.textColor};opacity:0.6;">
+        <p style="font-size:14px;">Editor initialization failed</p>
+        <p style="font-size:12px;margin-top:0.5rem;">${err instanceof Error ? err.message : 'Unknown error'}</p>
+      </div>`
+    }
   }
 
   // ──── Initialization ──────────────────────────────────
@@ -161,6 +214,33 @@ export class InteractiveSvgEditor {
         this.deselectAll()
       }
     })
+
+    // T9: Keyboard shortcuts
+    this.handleKeyDown = this.handleKeyDown.bind(this)
+    document.addEventListener('keydown', this.handleKeyDown)
+  }
+
+  // ──── Keyboard Shortcuts ──────────────────────────────
+  private handleKeyDown(e: KeyboardEvent) {
+    // Only handle when our SVG is focused/visible
+    if (!this.svg || !this.container.offsetParent) return
+
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (this.selectedNodeId && !this.editingLabelId) {
+        e.preventDefault()
+        this.removeSelectedNode()
+      }
+    } else if (e.key === 'Escape') {
+      this.deselectAll()
+      if (this.editingLabelId) {
+        const fo = this.svg.querySelector('.label-editor-fo')
+        if (fo) fo.remove()
+        this.editingLabelId = null
+      }
+    } else if (e.key === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      e.preventDefault()
+      this.undo()
+    }
   }
 
   // ──── SVG Element Creators ────────────────────────────
@@ -180,7 +260,7 @@ export class InteractiveSvgEditor {
 
     const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon')
     polygon.setAttribute('points', `0 0, ${ARROW_SIZE} ${ARROW_SIZE / 3}, 0 ${ARROW_SIZE / 1.5}`)
-    polygon.setAttribute('fill', EDGE_COLOR)
+    polygon.setAttribute('fill', this.theme.edgeColor)
     marker.appendChild(polygon)
     defs.appendChild(marker)
 
@@ -228,8 +308,8 @@ export class InteractiveSvgEditor {
     rect.setAttribute('y', String(node.y))
     rect.setAttribute('width', String(node.width))
     rect.setAttribute('height', String(node.height))
-    rect.setAttribute('fill', node.fill || NODE_COLORS[index % NODE_COLORS.length])
-    rect.setAttribute('stroke', STROKE_COLOR)
+    rect.setAttribute('fill', node.fill || this.theme.nodeFill)
+    rect.setAttribute('stroke', this.theme.nodeStroke)
     rect.setAttribute('stroke-width', node.isGroup ? '2' : '1.5')
     rect.setAttribute('rx', '8')
     if (node.isGroup) rect.setAttribute('stroke-dasharray', '6,3')
@@ -246,7 +326,7 @@ export class InteractiveSvgEditor {
     text.setAttribute('font-family', 'system-ui, -apple-system, sans-serif')
     text.setAttribute('font-size', node.isGroup ? '11' : '12')
     text.setAttribute('font-weight', node.isGroup ? '600' : '500')
-    text.setAttribute('fill', TEXT_COLOR)
+    text.setAttribute('fill', this.theme.textColor)
     text.setAttribute('pointer-events', 'none')
     text.textContent = dl
     g.appendChild(text)
@@ -258,7 +338,7 @@ export class InteractiveSvgEditor {
       handle.classList.add('resize-handle', `resize-${corner}`)
       handle.setAttribute('width', String(HANDLE_SIZE))
       handle.setAttribute('height', String(HANDLE_SIZE))
-      handle.setAttribute('fill', SELECTION_COLOR)
+      handle.setAttribute('fill', this.theme.selectionColor)
       handle.setAttribute('stroke', 'white')
       handle.setAttribute('stroke-width', '1')
       handle.setAttribute('rx', '2')
@@ -308,7 +388,7 @@ export class InteractiveSvgEditor {
     const d = edge.points.map((p, i) => (i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`)).join(' ')
     path.setAttribute('d', d)
     path.setAttribute('fill', 'none')
-    path.setAttribute('stroke', edge.color || EDGE_COLOR)
+    path.setAttribute('stroke', edge.color || this.theme.edgeColor)
     path.setAttribute('stroke-width', String(edge.strokeWidth || 1.5))
     if (edge.dashArray) path.setAttribute('stroke-dasharray', edge.dashArray)
     path.setAttribute('marker-end', 'url(#arrow-default)')
@@ -334,7 +414,7 @@ export class InteractiveSvgEditor {
       text.setAttribute('text-anchor', 'middle')
       text.setAttribute('font-family', 'system-ui, sans-serif')
       text.setAttribute('font-size', '10')
-      text.setAttribute('fill', edge.color || EDGE_COLOR)
+      text.setAttribute('fill', edge.color || this.theme.edgeColor)
       text.textContent = edge.label
       g.appendChild(text)
     }
@@ -345,6 +425,7 @@ export class InteractiveSvgEditor {
   // ──── Interaction: Drag ───────────────────────────────
 
   private startDrag(nodeId: string, e: MouseEvent) {
+    if (this.confirmed) return // Locked after confirm
     const node = this.findNode(nodeId)
     if (!node) return
     const pt = this.clientToSvg(e)
@@ -383,6 +464,7 @@ export class InteractiveSvgEditor {
 
   private onMouseUp(_e: MouseEvent) {
     if (this.dragging || this.resizing) {
+      this.saveUndoState()
       this.opts.onGraphChange(this.graph)
     }
     this.dragging = null
@@ -391,9 +473,25 @@ export class InteractiveSvgEditor {
     this.svg.style.cursor = 'default'
   }
 
+  /** Save current graph state for undo */
+  private saveUndoState() {
+    this.undoStack.push(JSON.stringify(this.graph))
+    if (this.undoStack.length > 50) this.undoStack.shift()
+  }
+
+  /** Undo last change */
+  undo() {
+    if (this.undoStack.length === 0) return
+    const prev = this.undoStack.pop()!
+    this.graph = JSON.parse(prev)
+    this.init()
+    this.opts.onGraphChange(this.graph)
+  }
+
   // ──── Interaction: Resize ─────────────────────────────
 
   private startResize(nodeId: string, corner: string, e: MouseEvent) {
+    if (this.confirmed) return // Locked after confirm
     const node = this.findNode(nodeId)
     if (!node) return
     const pt = this.clientToSvg(e)
@@ -482,6 +580,7 @@ export class InteractiveSvgEditor {
   // ──── Interaction: Label Edit ─────────────────────────
 
   private startLabelEdit(nodeId: string) {
+    if (this.confirmed) return // Locked after confirm
     const node = this.findNode(nodeId)
     if (!node) return
     this.editingLabelId = nodeId
@@ -540,7 +639,7 @@ export class InteractiveSvgEditor {
     // Highlight border
     const rect = g.querySelector('rect:not(.resize-handle)')
     if (rect) {
-      rect.setAttribute('stroke', SELECTION_COLOR)
+      rect.setAttribute('stroke', this.theme.selectionColor)
       rect.setAttribute('stroke-width', '2.5')
     }
 
@@ -556,7 +655,7 @@ export class InteractiveSvgEditor {
     if (g) {
       const rect = g.querySelector('rect:not(.resize-handle)')
       if (rect) {
-        rect.setAttribute('stroke', STROKE_COLOR)
+        rect.setAttribute('stroke', this.theme.nodeStroke)
         const node = this.findNode(this.selectedNodeId)
         rect.setAttribute('stroke-width', node?.isGroup ? '2' : '1.5')
       }
@@ -726,7 +825,7 @@ export class InteractiveSvgEditor {
     clone.querySelectorAll('.resize-handle, .label-editor-fo').forEach((el) => el.remove())
     // Reset selection styles
     clone.querySelectorAll('.interactive-node rect:not(.resize-handle)').forEach((rect) => {
-      rect.setAttribute('stroke', STROKE_COLOR)
+      rect.setAttribute('stroke', this.theme.nodeStroke)
     })
     return new XMLSerializer().serializeToString(clone)
   }
@@ -742,7 +841,7 @@ export class InteractiveSvgEditor {
       width: 160,
       height: 60,
       label,
-      fill: NODE_COLORS[this.graph.nodes.length % NODE_COLORS.length],
+      fill: this.theme.nodeFill,
     }
     this.graph.nodes.push(node)
     this.svg.appendChild(this.createNodeGroup(node, this.graph.nodes.length - 1))
@@ -806,11 +905,43 @@ export class InteractiveSvgEditor {
   /** Update from new ELK layout data */
   updateFromLayout(graph: InteractiveGraph) {
     this.graph = JSON.parse(JSON.stringify(graph))
+    this.confirmed = false
     this.init()
+  }
+
+  /** Mark as confirmed — disables editing */
+  confirmEdit() {
+    this.confirmed = true
+    this.deselectAll()
+    // Visual indicator: dim the grid, disable drag cursors
+    if (this.svg) {
+      this.svg.style.cursor = 'default'
+      this.svg.querySelectorAll('.interactive-node').forEach(g => {
+        (g as SVGGElement).style.cursor = 'default'
+        ;(g as SVGGElement).style.opacity = '0.9'
+      })
+    }
+  }
+
+  /** Check if editing is confirmed */
+  isConfirmed(): boolean {
+    return this.confirmed
+  }
+
+  /** Unlock editing */
+  unlockEdit() {
+    this.confirmed = false
+    if (this.svg) {
+      this.svg.querySelectorAll('.interactive-node').forEach(g => {
+        (g as SVGGElement).style.cursor = 'grab'
+        ;(g as SVGGElement).style.opacity = '1'
+      })
+    }
   }
 
   /** Destroy the editor */
   destroy() {
+    document.removeEventListener('keydown', this.handleKeyDown)
     this.container.innerHTML = ''
   }
 }
