@@ -122,6 +122,7 @@ export class InteractiveSvgEditor {
   private dragging: { nodeId: string; offsetX: number; offsetY: number } | null = null
   private resizing: { nodeId: string; corner: string; startX: number; startY: number; startW: number; startH: number; startNX: number; startNY: number } | null = null
   private panning: { startX: number; startY: number; startVX: number; startVY: number } | null = null
+  private panMoved = false  // Track if mouse moved during pan to prevent deselect on pan-end
   private viewBox = { x: 0, y: 0, w: 0, h: 0 }
   private zoom = 1
   private editingLabelId: string | null = null
@@ -161,22 +162,24 @@ export class InteractiveSvgEditor {
     this.container.innerHTML = ''
     const p = this.opts.padding
 
-    // Set viewBox to encompass all nodes
+    // Set viewBox with generous padding — ReactFlow-style spacious canvas
+    // Gives users a large pannable area around the content
+    const extraPad = Math.max(200, (this.graph.width || 800) * 0.5)
     this.viewBox = {
-      x: -p,
-      y: -p,
-      w: (this.graph.width || 800) + p * 2,
-      h: (this.graph.height || 600) + p * 2,
+      x: -extraPad,
+      y: -extraPad,
+      w: (this.graph.width || 800) + extraPad * 2,
+      h: (this.graph.height || 600) + extraPad * 2,
     }
 
     // Create SVG element
     this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
     this.svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
     this.svg.style.width = '100%'
-    this.svg.style.height = 'auto'
-    this.svg.style.minHeight = '320px'
-    this.svg.style.maxHeight = '70vh'
-    this.svg.style.cursor = 'default'
+    this.svg.style.height = '100%'
+    this.svg.style.minHeight = '400px'
+    this.svg.style.display = 'block'
+    this.svg.style.cursor = 'grab'
     this.svg.style.userSelect = 'none'
     this.updateViewBox()
 
@@ -209,8 +212,12 @@ export class InteractiveSvgEditor {
     this.svg.addEventListener('wheel', this.onWheel.bind(this), { passive: false })
     this.svg.addEventListener('mousedown', this.onSvgMouseDown.bind(this))
 
-    // Click on empty space to deselect
+    // Click on empty space to deselect (but not after panning)
     this.svg.addEventListener('click', (e) => {
+      if (this.panMoved) {
+        this.panMoved = false
+        return
+      }
       if ((e.target as Element) === this.svg || (e.target as Element).classList.contains('svg-grid')) {
         this.deselectAll()
       }
@@ -289,12 +296,24 @@ export class InteractiveSvgEditor {
   private createGrid(): SVGRectElement {
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
     rect.classList.add('svg-grid')
-    rect.setAttribute('x', String(this.viewBox.x))
-    rect.setAttribute('y', String(this.viewBox.y))
-    rect.setAttribute('width', String(this.viewBox.w))
-    rect.setAttribute('height', String(this.viewBox.h))
+    // Make grid much larger than viewBox so it covers panning area
+    rect.setAttribute('x', String(this.viewBox.x - this.viewBox.w * 2))
+    rect.setAttribute('y', String(this.viewBox.y - this.viewBox.h * 2))
+    rect.setAttribute('width', String(this.viewBox.w * 5))
+    rect.setAttribute('height', String(this.viewBox.h * 5))
     rect.setAttribute('fill', 'url(#grid-pattern)')
     return rect
+  }
+
+  /** Update grid rect to follow the viewBox when panning */
+  private updateGridExtent() {
+    const gridRect = this.svg?.querySelector('.svg-grid')
+    if (gridRect) {
+      gridRect.setAttribute('x', String(this.viewBox.x - this.viewBox.w * 2))
+      gridRect.setAttribute('y', String(this.viewBox.y - this.viewBox.h * 2))
+      gridRect.setAttribute('width', String(this.viewBox.w * 5))
+      gridRect.setAttribute('height', String(this.viewBox.h * 5))
+    }
   }
 
   private createNodeGroup(node: InteractiveNode, index: number): SVGGElement {
@@ -455,11 +474,16 @@ export class InteractiveSvgEditor {
     } else if (this.resizing) {
       this.handleResize(e)
     } else if (this.panning) {
-      const dx = (e.clientX - this.panning.startX) / this.zoom
-      const dy = (e.clientY - this.panning.startY) / this.zoom
+      const rect = this.svg.getBoundingClientRect()
+      const scaleX = this.viewBox.w / rect.width
+      const scaleY = this.viewBox.h / rect.height
+      const dx = (e.clientX - this.panning.startX) * scaleX
+      const dy = (e.clientY - this.panning.startY) * scaleY
       this.viewBox.x = this.panning.startVX - dx
       this.viewBox.y = this.panning.startVY - dy
+      this.panMoved = true
       this.updateViewBox()
+      this.updateGridExtent()
     }
   }
 
@@ -471,7 +495,7 @@ export class InteractiveSvgEditor {
     this.dragging = null
     this.resizing = null
     this.panning = null
-    this.svg.style.cursor = 'default'
+    this.svg.style.cursor = 'grab'
   }
 
   /** Save current graph state for undo */
@@ -553,14 +577,18 @@ export class InteractiveSvgEditor {
   // ──── Interaction: Pan & Zoom ─────────────────────────
 
   private onSvgMouseDown(e: MouseEvent) {
-    // Middle mouse button or Alt+Left click for panning
-    if (e.button === 1 || (e.button === 0 && e.altKey)) {
+    // Left-click on empty space (background/grid) OR middle mouse OR Alt+Left = panning
+    // This is the ReactFlow pattern: clicking the background pans the canvas
+    const target = e.target as Element
+    const isBackground = target === this.svg || target.classList.contains('svg-grid')
+    if ((e.button === 0 && isBackground) || e.button === 1 || (e.button === 0 && e.altKey)) {
       e.preventDefault()
       this.panning = {
         startX: e.clientX, startY: e.clientY,
         startVX: this.viewBox.x, startVY: this.viewBox.y,
       }
-      this.svg.style.cursor = 'move'
+      this.panMoved = false
+      this.svg.style.cursor = 'grabbing'
     }
   }
 
@@ -576,6 +604,7 @@ export class InteractiveSvgEditor {
 
     this.zoom = (this.graph.width + this.opts.padding * 2) / this.viewBox.w
     this.updateViewBox()
+    this.updateGridExtent()
   }
 
   // ──── Interaction: Label Edit ─────────────────────────
@@ -869,9 +898,9 @@ export class InteractiveSvgEditor {
     return true
   }
 
-  /** Fit view to show all content */
+  /** Fit view to show all content with generous padding (ReactFlow-style) */
   fitView() {
-    const p = this.opts.padding
+    const p = Math.max(this.opts.padding, 60) // At least 60px padding
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
     for (const n of this.graph.nodes) {
       if (n.x < minX) minX = n.x
@@ -880,13 +909,18 @@ export class InteractiveSvgEditor {
       if (n.y + n.height > maxY) maxY = n.y + n.height
     }
     if (minX === Infinity) return
+    const contentW = maxX - minX
+    const contentH = maxY - minY
+    // Add extra breathing room proportional to content size
+    const extraPad = Math.max(p, Math.min(contentW, contentH) * 0.3)
     this.viewBox = {
-      x: minX - p,
-      y: minY - p,
-      w: (maxX - minX) + p * 2,
-      h: (maxY - minY) + p * 2,
+      x: minX - extraPad,
+      y: minY - extraPad,
+      w: contentW + extraPad * 2,
+      h: contentH + extraPad * 2,
     }
     this.updateViewBox()
+    this.updateGridExtent()
   }
 
   /** Set zoom level (1 = 100%) */
@@ -901,6 +935,7 @@ export class InteractiveSvgEditor {
     this.viewBox.y = cy - this.viewBox.h / 2
     this.zoom = level
     this.updateViewBox()
+    this.updateGridExtent()
   }
 
   /** Update from new ELK layout data */
@@ -910,13 +945,14 @@ export class InteractiveSvgEditor {
     this.init()
   }
 
-  /** Mark as confirmed — disables editing */
+  /** Mark as confirmed — disables editing but still allows pan/zoom */
   confirmEdit() {
     this.confirmed = true
     this.deselectAll()
-    // Visual indicator: dim the grid, disable drag cursors
+    // Visual indicator: dim the grid, disable drag cursors on nodes
+    // But keep the SVG cursor as 'grab' so users can still pan
     if (this.svg) {
-      this.svg.style.cursor = 'default'
+      this.svg.style.cursor = 'grab'
       this.svg.querySelectorAll('.interactive-node').forEach(g => {
         (g as SVGGElement).style.cursor = 'default'
         ;(g as SVGGElement).style.opacity = '0.9'
