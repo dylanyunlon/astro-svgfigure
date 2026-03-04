@@ -99,7 +99,7 @@ async def generate_prompt_with_grok(
         dict with success, prompt, model_used
     """
     settings = get_settings()
-    use_model = model or settings.OPENAI_DEFAULT_MODEL  # grok-4
+    use_model = model or settings.DEFAULT_PROMPT_MODEL  # grok-4
 
     user_content = GROK_PROMPT_ENGINEER_USER.format(
         method_text=method_text,

@@ -2774,3 +2774,294 @@ likec4/likec4 Issues 参考清单 (批判性需求调研)
 | # 988 | feature | Error reporting for parallel steps |
 | # 960 | feature | Externally declared element rendering |
 | # 853 | bug | Dynamic view relationship hidden |
+
+
+
+13更新：
+astro-svgfigure v3: Phase 6 — Interactive ELK Editor
+
+> **核心理念**: 正向 Pipeline（文本→拓扑JSON→ELK布局→可交互骨架SVG→科研图）  
+> **本轮重点**: 让用户能**手动调整** ELK skeleton SVG（拖拽节点、编辑标签、调整大小），借鉴 ReactFlow + ELK.js 的交互灵活性  
+> **技术栈**: Astro 5 + astro-pure 主题 + UnoCSS + ELK.js (前端交互) + Grok 4 + Gemini 3 + Python 后端  
+> **关键修复**: skeleton SVG 渲染失败 + 用户无法编辑骨架
+
+---
+
+## 0. 问题诊断（基于最新 commit 3d40437）
+
+### 已发现的 BUG
+
+| # | 问题 | 严重度 | 原因分析 |
+|---|------|--------|---------|
+| B1 | skeleton SVG 完全没渲染 | 🔴 Critical | `@elk/to-svg` 导入路径可能在 Vite/Astro SSR 中失败；`elkToSvg()` 返回空字符串但无错误上报 |
+| B2 | 用户无法编辑 skeleton SVG | 🔴 Critical | `SvgPreview` 仅用 `innerHTML` 静态渲染，没有交互层（无拖拽、无编辑、无 resize） |
+| B3 | ELK.js 没有在前端体现 | 🟡 Major | ELK 只在 `/api/layout` 后端跑，前端无 re-layout 能力；与 ReactFlow+ELK 的交互模式差距巨大 |
+| B4 | Step 1 后只能点 Step 2, 无编辑流程 | 🟡 Major | Pipeline 设计缺少 "编辑→确认→继续" 的循环 |
+
+### ReactFlow + ELK.js 参考思路 (reactflow.dev/examples/layout/elkjs)
+
+ReactFlow 的做法：
+1. ELK.js 异步计算布局 → 返回 `{ children: [{x, y, width, height}], edges: [{sections}] }`
+2. 将 ELK 坐标映射为 ReactFlow 的 `position: {x, y}` → 渲染为可拖拽节点
+3. 用户拖拽节点后，可重新触发 ELK re-layout
+4. 支持多种布局方向 (horizontal/vertical) 切换
+
+**我们的 Astro 适配方案**: 不用 React，而是用 **原生 SVG + 事件监听** 实现类似交互：
+- SVG `<rect>` 节点支持 mousedown → drag
+- 双击 `<text>` 进入 inline 编辑（`<foreignObject>` + `<input>`）
+- 节点边角拖拽 resize
+- 边自动跟随节点移动（重新计算 bendPoints）
+- "Re-layout" 按钮: 将修改后的 JSON 重新提交给 ELK
+
+---
+
+## 1. Phase 6 — Claude 本轮 10 任务清单
+
+| # | 文件 | Op | 说明 | 优先级 |
+|---|------|----|------|--------|
+| T1 | `src/lib/elk/to-svg.ts` | ✏️ | **修复** skeleton SVG 渲染: 确保 `elkToSvg()` 正确生成 SVG 且不返回空串 | P0 |
+| T2 | `src/lib/elk/interactive-svg.ts` | 🆕 | **核心**: 交互式 SVG 引擎 — 拖拽节点、编辑标签、resize、边跟随、zoom/pan | P0 |
+| T3 | `src/components/pipeline/SvgPreview.astro` | ✏️ | 集成交互 SVG: 替换静态 innerHTML 为 interactive-svg 引擎 | P0 |
+| T4 | `src/components/pipeline/SvgEditor.astro` | 🆕 | SVG 编辑工具栏: 添加节点、删除节点、修改颜色、导出 JSON、Re-layout 按钮 | P0 |
+| T5 | `src/pages/generate/index.astro` | ✏️ | 集成编辑器+编辑→确认→继续流程 | P1 |
+| T6 | `src/pages/api/layout.ts` | ✏️ | 修复 `@elk/to-svg` 导入、增加 re-layout 端点支持用户修改后的 JSON | P0 |
+| T7 | `src/lib/elk/elk-to-interactive.ts` | 🆕 | ELK layouted JSON ↔ Interactive SVG 双向转换 | P1 |
+| T8 | `src/components/pipeline/PipelineSteps.astro` | ✏️ | 添加 "Edit Skeleton" 步骤指示 | P2 |
+| T9 | `src/components/pipeline/ElkOptions.astro` | ✏️ | ELK 参数实时调整面板（算法、间距、方向）+ re-layout 联动 | P2 |
+| T10 | `plan.md` | ✏️ | 更新为本文件 (v11) + likec4 issues 调研清单 | P1 |
+
+### Codex 并行 10 任务（建议）
+
+| # | 文件 | Op | 说明 |
+|---|------|----|------|
+| C1 | `src/pages/playground/index.astro` | ✏️ | Playground 页面使用交互 SVG 引擎 |
+| C2 | `src/components/gallery/FigureCard.astro` | ✏️ | Gallery 卡片展示 |
+| C3 | `backend/pipeline/topology_gen.py` | ✏️ | 优化拓扑 JSON 生成质量 |
+| C4 | `src/lib/elk/presets.ts` | ✏️ | 丰富 ELK 预设 |
+| C5 | `src/lib/elk/examples.ts` | ✏️ | 添加更多示例 |
+| C6 | `backend/pipeline/svg_validator.py` | ✏️ | SVG 验证增强 |
+| C7 | `src/components/pipeline/HealthCheck.astro` | ✏️ | 健康检查改进 |
+| C8 | `README.md` | ✏️ | 更新文档 |
+| C9 | `src/pages/index.astro` | ✏️ | 首页展示交互 Demo |
+| C10 | 单元测试 | 🆕 | ELK + Interactive SVG 测试 |
+
+---
+
+## 2. 文件变更清单（Phase 6）
+
+**标记**: 🆕 新增 | ✏️ 修改 | 🗑️ 删除 | 📌 不动
+
+### 修改的文件
+
+| # | 文件路径 | Op | 变更内容 |
+|---|----------|----|---------|
+| 1 | `src/lib/elk/to-svg.ts` | ✏️ | 修复空串 bug、增加错误处理、viewBox 修正 |
+| 2 | `src/components/pipeline/SvgPreview.astro` | ✏️ | 集成 interactive-svg 引擎替换静态 innerHTML |
+| 3 | `src/pages/generate/index.astro` | ✏️ | 添加 SvgEditor 组件、编辑→确认→继续流程 |
+| 4 | `src/pages/api/layout.ts` | ✏️ | 修复导入路径、添加 re-layout 支持 |
+| 5 | `src/components/pipeline/PipelineSteps.astro` | ✏️ | Step 1.5: Edit Skeleton 指示 |
+| 6 | `src/components/pipeline/ElkOptions.astro` | ✏️ | re-layout 联动 |
+| 7 | `plan.md` | ✏️ | 本文件 |
+
+### 新增的文件
+
+| # | 文件路径 | Op | 说明 |
+|---|----------|----|------|
+| 8 | `src/lib/elk/interactive-svg.ts` | 🆕 | 交互式 SVG 引擎核心 |
+| 9 | `src/lib/elk/elk-to-interactive.ts` | 🆕 | ELK ↔ Interactive 转换 |
+| 10 | `src/components/pipeline/SvgEditor.astro` | 🆕 | SVG 编辑工具栏组件 |
+
+---
+
+## 3. 交互式 SVG 编辑器架构设计
+
+```
+┌─── ELK Layout Engine (后端/api/layout) ───┐
+│  topology JSON → elk.layout() → layouted   │
+│  生成初始 {x,y,w,h} 坐标                   │
+└──────────┬────────────────────────────────┘
+           │ layouted JSON
+           ▼
+┌─── interactive-svg.ts (前端) ────────────┐
+│  渲染 SVG → 每个节点是可交互元素          │
+│                                           │
+│  ┌─── Node ────────────────────┐         │
+│  │ <rect> 可拖拽               │         │
+│  │ <text> 双击编辑标签         │         │
+│  │ resize handle 四角拖拽      │         │
+│  └─────────────────────────────┘         │
+│                                           │
+│  ┌─── Edge ────────────────────┐         │
+│  │ <path> 自动跟随源/目标节点  │         │
+│  │ bendPoints 自动更新         │         │
+│  └─────────────────────────────┘         │
+│                                           │
+│  API:                                     │
+│  - initInteractiveSvg(container, layout)  │
+│  - getModifiedLayout() → JSON             │
+│  - reLayout(options) → fetch /api/layout  │
+│  - toStaticSvg() → SVG string             │
+│  - addNode() / removeNode()               │
+│  - setZoom() / fitView()                  │
+└───────────────────────────────────────────┘
+           │
+           ▼
+┌─── SvgEditor.astro (工具栏) ─────────────┐
+│  [Re-Layout] [Add Node] [Delete]          │
+│  [Export SVG] [Export JSON] [Confirm→S2]  │
+│  ELK Options: algorithm, direction, etc.  │
+└───────────────────────────────────────────┘
+```
+
+---
+
+## 4. likec4/likec4 Issues 调研清单（竞品分析 + 我们可借鉴的教训）
+
+> 来源: github.com/likec4/likec4/issues pages 1-6, 共 130 open issues
+> 目的: 批判性分析，避免踩同样的坑，吸收好的 feature request
+
+### Page 1 (最新)
+
+| # | Issue | 类型 | 与我们的关联 |
+|---|-------|------|-------------|
+| # 2679 | Draw.io export: shape "person" → ellipse | bug | SVG 导出时形状映射要正确 |
+| # 2674 | Support logical grouping (loops, conditions) in Dynamic Views | feature | 我们的 ELK 也需支持条件/循环分组 |
+| # 2673 | Standalone Language Server fails to run | bug | N/A (LSP 相关) |
+| # 2672 | "View title cannot contain newlines" with implicitViews | bug | 文本处理要严格转义 |
+| # 2671 | Add secondary icons to specialize types icons | feature | 节点图标叠加功能 |
+| # 2669 | View title cannot contain newlines | bug | 同 #2672 |
+| # 2640 | Predicate to add all ancestors of visible elements | feature | 视图过滤逻辑 |
+| # 2637 | Custom color broken for tags since 1.49.0 | bug | 升级后颜色系统回归测试 |
+| # 2636 | Claude/Agent skill | feature | LLM 集成到架构工具 |
+| # 2626 | Follow up: iconColor does not apply to custom icons | bug | 自定义颜色体系要覆盖全面 |
+| # 2625 | Editing manual layout → reference resolvement issues | bug | 手动布局编辑的稳定性 |
+| # 2594 | Support Decentralized Model via Component `src` attribute | feature | N/A |
+
+### Page 2
+
+| # | Issue | 类型 | 与我们的关联 |
+|---|-------|------|-------------|
+| # 2533 | Support tags in relationships kind | feature | 边的元数据/标签系统 |
+| # 2505 | Images don't display in markdown | bug | Markdown 中图片路径处理 |
+| # 2475 | Notes directly displayed on sequence diagrams | feature | 图上注释功能 |
+| # 2468 | Support rank constraints for layout in dynamic view | feature | ELK rank 约束 |
+| # 2467 | Inheriting label from model in dynamic view | feature | 标签继承机制 |
+| # 2465 | Rank for nested elements moves it outside the box | bug | ELK 嵌套布局 bug |
+| # 2462 | Deployment view: Relationship to wrong nesting level | bug | 层级关系边的正确连接 |
+| # 2422 | Extension Diagram Preview URLs do not open | bug | N/A (VSCode 扩展) |
+| # 2402 | Lighter-weight syntax for beginner | feature | 降低使用门槛 |
+| # 2399 | Node not visualized on deployment view | bug | 节点渲染缺失 |
+| # 2378 | Allow importing files via URLs | feature | 远程资源加载 |
+| # 2375 | Conditional relation in dynamic views | feature | 条件逻辑 |
+
+### Page 3
+
+| # | Issue | 类型 | 与我们的关联 |
+|---|-------|------|-------------|
+| # 2143 | Accurate text color for tags | feature | 文本颜色对比度 |
+| # 2109 | Default (no kind) relationship styling | feature | 默认边样式 |
+| # 2107 | Groups in view containers ignored during rendering | bug | 分组渲染 |
+| # 2101 | Accurate background color for elements | feature | 颜色准确性 |
+| # 2100 | Adapt text color based on contrast with background | feature | WCAG 对比度自动计算 |
+| # 2094 | Relationships with kind show empty popup | bug | N/A |
+| # 2091 | Specify which views in landing page | feature | 视图选择器 |
+| # 2090 | Number of instances on deployment view | feature | N/A |
+| # 2088 | Create Brand Identity & Design System | feature | 设计系统化 |
+| # 2087 | Add GitHub Language Support | feature | N/A |
+| # 2051 | Text color | feature | 同 #2143 |
+| # 2048 | View styling by metadata | feature | 基于数据的样式 |
+
+### Page 4
+
+| # | Issue | 类型 | 与我们的关联 |
+|---|-------|------|-------------|
+| # 1919 | Showcase projects | feature | Gallery/案例展示 |
+| # 1915 | Styling of relationships not correctly applied | bug | 边样式一致性 |
+| # 1828 | Global groups | feature | 全局分组 |
+| # 1817 | Search deploymentNode | feature | 搜索功能 |
+| # 1775 | Searchable metadata | feature | 元数据搜索 |
+| # 1724 | Support fontawesome icons | feature | 图标系统扩展 |
+| # 1722 | Include predicate without parent | feature | N/A |
+| # 1718 | Resetting control points → straight line relationships | bug | 控制点重置 bug |
+| # 1717 | Customise icon size | feature | 图标尺寸可配 |
+| # 1709 | Multiple versions/iterations of architecture | feature | 版本历史 |
+| # 1708 | Tags are not inherited | bug | 标签继承 |
+| # 1705 | Include/reference element inside another | feature | 元素引用 |
+
+### Page 5
+
+| # | Issue | 类型 | 与我们的关联 |
+|---|-------|------|-------------|
+| # 1565 | Warnings on build --use-dot-bin | bug | N/A |
+| # 1483 | Handle lot of descendants in deployment view | feature | 大量节点性能 |
+| # 1480 | Support global styles in relationship browser | feature | 全局样式 |
+| # 1476 | Overlapping text in self-call dynamic view | bug | 文本重叠处理 |
+| # 1475 | Unable to include relation into deployment view | bug | N/A |
+| # 1474 | Import via git or file reference | feature | 外部资源导入 |
+| # 1465 | Support for visualizing data flows | feature | 数据流可视化 |
+| # 1460 | GraphvizWasmAdapter Build error | bug | WASM 构建兼容性 |
+| # 1459 | Likec4 support for Jetbrains | feature | N/A |
+| # 1453 | Generate dynamic view from mermaid sequence | feature | 从其他格式生成 |
+| # 1447 | Snap to grid | feature | 网格对齐 |
+| # 1414 | Exclusion rules not work for nested deployment | bug | N/A |
+
+### Page 6
+
+| # | Issue | 类型 | 与我们的关联 |
+|---|-------|------|-------------|
+| # 960 | Rendering externally declared element in container | bug | 跨容器渲染 |
+| # 853 | Dynamic view relationship hidden | bug | 边被隐藏 |
+| # 751 | Larger systems render poorly | bug | 大规模布局性能 |
+| # 663 | Multiple relationships | feature | 多重边处理 |
+| # 86 | Add hexagon shape | feature | 更多形状支持 |
+
+### 从 likec4 issues 中提取的关键教训
+
+1. **手动布局编辑是核心痛点** (#2625, #1718, #1447) — 我们必须做好交互编辑
+2. **大规模渲染性能** (#751, #1483) — 超过 50 个节点时要考虑虚拟化
+3. **颜色/文本对比度** (#2143, #2100, #2101) — WCAG 对比度自动调整
+4. **分组/嵌套渲染** (#2107, #2465) — ELK 嵌套子图要正确渲染
+5. **网格对齐** (#1447) — Snap to grid 是高频需求
+6. **文本重叠** (#1476) — 布局算法要防止标签遮盖
+7. **边样式一致性** (#1915, #2109) — 边的样式系统要统一
+
+---
+
+## 5. PR 说明
+
+**Branch**: `claude/phase6-interactive-elk-editor`
+
+**PR Title**: `feat(editor): Phase 6 — Interactive ELK Skeleton Editor + Fix Rendering`
+
+**Changes**:
+- FIX: `src/lib/elk/to-svg.ts` — 修复 skeleton SVG 空串渲染 bug
+- FIX: `src/pages/api/layout.ts` — 修复 `@elk/to-svg` 导入路径
+- NEW: `src/lib/elk/interactive-svg.ts` — 交互式 SVG 引擎 (拖拽/编辑/resize)
+- NEW: `src/lib/elk/elk-to-interactive.ts` — ELK ↔ Interactive 双向转换
+- NEW: `src/components/pipeline/SvgEditor.astro` — 编辑器工具栏
+- MOD: `src/components/pipeline/SvgPreview.astro` — 集成交互引擎
+- MOD: `src/pages/generate/index.astro` — 编辑→确认→继续流程
+- MOD: `src/components/pipeline/PipelineSteps.astro` — Edit 步骤
+- MOD: `src/components/pipeline/ElkOptions.astro` — Re-layout 联动
+- MOD: `plan.md` — v11 含 likec4 issues 调研
+
+**Codex 并行注意**:
+- 本 PR 主要修改 `src/lib/elk/`, `src/components/pipeline/`, `src/pages/generate/`
+- 不修改 `backend/`, `packages/pure/`, `public/`
+- server.py 不动
+- Codex 可安全并行修改: `src/pages/playground/`, `src/pages/gallery/`, `README.md`, 后端文件
+
+---
+
+## 6. 历史 Phase 记录
+
+| Phase | 内容 | 状态 |
+|-------|------|------|
+| Phase 0 | 配置+ELK核心 (001-010) | ✅ |
+| Phase 1 | Backend AI Engine (013-022) | ✅ |
+| Phase 2 | Generate页面+Pipeline组件 (023-032) | ✅ |
+| Phase 3 | 修复502+Pipeline联调 (T1-T10) | ✅ |
+| Phase 4 | Gallery+Playground+补全API (T1-T10) | ✅ |
+| Phase 4.5 | 修复ELK layout 500 + topology验证 | ✅ |
+| Phase 5 | Grok 4 + Gemini 3 Image (步骤5) | ✅ |
+| **Phase 6** | **Interactive ELK Editor (本轮)** | **🔄 进行中** |

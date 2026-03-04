@@ -67,6 +67,10 @@
 </div>
 
 <script>
+  import { InteractiveSvgEditor } from '@/lib/elk/interactive-svg'
+  import type { InteractiveGraph } from '@/lib/elk/interactive-svg'
+  import { elkToInteractive } from '@/lib/elk/elk-to-interactive'
+
   let currentZoom = 100
   const zoomIn = document.getElementById('zoom-in')
   const zoomOut = document.getElementById('zoom-out')
@@ -76,15 +80,29 @@
   const svgRender = document.getElementById('svg-render')
   const svgCanvas = document.getElementById('svg-canvas')
 
+  // Interactive editor instance
+  let editor: InteractiveSvgEditor | null = null
+  let skeletonSvg = ''
+  let skeletonLayouted: any = null
+  let finalSvg = ''
+  let activeTab = 'skeleton'
+
   function setZoom(val: number) {
     currentZoom = Math.max(25, Math.min(300, val))
     if (zoomLevel) zoomLevel.textContent = `${currentZoom}%`
-    if (svgRender) svgRender.style.transform = `scale(${currentZoom / 100})`
+    if (editor) {
+      editor.setZoom(currentZoom / 100)
+    } else if (svgRender) {
+      svgRender.style.transform = `scale(${currentZoom / 100})`
+    }
   }
 
   zoomIn?.addEventListener('click', () => setZoom(currentZoom + 25))
   zoomOut?.addEventListener('click', () => setZoom(currentZoom - 25))
-  zoomFit?.addEventListener('click', () => setZoom(100))
+  zoomFit?.addEventListener('click', () => {
+    setZoom(100)
+    if (editor) editor.fitView()
+  })
 
   let darkBg = false
   toggleBg?.addEventListener('click', () => {
@@ -94,46 +112,97 @@
     }
   })
 
-  // Expose globally for Generate page
-  let skeletonSvg = ''
-  let finalSvg = ''
-  let activeTab = 'skeleton'
-
   // Tab switching
   document.querySelectorAll('.preview-tab').forEach((tab) => {
     tab.addEventListener('click', () => {
       const t = (tab as HTMLElement).dataset.tab || 'final'
       activeTab = t
-      // Update tab styles
       document.querySelectorAll('.preview-tab').forEach((btn) => {
         btn.classList.remove('bg-background', 'text-foreground', 'shadow-sm')
         btn.classList.add('text-muted-foreground')
       })
       tab.classList.add('bg-background', 'text-foreground', 'shadow-sm')
       tab.classList.remove('text-muted-foreground')
-      // Show appropriate SVG
-      const content = t === 'skeleton' ? skeletonSvg : finalSvg
-      if (content && svgRender) {
-        svgRender.classList.remove('hidden')
-        svgRender.innerHTML = content
-        document.getElementById('svg-empty')?.classList.add('hidden')
-      } else if (!content && svgRender) {
-        svgRender.classList.add('hidden')
-        const empty = document.getElementById('svg-empty')
-        if (empty) {
-          empty.classList.remove('hidden')
-          const p = empty.querySelector('p')
-          if (p) {
-            p.textContent = t === 'skeleton'
-              ? 'Skeleton SVG will appear after ELK layout (Step 1)'
-              : 'Final image will appear after Gemini 3 generation (Step 3)'
-            p.style.color = ''
-          }
+
+      if (t === 'skeleton') {
+        // Show interactive editor if we have layouted data
+        if (skeletonLayouted && svgRender) {
+          initInteractiveEditor(skeletonLayouted)
+          document.getElementById('svg-empty')?.classList.add('hidden')
+          svgRender.classList.remove('hidden')
+          // Show editor toolbar
+          ;(window as any).__svgEditor?.show()
+        } else if (skeletonSvg && svgRender) {
+          // Fallback to static SVG
+          editor?.destroy()
+          editor = null
+          svgRender.classList.remove('hidden')
+          svgRender.innerHTML = skeletonSvg
+          svgRender.style.transformOrigin = 'center center'
+          document.getElementById('svg-empty')?.classList.add('hidden')
+          ;(window as any).__svgEditor?.show()
+        } else {
+          showEmptyState('Skeleton SVG will appear after ELK layout (Step 1)')
+          ;(window as any).__svgEditor?.hide()
+        }
+      } else {
+        // Final tab: show static SVG
+        ;(window as any).__svgEditor?.hide()
+        editor?.destroy()
+        editor = null
+        if (finalSvg && svgRender) {
+          svgRender.classList.remove('hidden')
+          svgRender.innerHTML = finalSvg
+          svgRender.style.transformOrigin = 'center center'
+          document.getElementById('svg-empty')?.classList.add('hidden')
+        } else {
+          showEmptyState('Final image will appear after Gemini 3 generation (Step 3)')
         }
       }
     })
   })
 
+  function showEmptyState(message: string) {
+    const empty = document.getElementById('svg-empty')
+    if (empty) {
+      empty.classList.remove('hidden')
+      const p = empty.querySelector('p')
+      if (p) { p.textContent = message; p.style.color = '' }
+    }
+    if (svgRender) { svgRender.classList.add('hidden'); svgRender.innerHTML = '' }
+  }
+
+  function initInteractiveEditor(layouted: any) {
+    if (!svgRender) return
+    try {
+      const graph: InteractiveGraph = elkToInteractive(layouted)
+      editor?.destroy()
+      svgRender.innerHTML = ''
+      svgRender.style.transform = ''
+      svgRender.style.transformOrigin = ''
+
+      editor = new InteractiveSvgEditor(svgRender, graph, {
+        snapToGrid: true,
+        gridSize: 10,
+        onGraphChange: (g: InteractiveGraph) => {
+          // Update the stored skeleton SVG from editor
+          if (editor) {
+            skeletonSvg = editor.toStaticSvg()
+          }
+        },
+      })
+      svgRender.classList.remove('hidden')
+    } catch (err) {
+      console.error('Failed to init interactive editor:', err)
+      // Fallback to static SVG
+      if (skeletonSvg) {
+        svgRender.innerHTML = skeletonSvg
+        svgRender.classList.remove('hidden')
+      }
+    }
+  }
+
+  // Expose globally for Generate page
   ;(window as any).__svgPreview = {
     show(svgContent: string) {
       finalSvg = svgContent
@@ -143,41 +212,50 @@
         if (empty) empty.classList.add('hidden')
         if (loading) loading.classList.add('hidden')
         if (svgRender) {
+          editor?.destroy()
+          editor = null
           svgRender.classList.remove('hidden')
           svgRender.innerHTML = svgContent
         }
       }
     },
-    showSkeleton(svgContent: string) {
+
+    showSkeleton(svgContent: string, layoutedData?: any) {
       skeletonSvg = svgContent
+      skeletonLayouted = layoutedData || null
+
       if (activeTab === 'skeleton' && svgRender) {
         const empty = document.getElementById('svg-empty')
         const loading = document.getElementById('svg-loading')
         if (empty) empty.classList.add('hidden')
         if (loading) loading.classList.add('hidden')
-        svgRender.classList.remove('hidden')
-        svgRender.innerHTML = svgContent
+
+        if (layoutedData) {
+          // Use interactive editor
+          initInteractiveEditor(layoutedData)
+        } else {
+          // Fallback: static SVG
+          editor?.destroy()
+          editor = null
+          svgRender.classList.remove('hidden')
+          svgRender.innerHTML = svgContent
+        }
+
+        // Show editor toolbar
+        ;(window as any).__svgEditor?.show()
       }
     },
+
     clear() {
       skeletonSvg = ''
+      skeletonLayouted = null
       finalSvg = ''
-      const empty = document.getElementById('svg-empty')
-      const loading = document.getElementById('svg-loading')
-      if (empty) {
-        empty.classList.remove('hidden')
-        const p = empty.querySelector('p')
-        if (p) {
-          p.textContent = 'Enter text and click Generate to create an academic figure'
-          p.style.color = ''
-        }
-      }
-      if (loading) loading.classList.add('hidden')
-      if (svgRender) {
-        svgRender.classList.add('hidden')
-        svgRender.innerHTML = ''
-      }
+      editor?.destroy()
+      editor = null
+      showEmptyState('Enter text and click Generate to create an academic figure')
+      ;(window as any).__svgEditor?.hide()
     },
+
     showLoading() {
       const empty = document.getElementById('svg-empty')
       const loading = document.getElementById('svg-loading')
@@ -185,23 +263,32 @@
       if (loading) loading.classList.remove('hidden')
       if (svgRender) svgRender.classList.add('hidden')
     },
+
     showError(message: string) {
+      showEmptyState(message)
       const empty = document.getElementById('svg-empty')
       if (empty) {
-        empty.classList.remove('hidden')
         const p = empty.querySelector('p')
-        if (p) {
-          p.textContent = message
-          p.style.color = 'var(--color-danger, #ef4444)'
-        }
+        if (p) p.style.color = 'var(--color-danger, #ef4444)'
       }
-      if (svgRender) svgRender.classList.add('hidden')
     },
+
     getSvg(): string {
+      if (editor && activeTab === 'skeleton') return editor.toStaticSvg()
       return finalSvg || svgRender?.innerHTML || ''
     },
+
     getSkeletonSvg(): string {
+      if (editor) return editor.toStaticSvg()
       return skeletonSvg
+    },
+
+    getEditor(): InteractiveSvgEditor | null {
+      return editor
+    },
+
+    getElkJson(): any {
+      return editor?.getElkJson() || null
     },
   }
 </script>

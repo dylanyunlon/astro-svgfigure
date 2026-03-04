@@ -109,9 +109,13 @@ const directions = [
   </Collapse>
 
   {/* Current config summary */}
-  <div class='flex flex-wrap gap-1'>
+  <div class='flex flex-wrap items-center gap-2'>
     <Label><span id='elk-summary-algo'>layered</span></Label>
     <Label><span id='elk-summary-dir'>DOWN</span></Label>
+    <label class='inline-flex items-center gap-x-1.5 text-xs text-muted-foreground cursor-pointer'>
+      <input id='chk-auto-relayout' type='checkbox' class='rounded border accent-primary'>
+      Auto re-layout
+    </label>
   </div>
 </div>
 
@@ -174,4 +178,13 @@ const directions = [
 
   // Expose globally for pipeline use
   ;(window as any).getElkOptions = getElkOptions
+
+  // Listen for re-layout requests from the editor toolbar
+  window.addEventListener('elk-options-change', () => {
+    // Auto re-layout when options change (if editor has a skeleton loaded)
+    const autoRelayout = document.getElementById('chk-auto-relayout') as HTMLInputElement
+    if (autoRelayout?.checked) {
+      document.getElementById('btn-relayout')?.click()
+    }
+  })
 </script>

@@ -17,6 +17,7 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
 import TextInput from '@/components/pipeline/TextInput.astro'
 import PipelineSteps from '@/components/pipeline/PipelineSteps.astro'
 import SvgPreview from '@/components/pipeline/SvgPreview.astro'
+import SvgEditor from '@/components/pipeline/SvgEditor.astro'
 import ExportPanel from '@/components/pipeline/ExportPanel.astro'
 import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
 import HealthCheck from '@/components/pipeline/HealthCheck.astro'
@@ -104,6 +105,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       {/* Center panel */}
       <div class='flex flex-col gap-y-4 lg:col-span-6'>
         <ErrorDisplay />
+        <SvgEditor />
         <SvgPreview />
 
         <div id='final-image-section' class='hidden'>
@@ -218,15 +220,23 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 
       currentSkeletonSvg = layoutData.skeletonSvg || ''
       if (currentSkeletonSvg) {
-        preview?.showSkeleton(currentSkeletonSvg)
+        // Pass both SVG and layouted JSON — enables interactive editor
+        preview?.showSkeleton(currentSkeletonSvg, layoutData.layouted)
         preview?.show(currentSkeletonSvg)
         // Auto-switch to skeleton tab so user can verify components
+        document.getElementById('tab-skeleton')?.click()
+        exportPanel?.enable()
+      } else if (layoutData.layouted) {
+        // SVG generation failed but we have layouted data — try interactive rendering
+        console.warn('skeletonSvg empty, falling back to interactive render from layouted JSON')
+        preview?.showSkeleton('', layoutData.layouted)
         document.getElementById('tab-skeleton')?.click()
         exportPanel?.enable()
       }
 
       steps?.setStatus('step-topology', 'done')
-      statusText.textContent = `Step 1 done (${elapsed()}s) — Confirm skeleton, then click "Step 2→3"`
+      steps?.setStatus('step-edit', 'running')
+      statusText.textContent = `Step 1 done (${elapsed()}s) — Edit skeleton below, then click "Step 2→3"`
       statusText.style.color = ''
       generateFigureBtn.disabled = false
 
@@ -269,6 +279,13 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
     const aspect = (document.getElementById('opt-aspect') as HTMLSelectElement)?.value
 
     try {
+      // Get latest SVG from interactive editor (user may have edited it)
+      const editorSvg = preview?.getSkeletonSvg()
+      if (editorSvg) currentSkeletonSvg = editorSvg
+
+      // Mark edit step as done
+      steps?.setStatus('step-edit', 'done')
+
       // Step 2: Grok 4 prompt
       steps?.setStatus('step-grok-prompt', 'running')
       if (!customPrompt) {
@@ -346,4 +363,88 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
     link.download = `scientific-figure.${currentMimeType.split('/')[1] || 'png'}`
     link.click()
   })
+
+  // ===== SVG Editor Toolbar Wiring =====
+  const svgEditor = (window as any).__svgEditor
+
+  // Re-Layout: send modified graph back to ELK
+  document.getElementById('btn-relayout')?.addEventListener('click', async () => {
+    const elkJson = preview?.getElkJson()
+    if (!elkJson) return
+    const preset = (document.getElementById('opt-preset') as HTMLSelectElement)?.value
+    const direction = (document.getElementById('opt-direction') as HTMLSelectElement)?.value
+    try {
+      const res = await fetch('/api/layout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ graph: elkJson, preset, options: { direction } }),
+      })
+      if (!res.ok) throw new Error('Re-layout failed')
+      const data = await res.json()
+      if (data.layouted) {
+        preview?.showSkeleton(data.skeletonSvg || '', data.layouted)
+        currentSkeletonSvg = data.skeletonSvg || preview?.getSkeletonSvg() || ''
+        layoutedPre.textContent = JSON.stringify(data.layouted, null, 2)
+      }
+    } catch (err: any) {
+      errorDisplay?.show({ title: 'Re-Layout Error', message: err.message, hint: '', step: 'Editor' })
+    }
+  })
+
+  // Add Node
+  document.getElementById('btn-add-node')?.addEventListener('click', () => {
+    const editor = preview?.getEditor()
+    if (editor) {
+      const name = prompt('Node label:', 'New Node')
+      if (name) editor.addNode(name)
+    }
+  })
+
+  // Delete Node
+  document.getElementById('btn-delete-node')?.addEventListener('click', () => {
+    const editor = preview?.getEditor()
+    if (editor) editor.removeSelectedNode()
+  })
+
+  // Fit View
+  document.getElementById('btn-fit-view')?.addEventListener('click', () => {
+    const editor = preview?.getEditor()
+    if (editor) editor.fitView()
+  })
+
+  // Export SVG
+  document.getElementById('btn-export-svg')?.addEventListener('click', () => {
+    const svg = preview?.getSkeletonSvg() || preview?.getSvg()
+    if (!svg) return
+    const blob = new Blob([svg], { type: 'image/svg+xml' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'skeleton.svg'
+    a.click()
+    URL.revokeObjectURL(url)
+  })
+
+  // Export JSON
+  document.getElementById('btn-export-json')?.addEventListener('click', () => {
+    const json = preview?.getElkJson()
+    if (!json) return
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'layout.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  })
+
+  // Snap to grid toggle
+  document.getElementById('chk-snap-grid')?.addEventListener('change', (e) => {
+    // Note: snap-to-grid is set at editor init time; toggle requires re-init
+    // For now, this is a visual indicator only
+  })
+
+  // Update currentSkeletonSvg from editor when Step 2 is about to run
+  const origRunFigureGen = runFigureGen
+
 </script>

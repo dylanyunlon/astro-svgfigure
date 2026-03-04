@@ -52,12 +52,37 @@ const SEMANTIC_STYLES: Record<string, Partial<AdvancedEdge>> = {
 }
 
 export function elkToSvg(graph: ElkGraph): string {
-  if (!graph) return ''
-  const width = (graph.width || 800) + PADDING * 2
-  const height = (graph.height || 600) + PADDING * 2
+  if (!graph) {
+    console.warn('[elkToSvg] graph is null/undefined')
+    return _fallbackSvg('No graph data')
+  }
+  // Ensure we have at least children or edges to render
+  const hasChildren = Array.isArray(graph.children) && graph.children.length > 0
+  const hasEdges = Array.isArray(graph.edges) && graph.edges.length > 0
+  if (!hasChildren && !hasEdges) {
+    console.warn('[elkToSvg] graph has no children and no edges')
+    return _fallbackSvg('Empty graph (no nodes)')
+  }
+
+  // Calculate bounds from actual node positions if graph width/height are 0
+  let gw = graph.width || 0
+  let gh = graph.height || 0
+  if (gw === 0 || gh === 0) {
+    for (const child of (graph.children || [])) {
+      const right = (child.x || 0) + (child.width || 160)
+      const bottom = (child.y || 0) + (child.height || 60)
+      if (right > gw) gw = right
+      if (bottom > gh) gh = bottom
+    }
+    gw = Math.max(gw, 200)
+    gh = Math.max(gh, 150)
+  }
+
+  const width = gw + PADDING * 2
+  const height = gh + PADDING * 2
   const parts: string[] = []
 
-  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">`)
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="max-width:100%;height:auto;">`)
   parts.push(`  <defs>`)
   parts.push(`    <marker id="ah-default" markerWidth="${ARROW_SIZE}" markerHeight="${ARROW_SIZE/1.5}" refX="${ARROW_SIZE}" refY="${ARROW_SIZE/3}" orient="auto" markerUnits="strokeWidth">`)
   parts.push(`      <polygon points="0 0, ${ARROW_SIZE} ${ARROW_SIZE/3}, 0 ${ARROW_SIZE/1.5}" fill="${DEFAULT_EDGE_COLOR}" />`)
@@ -199,6 +224,16 @@ function renderEdge(edge: ElkEdge): string {
 
 function escapeXml(str: string): string {
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
+}
+
+/** Fallback SVG shown when graph cannot be rendered */
+function _fallbackSvg(message: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200" width="400" height="200" style="max-width:100%;height:auto;">
+  <rect width="400" height="200" fill="#FAFAFA" rx="8" stroke="#E0E0E0" stroke-width="1"/>
+  <text x="200" y="90" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" fill="#78909C">⚠ Skeleton Generation Issue</text>
+  <text x="200" y="115" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" fill="#B0BEC5">${escapeXml(message)}</text>
+  <text x="200" y="140" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#B0BEC5">Try re-generating or check topology JSON</text>
+</svg>`
 }
 
 export default elkToSvg

@@ -145,12 +145,18 @@ export const POST: APIRoute = async ({ request }) => {
     // Generate skeleton SVG from layouted graph (non-fatal if it fails)
     let skeletonSvg = ''
     try {
-      const { elkToSvg } = await import('@elk/to-svg')
+      // Use relative import to avoid Vite alias resolution issues in SSR
+      const { elkToSvg } = await import('../../lib/elk/to-svg')
       if (layouted && layouted.children && layouted.children.length > 0) {
         skeletonSvg = elkToSvg(layouted)
+        if (!skeletonSvg || skeletonSvg.length < 50) {
+          console.warn('elkToSvg returned empty/tiny result, layouted:', JSON.stringify(layouted).slice(0, 200))
+        }
+      } else {
+        console.warn('No children in layouted graph — cannot generate skeleton SVG')
       }
     } catch (svgErr: any) {
-      console.warn('Skeleton SVG generation failed (non-fatal):', svgErr.message)
+      console.error('Skeleton SVG generation failed:', svgErr.message, svgErr.stack?.slice(0, 300))
     }
 
     return new Response(
