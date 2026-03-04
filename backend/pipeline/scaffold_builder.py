@@ -99,79 +99,14 @@ def build_scaffold(
 
     total_nodes = len(children)
 
-    # ── Convert nodes to scaffold elements ──────────────────────────────
-    for i, node in enumerate(children):
-        if isinstance(node, dict):
-            node_id = node.get("id", f"node_{i}")
-            x = node.get("x", 0) or 0
-            y = node.get("y", 0) or 0
-            w = node.get("width", 150)
-            h = node.get("height", 50)
-            labels = node.get("labels", [])
-            label = labels[0].get("text", node_id) if labels else node_id
-        else:
-            node_id = node.id
-            x = node.x if node.x is not None else 0
-            y = node.y if node.y is not None else 0
-            w = node.width
-            h = node.height
-            label = node.labels[0].text if node.labels else node.id
+    # ── Convert nodes to scaffold elements (recursive for compound nodes) ──
+    _build_elements_recursive(children, elements, connections, padding, depth=0, parent_id=None)
 
-        node_type = _classify_node(node_id, i, total_nodes)
-
-        elements.append(ScaffoldElement(
-            id=node_id,
-            type=node_type,
-            label=label,
-            x=x + padding,
-            y=y + padding,
-            width=w,
-            height=h,
-            style="rounded_rect",
-            fill=NODE_COLORS[i % len(NODE_COLORS)],
-        ))
-
-    # ── Convert edges to scaffold connections ───────────────────────────
+    # ── Convert top-level edges to scaffold connections ─────────────────
     for edge in edges:
-        if isinstance(edge, dict):
-            source = (edge.get("sources") or [""])[0]
-            target = (edge.get("targets") or [""])[0]
-            sections = edge.get("sections", [])
-        else:
-            source = edge.sources[0] if edge.sources else ""
-            target = edge.targets[0] if edge.targets else ""
-            sections = getattr(edge, "sections", [])
-
-        # Extract routing points
-        points = _extract_edge_points_from_sections(sections, padding)
-
-        # If no routing points, compute simple center-to-center connection
-        if not points:
-            points = _compute_simple_connection(source, target, elements)
-
-# Determine edge style from advanced properties
-        edge_style = "arrow"
-        edge_label = None
-        adv = edge.get("advanced") if isinstance(edge, dict) else getattr(edge, "advanced", None)
-        if adv and isinstance(adv, dict):
-            sem = adv.get("semanticType", "")
-            ls = adv.get("lineStyle", "")
-            if ls == "dashed" or sem in ("gradient_flow", "optional_path", "inference_only", "feedback"):
-                edge_style = "dashed"
-            elif ls == "dotted" or sem == "attention":
-                edge_style = "dotted"
-            elif adv.get("directionality") == "bidirectional":
-                edge_style = "bidirectional"
-            lbls = adv.get("edgeLabels", [])
-            if lbls and isinstance(lbls, list) and len(lbls) > 0:
-                fl = lbls[0] if isinstance(lbls[0], dict) else {}
-                edge_label = fl.get("text")
-
-        connections.append(ScaffoldConnection(
-            **{"from": source, "to": target},
-            style=edge_style,
-            points=points,
-        ))
+        conn = _build_connection_from_edge(edge, elements, padding)
+        if conn:
+            connections.append(conn)
 
     # ── Compute canvas dimensions ───────────────────────────────────────
     canvas_width, canvas_height = _compute_canvas_size(elements, padding)
@@ -226,6 +161,148 @@ def _classify_node(node_id: str, index: int, total: int) -> str:
         return "output"
 
     return "processing"
+
+
+# ── Group background tints per nesting depth ────────────────────────────
+GROUP_BACKGROUND_TINTS = [
+    "rgba(100,150,255,0.06)",   # depth 0: very subtle blue
+    "rgba(100,200,150,0.06)",   # depth 1: very subtle green
+    "rgba(200,150,100,0.06)",   # depth 2: very subtle orange
+    "rgba(150,100,200,0.06)",   # depth 3: very subtle purple
+    "rgba(100,200,200,0.06)",   # depth 4: very subtle teal
+]
+
+
+def _build_elements_recursive(
+    children: Any,
+    elements: List[ScaffoldElement],
+    connections: List[ScaffoldConnection],
+    padding: float,
+    depth: int = 0,
+    parent_id: Optional[str] = None,
+) -> None:
+    """
+    Recursively build scaffold elements from ELK nodes, handling compound nodes.
+
+    For compound (group) nodes:
+      - Creates a group element with borderless background tint
+      - Recursively processes nested children
+      - Processes nested edges within the compound node
+    """
+    total = len(children) if isinstance(children, list) else 0
+
+    for i, node in enumerate(children if isinstance(children, list) else []):
+        if isinstance(node, dict):
+            node_id = node.get("id", f"node_{depth}_{i}")
+            x = node.get("x", 0) or 0
+            y = node.get("y", 0) or 0
+            w = node.get("width", 150)
+            h = node.get("height", 50)
+            labels = node.get("labels", [])
+            label = labels[0].get("text", node_id) if labels else node_id
+            is_group = node.get("group", False)
+            is_borderless = node.get("borderless", False)
+            icon_hint = node.get("iconHint", None)
+            nested_children = node.get("children", [])
+            nested_edges = node.get("edges", [])
+        else:
+            node_id = node.id
+            x = node.x if node.x is not None else 0
+            y = node.y if node.y is not None else 0
+            w = node.width
+            h = node.height
+            label = node.labels[0].text if node.labels else node.id
+            is_group = getattr(node, "group", False)
+            is_borderless = getattr(node, "borderless", False)
+            icon_hint = getattr(node, "iconHint", None)
+            nested_children = getattr(node, "children", [])
+            nested_edges = getattr(node, "edges", [])
+
+        node_type = _classify_node(node_id, i, total)
+
+        # Determine fill color
+        if is_group and is_borderless:
+            # Borderless group: use subtle tint based on nesting depth
+            fill = GROUP_BACKGROUND_TINTS[depth % len(GROUP_BACKGROUND_TINTS)]
+            style = "borderless_group"
+        elif is_group:
+            fill = NODE_COLORS[i % len(NODE_COLORS)]
+            style = "group_rect"
+        else:
+            fill = NODE_COLORS[(i + depth * 3) % len(NODE_COLORS)]
+            style = "rounded_rect"
+
+        elem = ScaffoldElement(
+            id=node_id,
+            type=node_type if not is_group else "group",
+            label=label,
+            x=x + padding,
+            y=y + padding,
+            width=w,
+            height=h,
+            style=style,
+            fill=fill,
+        )
+        elements.append(elem)
+
+        # Recursively process nested children (compound nodes)
+        if nested_children and isinstance(nested_children, list):
+            _build_elements_recursive(
+                nested_children, elements, connections,
+                padding, depth + 1, parent_id=node_id,
+            )
+
+        # Process nested edges inside compound nodes
+        if nested_edges and isinstance(nested_edges, list):
+            for edge in nested_edges:
+                conn = _build_connection_from_edge(edge, elements, padding)
+                if conn:
+                    connections.append(conn)
+
+
+def _build_connection_from_edge(
+    edge: Any,
+    elements: List[ScaffoldElement],
+    padding: float,
+) -> Optional[ScaffoldConnection]:
+    """Build a ScaffoldConnection from an ELK edge, with advanced style detection."""
+    if isinstance(edge, dict):
+        source = (edge.get("sources") or [""])[0]
+        target = (edge.get("targets") or [""])[0]
+        sections = edge.get("sections", [])
+    else:
+        source = edge.sources[0] if edge.sources else ""
+        target = edge.targets[0] if edge.targets else ""
+        sections = getattr(edge, "sections", [])
+
+    if not source or not target:
+        return None
+
+    # Extract routing points
+    points = _extract_edge_points_from_sections(sections, padding)
+
+    # If no routing points, compute simple center-to-center connection
+    if not points:
+        points = _compute_simple_connection(source, target, elements)
+
+    # Determine edge style from advanced properties
+    edge_style = "arrow"
+    adv = edge.get("advanced") if isinstance(edge, dict) else getattr(edge, "advanced", None)
+    if adv and isinstance(adv, dict):
+        sem = adv.get("semanticType", "")
+        ls = adv.get("lineStyle", "")
+        if ls == "dashed" or sem in ("gradient_flow", "optional_path", "inference_only", "feedback"):
+            edge_style = "dashed"
+        elif ls == "dotted" or sem == "attention":
+            edge_style = "dotted"
+        elif adv.get("directionality") == "bidirectional":
+            edge_style = "bidirectional"
+
+    return ScaffoldConnection(
+        **{"from": source, "to": target},
+        style=edge_style,
+        points=points,
+    )
 
 
 def _extract_edge_points_from_sections(

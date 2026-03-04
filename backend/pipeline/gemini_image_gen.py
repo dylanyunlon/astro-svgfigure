@@ -44,37 +44,91 @@ logger = logging.getLogger(__name__)
 GROK_PROMPT_ENGINEER_SYSTEM = """\
 You are an expert AI art director specializing in academic/scientific figure design.
 Your task: analyze the provided SVG layout and paper method description,
-then generate a DETAILED prompt for an AI image generator (Gemini 3 Pro Image)
-to create a publication-quality scientific figure.
+then generate a DETAILED, NUMBERED-POINT prompt for an AI image generator
+(Gemini 3 Pro Image) to create a publication-quality scientific figure.
 
-Your prompt must cover:
-1. **Visual Style**: Clean, professional academic illustration style
-   (vector-like, flat design with subtle gradients, Nature/Science quality)
-2. **Layout & Composition**: Describe spatial arrangement matching the SVG structure
-3. **Core Elements**: Each component/module with shape, color, label
-4. **Color Palette**: Professional scientific palette
-   (blues, teals, soft oranges for accents, white background)
-5. **Typography**: Clean sans-serif labels, readable at print size
-6. **Connections**: Arrows, flow lines with clear directionality
-7. **Details**: Shadows, borders, rounded corners, padding
-8. **Do NOT include**: Any text formatting, markdown, or code fences
+=== STEP 1: COMPLEXITY ANALYSIS ===
+First, analyze the input to determine the COMPLEXITY TIER.
+Count identifiable components from the SVG and method text:
+- nodes, modules, layers, sub-components, connections, annotations, icons, labels
 
-Output ONLY the prompt text, nothing else. The prompt should be 200-400 words,
-highly specific, and directly usable as input to Gemini 3 Pro Image.
+Based on your count, select EXACTLY ONE tier:
+  TIER-20: Simple (≤15 identifiable components). Output exactly 20 numbered design points.
+  TIER-40: Medium (16-30 components). Output exactly 40 numbered design points.
+  TIER-60: Complex (31-50 components). Output exactly 60 numbered design points.
+  TIER-80: Very Complex (51+ components, or deep nesting ≥3 levels). Output exactly 80 numbered design points.
+
+You MUST state your chosen tier at the very top of your output, e.g.:
+  [TIER-40: 40 design points]
+
+=== STEP 2: ARCHITECTURE vs FLOWCHART DETECTION ===
+Detect the diagram type from the input:
+
+(A) ARCHITECTURE DIAGRAM (hierarchical, nested, spatial grouping):
+  - Parent-child node relationships MUST use nested compound groups
+  - Sibling nodes at the same level MUST share a BORDERLESS background region
+    (e.g., Father node contains Child-1, Child-2, Child-3 → all children share
+     a subtle, borderless, semi-transparent background to visually group them)
+  - Grandchild / deep nesting: each nesting level gets its own slightly different
+    background tint (no hard borders) to show hierarchy depth
+  - Neural-network level multi-layer nesting is expected: describe EACH level explicitly
+
+(B) FLOWCHART / PIPELINE (sequential, mostly linear):
+  - Emphasize directional flow (arrows, step numbers)
+  - Use clear lane separation if parallel paths exist
+
+=== STEP 3: NUMBERED DESIGN POINTS ===
+Generate EXACTLY the number of design points matching your chosen tier.
+Each point must be specific and actionable for the image generator.
+
+Cover these categories across your points:
+  - Global style, canvas, background
+  - EACH component: shape, size, position, color, label text, icon/illustration
+  - EACH parent-child / sibling / grandchild grouping relationship
+  - EACH connection: arrow type (straight/bent/orthogonal/curved), style (solid/dashed),
+    color, label, direction
+  - Typography, spacing, shadows, padding
+  - Borderless grouping backgrounds for hierarchical layers
+  - Dynamic visual elements: describe what each icon/illustration SHOULD DEPICT
+    using natural language (e.g., "a small microscope illustration", "a DNA helix icon",
+    "a brain-shaped motif") so the image model generates them from the description.
+    NEVER use hardcoded emoji or Unicode symbols — always describe visuals in words
+    so Gemini 3 Pro Image can generate them natively.
+
+=== OUTPUT FORMAT ===
+[TIER-{N}: {N} design points]
+Point 1: {specific design instruction}
+Point 2: {specific design instruction}
+...
+Point {N}: {specific design instruction}
+
+Output ONLY the numbered points with the tier header. No markdown, no code fences,
+no explanations outside the points. Each point should be 1-3 sentences.
 """
 
 GROK_PROMPT_ENGINEER_USER = """\
-Based on this paper method description and SVG layout, generate a detailed
-AI image generation prompt for creating a publication-quality scientific figure.
+Analyze this paper method + SVG layout. Determine the complexity tier (20/40/60/80),
+detect whether this is an architecture diagram or flowchart, then generate the
+corresponding number of precise, numbered design points for Gemini 3 Pro Image.
 
 Paper Method:
 {method_text}
 
-SVG Layout (describes component positions and connections):
+SVG Layout (component positions and connections):
 {svg_content}
 
-Generate the detailed prompt now:
-"""
+IMPORTANT RULES:
+- Count all identifiable components/modules/connections to pick the right tier
+- If architecture diagram: describe parent→child→grandchild nesting, sibling groupings
+  with BORDERLESS background regions, and multi-level hierarchy explicitly
+- For EVERY visual element (icons, illustrations, avatars): describe what it depicts
+  in natural language words so the image model generates it. NEVER write emoji or
+  Unicode symbols. Example: instead of a microscope emoji, write "a small detailed
+  microscope illustration in flat vector style".
+- Bent/orthogonal arrows for complex routing, curved arrows for skip connections
+- Each numbered point must be concrete and directly actionable
+
+Generate your tier-tagged numbered design points now:"""
 
 
 async def generate_prompt_with_grok(
@@ -88,6 +142,13 @@ async def generate_prompt_with_grok(
     Step a: Use Grok 4 (or specified model) to reverse-engineer a professional
     prompt from the SVG + method text (+ optional reference image).
 
+    Enhanced with:
+      - Complexity tier detection (20/40/60/80 design points)
+      - Architecture vs flowchart auto-detection
+      - Hierarchical relationship preservation (parent-child-grandchild)
+      - Dynamic visual descriptions (no hardcoded emoji)
+      - Numbered-point structured output
+
     Args:
         ai_engine: Initialized AIEngine
         method_text: Paper method description
@@ -96,15 +157,30 @@ async def generate_prompt_with_grok(
         reference_image_b64: Optional base64-encoded reference image
 
     Returns:
-        dict with success, prompt, model_used
+        dict with success, prompt, model_used, tier, component_count
     """
     settings = get_settings()
     use_model = model or settings.DEFAULT_PROMPT_MODEL  # grok-4
 
+    # ── Pre-analysis: estimate complexity from SVG structure ────────────
+    complexity_info = _analyze_svg_complexity(svg_content)
+    suggested_tier = complexity_info["suggested_tier"]
+    component_count = complexity_info["component_count"]
+    is_architecture = complexity_info["is_architecture"]
+    nesting_depth = complexity_info["nesting_depth"]
+
+    # Inject complexity hint into user prompt
+    complexity_hint = (
+        f"\n\n[COMPLEXITY HINT from pre-analysis: ~{component_count} components detected, "
+        f"nesting depth={nesting_depth}, "
+        f"diagram type={'ARCHITECTURE (hierarchical)' if is_architecture else 'FLOWCHART (sequential)'}. "
+        f"Suggested tier: TIER-{suggested_tier}. You may adjust if your analysis differs.]\n"
+    )
+
     user_content = GROK_PROMPT_ENGINEER_USER.format(
         method_text=method_text,
         svg_content=svg_content[:8000],  # Truncate SVG if too long
-    )
+    ) + complexity_hint
 
     # If reference image provided, add it to context
     if reference_image_b64:
@@ -116,7 +192,11 @@ async def generate_prompt_with_grok(
         )
 
     try:
-        logger.info(f"Grok prompt engineering: model={use_model}")
+        logger.info(
+            f"Grok prompt engineering: model={use_model}, "
+            f"pre-analysis: {component_count} components, tier={suggested_tier}, "
+            f"arch={is_architecture}, depth={nesting_depth}"
+        )
 
         result = await ai_engine.get_completion(
             messages=[
@@ -125,7 +205,7 @@ async def generate_prompt_with_grok(
             ],
             model=use_model,
             temperature=0.7,
-            max_tokens=2048,
+            max_tokens=4096,  # Increased for larger tier outputs
         )
 
         prompt = result.get("content", "").strip()
@@ -136,11 +216,27 @@ async def generate_prompt_with_grok(
                 "model_used": use_model,
             }
 
-        logger.info(f"Grok prompt generated: {len(prompt)} chars")
+        # ── Post-process: validate tier and extract metadata ───────────
+        detected_tier = _extract_tier_from_output(prompt)
+        if detected_tier is None:
+            detected_tier = suggested_tier
+            logger.warning(
+                f"Grok output missing tier header, using pre-analysis tier={suggested_tier}"
+            )
+
+        logger.info(
+            f"Grok prompt generated: {len(prompt)} chars, "
+            f"tier={detected_tier}, points={_count_numbered_points(prompt)}"
+        )
+
         return {
             "success": True,
             "prompt": prompt,
             "model_used": result.get("model", use_model),
+            "tier": detected_tier,
+            "component_count": component_count,
+            "is_architecture": is_architecture,
+            "nesting_depth": nesting_depth,
         }
 
     except Exception as e:
@@ -150,6 +246,85 @@ async def generate_prompt_with_grok(
             "error": str(e),
             "model_used": use_model,
         }
+
+
+def _analyze_svg_complexity(svg_content: str) -> Dict[str, Any]:
+    """
+    Pre-analyze SVG content to estimate complexity for tier selection.
+
+    Returns:
+        dict with component_count, suggested_tier, is_architecture, nesting_depth
+    """
+    # Count nodes (rect elements, excluding background)
+    rects = re.findall(r'<rect[^>]*>', svg_content)
+    rect_count = max(0, len(rects) - 1)  # subtract background
+
+    # Count text labels
+    labels = re.findall(r'>([^<]{2,50})<', svg_content)
+    unique_labels = list(dict.fromkeys(l.strip() for l in labels if l.strip()))
+    label_count = len(unique_labels)
+
+    # Count arrows/connections
+    arrow_count = svg_content.count('marker-end')
+
+    # Count groups (potential hierarchy)
+    group_count = svg_content.count('<g ')
+
+    # Detect nesting depth from nested <g> tags
+    nesting_depth = 0
+    depth = 0
+    for char_idx in range(len(svg_content) - 2):
+        if svg_content[char_idx:char_idx+2] == '<g':
+            depth += 1
+            nesting_depth = max(nesting_depth, depth)
+        elif svg_content[char_idx:char_idx+4] == '</g>':
+            depth -= 1
+
+    # Architecture detection: nested groups, compound nodes
+    is_architecture = (nesting_depth >= 3) or (group_count > rect_count * 0.5)
+
+    # Total component estimate
+    component_count = rect_count + arrow_count + max(0, label_count - rect_count)
+
+    # Tier selection
+    if component_count <= 15:
+        suggested_tier = 20
+    elif component_count <= 30:
+        suggested_tier = 40
+    elif component_count <= 50:
+        suggested_tier = 60
+    else:
+        suggested_tier = 80
+
+    # Deep nesting always bumps to at least TIER-60
+    if nesting_depth >= 3 and suggested_tier < 60:
+        suggested_tier = 60
+
+    return {
+        "component_count": component_count,
+        "suggested_tier": suggested_tier,
+        "is_architecture": is_architecture,
+        "nesting_depth": nesting_depth,
+        "rect_count": rect_count,
+        "arrow_count": arrow_count,
+        "label_count": label_count,
+    }
+
+
+def _extract_tier_from_output(prompt: str) -> Optional[int]:
+    """Extract the tier number from Grok's output header."""
+    match = re.search(r'\[TIER-(\d+)', prompt)
+    if match:
+        tier = int(match.group(1))
+        if tier in (20, 40, 60, 80):
+            return tier
+    return None
+
+
+def _count_numbered_points(prompt: str) -> int:
+    """Count how many numbered points Grok actually generated."""
+    points = re.findall(r'(?:^|\n)\s*(?:Point\s+)?(\d+)[.:：]', prompt)
+    return len(points)
 
 
 # ============================================================================
@@ -576,21 +751,40 @@ async def generate_scientific_figure(
 
 
 def _build_fallback_prompt(method_text: str, svg_content: str) -> str:
-    """Build a basic prompt when Grok is unavailable."""
+    """Build a complexity-aware fallback prompt when Grok is unavailable."""
     # Extract labels from SVG to understand components
     labels = re.findall(r'>([^<]{2,50})<', svg_content)
-    unique_labels = list(dict.fromkeys(labels))[:20]  # Deduplicate, max 20
+    unique_labels = list(dict.fromkeys(l.strip() for l in labels if l.strip()))[:30]
     components = ", ".join(unique_labels) if unique_labels else "neural network components"
 
+    # Analyze complexity for tier selection
+    complexity = _analyze_svg_complexity(svg_content)
+    tier = complexity["suggested_tier"]
+    is_arch = complexity["is_architecture"]
+
+    hierarchy_instruction = ""
+    if is_arch:
+        hierarchy_instruction = (
+            "This is an ARCHITECTURE diagram with hierarchical nesting. "
+            "Parent nodes contain child nodes visually. Sibling nodes at the same "
+            "hierarchical level share a subtle, borderless semi-transparent background "
+            "region to show they belong to the same group. "
+            "Use different background tints for different nesting depths. "
+        )
+
     return (
+        f"[TIER-{tier}: {tier} design points]\n"
         f"Create a high-quality scientific architecture diagram for an academic paper. "
+        f"{hierarchy_instruction}"
         f"The figure should show: {method_text[:500]}. "
         f"Key components include: {components}. "
         f"Style: Clean, professional vector illustration suitable for a top-tier "
         f"machine learning conference (NeurIPS, ICLR, CVPR). "
         f"Use a professional color palette with soft blues, teals, and warm accents. "
         f"White background, clean sans-serif text labels, rounded rectangles for modules, "
-        f"smooth directional arrows for data flow. "
+        f"smooth directional arrows for data flow. Bent orthogonal arrows for complex routing. "
+        f"For every visual element (icons, avatars, illustrations), describe what it depicts "
+        f"in natural language — never use emoji or Unicode symbols. "
         f"The figure should be immediately understandable and visually striking."
     )
 
@@ -600,6 +794,11 @@ def _extract_svg_structure(svg_content: str) -> str:
     Extract meaningful layout info from SVG for the image generation prompt.
     Converts SVG XML into human-readable description (image models work better
     with natural language than raw markup).
+
+    Enhanced to detect:
+      - Hierarchical nesting depth
+      - Group/compound node relationships
+      - Architecture vs flowchart patterns
     """
     labels = re.findall(r'>([^<]{2,50})<', svg_content)
     unique_labels = list(dict.fromkeys(l.strip() for l in labels if l.strip()))[:30]
@@ -616,15 +815,41 @@ def _extract_svg_structure(svg_content: str) -> str:
     arrow_count = svg_content.count('marker-end')
     node_count = max(0, len(rects) - 1)  # subtract background rect
 
+    # Detect nesting depth from <g> tags
+    group_count = svg_content.count('<g ')
+    nesting_depth = 0
+    depth = 0
+    for idx in range(len(svg_content) - 2):
+        if svg_content[idx:idx+2] == '<g':
+            depth += 1
+            nesting_depth = max(nesting_depth, depth)
+        elif svg_content[idx:idx+4] == '</g>':
+            depth -= 1
+
+    is_architecture = nesting_depth >= 3
+
     parts = [
         f"Canvas: {canvas_w}x{canvas_h} pixels",
         f"Components ({node_count}): {', '.join(unique_labels[:15])}",
         f"Connections: {arrow_count} directional arrows",
+        f"Diagram type: {'Architecture (hierarchical, nested groups)' if is_architecture else 'Flowchart (sequential pipeline)'}",
     ]
+
+    if nesting_depth >= 2:
+        parts.append(
+            f"Hierarchy depth: {nesting_depth} levels. "
+            f"Parent nodes contain child nodes. Sibling nodes share borderless background regions."
+        )
 
     if rects and len(rects) > 2:
         ys = sorted(set(float(r[1]) for r in rects[1:]))
         if len(ys) > 1:
             parts.append(f"Layout: {len(ys)} layers arranged vertically (top to bottom flow)")
+
+    parts.append(
+        "IMPORTANT: For every visual element (icons, illustrations, avatars), "
+        "describe what it depicts in natural language words — NEVER use emoji or Unicode symbols. "
+        "The image generator will create visuals from text descriptions."
+    )
 
     return "\n".join(parts)

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..ai_engine import AIEngine
 from .edge_routing_prompts import get_topology_prompt_with_edge_routing
@@ -44,20 +44,82 @@ Your output must be valid ELK JSON (Eclipse Layout Kernel format) with:
 - edges: array of connections, each with {id, sources: [nodeId], targets: [nodeId]}
 - layoutOptions: {"elk.algorithm": "layered", "elk.direction": "DOWN"}
 
+=== ARCHITECTURE vs FLOWCHART DETECTION ===
+Analyze the input text to determine the diagram type:
+
+(A) ARCHITECTURE DIAGRAM (hierarchical, modular, nested components):
+  - Use COMPOUND NODES (nested children) for parent-child relationships
+  - A parent node contains its children as nested "children" array
+  - Siblings at the same level are children of the same parent
+  - Grandchild nodes are nested inside child nodes
+  - Add "group" property to parent nodes: {"group": true, "borderless": true}
+  - Borderless group nodes represent visual grouping layers — they should
+    have NO visible border in the final rendering, only a subtle background tint
+  - Deep nesting (≥3 levels) is expected for complex architectures
+
+(B) FLOWCHART / PIPELINE (sequential data flow):
+  - Mostly linear chain of nodes with directional edges
+  - Minimal nesting, emphasis on edge routing and flow direction
+  - Use lane grouping for parallel paths if applicable
+
+=== COMPLEXITY-AWARE NODE GENERATION ===
+Count the distinct modules/components/steps mentioned in the text:
+  - ≤15 components → generate ~10-15 nodes (simple)
+  - 16-30 components → generate ~20-30 nodes (medium)
+  - 31-50 components → generate ~35-50 nodes (complex)
+  - 51+ components → generate ~50-80 nodes (very complex)
+Generate ALL components the paper describes. Do NOT oversimplify.
+
 Rules:
 1. Each major component/step/module becomes a node.
 2. Data flow or sequential connections become edges.
-3. Use descriptive but short labels (max 3 words per label).
+3. Use descriptive but short labels (max 4 words per label).
 4. Node IDs should be snake_case, descriptive (e.g., "self_attention", "feed_forward").
 5. Set reasonable default sizes: width=150, height=50 for standard nodes,
-   width=200, height=60 for complex nodes.
+   width=200, height=60 for complex nodes, width=250, height=80 for group containers.
 6. Do NOT include x, y coordinates — ELK will compute them.
 7. For hierarchical structures, use nested children (compound nodes).
+   Example: a "Transformer Block" parent containing "Multi-Head Attention",
+   "Feed Forward", and "Layer Norm" as children.
 8. Every edge's sources and targets MUST reference existing node IDs from children.
 9. Edge IDs must be unique strings (e.g., "e1", "e2", "e3").
 10. Output ONLY the JSON object, no markdown fences, no explanation.
+11. For architecture diagrams: parent nodes with children MUST have
+    "layoutOptions": {"elk.padding": "[top=30,left=10,bottom=10,right=10]"}
+12. Add iconHint field to nodes that should have an icon/illustration.
+    Use natural language descriptions (e.g., "microscope", "DNA helix", "brain"),
+    NOT emoji or Unicode. The image generator will create these from text.
 
-Example output:
+Example output with nesting (architecture diagram):
+{
+  "id": "root",
+  "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "DOWN"},
+  "children": [
+    {"id": "input", "width": 150, "height": 50, "labels": [{"text": "Input"}]},
+    {
+      "id": "encoder_block", "width": 250, "height": 200,
+      "labels": [{"text": "Encoder Block"}],
+      "group": true, "borderless": true,
+      "layoutOptions": {"elk.padding": "[top=30,left=10,bottom=10,right=10]"},
+      "children": [
+        {"id": "self_attn", "width": 150, "height": 50, "labels": [{"text": "Self Attention"}], "iconHint": "attention mechanism"},
+        {"id": "ffn", "width": 150, "height": 50, "labels": [{"text": "Feed Forward"}]},
+        {"id": "layer_norm", "width": 150, "height": 50, "labels": [{"text": "Layer Norm"}]}
+      ],
+      "edges": [
+        {"id": "inner_e1", "sources": ["self_attn"], "targets": ["ffn"]},
+        {"id": "inner_e2", "sources": ["ffn"], "targets": ["layer_norm"]}
+      ]
+    },
+    {"id": "output", "width": 150, "height": 50, "labels": [{"text": "Output"}]}
+  ],
+  "edges": [
+    {"id": "e1", "sources": ["input"], "targets": ["encoder_block"]},
+    {"id": "e2", "sources": ["encoder_block"], "targets": ["output"]}
+  ]
+}
+
+Example output (simple flowchart):
 {
   "id": "root",
   "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "DOWN"},
@@ -226,6 +288,8 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
       - Edges referencing non-existent nodes
       - Duplicate edge IDs
       - Missing layoutOptions
+      - Preserves compound node fields: group, borderless, iconHint
+      - Recursively validates nested children and their edges
     """
     # Ensure children exist
     children = topology.get("children", [])
@@ -233,23 +297,57 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning("Topology has no children — cannot fix")
         return topology
 
-    # Fix nodes
+    # Fix nodes (recursive for compound nodes)
+    all_valid_ids: set = set()
+    fixed_children = _fix_node_list(children, all_valid_ids, depth=0)
+    topology["children"] = fixed_children
+
+    # Fix top-level edges
+    edges = topology.get("edges", [])
+    if not isinstance(edges, list):
+        edges = []
+
+    fixed_edges = _fix_edge_list(edges, all_valid_ids, edge_id_prefix="e")
+    topology["edges"] = fixed_edges
+
+    original_child_count = len(children)
+    original_edge_count = len(edges)
+
+    logger.info(
+        f"Topology validated: {len(fixed_children)} top-level nodes "
+        f"({len(all_valid_ids)} total including nested), "
+        f"{len(fixed_edges)} top-level edges "
+        f"(dropped {original_child_count - len(fixed_children)} nodes, "
+        f"{original_edge_count - len(fixed_edges)} edges)"
+    )
+
+    return topology
+
+
+def _fix_node_list(
+    children: List[Dict[str, Any]],
+    all_valid_ids: set,
+    depth: int = 0,
+) -> List[Dict[str, Any]]:
+    """Recursively fix a list of nodes, handling compound nodes with nested children."""
     seen_ids: set = set()
     fixed_children = []
+
     for i, node in enumerate(children):
         if not isinstance(node, dict):
             continue
 
-        node_id = node.get("id", f"node_{i}")
+        node_id = node.get("id", f"node_d{depth}_{i}")
         # Deduplicate IDs
-        if node_id in seen_ids:
-            node_id = f"{node_id}_{i}"
+        if node_id in seen_ids or node_id in all_valid_ids:
+            node_id = f"{node_id}_{depth}_{i}"
         seen_ids.add(node_id)
+        all_valid_ids.add(node_id)
 
         fixed_node = {
             "id": node_id,
-            "width": node.get("width") or 150,
-            "height": node.get("height") or 50,
+            "width": node.get("width") or (250 if "children" in node else 150),
+            "height": node.get("height") or (200 if "children" in node else 50),
         }
 
         # Ensure labels
@@ -257,25 +355,44 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(labels, list) and len(labels) > 0:
             fixed_node["labels"] = labels
         else:
-            # Use id as label, replacing underscores with spaces
             fixed_node["labels"] = [{"text": node_id.replace("_", " ").title()}]
 
-        # Preserve nested children if any
+        # Preserve compound node fields
+        if node.get("group"):
+            fixed_node["group"] = True
+        if node.get("borderless"):
+            fixed_node["borderless"] = True
+        if node.get("iconHint"):
+            fixed_node["iconHint"] = node["iconHint"]
+        if node.get("layoutOptions"):
+            fixed_node["layoutOptions"] = node["layoutOptions"]
+
+        # Recursively fix nested children (compound nodes)
         if "children" in node and isinstance(node["children"], list):
-            fixed_node["children"] = node["children"]
+            nested_children = _fix_node_list(node["children"], all_valid_ids, depth + 1)
+            fixed_node["children"] = nested_children
+
+            # Fix nested edges inside compound nodes
+            nested_edges = node.get("edges", [])
+            if isinstance(nested_edges, list) and nested_edges:
+                fixed_node["edges"] = _fix_edge_list(
+                    nested_edges, all_valid_ids, edge_id_prefix=f"inner_{node_id}_e"
+                )
 
         fixed_children.append(fixed_node)
 
-    topology["children"] = fixed_children
-    valid_ids = seen_ids
+    return fixed_children
 
-    # Fix edges
-    edges = topology.get("edges", [])
-    if not isinstance(edges, list):
-        edges = []
 
+def _fix_edge_list(
+    edges: List[Dict[str, Any]],
+    valid_ids: set,
+    edge_id_prefix: str = "e",
+) -> List[Dict[str, Any]]:
+    """Fix a list of edges, validating references against valid node IDs."""
     seen_edge_ids: set = set()
     fixed_edges = []
+
     for i, edge in enumerate(edges):
         if not isinstance(edge, dict):
             continue
@@ -316,25 +433,26 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
             logger.debug(f"Dropping edge {edge.get('id', i)}: invalid sources={sources} or targets={targets}")
             continue
 
-        edge_id = edge.get("id", f"e_{i}")
+        edge_id = edge.get("id", f"{edge_id_prefix}_{i}")
         if edge_id in seen_edge_ids:
             edge_id = f"{edge_id}_{i}"
         seen_edge_ids.add(edge_id)
 
-        fixed_edges.append({
+        fixed_edge = {
             "id": edge_id,
             "sources": valid_sources,
             "targets": valid_targets,
-        })
+        }
 
-    topology["edges"] = fixed_edges
+        # Preserve advanced edge properties
+        if edge.get("advanced"):
+            fixed_edge["advanced"] = edge["advanced"]
+        if edge.get("labels"):
+            fixed_edge["labels"] = edge["labels"]
 
-    logger.info(
-        f"Topology validated: {len(fixed_children)} nodes, {len(fixed_edges)} edges "
-        f"(dropped {len(children) - len(fixed_children)} nodes, {len(edges) - len(fixed_edges)} edges)"
-    )
+        fixed_edges.append(fixed_edge)
 
-    return topology
+    return fixed_edges
 
 
 def create_example_topology(

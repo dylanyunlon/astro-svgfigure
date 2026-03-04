@@ -99,6 +99,9 @@ const EDGE_COLOR_FALLBACK = '#94A3B8'
 const SELECTION_COLOR_FALLBACK = '#4F46E5'
 const HANDLE_SIZE = 8
 const ARROW_SIZE = 8
+const MIN_ZOOM = 0.1
+const MAX_ZOOM = 5
+const ZOOM_SENSITIVITY = 0.08  // Smoother than 10% per step
 
 // ──── Main Class ────────────────────────────────────────
 export class InteractiveSvgEditor {
@@ -123,6 +126,7 @@ export class InteractiveSvgEditor {
   private resizing: { nodeId: string; corner: string; startX: number; startY: number; startW: number; startH: number; startNX: number; startNY: number } | null = null
   private panning: { startX: number; startY: number; startVX: number; startVY: number } | null = null
   private panMoved = false  // Track if mouse moved during pan to prevent deselect on pan-end
+  private touchState: { lastDist: number; lastMidX: number; lastMidY: number; startVX: number; startVY: number } | null = null
   private viewBox = { x: 0, y: 0, w: 0, h: 0 }
   private zoom = 1
   private editingLabelId: string | null = null
@@ -163,31 +167,33 @@ export class InteractiveSvgEditor {
     const p = this.opts.padding
 
     // Set viewBox with generous padding — ReactFlow-style spacious canvas
-    // Gives users a large pannable area around the content
-    const extraPad = Math.max(200, (this.graph.width || 800) * 0.5)
+    const contentW = this.graph.width || 800
+    const contentH = this.graph.height || 600
+    const extraPad = Math.max(200, Math.max(contentW, contentH) * 0.6)
     this.viewBox = {
       x: -extraPad,
       y: -extraPad,
-      w: (this.graph.width || 800) + extraPad * 2,
-      h: (this.graph.height || 600) + extraPad * 2,
+      w: contentW + extraPad * 2,
+      h: contentH + extraPad * 2,
     }
 
-    // Create SVG element
+    // Create SVG element — fills container absolutely
     this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
     this.svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
     this.svg.style.width = '100%'
     this.svg.style.height = '100%'
-    this.svg.style.minHeight = '400px'
     this.svg.style.display = 'block'
     this.svg.style.cursor = 'grab'
     this.svg.style.userSelect = 'none'
+    // Prevent browser default touch behaviors (scroll, zoom) so our handlers work
+    this.svg.style.touchAction = 'none'
     this.updateViewBox()
 
-    // Defs: arrow markers
+    // Defs: arrow markers + grid pattern
     const defs = this.createDefs()
     this.svg.appendChild(defs)
 
-    // Background grid (snap-to-grid visual)
+    // Background grid
     if (this.opts.snapToGrid) {
       this.svg.appendChild(this.createGrid())
     }
@@ -212,6 +218,11 @@ export class InteractiveSvgEditor {
     this.svg.addEventListener('wheel', this.onWheel.bind(this), { passive: false })
     this.svg.addEventListener('mousedown', this.onSvgMouseDown.bind(this))
 
+    // Touch events for mobile — Task 7
+    this.svg.addEventListener('touchstart', this.onTouchStart.bind(this), { passive: false })
+    this.svg.addEventListener('touchmove', this.onTouchMove.bind(this), { passive: false })
+    this.svg.addEventListener('touchend', this.onTouchEnd.bind(this))
+
     // Click on empty space to deselect (but not after panning)
     this.svg.addEventListener('click', (e) => {
       if (this.panMoved) {
@@ -220,6 +231,13 @@ export class InteractiveSvgEditor {
       }
       if ((e.target as Element) === this.svg || (e.target as Element).classList.contains('svg-grid')) {
         this.deselectAll()
+      }
+    })
+
+    // Double-click background to fitView — Task 8 (ReactFlow behavior)
+    this.svg.addEventListener('dblclick', (e) => {
+      if ((e.target as Element) === this.svg || (e.target as Element).classList.contains('svg-grid')) {
+        this.animatedFitView()
       }
     })
 
@@ -272,21 +290,32 @@ export class InteractiveSvgEditor {
     marker.appendChild(polygon)
     defs.appendChild(marker)
 
-    // Grid pattern
+    // Grid pattern — ReactFlow-style: small dots + larger cross at intervals
     if (this.opts.snapToGrid) {
       const gs = this.opts.gridSize
+      const bigGs = gs * 10  // Major grid every 10 units
+
+      // Small dot pattern
       const pattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern')
       pattern.setAttribute('id', 'grid-pattern')
-      pattern.setAttribute('width', String(gs))
-      pattern.setAttribute('height', String(gs))
+      pattern.setAttribute('width', String(bigGs))
+      pattern.setAttribute('height', String(bigGs))
       pattern.setAttribute('patternUnits', 'userSpaceOnUse')
 
-      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
-      dot.setAttribute('cx', String(gs))
-      dot.setAttribute('cy', String(gs))
-      dot.setAttribute('r', '0.5')
-      dot.setAttribute('fill', '#CBD5E1')
-      pattern.appendChild(dot)
+      // Small dots at each gridSize interval
+      for (let gx = 0; gx <= bigGs; gx += gs) {
+        for (let gy = 0; gy <= bigGs; gy += gs) {
+          const isMajor = gx % bigGs === 0 && gy % bigGs === 0
+          const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+          dot.setAttribute('cx', String(gx))
+          dot.setAttribute('cy', String(gy))
+          dot.setAttribute('r', isMajor ? '1.2' : '0.6')
+          dot.setAttribute('fill', isMajor ? '#94A3B8' : '#CBD5E1')
+          dot.setAttribute('opacity', isMajor ? '0.7' : '0.4')
+          pattern.appendChild(dot)
+        }
+      }
+
       defs.appendChild(pattern)
     }
 
@@ -321,8 +350,9 @@ export class InteractiveSvgEditor {
     g.setAttribute('data-node-id', node.id)
     g.classList.add('interactive-node')
     g.style.cursor = 'grab'
+    g.style.transition = 'opacity 0.15s ease'
 
-    // Main rect
+    // Main rect — with subtle shadow via filter
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
     rect.setAttribute('x', String(node.x))
     rect.setAttribute('y', String(node.y))
@@ -333,6 +363,21 @@ export class InteractiveSvgEditor {
     rect.setAttribute('stroke-width', node.isGroup ? '2' : '1.5')
     rect.setAttribute('rx', '8')
     if (node.isGroup) rect.setAttribute('stroke-dasharray', '6,3')
+
+    // Hover effect — Task 9
+    g.addEventListener('mouseenter', () => {
+      if (!this.confirmed) {
+        rect.setAttribute('stroke-width', node.isGroup ? '2.5' : '2')
+        rect.setAttribute('stroke', this.theme.selectionColor + '80') // 50% opacity accent
+      }
+    })
+    g.addEventListener('mouseleave', () => {
+      if (this.selectedNodeId !== node.id) {
+        rect.setAttribute('stroke-width', node.isGroup ? '2' : '1.5')
+        rect.setAttribute('stroke', this.theme.nodeStroke)
+      }
+    })
+
     g.appendChild(rect)
 
     // Label text
@@ -403,9 +448,9 @@ export class InteractiveSvgEditor {
 
     if (edge.points.length < 2) return g
 
-    // Build path
+    // Build path — use smooth rounded corners for orthogonal routing (ReactFlow-style)
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-    const d = edge.points.map((p, i) => (i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`)).join(' ')
+    const d = this.buildSmoothEdgePath(edge.points)
     path.setAttribute('d', d)
     path.setAttribute('fill', 'none')
     path.setAttribute('stroke', edge.color || this.theme.edgeColor)
@@ -443,6 +488,47 @@ export class InteractiveSvgEditor {
   }
 
   // ──── Interaction: Drag ───────────────────────────────
+
+  /** Build SVG path with rounded corners at bend points (ReactFlow smooth-step style) */
+  private buildSmoothEdgePath(points: { x: number; y: number }[]): string {
+    if (points.length < 2) return ''
+    if (points.length === 2) {
+      return `M${points[0].x},${points[0].y} L${points[1].x},${points[1].y}`
+    }
+
+    const radius = 8 // Corner rounding radius
+    let d = `M${points[0].x},${points[0].y}`
+
+    for (let i = 1; i < points.length - 1; i++) {
+      const prev = points[i - 1]
+      const curr = points[i]
+      const next = points[i + 1]
+
+      // Calculate distance to neighboring points
+      const d1 = Math.sqrt((curr.x - prev.x) * (curr.x - prev.x) + (curr.y - prev.y) * (curr.y - prev.y))
+      const d2 = Math.sqrt((next.x - curr.x) * (next.x - curr.x) + (next.y - curr.y) * (next.y - curr.y))
+      const r = Math.min(radius, d1 / 2, d2 / 2)
+
+      if (r < 1) {
+        // Too small for rounding, just use straight line
+        d += ` L${curr.x},${curr.y}`
+        continue
+      }
+
+      // Point before the corner
+      const t1x = curr.x - (r * (curr.x - prev.x)) / d1
+      const t1y = curr.y - (r * (curr.y - prev.y)) / d1
+      // Point after the corner
+      const t2x = curr.x + (r * (next.x - curr.x)) / d2
+      const t2y = curr.y + (r * (next.y - curr.y)) / d2
+
+      d += ` L${t1x},${t1y} Q${curr.x},${curr.y} ${t2x},${t2y}`
+    }
+
+    const last = points[points.length - 1]
+    d += ` L${last.x},${last.y}`
+    return d
+  }
 
   private startDrag(nodeId: string, e: MouseEvent) {
     if (this.confirmed) return // Locked after confirm
@@ -594,17 +680,122 @@ export class InteractiveSvgEditor {
 
   private onWheel(e: WheelEvent) {
     e.preventDefault()
-    const scaleFactor = e.deltaY > 0 ? 1.1 : 0.9
+    // Smooth zoom with clamping — Task 3
+    const delta = -e.deltaY * ZOOM_SENSITIVITY * 0.01
+    const scaleFactor = Math.pow(2, -delta * 10)
     const pt = this.clientToSvg(e)
+
+    // Compute new viewBox dimensions
+    const newW = this.viewBox.w * scaleFactor
+    const newH = this.viewBox.h * scaleFactor
+
+    // Calculate what zoom level this corresponds to
+    const baseW = (this.graph.width || 800) + this.opts.padding * 2
+    const newZoom = baseW / newW
+
+    // Clamp zoom
+    if (newZoom < MIN_ZOOM || newZoom > MAX_ZOOM) return
 
     this.viewBox.x = pt.x - (pt.x - this.viewBox.x) * scaleFactor
     this.viewBox.y = pt.y - (pt.y - this.viewBox.y) * scaleFactor
-    this.viewBox.w *= scaleFactor
-    this.viewBox.h *= scaleFactor
+    this.viewBox.w = newW
+    this.viewBox.h = newH
 
-    this.zoom = (this.graph.width + this.opts.padding * 2) / this.viewBox.w
+    this.zoom = newZoom
     this.updateViewBox()
     this.updateGridExtent()
+  }
+
+  // ──── Interaction: Touch (Mobile) — Task 7 ────────────
+
+  private onTouchStart(e: TouchEvent) {
+    if (e.touches.length === 1) {
+      // Single finger: pan (on background) or drag node
+      const touch = e.touches[0]
+      const target = document.elementFromPoint(touch.clientX, touch.clientY) as Element
+      const isBackground = !target || target === this.svg || target.classList.contains('svg-grid')
+
+      if (isBackground) {
+        e.preventDefault()
+        this.panning = {
+          startX: touch.clientX, startY: touch.clientY,
+          startVX: this.viewBox.x, startVY: this.viewBox.y,
+        }
+        this.panMoved = false
+      }
+    } else if (e.touches.length === 2) {
+      // Two fingers: pinch-zoom + pan
+      e.preventDefault()
+      const [t1, t2] = [e.touches[0], e.touches[1]]
+      const dist = Math.sqrt((t2.clientX - t1.clientX) * (t2.clientX - t1.clientX) + (t2.clientY - t1.clientY) * (t2.clientY - t1.clientY))
+      const midX = (t1.clientX + t2.clientX) / 2
+      const midY = (t1.clientY + t2.clientY) / 2
+      this.touchState = {
+        lastDist: dist, lastMidX: midX, lastMidY: midY,
+        startVX: this.viewBox.x, startVY: this.viewBox.y,
+      }
+      this.panning = null // Cancel single-finger pan
+    }
+  }
+
+  private onTouchMove(e: TouchEvent) {
+    if (e.touches.length === 1 && this.panning) {
+      e.preventDefault()
+      const touch = e.touches[0]
+      const rect = this.svg.getBoundingClientRect()
+      const scaleX = this.viewBox.w / rect.width
+      const scaleY = this.viewBox.h / rect.height
+      const dx = (touch.clientX - this.panning.startX) * scaleX
+      const dy = (touch.clientY - this.panning.startY) * scaleY
+      this.viewBox.x = this.panning.startVX - dx
+      this.viewBox.y = this.panning.startVY - dy
+      this.panMoved = true
+      this.updateViewBox()
+      this.updateGridExtent()
+    } else if (e.touches.length === 2 && this.touchState) {
+      e.preventDefault()
+      const [t1, t2] = [e.touches[0], e.touches[1]]
+      const dist = Math.sqrt((t2.clientX - t1.clientX) * (t2.clientX - t1.clientX) + (t2.clientY - t1.clientY) * (t2.clientY - t1.clientY))
+      const midX = (t1.clientX + t2.clientX) / 2
+      const midY = (t1.clientY + t2.clientY) / 2
+
+      // Pinch zoom
+      const scaleFactor = this.touchState.lastDist / dist
+      const pt = this.clientToSvgXY(midX, midY)
+
+      const newW = this.viewBox.w * scaleFactor
+      const baseW = (this.graph.width || 800) + this.opts.padding * 2
+      const newZoom = baseW / newW
+      if (newZoom >= MIN_ZOOM && newZoom <= MAX_ZOOM) {
+        this.viewBox.x = pt.x - (pt.x - this.viewBox.x) * scaleFactor
+        this.viewBox.y = pt.y - (pt.y - this.viewBox.y) * scaleFactor
+        this.viewBox.w = newW
+        this.viewBox.h *= scaleFactor
+        this.zoom = newZoom
+      }
+
+      this.touchState.lastDist = dist
+      this.touchState.lastMidX = midX
+      this.touchState.lastMidY = midY
+      this.updateViewBox()
+      this.updateGridExtent()
+    }
+  }
+
+  private onTouchEnd(_e: TouchEvent) {
+    this.panning = null
+    this.touchState = null
+  }
+
+  /** Convert raw client coordinates to SVG space (for touch events) */
+  private clientToSvgXY(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = this.svg.getBoundingClientRect()
+    const scaleX = this.viewBox.w / rect.width
+    const scaleY = this.viewBox.h / rect.height
+    return {
+      x: (clientX - rect.left) * scaleX + this.viewBox.x,
+      y: (clientY - rect.top) * scaleY + this.viewBox.y,
+    }
   }
 
   // ──── Interaction: Label Edit ─────────────────────────
@@ -794,7 +985,7 @@ export class InteractiveSvgEditor {
     if (!g) return
     const path = g.querySelector('path')
     if (path && edge.points.length >= 2) {
-      const d = edge.points.map((p, i) => (i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`)).join(' ')
+      const d = this.buildSmoothEdgePath(edge.points)
       path.setAttribute('d', d)
     }
   }
@@ -900,7 +1091,44 @@ export class InteractiveSvgEditor {
 
   /** Fit view to show all content with generous padding (ReactFlow-style) */
   fitView() {
-    const p = Math.max(this.opts.padding, 60) // At least 60px padding
+    const target = this.computeFitViewBox()
+    if (!target) return
+    this.viewBox = target
+    this.zoom = (this.graph.width + this.opts.padding * 2) / this.viewBox.w
+    this.updateViewBox()
+    this.updateGridExtent()
+  }
+
+  /** Animated fit view — smoothly transitions viewBox (Task 4) */
+  animatedFitView() {
+    const target = this.computeFitViewBox()
+    if (!target) return
+
+    const start = { ...this.viewBox }
+    const duration = 300 // ms
+    const startTime = performance.now()
+
+    const step = (time: number) => {
+      const t = Math.min((time - startTime) / duration, 1)
+      // Ease-out cubic
+      const ease = 1 - Math.pow(1 - t, 3)
+
+      this.viewBox.x = start.x + (target.x - start.x) * ease
+      this.viewBox.y = start.y + (target.y - start.y) * ease
+      this.viewBox.w = start.w + (target.w - start.w) * ease
+      this.viewBox.h = start.h + (target.h - start.h) * ease
+      this.updateViewBox()
+      this.updateGridExtent()
+
+      if (t < 1) requestAnimationFrame(step)
+      else this.zoom = (this.graph.width + this.opts.padding * 2) / this.viewBox.w
+    }
+    requestAnimationFrame(step)
+  }
+
+  /** Compute the target viewBox for fitView */
+  private computeFitViewBox(): { x: number; y: number; w: number; h: number } | null {
+    const p = Math.max(this.opts.padding, 60)
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
     for (const n of this.graph.nodes) {
       if (n.x < minX) minX = n.x
@@ -908,23 +1136,40 @@ export class InteractiveSvgEditor {
       if (n.x + n.width > maxX) maxX = n.x + n.width
       if (n.y + n.height > maxY) maxY = n.y + n.height
     }
-    if (minX === Infinity) return
+    if (minX === Infinity) return null
     const contentW = maxX - minX
     const contentH = maxY - minY
-    // Add extra breathing room proportional to content size
     const extraPad = Math.max(p, Math.min(contentW, contentH) * 0.3)
-    this.viewBox = {
-      x: minX - extraPad,
-      y: minY - extraPad,
-      w: contentW + extraPad * 2,
-      h: contentH + extraPad * 2,
+
+    // Adjust aspect ratio to match container
+    let targetW = contentW + extraPad * 2
+    let targetH = contentH + extraPad * 2
+    const containerRect = this.container.getBoundingClientRect()
+    if (containerRect.width > 0 && containerRect.height > 0) {
+      const containerAR = containerRect.width / containerRect.height
+      const contentAR = targetW / targetH
+      if (contentAR > containerAR) {
+        // Content is wider — expand height
+        targetH = targetW / containerAR
+      } else {
+        // Content is taller — expand width
+        targetW = targetH * containerAR
+      }
     }
-    this.updateViewBox()
-    this.updateGridExtent()
+
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
+    return {
+      x: cx - targetW / 2,
+      y: cy - targetH / 2,
+      w: targetW,
+      h: targetH,
+    }
   }
 
-  /** Set zoom level (1 = 100%) */
+  /** Set zoom level (1 = 100%) — clamped to [MIN_ZOOM, MAX_ZOOM] */
   setZoom(level: number) {
+    level = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, level))
     const cx = this.viewBox.x + this.viewBox.w / 2
     const cy = this.viewBox.y + this.viewBox.h / 2
     const baseW = (this.graph.width || 800) + this.opts.padding * 2

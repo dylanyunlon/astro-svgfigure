@@ -79,17 +79,43 @@ GROK_EDGE_ROUTING_SYSTEM_ADDON = """
 === CRITICAL: Advanced Arrow Rendering Instructions ===
 
 For EACH arrow type, describe precisely:
-1. Orthogonal: right-angle bends, clean routing
+1. Orthogonal: right-angle bends, clean routing (DEFAULT for architecture diagrams)
 2. Fan-out: arrows diverge from single source symmetrically
 3. Fan-in: arrows converge to single target
 4. Dashed: indicating gradient/optional/inference paths
 5. Bidirectional: double-headed arrows
-6. Curved/Spline: smooth arcs for skip connections
+6. Curved/Spline: smooth arcs for skip connections and residual paths
 7. Labeled: text at midpoint with white background
-8. Cross-boundary: arrows crossing group borders
+8. Cross-boundary: arrows crossing group borders (parent→grandchild, etc.)
+9. Bent/Elbow: right-angle bent arrows for routing around sibling nodes
 
 For EACH arrow specify: start/end module, exit/entry direction,
 bends, line style, color, label, curvature.
+
+=== HIERARCHICAL GROUPING (Architecture Diagrams) ===
+
+When generating points for architecture diagrams:
+- Parent-child: parent node visually CONTAINS children as a group
+- Sibling grouping: children of the same parent share a BORDERLESS,
+  semi-transparent background region. NO hard borders on the group —
+  only a subtle tint (e.g., rgba(100,150,255,0.08)) to show they're related
+- Grandchild nesting: each deeper level gets a slightly different tint
+  to create visual depth hierarchy
+- Neural-network level nesting: describe EACH layer explicitly with its
+  own background tint and contained elements
+- Group labels appear at the TOP of the borderless background region
+
+=== DYNAMIC VISUAL ELEMENTS ===
+
+For icons, illustrations, avatars, and visual elements inside nodes:
+- ALWAYS describe what the visual should depict using natural language
+  (e.g., "a small detailed illustration of a microscope in flat vector style")
+- NEVER use emoji, Unicode symbols, or hardcoded character references
+- The image model (Gemini 3 Pro Image) will generate these visuals natively
+  from the text description in the prompt
+- Each node that needs an icon should specify: what it depicts, its style
+  (flat, line-art, isometric), its approximate size relative to the node,
+  and its position within the node (top-left, center, etc.)
 """
 
 
