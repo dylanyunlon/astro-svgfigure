@@ -206,9 +206,10 @@ async def generate_image_with_gemini(
     # Extract meaningful layout info instead of dumping raw SVG XML
     svg_summary = _extract_svg_structure(svg_content)
     combined_prompt = (
-        f"{prompt}\n\n"
+        f"Generate an image: {prompt}\n\n"
         f"Layout structure reference:\n{svg_summary}\n\n"
-        f"Generate a high-quality, publication-ready scientific figure image."
+        f"IMPORTANT: You MUST generate and return an IMAGE. "
+        f"Create a high-quality, publication-ready scientific figure image."
     )
 
     request_body = {
@@ -221,11 +222,7 @@ async def generate_image_with_gemini(
             }
         ],
         "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"],
-            "imageConfig": {
-                "aspectRatio": aspect_ratio,
-                "imageSize": image_size,
-            },
+            "responseModalities": ["IMAGE", "TEXT"],
         },
     }
 
@@ -247,7 +244,7 @@ async def generate_image_with_gemini(
             f"endpoint={endpoint[:60]}..."
         )
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
                 endpoint,
                 json=request_body,
@@ -264,8 +261,78 @@ async def generate_image_with_gemini(
                 "model_used": model,
             }
 
-        data = response.json()
-        return _parse_gemini_image_response(data, model)
+        raw_text = response.text.strip()
+        content_type = response.headers.get("content-type", "")
+
+        # tryallai proxy may force SSE streaming even for generateContent
+        # Detect and reassemble SSE into a single JSON response
+        if raw_text.startswith("data: ") or "text/event-stream" in content_type:
+            logger.warning("Gemini image API returned SSE stream — reassembling")
+            data = _reassemble_sse_gemini(raw_text)
+        else:
+            try:
+                data = json.loads(raw_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"Gemini response not JSON: {e}. First 300 chars: {raw_text[:300]}")
+                return {
+                    "success": False,
+                    "error": f"Gemini returned non-JSON response: {raw_text[:200]}",
+                    "model_used": model,
+                }
+
+        # Debug: log response structure to diagnose proxy issues
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            part_keys = [list(p.keys()) for p in parts[:5]]
+            logger.info(f"Gemini response: {len(candidates)} candidates, parts keys: {part_keys}")
+        else:
+            logger.warning(f"Gemini response has no candidates. Top keys: {list(data.keys())[:10]}")
+
+        result = _parse_gemini_image_response(data, model)
+
+        # If no image returned, retry with IMAGE-only modality
+        if not result.get("success") and "no image data" in result.get("error", "").lower():
+            logger.warning(
+                f"Gemini returned text-only, retrying with IMAGE-only modality. "
+                f"Text response: {result.get('text_response', '')[:200]}"
+            )
+            request_body["generationConfig"]["responseModalities"] = ["IMAGE"]
+            # Also simplify the prompt to be more direct
+            request_body["contents"][0]["parts"][0]["text"] = (
+                f"Generate an image of: {prompt}\n\n"
+                f"Output ONLY an image, no text."
+            )
+
+            async with httpx.AsyncClient(timeout=600.0) as client2:
+                response2 = await client2.post(
+                    endpoint,
+                    json=request_body,
+                    headers=headers,
+                    params=params if params else None,
+                )
+
+            if response2.status_code == 200:
+                raw2 = response2.text.strip()
+                ct2 = response2.headers.get("content-type", "")
+                if raw2.startswith("data: ") or "text/event-stream" in ct2:
+                    data2 = _reassemble_sse_gemini(raw2)
+                else:
+                    try:
+                        data2 = json.loads(raw2)
+                    except json.JSONDecodeError:
+                        data2 = {}
+                result2 = _parse_gemini_image_response(data2, model)
+                if result2.get("success"):
+                    return result2
+                else:
+                    logger.error(f"Gemini IMAGE-only retry also failed: {result2.get('error')}")
+                    # Return original error with retry info
+                    result["error"] += f" (IMAGE-only retry also failed: {result2.get('error', '')})"
+            else:
+                logger.error(f"Gemini IMAGE-only retry HTTP error: {response2.status_code}")
+
+        return result
 
     except httpx.TimeoutException:
         return {
@@ -282,11 +349,62 @@ async def generate_image_with_gemini(
         }
 
 
+def _reassemble_sse_gemini(raw_text: str) -> dict:
+    """
+    Reassemble Gemini SSE streaming response into a single generateContent response.
+
+    SSE format from proxy:
+      data: {"candidates":[{"content":{"parts":[{"text":"..."}]}}]}
+      data: {"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"base64chunk"}}]}}]}
+      data: [DONE]
+
+    We need to merge all parts across chunks into one response.
+    """
+    all_parts: List[dict] = []
+    last_candidate = {}
+
+    for line in raw_text.split("\n"):
+        line = line.strip()
+        if not line.startswith("data: "):
+            continue
+        data_str = line[6:]
+        if data_str == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data_str)
+            candidates = chunk.get("candidates", [])
+            if candidates:
+                candidate = candidates[0]
+                last_candidate = candidate
+                content = candidate.get("content", {})
+                parts = content.get("parts", [])
+                for part in parts:
+                    # Merge: if this is a continuation of inline_data, append to last
+                    if part:
+                        all_parts.append(part)
+        except json.JSONDecodeError:
+            continue
+
+    # Rebuild a single response
+    merged = {
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": all_parts,
+            },
+            **{k: v for k, v in last_candidate.items() if k != "content"},
+        }]
+    }
+
+    logger.info(f"SSE reassembled: {len(all_parts)} parts")
+    return merged
+
+
 def _parse_gemini_image_response(data: dict, model: str) -> Dict[str, Any]:
     """
     Parse Gemini generateContent response which may contain both text and image parts.
 
-    Response format:
+    Response format (standard):
     {
       "candidates": [{
         "content": {
@@ -298,14 +416,20 @@ def _parse_gemini_image_response(data: dict, model: str) -> Dict[str, Any]:
         }
       }]
     }
+
+    Some proxies may use snake_case: inline_data, mime_type
     """
     candidates = data.get("candidates", [])
     if not candidates:
-        return {
-            "success": False,
-            "error": "Gemini returned no candidates",
-            "model_used": model,
-        }
+        # Some proxies wrap in a different structure
+        if "content" in data and "parts" in data.get("content", {}):
+            candidates = [data]
+        else:
+            return {
+                "success": False,
+                "error": f"Gemini returned no candidates. Response keys: {list(data.keys())}",
+                "model_used": model,
+            }
 
     content = candidates[0].get("content", {})
     parts = content.get("parts", [])
@@ -317,16 +441,41 @@ def _parse_gemini_image_response(data: dict, model: str) -> Dict[str, Any]:
     for part in parts:
         if "text" in part:
             text_response += part["text"]
-        if "inlineData" in part:
-            inline = part["inlineData"]
+
+        # Handle both camelCase and snake_case
+        inline = part.get("inlineData") or part.get("inline_data")
+        if inline:
             image_b64 = inline.get("data", "")
-            mime_type = inline.get("mimeType", "image/png")
+            mime_type = inline.get("mimeType") or inline.get("mime_type") or "image/png"
+
+        # Some formats nest under "image" key
+        if "image" in part and isinstance(part["image"], dict):
+            image_b64 = part["image"].get("data", "") or part["image"].get("base64", "")
+            mime_type = part["image"].get("mimeType") or part["image"].get("mime_type") or "image/png"
+
+    # Format 3: tryallai proxy embeds image as Markdown data URI in text
+    # e.g. ![image](data:image/jpeg;base64,/9j/4AAQ...)
+    if not image_b64 and text_response:
+        match = re.search(
+            r'!\[.*?\]\(data:(image/[a-zA-Z]+);base64,([A-Za-z0-9+/=\s]+)\)',
+            text_response,
+            re.DOTALL,
+        )
+        if match:
+            mime_type = match.group(1)
+            image_b64 = match.group(2).replace("\n", "").replace("\r", "").replace(" ", "")
+            # Remove the image markdown from text_response
+            text_response = text_response[:match.start()] + text_response[match.end():]
+            text_response = text_response.strip()
+            logger.info(f"Extracted image from Markdown data URI: mime={mime_type}, {len(image_b64)} chars")
 
     if not image_b64:
+        logger.error(f"Gemini no image. Text response: {text_response[:500]}")
         return {
             "success": False,
-            "error": "Gemini response contained no image data",
-            "text_response": text_response,
+            "error": f"Gemini returned no image. Model said: {text_response[:300]}" if text_response else "Gemini returned empty response",
+            "text_response": text_response[:500],
+            "raw_parts_keys": [list(p.keys()) for p in parts[:5]],
             "model_used": model,
         }
 

@@ -173,8 +173,9 @@ export class InteractiveSvgEditor {
     this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
     this.svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
     this.svg.style.width = '100%'
-    this.svg.style.height = '100%'
+    this.svg.style.height = 'auto'
     this.svg.style.minHeight = '320px'
+    this.svg.style.maxHeight = '70vh'
     this.svg.style.cursor = 'default'
     this.svg.style.userSelect = 'none'
     this.updateViewBox()

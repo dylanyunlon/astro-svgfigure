@@ -39,7 +39,7 @@
   <div
     id='svg-canvas'
     class='relative flex items-center justify-center overflow-auto rounded-xl border bg-muted'
-    style='min-height: 320px; background-image: linear-gradient(45deg, hsl(var(--border)) 25%, transparent 25%), linear-gradient(-45deg, hsl(var(--border)) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, hsl(var(--border)) 75%), linear-gradient(-45deg, transparent 75%, hsl(var(--border)) 75%); background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0px;'
+    style='min-height: 320px; max-height: 75vh; background-image: linear-gradient(45deg, hsl(var(--border)) 25%, transparent 25%), linear-gradient(-45deg, hsl(var(--border)) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, hsl(var(--border)) 75%), linear-gradient(-45deg, transparent 75%, hsl(var(--border)) 75%); background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0px;'
   >
     {/* Empty state */}
     <div id='svg-empty' class='flex flex-col items-center gap-y-3 py-12 text-center'>
@@ -52,7 +52,7 @@
     </div>
 
     {/* Loading state */}
-    <div id='svg-loading' class='hidden flex flex-col items-center gap-y-3 py-12 text-center'>
+    <div id='svg-loading' class='flex flex-col items-center gap-y-3 py-12 text-center' style='display:none'>
       <svg class='size-12 animate-spin text-primary opacity-60' xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24'>
         <circle class='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' stroke-width='4' />
         <path class='opacity-75' fill='currentColor' d='M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z' />
@@ -61,7 +61,7 @@
     </div>
 
     {/* SVG render area */}
-    <div id='svg-render' class='hidden p-4' style='transform-origin: center center;'>
+    <div id='svg-render' class='p-4' style='display:none; transform-origin: center center;'>
     </div>
   </div>
 </div>
@@ -125,37 +125,64 @@
       tab.classList.remove('text-muted-foreground')
 
       if (t === 'skeleton') {
-        // Show interactive editor if we have layouted data
-        if (skeletonLayouted && svgRender) {
+        // Restore the interactive editor — DON'T re-init from original layouted
+        if (editor && svgRender) {
+          // Editor still alive (was just hidden), show its SVG element
+          const editorSvg = svgRender.querySelector('svg')
+          if (editorSvg) (editorSvg as HTMLElement).style.display = ''
+          // Remove any final SVG static HTML that was injected
+          const staticDiv = svgRender.querySelector('#static-final-svg')
+          if (staticDiv) staticDiv.remove()
+          svgRender.style.display = ''
+          hideEmptyAndLoading()
+          ;(window as any).__svgEditor?.show()
+        } else if (skeletonLayouted && svgRender) {
+          // No editor instance yet — create one
           initInteractiveEditor(skeletonLayouted)
-          document.getElementById('svg-empty')?.classList.add('hidden')
-          svgRender.classList.remove('hidden')
-          // Show editor toolbar
+          hideEmptyAndLoading()
+          svgRender.style.display = ''
           ;(window as any).__svgEditor?.show()
         } else if (skeletonSvg && svgRender) {
           // Fallback to static SVG
-          editor?.destroy()
-          editor = null
-          svgRender.classList.remove('hidden')
+          svgRender.style.display = ''
           svgRender.innerHTML = skeletonSvg
           svgRender.style.transformOrigin = 'center center'
-          document.getElementById('svg-empty')?.classList.add('hidden')
+          hideEmptyAndLoading()
           ;(window as any).__svgEditor?.show()
         } else {
           showEmptyState('Skeleton SVG will appear after ELK layout (Step 1)')
           ;(window as any).__svgEditor?.hide()
         }
       } else {
-        // Final tab: show static SVG
+        // Final tab: hide the editor SVG (don't destroy!), show final static SVG
         ;(window as any).__svgEditor?.hide()
-        editor?.destroy()
-        editor = null
+
+        if (editor && svgRender) {
+          // Save latest skeleton SVG from editor before hiding
+          skeletonSvg = editor.toStaticSvg()
+          // Hide editor's SVG element instead of destroying
+          const editorSvg = svgRender.querySelector('svg')
+          if (editorSvg) (editorSvg as HTMLElement).style.display = 'none'
+        }
+
         if (finalSvg && svgRender) {
-          svgRender.classList.remove('hidden')
-          svgRender.innerHTML = finalSvg
+          // Inject final SVG in a wrapper div so we can remove it later
+          let staticDiv = svgRender.querySelector('#static-final-svg') as HTMLElement
+          if (!staticDiv) {
+            staticDiv = document.createElement('div')
+            staticDiv.id = 'static-final-svg'
+            svgRender.appendChild(staticDiv)
+          }
+          staticDiv.innerHTML = finalSvg
+          staticDiv.style.display = ''
+          svgRender.style.display = ''
           svgRender.style.transformOrigin = 'center center'
-          document.getElementById('svg-empty')?.classList.add('hidden')
+          hideEmptyAndLoading()
         } else {
+          // No editor to hide, just show empty
+          if (!editor && svgRender) {
+            svgRender.style.display = 'none'
+          }
           showEmptyState('Final image will appear after Gemini 3 generation (Step 3)')
         }
       }
@@ -165,11 +192,20 @@
   function showEmptyState(message: string) {
     const empty = document.getElementById('svg-empty')
     if (empty) {
-      empty.classList.remove('hidden')
+      empty.style.display = ''
       const p = empty.querySelector('p')
       if (p) { p.textContent = message; p.style.color = '' }
     }
-    if (svgRender) { svgRender.classList.add('hidden'); svgRender.innerHTML = '' }
+    const loading = document.getElementById('svg-loading')
+    if (loading) loading.style.display = 'none'
+    if (svgRender) { svgRender.style.display = 'none'; svgRender.innerHTML = '' }
+  }
+
+  function hideEmptyAndLoading() {
+    const empty = document.getElementById('svg-empty')
+    if (empty) empty.style.display = 'none'
+    const loading = document.getElementById('svg-loading')
+    if (loading) loading.style.display = 'none'
   }
 
   function initInteractiveEditor(layouted: any) {
@@ -182,7 +218,8 @@
           editor?.destroy()
           editor = null
           svgRender.innerHTML = skeletonSvg
-          svgRender.classList.remove('hidden')
+          svgRender.style.display = ''
+          hideEmptyAndLoading()
         } else {
           showEmptyState('Layout returned no nodes — try a different description')
         }
@@ -198,7 +235,8 @@
           editor?.destroy()
           editor = null
           svgRender.innerHTML = skeletonSvg
-          svgRender.classList.remove('hidden')
+          svgRender.style.display = ''
+          hideEmptyAndLoading()
         }
         return
       }
@@ -218,7 +256,11 @@
           }
         },
       })
-      svgRender.classList.remove('hidden')
+      svgRender.style.display = ''
+
+      // Ensure empty/loading states are hidden
+      hideEmptyAndLoading()
+      { const _l = document.getElementById('svg-loading'); if (_l) _l.style.display = 'none' }
 
       // Auto fit-view after initialization
       requestAnimationFrame(() => {
@@ -231,7 +273,9 @@
       editor = null
       if (skeletonSvg) {
         svgRender.innerHTML = skeletonSvg
-        svgRender.classList.remove('hidden')
+        svgRender.style.display = ''
+        hideEmptyAndLoading()
+        { const _l = document.getElementById('svg-loading'); if (_l) _l.style.display = 'none' }
       } else {
         showEmptyState(`Editor error: ${err instanceof Error ? err.message : 'Unknown'}`)
       }
@@ -245,13 +289,24 @@
       if (activeTab === 'final') {
         const empty = document.getElementById('svg-empty')
         const loading = document.getElementById('svg-loading')
-        if (empty) empty.classList.add('hidden')
-        if (loading) loading.classList.add('hidden')
+        if (empty) empty.style.display = 'none'
+        if (loading) loading.style.display = 'none'
         if (svgRender) {
-          editor?.destroy()
-          editor = null
-          svgRender.classList.remove('hidden')
-          svgRender.innerHTML = svgContent
+          // Hide editor SVG if present
+          if (editor) {
+            const editorSvg = svgRender.querySelector('svg:not(#static-final-svg svg)')
+            if (editorSvg) (editorSvg as HTMLElement).style.display = 'none'
+          }
+          // Insert final SVG in wrapper
+          let staticDiv = svgRender.querySelector('#static-final-svg') as HTMLElement
+          if (!staticDiv) {
+            staticDiv = document.createElement('div')
+            staticDiv.id = 'static-final-svg'
+            svgRender.appendChild(staticDiv)
+          }
+          staticDiv.innerHTML = svgContent
+          staticDiv.style.display = ''
+          svgRender.style.display = ''
         }
       }
     },
@@ -263,8 +318,8 @@
       if (activeTab === 'skeleton' && svgRender) {
         const empty = document.getElementById('svg-empty')
         const loading = document.getElementById('svg-loading')
-        if (empty) empty.classList.add('hidden')
-        if (loading) loading.classList.add('hidden')
+        if (empty) empty.style.display = 'none'
+        if (loading) loading.style.display = 'none'
 
         if (layoutedData) {
           // Use interactive editor
@@ -273,7 +328,7 @@
           // Fallback: static SVG
           editor?.destroy()
           editor = null
-          svgRender.classList.remove('hidden')
+          svgRender.style.display = ''
           svgRender.innerHTML = svgContent
         }
 
@@ -288,6 +343,11 @@
       finalSvg = ''
       editor?.destroy()
       editor = null
+      // Also remove any static final SVG wrapper
+      if (svgRender) {
+        const staticDiv = svgRender.querySelector('#static-final-svg')
+        if (staticDiv) staticDiv.remove()
+      }
       showEmptyState('Enter text and click Generate to create an academic figure')
       ;(window as any).__svgEditor?.hide()
     },
@@ -295,9 +355,9 @@
     showLoading() {
       const empty = document.getElementById('svg-empty')
       const loading = document.getElementById('svg-loading')
-      if (empty) empty.classList.add('hidden')
-      if (loading) loading.classList.remove('hidden')
-      if (svgRender) svgRender.classList.add('hidden')
+      if (empty) empty.style.display = 'none'
+      if (loading) loading.style.display = ''
+      if (svgRender) svgRender.style.display = 'none'
     },
 
     showError(message: string) {
