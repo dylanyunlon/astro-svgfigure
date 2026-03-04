@@ -2608,3 +2608,169 @@ topology.ts 发送 { model: "gemini-2.5-flash" }
 - All 6 modified files verified with `git diff --stat`
 - 1 new file (`edge_routing_prompts.py`) verified
 - No content from previous version lost
+
+12更新：
+astro-svgfigure v3: 3-Step Pipeline 修复 + 完善
+
+> **核心流程**: Text → LLM Topology JSON → ELK.js Layout → Skeleton SVG → (用户确认) → Grok 4 Prompt → Gemini 3 Pro Image
+> **技术栈**: Astro 5 + astro-pure 主题 + UnoCSS + ELK.js + Grok 4 + Gemini 3 Pro Image + Python FastAPI
+> **分支**: `fix/skeleton-render-and-plan` — Claude Opus 负责前 10 个任务, Codex 并行后 10 个任务
+
+---
+
+## 0. 当前已确认的架构 (commit ba6a4cd 起)
+
+3-Step Pipeline:
+1. **Step 1**: 用户输入 method text → Claude Opus LLM 生成拓扑 JSON → ELK.js 约束布局 → Skeleton SVG (用户确认组件无缺失)
+2. **Step 2**: Grok 4 从 Skeleton SVG + method text 反推专业 AI drawing prompt (用户可编辑)
+3. **Step 3**: Gemini 3 Pro Image 根据 prompt 生成科研级图片 (4K PNG)
+
+两个按钮:
+- `Step 1: Generate Skeleton` — 执行 Step 1
+- `Step 2→3: Generate Figure` — 执行 Step 2 + Step 3
+
+---
+
+## 1. 关键 Bug 修复 (已完成 ✅)
+
+### BUG-1: Skeleton SVG 完全没渲染
+**症状**: 运行 Step 1 后, SVG Preview 区域仍显示 "Skeleton SVG will appear after ELK layout (Step 2)", skeleton 从未出现在界面上
+**根因**:
+- `generate/index.astro` 的 Step 1 完成后调用 `preview?.show(currentSkeletonSvg)`, 但 `show()` 设置的是 `finalSvg` (Final tab 内容)
+- `SvgPreview.astro` 默认 `activeTab = 'final'`, skeleton 被存到了 Final tab
+- 用户切到 Skeleton tab 时看到空白, 因为 `showSkeleton()` 从未被调用
+- 空白提示文字 "Step 2" 应为 "Step 1" (3-step pipeline 里 ELK layout 是 Step 1)
+
+**修复** (3 个文件):
+| 文件 | 改动 |
+|------|------|
+| `src/pages/generate/index.astro` | Step 1 完成后同时调用 `showSkeleton()` 和 `show()`, 并自动切换到 Skeleton tab |
+| `src/components/pipeline/SvgPreview.astro` | 默认 `activeTab = 'skeleton'`, Skeleton tab 设为默认高亮 |
+| `src/components/pipeline/SvgPreview.astro` | 空白提示文字 "Step 2" → "Step 1", "NanoBanana" → "Gemini 3" |
+
+---
+
+## 2. 接下来的 20 个任务 (Claude Opus: T1-T10, Codex: T11-T20)
+
+### Claude Opus 负责: T1 ~ T10
+
+| # | 任务 | 涉及文件 | 说明 |
+|---|------|---------|------|
+| T1 | ✅ 修复 Skeleton SVG 渲染 | `src/pages/generate/index.astro`, `src/components/pipeline/SvgPreview.astro` | 见上方 BUG-1 |
+| T2 | SVG 手动编辑功能 | **新增** `src/components/pipeline/SvgEditor.astro`, **修改** `src/pages/generate/index.astro` | 用户可在 skeleton 预览上拖拽节点、调整连线, 使用内联 contenteditable 或轻量 SVG 交互 (不引入第三方 SVG editor) |
+| T3 | Step 2→3 流程完善 | **修改** `src/pages/generate/index.astro` | Step 3 完成后自动切换到 Final tab, 显示 Gemini 3 生成的图片 |
+| T4 | Grok prompt 编辑区域增强 | **修改** `src/pages/generate/index.astro` | prompt 区域加载时显示 "waiting for Step 2...", Step 2 完成后高亮提示用户可编辑, 编辑后 regenerate 只重跑 Step 3 |
+| T5 | 导出功能完善 | **修改** `src/components/pipeline/ExportPanel.astro` | 支持导出 Skeleton SVG, Final Image (PNG), Topology JSON, Prompt Text 四种格式 |
+| T6 | 错误处理增强 | **修改** `src/components/pipeline/ErrorDisplay.astro`, `src/pages/generate/index.astro` | 各 step 错误提示区分: API key 缺失 / 后端未启动 / 超时 / 模型不可用 |
+| T7 | 后端 topology prompt 优化 | **修改** `backend/pipeline/topology_gen.py` | 优化 LLM prompt 使输出 ELK JSON 的 edge 格式更准确 (sources/targets 数组) |
+| T8 | ELK to-svg 渲染增强 | **修改** `src/lib/elk/to-svg.ts` | 支持 group/compound node 渲染, 改善 label 截断, 添加 legend |
+| T9 | 健康检查页面完善 | **修改** `src/components/pipeline/HealthCheck.astro`, `src/pages/api/health.ts` | 检查后端 + API key 状态 |
+
+likec4/likec4 Issues 参考清单 (批判性需求调研)
+
+# # #  高相关性 (直接影响 ELK 布局 / SVG 渲染)
+
+| Issue | 类型 | 标题 | 启示 |
+|-------|------|------|------|
+| # 1629 | feature | ELK Playground | 我们 Playground 应提供类似交互 |
+| # 751 | wanted | Larger systems render poorly | 大图性能, 限制节点数 |
+| # 1224 | bug | Relationship text overlapping | edge label 重叠, T8 需解决 |
+| # 1210 | feature | Reposition relationship label | T2 SVG 编辑应支持 |
+| # 663 | feature | Multiple relationships | 多边渲染 |
+| # 86 | feature | Add hexagon shape | to-svg.ts 应支持更多 shape |
+| # 1447 | feature | Snap to grid | SVG 编辑对齐 |
+| # 1476 | bug | Overlapping text with self-call | 自循环边文字重叠 |
+| # 1985 | bug | Memory out of bounds | 大图内存问题 |
+| # 2033 | bug | Incorrect self-reference | 自引用边 |
+
+# # #  中相关性 (UX / 功能设计参考)
+
+| Issue | 类型 | 标题 |
+|-------|------|------|
+| # 2679 | bug | Draw.io export: person → ellipse |
+| # 2674 | wanted | Logical grouping (loops, conditions) |
+| # 2672 | bug | View title newlines |
+| # 2671 | wanted | Secondary icons |
+| # 2636 | wanted | Claude/Agent skill |
+| # 2625 | bug | Editing manual layout → reference issues |
+| # 2594 | wanted | Decentralized Model Resolution |
+| # 2567 | wanted | Notes elements and info popovers |
+| # 2566 | wanted | Animated diagrams |
+| # 2562 | bug | watch: true HMR issue |
+| # 2553 | bug | codegen react manual layouts |
+| # 2505 | bug | Images in markdown |
+| # 2475 | wanted | Notes on sequence diagrams |
+| # 2468 | wanted | Rank constraints for layout |
+| # 2465 | bug | Nested element rank positioning |
+| # 2462 | bug | Relationship wrong nesting level |
+| # 2422 | bug | URLs don't open in preview |
+| # 2402 | wanted | Lighter syntax for beginners |
+| # 2399 | bug | Node not visualized |
+| # 2378 | wanted | Import via URLs |
+| # 2375 | wanted | Conditional relation |
+| # 2308 | wanted | Sequence diagrams in PlantUML |
+| # 2286 | wanted | Export PNG from command palette |
+| # 2271 | wanted | Glob/regexp predicates |
+| # 2264 | wanted | Custom element properties |
+| # 2251 | wanted | Alphabetise views |
+| # 2238 | wanted | Element in two parents |
+| # 2165 | wanted | Icon override specificity |
+| # 2143 | wanted | Accurate tag text color |
+| # 2109 | wanted | Default relationship styling |
+| # 2107 | bug | Groups ignored in rendering |
+| # 2101 | wanted | Accurate background color |
+| # 2100 | wanted | Text contrast adaptation |
+| # 2094 | bug | Empty popup for typed relationships |
+| # 2091 | wanted | Choose views for landing page |
+| # 2090 | wanted | Instance count on deployment view |
+| # 2088 | wanted | Brand Identity & Design System |
+| # 2087 | wanted | GitHub Language Support |
+| # 2051 | feature | Text color |
+| # 2048 | wanted | View styling by metadata |
+| # 2009 | wanted | Self-relationship |
+| # 1998 | wanted | IF Logic for routing |
+| # 1993 | wanted | Direct link to element |
+| # 1987 | wanted | Reusable constants |
+| # 1946 | bug | Multi-file merge ambiguity |
+| # 1919 | wanted | Showcase projects |
+| # 1915 | bug | Relationship styling not applied |
+| # 1828 | wanted | Global groups |
+| # 1724 | feature | FontAwesome icons |
+| # 1722 | feature | Include without parent |
+| # 1718 | feature | Reset control points → straight lines |
+| # 1717 | feature | Custom icon size |
+| # 1709 | feature | Multiple versions/iterations |
+| # 1708 | feature | Tags not inherited |
+| # 1705 | feature | Include/reference element in another |
+| # 1676 | bug | Unexpected crossing lines |
+| # 1675 | feature | Inline tag declaration |
+| # 1640 | feature | Metadata viewer: yaml + links |
+| # 1639 | feature | Export: background, filter |
+| # 1608 | bug | Exclude issue in deployment view |
+| # 1599 | feature | Dynamic deployment views |
+| # 1595 | bug | Residual elements |
+| # 1593 | feature | Fuzzy search |
+| # 1569 | feature | Border radius style |
+| # 1568 | feature | Border width style |
+| # 1565 | bug | Build warnings with dot-bin |
+| # 1483 | bug | Many descendants handling |
+| # 1480 | feature | Global styles for relationships |
+| # 1474 | feature | Import via git/file ref |
+| # 1465 | feature | Data flow visualization |
+| # 1460 | bug | GraphvizWasm build error |
+| # 1459 | feature | JetBrains support |
+| # 1453 | feature | Mermaid → dynamic view |
+| # 1414 | bug | Exclusion rules nested instances |
+| # 1365 | feature | Export relationships overlay |
+| # 1349 | feature | Specification inheritance |
+| # 1343 | bug | No filesystem in browser |
+| # 1276 | feature | Colors limitation |
+| # 1257 | feature | More style customization |
+| # 1234 | wanted | Style relationships by tag |
+| # 1209 | feature | Drawing tunnels |
+| # 1194 | docs | Deploy with GitLab |
+| # 1148 | bug | Memory access out of bounds |
+| # 1003 | feature | Nest in multiple parents |
+| # 988 | feature | Error reporting for parallel steps |
+| # 960 | feature | Externally declared element rendering |
+| # 853 | bug | Dynamic view relationship hidden |

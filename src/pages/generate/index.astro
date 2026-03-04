@@ -95,8 +95,8 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
           <div class='flex flex-col gap-y-2 pb-2'>
             <textarea id='grok-prompt-text' rows='6'
               class='w-full rounded-lg border bg-muted p-2 text-xs text-foreground placeholder:text-muted-foreground'
-              placeholder='Grok 4 will auto-generate a professional prompt in Step 2. You can edit it before Step 3.'></textarea>
-            <p class='text-xs text-muted-foreground'>Edit to refine the final image.</p>
+              placeholder='Waiting for Step 2... Grok 4 will auto-generate a professional prompt. You can then edit it before clicking Regenerate.'></textarea>
+            <p id='grok-prompt-hint' class='text-xs text-muted-foreground'>Run Step 2→3 to generate prompt. Edit to refine the final image.</p>
           </div>
         </Collapse>
       </div>
@@ -217,7 +217,13 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       layoutedPre.textContent = JSON.stringify(layoutData.layouted, null, 2)
 
       currentSkeletonSvg = layoutData.skeletonSvg || ''
-      if (currentSkeletonSvg) { preview?.show(currentSkeletonSvg); exportPanel?.enable() }
+      if (currentSkeletonSvg) {
+        preview?.showSkeleton(currentSkeletonSvg)
+        preview?.show(currentSkeletonSvg)
+        // Auto-switch to skeleton tab so user can verify components
+        document.getElementById('tab-skeleton')?.click()
+        exportPanel?.enable()
+      }
 
       steps?.setStatus('step-topology', 'done')
       statusText.textContent = `Step 1 done (${elapsed()}s) — Confirm skeleton, then click "Step 2→3"`
@@ -277,6 +283,11 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
         if (pData.success && pData.prompt) {
           promptTextarea.value = pData.prompt
           customPrompt = pData.prompt
+          // Highlight prompt area to show it's editable
+          promptTextarea.classList.add('ring-2', 'ring-purple-400')
+          const hint = document.getElementById('grok-prompt-hint')
+          if (hint) hint.textContent = '✏️ Prompt generated! Edit above and click Regenerate to refine.'
+          setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-purple-400'), 3000)
         } else { throw new Error(`Grok: ${pData.error || 'Empty prompt'}`) }
       }
       steps?.setStatus('step-grok-prompt', 'done')
@@ -300,6 +311,8 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
         currentMimeType = iData.mime_type || 'image/png'
         finalImage.src = `data:${currentMimeType};base64,${currentImageB64}`
         finalImageSection?.classList.remove('hidden')
+        // Auto-switch to Final tab to show the generated image
+        document.getElementById('tab-final')?.click()
         finalImageInfo.textContent = `Prompt: ${iData.prompt_model_used || '?'} → Image: ${iData.image_model_used || '?'} | ${elapsed()}s`
         steps?.setStatus('step-gemini-image', 'done')
         statusText.textContent = `Done! Figure generated (${elapsed()}s)`

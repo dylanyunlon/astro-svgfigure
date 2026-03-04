@@ -71,6 +71,27 @@
       const hintEl = document.getElementById('error-hint')
       const stepEl = document.getElementById('error-step')
 
+      // Auto-detect hint from error message if not provided
+      if (!hint) {
+        const msg = message.toLowerCase()
+        if (msg.includes('502') || msg.includes('connect') || msg.includes('econnrefused'))
+          hint = '💡 Backend not running. Start it with: python server.py'
+        else if (msg.includes('401') || msg.includes('api_key') || msg.includes('unauthorized'))
+          hint = '💡 API key missing or invalid. Check your .env file for GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY'
+        else if (msg.includes('503') || msg.includes('model_not_found') || msg.includes('not available'))
+          hint = '💡 Model not available. Check your API provider supports the configured model.'
+        else if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('504'))
+          hint = '💡 Request timed out. Try a simpler description or check your network connection.'
+        else if (msg.includes('500') || msg.includes('internal'))
+          hint = '💡 Server error. Check backend logs (python server.py) for details.'
+        else if (msg.includes('elk') || msg.includes('layout'))
+          hint = '💡 ELK layout failed. The topology JSON may have invalid format. Try a simpler description.'
+        else if (msg.includes('grok'))
+          hint = '💡 Grok 4 prompt generation failed. Check OPENAI_API_KEY (Grok uses OpenAI-compatible format).'
+        else if (msg.includes('gemini'))
+          hint = '💡 Gemini image generation failed. Check GEMINI_API_KEY. Image gen can take 1-2 minutes.'
+      }
+
       if (container) container.classList.remove('hidden')
       if (titleEl) titleEl.textContent = title || 'Pipeline Error'
       if (messageEl) messageEl.textContent = message

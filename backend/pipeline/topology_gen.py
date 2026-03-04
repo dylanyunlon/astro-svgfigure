@@ -283,6 +283,22 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
         sources = edge.get("sources", [])
         targets = edge.get("targets", [])
 
+        # Handle common LLM mistakes: "source"/"target" instead of "sources"/"targets"
+        if not sources and "source" in edge:
+            src = edge["source"]
+            sources = [src] if isinstance(src, str) else src
+        if not targets and "target" in edge:
+            tgt = edge["target"]
+            targets = [tgt] if isinstance(tgt, str) else tgt
+
+        # Handle "from"/"to" format
+        if not sources and "from" in edge:
+            src = edge["from"]
+            sources = [src] if isinstance(src, str) else src
+        if not targets and "to" in edge:
+            tgt = edge["to"]
+            targets = [tgt] if isinstance(tgt, str) else tgt
+
         # Ensure sources/targets are lists
         if isinstance(sources, str):
             sources = [sources]

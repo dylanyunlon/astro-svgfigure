@@ -14,8 +14,8 @@
       <span class='text-sm font-medium text-muted-foreground'>SVG Preview</span>
       {/* Tab toggle: Skeleton vs Final */}
       <div class='flex items-center rounded-lg border bg-muted p-0.5'>
-        <button id='tab-skeleton' class='preview-tab rounded-md px-2 py-0.5 text-xs font-medium text-muted-foreground transition-all hover:text-foreground' data-tab='skeleton'>Skeleton</button>
-        <button id='tab-final' class='preview-tab rounded-md px-2 py-0.5 text-xs font-medium bg-background text-foreground shadow-sm' data-tab='final'>Final</button>
+        <button id='tab-skeleton' class='preview-tab rounded-md px-2 py-0.5 text-xs font-medium bg-background text-foreground shadow-sm transition-all hover:text-foreground' data-tab='skeleton'>Skeleton</button>
+        <button id='tab-final' class='preview-tab rounded-md px-2 py-0.5 text-xs font-medium text-muted-foreground' data-tab='final'>Final</button>
       </div>
     </div>
     <div class='flex items-center gap-x-1'>
@@ -97,7 +97,7 @@
   // Expose globally for Generate page
   let skeletonSvg = ''
   let finalSvg = ''
-  let activeTab = 'final'
+  let activeTab = 'skeleton'
 
   // Tab switching
   document.querySelectorAll('.preview-tab').forEach((tab) => {
@@ -125,8 +125,8 @@
           const p = empty.querySelector('p')
           if (p) {
             p.textContent = t === 'skeleton'
-              ? 'Skeleton SVG will appear after ELK layout (Step 2)'
-              : 'Final SVG will appear after NanoBanana generation (Step 3)'
+              ? 'Skeleton SVG will appear after ELK layout (Step 1)'
+              : 'Final image will appear after Gemini 3 generation (Step 3)'
             p.style.color = ''
           }
         }

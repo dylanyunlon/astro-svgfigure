@@ -41,10 +41,25 @@ export const GET: APIRoute = async () => {
     } else {
       health.backendError = `HTTP ${res.status}`
     }
+
+    // Check API key status from backend config endpoint
+    try {
+      const configRes = await fetch(`${BACKEND_URL}/api/config`, {
+        signal: AbortSignal.timeout(3000),
+      })
+      if (configRes.ok) {
+        health.config = await configRes.json()
+      }
+    } catch {
+      // Config endpoint optional
+    }
   } catch (err: any) {
     health.backendError =
       err.name === 'AbortError' ? 'Timeout (5s)' : err.message
   }
+
+  // Determine pipeline readiness
+  health.pipelineReady = health.backend === true
 
   return new Response(JSON.stringify(health), {
     status: 200,

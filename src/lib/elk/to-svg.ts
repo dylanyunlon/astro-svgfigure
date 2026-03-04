@@ -92,7 +92,7 @@ export function elkToSvg(graph: ElkGraph): string {
 
   if (Array.isArray(graph.children)) {
     graph.children.slice(0, 100).forEach((node, i) => {
-      if (node) parts.push(renderNode(node, i))
+      if (node) parts.push(renderNode(node, i, 0))
     })
   }
 
@@ -100,17 +100,28 @@ export function elkToSvg(graph: ElkGraph): string {
   return parts.join('\n')
 }
 
-function renderNode(node: ElkNode, index: number): string {
+function renderNode(node: ElkNode, index: number, depth: number = 0): string {
   const x = (node.x || 0) + PADDING, y = (node.y || 0) + PADDING
   const w = node.width || 160, h = node.height || 60
-  const fill = NODE_COLORS[index % NODE_COLORS.length]
+  const isGroup = Array.isArray(node.children) && node.children.length > 0
+  const fill = isGroup ? `${NODE_COLORS[index % NODE_COLORS.length]}80` : NODE_COLORS[index % NODE_COLORS.length]
+  const strokeW = isGroup ? 2 : 1.5
+  const strokeDash = isGroup ? ' stroke-dasharray="6,3"' : ''
   const label = node.labels?.[0]?.text || node.id
-  const dl = label.length > 20 ? label.slice(0, 18) + '\u2026' : label
 
-  let svg = `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="1.5" rx="8" />`
-  svg += `  <text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="${TEXT_COLOR}" font-weight="500">${escapeXml(dl)}</text>`
+  // Smart label truncation based on node width
+  const maxChars = Math.max(6, Math.floor(w / 8))
+  const dl = label.length > maxChars ? label.slice(0, maxChars - 2) + '\u2026' : label
 
-  if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i) })
+  let svg = `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${strokeW}" rx="8"${strokeDash} />`
+
+  // For group nodes, put label at top
+  const labelY = isGroup ? y + 16 : y + h / 2
+  const fontSize = isGroup ? 11 : 12
+  const fontWeight = isGroup ? '600' : '500'
+  svg += `  <text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
+
+  if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1) })
   return svg
 }
 

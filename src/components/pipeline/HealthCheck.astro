@@ -16,12 +16,14 @@
     title="Checking..."
   ></span>
   <span id="health-text">Checking backend...</span>
+  <span id="health-keys" class="hidden text-muted-foreground"></span>
 </div>
 
 <script>
   ;(async () => {
     const dot = document.getElementById('health-dot') as HTMLElement
     const text = document.getElementById('health-text') as HTMLElement
+    const keys = document.getElementById('health-keys') as HTMLElement
     const btn = document.getElementById('generate-btn') as HTMLButtonElement | null
 
     try {
@@ -37,7 +39,18 @@
         const modelCount = data.models
           ? Object.values(data.models).flat().length
           : 0
-        text.textContent = `Backend OK · ${modelCount} model${modelCount !== 1 ? 's' : ''}`
+
+        // Show pipeline info
+        const parts: string[] = [`Backend OK`]
+        if (modelCount > 0) parts.push(`${modelCount} model${modelCount !== 1 ? 's' : ''}`)
+        text.textContent = parts.join(' · ')
+
+        // Show pipeline steps availability
+        if (data.pipelineReady) {
+          keys.classList.remove('hidden')
+          keys.textContent = '· Pipeline ready (Step 1→2→3)'
+          keys.classList.add('text-green-600')
+        }
       } else {
         dot.classList.remove('bg-muted')
         dot.classList.add('bg-red-500')
