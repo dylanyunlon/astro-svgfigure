@@ -208,11 +208,17 @@ async def generate_prompt_with_grok(
             max_tokens=4096,  # Increased for larger tier outputs
         )
 
-        prompt = result.get("content", "").strip()
+        raw_prompt = result.get("content", "").strip()
+        # Strip <think> reasoning blocks, JSON wrappers, code fences
+        prompt = _strip_think_and_clean(raw_prompt)
         if not prompt:
+            logger.error(
+                f"Grok returned empty prompt after cleaning. "
+                f"Raw length={len(raw_prompt)}, first 300 chars: {raw_prompt[:300]}"
+            )
             return {
                 "success": False,
-                "error": "Grok returned empty prompt",
+                "error": "Grok returned empty prompt (reasoning-only output with no design points)",
                 "model_used": use_model,
             }
 
@@ -311,6 +317,45 @@ def _analyze_svg_complexity(svg_content: str) -> Dict[str, Any]:
     }
 
 
+def _strip_think_and_clean(raw_output: str) -> str:
+    """
+    Strip <think>...</think> reasoning blocks and other noise from LLM output.
+
+    Reasoning models (DeepSeek-R1, Grok with thinking, QwQ, etc.) wrap their
+    chain-of-thought in <think>...</think> tags. This must be removed before
+    using the output as a prompt for another model.
+
+    Also strips:
+      - ```json ... ``` code fences that some models wrap output in
+      - { "prompt": "..." } JSON wrappers
+      - Leading/trailing whitespace
+    """
+    text = raw_output
+
+    # 1. Remove <think>...</think> blocks (greedy, handles multiline)
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+
+    # 2. Also handle unclosed <think> (model output truncated mid-thought)
+    #    Remove everything from <think> to end of string if no closing tag
+    text = re.sub(r'<think>.*$', '', text, flags=re.DOTALL)
+
+    # 3. Strip ```json ... ``` code fence wrappers
+    text = re.sub(r'^```(?:json)?\s*\n?', '', text.strip())
+    text = re.sub(r'\n?```\s*$', '', text.strip())
+
+    # 4. If the entire output is a JSON object with a "prompt" key, extract it
+    text = text.strip()
+    if text.startswith('{') and text.endswith('}'):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and 'prompt' in parsed:
+                text = parsed['prompt']
+        except json.JSONDecodeError:
+            pass  # Not valid JSON, keep as-is
+
+    return text.strip()
+
+
 def _extract_tier_from_output(prompt: str) -> Optional[int]:
     """Extract the tier number from Grok's output header."""
     match = re.search(r'\[TIER-(\d+)', prompt)
@@ -380,8 +425,17 @@ async def generate_image_with_gemini(
     # Build the request body (Gemini native format)
     # Extract meaningful layout info instead of dumping raw SVG XML
     svg_summary = _extract_svg_structure(svg_content)
+    # Safety net: strip any <think> blocks or JSON wrappers that may have
+    # leaked through from reasoning models (e.g. Grok, DeepSeek-R1)
+    clean_prompt = _strip_think_and_clean(prompt)
+    if len(clean_prompt) < 20 and len(prompt) > 100:
+        logger.warning(
+            f"Prompt shrank drastically after cleaning ({len(prompt)} → {len(clean_prompt)} chars). "
+            f"Original may have been reasoning-only. Using fallback."
+        )
+        clean_prompt = prompt  # Fall back to original if cleaning removed everything meaningful
     combined_prompt = (
-        f"Generate an image: {prompt}\n\n"
+        f"Generate an image: {clean_prompt}\n\n"
         f"Layout structure reference:\n{svg_summary}\n\n"
         f"IMPORTANT: You MUST generate and return an IMAGE. "
         f"Create a high-quality, publication-ready scientific figure image."
@@ -507,7 +561,7 @@ async def generate_image_with_gemini(
             }
             # Also simplify the prompt to be more direct
             request_body["contents"][0]["parts"][0]["text"] = (
-                f"Generate an image of: {prompt}\n\n"
+                f"Generate an image of: {clean_prompt}\n\n"
                 f"Output ONLY an image, no text."
             )
 
