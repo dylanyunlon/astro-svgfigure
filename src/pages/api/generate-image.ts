@@ -47,6 +47,7 @@ export const POST: APIRoute = async ({ request }) => {
           aspect_ratio: body.aspect_ratio || '16:9',
           image_size: body.image_size || '4K',
           custom_prompt: body.custom_prompt || null,
+          elk_graph: body.elk_graph || null,
         }),
         signal: controller.signal,
       })

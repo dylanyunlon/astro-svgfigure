@@ -373,6 +373,49 @@ def _count_numbered_points(prompt: str) -> int:
 
 
 # ============================================================================
+# SVG → PNG Rendering (for Gemini image input)
+# ============================================================================
+
+def _svg_to_png_b64(svg_content: str, target_width: int = 1024) -> Optional[str]:
+    """
+    Render SVG string to PNG and return as base64.
+    Uses cairosvg (listed in requirements.txt).
+
+    The rendered skeleton image is sent to Gemini as visual reference
+    so the model can see the EXACT spatial layout the user confirmed.
+
+    Args:
+        svg_content: SVG XML string
+        target_width: Output width in pixels (height auto-scales)
+
+    Returns:
+        Base64-encoded PNG string, or None if rendering fails
+    """
+    try:
+        import cairosvg
+    except ImportError:
+        logger.warning("cairosvg not installed — cannot render SVG to PNG for Gemini input")
+        return None
+
+    try:
+        # Render SVG to PNG bytes
+        png_bytes = cairosvg.svg2png(
+            bytestring=svg_content.encode("utf-8"),
+            output_width=target_width,
+        )
+        if not png_bytes or len(png_bytes) < 100:
+            logger.warning(f"cairosvg produced tiny/empty PNG ({len(png_bytes) if png_bytes else 0} bytes)")
+            return None
+
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        logger.info(f"SVG→PNG rendered: {len(png_bytes)} bytes, {len(b64)} base64 chars (width={target_width})")
+        return b64
+    except Exception as e:
+        logger.warning(f"SVG→PNG rendering failed: {e}")
+        return None
+
+
+# ============================================================================
 # Gemini 3 Pro Image Generation — Step b
 # ============================================================================
 
@@ -383,6 +426,7 @@ async def generate_image_with_gemini(
     model: str = "gemini-3-pro-image-preview",
     aspect_ratio: str = "16:9",
     image_size: str = "4K",
+    elk_graph: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Step b: Use Gemini 3 Pro Image model (via tryallai.com proxy)
@@ -391,6 +435,9 @@ async def generate_image_with_gemini(
     Uses Gemini native format: v1beta/models/{model}:generateContent
     with responseModalities: ["TEXT", "IMAGE"]
 
+    Enhanced: sends the skeleton SVG rendered as PNG image alongside the text
+    prompt, so Gemini can SEE the exact layout the user confirmed.
+
     Args:
         svg_content: The ELK-generated SVG (as context for the figure)
         prompt: The detailed prompt (from Grok 4 or user)
@@ -398,6 +445,8 @@ async def generate_image_with_gemini(
         model: Gemini image model name
         aspect_ratio: Image aspect ratio
         image_size: Output size (e.g. "4K")
+        elk_graph: Optional structured graph data from interactive editor
+                   (nodes with x,y,width,height + edges with sourceId,targetId)
 
     Returns:
         dict with success, image_b64, mime_type, text_response, model_used
@@ -423,8 +472,8 @@ async def generate_image_with_gemini(
         endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     # Build the request body (Gemini native format)
-    # Extract meaningful layout info instead of dumping raw SVG XML
-    svg_summary = _extract_svg_structure(svg_content)
+    # Extract RICH layout info using elk_graph (preferred) or SVG parsing (fallback)
+    svg_summary = _extract_svg_structure(svg_content, elk_graph=elk_graph)
     # Safety net: strip any <think> blocks or JSON wrappers that may have
     # leaked through from reasoning models (e.g. Grok, DeepSeek-R1)
     clean_prompt = _strip_think_and_clean(prompt)
@@ -438,16 +487,42 @@ async def generate_image_with_gemini(
         f"Generate an image: {clean_prompt}\n\n"
         f"Layout structure reference:\n{svg_summary}\n\n"
         f"IMPORTANT: You MUST generate and return an IMAGE. "
-        f"Create a high-quality, publication-ready scientific figure image."
+        f"Create a high-quality, publication-ready scientific figure image. "
+        f"The spatial layout (node positions, sizes, connection topology) MUST closely "
+        f"follow the reference layout described above and shown in the attached skeleton image."
     )
+
+    # ── Build request parts: text + optional skeleton image ──
+    request_parts: List[Dict[str, Any]] = [{"text": combined_prompt}]
+
+    # Render SVG to PNG and attach as visual reference for Gemini
+    skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+    if skeleton_png_b64:
+        request_parts.insert(0, {
+            "inlineData": {
+                "mimeType": "image/png",
+                "data": skeleton_png_b64,
+            }
+        })
+        # Prepend instruction that references the image
+        request_parts.insert(0, {
+            "text": (
+                "Below is the SKELETON LAYOUT image showing the exact spatial arrangement "
+                "of nodes and connections that the user has confirmed. Your generated figure "
+                "MUST preserve this exact layout — same node positions, same connection "
+                "topology, same spatial relationships. Enhance it into a professional, "
+                "publication-quality scientific figure while keeping the structure identical."
+            )
+        })
+        logger.info("Attached skeleton PNG as visual reference for Gemini")
+    else:
+        logger.warning("Could not render skeleton PNG — Gemini will rely on text description only")
 
     request_body = {
         "contents": [
             {
                 "role": "user",
-                "parts": [
-                    {"text": combined_prompt}
-                ],
+                "parts": request_parts,
             }
         ],
         "generationConfig": {
@@ -889,6 +964,7 @@ async def generate_scientific_figure(
     aspect_ratio: str = "16:9",
     image_size: str = "4K",
     custom_prompt: Optional[str] = None,
+    elk_graph: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Combined Step 5 pipeline:
@@ -905,6 +981,8 @@ async def generate_scientific_figure(
         aspect_ratio: Image aspect ratio
         image_size: Image size
         custom_prompt: Skip Grok and use this prompt directly
+        elk_graph: Optional structured graph data from interactive editor
+                   (nodes with x,y,width,height + edges with sourceId,targetId)
 
     Returns:
         dict with success, image_b64, mime_type, prompt, prompt_model, image_model
@@ -943,6 +1021,7 @@ async def generate_scientific_figure(
         model=image_model,
         aspect_ratio=aspect_ratio,
         image_size=image_size,
+        elk_graph=elk_graph,
     )
 
     return {
@@ -996,33 +1075,194 @@ def _build_fallback_prompt(method_text: str, svg_content: str) -> str:
     )
 
 
-def _extract_svg_structure(svg_content: str) -> str:
+def _extract_svg_structure(svg_content: str, elk_graph: Optional[Dict] = None) -> str:
     """
-    Extract meaningful layout info from SVG for the image generation prompt.
-    Converts SVG XML into human-readable description (image models work better
-    with natural language than raw markup).
+    Extract RICH spatial layout info from SVG + optional ELK graph data.
+    Produces a detailed natural-language description of every node's position,
+    size, label, and every connection — so the image model can faithfully
+    reproduce the user's edited layout.
 
-    Enhanced to detect:
+    Two data sources (combined for maximum fidelity):
+      1. elk_graph (preferred): structured JSON with exact x, y, width, height
+         per node and edge connection topology from the interactive editor.
+      2. svg_content (fallback): parse <rect> and <text> elements from SVG XML.
+
+    Enhanced output includes:
+      - Per-node: label, position (x,y), dimensions (w×h), relative placement
+      - Per-edge: source → target, with labels if present
+      - Spatial relationships: which nodes are left/right/above/below each other
       - Hierarchical nesting depth
-      - Group/compound node relationships
-      - Architecture vs flowchart patterns
+      - Overall flow direction detection
     """
-    labels = re.findall(r'>([^<]{2,50})<', svg_content)
-    unique_labels = list(dict.fromkeys(l.strip() for l in labels if l.strip()))[:30]
+    parts: List[str] = []
 
-    rects = re.findall(
-        r'<rect[^>]*x="([^"]*)"[^>]*y="([^"]*)"[^>]*width="([^"]*)"[^>]*height="([^"]*)"',
-        svg_content
-    )
+    # ── Strategy 1: Use elk_graph structured data (from interactive editor) ──
+    if elk_graph and isinstance(elk_graph, dict):
+        nodes_data = elk_graph.get("nodes", [])
+        edges_data = elk_graph.get("edges", [])
+        canvas_w = elk_graph.get("width", 800)
+        canvas_h = elk_graph.get("height", 600)
 
-    viewbox = re.search(r'viewBox="0 0 (\d+) (\d+)"', svg_content)
+        if nodes_data:
+            parts.append(f"=== SPATIAL LAYOUT (canvas {canvas_w}×{canvas_h}px) ===")
+            parts.append(f"Total: {len(nodes_data)} nodes, {len(edges_data)} connections")
+            parts.append("")
+
+            # ── Per-node spatial description ──
+            parts.append("NODE POSITIONS AND SIZES:")
+            # Sort by y then x for natural reading order (top-to-bottom, left-to-right)
+            sorted_nodes = sorted(nodes_data, key=lambda n: (n.get("y", 0), n.get("x", 0)))
+
+            # Detect layers (nodes at similar y-coordinates)
+            y_threshold = 30  # nodes within 30px of each other are "same row"
+            layers: List[List[Dict]] = []
+            for node in sorted_nodes:
+                ny = node.get("y", 0)
+                placed = False
+                for layer in layers:
+                    if abs(layer[0].get("y", 0) - ny) < y_threshold:
+                        layer.append(node)
+                        placed = True
+                        break
+                if not placed:
+                    layers.append([node])
+
+            for li, layer in enumerate(layers):
+                # Sort each layer by x (left to right)
+                layer.sort(key=lambda n: n.get("x", 0))
+                if len(layers) > 1:
+                    parts.append(f"\n  Row/Layer {li + 1} (y ≈ {int(layer[0].get('y', 0))}px):")
+
+                for node in layer:
+                    label = node.get("label", node.get("id", "?"))
+                    x = int(node.get("x", 0))
+                    y = int(node.get("y", 0))
+                    w = int(node.get("width", 160))
+                    h = int(node.get("height", 60))
+                    is_group = node.get("isGroup", False)
+                    node_type = "GROUP" if is_group else "node"
+                    parts.append(
+                        f"    [{node_type}] \"{label}\" at ({x},{y}), size {w}×{h}px"
+                    )
+
+            # ── Connection topology ──
+            if edges_data:
+                parts.append("\nCONNECTIONS (arrows):")
+                node_id_to_label = {
+                    n.get("id", ""): n.get("label", n.get("id", "?"))
+                    for n in nodes_data
+                }
+                for edge in edges_data:
+                    src = node_id_to_label.get(edge.get("sourceId", ""), edge.get("sourceId", "?"))
+                    tgt = node_id_to_label.get(edge.get("targetId", ""), edge.get("targetId", "?"))
+                    edge_label = edge.get("label", "")
+                    label_str = f' (label: "{edge_label}")' if edge_label else ""
+                    parts.append(f'    "{src}" → "{tgt}"{label_str}')
+
+            # ── Flow direction detection ──
+            if len(layers) > 1:
+                avg_first_y = sum(n.get("y", 0) for n in layers[0]) / len(layers[0])
+                avg_last_y = sum(n.get("y", 0) for n in layers[-1]) / len(layers[-1])
+                if avg_last_y > avg_first_y + 50:
+                    parts.append("\nFlow direction: TOP → BOTTOM (vertical pipeline)")
+                elif avg_first_y > avg_last_y + 50:
+                    parts.append("\nFlow direction: BOTTOM → TOP")
+            else:
+                # Check horizontal flow
+                xs = [n.get("x", 0) for n in sorted_nodes]
+                if len(xs) > 1 and max(xs) - min(xs) > 200:
+                    parts.append("\nFlow direction: LEFT → RIGHT (horizontal pipeline)")
+
+            parts.append("")
+            parts.append(
+                "IMPORTANT: Reproduce this EXACT spatial layout — node positions, sizes, "
+                "and connection topology MUST match the layout described above. "
+                "For every visual element (icons, illustrations), describe what it depicts "
+                "in natural language — NEVER use emoji or Unicode symbols."
+            )
+
+            return "\n".join(parts)
+
+    # ── Strategy 2: Fallback — parse SVG XML (enhanced with per-node extraction) ──
+    viewbox = re.search(r'viewBox="0 0 ([0-9.]+) ([0-9.]+)"', svg_content)
     canvas_w = viewbox.group(1) if viewbox else "800"
     canvas_h = viewbox.group(2) if viewbox else "600"
 
-    arrow_count = svg_content.count('marker-end')
-    node_count = max(0, len(rects) - 1)  # subtract background rect
+    # Extract ALL rect+text pairs — each node is a rect followed by a text element
+    # Pattern: match rect attributes (handle any attribute order)
+    rect_pattern = re.compile(
+        r'<rect\s[^>]*?(?=x=")x="([^"]*)"[^>]*?(?=y=")y="([^"]*)"'
+        r'[^>]*?(?=width=")width="([^"]*)"[^>]*?(?=height=")height="([^"]*)"[^>]*?>',
+        re.DOTALL
+    )
+    # Also handle rects where attributes are in different order
+    rect_pattern_alt = re.compile(
+        r'<rect\s[^>]*?width="([^"]*)"[^>]*?height="([^"]*)"'
+        r'[^>]*?x="([^"]*)"[^>]*?y="([^"]*)"[^>]*?>',
+        re.DOTALL
+    )
 
-    # Detect nesting depth from <g> tags
+    rects_found = []
+    for m in rect_pattern.finditer(svg_content):
+        rects_found.append({
+            "x": float(m.group(1)), "y": float(m.group(2)),
+            "w": float(m.group(3)), "h": float(m.group(4)),
+        })
+    for m in rect_pattern_alt.finditer(svg_content):
+        rects_found.append({
+            "x": float(m.group(3)), "y": float(m.group(4)),
+            "w": float(m.group(1)), "h": float(m.group(2)),
+        })
+
+    # Deduplicate by (x, y)
+    seen_coords = set()
+    unique_rects = []
+    for r in rects_found:
+        key = (round(r["x"], 1), round(r["y"], 1))
+        if key not in seen_coords:
+            seen_coords.add(key)
+            unique_rects.append(r)
+
+    # Extract text labels with their positions
+    text_pattern = re.compile(
+        r'<text\s[^>]*?x="([^"]*)"[^>]*?y="([^"]*)"[^>]*?>([^<]+)</text>'
+    )
+    text_elements = []
+    for m in text_pattern.finditer(svg_content):
+        text_elements.append({
+            "x": float(m.group(1)), "y": float(m.group(2)),
+            "text": m.group(3).strip(),
+        })
+
+    # Match each text label to its nearest rect (the label belongs to that node)
+    node_descriptions = []
+    # Skip the first rect if it's the background (covers full canvas)
+    data_rects = unique_rects
+    if data_rects and data_rects[0]["w"] > float(canvas_w) * 0.9:
+        data_rects = data_rects[1:]
+
+    for rect in data_rects:
+        # Find the text element closest to this rect's center
+        rx_center = rect["x"] + rect["w"] / 2
+        ry_center = rect["y"] + rect["h"] / 2
+        best_text = None
+        best_dist = float("inf")
+        for te in text_elements:
+            dist = abs(te["x"] - rx_center) + abs(te["y"] - ry_center)
+            if dist < best_dist and dist < max(rect["w"], rect["h"]) * 1.5:
+                best_dist = dist
+                best_text = te["text"]
+
+        label = best_text or "unlabeled"
+        node_descriptions.append({
+            "label": label,
+            "x": int(rect["x"]), "y": int(rect["y"]),
+            "w": int(rect["w"]), "h": int(rect["h"]),
+        })
+
+    arrow_count = svg_content.count('marker-end')
+
+    # Detect nesting
     group_count = svg_content.count('<g ')
     nesting_depth = 0
     depth = 0
@@ -1035,28 +1275,53 @@ def _extract_svg_structure(svg_content: str) -> str:
 
     is_architecture = nesting_depth >= 3
 
-    parts = [
-        f"Canvas: {canvas_w}x{canvas_h} pixels",
-        f"Components ({node_count}): {', '.join(unique_labels[:15])}",
-        f"Connections: {arrow_count} directional arrows",
-        f"Diagram type: {'Architecture (hierarchical, nested groups)' if is_architecture else 'Flowchart (sequential pipeline)'}",
-    ]
+    parts.append(f"=== SPATIAL LAYOUT (canvas {canvas_w}×{canvas_h}px, parsed from SVG) ===")
+    parts.append(f"Total: {len(node_descriptions)} nodes, {arrow_count} connections")
+    parts.append(f"Diagram type: {'Architecture (hierarchical)' if is_architecture else 'Flowchart (sequential)'}")
+    parts.append("")
+
+    if node_descriptions:
+        parts.append("NODE POSITIONS AND SIZES:")
+        # Sort by y then x
+        node_descriptions.sort(key=lambda n: (n["y"], n["x"]))
+
+        # Detect layers
+        y_threshold = 30
+        layers: List[List[Dict]] = []
+        for nd in node_descriptions:
+            placed = False
+            for layer in layers:
+                if abs(layer[0]["y"] - nd["y"]) < y_threshold:
+                    layer.append(nd)
+                    placed = True
+                    break
+            if not placed:
+                layers.append([nd])
+
+        for li, layer in enumerate(layers):
+            layer.sort(key=lambda n: n["x"])
+            if len(layers) > 1:
+                parts.append(f"\n  Row/Layer {li + 1} (y ≈ {layer[0]['y']}px):")
+            for nd in layer:
+                parts.append(
+                    f'    [node] "{nd["label"]}" at ({nd["x"]},{nd["y"]}), size {nd["w"]}×{nd["h"]}px'
+                )
+
+        if len(layers) > 1:
+            parts.append(f"\nFlow direction: TOP → BOTTOM ({len(layers)} layers)")
 
     if nesting_depth >= 2:
         parts.append(
-            f"Hierarchy depth: {nesting_depth} levels. "
-            f"Parent nodes contain child nodes. Sibling nodes share borderless background regions."
+            f"\nHierarchy depth: {nesting_depth} levels. "
+            f"Parent nodes contain child nodes."
         )
 
-    if rects and len(rects) > 2:
-        ys = sorted(set(float(r[1]) for r in rects[1:]))
-        if len(ys) > 1:
-            parts.append(f"Layout: {len(ys)} layers arranged vertically (top to bottom flow)")
-
+    parts.append("")
     parts.append(
-        "IMPORTANT: For every visual element (icons, illustrations, avatars), "
-        "describe what it depicts in natural language words — NEVER use emoji or Unicode symbols. "
-        "The image generator will create visuals from text descriptions."
+        "IMPORTANT: Reproduce this EXACT spatial layout — node positions, sizes, "
+        "and the connection topology MUST match the layout described above. "
+        "For every visual element (icons, illustrations), describe what it depicts "
+        "in natural language — NEVER use emoji or Unicode symbols."
     )
 
     return "\n".join(parts)
