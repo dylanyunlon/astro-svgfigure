@@ -650,3 +650,4 @@ def create_example_topology(
 
     topology_dict = examples.get(name, examples["transformer"])
     return ElkGraph(**topology_dict)
+    
