@@ -32,7 +32,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     // Forward to Python backend (long timeout for image generation)
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 600000) // 1500s timeout
+    const timeout = setTimeout(() => controller.abort(), 600000) // 600s timeout
 
     try {
       const backendRes = await fetch(`${BACKEND_URL}/api/generate-image`, {
@@ -76,7 +76,7 @@ export const POST: APIRoute = async ({ request }) => {
     if (err.name === 'AbortError') {
       return new Response(
         JSON.stringify({
-          error: 'Image generation timed out (1500s)',
+          error: 'Image generation timed out (600s)',
           hint: 'Try a simpler description or a faster model',
         }),
         { status: 504, headers: { 'Content-Type': 'application/json' } }

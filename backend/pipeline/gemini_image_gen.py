@@ -398,12 +398,17 @@ async def generate_image_with_gemini(
         ],
         "generationConfig": {
             "responseModalities": ["IMAGE", "TEXT"],
+            "imageConfig": {
+                "aspectRatio": aspect_ratio,
+                "imageSize": image_size,
+            },
         },
     }
 
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",  # Signal we prefer non-SSE response
     }
 
     # For direct Google API (no api_base), use query param instead
@@ -441,12 +446,23 @@ async def generate_image_with_gemini(
 
         # tryallai proxy may force SSE streaming even for generateContent
         # Detect and reassemble SSE into a single JSON response
-        if raw_text.startswith("data: ") or "text/event-stream" in content_type:
+        # Check both prefix and content-type; also handle \r\n line endings
+        is_sse = (
+            raw_text.startswith("data: ")
+            or raw_text.startswith("data:")
+            or "text/event-stream" in content_type
+            or "\ndata: " in raw_text[:200]  # SSE after initial blank lines
+        )
+        if is_sse:
             logger.warning("Gemini image API returned SSE stream — reassembling")
             data = _reassemble_sse_gemini(raw_text)
         else:
             try:
                 data = json.loads(raw_text)
+                # Some proxies return an array of chunks instead of a single object
+                if isinstance(data, list):
+                    logger.warning(f"Gemini returned JSON array ({len(data)} items) — merging")
+                    data = _merge_json_array_response(data)
             except json.JSONDecodeError as e:
                 logger.error(f"Gemini response not JSON: {e}. First 300 chars: {raw_text[:300]}")
                 return {
@@ -467,12 +483,28 @@ async def generate_image_with_gemini(
         result = _parse_gemini_image_response(data, model)
 
         # If no image returned, retry with IMAGE-only modality
-        if not result.get("success") and "no image data" in result.get("error", "").lower():
+        # Match against multiple possible error patterns
+        error_lower = result.get("error", "").lower()
+        should_retry = (
+            not result.get("success")
+            and (
+                "no image" in error_lower
+                or "returned no image" in error_lower
+                or "no image data" in error_lower
+                or "empty response" in error_lower
+            )
+        )
+        if should_retry:
             logger.warning(
                 f"Gemini returned text-only, retrying with IMAGE-only modality. "
                 f"Text response: {result.get('text_response', '')[:200]}"
             )
             request_body["generationConfig"]["responseModalities"] = ["IMAGE"]
+            # Keep imageConfig for the retry
+            request_body["generationConfig"]["imageConfig"] = {
+                "aspectRatio": aspect_ratio,
+                "imageSize": image_size,
+            }
             # Also simplify the prompt to be more direct
             request_body["contents"][0]["parts"][0]["text"] = (
                 f"Generate an image of: {prompt}\n\n"
@@ -512,7 +544,7 @@ async def generate_image_with_gemini(
     except httpx.TimeoutException:
         return {
             "success": False,
-            "error": "Gemini image generation timed out (120s). Try a simpler prompt.",
+            "error": "Gemini image generation timed out (600s). Try a simpler prompt.",
             "model_used": model,
         }
     except Exception as e:
@@ -533,10 +565,16 @@ def _reassemble_sse_gemini(raw_text: str) -> dict:
       data: {"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"base64chunk"}}]}}]}
       data: [DONE]
 
-    We need to merge all parts across chunks into one response.
+    Key challenges:
+      - base64 image data may be split across multiple SSE chunks
+      - text parts may also be split across chunks
+      - Some proxies send incremental deltas, not full parts each time
+    We need to merge all parts across chunks into one coherent response.
     """
-    all_parts: List[dict] = []
+    all_text_parts: List[str] = []
+    image_data_chunks: Dict[str, List[str]] = {}  # mime_type -> [base64 chunks]
     last_candidate = {}
+    current_image_mime = None
 
     for line in raw_text.split("\n"):
         line = line.strip()
@@ -547,21 +585,118 @@ def _reassemble_sse_gemini(raw_text: str) -> dict:
             break
         try:
             chunk = json.loads(data_str)
-            candidates = chunk.get("candidates", [])
-            if candidates:
-                candidate = candidates[0]
-                last_candidate = candidate
-                content = candidate.get("content", {})
-                parts = content.get("parts", [])
-                for part in parts:
-                    # Merge: if this is a continuation of inline_data, append to last
-                    if part:
-                        all_parts.append(part)
         except json.JSONDecodeError:
             continue
 
+        candidates = chunk.get("candidates", [])
+        if not candidates:
+            continue
+
+        candidate = candidates[0]
+        last_candidate = candidate
+        content = candidate.get("content", {})
+        parts = content.get("parts", [])
+
+        for part in parts:
+            if not part:
+                continue
+
+            # Text parts
+            if "text" in part:
+                all_text_parts.append(part["text"])
+
+            # Image parts — handle both camelCase and snake_case
+            inline = part.get("inlineData") or part.get("inline_data")
+            if inline:
+                mime = (
+                    inline.get("mimeType")
+                    or inline.get("mime_type")
+                    or "image/png"
+                )
+                b64_data = inline.get("data", "")
+                if b64_data:
+                    current_image_mime = mime
+                    if mime not in image_data_chunks:
+                        image_data_chunks[mime] = []
+                    image_data_chunks[mime].append(b64_data)
+
+            # Some proxies nest under "image" key
+            if "image" in part and isinstance(part["image"], dict):
+                img = part["image"]
+                b64_data = img.get("data", "") or img.get("base64", "")
+                mime = img.get("mimeType") or img.get("mime_type") or "image/png"
+                if b64_data:
+                    current_image_mime = mime
+                    if mime not in image_data_chunks:
+                        image_data_chunks[mime] = []
+                    image_data_chunks[mime].append(b64_data)
+
+    # Rebuild merged parts
+    merged_parts: List[dict] = []
+
+    # Add text if present
+    full_text = "".join(all_text_parts)
+    if full_text:
+        merged_parts.append({"text": full_text})
+
+    # Merge all base64 chunks for each image into a single inlineData part
+    for mime, chunks in image_data_chunks.items():
+        # Concatenate all base64 fragments (strip whitespace that may be present)
+        merged_b64 = "".join(
+            c.replace("\n", "").replace("\r", "").replace(" ", "")
+            for c in chunks
+        )
+        if merged_b64:
+            merged_parts.append({
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": merged_b64,
+                }
+            })
+
     # Rebuild a single response
     merged = {
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": merged_parts,
+            },
+            **{k: v for k, v in last_candidate.items() if k != "content"},
+        }]
+    }
+
+    logger.info(
+        f"SSE reassembled: {len(all_text_parts)} text chunks, "
+        f"{sum(len(v) for v in image_data_chunks.values())} image chunks, "
+        f"{len(merged_parts)} merged parts"
+    )
+    return merged
+
+
+def _merge_json_array_response(items: list) -> dict:
+    """
+    Merge a JSON array of Gemini response chunks into a single response.
+    Some proxies return [chunk1, chunk2, ...] instead of SSE or single JSON.
+    """
+    all_parts: List[dict] = []
+    last_candidate = {}
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        candidates = item.get("candidates", [])
+        if candidates:
+            candidate = candidates[0]
+            last_candidate = candidate
+            content = candidate.get("content", {})
+            parts = content.get("parts", [])
+            all_parts.extend(p for p in parts if p)
+
+    if not all_parts:
+        # Return the last item as-is if we couldn't parse
+        return items[-1] if items else {}
+
+    return {
         "candidates": [{
             "content": {
                 "role": "model",
@@ -570,9 +705,6 @@ def _reassemble_sse_gemini(raw_text: str) -> dict:
             **{k: v for k, v in last_candidate.items() if k != "content"},
         }]
     }
-
-    logger.info(f"SSE reassembled: {len(all_parts)} parts")
-    return merged
 
 
 def _parse_gemini_image_response(data: dict, model: str) -> Dict[str, Any]:
@@ -653,6 +785,27 @@ def _parse_gemini_image_response(data: dict, model: str) -> Dict[str, Any]:
             "raw_parts_keys": [list(p.keys()) for p in parts[:5]],
             "model_used": model,
         }
+
+    # Clean and validate base64 data
+    image_b64 = image_b64.replace("\n", "").replace("\r", "").replace(" ", "")
+
+    # Validate base64 — quick sanity check
+    if len(image_b64) < 100:
+        logger.error(f"Gemini image base64 too short ({len(image_b64)} chars), likely corrupt")
+        return {
+            "success": False,
+            "error": f"Gemini returned corrupted image data ({len(image_b64)} chars)",
+            "text_response": text_response[:500],
+            "model_used": model,
+        }
+
+    # Try to decode a small sample to verify it's valid base64
+    try:
+        base64.b64decode(image_b64[:100] + "==")  # test first ~75 bytes
+    except Exception:
+        # Try removing potential data URI prefix
+        if "," in image_b64[:100]:
+            image_b64 = image_b64.split(",", 1)[1]
 
     logger.info(
         f"Gemini image generated: {len(image_b64)} base64 chars, "

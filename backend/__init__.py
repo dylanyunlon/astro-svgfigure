@@ -18,7 +18,8 @@ Architecture (modeled after skynetCheapBuy/app/core/ai_engine.py):
     ├── nanobanana_bridge  — layouted JSON → NanoBanana SVG
     ├── scaffold_builder   — ELK layout → JSON scaffold
     ├── svg_validator      — lxml validation + LLM fix
-    └── svg_scaler         — SVG coordinate scaling
+    ├── svg_scaler         — SVG coordinate scaling
+    └── gemini_image_gen   — SVG → Gemini 3 Pro Image (scientific figure)
 
 GitHub references:
   - dylanyunlon/skynetCheapBuy (AI Engine pattern)
