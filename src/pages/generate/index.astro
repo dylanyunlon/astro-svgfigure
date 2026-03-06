@@ -28,8 +28,8 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
     <div class='flex flex-col items-center gap-y-2 text-center'>
       <h1 class='text-2xl font-medium'>Generate Academic Figure</h1>
       <p class='text-sm text-muted-foreground max-w-xl'>
-        Describe your paper method → ELK.js generates layout skeleton →
-        Grok 4 crafts the prompt → Gemini 3 produces publication-quality figure.
+        Describe your paper method → Planner Agent generates layout draft →
+        Stylist Agent refines the description → Visualizer produces publication-quality figure.
       </p>
       <HealthCheck />
     </div>
@@ -50,7 +50,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
           <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
             <polygon points='5 3 19 12 5 21 5 3' />
           </svg>
-          <span id='generate-btn-text'>Step 1: Generate Skeleton</span>
+          <span id='generate-btn-text'>Step 1: Generate Draft</span>
         </button>
 
         <button id='generate-figure-btn' disabled
@@ -92,12 +92,12 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
           </div>
         </Collapse>
 
-        <Collapse title='Grok 4 Prompt (Editable)'>
+        <Collapse title='Stylist Prompt (Editable)'>
           <div class='flex flex-col gap-y-2 pb-2'>
             <textarea id='grok-prompt-text' rows='6'
               class='w-full rounded-lg border bg-muted p-2 text-xs text-foreground placeholder:text-muted-foreground'
-              placeholder='Waiting for Step 2... Grok 4 will auto-generate a professional prompt. You can then edit it before clicking Regenerate.'></textarea>
-            <p id='grok-prompt-hint' class='text-xs text-muted-foreground'>Run Step 2→3 to generate prompt. Edit to refine the final image.</p>
+              placeholder='Waiting for Step 2... The Stylist Agent will auto-generate a refined description. You can then edit it before clicking Regenerate.'></textarea>
+            <p id='grok-prompt-hint' class='text-xs text-muted-foreground'>Run Step 2→3 to generate description. Edit to refine the final image.</p>
           </div>
         </Collapse>
       </div>
@@ -110,7 +110,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 
         <div id='final-image-section' class='hidden'>
           <div class='flex items-center justify-between mb-2'>
-            <span class='text-sm font-medium'>Scientific Figure (Gemini 3 Pro Image)</span>
+            <span class='text-sm font-medium'>Scientific Figure (Visualizer Output)</span>
             <div class='flex gap-x-2'>
               <button id='download-image-btn' class='rounded-lg border px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted'>Download PNG</button>
               <button id='regenerate-btn' class='rounded-lg border bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700'>Regenerate</button>
@@ -128,10 +128,10 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
         <Card heading='Export SVG'>
           <ExportPanel />
         </Card>
-        <Collapse title='Topology JSON'>
+        <Collapse title='Planner Output JSON'>
           <pre id='topology-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
         </Collapse>
-        <Collapse title='ELK Layouted JSON'>
+        <Collapse title='Structured Layout Data'>
           <pre id='layouted-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
         </Collapse>
       </div>
@@ -198,7 +198,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 
     try {
       steps?.setStatus('step-topology', 'running')
-      statusText.textContent = 'Step 1: LLM generating topology...'
+      statusText.textContent = 'Step 1: Planner analyzing structure...'
 
       const topoRes = await fetch('/api/topology', {
         method: 'POST',
@@ -210,7 +210,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       const topology = topoData.topology || topoData.graph || topoData
       topologyPre.textContent = JSON.stringify(topology, null, 2)
 
-      statusText.textContent = 'Step 1: ELK computing layout...'
+      statusText.textContent = 'Step 1: Computing layout composition...'
       const layoutRes = await fetch('/api/layout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -238,7 +238,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 
       steps?.setStatus('step-topology', 'done')
       steps?.setStatus('step-edit', 'running')
-      statusText.textContent = `Step 1 done (${elapsed()}s) — Edit skeleton below, then click "Confirm Edit" → "Step 2→3"`
+      statusText.textContent = `Step 1 done (${elapsed()}s) — Edit draft below, then click "Confirm Edit" → "Step 2→3"`
       statusText.style.color = ''
       // Step 2→3 stays disabled until user clicks "Confirm Edit"
       generateFigureBtn.disabled = true
@@ -258,7 +258,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
     } finally {
       stopTimer(); running = false
       generateBtn.disabled = false
-      generateBtnText.textContent = 'Step 1: Generate Skeleton'
+      generateBtnText.textContent = 'Step 1: Generate Draft'
     }
   })
 
@@ -292,7 +292,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       // Step 2: Grok 4 prompt
       steps?.setStatus('step-grok-prompt', 'running')
       if (!customPrompt) {
-        statusText.textContent = 'Step 2: Grok 4 generating prompt...'
+        statusText.textContent = 'Step 2: Stylist refining description...'
         const pRes = await fetch('/api/generate-prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -314,7 +314,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 
       // Step 3: Gemini 3 Image
       steps?.setStatus('step-gemini-image', 'running')
-      statusText.textContent = 'Step 3: Gemini 3 generating figure...'
+      statusText.textContent = 'Step 3: Visualizer generating figure...'
       const iRes = await fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -345,8 +345,8 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       })
       const msg = err.message || 'Unknown error'
       let hint = ''
-      if (msg.includes('Grok')) hint = 'Check OPENAI_API_KEY (Grok 4 uses OpenAI format)'
-      else if (msg.includes('Gemini')) hint = 'Check GEMINI_API_KEY. Image gen uses native v1beta format.'
+      if (msg.includes('Grok')) hint = 'Check API key for the Stylist Agent (uses OpenAI format)'
+      else if (msg.includes('Gemini')) hint = 'Check API key for the Visualizer Agent.'
       else if (msg.includes('502')) hint = 'Start backend: python server.py'
       else if (msg.includes('timed out')) hint = 'Image gen can take ~2min. Try again.'
       errorDisplay?.show({ title: 'Figure Error', message: msg, hint, step: 'Step 2-3' })
@@ -462,7 +462,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       steps?.setStatus('step-edit', 'done')
       // Enable Step 2→3 button
       generateFigureBtn.disabled = false
-      statusText.textContent = 'Skeleton confirmed! Click "Step 2→3" to generate figure.'
+      statusText.textContent = 'Draft confirmed! Click "Step 2→3" to generate figure.'
       statusText.style.color = ''
     }
   })

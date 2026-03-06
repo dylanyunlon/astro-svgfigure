@@ -8,10 +8,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cworld1/astro-theme-pure.git",
+    "url": "git+https://github.com/dylanyunlon/astro-svgfigure.git",
     "directory": "packages/pure"
   },
-  "bugs": "https://github.com/cworld1/astro-theme-pure",
+  "bugs": "https://github.com/dylanyunlon/astro-svgfigure",
   "keywords": [
     "astro-component",
     "withastro",
