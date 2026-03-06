@@ -1,5 +1,5 @@
 {
-  "name": "astro-theme-pure",
+  "name": "dylanet-pure",
   "workspaces": [
     "packages/*"
   ],
