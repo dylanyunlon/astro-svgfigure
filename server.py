@@ -167,7 +167,7 @@ async def api_topology(request_data: dict) -> JSONResponse:
         if result.success:
             return JSONResponse({
                 "success": True,
-                "topology": result.topology.model_dump() if result.topology else None,
+                "topology": result.topology.model_dump(exclude_none=True) if result.topology else None,
                 "model_used": result.model_used,
             })
         else:

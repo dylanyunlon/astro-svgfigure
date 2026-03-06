@@ -55,23 +55,34 @@ class ElkLabel(BaseModel):
 
 
 class ElkNode(BaseModel):
-    """ELK graph node (child)."""
+    """ELK graph node (child). Supports compound nodes with nested children."""
+    model_config = {"extra": "allow"}
+
     id: str
     width: float = 150
     height: float = 50
     labels: List[ElkLabel] = []
     layoutOptions: Optional[Dict[str, str]] = None
+    # Compound node fields
+    children: Optional[List["ElkNode"]] = None
+    edges: Optional[List["ElkEdge"]] = None
+    group: Optional[bool] = None
+    borderless: Optional[bool] = None
+    iconHint: Optional[str] = None
     # After layout, these are populated:
     x: Optional[float] = None
     y: Optional[float] = None
 
 
 class ElkEdge(BaseModel):
-    """ELK graph edge."""
+    """ELK graph edge with optional advanced routing properties."""
+    model_config = {"extra": "allow"}
+
     id: str
     sources: List[str]
     targets: List[str]
     labels: Optional[List[ElkLabel]] = None
+    advanced: Optional[Dict[str, Any]] = None
 
 
 class ElkLayoutOptions(BaseModel):
@@ -87,10 +98,16 @@ class ElkGraph(BaseModel):
     Full ELK graph (input to elk.layout()).
     Reference: kieler/elkjs
     """
+    model_config = {"extra": "allow"}
+
     id: str = "root"
     layoutOptions: Optional[Dict[str, str]] = None
     children: List[ElkNode] = []
     edges: List[ElkEdge] = []
+
+
+# Resolve forward references for self-referencing ElkNode
+ElkNode.model_rebuild()
 
 
 # ============================================================================
