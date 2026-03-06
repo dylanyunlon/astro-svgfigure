@@ -85,11 +85,11 @@
         else if (msg.includes('500') || msg.includes('internal'))
           hint = '💡 Server error. Check backend logs (python server.py) for details.'
         else if (msg.includes('elk') || msg.includes('layout'))
-          hint = '💡 ELK layout failed. The topology JSON may have invalid format. Try a simpler description.'
+          hint = '💡 Layout composition failed. The planner output may have invalid format. Try a simpler description.'
         else if (msg.includes('grok'))
-          hint = '💡 Grok 4 prompt generation failed. Check OPENAI_API_KEY (Grok uses OpenAI-compatible format).'
+          hint = '💡 Stylist refinement failed. Check API configuration for the Stylist Agent.'
         else if (msg.includes('gemini'))
-          hint = '💡 Gemini image generation failed. Check GEMINI_API_KEY. Image gen can take 1-2 minutes.'
+          hint = '💡 Visualizer generation failed. Check API configuration. Image generation can take 1-2 minutes.'
       }
 
       if (container) container.classList.remove('hidden')
