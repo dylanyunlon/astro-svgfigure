@@ -81,6 +81,29 @@ export function elkToInteractive(layouted: ElkLayouted): InteractiveGraph {
     })
   }
 
+  // Also collect nested edges inside compound nodes (recursive)
+  // Nested edge coordinates from ELK are relative to the parent compound node
+  function collectNestedEdges(children: any[], ox: number = 0, oy: number = 0) {
+    for (const child of children) {
+      const childAbsX = (child.x || 0) + ox
+      const childAbsY = (child.y || 0) + oy
+      if (child && Array.isArray(child.edges)) {
+        child.edges.forEach((edge: any, i: number) => {
+          if (edge) {
+            const ie = convertEdge(edge, edges.length + i, nodeMap, childAbsX, childAbsY)
+            if (ie) edges.push(ie)
+          }
+        })
+      }
+      if (child && Array.isArray(child.children)) {
+        collectNestedEdges(child.children, childAbsX, childAbsY)
+      }
+    }
+  }
+  if (Array.isArray(layouted.children)) {
+    collectNestedEdges(layouted.children)
+  }
+
   // Calculate bounds
   let maxX = 0, maxY = 0
   for (const n of nodes) {
@@ -125,7 +148,7 @@ function flattenNode(node: ElkLayoutedNode, index: number, out: InteractiveNode[
   }
 }
 
-function convertEdge(edge: ElkLayoutedEdge, index: number, nodeMap: Map<string, InteractiveNode>): InteractiveEdge | null {
+function convertEdge(edge: ElkLayoutedEdge, index: number, nodeMap: Map<string, InteractiveNode>, offsetX: number = 0, offsetY: number = 0): InteractiveEdge | null {
   const sourceId = edge.sources?.[0]
   const targetId = edge.targets?.[0]
   if (!sourceId || !targetId) return null
@@ -134,13 +157,13 @@ function convertEdge(edge: ElkLayoutedEdge, index: number, nodeMap: Map<string, 
 
   if (edge.sections && edge.sections.length > 0) {
     for (const sec of edge.sections) {
-      if (sec.startPoint) points.push({ x: sec.startPoint.x, y: sec.startPoint.y })
+      if (sec.startPoint) points.push({ x: sec.startPoint.x + offsetX, y: sec.startPoint.y + offsetY })
       if (sec.bendPoints) {
         for (const bp of sec.bendPoints) {
-          points.push({ x: bp.x, y: bp.y })
+          points.push({ x: bp.x + offsetX, y: bp.y + offsetY })
         }
       }
-      if (sec.endPoint) points.push({ x: sec.endPoint.x, y: sec.endPoint.y })
+      if (sec.endPoint) points.push({ x: sec.endPoint.x + offsetX, y: sec.endPoint.y + offsetY })
     }
   }
 

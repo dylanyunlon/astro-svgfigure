@@ -68,15 +68,25 @@ export function elkToSvg(graph: ElkGraph): string {
   }
 
   // Calculate bounds from actual node positions if graph width/height are 0
+  // Recursively check all nested children for accurate bounds
   let gw = graph.width || 0
   let gh = graph.height || 0
   if (gw === 0 || gh === 0) {
-    for (const child of (graph.children || [])) {
-      const right = (child.x || 0) + (child.width || 160)
-      const bottom = (child.y || 0) + (child.height || 60)
-      if (right > gw) gw = right
-      if (bottom > gh) gh = bottom
+    function computeBounds(nodes: ElkNode[], ox: number, oy: number) {
+      for (const child of nodes) {
+        const cx = (child.x || 0) + ox
+        const cy = (child.y || 0) + oy
+        const right = cx + (child.width || 160)
+        const bottom = cy + (child.height || 60)
+        if (right > gw) gw = right
+        if (bottom > gh) gh = bottom
+        // Recurse into nested children with accumulated offset
+        if (Array.isArray(child.children) && child.children.length > 0) {
+          computeBounds(child.children, cx, cy)
+        }
+      }
     }
+    computeBounds(graph.children || [], 0, 0)
     gw = Math.max(gw, 200)
     gh = Math.max(gh, 150)
   }
@@ -91,15 +101,24 @@ export function elkToSvg(graph: ElkGraph): string {
   parts.push(`      <polygon points="0 0, ${ARROW_SIZE} ${ARROW_SIZE/3}, 0 ${ARROW_SIZE/1.5}" fill="${DEFAULT_EDGE_COLOR}" />`)
   parts.push(`    </marker>`)
 
-  // Generate colored markers for each edge color
+  // Generate colored markers for each edge color (including nested edges)
   const markerColors = new Set<string>()
-  if (Array.isArray(graph.edges)) {
-    for (const e of graph.edges) {
+  function collectEdgeColors(edgeList: ElkEdge[] | undefined) {
+    if (!Array.isArray(edgeList)) return
+    for (const e of edgeList) {
       if (e?.advanced?.strokeColor) markerColors.add(e.advanced.strokeColor)
       if (e?.advanced?.semanticType && SEMANTIC_STYLES[e.advanced.semanticType]?.strokeColor)
         markerColors.add(SEMANTIC_STYLES[e.advanced.semanticType].strokeColor!)
     }
   }
+  function collectAllEdgeColors(nodes: ElkNode[]) {
+    for (const node of nodes) {
+      collectEdgeColors((node as any).edges)
+      if (node.children) collectAllEdgeColors(node.children)
+    }
+  }
+  collectEdgeColors(graph.edges)
+  if (Array.isArray(graph.children)) collectAllEdgeColors(graph.children)
   for (const color of markerColors) {
     const mid = `ah-${color.replace('#', '')}`
     parts.push(`    <marker id="${mid}" markerWidth="${ARROW_SIZE}" markerHeight="${ARROW_SIZE/1.5}" refX="${ARROW_SIZE}" refY="${ARROW_SIZE/3}" orient="auto" markerUnits="strokeWidth">`)
@@ -118,6 +137,26 @@ export function elkToSvg(graph: ElkGraph): string {
     }
   }
 
+  // Also render nested edges inside compound nodes (recursive)
+  // Nested edge coordinates are relative to their parent compound node
+  function collectNestedEdges(nodes: ElkNode[], ox: number, oy: number) {
+    for (const node of nodes) {
+      const nodeAbsX = (node.x || 0) + ox
+      const nodeAbsY = (node.y || 0) + oy
+      if (node && (node as any).edges && Array.isArray((node as any).edges)) {
+        for (const edge of (node as any).edges as ElkEdge[]) {
+          if (edge) { const r = renderEdge(edge, nodeAbsX, nodeAbsY); if (r) parts.push(r) }
+        }
+      }
+      if (node && node.children && Array.isArray(node.children)) {
+        collectNestedEdges(node.children, nodeAbsX, nodeAbsY)
+      }
+    }
+  }
+  if (Array.isArray(graph.children)) {
+    collectNestedEdges(graph.children, 0, 0)
+  }
+
   if (Array.isArray(graph.children)) {
     graph.children.slice(0, 100).forEach((node, i) => {
       if (node) parts.push(renderNode(node, i, 0))
@@ -128,8 +167,8 @@ export function elkToSvg(graph: ElkGraph): string {
   return parts.join('\n')
 }
 
-function renderNode(node: ElkNode, index: number, depth: number = 0): string {
-  const x = (node.x || 0) + PADDING, y = (node.y || 0) + PADDING
+function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: number = 0, offsetY: number = 0): string {
+  const x = (node.x || 0) + PADDING + offsetX, y = (node.y || 0) + PADDING + offsetY
   const w = node.width || 160, h = node.height || 60
   const isGroup = Array.isArray(node.children) && node.children.length > 0
   const fill = isGroup ? NODE_FILL_GROUP : NODE_FILL
@@ -149,11 +188,12 @@ function renderNode(node: ElkNode, index: number, depth: number = 0): string {
   const fontWeight = isGroup ? '600' : '500'
   svg += `  <text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
 
-  if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1) })
+  // Nested children: pass parent's absolute position as offset (minus PADDING since children add it again)
+  if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
   return svg
 }
 
-function renderEdge(edge: ElkEdge): string {
+function renderEdge(edge: ElkEdge, offsetX: number = 0, offsetY: number = 0): string {
   if (!edge?.sections?.length) return ''
 
   const adv = edge.advanced || {}
@@ -173,14 +213,14 @@ function renderEdge(edge: ElkEdge): string {
     if (!section?.startPoint || !section?.endPoint) continue
 
     const pts: {x:number;y:number}[] = []
-    pts.push({ x: (section.startPoint.x??0)+PADDING, y: (section.startPoint.y??0)+PADDING })
+    pts.push({ x: (section.startPoint.x??0)+PADDING+offsetX, y: (section.startPoint.y??0)+PADDING+offsetY })
     if (Array.isArray(section.bendPoints)) {
       for (const bp of section.bendPoints) {
         if (bp && typeof bp.x==='number' && typeof bp.y==='number')
-          pts.push({ x: bp.x+PADDING, y: bp.y+PADDING })
+          pts.push({ x: bp.x+PADDING+offsetX, y: bp.y+PADDING+offsetY })
       }
     }
-    pts.push({ x: (section.endPoint.x??0)+PADDING, y: (section.endPoint.y??0)+PADDING })
+    pts.push({ x: (section.endPoint.x??0)+PADDING+offsetX, y: (section.endPoint.y??0)+PADDING+offsetY })
 
     let d: string
     if (curv > 0 && pts.length === 2) {
@@ -213,8 +253,8 @@ function renderEdge(edge: ElkEdge): string {
     const pos = lbl.position ?? 0.5
     const idx = Math.min(Math.floor(pos*(allPts.length-1)), allPts.length-2)
     const t = (pos*(allPts.length-1)) - idx
-    const px = (allPts[idx].x*(1-t) + allPts[idx+1].x*t) + PADDING
-    const py = (allPts[idx].y*(1-t) + allPts[idx+1].y*t) + PADDING
+    const px = (allPts[idx].x*(1-t) + allPts[idx+1].x*t) + PADDING + offsetX
+    const py = (allPts[idx].y*(1-t) + allPts[idx+1].y*t) + PADDING + offsetY
     const fs = lbl.fontSize || 10
     const bg = lbl.backgroundColor || '#FFFFFF'
 

@@ -1,241 +1,237 @@
 /**
- * ELK.js 布局引擎封装
+ * POST /api/layout — Topology JSON → ELK Layouted JSON
  *
- * 核心文件: 将 LLM 生成的零坐标拓扑 JSON 通过 elkjs 约束求解器
- * 计算出精确的像素位置。
+ * Runs ELK.js constraint solver on the server side (Astro SSR)
+ * Uses the project's src/lib/elk/layout.ts module
  *
- * 参考实现:
- * - kieler/elkjs: https://github.com/kieler/elkjs
- * - ReactFlow ELK 示例: https://reactflow.dev/examples/layout/elkjs
- * - xyflow/xyflow: https://github.com/xyflow/xyflow
- * - Eclipse ELK 算法: https://www.eclipse.org/elk/reference/algorithms.html
- *
- * 使用方式:
- * ```ts
- * import { layoutGraph, layoutWithPreset } from '@elk/layout'
- *
- * const result = await layoutGraph(topologyJson)
- * // result.graph.children[i] => { id, x, y, width, height, ... }
- * // result.graph.edges[i].sections => 边的路由点
- *
- * const result2 = await layoutWithPreset(topologyJson, 'academic-paper')
- * ```
+ * GitHub 背书: kieler/elkjs, withastro/astro (API Routes)
  */
+import type { APIRoute } from 'astro'
 
-import ELK from 'elkjs/lib/elk.bundled.js'
+export const prerender = false
 
-import { DEFAULT_LAYOUT_OPTIONS, DEFAULT_NODE_SIZE } from './constants'
-import { PRESETS } from './presets'
-import type {
-  ElkAlgorithm,
-  ElkDirection,
-  ElkGraph,
-  ElkLayoutOptions,
-  ElkNode,
-  LayoutedGraph,
-  LayoutResult
-} from './types'
+export const POST: APIRoute = async ({ request }) => {
+  try {
+    const body = await request.json()
+    const { graph, preset, options } = body
 
-// ============================================================
-// ELK 实例 (单例)
-// ============================================================
+    if (!graph || typeof graph !== 'object') {
+      return new Response(
+        JSON.stringify({ error: 'graph field is required (ELK JSON)' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
 
-let elkInstance: InstanceType<typeof ELK> | null = null
+    // ── Validate & sanitize graph before passing to ELK ──────────────
+    const children = Array.isArray(graph.children) ? graph.children : []
+    const edges = Array.isArray(graph.edges) ? graph.edges : []
 
-function getElk(): InstanceType<typeof ELK> {
-  if (!elkInstance) {
-    elkInstance = new ELK()
-  }
-  return elkInstance
-}
+    if (children.length === 0) {
+      return new Response(
+        JSON.stringify({
+          error: 'graph.children is empty — need at least one node',
+          debug: { receivedKeys: Object.keys(graph) },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
 
-// ============================================================
-// 核心布局函数
-// ============================================================
+    // Dynamic import to avoid bundling issues
+    const ELK = (await import('elkjs/lib/elk.bundled.js')).default
+    const elk = new ELK()
 
-/**
- * 对拓扑 JSON 执行 ELK 布局
- *
- * @param graph - LLM 生成的零坐标拓扑 JSON (ElkGraph 格式)
- * @param options - 可选的 ELK 布局选项 (覆盖默认值)
- * @returns 布局结果, 包含精确坐标的图和元数据
- *
- * @example
- * ```ts
- * const topology = {
- *   id: "root",
- *   children: [
- *     { id: "input", width: 150, height: 50, labels: [{ text: "Input" }] },
- *     { id: "encoder", width: 150, height: 50, labels: [{ text: "Encoder" }] }
- *   ],
- *   edges: [
- *     { id: "e1", sources: ["input"], targets: ["encoder"] }
- *   ]
- * }
- * const result = await layoutGraph(topology)
- * console.log(result.graph.children[0].x, result.graph.children[0].y)
- * ```
- */
-export async function layoutGraph(
-  graph: ElkGraph,
-  options?: ElkLayoutOptions
-): Promise<LayoutResult> {
-  const elk = getElk()
-  const startTime = performance.now()
+    // Merge layout options
+    const defaultOptions: Record<string, string> = {
+      'elk.algorithm': options?.algorithm || 'layered',
+      'elk.direction': options?.direction || 'DOWN',
+      'elk.spacing.nodeNode': String(options?.nodeSpacing || 50),
+      'elk.layered.spacing.nodeNodeBetweenLayers': String(options?.layerSpacing || 80),
+      'elk.spacing.edgeNode': String(options?.edgeNodeSpacing || 30),
+      'elk.edgeRouting': options?.edgeRouting || 'ORTHOGONAL',
+      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+    }
 
-  // 合并布局选项: 默认 → 图自带 → 参数覆盖
-  const mergedOptions: ElkLayoutOptions = {
-    ...DEFAULT_LAYOUT_OPTIONS,
-    ...(graph.layoutOptions || {}),
-    ...(options || {})
-  }
+    // Apply preset overrides
+    const presetOverrides: Record<string, Record<string, string>> = {
+      'academic-paper': {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'DOWN',
+        'elk.spacing.nodeNode': '60',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '100',
+      },
+      'neural-network': {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'RIGHT',
+        'elk.spacing.nodeNode': '40',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '120',
+      },
+      'flowchart': {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'DOWN',
+        'elk.spacing.nodeNode': '50',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '80',
+      },
+    }
 
-  // 预处理: 确保所有节点有宽高
-  const preparedGraph = prepareGraph(graph, mergedOptions)
+    const layoutOptions = {
+      ...defaultOptions,
+      // Also merge any layoutOptions the LLM put on the graph itself
+      ...(graph.layoutOptions || {}),
+      ...(preset && presetOverrides[preset] ? presetOverrides[preset] : {}),
+    }
 
-  // 执行 ELK 布局
-  const layoutedGraph = (await elk.layout(preparedGraph)) as LayoutedGraph
+    // Collect ALL valid node IDs recursively (including nested compound children)
+    const nodeIds = new Set<string>()
 
-  const duration = performance.now() - startTime
-  const bounds = computeBounds(layoutedGraph)
-  const algorithm = (mergedOptions['elk.algorithm'] || 'layered') as ElkAlgorithm
+    /**
+     * Recursively sanitize a list of nodes, preserving compound node properties
+     * (layoutOptions, group, borderless, nested edges, iconHint) that ELK needs
+     * for proper hierarchical layout.
+     */
+    function sanitizeNodeList(nodes: any[], depth: number = 0): any[] {
+      const seenIds = new Set<string>()
+      return nodes.map((node: any, i: number) => {
+        let id = node.id || `node_d${depth}_${i}`
+        // Deduplicate IDs at this level
+        if (seenIds.has(id) || nodeIds.has(id)) {
+          id = `${id}_d${depth}_${i}`
+        }
+        seenIds.add(id)
+        nodeIds.add(id)
 
-  return {
-    graph: layoutedGraph,
-    duration,
-    algorithm,
-    bounds
-  }
-}
+        const hasChildren = Array.isArray(node.children) && node.children.length > 0
+        const isGroup = hasChildren || node.group
 
-/**
- * 使用预设配置进行布局
- *
- * @param graph - 拓扑 JSON
- * @param presetName - 预设名称 (academic-paper / flowchart / neural-net / architecture)
- * @param overrides - 额外覆盖选项
- */
-export async function layoutWithPreset(
-  graph: ElkGraph,
-  presetName: string,
-  overrides?: ElkLayoutOptions
-): Promise<LayoutResult> {
-  const preset = PRESETS[presetName]
-  if (!preset) {
-    console.warn(`Unknown preset "${presetName}", falling back to defaults`)
-    return layoutGraph(graph, overrides)
-  }
+        const sanitized: Record<string, any> = {
+          id,
+          width: Number(node.width) || (isGroup ? 250 : 160),
+          height: Number(node.height) || (isGroup ? 200 : 60),
+          labels: Array.isArray(node.labels) && node.labels.length > 0
+            ? node.labels
+            : [{ text: id.replace(/_/g, ' ') }],
+        }
 
-  const options: ElkLayoutOptions = {
-    ...preset.layoutOptions,
-    ...(overrides || {})
-  }
+        // Preserve compound node properties essential for ELK layout
+        if (node.layoutOptions) sanitized.layoutOptions = node.layoutOptions
+        if (node.group) sanitized.group = true
+        if (node.borderless) sanitized.borderless = true
+        if (node.iconHint) sanitized.iconHint = node.iconHint
 
-  // 应用预设的默认节点尺寸 (仅对缺少尺寸的节点)
-  const preparedGraph = {
-    ...graph,
-    children: (graph.children || []).map((node) => ({
-      ...node,
-      width: node.width || preset.defaultNodeSize.width,
-      height: node.height || preset.defaultNodeSize.height
-    }))
-  }
+        // Recursively sanitize nested children
+        if (hasChildren) {
+          sanitized.children = sanitizeNodeList(node.children, depth + 1)
 
-  return layoutGraph(preparedGraph, options)
-}
+          // Ensure compound nodes have padding layoutOptions for proper ELK sizing
+          if (!sanitized.layoutOptions) {
+            sanitized.layoutOptions = {
+              'elk.padding': '[top=30,left=10,bottom=10,right=10]',
+            }
+          }
 
-/**
- * 快速布局: 指定算法和方向
- */
-export async function quickLayout(
-  graph: ElkGraph,
-  algorithm: ElkAlgorithm = 'layered',
-  direction: ElkDirection = 'DOWN'
-): Promise<LayoutResult> {
-  return layoutGraph(graph, {
-    'elk.algorithm': algorithm,
-    'elk.direction': direction
-  })
-}
+          // Sanitize nested edges within compound nodes
+          if (Array.isArray(node.edges) && node.edges.length > 0) {
+            sanitized.edges = sanitizeEdgeList(
+              node.edges, `inner_${id}_e`, depth
+            )
+          }
+        }
 
-// ============================================================
-// 辅助函数
-// ============================================================
+        return sanitized
+      })
+    }
 
-/**
- * 预处理图: 确保所有节点都有宽高, 递归处理子图
- */
-function prepareGraph(graph: ElkGraph, options: ElkLayoutOptions): ElkGraph {
-  return {
-    ...graph,
-    layoutOptions: options,
-    children: (graph.children || []).map((node) => prepareNode(node)),
-    edges: graph.edges || []
-  }
-}
+    /**
+     * Sanitize a list of edges, validating source/target references.
+     * Uses the global nodeIds set which is populated during node sanitization.
+     */
+    function sanitizeEdgeList(
+      edgeList: any[],
+      idPrefix: string = 'e',
+      _depth: number = 0,
+    ): any[] {
+      const seenEdgeIds = new Set<string>()
+      return edgeList
+        .filter((edge: any) => {
+          const sources = Array.isArray(edge.sources) ? edge.sources : []
+          const targets = Array.isArray(edge.targets) ? edge.targets : []
+          if (sources.length === 0 || targets.length === 0) return false
+          // Validate all endpoints reference existing nodes
+          const allValid = sources.every((s: string) => nodeIds.has(s)) &&
+                           targets.every((t: string) => nodeIds.has(t))
+          return allValid
+        })
+        .map((edge: any, i: number) => {
+          let id = edge.id || `${idPrefix}_${i}`
+          if (seenEdgeIds.has(id)) {
+            id = `${id}_dup_${i}`
+          }
+          seenEdgeIds.add(id)
+          return {
+            id,
+            sources: Array.isArray(edge.sources) ? edge.sources : [],
+            targets: Array.isArray(edge.targets) ? edge.targets : [],
+            ...(edge.advanced ? { advanced: edge.advanced } : {}),
+            ...(edge.labels ? { labels: edge.labels } : {}),
+          }
+        })
+    }
 
-/**
- * 预处理单个节点
- */
-function prepareNode(node: ElkNode): ElkNode {
-  const prepared: ElkNode = {
-    ...node,
-    width: node.width || DEFAULT_NODE_SIZE.width,
-    height: node.height || DEFAULT_NODE_SIZE.height
-  }
+    // Sanitize nodes first (populates nodeIds with ALL IDs including nested)
+    const sanitizedChildren = sanitizeNodeList(children)
 
-  // 递归处理子节点 (compound graph)
-  if (node.children && node.children.length > 0) {
-    prepared.children = node.children.map((child) => prepareNode(child))
-  }
+    // Then sanitize top-level edges (can now reference nested node IDs too)
+    const sanitizedEdges = sanitizeEdgeList(edges, 'e')
 
-  return prepared
-}
+    const processedGraph = {
+      id: graph.id || 'root',
+      layoutOptions,
+      children: sanitizedChildren,
+      edges: sanitizedEdges,
+    }
 
-/**
- * 计算布局后图的包围盒
- */
-function computeBounds(graph: LayoutedGraph): {
-  x: number
-  y: number
-  width: number
-  height: number
-} {
-  if (!graph.children || graph.children.length === 0) {
-    return { x: 0, y: 0, width: 0, height: 0 }
-  }
+    const layouted = await elk.layout(processedGraph)
 
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
+    // Generate skeleton SVG from layouted graph (non-fatal if it fails)
+    let skeletonSvg = ''
+    try {
+      // Use relative import to avoid Vite alias resolution issues in SSR
+      const { elkToSvg } = await import('../../lib/elk/to-svg')
+      if (layouted && layouted.children && layouted.children.length > 0) {
+        skeletonSvg = elkToSvg(layouted)
+        if (!skeletonSvg || skeletonSvg.length < 50) {
+          console.warn('elkToSvg returned empty/tiny result, layouted:', JSON.stringify(layouted).slice(0, 200))
+        }
+      } else {
+        console.warn('No children in layouted graph — cannot generate skeleton SVG')
+      }
+    } catch (svgErr: any) {
+      console.error('Skeleton SVG generation failed:', svgErr.message, svgErr.stack?.slice(0, 300))
+    }
 
-  for (const node of graph.children) {
-    const nx = node.x ?? 0
-    const ny = node.y ?? 0
-    const nw = node.width ?? DEFAULT_NODE_SIZE.width
-    const nh = node.height ?? DEFAULT_NODE_SIZE.height
-
-    minX = Math.min(minX, nx)
-    minY = Math.min(minY, ny)
-    maxX = Math.max(maxX, nx + nw)
-    maxY = Math.max(maxY, ny + nh)
-  }
-
-  return {
-    x: minX,
-    y: minY,
-    width: maxX - minX,
-    height: maxY - minY
-  }
-}
-
-/**
- * 销毁 ELK 实例 (清理 Web Worker 如果有)
- */
-export function destroyElk(): void {
-  if (elkInstance) {
-    // elkjs 没有显式 destroy, 但置空引用让 GC 回收
-    elkInstance = null
+    return new Response(
+      JSON.stringify({
+        success: true,
+        layouted,
+        skeletonSvg,
+        options: layoutOptions,
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    )
+  } catch (err: any) {
+    console.error('ELK layout error:', err)
+    return new Response(
+      JSON.stringify({
+        error: 'ELK layout failed',
+        details: err.message,
+        hint: 'The topology JSON may have invalid node/edge format. Check that all edge sources/targets reference valid node IDs.',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
   }
 }
