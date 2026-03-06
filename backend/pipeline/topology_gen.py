@@ -44,18 +44,39 @@ Your output must be valid ELK JSON (Eclipse Layout Kernel format) with:
 - edges: array of connections, each with {id, sources: [nodeId], targets: [nodeId]}
 - layoutOptions: {"elk.algorithm": "layered", "elk.direction": "DOWN"}
 
+=== CRITICAL RULE: EDGE INTEGRITY ===
+EVERY edge's "sources" and "targets" MUST reference node IDs that EXIST in
+the "children" array (at the same level or inside a compound node's "children").
+
+**BEFORE outputting**, mentally verify:
+  - For each edge, check that the source ID exists as a node.
+  - For each edge, check that the target ID exists as a node.
+  - If a node should contain sub-components, it MUST have a "children" array
+    with those sub-components listed as nodes inside it.
+
+COMMON MISTAKE TO AVOID:
+  ❌ WRONG: Creating "input_group" as a big empty box (width=280, height=140)
+     and then referencing "source_context" in edges — but "source_context" does
+     not exist anywhere in children!
+  ✅ RIGHT: Either (A) make "input_group" a compound node WITH children
+     containing "source_context", OR (B) list "source_context" as a
+     top-level node in the root children array.
+
 === ARCHITECTURE vs FLOWCHART DETECTION ===
 Analyze the input text to determine the diagram type:
 
 (A) ARCHITECTURE DIAGRAM (hierarchical, modular, nested components):
   - Use COMPOUND NODES (nested children) for parent-child relationships
-  - A parent node contains its children as nested "children" array
+  - A parent node MUST contain its children as a nested "children" array
+    — never create empty group boxes without actual children inside
   - Siblings at the same level are children of the same parent
   - Grandchild nodes are nested inside child nodes
   - Add "group" property to parent nodes: {"group": true, "borderless": true}
   - Borderless group nodes represent visual grouping layers — they should
     have NO visible border in the final rendering, only a subtle background tint
   - Deep nesting (≥3 levels) is expected for complex architectures
+  - Edges BETWEEN groups go in the root "edges" array, referencing child node IDs
+  - Edges WITHIN a group go in that group's "edges" array
 
 (B) FLOWCHART / PIPELINE (sequential data flow):
   - Mostly linear chain of nodes with directional edges
@@ -82,6 +103,9 @@ Rules:
    Example: a "Transformer Block" parent containing "Multi-Head Attention",
    "Feed Forward", and "Layer Norm" as children.
 8. Every edge's sources and targets MUST reference existing node IDs from children.
+   TRIPLE-CHECK this — the most common failure mode is edges referencing
+   nodes that were never created. If you mention a node in an edge, it MUST
+   exist in some children array.
 9. Edge IDs must be unique strings (e.g., "e1", "e2", "e3").
 10. Output ONLY the JSON object, no markdown fences, no explanation.
 11. For architecture diagrams: parent nodes with children MUST have
@@ -285,7 +309,7 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
       - Nodes without width/height
       - Nodes without labels
       - Duplicate node IDs
-      - Edges referencing non-existent nodes
+      - Edges referencing non-existent nodes → AUTO-CREATE missing nodes
       - Duplicate edge IDs
       - Missing layoutOptions
       - Preserves compound node fields: group, borderless, iconHint
@@ -307,8 +331,44 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(edges, list):
         edges = []
 
+    # ── AUTO-CREATE missing nodes referenced by edges ─────────────────
+    # This fixes the common LLM mistake of referencing nodes in edges
+    # that were never created (e.g., creating "input_group" as an empty
+    # big box but referencing "source_context" which doesn't exist).
+    orphan_ids: set = set()
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        for src in (edge.get("sources") or edge.get("source") or []):
+            s = src if isinstance(src, str) else ""
+            if s and s not in all_valid_ids:
+                orphan_ids.add(s)
+        for tgt in (edge.get("targets") or edge.get("target") or []):
+            t = tgt if isinstance(tgt, str) else ""
+            if t and t not in all_valid_ids:
+                orphan_ids.add(t)
+
+    if orphan_ids:
+        logger.warning(
+            f"Found {len(orphan_ids)} orphan node IDs referenced in edges "
+            f"but missing from children: {orphan_ids}. Auto-creating them."
+        )
+        for orphan_id in orphan_ids:
+            new_node = {
+                "id": orphan_id,
+                "width": 160,
+                "height": 50,
+                "labels": [{"text": orphan_id.replace("_", " ").title()}],
+            }
+            fixed_children.append(new_node)
+            all_valid_ids.add(orphan_id)
+        topology["children"] = fixed_children
+
     fixed_edges = _fix_edge_list(edges, all_valid_ids, edge_id_prefix="e")
     topology["edges"] = fixed_edges
+
+    # Also check nested edges inside compound nodes for orphan references
+    _fix_orphan_refs_recursive(fixed_children, all_valid_ids)
 
     original_child_count = len(children)
     original_edge_count = len(edges)
@@ -319,9 +379,54 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
         f"{len(fixed_edges)} top-level edges "
         f"(dropped {original_child_count - len(fixed_children)} nodes, "
         f"{original_edge_count - len(fixed_edges)} edges)"
+        f"{f', auto-created {len(orphan_ids)} missing nodes' if orphan_ids else ''}"
     )
 
     return topology
+
+
+def _fix_orphan_refs_recursive(
+    children: List[Dict[str, Any]],
+    all_valid_ids: set,
+) -> None:
+    """Recursively check nested edges for orphan references and auto-create missing nodes."""
+    for node in children:
+        if not isinstance(node, dict):
+            continue
+        nested_edges = node.get("edges", [])
+        nested_children = node.get("children", [])
+
+        if isinstance(nested_edges, list) and nested_edges:
+            orphan_ids: set = set()
+            for edge in nested_edges:
+                if not isinstance(edge, dict):
+                    continue
+                for src in (edge.get("sources") or []):
+                    if isinstance(src, str) and src not in all_valid_ids:
+                        orphan_ids.add(src)
+                for tgt in (edge.get("targets") or []):
+                    if isinstance(tgt, str) and tgt not in all_valid_ids:
+                        orphan_ids.add(tgt)
+
+            if orphan_ids:
+                if not isinstance(nested_children, list):
+                    nested_children = []
+                    node["children"] = nested_children
+                for orphan_id in orphan_ids:
+                    nested_children.append({
+                        "id": orphan_id,
+                        "width": 150,
+                        "height": 50,
+                        "labels": [{"text": orphan_id.replace("_", " ").title()}],
+                    })
+                    all_valid_ids.add(orphan_id)
+                logger.warning(
+                    f"Auto-created {len(orphan_ids)} missing nodes inside "
+                    f"compound node '{node.get('id', '?')}': {orphan_ids}"
+                )
+
+        if isinstance(nested_children, list):
+            _fix_orphan_refs_recursive(nested_children, all_valid_ids)
 
 
 def _fix_node_list(
@@ -350,22 +455,31 @@ def _fix_node_list(
             "height": node.get("height") or (200 if "children" in node else 50),
         }
 
-        # Ensure labels
-        labels = node.get("labels", [])
+        # Ensure labels (handle null labels from LLM)
+        labels = node.get("labels")
         if isinstance(labels, list) and len(labels) > 0:
-            fixed_node["labels"] = labels
+            # Clean label objects: remove null text values
+            clean_labels = []
+            for lbl in labels:
+                if isinstance(lbl, dict) and lbl.get("text"):
+                    clean_labels.append({"text": lbl["text"]})
+                elif isinstance(lbl, str) and lbl:
+                    clean_labels.append({"text": lbl})
+            fixed_node["labels"] = clean_labels if clean_labels else [{"text": node_id.replace("_", " ").title()}]
         else:
             fixed_node["labels"] = [{"text": node_id.replace("_", " ").title()}]
 
-        # Preserve compound node fields
+        # Preserve compound node fields (skip null/None values)
         if node.get("group"):
             fixed_node["group"] = True
         if node.get("borderless"):
             fixed_node["borderless"] = True
         if node.get("iconHint"):
             fixed_node["iconHint"] = node["iconHint"]
-        if node.get("layoutOptions"):
-            fixed_node["layoutOptions"] = node["layoutOptions"]
+        # Only preserve layoutOptions if it's a non-null dict
+        lo = node.get("layoutOptions")
+        if lo and isinstance(lo, dict):
+            fixed_node["layoutOptions"] = lo
 
         # Recursively fix nested children (compound nodes)
         if "children" in node and isinstance(node["children"], list):
@@ -397,8 +511,8 @@ def _fix_edge_list(
         if not isinstance(edge, dict):
             continue
 
-        sources = edge.get("sources", [])
-        targets = edge.get("targets", [])
+        sources = edge.get("sources") or []
+        targets = edge.get("targets") or []
 
         # Handle common LLM mistakes: "source"/"target" instead of "sources"/"targets"
         if not sources and "source" in edge:
@@ -444,11 +558,13 @@ def _fix_edge_list(
             "targets": valid_targets,
         }
 
-        # Preserve advanced edge properties
-        if edge.get("advanced"):
-            fixed_edge["advanced"] = edge["advanced"]
-        if edge.get("labels"):
-            fixed_edge["labels"] = edge["labels"]
+        # Preserve advanced edge properties (skip null values)
+        adv = edge.get("advanced")
+        if adv and isinstance(adv, dict):
+            fixed_edge["advanced"] = adv
+        lbls = edge.get("labels")
+        if lbls and isinstance(lbls, list) and len(lbls) > 0:
+            fixed_edge["labels"] = lbls
 
         fixed_edges.append(fixed_edge)
 
