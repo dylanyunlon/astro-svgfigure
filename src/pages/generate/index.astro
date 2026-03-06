@@ -286,6 +286,11 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       const editorSvg = preview?.getSkeletonSvg()
       if (editorSvg) currentSkeletonSvg = editorSvg
 
+      // Extract structured graph data from interactive editor (nodes with x,y,w,h + edges)
+      // This provides Gemini with EXACT spatial layout information the user confirmed
+      const editor = preview?.getEditor()
+      const elkGraph = editor ? editor.getGraph() : null
+
       // Mark edit step as done
       steps?.setStatus('step-edit', 'done')
 
@@ -296,7 +301,10 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
         const pRes = await fetch('/api/generate-prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ method_text: text, svg_content: currentSkeletonSvg }),
+          body: JSON.stringify({
+            method_text: text, svg_content: currentSkeletonSvg,
+            elk_graph: elkGraph,
+          }),
         })
         if (!pRes.ok) { const e = await pRes.json(); throw new Error(`Grok: ${e.error || 'Failed'}`) }
         const pData = await pRes.json()
@@ -321,6 +329,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
         body: JSON.stringify({
           svg_content: currentSkeletonSvg, method_text: text,
           custom_prompt: customPrompt, aspect_ratio: aspect || '16:9', image_size: '4K',
+          elk_graph: elkGraph,
         }),
       })
       if (!iRes.ok) { const e = await iRes.json(); throw new Error(`Gemini: ${e.error || 'Failed'}`) }

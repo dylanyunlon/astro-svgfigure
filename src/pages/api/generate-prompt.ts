@@ -32,6 +32,7 @@ export const POST: APIRoute = async ({ request }) => {
         svg_content: body.svg_content,
         model: body.model || null,
         reference_image_b64: body.reference_image_b64 || null,
+        elk_graph: body.elk_graph || null,
       }),
     })
 

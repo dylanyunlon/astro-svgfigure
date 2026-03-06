@@ -300,6 +300,8 @@ async def api_generate_image(request_data: dict) -> JSONResponse:
       - aspect_ratio (str, optional): Image aspect ratio (default: 16:9)
       - image_size (str, optional): Image size (default: 4K)
       - custom_prompt (str, optional): Skip Grok, use this prompt directly
+      - elk_graph (dict, optional): Structured graph data from interactive editor
+        (nodes with x,y,width,height + edges with sourceId,targetId)
 
     Returns:
       - success (bool)
@@ -334,6 +336,7 @@ async def api_generate_image(request_data: dict) -> JSONResponse:
             aspect_ratio=request_data.get("aspect_ratio", "16:9"),
             image_size=request_data.get("image_size", "4K"),
             custom_prompt=request_data.get("custom_prompt"),
+            elk_graph=request_data.get("elk_graph"),
         )
 
         return JSONResponse(result)
