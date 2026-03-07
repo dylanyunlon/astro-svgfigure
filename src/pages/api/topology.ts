@@ -34,7 +34,7 @@ export const POST: APIRoute = async ({ request }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: text.trim(),
-          model: 'claude-opus-4-6',  // Step 1 固定使用 Claude Opus
+          model: 'claude-sonnet-4-20250514',  // Step 1 固定使用 Claude Opus
           algorithm: algorithm || 'layered',
           direction: direction || 'DOWN',
         }),

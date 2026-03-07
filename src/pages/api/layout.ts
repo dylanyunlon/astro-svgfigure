@@ -233,32 +233,58 @@ export const POST: APIRoute = async ({ request }) => {
       return result
     }
 
+    /**
+     * Sanitize edges and SPLIT HYPEREDGES into 1-to-1 simple edges.
+     *
+     * ELK's layered algorithm throws "Hyperedges are not supported" when an
+     * edge has multiple sources OR multiple targets. LLMs sometimes generate
+     * edges like {sources: ["a","b"], targets: ["c"]} — these must be
+     * decomposed into individual edges: a→c and b→c.
+     */
     function sanitizeEdgeList(edgeList: any[]): any[] {
       const seenIds = new Set<string>()
-      return edgeList
-        .filter((edge: any) => {
-          const sources = Array.isArray(edge.sources) ? edge.sources : []
-          const targets = Array.isArray(edge.targets) ? edge.targets : []
-          if (sources.length === 0 || targets.length === 0) return false
-          // Validate against ALL node IDs (including nested ones)
-          const allValid = sources.every((s: string) => nodeIds.has(s)) &&
-                           targets.every((t: string) => nodeIds.has(t))
-          return allValid
-        })
-        .map((edge: any, i: number) => {
-          let id = edge.id || `e_${i}`
-          if (seenIds.has(id)) {
-            id = `${id}_dup_${i}`
+      const result: any[] = []
+
+      for (let i = 0; i < edgeList.length; i++) {
+        const edge = edgeList[i]
+        if (!edge) continue
+
+        const sources = (Array.isArray(edge.sources) ? edge.sources : [])
+          .filter((s: string) => typeof s === 'string' && nodeIds.has(s))
+        const targets = (Array.isArray(edge.targets) ? edge.targets : [])
+          .filter((t: string) => typeof t === 'string' && nodeIds.has(t))
+
+        if (sources.length === 0 || targets.length === 0) continue
+
+        // Decompose hyperedges (M sources × N targets) into M*N simple edges
+        // Each simple edge has exactly 1 source and 1 target
+        for (let si = 0; si < sources.length; si++) {
+          for (let ti = 0; ti < targets.length; ti++) {
+            const baseId = edge.id || `e_${i}`
+            // Only append suffix if this is a decomposed hyperedge
+            const needsSuffix = sources.length > 1 || targets.length > 1
+            let id = needsSuffix ? `${baseId}_s${si}_t${ti}` : baseId
+            if (seenIds.has(id)) {
+              id = `${id}_dup_${i}`
+            }
+            seenIds.add(id)
+
+            const simpleEdge: any = {
+              id,
+              sources: [sources[si]],
+              targets: [targets[ti]],
+            }
+            // Preserve labels only on the first decomposed edge
+            if (si === 0 && ti === 0) {
+              if (edge.advanced) simpleEdge.advanced = edge.advanced
+              if (edge.labels) simpleEdge.labels = edge.labels
+            }
+            result.push(simpleEdge)
           }
-          seenIds.add(id)
-          return {
-            id,
-            sources: Array.isArray(edge.sources) ? edge.sources : [],
-            targets: Array.isArray(edge.targets) ? edge.targets : [],
-            ...(edge.advanced ? { advanced: edge.advanced } : {}),
-            ...(edge.labels ? { labels: edge.labels } : {}),
-          }
-        })
+        }
+      }
+
+      return result
     }
 
     const sanitizedChildren = children.map((node: any, i: number) => sanitizeNode(node, i))
@@ -272,6 +298,17 @@ export const POST: APIRoute = async ({ request }) => {
       children: sanitizedChildren,
       edges: sanitizedEdges,
     }
+
+    // ── Diagnostic: log edge statistics ──────────────────────────────
+    const totalEdges = sanitizedEdges.length
+    const hyperEdges = sanitizedEdges.filter((e: any) =>
+      (e.sources?.length || 0) > 1 || (e.targets?.length || 0) > 1
+    ).length
+    if (hyperEdges > 0) {
+      // This should never happen after our fix, but log if it does
+      console.error(`[layout] BUG: ${hyperEdges}/${totalEdges} hyperedges survived sanitization!`)
+    }
+    console.log(`[layout] Passing to ELK: ${sanitizedChildren.length} top-level nodes, ${totalEdges} edges`)
 
     const layouted = await elk.layout(processedGraph)
 

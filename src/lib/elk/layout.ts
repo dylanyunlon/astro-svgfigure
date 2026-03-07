@@ -144,8 +144,9 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     /**
-     * Sanitize a list of edges, validating source/target references.
-     * Uses the global nodeIds set which is populated during node sanitization.
+     * Sanitize edges and SPLIT HYPEREDGES into 1-to-1 simple edges.
+     * ELK's layered algorithm throws "Hyperedges are not supported" when an
+     * edge has multiple sources OR multiple targets.
      */
     function sanitizeEdgeList(
       edgeList: any[],
@@ -153,30 +154,45 @@ export const POST: APIRoute = async ({ request }) => {
       _depth: number = 0,
     ): any[] {
       const seenEdgeIds = new Set<string>()
-      return edgeList
-        .filter((edge: any) => {
-          const sources = Array.isArray(edge.sources) ? edge.sources : []
-          const targets = Array.isArray(edge.targets) ? edge.targets : []
-          if (sources.length === 0 || targets.length === 0) return false
-          // Validate all endpoints reference existing nodes
-          const allValid = sources.every((s: string) => nodeIds.has(s)) &&
-                           targets.every((t: string) => nodeIds.has(t))
-          return allValid
-        })
-        .map((edge: any, i: number) => {
-          let id = edge.id || `${idPrefix}_${i}`
-          if (seenEdgeIds.has(id)) {
-            id = `${id}_dup_${i}`
+      const result: any[] = []
+
+      for (let i = 0; i < edgeList.length; i++) {
+        const edge = edgeList[i]
+        if (!edge) continue
+
+        const sources = (Array.isArray(edge.sources) ? edge.sources : [])
+          .filter((s: string) => typeof s === 'string' && nodeIds.has(s))
+        const targets = (Array.isArray(edge.targets) ? edge.targets : [])
+          .filter((t: string) => typeof t === 'string' && nodeIds.has(t))
+
+        if (sources.length === 0 || targets.length === 0) continue
+
+        // Decompose hyperedges into simple 1-to-1 edges
+        for (let si = 0; si < sources.length; si++) {
+          for (let ti = 0; ti < targets.length; ti++) {
+            const baseId = edge.id || `${idPrefix}_${i}`
+            const needsSuffix = sources.length > 1 || targets.length > 1
+            let id = needsSuffix ? `${baseId}_s${si}_t${ti}` : baseId
+            if (seenEdgeIds.has(id)) {
+              id = `${id}_dup_${i}`
+            }
+            seenEdgeIds.add(id)
+
+            const simpleEdge: any = {
+              id,
+              sources: [sources[si]],
+              targets: [targets[ti]],
+            }
+            if (si === 0 && ti === 0) {
+              if (edge.advanced) simpleEdge.advanced = edge.advanced
+              if (edge.labels) simpleEdge.labels = edge.labels
+            }
+            result.push(simpleEdge)
           }
-          seenEdgeIds.add(id)
-          return {
-            id,
-            sources: Array.isArray(edge.sources) ? edge.sources : [],
-            targets: Array.isArray(edge.targets) ? edge.targets : [],
-            ...(edge.advanced ? { advanced: edge.advanced } : {}),
-            ...(edge.labels ? { labels: edge.labels } : {}),
-          }
-        })
+        }
+      }
+
+      return result
     }
 
     // Sanitize nodes first (populates nodeIds with ALL IDs including nested)

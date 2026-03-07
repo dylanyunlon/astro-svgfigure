@@ -50,7 +50,7 @@ export const GET: APIRoute = async () => {
     return new Response(
       JSON.stringify({
         anthropic: [
-          { id: 'claude-opus-4-6', name: 'Claude Opus 4.6 (topology)' },
+          { id: 'claude-sonnet-4-20250514', name: 'Claude Opus 4.6 (topology)' },
         ],
         openai: [
           { id: 'grok-4', name: 'Grok 4 (prompt engineering)' },

@@ -114,6 +114,14 @@ Rules:
     Use natural language descriptions (e.g., "microscope", "DNA helix", "brain"),
     NOT emoji or Unicode. The image generator will create these from text.
 
+=== CRITICAL: NO HYPEREDGES ===
+Each edge MUST have EXACTLY ONE source and EXACTLY ONE target:
+  ✅ CORRECT: {"id": "e1", "sources": ["nodeA"], "targets": ["nodeB"]}
+  ❌ WRONG:  {"id": "e1", "sources": ["nodeA", "nodeB"], "targets": ["nodeC"]}
+  ❌ WRONG:  {"id": "e1", "sources": ["nodeA"], "targets": ["nodeB", "nodeC"]}
+If a node connects to multiple targets, create SEPARATE edges for each connection.
+Example: nodeA → nodeB AND nodeA → nodeC requires TWO edges, not one with two targets.
+
 Example output with nesting (architecture diagram):
 {
   "id": "root",
@@ -503,7 +511,13 @@ def _fix_edge_list(
     valid_ids: set,
     edge_id_prefix: str = "e",
 ) -> List[Dict[str, Any]]:
-    """Fix a list of edges, validating references against valid node IDs."""
+    """
+    Fix a list of edges, validating references against valid node IDs.
+
+    CRITICAL: Decompose hyperedges (multiple sources or targets) into
+    simple 1-to-1 edges. ELK's layered algorithm throws
+    "Hyperedges are not supported" when an edge has >1 source or >1 target.
+    """
     seen_edge_ids: set = set()
     fixed_edges = []
 
@@ -547,26 +561,33 @@ def _fix_edge_list(
             logger.debug(f"Dropping edge {edge.get('id', i)}: invalid sources={sources} or targets={targets}")
             continue
 
-        edge_id = edge.get("id", f"{edge_id_prefix}_{i}")
-        if edge_id in seen_edge_ids:
-            edge_id = f"{edge_id}_{i}"
-        seen_edge_ids.add(edge_id)
+        # Decompose hyperedges (M sources × N targets) into M*N simple edges
+        # Each simple edge has exactly 1 source and 1 target to avoid ELK error
+        for si, src_id in enumerate(valid_sources):
+            for ti, tgt_id in enumerate(valid_targets):
+                base_id = edge.get("id", f"{edge_id_prefix}_{i}")
+                needs_suffix = len(valid_sources) > 1 or len(valid_targets) > 1
+                edge_id = f"{base_id}_s{si}_t{ti}" if needs_suffix else base_id
+                if edge_id in seen_edge_ids:
+                    edge_id = f"{edge_id}_{i}"
+                seen_edge_ids.add(edge_id)
 
-        fixed_edge = {
-            "id": edge_id,
-            "sources": valid_sources,
-            "targets": valid_targets,
-        }
+                fixed_edge = {
+                    "id": edge_id,
+                    "sources": [src_id],
+                    "targets": [tgt_id],
+                }
 
-        # Preserve advanced edge properties (skip null values)
-        adv = edge.get("advanced")
-        if adv and isinstance(adv, dict):
-            fixed_edge["advanced"] = adv
-        lbls = edge.get("labels")
-        if lbls and isinstance(lbls, list) and len(lbls) > 0:
-            fixed_edge["labels"] = lbls
+                # Preserve advanced edge properties only on first decomposed edge
+                if si == 0 and ti == 0:
+                    adv = edge.get("advanced")
+                    if adv and isinstance(adv, dict):
+                        fixed_edge["advanced"] = adv
+                    lbls = edge.get("labels")
+                    if lbls and isinstance(lbls, list) and len(lbls) > 0:
+                        fixed_edge["labels"] = lbls
 
-        fixed_edges.append(fixed_edge)
+                fixed_edges.append(fixed_edge)
 
     return fixed_edges
 
@@ -650,4 +671,3 @@ def create_example_topology(
 
     topology_dict = examples.get(name, examples["transformer"])
     return ElkGraph(**topology_dict)
-    
