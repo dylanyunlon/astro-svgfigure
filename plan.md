@@ -2496,7 +2496,7 @@ Pipeline 重构 + 修复 503 model_not_found
 
 | Step | 模型 | 输入 → 输出 |
 |------|------|------------|
-| 1. Topology + ELK Layout | `claude-opus-4-6` (.env) | 论文 method text → 拓扑 JSON → ELK.js 约束布局 → 骨架 SVG |
+| 1. Topology + ELK Layout | `claude-sonnet-4-20250514` (.env) | 论文 method text → 拓扑 JSON → ELK.js 约束布局 → 骨架 SVG |
 | 2. Grok 4 Prompt | `grok-4` (.env) | 骨架 SVG + method text → 200-400 词专业绘图 prompt |
 | 3. Gemini 3 Image | `gemini-3-pro-image-preview` (.env) | prompt → 4K PNG 科研级图片 |
 
@@ -2513,13 +2513,13 @@ Pipeline 重构 + 修复 503 model_not_found
 | `src/pages/index.astro` | 删除旧 4-step 流程副本, 改为重定向到 `/generate` |
 | `src/pages/api/topology.ts` | 移除硬编码 `model: 'gemini-2.5-flash'`, 改为 `undefined` 由后端 .env 决定 |
 | `src/pages/api/beautify.ts` | 同上 |
-| `src/pages/api/models.ts` | fallback 模型列表从 `gemini-2.5-flash` 改为 `claude-opus-4-6` / `grok-4` / `gemini-3-pro-image-preview` |
+| `src/pages/api/models.ts` | fallback 模型列表从 `gemini-2.5-flash` 改为 `claude-sonnet-4-20250514` / `grok-4` / `gemini-3-pro-image-preview` |
 
 **后端 (3个)**
 
 | 文件 | 改动 |
 |------|------|
-| `backend/config.py` | `DEFAULT_AI_MODEL` / `DEFAULT_TOPOLOGY_MODEL` 从 `gemini-2.5-flash` → `claude-opus-4-6`; 注释更新为 3-Step |
+| `backend/config.py` | `DEFAULT_AI_MODEL` / `DEFAULT_TOPOLOGY_MODEL` 从 `gemini-2.5-flash` → `claude-sonnet-4-20250514`; 注释更新为 3-Step |
 | `backend/ai_engine.py` | `DEFAULT_MODEL` 改为从 `settings.DEFAULT_AI_MODEL` 读取; `is_openai_model()` 新增 `grok-` 前缀路由 |
 | `backend/pipeline/gemini_image_gen.py` | 修复 tryallai endpoint URL (加 trailing `/`); 修复 Bearer auth 逻辑; 新增 `_extract_svg_structure()` 避免给 image model 喂 raw SVG XML |
 
@@ -2536,7 +2536,7 @@ topology.ts 发送 { model: "gemini-2.5-flash" }
       → tryallai 代理返回 503: 分组 画图分组 下模型 gemini-2.5-flash 无可用渠道
 ```
 
-修复后: 前端不再发送 model 字段 → 后端从 .env 读取 `DEFAULT_TOPOLOGY_MODEL=claude-opus-4-6`
+修复后: 前端不再发送 model 字段 → 后端从 .env 读取 `DEFAULT_TOPOLOGY_MODEL=claude-sonnet-4-20250514`
 
 12更新：
 

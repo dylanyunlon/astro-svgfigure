@@ -483,13 +483,36 @@ async def generate_image_with_gemini(
             f"Original may have been reasoning-only. Using fallback."
         )
         clean_prompt = prompt  # Fall back to original if cleaning removed everything meaningful
+
+    # ── CRITICAL: Truncate excessively verbose prompts ──────────────────
+    # Gemini 3 Pro Image handles ~3000 chars of design instruction well.
+    # Beyond ~6000 chars, the model tends to echo the prompt as text
+    # instead of generating an image. For verbose TIER-60/80 specs, we
+    # compress to the most impactful design points.
+    MAX_PROMPT_CHARS = 5000
+    if len(clean_prompt) > MAX_PROMPT_CHARS:
+        logger.warning(
+            f"Prompt too verbose ({len(clean_prompt)} chars > {MAX_PROMPT_CHARS}). "
+            f"Truncating to prevent Gemini from echoing prompt as text."
+        )
+        # Keep the tier header + first N characters, then add closing instruction
+        clean_prompt = clean_prompt[:MAX_PROMPT_CHARS - 200] + (
+            "\n\n[Remaining design points omitted for brevity. "
+            "Apply consistent professional academic style to all unlisted elements.]"
+        )
+
+    # Also cap the svg_summary to prevent total payload bloat
+    MAX_SUMMARY_CHARS = 2000
+    if len(svg_summary) > MAX_SUMMARY_CHARS:
+        svg_summary = svg_summary[:MAX_SUMMARY_CHARS] + "\n[... layout truncated]"
+
     combined_prompt = (
-        f"Generate an image: {clean_prompt}\n\n"
+        f"Create a publication-ready scientific figure image based on these design specifications:\n\n"
+        f"{clean_prompt}\n\n"
         f"Layout structure reference:\n{svg_summary}\n\n"
-        f"IMPORTANT: You MUST generate and return an IMAGE. "
-        f"Create a high-quality, publication-ready scientific figure image. "
+        f"OUTPUT: Generate a single high-quality IMAGE. "
         f"The spatial layout (node positions, sizes, connection topology) MUST closely "
-        f"follow the reference layout described above and shown in the attached skeleton image."
+        f"follow the reference layout described above."
     )
 
     # ── Build request parts: text + optional skeleton image ──
@@ -611,62 +634,27 @@ async def generate_image_with_gemini(
 
         result = _parse_gemini_image_response(data, model)
 
-        # If no image returned, retry with IMAGE-only modality
-        # Match against multiple possible error patterns
-        error_lower = result.get("error", "").lower()
-        should_retry = (
-            not result.get("success")
-            and (
-                "no image" in error_lower
-                or "returned no image" in error_lower
-                or "no image data" in error_lower
-                or "empty response" in error_lower
-            )
-        )
-        if should_retry:
-            logger.warning(
-                f"Gemini returned text-only, retrying with IMAGE-only modality. "
-                f"Text response: {result.get('text_response', '')[:200]}"
-            )
-            request_body["generationConfig"]["responseModalities"] = ["IMAGE"]
-            # Keep imageConfig for the retry
-            request_body["generationConfig"]["imageConfig"] = {
-                "aspectRatio": aspect_ratio,
-                "imageSize": image_size,
-            }
-            # Also simplify the prompt to be more direct
-            request_body["contents"][0]["parts"][0]["text"] = (
-                f"Generate an image of: {clean_prompt}\n\n"
-                f"Output ONLY an image, no text."
-            )
-
-            async with httpx.AsyncClient(timeout=600.0) as client2:
-                response2 = await client2.post(
-                    endpoint,
-                    json=request_body,
-                    headers=headers,
-                    params=params if params else None,
+        # ── Detect prompt-echo failure ────────────────────────────────────
+        # Some proxies/model configs cause Gemini to echo the prompt as text
+        # instead of generating an image. Detect this pattern and report clearly.
+        text_resp = result.get("text_response", "")
+        if not result.get("success") and text_resp:
+            # Check if the text response is just echoing our prompt back
+            prompt_fragment = clean_prompt[:100] if len(clean_prompt) > 100 else clean_prompt
+            if prompt_fragment[:50] in text_resp or "TIER-" in text_resp[:200]:
+                logger.error(
+                    f"Gemini echoed prompt as text instead of generating image. "
+                    f"This typically means: (1) responseModalities was not honored by proxy, "
+                    f"(2) prompt was too long/complex ({len(combined_prompt)} chars), or "
+                    f"(3) the model lacks image generation capability. "
+                    f"Text preview: {text_resp[:300]}"
                 )
-
-            if response2.status_code == 200:
-                raw2 = response2.text.strip()
-                ct2 = response2.headers.get("content-type", "")
-                if raw2.startswith("data: ") or "text/event-stream" in ct2:
-                    data2 = _reassemble_sse_gemini(raw2)
-                else:
-                    try:
-                        data2 = json.loads(raw2)
-                    except json.JSONDecodeError:
-                        data2 = {}
-                result2 = _parse_gemini_image_response(data2, model)
-                if result2.get("success"):
-                    return result2
-                else:
-                    logger.error(f"Gemini IMAGE-only retry also failed: {result2.get('error')}")
-                    # Return original error with retry info
-                    result["error"] += f" (IMAGE-only retry also failed: {result2.get('error', '')})"
-            else:
-                logger.error(f"Gemini IMAGE-only retry HTTP error: {response2.status_code}")
+                result["error"] = (
+                    f"Gemini returned text instead of an image (prompt echo detected). "
+                    f"Prompt was {len(combined_prompt)} chars. "
+                    f"Try: (1) shorter/simpler design spec, (2) verify API proxy supports "
+                    f"responseModalities=[IMAGE,TEXT], (3) confirm model={model} supports image output."
+                )
 
         return result
 

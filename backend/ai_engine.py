@@ -1025,11 +1025,11 @@ class AIEngine:
         assert "stop_reason" in result
     """
 
-    DEFAULT_MODEL = "claude-opus-4-6"
+    DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
     def __init__(self, settings: Optional[Settings] = None):
         self._settings = settings or get_settings()
-        self.DEFAULT_MODEL = self._settings.DEFAULT_AI_MODEL or "claude-opus-4-6"
+        self.DEFAULT_MODEL = self._settings.DEFAULT_AI_MODEL or "claude-sonnet-4-20250514"
         self._providers: Dict[str, AIProvider] = {}
         self._init_providers()
 

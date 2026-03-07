@@ -60,10 +60,10 @@ class Settings(BaseSettings):
     #   Step 1: Topology + ELK Layout (DEFAULT_TOPOLOGY_MODEL)
     #   Step 2: Grok 4 prompt engineering (DEFAULT_PROMPT_MODEL)
     #   Step 3: Gemini 3 image generation (DEFAULT_IMAGE_MODEL)
-    DEFAULT_AI_MODEL: str = "claude-opus-4-6"
-    DEFAULT_TOPOLOGY_MODEL: str = "claude-opus-4-6"
+    DEFAULT_AI_MODEL: str = "claude-sonnet-4-20250514"
+    DEFAULT_TOPOLOGY_MODEL: str = "claude-sonnet-4-20250514"
     DEFAULT_BEAUTIFY_MODEL: str = "grok-4"         # Legacy, kept for backward compat
-    DEFAULT_VALIDATOR_MODEL: str = "claude-opus-4-6"
+    DEFAULT_VALIDATOR_MODEL: str = "claude-sonnet-4-20250514"
 
     # ── Step 2+3: Image Generation ───────────────────────────────────────
     DEFAULT_PROMPT_MODEL: str = "grok-4"                    # Grok 4 反推 prompt
