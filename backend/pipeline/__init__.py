@@ -9,6 +9,7 @@ Forward SVG generation pipeline modules:
   svg_validator      — Step 4: lxml validation + LLM auto-fix
   svg_scaler         — Utility: SVG coordinate scaling
   gemini_image_gen   — Step 5: SVG → Gemini 3 Pro Image (scientific figure)
+  prompt_compressor  — Utility: Verbose TIER-N → dense narrative for Gemini
 
 Pipeline flow:
   text → [topology_gen] → topology.json
@@ -17,6 +18,7 @@ Pipeline flow:
        → [nanobanana_bridge] → raw.svg
        → [svg_validator] → validated.svg
        → [svg_scaler] → final.svg
+       → [prompt_compressor] → narrative prompt (800-1500 chars)
        → [gemini_image_gen] → scientific_figure.png
 """
 
@@ -26,6 +28,7 @@ from .scaffold_builder import build_scaffold
 from .svg_validator import validate_svg
 from .svg_scaler import scale_svg
 from .gemini_image_gen import generate_scientific_figure, generate_image_with_gemini
+from .prompt_compressor import structural_compress, to_gemini_narrative
 
 __all__ = [
     "generate_topology",
@@ -35,4 +38,6 @@ __all__ = [
     "scale_svg",
     "generate_scientific_figure",
     "generate_image_with_gemini",
+    "structural_compress",
+    "to_gemini_narrative",
 ]
