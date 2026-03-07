@@ -103,7 +103,10 @@ Point 2: {specific design instruction}
 Point {N}: {specific design instruction}
 
 Output ONLY the numbered points with the tier header. No markdown, no code fences,
-no explanations outside the points. Each point should be 1-3 sentences.
+no explanations outside the points. Each point should be ONE sentence only — concise
+and actionable. Avoid repetitive phrasing. The total output MUST be under 3000 characters
+because the downstream image model (Gemini 3 Pro Image) works best with concise prompts.
+If you exceed 3000 characters, the image model will fail to generate an image.
 """
 
 GROK_PROMPT_ENGINEER_USER = """\
@@ -373,6 +376,144 @@ def _count_numbered_points(prompt: str) -> int:
 
 
 # ============================================================================
+# Prompt Distiller — Semantic Compression (No LLM call)
+# ============================================================================
+
+def _distill_prompt_rule_based(verbose_prompt: str, target_chars: int = 1500) -> str:
+    """
+    Compress a verbose TIER-40/60/80 design spec into a dense image prompt.
+
+    Strategy (informed by Knuth's "premature optimization is the root of all evil"
+    — but *mature* optimization is essential):
+
+    1. Extract the TIER header (keep as-is, it's metadata)
+    2. Parse numbered points into a list
+    3. Classify points into priority tiers:
+       - P0 (must keep): Global style, canvas, background, overall color scheme
+       - P1 (keep if space): Component shapes, positions, key labels
+       - P2 (compress): Connection details, arrow styles
+       - P3 (drop first): Padding, shadows, fine typography, spacing details
+    4. Merge P0+P1 points into flowing sentences (not numbered list)
+    5. Summarize P2 as a single sentence
+    6. Drop P3 entirely
+
+    This is a rule-based approach — no LLM call, zero latency, deterministic.
+    """
+    # Extract tier header
+    tier_match = re.search(r'\[TIER-(\d+)[^\]]*\]', verbose_prompt)
+    tier_header = tier_match.group(0) if tier_match else ""
+
+    # Parse numbered points
+    point_pattern = re.compile(
+        r'(?:^|\n)\s*(?:Point\s+)?(\d+)[.:：]\s*(.*?)(?=\n\s*(?:Point\s+)?\d+[.:：]|\Z)',
+        re.DOTALL
+    )
+    points = []
+    for m in point_pattern.finditer(verbose_prompt):
+        num = int(m.group(1))
+        text = m.group(2).strip()
+        if text:
+            points.append((num, text))
+
+    if not points:
+        # Fallback: couldn't parse points, just take first N chars cleanly
+        return verbose_prompt[:target_chars].rsplit('.', 1)[0] + '.'
+
+    # Classify points by priority
+    p0_keywords = {
+        'canvas', 'background', 'overall', 'global', 'color palette',
+        'color scheme', 'style', 'professional', 'publication', 'white background',
+        'landscape', 'orientation', 'main title', 'figure title',
+    }
+    p1_keywords = {
+        'position', 'module', 'component', 'node', 'block', 'layer',
+        'shape', 'rectangle', 'rounded', 'label', 'text', 'icon',
+        'illustration', 'depict', 'group', 'contain', 'parent', 'child',
+        'nesting', 'hierarchy', 'borderless',
+    }
+    p2_keywords = {
+        'arrow', 'connection', 'flow', 'edge', 'line', 'dashed', 'solid',
+        'orthogonal', 'curved', 'bent', 'routing', 'direction',
+    }
+    # Everything else is P3
+
+    p0, p1, p2, p3 = [], [], [], []
+    for num, text in points:
+        text_lower = text.lower()
+        if any(kw in text_lower for kw in p0_keywords):
+            p0.append(text)
+        elif any(kw in text_lower for kw in p1_keywords):
+            p1.append(text)
+        elif any(kw in text_lower for kw in p2_keywords):
+            p2.append(text)
+        else:
+            p3.append(text)
+
+    # Build compressed prompt
+    parts = []
+    if tier_header:
+        parts.append(tier_header)
+
+    # P0: Keep fully (these are usually short and critical)
+    for text in p0:
+        # Compress each point to one sentence
+        sentences = re.split(r'[.!]\s+', text)
+        parts.append(sentences[0].strip().rstrip('.') + '.')
+
+    # P1: Keep first sentence of each, up to budget
+    for text in p1:
+        sentences = re.split(r'[.!]\s+', text)
+        parts.append(sentences[0].strip().rstrip('.') + '.')
+
+    # P2: Merge into one summary sentence
+    if p2:
+        arrow_types = set()
+        for text in p2:
+            text_lower = text.lower()
+            for atype in ['orthogonal', 'curved', 'dashed', 'solid', 'bent', 'bidirectional']:
+                if atype in text_lower:
+                    arrow_types.add(atype)
+        if arrow_types:
+            parts.append(
+                f"Connections use {', '.join(sorted(arrow_types))} arrows with professional styling."
+            )
+        else:
+            parts.append("Clean directional arrows connect all components.")
+
+    # P3: Drop entirely (shadows, padding, fine spacing)
+
+    # Join and check length
+    result = ' '.join(parts)
+
+    # If still over budget, progressively drop P1 points from the end
+    while len(result) > target_chars and p1:
+        p1.pop()
+        parts_rebuild = []
+        if tier_header:
+            parts_rebuild.append(tier_header)
+        for text in p0:
+            sentences = re.split(r'[.!]\s+', text)
+            parts_rebuild.append(sentences[0].strip().rstrip('.') + '.')
+        for text in p1:
+            sentences = re.split(r'[.!]\s+', text)
+            parts_rebuild.append(sentences[0].strip().rstrip('.') + '.')
+        if p2:
+            if arrow_types:
+                parts_rebuild.append(
+                    f"Connections use {', '.join(sorted(arrow_types))} arrows."
+                )
+            else:
+                parts_rebuild.append("Clean directional arrows connect all components.")
+        result = ' '.join(parts_rebuild)
+
+    # Final safety: hard cut if still over (shouldn't happen)
+    if len(result) > target_chars:
+        result = result[:target_chars].rsplit('.', 1)[0] + '.'
+
+    return result
+
+
+# ============================================================================
 # SVG → PNG Rendering (for Gemini image input)
 # ============================================================================
 
@@ -484,36 +625,52 @@ async def generate_image_with_gemini(
         )
         clean_prompt = prompt  # Fall back to original if cleaning removed everything meaningful
 
-    # ── CRITICAL: Truncate excessively verbose prompts ──────────────────
-    # Gemini 3 Pro Image handles ~3000 chars of design instruction well.
-    # Beyond ~6000 chars, the model tends to echo the prompt as text
-    # instead of generating an image. For verbose TIER-60/80 specs, we
-    # compress to the most impactful design points.
-    MAX_PROMPT_CHARS = 5000
-    if len(clean_prompt) > MAX_PROMPT_CHARS:
-        logger.warning(
-            f"Prompt too verbose ({len(clean_prompt)} chars > {MAX_PROMPT_CHARS}). "
-            f"Truncating to prevent Gemini from echoing prompt as text."
-        )
-        # Keep the tier header + first N characters, then add closing instruction
-        clean_prompt = clean_prompt[:MAX_PROMPT_CHARS - 200] + (
-            "\n\n[Remaining design points omitted for brevity. "
-            "Apply consistent professional academic style to all unlisted elements.]"
-        )
+    # ── CRITICAL: Semantic prompt distillation ──────────────────────────
+    # Gemini 3 Pro Image works best with concise, direct prompts (~1500 chars).
+    # Google's own guidance: "Be concise. Gemini 3 responds best to direct,
+    # clear instructions. It may over-analyze verbose prompt engineering."
+    #
+    # Instead of crude truncation (which breaks mid-sentence and loses key
+    # design points), we distill verbose TIER-40/60/80 specs into a dense
+    # image generation prompt. This is Stage 2 of the 3-stage pipeline.
+    #
+    # Design decision: NO retry mechanism. If distillation fails, we use
+    # the rule-based fallback compressor.
+    MAX_GEMINI_PROMPT_CHARS = 1500  # Sweet spot for image generation
+    MAX_COMBINED_CHARS = 2500       # Total text payload ceiling
 
-    # Also cap the svg_summary to prevent total payload bloat
-    MAX_SUMMARY_CHARS = 2000
+    if len(clean_prompt) > MAX_GEMINI_PROMPT_CHARS:
+        logger.info(
+            f"Prompt distillation: {len(clean_prompt)} chars → target {MAX_GEMINI_PROMPT_CHARS}. "
+            f"Using rule-based compressor (no LLM call to avoid latency)."
+        )
+        clean_prompt = _distill_prompt_rule_based(clean_prompt, MAX_GEMINI_PROMPT_CHARS)
+        logger.info(f"Distilled prompt: {len(clean_prompt)} chars")
+
+    # Cap the svg_summary — layout info is secondary when skeleton PNG is attached
+    MAX_SUMMARY_CHARS = 800
     if len(svg_summary) > MAX_SUMMARY_CHARS:
-        svg_summary = svg_summary[:MAX_SUMMARY_CHARS] + "\n[... layout truncated]"
+        svg_summary = svg_summary[:MAX_SUMMARY_CHARS] + "\n[layout continues...]"
 
+    # Build final prompt — keep it SHORT and imperative
     combined_prompt = (
-        f"Create a publication-ready scientific figure image based on these design specifications:\n\n"
-        f"{clean_prompt}\n\n"
-        f"Layout structure reference:\n{svg_summary}\n\n"
-        f"OUTPUT: Generate a single high-quality IMAGE. "
-        f"The spatial layout (node positions, sizes, connection topology) MUST closely "
-        f"follow the reference layout described above."
+        f"Generate a publication-quality scientific figure IMAGE.\n\n"
+        f"Design:\n{clean_prompt}\n\n"
+        f"Layout:\n{svg_summary}\n\n"
+        f"Output a single high-quality IMAGE preserving this exact spatial layout."
     )
+
+    # Final safety check — if combined_prompt still exceeds ceiling, compress further
+    if len(combined_prompt) > MAX_COMBINED_CHARS:
+        # Prioritize the design prompt over layout summary
+        overflow = len(combined_prompt) - MAX_COMBINED_CHARS
+        svg_summary = svg_summary[:max(200, len(svg_summary) - overflow)]
+        combined_prompt = (
+            f"Generate a publication-quality scientific figure IMAGE.\n\n"
+            f"Design:\n{clean_prompt}\n\n"
+            f"Layout:\n{svg_summary}\n\n"
+            f"Output a single high-quality IMAGE preserving this spatial layout."
+        )
 
     # ── Build request parts: text + optional skeleton image ──
     request_parts: List[Dict[str, Any]] = [{"text": combined_prompt}]
@@ -530,11 +687,9 @@ async def generate_image_with_gemini(
         # Prepend instruction that references the image
         request_parts.insert(0, {
             "text": (
-                "Below is the SKELETON LAYOUT image showing the exact spatial arrangement "
-                "of nodes and connections that the user has confirmed. Your generated figure "
-                "MUST preserve this exact layout — same node positions, same connection "
-                "topology, same spatial relationships. Enhance it into a professional, "
-                "publication-quality scientific figure while keeping the structure identical."
+                "Reference layout image attached. "
+                "Preserve exact node positions and connections. "
+                "Enhance into a professional scientific figure."
             )
         })
         logger.info("Attached skeleton PNG as visual reference for Gemini")
@@ -549,6 +704,7 @@ async def generate_image_with_gemini(
             }
         ],
         "generationConfig": {
+            # IMAGE listed first to signal priority to proxy
             "responseModalities": ["IMAGE", "TEXT"],
             "imageConfig": {
                 "aspectRatio": aspect_ratio,
@@ -560,7 +716,10 @@ async def generate_image_with_gemini(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",  # Signal we prefer non-SSE response
+        # Explicitly request JSON (not SSE) — some proxies honor this
+        "Accept": "application/json",
+        # Signal to proxy that we want image output
+        "X-Response-Modality": "IMAGE",
     }
 
     # For direct Google API (no api_base), use query param instead
