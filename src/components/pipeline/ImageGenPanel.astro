@@ -196,14 +196,16 @@ import { Button, Collapse, Label } from 'astro-pure/user'
   // Store state
   let currentSvg = ''
   let currentMethodText = ''
+  let currentElkGraph: any = null
   let currentImageB64 = ''
   let currentMimeType = 'image/png'
 
   // Expose enable/disable API for the pipeline orchestrator
   ;(window as any).__imageGenPanel = {
-    enable(svg: string, methodText: string) {
+    enable(svg: string, methodText: string, elkGraph?: any) {
       currentSvg = svg
       currentMethodText = methodText
+      currentElkGraph = elkGraph || null
       confirmBtn.disabled = false
       genPromptBtn.disabled = false
       genWithPromptBtn.disabled = false
@@ -216,6 +218,7 @@ import { Button, Collapse, Label } from 'astro-pure/user'
       genWithPromptBtn.disabled = true
       currentSvg = ''
       currentMethodText = ''
+      currentElkGraph = null
       statusLabel.textContent = 'Waiting for SVG'
       statusLabel.className = 'text-xs'
       resultDiv.classList.add('hidden')
@@ -258,6 +261,7 @@ import { Button, Collapse, Label } from 'astro-pure/user'
           method_text: currentMethodText,
           svg_content: currentSvg,
           model: opts.prompt_model,
+          elk_graph: currentElkGraph,
         }),
       })
       const data = await res.json()
@@ -310,6 +314,7 @@ import { Button, Collapse, Label } from 'astro-pure/user'
           aspect_ratio: opts.aspect_ratio,
           image_size: opts.image_size,
           custom_prompt: customPrompt || null,
+          elk_graph: currentElkGraph,
         }),
       })
 

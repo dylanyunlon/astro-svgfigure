@@ -1,70 +1,20 @@
 """
-Gemini Image Generation v2 — Knuth-Critical Rewrite
-=====================================================
-Root Cause Analysis (as Donald Knuth would frame it):
-------------------------------------------------------
-The original system has 5 compounding failures that produce the
-"prompt echo" symptom. These are not independent bugs — they form
-a causal chain where each failure AMPLIFIES the next:
+Gemini Image Generation v2 — Full Prompt Pipeline
+===================================================
+This module sends Grok's COMPLETE design specification to Gemini without
+any compression or narrative conversion. The skeleton PNG is attached
+as visual reference alongside the full text prompt.
 
-  Cause 1: FORMAT MISMATCH (structural)
-    Grok 4 outputs "Point 1: ... Point 2: ..." numbered lists.
-    Gemini's image model is trained on NARRATIVE PARAGRAPHS.
-    Google's official guidance (2026-02-27 blog): "Describe the scene,
-    don't just list keywords. A narrative paragraph will almost always
-    produce a better image than a list of disconnected words."
-    → Numbered lists trigger Gemini's TEXT-COMPLETION mode instead
-      of IMAGE-GENERATION mode.
+Previous approach (REMOVED):
+  - prompt_compressor.py compressed 80-point TIER-80 specs to ~1200 chars
+  - This destroyed user's skeleton edits (added/renamed nodes)
+  - The "prompt echo" issue was actually caused by Gemini API proxy
+    instability, NOT by prompt length
 
-  Cause 2: PAYLOAD BLOAT (quantitative)
-    TIER-80 generates ~6000 chars of numbered points.
-    The rule-based compressor (_distill_prompt_rule_based) aims for
-    1500 chars but keeps the numbered-list FORMAT, just shorter.
-    Combined with svg_summary (800 chars) + wrapper text (~200 chars),
-    the total payload reaches ~2500 chars of LIST-FORMAT text.
-    → Even "compressed", the format is still wrong for image gen.
-
-  Cause 3: PROXY SSE INTERFERENCE (infrastructure)
-    tryallai.com proxy returns SSE (text/event-stream) instead of
-    JSON for generateContent. The reassembly logic works for IMAGE
-    chunks but when the model returns TEXT-ONLY (because of Causes
-    1-2), the SSE reassembly produces a text-only response that
-    looks like the prompt was echoed.
-    → The proxy may not faithfully forward responseModalities when
-      the prompt triggers text-completion mode.
-
-  Cause 4: MISSING IMAGE-TRIGGER PHRASE (semantic)
-    Google's best practice doc (2026-03-05): "Use phrases such as
-    'create an image of' or 'generate an image of'. Otherwise, the
-    multimodal model might respond with text instead of the image."
-    The original code starts with "Generate a publication-quality
-    scientific figure IMAGE." — but the word "IMAGE" at the end of
-    a long sentence is not as strong a trigger as "Generate an image
-    of..." at the very start.
-    → Weak image-trigger phrase lets the model default to text mode.
-
-  Cause 5: cairosvg NOT INSTALLED (environmental)
-    The log shows "cairosvg not installed — cannot render SVG to PNG".
-    Without the skeleton PNG, Gemini has NO visual reference — it only
-    sees a LONG TEXT describing a layout. This makes it even more likely
-    to treat the entire input as a text-completion task.
-    → Missing visual input removes the strongest IMAGE-mode signal.
-
-SOLUTION: A 3-stage pipeline that addresses ALL 5 causes without retry.
-------------------------------------------------------------------------
-  Stage 1: Grok 4 generates verbose design spec (existing, unchanged)
-  Stage 2: NARRATIVE COMPRESSOR converts numbered-list → dense paragraph
-           (the prompt_compressor.py module, now integrated properly)
-  Stage 3: Gemini receives:
-           (a) A SHORT narrative paragraph (800-1200 chars)
-           (b) Starting with "Generate an image of..." (strong trigger)
-           (c) responseModalities: ["IMAGE", "TEXT"] (IMAGE first)
-           (d) Skeleton PNG if available (strongest image-mode signal)
-           (e) No numbered lists, no TIER headers, no "Point N:" format
-
-NO RETRY MECHANISM. If Stage 2 compression fails, we use the fallback
-compressor. If Gemini returns text instead of image, we report the
-error clearly and let the user adjust.
+Current approach:
+  Stage 1: Grok 4 generates verbose design spec (unchanged)
+  Stage 2: Strip <think> blocks only — NO compression
+  Stage 3: Gemini receives FULL design spec + skeleton PNG
 
 GitHub: dylanyunlon/astro-svgfigure
 """
@@ -80,7 +30,6 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from ..config import Settings, get_settings
-from .prompt_compressor import structural_compress, to_gemini_narrative
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +50,15 @@ async def generate_image_with_gemini_v2(
     skeleton_png_b64: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Generate a scientific figure image using Gemini, with proper prompt
-    formatting that avoids the prompt-echo failure.
+    Generate a scientific figure image using Gemini with FULL prompt.
 
-    Key differences from v1:
-      1. Converts design_spec to NARRATIVE format (no numbered lists)
+    Sends Grok's complete design specification to Gemini without any
+    compression. The skeleton PNG is attached as visual reference.
+
+    Key approach:
+      1. Sends FULL Grok output (even 10000+ chars for TIER-80)
       2. Starts with strong image-trigger phrase
-      3. Keeps total text payload under 1500 chars
+      3. Attaches skeleton PNG for visual reference
       4. No retry mechanism — fail cleanly on first attempt
 
     Args:
@@ -133,43 +84,40 @@ async def generate_image_with_gemini_v2(
     if not api_key:
         return {"success": False, "error": "GEMINI_API_KEY not configured"}
 
-    # ── Stage 2: Convert design spec to Gemini-optimized narrative ──
-    # This is the CRITICAL fix for Cause 1 (format mismatch) and
-    # Cause 2 (payload bloat).
-    narrative = to_gemini_narrative(
-        prompt=design_spec,
-        method_text=method_text,
-        svg_summary="",  # We'll handle layout info separately
-    )
-
-    # ── Build the final prompt — SHORT, NARRATIVE, IMAGE-TRIGGER ──
-    # Fix for Cause 4: start with "Generate an image of..." explicitly.
-    # Google's best practice: this phrase triggers image generation mode.
+    # ── Send FULL design spec to Gemini — NO compression ──────────────
+    # Previous approach compressed the Grok output to ~1200-1500 chars using
+    # prompt_compressor.py's to_gemini_narrative(). This destroyed user's
+    # skeleton edits (added nodes, renamed labels) because the compressor
+    # stripped all per-component details.
     #
-    # Total target: ≤ 1200 chars. This is well within the sweet spot
-    # identified by Google's own guidance (narrative paragraph, not list).
-    final_prompt = narrative  # Already starts with "Generate an image of..."
+    # The "prompt echo" issue was caused by Gemini API proxy instability,
+    # NOT by prompt length. Gemini can handle 10000+ chars when:
+    #   1. responseModalities: ["IMAGE", "TEXT"] is set (IMAGE first)
+    #   2. Skeleton PNG is attached as visual reference
+    #   3. Prompt starts with clear image-trigger phrase
+    #
+    # Strip <think> blocks from reasoning models but keep ALL design points.
+    from .gemini_image_gen import _strip_think_and_clean
+    clean_spec = _strip_think_and_clean(design_spec)
+    if len(clean_spec) < 20 and len(design_spec) > 100:
+        clean_spec = design_spec  # Fallback if cleaning removed everything
 
-    # Safety: hard cap at 1500 chars (beyond this, risk of text-echo increases)
-    if len(final_prompt) > 1500:
-        # Truncate at a sentence boundary
-        truncated = final_prompt[:1500]
-        last_period = truncated.rfind('.')
-        if last_period > 800:
-            final_prompt = truncated[:last_period + 1]
-        else:
-            final_prompt = truncated + "."
+    # Build final prompt with image-trigger prefix + full design spec
+    final_prompt = (
+        f"Generate an image of a publication-quality scientific figure.\n\n"
+        f"Design specification:\n{clean_spec}\n\n"
+        f"Output a single high-quality IMAGE preserving the exact spatial layout."
+    )
 
     logger.info(
         f"Gemini v2 prompt: {len(final_prompt)} chars "
-        f"(narrative format, no numbered lists)"
+        f"(full Grok output, no compression)"
     )
 
     # ── Build request parts ──
     request_parts: List[Dict[str, Any]] = []
 
-    # Fix for Cause 5: attach skeleton PNG if available
-    # The PNG is the STRONGEST signal to Gemini that we want IMAGE output.
+    # Attach skeleton PNG if available — strongest signal for IMAGE mode
     if skeleton_png_b64:
         request_parts.append({
             "inlineData": {
@@ -187,7 +135,7 @@ async def generate_image_with_gemini_v2(
         })
         logger.info("Attached skeleton PNG as visual reference")
 
-    # The main narrative prompt
+    # The main prompt — FULL, not compressed
     request_parts.append({"text": final_prompt})
 
     # ── Build endpoint URL ──
@@ -297,7 +245,7 @@ async def generate_image_with_gemini_v2(
                 # responseModalities properly, this can still happen.
                 logger.error(
                     f"Gemini v2 returned text instead of image. "
-                    f"Prompt was {len(final_prompt)} chars (narrative format). "
+                    f"Prompt was {len(final_prompt)} chars （full design spec, no compression). "
                     f"This indicates the proxy may not support image generation. "
                     f"Text preview: {text_resp[:200]}"
                 )
@@ -305,7 +253,7 @@ async def generate_image_with_gemini_v2(
                     f"Proxy returned text instead of image. "
                     f"Verify that the proxy (GEMINI_API_BASE) supports "
                     f"responseModalities=[IMAGE,TEXT] for model={model}. "
-                    f"Prompt was {len(final_prompt)} chars in narrative format."
+                    f"Prompt was {len(final_prompt)} chars with full design spec."
                 )
 
         return result
