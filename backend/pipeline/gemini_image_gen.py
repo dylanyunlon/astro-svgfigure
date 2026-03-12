@@ -103,10 +103,8 @@ Point 2: {specific design instruction}
 Point {N}: {specific design instruction}
 
 Output ONLY the numbered points with the tier header. No markdown, no code fences,
-no explanations outside the points. Each point should be ONE sentence only — concise
-and actionable. Avoid repetitive phrasing. The total output MUST be under 3000 characters
-because the downstream image model (Gemini 3 Pro Image) works best with concise prompts.
-If you exceed 3000 characters, the image model will fail to generate an image.
+no explanations outside the points. Each point should be 1-3 sentences, specific
+and actionable. Avoid repetitive phrasing.
 """
 
 GROK_PROMPT_ENGINEER_USER = """\
@@ -625,52 +623,46 @@ async def generate_image_with_gemini(
         )
         clean_prompt = prompt  # Fall back to original if cleaning removed everything meaningful
 
-    # ── CRITICAL FIX: Narrative prompt conversion ─────────────────────
-    # The root cause of the "prompt echo" bug is FORMAT MISMATCH:
-    # Grok outputs numbered lists ("Point 1: ... Point 2: ...") but
-    # Gemini's image model expects NARRATIVE PARAGRAPHS.
+    # ── Send FULL Grok prompt to Gemini — NO compression ─────────────
+    # The previous approach compressed Grok's TIER-80 output (e.g. 6000 chars)
+    # down to ~1500 chars using prompt_compressor.py. This DESTROYED user's
+    # skeleton edits (e.g. added nodes like "谭云龙") because the compressor
+    # aggressively stripped component details.
     #
-    # Google's official guidance (2026-02-27 Developers Blog):
-    #   "Describe the scene, don't just list keywords. A narrative,
-    #    descriptive paragraph will almost always produce a better,
-    #    more coherent image than a simple list of disconnected words."
+    # Root cause clarification: the "prompt echo" issue was caused by Gemini
+    # API instability (proxy SSE handling, missing responseModalities support),
+    # NOT by prompt length. Gemini's image model can handle 10000+ chars.
+    # Even 80-point TIER-80 prompts work fine when:
+    #   1. responseModalities: ["IMAGE", "TEXT"] is set (IMAGE first)
+    #   2. The skeleton PNG is attached as visual reference
+    #   3. The prompt starts with a clear image-generation trigger phrase
     #
-    # Google's best practice (2026-03-05 Vertex AI docs):
-    #   "Use phrases such as 'create an image of' or 'generate an image of'.
-    #    Otherwise, the multimodal model might respond with text instead."
-    #
-    # Solution: Use the prompt_compressor to convert ANY format into
-    # a Gemini-optimized narrative paragraph. No retry needed.
-    from .prompt_compressor import to_gemini_narrative
+    # Therefore: send the FULL Grok output to preserve ALL user edits.
 
-    narrative_prompt = to_gemini_narrative(
-        prompt=clean_prompt,
-        method_text="",  # method_text already embedded by Grok
-        svg_summary="",  # layout info handled separately below
-    )
-
-    # Cap the svg_summary — layout info is secondary when skeleton PNG is attached
-    MAX_SUMMARY_CHARS = 400  # Reduced from 800 — narrative is more important
+    # Cap svg_summary at a reasonable size (layout info supplements the prompt)
+    MAX_SUMMARY_CHARS = 1200
     if len(svg_summary) > MAX_SUMMARY_CHARS:
         svg_summary = svg_summary[:MAX_SUMMARY_CHARS] + "\n[layout continues...]"
 
-    # Build final prompt — NARRATIVE format, strong image-trigger at start
+    # Build final prompt with image-trigger prefix + full design spec + layout
     if svg_summary.strip():
         combined_prompt = (
-            f"{narrative_prompt}\n\n"
-            f"Layout reference:\n{svg_summary}\n\n"
-            f"Preserve the spatial arrangement shown above."
+            f"Generate an image of a publication-quality scientific figure.\n\n"
+            f"Design specification:\n{clean_prompt}\n\n"
+            f"Spatial layout reference:\n{svg_summary}\n\n"
+            f"Output a single high-quality IMAGE preserving the exact spatial layout above."
         )
     else:
-        combined_prompt = narrative_prompt
+        combined_prompt = (
+            f"Generate an image of a publication-quality scientific figure.\n\n"
+            f"Design specification:\n{clean_prompt}\n\n"
+            f"Output a single high-quality IMAGE."
+        )
 
-    # Final safety: hard cap at 1800 chars total
-    MAX_COMBINED_CHARS = 1800
-    if len(combined_prompt) > MAX_COMBINED_CHARS:
-        # Prioritize the narrative over layout summary
-        combined_prompt = narrative_prompt
-        if len(combined_prompt) > MAX_COMBINED_CHARS:
-            combined_prompt = combined_prompt[:MAX_COMBINED_CHARS - 3] + "..."
+    logger.info(
+        f"Gemini prompt: {len(combined_prompt)} chars total "
+        f"(full Grok output, no compression)"
+    )
 
     # ── Build request parts: text + optional skeleton image ──
     request_parts: List[Dict[str, Any]] = [{"text": combined_prompt}]
