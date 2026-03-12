@@ -625,52 +625,52 @@ async def generate_image_with_gemini(
         )
         clean_prompt = prompt  # Fall back to original if cleaning removed everything meaningful
 
-    # ── CRITICAL: Semantic prompt distillation ──────────────────────────
-    # Gemini 3 Pro Image works best with concise, direct prompts (~1500 chars).
-    # Google's own guidance: "Be concise. Gemini 3 responds best to direct,
-    # clear instructions. It may over-analyze verbose prompt engineering."
+    # ── CRITICAL FIX: Narrative prompt conversion ─────────────────────
+    # The root cause of the "prompt echo" bug is FORMAT MISMATCH:
+    # Grok outputs numbered lists ("Point 1: ... Point 2: ...") but
+    # Gemini's image model expects NARRATIVE PARAGRAPHS.
     #
-    # Instead of crude truncation (which breaks mid-sentence and loses key
-    # design points), we distill verbose TIER-40/60/80 specs into a dense
-    # image generation prompt. This is Stage 2 of the 3-stage pipeline.
+    # Google's official guidance (2026-02-27 Developers Blog):
+    #   "Describe the scene, don't just list keywords. A narrative,
+    #    descriptive paragraph will almost always produce a better,
+    #    more coherent image than a simple list of disconnected words."
     #
-    # Design decision: NO retry mechanism. If distillation fails, we use
-    # the rule-based fallback compressor.
-    MAX_GEMINI_PROMPT_CHARS = 1500  # Sweet spot for image generation
-    MAX_COMBINED_CHARS = 2500       # Total text payload ceiling
+    # Google's best practice (2026-03-05 Vertex AI docs):
+    #   "Use phrases such as 'create an image of' or 'generate an image of'.
+    #    Otherwise, the multimodal model might respond with text instead."
+    #
+    # Solution: Use the prompt_compressor to convert ANY format into
+    # a Gemini-optimized narrative paragraph. No retry needed.
+    from .prompt_compressor import to_gemini_narrative
 
-    if len(clean_prompt) > MAX_GEMINI_PROMPT_CHARS:
-        logger.info(
-            f"Prompt distillation: {len(clean_prompt)} chars → target {MAX_GEMINI_PROMPT_CHARS}. "
-            f"Using rule-based compressor (no LLM call to avoid latency)."
-        )
-        clean_prompt = _distill_prompt_rule_based(clean_prompt, MAX_GEMINI_PROMPT_CHARS)
-        logger.info(f"Distilled prompt: {len(clean_prompt)} chars")
+    narrative_prompt = to_gemini_narrative(
+        prompt=clean_prompt,
+        method_text="",  # method_text already embedded by Grok
+        svg_summary="",  # layout info handled separately below
+    )
 
     # Cap the svg_summary — layout info is secondary when skeleton PNG is attached
-    MAX_SUMMARY_CHARS = 800
+    MAX_SUMMARY_CHARS = 400  # Reduced from 800 — narrative is more important
     if len(svg_summary) > MAX_SUMMARY_CHARS:
         svg_summary = svg_summary[:MAX_SUMMARY_CHARS] + "\n[layout continues...]"
 
-    # Build final prompt — keep it SHORT and imperative
-    combined_prompt = (
-        f"Generate a publication-quality scientific figure IMAGE.\n\n"
-        f"Design:\n{clean_prompt}\n\n"
-        f"Layout:\n{svg_summary}\n\n"
-        f"Output a single high-quality IMAGE preserving this exact spatial layout."
-    )
-
-    # Final safety check — if combined_prompt still exceeds ceiling, compress further
-    if len(combined_prompt) > MAX_COMBINED_CHARS:
-        # Prioritize the design prompt over layout summary
-        overflow = len(combined_prompt) - MAX_COMBINED_CHARS
-        svg_summary = svg_summary[:max(200, len(svg_summary) - overflow)]
+    # Build final prompt — NARRATIVE format, strong image-trigger at start
+    if svg_summary.strip():
         combined_prompt = (
-            f"Generate a publication-quality scientific figure IMAGE.\n\n"
-            f"Design:\n{clean_prompt}\n\n"
-            f"Layout:\n{svg_summary}\n\n"
-            f"Output a single high-quality IMAGE preserving this spatial layout."
+            f"{narrative_prompt}\n\n"
+            f"Layout reference:\n{svg_summary}\n\n"
+            f"Preserve the spatial arrangement shown above."
         )
+    else:
+        combined_prompt = narrative_prompt
+
+    # Final safety: hard cap at 1800 chars total
+    MAX_COMBINED_CHARS = 1800
+    if len(combined_prompt) > MAX_COMBINED_CHARS:
+        # Prioritize the narrative over layout summary
+        combined_prompt = narrative_prompt
+        if len(combined_prompt) > MAX_COMBINED_CHARS:
+            combined_prompt = combined_prompt[:MAX_COMBINED_CHARS - 3] + "..."
 
     # ── Build request parts: text + optional skeleton image ──
     request_parts: List[Dict[str, Any]] = [{"text": combined_prompt}]

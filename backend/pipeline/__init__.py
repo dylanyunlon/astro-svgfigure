@@ -28,6 +28,7 @@ from .scaffold_builder import build_scaffold
 from .svg_validator import validate_svg
 from .svg_scaler import scale_svg
 from .gemini_image_gen import generate_scientific_figure, generate_image_with_gemini
+from .gemini_image_gen_v2 import generate_scientific_figure_v2, generate_image_with_gemini_v2
 from .prompt_compressor import structural_compress, to_gemini_narrative
 
 __all__ = [
@@ -38,6 +39,8 @@ __all__ = [
     "scale_svg",
     "generate_scientific_figure",
     "generate_image_with_gemini",
+    "generate_scientific_figure_v2",
+    "generate_image_with_gemini_v2",
     "structural_compress",
     "to_gemini_narrative",
 ]

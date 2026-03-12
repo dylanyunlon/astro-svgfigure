@@ -280,6 +280,9 @@ from backend.pipeline.gemini_image_gen import (
     generate_prompt_with_grok,
     generate_image_with_gemini,
 )
+from backend.pipeline.gemini_image_gen_v2 import (
+    generate_scientific_figure_v2,
+)
 
 
 @app.post("/api/generate-image")
@@ -287,29 +290,16 @@ async def api_generate_image(request_data: dict) -> JSONResponse:
     """
     POST /api/generate-image — Step 5: SVG → Gemini 3 Pro Image
 
+    Uses v2 pipeline which converts verbose design specs into
+    narrative paragraphs that Gemini's image model can consume
+    without falling back to text-echo mode.
+
     Flow:
-      a) Grok 4 reverse-engineers a professional prompt (optional)
-      b) Gemini 3 Pro Image generates the scientific figure
+      Stage 1: Grok 4 generates verbose design spec
+      Stage 2: Narrative compressor → dense paragraph (800-1200 chars)
+      Stage 3: Gemini receives narrative + optional skeleton PNG
 
-    Request body:
-      - svg_content (str): The ELK-generated SVG (required)
-      - method_text (str): Paper method description (required)
-      - reference_image_b64 (str, optional): Base64 reference image
-      - prompt_model (str, optional): Model for prompt engineering (default: grok-4)
-      - image_model (str, optional): Gemini image model (default: gemini-3-pro-image-preview)
-      - aspect_ratio (str, optional): Image aspect ratio (default: 16:9)
-      - image_size (str, optional): Image size (default: 4K)
-      - custom_prompt (str, optional): Skip Grok, use this prompt directly
-      - elk_graph (dict, optional): Structured graph data from interactive editor
-        (nodes with x,y,width,height + edges with sourceId,targetId)
-
-    Returns:
-      - success (bool)
-      - image_b64 (str): Base64-encoded image
-      - mime_type (str): e.g. "image/png"
-      - prompt (str): The prompt used
-      - prompt_model_used (str)
-      - image_model_used (str)
+    No retry mechanism. Fail cleanly.
     """
     try:
         svg_content = request_data.get("svg_content", "")
@@ -326,7 +316,8 @@ async def api_generate_image(request_data: dict) -> JSONResponse:
 
         engine = _get_ai_engine()
 
-        result = await generate_scientific_figure(
+        # Use v2 pipeline (narrative format, no numbered lists)
+        result = await generate_scientific_figure_v2(
             ai_engine=engine,
             method_text=method_text,
             svg_content=svg_content,

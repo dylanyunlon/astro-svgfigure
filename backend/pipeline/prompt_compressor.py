@@ -260,24 +260,30 @@ def to_gemini_narrative(
         # Crude but fast: capitalize words are likely component names
         component_names = [w.strip(",.;:()") for w in words if w[0:1].isupper()][:10]
 
-    # Build the narrative with explicit image-generation trigger
+    # Build the narrative with explicit image-generation trigger.
+    # Google's best practice (2026-03-05 Vertex AI docs):
+    #   "Use phrases such as 'create an image of' or 'generate an image of'.
+    #    Otherwise, the multimodal model might respond with text instead."
+    # Google Developers Blog (2026-02-27):
+    #   "Describe the scene, don't just list keywords. A narrative,
+    #    descriptive paragraph will almost always produce a better,
+    #    more coherent image than a simple list of disconnected words."
     parts = [
-        "Generate an image of a publication-ready scientific figure."
+        "Create an image of a professional scientific figure for an academic paper."
     ]
 
-    # Add method context if available
+    # Add method context if available (brief, not verbose)
     if method_text:
-        # Take first ~200 chars of method text as context
-        method_brief = method_text[:200].rsplit(" ", 1)[0] if len(method_text) > 200 else method_text
-        parts.append(f"The figure illustrates: {method_brief}.")
+        method_brief = method_text[:150].rsplit(" ", 1)[0] if len(method_text) > 150 else method_text
+        parts.append(f"It illustrates: {method_brief}.")
 
-    # Add the compressed design spec
+    # Add the compressed design spec (already a narrative paragraph)
     parts.append(compressed)
 
-    # Explicit output instruction (Google recommends being explicit)
+    # Short, explicit output instruction
     parts.append(
-        "Output a single high-quality image suitable for an academic paper. "
-        "Professional vector illustration style with clean sans-serif labels."
+        "Produce a single high-quality image in clean vector illustration style "
+        "with readable sans-serif labels, suitable for a top-tier conference."
     )
 
     result = " ".join(parts)
