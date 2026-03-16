@@ -6,8 +6,10 @@
 <script is:inline>
   function simpleSetTheme() {
     let theme = localStorage.getItem('theme')
-    // If undefined or 'system', get from system
-    if (!theme || theme === 'system') {
+    // If undefined, default to light (daytime) mode
+    if (!theme) {
+      theme = 'light'
+    } else if (theme === 'system') {
       theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
     }
     document.documentElement.classList.toggle('dark', theme === 'dark')
