@@ -138,12 +138,16 @@ async def generate_prompt_with_grok(
     svg_content: str,
     model: Optional[str] = None,
     reference_image_b64: Optional[str] = None,
+    elk_graph: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Step a: Use Grok 4 (or specified model) to reverse-engineer a professional
     prompt from the SVG + method text (+ optional reference image).
 
     Enhanced with:
+      - elk_graph support: user skeleton edits (added/renamed nodes) are
+        preserved via _extract_svg_structure() which reads the structured
+        graph data from the interactive editor
       - Complexity tier detection (20/40/60/80 design points)
       - Architecture vs flowchart auto-detection
       - Hierarchical relationship preservation (parent-child-grandchild)
@@ -156,6 +160,9 @@ async def generate_prompt_with_grok(
         svg_content: The ELK-generated SVG content
         model: Model to use (defaults to grok-4 via OpenAI-compatible)
         reference_image_b64: Optional base64-encoded reference image
+        elk_graph: Optional structured graph data from interactive editor
+                   (nodes with x,y,w,h + edges). When provided, takes
+                   priority over SVG parsing for layout description.
 
     Returns:
         dict with success, prompt, model_used, tier, component_count
@@ -178,9 +185,19 @@ async def generate_prompt_with_grok(
         f"Suggested tier: TIER-{suggested_tier}. You may adjust if your analysis differs.]\n"
     )
 
+    # ── Build SVG layout description for Grok ────────────────────────
+    # When elk_graph is available, _extract_svg_structure produces a rich
+    # text description with every node label, position, size, and connection
+    # — including user-added/renamed nodes from the skeleton editor.
+    # This replaces the old svg_content[:8000] truncation which lost data.
+    svg_layout_text = _extract_svg_structure(svg_content, elk_graph=elk_graph)
+    if not svg_layout_text.strip():
+        # Fallback: use raw SVG (truncated) if extraction failed
+        svg_layout_text = svg_content[:8000]
+
     user_content = GROK_PROMPT_ENGINEER_USER.format(
         method_text=method_text,
-        svg_content=svg_content[:8000],  # Truncate SVG if too long
+        svg_content=svg_layout_text,
     ) + complexity_hint
 
     # If reference image provided, add it to context
@@ -374,144 +391,6 @@ def _count_numbered_points(prompt: str) -> int:
 
 
 # ============================================================================
-# Prompt Distiller — Semantic Compression (No LLM call)
-# ============================================================================
-
-def _distill_prompt_rule_based(verbose_prompt: str, target_chars: int = 1500) -> str:
-    """
-    Compress a verbose TIER-40/60/80 design spec into a dense image prompt.
-
-    Strategy (informed by Knuth's "premature optimization is the root of all evil"
-    — but *mature* optimization is essential):
-
-    1. Extract the TIER header (keep as-is, it's metadata)
-    2. Parse numbered points into a list
-    3. Classify points into priority tiers:
-       - P0 (must keep): Global style, canvas, background, overall color scheme
-       - P1 (keep if space): Component shapes, positions, key labels
-       - P2 (compress): Connection details, arrow styles
-       - P3 (drop first): Padding, shadows, fine typography, spacing details
-    4. Merge P0+P1 points into flowing sentences (not numbered list)
-    5. Summarize P2 as a single sentence
-    6. Drop P3 entirely
-
-    This is a rule-based approach — no LLM call, zero latency, deterministic.
-    """
-    # Extract tier header
-    tier_match = re.search(r'\[TIER-(\d+)[^\]]*\]', verbose_prompt)
-    tier_header = tier_match.group(0) if tier_match else ""
-
-    # Parse numbered points
-    point_pattern = re.compile(
-        r'(?:^|\n)\s*(?:Point\s+)?(\d+)[.:：]\s*(.*?)(?=\n\s*(?:Point\s+)?\d+[.:：]|\Z)',
-        re.DOTALL
-    )
-    points = []
-    for m in point_pattern.finditer(verbose_prompt):
-        num = int(m.group(1))
-        text = m.group(2).strip()
-        if text:
-            points.append((num, text))
-
-    if not points:
-        # Fallback: couldn't parse points, just take first N chars cleanly
-        return verbose_prompt[:target_chars].rsplit('.', 1)[0] + '.'
-
-    # Classify points by priority
-    p0_keywords = {
-        'canvas', 'background', 'overall', 'global', 'color palette',
-        'color scheme', 'style', 'professional', 'publication', 'white background',
-        'landscape', 'orientation', 'main title', 'figure title',
-    }
-    p1_keywords = {
-        'position', 'module', 'component', 'node', 'block', 'layer',
-        'shape', 'rectangle', 'rounded', 'label', 'text', 'icon',
-        'illustration', 'depict', 'group', 'contain', 'parent', 'child',
-        'nesting', 'hierarchy', 'borderless',
-    }
-    p2_keywords = {
-        'arrow', 'connection', 'flow', 'edge', 'line', 'dashed', 'solid',
-        'orthogonal', 'curved', 'bent', 'routing', 'direction',
-    }
-    # Everything else is P3
-
-    p0, p1, p2, p3 = [], [], [], []
-    for num, text in points:
-        text_lower = text.lower()
-        if any(kw in text_lower for kw in p0_keywords):
-            p0.append(text)
-        elif any(kw in text_lower for kw in p1_keywords):
-            p1.append(text)
-        elif any(kw in text_lower for kw in p2_keywords):
-            p2.append(text)
-        else:
-            p3.append(text)
-
-    # Build compressed prompt
-    parts = []
-    if tier_header:
-        parts.append(tier_header)
-
-    # P0: Keep fully (these are usually short and critical)
-    for text in p0:
-        # Compress each point to one sentence
-        sentences = re.split(r'[.!]\s+', text)
-        parts.append(sentences[0].strip().rstrip('.') + '.')
-
-    # P1: Keep first sentence of each, up to budget
-    for text in p1:
-        sentences = re.split(r'[.!]\s+', text)
-        parts.append(sentences[0].strip().rstrip('.') + '.')
-
-    # P2: Merge into one summary sentence
-    if p2:
-        arrow_types = set()
-        for text in p2:
-            text_lower = text.lower()
-            for atype in ['orthogonal', 'curved', 'dashed', 'solid', 'bent', 'bidirectional']:
-                if atype in text_lower:
-                    arrow_types.add(atype)
-        if arrow_types:
-            parts.append(
-                f"Connections use {', '.join(sorted(arrow_types))} arrows with professional styling."
-            )
-        else:
-            parts.append("Clean directional arrows connect all components.")
-
-    # P3: Drop entirely (shadows, padding, fine spacing)
-
-    # Join and check length
-    result = ' '.join(parts)
-
-    # If still over budget, progressively drop P1 points from the end
-    while len(result) > target_chars and p1:
-        p1.pop()
-        parts_rebuild = []
-        if tier_header:
-            parts_rebuild.append(tier_header)
-        for text in p0:
-            sentences = re.split(r'[.!]\s+', text)
-            parts_rebuild.append(sentences[0].strip().rstrip('.') + '.')
-        for text in p1:
-            sentences = re.split(r'[.!]\s+', text)
-            parts_rebuild.append(sentences[0].strip().rstrip('.') + '.')
-        if p2:
-            if arrow_types:
-                parts_rebuild.append(
-                    f"Connections use {', '.join(sorted(arrow_types))} arrows."
-                )
-            else:
-                parts_rebuild.append("Clean directional arrows connect all components.")
-        result = ' '.join(parts_rebuild)
-
-    # Final safety: hard cut if still over (shouldn't happen)
-    if len(result) > target_chars:
-        result = result[:target_chars].rsplit('.', 1)[0] + '.'
-
-    return result
-
-
-# ============================================================================
 # SVG → PNG Rendering (for Gemini image input)
 # ============================================================================
 
@@ -607,27 +486,8 @@ async def generate_image_with_gemini(
     # Produces text with every node label, position, size, and connection.
     svg_summary = _extract_svg_structure(svg_content, elk_graph=elk_graph)
 
-    # ── Build final prompt: trigger phrase + full spec + layout ────────
-    if svg_summary.strip():
-        combined_prompt = (
-            f"Generate an image of a publication-quality scientific figure.\n\n"
-            f"Design specification:\n{clean_prompt}\n\n"
-            f"Spatial layout reference:\n{svg_summary}\n\n"
-            f"Output a single high-quality IMAGE preserving the exact spatial layout above."
-        )
-    else:
-        combined_prompt = (
-            f"Generate an image of a publication-quality scientific figure.\n\n"
-            f"Design specification:\n{clean_prompt}\n\n"
-            f"Output a single high-quality IMAGE."
-        )
-
-    logger.info(
-        f"Gemini prompt: {len(combined_prompt)} chars total "
-        f"(full Grok output, no compression)"
-    )
-
-    # ── Build request parts: optional skeleton PNG + text ──
+    # ── Build request parts: skeleton PNG first (visual reference) ────
+    # Image goes FIRST so Gemini "sees" the layout before reading text.
     request_parts: List[Dict[str, Any]] = []
 
     if not skeleton_png_b64:
@@ -651,7 +511,28 @@ async def generate_image_with_gemini(
     else:
         logger.warning("Could not render skeleton PNG — Gemini will rely on text description only")
 
+    # ── Build final prompt: trigger phrase + full spec + layout ────────
+    # Appended AFTER the skeleton PNG so Gemini processes image first.
+    if svg_summary.strip():
+        combined_prompt = (
+            f"Generate an image of a publication-quality scientific figure.\n\n"
+            f"Design specification:\n{clean_prompt}\n\n"
+            f"Spatial layout reference:\n{svg_summary}\n\n"
+            f"Output a single high-quality IMAGE preserving the exact spatial layout above."
+        )
+    else:
+        combined_prompt = (
+            f"Generate an image of a publication-quality scientific figure.\n\n"
+            f"Design specification:\n{clean_prompt}\n\n"
+            f"Output a single high-quality IMAGE."
+        )
+
     request_parts.append({"text": combined_prompt})
+
+    logger.info(
+        f"Gemini prompt: {len(combined_prompt)} chars total "
+        f"(full Grok output, no compression)"
+    )
 
     # ── Endpoint URL ──
     if api_base:
@@ -1095,6 +976,7 @@ async def generate_scientific_figure(
             svg_content=svg_content,
             model=prompt_model,
             reference_image_b64=reference_image_b64,
+            elk_graph=elk_graph,
         )
 
         if not prompt_result.get("success"):

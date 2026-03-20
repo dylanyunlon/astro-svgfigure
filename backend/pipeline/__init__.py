@@ -10,7 +10,6 @@ Forward SVG generation pipeline modules:
   svg_scaler         — Utility: SVG coordinate scaling
   gemini_image_gen   — Step 5: SVG → Gemini 3 Pro Image (scientific figure)
   text_inpainter     — Step 5b: Remove dark text pixels from generated images
-  prompt_compressor  — Utility: (DISABLED) was compressing prompts, now bypassed
 
 Pipeline flow:
   text → [topology_gen] → topology.json
