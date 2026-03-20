@@ -40,7 +40,8 @@ from __future__ import annotations
 import base64
 import io
 import logging
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
@@ -54,48 +55,68 @@ def create_dark_pixel_mask(
     dark_threshold: int = 50,
     mode: str = "global",
     min_component_size: int = 0,
+    target_color: Optional[tuple] = None,
+    color_tolerance: Optional[int] = None,
+    dilation: int = 0,
 ) -> np.ndarray:
     """
-    Create a binary mask identifying dark pixels in an RGB image.
+    Create a binary mask identifying target-colored pixels in an RGB image.
 
-    A pixel is considered "dark" if ALL three RGB channels are below
-    the given threshold. This catches black and very dark text while
-    ignoring colored elements.
+    By default (no target_color), a pixel is considered "dark" if ALL three
+    RGB channels are below the given threshold. When target_color is set,
+    pixels within color_tolerance Euclidean distance of the target are marked.
 
     Args:
         image_array: H×W×3 uint8 numpy array (RGB or RGBA)
         dark_threshold: Pixels with all channels < this value are marked.
                         Use 1 for pure-black only, ~50 for near-black text.
         mode: "global" for simple threshold, "adaptive" for locally-adaptive
-              Gaussian thresholding that detects pixels dark relative to
-              their neighborhood.
+              Gaussian thresholding.
         min_component_size: If > 0, remove connected components with fewer
                             than this many pixels (noise filtering).
+        target_color: Optional RGB tuple (or list of tuples) to target
+                      specific colors instead of dark pixels.
+        color_tolerance: Max Euclidean distance from target_color to match.
+                         Only used when target_color is set.
+        dilation: If > 0, dilate the mask by this many pixels.
+                  If < 0, erode the mask.
 
     Returns:
-        H×W uint8 array: 255 where dark, 0 elsewhere
+        H×W uint8 array: 255 where matched, 0 elsewhere
     """
     if image_array.ndim != 3 or image_array.shape[2] < 3:
         raise ValueError(f"Expected H×W×3 image, got shape {image_array.shape}")
 
     # Use only the first 3 channels (handles RGBA gracefully)
-    rgb = image_array[:, :, :3]
+    rgb = image_array[:, :, :3].astype(np.float32)
 
-    if mode == "adaptive":
-        # Convert to grayscale for adaptive thresholding
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-        # Adaptive Gaussian threshold: marks pixels that are dark
-        # relative to their local neighborhood
+    if target_color is not None:
+        # Color-targeted mode
+        tolerance = color_tolerance if color_tolerance is not None else dark_threshold
+
+        # Support list of target colors
+        if isinstance(target_color, list):
+            colors = target_color
+        else:
+            colors = [target_color]
+
+        dark_mask = np.zeros(image_array.shape[:2], dtype=np.uint8)
+        for tc in colors:
+            tc_arr = np.array(tc, dtype=np.float32).reshape(1, 1, 3)
+            # Use per-channel max difference (Chebyshev distance)
+            # so that tolerance=255 covers ALL possible pixel values
+            dist = np.max(np.abs(rgb - tc_arr), axis=2)
+            dark_mask[dist <= tolerance] = 255
+    elif mode == "adaptive":
+        gray = cv2.cvtColor(image_array[:, :, :3], cv2.COLOR_RGB2GRAY)
         adaptive_mask = cv2.adaptiveThreshold(
             gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV, blockSize=51, C=15,
         )
-        # Also apply global threshold as a union to catch truly dark pixels
-        global_mask = np.all(rgb < dark_threshold, axis=2).astype(np.uint8) * 255
+        global_mask = np.all(image_array[:, :, :3] < dark_threshold, axis=2).astype(np.uint8) * 255
         dark_mask = cv2.bitwise_or(adaptive_mask, global_mask)
     else:
-        # Global mode: all three channels must be below threshold
-        dark_mask = np.all(rgb < dark_threshold, axis=2).astype(np.uint8) * 255
+        dark_mask = np.all(image_array[:, :, :3] < dark_threshold, axis=2).astype(np.uint8) * 255
 
     # Filter by connected component size to remove noise
     if min_component_size > 0:
@@ -106,6 +127,15 @@ def create_dark_pixel_mask(
             area = stats[label_id, cv2.CC_STAT_AREA]
             if area < min_component_size:
                 dark_mask[labels == label_id] = 0
+
+    # Apply dilation or erosion
+    if dilation != 0:
+        k_size = max(1, abs(dilation) * 2 + 1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
+        if dilation > 0:
+            dark_mask = cv2.dilate(dark_mask, kernel, iterations=1)
+        else:
+            dark_mask = cv2.erode(dark_mask, kernel, iterations=1)
 
     return dark_mask
 
@@ -158,6 +188,9 @@ _MIME_TO_PIL_FORMAT = {
     "image/jpeg": "JPEG",
     "image/jpg": "JPEG",
     "image/webp": "WEBP",
+    "image/gif": "GIF",
+    "image/tiff": "TIFF",
+    "image/bmp": "BMP",
 }
 
 
@@ -174,6 +207,11 @@ def inpaint_dark_text(
     min_stroke_width: int = 0,
     inpaint_radius: int = 5,
     algorithm: str = "telea",
+    return_mask: bool = False,
+    target_color: Optional[Union[tuple, list]] = None,
+    color_tolerance: Optional[int] = None,
+    mask_dilation: int = 0,
+    roi: Optional[Union[Tuple[int, int, int, int], List[Tuple[int, int, int, int]]]] = None,
 ) -> Dict[str, Any]:
     """
     Main function: remove dark text pixels from a base64-encoded image
@@ -182,20 +220,25 @@ def inpaint_dark_text(
     Args:
         image_b64: Base64-encoded image data
         mime_type: MIME type of the input image
-                   ("image/png", "image/jpeg", or "image/webp")
         dark_threshold: Pixels with all RGB channels < this are treated as text
-        min_stroke_width: If > 0, thick dark regions (borders) wider than this
-                          many pixels are preserved (not inpainted)
+        min_stroke_width: If > 0, thick dark regions wider than this are preserved
         inpaint_radius: Radius for cv2.inpaint neighborhood
-        algorithm: Inpainting algorithm — "telea" (default) or "ns"
-                   (Navier-Stokes)
+        algorithm: "telea" (default) or "ns" (Navier-Stokes)
+        return_mask: If True, include 'mask_b64' in the result dict
+        target_color: Optional RGB tuple (or list of tuples) to target
+                      specific colors. None = default dark-pixel detection.
+        color_tolerance: Max Euclidean distance from target_color.
+        mask_dilation: Pixels to dilate (>0) or erode (<0) the mask.
+        roi: Optional (x, y, w, h) tuple or list of tuples to limit
+             processing to specific regions. None = full image.
 
     Returns:
         Dict with keys:
           success (bool), image_b64 (str), mime_type (str),
-          stats (dict with dark_pixels_found, pixels_inpainted, width, height),
-          and optionally error (str) if success=False
+          stats (dict), and optionally mask_b64 (str), error (str)
     """
+    t_start = time.monotonic()
+
     # Validate algorithm choice
     algo_flag = _ALGORITHM_MAP.get(algorithm.lower().strip() if algorithm else "")
     if algo_flag is None:
@@ -223,52 +266,124 @@ def inpaint_dark_text(
         pil_image = pil_image.convert("RGB")
     img_array = np.array(pil_image)
     img_h, img_w = img_array.shape[:2]
+    total_pixels = img_h * img_w
 
-    # Create mask of dark pixels
-    mask = create_dark_pixel_mask(img_array, dark_threshold=dark_threshold)
+    # Build ROI mask if needed
+    roi_mask = None
+    if roi is not None:
+        # Validate ROI type
+        if isinstance(roi, str):
+            return {
+                "success": False,
+                "error": f"Invalid roi type: expected tuple or list, got {type(roi).__name__}",
+            }
+        roi_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        rois = roi if isinstance(roi, list) and len(roi) > 0 and isinstance(roi[0], (tuple, list)) else [roi]
+        for r in rois:
+            if not isinstance(r, (tuple, list)) or len(r) != 4:
+                continue
+            rx, ry, rw, rh = r
+            rx = max(0, int(rx))
+            ry = max(0, int(ry))
+            rx2 = min(img_w, rx + int(rw))
+            ry2 = min(img_h, ry + int(rh))
+            if rx2 > rx and ry2 > ry:
+                roi_mask[ry:ry2, rx:rx2] = 255
+
+    # Create mask of dark / target pixels
+    mask_kwargs: Dict[str, Any] = {"dark_threshold": dark_threshold}
+    if target_color is not None:
+        mask_kwargs["target_color"] = target_color
+    if color_tolerance is not None:
+        mask_kwargs["color_tolerance"] = color_tolerance
+
+    mask = create_dark_pixel_mask(img_array, **mask_kwargs)
     dark_pixels_found = int(np.sum(mask > 0))
 
     # If min_stroke_width > 0, filter out thick borders
     if min_stroke_width > 0:
         mask = _filter_mask_by_stroke_width(mask, min_stroke_width=min_stroke_width)
 
+    # Apply mask dilation/erosion
+    if mask_dilation != 0:
+        k_size = max(1, abs(mask_dilation) * 2 + 1)
+        dilation_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (k_size, k_size)
+        )
+        if mask_dilation > 0:
+            mask = cv2.dilate(mask, dilation_kernel, iterations=1)
+        else:
+            mask = cv2.erode(mask, dilation_kernel, iterations=1)
+
+    # Apply ROI restriction
+    if roi_mask is not None:
+        mask = cv2.bitwise_and(mask, roi_mask)
+
     pixels_inpainted = int(np.sum(mask > 0))
 
-    # Build stats dict (always included in result)
+    # Compute enhanced stats
+    inpainted_pct = (pixels_inpainted / total_pixels * 100) if total_pixels > 0 else 0.0
+    t_elapsed_ms = (time.monotonic() - t_start) * 1000
+
     stats = {
         "dark_pixels_found": dark_pixels_found,
         "pixels_inpainted": pixels_inpainted,
         "width": img_w,
         "height": img_h,
+        "total_pixels": total_pixels,
+        "inpainted_percentage": round(inpainted_pct, 4),
+        "processing_time_ms": round(t_elapsed_ms, 2),
     }
 
-    # If no dark pixels found, return image as-is
+    # Optionally encode mask as base64 image for debugging
+    mask_b64_out = None
+    if return_mask:
+        mask_pil = Image.fromarray(mask)
+        mask_buf = io.BytesIO()
+        mask_pil.save(mask_buf, format="PNG")
+        mask_b64_out = base64.b64encode(mask_buf.getvalue()).decode("ascii")
+
+    # If no pixels to inpaint, return image as-is
     if pixels_inpainted == 0:
-        return {
+        result = {
             "success": True,
             "image_b64": image_b64,
             "mime_type": mime_type,
             "stats": stats,
         }
+        if return_mask and mask_b64_out is not None:
+            result["mask_b64"] = mask_b64_out
+        return result
 
     # Convert RGB to BGR for OpenCV
     img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-    # Apply inpainting using the selected algorithm
-    inpainted_bgr = cv2.inpaint(
-        img_bgr, mask, inpaint_radius, algo_flag
-    )
+    # Apply inpainting
+    inpainted_bgr = cv2.inpaint(img_bgr, mask, inpaint_radius, algo_flag)
+
+    # If ROI was used, only apply inpainting within ROI regions
+    if roi_mask is not None:
+        roi_3ch = cv2.merge([roi_mask, roi_mask, roi_mask])
+        inpainted_bgr = np.where(roi_3ch > 0, inpainted_bgr, img_bgr)
 
     # Convert back to RGB PIL image
     inpainted_rgb = cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
     result_pil = Image.fromarray(inpainted_rgb)
 
-    # Encode back to base64 in original format (supports PNG, JPEG, WebP)
+    # Encode back to base64 with format-specific quality settings
     output_format = _resolve_output_format(mime_type)
-
     buf = io.BytesIO()
-    result_pil.save(buf, format=output_format)
+    save_kwargs: Dict[str, Any] = {"format": output_format}
+    if output_format == "WEBP":
+        save_kwargs["quality"] = 100
+        save_kwargs["method"] = 0  # Fastest (least compressed)
+    elif output_format == "JPEG":
+        save_kwargs["quality"] = 95
+    result_pil.save(buf, **save_kwargs)
     result_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    # Update timing
+    stats["processing_time_ms"] = round((time.monotonic() - t_start) * 1000, 2)
 
     logger.info(
         f"Text inpainting complete: found {dark_pixels_found} dark pixels, "
@@ -276,12 +391,58 @@ def inpaint_dark_text(
         f"output {len(result_b64)} base64 chars"
     )
 
-    return {
+    result = {
         "success": True,
         "image_b64": result_b64,
         "mime_type": mime_type,
         "stats": stats,
     }
+    if return_mask and mask_b64_out is not None:
+        result["mask_b64"] = mask_b64_out
+
+    return result
+
+
+def inpaint_batch(
+    images: List[Dict[str, Any]],
+    dark_threshold: int = 50,
+    min_stroke_width: int = 0,
+    inpaint_radius: int = 5,
+    algorithm: str = "telea",
+    **kwargs,
+) -> List[Dict[str, Any]]:
+    """
+    Process multiple images in a single call.
+
+    Args:
+        images: List of dicts, each with 'image_b64' and 'mime_type' keys
+        dark_threshold: Passed to inpaint_dark_text
+        min_stroke_width: Passed to inpaint_dark_text
+        inpaint_radius: Passed to inpaint_dark_text
+        algorithm: Passed to inpaint_dark_text
+        **kwargs: Additional keyword arguments passed to inpaint_dark_text
+
+    Returns:
+        List of result dicts in the same order as inputs
+    """
+    if not images:
+        return []
+
+    results = []
+    for img_dict in images:
+        image_b64 = img_dict.get("image_b64", "")
+        mime_type = img_dict.get("mime_type", "image/png")
+        result = inpaint_dark_text(
+            image_b64,
+            mime_type=mime_type,
+            dark_threshold=dark_threshold,
+            min_stroke_width=min_stroke_width,
+            inpaint_radius=inpaint_radius,
+            algorithm=algorithm,
+            **kwargs,
+        )
+        results.append(result)
+    return results
 
 
 def process_gemini_result(
