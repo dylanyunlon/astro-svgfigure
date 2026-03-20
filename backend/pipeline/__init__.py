@@ -9,6 +9,7 @@ Forward SVG generation pipeline modules:
   svg_validator      — Step 4: lxml validation + LLM auto-fix
   svg_scaler         — Utility: SVG coordinate scaling
   gemini_image_gen   — Step 5: SVG → Gemini 3 Pro Image (scientific figure)
+  text_inpainter     — Step 5b: Remove dark text pixels from generated images
   prompt_compressor  — Utility: (DISABLED) was compressing prompts, now bypassed
 
 Pipeline flow:
@@ -28,6 +29,7 @@ from .scaffold_builder import build_scaffold
 from .svg_validator import validate_svg
 from .svg_scaler import scale_svg
 from .gemini_image_gen import generate_scientific_figure, generate_image_with_gemini
+from .text_inpainter import inpaint_dark_text, process_gemini_result
 
 __all__ = [
     "generate_topology",
@@ -37,4 +39,6 @@ __all__ = [
     "scale_svg",
     "generate_scientific_figure",
     "generate_image_with_gemini",
+    "inpaint_dark_text",
+    "process_gemini_result",
 ]
