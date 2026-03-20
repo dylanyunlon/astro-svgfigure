@@ -368,6 +368,7 @@ async def api_generate_prompt(request_data: dict) -> JSONResponse:
             svg_content=svg_content,
             model=request_data.get("model"),
             reference_image_b64=request_data.get("reference_image_b64"),
+            elk_graph=request_data.get("elk_graph"),
         )
 
         return JSONResponse(result)
