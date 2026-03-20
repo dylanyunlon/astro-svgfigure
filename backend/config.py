@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     # ── Anthropic provider ──────────────────────────────────────────────
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_API_BASE: str = "https://api.anthropic.com"
-    ANTHROPIC_DEFAULT_MODEL: str = "claude-sonnet-4-20250514"
+    ANTHROPIC_DEFAULT_MODEL: str = "claude-sonnet-4-5-20250929"
 
     # ── Google Gemini provider ──────────────────────────────────────────
     GEMINI_API_KEY: str = ""
@@ -60,10 +60,10 @@ class Settings(BaseSettings):
     #   Step 1: Topology + ELK Layout (DEFAULT_TOPOLOGY_MODEL)
     #   Step 2: Grok 4 prompt engineering (DEFAULT_PROMPT_MODEL)
     #   Step 3: Gemini 3 image generation (DEFAULT_IMAGE_MODEL)
-    DEFAULT_AI_MODEL: str = "claude-sonnet-4-20250514"
-    DEFAULT_TOPOLOGY_MODEL: str = "claude-sonnet-4-20250514"
+    DEFAULT_AI_MODEL: str = "claude-sonnet-4-5-20250929"
+    DEFAULT_TOPOLOGY_MODEL: str = "claude-sonnet-4-5-20250929"
     DEFAULT_BEAUTIFY_MODEL: str = "grok-4"         # Legacy, kept for backward compat
-    DEFAULT_VALIDATOR_MODEL: str = "claude-sonnet-4-20250514"
+    DEFAULT_VALIDATOR_MODEL: str = "claude-sonnet-4-5-20250929"
 
     # ── Step 2+3: Image Generation ───────────────────────────────────────
     DEFAULT_PROMPT_MODEL: str = "grok-4"                    # Grok 4 反推 prompt
@@ -110,13 +110,13 @@ class Settings(BaseSettings):
 
         if self.ANTHROPIC_API_KEY:
             models["anthropic"] = [
-                {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
+                {"id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4"},
                 {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5"},
             ]
 
         if self.CLAUDE_COMPATIBLE_API_KEY:
             models["claude_compatible"] = [
-                {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4 (Compatible)"},
+                {"id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4 (Compatible)"},
             ]
 
         return models
