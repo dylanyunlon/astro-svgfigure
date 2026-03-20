@@ -18,6 +18,15 @@
  */
 
 // ──── Types ─────────────────────────────────────────────
+export type HandlePosition = 'left' | 'right' | 'top' | 'bottom'
+export type HandleType = 'source' | 'target'
+
+export interface NodeHandle {
+  id: string
+  type: HandleType
+  position: HandlePosition
+}
+
 export interface InteractiveNode {
   id: string
   x: number
@@ -28,12 +37,15 @@ export interface InteractiveNode {
   fill: string
   children?: InteractiveNode[]
   isGroup?: boolean
+  handles?: NodeHandle[]
 }
 
 export interface InteractiveEdge {
   id: string
   sourceId: string
   targetId: string
+  sourceHandleId?: string
+  targetHandleId?: string
   points: { x: number; y: number }[]
   label?: string
   color: string
@@ -132,6 +144,8 @@ export class InteractiveSvgEditor {
   private editingLabelId: string | null = null
   private undoStack: string[] = []
   private confirmed = false
+  // Connection drag state (handle → handle)
+  private connecting: { sourceHandleId: string; sourceNodeId: string; previewLine: SVGLineElement | null } | null = null
 
   constructor(container: HTMLElement, graph: InteractiveGraph, options?: InteractiveSvgOptions) {
     this.container = container
@@ -148,6 +162,13 @@ export class InteractiveSvgEditor {
     if (!this.graph.edges) this.graph.edges = []
     if (!this.graph.width || this.graph.width <= 0) this.graph.width = 800
     if (!this.graph.height || this.graph.height <= 0) this.graph.height = 600
+
+    // Ensure all nodes have handles (auto-generate defaults if missing)
+    for (const node of this.graph.nodes) {
+      if (!node.handles || node.handles.length === 0) {
+        node.handles = InteractiveSvgEditor.generateDefaultHandles(node.id)
+      }
+    }
 
     try {
       this.init()
@@ -419,9 +440,15 @@ export class InteractiveSvgEditor {
       g.appendChild(handle)
     }
 
+    // ── Connection Handles (ports) ──────────────────────
+    if (node.handles && node.handles.length > 0) {
+      this.renderNodeHandles(g, node)
+    }
+
     // Drag events
     g.addEventListener('mousedown', (e) => {
       if ((e.target as Element).classList.contains('resize-handle')) return
+      if ((e.target as Element).classList.contains('node-handle')) return // handles have own event
       e.stopPropagation()
       this.startDrag(node.id, e)
     })
@@ -439,6 +466,164 @@ export class InteractiveSvgEditor {
     })
 
     return g
+  }
+
+  // ──── Handle (Port) Rendering ─────────────────────────
+
+  /** Render connection handles on a node group */
+  private renderNodeHandles(g: SVGGElement, node: InteractiveNode) {
+    if (!node.handles) return
+
+    // Group handles by position for even distribution
+    const byPosition: Record<string, NodeHandle[]> = {}
+    for (const h of node.handles) {
+      if (!byPosition[h.position]) byPosition[h.position] = []
+      byPosition[h.position].push(h)
+    }
+
+    for (const [position, handles] of Object.entries(byPosition)) {
+      const count = handles.length
+      handles.forEach((handle, idx) => {
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+        circle.classList.add('node-handle')
+        circle.setAttribute('data-handle-id', handle.id)
+        circle.setAttribute('data-handle-type', handle.type)
+        circle.setAttribute('data-handle-position', position)
+        circle.setAttribute('r', '5')
+        circle.setAttribute('stroke', 'white')
+        circle.setAttribute('stroke-width', '1.5')
+        circle.style.cursor = 'crosshair'
+
+        // Different fill for source vs target
+        if (handle.type === 'source') {
+          circle.setAttribute('fill', this.theme.selectionColor)
+        } else {
+          circle.setAttribute('fill', this.theme.edgeColor)
+        }
+
+        // Position the handle
+        const pos = this.computeHandleXY(node, position as HandlePosition, idx, count)
+        circle.setAttribute('cx', String(pos.x))
+        circle.setAttribute('cy', String(pos.y))
+
+        // Handle mousedown: start connection drag
+        circle.addEventListener('mousedown', (e) => {
+          e.stopPropagation()
+          if (this.confirmed) return
+          if (handle.type === 'source') {
+            this.startConnectionDrag(node.id, handle.id, pos, e)
+          }
+        })
+
+        // Handle mouseup: complete connection
+        circle.addEventListener('mouseup', (e) => {
+          e.stopPropagation()
+          if (this.connecting && handle.type === 'target') {
+            this.completeConnection(node.id, handle.id)
+          }
+        })
+
+        g.appendChild(circle)
+      })
+    }
+  }
+
+  /** Compute the absolute (x, y) for a handle on a node edge */
+  private computeHandleXY(node: InteractiveNode, position: HandlePosition, index: number, total: number): { x: number; y: number } {
+    const spacing = (val: number) => (val / (total + 1)) * (index + 1)
+    switch (position) {
+      case 'right':
+        return { x: node.x + node.width, y: node.y + spacing(node.height) }
+      case 'left':
+        return { x: node.x, y: node.y + spacing(node.height) }
+      case 'top':
+        return { x: node.x + spacing(node.width), y: node.y }
+      case 'bottom':
+        return { x: node.x + spacing(node.width), y: node.y + node.height }
+      default:
+        return { x: node.x + node.width, y: node.y + spacing(node.height) }
+    }
+  }
+
+  /** Get the absolute position of a handle by ID */
+  private getHandleAbsPosition(handleId: string): { x: number; y: number; nodeId: string } | null {
+    for (const node of this.graph.nodes) {
+      if (!node.handles) continue
+      const byPos: Record<string, NodeHandle[]> = {}
+      for (const h of node.handles) {
+        if (!byPos[h.position]) byPos[h.position] = []
+        byPos[h.position].push(h)
+      }
+      for (const [position, handles] of Object.entries(byPos)) {
+        const idx = handles.findIndex(h => h.id === handleId)
+        if (idx !== -1) {
+          const pos = this.computeHandleXY(node, position as HandlePosition, idx, handles.length)
+          return { ...pos, nodeId: node.id }
+        }
+      }
+    }
+    return null
+  }
+
+  /** Start a connection drag from a source handle */
+  private startConnectionDrag(nodeId: string, handleId: string, pos: { x: number; y: number }, _e: MouseEvent) {
+    // Create preview line
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+    line.classList.add('connection-preview')
+    line.setAttribute('x1', String(pos.x))
+    line.setAttribute('y1', String(pos.y))
+    line.setAttribute('x2', String(pos.x))
+    line.setAttribute('y2', String(pos.y))
+    line.setAttribute('stroke', this.theme.selectionColor)
+    line.setAttribute('stroke-width', '2')
+    line.setAttribute('stroke-dasharray', '6,3')
+    this.svg.appendChild(line)
+
+    this.connecting = { sourceHandleId: handleId, sourceNodeId: nodeId, previewLine: line }
+
+    // Highlight compatible target handles
+    this.svg.querySelectorAll('.node-handle[data-handle-type="target"]').forEach(el => {
+      // Don't highlight targets on the same node
+      const parentNode = (el as SVGElement).closest('[data-node-id]')
+      if (parentNode && parentNode.getAttribute('data-node-id') !== nodeId) {
+        el.classList.add('handle-connectable')
+        ;(el as SVGElement).setAttribute('r', '7') // enlarge
+      }
+    })
+  }
+
+  /** Complete a connection to a target handle */
+  private completeConnection(targetNodeId: string, targetHandleId: string) {
+    if (!this.connecting) return
+    const { sourceHandleId, sourceNodeId } = this.connecting
+
+    // Clean up preview
+    this.cleanupConnectionDrag()
+
+    // Validate and add
+    this.addEdgeFromHandles(sourceHandleId, targetHandleId)
+  }
+
+  /** Clean up connection drag state */
+  private cleanupConnectionDrag() {
+    if (this.connecting?.previewLine) {
+      this.connecting.previewLine.remove()
+    }
+    this.connecting = null
+
+    // Remove highlights
+    this.svg.querySelectorAll('.node-handle.handle-connectable').forEach(el => {
+      el.classList.remove('handle-connectable')
+      ;(el as SVGElement).setAttribute('r', '5')
+    })
+  }
+
+  /** Generate default handles for a node (1 source right, 1 target left, 1 source bottom, 1 target top) */
+  static generateDefaultHandles(nodeId: string): NodeHandle[] {
+    return [
+      { id: `${nodeId}-src-default`, type: 'source', position: 'right' },
+      { id: `${nodeId}-tgt-default`, type: 'target', position: 'left' },
+    ]
   }
 
   private createEdgeGroup(edge: InteractiveEdge): SVGGElement {
@@ -541,7 +726,12 @@ export class InteractiveSvgEditor {
   }
 
   private onMouseMove(e: MouseEvent) {
-    if (this.dragging) {
+    if (this.connecting && this.connecting.previewLine) {
+      // Update connection preview line endpoint
+      const pt = this.clientToSvg(e)
+      this.connecting.previewLine.setAttribute('x2', String(pt.x))
+      this.connecting.previewLine.setAttribute('y2', String(pt.y))
+    } else if (this.dragging) {
       const pt = this.clientToSvg(e)
       const node = this.findNode(this.dragging.nodeId)
       if (!node) return
@@ -577,6 +767,9 @@ export class InteractiveSvgEditor {
     if (this.dragging || this.resizing) {
       this.saveUndoState()
       this.opts.onGraphChange(this.graph)
+    }
+    if (this.connecting) {
+      this.cleanupConnectionDrag()
     }
     this.dragging = null
     this.resizing = null
@@ -916,6 +1109,25 @@ export class InteractiveSvgEditor {
       const handle = g.querySelector(`.resize-${corner}`) as SVGRectElement | null
       if (handle) this.positionHandle(handle, node, corner)
     }
+
+    // Update connection handles (ports)
+    if (node.handles) {
+      const byPos: Record<string, NodeHandle[]> = {}
+      for (const h of node.handles) {
+        if (!byPos[h.position]) byPos[h.position] = []
+        byPos[h.position].push(h)
+      }
+      for (const [position, handles] of Object.entries(byPos)) {
+        handles.forEach((h, idx) => {
+          const circle = g.querySelector(`.node-handle[data-handle-id="${h.id}"]`) as SVGCircleElement | null
+          if (circle) {
+            const pos = this.computeHandleXY(node, position as HandlePosition, idx, handles.length)
+            circle.setAttribute('cx', String(pos.x))
+            circle.setAttribute('cy', String(pos.y))
+          }
+        })
+      }
+    }
   }
 
   private positionHandle(handle: SVGRectElement, node: InteractiveNode, corner: string) {
@@ -957,13 +1169,26 @@ export class InteractiveSvgEditor {
     const tgt = this.findNode(edge.targetId)
     if (!src || !tgt) return
 
-    // Simple center-to-center with port detection
-    const sx = src.x + src.width / 2
-    const sy = src.y + src.height
-    const tx = tgt.x + tgt.width / 2
-    const ty = tgt.y
+    // Use handle positions if available
+    let sx: number, sy: number, tx: number, ty: number
 
-    // For orthogonal routing, add a midpoint
+    if (edge.sourceHandleId) {
+      const srcPos = this.getHandleAbsPosition(edge.sourceHandleId)
+      if (srcPos) { sx = srcPos.x; sy = srcPos.y }
+      else { sx = src.x + src.width / 2; sy = src.y + src.height }
+    } else {
+      sx = src.x + src.width / 2; sy = src.y + src.height
+    }
+
+    if (edge.targetHandleId) {
+      const tgtPos = this.getHandleAbsPosition(edge.targetHandleId)
+      if (tgtPos) { tx = tgtPos.x; ty = tgtPos.y }
+      else { tx = tgt.x + tgt.width / 2; ty = tgt.y }
+    } else {
+      tx = tgt.x + tgt.width / 2; ty = tgt.y
+    }
+
+    // For orthogonal routing, add midpoints
     const midY = (sy + ty) / 2
     if (Math.abs(sy - ty) > 20) {
       edge.points = [
@@ -1023,16 +1248,27 @@ export class InteractiveSvgEditor {
   getElkJson(): any {
     return {
       id: 'root',
-      children: this.graph.nodes.map((n) => ({
-        id: n.id,
-        width: n.width,
-        height: n.height,
-        labels: [{ text: n.label }],
-      })),
+      children: this.graph.nodes.map((n) => {
+        const ports = (n.handles || []).map((h) => ({
+          id: h.id,
+          properties: {
+            side: h.position === 'right' ? 'EAST' : h.position === 'left' ? 'WEST' : h.position === 'top' ? 'NORTH' : 'SOUTH',
+            type: h.type,
+          },
+        }))
+        return {
+          id: n.id,
+          width: n.width,
+          height: n.height,
+          labels: [{ text: n.label }],
+          ...(ports.length > 0 ? { ports } : {}),
+          ...(ports.length > 0 ? { properties: { 'org.eclipse.elk.portConstraints': 'FIXED_ORDER' } } : {}),
+        }
+      }),
       edges: this.graph.edges.map((e) => ({
         id: e.id,
-        sources: [e.sourceId],
-        targets: [e.targetId],
+        sources: [e.sourceHandleId || e.sourceId],
+        targets: [e.targetHandleId || e.targetId],
         ...(e.label ? { labels: [{ text: e.label }] } : {}),
       })),
     }
@@ -1042,7 +1278,7 @@ export class InteractiveSvgEditor {
   toStaticSvg(): string {
     // Clone SVG without interactive elements
     const clone = this.svg.cloneNode(true) as SVGSVGElement
-    // Remove resize handles and editors
+    // Remove resize handles and editors (but keep node-handle for ports)
     clone.querySelectorAll('.resize-handle, .label-editor-fo').forEach((el) => el.remove())
     // Reset selection styles
     clone.querySelectorAll('.interactive-node rect:not(.resize-handle)').forEach((rect) => {
@@ -1051,7 +1287,7 @@ export class InteractiveSvgEditor {
     return new XMLSerializer().serializeToString(clone)
   }
 
-  /** Add a new node */
+  /** Add a new node (with auto-generated default handles) */
   addNode(label: string): InteractiveNode {
     const id = `node_${Date.now()}`
     const maxX = Math.max(...this.graph.nodes.map((n) => n.x + n.width), 100)
@@ -1063,11 +1299,114 @@ export class InteractiveSvgEditor {
       height: 60,
       label,
       fill: this.theme.nodeFill,
+      handles: InteractiveSvgEditor.generateDefaultHandles(id),
     }
     this.graph.nodes.push(node)
     this.svg.appendChild(this.createNodeGroup(node, this.graph.nodes.length - 1))
     this.opts.onGraphChange(this.graph)
     return node
+  }
+
+  /** Add a new node with custom handles */
+  addNodeWithHandles(label: string, handles: NodeHandle[]): InteractiveNode {
+    const id = `node_${Date.now()}`
+    const maxX = Math.max(...this.graph.nodes.map((n) => n.x + n.width), 100)
+    const node: InteractiveNode = {
+      id,
+      x: maxX + 30,
+      y: 50,
+      width: 160,
+      height: 60,
+      label,
+      fill: this.theme.nodeFill,
+      handles: handles.map(h => ({ ...h })),
+    }
+    this.graph.nodes.push(node)
+    this.svg.appendChild(this.createNodeGroup(node, this.graph.nodes.length - 1))
+    this.opts.onGraphChange(this.graph)
+    return node
+  }
+
+  /** Add an edge between two handles (source → target) */
+  addEdgeFromHandles(sourceHandleId: string, targetHandleId: string): InteractiveEdge | null {
+    // Find source and target nodes
+    const srcInfo = this.getHandleAbsPosition(sourceHandleId)
+    const tgtInfo = this.getHandleAbsPosition(targetHandleId)
+    if (!srcInfo || !tgtInfo) return null
+
+    // Validate: find handle types
+    const srcHandle = this.findHandle(sourceHandleId)
+    const tgtHandle = this.findHandle(targetHandleId)
+    if (!srcHandle || !tgtHandle) return null
+
+    // Must be source → target
+    if (srcHandle.type !== 'source' || tgtHandle.type !== 'target') return null
+
+    // No self-connections
+    if (srcInfo.nodeId === tgtInfo.nodeId) return null
+
+    // No duplicates
+    const exists = this.graph.edges.some(
+      e => e.sourceHandleId === sourceHandleId && e.targetHandleId === targetHandleId
+    )
+    if (exists) return null
+
+    return this.addConnection(srcInfo.nodeId, sourceHandleId, tgtInfo.nodeId, targetHandleId)
+  }
+
+  /** Add a connection between specific handles on specific nodes */
+  addConnection(sourceNodeId: string, sourceHandleId: string, targetNodeId: string, targetHandleId: string): InteractiveEdge | null {
+    // Validate handle types
+    const srcHandle = this.findHandle(sourceHandleId)
+    const tgtHandle = this.findHandle(targetHandleId)
+    if (!srcHandle || !tgtHandle) return null
+    if (srcHandle.type !== 'source' || tgtHandle.type !== 'target') return null
+    if (sourceNodeId === targetNodeId) return null
+
+    // No duplicates
+    const exists = this.graph.edges.some(
+      e => e.sourceHandleId === sourceHandleId && e.targetHandleId === targetHandleId
+    )
+    if (exists) return null
+
+    const edge: InteractiveEdge = {
+      id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      sourceId: sourceNodeId,
+      targetId: targetNodeId,
+      sourceHandleId,
+      targetHandleId,
+      points: [],
+      color: this.theme.edgeColor,
+      strokeWidth: 1.5,
+    }
+
+    // Calculate edge points using handle positions
+    this.graph.edges.push(edge)
+    this.recalcEdgePoints(edge)
+    this.svg.appendChild(this.createEdgeGroup(edge))
+    this.saveUndoState()
+    this.opts.onGraphChange(this.graph)
+    return edge
+  }
+
+  /** Remove an edge by ID */
+  removeEdge(edgeId: string): boolean {
+    const idx = this.graph.edges.findIndex(e => e.id === edgeId)
+    if (idx === -1) return false
+    this.graph.edges.splice(idx, 1)
+    this.svg.querySelector(`[data-edge-id="${edgeId}"]`)?.remove()
+    this.opts.onGraphChange(this.graph)
+    return true
+  }
+
+  /** Find a handle definition by ID across all nodes */
+  private findHandle(handleId: string): NodeHandle | undefined {
+    for (const node of this.graph.nodes) {
+      if (!node.handles) continue
+      const h = node.handles.find(h => h.id === handleId)
+      if (h) return h
+    }
+    return undefined
   }
 
   /** Remove selected node */
