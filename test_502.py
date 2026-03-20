@@ -280,7 +280,7 @@ async def test_6_tryallai_direct():
         import urllib.request
         url = f"{compat_base.rstrip('/')}/v1/messages"
         payload = json.dumps({
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-4-5-20250929",
             "messages": [{"role": "user", "content": "Say OK"}],
             "max_tokens": 5,
         }).encode()
