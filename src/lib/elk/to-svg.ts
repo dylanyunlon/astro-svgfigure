@@ -16,6 +16,12 @@ interface AdvancedEdge {
 interface ElkNode {
   id: string; x?: number; y?: number; width?: number; height?: number
   labels?: { text: string }[]; children?: ElkNode[]
+  ports?: ElkPort[]
+}
+
+interface ElkPort {
+  id: string; x?: number; y?: number; width?: number; height?: number
+  properties?: { side?: string; type?: string }
 }
 
 interface ElkEdge {
@@ -187,6 +193,18 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   const fontSize = isGroup ? 11 : 12
   const fontWeight = isGroup ? '600' : '500'
   svg += `  <text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
+
+  // Render port indicators if node has ports
+  if (Array.isArray(node.ports) && node.ports.length > 0) {
+    for (const port of node.ports) {
+      const px = x + (port.x || 0)
+      const py = y + (port.y || 0)
+      const portType = port.properties?.type || 'source'
+      const portSide = port.properties?.side || 'EAST'
+      const portFill = portType === 'source' ? '#4F46E5' : DEFAULT_EDGE_COLOR
+      svg += `  <circle class="port-indicator" data-port-id="${escapeXml(port.id)}" data-port-type="${portType}" data-port-side="${portSide}" cx="${px}" cy="${py}" r="4" fill="${portFill}" stroke="white" stroke-width="1.5" />`
+    }
+  }
 
   // Nested children: pass parent's absolute position as offset (minus PADDING since children add it again)
   if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
