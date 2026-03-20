@@ -28,7 +28,6 @@ from .scaffold_builder import build_scaffold
 from .svg_validator import validate_svg
 from .svg_scaler import scale_svg
 from .gemini_image_gen import generate_scientific_figure, generate_image_with_gemini
-from .gemini_image_gen_v2 import generate_scientific_figure_v2, generate_image_with_gemini_v2
 
 __all__ = [
     "generate_topology",
@@ -38,6 +37,4 @@ __all__ = [
     "scale_svg",
     "generate_scientific_figure",
     "generate_image_with_gemini",
-    "generate_scientific_figure_v2",
-    "generate_image_with_gemini_v2",
 ]

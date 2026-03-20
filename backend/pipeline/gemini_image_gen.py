@@ -566,26 +566,24 @@ async def generate_image_with_gemini(
     aspect_ratio: str = "16:9",
     image_size: str = "4K",
     elk_graph: Optional[Dict] = None,
+    skeleton_png_b64: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Step b: Use Gemini 3 Pro Image model (via tryallai.com proxy)
-    to generate a publication-quality scientific figure.
+    Use Gemini 3 Pro Image model to generate a publication-quality scientific figure.
 
-    Uses Gemini native format: v1beta/models/{model}:generateContent
-    with responseModalities: ["TEXT", "IMAGE"]
-
-    Enhanced: sends the skeleton SVG rendered as PNG image alongside the text
-    prompt, so Gemini can SEE the exact layout the user confirmed.
+    Sends Grok's FULL design specification — NO compression. User skeleton edits
+    (added/renamed nodes) are preserved via _extract_svg_structure() which appends
+    spatial layout text with every node label, position, and connection.
 
     Args:
-        svg_content: The ELK-generated SVG (as context for the figure)
-        prompt: The detailed prompt (from Grok 4 or user)
+        svg_content: The ELK-generated SVG (for structure extraction + PNG render)
+        prompt: The detailed design spec (from Grok 4 or user)
         settings: Backend settings
         model: Gemini image model name
         aspect_ratio: Image aspect ratio
         image_size: Output size (e.g. "4K")
         elk_graph: Optional structured graph data from interactive editor
-                   (nodes with x,y,width,height + edges with sourceId,targetId)
+        skeleton_png_b64: Pre-rendered skeleton PNG (base64), if available
 
     Returns:
         dict with success, image_b64, mime_type, text_response, model_used
@@ -599,52 +597,17 @@ async def generate_image_with_gemini(
     if not api_key:
         return {"success": False, "error": "GEMINI_API_KEY not configured"}
 
-    # Determine endpoint
-    # tryallai.com proxy: /v1beta/models/{model}:generateContent/ (trailing slash per spec)
-    if api_base:
-        base_url = api_base.rstrip("/")
-        if base_url.endswith("/v1"):
-            base_url = base_url[:-3]
-        endpoint = f"{base_url}/v1beta/models/{model}:generateContent/"
-    else:
-        # Direct Google API
-        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-
-    # Build the request body (Gemini native format)
-    # Extract RICH layout info using elk_graph (preferred) or SVG parsing (fallback)
-    svg_summary = _extract_svg_structure(svg_content, elk_graph=elk_graph)
-    # Safety net: strip any <think> blocks or JSON wrappers that may have
-    # leaked through from reasoning models (e.g. Grok, DeepSeek-R1)
+    # ── Clean prompt: strip <think> blocks but keep ALL design points ──
     clean_prompt = _strip_think_and_clean(prompt)
     if len(clean_prompt) < 20 and len(prompt) > 100:
-        logger.warning(
-            f"Prompt shrank drastically after cleaning ({len(prompt)} → {len(clean_prompt)} chars). "
-            f"Original may have been reasoning-only. Using fallback."
-        )
-        clean_prompt = prompt  # Fall back to original if cleaning removed everything meaningful
+        clean_prompt = prompt
 
-    # ── Send FULL Grok prompt to Gemini — NO compression ─────────────
-    # The previous approach compressed Grok's TIER-80 output (e.g. 6000 chars)
-    # down to ~1500 chars using prompt_compressor.py. This DESTROYED user's
-    # skeleton edits (e.g. added nodes like "谭云龙") because the compressor
-    # aggressively stripped component details.
-    #
-    # Root cause clarification: the "prompt echo" issue was caused by Gemini
-    # API instability (proxy SSE handling, missing responseModalities support),
-    # NOT by prompt length. Gemini's image model can handle 10000+ chars.
-    # Even 80-point TIER-80 prompts work fine when:
-    #   1. responseModalities: ["IMAGE", "TEXT"] is set (IMAGE first)
-    #   2. The skeleton PNG is attached as visual reference
-    #   3. The prompt starts with a clear image-generation trigger phrase
-    #
-    # Therefore: send the FULL Grok output to preserve ALL user edits.
+    # ── Extract spatial layout from SVG + elk_graph ───────────────────
+    # CRITICAL for preserving user skeleton edits (added/renamed nodes).
+    # Produces text with every node label, position, size, and connection.
+    svg_summary = _extract_svg_structure(svg_content, elk_graph=elk_graph)
 
-    # Cap svg_summary at a reasonable size (layout info supplements the prompt)
-    MAX_SUMMARY_CHARS = 1200
-    if len(svg_summary) > MAX_SUMMARY_CHARS:
-        svg_summary = svg_summary[:MAX_SUMMARY_CHARS] + "\n[layout continues...]"
-
-    # Build final prompt with image-trigger prefix + full design spec + layout
+    # ── Build final prompt: trigger phrase + full spec + layout ────────
     if svg_summary.strip():
         combined_prompt = (
             f"Generate an image of a publication-quality scientific figure.\n\n"
@@ -664,29 +627,40 @@ async def generate_image_with_gemini(
         f"(full Grok output, no compression)"
     )
 
-    # ── Build request parts: text + optional skeleton image ──
-    request_parts: List[Dict[str, Any]] = [{"text": combined_prompt}]
+    # ── Build request parts: optional skeleton PNG + text ──
+    request_parts: List[Dict[str, Any]] = []
 
-    # Render SVG to PNG and attach as visual reference for Gemini
-    skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+    if not skeleton_png_b64:
+        skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+
     if skeleton_png_b64:
-        request_parts.insert(0, {
+        request_parts.append({
             "inlineData": {
                 "mimeType": "image/png",
                 "data": skeleton_png_b64,
             }
         })
-        # Prepend instruction that references the image
-        request_parts.insert(0, {
+        request_parts.append({
             "text": (
-                "Reference layout image attached. "
-                "Preserve exact node positions and connections. "
-                "Enhance into a professional scientific figure."
+                "Reference layout image above. "
+                "Enhance this diagram into a professional scientific figure. "
+                "Preserve node positions and connections."
             )
         })
         logger.info("Attached skeleton PNG as visual reference for Gemini")
     else:
         logger.warning("Could not render skeleton PNG — Gemini will rely on text description only")
+
+    request_parts.append({"text": combined_prompt})
+
+    # ── Endpoint URL ──
+    if api_base:
+        base_url = api_base.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        endpoint = f"{base_url}/v1beta/models/{model}:generateContent/"
+    else:
+        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     request_body = {
         "contents": [
@@ -696,7 +670,6 @@ async def generate_image_with_gemini(
             }
         ],
         "generationConfig": {
-            # IMAGE listed first to signal priority to proxy
             "responseModalities": ["IMAGE", "TEXT"],
             "imageConfig": {
                 "aspectRatio": aspect_ratio,
@@ -708,13 +681,10 @@ async def generate_image_with_gemini(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
-        # Explicitly request JSON (not SSE) — some proxies honor this
         "Accept": "application/json",
-        # Signal to proxy that we want image output
         "X-Response-Modality": "IMAGE",
     }
 
-    # For direct Google API (no api_base), use query param instead
     params = {}
     if not api_base:
         headers.pop("Authorization", None)
@@ -724,7 +694,8 @@ async def generate_image_with_gemini(
         logger.info(
             f"Gemini image gen: model={model}, "
             f"aspect={aspect_ratio}, size={image_size}, "
-            f"endpoint={endpoint[:60]}..."
+            f"prompt_chars={len(combined_prompt)}, "
+            f"has_skeleton_png={skeleton_png_b64 is not None}"
         )
 
         async with httpx.AsyncClient(timeout=600.0) as client:
@@ -747,14 +718,11 @@ async def generate_image_with_gemini(
         raw_text = response.text.strip()
         content_type = response.headers.get("content-type", "")
 
-        # tryallai proxy may force SSE streaming even for generateContent
-        # Detect and reassemble SSE into a single JSON response
-        # Check both prefix and content-type; also handle \r\n line endings
         is_sse = (
             raw_text.startswith("data: ")
             or raw_text.startswith("data:")
             or "text/event-stream" in content_type
-            or "\ndata: " in raw_text[:200]  # SSE after initial blank lines
+            or "\ndata: " in raw_text[:200]
         )
         if is_sse:
             logger.warning("Gemini image API returned SSE stream — reassembling")
@@ -762,7 +730,6 @@ async def generate_image_with_gemini(
         else:
             try:
                 data = json.loads(raw_text)
-                # Some proxies return an array of chunks instead of a single object
                 if isinstance(data, list):
                     logger.warning(f"Gemini returned JSON array ({len(data)} items) — merging")
                     data = _merge_json_array_response(data)
@@ -774,37 +741,21 @@ async def generate_image_with_gemini(
                     "model_used": model,
                 }
 
-        # Debug: log response structure to diagnose proxy issues
-        candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            part_keys = [list(p.keys()) for p in parts[:5]]
-            logger.info(f"Gemini response: {len(candidates)} candidates, parts keys: {part_keys}")
-        else:
-            logger.warning(f"Gemini response has no candidates. Top keys: {list(data.keys())[:10]}")
-
         result = _parse_gemini_image_response(data, model)
 
-        # ── Detect prompt-echo failure ────────────────────────────────────
-        # Some proxies/model configs cause Gemini to echo the prompt as text
-        # instead of generating an image. Detect this pattern and report clearly.
-        text_resp = result.get("text_response", "")
-        if not result.get("success") and text_resp:
-            # Check if the text response is just echoing our prompt back
-            prompt_fragment = clean_prompt[:100] if len(clean_prompt) > 100 else clean_prompt
-            if prompt_fragment[:50] in text_resp or "TIER-" in text_resp[:200]:
+        # ── Detect prompt-echo failure ──
+        if not result.get("success"):
+            text_resp = result.get("text_response", "")
+            if text_resp:
                 logger.error(
-                    f"Gemini echoed prompt as text instead of generating image. "
-                    f"This typically means: (1) responseModalities was not honored by proxy, "
-                    f"(2) prompt was too long/complex ({len(combined_prompt)} chars), or "
-                    f"(3) the model lacks image generation capability. "
-                    f"Text preview: {text_resp[:300]}"
+                    f"Gemini returned text instead of image. "
+                    f"Prompt was {len(combined_prompt)} chars (full design spec, no compression). "
+                    f"Text preview: {text_resp[:200]}"
                 )
                 result["error"] = (
-                    f"Gemini returned text instead of an image (prompt echo detected). "
-                    f"Prompt was {len(combined_prompt)} chars. "
-                    f"Try: (1) shorter/simpler design spec, (2) verify API proxy supports "
-                    f"responseModalities=[IMAGE,TEXT], (3) confirm model={model} supports image output."
+                    f"Proxy returned text instead of image. "
+                    f"Verify that the proxy (GEMINI_API_BASE) supports "
+                    f"responseModalities=[IMAGE,TEXT] for model={model}."
                 )
 
         return result
@@ -812,7 +763,7 @@ async def generate_image_with_gemini(
     except httpx.TimeoutException:
         return {
             "success": False,
-            "error": "Gemini image generation timed out (600s). Try a simpler prompt.",
+            "error": "Gemini image generation timed out (600s).",
             "model_used": model,
         }
     except Exception as e:
@@ -1104,11 +1055,15 @@ async def generate_scientific_figure(
     image_size: str = "4K",
     custom_prompt: Optional[str] = None,
     elk_graph: Optional[Dict] = None,
+    settings: Optional[Settings] = None,
 ) -> Dict[str, Any]:
     """
     Combined Step 5 pipeline:
-      a) Grok 4 generates detailed prompt from SVG + method text
+      a) Grok 4 generates detailed design spec from SVG + method text
       b) Gemini 3 Pro Image generates the scientific figure
+
+    Sends Grok's FULL output to Gemini (no compression). User skeleton
+    edits are preserved via _extract_svg_structure().
 
     Args:
         ai_engine: Initialized AIEngine
@@ -1121,14 +1076,15 @@ async def generate_scientific_figure(
         image_size: Image size
         custom_prompt: Skip Grok and use this prompt directly
         elk_graph: Optional structured graph data from interactive editor
-                   (nodes with x,y,width,height + edges with sourceId,targetId)
+        settings: Backend settings (defaults to get_settings())
 
     Returns:
         dict with success, image_b64, mime_type, prompt, prompt_model, image_model
     """
-    settings = get_settings()
+    if settings is None:
+        settings = get_settings()
 
-    # Step a: Generate prompt (or use custom)
+    # Step a: Generate design spec (or use custom)
     if custom_prompt:
         prompt = custom_prompt
         prompt_model_used = "custom"
@@ -1142,7 +1098,6 @@ async def generate_scientific_figure(
         )
 
         if not prompt_result.get("success"):
-            # Fallback: build a basic prompt ourselves
             prompt = _build_fallback_prompt(method_text, svg_content)
             prompt_model_used = "fallback"
             logger.warning(
@@ -1152,7 +1107,14 @@ async def generate_scientific_figure(
             prompt = prompt_result["prompt"]
             prompt_model_used = prompt_result.get("model_used", "unknown")
 
-    # Step b: Generate image
+    # Render skeleton PNG
+    skeleton_png_b64 = None
+    try:
+        skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+    except Exception as e:
+        logger.warning(f"Skeleton PNG render failed: {e}")
+
+    # Step b: Generate image (full prompt, no compression)
     image_result = await generate_image_with_gemini(
         svg_content=svg_content,
         prompt=prompt,
@@ -1161,6 +1123,7 @@ async def generate_scientific_figure(
         aspect_ratio=aspect_ratio,
         image_size=image_size,
         elk_graph=elk_graph,
+        skeleton_png_b64=skeleton_png_b64,
     )
 
     return {
@@ -1237,7 +1200,8 @@ def _extract_svg_structure(svg_content: str, elk_graph: Optional[Dict] = None) -
 
     # ── Strategy 1: Use elk_graph structured data (from interactive editor) ──
     if elk_graph and isinstance(elk_graph, dict):
-        nodes_data = elk_graph.get("nodes", [])
+        # Support both flat format (nodes) and ELK standard format (children)
+        nodes_data = elk_graph.get("nodes", []) or elk_graph.get("children", [])
         edges_data = elk_graph.get("edges", [])
         canvas_w = elk_graph.get("width", 800)
         canvas_h = elk_graph.get("height", 600)
