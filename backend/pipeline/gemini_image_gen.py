@@ -137,12 +137,15 @@ async def generate_prompt_with_grok(
     svg_content: str,
     model: Optional[str] = None,
     reference_image_b64: Optional[str] = None,
+    elk_graph: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Step a: Use Grok 4 (or specified model) to reverse-engineer a professional
     prompt from the SVG + method text (+ optional reference image).
 
     Enhanced with:
+      - elk_graph support: user skeleton edits (added/renamed nodes) are
+        preserved via _extract_svg_structure()
       - Complexity tier detection (20/40/60/80 design points)
       - Architecture vs flowchart auto-detection
       - Hierarchical relationship preservation (parent-child-grandchild)
@@ -155,6 +158,7 @@ async def generate_prompt_with_grok(
         svg_content: The ELK-generated SVG content
         model: Model to use (defaults to grok-4 via OpenAI-compatible)
         reference_image_b64: Optional base64-encoded reference image
+        elk_graph: Optional structured graph data from interactive editor
 
     Returns:
         dict with success, prompt, model_used, tier, component_count
@@ -177,9 +181,14 @@ async def generate_prompt_with_grok(
         f"Suggested tier: TIER-{suggested_tier}. You may adjust if your analysis differs.]\n"
     )
 
+    # Build SVG layout description — use elk_graph if available for richer data
+    svg_layout_text = _extract_svg_structure(svg_content, elk_graph=elk_graph)
+    if not svg_layout_text.strip():
+        svg_layout_text = svg_content[:8000]
+
     user_content = GROK_PROMPT_ENGINEER_USER.format(
         method_text=method_text,
-        svg_content=svg_content[:8000],  # Truncate SVG if too long
+        svg_content=svg_layout_text,
     ) + complexity_hint
 
     # If reference image provided, add it to context
@@ -427,26 +436,24 @@ async def generate_image_with_gemini(
     aspect_ratio: str = "16:9",
     image_size: str = "4K",
     elk_graph: Optional[Dict] = None,
+    skeleton_png_b64: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Step b: Use Gemini 3 Pro Image model (via tryallai.com proxy)
     to generate a publication-quality scientific figure.
 
-    Uses Gemini native format: v1beta/models/{model}:generateContent
-    with responseModalities: ["TEXT", "IMAGE"]
-
-    Enhanced: sends the skeleton SVG rendered as PNG image alongside the text
-    prompt, so Gemini can SEE the exact layout the user confirmed.
+    Sends Grok's FULL design specification — NO compression. User skeleton edits
+    (added/renamed nodes) are preserved via _extract_svg_structure().
 
     Args:
-        svg_content: The ELK-generated SVG (as context for the figure)
+        svg_content: The ELK-generated SVG (for structure extraction + PNG render)
         prompt: The detailed prompt (from Grok 4 or user)
         settings: Backend settings
         model: Gemini image model name
         aspect_ratio: Image aspect ratio
         image_size: Output size (e.g. "4K")
         elk_graph: Optional structured graph data from interactive editor
-                   (nodes with x,y,width,height + edges with sourceId,targetId)
+        skeleton_png_b64: Pre-rendered skeleton PNG (base64), if available
 
     Returns:
         dict with success, image_b64, mime_type, text_response, model_used
@@ -492,20 +499,15 @@ async def generate_image_with_gemini(
         f"follow the reference layout described above and shown in the attached skeleton image."
     )
 
-    # ── Build request parts: text + optional skeleton image ──
-    request_parts: List[Dict[str, Any]] = [{"text": combined_prompt}]
+    # ── Build request parts: skeleton image first, then text ──
+    request_parts: List[Dict[str, Any]] = []
 
-    # Render SVG to PNG and attach as visual reference for Gemini
-    skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+    # Use pre-rendered skeleton PNG or render fresh
+    if not skeleton_png_b64:
+        skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+
     if skeleton_png_b64:
-        request_parts.insert(0, {
-            "inlineData": {
-                "mimeType": "image/png",
-                "data": skeleton_png_b64,
-            }
-        })
-        # Prepend instruction that references the image
-        request_parts.insert(0, {
+        request_parts.append({
             "text": (
                 "Below is the SKELETON LAYOUT image showing the exact spatial arrangement "
                 "of nodes and connections that the user has confirmed. Your generated figure "
@@ -514,9 +516,17 @@ async def generate_image_with_gemini(
                 "publication-quality scientific figure while keeping the structure identical."
             )
         })
+        request_parts.append({
+            "inlineData": {
+                "mimeType": "image/png",
+                "data": skeleton_png_b64,
+            }
+        })
         logger.info("Attached skeleton PNG as visual reference for Gemini")
     else:
         logger.warning("Could not render skeleton PNG — Gemini will rely on text description only")
+
+    request_parts.append({"text": combined_prompt})
 
     request_body = {
         "contents": [
@@ -965,11 +975,15 @@ async def generate_scientific_figure(
     image_size: str = "4K",
     custom_prompt: Optional[str] = None,
     elk_graph: Optional[Dict] = None,
+    settings: Optional[Settings] = None,
 ) -> Dict[str, Any]:
     """
     Combined Step 5 pipeline:
-      a) Grok 4 generates detailed prompt from SVG + method text
+      a) Grok 4 generates detailed design spec from SVG + method text
       b) Gemini 3 Pro Image generates the scientific figure
+
+    Sends Grok's FULL output to Gemini (no compression). User skeleton
+    edits are preserved via _extract_svg_structure().
 
     Args:
         ai_engine: Initialized AIEngine
@@ -982,14 +996,15 @@ async def generate_scientific_figure(
         image_size: Image size
         custom_prompt: Skip Grok and use this prompt directly
         elk_graph: Optional structured graph data from interactive editor
-                   (nodes with x,y,width,height + edges with sourceId,targetId)
+        settings: Backend settings (defaults to get_settings())
 
     Returns:
         dict with success, image_b64, mime_type, prompt, prompt_model, image_model
     """
-    settings = get_settings()
+    if settings is None:
+        settings = get_settings()
 
-    # Step a: Generate prompt (or use custom)
+    # Step a: Generate design spec (or use custom)
     if custom_prompt:
         prompt = custom_prompt
         prompt_model_used = "custom"
@@ -1000,10 +1015,10 @@ async def generate_scientific_figure(
             svg_content=svg_content,
             model=prompt_model,
             reference_image_b64=reference_image_b64,
+            elk_graph=elk_graph,
         )
 
         if not prompt_result.get("success"):
-            # Fallback: build a basic prompt ourselves
             prompt = _build_fallback_prompt(method_text, svg_content)
             prompt_model_used = "fallback"
             logger.warning(
@@ -1013,7 +1028,14 @@ async def generate_scientific_figure(
             prompt = prompt_result["prompt"]
             prompt_model_used = prompt_result.get("model_used", "unknown")
 
-    # Step b: Generate image
+    # Pre-render skeleton PNG once for reuse
+    skeleton_png_b64 = None
+    try:
+        skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+    except Exception as e:
+        logger.warning(f"Skeleton PNG render failed: {e}")
+
+    # Step b: Generate image (full prompt, no compression)
     image_result = await generate_image_with_gemini(
         svg_content=svg_content,
         prompt=prompt,
@@ -1022,6 +1044,7 @@ async def generate_scientific_figure(
         aspect_ratio=aspect_ratio,
         image_size=image_size,
         elk_graph=elk_graph,
+        skeleton_png_b64=skeleton_png_b64,
     )
 
     return {
@@ -1098,7 +1121,8 @@ def _extract_svg_structure(svg_content: str, elk_graph: Optional[Dict] = None) -
 
     # ── Strategy 1: Use elk_graph structured data (from interactive editor) ──
     if elk_graph and isinstance(elk_graph, dict):
-        nodes_data = elk_graph.get("nodes", [])
+        # Support both flat format (nodes) and ELK standard format (children)
+        nodes_data = elk_graph.get("nodes", []) or elk_graph.get("children", [])
         edges_data = elk_graph.get("edges", [])
         canvas_w = elk_graph.get("width", 800)
         canvas_h = elk_graph.get("height", 600)

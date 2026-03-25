@@ -114,6 +114,20 @@ Rules:
     Use natural language descriptions (e.g., "microscope", "DNA helix", "brain"),
     NOT emoji or Unicode. The image generator will create these from text.
 
+=== CRITICAL: NO HYPEREDGES ===
+Each edge MUST have EXACTLY ONE source and EXACTLY ONE target:
+  ✅ CORRECT: {"id": "e1", "sources": ["nodeA"], "targets": ["nodeB"]}
+  ❌ WRONG:  {"id": "e1", "sources": ["nodeA", "nodeB"], "targets": ["nodeC"]}
+  ❌ WRONG:  {"id": "e1", "sources": ["nodeA"], "targets": ["nodeB", "nodeC"]}
+If a node connects to multiple targets, create SEPARATE edges for each connection.
+Example: nodeA → nodeB AND nodeA → nodeC requires TWO edges, not one with two targets.
+
+=== CRITICAL: NO DOT-NOTATION IN NODE IDS ===
+Node IDs MUST be simple snake_case without dots.
+  ✅ CORRECT: "adjacency_matrix_w"
+  ❌ WRONG:  "stage_1.adjacency_matrix_w"
+Cross-group edges reference child IDs directly (ELK resolves hierarchy automatically).
+
 Example output with nesting (architecture diagram):
 {
   "id": "root",
@@ -331,10 +345,39 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(edges, list):
         edges = []
 
+    # ── RESOLVE DOT-NOTATION in edges before orphan detection ──────────
+    # LLMs frequently generate edges with dot-notation IDs like
+    # "stage_1_graph_construction.adjacency_matrix_w" to reference
+    # child node "adjacency_matrix_w" inside compound parent
+    # "stage_1_graph_construction". Resolve these first.
+    dot_index = _build_dot_notation_index(fixed_children)
+    resolved_count = 0
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        for key in ("sources", "targets", "source", "target"):
+            refs = edge.get(key)
+            if not refs:
+                continue
+            if isinstance(refs, str):
+                refs = [refs]
+                edge[key] = refs
+            if not isinstance(refs, list):
+                continue
+            for i, ref in enumerate(refs):
+                if isinstance(ref, str) and ref not in all_valid_ids and "." in ref:
+                    resolved = _resolve_dot_notation(ref, dot_index, all_valid_ids)
+                    if resolved and resolved != ref:
+                        refs[i] = resolved
+                        resolved_count += 1
+
+    if resolved_count > 0:
+        logger.info(
+            f"Resolved {resolved_count} dot-notation edge references "
+            f"to nested child node IDs"
+        )
+
     # ── AUTO-CREATE missing nodes referenced by edges ─────────────────
-    # This fixes the common LLM mistake of referencing nodes in edges
-    # that were never created (e.g., creating "input_group" as an empty
-    # big box but referencing "source_context" which doesn't exist).
     orphan_ids: set = set()
     for edge in edges:
         if not isinstance(edge, dict):
@@ -353,15 +396,89 @@ def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:
             f"Found {len(orphan_ids)} orphan node IDs referenced in edges "
             f"but missing from children: {orphan_ids}. Auto-creating them."
         )
+
+        # Build lookup: top-level node ID → node dict
+        parent_lookup: Dict[str, Dict[str, Any]] = {}
+        for child in fixed_children:
+            if isinstance(child, dict) and child.get("id"):
+                parent_lookup[child["id"]] = child
+
+        resolved_orphan_count = 0
         for orphan_id in orphan_ids:
-            new_node = {
-                "id": orphan_id,
-                "width": 160,
-                "height": 50,
-                "labels": [{"text": orphan_id.replace("_", " ").title()}],
-            }
-            fixed_children.append(new_node)
-            all_valid_ids.add(orphan_id)
+            child_id = orphan_id
+            placed_inside_parent = False
+
+            # DOT-NOTATION ORPHAN PLACEMENT: "parent_name.child_name" →
+            # create child_name INSIDE parent compound node
+            if "." in orphan_id:
+                parts = orphan_id.split(".")
+                for end_idx in range(1, len(parts)):
+                    parent_candidate = ".".join(parts[:end_idx])
+                    child_id = ".".join(parts[end_idx:])
+
+                    if parent_candidate in parent_lookup:
+                        parent_node = parent_lookup[parent_candidate]
+                        if not isinstance(parent_node.get("children"), list):
+                            parent_node["children"] = []
+
+                        existing_child_ids = {
+                            c.get("id") for c in parent_node["children"]
+                            if isinstance(c, dict)
+                        }
+                        if child_id not in existing_child_ids:
+                            label_text = child_id.replace("_", " ").title()
+                            parent_node["children"].append({
+                                "id": child_id,
+                                "width": 160,
+                                "height": 50,
+                                "labels": [{"text": label_text}],
+                            })
+                            all_valid_ids.add(child_id)
+                            logger.info(
+                                f"Placed orphan '{orphan_id}' as child '{child_id}' "
+                                f"inside parent '{parent_candidate}'"
+                            )
+                        else:
+                            all_valid_ids.add(child_id)
+
+                        placed_inside_parent = True
+                        resolved_orphan_count += 1
+                        break
+
+                # Rewrite edge references: orphan_id → child_id
+                if placed_inside_parent:
+                    for edge in edges:
+                        if not isinstance(edge, dict):
+                            continue
+                        for key in ("sources", "targets", "source", "target"):
+                            refs = edge.get(key)
+                            if not refs:
+                                continue
+                            if isinstance(refs, list):
+                                for i, r in enumerate(refs):
+                                    if r == orphan_id:
+                                        refs[i] = child_id
+                            elif isinstance(refs, str) and refs == orphan_id:
+                                edge[key] = child_id
+
+            # Fallback: create at top level if no parent match
+            if not placed_inside_parent:
+                label_text = orphan_id.split(".")[-1].replace("_", " ").title()
+                new_node = {
+                    "id": orphan_id,
+                    "width": 160,
+                    "height": 50,
+                    "labels": [{"text": label_text}],
+                }
+                fixed_children.append(new_node)
+                all_valid_ids.add(orphan_id)
+
+        if resolved_orphan_count > 0:
+            logger.info(
+                f"Placed {resolved_orphan_count}/{len(orphan_ids)} orphan nodes "
+                f"inside their parent compound nodes (dot-notation resolution)"
+            )
+
         topology["children"] = fixed_children
 
     fixed_edges = _fix_edge_list(edges, all_valid_ids, edge_id_prefix="e")
@@ -503,7 +620,13 @@ def _fix_edge_list(
     valid_ids: set,
     edge_id_prefix: str = "e",
 ) -> List[Dict[str, Any]]:
-    """Fix a list of edges, validating references against valid node IDs."""
+    """
+    Fix a list of edges, validating references against valid node IDs.
+
+    CRITICAL: Decompose hyperedges (multiple sources or targets) into
+    simple 1-to-1 edges. ELK's layered algorithm throws
+    "Hyperedges are not supported" when an edge has >1 source or >1 target.
+    """
     seen_edge_ids: set = set()
     fixed_edges = []
 
@@ -547,26 +670,33 @@ def _fix_edge_list(
             logger.debug(f"Dropping edge {edge.get('id', i)}: invalid sources={sources} or targets={targets}")
             continue
 
-        edge_id = edge.get("id", f"{edge_id_prefix}_{i}")
-        if edge_id in seen_edge_ids:
-            edge_id = f"{edge_id}_{i}"
-        seen_edge_ids.add(edge_id)
+        # Decompose hyperedges (M sources × N targets) into M*N simple edges
+        # Each simple edge has exactly 1 source and 1 target to avoid ELK error
+        for si, src_id in enumerate(valid_sources):
+            for ti, tgt_id in enumerate(valid_targets):
+                base_id = edge.get("id", f"{edge_id_prefix}_{i}")
+                needs_suffix = len(valid_sources) > 1 or len(valid_targets) > 1
+                edge_id = f"{base_id}_s{si}_t{ti}" if needs_suffix else base_id
+                if edge_id in seen_edge_ids:
+                    edge_id = f"{edge_id}_{i}"
+                seen_edge_ids.add(edge_id)
 
-        fixed_edge = {
-            "id": edge_id,
-            "sources": valid_sources,
-            "targets": valid_targets,
-        }
+                fixed_edge = {
+                    "id": edge_id,
+                    "sources": [src_id],
+                    "targets": [tgt_id],
+                }
 
-        # Preserve advanced edge properties (skip null values)
-        adv = edge.get("advanced")
-        if adv and isinstance(adv, dict):
-            fixed_edge["advanced"] = adv
-        lbls = edge.get("labels")
-        if lbls and isinstance(lbls, list) and len(lbls) > 0:
-            fixed_edge["labels"] = lbls
+                # Preserve advanced edge properties only on first decomposed edge
+                if si == 0 and ti == 0:
+                    adv = edge.get("advanced")
+                    if adv and isinstance(adv, dict):
+                        fixed_edge["advanced"] = adv
+                    lbls = edge.get("labels")
+                    if lbls and isinstance(lbls, list) and len(lbls) > 0:
+                        fixed_edge["labels"] = lbls
 
-        fixed_edges.append(fixed_edge)
+                fixed_edges.append(fixed_edge)
 
     return fixed_edges
 
@@ -650,4 +780,77 @@ def create_example_topology(
 
     topology_dict = examples.get(name, examples["transformer"])
     return ElkGraph(**topology_dict)
-    
+
+
+# ============================================================================
+# Dot-notation resolution helpers
+# ============================================================================
+
+def _build_dot_notation_index(
+    children: List[Dict[str, Any]],
+    parent_prefix: str = "",
+) -> Dict[str, str]:
+    """
+    Build an index mapping dotted path strings to resolved node IDs.
+    E.g., "stage_1.adjacency_matrix_w" → "adjacency_matrix_w"
+    """
+    index: Dict[str, str] = {}
+    for node in children:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id", "")
+        if not node_id:
+            continue
+
+        nested = node.get("children", [])
+        if isinstance(nested, list):
+            for child in nested:
+                if not isinstance(child, dict):
+                    continue
+                child_id = child.get("id", "")
+                if child_id:
+                    dotted_key = f"{node_id}.{child_id}"
+                    index[dotted_key] = child_id
+                    # Recurse for deeper nesting
+                    deeper = _build_dot_notation_index([child], parent_prefix=dotted_key)
+                    index.update(deeper)
+
+    return index
+
+
+def _resolve_dot_notation(
+    ref: str,
+    dot_index: Dict[str, str],
+    all_valid_ids: set,
+) -> Optional[str]:
+    """
+    Try to resolve a dot-notation reference to an actual nested child ID.
+
+    Strategies:
+    1. Direct lookup in dot_index
+    2. Last segment match: if "child" part exists in all_valid_ids, use it
+    3. Progressive suffix matching
+    """
+    # Strategy 1: direct lookup
+    if ref in dot_index:
+        resolved = dot_index[ref]
+        if resolved in all_valid_ids:
+            return resolved
+
+    # Strategy 2: try suffixes
+    parts = ref.split(".")
+    for start_idx in range(1, len(parts)):
+        suffix = ".".join(parts[start_idx:])
+        if suffix in all_valid_ids:
+            return suffix
+        if suffix in dot_index:
+            resolved = dot_index[suffix]
+            if resolved in all_valid_ids:
+                return resolved
+
+    # Strategy 3: last segment only
+    last = parts[-1]
+    if last in all_valid_ids:
+        return last
+
+    return None
