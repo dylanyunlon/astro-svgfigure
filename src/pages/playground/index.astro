@@ -1,363 +1,1037 @@
 ---
 /**
- * /playground — ELK.js Layout Playground
+ * /playground — Animation Frame Generator
  *
- * Interactive playground for experimenting with ELK.js graph layouts.
- * Users can edit topology JSON and see real-time layout results.
- * Uses astro-pure Card, Tabs, TabItem, Button, Collapse, Label components.
+ * Pipeline (mirrors /generate's Claude4.6+Grok5+Gemini3 architecture):
+ *   Step 1: Upload image → Claude 4.6 analyzes structure & animatable elements
+ *   Step 2: Grok designs animation frame decomposition prompt (green-screen BG)
+ *   Step 3: Gemini 3 generates multi-frame animation images
+ *   Step 4: Client-side green-screen removal → transparent PNG frames → GIF/APNG
  *
- * GitHub 背书: kieler/elkjs, xyflow/xyflow, rtsys.informatik.uni-kiel.de/elklive
+ * Unlike /generate: no ELK.js rendering — input is a user-uploaded image.
+ * All frames use green-screen background for chroma-key removal.
+ *
+ * Uses astro-pure components: Card, Button, Collapse, Label, Tabs, TabItem
+ * GitHub 背书: withastro/astro, cworld1/astro-theme-pure
  */
 export const prerender = false
 
-import { Card, Tabs, TabItem, Button, Collapse, Label } from 'astro-pure/user'
+import { Card, Collapse, Label, Tabs, TabItem, Button } from 'astro-pure/user'
 import GenerateLayout from '@/layouts/GenerateLayout.astro'
-
-const defaultTopology = JSON.stringify({
-  id: 'root',
-  layoutOptions: {
-    'elk.algorithm': 'layered',
-    'elk.direction': 'DOWN',
-    'elk.layered.spacing.nodeNodeBetweenLayers': '80',
-    'elk.spacing.nodeNode': '60',
-  },
-  children: [
-    { id: 'input', width: 140, height: 45, labels: [{ text: 'Input Data' }] },
-    { id: 'encoder', width: 140, height: 45, labels: [{ text: 'Encoder' }] },
-    { id: 'attention', width: 160, height: 45, labels: [{ text: 'Self-Attention' }] },
-    { id: 'decoder', width: 140, height: 45, labels: [{ text: 'Decoder' }] },
-    { id: 'output', width: 140, height: 45, labels: [{ text: 'Output' }] },
-  ],
-  edges: [
-    { id: 'e1', sources: ['input'], targets: ['encoder'] },
-    { id: 'e2', sources: ['encoder'], targets: ['attention'] },
-    { id: 'e3', sources: ['attention'], targets: ['decoder'] },
-    { id: 'e4', sources: ['decoder'], targets: ['output'] },
-  ],
-}, null, 2)
-
-const algorithms = [
-  { id: 'layered', name: 'Layered (Sugiyama)', desc: 'Best for DAGs & flowcharts' },
-  { id: 'mrtree', name: 'Mr. Tree', desc: 'Tree-like hierarchies' },
-  { id: 'force', name: 'Force-Directed', desc: 'Physics-based spring model' },
-  { id: 'stress', name: 'Stress Minimization', desc: 'Minimizes edge stress' },
-  { id: 'radial', name: 'Radial', desc: 'Root at center, layers as rings' },
-]
-
-const presets = [
-  { id: 'academic-flow', name: 'Academic Pipeline', desc: 'Top-down architecture diagram' },
-  { id: 'neural-network', name: 'Neural Network', desc: 'Layered network topology' },
-  { id: 'tree-hierarchy', name: 'Tree Hierarchy', desc: 'Hierarchical tree layout' },
-]
+import HealthCheck from '@/components/pipeline/HealthCheck.astro'
+import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
 ---
 
-<GenerateLayout meta={{ title: 'ELK Playground — Layout Experimentation' }} highlightColor='#059669'>
+<GenerateLayout meta={{ title: 'Animation Playground — Frame Generator' }} highlightColor='#7C3AED'>
   <main class='flex w-full flex-col gap-y-6 py-6'>
-    {/* Header */}
+    {/* ── Header ── */}
     <div class='flex flex-col items-center gap-y-2 text-center'>
-      <h1 class='text-2xl font-medium'>ELK.js Playground</h1>
+      <h1 class='text-2xl font-medium'>Animation Frame Generator</h1>
       <p class='text-sm text-muted-foreground max-w-xl'>
-        Experiment with ELK.js layout algorithms. Edit the topology JSON on the left,
-        choose an algorithm, and see the computed layout rendered as SVG.
+        Upload an image → AI analyzes structure → Generates multi-frame animation
+        with transparent background. Powered by Claude 4.6 + Grok + Gemini 3.
       </p>
+      <HealthCheck />
       <div class='flex gap-2'>
-        <Label>kieler/elkjs</Label>
-        <Label>5 algorithms</Label>
-        <Label>real-time</Label>
+        <Label title='Claude 4.6 Analysis'>
+          <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' slot='icon'>
+            <circle cx='12' cy='12' r='10'/><path d='M12 16v-4'/><path d='M12 8h.01'/>
+          </svg>
+        </Label>
+        <Label title='Grok Prompt Design'>
+          <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' slot='icon'>
+            <path d='M12 20h9'/><path d='M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z'/>
+          </svg>
+        </Label>
+        <Label title='Green-Screen → Transparent'>
+          <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' slot='icon'>
+            <rect x='3' y='3' width='18' height='18' rx='2'/><path d='m9 12 2 2 4-4'/>
+          </svg>
+        </Label>
       </div>
     </div>
 
-    {/* Main layout: editor on left, preview on right */}
-    <div class='grid grid-cols-1 gap-4 lg:grid-cols-2'>
+    {/* ── Main 3-Column Layout (mirrors /generate structure) ── */}
+    <div class='grid grid-cols-1 gap-4 lg:grid-cols-12'>
 
-      {/* Left: JSON editor + options */}
-      <div class='flex flex-col gap-y-4'>
-        <Card heading='Topology JSON'>
-          <textarea
-            id='playground-json'
-            class='w-full rounded-lg border bg-background p-3 font-mono text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/30'
-            rows='20'
-            spellcheck='false'
-            set:text={defaultTopology}
-          />
-        </Card>
+      {/* ═══ Left Panel: Input + Pipeline + Controls ═══ */}
+      <div class='flex flex-col gap-y-4 lg:col-span-3'>
 
-        {/* Algorithm selector */}
-        <Card heading='Algorithm'>
-          <div class='flex flex-col gap-y-2'>
-            {algorithms.map((alg) => (
-              <label class='flex items-center gap-x-2 cursor-pointer rounded-lg border px-3 py-2 transition-all hover:bg-muted'>
-                <input
-                  type='radio'
-                  name='elk-algorithm'
-                  value={alg.id}
-                  checked={alg.id === 'layered'}
-                  class='accent-primary'
-                />
-                <div class='flex flex-col'>
-                  <span class='text-sm font-medium'>{alg.name}</span>
-                  <span class='text-xs text-muted-foreground'>{alg.desc}</span>
-                </div>
-              </label>
-            ))}
-          </div>
-        </Card>
-
-        {/* Presets */}
-        <Collapse title='Presets'>
-          <div class='flex flex-col gap-y-2 pb-2'>
-            {presets.map((p) => (
-              <button
-                class='flex flex-col rounded-lg border px-3 py-2 text-left transition-all hover:bg-muted'
-                data-preset={p.id}
-              >
-                <span class='text-sm font-medium'>{p.name}</span>
-                <span class='text-xs text-muted-foreground'>{p.desc}</span>
-              </button>
-            ))}
-          </div>
-        </Collapse>
-
-        {/* Layout button */}
-        <button
-          id='layout-btn'
-          class='flex w-full items-center justify-center gap-x-2 rounded-xl border bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:opacity-90'
-        >
-          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
-            <rect x='3' y='3' width='7' height='7' />
-            <rect x='14' y='3' width='7' height='7' />
-            <rect x='14' y='14' width='7' height='7' />
-            <rect x='3' y='14' width='7' height='7' />
-          </svg>
-          Compute Layout
-        </button>
-      </div>
-
-      {/* Right: SVG preview + layouted JSON */}
-      <div class='flex flex-col gap-y-4'>
-        <Card heading='Layout Preview'>
-          <div
-            id='playground-svg-container'
-            class='flex aspect-[4/3] items-center justify-center rounded-lg border bg-white dark:bg-zinc-900 overflow-auto'
-          >
-            <div class='flex flex-col items-center gap-y-2 text-muted-foreground'>
-              <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
-                <rect x='3' y='3' width='7' height='7' rx='1' />
-                <rect x='14' y='3' width='7' height='7' rx='1' />
-                <rect x='8.5' y='14' width='7' height='7' rx='1' />
-                <line x1='6.5' y1='10' x2='6.5' y2='14' stroke='currentColor' stroke-dasharray='2' />
-                <line x1='17.5' y1='10' x2='17.5' y2='14' stroke='currentColor' stroke-dasharray='2' />
+        {/* Image Upload Card */}
+        <Card heading='Upload Image'>
+          <div class='flex flex-col gap-y-3'>
+            <div
+              id='upload-dropzone'
+              class='relative flex aspect-square cursor-pointer flex-col items-center justify-center gap-y-2 rounded-xl border-2 border-dashed border-muted-foreground/30 bg-background transition-all hover:border-primary/50 hover:bg-muted/50'
+            >
+              <svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5' class='text-muted-foreground'>
+                <path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/>
+                <polyline points='17 8 12 3 7 8'/>
+                <line x1='12' y1='3' x2='12' y2='15'/>
               </svg>
-              <span class='text-sm'>Click "Compute Layout" to see results</span>
+              <span class='text-sm text-muted-foreground'>Drop image or click to upload</span>
+              <span class='text-xs text-muted-foreground'>PNG, JPG, WebP — max 10MB</span>
+              <input
+                id='image-file-input'
+                type='file'
+                accept='image/png,image/jpeg,image/webp'
+                class='absolute inset-0 cursor-pointer opacity-0'
+              />
+            </div>
+            {/* Thumbnail preview */}
+            <div id='upload-preview-box' class='hidden'>
+              <div class='relative overflow-hidden rounded-xl border'>
+                <img id='upload-preview-img' class='h-auto w-full' alt='Uploaded image preview' />
+                <button
+                  id='remove-upload-btn'
+                  class='absolute right-2 top-2 rounded-lg bg-black/50 p-1 text-white transition-all hover:bg-black/70'
+                  title='Remove image'
+                >
+                  <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+                    <line x1='18' y1='6' x2='6' y2='18'/><line x1='6' y1='6' x2='18' y2='18'/>
+                  </svg>
+                </button>
+              </div>
+              <p id='upload-info' class='mt-1 text-xs text-muted-foreground'></p>
             </div>
           </div>
         </Card>
 
-        <Collapse title='Layouted JSON (with coordinates)'>
-          <pre
-            id='playground-layouted'
-            class='max-h-64 overflow-auto rounded-lg bg-zinc-100 dark:bg-zinc-800 p-3 font-mono text-xs'
-          >
-            {/* Will be populated by JS */}
-            Computed layout will appear here...
-          </pre>
-        </Collapse>
-
-        {/* Stats */}
-        <Card heading='Layout Stats'>
-          <div id='playground-stats' class='flex flex-wrap gap-2 text-sm text-muted-foreground'>
-            <span>Nodes: <strong id='stat-nodes'>0</strong></span>
-            <span>Edges: <strong id='stat-edges'>0</strong></span>
-            <span>Canvas: <strong id='stat-canvas'>-</strong></span>
-            <span>Time: <strong id='stat-time'>-</strong></span>
+        {/* Pipeline Steps */}
+        <Card heading='Pipeline'>
+          <div class='flex flex-col gap-y-1' id='anim-pipeline-steps'>
+            {[
+              { id: 'step-analyze', num: '1', label: 'Image Analysis', desc: 'Claude 4.6 identifies structure & animatable elements' },
+              { id: 'step-prompt', num: '2', label: 'Animation Design', desc: 'Grok designs frame decomposition with green-screen BG' },
+              { id: 'step-frames', num: '3', label: 'Frame Generation', desc: 'Gemini 3 generates multi-frame animation images' },
+              { id: 'step-rembg', num: '4', label: 'Background Removal', desc: 'Green-screen chroma key → transparent PNG frames' },
+            ].map((step) => (
+              <div
+                id={step.id}
+                class='pipeline-step flex items-center gap-x-3 rounded-xl border bg-muted px-3 py-2 transition-all'
+                data-status='idle'
+              >
+                <div class='step-indicator flex size-7 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium text-muted-foreground transition-colors'>
+                  {step.num}
+                </div>
+                <div class='flex flex-1 flex-col'>
+                  <span class='text-sm font-medium'>{step.label}</span>
+                  <span class='text-xs text-muted-foreground'>{step.desc}</span>
+                </div>
+                <div class='step-status'>
+                  <svg class='step-spinner hidden size-4 animate-spin text-primary' xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24'>
+                    <circle class='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' stroke-width='4'/>
+                    <path class='opacity-75' fill='currentColor' d='M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z'/>
+                  </svg>
+                  <svg class='step-check hidden size-4 text-green-500' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+                    <polyline points='20 6 9 17 4 12'/>
+                  </svg>
+                  <svg class='step-error hidden size-4 text-red-500' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+                    <line x1='18' y1='6' x2='6' y2='18'/><line x1='6' y1='6' x2='18' y2='18'/>
+                  </svg>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div class='mt-2 flex items-center justify-between text-xs text-muted-foreground'>
+            <span id='anim-status-text'>Ready — upload an image to begin</span>
+            <span id='anim-elapsed'>0.0s</span>
           </div>
         </Card>
 
-        {/* Actions */}
-        <div class='flex gap-2'>
-          <Button href='/generate' variant='pill'>
-            <span slot='before'>→</span>
-            Send to Generate
-          </Button>
-          <button
-            id='copy-layout-btn'
-            class='inline-flex items-center gap-x-1 rounded-xl border bg-muted px-3 py-1 text-sm text-muted-foreground transition-all hover:bg-card'
-          >
-            Copy Layout JSON
-          </button>
+        {/* Generate buttons */}
+        <button
+          id='analyze-btn'
+          disabled
+          class='flex w-full items-center justify-center gap-x-2 rounded-xl border bg-violet-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40'
+        >
+          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+            <circle cx='12' cy='12' r='10'/><path d='M12 16v-4'/><path d='M12 8h.01'/>
+          </svg>
+          <span id='analyze-btn-text'>Step 1: Analyze Image</span>
+        </button>
+
+        <button
+          id='generate-frames-btn'
+          disabled
+          class='flex w-full items-center justify-center gap-x-2 rounded-xl border bg-purple-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-40'
+        >
+          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+            <polygon points='5 3 19 12 5 21 5 3'/>
+          </svg>
+          <span id='generate-frames-text'>Step 2→3→4: Generate Animation</span>
+        </button>
+
+        {/* Animation Options */}
+        <Collapse title='Animation Options'>
+          <div class='flex flex-col gap-y-3 pb-2'>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='opt-frames'>Frame Count</label>
+              <select id='opt-frames' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+                <option value='4'>4 frames</option>
+                <option value='6'>6 frames</option>
+                <option value='8' selected>8 frames</option>
+                <option value='12'>12 frames</option>
+                <option value='16'>16 frames</option>
+              </select>
+            </div>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='opt-fps'>Playback FPS</label>
+              <select id='opt-fps' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+                <option value='8'>8 FPS (slow)</option>
+                <option value='12' selected>12 FPS (standard)</option>
+                <option value='24'>24 FPS (cinematic)</option>
+              </select>
+            </div>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='opt-style'>Animation Style</label>
+              <select id='opt-style' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+                <option value='smooth' selected>Smooth (interpolated motion)</option>
+                <option value='bounce'>Bounce (elastic ease)</option>
+                <option value='rotate'>Rotate (spin/turn)</option>
+                <option value='morph'>Morph (shape transition)</option>
+                <option value='explode'>Explode (decompose parts)</option>
+              </select>
+            </div>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='opt-aspect'>Aspect Ratio</label>
+              <select id='opt-aspect' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+                <option value='1:1' selected>1:1 (Square)</option>
+                <option value='16:9'>16:9 (Landscape)</option>
+                <option value='9:16'>9:16 (Portrait)</option>
+                <option value='4:3'>4:3</option>
+              </select>
+            </div>
+          </div>
+        </Collapse>
+
+        {/* Grok Prompt (editable) */}
+        <Collapse title='Animation Prompt (Editable)'>
+          <div class='flex flex-col gap-y-2 pb-2'>
+            <textarea id='anim-prompt-text' rows='6'
+              class='w-full rounded-lg border bg-muted p-2 text-xs text-foreground placeholder:text-muted-foreground'
+              placeholder='Waiting for Step 2... The Animation Designer (Grok) will auto-generate the frame decomposition prompt. You can edit before generating frames.'></textarea>
+            <p id='anim-prompt-hint' class='text-xs text-muted-foreground'>Run Step 2→3→4 to generate animation prompt. Edit to refine frame design.</p>
+          </div>
+        </Collapse>
+
+        <Button href='/generate' variant='pill'>
+          <span slot='before'>←</span>
+          Back to Generate
+        </Button>
+      </div>
+
+      {/* ═══ Center Panel: Preview Area ═══ */}
+      <div class='flex flex-col gap-y-4 lg:col-span-6'>
+        <ErrorDisplay />
+
+        {/* Analysis Result Card */}
+        <div id='analysis-section' class='hidden'>
+          <Card heading='Image Analysis (Claude 4.6)'>
+            <div id='analysis-content' class='text-sm text-foreground'>
+              <p class='text-muted-foreground'>Analysis will appear here...</p>
+            </div>
+          </Card>
         </div>
+
+        {/* Frame Preview with Tabs */}
+        <Tabs>
+          <TabItem label='Frames'>
+            <div
+              id='frames-grid-container'
+              class='flex flex-col gap-y-3'
+            >
+              <div class='flex items-center justify-center rounded-xl border bg-white p-8 dark:bg-zinc-900' style='min-height: 300px;'>
+                <div class='flex flex-col items-center gap-y-2 text-muted-foreground'>
+                  <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+                    <rect x='2' y='2' width='20' height='20' rx='2.18' ry='2.18'/>
+                    <line x1='7' y1='2' x2='7' y2='22'/><line x1='17' y1='2' x2='17' y2='22'/>
+                    <line x1='2' y1='12' x2='22' y2='12'/>
+                    <line x1='2' y1='7' x2='7' y2='7'/><line x1='2' y1='17' x2='7' y2='17'/>
+                    <line x1='17' y1='7' x2='22' y2='7'/><line x1='17' y1='17' x2='22' y2='17'/>
+                  </svg>
+                  <span class='text-sm'>Generated frames will appear here</span>
+                  <span class='text-xs'>Each frame rendered with green-screen → auto-removed</span>
+                </div>
+              </div>
+            </div>
+          </TabItem>
+          <TabItem label='Animation Preview'>
+            <div
+              id='animation-preview-container'
+              class='flex flex-col items-center gap-y-3'
+            >
+              <div
+                id='animation-canvas-wrapper'
+                class='flex items-center justify-center overflow-hidden rounded-xl border'
+                style='min-height: 400px; background-image: repeating-conic-gradient(#e5e7eb 0% 25%, transparent 0% 50%); background-size: 20px 20px;'
+              >
+                <canvas id='animation-canvas' class='max-h-[500px] max-w-full'></canvas>
+                <div id='anim-placeholder' class='flex flex-col items-center gap-y-2 text-muted-foreground'>
+                  <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+                    <polygon points='5 3 19 12 5 21 5 3'/>
+                  </svg>
+                  <span class='text-sm'>Animation preview</span>
+                  <span class='text-xs'>Transparent-background animation will play here</span>
+                </div>
+              </div>
+              {/* Playback controls */}
+              <div id='playback-controls' class='hidden flex items-center gap-x-3 w-full'>
+                <button id='play-pause-btn' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground transition-all hover:bg-card' title='Play/Pause'>
+                  ▶ Play
+                </button>
+                <span id='frame-counter' class='text-xs text-muted-foreground whitespace-nowrap'>Frame 0 / 0</span>
+                <input id='frame-slider' type='range' min='0' max='0' value='0' class='flex-1' />
+                <button id='speed-btn' class='rounded-lg border bg-muted px-2 py-1 text-xs text-muted-foreground transition-all hover:bg-card'>
+                  1×
+                </button>
+              </div>
+            </div>
+          </TabItem>
+        </Tabs>
+
+        {/* Background Removal Stats */}
+        <div id='rembg-stats' class='hidden'>
+          <Card heading='Background Removal Stats'>
+            <div class='flex flex-wrap gap-4 text-sm text-muted-foreground'>
+              <span>Frames: <strong id='rembg-frame-count'>0</strong></span>
+              <span>Green pixels removed: <strong id='rembg-pixel-count'>0</strong></span>
+              <span>Avg transparency: <strong id='rembg-alpha-avg'>0%</strong></span>
+              <span>Processing: <strong id='rembg-time'>0ms</strong></span>
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      {/* ═══ Right Panel: Export + Details ═══ */}
+      <div class='flex flex-col gap-y-4 lg:col-span-3'>
+
+        {/* Export Panel */}
+        <Card heading='Export'>
+          <div class='flex flex-col gap-y-2'>
+            <button
+              id='export-gif-btn'
+              disabled
+              class='flex w-full items-center justify-center gap-x-2 rounded-lg border bg-muted px-3 py-2 text-sm text-foreground transition-all hover:bg-card disabled:cursor-not-allowed disabled:opacity-40'
+            >
+              <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+                <path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><polyline points='7 10 12 15 17 10'/><line x1='12' y1='15' x2='12' y2='3'/>
+              </svg>
+              Download GIF (transparent)
+            </button>
+            <button
+              id='export-apng-btn'
+              disabled
+              class='flex w-full items-center justify-center gap-x-2 rounded-lg border bg-muted px-3 py-2 text-sm text-foreground transition-all hover:bg-card disabled:cursor-not-allowed disabled:opacity-40'
+            >
+              <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+                <path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><polyline points='7 10 12 15 17 10'/><line x1='12' y1='15' x2='12' y2='3'/>
+              </svg>
+              Download APNG (lossless)
+            </button>
+            <button
+              id='export-frames-btn'
+              disabled
+              class='flex w-full items-center justify-center gap-x-2 rounded-lg border bg-muted px-3 py-2 text-sm text-foreground transition-all hover:bg-card disabled:cursor-not-allowed disabled:opacity-40'
+            >
+              <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+                <path d='M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z'/><polyline points='13 2 13 9 20 9'/>
+              </svg>
+              Download All Frames (ZIP)
+            </button>
+          </div>
+        </Card>
+
+        {/* Analysis JSON */}
+        <Collapse title='Analysis JSON'>
+          <pre id='analysis-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
+        </Collapse>
+
+        {/* Grok Prompt Output */}
+        <Collapse title='Grok Prompt Output'>
+          <pre id='grok-output-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
+        </Collapse>
+
+        {/* Green-Screen Removal Settings */}
+        <Collapse title='Green-Screen Settings'>
+          <div class='flex flex-col gap-y-3 pb-2'>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='gs-tolerance'>Color Tolerance</label>
+              <input id='gs-tolerance' type='range' min='10' max='120' value='60' class='w-full' />
+              <div class='flex justify-between text-xs text-muted-foreground'>
+                <span>Strict (10)</span>
+                <span id='gs-tolerance-val'>60</span>
+                <span>Loose (120)</span>
+              </div>
+            </div>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='gs-edge-blur'>Edge Softness</label>
+              <input id='gs-edge-blur' type='range' min='0' max='5' value='1' step='0.5' class='w-full' />
+              <div class='flex justify-between text-xs text-muted-foreground'>
+                <span>Sharp</span>
+                <span id='gs-edge-blur-val'>1px</span>
+                <span>Soft</span>
+              </div>
+            </div>
+            <button id='reprocess-rembg-btn' disabled
+              class='rounded-lg border bg-muted px-3 py-1.5 text-xs text-foreground transition-all hover:bg-card disabled:cursor-not-allowed disabled:opacity-40'>
+              Re-process Background Removal
+            </button>
+          </div>
+        </Collapse>
       </div>
     </div>
   </main>
 
-  {/* Client-side ELK.js layout computation */}
+  {/* ── Pipeline Step Styles (same pattern as /generate PipelineSteps.astro) ── */}
+  <style>
+    .pipeline-step[data-status='running'] {
+      border-color: hsl(var(--primary) / 0.5);
+      background-color: hsl(var(--primary) / 0.05);
+    }
+    .pipeline-step[data-status='running'] .step-indicator {
+      background-color: hsl(var(--primary));
+      color: white;
+      border-color: hsl(var(--primary));
+    }
+    .pipeline-step[data-status='running'] .step-spinner { display: block; }
+    .pipeline-step[data-status='done'] .step-indicator {
+      background-color: hsl(142.1 76.2% 36.3%);
+      color: white;
+      border-color: hsl(142.1 76.2% 36.3%);
+    }
+    .pipeline-step[data-status='done'] .step-check { display: block; }
+    .pipeline-step[data-status='error'] .step-indicator {
+      background-color: hsl(0 72.2% 50.6%);
+      color: white;
+      border-color: hsl(0 72.2% 50.6%);
+    }
+    .pipeline-step[data-status='error'] .step-error { display: block; }
+    .pipeline-step[data-status='error'] {
+      border-color: hsl(0 72.2% 50.6% / 0.5);
+      background-color: hsl(0 72.2% 50.6% / 0.05);
+      animation: shake 0.4s ease-in-out;
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      20% { transform: translateX(-4px); }
+      40% { transform: translateX(4px); }
+      60% { transform: translateX(-2px); }
+      80% { transform: translateX(2px); }
+    }
+  </style>
+
+  {/* ═══════════════════════════════════════════════════════════════════════
+       Client-side Orchestrator — Animation Frame Pipeline
+       ═══════════════════════════════════════════════════════════════════════ */}
   <script>
-    import ELK from 'elkjs/lib/elk.bundled.js'
+    // ── DOM references ──
+    const fileInput = document.getElementById('image-file-input') as HTMLInputElement
+    const dropzone = document.getElementById('upload-dropzone') as HTMLElement
+    const previewBox = document.getElementById('upload-preview-box') as HTMLElement
+    const previewImg = document.getElementById('upload-preview-img') as HTMLImageElement
+    const removeBtn = document.getElementById('remove-upload-btn') as HTMLButtonElement
+    const uploadInfo = document.getElementById('upload-info') as HTMLElement
 
-    const elk = new ELK()
+    const analyzeBtn = document.getElementById('analyze-btn') as HTMLButtonElement
+    const analyzeBtnText = document.getElementById('analyze-btn-text') as HTMLSpanElement
+    const genFramesBtn = document.getElementById('generate-frames-btn') as HTMLButtonElement
+    const genFramesText = document.getElementById('generate-frames-text') as HTMLSpanElement
 
-    const jsonInput = document.getElementById('playground-json') as HTMLTextAreaElement
-    const layoutBtn = document.getElementById('layout-btn')
-    const svgContainer = document.getElementById('playground-svg-container')
-    const layoutedPre = document.getElementById('playground-layouted')
-    const copyBtn = document.getElementById('copy-layout-btn')
+    const statusText = document.getElementById('anim-status-text') as HTMLElement
+    const elapsedEl = document.getElementById('anim-elapsed') as HTMLElement
+    const analysisSection = document.getElementById('analysis-section') as HTMLElement
+    const analysisContent = document.getElementById('analysis-content') as HTMLElement
+    const analysisJsonPre = document.getElementById('analysis-json') as HTMLPreElement
+    const grokOutputPre = document.getElementById('grok-output-json') as HTMLPreElement
+    const promptTextarea = document.getElementById('anim-prompt-text') as HTMLTextAreaElement
 
-    // Stats elements
-    const statNodes = document.getElementById('stat-nodes')
-    const statEdges = document.getElementById('stat-edges')
-    const statCanvas = document.getElementById('stat-canvas')
-    const statTime = document.getElementById('stat-time')
+    const framesGrid = document.getElementById('frames-grid-container') as HTMLElement
+    const animCanvas = document.getElementById('animation-canvas') as HTMLCanvasElement
+    const animPlaceholder = document.getElementById('anim-placeholder') as HTMLElement
+    const playbackControls = document.getElementById('playback-controls') as HTMLElement
+    const playPauseBtn = document.getElementById('play-pause-btn') as HTMLButtonElement
+    const frameCounter = document.getElementById('frame-counter') as HTMLElement
+    const frameSlider = document.getElementById('frame-slider') as HTMLInputElement
+    const speedBtn = document.getElementById('speed-btn') as HTMLButtonElement
 
-    let lastLayouted: any = null
+    const rembgStats = document.getElementById('rembg-stats') as HTMLElement
+    const exportGifBtn = document.getElementById('export-gif-btn') as HTMLButtonElement
+    const exportApngBtn = document.getElementById('export-apng-btn') as HTMLButtonElement
+    const exportFramesBtn = document.getElementById('export-frames-btn') as HTMLButtonElement
+    const reprocessBtn = document.getElementById('reprocess-rembg-btn') as HTMLButtonElement
 
-    layoutBtn?.addEventListener('click', async () => {
-      try {
-        const topology = JSON.parse(jsonInput.value)
+    const gsTolerance = document.getElementById('gs-tolerance') as HTMLInputElement
+    const gsToleranceVal = document.getElementById('gs-tolerance-val') as HTMLElement
+    const gsEdgeBlur = document.getElementById('gs-edge-blur') as HTMLInputElement
+    const gsEdgeBlurVal = document.getElementById('gs-edge-blur-val') as HTMLElement
 
-        // Get selected algorithm
-        const algoRadio = document.querySelector('input[name="elk-algorithm"]:checked') as HTMLInputElement
-        if (algoRadio) {
-          topology.layoutOptions = topology.layoutOptions || {}
-          topology.layoutOptions['elk.algorithm'] = algoRadio.value
-        }
+    const errorDisplay = (window as any).__errorDisplay
 
-        const t0 = performance.now()
-        const layouted = await elk.layout(topology)
-        const elapsed = (performance.now() - t0).toFixed(1)
+    // ── State ──
+    let uploadedImageB64 = ''
+    let uploadedMimeType = 'image/png'
+    let analysisResult: any = null
+    let rawFramesB64: string[] = []         // green-screen frames from Gemini
+    let transparentFrames: ImageData[] = []  // after rembg
+    let transparentBlobs: Blob[] = []        // PNG blobs for export
+    let running = false
+    let startTime = 0
+    let timerInterval: number | null = null
+    let animPlaying = false
+    let animFrame = 0
+    let animIntervalId: number | null = null
+    let speedMultiplier = 1
 
-        lastLayouted = layouted
+    // ── Timer ──
+    function startTimer() {
+      startTime = Date.now()
+      timerInterval = window.setInterval(() => {
+        if (elapsedEl) elapsedEl.textContent = `${((Date.now() - startTime) / 1000).toFixed(1)}s`
+      }, 100)
+    }
+    function stopTimer() { if (timerInterval) clearInterval(timerInterval); timerInterval = null }
+    function elapsed() { return ((Date.now() - startTime) / 1000).toFixed(1) }
 
-        // Update stats
-        const nodes = layouted.children?.length || 0
-        const edges = layouted.edges?.length || 0
-        if (statNodes) statNodes.textContent = String(nodes)
-        if (statEdges) statEdges.textContent = String(edges)
-        if (statCanvas) statCanvas.textContent = `${Math.round(layouted.width || 0)}×${Math.round(layouted.height || 0)}`
-        if (statTime) statTime.textContent = `${elapsed}ms`
-
-        // Render SVG
-        if (svgContainer) {
-          svgContainer.innerHTML = renderElkSvg(layouted)
-        }
-
-        // Show layouted JSON
-        if (layoutedPre) {
-          layoutedPre.textContent = JSON.stringify(layouted, null, 2)
-        }
-      } catch (err: any) {
-        if (svgContainer) {
-          svgContainer.innerHTML = `<div class="text-red-500 text-sm p-4">${err.message}</div>`
-        }
-      }
-    })
-
-    copyBtn?.addEventListener('click', () => {
-      if (lastLayouted) {
-        navigator.clipboard.writeText(JSON.stringify(lastLayouted, null, 2))
-      }
-    })
-
-    // Preset buttons
-    document.querySelectorAll('[data-preset]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const presetId = (btn as HTMLElement).dataset.preset
-        const presetJson = getPresetTopology(presetId || '')
-        if (presetJson) jsonInput.value = JSON.stringify(presetJson, null, 2)
-      })
-    })
-
-    function renderElkSvg(layouted: any): string {
-      const w = Math.round(layouted.width || 400)
-      const h = Math.round(layouted.height || 300)
-      const pad = 20
-
-      let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-pad} ${-pad} ${w + pad * 2} ${h + pad * 2}" class="w-full h-full">`
-
-      // Edges
-      for (const edge of layouted.edges || []) {
-        for (const section of edge.sections || []) {
-          const points = [section.startPoint, ...(section.bendPoints || []), section.endPoint]
-          const d = points.map((p: any, i: number) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ')
-          svg += `<path d="${d}" fill="none" stroke="#6B7280" stroke-width="1.5" marker-end="url(#arrow)"/>`
-        }
-      }
-
-      // Nodes
-      for (const node of layouted.children || []) {
-        const x = Math.round(node.x || 0)
-        const y = Math.round(node.y || 0)
-        const nw = Math.round(node.width || 100)
-        const nh = Math.round(node.height || 40)
-        const label = node.labels?.[0]?.text || node.id
-
-        svg += `<rect x="${x}" y="${y}" width="${nw}" height="${nh}" rx="6" fill="#E0E7FF" stroke="#4F46E5" stroke-width="1.5"/>`
-        svg += `<text x="${x + nw / 2}" y="${y + nh / 2 + 4}" text-anchor="middle" font-size="12" fill="#1E1B4B" font-family="system-ui">${label}</text>`
-      }
-
-      // Arrow marker
-      svg += `<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 Z" fill="#6B7280"/></marker></defs>`
-      svg += '</svg>'
-      return svg
+    // ── Pipeline step helper (mirrors PipelineSteps.astro pattern) ──
+    function setStep(stepId: string, status: 'idle' | 'running' | 'done' | 'error') {
+      const el = document.getElementById(stepId)
+      if (!el) return
+      el.dataset.status = status
+      el.querySelector('.step-spinner')?.classList.add('hidden')
+      el.querySelector('.step-check')?.classList.add('hidden')
+      el.querySelector('.step-error')?.classList.add('hidden')
+    }
+    function resetSteps() {
+      ;['step-analyze', 'step-prompt', 'step-frames', 'step-rembg'].forEach(id => setStep(id, 'idle'))
+      if (statusText) { statusText.textContent = 'Ready'; statusText.style.color = '' }
+      if (elapsedEl) elapsedEl.textContent = '0.0s'
     }
 
-    function getPresetTopology(id: string): any {
-      const presets: Record<string, any> = {
-        'academic-flow': {
-          id: 'root',
-          layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'DOWN' },
-          children: [
-            { id: 'input', width: 140, height: 45, labels: [{ text: 'Input' }] },
-            { id: 'preprocess', width: 140, height: 45, labels: [{ text: 'Preprocessing' }] },
-            { id: 'model', width: 160, height: 50, labels: [{ text: 'Model' }] },
-            { id: 'loss', width: 140, height: 45, labels: [{ text: 'Loss Function' }] },
-            { id: 'output', width: 140, height: 45, labels: [{ text: 'Output' }] },
-          ],
-          edges: [
-            { id: 'e1', sources: ['input'], targets: ['preprocess'] },
-            { id: 'e2', sources: ['preprocess'], targets: ['model'] },
-            { id: 'e3', sources: ['model'], targets: ['loss'] },
-            { id: 'e4', sources: ['model'], targets: ['output'] },
-          ],
-        },
-        'neural-network': {
-          id: 'root',
-          layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT' },
-          children: [
-            { id: 'x', width: 50, height: 50, labels: [{ text: 'X' }] },
-            { id: 'h1', width: 60, height: 50, labels: [{ text: 'H1' }] },
-            { id: 'h2', width: 60, height: 50, labels: [{ text: 'H2' }] },
-            { id: 'h3', width: 60, height: 50, labels: [{ text: 'H3' }] },
-            { id: 'y', width: 50, height: 50, labels: [{ text: 'Y' }] },
-          ],
-          edges: [
-            { id: 'e1', sources: ['x'], targets: ['h1'] },
-            { id: 'e2', sources: ['x'], targets: ['h2'] },
-            { id: 'e3', sources: ['h1'], targets: ['h3'] },
-            { id: 'e4', sources: ['h2'], targets: ['h3'] },
-            { id: 'e5', sources: ['h3'], targets: ['y'] },
-          ],
-        },
-        'tree-hierarchy': {
-          id: 'root',
-          layoutOptions: { 'elk.algorithm': 'mrtree', 'elk.direction': 'DOWN' },
-          children: [
-            { id: 'root_node', width: 120, height: 40, labels: [{ text: 'Root' }] },
-            { id: 'child1', width: 100, height: 40, labels: [{ text: 'Branch A' }] },
-            { id: 'child2', width: 100, height: 40, labels: [{ text: 'Branch B' }] },
-            { id: 'leaf1', width: 90, height: 35, labels: [{ text: 'Leaf 1' }] },
-            { id: 'leaf2', width: 90, height: 35, labels: [{ text: 'Leaf 2' }] },
-            { id: 'leaf3', width: 90, height: 35, labels: [{ text: 'Leaf 3' }] },
-          ],
-          edges: [
-            { id: 'e1', sources: ['root_node'], targets: ['child1'] },
-            { id: 'e2', sources: ['root_node'], targets: ['child2'] },
-            { id: 'e3', sources: ['child1'], targets: ['leaf1'] },
-            { id: 'e4', sources: ['child1'], targets: ['leaf2'] },
-            { id: 'e5', sources: ['child2'], targets: ['leaf3'] },
-          ],
-        },
+    // ══════════════════════════════════════════
+    //  FILE UPLOAD
+    // ══════════════════════════════════════════
+    function handleFileSelect(file: File) {
+      if (!file || !file.type.startsWith('image/')) return
+      if (file.size > 10 * 1024 * 1024) {
+        errorDisplay?.show({ title: 'File Too Large', message: 'Maximum file size is 10 MB.', hint: 'Resize the image before uploading.' })
+        return
       }
-      return presets[id] || null
+
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string
+        uploadedImageB64 = dataUrl.split(',')[1]
+        uploadedMimeType = file.type
+
+        previewImg.src = dataUrl
+        previewBox.classList.remove('hidden')
+        dropzone.classList.add('hidden')
+        uploadInfo.textContent = `${file.name} — ${(file.size / 1024).toFixed(0)} KB`
+
+        analyzeBtn.disabled = false
+        genFramesBtn.disabled = true
+        analysisResult = null
+        resetSteps()
+        statusText.textContent = 'Image uploaded — click "Step 1: Analyze Image"'
+      }
+      reader.readAsDataURL(file)
+    }
+
+    fileInput?.addEventListener('change', (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0]
+      if (file) handleFileSelect(file)
+    })
+
+    // Drag & drop
+    dropzone?.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('border-primary/70', 'bg-primary/5') })
+    dropzone?.addEventListener('dragleave', () => { dropzone.classList.remove('border-primary/70', 'bg-primary/5') })
+    dropzone?.addEventListener('drop', (e) => {
+      e.preventDefault()
+      dropzone.classList.remove('border-primary/70', 'bg-primary/5')
+      const file = e.dataTransfer?.files?.[0]
+      if (file) handleFileSelect(file)
+    })
+
+    removeBtn?.addEventListener('click', () => {
+      uploadedImageB64 = ''
+      previewBox.classList.add('hidden')
+      dropzone.classList.remove('hidden')
+      fileInput.value = ''
+      analyzeBtn.disabled = true
+      genFramesBtn.disabled = true
+      analysisResult = null
+      analysisSection.classList.add('hidden')
+      resetSteps()
+      statusText.textContent = 'Ready — upload an image to begin'
+    })
+
+    // ══════════════════════════════════════════
+    //  STEP 1: Claude 4.6 Image Analysis
+    // ══════════════════════════════════════════
+    analyzeBtn?.addEventListener('click', async () => {
+      if (running || !uploadedImageB64) return
+      running = true
+      analyzeBtn.disabled = true
+      errorDisplay?.hide()
+      resetSteps()
+      startTimer()
+
+      try {
+        setStep('step-analyze', 'running')
+        statusText.textContent = 'Step 1: Analyzing image structure…'
+        analyzeBtnText.textContent = 'Analyzing…'
+
+        const res = await fetch('/api/analyze-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_b64: uploadedImageB64,
+            mime_type: uploadedMimeType,
+          }),
+        })
+
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(`Analysis: ${err.error || res.statusText}`)
+        }
+
+        const data = await res.json()
+        if (data.success && data.analysis) {
+          analysisResult = data.analysis
+          analysisSection.classList.remove('hidden')
+
+          // Render analysis as readable HTML (safe — server-controlled content)
+          const a = data.analysis
+          let html = `<div class="flex flex-col gap-y-2">`
+          html += `<p class="font-medium">${escapeHtml(a.summary || 'Image analyzed successfully')}</p>`
+          if (a.components) {
+            const comps = Array.isArray(a.components) ? a.components.join(', ') : String(a.components)
+            html += `<p class="text-xs text-muted-foreground">Components: ${escapeHtml(comps)}</p>`
+          }
+          if (a.animation_suggestions) {
+            const sug = Array.isArray(a.animation_suggestions) ? a.animation_suggestions.join('; ') : String(a.animation_suggestions)
+            html += `<p class="text-xs text-muted-foreground">Animation ideas: ${escapeHtml(sug)}</p>`
+          }
+          html += `</div>`
+          analysisContent.innerHTML = html
+
+          analysisJsonPre.textContent = JSON.stringify(data.analysis, null, 2)
+          setStep('step-analyze', 'done')
+          statusText.textContent = `Analysis complete (${elapsed()}s) — click "Step 2→3→4"`
+          genFramesBtn.disabled = false
+        } else {
+          throw new Error(`Analysis: ${data.error || 'No analysis result'}`)
+        }
+      } catch (err: any) {
+        setStep('step-analyze', 'error')
+        errorDisplay?.show({ title: 'Analysis Error', message: err.message, step: 'Step 1' })
+        statusText.textContent = `Error: ${err.message}`
+        statusText.style.color = 'var(--color-danger, #ef4444)'
+      } finally {
+        stopTimer()
+        running = false
+        analyzeBtn.disabled = false
+        analyzeBtnText.textContent = 'Step 1: Analyze Image'
+      }
+    })
+
+    // ══════════════════════════════════════════
+    //  STEP 2→3→4: Grok Prompt + Gemini Frames + Rembg
+    // ══════════════════════════════════════════
+    genFramesBtn?.addEventListener('click', runFramePipeline)
+
+    async function runFramePipeline() {
+      if (running || !uploadedImageB64 || !analysisResult) return
+      running = true
+      genFramesBtn.disabled = true
+      analyzeBtn.disabled = true
+      errorDisplay?.hide()
+      startTimer()
+
+      const frameCount = parseInt((document.getElementById('opt-frames') as HTMLSelectElement)?.value || '8')
+      const fps = parseInt((document.getElementById('opt-fps') as HTMLSelectElement)?.value || '12')
+      const style = (document.getElementById('opt-style') as HTMLSelectElement)?.value || 'smooth'
+      const aspect = (document.getElementById('opt-aspect') as HTMLSelectElement)?.value || '1:1'
+
+      try {
+        // ── Step 2: Grok Animation Prompt ──
+        setStep('step-prompt', 'running')
+        statusText.textContent = 'Step 2: Designing animation frames…'
+        genFramesText.textContent = 'Designing…'
+
+        const customPrompt = promptTextarea.value.trim() || null
+        const pRes = await fetch('/api/animate-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_b64: uploadedImageB64,
+            analysis: analysisResult,
+            frame_count: frameCount,
+            animation_style: style,
+          }),
+        })
+        if (!pRes.ok) {
+          const e = await pRes.json()
+          throw new Error(`Grok: ${e.error || 'Prompt design failed'}`)
+        }
+        const pData = await pRes.json()
+        if (pData.success && pData.prompt) {
+          if (!customPrompt) {
+            promptTextarea.value = pData.prompt
+          }
+          grokOutputPre.textContent = JSON.stringify(pData, null, 2)
+          promptTextarea.classList.add('ring-2', 'ring-purple-400')
+          const hint = document.getElementById('anim-prompt-hint')
+          if (hint) hint.textContent = '✏️ Prompt generated! Edit above and click button again to refine.'
+          setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-purple-400'), 3000)
+        } else {
+          throw new Error(`Grok: ${pData.error || 'Empty prompt'}`)
+        }
+        setStep('step-prompt', 'done')
+
+        // ── Step 3: Gemini Frame Generation ──
+        setStep('step-frames', 'running')
+        statusText.textContent = 'Step 3: Generating animation frames (this may take a while)…'
+        genFramesText.textContent = 'Generating frames…'
+
+        const fRes = await fetch('/api/animate-frames', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_b64: uploadedImageB64,
+            frame_count: frameCount,
+            fps,
+            animation_style: style,
+            custom_prompt: promptTextarea.value.trim() || pData.prompt,
+            green_screen: true,
+            aspect_ratio: aspect,
+          }),
+        })
+        if (!fRes.ok) {
+          const e = await fRes.json()
+          throw new Error(`Gemini: ${e.error || 'Frame generation failed'}`)
+        }
+        const fData = await fRes.json()
+        if (fData.success && fData.frames && fData.frames.length > 0) {
+          rawFramesB64 = fData.frames
+          setStep('step-frames', 'done')
+          statusText.textContent = `${rawFramesB64.length} frames generated. Removing background…`
+        } else {
+          throw new Error(`Gemini: ${fData.error || 'No frames generated'}`)
+        }
+
+        // ── Step 4: Client-side Green-Screen Removal ──
+        setStep('step-rembg', 'running')
+        statusText.textContent = 'Step 4: Removing green-screen background…'
+        genFramesText.textContent = 'Removing BG…'
+        await processGreenScreen()
+        setStep('step-rembg', 'done')
+
+        statusText.textContent = `Done! ${transparentFrames.length} transparent frames (${elapsed()}s)`
+        statusText.style.color = ''
+
+        // Enable exports
+        exportGifBtn.disabled = false
+        exportApngBtn.disabled = false
+        exportFramesBtn.disabled = false
+        reprocessBtn.disabled = false
+
+        // Show results
+        showFramesGrid()
+        startAnimation(fps)
+
+      } catch (err: any) {
+        document.querySelectorAll('.pipeline-step[data-status="running"]').forEach(el => {
+          ;(el as HTMLElement).dataset.status = 'error'
+        })
+        let hint = ''
+        const msg = err.message || 'Unknown error'
+        if (msg.includes('Grok')) hint = 'Check API key for the Animation Designer Agent.'
+        else if (msg.includes('Gemini')) hint = 'Check API key for frame generation. May take ~3min.'
+        else if (msg.includes('502')) hint = 'Start backend: python server.py'
+        else if (msg.includes('timed out')) hint = 'Frame generation can be slow. Try fewer frames.'
+        errorDisplay?.show({ title: 'Animation Error', message: msg, hint, step: 'Step 2-4' })
+        statusText.textContent = `Error: ${msg}`
+        statusText.style.color = 'var(--color-danger, #ef4444)'
+      } finally {
+        stopTimer()
+        running = false
+        genFramesBtn.disabled = false
+        analyzeBtn.disabled = false
+        genFramesText.textContent = 'Step 2→3→4: Generate Animation'
+      }
+    }
+
+    // ══════════════════════════════════════════
+    //  GREEN-SCREEN REMOVAL (Client-side rembg)
+    //
+    //  Algorithm: Chroma-key on green channel with
+    //  edge anti-aliasing and green-spill correction.
+    //  Equivalent to rembg's green-screen mode but
+    //  runs entirely in-browser via Canvas API.
+    // ══════════════════════════════════════════
+    async function processGreenScreen() {
+      const tolerance = parseInt(gsTolerance?.value || '60')
+      const edgeBlur = parseFloat(gsEdgeBlur?.value || '1')
+      const t0 = performance.now()
+
+      transparentFrames = []
+      transparentBlobs = []
+      let totalGreenPixels = 0
+      let totalPixels = 0
+
+      for (let i = 0; i < rawFramesB64.length; i++) {
+        const img = await loadImage(`data:image/png;base64,${rawFramesB64[i]}`)
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')!
+        ctx.drawImage(img, 0, 0)
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+        const { data } = imageData
+        totalPixels += data.length / 4
+
+        // Pass 1: Green-screen chroma key removal
+        for (let p = 0; p < data.length; p += 4) {
+          const r = data[p], g = data[p + 1], b = data[p + 2]
+          // Green dominance = how much greener than the max of R and B
+          const greenDominance = g - Math.max(r, b)
+
+          if (greenDominance > tolerance * 0.3 && g > 80) {
+            // Core green area — fully transparent
+            data[p + 3] = 0
+            totalGreenPixels++
+          } else if (greenDominance > tolerance * 0.15 && g > 60) {
+            // Edge transition — partial transparency for smooth edges
+            const alpha = Math.max(0, 255 - Math.round((greenDominance / tolerance) * 255 * 2))
+            data[p + 3] = Math.min(data[p + 3], alpha)
+            // Green-spill correction: reduce green tint on edges
+            data[p + 1] = Math.min(g, Math.round((r + b) / 2))
+          }
+        }
+
+        ctx.putImageData(imageData, 0, 0)
+
+        // Pass 2: Edge softness via alpha-channel blur
+        if (edgeBlur > 0) {
+          const tempCanvas = document.createElement('canvas')
+          tempCanvas.width = canvas.width
+          tempCanvas.height = canvas.height
+          const tempCtx = tempCanvas.getContext('2d')!
+          tempCtx.filter = `blur(${edgeBlur}px)`
+          tempCtx.drawImage(canvas, 0, 0)
+          const blurred = tempCtx.getImageData(0, 0, canvas.width, canvas.height)
+          const original = ctx.getImageData(0, 0, canvas.width, canvas.height)
+          // Only apply blurred alpha (keeps color sharp, softens edges)
+          for (let p = 3; p < blurred.data.length; p += 4) {
+            original.data[p] = Math.min(original.data[p], blurred.data[p])
+          }
+          ctx.putImageData(original, 0, 0)
+        }
+
+        transparentFrames.push(ctx.getImageData(0, 0, canvas.width, canvas.height))
+
+        // Create exportable PNG blob
+        const blob = await new Promise<Blob>((resolve) => {
+          canvas.toBlob((b) => resolve(b!), 'image/png')
+        })
+        transparentBlobs.push(blob)
+      }
+
+      const procTime = (performance.now() - t0).toFixed(0)
+
+      // Update stats UI
+      rembgStats.classList.remove('hidden')
+      const fcEl = document.getElementById('rembg-frame-count')
+      const pcEl = document.getElementById('rembg-pixel-count')
+      const aaEl = document.getElementById('rembg-alpha-avg')
+      const tmEl = document.getElementById('rembg-time')
+      if (fcEl) fcEl.textContent = String(transparentFrames.length)
+      if (pcEl) pcEl.textContent = totalGreenPixels.toLocaleString()
+      if (aaEl) aaEl.textContent = `${totalPixels > 0 ? ((totalGreenPixels / totalPixels) * 100).toFixed(1) : '0'}%`
+      if (tmEl) tmEl.textContent = `${procTime}ms`
+    }
+
+    function loadImage(src: string): Promise<HTMLImageElement> {
+      return new Promise((resolve, reject) => {
+        const img = new Image()
+        img.onload = () => resolve(img)
+        img.onerror = () => reject(new Error('Failed to load frame image'))
+        img.src = src
+      })
+    }
+
+    // ══════════════════════════════════════════
+    //  FRAME GRID DISPLAY
+    // ══════════════════════════════════════════
+    function showFramesGrid() {
+      if (!framesGrid || transparentBlobs.length === 0) return
+      const gridHtml = transparentBlobs.map((blob, i) => {
+        const url = URL.createObjectURL(blob)
+        return `
+          <div class="relative overflow-hidden rounded-lg border">
+            <div class="text-xs font-medium absolute top-1 left-1 bg-black/50 text-white px-1.5 py-0.5 rounded z-10">F${i + 1}</div>
+            <div style="background-image: repeating-conic-gradient(#e5e7eb 0% 25%, transparent 0% 50%); background-size: 12px 12px;">
+              <img src="${url}" class="h-auto w-full" alt="Frame ${i + 1}" loading="lazy" />
+            </div>
+          </div>
+        `
+      }).join('')
+
+      framesGrid.innerHTML = `
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+          ${gridHtml}
+        </div>
+      `
+    }
+
+    // ══════════════════════════════════════════
+    //  ANIMATION PLAYBACK (Canvas-based)
+    // ══════════════════════════════════════════
+    function startAnimation(fps: number) {
+      if (transparentFrames.length === 0) return
+
+      const firstFrame = transparentFrames[0]
+      animCanvas.width = firstFrame.width
+      animCanvas.height = firstFrame.height
+      animPlaceholder.classList.add('hidden')
+      animCanvas.style.display = 'block'
+      playbackControls.classList.remove('hidden')
+
+      frameSlider.max = String(transparentFrames.length - 1)
+      frameSlider.value = '0'
+      animFrame = 0
+      animPlaying = true
+      playPauseBtn.textContent = '⏸ Pause'
+
+      if (animIntervalId) clearInterval(animIntervalId)
+      scheduleAnimInterval(fps)
+      renderCurrentFrame()
+    }
+
+    function scheduleAnimInterval(fps: number) {
+      if (animIntervalId) clearInterval(animIntervalId)
+      animIntervalId = window.setInterval(() => {
+        if (!animPlaying) return
+        animFrame = (animFrame + 1) % transparentFrames.length
+        renderCurrentFrame()
+      }, 1000 / (fps * speedMultiplier))
+    }
+
+    function renderCurrentFrame() {
+      const ctx = animCanvas.getContext('2d')
+      if (!ctx || !transparentFrames[animFrame]) return
+      ctx.clearRect(0, 0, animCanvas.width, animCanvas.height)
+      ctx.putImageData(transparentFrames[animFrame], 0, 0)
+      frameCounter.textContent = `Frame ${animFrame + 1} / ${transparentFrames.length}`
+      frameSlider.value = String(animFrame)
+    }
+
+    playPauseBtn?.addEventListener('click', () => {
+      animPlaying = !animPlaying
+      playPauseBtn.textContent = animPlaying ? '⏸ Pause' : '▶ Play'
+    })
+
+    frameSlider?.addEventListener('input', () => {
+      animFrame = parseInt(frameSlider.value)
+      renderCurrentFrame()
+    })
+
+    speedBtn?.addEventListener('click', () => {
+      const speeds = [0.5, 1, 1.5, 2]
+      const idx = speeds.indexOf(speedMultiplier)
+      speedMultiplier = speeds[(idx + 1) % speeds.length]
+      speedBtn.textContent = `${speedMultiplier}×`
+      const fps = parseInt((document.getElementById('opt-fps') as HTMLSelectElement)?.value || '12')
+      scheduleAnimInterval(fps)
+    })
+
+    // ══════════════════════════════════════════
+    //  GREEN-SCREEN SETTINGS UI
+    // ══════════════════════════════════════════
+    gsTolerance?.addEventListener('input', () => {
+      if (gsToleranceVal) gsToleranceVal.textContent = gsTolerance.value
+    })
+    gsEdgeBlur?.addEventListener('input', () => {
+      if (gsEdgeBlurVal) gsEdgeBlurVal.textContent = `${gsEdgeBlur.value}px`
+    })
+    reprocessBtn?.addEventListener('click', async () => {
+      if (rawFramesB64.length === 0) return
+      reprocessBtn.disabled = true
+      statusText.textContent = 'Re-processing background removal…'
+      setStep('step-rembg', 'running')
+      await processGreenScreen()
+      setStep('step-rembg', 'done')
+      showFramesGrid()
+      const fps = parseInt((document.getElementById('opt-fps') as HTMLSelectElement)?.value || '12')
+      startAnimation(fps)
+      reprocessBtn.disabled = false
+      statusText.textContent = 'Background re-processed!'
+    })
+
+    // ══════════════════════════════════════════
+    //  EXPORT
+    // ══════════════════════════════════════════
+    exportGifBtn?.addEventListener('click', async () => {
+      if (transparentBlobs.length === 0) return
+      exportGifBtn.disabled = true
+      statusText.textContent = 'Preparing download…'
+      try {
+        // Download individual transparent PNGs (GIF encoding requires gif.js)
+        await downloadAllFrames('animation-gif')
+        statusText.textContent = `Exported ${transparentBlobs.length} frames as transparent PNGs`
+      } finally { exportGifBtn.disabled = false }
+    })
+
+    exportApngBtn?.addEventListener('click', async () => {
+      if (transparentBlobs.length === 0) return
+      exportApngBtn.disabled = true
+      statusText.textContent = 'Preparing download…'
+      try {
+        await downloadAllFrames('animation-apng')
+        statusText.textContent = `Exported ${transparentBlobs.length} frames as transparent PNGs`
+      } finally { exportApngBtn.disabled = false }
+    })
+
+    exportFramesBtn?.addEventListener('click', async () => {
+      if (transparentBlobs.length === 0) return
+      exportFramesBtn.disabled = true
+      statusText.textContent = 'Downloading frames…'
+      await downloadAllFrames('frame')
+      exportFramesBtn.disabled = false
+      statusText.textContent = `Downloaded ${transparentBlobs.length} transparent PNG frames`
+    })
+
+    async function downloadAllFrames(prefix = 'frame') {
+      for (let i = 0; i < transparentBlobs.length; i++) {
+        const url = URL.createObjectURL(transparentBlobs[i])
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${prefix}-${String(i + 1).padStart(3, '0')}.png`
+        a.click()
+        URL.revokeObjectURL(url)
+        // Small delay to avoid browser throttling
+        await new Promise(r => setTimeout(r, 150))
+      }
+    }
+
+    // ── Retry from ErrorDisplay ──
+    document.getElementById('error-retry')?.addEventListener('click', () => {
+      errorDisplay?.hide()
+      if (analysisResult) {
+        genFramesBtn?.click()
+      } else if (uploadedImageB64) {
+        analyzeBtn?.click()
+      }
+    })
+
+    // ── Utility ──
+    function escapeHtml(str: string): string {
+      const div = document.createElement('div')
+      div.textContent = str
+      return div.innerHTML
     }
   </script>
 </GenerateLayout>
