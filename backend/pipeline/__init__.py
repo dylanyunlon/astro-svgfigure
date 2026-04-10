@@ -27,6 +27,11 @@ from .svg_validator import validate_svg
 from .svg_scaler import scale_svg
 from .gemini_image_gen import generate_scientific_figure, generate_image_with_gemini
 
+# Animation pipeline modules (Playground page)
+from .image_analyzer import analyze_image
+from .animation_prompt_designer import design_animation_prompt
+from .frame_generator import generate_animation_frames
+
 __all__ = [
     "generate_topology",
     "beautify_with_nanobanana",
@@ -35,4 +40,7 @@ __all__ = [
     "scale_svg",
     "generate_scientific_figure",
     "generate_image_with_gemini",
+    "analyze_image",
+    "design_animation_prompt",
+    "generate_animation_frames",
 ]

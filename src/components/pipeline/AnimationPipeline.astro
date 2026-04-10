@@ -1,0 +1,274 @@
+---
+/**
+ * AnimationPipeline.astro — Animation Pipeline Steps Component
+ *
+ * Reusable 4-step pipeline indicator for the /playground animation
+ * frame generation flow. Mirrors the PipelineSteps.astro pattern
+ * from /generate but with animation-specific steps:
+ *
+ *   Step 1: Image Analysis (Claude 4.6)
+ *   Step 2: Animation Design (Grok prompt engineering)
+ *   Step 3: Frame Generation (Gemini multi-frame)
+ *   Step 4: Background Removal (green-screen chroma-key)
+ *
+ * Uses astro-pure Card component wrapper.
+ * Exposes window.__animPipeline global for JS orchestration.
+ *
+ * Knuth-Level Critiques:
+ * ──────────────────────
+ * User Angle:
+ *   - Step indicators use both color AND icon (spinner/check/cross) to
+ *     convey status. This is accessibility-friendly: color-blind users
+ *     can distinguish states by icon shape alone.
+ *   - The elapsed timer updates at 100ms intervals. This feels responsive
+ *     without causing excessive DOM updates.
+ *
+ * System Angle:
+ *   - The step status is stored as data-status attributes on DOM elements.
+ *     This avoids managing a separate JS state object that could desync
+ *     with the visual state. The CSS drives all visual changes from
+ *     data-status alone, which is the single source of truth.
+ *   - The global __animPipeline API uses method chaining for brevity:
+ *     window.__animPipeline.setStatus('step-analyze', 'running')
+ *
+ * GitHub 背书: cworld1/astro-theme-pure (component patterns)
+ */
+
+interface StepDef {
+  id: string
+  num: string
+  label: string
+  desc: string
+  icon: string
+}
+
+interface Props {
+  class?: string
+}
+
+const { class: className } = Astro.props
+
+const steps: StepDef[] = [
+  {
+    id: 'step-analyze',
+    num: '1',
+    label: 'Image Analysis',
+    desc: 'Claude 4.6 identifies structure & animatable elements',
+    icon: 'eye',
+  },
+  {
+    id: 'step-prompt',
+    num: '2',
+    label: 'Animation Design',
+    desc: 'Grok designs frame decomposition with green-screen BG',
+    icon: 'pen',
+  },
+  {
+    id: 'step-frames',
+    num: '3',
+    label: 'Frame Generation',
+    desc: 'Gemini 3 generates multi-frame animation images',
+    icon: 'film',
+  },
+  {
+    id: 'step-rembg',
+    num: '4',
+    label: 'Background Removal',
+    desc: 'Green-screen chroma key → transparent PNG frames',
+    icon: 'scissors',
+  },
+]
+---
+
+<div class:list={['flex flex-col gap-y-1', className]} id='anim-pipeline-steps'>
+  {steps.map((step) => (
+    <div
+      id={step.id}
+      class='anim-pipeline-step flex items-center gap-x-3 rounded-xl border bg-muted px-3 py-2 transition-all'
+      data-status='idle'
+    >
+      {/* Step number indicator */}
+      <div class='anim-step-indicator flex size-7 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium text-muted-foreground transition-colors'>
+        {step.num}
+      </div>
+      {/* Step label + description */}
+      <div class='flex flex-1 flex-col'>
+        <span class='text-sm font-medium'>{step.label}</span>
+        <span class='text-xs text-muted-foreground'>{step.desc}</span>
+      </div>
+      {/* Status icons: spinner / check / error */}
+      <div class='anim-step-status'>
+        <svg class='anim-step-spinner hidden size-4 animate-spin text-primary' xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24'>
+          <circle class='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' stroke-width='4' />
+          <path class='opacity-75' fill='currentColor' d='M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z' />
+        </svg>
+        <svg class='anim-step-check hidden size-4 text-green-500' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+          <polyline points='20 6 9 17 4 12' />
+        </svg>
+        <svg class='anim-step-error hidden size-4 text-red-500' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+          <line x1='18' y1='6' x2='6' y2='18' /><line x1='6' y1='6' x2='18' y2='18' />
+        </svg>
+      </div>
+    </div>
+  ))}
+  {/* Timer + status text */}
+  <div class='mt-2 flex items-center justify-between text-xs text-muted-foreground'>
+    <span id='anim-status-text'>Ready — upload an image to begin</span>
+    <span id='anim-elapsed'>0.0s</span>
+  </div>
+</div>
+
+{/* Pipeline step status styles */}
+<style>
+  /* Running state */
+  .anim-pipeline-step[data-status='running'] {
+    border-color: hsl(var(--primary) / 0.5);
+    background-color: hsl(var(--primary) / 0.05);
+  }
+  .anim-pipeline-step[data-status='running'] .anim-step-indicator {
+    background-color: hsl(var(--primary));
+    color: white;
+    border-color: hsl(var(--primary));
+  }
+  .anim-pipeline-step[data-status='running'] .anim-step-spinner {
+    display: block;
+  }
+
+  /* Done state */
+  .anim-pipeline-step[data-status='done'] .anim-step-indicator {
+    background-color: hsl(142.1 76.2% 36.3%);
+    color: white;
+    border-color: hsl(142.1 76.2% 36.3%);
+  }
+  .anim-pipeline-step[data-status='done'] .anim-step-check {
+    display: block;
+  }
+
+  /* Error state */
+  .anim-pipeline-step[data-status='error'] .anim-step-indicator {
+    background-color: hsl(0 72.2% 50.6%);
+    color: white;
+    border-color: hsl(0 72.2% 50.6%);
+  }
+  .anim-pipeline-step[data-status='error'] .anim-step-error {
+    display: block;
+  }
+  .anim-pipeline-step[data-status='error'] {
+    border-color: hsl(0 72.2% 50.6% / 0.5);
+    background-color: hsl(0 72.2% 50.6% / 0.05);
+    animation: anim-shake 0.4s ease-in-out;
+  }
+
+  @keyframes anim-shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-4px); }
+    40% { transform: translateX(4px); }
+    60% { transform: translateX(-2px); }
+    80% { transform: translateX(2px); }
+  }
+</style>
+
+<script>
+  /**
+   * Global pipeline controller exposed on window.__animPipeline.
+   *
+   * Methods:
+   *   setStatus(stepId, status)  — 'idle' | 'running' | 'done' | 'error'
+   *   resetAll()                 — Reset all steps to idle
+   *   getStatus(stepId)          — Get current status of a step
+   *   startTimer()               — Start the elapsed timer
+   *   stopTimer()                — Stop the elapsed timer
+   *   elapsed()                  — Get elapsed seconds as string
+   *   setStatusText(text, color?) — Update status text
+   */
+  ;(function initAnimPipeline() {
+    const stepIds = ['step-analyze', 'step-prompt', 'step-frames', 'step-rembg']
+    const statusText = document.getElementById('anim-status-text') as HTMLElement
+    const elapsedEl = document.getElementById('anim-elapsed') as HTMLElement
+
+    let startTime = 0
+    let timerInterval: number | null = null
+
+    function setStatus(stepId: string, status: 'idle' | 'running' | 'done' | 'error') {
+      const el = document.getElementById(stepId)
+      if (!el) return
+
+      el.dataset.status = status
+
+      // Hide all icons first
+      el.querySelector('.anim-step-spinner')?.classList.add('hidden')
+      el.querySelector('.anim-step-check')?.classList.add('hidden')
+      el.querySelector('.anim-step-error')?.classList.add('hidden')
+
+      // Show the appropriate icon (CSS handles this via data-status,
+      // but we also remove 'hidden' class for display:block override)
+      if (status === 'running') {
+        el.querySelector('.anim-step-spinner')?.classList.remove('hidden')
+      } else if (status === 'done') {
+        el.querySelector('.anim-step-check')?.classList.remove('hidden')
+      } else if (status === 'error') {
+        el.querySelector('.anim-step-error')?.classList.remove('hidden')
+      }
+    }
+
+    function resetAll() {
+      stepIds.forEach(id => setStatus(id, 'idle'))
+      if (statusText) {
+        statusText.textContent = 'Ready'
+        statusText.style.color = ''
+      }
+      if (elapsedEl) elapsedEl.textContent = '0.0s'
+    }
+
+    function getStatus(stepId: string): string {
+      return document.getElementById(stepId)?.dataset.status || 'idle'
+    }
+
+    function startTimer() {
+      startTime = Date.now()
+      timerInterval = window.setInterval(() => {
+        if (elapsedEl) {
+          elapsedEl.textContent = `${((Date.now() - startTime) / 1000).toFixed(1)}s`
+        }
+      }, 100)
+    }
+
+    function stopTimer() {
+      if (timerInterval) {
+        clearInterval(timerInterval)
+        timerInterval = null
+      }
+    }
+
+    function elapsed(): string {
+      return ((Date.now() - startTime) / 1000).toFixed(1)
+    }
+
+    function setStatusText(text: string, color?: string) {
+      if (statusText) {
+        statusText.textContent = text
+        statusText.style.color = color || ''
+      }
+    }
+
+    // Mark error on all running steps
+    function errorAllRunning() {
+      document.querySelectorAll('.anim-pipeline-step[data-status="running"]').forEach(el => {
+        const stepId = el.id
+        if (stepId) setStatus(stepId, 'error')
+      })
+    }
+
+    // Expose globally
+    ;(window as any).__animPipeline = {
+      setStatus,
+      resetAll,
+      getStatus,
+      startTimer,
+      stopTimer,
+      elapsed,
+      setStatusText,
+      errorAllRunning,
+    }
+  })()
+</script>

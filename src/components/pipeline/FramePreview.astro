@@ -1,0 +1,325 @@
+---
+/**
+ * FramePreview.astro — Animation Frame Grid + Playback Component
+ *
+ * Displays generated animation frames in two views:
+ *   Tab 1: Frame Grid — all frames as thumbnails with index labels
+ *   Tab 2: Animation Preview — canvas-based playback with controls
+ *
+ * Uses astro-pure Tabs and TabItem components.
+ * Exposes window.__framePreview global for JS orchestration.
+ *
+ * Knuth-Level Critiques:
+ * ──────────────────────
+ * User Angle:
+ *   - The animation canvas uses a checkerboard background to indicate
+ *     transparency, matching the convention in image editors (Photoshop,
+ *     GIMP). Users immediately understand the transparent areas.
+ *   - Playback speed button cycles through 0.5×, 1×, 1.5×, 2×.
+ *     At 0.5× with 12fps, the frame duration is 166ms — still smooth.
+ *     At 2× with 24fps, the interval is 20ms which may drop frames
+ *     on slow devices. We cap the effective interval at 16ms (60Hz).
+ *   - The frame slider allows scrubbing through frames manually.
+ *     This pauses playback automatically to prevent fighting between
+ *     slider input and auto-advance.
+ *
+ * System Angle:
+ *   - Canvas.putImageData() is faster than drawImage() for per-frame
+ *     rendering because it skips compositing. But it requires ImageData
+ *     objects (not just base64). We pre-decode all frames into ImageData
+ *     when frames are loaded, trading memory for playback performance.
+ *   - For 16 frames at 1024x1024 RGBA, the ImageData array uses ~64MB.
+ *     This is fine on desktop but may cause OOM on mobile devices with
+ *     ≤2GB RAM. We should add a mobile detection + size warning.
+ *   - Frame thumbnails use URL.createObjectURL(Blob) for memory-efficient
+ *     rendering. We revoke URLs when frames are replaced.
+ *
+ * GitHub 背书: cworld1/astro-theme-pure (Tabs, TabItem)
+ */
+import { Tabs, TabItem } from 'astro-pure/user'
+
+interface Props {
+  class?: string
+}
+
+const { class: className } = Astro.props
+---
+
+<div class:list={['flex flex-col gap-y-4', className]}>
+  <Tabs>
+    {/* ── Tab 1: Frame Grid ── */}
+    <TabItem label='Frames'>
+      <div id='frames-grid-container' class='flex flex-col gap-y-3'>
+        <div
+          class='flex items-center justify-center rounded-xl border bg-white p-8 dark:bg-zinc-900'
+          style='min-height: 300px;'
+        >
+          <div id='frames-placeholder' class='flex flex-col items-center gap-y-2 text-muted-foreground'>
+            <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+              <rect x='2' y='2' width='20' height='20' rx='2.18' ry='2.18' />
+              <line x1='7' y1='2' x2='7' y2='22' /><line x1='17' y1='2' x2='17' y2='22' />
+              <line x1='2' y1='12' x2='22' y2='12' />
+              <line x1='2' y1='7' x2='7' y2='7' /><line x1='2' y1='17' x2='7' y2='17' />
+              <line x1='17' y1='7' x2='22' y2='7' /><line x1='17' y1='17' x2='22' y2='17' />
+            </svg>
+            <span class='text-sm'>Generated frames will appear here</span>
+            <span class='text-xs'>Each frame rendered with green-screen → auto-removed</span>
+          </div>
+        </div>
+      </div>
+    </TabItem>
+
+    {/* ── Tab 2: Animation Preview ── */}
+    <TabItem label='Animation Preview'>
+      <div id='animation-preview-container' class='flex flex-col items-center gap-y-3'>
+        {/* Canvas with checkerboard transparency background */}
+        <div
+          id='animation-canvas-wrapper'
+          class='flex items-center justify-center overflow-hidden rounded-xl border'
+          style='min-height: 400px; background-image: repeating-conic-gradient(#e5e7eb 0% 25%, transparent 0% 50%); background-size: 20px 20px;'
+        >
+          <canvas id='animation-canvas' class='max-h-[500px] max-w-full' style='display:none;'></canvas>
+          <div id='anim-placeholder' class='flex flex-col items-center gap-y-2 text-muted-foreground'>
+            <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
+              <polygon points='5 3 19 12 5 21 5 3' />
+            </svg>
+            <span class='text-sm'>Animation preview</span>
+            <span class='text-xs'>Transparent-background animation will play here</span>
+          </div>
+        </div>
+        {/* Playback controls */}
+        <div id='playback-controls' class='hidden flex w-full items-center gap-x-3'>
+          <button
+            id='play-pause-btn'
+            class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground transition-all hover:bg-card'
+            title='Play/Pause'
+          >
+            ▶ Play
+          </button>
+          <span id='frame-counter' class='whitespace-nowrap text-xs text-muted-foreground'>Frame 0 / 0</span>
+          <input id='frame-slider' type='range' min='0' max='0' value='0' class='flex-1' />
+          <button
+            id='speed-btn'
+            class='rounded-lg border bg-muted px-2 py-1 text-xs text-muted-foreground transition-all hover:bg-card'
+          >
+            1×
+          </button>
+        </div>
+      </div>
+    </TabItem>
+  </Tabs>
+
+  {/* ── Background Removal Stats ── */}
+  <div id='rembg-stats' class='hidden'>
+    <div class='rounded-xl border bg-muted px-4 py-3'>
+      <div class='mb-1 text-sm font-medium'>Background Removal Stats</div>
+      <div class='flex flex-wrap gap-4 text-xs text-muted-foreground'>
+        <span>Frames: <strong id='rembg-frame-count' class='text-foreground'>0</strong></span>
+        <span>Green removed: <strong id='rembg-pixel-count' class='text-foreground'>0</strong></span>
+        <span>Transparency: <strong id='rembg-alpha-avg' class='text-foreground'>0%</strong></span>
+        <span>Time: <strong id='rembg-time' class='text-foreground'>0ms</strong></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  /**
+   * Frame Preview Controller — manages frame grid and animation playback.
+   *
+   * Exposed on window.__framePreview with methods:
+   *   showFrames(blobs)         — Display frame thumbnails in grid
+   *   loadAnimation(imageData, fps) — Load frames into canvas player
+   *   play() / pause() / stop() — Playback control
+   *   setSpeed(multiplier)      — Set playback speed
+   *   getCurrentFrame()         — Get current frame index
+   *   getFrameCount()           — Get total frame count
+   *   updateStats(stats)        — Update rembg stats display
+   *   destroy()                 — Clean up resources
+   */
+  ;(function initFramePreview() {
+    const framesGrid = document.getElementById('frames-grid-container') as HTMLElement
+    const framesPlaceholder = document.getElementById('frames-placeholder') as HTMLElement
+    const animCanvas = document.getElementById('animation-canvas') as HTMLCanvasElement
+    const animPlaceholder = document.getElementById('anim-placeholder') as HTMLElement
+    const playbackControls = document.getElementById('playback-controls') as HTMLElement
+    const playPauseBtn = document.getElementById('play-pause-btn') as HTMLButtonElement
+    const frameCounter = document.getElementById('frame-counter') as HTMLElement
+    const frameSlider = document.getElementById('frame-slider') as HTMLInputElement
+    const speedBtn = document.getElementById('speed-btn') as HTMLButtonElement
+    const rembgStats = document.getElementById('rembg-stats') as HTMLElement
+
+    // ── State ──
+    let transparentFrames: ImageData[] = []
+    let transparentBlobs: Blob[] = []
+    let objectUrls: string[] = []
+    let playing = false
+    let currentFrame = 0
+    let intervalId: number | null = null
+    let speedMultiplier = 1
+    let baseFps = 12
+
+    // ── Frame Grid Display ──
+    function showFrames(blobs: Blob[]) {
+      // Revoke old URLs
+      objectUrls.forEach(url => URL.revokeObjectURL(url))
+      objectUrls = []
+      transparentBlobs = blobs
+
+      if (!framesGrid || blobs.length === 0) return
+
+      const gridItems = blobs.map((blob, i) => {
+        const url = URL.createObjectURL(blob)
+        objectUrls.push(url)
+        return `
+          <div class="relative overflow-hidden rounded-lg border">
+            <div class="absolute left-1 top-1 z-10 rounded bg-black/50 px-1.5 py-0.5 text-xs font-medium text-white">F${i + 1}</div>
+            <div style="background-image: repeating-conic-gradient(#e5e7eb 0% 25%, transparent 0% 50%); background-size: 12px 12px;">
+              <img src="${url}" class="h-auto w-full" alt="Frame ${i + 1}" loading="lazy" />
+            </div>
+          </div>
+        `
+      }).join('')
+
+      framesGrid.innerHTML = `
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+          ${gridItems}
+        </div>
+      `
+    }
+
+    // ── Animation Playback ──
+    function loadAnimation(imageDataArray: ImageData[], fps: number) {
+      transparentFrames = imageDataArray
+      baseFps = fps
+      currentFrame = 0
+
+      if (transparentFrames.length === 0) return
+
+      // Setup canvas
+      const first = transparentFrames[0]
+      animCanvas.width = first.width
+      animCanvas.height = first.height
+      animCanvas.style.display = 'block'
+      animPlaceholder?.classList.add('hidden')
+      playbackControls?.classList.remove('hidden')
+
+      // Setup slider
+      frameSlider.max = String(transparentFrames.length - 1)
+      frameSlider.value = '0'
+
+      // Start playing
+      play()
+      renderFrame()
+    }
+
+    function renderFrame() {
+      const ctx = animCanvas.getContext('2d')
+      if (!ctx || !transparentFrames[currentFrame]) return
+      ctx.clearRect(0, 0, animCanvas.width, animCanvas.height)
+      ctx.putImageData(transparentFrames[currentFrame], 0, 0)
+      frameCounter.textContent = `Frame ${currentFrame + 1} / ${transparentFrames.length}`
+      frameSlider.value = String(currentFrame)
+    }
+
+    function play() {
+      if (transparentFrames.length === 0) return
+      playing = true
+      playPauseBtn.textContent = '⏸ Pause'
+      scheduleInterval()
+    }
+
+    function pause() {
+      playing = false
+      playPauseBtn.textContent = '▶ Play'
+      if (intervalId) {
+        clearInterval(intervalId)
+        intervalId = null
+      }
+    }
+
+    function stop() {
+      pause()
+      currentFrame = 0
+      renderFrame()
+    }
+
+    function scheduleInterval() {
+      if (intervalId) clearInterval(intervalId)
+      const ms = Math.max(16, 1000 / (baseFps * speedMultiplier))
+      intervalId = window.setInterval(() => {
+        if (!playing) return
+        currentFrame = (currentFrame + 1) % transparentFrames.length
+        renderFrame()
+      }, ms)
+    }
+
+    function setSpeed(mult: number) {
+      speedMultiplier = mult
+      speedBtn.textContent = `${mult}×`
+      if (playing) scheduleInterval()
+    }
+
+    // ── Stats ──
+    function updateStats(stats: {
+      frameCount: number
+      greenPixels: number
+      alphaAvg: string
+      timeMs: string
+    }) {
+      rembgStats?.classList.remove('hidden')
+      const fcEl = document.getElementById('rembg-frame-count')
+      const pcEl = document.getElementById('rembg-pixel-count')
+      const aaEl = document.getElementById('rembg-alpha-avg')
+      const tmEl = document.getElementById('rembg-time')
+      if (fcEl) fcEl.textContent = String(stats.frameCount)
+      if (pcEl) pcEl.textContent = stats.greenPixels.toLocaleString()
+      if (aaEl) aaEl.textContent = stats.alphaAvg
+      if (tmEl) tmEl.textContent = stats.timeMs
+    }
+
+    // ── Cleanup ──
+    function destroy() {
+      pause()
+      objectUrls.forEach(url => URL.revokeObjectURL(url))
+      objectUrls = []
+      transparentFrames = []
+      transparentBlobs = []
+    }
+
+    // ── Event Listeners ──
+    playPauseBtn?.addEventListener('click', () => {
+      if (playing) pause()
+      else play()
+    })
+
+    frameSlider?.addEventListener('input', () => {
+      // Pause on manual scrub to prevent fighting
+      if (playing) pause()
+      currentFrame = parseInt(frameSlider.value)
+      renderFrame()
+    })
+
+    speedBtn?.addEventListener('click', () => {
+      const speeds = [0.5, 1, 1.5, 2]
+      const idx = speeds.indexOf(speedMultiplier)
+      const next = speeds[(idx + 1) % speeds.length]
+      setSpeed(next)
+    })
+
+    // ── Expose globally ──
+    ;(window as any).__framePreview = {
+      showFrames,
+      loadAnimation,
+      play,
+      pause,
+      stop,
+      setSpeed,
+      getCurrentFrame: () => currentFrame,
+      getFrameCount: () => transparentFrames.length,
+      getBlobs: () => transparentBlobs,
+      updateStats,
+      destroy,
+    }
+  })()
+</script>

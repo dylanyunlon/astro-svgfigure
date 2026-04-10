@@ -40,6 +40,7 @@ from backend.pipeline.topology_gen import generate_topology
 from backend.pipeline.scaffold_builder import build_scaffold
 from backend.pipeline.nanobanana_bridge import beautify_with_nanobanana
 from backend.pipeline.svg_validator import validate_svg as validate_svg_func
+from backend.server_animation_routes import register_animation_routes
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,10 @@ def _get_ai_engine() -> AIEngine:
     if _ai_engine is None:
         _ai_engine = AIEngine(_settings)
     return _ai_engine
+
+
+# ── Animation pipeline routes ─────────────────────────────────────────
+register_animation_routes(app)
 
 
 # ============================================================================
