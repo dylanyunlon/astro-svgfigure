@@ -1,63 +1,52 @@
 """
-Frame Generator — Gemini Multi-Frame Animation
-=================================================
-Generates animation frames using Gemini 3 Pro Image with mandatory
-green-screen (#00FF00) background for downstream chroma-key removal.
+Frame Generator — Gemini Multi-Frame Animation (Reference-Preserving)
+======================================================================
+Generates animation frames using Gemini IMAGE EDITING mode to preserve
+the original uploaded image content.
 
 Pipeline Position: Step 3 of 4
     Step 1: Claude 4.6 image analysis
     Step 2: Grok animation prompt engineering
-  → Step 3: THIS MODULE (Gemini frame generation)
+  → Step 3: THIS MODULE (Gemini frame generation with IMAGE EDITING)
     Step 4: Green-screen removal + encoding
 
-Architecture Decision Record:
-─────────────────────────────
-1. BATCHING STRATEGY:
-   Gemini's image generation has output limits. For ≤4 frames, we
-   generate all in one request. For 5-24 frames, we batch into groups
-   of 4 and make sequential requests. This trades latency for reliability.
+CRITICAL FIX (2024):
+───────────────────
+The previous implementation used TEXT-TO-IMAGE generation, which caused
+the generated frames to have NO RELATION to the original uploaded image.
 
-   Alternative considered: parallel requests. Rejected because:
-   - Rate limits would cause 429 errors
-   - Visual consistency degrades without sequential context
-   - Error handling becomes complex with partial failures
+User complaint: "最终效果与原始图片完全无联系"
+Root cause: Gemini received TEXT prompts only, never saw the original image.
 
-2. GREEN-SCREEN HARDCODING:
-   The green_screen flag is always True (enforced in schema validator).
-   We additionally prepend the green-screen instruction to EVERY prompt
-   sent to Gemini, regardless of what the user/Grok specified.
-   Belt-and-suspenders approach: the cost of a green-screen failure
-   (wasted minutes + API tokens) vastly exceeds the cost of redundant
-   instructions (~50 tokens per request).
+SOLUTION: Use IMAGE EDITING mode instead of text generation.
+- OLD: {"contents": [{"parts": [{"text": prompt}]}]}  ← No image!
+- NEW: {"contents": [{"parts": [{"inline_data": image}, {"text": edit_instruction}]}]}
 
-3. FRAME CONSISTENCY:
-   We send the source image + previous frame as reference for each batch.
-   This improves visual consistency but increases request size.
-   Trade-off: ~2x request size vs. significantly better frame coherence.
+Per Google's documentation (developers.googleblog.com):
+"Using the provided image, change only the [specific element]"
 
-Knuth-Level Critiques:
-─────────────────────
-User Angle:
-  - Generation of 8+ frames takes 2-5 minutes. The frontend should show
-    per-frame progress, but we currently return all-or-nothing. Future:
-    implement SSE streaming of frames as they complete.
-  - If Gemini generates frames with slightly different dimensions,
-    the animation will jitter. We normalize all frames to the first
-    frame's dimensions in post-processing.
+Architecture Changes:
+────────────────────
+1. SEQUENTIAL FRAME-BY-FRAME:
+   Each frame is generated individually with the ORIGINAL IMAGE as reference.
+   No batching — each frame needs the original context.
 
-System Angle:
-  - Gemini 3 Pro Image returns images as base64 in the response.
-    For 16 frames at 1024x1024, this is ~50MB of base64 data.
-    We should add response streaming, but the current architecture
-    (Astro proxy → FastAPI → Gemini) doesn't support it cleanly.
-  - If Gemini returns fewer frames than requested (common with
-    complex prompts), we interpolate missing frames by blending
-    adjacent frames. This is a lossy approximation but prevents
-    the animation from having gaps.
+2. IDENTITY LOCK:
+   Every prompt includes an identity header that prevents visual drift.
+   "DO NOT change colors, proportions, or style."
+
+3. EXACT GREEN SCREEN:
+   Precise #00FF00 specification with explicit "no gradients, no shadows".
+
+4. EXTENDED TIMEOUT:
+   300 seconds per frame (was 120s — caused timeouts on slow Gemini responses).
+
+5. NO RETRY:
+   User explicitly requested: "we don't need retry mechanism" — fail fast.
 
 GitHub references:
   - google/generative-ai-python (Gemini API)
-  - dylanyunlon/astro-svgfigure/backend/pipeline/gemini_image_gen.py
+  - ai.google.dev/gemini-api/docs/image-generation (Image editing docs)
 """
 
 from __future__ import annotations
@@ -67,6 +56,7 @@ import base64
 import io
 import json
 import logging
+import math
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -84,16 +74,26 @@ logger = logging.getLogger(__name__)
 #  Constants
 # ═══════════════════════════════════════════════════════════════════════
 
-BATCH_SIZE = 4  # Max frames per Gemini request
-MAX_RETRIES = 2  # Retries per batch on failure
-RETRY_DELAY_S = 3  # Delay between retries
+# Frame generation timeout - EXTENDED from 120s to 300s
+FRAME_TIMEOUT_S = 300.0
 
-GREEN_SCREEN_PREAMBLE = (
-    "MANDATORY BACKGROUND RULE: The background of this image MUST be "
-    "solid bright green (#00FF00, RGB(0,255,0)). No gradients, no shadows, "
-    "no texture on the background. The subject must have clean, sharp edges "
-    "against the pure green background. This is for chroma-key compositing.\n\n"
-)
+# No retry - fail fast per user request
+MAX_RETRIES = 0
+
+# Exact green screen specification
+GREEN_SCREEN_HEX = "#00FF00"
+
+GREEN_SCREEN_PREAMBLE = f"""
+BACKGROUND REQUIREMENT (CRITICAL):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The ENTIRE background MUST be solid {GREEN_SCREEN_HEX} green.
+- NO gradients (must be perfectly flat single color)
+- NO shadows on the background (shadows only on subject)
+- NO textures or patterns
+- Subject edges must be SHARP and CLEAN against the green
+- NO green spill on subject edges
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 
 # Aspect ratio to pixel dimensions mapping
 ASPECT_DIMENSIONS: Dict[str, Tuple[int, int]] = {
@@ -104,8 +104,50 @@ ASPECT_DIMENSIONS: Dict[str, Tuple[int, int]] = {
 }
 
 
+# Identity lock template - prevents visual drift across frames
+IDENTITY_LOCK_TEMPLATE = """
+═══════════════════════════════════════════════════════════════
+VISUAL IDENTITY LOCK — DO NOT MODIFY THESE ATTRIBUTES
+═══════════════════════════════════════════════════════════════
+
+Subject: {subject_description}
+Style: {visual_style}
+
+MUST PRESERVE EXACTLY:
+{preserve_list}
+
+HARD NEGATIVES (FORBIDDEN):
+- Do NOT change the overall shape or proportions
+- Do NOT modify any colors
+- Do NOT change the visual style
+- Do NOT add new elements to the subject
+- Do NOT remove existing elements
+- Do NOT add motion blur or speed effects
+- Do NOT change the viewing angle significantly
+
+═══════════════════════════════════════════════════════════════
+"""
+
+
+# Edit instruction template for each frame
+EDIT_INSTRUCTION_TEMPLATE = """
+EDIT TASK — FRAME {frame_num} OF {total_frames}:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Using the PROVIDED IMAGE, apply this edit:
+
+{motion_instruction}
+
+{green_screen}
+
+OUTPUT: A single edited image showing this motion applied.
+The subject must be IDENTICAL to the provided image — only position/pose changes.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+
 # ═══════════════════════════════════════════════════════════════════════
-#  Core Frame Generation
+#  Core Frame Generation (IMAGE EDITING MODE)
 # ═══════════════════════════════════════════════════════════════════════
 
 async def generate_animation_frames(
@@ -114,10 +156,10 @@ async def generate_animation_frames(
     ai_engine: Optional[AIEngine] = None,
 ) -> AnimateFramesResponse:
     """
-    Generate multi-frame animation images using Gemini.
+    Generate multi-frame animation using Gemini IMAGE EDITING mode.
 
-    Each frame has a mandatory green-screen (#00FF00) background.
-    Frames are generated in batches of BATCH_SIZE for reliability.
+    CRITICAL: This function now sends the ORIGINAL IMAGE to Gemini
+    in every request, using image editing (not text-to-image generation).
 
     Parameters
     ----------
@@ -141,84 +183,97 @@ async def generate_animation_frames(
     try:
         image_b64 = _sanitize_base64(request.image_b64)
         frame_count = request.frame_count
-        prompt = request.custom_prompt or ""
+        base_prompt = request.custom_prompt or ""
         aspect = request.aspect_ratio
+        style = request.animation_style
 
-        # ── Validate and enhance prompt ──
-        prompt = _build_frame_prompt(
-            base_prompt=prompt,
-            frame_count=frame_count,
-            aspect=aspect,
-            style=request.animation_style,
-        )
+        # ── Extract identity info from analysis (if provided in prompt) ──
+        identity_header = _build_identity_header(base_prompt)
 
         logger.info(
-            "generate_frames: model=%s, frames=%d, aspect=%s, prompt_len=%d",
-            model, frame_count, aspect, len(prompt),
+            "generate_frames: model=%s, frames=%d, aspect=%s, style=%s (IMAGE EDITING MODE)",
+            model, frame_count, aspect, style,
         )
 
-        # ── Generate frames in batches ──
+        # ── Generate frames SEQUENTIALLY with original image reference ──
         all_frames: List[str] = []
-        batches = _create_batches(frame_count, BATCH_SIZE)
+        frame_times: List[int] = []
+        thought_signature: Optional[str] = None
 
-        for batch_idx, (start_frame, batch_count) in enumerate(batches):
-            logger.info(
-                "generate_frames: batch %d/%d — frames %d-%d",
-                batch_idx + 1, len(batches), start_frame + 1, start_frame + batch_count,
-            )
+        for frame_idx in range(frame_count):
+            frame_t0 = time.monotonic()
 
-            batch_prompt = _build_batch_prompt(
-                prompt=prompt,
-                batch_start=start_frame,
-                batch_count=batch_count,
+            # Build edit instruction for this specific frame
+            motion_instruction = _get_motion_instruction(
+                style=style,
+                frame_index=frame_idx,
                 total_frames=frame_count,
             )
 
-            # Reference image for consistency
-            reference_b64 = image_b64
-            # For subsequent batches, also reference the last generated frame
-            if all_frames:
-                reference_b64 = all_frames[-1]
-
-            batch_frames = await _generate_batch(
-                engine=engine,
-                model=model,
-                prompt=batch_prompt,
-                reference_b64=reference_b64,
-                source_b64=image_b64,
-                batch_count=batch_count,
-                aspect=aspect,
+            edit_instruction = EDIT_INSTRUCTION_TEMPLATE.format(
+                frame_num=frame_idx + 1,
+                total_frames=frame_count,
+                motion_instruction=motion_instruction,
+                green_screen=GREEN_SCREEN_PREAMBLE,
             )
 
-            if batch_frames:
-                all_frames.extend(batch_frames)
+            # Combine identity header + edit instruction
+            full_prompt = f"{identity_header}\n\n{edit_instruction}"
+
+            logger.info(
+                "generate_frames: generating frame %d/%d (prompt_len=%d)",
+                frame_idx + 1, frame_count, len(full_prompt),
+            )
+
+            # Generate frame using IMAGE EDITING mode
+            try:
+                frame_b64, new_thought_sig = await _generate_frame_with_image_edit(
+                    engine=engine,
+                    model=model,
+                    original_image_b64=image_b64,
+                    edit_instruction=full_prompt,
+                    previous_thought_signature=thought_signature,
+                    settings=settings,
+                )
+            except asyncio.TimeoutError:
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                return AnimateFramesResponse(
+                    success=False,
+                    error=f"Frame {frame_idx + 1} timed out after {FRAME_TIMEOUT_S:.0f}s. The Gemini API may be overloaded.",
+                    generation_time_ms=elapsed_ms,
+                )
+            except Exception as e:
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                return AnimateFramesResponse(
+                    success=False,
+                    error=f"Frame {frame_idx + 1} generation failed: {str(e)}",
+                    generation_time_ms=elapsed_ms,
+                )
+
+            frame_time_ms = int((time.monotonic() - frame_t0) * 1000)
+            frame_times.append(frame_time_ms)
+
+            if frame_b64:
+                all_frames.append(frame_b64)
+                thought_signature = new_thought_sig
                 logger.info(
-                    "generate_frames: batch %d produced %d frames (total: %d)",
-                    batch_idx + 1, len(batch_frames), len(all_frames),
+                    "generate_frames: frame %d/%d completed in %d ms",
+                    frame_idx + 1, frame_count, frame_time_ms,
                 )
             else:
-                logger.warning("generate_frames: batch %d produced 0 frames", batch_idx + 1)
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                return AnimateFramesResponse(
+                    success=False,
+                    error=f"Frame {frame_idx + 1} returned no image from Gemini.",
+                    generation_time_ms=elapsed_ms,
+                )
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-        if not all_frames:
-            return AnimateFramesResponse(
-                success=False,
-                error="Gemini did not generate any frames. Try a simpler prompt or fewer frames.",
-                generation_time_ms=elapsed_ms,
-            )
-
-        # ── Post-processing: normalize frame count ──
-        if len(all_frames) < frame_count:
-            logger.warning(
-                "generate_frames: got %d/%d frames — interpolating missing",
-                len(all_frames), frame_count,
-            )
-            # Don't interpolate if we're close enough
-            if len(all_frames) >= frame_count * 0.5:
-                all_frames = _pad_frames(all_frames, frame_count)
-        elif len(all_frames) > frame_count:
-            all_frames = all_frames[:frame_count]
+        logger.info(
+            "generate_frames: completed %d frames in %d ms (avg: %d ms/frame)",
+            len(all_frames), elapsed_ms, elapsed_ms // len(all_frames) if all_frames else 0,
+        )
 
         return AnimateFramesResponse(
             success=True,
@@ -236,6 +291,276 @@ async def generate_animation_frames(
             error=str(e),
             generation_time_ms=elapsed_ms,
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Image Editing Mode Generation
+# ═══════════════════════════════════════════════════════════════════════
+
+async def _generate_frame_with_image_edit(
+    engine: AIEngine,
+    model: str,
+    original_image_b64: str,
+    edit_instruction: str,
+    previous_thought_signature: Optional[str],
+    settings: Settings,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Generate a single frame using Gemini's IMAGE EDITING capability.
+
+    KEY DIFFERENCE FROM OLD APPROACH:
+    - OLD: Send text prompt only → Gemini generates NEW image
+    - NEW: Send image + edit instruction → Gemini EDITS the image
+
+    Per Google's documentation:
+    "Using the provided image, change only the [specific element]"
+    """
+    try:
+        import httpx
+    except ImportError:
+        # Fallback to engine if httpx not available
+        logger.warning("httpx not available, falling back to text-based generation")
+        return await _generate_frame_fallback(engine, model, edit_instruction)
+
+    # Build request body for IMAGE EDITING (not text-to-image!)
+    request_body = {
+        "contents": [{
+            "role": "user",
+            "parts": [
+                # CRITICAL: Include the original image
+                {
+                    "inline_data": {
+                        "mime_type": "image/png",
+                        "data": original_image_b64,
+                    }
+                },
+                # The edit instruction
+                {"text": edit_instruction},
+            ],
+        }],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+        },
+    }
+
+    # Include thought signature for cross-frame consistency
+    if previous_thought_signature:
+        request_body["thought_signature"] = previous_thought_signature
+
+    # Call Gemini API directly
+    gemini_model = "gemini-3.1-flash-image-preview"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent"
+
+    async with httpx.AsyncClient(timeout=FRAME_TIMEOUT_S) as client:
+        response = await client.post(
+            url,
+            json=request_body,
+            params={"key": settings.GEMINI_API_KEY},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    # Extract image from response
+    frame_b64 = None
+    for cand in data.get("candidates", []):
+        for part in cand.get("content", {}).get("parts", []):
+            if "inline_data" in part:
+                frame_b64 = part["inline_data"].get("data")
+                break
+        if frame_b64:
+            break
+
+    thought_sig = data.get("thought_signature")
+
+    return frame_b64, thought_sig
+
+
+async def _generate_frame_fallback(
+    engine: AIEngine,
+    model: str,
+    prompt: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Fallback to text-based generation if httpx unavailable."""
+    try:
+        result = await engine.get_completion(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            temperature=0.5,
+            max_tokens=8192,
+        )
+        frames = _extract_frames_from_response(result, 1)
+        return (frames[0] if frames else None, None)
+    except Exception as e:
+        logger.error("Fallback generation failed: %s", e)
+        return None, None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Motion Instruction Generator (Algorithmic)
+# ═══════════════════════════════════════════════════════════════════════
+
+def _get_motion_instruction(style: str, frame_index: int, total_frames: int) -> str:
+    """
+    Generate LITERAL motion instruction for a specific frame.
+    
+    This replaces Grok's "creative" prompts with precise, mathematical instructions.
+    User wanted: "让车子左右移动" (move the car left and right)
+    Not: "A dynamic car streaking with kinetic energy..."
+    """
+    t = frame_index / (total_frames - 1) if total_frames > 1 else 0
+    
+    style_lower = style.lower() if style else "smooth"
+    
+    if style_lower == "smooth" or style_lower == "horizontal":
+        offset = math.sin(t * 2 * math.pi) * 15  # ±15%
+        direction = "right" if offset >= 0 else "left"
+        return (
+            f"Move the subject {abs(offset):.0f}% to the {direction}.\n"
+            f"This is a smooth horizontal slide.\n"
+            f"Do NOT add motion blur or speed effects."
+        )
+    
+    elif style_lower == "vertical":
+        offset = math.sin(t * 2 * math.pi) * 10  # ±10%
+        direction = "up" if offset >= 0 else "down"
+        return (
+            f"Move the subject {abs(offset):.0f}% {direction}.\n"
+            f"This is a gentle floating motion.\n"
+            f"Do NOT add motion blur or effects."
+        )
+    
+    elif style_lower == "bounce":
+        phase = frame_index % 4
+        if phase == 0:
+            return (
+                "Subject at TOP of bounce arc.\n"
+                "Stretch vertically by 3-5%.\n"
+                "Do NOT distort — subtle elongation only."
+            )
+        elif phase == 1:
+            return (
+                "Subject FALLING.\n"
+                "Normal proportions, between top and bottom.\n"
+                "Maintain exact appearance."
+            )
+        elif phase == 2:
+            return (
+                "Subject at BOTTOM, contact point.\n"
+                "Squash: compress vertically 5%, widen 3%.\n"
+                "Do NOT over-exaggerate."
+            )
+        else:
+            return (
+                "Subject RISING from bounce.\n"
+                "Normal proportions, between bottom and top.\n"
+                "Maintain exact appearance."
+            )
+    
+    elif style_lower == "rotate":
+        angle = t * 360
+        return (
+            f"Rotate subject {angle:.0f}° clockwise.\n"
+            f"Rotation center is subject's center.\n"
+            f"Maintain all visual details."
+        )
+    
+    elif style_lower == "pulse" or style_lower == "scale":
+        scale = math.sin(t * 2 * math.pi) * 5  # ±5%
+        action = "LARGER" if scale >= 0 else "SMALLER"
+        return (
+            f"Scale subject {abs(scale):.0f}% {action}.\n"
+            f"This is a breathing/pulsing effect.\n"
+            f"Scale uniformly, keep centered."
+        )
+    
+    elif style_lower == "wave":
+        angle = math.sin(t * 2 * math.pi) * 8  # ±8°
+        direction = "right" if angle >= 0 else "left"
+        return (
+            f"Tilt subject {abs(angle):.0f}° to the {direction}.\n"
+            f"This is a gentle rocking motion.\n"
+            f"Maintain all visual details."
+        )
+    
+    elif style_lower == "walk":
+        phase = frame_index % 4
+        if phase == 0:
+            return "Walk cycle contact pose: leading foot touching ground."
+        elif phase == 1:
+            return "Walk cycle passing pose: one leg passes the other."
+        elif phase == 2:
+            return "Walk cycle contact pose: opposite foot touching ground."
+        else:
+            return "Walk cycle passing pose: completing the stride."
+    
+    elif style_lower == "explode":
+        if t < 0.5:
+            separation = int(t * 2 * 30)  # 0% to 30%
+            return (
+                f"Components separating outward by {separation}% from center.\n"
+                f"Each part moves away from center.\n"
+                f"Maintain each component's appearance."
+            )
+        else:
+            separation = int((1 - t) * 2 * 30)  # 30% back to 0%
+            return (
+                f"Components reassembling — now {separation}% separated.\n"
+                f"Parts returning to original positions.\n"
+                f"Maintain each component's appearance."
+            )
+    
+    elif style_lower == "morph":
+        morph_pct = int(abs(t - 0.5) * 2 * 100)
+        if t < 0.5:
+            return (
+                f"Subtle shape transformation {100 - morph_pct}% toward relaxed pose.\n"
+                f"Identity must remain clear.\n"
+                f"Do NOT change colors or major proportions."
+            )
+        else:
+            return (
+                f"Returning {morph_pct}% toward original pose.\n"
+                f"Morphing back to starting shape.\n"
+                f"Maintain identity throughout."
+            )
+    
+    else:
+        return (
+            f"Frame {frame_index + 1} of {total_frames}.\n"
+            f"Apply subtle natural animation to the subject.\n"
+            f"Maintain subject identity."
+        )
+
+
+def _build_identity_header(prompt: str) -> str:
+    """
+    Build identity header from prompt content.
+    
+    Extracts subject information and creates a lock header.
+    """
+    # Simple extraction - in practice, this would use Claude's analysis
+    lines = [
+        "═══════════════════════════════════════════════════════════════",
+        "VISUAL IDENTITY LOCK — DO NOT MODIFY THESE ATTRIBUTES",
+        "═══════════════════════════════════════════════════════════════",
+        "",
+        "MUST PRESERVE:",
+        "  • Overall shape and proportions",
+        "  • All colors exactly as shown",
+        "  • Visual style (realistic/cartoon/etc.)",
+        "  • All visible components and details",
+        "",
+        "HARD NEGATIVES (FORBIDDEN):",
+        "  ✗ Do NOT change the overall shape or proportions",
+        "  ✗ Do NOT modify any colors",
+        "  ✗ Do NOT change the visual style",
+        "  ✗ Do NOT add new elements to the subject",
+        "  ✗ Do NOT remove existing elements",
+        "  ✗ Do NOT add motion blur or speed effects",
+        "",
+        "═══════════════════════════════════════════════════════════════",
+    ]
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════════════

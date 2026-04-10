@@ -321,6 +321,7 @@ def register_animation_routes(app: FastAPI) -> None:
             return JSONResponse(content={
                 "backend": True,
                 "animation_pipeline": True,
+                "animation_pipeline_v2": True,
                 "rembg": rembg_status,
                 "encoders": encoder_status,
                 "models": {
@@ -341,6 +342,184 @@ def register_animation_routes(app: FastAPI) -> None:
                 status_code=500,
             )
 
+    # ═══════════════════════════════════════════════════════════════════════
+    #  V2 API: Reference-Preserving Animation Pipeline
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @app.post("/api/v2/animate")
+    async def api_animate_v2(request: dict) -> JSONResponse:
+        """
+        V2 Animation Pipeline: Single endpoint that preserves original image.
+
+        This is the NEW reference-preserving pipeline that solves the core
+        issue of generated frames having no relation to the original image.
+
+        Key differences from v1:
+        - Grok receives BOTH the image AND the analysis (not just text)
+        - Gemini edits the ORIGINAL image instead of generating new ones
+        - Green screen removal uses HSV color space for accuracy
+        - Cross-frame consistency validation
+
+        Request body:
+        {
+            "image_b64": "base64-encoded image",
+            "user_prompt": "optional animation direction",
+            "frame_count": 8,
+            "fps": 12,
+            "output_format": "gif" | "webp" | "apng",
+            "green_screen": true
+        }
+
+        Response:
+        {
+            "success": true,
+            "animation_b64": "base64-encoded result",
+            "frames_b64": ["frame1", "frame2", ...],
+            "frame_count": 8,
+            "format": "gif",
+            "timing_ms": { ... }
+        }
+        """
+        t0 = time.monotonic()
+        settings = get_settings()
+
+        try:
+            from backend.pipeline.animation_pipeline_orchestrator import (
+                AnimationPipelineOrchestrator,
+                AnimationConfig,
+            )
+
+            # Parse request
+            image_b64 = request.get("image_b64")
+            if not image_b64:
+                return JSONResponse(
+                    content={"success": False, "error": "image_b64 is required"},
+                    status_code=400,
+                )
+
+            # Build config
+            config = AnimationConfig(
+                frame_count=request.get("frame_count", 8),
+                fps=request.get("fps", 12),
+                output_format=request.get("output_format", "gif"),
+                green_screen=request.get("green_screen", True),
+                user_prompt=request.get("user_prompt"),
+            )
+
+            # Run orchestrator
+            orchestrator = AnimationPipelineOrchestrator(settings)
+            result = await orchestrator.run(image_b64, config)
+
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                "POST /api/v2/animate → %s, %d frames (%d ms)",
+                "ok" if result.get("success") else "error",
+                result.get("frame_count", 0),
+                elapsed_ms,
+            )
+
+            status_code = 200 if result.get("success") else 500
+            return JSONResponse(content=result, status_code=status_code)
+
+        except Exception as e:
+            logger.exception("POST /api/v2/animate failed: %s", e)
+            return JSONResponse(
+                content={"success": False, "error": str(e)},
+                status_code=500,
+            )
+
+    @app.post("/api/v2/animate/preview")
+    async def api_animate_preview_v2(request: dict) -> JSONResponse:
+        """
+        Quick preview: Generate just 2-3 frames to preview the animation.
+
+        Useful for the user to verify the animation direction before
+        committing to a full 8-16 frame generation.
+        """
+        t0 = time.monotonic()
+        settings = get_settings()
+
+        try:
+            from backend.pipeline.animation_pipeline_orchestrator import (
+                AnimationPipelineOrchestrator,
+                AnimationConfig,
+            )
+
+            image_b64 = request.get("image_b64")
+            if not image_b64:
+                return JSONResponse(
+                    content={"success": False, "error": "image_b64 is required"},
+                    status_code=400,
+                )
+
+            # Preview mode: just 3 frames
+            config = AnimationConfig(
+                frame_count=3,
+                fps=request.get("fps", 8),
+                output_format="gif",
+                green_screen=request.get("green_screen", True),
+                user_prompt=request.get("user_prompt"),
+            )
+
+            orchestrator = AnimationPipelineOrchestrator(settings)
+            result = await orchestrator.run(image_b64, config)
+
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.info("POST /api/v2/animate/preview → %s (%d ms)",
+                       "ok" if result.get("success") else "error", elapsed_ms)
+
+            status_code = 200 if result.get("success") else 500
+            return JSONResponse(content=result, status_code=status_code)
+
+        except Exception as e:
+            logger.exception("POST /api/v2/animate/preview failed: %s", e)
+            return JSONResponse(
+                content={"success": False, "error": str(e)},
+                status_code=500,
+            )
+
+    @app.post("/api/v2/validate-image")
+    async def api_validate_image_v2(request: dict) -> JSONResponse:
+        """
+        Pre-validate an image before animation.
+
+        Checks for issues that would affect animation quality:
+        - Image too small/large
+        - Already contains green background
+        - Contains text that might get distorted
+        - Low complexity (solid colors)
+        """
+        try:
+            from backend.pipeline.reference_image_validator import (
+                ReferenceImageValidator,
+            )
+
+            image_b64 = request.get("image_b64")
+            if not image_b64:
+                return JSONResponse(
+                    content={"success": False, "error": "image_b64 is required"},
+                    status_code=400,
+                )
+
+            validator = ReferenceImageValidator()
+            result = await validator.validate(image_b64)
+
+            return JSONResponse(content={
+                "success": True,
+                "valid": result.is_valid,
+                "errors": result.errors,
+                "warnings": result.warnings,
+                "info": result.info,
+            })
+
+        except Exception as e:
+            logger.exception("POST /api/v2/validate-image failed: %s", e)
+            return JSONResponse(
+                content={"success": False, "error": str(e)},
+                status_code=500,
+            )
+
     logger.info("Animation pipeline routes registered: "
                 "/api/analyze-image, /api/animate-prompt, /api/animate-frames, "
-                "/api/rembg-frames, /api/encode-animation, /api/animation-health")
+                "/api/rembg-frames, /api/encode-animation, /api/animation-health, "
+                "/api/v2/animate, /api/v2/animate/preview, /api/v2/validate-image")
