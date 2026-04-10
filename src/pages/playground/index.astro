@@ -50,7 +50,7 @@ import AnimationPipeline from '@/components/pipeline/AnimationPipeline.astro'
 import FramePreview from '@/components/pipeline/FramePreview.astro'
 ---
 
-<GenerateLayout meta={{ title: 'Animation Playground — Frame Generator' }} highlightColor='#7C3AED'>
+<GenerateLayout meta={{ title: 'Animation Playground — Frame Generator' }} highlightColor='#059669'>
   <main class='flex w-full flex-col gap-y-6 py-6'>
     {/* ── Header ── */}
     <div class='flex flex-col items-center gap-y-2 text-center'>
@@ -117,12 +117,12 @@ import FramePreview from '@/components/pipeline/FramePreview.astro'
           <AnimationPipeline />
         </Card>
 
-        <button id='analyze-btn' disabled class='flex w-full items-center justify-center gap-x-2 rounded-xl border bg-violet-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40'>
+        <button id='analyze-btn' disabled class='flex w-full items-center justify-center gap-x-2 rounded-xl border bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40'>
           <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='10' /><path d='M12 16v-4' /><path d='M12 8h.01' /></svg>
           <span id='analyze-btn-text'>Step 1: Analyze Image</span>
         </button>
 
-        <button id='generate-frames-btn' disabled class='flex w-full items-center justify-center gap-x-2 rounded-xl border bg-purple-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-40'>
+        <button id='generate-frames-btn' disabled class='flex w-full items-center justify-center gap-x-2 rounded-xl border bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40'>
           <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><polygon points='5 3 19 12 5 21 5 3' /></svg>
           <span id='generate-frames-text'>Step 2→3→4: Generate Animation</span>
         </button>
@@ -211,7 +211,7 @@ import FramePreview from '@/components/pipeline/FramePreview.astro'
               <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z' /><polyline points='13 2 13 9 20 9' /></svg>
               Download Frames (ZIP)
             </button>
-            <button id='enhance-rembg-btn' disabled class='flex w-full items-center justify-center gap-x-2 rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm text-violet-700 transition-all hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-300'>
+            <button id='enhance-rembg-btn' disabled class='flex w-full items-center justify-center gap-x-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 transition-all hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300'>
               <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z' /></svg>
               Enhance with Server rembg
             </button>
@@ -353,7 +353,7 @@ import FramePreview from '@/components/pipeline/FramePreview.astro'
         const pRes = await fetch('/api/animate-prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image_b64: uploadedImageB64, analysis: analysisResult, frame_count: fc, animation_style: style }) })
         if (!pRes.ok) { const e = await pRes.json().catch(() => ({ error: pRes.statusText })); throw new Error(`Grok: ${e.error || 'Failed'}`) }
         const pData = await pRes.json()
-        if (pData.success && pData.prompt) { if (!cp) promptTextarea.value = pData.prompt; grokOutputPre.textContent = JSON.stringify(pData, null, 2); promptTextarea.classList.add('ring-2', 'ring-purple-400'); setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-purple-400'), 3000) }
+        if (pData.success && pData.prompt) { if (!cp) promptTextarea.value = pData.prompt; grokOutputPre.textContent = JSON.stringify(pData, null, 2); promptTextarea.classList.add('ring-2', 'ring-emerald-400'); setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-emerald-400'), 3000) }
         else throw new Error(`Grok: ${pData.error || 'Empty'}`)
         pipeline?.setStatus('step-prompt', 'done')
 
