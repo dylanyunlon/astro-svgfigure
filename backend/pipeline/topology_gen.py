@@ -218,8 +218,24 @@ async def generate_topology(
         direction=direction.value,
     )
 
+    # Track raw_output for error reporting
+    raw_output: Optional[str] = None
+
     try:
         logger.info(f"Generating topology with model={model or 'default'}")
+
+        # ── Pre-flight check: Ensure AI engine has available providers ──
+        if not ai_engine.available_providers:
+            error_msg = (
+                "No AI providers configured. Please set at least one of: "
+                "GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY in your .env file."
+            )
+            logger.error(error_msg)
+            return TopologyResponse(
+                success=False,
+                error=error_msg,
+                raw_llm_output=None,
+            )
 
         result = await ai_engine.get_completion(
             messages=[
@@ -228,11 +244,33 @@ async def generate_topology(
             ],
             model=model,
             temperature=0.3,  # Low temperature for structured output
-            max_tokens=8192,
+            max_tokens=16384,  # Increased for complex topology JSON
         )
 
-        raw_output = result["content"]
-        logger.debug(f"Raw LLM topology output: {raw_output[:500]}...")
+        # ── Robust extraction of raw_output with detailed error handling ──
+        raw_output = result.get("content", "")
+
+        # Handle case where content is None or empty
+        if raw_output is None:
+            raw_output = ""
+
+        if not isinstance(raw_output, str):
+            raw_output = str(raw_output) if raw_output else ""
+
+        # ── Validate that we got meaningful content ──
+        if not raw_output or not raw_output.strip():
+            # Check for common API configuration issues
+            provider_hint = _diagnose_empty_response(ai_engine, model)
+            error_msg = f"LLM returned empty response. {provider_hint}"
+            logger.error(error_msg)
+            return TopologyResponse(
+                success=False,
+                error=error_msg,
+                raw_llm_output=raw_output,
+                model_used=result.get("model", model),
+            )
+
+        logger.debug(f"Raw LLM topology output ({len(raw_output)} chars): {raw_output[:500]}...")
 
         # Parse the JSON response
         topology_dict = _parse_topology_json(raw_output)
@@ -265,18 +303,106 @@ async def generate_topology(
         )
 
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse topology JSON: {e}")
+        # ── Enhanced JSON error with diagnostic context ──
+        error_context = _diagnose_json_error(raw_output, e)
+        logger.error(f"Failed to parse topology JSON: {error_context}")
         return TopologyResponse(
             success=False,
-            error=f"LLM output is not valid JSON: {str(e)}",
-            raw_llm_output=raw_output if "raw_output" in dir() else None,
+            error=error_context,
+            raw_llm_output=raw_output,
+        )
+    except RuntimeError as e:
+        # ── Specific handling for provider configuration errors ──
+        error_msg = str(e)
+        if "No provider available" in error_msg:
+            error_msg = (
+                f"AI provider not configured: {error_msg}. "
+                "Please check your .env file and ensure the required API keys are set."
+            )
+        logger.error(f"Topology generation failed (RuntimeError): {error_msg}")
+        return TopologyResponse(
+            success=False,
+            error=error_msg,
+            raw_llm_output=raw_output,
         )
     except Exception as e:
-        logger.error(f"Topology generation failed: {e}")
+        logger.error(f"Topology generation failed: {e}", exc_info=True)
         return TopologyResponse(
             success=False,
             error=str(e),
+            raw_llm_output=raw_output,
         )
+
+
+def _diagnose_empty_response(ai_engine: AIEngine, model: Optional[str]) -> str:
+    """
+    Diagnose why the LLM returned an empty response.
+    Returns a helpful hint message.
+    """
+    providers = ai_engine.available_providers
+    if not providers:
+        return (
+            "No AI providers are configured. "
+            "Set GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY in .env"
+        )
+
+    if model:
+        model_lower = model.lower()
+        if model_lower.startswith("gemini") and "gemini" not in providers:
+            return f"Model '{model}' requires GEMINI_API_KEY which is not set."
+        if model_lower.startswith("claude") and "anthropic" not in providers and "claude_compatible" not in providers:
+            return f"Model '{model}' requires ANTHROPIC_API_KEY which is not set."
+        if model_lower.startswith(("gpt-", "o1-", "o3-", "grok-")) and "openai" not in providers:
+            return f"Model '{model}' requires OPENAI_API_KEY which is not set."
+
+    return (
+        f"Available providers: {providers}. "
+        "The model may have returned an empty response due to content filtering or rate limits. "
+        "Check API logs for details."
+    )
+
+
+def _diagnose_json_error(raw_output: Optional[str], error: json.JSONDecodeError) -> str:
+    """
+    Provide diagnostic context for JSON parsing errors.
+    """
+    if raw_output is None or raw_output == "":
+        return (
+            "LLM returned empty response (no JSON to parse). "
+            "This usually indicates an API configuration issue. "
+            "Check that your API keys are valid and the model is accessible."
+        )
+
+    content_preview = raw_output[:200] if raw_output else "(empty)"
+    content_len = len(raw_output) if raw_output else 0
+
+    # Check for common non-JSON patterns
+    stripped = raw_output.strip() if raw_output else ""
+
+    if stripped.startswith("I ") or stripped.startswith("Here") or stripped.startswith("The "):
+        return (
+            f"LLM returned prose text instead of JSON ({content_len} chars). "
+            f"Preview: '{content_preview}...'. "
+            "The model may have misunderstood the prompt or refused the request."
+        )
+
+    if stripped.startswith("<"):
+        return (
+            f"LLM returned XML/HTML instead of JSON ({content_len} chars). "
+            f"Preview: '{content_preview}...'. "
+            "Try a different model or simplify the input text."
+        )
+
+    if "error" in stripped.lower()[:100]:
+        return (
+            f"LLM response contains error message ({content_len} chars). "
+            f"Preview: '{content_preview}...'"
+        )
+
+    return (
+        f"Failed to parse JSON from LLM output ({content_len} chars): {str(error)}. "
+        f"Preview: '{content_preview}...'"
+    )
 
 
 # ============================================================================
@@ -284,34 +410,253 @@ async def generate_topology(
 # ============================================================================
 
 def _parse_topology_json(raw: str) -> Dict[str, Any]:
-    """Parse LLM output into a topology dict, handling common issues."""
+    """
+    Parse LLM output into a topology dict, handling common issues.
+    
+    Handles:
+    - Empty/None input
+    - Markdown code fences (```json ... ```)
+    - Leading/trailing whitespace and text
+    - Common LLM JSON syntax errors (missing commas, trailing commas, etc.)
+    
+    Raises:
+        json.JSONDecodeError: If no valid JSON can be extracted
+    """
+    # ── Guard against None/empty input ──
+    if raw is None:
+        raise json.JSONDecodeError(
+            "LLM returned None (no response content)", "", 0
+        )
+    
+    if not isinstance(raw, str):
+        raw = str(raw)
+    
     text = raw.strip()
+    
+    if not text:
+        raise json.JSONDecodeError(
+            "LLM returned empty response (no content to parse)", "", 0
+        )
 
-    # Remove markdown fences
+    # ── Remove markdown fences ──
     if text.startswith("```"):
         lines = text.split("\n")
+        # Remove opening fence (```json or ```)
         if lines[0].startswith("```"):
             lines = lines[1:]
+        # Remove closing fence
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
-        text = "\n".join(lines)
+        text = "\n".join(lines).strip()
+        
+        # After removing fences, check again if empty
+        if not text:
+            raise json.JSONDecodeError(
+                "LLM returned empty content within markdown fences", raw, 0
+            )
 
-    # Try direct parse
+    # ── Try direct parse ──
     try:
-        return json.loads(text)
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return result
+        raise json.JSONDecodeError(
+            f"LLM returned valid JSON but not an object (got {type(result).__name__})",
+            text, 0
+        )
     except json.JSONDecodeError:
         pass
 
-    # Try finding JSON object boundaries
+    # ── Try finding JSON object boundaries ──
     start = text.find("{")
     end = text.rfind("}") + 1
-    if start >= 0 and end > start:
-        try:
-            return json.loads(text[start:end])
-        except json.JSONDecodeError:
-            pass
+    
+    if start < 0:
+        preview = text[:100] + "..." if len(text) > 100 else text
+        raise json.JSONDecodeError(
+            f"No JSON object found in LLM output (no '{{' character). Preview: {preview}",
+            text, 0
+        )
+    
+    if end <= start:
+        preview = text[:100] + "..." if len(text) > 100 else text
+        raise json.JSONDecodeError(
+            f"Incomplete JSON object in LLM output (no matching '}}' found). Preview: {preview}",
+            text, start
+        )
+    
+    # Extract the JSON substring
+    json_candidate = text[start:end]
+    
+    # ── First attempt: direct parse ──
+    try:
+        result = json.loads(json_candidate)
+        if isinstance(result, dict):
+            return result
+        raise json.JSONDecodeError(
+            f"Extracted JSON is not an object (got {type(result).__name__})",
+            json_candidate, 0
+        )
+    except json.JSONDecodeError as first_error:
+        # ── Second attempt: fix common LLM JSON errors ──
+        logger.warning(f"JSON parse failed at position {first_error.pos}, attempting repair...")
+        
+        fixed_json = _repair_json(json_candidate, first_error)
+        
+        if fixed_json:
+            try:
+                result = json.loads(fixed_json)
+                if isinstance(result, dict):
+                    logger.info("JSON repair successful")
+                    return result
+            except json.JSONDecodeError:
+                pass
+        
+        # ── All repair attempts failed ──
+        preview = json_candidate[:150] + "..." if len(json_candidate) > 150 else json_candidate
+        raise json.JSONDecodeError(
+            f"Could not parse extracted JSON: {first_error.msg}. Preview: {preview}",
+            json_candidate, first_error.pos
+        )
 
-    raise json.JSONDecodeError("Could not extract JSON from LLM output", text, 0)
+
+def _repair_json(json_str: str, error: json.JSONDecodeError) -> Optional[str]:
+    """
+    Attempt to repair common LLM JSON syntax errors.
+    
+    Common errors:
+    - Missing comma between elements
+    - Trailing comma before closing bracket
+    - Unescaped quotes in strings
+    - Truncated JSON (incomplete)
+    
+    Returns repaired JSON string or None if repair failed.
+    """
+    import re
+    
+    text = json_str
+    error_pos = error.pos if error.pos else 0
+    
+    # ── Strategy 1: Fix at error position ──
+    # If we know the exact position, try to fix there first
+    if error_pos > 0 and error_pos < len(text):
+        # Look around the error position for common issues
+        start = max(0, error_pos - 50)
+        end = min(len(text), error_pos + 50)
+        context = text[start:end]
+        
+        # Common issue: missing comma before a key
+        # e.g., }"key": or ]"key": should be },"key": or ],"key":
+        if error.msg == "Expecting ',' delimiter":
+            # Try inserting comma at error position
+            fixed = text[:error_pos] + ',' + text[error_pos:]
+            try:
+                json.loads(fixed)
+                return fixed
+            except json.JSONDecodeError:
+                pass
+            
+            # Try inserting comma just before error position
+            for offset in range(-5, 5):
+                pos = error_pos + offset
+                if 0 <= pos < len(text):
+                    fixed = text[:pos] + ',' + text[pos:]
+                    try:
+                        json.loads(fixed)
+                        return fixed
+                    except json.JSONDecodeError:
+                        continue
+    
+    # ── Strategy 2: Global regex fixes ──
+    
+    # Add missing comma between } and {
+    text = re.sub(r'(\})\s*\n\s*(\{)', r'\1,\n\2', text)
+    
+    # Add missing comma between ] and [
+    text = re.sub(r'(\])\s*\n\s*(\[)', r'\1,\n\2', text)
+    
+    # Add missing comma between } and "
+    text = re.sub(r'(\})\s*\n\s*(")', r'\1,\n\2', text)
+    
+    # Add missing comma between ] and "
+    text = re.sub(r'(\])\s*\n\s*(")', r'\1,\n\2', text)
+    
+    # Add missing comma between " and " (end of string value, start of key)
+    # This pattern: "value"\n"key": → "value",\n"key":
+    text = re.sub(r'(")\s*\n(\s*"[^"]+"\s*:)', r'\1,\n\2', text)
+    
+    # Add missing comma between number and "
+    text = re.sub(r'(\d)\s*\n\s*(")', r'\1,\n\2', text)
+    
+    # Add missing comma between true/false/null and "
+    text = re.sub(r'(true|false|null)\s*\n\s*(")', r'\1,\n\2', text)
+    
+    # Add missing comma between } and [ (object followed by array)
+    text = re.sub(r'(\})\s*\n\s*(\[)', r'\1,\n\2', text)
+    
+    # Add missing comma between ] and { (array followed by object)
+    text = re.sub(r'(\])\s*\n\s*(\{)', r'\1,\n\2', text)
+    
+    # ── Strategy 3: Fix inline missing commas (no newline) ──
+    # Pattern: }"key" or ]"key" without comma
+    text = re.sub(r'(\})(\s*)("[^"]+"\s*:)', r'\1,\2\3', text)
+    text = re.sub(r'(\])(\s*)("[^"]+"\s*:)', r'\1,\2\3', text)
+    
+    # ── Strategy 4: Trailing commas ──
+    # Remove trailing comma before }
+    text = re.sub(r',(\s*\})', r'\1', text)
+    
+    # Remove trailing comma before ]
+    text = re.sub(r',(\s*\])', r'\1', text)
+    
+    # ── Strategy 5: Try to close incomplete JSON ──
+    # Count brackets
+    open_braces = text.count('{') - text.count('}')
+    open_brackets = text.count('[') - text.count(']')
+    
+    if open_braces > 0 or open_brackets > 0:
+        # JSON is truncated, try to close it
+        # First, try to find a clean cut point (after a complete value)
+        
+        # Remove any trailing incomplete content after last complete element
+        # Look for last complete object or array
+        last_complete = max(
+            text.rfind('}'),
+            text.rfind(']'),
+            text.rfind('"'),  # end of string
+        )
+        
+        if last_complete > 0:
+            # Check if we're in the middle of a string
+            after_last = text[last_complete + 1:].strip()
+            if after_last and not after_last.startswith((',', '}', ']')):
+                # Truncate at last complete element
+                text = text[:last_complete + 1]
+        
+        # Close remaining brackets
+        open_braces = text.count('{') - text.count('}')
+        open_brackets = text.count('[') - text.count(']')
+        
+        # Close in reverse order of expected nesting
+        text = text.rstrip()
+        if text.endswith(','):
+            text = text[:-1]
+        
+        text += ']' * max(0, open_brackets)
+        text += '}' * max(0, open_braces)
+    
+    # ── Verify the repair worked ──
+    if text != json_str:
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError as e2:
+            # If still failing, try recursive repair with new error position
+            if e2.pos != error.pos and e2.pos > 0:
+                logger.debug(f"First repair attempt moved error from {error.pos} to {e2.pos}, trying again...")
+                return _repair_json(text, e2)
+    
+    return None
 
 
 def _validate_and_fix_topology(topology: Dict[str, Any]) -> Dict[str, Any]:

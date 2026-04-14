@@ -281,6 +281,10 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 
     const aspect = (document.getElementById('opt-aspect') as HTMLSelectElement)?.value
 
+    // Create AbortController for fetch timeout management
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 300000) // 5 min timeout
+
     try {
       // Get latest SVG from interactive editor (user may have edited it)
       const editorSvg = preview?.getSkeletonSvg()
@@ -305,6 +309,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
             method_text: text, svg_content: currentSkeletonSvg,
             elk_graph: elkGraph,
           }),
+          signal: controller.signal,
         })
         if (!pRes.ok) { const e = await pRes.json(); throw new Error(`Grok: ${e.error || 'Failed'}`) }
         const pData = await pRes.json()
@@ -331,6 +336,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
           custom_prompt: customPrompt, aspect_ratio: aspect || '16:9', image_size: '4K',
           elk_graph: elkGraph,
         }),
+        signal: controller.signal,
       })
       if (!iRes.ok) { const e = await iRes.json(); throw new Error(`Gemini: ${e.error || 'Failed'}`) }
       const iData = await iRes.json()
@@ -352,7 +358,11 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       document.querySelectorAll('.pipeline-step[data-status="running"]').forEach(el => {
         ;(el as HTMLElement).dataset.status = 'error'
       })
-      const msg = err.message || 'Unknown error'
+      let msg = err.message || 'Unknown error'
+      // Handle AbortError (timeout)
+      if (err.name === 'AbortError') {
+        msg = 'Request timed out (5 min). The API may be slow or the input too complex.'
+      }
       let hint = ''
       if (msg.includes('Grok')) hint = 'Check API key for the Stylist Agent (uses OpenAI format)'
       else if (msg.includes('Gemini')) hint = 'Check API key for the Visualizer Agent.'
@@ -362,6 +372,7 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
       statusText.textContent = `Error: ${msg}`
       statusText.style.color = 'var(--color-danger, #ef4444)'
     } finally {
+      clearTimeout(timeoutId)
       stopTimer(); running = false
       generateFigureBtn.disabled = false; generateBtn.disabled = false
       generateFigureText.textContent = 'Step 2→3: Generate Figure'

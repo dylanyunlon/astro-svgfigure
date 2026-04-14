@@ -271,7 +271,7 @@ class OpenAICompatibleProvider(AIProvider):
             raise ValueError("OpenAICompatibleProvider requires base_url")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._client = httpx.AsyncClient(timeout=300.0)  # 5 min for complex prompts
         logger.info(f"OpenAICompatibleProvider initialized (base_url={self._base_url})")
 
     async def get_completion(
@@ -311,20 +311,52 @@ class OpenAICompatibleProvider(AIProvider):
         }
 
         url = f"{self._base_url}/chat/completions"
-        response = await self._client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        
+        logger.debug(f"OpenAICompatibleProvider: POST {url}")
+        logger.debug(f"OpenAICompatibleProvider: model={model}, max_tokens={max_tokens}")
+        
+        try:
+            response = await self._client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"OpenAICompatibleProvider HTTP error: {e.response.status_code}")
+            logger.error(f"Response body: {e.response.text[:500]}")
+            raise RuntimeError(f"API request failed: {e.response.status_code} - {e.response.text[:200]}")
+        except httpx.RequestError as e:
+            logger.error(f"OpenAICompatibleProvider request error: {e}")
+            raise RuntimeError(f"API connection failed: {e}")
 
         raw_text = response.text.strip()
         content_type = response.headers.get("content-type", "")
+        
+        logger.debug(f"OpenAICompatibleProvider: response length={len(raw_text)}, content-type={content_type}")
 
         # Some proxies (e.g. tryallai) force streaming even when stream=False.
         # Detect SSE format and reassemble the full response from deltas.
         if raw_text.startswith("data: ") or "text/event-stream" in content_type:
+            logger.debug("OpenAICompatibleProvider: detected SSE response, parsing stream")
             return self._parse_sse_to_completion(raw_text, model)
 
         # Normal JSON response
-        data = json.loads(raw_text)
-        return self._parse_json_response(data, model)
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            logger.error(f"OpenAICompatibleProvider: failed to parse JSON: {e}")
+            logger.error(f"Raw response preview: {raw_text[:500]}")
+            raise RuntimeError(f"Invalid JSON response from API: {e}")
+        
+        # Check for API-level errors
+        if "error" in data:
+            error_info = data["error"]
+            error_msg = error_info.get("message", str(error_info)) if isinstance(error_info, dict) else str(error_info)
+            logger.error(f"OpenAICompatibleProvider: API error: {error_msg}")
+            raise RuntimeError(f"API error: {error_msg}")
+        
+        result = self._parse_json_response(data, model)
+        
+        logger.debug(f"OpenAICompatibleProvider: extracted {len(result.get('content', ''))} chars")
+        
+        return result
 
     def _parse_sse_to_completion(self, raw_text: str, model: str) -> Dict[str, Any]:
         """Reassemble a streaming SSE response into a single completion result."""
@@ -843,7 +875,7 @@ class ClaudeCompatibleProvider(AIProvider):
             raise ValueError("ClaudeCompatibleProvider requires base_url")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._client = httpx.AsyncClient(timeout=300.0)  # 5 min for complex prompts
         logger.info(f"ClaudeCompatibleProvider initialized (base_url={self._base_url})")
 
     async def get_completion(
@@ -885,32 +917,89 @@ class ClaudeCompatibleProvider(AIProvider):
         }
 
         url = f"{self._base_url}/v1/messages"
-        response = await self._client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+        
+        logger.debug(f"ClaudeCompatibleProvider: POST {url}")
+        logger.debug(f"ClaudeCompatibleProvider: model={model}, max_tokens={max_tokens}")
+        
+        try:
+            response = await self._client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"ClaudeCompatibleProvider HTTP error: {e.response.status_code}")
+            logger.error(f"Response body: {e.response.text[:500]}")
+            raise RuntimeError(f"API request failed: {e.response.status_code} - {e.response.text[:200]}")
+        except httpx.RequestError as e:
+            logger.error(f"ClaudeCompatibleProvider request error: {e}")
+            raise RuntimeError(f"API connection failed: {e}")
+        
         data = response.json()
+        
+        # ── Debug: Log raw response structure ──
+        logger.debug(f"ClaudeCompatibleProvider: response keys = {list(data.keys())}")
+        logger.debug(f"ClaudeCompatibleProvider: stop_reason = {data.get('stop_reason')}")
+        logger.debug(f"ClaudeCompatibleProvider: usage = {data.get('usage')}")
+        
+        # ── Check for API-level errors ──
+        if "error" in data:
+            error_info = data["error"]
+            error_msg = error_info.get("message", str(error_info)) if isinstance(error_info, dict) else str(error_info)
+            logger.error(f"ClaudeCompatibleProvider: API returned error: {error_msg}")
+            raise RuntimeError(f"API error: {error_msg}")
 
         # Parse response (Anthropic /v1/messages format)
         content_blocks = []
         tool_uses = []
         text_parts = []
-
-        for block in data.get("content", []):
-            block_type = block.get("type")
-            if block_type == "text":
-                content_blocks.append({"type": "text", "text": block["text"]})
-                text_parts.append(block["text"])
-            elif block_type == "tool_use":
-                tool_block = {
-                    "type": "tool_use",
-                    "id": block.get("id", ""),
-                    "name": block.get("name", ""),
-                    "input": block.get("input", {}),
-                }
-                content_blocks.append(tool_block)
-                tool_uses.append(tool_block)
+        
+        raw_content = data.get("content", [])
+        
+        # ── Handle unexpected content formats ──
+        if raw_content is None:
+            logger.warning("ClaudeCompatibleProvider: content is None")
+            raw_content = []
+        elif isinstance(raw_content, str):
+            # Some proxies return content as a string directly
+            logger.warning("ClaudeCompatibleProvider: content is string (non-standard)")
+            text_parts.append(raw_content)
+            content_blocks.append({"type": "text", "text": raw_content})
+        elif isinstance(raw_content, list):
+            for block in raw_content:
+                if not isinstance(block, dict):
+                    logger.warning(f"ClaudeCompatibleProvider: unexpected block type: {type(block)}")
+                    if isinstance(block, str):
+                        text_parts.append(block)
+                        content_blocks.append({"type": "text", "text": block})
+                    continue
+                    
+                block_type = block.get("type")
+                if block_type == "text":
+                    text_content = block.get("text", "")
+                    content_blocks.append({"type": "text", "text": text_content})
+                    text_parts.append(text_content)
+                elif block_type == "tool_use":
+                    tool_block = {
+                        "type": "tool_use",
+                        "id": block.get("id", ""),
+                        "name": block.get("name", ""),
+                        "input": block.get("input", {}),
+                    }
+                    content_blocks.append(tool_block)
+                    tool_uses.append(tool_block)
+                else:
+                    logger.warning(f"ClaudeCompatibleProvider: unknown block type: {block_type}")
+        else:
+            logger.error(f"ClaudeCompatibleProvider: unexpected content type: {type(raw_content)}")
+        
+        final_content = "\n".join(text_parts)
+        
+        # ── Log content summary ──
+        logger.debug(f"ClaudeCompatibleProvider: extracted {len(text_parts)} text blocks, total {len(final_content)} chars")
+        if not final_content:
+            logger.warning("ClaudeCompatibleProvider: no text content extracted from response")
+            logger.debug(f"ClaudeCompatibleProvider: raw response preview: {str(data)[:500]}")
 
         return {
-            "content": "\n".join(text_parts),
+            "content": final_content,
             "content_blocks": content_blocks,
             "tool_uses": tool_uses,
             "tool_calls": tool_uses if tool_uses else None,

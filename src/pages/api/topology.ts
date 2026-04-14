@@ -25,8 +25,9 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     // Forward to Python backend with timeout
+    // Complex academic figure descriptions may take 2-3 minutes for LLM to process
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 60000) // 60s timeout
+    const timeout = setTimeout(() => controller.abort(), 180000) // 180s timeout (3 min)
 
     try {
       const backendRes = await fetch(`${BACKEND_URL}/api/topology`, {
@@ -72,8 +73,8 @@ export const POST: APIRoute = async ({ request }) => {
       if (fetchErr.name === 'AbortError') {
         return new Response(
           JSON.stringify({
-            error: 'Request timed out (60s)',
-            hint: 'The LLM may be slow. Try a faster model like gemini-2.0-flash.',
+            error: 'Request timed out (180s)',
+            hint: 'Your description may be too complex. Try simplifying it or use a faster model.',
           }),
           { status: 504, headers: { 'Content-Type': 'application/json' } }
         )

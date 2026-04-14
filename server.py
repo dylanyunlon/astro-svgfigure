@@ -130,6 +130,63 @@ def _get_ai_engine() -> AIEngine:
     return _ai_engine
 
 
+def _print_config_status():
+    """Print AI provider configuration status at startup."""
+    print("\n" + "=" * 60)
+    print("AI Provider Configuration Status")
+    print("=" * 60)
+    
+    providers_found = []
+    providers_missing = []
+    
+    # Check Gemini
+    if _settings.GEMINI_API_KEY:
+        base = _settings.GEMINI_API_BASE or "(direct Google API)"
+        providers_found.append(f"✓ Gemini: {base}")
+    else:
+        providers_missing.append("✗ Gemini: GEMINI_API_KEY not set")
+    
+    # Check OpenAI
+    if _settings.OPENAI_API_KEY:
+        providers_found.append(f"✓ OpenAI: {_settings.OPENAI_API_BASE}")
+    else:
+        providers_missing.append("✗ OpenAI: OPENAI_API_KEY not set")
+    
+    # Check Anthropic
+    if _settings.ANTHROPIC_API_KEY:
+        providers_found.append(f"✓ Anthropic: {_settings.ANTHROPIC_API_BASE}")
+    else:
+        providers_missing.append("✗ Anthropic: ANTHROPIC_API_KEY not set")
+    
+    # Check Claude Compatible
+    if _settings.CLAUDE_COMPATIBLE_API_KEY and _settings.CLAUDE_COMPATIBLE_API_BASE:
+        providers_found.append(f"✓ Claude-Compatible: {_settings.CLAUDE_COMPATIBLE_API_BASE}")
+    
+    # Print results
+    for p in providers_found:
+        print(p)
+    for p in providers_missing:
+        print(p)
+    
+    print("-" * 60)
+    
+    if not providers_found:
+        print("⚠️  WARNING: No AI providers configured!")
+        print("   Copy .env.example to .env and add your API keys.")
+        print("   At least ONE provider (Gemini/OpenAI/Anthropic) is required.")
+    else:
+        print(f"✓ {len(providers_found)} provider(s) configured")
+        
+        # Try to initialize AI engine and report available providers
+        try:
+            engine = _get_ai_engine()
+            print(f"✓ Available providers: {engine.available_providers}")
+        except Exception as e:
+            print(f"⚠️  Failed to initialize AI engine: {e}")
+    
+    print("=" * 60 + "\n")
+
+
 # ── Animation pipeline routes ─────────────────────────────────────────
 register_animation_routes(app)
 
@@ -837,6 +894,9 @@ if __name__ == "__main__":
     initial_port = 8000
     
     try:
+        # Print configuration status before starting
+        _print_config_status()
+        
         actual_port = find_available_port(initial_port)
         
         print(f"--- Starting Server ---")

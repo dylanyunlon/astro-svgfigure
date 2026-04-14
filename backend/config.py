@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     UPLOADS_DIR: Path = _PROJECT_ROOT / "uploads"
 
     # ── Limits ──────────────────────────────────────────────────────────
-    MAX_TOPOLOGY_TOKENS: int = 8192
+    MAX_TOPOLOGY_TOKENS: int = 16384
     MAX_BEAUTIFY_TOKENS: int = 16384
     MAX_VALIDATE_TOKENS: int = 8192
     SVG_VALIDATOR_MAX_RETRIES: int = 3
