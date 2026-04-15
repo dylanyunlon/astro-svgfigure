@@ -54,18 +54,48 @@ export const POST: APIRoute = async ({ request }) => {
 
       clearTimeout(timeout)
 
+      // Read response body as text first to handle empty/malformed responses
+      const responseText = await backendRes.text()
+
       if (!backendRes.ok) {
-        const errorText = await backendRes.text()
         return new Response(
           JSON.stringify({
+            success: false,
             error: `Backend error: ${backendRes.status}`,
-            details: errorText,
+            details: responseText,
           }),
           { status: backendRes.status, headers: { 'Content-Type': 'application/json' } }
         )
       }
 
-      const data = await backendRes.json()
+      // Validate response body is non-empty before parsing
+      if (!responseText || responseText.trim() === '') {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'Backend returned empty response',
+            hint: 'The AI model may have returned no content. Check backend logs.',
+          }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+
+      // Parse JSON with explicit error handling
+      let data: unknown
+      try {
+        data = JSON.parse(responseText)
+      } catch (parseErr: any) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'Backend returned invalid JSON',
+            details: parseErr.message,
+            rawResponse: responseText.slice(0, 500),
+          }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+
       return new Response(JSON.stringify(data), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -77,15 +107,18 @@ export const POST: APIRoute = async ({ request }) => {
     if (err.name === 'AbortError') {
       return new Response(
         JSON.stringify({
+          success: false,
           error: 'Image generation timed out (600s)',
           hint: 'Try a simpler description or a faster model',
         }),
         { status: 504, headers: { 'Content-Type': 'application/json' } }
       )
     }
+    // Network-level errors (connection refused, DNS failure, etc.)
     return new Response(
       JSON.stringify({
-        error: 'Failed to connect to backend',
+        success: false,
+        error: 'Network error connecting to backend',
         details: err.message,
         hint: 'Make sure Python backend is running: python server.py',
       }),
