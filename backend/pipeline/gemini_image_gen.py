@@ -468,15 +468,21 @@ async def generate_image_with_gemini(
         return {"success": False, "error": "GEMINI_API_KEY not configured"}
 
     # Determine endpoint
-    # tryallai.com proxy: /v1beta/models/{model}:generateContent/ (trailing slash per spec)
+    # Proxy format: {base}/v1beta/models/{model}:generateContent
+    # Direct Google: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
     if api_base:
         base_url = api_base.rstrip("/")
+        # Remove trailing /v1 if present (common misconfiguration)
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
-        endpoint = f"{base_url}/v1beta/models/{model}:generateContent/"
+            logger.info(f"Stripped /v1 suffix from GEMINI_API_BASE: {api_base} → {base_url}")
+        # Note: we use /v1beta for Gemini native format, not /v1 (OpenAI format)
+        endpoint = f"{base_url}/v1beta/models/{model}:generateContent"
+        logger.info(f"Using proxy endpoint: {endpoint}")
     else:
         # Direct Google API
         endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        logger.info(f"Using direct Google API endpoint: {endpoint}")
 
     # Build the request body (Gemini native format)
     # Extract RICH layout info using elk_graph (preferred) or SVG parsing (fallback)
@@ -528,6 +534,24 @@ async def generate_image_with_gemini(
 
     request_parts.append({"text": combined_prompt})
 
+    # Build generationConfig — imageConfig is only supported by direct Google API,
+    # most third-party proxies (avman.ai, tryallai, etc.) reject it with 400 error
+    generation_config: Dict[str, Any] = {
+        "responseModalities": ["IMAGE", "TEXT"],
+    }
+
+    # Only add imageConfig when using direct Google API (no proxy)
+    # Proxies like api.avman.ai do not support imageConfig and return 400
+    is_direct_google_api = not api_base
+    if is_direct_google_api:
+        generation_config["imageConfig"] = {
+            "aspectRatio": aspect_ratio,
+            "imageSize": image_size,
+        }
+        logger.info(f"Using direct Google API with imageConfig: aspect={aspect_ratio}, size={image_size}")
+    else:
+        logger.info(f"Using proxy API ({api_base[:30]}...), imageConfig disabled to avoid 400 errors")
+
     request_body = {
         "contents": [
             {
@@ -535,13 +559,7 @@ async def generate_image_with_gemini(
                 "parts": request_parts,
             }
         ],
-        "generationConfig": {
-            "responseModalities": ["IMAGE", "TEXT"],
-            "imageConfig": {
-                "aspectRatio": aspect_ratio,
-                "imageSize": image_size,
-            },
-        },
+        "generationConfig": generation_config,
     }
 
     headers = {
@@ -550,9 +568,9 @@ async def generate_image_with_gemini(
         "Accept": "application/json",  # Signal we prefer non-SSE response
     }
 
-    # For direct Google API (no api_base), use query param instead
+    # For direct Google API (no api_base), use query param instead of Bearer token
     params = {}
-    if not api_base:
+    if is_direct_google_api:
         headers.pop("Authorization", None)
         params["key"] = api_key
 
@@ -563,7 +581,8 @@ async def generate_image_with_gemini(
             f"endpoint={endpoint[:60]}..."
         )
 
-        async with httpx.AsyncClient(timeout=600.0) as client:
+        # Enable follow_redirects to handle http→https redirects (307/301/302)
+        async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
             response = await client.post(
                 endpoint,
                 json=request_body,
@@ -574,11 +593,36 @@ async def generate_image_with_gemini(
         if response.status_code != 200:
             error_text = response.text[:500]
             logger.error(f"Gemini image API error {response.status_code}: {error_text}")
-            return {
+            
+            # Provide helpful hints for common errors
+            hint = None
+            if response.status_code == 307:
+                # 307 Temporary Redirect — usually means http→https or wrong domain
+                location = response.headers.get("location", "")
+                hint = (
+                    f"Got 307 redirect. Check GEMINI_API_BASE in .env: "
+                    f"use https:// not http://, and verify the domain. "
+                    f"Redirect location: {location or 'not provided'}"
+                )
+            elif response.status_code == 301 or response.status_code == 302:
+                location = response.headers.get("location", "")
+                hint = f"Got redirect to: {location}. Update GEMINI_API_BASE to the correct URL."
+            elif response.status_code == 401:
+                hint = "Authentication failed. Check GEMINI_API_KEY in .env."
+            elif response.status_code == 400:
+                hint = "Bad request. The API may not support certain parameters."
+            
+            error_response = {
                 "success": False,
                 "error": f"Gemini API error {response.status_code}: {error_text}",
                 "model_used": model,
+                "endpoint_used": endpoint,
             }
+            if hint:
+                error_response["hint"] = hint
+                logger.error(f"Hint: {hint}")
+            
+            return error_response
 
         raw_text = response.text.strip()
         content_type = response.headers.get("content-type", "")
@@ -639,18 +683,19 @@ async def generate_image_with_gemini(
                 f"Text response: {result.get('text_response', '')[:200]}"
             )
             request_body["generationConfig"]["responseModalities"] = ["IMAGE"]
-            # Keep imageConfig for the retry
-            request_body["generationConfig"]["imageConfig"] = {
-                "aspectRatio": aspect_ratio,
-                "imageSize": image_size,
-            }
+            # Only add imageConfig for direct Google API, proxies don't support it
+            if is_direct_google_api:
+                request_body["generationConfig"]["imageConfig"] = {
+                    "aspectRatio": aspect_ratio,
+                    "imageSize": image_size,
+                }
             # Also simplify the prompt to be more direct
             request_body["contents"][0]["parts"][0]["text"] = (
                 f"Generate an image of: {clean_prompt}\n\n"
                 f"Output ONLY an image, no text."
             )
 
-            async with httpx.AsyncClient(timeout=600.0) as client2:
+            async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client2:
                 response2 = await client2.post(
                     endpoint,
                     json=request_body,
@@ -686,6 +731,29 @@ async def generate_image_with_gemini(
             "error": "Gemini image generation timed out (600s). Try a simpler prompt.",
             "model_used": model,
         }
+    except httpx.ConnectError as e:
+        # DNS resolution failure or connection refused
+        error_str = str(e)
+        if "Name or service not known" in error_str or "getaddrinfo failed" in error_str:
+            # DNS resolution failed — likely trying to access Google API without proxy
+            hint = (
+                "DNS resolution failed. If you're in China or behind a firewall, "
+                "set GEMINI_API_BASE in .env to use a proxy (e.g. https://api.avman.ai or https://api.tryallai.com/v1)"
+            )
+            logger.error(f"DNS resolution failed for Gemini API: {e}. Hint: {hint}")
+            return {
+                "success": False,
+                "error": f"Cannot resolve Gemini API hostname: {error_str}",
+                "hint": hint,
+                "model_used": model,
+            }
+        else:
+            logger.error(f"Connection error to Gemini API: {e}")
+            return {
+                "success": False,
+                "error": f"Connection failed: {error_str}",
+                "model_used": model,
+            }
     except Exception as e:
         logger.error(f"Gemini image gen failed: {e}")
         return {

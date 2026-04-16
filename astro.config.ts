@@ -135,6 +135,9 @@ export default defineConfig({
   vite: {
     optimizeDeps: {
       include: ['elkjs/lib/elk.bundled.js']
+    },
+    server: {
+      allowedHosts: ['baloonet.tech', 'www.baloonet.tech', 'localhost']
     }
   }
 })

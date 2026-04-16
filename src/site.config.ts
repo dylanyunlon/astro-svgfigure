@@ -51,8 +51,6 @@ export const theme: ThemeUserConfig = {
       { title: 'Generate', link: '/generate' },
       { title: 'Gallery', link: '/gallery' },
       { title: 'Playground', link: '/playground' },
-      { title: 'Blog', link: '/blog' },
-      { title: 'Docs', link: '/docs' }
     ]
   },
 
@@ -78,7 +76,7 @@ export const theme: ThemeUserConfig = {
     /** Enable displaying a “Astro & Pure theme powered” link in your site’s footer. */
     credits: true,
     /** Optional details about the social media accounts for this site. */
-    social: { github: 'https://github.com/dylanyunlon/astro-svgfigure' }
+    social: { github: 'https://github.com/ResearAI/AutoFigure-Edit' }
   },
 
   // [Content]

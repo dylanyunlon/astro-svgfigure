@@ -271,7 +271,7 @@ class OpenAICompatibleProvider(AIProvider):
             raise ValueError("OpenAICompatibleProvider requires base_url")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=300.0)  # 5 min for complex prompts
+        self._client = httpx.AsyncClient(timeout=300.0, follow_redirects=True)
         logger.info(f"OpenAICompatibleProvider initialized (base_url={self._base_url})")
 
     async def get_completion(
@@ -875,7 +875,7 @@ class ClaudeCompatibleProvider(AIProvider):
             raise ValueError("ClaudeCompatibleProvider requires base_url")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=300.0)  # 5 min for complex prompts
+        self._client = httpx.AsyncClient(timeout=300.0, follow_redirects=True)
         logger.info(f"ClaudeCompatibleProvider initialized (base_url={self._base_url})")
 
     async def get_completion(
