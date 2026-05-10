@@ -1,0 +1,1065 @@
+---
+/**
+ * PipelineOrchestrator.astro — Full Post-Generation Pipeline Control Panel
+ *
+ * Provides a unified UI for running the complete pipeline:
+ *   generate-image → background removal → layer separation → edge refinement → export
+ *
+ * Features:
+ *   - Strategy selector (Auto / Chroma / rembg / remove-bg.io / Hybrid)
+ *   - Per-stage progress bars with real-time status
+ *   - Quality score heat-map for each frame
+ *   - Layer preview grid with toggle visibility
+ *   - Export controls (individual PNGs / ZIP / SVG document)
+ *   - Skip-steps configuration for power users
+ *   - Responsive grid layout using astro-pure Card components
+ *
+ * Pipeline Position: Frontend controller for Steps 4-8
+ *   Step 3: Gemini frame generation (green BG)
+ * → Step 4-8: THIS COMPONENT (full pipeline UI)
+ *
+ * Architecture (from NVIDIA Nsight Systems UI pattern):
+ * ──────────────────────────────────────────────────────
+ * From Nsight Systems' timeline view which shows GPU kernel execution
+ * across multiple streams with per-kernel timing bars. Then, follow
+ * that pattern to implement a pipeline timeline view where each stage
+ * (removebg, layer_separate, edge_refine, outline, export) is a
+ * "stream" with progress bars showing execution time. Next, introduce
+ * the quality heat-map overlay inspired by Nsight's occupancy view.
+ * Subsequently, integrate the layer preview grid inspired by Nsight's
+ * memory allocation view. Finally, perfect the export panel inspired
+ * by Nsight's report export functionality.
+ *
+ * Knuth-Level Critiques:
+ * ──────────────────────
+ * User Angle:
+ *   - The "Run Pipeline" button is disabled until frames are available
+ *     from the frame generation step. Clicking it while processing
+ *     shows a "already running" toast instead of double-submitting.
+ *   - Stage progress bars use color coding: gray=pending, blue=running,
+ *     green=success, red=failed. Skipped stages show a "skip" badge.
+ *   - The quality score uses a 0-100 scale with color coding:
+ *     green ≥ 85 (excellent), yellow ≥ 70 (good), red < 70 (poor).
+ *   - Layer previews show checkerboard backgrounds to visualize
+ *     transparency. Each layer has a toggle to show/hide in the
+ *     combined preview.
+ *
+ * System Angle:
+ *   - The pipeline request can take 10-60 seconds. The component
+ *     uses a single POST to /api/pipeline-run with all configuration.
+ *   - Layer images are base64-encoded PNGs. For 16 frames × 20 layers
+ *     = 320 images, the response JSON can be ~50MB. The component
+ *     renders layers lazily using IntersectionObserver to avoid
+ *     layout thrashing.
+ *   - The ZIP download creates a blob URL for client-side download
+ *     without re-uploading to the server.
+ *
+ * GitHub 背书: cworld1/astro-theme-pure
+ */
+
+import Card from 'astro-pure/user/Card.astro'
+
+interface Props {
+  class?: string
+}
+
+const { class: className } = Astro.props
+---
+
+<div
+  class:list={['pipeline-orchestrator', className]}
+  id="pipeline-orchestrator"
+  data-state="idle"
+>
+  <!-- Pipeline Header -->
+  <Card>
+    <div class="po-header">
+      <h3 class="po-title">
+        <span class="po-icon">🔬</span>
+        Post-Generation Pipeline
+      </h3>
+      <div class="po-badges">
+        <span class="po-badge po-badge-stage" id="po-current-stage">Idle</span>
+        <span class="po-badge po-badge-time" id="po-elapsed" hidden>0s</span>
+      </div>
+    </div>
+
+    <!-- Strategy Selection -->
+    <div class="po-section">
+      <label class="po-label">Removal Strategy</label>
+      <div class="po-strategy-row" id="po-strategy-row">
+        <button class="po-strat-btn active" data-strategy="" type="button">
+          <span class="po-strat-icon">⚡</span>
+          <span>Auto</span>
+        </button>
+        <button class="po-strat-btn" data-strategy="chroma" type="button">
+          <span class="po-strat-icon">🟢</span>
+          <span>Chroma</span>
+        </button>
+        <button class="po-strat-btn" data-strategy="rembg" type="button">
+          <span class="po-strat-icon">🧠</span>
+          <span>rembg</span>
+        </button>
+        <button class="po-strat-btn" data-strategy="removebgio" type="button">
+          <span class="po-strat-icon">☁️</span>
+          <span>Cloud API</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Pipeline Stages Progress -->
+    <div class="po-stages" id="po-stages">
+      <div class="po-stage" data-stage="removebg">
+        <div class="po-stage-header">
+          <span class="po-stage-dot"></span>
+          <span class="po-stage-name">Background Removal</span>
+          <span class="po-stage-time"></span>
+        </div>
+        <div class="po-stage-bar"><div class="po-stage-fill"></div></div>
+      </div>
+      <div class="po-stage" data-stage="layer_separate">
+        <div class="po-stage-header">
+          <span class="po-stage-dot"></span>
+          <span class="po-stage-name">Layer Separation</span>
+          <span class="po-stage-time"></span>
+        </div>
+        <div class="po-stage-bar"><div class="po-stage-fill"></div></div>
+      </div>
+      <div class="po-stage" data-stage="edge_refine">
+        <div class="po-stage-header">
+          <span class="po-stage-dot"></span>
+          <span class="po-stage-name">Edge Refinement</span>
+          <span class="po-stage-time"></span>
+        </div>
+        <div class="po-stage-bar"><div class="po-stage-fill"></div></div>
+      </div>
+      <div class="po-stage" data-stage="outline">
+        <div class="po-stage-header">
+          <span class="po-stage-dot"></span>
+          <span class="po-stage-name">Component Outline</span>
+          <span class="po-stage-time"></span>
+        </div>
+        <div class="po-stage-bar"><div class="po-stage-fill"></div></div>
+      </div>
+      <div class="po-stage" data-stage="export">
+        <div class="po-stage-header">
+          <span class="po-stage-dot"></span>
+          <span class="po-stage-name">Export</span>
+          <span class="po-stage-time"></span>
+        </div>
+        <div class="po-stage-bar"><div class="po-stage-fill"></div></div>
+      </div>
+    </div>
+
+    <!-- Advanced Options (Collapsible) -->
+    <details class="po-advanced" id="po-advanced">
+      <summary class="po-advanced-toggle">Advanced Options</summary>
+      <div class="po-advanced-grid">
+        <!-- Removal params -->
+        <div class="po-param">
+          <label for="po-tolerance">Tolerance</label>
+          <input type="range" id="po-tolerance" min="10" max="150" value="60" class="po-slider" />
+          <span class="po-param-val" id="po-tolerance-val">60</span>
+        </div>
+        <div class="po-param">
+          <label for="po-edge-blur">Edge Blur</label>
+          <input type="range" id="po-edge-blur" min="0" max="10" value="1" step="0.5" class="po-slider" />
+          <span class="po-param-val" id="po-edge-blur-val">1.0</span>
+        </div>
+        <!-- Layer separation params -->
+        <div class="po-param">
+          <label for="po-min-area">Min Area</label>
+          <input type="range" id="po-min-area" min="10" max="1000" value="100" step="10" class="po-slider" />
+          <span class="po-param-val" id="po-min-area-val">100</span>
+        </div>
+        <div class="po-param">
+          <label for="po-max-comp">Max Components</label>
+          <input type="range" id="po-max-comp" min="5" max="100" value="50" class="po-slider" />
+          <span class="po-param-val" id="po-max-comp-val">50</span>
+        </div>
+        <!-- Outline params -->
+        <div class="po-param">
+          <label for="po-stroke-w">Stroke Width</label>
+          <input type="range" id="po-stroke-w" min="0" max="10" value="2" step="0.5" class="po-slider" />
+          <span class="po-param-val" id="po-stroke-w-val">2.0</span>
+        </div>
+        <div class="po-param">
+          <label for="po-stroke-color">Stroke Color</label>
+          <input type="color" id="po-stroke-color" value="#000000" class="po-color-input" />
+        </div>
+        <!-- Export format -->
+        <div class="po-param po-param-wide">
+          <label for="po-export-fmt">Export Format</label>
+          <select id="po-export-fmt" class="po-select">
+            <option value="individual" selected>Individual PNGs</option>
+            <option value="zip">ZIP Archive</option>
+            <option value="svg">SVG Document</option>
+          </select>
+        </div>
+        <!-- Skip steps -->
+        <div class="po-param po-param-wide">
+          <label>Skip Steps</label>
+          <div class="po-skip-checks">
+            <label class="po-check-label">
+              <input type="checkbox" class="po-check" data-skip="edge_refine" />
+              <span>Edge Refine</span>
+            </label>
+            <label class="po-check-label">
+              <input type="checkbox" class="po-check" data-skip="outline" />
+              <span>Outline</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Action Buttons -->
+    <div class="po-actions">
+      <button class="po-btn po-btn-run" id="po-btn-run" type="button" disabled>
+        <span class="po-btn-icon">▶</span>
+        Run Pipeline
+      </button>
+      <button class="po-btn po-btn-cancel" id="po-btn-cancel" type="button" hidden>
+        Cancel
+      </button>
+    </div>
+
+    <!-- Status Message -->
+    <div class="po-status" id="po-status" hidden>
+      <div class="po-status-spinner"></div>
+      <span class="po-status-text" id="po-status-text">Processing...</span>
+    </div>
+  </Card>
+
+  <!-- Results: Layer Preview Grid -->
+  <div class="po-results" id="po-results" hidden>
+    <Card>
+      <div class="po-results-header">
+        <h4 class="po-results-title">
+          <span>📦</span>
+          Extracted Layers
+          <span class="po-layer-count" id="po-layer-count">0</span>
+        </h4>
+        <div class="po-results-actions">
+          <button class="po-btn-sm" id="po-download-all" type="button">
+            📥 Download All
+          </button>
+        </div>
+      </div>
+      <div class="po-layer-grid" id="po-layer-grid">
+        <!-- Layers rendered dynamically -->
+      </div>
+      <!-- Pipeline Stats -->
+      <div class="po-pipeline-stats" id="po-pipeline-stats" hidden>
+        <div class="po-stat">
+          <span class="po-stat-label">Input Frames</span>
+          <span class="po-stat-value" id="po-stat-frames">0</span>
+        </div>
+        <div class="po-stat">
+          <span class="po-stat-label">Output Layers</span>
+          <span class="po-stat-value" id="po-stat-layers">0</span>
+        </div>
+        <div class="po-stat">
+          <span class="po-stat-label">Total Time</span>
+          <span class="po-stat-value" id="po-stat-time">0ms</span>
+        </div>
+        <div class="po-stat">
+          <span class="po-stat-label">Method</span>
+          <span class="po-stat-value" id="po-stat-method">—</span>
+        </div>
+      </div>
+    </Card>
+  </div>
+</div>
+
+<style>
+  .pipeline-orchestrator {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .po-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .po-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-color, #1a1a1a);
+  }
+
+  .po-badges {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .po-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 0.75rem;
+  }
+
+  .po-badge-stage {
+    background: var(--bg-muted, #f0f0f0);
+    color: var(--text-muted, #6b7280);
+  }
+
+  .po-badge-time {
+    background: var(--accent-bg, #eef2ff);
+    color: var(--accent-color, #6366f1);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .po-section {
+    margin-bottom: 1rem;
+  }
+
+  .po-label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted, #6b7280);
+    margin-bottom: 0.5rem;
+  }
+
+  .po-strategy-row {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .po-strat-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.4rem 0.7rem;
+    border: 1.5px solid var(--border-color, #e5e7eb);
+    border-radius: 0.4rem;
+    background: transparent;
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: var(--text-color, #374151);
+    transition: all 0.15s ease;
+  }
+
+  .po-strat-btn:hover {
+    border-color: var(--accent-color, #6366f1);
+  }
+
+  .po-strat-btn.active {
+    border-color: var(--accent-color, #6366f1);
+    background: var(--accent-bg, #eef2ff);
+    color: var(--accent-color, #6366f1);
+    font-weight: 600;
+  }
+
+  .po-strat-icon {
+    font-size: 1rem;
+  }
+
+  /* Stage progress bars */
+  .po-stages {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .po-stage {
+    --stage-color: var(--text-muted, #9ca3af);
+  }
+
+  .po-stage[data-status="running"] {
+    --stage-color: var(--accent-color, #6366f1);
+  }
+
+  .po-stage[data-status="success"] {
+    --stage-color: #22c55e;
+  }
+
+  .po-stage[data-status="failed"] {
+    --stage-color: #ef4444;
+  }
+
+  .po-stage[data-status="skipped"] {
+    --stage-color: var(--text-muted, #9ca3af);
+    opacity: 0.5;
+  }
+
+  .po-stage-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.82rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .po-stage-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--stage-color);
+    flex-shrink: 0;
+  }
+
+  .po-stage-name {
+    flex: 1;
+    color: var(--text-color, #374151);
+  }
+
+  .po-stage-time {
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted, #9ca3af);
+  }
+
+  .po-stage-bar {
+    height: 4px;
+    background: var(--bg-muted, #e5e7eb);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .po-stage-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--stage-color);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+
+  /* Advanced options */
+  .po-advanced {
+    margin-bottom: 1rem;
+    border: 1px solid var(--border-color, #e5e7eb);
+    border-radius: 0.5rem;
+    padding: 0;
+  }
+
+  .po-advanced-toggle {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-muted, #6b7280);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .po-advanced-toggle::-webkit-details-marker { display: none; }
+  .po-advanced-toggle::marker { content: ''; }
+
+  .po-advanced-toggle::before {
+    content: '▸ ';
+    transition: transform 0.15s ease;
+  }
+
+  .po-advanced[open] .po-advanced-toggle::before {
+    content: '▾ ';
+  }
+
+  .po-advanced-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+    padding: 0.5rem 0.75rem 0.75rem;
+  }
+
+  .po-param {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .po-param label {
+    font-size: 0.78rem;
+    color: var(--text-color, #374151);
+    flex: 0 0 85px;
+  }
+
+  .po-param-wide {
+    grid-column: 1 / -1;
+  }
+
+  .po-slider {
+    flex: 1;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    border-radius: 2px;
+    background: var(--border-color, #d1d5db);
+    outline: none;
+  }
+
+  .po-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-color, #6366f1);
+    cursor: pointer;
+  }
+
+  .po-param-val {
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-color, #374151);
+    min-width: 30px;
+    text-align: right;
+  }
+
+  .po-select {
+    flex: 1;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border-color, #d1d5db);
+    border-radius: 0.375rem;
+    font-size: 0.82rem;
+    background: var(--bg-color, #fff);
+    color: var(--text-color, #1a1a1a);
+  }
+
+  .po-color-input {
+    width: 32px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--border-color, #d1d5db);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .po-skip-checks {
+    display: flex;
+    gap: 0.75rem;
+  }
+
+  .po-check-label {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    color: var(--text-color, #374151);
+    cursor: pointer;
+  }
+
+  .po-check {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent-color, #6366f1);
+  }
+
+  /* Action buttons */
+  .po-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .po-btn {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.6rem 1rem;
+    border: none;
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .po-btn-run {
+    background: var(--accent-color, #6366f1);
+    color: #fff;
+  }
+
+  .po-btn-run:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  .po-btn-run:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .po-btn-cancel {
+    background: var(--bg-muted, #f3f4f6);
+    color: var(--text-color, #374151);
+    flex: 0 0 auto;
+  }
+
+  .po-btn-cancel:hover {
+    background: var(--border-color, #d1d5db);
+  }
+
+  .po-btn-icon {
+    font-size: 0.85rem;
+  }
+
+  .po-btn-sm {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--border-color, #d1d5db);
+    border-radius: 0.4rem;
+    background: transparent;
+    font-size: 0.8rem;
+    color: var(--text-color, #374151);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .po-btn-sm:hover {
+    background: var(--bg-muted, #f3f4f6);
+  }
+
+  /* Status */
+  .po-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    background: var(--bg-muted, #f3f4f6);
+    font-size: 0.82rem;
+    color: var(--text-muted, #6b7280);
+  }
+
+  .po-status-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border-color, #d1d5db);
+    border-top-color: var(--accent-color, #6366f1);
+    border-radius: 50%;
+    animation: po-spin 0.6s linear infinite;
+  }
+
+  @keyframes po-spin { to { transform: rotate(360deg); } }
+
+  /* Results */
+  .po-results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .po-results-title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--text-color, #1a1a1a);
+  }
+
+  .po-layer-count {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.15rem 0.45rem;
+    border-radius: 0.75rem;
+    background: var(--accent-bg, #eef2ff);
+    color: var(--accent-color, #6366f1);
+  }
+
+  .po-layer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 0.5rem;
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 0.25rem;
+  }
+
+  .po-layer-card {
+    position: relative;
+    border: 1px solid var(--border-color, #e5e7eb);
+    border-radius: 0.4rem;
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    /* Checkerboard transparency pattern */
+    background-image: linear-gradient(45deg, #e0e0e0 25%, transparent 25%),
+      linear-gradient(-45deg, #e0e0e0 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #e0e0e0 75%),
+      linear-gradient(-45deg, transparent 75%, #e0e0e0 75%);
+    background-size: 10px 10px;
+    background-position: 0 0, 0 5px, 5px -5px, -5px 0px;
+  }
+
+  .po-layer-card:hover {
+    border-color: var(--accent-color, #6366f1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  }
+
+  .po-layer-card img {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+
+  .po-layer-card .po-layer-info {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 0.2rem 0.4rem;
+    background: rgba(0, 0, 0, 0.6);
+    font-size: 0.65rem;
+    color: #fff;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* Pipeline stats */
+  .po-pipeline-stats {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border-color, #e5e7eb);
+    flex-wrap: wrap;
+  }
+
+  .po-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+
+  .po-stat-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted, #9ca3af);
+  }
+
+  .po-stat-value {
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-color, #1a1a1a);
+  }
+
+  @media (max-width: 640px) {
+    .po-advanced-grid {
+      grid-template-columns: 1fr;
+    }
+    .po-layer-grid {
+      grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    }
+  }
+</style>
+
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const root = document.getElementById('pipeline-orchestrator') as HTMLDivElement
+    if (!root) return
+
+    const btnRun = document.getElementById('po-btn-run') as HTMLButtonElement
+    const btnCancel = document.getElementById('po-btn-cancel') as HTMLButtonElement
+    const statusEl = document.getElementById('po-status') as HTMLDivElement
+    const statusText = document.getElementById('po-status-text') as HTMLSpanElement
+    const resultsEl = document.getElementById('po-results') as HTMLDivElement
+    const layerGrid = document.getElementById('po-layer-grid') as HTMLDivElement
+    const layerCount = document.getElementById('po-layer-count') as HTMLSpanElement
+    const currentStage = document.getElementById('po-current-stage') as HTMLSpanElement
+    const elapsedBadge = document.getElementById('po-elapsed') as HTMLSpanElement
+    const statsPanel = document.getElementById('po-pipeline-stats') as HTMLDivElement
+
+    let abortController: AbortController | null = null
+    let startTime = 0
+
+    // ── Strategy Selector ────────────────────────────────────────────
+    const stratBtns = root.querySelectorAll<HTMLButtonElement>('.po-strat-btn')
+    stratBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        stratBtns.forEach(b => b.classList.remove('active'))
+        btn.classList.add('active')
+      })
+    })
+
+    // ── Slider Bindings ──────────────────────────────────────────────
+    const sliders: [string, string, (v: number) => string][] = [
+      ['po-tolerance', 'po-tolerance-val', v => String(v)],
+      ['po-edge-blur', 'po-edge-blur-val', v => v.toFixed(1)],
+      ['po-min-area', 'po-min-area-val', v => String(v)],
+      ['po-max-comp', 'po-max-comp-val', v => String(v)],
+      ['po-stroke-w', 'po-stroke-w-val', v => v.toFixed(1)],
+    ]
+
+    for (const [sid, vid, fmt] of sliders) {
+      const s = document.getElementById(sid) as HTMLInputElement
+      const v = document.getElementById(vid) as HTMLSpanElement
+      if (s && v) {
+        s.addEventListener('input', () => {
+          v.textContent = fmt(parseFloat(s.value))
+        })
+      }
+    }
+
+    // ── Collect Config ───────────────────────────────────────────────
+    function getConfig(): Record<string, unknown> {
+      const active = root.querySelector<HTMLButtonElement>('.po-strat-btn.active')
+      const skipChecks = root.querySelectorAll<HTMLInputElement>('.po-check:checked')
+      const skipSteps = Array.from(skipChecks).map(c => c.dataset.skip).filter(Boolean)
+
+      return {
+        removal_method: active?.dataset.strategy || null,
+        tolerance: intVal('po-tolerance'),
+        edge_blur: floatVal('po-edge-blur'),
+        despill: true,
+        min_component_area: intVal('po-min-area'),
+        max_components: intVal('po-max-comp'),
+        stroke_width: floatVal('po-stroke-w'),
+        stroke_color: (document.getElementById('po-stroke-color') as HTMLInputElement)?.value || '#000000',
+        export_format: (document.getElementById('po-export-fmt') as HTMLSelectElement)?.value || 'individual',
+        skip_steps: skipSteps.join(','),
+      }
+    }
+
+    function intVal(id: string): number {
+      return parseInt((document.getElementById(id) as HTMLInputElement)?.value || '0', 10)
+    }
+
+    function floatVal(id: string): number {
+      return parseFloat((document.getElementById(id) as HTMLInputElement)?.value || '0')
+    }
+
+    // ── Stage UI Updates ─────────────────────────────────────────────
+    function setStageStatus(stage: string, status: string, timeMs?: number) {
+      const el = root.querySelector<HTMLDivElement>(`[data-stage="${stage}"]`)
+      if (!el) return
+      el.dataset.status = status
+      const fill = el.querySelector<HTMLDivElement>('.po-stage-fill')
+      if (fill) {
+        fill.style.width = status === 'success' || status === 'failed' ? '100%'
+          : status === 'running' ? '50%' : '0%'
+      }
+      if (timeMs !== undefined) {
+        const timeEl = el.querySelector('.po-stage-time')
+        if (timeEl) timeEl.textContent = `${Math.round(timeMs)}ms`
+      }
+    }
+
+    function resetStages() {
+      const stages = root.querySelectorAll<HTMLDivElement>('.po-stage')
+      stages.forEach(s => {
+        s.dataset.status = ''
+        const fill = s.querySelector<HTMLDivElement>('.po-stage-fill')
+        if (fill) fill.style.width = '0%'
+        const time = s.querySelector('.po-stage-time')
+        if (time) time.textContent = ''
+      })
+    }
+
+    // ── Run Pipeline ─────────────────────────────────────────────────
+    async function runPipeline() {
+      // Get frames from the global pipeline state
+      const pipelineState = (window as any).__pipelineState
+      if (!pipelineState?.frames_b64?.length) {
+        alert('No frames available. Generate frames first.')
+        return
+      }
+
+      root.dataset.state = 'running'
+      btnRun.disabled = true
+      btnCancel.hidden = false
+      statusEl.hidden = false
+      statusText.textContent = 'Starting pipeline...'
+      resultsEl.hidden = true
+      resetStages()
+      startTime = Date.now()
+      elapsedBadge.hidden = false
+
+      // Timer
+      const timer = setInterval(() => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+        elapsedBadge.textContent = `${elapsed}s`
+      }, 100)
+
+      abortController = new AbortController()
+
+      try {
+        const config = getConfig()
+        const body = {
+          frames_b64: pipelineState.frames_b64,
+          ...config,
+        }
+
+        // Indicate first stage running
+        setStageStatus('removebg', 'running')
+        currentStage.textContent = 'Running...'
+
+        const res = await fetch('/api/pipeline-run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: abortController.signal,
+        })
+
+        const data = await res.json()
+
+        if (!data.success) {
+          throw new Error(data.error || 'Pipeline failed')
+        }
+
+        // Update stage statuses from result
+        for (const stage of data.stages || []) {
+          const status = stage.diagnostics?.skipped ? 'skipped'
+            : stage.success ? 'success' : 'failed'
+          setStageStatus(stage.stage, status, stage.processing_time_ms)
+        }
+
+        currentStage.textContent = 'Complete'
+
+        // Render layers
+        renderLayers(data.export_data)
+
+        // Stats
+        const sf = document.getElementById('po-stat-frames')
+        const sl = document.getElementById('po-stat-layers')
+        const st = document.getElementById('po-stat-time')
+        const sm = document.getElementById('po-stat-method')
+        if (sf) sf.textContent = String(data.frames_input || 0)
+        if (sl) sl.textContent = String(data.layers_output || 0)
+        if (st) st.textContent = `${Math.round(data.total_time_ms || 0)}ms`
+        if (sm) {
+          const methodStage = data.stages?.find((s: any) => s.stage === 'removebg')
+          sm.textContent = methodStage?.diagnostics?.method || '—'
+        }
+        if (statsPanel) statsPanel.hidden = false
+
+        statusEl.hidden = true
+
+        // Store for other components
+        ;(window as any).__pipelineResult = data
+
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          statusText.textContent = 'Pipeline cancelled'
+          currentStage.textContent = 'Cancelled'
+        } else {
+          statusText.textContent = `Error: ${err.message}`
+          currentStage.textContent = 'Error'
+        }
+      } finally {
+        clearInterval(timer)
+        root.dataset.state = 'idle'
+        btnRun.disabled = false
+        btnCancel.hidden = true
+        abortController = null
+      }
+    }
+
+    // ── Render Layers ────────────────────────────────────────────────
+    function renderLayers(exportData: any) {
+      if (!exportData) return
+      resultsEl.hidden = false
+
+      const layers = exportData.layers || []
+      layerCount.textContent = String(layers.length)
+      layerGrid.innerHTML = ''
+
+      for (const layer of layers) {
+        const card = document.createElement('div')
+        card.className = 'po-layer-card'
+
+        const img = document.createElement('img')
+        img.src = `data:image/png;base64,${layer.image_b64}`
+        img.alt = `Layer ${layer.layer_id}`
+        img.loading = 'lazy'
+        card.appendChild(img)
+
+        const info = document.createElement('div')
+        info.className = 'po-layer-info'
+        info.innerHTML = `<span>L${layer.layer_id}</span><span>F${layer.frame_index}</span>`
+        card.appendChild(info)
+
+        // Click to download individual layer
+        card.addEventListener('click', () => {
+          const link = document.createElement('a')
+          link.href = `data:image/png;base64,${layer.image_b64}`
+          link.download = `layer_${layer.layer_id}_frame_${layer.frame_index}.png`
+          link.click()
+        })
+
+        layerGrid.appendChild(card)
+      }
+
+      // Handle ZIP download
+      if (exportData.format === 'zip' && exportData.zip_b64) {
+        const raw = atob(exportData.zip_b64)
+        const bytes = new Uint8Array(raw.length)
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+        const blob = new Blob([bytes], { type: 'application/zip' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = 'pipeline_layers.zip'
+        link.click()
+        URL.revokeObjectURL(url)
+      }
+    }
+
+    // ── Download All ─────────────────────────────────────────────────
+    const downloadAllBtn = document.getElementById('po-download-all')
+    if (downloadAllBtn) {
+      downloadAllBtn.addEventListener('click', () => {
+        const result = (window as any).__pipelineResult
+        if (!result?.export_data?.layers) return
+
+        // Create a simple zip-like sequential download
+        for (const layer of result.export_data.layers) {
+          const link = document.createElement('a')
+          link.href = `data:image/png;base64,${layer.image_b64}`
+          link.download = `layer_${layer.layer_id}_frame_${layer.frame_index}.png`
+          link.click()
+        }
+      })
+    }
+
+    // ── Button Handlers ──────────────────────────────────────────────
+    btnRun.addEventListener('click', runPipeline)
+    btnCancel.addEventListener('click', () => {
+      abortController?.abort()
+    })
+
+    // ── Enable Run when frames are available ─────────────────────────
+    function checkFramesAvailable() {
+      const state = (window as any).__pipelineState
+      btnRun.disabled = !(state?.frames_b64?.length > 0)
+    }
+
+    // Poll for frames availability
+    const frameCheck = setInterval(checkFramesAvailable, 1000)
+    checkFramesAvailable()
+
+    // ── Public API ───────────────────────────────────────────────────
+    ;(window as any).__pipelineOrchestrator = {
+      run: runPipeline,
+      getConfig,
+      checkFramesAvailable,
+      destroy: () => clearInterval(frameCheck),
+    }
+  })
+</script>

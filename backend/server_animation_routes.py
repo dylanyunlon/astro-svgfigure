@@ -845,6 +845,104 @@ def register_animation_routes(app: FastAPI) -> None:
                 status_code=500,
             )
 
+    # ── /api/removebg — Tiered Background Removal ─────────────────
+    @app.post("/api/removebg")
+    async def api_removebg(request_data: dict) -> JSONResponse:
+        """
+        Remove background from frames using tiered fallback:
+        Tier 1: remove-bg.io cloud → Tier 2: rembg U2-Net → Tier 3: chroma-key
+
+        Maps to removebg_route.handle_removebg().
+        """
+        try:
+            from backend.pipeline.removebg_route import handle_removebg
+
+            frames_b64 = request_data.get("frames_b64", [])
+            if not frames_b64 or not isinstance(frames_b64, list):
+                return JSONResponse(
+                    content={"success": False, "error": "frames_b64 array required"},
+                    status_code=400,
+                )
+
+            result = await handle_removebg(
+                frames_b64=frames_b64,
+                api_key=request_data.get("api_key", ""),
+                force_method=request_data.get("method"),
+                tolerance=request_data.get("tolerance", 60),
+                edge_blur=request_data.get("edge_blur", 1.0),
+                despill=request_data.get("despill", True),
+            )
+
+            status = 200 if result.get("success") else 500
+            return JSONResponse(content=result, status_code=status)
+
+        except Exception as e:
+            logger.exception("POST /api/removebg failed: %s", e)
+            return JSONResponse(
+                content={"success": False, "error": str(e)},
+                status_code=500,
+            )
+
+    @app.get("/api/removebg/status")
+    async def api_removebg_status() -> JSONResponse:
+        """Check available background removal methods."""
+        try:
+            from backend.pipeline.removebg_route import get_removebg_status
+            return JSONResponse(content=get_removebg_status())
+        except Exception as e:
+            return JSONResponse(
+                content={"error": str(e)},
+                status_code=500,
+            )
+
+    # ── /api/pipeline-run — Full End-to-End Pipeline ─────────────────
+    @app.post("/api/pipeline-run")
+    async def api_pipeline_run(request_data: dict) -> JSONResponse:
+        """
+        Run the full post-generation pipeline in one call:
+        removebg → layer-separate → edge-refine → outline → export
+
+        Maps to pipeline_orchestrator.run_pipeline().
+        """
+        t0 = time.time()
+        try:
+            from backend.pipeline.pipeline_orchestrator import (
+                run_pipeline,
+                config_from_request,
+            )
+
+            frames_b64 = request_data.get("frames_b64", [])
+            if not frames_b64 or not isinstance(frames_b64, list):
+                return JSONResponse(
+                    content={"success": False, "error": "frames_b64 array required"},
+                    status_code=400,
+                )
+
+            if len(frames_b64) > 64:
+                return JSONResponse(
+                    content={"success": False, "error": "Max 64 frames per pipeline run"},
+                    status_code=400,
+                )
+
+            config = config_from_request(request_data)
+            report = await run_pipeline(frames_b64, config)
+
+            elapsed_ms = (time.time() - t0) * 1000
+            logger.info(
+                "POST /api/pipeline-run → %d frames, %d layers, %.0fms",
+                report.frames_input, report.layers_output, elapsed_ms,
+            )
+
+            return JSONResponse(content=report.to_dict())
+
+        except Exception as e:
+            logger.exception("POST /api/pipeline-run failed: %s", e)
+            return JSONResponse(
+                content={"success": False, "error": str(e)},
+                status_code=500,
+            )
+
     logger.info("Advanced pipeline routes registered: "
                 "/api/advanced-rembg, /api/layer-separate, "
-                "/api/edge-refine, /api/component-outline")
+                "/api/edge-refine, /api/component-outline, "
+                "/api/removebg, /api/pipeline-run")
