@@ -32,6 +32,68 @@ from .image_analyzer import analyze_image
 from .animation_prompt_designer import design_animation_prompt
 from .frame_generator import generate_animation_frames
 
+
+# Green-screen removal & advanced background processing (Step 4)
+try:
+    from .green_screen_advanced import (
+        process_frames_hsv,
+        GreenScreenConfig,
+        get_grok_green_screen_requirements,
+    )
+    from .batch_rembg_orchestrator import (
+        orchestrate_batch_removal,
+        orchestrate_batch_removal_b64,
+        config_from_params,
+    )
+except ImportError:
+    pass  # numpy/PIL may not be installed in all environments
+
+# Layer separation (Step 5)
+try:
+    from .layer_separator import separate_layers, separate_layers_batch
+except ImportError:
+    pass
+
+# Edge refinement & outlining (Step 6)
+try:
+    from .edge_refiner import refine_layer_edges, refine_layers_batch
+    from .component_outliner import (
+        outline_component,
+        outline_components_batch,
+        build_svg_document,
+    )
+except ImportError:
+    pass
+
+# Transparency validation (QA)
+try:
+    from .transparency_validator import validate_frame, validate_batch, validate_batch_b64
+except ImportError:
+    pass
+
+# Row-scan pixel engine (M001+M002: OpenCV HSV lookup + thrust::transform pipeline)
+try:
+    from .rowscan_engine import (
+        HSVLookupTable,
+        PixelTransformPipeline,
+        classify_green_rowscan,
+        despill_green_rowscan,
+        benchmark_rowscan,
+    )
+except ImportError:
+    pass
+
+# remove-bg.io cloud API client (free HD background removal)
+try:
+    from .removebg_client import (
+        RemoveBgIoClient,
+        RemoveBgIoConfig,
+        is_removebgio_available,
+        process_frame_removebgio,
+    )
+except ImportError:
+    pass
+
 __all__ = [
     "generate_topology",
     "beautify_with_nanobanana",
@@ -43,4 +105,32 @@ __all__ = [
     "analyze_image",
     "design_animation_prompt",
     "generate_animation_frames",
+    # Advanced pipeline modules
+    "process_frames_hsv",
+    "GreenScreenConfig",
+    "get_grok_green_screen_requirements",
+    "orchestrate_batch_removal",
+    "orchestrate_batch_removal_b64",
+    "config_from_params",
+    "separate_layers",
+    "separate_layers_batch",
+    "refine_layer_edges",
+    "refine_layers_batch",
+    "outline_component",
+    "outline_components_batch",
+    "build_svg_document",
+    "validate_frame",
+    "validate_batch",
+    "validate_batch_b64",
+    # M001+M002: Row-scan engine
+    "HSVLookupTable",
+    "PixelTransformPipeline",
+    "classify_green_rowscan",
+    "despill_green_rowscan",
+    "benchmark_rowscan",
+    # remove-bg.io cloud API
+    "RemoveBgIoClient",
+    "RemoveBgIoConfig",
+    "is_removebgio_available",
+    "process_frame_removebgio",
 ]
