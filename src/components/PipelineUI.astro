@@ -1,0 +1,572 @@
+/**
+ * M010: PipelineUI.astro - Astro 前端交互组件
+ * 文件位置: src/components/PipelineUI.astro
+ *
+ * 注意: 这是 .astro 文件内容, 文件扩展名应为 .astro
+ * 样式来自 Astro 的 scoped CSS (确保样式来自 astro 的 node_module)
+ *
+ * 从 file upload handler 开始。然后,遵循该模式实现 progressive UI,
+ * 让用户可以看到每个处理阶段的实时进度,并能预览中间结果。
+ * 接着 preset selector 引入一键配置,使非技术用户能够选择处理模式。
+ * 同时 component gallery 优化结果展示。随后 download manager
+ * 整合批量下载。最终 responsive layout 完善移动端适配。
+ */
+
+// === 以下是 PipelineUI.astro 文件的完整内容 ===
+
+const ASTRO_COMPONENT = `---
+/**
+ * PipelineUI - 绿幕移除 Pipeline 交互界面
+ * 
+ * Usage:
+ *   <PipelineUI apiBase="/api/pipeline" />
+ */
+import type { HTMLAttributes } from 'astro';
+
+interface Props extends HTMLAttributes<'div'> {
+  apiBase?: string;
+  defaultPreset?: 'fast' | 'balanced' | 'quality' | 'greenscreen';
+  maxUploadMb?: number;
+}
+
+const {
+  apiBase = '/api/pipeline',
+  defaultPreset = 'balanced',
+  maxUploadMb = 20,
+  class: className,
+  ...rest
+} = Astro.props;
+---
+
+<div
+  class:list={["pipeline-ui", className]}
+  data-api-base={apiBase}
+  data-max-upload={maxUploadMb}
+  data-default-preset={defaultPreset}
+  {...rest}
+>
+  <!-- ====== §1 上传区域 ====== -->
+  <section class="pipeline-upload" id="upload-section">
+    <div class="upload-dropzone" id="dropzone">
+      <div class="upload-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="17 8 12 3 7 8" />
+          <line x1="12" y1="3" x2="12" y2="15" />
+        </svg>
+      </div>
+      <p class="upload-text">拖放图片到此处, 或点击选择</p>
+      <p class="upload-hint">支持 PNG / JPEG / WebP, 最大 {maxUploadMb}MB</p>
+      <input
+        type="file"
+        id="file-input"
+        accept="image/png,image/jpeg,image/webp"
+        style="display:none"
+      />
+    </div>
+  </section>
+
+  <!-- ====== §2 预设选择器 ====== -->
+  <section class="pipeline-presets" id="preset-section" style="display:none">
+    <h3 class="section-title">处理模式</h3>
+    <div class="preset-grid">
+      <button class="preset-card" data-preset="fast">
+        <span class="preset-icon">⚡</span>
+        <span class="preset-name">快速</span>
+        <span class="preset-desc">色度键抠图, ~1秒</span>
+      </button>
+      <button class="preset-card" data-preset="balanced">
+        <span class="preset-icon">⚖️</span>
+        <span class="preset-name">均衡</span>
+        <span class="preset-desc">色度键 + AI增强</span>
+      </button>
+      <button class="preset-card" data-preset="quality">
+        <span class="preset-icon">✨</span>
+        <span class="preset-name">高质量</span>
+        <span class="preset-desc">BiRefNet AI, ~5秒</span>
+      </button>
+      <button class="preset-card" data-preset="greenscreen">
+        <span class="preset-icon">🟩</span>
+        <span class="preset-name">绿幕专用</span>
+        <span class="preset-desc">专为绿幕优化</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ====== §3 处理进度 ====== -->
+  <section class="pipeline-progress" id="progress-section" style="display:none">
+    <h3 class="section-title">处理进度</h3>
+    <div class="progress-stages" id="progress-stages">
+      <!-- 动态填充 -->
+    </div>
+    <div class="progress-bar-wrapper">
+      <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+    </div>
+    <p class="progress-status" id="progress-status">准备中...</p>
+  </section>
+
+  <!-- ====== §4 预览面板 ====== -->
+  <section class="pipeline-preview" id="preview-section" style="display:none">
+    <h3 class="section-title">处理结果</h3>
+    <div class="preview-tabs">
+      <button class="tab-btn active" data-tab="original">原图</button>
+      <button class="tab-btn" data-tab="transparent">去背景</button>
+      <button class="tab-btn" data-tab="components">组件</button>
+    </div>
+    <div class="preview-canvas-wrapper">
+      <div class="checkerboard-bg">
+        <img id="preview-image" alt="Preview" />
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== §5 组件画廊 ====== -->
+  <section class="pipeline-gallery" id="gallery-section" style="display:none">
+    <h3 class="section-title">分离的组件</h3>
+    <div class="gallery-grid" id="gallery-grid">
+      <!-- 动态填充 -->
+    </div>
+    <div class="gallery-actions">
+      <button class="btn btn-primary" id="download-all-btn">下载全部 (ZIP)</button>
+      <button class="btn btn-secondary" id="copy-manifest-btn">复制 Manifest</button>
+    </div>
+  </section>
+
+  <!-- ====== §6 质量报告 ====== -->
+  <section class="pipeline-quality" id="quality-section" style="display:none">
+    <h3 class="section-title">质量报告</h3>
+    <div class="quality-badge" id="quality-badge">
+      <span class="quality-grade" id="quality-grade">-</span>
+      <span class="quality-score" id="quality-score">-</span>
+    </div>
+    <div class="quality-details" id="quality-details">
+      <!-- 动态填充 -->
+    </div>
+  </section>
+</div>
+
+<style>
+  /* 
+   * 样式遵循 Astro scoped CSS 规范
+   * 使用 CSS Custom Properties 确保可主题化
+   * 参考 Astro 的 node_modules 内 @astrojs/prism 的 token 命名约定
+   */
+  .pipeline-ui {
+    --pipeline-bg: #ffffff;
+    --pipeline-border: #e5e7eb;
+    --pipeline-text: #1f2937;
+    --pipeline-text-secondary: #6b7280;
+    --pipeline-primary: #3b82f6;
+    --pipeline-primary-hover: #2563eb;
+    --pipeline-success: #10b981;
+    --pipeline-error: #ef4444;
+    --pipeline-warning: #f59e0b;
+    --pipeline-radius: 8px;
+    --pipeline-shadow: 0 1px 3px rgba(0,0,0,0.1);
+
+    font-family: system-ui, -apple-system, sans-serif;
+    color: var(--pipeline-text);
+    max-width: 800px;
+    margin: 0 auto;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .pipeline-ui {
+      --pipeline-bg: #1f2937;
+      --pipeline-border: #374151;
+      --pipeline-text: #f9fafb;
+      --pipeline-text-secondary: #9ca3af;
+    }
+  }
+
+  .section-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 1.5rem 0 0.75rem;
+  }
+
+  /* Upload Dropzone */
+  .upload-dropzone {
+    border: 2px dashed var(--pipeline-border);
+    border-radius: var(--pipeline-radius);
+    padding: 3rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .upload-dropzone:hover,
+  .upload-dropzone.dragover {
+    border-color: var(--pipeline-primary);
+    background: rgba(59, 130, 246, 0.05);
+  }
+  .upload-icon { color: var(--pipeline-text-secondary); margin-bottom: 1rem; }
+  .upload-text { font-size: 1rem; margin: 0 0 0.5rem; }
+  .upload-hint { font-size: 0.85rem; color: var(--pipeline-text-secondary); margin: 0; }
+
+  /* Presets */
+  .preset-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+  }
+  .preset-card {
+    border: 1px solid var(--pipeline-border);
+    border-radius: var(--pipeline-radius);
+    padding: 1rem;
+    background: var(--pipeline-bg);
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.2s;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .preset-card:hover { border-color: var(--pipeline-primary); }
+  .preset-card.active {
+    border-color: var(--pipeline-primary);
+    box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+  }
+  .preset-icon { font-size: 1.5rem; }
+  .preset-name { font-weight: 600; font-size: 0.95rem; }
+  .preset-desc { font-size: 0.8rem; color: var(--pipeline-text-secondary); }
+
+  /* Progress */
+  .progress-bar-wrapper {
+    background: var(--pipeline-border);
+    border-radius: 4px;
+    height: 6px;
+    overflow: hidden;
+    margin: 1rem 0;
+  }
+  .progress-bar {
+    height: 100%;
+    background: var(--pipeline-primary);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+  }
+  .progress-status {
+    font-size: 0.9rem;
+    color: var(--pipeline-text-secondary);
+    text-align: center;
+  }
+  .progress-stages {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 0.5rem;
+  }
+
+  /* Preview */
+  .preview-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+  .tab-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--pipeline-border);
+    border-radius: var(--pipeline-radius);
+    background: var(--pipeline-bg);
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+  .tab-btn.active {
+    background: var(--pipeline-primary);
+    color: white;
+    border-color: var(--pipeline-primary);
+  }
+  .preview-canvas-wrapper { border-radius: var(--pipeline-radius); overflow: hidden; }
+  .checkerboard-bg {
+    background-image:
+      linear-gradient(45deg, #ccc 25%, transparent 25%),
+      linear-gradient(-45deg, #ccc 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #ccc 75%),
+      linear-gradient(-45deg, transparent 75%, #ccc 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    min-height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .checkerboard-bg img {
+    max-width: 100%;
+    max-height: 500px;
+    display: block;
+  }
+
+  /* Gallery */
+  .gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 1rem;
+  }
+  .gallery-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    justify-content: center;
+  }
+
+  /* Buttons */
+  .btn {
+    padding: 0.6rem 1.2rem;
+    border-radius: var(--pipeline-radius);
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+  }
+  .btn-primary {
+    background: var(--pipeline-primary);
+    color: white;
+  }
+  .btn-primary:hover { background: var(--pipeline-primary-hover); }
+  .btn-secondary {
+    background: transparent;
+    color: var(--pipeline-primary);
+    border: 1px solid var(--pipeline-primary);
+  }
+
+  /* Quality */
+  .quality-badge {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    justify-content: center;
+    margin: 1rem 0;
+  }
+  .quality-grade {
+    font-size: 3rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .quality-score { font-size: 1.2rem; color: var(--pipeline-text-secondary); }
+</style>
+
+<script define:vars={{ apiBase, defaultPreset, maxUploadMb }}>
+  /**
+   * Client-side Pipeline Controller
+   * 
+   * 参考 React Query 的 mutation 模式:
+   *   状态驱动UI更新, 异步操作串行化
+   */
+  
+  const ui = document.querySelector('.pipeline-ui');
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('file-input');
+  const presetSection = document.getElementById('preset-section');
+  const progressSection = document.getElementById('progress-section');
+  const previewSection = document.getElementById('preview-section');
+  const gallerySection = document.getElementById('gallery-section');
+  const qualitySection = document.getElementById('quality-section');
+  const progressBar = document.getElementById('progress-bar');
+  const progressStatus = document.getElementById('progress-status');
+  const previewImage = document.getElementById('preview-image');
+  const galleryGrid = document.getElementById('gallery-grid');
+
+  let selectedPreset = defaultPreset;
+  let uploadedFile = null;
+  let processedData = null;
+
+  // ── File Upload ──
+  dropzone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) handleFile(e.target.files[0]);
+  });
+
+  dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+  dropzone.addEventListener('dragleave', () => {
+    dropzone.classList.remove('dragover');
+  });
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+  });
+
+  function handleFile(file) {
+    if (file.size > maxUploadMb * 1024 * 1024) {
+      alert(\`文件过大 (最大 \${maxUploadMb}MB)\`);
+      return;
+    }
+    uploadedFile = file;
+
+    // Show original preview
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      previewImage.src = e.target.result;
+      previewSection.style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+
+    presetSection.style.display = 'block';
+  }
+
+  // ── Preset Selection ──
+  document.querySelectorAll('.preset-card').forEach(card => {
+    if (card.dataset.preset === defaultPreset) card.classList.add('active');
+
+    card.addEventListener('click', () => {
+      document.querySelectorAll('.preset-card').forEach(c => c.classList.remove('active'));
+      card.classList.add('active');
+      selectedPreset = card.dataset.preset;
+      if (uploadedFile) startProcessing();
+    });
+  });
+
+  // ── Processing ──
+  async function startProcessing() {
+    progressSection.style.display = 'block';
+    gallerySection.style.display = 'none';
+    qualitySection.style.display = 'none';
+    updateProgress(10, '上传中...');
+
+    const formData = new FormData();
+    formData.append('image', uploadedFile);
+
+    try {
+      updateProgress(20, '处理中: 绿幕检测...');
+
+      const response = await fetch(
+        \`\${apiBase}?action=full&preset=\${selectedPreset}&returnFormat=json\`,
+        { method: 'POST', body: formData }
+      );
+
+      updateProgress(70, '解析结果...');
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Processing failed');
+      }
+
+      processedData = await response.json();
+      updateProgress(90, '渲染预览...');
+
+      renderResults(processedData);
+      updateProgress(100, '完成!');
+
+    } catch (error) {
+      updateProgress(0, \`错误: \${error.message}\`);
+      progressBar.style.background = 'var(--pipeline-error)';
+    }
+  }
+
+  function updateProgress(percent, status) {
+    progressBar.style.width = percent + '%';
+    progressStatus.textContent = status;
+  }
+
+  function renderResults(data) {
+    // 透明图预览
+    if (data.components && data.components.length > 0) {
+      const firstComp = data.components[0];
+      if (firstComp.image) {
+        previewImage.src = 'data:image/png;base64,' + firstComp.image;
+      }
+    }
+
+    // 组件画廊
+    if (data.components && data.components.length > 0) {
+      galleryGrid.innerHTML = '';
+      data.components.forEach((comp, i) => {
+        const card = document.createElement('div');
+        card.className = 'gallery-card';
+        card.style.cssText = \`
+          border: 1px solid var(--pipeline-border);
+          border-radius: var(--pipeline-radius);
+          padding: 0.5rem;
+          text-align: center;
+        \`;
+        card.innerHTML = \`
+          <div class="checkerboard-bg" style="min-height:80px;margin-bottom:0.5rem;">
+            <img src="data:image/png;base64,\${comp.image}" 
+                 alt="Component \${i + 1}" 
+                 style="max-width:100%;max-height:100px;" />
+          </div>
+          <p style="font-size:0.8rem;margin:0;color:var(--pipeline-text-secondary);">
+            组件 \${i + 1}
+          </p>
+        \`;
+        galleryGrid.appendChild(card);
+      });
+      gallerySection.style.display = 'block';
+    }
+
+    // 质量指标
+    if (data.metadata) {
+      qualitySection.style.display = 'block';
+      const gradeEl = document.getElementById('quality-grade');
+      const scoreEl = document.getElementById('quality-score');
+      gradeEl.textContent = data.metadata.finalStrategy || '-';
+      scoreEl.textContent = \`\${data.metadata.stagesExecuted} stages, \${data.metadata.totalDurationMs}ms\`;
+    }
+
+    previewSection.style.display = 'block';
+  }
+
+  // ── Tab switching ──
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      // Tab logic would update previewImage.src based on processedData
+    });
+  });
+</script>
+`;
+
+// 导出为 TypeScript 常量, 实际使用时保存为 .astro 文件
+export const PIPELINE_UI_CONTENT = ASTRO_COMPONENT;
+
+/**
+ * 工具函数: 将 PipelineUI.astro 写入项目目录
+ */
+export async function writePipelineUI(projectRoot: string): Promise<string> {
+  const { writeFile, mkdir } = await import('fs/promises');
+  const { join } = await import('path');
+
+  const componentDir = join(projectRoot, 'src', 'components');
+  await mkdir(componentDir, { recursive: true });
+
+  const filePath = join(componentDir, 'PipelineUI.astro');
+  await writeFile(filePath, ASTRO_COMPONENT, 'utf-8');
+
+  return filePath;
+}
+
+/**
+ * 工具函数: 生成使用 PipelineUI 的示例页面
+ */
+export function generateExamplePage(): string {
+  return `---
+/**
+ * Pipeline Demo Page
+ * 文件位置: src/pages/pipeline.astro
+ */
+import Layout from '../layouts/Layout.astro';
+import PipelineUI from '../components/PipelineUI.astro';
+---
+
+<Layout title="SVG Figure Pipeline">
+  <main style="padding: 2rem;">
+    <h1 style="text-align:center;margin-bottom:2rem;">
+      🎨 SVG Figure Pipeline
+    </h1>
+    <p style="text-align:center;color:#6b7280;margin-bottom:2rem;">
+      上传带绿幕的图片, 自动去除背景并分离为独立组件
+    </p>
+    <PipelineUI 
+      apiBase="/api/pipeline"
+      defaultPreset="greenscreen"
+      maxUploadMb={20}
+    />
+  </main>
+</Layout>
+`;
+}

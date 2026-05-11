@@ -33,39 +33,9 @@ const footerLink1 = footerConf.links?.filter(({ pos }) => pos === 1) || []
             </div>
           )
         }
-        {/* Position 2 */}
-        <div>
-          {config.footer.year}
-          {config.author}
-          {
-            footerConf.links && footerConf.links.length > 0 && (
-              <>
-                &
-                <span>
-                  {footerConf.links
-                    .filter(({ pos }) => pos === 2)
-                    .map(({ title, link, style }) => (
-                      <span>
-                        <a href={link} target='_blank' class={style}>{title}</a>
-                      </span>
-                    ))}
-                </span>
-              </>
-            )
-          }
-        </div>
-        {
-          footerConf.credits && (
-            <span>
-              <a href='https://github.com/withastro/astro' target='_blank'>Astro</a>
-              &
-              <a href='https://github.com/dylanyunlon/astro-svgfigure' target='_blank'>Pure</a>
-              theme powered
-            </span>
-          )
-        }
+        
+      
       </div>
-
       {/* Social Brands */}
       <div class='flex items-center gap-x-4'>
         {
