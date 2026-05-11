@@ -42,6 +42,8 @@ from backend.pipeline.nanobanana_bridge import beautify_with_nanobanana
 from backend.pipeline.svg_validator import validate_svg as validate_svg_func
 from backend.server_animation_routes import register_animation_routes
 
+logger = logging.getLogger(__name__)
+
 # Post-generation pipeline imports (Step 4+: removebg → layers → edges → export)
 try:
     from backend.pipeline.removebg_route import handle_removebg, get_removebg_status
@@ -50,8 +52,6 @@ try:
 except ImportError as _e:
     logger.warning(f"Post-generation pipeline modules not fully available: {_e}")
     _PIPELINE_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"

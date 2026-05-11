@@ -21,6 +21,10 @@
       { id: 'step-edit', num: '✎', label: 'Edit Draft', desc: 'Drag nodes, edit labels, resize — then confirm', icon: '' },
       { id: 'step-grok-prompt', num: '2', label: 'Stylist Refinement', desc: 'Synthesize aesthetic guideline for illustration', icon: '' },
       { id: 'step-gemini-image', num: '3', label: 'Visualizer Output', desc: 'Generate publication-quality figure', icon: '' },
+      { id: 'step-removebg', num: '4', label: 'Background Removal', desc: 'Green-screen removal → transparent PNG', icon: '' },
+      { id: 'step-layers', num: '5', label: 'Layer Separation', desc: 'Connected-component labeling → individual elements', icon: '' },
+      { id: 'step-edges', num: '6', label: 'Edge Refinement + Outline', desc: 'Anti-alias, alpha matte, stroke generation', icon: '' },
+      { id: 'step-export', num: '7', label: 'Export Components', desc: 'Package transparent layers → download', icon: '' },
     ].map((step) => (
       <div
         id={step.id}

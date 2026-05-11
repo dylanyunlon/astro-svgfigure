@@ -1,0 +1,829 @@
+---
+/**
+ * PostGenPanel.astro — Post-Generation Pipeline Controls
+ *
+ * Bridges the gap between Step 3 (Visualizer Output / generate-image)
+ * and Steps 4-7 (removebg → layers → edges → export).
+ *
+ * After Gemini generates the figure, this panel appears with:
+ *   - Strategy selector (Auto / Chroma / rembg)
+ *   - "Run Pipeline" button to chain Steps 4-7
+ *   - Per-stage progress indicators
+ *   - Layer preview grid with checkerboard transparency
+ *   - Export controls (individual PNGs / ZIP download)
+ *
+ * The panel auto-shows when currentImageB64 is set by the generate flow.
+ * It reads currentImageB64 from window.__postGenState and calls /api/pipeline-run.
+ *
+ * Styles use astro-pure CSS variables from the node_modules theme system
+ * (hsl(var(--primary)), hsl(var(--muted)), etc.) for consistency.
+ *
+ * GitHub: cworld1/astro-theme-pure
+ */
+---
+
+<div id="post-gen-panel" class="post-gen hidden">
+  <!-- Header -->
+  <div class="pg-header">
+    <div class="pg-title-row">
+      <span class="pg-icon">🧪</span>
+      <h3 class="pg-title">Post-Generation Pipeline</h3>
+      <span class="pg-badge" id="pg-method-badge">—</span>
+    </div>
+    <p class="pg-desc">
+      Remove background → Separate layers → Refine edges → Export transparent components
+    </p>
+  </div>
+
+  <!-- Controls -->
+  <div class="pg-controls">
+    <div class="pg-control-group">
+      <label class="pg-label" for="pg-strategy">Removal Strategy</label>
+      <select id="pg-strategy" class="pg-select">
+        <option value="auto">Auto (best available)</option>
+        <option value="rembg">rembg U2-Net (local ML)</option>
+        <option value="chroma">Chroma-Key HSV (fast)</option>
+      </select>
+    </div>
+
+    <div class="pg-control-group">
+      <label class="pg-label" for="pg-tolerance">Green Tolerance</label>
+      <div class="pg-range-row">
+        <input type="range" id="pg-tolerance" min="10" max="120" value="60" class="pg-range" />
+        <span id="pg-tolerance-val" class="pg-range-val">60</span>
+      </div>
+    </div>
+
+    <div class="pg-control-group">
+      <label class="pg-label">Skip Steps</label>
+      <div class="pg-checkboxes">
+        <label class="pg-checkbox-label">
+          <input type="checkbox" id="pg-skip-outline" value="outline" />
+          <span>Outline</span>
+        </label>
+        <label class="pg-checkbox-label">
+          <input type="checkbox" id="pg-skip-edge" value="edge_refine" />
+          <span>Edge Refine</span>
+        </label>
+      </div>
+    </div>
+
+    <button id="pg-run-btn" class="pg-run-btn" disabled>
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+        fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="5 3 19 12 5 21 5 3" />
+      </svg>
+      <span id="pg-run-text">Run Pipeline (Steps 4→7)</span>
+    </button>
+  </div>
+
+  <!-- Stage Progress -->
+  <div class="pg-stages" id="pg-stages">
+    {[
+      { id: 'pg-stage-removebg', label: 'Background Removal', icon: '🟢' },
+      { id: 'pg-stage-layers', label: 'Layer Separation', icon: '📐' },
+      { id: 'pg-stage-edges', label: 'Edge Refinement', icon: '✨' },
+      { id: 'pg-stage-export', label: 'Export', icon: '📦' },
+    ].map((stage) => (
+      <div class="pg-stage" id={stage.id} data-status="pending">
+        <span class="pg-stage-icon">{stage.icon}</span>
+        <span class="pg-stage-label">{stage.label}</span>
+        <div class="pg-stage-bar">
+          <div class="pg-stage-fill"></div>
+        </div>
+        <span class="pg-stage-time">—</span>
+      </div>
+    ))}
+  </div>
+
+  <!-- Transparent Preview (before/after) -->
+  <div class="pg-preview-row hidden" id="pg-preview-row">
+    <div class="pg-preview-col">
+      <span class="pg-preview-label">Original (with BG)</span>
+      <div class="pg-preview-frame">
+        <img id="pg-preview-original" class="pg-preview-img" alt="Original" />
+      </div>
+    </div>
+    <div class="pg-preview-arrow">→</div>
+    <div class="pg-preview-col">
+      <span class="pg-preview-label">Transparent</span>
+      <div class="pg-preview-frame pg-checkerboard">
+        <img id="pg-preview-transparent" class="pg-preview-img" alt="Transparent" />
+      </div>
+    </div>
+  </div>
+
+  <!-- Layer Grid -->
+  <div class="pg-layer-grid hidden" id="pg-layer-grid">
+    <div class="pg-layer-header">
+      <span class="pg-layer-title">Separated Layers</span>
+      <span class="pg-layer-count" id="pg-layer-count">0 layers</span>
+    </div>
+    <div class="pg-layers" id="pg-layers-container">
+      <!-- Dynamically populated -->
+    </div>
+  </div>
+
+  <!-- Export Controls -->
+  <div class="pg-export hidden" id="pg-export-section">
+    <div class="pg-export-row">
+      <button id="pg-export-all" class="pg-export-btn">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        Download All Layers (ZIP)
+      </button>
+      <button id="pg-export-transparent" class="pg-export-btn">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <polyline points="21 15 16 10 5 21" />
+        </svg>
+        Download Transparent PNG
+      </button>
+    </div>
+  </div>
+
+  <!-- Error display -->
+  <div class="pg-error hidden" id="pg-error">
+    <span class="pg-error-icon">⚠️</span>
+    <span class="pg-error-text" id="pg-error-text"></span>
+  </div>
+</div>
+
+<style>
+  .post-gen {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1rem;
+    border-radius: 0.75rem;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--card));
+  }
+  .post-gen.hidden { display: none; }
+
+  .pg-header { display: flex; flex-direction: column; gap: 0.25rem; }
+  .pg-title-row { display: flex; align-items: center; gap: 0.5rem; }
+  .pg-icon { font-size: 1.125rem; }
+  .pg-title {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+    margin: 0;
+  }
+  .pg-badge {
+    font-size: 0.6875rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+    font-weight: 500;
+  }
+  .pg-desc {
+    font-size: 0.75rem;
+    color: hsl(var(--muted-foreground));
+    margin: 0;
+  }
+
+  .pg-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .pg-control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .pg-label {
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+    font-weight: 500;
+  }
+  .pg-select {
+    border-radius: 0.5rem;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--muted));
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    color: hsl(var(--foreground));
+  }
+  .pg-range-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .pg-range { flex: 1; }
+  .pg-range-val {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+    min-width: 2rem;
+    text-align: center;
+  }
+  .pg-checkboxes { display: flex; gap: 1rem; }
+  .pg-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.75rem;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+  }
+
+  .pg-run-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.625rem 1rem;
+    border-radius: 0.75rem;
+    border: 1px solid transparent;
+    background: hsl(var(--primary));
+    color: white;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .pg-run-btn:hover { opacity: 0.9; }
+  .pg-run-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Stage progress bars */
+  .pg-stages {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+  .pg-stage {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: 0.5rem;
+    background: hsl(var(--muted));
+    font-size: 0.75rem;
+  }
+  .pg-stage-icon { font-size: 0.875rem; width: 1.25rem; text-align: center; }
+  .pg-stage-label {
+    flex: 1;
+    color: hsl(var(--muted-foreground));
+    font-weight: 500;
+  }
+  .pg-stage-bar {
+    width: 4rem;
+    height: 0.375rem;
+    border-radius: 9999px;
+    background: hsl(var(--border));
+    overflow: hidden;
+  }
+  .pg-stage-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 9999px;
+    background: hsl(var(--primary));
+    transition: width 0.3s ease;
+  }
+  .pg-stage-time {
+    min-width: 2.5rem;
+    text-align: right;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pg-stage[data-status="running"] { background: hsl(var(--primary) / 0.08); }
+  .pg-stage[data-status="running"] .pg-stage-label { color: hsl(var(--primary)); }
+  .pg-stage[data-status="running"] .pg-stage-fill {
+    width: 60%;
+    animation: pulse-bar 1.5s ease-in-out infinite;
+  }
+  .pg-stage[data-status="done"] .pg-stage-fill {
+    width: 100%;
+    background: hsl(142.1 76.2% 36.3%);
+  }
+  .pg-stage[data-status="done"] .pg-stage-label { color: hsl(142.1 76.2% 36.3%); }
+  .pg-stage[data-status="error"] .pg-stage-fill {
+    width: 100%;
+    background: hsl(0 72.2% 50.6%);
+  }
+  .pg-stage[data-status="error"] .pg-stage-label { color: hsl(0 72.2% 50.6%); }
+  .pg-stage[data-status="skipped"] { opacity: 0.5; }
+  .pg-stage[data-status="skipped"] .pg-stage-label {
+    text-decoration: line-through;
+  }
+
+  @keyframes pulse-bar {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  /* Preview row */
+  .pg-preview-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .pg-preview-row.hidden { display: none; }
+  .pg-preview-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .pg-preview-label {
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+    font-weight: 500;
+  }
+  .pg-preview-frame {
+    border-radius: 0.5rem;
+    border: 1px solid hsl(var(--border));
+    overflow: hidden;
+    aspect-ratio: 16/9;
+  }
+  .pg-preview-img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  .pg-preview-arrow {
+    font-size: 1.25rem;
+    color: hsl(var(--muted-foreground));
+    flex-shrink: 0;
+  }
+  .pg-checkerboard {
+    background-image:
+      linear-gradient(45deg, hsl(var(--muted)) 25%, transparent 25%),
+      linear-gradient(-45deg, hsl(var(--muted)) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, hsl(var(--muted)) 75%),
+      linear-gradient(-45deg, transparent 75%, hsl(var(--muted)) 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+    background-color: hsl(var(--background));
+  }
+
+  /* Layer grid */
+  .pg-layer-grid.hidden { display: none; }
+  .pg-layer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .pg-layer-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+  }
+  .pg-layer-count {
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+  }
+  .pg-layers {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 0.5rem;
+  }
+  .pg-layer-card {
+    border-radius: 0.5rem;
+    border: 1px solid hsl(var(--border));
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .pg-layer-card:hover {
+    border-color: hsl(var(--primary));
+    box-shadow: 0 0 0 2px hsl(var(--primary) / 0.15);
+  }
+  .pg-layer-thumb {
+    aspect-ratio: 1;
+    width: 100%;
+    object-fit: contain;
+  }
+  .pg-layer-card .pg-checkerboard {
+    aspect-ratio: 1;
+  }
+  .pg-layer-info {
+    padding: 0.25rem 0.375rem;
+    font-size: 0.625rem;
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--muted));
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* Export section */
+  .pg-export.hidden { display: none; }
+  .pg-export-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .pg-export-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .pg-export-btn:hover {
+    background: hsl(var(--card));
+    color: hsl(var(--foreground));
+  }
+
+  /* Error */
+  .pg-error {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    background: hsl(0 72.2% 50.6% / 0.08);
+    border: 1px solid hsl(0 72.2% 50.6% / 0.3);
+  }
+  .pg-error.hidden { display: none; }
+  .pg-error-text {
+    font-size: 0.75rem;
+    color: hsl(0 72.2% 50.6%);
+  }
+</style>
+
+<script>
+  /**
+   * PostGenPanel Controller
+   *
+   * Exposes window.__postGenPanel with:
+   *   - show(imageB64, mimeType) — reveal panel, enable run button
+   *   - hide() — hide panel
+   *   - runPipeline() — trigger Steps 4-7
+   *
+   * Reads /api/pipeline-run for the chained backend.
+   * Falls back to /api/removebg if pipeline-run isn't available.
+   */
+
+  const panel = document.getElementById('post-gen-panel')!
+  const runBtn = document.getElementById('pg-run-btn') as HTMLButtonElement
+  const runText = document.getElementById('pg-run-text') as HTMLSpanElement
+  const strategySelect = document.getElementById('pg-strategy') as HTMLSelectElement
+  const toleranceRange = document.getElementById('pg-tolerance') as HTMLInputElement
+  const toleranceVal = document.getElementById('pg-tolerance-val') as HTMLSpanElement
+  const methodBadge = document.getElementById('pg-method-badge') as HTMLSpanElement
+  const previewRow = document.getElementById('pg-preview-row')!
+  const previewOriginal = document.getElementById('pg-preview-original') as HTMLImageElement
+  const previewTransparent = document.getElementById('pg-preview-transparent') as HTMLImageElement
+  const layerGrid = document.getElementById('pg-layer-grid')!
+  const layerCount = document.getElementById('pg-layer-count') as HTMLSpanElement
+  const layersContainer = document.getElementById('pg-layers-container')!
+  const exportSection = document.getElementById('pg-export-section')!
+  const errorDiv = document.getElementById('pg-error')!
+  const errorText = document.getElementById('pg-error-text')!
+
+  // Pipeline steps reference (for steps 4-7 status in PipelineSteps.astro)
+  const steps = (window as any).__pipelineSteps
+
+  let _imageB64 = ''
+  let _mimeType = 'image/png'
+  let _running = false
+  let _pipelineResult: any = null
+
+  toleranceRange?.addEventListener('input', () => {
+    toleranceVal.textContent = toleranceRange.value
+  })
+
+  function setStageStatus(stageId: string, status: 'pending' | 'running' | 'done' | 'error' | 'skipped', timeMs?: number) {
+    const el = document.getElementById(stageId)
+    if (!el) return
+    el.dataset.status = status
+    if (timeMs !== undefined) {
+      const timeEl = el.querySelector('.pg-stage-time') as HTMLSpanElement
+      if (timeEl) timeEl.textContent = `${(timeMs / 1000).toFixed(1)}s`
+    }
+  }
+
+  function resetStages() {
+    ['pg-stage-removebg', 'pg-stage-layers', 'pg-stage-edges', 'pg-stage-export'].forEach(id => {
+      setStageStatus(id, 'pending')
+      const el = document.getElementById(id)
+      if (el) {
+        const timeEl = el.querySelector('.pg-stage-time') as HTMLSpanElement
+        if (timeEl) timeEl.textContent = '—'
+      }
+    })
+  }
+
+  function showError(msg: string) {
+    errorDiv.classList.remove('hidden')
+    errorText.textContent = msg
+  }
+
+  function hideError() {
+    errorDiv.classList.add('hidden')
+  }
+
+  function downloadBlob(data: string, filename: string, mime: string) {
+    // data is base64
+    const binary = atob(data)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const blob = new Blob([bytes], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function runPipeline() {
+    if (_running || !_imageB64) return
+    _running = true
+    runBtn.disabled = true
+    runText.textContent = 'Running pipeline...'
+    hideError()
+    resetStages()
+    previewRow.classList.add('hidden')
+    layerGrid.classList.add('hidden')
+    exportSection.classList.add('hidden')
+
+    // Show original in preview
+    previewOriginal.src = `data:${_mimeType};base64,${_imageB64}`
+
+    // Gather config
+    const skipSteps: string[] = []
+    if ((document.getElementById('pg-skip-outline') as HTMLInputElement)?.checked) skipSteps.push('outline')
+    if ((document.getElementById('pg-skip-edge') as HTMLInputElement)?.checked) skipSteps.push('edge_refine')
+
+    const config = {
+      removal_method: strategySelect.value,
+      tolerance: parseInt(toleranceRange.value, 10),
+      edge_blur: 1.0,
+      despill: true,
+      skip_steps: skipSteps,
+      outline_stroke: 2,
+      outline_color: '#000000',
+      export_format: 'png',
+    }
+
+    // Update pipeline steps (PipelineSteps.astro steps 4-7)
+    steps?.setStatus('step-removebg', 'running')
+    setStageStatus('pg-stage-removebg', 'running')
+
+    try {
+      // First try the full pipeline endpoint
+      const res = await fetch('/api/pipeline-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          frames: [_imageB64],
+          config,
+        }),
+      })
+
+      if (res.status === 501) {
+        // Pipeline modules not installed — fall back to removebg-only
+        console.warn('pipeline-run not available, falling back to /api/removebg')
+        await runRemoveBgFallback(config)
+        return
+      }
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Unknown error' }))
+        throw new Error(err.error || `Pipeline failed (${res.status})`)
+      }
+
+      const result = await res.json()
+      _pipelineResult = result
+
+      if (!result.success) {
+        throw new Error(result.error || 'Pipeline returned failure')
+      }
+
+      // Process stage results
+      const stages = result.stages || {}
+
+      // Step 4: Background Removal
+      if (stages.removebg) {
+        const s = stages.removebg
+        setStageStatus('pg-stage-removebg', s.success ? 'done' : 'error', s.processing_time_ms)
+        steps?.setStatus('step-removebg', s.success ? 'done' : 'error')
+        methodBadge.textContent = s.method_used || 'auto'
+
+        // Show transparent preview
+        if (s.frames_b64 && s.frames_b64.length > 0) {
+          previewTransparent.src = `data:image/png;base64,${s.frames_b64[0]}`
+          previewRow.classList.remove('hidden')
+        }
+      }
+
+      // Step 5: Layer Separation
+      if (stages.layer_separate) {
+        const s = stages.layer_separate
+        setStageStatus('pg-stage-layers', s.success ? 'done' : 'error', s.processing_time_ms)
+        steps?.setStatus('step-layers', s.success ? 'done' : 'error')
+      }
+
+      // Step 6: Edge Refinement
+      if (stages.edge_refine) {
+        const s = stages.edge_refine
+        const status = skipSteps.includes('edge_refine') ? 'skipped' : (s.success ? 'done' : 'error')
+        setStageStatus('pg-stage-edges', status, s.processing_time_ms)
+        steps?.setStatus('step-edges', status)
+      } else if (skipSteps.includes('edge_refine')) {
+        setStageStatus('pg-stage-edges', 'skipped')
+        steps?.setStatus('step-edges', 'done')
+      }
+
+      // Step 7: Export
+      if (stages.export) {
+        const s = stages.export
+        setStageStatus('pg-stage-export', s.success ? 'done' : 'error', s.processing_time_ms)
+        steps?.setStatus('step-export', s.success ? 'done' : 'error')
+      }
+
+      // Render layers
+      const layers = result.layers || []
+      if (layers.length > 0) {
+        renderLayers(layers)
+        layerGrid.classList.remove('hidden')
+        exportSection.classList.remove('hidden')
+      }
+
+    } catch (err: any) {
+      showError(err.message || 'Pipeline failed')
+      steps?.setStatus('step-removebg', 'error')
+      setStageStatus('pg-stage-removebg', 'error')
+    } finally {
+      _running = false
+      runBtn.disabled = false
+      runText.textContent = 'Run Pipeline (Steps 4→7)'
+    }
+  }
+
+  /**
+   * Fallback: just do background removal via /api/removebg
+   * when the full pipeline-run endpoint isn't available.
+   */
+  async function runRemoveBgFallback(config: any) {
+    try {
+      setStageStatus('pg-stage-removebg', 'running')
+      steps?.setStatus('step-removebg', 'running')
+
+      const res = await fetch('/api/removebg', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          frames: [_imageB64],
+          method: config.removal_method,
+          tolerance: config.tolerance,
+          edge_blur: config.edge_blur,
+          despill: config.despill,
+        }),
+      })
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'removebg failed' }))
+        throw new Error(err.error || `removebg failed (${res.status})`)
+      }
+
+      const data = await res.json()
+      // The removebg endpoint returns { success, results: [{image_b64, method, quality_score}], method, tier }
+      const firstResult = data.results?.[0]
+      if (data.success && firstResult?.image_b64) {
+        setStageStatus('pg-stage-removebg', 'done')
+        steps?.setStatus('step-removebg', 'done')
+        methodBadge.textContent = firstResult.method || data.method || config.removal_method
+
+        previewTransparent.src = `data:image/png;base64,${firstResult.image_b64}`
+        previewOriginal.src = `data:${_mimeType};base64,${_imageB64}`
+        previewRow.classList.remove('hidden')
+        exportSection.classList.remove('hidden')
+
+        // Mark remaining stages as skipped (not available)
+        setStageStatus('pg-stage-layers', 'skipped')
+        setStageStatus('pg-stage-edges', 'skipped')
+        setStageStatus('pg-stage-export', 'done')
+        steps?.setStatus('step-layers', 'done')
+        steps?.setStatus('step-edges', 'done')
+        steps?.setStatus('step-export', 'done')
+
+        // Store for export
+        _pipelineResult = { transparent_b64: firstResult.image_b64 }
+      } else {
+        throw new Error(data.error || 'removebg returned no image')
+      }
+    } catch (err: any) {
+      showError(`Fallback removal failed: ${err.message}`)
+      setStageStatus('pg-stage-removebg', 'error')
+      steps?.setStatus('step-removebg', 'error')
+    } finally {
+      _running = false
+      runBtn.disabled = false
+      runText.textContent = 'Run Pipeline (Steps 4→7)'
+    }
+  }
+
+  function renderLayers(layers: any[]) {
+    layersContainer.innerHTML = ''
+    layerCount.textContent = `${layers.length} layer${layers.length !== 1 ? 's' : ''}`
+
+    layers.forEach((layer: any, idx: number) => {
+      const card = document.createElement('div')
+      card.className = 'pg-layer-card'
+
+      const thumbWrap = document.createElement('div')
+      thumbWrap.className = 'pg-checkerboard'
+
+      const img = document.createElement('img')
+      img.className = 'pg-layer-thumb'
+      img.alt = `Layer ${idx + 1}`
+      img.loading = 'lazy'
+      if (layer.image_b64) {
+        img.src = `data:image/png;base64,${layer.image_b64}`
+      } else if (layer.data_url) {
+        img.src = layer.data_url
+      }
+
+      thumbWrap.appendChild(img)
+      card.appendChild(thumbWrap)
+
+      const info = document.createElement('div')
+      info.className = 'pg-layer-info'
+      info.innerHTML = `<span>Layer ${idx + 1}</span><span>${layer.width || '?'}×${layer.height || '?'}</span>`
+      card.appendChild(info)
+
+      // Click to download individual layer
+      card.addEventListener('click', () => {
+        if (layer.image_b64) {
+          downloadBlob(layer.image_b64, `layer-${idx + 1}.png`, 'image/png')
+        }
+      })
+
+      layersContainer.appendChild(card)
+    })
+  }
+
+  // Export all layers as ZIP (client-side)
+  document.getElementById('pg-export-all')?.addEventListener('click', async () => {
+    if (!_pipelineResult) return
+
+    // If we have layers, try to bundle them
+    const layers = _pipelineResult.layers || []
+    if (layers.length > 0) {
+      // Simple: download each one (no JSZip dependency)
+      layers.forEach((layer: any, idx: number) => {
+        if (layer.image_b64) {
+          setTimeout(() => downloadBlob(layer.image_b64, `layer-${idx + 1}.png`, 'image/png'), idx * 200)
+        }
+      })
+    } else if (_pipelineResult.export?.zip_b64) {
+      downloadBlob(_pipelineResult.export.zip_b64, 'layers.zip', 'application/zip')
+    } else if (_pipelineResult.transparent_b64) {
+      downloadBlob(_pipelineResult.transparent_b64, 'transparent.png', 'image/png')
+    }
+  })
+
+  // Export transparent PNG
+  document.getElementById('pg-export-transparent')?.addEventListener('click', () => {
+    const transparentB64 =
+      _pipelineResult?.stages?.removebg?.frames_b64?.[0] ||
+      _pipelineResult?.transparent_b64
+    if (transparentB64) {
+      downloadBlob(transparentB64, 'figure-transparent.png', 'image/png')
+    }
+  })
+
+  // Run button
+  runBtn?.addEventListener('click', () => runPipeline())
+
+  // Expose globally
+  ;(window as any).__postGenPanel = {
+    show(imageB64: string, mimeType: string = 'image/png') {
+      _imageB64 = imageB64
+      _mimeType = mimeType
+      panel.classList.remove('hidden')
+      runBtn.disabled = false
+      resetStages()
+      hideError()
+      previewRow.classList.add('hidden')
+      layerGrid.classList.add('hidden')
+      exportSection.classList.add('hidden')
+    },
+    hide() {
+      panel.classList.add('hidden')
+      _imageB64 = ''
+      _pipelineResult = null
+    },
+    runPipeline,
+    getResult() { return _pipelineResult },
+  }
+</script>
