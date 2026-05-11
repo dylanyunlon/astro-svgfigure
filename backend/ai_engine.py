@@ -24,8 +24,10 @@ GitHub references:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -34,6 +36,101 @@ import httpx
 from .config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Cloudflare / Proxy Retry Helpers
+# ============================================================================
+# Cloudflare returns HTTP 524 when the origin server takes too long.
+# Third-party API proxies (tryallai.com, bianxie.ai, etc.) sit behind
+# Cloudflare and inherit this 100-second gateway timeout. For large
+# LLM requests (4K+ output tokens), 524 is common.
+#
+# Strategy: exponential backoff with jitter, max 3 retries.
+# Inspired by NCCL's retry logic in ncclNetSocketInit() where transient
+# ECONNREFUSED errors are retried with exponential backoff before
+# declaring the connection permanently failed.
+#
+# Retryable status codes:
+#   524 — Cloudflare gateway timeout (origin didn't respond in time)
+#   502 — Bad Gateway (origin crashed mid-request)
+#   503 — Service Unavailable (origin overloaded)
+#   429 — Rate Limited (too many requests, needs backoff)
+
+_RETRYABLE_STATUS_CODES = {524, 502, 503, 429}
+_MAX_RETRIES = 3
+_BASE_DELAY = 2.0  # seconds
+_MAX_DELAY = 30.0  # seconds
+
+
+def _is_cloudflare_html(text: str) -> bool:
+    """Detect if response body is Cloudflare error HTML instead of JSON."""
+    if not text:
+        return False
+    # Cloudflare error pages start with <!DOCTYPE html> and contain
+    # distinctive markers like "cloudflare" or "cf-error-details"
+    lower = text[:2000].lower()
+    return (
+        text.lstrip().startswith("<!DOCTYPE") or text.lstrip().startswith("<html")
+    ) and ("cloudflare" in lower or "cf-" in lower or "ray id" in lower)
+
+
+def _extract_cloudflare_error(text: str, status_code: int) -> str:
+    """Extract a human-readable error from Cloudflare HTML."""
+    # Try to find the title
+    match = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+    title = match.group(1).strip() if match else ""
+    if title:
+        return f"Cloudflare {status_code}: {title}"
+    return f"Cloudflare gateway error (HTTP {status_code})"
+
+
+async def _retry_with_backoff(
+    coro_factory,
+    *,
+    max_retries: int = _MAX_RETRIES,
+    base_delay: float = _BASE_DELAY,
+    max_delay: float = _MAX_DELAY,
+    operation_name: str = "API call",
+):
+    """
+    Execute an async callable with exponential backoff on retryable errors.
+
+    coro_factory: a zero-argument callable that returns a new coroutine each call.
+    Returns the result of the first successful call.
+    Raises the last exception if all retries are exhausted.
+    """
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_factory()
+        except _RetryableError as e:
+            last_exception = e.original
+            if attempt < max_retries:
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                # Add jitter: ±25%
+                import random
+                delay *= 0.75 + random.random() * 0.5
+                logger.warning(
+                    f"{operation_name}: retryable error (attempt {attempt + 1}/{max_retries + 1}), "
+                    f"retrying in {delay:.1f}s — {e}"
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"{operation_name}: all {max_retries + 1} attempts failed — {e}"
+                )
+                raise last_exception
+        except Exception:
+            raise  # Non-retryable errors propagate immediately
+    raise last_exception  # Shouldn't reach here, but just in case
+
+
+class _RetryableError(Exception):
+    """Wrapper to signal that an error is retryable."""
+    def __init__(self, message: str, original: Exception):
+        super().__init__(message)
+        self.original = original
 
 
 # ============================================================================
@@ -314,45 +411,78 @@ class OpenAICompatibleProvider(AIProvider):
         
         logger.debug(f"OpenAICompatibleProvider: POST {url}")
         logger.debug(f"OpenAICompatibleProvider: model={model}, max_tokens={max_tokens}")
-        
-        try:
-            response = await self._client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"OpenAICompatibleProvider HTTP error: {e.response.status_code}")
-            logger.error(f"Response body: {e.response.text[:500]}")
-            raise RuntimeError(f"API request failed: {e.response.status_code} - {e.response.text[:200]}")
-        except httpx.RequestError as e:
-            logger.error(f"OpenAICompatibleProvider request error: {e}")
-            raise RuntimeError(f"API connection failed: {e}")
 
-        raw_text = response.text.strip()
-        content_type = response.headers.get("content-type", "")
-        
-        logger.debug(f"OpenAICompatibleProvider: response length={len(raw_text)}, content-type={content_type}")
+        async def _single_attempt():
+            try:
+                response = await self._client.post(url, json=payload, headers=headers)
+            except httpx.ReadTimeout as e:
+                raise _RetryableError(
+                    f"Read timeout after 300s (model={model})", RuntimeError(f"API timeout: {e}")
+                )
+            except httpx.RequestError as e:
+                logger.error(f"OpenAICompatibleProvider request error: {e}")
+                raise RuntimeError(f"API connection failed: {e}")
 
-        # Some proxies (e.g. tryallai) force streaming even when stream=False.
-        # Detect SSE format and reassemble the full response from deltas.
-        if raw_text.startswith("data: ") or "text/event-stream" in content_type:
-            logger.debug("OpenAICompatibleProvider: detected SSE response, parsing stream")
-            return self._parse_sse_to_completion(raw_text, model)
+            # Check for retryable HTTP status codes (Cloudflare 524, 502, 503, 429)
+            if response.status_code in _RETRYABLE_STATUS_CODES:
+                body_preview = response.text[:300]
+                cf_msg = ""
+                if _is_cloudflare_html(response.text):
+                    cf_msg = _extract_cloudflare_error(response.text, response.status_code)
+                else:
+                    cf_msg = f"HTTP {response.status_code}: {body_preview}"
+                raise _RetryableError(
+                    cf_msg,
+                    RuntimeError(f"Proxy/gateway error ({response.status_code}): {cf_msg}"),
+                )
 
-        # Normal JSON response
-        try:
-            data = json.loads(raw_text)
-        except json.JSONDecodeError as e:
-            logger.error(f"OpenAICompatibleProvider: failed to parse JSON: {e}")
-            logger.error(f"Raw response preview: {raw_text[:500]}")
-            raise RuntimeError(f"Invalid JSON response from API: {e}")
-        
-        # Check for API-level errors
-        if "error" in data:
-            error_info = data["error"]
-            error_msg = error_info.get("message", str(error_info)) if isinstance(error_info, dict) else str(error_info)
-            logger.error(f"OpenAICompatibleProvider: API error: {error_msg}")
-            raise RuntimeError(f"API error: {error_msg}")
-        
-        result = self._parse_json_response(data, model)
+            if response.status_code >= 400:
+                body = response.text[:500]
+                logger.error(f"OpenAICompatibleProvider HTTP {response.status_code}: {body}")
+                # Detect Cloudflare HTML in non-retryable errors too
+                if _is_cloudflare_html(response.text):
+                    raise RuntimeError(_extract_cloudflare_error(response.text, response.status_code))
+                raise RuntimeError(f"API request failed: {response.status_code} - {body[:200]}")
+
+            raw_text = response.text.strip()
+            content_type = response.headers.get("content-type", "")
+            
+            logger.debug(f"OpenAICompatibleProvider: response length={len(raw_text)}, content-type={content_type}")
+
+            # Some proxies (e.g. tryallai) force streaming even when stream=False.
+            # Detect SSE format and reassemble the full response from deltas.
+            if raw_text.startswith("data: ") or "text/event-stream" in content_type:
+                logger.debug("OpenAICompatibleProvider: detected SSE response, parsing stream")
+                return self._parse_sse_to_completion(raw_text, model)
+
+            # Detect Cloudflare HTML masquerading as 200 OK
+            if _is_cloudflare_html(raw_text):
+                raise _RetryableError(
+                    "Cloudflare challenge page returned as 200",
+                    RuntimeError("Cloudflare challenge/JS challenge page returned instead of API response"),
+                )
+
+            # Normal JSON response
+            try:
+                data = json.loads(raw_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"OpenAICompatibleProvider: failed to parse JSON: {e}")
+                logger.error(f"Raw response preview: {raw_text[:500]}")
+                raise RuntimeError(f"Invalid JSON response from API: {e}")
+            
+            # Check for API-level errors
+            if "error" in data:
+                error_info = data["error"]
+                error_msg = error_info.get("message", str(error_info)) if isinstance(error_info, dict) else str(error_info)
+                logger.error(f"OpenAICompatibleProvider: API error: {error_msg}")
+                raise RuntimeError(f"API error: {error_msg}")
+            
+            return self._parse_json_response(data, model)
+
+        result = await _retry_with_backoff(
+            _single_attempt,
+            operation_name=f"OpenAICompatible({model})",
+        )
         
         logger.debug(f"OpenAICompatibleProvider: extracted {len(result.get('content', ''))} chars")
         
@@ -920,93 +1050,127 @@ class ClaudeCompatibleProvider(AIProvider):
         
         logger.debug(f"ClaudeCompatibleProvider: POST {url}")
         logger.debug(f"ClaudeCompatibleProvider: model={model}, max_tokens={max_tokens}")
-        
-        try:
-            response = await self._client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"ClaudeCompatibleProvider HTTP error: {e.response.status_code}")
-            logger.error(f"Response body: {e.response.text[:500]}")
-            raise RuntimeError(f"API request failed: {e.response.status_code} - {e.response.text[:200]}")
-        except httpx.RequestError as e:
-            logger.error(f"ClaudeCompatibleProvider request error: {e}")
-            raise RuntimeError(f"API connection failed: {e}")
-        
-        data = response.json()
-        
-        # ── Debug: Log raw response structure ──
-        logger.debug(f"ClaudeCompatibleProvider: response keys = {list(data.keys())}")
-        logger.debug(f"ClaudeCompatibleProvider: stop_reason = {data.get('stop_reason')}")
-        logger.debug(f"ClaudeCompatibleProvider: usage = {data.get('usage')}")
-        
-        # ── Check for API-level errors ──
-        if "error" in data:
-            error_info = data["error"]
-            error_msg = error_info.get("message", str(error_info)) if isinstance(error_info, dict) else str(error_info)
-            logger.error(f"ClaudeCompatibleProvider: API returned error: {error_msg}")
-            raise RuntimeError(f"API error: {error_msg}")
 
-        # Parse response (Anthropic /v1/messages format)
-        content_blocks = []
-        tool_uses = []
-        text_parts = []
-        
-        raw_content = data.get("content", [])
-        
-        # ── Handle unexpected content formats ──
-        if raw_content is None:
-            logger.warning("ClaudeCompatibleProvider: content is None")
-            raw_content = []
-        elif isinstance(raw_content, str):
-            # Some proxies return content as a string directly
-            logger.warning("ClaudeCompatibleProvider: content is string (non-standard)")
-            text_parts.append(raw_content)
-            content_blocks.append({"type": "text", "text": raw_content})
-        elif isinstance(raw_content, list):
-            for block in raw_content:
-                if not isinstance(block, dict):
-                    logger.warning(f"ClaudeCompatibleProvider: unexpected block type: {type(block)}")
-                    if isinstance(block, str):
-                        text_parts.append(block)
-                        content_blocks.append({"type": "text", "text": block})
-                    continue
-                    
-                block_type = block.get("type")
-                if block_type == "text":
-                    text_content = block.get("text", "")
-                    content_blocks.append({"type": "text", "text": text_content})
-                    text_parts.append(text_content)
-                elif block_type == "tool_use":
-                    tool_block = {
-                        "type": "tool_use",
-                        "id": block.get("id", ""),
-                        "name": block.get("name", ""),
-                        "input": block.get("input", {}),
-                    }
-                    content_blocks.append(tool_block)
-                    tool_uses.append(tool_block)
+        async def _single_attempt():
+            try:
+                response = await self._client.post(url, json=payload, headers=headers)
+            except httpx.ReadTimeout as e:
+                raise _RetryableError(
+                    f"Read timeout after 300s (model={model})", RuntimeError(f"API timeout: {e}")
+                )
+            except httpx.RequestError as e:
+                logger.error(f"ClaudeCompatibleProvider request error: {e}")
+                raise RuntimeError(f"API connection failed: {e}")
+
+            # Check for retryable HTTP status codes (Cloudflare 524, 502, 503, 429)
+            if response.status_code in _RETRYABLE_STATUS_CODES:
+                body_preview = response.text[:300]
+                cf_msg = ""
+                if _is_cloudflare_html(response.text):
+                    cf_msg = _extract_cloudflare_error(response.text, response.status_code)
                 else:
-                    logger.warning(f"ClaudeCompatibleProvider: unknown block type: {block_type}")
-        else:
-            logger.error(f"ClaudeCompatibleProvider: unexpected content type: {type(raw_content)}")
-        
-        final_content = "\n".join(text_parts)
-        
-        # ── Log content summary ──
-        logger.debug(f"ClaudeCompatibleProvider: extracted {len(text_parts)} text blocks, total {len(final_content)} chars")
-        if not final_content:
-            logger.warning("ClaudeCompatibleProvider: no text content extracted from response")
-            logger.debug(f"ClaudeCompatibleProvider: raw response preview: {str(data)[:500]}")
+                    cf_msg = f"HTTP {response.status_code}: {body_preview}"
+                raise _RetryableError(
+                    cf_msg,
+                    RuntimeError(f"Proxy/gateway error ({response.status_code}): {cf_msg}"),
+                )
 
-        return {
-            "content": final_content,
-            "content_blocks": content_blocks,
-            "tool_uses": tool_uses,
-            "tool_calls": tool_uses if tool_uses else None,
-            "stop_reason": data.get("stop_reason", "end_turn"),
-            "model": data.get("model", model),
-            "usage": data.get("usage", {}),
-        }
+            if response.status_code >= 400:
+                body = response.text[:500]
+                logger.error(f"ClaudeCompatibleProvider HTTP {response.status_code}: {body}")
+                if _is_cloudflare_html(response.text):
+                    raise RuntimeError(_extract_cloudflare_error(response.text, response.status_code))
+                raise RuntimeError(f"API request failed: {response.status_code} - {body[:200]}")
+            
+            # Detect Cloudflare HTML masquerading as 200
+            raw_text = response.text.strip()
+            if _is_cloudflare_html(raw_text):
+                raise _RetryableError(
+                    "Cloudflare challenge page returned as 200",
+                    RuntimeError("Cloudflare challenge page returned instead of API response"),
+                )
+
+            data = response.json()
+            
+            # ── Debug: Log raw response structure ──
+            logger.debug(f"ClaudeCompatibleProvider: response keys = {list(data.keys())}")
+            logger.debug(f"ClaudeCompatibleProvider: stop_reason = {data.get('stop_reason')}")
+            logger.debug(f"ClaudeCompatibleProvider: usage = {data.get('usage')}")
+            
+            # ── Check for API-level errors ──
+            if "error" in data:
+                error_info = data["error"]
+                error_msg = error_info.get("message", str(error_info)) if isinstance(error_info, dict) else str(error_info)
+                # Overloaded errors are retryable
+                if "overloaded" in error_msg.lower() or "rate" in error_msg.lower():
+                    raise _RetryableError(error_msg, RuntimeError(f"API error: {error_msg}"))
+                logger.error(f"ClaudeCompatibleProvider: API returned error: {error_msg}")
+                raise RuntimeError(f"API error: {error_msg}")
+
+            # Parse response (Anthropic /v1/messages format)
+            content_blocks = []
+            tool_uses = []
+            text_parts = []
+            
+            raw_content = data.get("content", [])
+            
+            # ── Handle unexpected content formats ──
+            if raw_content is None:
+                logger.warning("ClaudeCompatibleProvider: content is None")
+                raw_content = []
+            elif isinstance(raw_content, str):
+                logger.warning("ClaudeCompatibleProvider: content is string (non-standard)")
+                text_parts.append(raw_content)
+                content_blocks.append({"type": "text", "text": raw_content})
+            elif isinstance(raw_content, list):
+                for block in raw_content:
+                    if not isinstance(block, dict):
+                        logger.warning(f"ClaudeCompatibleProvider: unexpected block type: {type(block)}")
+                        if isinstance(block, str):
+                            text_parts.append(block)
+                            content_blocks.append({"type": "text", "text": block})
+                        continue
+                        
+                    block_type = block.get("type")
+                    if block_type == "text":
+                        text_content = block.get("text", "")
+                        content_blocks.append({"type": "text", "text": text_content})
+                        text_parts.append(text_content)
+                    elif block_type == "tool_use":
+                        tool_block = {
+                            "type": "tool_use",
+                            "id": block.get("id", ""),
+                            "name": block.get("name", ""),
+                            "input": block.get("input", {}),
+                        }
+                        content_blocks.append(tool_block)
+                        tool_uses.append(tool_block)
+                    else:
+                        logger.warning(f"ClaudeCompatibleProvider: unknown block type: {block_type}")
+            else:
+                logger.error(f"ClaudeCompatibleProvider: unexpected content type: {type(raw_content)}")
+            
+            final_content = "\n".join(text_parts)
+            
+            logger.debug(f"ClaudeCompatibleProvider: extracted {len(text_parts)} text blocks, total {len(final_content)} chars")
+            if not final_content:
+                logger.warning("ClaudeCompatibleProvider: no text content extracted from response")
+                logger.debug(f"ClaudeCompatibleProvider: raw response preview: {str(data)[:500]}")
+
+            return {
+                "content": final_content,
+                "content_blocks": content_blocks,
+                "tool_uses": tool_uses,
+                "tool_calls": tool_uses if tool_uses else None,
+                "stop_reason": data.get("stop_reason", "end_turn"),
+                "model": data.get("model", model),
+                "usage": data.get("usage", {}),
+            }
+
+        return await _retry_with_backoff(
+            _single_attempt,
+            operation_name=f"ClaudeCompatible({model})",
+        )
 
     async def stream_completion(
         self,

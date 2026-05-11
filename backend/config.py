@@ -62,12 +62,17 @@ class Settings(BaseSettings):
     #   Step 3: Gemini 3 image generation (DEFAULT_IMAGE_MODEL)
     DEFAULT_AI_MODEL: str = "claude-sonnet-4-5-20250929"
     DEFAULT_TOPOLOGY_MODEL: str = "claude-sonnet-4-5-20250929"
-    DEFAULT_BEAUTIFY_MODEL: str = "grok-4"         # Legacy, kept for backward compat
+    DEFAULT_BEAUTIFY_MODEL: str = "claude-sonnet-4-5-20250929"  # Was grok-4, migrated
     DEFAULT_VALIDATOR_MODEL: str = "claude-sonnet-4-5-20250929"
 
     # ── Step 2+3: Image Generation ───────────────────────────────────────
-    DEFAULT_PROMPT_MODEL: str = "grok-4"                    # Grok 4 反推 prompt
-    DEFAULT_IMAGE_MODEL: str = "gemini-3-pro-image-preview" # Gemini 3 生成图片
+    # Prompt engineering model: was grok-4, now claude-sonnet-4-5-20250929
+    # because tryallai.com proxy dropped Grok support. Claude Opus 4.6
+    # (claude-opus-4-6) is the strongest alternative for prompt reverse-
+    # engineering tasks. Sonnet 4.5 is a good cost/quality tradeoff.
+    # Override via .env: DEFAULT_PROMPT_MODEL=claude-opus-4-6
+    DEFAULT_PROMPT_MODEL: str = "claude-sonnet-4-5-20250929"    # Prompt engineering
+    DEFAULT_IMAGE_MODEL: str = "gemini-3-pro-image-preview"     # Gemini 3 image gen
 
     # ── Server ──────────────────────────────────────────────────────────
     HOST: str = "0.0.0.0"
@@ -102,7 +107,6 @@ class Settings(BaseSettings):
 
         if self.OPENAI_API_KEY:
             models["openai"] = [
-                {"id": "grok-4", "name": "Grok 4 (prompt engineering)"},
                 {"id": "gpt-4o", "name": "GPT-4o"},
                 {"id": "gpt-4o-mini", "name": "GPT-4o Mini"},
                 {"id": "o3-mini", "name": "o3-mini"},
@@ -110,13 +114,16 @@ class Settings(BaseSettings):
 
         if self.ANTHROPIC_API_KEY:
             models["anthropic"] = [
+                {"id": "claude-opus-4-6", "name": "Claude Opus 4.6 (strongest)"},
+                {"id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4.5 (default)"},
                 {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
-                {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5"},
+                {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5 (fast)"},
             ]
 
         if self.CLAUDE_COMPATIBLE_API_KEY:
             models["claude_compatible"] = [
-                {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4 (Compatible)"},
+                {"id": "claude-opus-4-6", "name": "Claude Opus 4.6 (Compatible)"},
+                {"id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4.5 (Compatible)"},
             ]
 
         return models

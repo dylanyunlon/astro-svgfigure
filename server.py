@@ -42,6 +42,15 @@ from backend.pipeline.nanobanana_bridge import beautify_with_nanobanana
 from backend.pipeline.svg_validator import validate_svg as validate_svg_func
 from backend.server_animation_routes import register_animation_routes
 
+# Post-generation pipeline imports (Step 4+: removebg → layers → edges → export)
+try:
+    from backend.pipeline.removebg_route import handle_removebg, get_removebg_status
+    from backend.pipeline.pipeline_orchestrator import run_pipeline
+    _PIPELINE_AVAILABLE = True
+except ImportError as _e:
+    logger.warning(f"Post-generation pipeline modules not fully available: {_e}")
+    _PIPELINE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -450,6 +459,152 @@ async def api_generate_prompt(request_data: dict) -> JSONResponse:
 
     except Exception as e:
         logger.exception("api_generate_prompt error")
+        return JSONResponse(
+            {"success": False, "error": str(e)}, status_code=500
+        )
+
+
+# ============================================================================
+# Post-Generation Pipeline Endpoints (Step 4+)
+# ============================================================================
+# These endpoints are called by the Astro proxies:
+#   src/pages/api/pipeline-run.ts  → /api/pipeline-run
+#   src/pages/api/removebg.ts      → /api/removebg
+# The pipeline flow:
+#   generate-image (Step 3 output) → removebg → layers → edges → export
+
+
+@app.post("/api/removebg")
+async def api_removebg(request_data: dict) -> JSONResponse:
+    """
+    POST /api/removebg — Background Removal (Tiered Fallback)
+
+    Tier 1: remove-bg.io cloud (best quality, needs API key)
+    Tier 2: rembg U2-Net ML (good quality, local)
+    Tier 3: Chroma-key HSV (fast, green-screen only)
+
+    Request body:
+      - frames (list[str]): base64-encoded frame images
+      - method (str, optional): force "removebgio", "rembg", or "chroma"
+      - tolerance (int, optional): green-screen tolerance (default 60)
+      - edge_blur (float, optional): edge feathering radius
+      - despill (bool, optional): green-spill correction
+      - api_key (str, optional): remove-bg.io key
+
+    Returns:
+      - success (bool)
+      - results (list): per-frame {image_b64, method, quality_score}
+      - method (str): winning tier name
+      - tier (int): 1/2/3
+    """
+    if not _PIPELINE_AVAILABLE:
+        return JSONResponse(
+            {"success": False, "error": "Pipeline modules not installed (numpy/PIL required)"},
+            status_code=501,
+        )
+
+    try:
+        frames = request_data.get("frames", [])
+        if not frames:
+            return JSONResponse(
+                {"error": "No frames provided"}, status_code=400
+            )
+
+        result = await handle_removebg(
+            frames_b64=frames,
+            api_key=request_data.get("api_key", ""),
+            force_method=request_data.get("method"),
+            tolerance=request_data.get("tolerance", 60),
+            edge_blur=request_data.get("edge_blur", 1.0),
+            despill=request_data.get("despill", True),
+        )
+        return JSONResponse(result)
+
+    except Exception as e:
+        logger.exception("api_removebg error")
+        return JSONResponse(
+            {"success": False, "error": str(e)}, status_code=500
+        )
+
+
+@app.get("/api/removebg/status")
+def api_removebg_status() -> JSONResponse:
+    """GET /api/removebg/status — Check available removal methods."""
+    if not _PIPELINE_AVAILABLE:
+        return JSONResponse({"available": False, "methods": []})
+
+    try:
+        status = get_removebg_status()
+        return JSONResponse(status)
+    except Exception:
+        return JSONResponse({"available": False, "methods": []})
+
+
+@app.post("/api/pipeline-run")
+async def api_pipeline_run(request_data: dict) -> JSONResponse:
+    """
+    POST /api/pipeline-run — Full End-to-End Post-Generation Pipeline
+
+    Chains: removebg → layer separation → edge refinement → outlining → export
+
+    Request body:
+      - frames (list[str]): base64-encoded frames with green background
+      - config (dict, optional): pipeline configuration overrides
+        - removal_method (str): "auto" | "removebgio" | "rembg" | "chroma"
+        - tolerance (int): chroma-key tolerance (default 60)
+        - edge_blur (float): edge feathering
+        - skip_steps (list[str]): stages to skip
+        - outline_stroke (int): outline stroke width
+        - outline_color (str): outline stroke color hex
+        - export_format (str): "png" | "svg" | "zip"
+
+    Returns:
+      - success (bool)
+      - stages (dict): per-stage results with timing
+      - layers (list): exported layer images
+      - export (dict): final export data
+      - total_time_ms (float)
+    """
+    if not _PIPELINE_AVAILABLE:
+        return JSONResponse(
+            {"success": False, "error": "Pipeline modules not installed"},
+            status_code=501,
+        )
+
+    try:
+        frames = request_data.get("frames", [])
+        if not frames:
+            return JSONResponse(
+                {"error": "No frames provided"}, status_code=400
+            )
+
+        from backend.pipeline.pipeline_orchestrator import PipelineConfig
+
+        # Build config from request
+        cfg_data = request_data.get("config", {})
+        config = PipelineConfig(
+            removal_method=cfg_data.get("removal_method", "auto"),
+            tolerance=cfg_data.get("tolerance", 60),
+            edge_blur=cfg_data.get("edge_blur", 1.0),
+            despill=cfg_data.get("despill", True),
+            skip_steps=cfg_data.get("skip_steps", []),
+            outline_stroke=cfg_data.get("outline_stroke", 2),
+            outline_color=cfg_data.get("outline_color", "#000000"),
+            export_format=cfg_data.get("export_format", "png"),
+        )
+
+        report = await run_pipeline(
+            frames_b64=frames,
+            config=config,
+        )
+
+        # Convert dataclass to dict for JSON response
+        import dataclasses
+        result = dataclasses.asdict(report) if dataclasses.is_dataclass(report) else report
+        return JSONResponse(result)
+
+    except Exception as e:
+        logger.exception("api_pipeline_run error")
         return JSONResponse(
             {"success": False, "error": str(e)}, status_code=500
         )
