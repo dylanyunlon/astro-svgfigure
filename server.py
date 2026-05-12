@@ -19,11 +19,13 @@ from typing import Optional
 import asyncio
 import logging
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from collections import defaultdict
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Pipeline imports (Phase 1 backend modules)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -118,6 +120,228 @@ class RunRequest(BaseModel):
 
 
 app = FastAPI()
+
+# ── IP Firewall v2 ("French Beach + Underwear Thief") ────────────────
+# Layer 0: Whitelist (your own IPs, private ranges)
+# Layer 1: Behavior traps (scanner paths → instant 24h ban, zero API cost)
+# Layer 2: IP reputation (AbuseIPDB / Scamalytics / proxycheck, parallel max)
+
+_IP_WHITELIST: frozenset[str] = frozenset(
+    s.strip() for s in os.environ.get("IP_WHITELIST", "").split(",") if s.strip()
+)
+
+# Trap paths — any legitimate user would NEVER request these.
+# Hitting one = caught stealing underwear on the beach.
+_TRAP_EXACT: frozenset[str] = frozenset({
+    "/server", "/server-status", "/server-info",
+    "/login.action", "/debug/default/view", "/trace.axd",
+    "/info.php", "/phpinfo.php", "/config.json",
+    "/telescope/requests", "/.ds_store", "/.vscode/sftp.json",
+    "/swagger.json", "/swagger-ui",
+})
+
+_TRAP_PREFIXES: tuple[str, ...] = (
+    "/wp-json/", "/wp-admin", "/wp-content", "/wp-includes", "/wp-login",
+    "/xmlrpc.php",
+    "/___proxy_subdomain_whm", "/___proxy_subdomain_cpanel",
+    "/cpanel", "/whm",
+    "/v2/_catalog",
+    "/ecp/", "/owa/", "/autodiscover/",
+    "/s/8323",
+    "/actuator/",
+    "/.env", "/.git/", "/.svn/", "/.hg/",
+    "/proc/", "/etc/passwd",
+    "/swagger/", "/swagger/v1/", "/api-docs/",
+    "/v2/api-docs", "/v3/api-docs", "/webjars/swagger",
+    "/graphql",
+    "/phpmyadmin", "/adminer", "/pma/",
+    "/node_modules/", "/.npmrc",
+)
+
+_TRAP_SUBSTRINGS: tuple[str, ...] = (
+    "META-INF/", "WEB-INF/", "..%2f", "..%5c", "%00", "pom.properties",
+)
+
+def _is_trap_path(path: str) -> bool:
+    low = path.lower()
+    if low in _TRAP_EXACT:
+        return True
+    for p in _TRAP_PREFIXES:
+        if low.startswith(p):
+            return True
+    for s in _TRAP_SUBSTRINGS:
+        if s in low:
+            return True
+    return False
+
+
+class IPFirewall(BaseHTTPMiddleware):
+    """Three-layer firewall: whitelist → behavior traps → IP reputation."""
+
+    BLOCK_THRESHOLD = int(os.environ.get("IP_BLOCK_THRESHOLD", "75"))
+    CACHE_TTL = int(os.environ.get("IP_CACHE_TTL", "3600"))
+    CACHE_MAX = int(os.environ.get("IP_CACHE_MAX", "4096"))
+    TRAP_BAN_TTL = 86400  # 24 hours for trap bans
+
+    ABUSEIPDB_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
+    SCAMALYTICS_KEY = os.environ.get("SCAMALYTICS_API_KEY", "")
+    SCAMALYTICS_USER = os.environ.get("SCAMALYTICS_USERNAME", "")
+    PROXYCHECK_KEY = os.environ.get("PROXYCHECK_API_KEY", "")
+
+    _PRIVATE_PREFIXES = (
+        "127.", "10.", "192.168.",
+        "172.16.", "172.17.", "172.18.", "172.19.",
+        "172.20.", "172.21.", "172.22.", "172.23.",
+        "172.24.", "172.25.", "172.26.", "172.27.",
+        "172.28.", "172.29.", "172.30.", "172.31.",
+        "::1", "fe80:", "0.0.0.0",
+    )
+
+    def __init__(self, app):
+        super().__init__(app)
+        # ip → (expiry_timestamp, score, blocked)
+        self._cache: dict[str, tuple[float, int, bool]] = {}
+        import httpx
+        self._http = httpx.AsyncClient(timeout=3.0)
+
+    def _extract_ip(self, request: Request) -> str:
+        for hdr in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
+            val = request.headers.get(hdr)
+            if val:
+                return val.split(",")[0].strip()
+        return request.client.host if request.client else "0.0.0.0"
+
+    def _is_trusted(self, ip: str) -> bool:
+        if ip in _IP_WHITELIST:
+            return True
+        return any(ip.startswith(p) for p in self._PRIVATE_PREFIXES)
+
+    def _cache_get(self, ip: str) -> tuple[int, bool] | None:
+        entry = self._cache.get(ip)
+        if entry is None:
+            return None
+        expiry, score, blocked = entry
+        if time.time() > expiry:
+            del self._cache[ip]
+            return None
+        return score, blocked
+
+    def _cache_set(self, ip: str, score: int, blocked: bool, ttl: int | None = None) -> None:
+        if len(self._cache) >= self.CACHE_MAX:
+            oldest = next(iter(self._cache))
+            del self._cache[oldest]
+        self._cache[ip] = (time.time() + (ttl or self.CACHE_TTL), score, blocked)
+
+    # ── Provider queries (unchanged) ────────────────────────────────────
+
+    async def _query_abuseipdb(self, ip: str) -> int | None:
+        if not self.ABUSEIPDB_KEY:
+            return None
+        try:
+            r = await self._http.get(
+                "https://api.abuseipdb.com/api/v2/check",
+                params={"ipAddress": ip, "maxAgeInDays": "90"},
+                headers={"Key": self.ABUSEIPDB_KEY, "Accept": "application/json"},
+            )
+            if r.status_code != 200:
+                return None
+            score = r.json().get("data", {}).get("abuseConfidenceScore")
+            return int(score) if isinstance(score, (int, float)) else None
+        except Exception:
+            return None
+
+    async def _query_scamalytics(self, ip: str) -> int | None:
+        if not self.SCAMALYTICS_KEY or not self.SCAMALYTICS_USER:
+            return None
+        try:
+            r = await self._http.get(
+                f"https://api11.scamalytics.com/v3/{self.SCAMALYTICS_USER}",
+                params={"key": self.SCAMALYTICS_KEY, "ip": ip},
+            )
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            score = data.get("score", data.get("risk"))
+            if isinstance(score, (int, float)) and 0 <= score <= 100:
+                return int(score)
+            level = str(data.get("risk", "")).lower()
+            return {"very high": 90, "high": 75, "medium": 50, "low": 15}.get(level)
+        except Exception:
+            return None
+
+    async def _query_proxycheck(self, ip: str) -> int | None:
+        if not self.PROXYCHECK_KEY:
+            return None
+        try:
+            r = await self._http.get(
+                f"https://proxycheck.io/v2/{ip}",
+                params={"key": self.PROXYCHECK_KEY, "risk": "1", "vpn": "1"},
+            )
+            if r.status_code != 200:
+                return None
+            entry = r.json().get(ip, {})
+            risk = entry.get("risk")
+            return int(risk) if isinstance(risk, (int, float)) and 0 <= risk <= 100 else None
+        except Exception:
+            return None
+
+    async def _get_score(self, ip: str) -> tuple[int, str] | None:
+        import asyncio as _aio
+        results = await _aio.gather(
+            self._query_abuseipdb(ip),
+            self._query_scamalytics(ip),
+            self._query_proxycheck(ip),
+            return_exceptions=True,
+        )
+        names = ("abuseipdb", "scamalytics", "proxycheck")
+        best_score, best_name = -1, ""
+        for score, name in zip(results, names):
+            if isinstance(score, int) and score > best_score:
+                best_score, best_name = score, name
+        return (best_score, best_name) if best_score >= 0 else None
+
+    # ── Dispatch: Layer 0 → 1 → 2 ──────────────────────────────────────
+
+    async def dispatch(self, request: Request, call_next):
+        ip = self._extract_ip(request)
+        path = request.url.path
+
+        # Layer 0: Whitelist
+        if self._is_trusted(ip):
+            return await call_next(request)
+
+        # Check cache (covers both trap bans and reputation bans)
+        cached = self._cache_get(ip)
+        if cached is not None:
+            _, blocked = cached
+            if blocked:
+                return Response(status_code=403)
+            return await call_next(request)
+
+        # Layer 1: Behavior trap — caught stealing underwear
+        if _is_trap_path(path):
+            self._cache_set(ip, 100, True, ttl=self.TRAP_BAN_TTL)
+            logger.warning(f"[FIREWALL] TRAPPED ip={ip} path={path}")
+            return Response(status_code=403)
+
+        # Layer 2: IP reputation
+        result = await self._get_score(ip)
+        if result is None:
+            self._cache_set(ip, 0, False, ttl=300)
+            return await call_next(request)
+
+        score, provider = result
+        blocked = score >= self.BLOCK_THRESHOLD
+        self._cache_set(ip, score, blocked)
+
+        if blocked:
+            logger.warning(f"[FIREWALL] BLOCKED ip={ip} score={score} ({provider})")
+            return Response(status_code=403)
+
+        return await call_next(request)
+
+# Register firewall BEFORE CORS so blocked IPs never get CORS headers
+app.add_middleware(IPFirewall)
 
 # ── CORS (allow Astro frontend at :4321 to call us) ───────────────────
 _settings = get_settings()

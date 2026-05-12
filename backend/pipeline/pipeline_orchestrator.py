@@ -205,23 +205,60 @@ class PipelineReport:
     error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        """Convert to frontend-compatible dict.
+
+        The frontend PostGenPanel expects stages as an object keyed by
+        stage_name, with each stage containing frames_b64 when applicable.
+        We produce both: an array (for ordered iteration) and an object
+        (for direct stage access by name).
+        """
+        stages_array = []
+        stages_obj = {}
+        for s in self.stages:
+            stage_dict: Dict[str, Any] = {
+                "stage": s.stage_name,
+                "success": s.success,
+                "processing_time_ms": round(s.processing_time_ms, 2),
+                "frames_processed": s.frames_processed,
+                "frames_failed": s.frames_failed,
+                "error": s.error,
+                "diagnostics": s.diagnostics,
+            }
+            # Include stage data — for removebg this is the list of
+            # transparent frame base64 strings; for layer_separate it's
+            # the list of layer dicts with image_b64 fields.
+            if isinstance(s.data, list):
+                # removebg stage: data is list of base64 strings
+                if s.data and isinstance(s.data[0], str):
+                    stage_dict["frames_b64"] = s.data
+                # layer_separate stage: data is list of layer dicts
+                elif s.data and isinstance(s.data[0], dict):
+                    stage_dict["layers"] = s.data
+                else:
+                    stage_dict["data"] = s.data
+            elif s.data is not None:
+                stage_dict["data"] = s.data
+
+            stages_array.append(stage_dict)
+            stages_obj[s.stage_name] = stage_dict
+
+        # Use layers from the last stage that produced dict data
+        # (export > outline > edge_refine > layer_separate)
+        # This gives the most refined version of the layers.
+        final_layers = []
+        for s in reversed(self.stages):
+            if isinstance(s.data, list) and s.data and isinstance(s.data[0], dict):
+                final_layers = s.data
+                break
+
         return {
             "success": self.success,
-            "stages": [
-                {
-                    "stage": s.stage_name,
-                    "success": s.success,
-                    "processing_time_ms": round(s.processing_time_ms, 2),
-                    "frames_processed": s.frames_processed,
-                    "frames_failed": s.frames_failed,
-                    "error": s.error,
-                    "diagnostics": s.diagnostics,
-                }
-                for s in self.stages
-            ],
+            "stages": stages_obj,  # Object keyed by stage name (frontend expects this)
+            "stages_array": stages_array,  # Ordered array (for iteration)
             "total_time_ms": round(self.total_time_ms, 2),
             "frames_input": self.frames_input,
-            "layers_output": self.layers_output,
+            "layers_output": self.layers_output or len(final_layers),
+            "layers": final_layers,  # Final refined layer list for rendering
             "export_data": self.export_data,
             "error": self.error,
         }
@@ -420,26 +457,29 @@ async def _stage_edge_refine(
         progress("edge_refine", "starting", 0)
 
     try:
-        from backend.pipeline.edge_refiner import refine_layers_batch
+        from backend.pipeline.edge_refiner import refine_layers_batch, EdgeRefineConfig
 
         layer_b64s = [l["image_b64"] for l in layers]
 
-        refine_config = {
-            "anti_alias": config.anti_alias,
-            "edge_smoothing": config.edge_smoothing,
-            "alpha_matting": config.alpha_matting,
-        }
+        refine_config = EdgeRefineConfig(
+            anti_alias=config.anti_alias,
+            smooth_radius=config.edge_smoothing,
+        )
 
-        result = refine_layers_batch(layer_b64s, refine_config)
+        result = await refine_layers_batch(layer_b64s, refine_config)
+
+        # refine_layers_batch returns {"success": bool, "layers": [...]}
+        result_layers = result.get("layers", []) if isinstance(result, dict) else result
 
         # Merge refined images back into layer metadata
         refined_layers = []
         processed = 0
         failed = 0
         for i, layer in enumerate(layers):
-            if i < len(result) and result[i].get("success"):
+            rl = result_layers[i] if i < len(result_layers) else None
+            if rl and rl.get("success") and rl.get("image_b64"):
                 refined = dict(layer)
-                refined["image_b64"] = result[i]["image_b64"]
+                refined["image_b64"] = rl["image_b64"]
                 refined["edge_refined"] = True
                 refined_layers.append(refined)
                 processed += 1
@@ -507,29 +547,32 @@ async def _stage_outline(
 
     try:
         from backend.pipeline.component_outliner import (
-            outline_components_batch,
+            generate_outlines_batch,
+            OutlinerConfig,
         )
 
         layer_b64s = [l["image_b64"] for l in layers]
 
-        outline_config = {
-            "stroke_width": config.stroke_width,
-            "stroke_color": config.stroke_color,
-            "stroke_profile": config.stroke_profile,
-            "glow_enabled": config.glow_enabled,
-        }
+        outline_config = OutlinerConfig(
+            stroke_width=config.stroke_width,
+            stroke_color=config.stroke_color,
+        )
 
-        result = outline_components_batch(layer_b64s, outline_config)
+        result = await generate_outlines_batch(layer_b64s, outline_config)
+
+        # generate_outlines_batch returns {"success": bool, "layers": [...]}
+        result_layers = result.get("layers", []) if isinstance(result, dict) else result
 
         # Merge outlined images back
         outlined_layers = []
         processed = 0
         failed = 0
         for i, layer in enumerate(layers):
-            if i < len(result) and result[i].get("success"):
+            rl = result_layers[i] if i < len(result_layers) else None
+            if rl and rl.get("success"):
                 outlined = dict(layer)
-                outlined["image_b64"] = result[i].get("outlined_b64", layer["image_b64"])
-                outlined["svg_path"] = result[i].get("svg_path")
+                outlined["image_b64"] = rl.get("outlined_b64", layer["image_b64"])
+                outlined["svg_path"] = rl.get("svg_path")
                 outlined["outlined"] = True
                 outlined_layers.append(outlined)
                 processed += 1
