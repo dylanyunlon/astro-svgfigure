@@ -80,6 +80,13 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     // ── Proxy to Python backend ──────────────────────────────────────
+    // Remap: frontend sends frames_b64, backend expects frames
+    const backendBody = {
+      ...body,
+      frames: body.frames_b64,
+    }
+    delete backendBody.frames_b64
+
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), BACKEND_TIMEOUT_MS)
 
@@ -88,7 +95,7 @@ export const POST: APIRoute = async ({ request }) => {
       backendRes = await fetch(`${BACKEND_URL}/api/pipeline-run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(backendBody),
         signal: controller.signal,
       })
     } catch (err: any) {

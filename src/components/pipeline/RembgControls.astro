@@ -60,7 +60,7 @@ const { class: className } = Astro.props
   <Card>
     <div class="rc-header">
       <h3 class="rc-title">
-        <span class="rc-icon">🎨</span>
+        <span class="rc-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 0 1 0 20 2 2 0 0 1 0-4 6 6 0 0 0 0-12" /><circle cx="12" cy="10" r="1" /><circle cx="8" cy="14" r="1" /><circle cx="16" cy="14" r="1" /></svg></span>
         Background Removal Settings
       </h3>
       <div class="rc-quality-badge" id="rc-quality-badge" data-score="0" hidden>
@@ -74,17 +74,17 @@ const { class: className } = Astro.props
       <label class="rc-label">Removal Strategy</label>
       <div class="rc-strategy-grid" id="rc-strategy-grid">
         <button class="rc-strategy-btn active" data-strategy="auto" type="button">
-          <span class="rc-strategy-icon">⚡</span>
+          <span class="rc-strategy-icon"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg></span>
           <span class="rc-strategy-name">Auto</span>
           <span class="rc-strategy-desc">Best quality, automatic</span>
         </button>
         <button class="rc-strategy-btn" data-strategy="chroma" type="button">
-          <span class="rc-strategy-icon">🟢</span>
+          <span class="rc-strategy-icon"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" /></svg></span>
           <span class="rc-strategy-name">Chroma-Key</span>
           <span class="rc-strategy-desc">Fast, green-screen only</span>
         </button>
         <button class="rc-strategy-btn" data-strategy="rembg" type="button">
-          <span class="rc-strategy-icon">🧠</span>
+          <span class="rc-strategy-icon"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44" /></svg></span>
           <span class="rc-strategy-name">AI (rembg)</span>
           <span class="rc-strategy-desc">ML-based, any background</span>
         </button>

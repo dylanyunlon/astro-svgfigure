@@ -75,21 +75,21 @@
       if (!hint) {
         const msg = message.toLowerCase()
         if (msg.includes('502') || msg.includes('connect') || msg.includes('econnrefused'))
-          hint = '💡 Backend not running. Start it with: python server.py'
+          hint = 'Hint: Backend not running. Start it with: python server.py'
         else if (msg.includes('401') || msg.includes('api_key') || msg.includes('unauthorized'))
-          hint = '💡 API key missing or invalid. Check your .env file for GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY'
+          hint = 'Hint: API key missing or invalid. Check your .env file for GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY'
         else if (msg.includes('503') || msg.includes('model_not_found') || msg.includes('not available'))
-          hint = '💡 Model not available. Check your API provider supports the configured model.'
+          hint = 'Hint: Model not available. Check your API provider supports the configured model.'
         else if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('504'))
-          hint = '💡 Request timed out. Try a simpler description or check your network connection.'
+          hint = 'Hint: Request timed out. Try a simpler description or check your network connection.'
         else if (msg.includes('500') || msg.includes('internal'))
-          hint = '💡 Server error. Check backend logs (python server.py) for details.'
+          hint = 'Hint: Server error. Check backend logs (python server.py) for details.'
         else if (msg.includes('elk') || msg.includes('layout'))
-          hint = '💡 Layout composition failed. The planner output may have invalid format. Try a simpler description.'
+          hint = 'Hint: Layout composition failed. The planner output may have invalid format. Try a simpler description.'
         else if (msg.includes('grok'))
-          hint = '💡 Stylist refinement failed. Check API configuration for the Stylist Agent.'
+          hint = 'Hint: Stylist refinement failed. Check API configuration for the Stylist Agent.'
         else if (msg.includes('gemini'))
-          hint = '💡 Visualizer generation failed. Check API configuration. Image generation can take 1-2 minutes.'
+          hint = 'Hint: Visualizer generation failed. Check API configuration. Image generation can take 1-2 minutes.'
       }
 
       if (container) container.classList.remove('hidden')

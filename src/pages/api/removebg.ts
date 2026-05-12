@@ -54,8 +54,12 @@ export const POST: APIRoute = async ({ request }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          frames_b64: body.frames_b64,
+          frames: body.frames_b64,
           api_key: body.api_key || '',
+          method: body.method,
+          tolerance: body.tolerance,
+          edge_blur: body.edge_blur,
+          despill: body.despill,
         }),
         signal: controller.signal,
       })

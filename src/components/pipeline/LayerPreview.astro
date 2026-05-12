@@ -63,7 +63,7 @@ const { class: className } = Astro.props
   <Card>
     <div class="lp-header">
       <h3 class="lp-title">
-        <span class="lp-icon">📐</span>
+        <span class="lp-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></svg></span>
         Separated Layers
       </h3>
       <div class="lp-summary" id="lp-summary" hidden>
@@ -537,7 +537,7 @@ const { class: className } = Astro.props
         refineBtn.type = 'button'
         refineBtn.className = 'lp-layer-action-btn'
         refineBtn.title = 'Refine edges'
-        refineBtn.textContent = '✨'
+        refineBtn.textContent = 'Refine'
         refineBtn.addEventListener('click', e => {
           e.stopPropagation()
           const event = new CustomEvent('layer-refine', {

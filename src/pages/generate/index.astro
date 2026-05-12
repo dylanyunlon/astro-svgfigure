@@ -324,7 +324,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
           // Highlight prompt area to show it's editable
           promptTextarea.classList.add('ring-2', 'ring-purple-400')
           const hint = document.getElementById('grok-prompt-hint')
-          if (hint) hint.textContent = '✏️ Prompt generated! Edit above and click Regenerate to refine.'
+          if (hint) hint.textContent = 'Prompt generated. Edit above and click Regenerate to refine.'
           setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-purple-400'), 3000)
         } else { throw new Error(`Grok: ${pData.error || 'Empty prompt'}`) }
       }

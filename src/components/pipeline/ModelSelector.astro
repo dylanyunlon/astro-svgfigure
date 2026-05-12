@@ -53,10 +53,10 @@ const { defaultModel = 'gemini-2.5-flash', class: className } = Astro.props
       select.innerHTML = ''
 
       const providerColors: Record<string, string> = {
-        gemini: '🟢',
-        openai: '🔵',
-        anthropic: '🟠',
-        claude_compatible: '🟣',
+        gemini: '[G]',
+        openai: '[O]',
+        anthropic: '[A]',
+        claude_compatible: '[C]',
       }
 
       let hasDefault = false
@@ -66,7 +66,7 @@ const { defaultModel = 'gemini-2.5-flash', class: className } = Astro.props
         if (provider.startsWith('_')) continue // skip _fallback, _hint
 
         const group = document.createElement('optgroup')
-        group.label = `${providerColors[provider] || '⚪'} ${provider.charAt(0).toUpperCase() + provider.slice(1)}`
+        group.label = `${providerColors[provider] || '[?]'} ${provider.charAt(0).toUpperCase() + provider.slice(1)}`
         providerNames.push(provider)
 
         for (const model of models as any[]) {
@@ -92,7 +92,7 @@ const { defaultModel = 'gemini-2.5-flash', class: className } = Astro.props
       if (providersEl) {
         providersEl.innerHTML = providerNames
           .map((p) => {
-            const icon = providerColors[p] || '⚪'
+            const icon = providerColors[p] || '[?]'
             return `<span class="inline-flex items-center gap-x-0.5 rounded-xl border px-2 py-0.5 text-xs text-muted-foreground">${icon} ${p}</span>`
           })
           .join('')

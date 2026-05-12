@@ -580,17 +580,17 @@ async def api_pipeline_run(request_data: dict) -> JSONResponse:
 
         from backend.pipeline.pipeline_orchestrator import PipelineConfig
 
-        # Build config from request
+        # Build config from request — field names must match PipelineConfig dataclass
         cfg_data = request_data.get("config", {})
         config = PipelineConfig(
             removal_method=cfg_data.get("removal_method", "auto"),
-            tolerance=cfg_data.get("tolerance", 60),
-            edge_blur=cfg_data.get("edge_blur", 1.0),
-            despill=cfg_data.get("despill", True),
+            removal_tolerance=cfg_data.get("tolerance", 60),
+            removal_edge_blur=cfg_data.get("edge_blur", 1.0),
+            removal_despill=cfg_data.get("despill", True),
             skip_steps=cfg_data.get("skip_steps", []),
-            outline_stroke=cfg_data.get("outline_stroke", 2),
-            outline_color=cfg_data.get("outline_color", "#000000"),
-            export_format=cfg_data.get("export_format", "png"),
+            stroke_width=float(cfg_data.get("outline_stroke", 2)),
+            stroke_color=cfg_data.get("outline_color", "#000000"),
+            export_format=cfg_data.get("export_format", "individual"),
         )
 
         report = await run_pipeline(
@@ -598,9 +598,9 @@ async def api_pipeline_run(request_data: dict) -> JSONResponse:
             config=config,
         )
 
-        # Convert dataclass to dict for JSON response
-        import dataclasses
-        result = dataclasses.asdict(report) if dataclasses.is_dataclass(report) else report
+        # Use the structured to_dict() which produces frontend-compatible format
+        # (stages as array with stage_name, not raw dataclass dump)
+        result = report.to_dict() if hasattr(report, "to_dict") else report
         return JSONResponse(result)
 
     except Exception as e:
