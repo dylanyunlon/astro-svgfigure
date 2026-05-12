@@ -86,7 +86,7 @@
           hint = 'Hint: Server error. Check backend logs (python server.py) for details.'
         else if (msg.includes('elk') || msg.includes('layout'))
           hint = 'Hint: Layout composition failed. The planner output may have invalid format. Try a simpler description.'
-        else if (msg.includes('grok'))
+        else if (msg.includes('Stylist'))
           hint = 'Hint: Stylist refinement failed. Check API configuration for the Stylist Agent.'
         else if (msg.includes('gemini'))
           hint = 'Hint: Visualizer generation failed. Check API configuration. Image generation can take 1-2 minutes.'

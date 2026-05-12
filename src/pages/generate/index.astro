@@ -4,7 +4,7 @@
  *
  * 新流程:
  *   Step 1: Text → LLM 拓扑 → ELK.js 布局 → 骨架 SVG (用户确认组件无缺失)
- *   Step 2: Grok 4 反推专业 prompt (从骨架 SVG + method text)
+ *   Step 2: Stylist 反推专业 prompt (从骨架 SVG + method text)
  *   Step 3: Gemini 3 Pro Image → 科研级图片 (4K PNG)
  *
  * 使用 astro-pure 组件 (Card, Button, Collapse, Label)
@@ -55,7 +55,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         </button>
 
         <button id='generate-figure-btn' disabled
-          class='group flex w-full items-center justify-center gap-x-2 rounded-xl border bg-purple-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed'>
+          class='group flex w-full items-center justify-center gap-x-2 rounded-xl border bg-primary px-4 py-2.5 text-sm font-medium text-white transition-all hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed'>
           <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
             <path d='M15 8h.01M3 6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6z' />
             <path d='m3 16 5-5c.928-.893 2.072-.893 3 0l5 5' />
@@ -95,10 +95,10 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
 
         <Collapse title='Stylist Prompt (Editable)'>
           <div class='flex flex-col gap-y-2 pb-2'>
-            <textarea id='grok-prompt-text' rows='6'
+            <textarea id='stylist-prompt-text' rows='6'
               class='w-full rounded-lg border bg-muted p-2 text-xs text-foreground placeholder:text-muted-foreground'
               placeholder='Waiting for Step 2... The Stylist Agent will auto-generate a refined description. You can then edit it before clicking Regenerate.'></textarea>
-            <p id='grok-prompt-hint' class='text-xs text-muted-foreground'>Run Step 2→3 to generate description. Edit to refine the final image.</p>
+            <p id='stylist-prompt-hint' class='text-xs text-muted-foreground'>Run Step 2→3 to generate description. Edit to refine the final image.</p>
           </div>
         </Collapse>
       </div>
@@ -114,7 +114,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
             <span class='text-sm font-medium'>Scientific Figure (Visualizer Output)</span>
             <div class='flex gap-x-2'>
               <button id='download-image-btn' class='rounded-lg border px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted'>Download PNG</button>
-              <button id='regenerate-btn' class='rounded-lg border bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700'>Regenerate</button>
+              <button id='regenerate-btn' class='rounded-lg border bg-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90'>Regenerate</button>
             </div>
           </div>
           <div class='overflow-hidden rounded-xl border'>
@@ -154,7 +154,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
   const elapsedEl = document.getElementById('pipeline-elapsed') as HTMLElement
   const topologyPre = document.getElementById('topology-json') as HTMLPreElement
   const layoutedPre = document.getElementById('layouted-json') as HTMLPreElement
-  const promptTextarea = document.getElementById('grok-prompt-text') as HTMLTextAreaElement
+  const promptTextarea = document.getElementById('stylist-prompt-text') as HTMLTextAreaElement
   const finalImageSection = document.getElementById('final-image-section') as HTMLElement
   const finalImage = document.getElementById('final-image') as HTMLImageElement
   const finalImageInfo = document.getElementById('final-image-info') as HTMLElement
@@ -258,7 +258,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       else if (msg.includes('500')) hint = 'Check API keys in .env'
       errorDisplay?.show({ title: 'Step 1 Error', message: msg, hint, step: 'Step 1' })
       statusText.textContent = `Error: ${msg}`
-      statusText.style.color = 'var(--color-danger, #ef4444)'
+      statusText.style.color = 'hsl(0 72.2% 50.6%)'
     } finally {
       stopTimer(); running = false
       generateBtn.disabled = false
@@ -266,7 +266,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
     }
   })
 
-  // ===== STEP 2→3: Grok 4 prompt + Gemini 3 image =====
+  // ===== STEP 2→3: Stylist prompt + Gemini 3 image =====
   generateFigureBtn?.addEventListener('click', () => runFigureGen())
   regenerateBtn?.addEventListener('click', () => runFigureGen(promptTextarea.value))
 
@@ -303,8 +303,8 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       // Mark edit step as done
       steps?.setStatus('step-edit', 'done')
 
-      // Step 2: Grok 4 prompt
-      steps?.setStatus('step-grok-prompt', 'running')
+      // Step 2: Stylist prompt
+      steps?.setStatus('step-stylist-prompt', 'running')
       if (!customPrompt) {
         statusText.textContent = 'Step 2: Stylist refining description...'
         const pRes = await fetch('/api/generate-prompt', {
@@ -316,19 +316,19 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
           }),
           signal: controller.signal,
         })
-        if (!pRes.ok) { const e = await pRes.json(); throw new Error(`Grok: ${e.error || 'Failed'}`) }
+        if (!pRes.ok) { const e = await pRes.json(); throw new Error(`Stylist: ${e.error || 'Failed'}`) }
         const pData = await pRes.json()
         if (pData.success && pData.prompt) {
           promptTextarea.value = pData.prompt
           customPrompt = pData.prompt
           // Highlight prompt area to show it's editable
-          promptTextarea.classList.add('ring-2', 'ring-purple-400')
-          const hint = document.getElementById('grok-prompt-hint')
+          promptTextarea.classList.add('ring-2', 'ring-primary')
+          const hint = document.getElementById('stylist-prompt-hint')
           if (hint) hint.textContent = 'Prompt generated. Edit above and click Regenerate to refine.'
-          setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-purple-400'), 3000)
-        } else { throw new Error(`Grok: ${pData.error || 'Empty prompt'}`) }
+          setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-primary'), 3000)
+        } else { throw new Error(`Stylist: ${pData.error || 'Empty prompt'}`) }
       }
-      steps?.setStatus('step-grok-prompt', 'done')
+      steps?.setStatus('step-stylist-prompt', 'done')
 
       // Step 3: Gemini 3 Image
       steps?.setStatus('step-gemini-image', 'running')
@@ -377,13 +377,13 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         msg = 'Request timed out (5 min). The API may be slow or the input too complex.'
       }
       let hint = ''
-      if (msg.includes('Grok')) hint = 'Check API key for the Stylist Agent (uses OpenAI format)'
+      if (msg.includes('Stylist')) hint = 'Check API key for the Stylist Agent (uses OpenAI format)'
       else if (msg.includes('Gemini')) hint = 'Check API key for the Visualizer Agent.'
       else if (msg.includes('502')) hint = 'Start backend: python server.py'
       else if (msg.includes('timed out')) hint = 'Image gen can take ~2min. Try again.'
       errorDisplay?.show({ title: 'Figure Error', message: msg, hint, step: 'Step 2-3' })
       statusText.textContent = `Error: ${msg}`
-      statusText.style.color = 'var(--color-danger, #ef4444)'
+      statusText.style.color = 'hsl(0 72.2% 50.6%)'
     } finally {
       clearTimeout(timeoutId)
       stopTimer(); running = false

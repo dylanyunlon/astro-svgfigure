@@ -222,7 +222,7 @@ import FramePreview from '@/components/pipeline/FramePreview.astro'
           <pre id='analysis-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
         </Collapse>
         <Collapse title='Grok Prompt Output'>
-          <pre id='grok-output-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
+          <pre id='stylist-output-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
         </Collapse>
 
         <Collapse title='Green-Screen Settings'>
@@ -265,7 +265,7 @@ import FramePreview from '@/components/pipeline/FramePreview.astro'
     const analysisSection = document.getElementById('analysis-section') as HTMLElement
     const analysisContent = document.getElementById('analysis-content') as HTMLElement
     const analysisJsonPre = document.getElementById('analysis-json') as HTMLPreElement
-    const grokOutputPre = document.getElementById('grok-output-json') as HTMLPreElement
+    const stylistOutputPre = document.getElementById('stylist-output-json') as HTMLPreElement
     const promptTextarea = document.getElementById('anim-prompt-text') as HTMLTextAreaElement
     const exportGifBtn = document.getElementById('export-gif-btn') as HTMLButtonElement
     const exportApngBtn = document.getElementById('export-apng-btn') as HTMLButtonElement
@@ -353,7 +353,7 @@ import FramePreview from '@/components/pipeline/FramePreview.astro'
         const pRes = await fetch('/api/animate-prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image_b64: uploadedImageB64, analysis: analysisResult, frame_count: fc, animation_style: style }) })
         if (!pRes.ok) { const e = await pRes.json().catch(() => ({ error: pRes.statusText })); throw new Error(`Grok: ${e.error || 'Failed'}`) }
         const pData = await pRes.json()
-        if (pData.success && pData.prompt) { if (!cp) promptTextarea.value = pData.prompt; grokOutputPre.textContent = JSON.stringify(pData, null, 2); promptTextarea.classList.add('ring-2', 'ring-emerald-400'); setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-emerald-400'), 3000) }
+        if (pData.success && pData.prompt) { if (!cp) promptTextarea.value = pData.prompt; stylistOutputPre.textContent = JSON.stringify(pData, null, 2); promptTextarea.classList.add('ring-2', 'ring-emerald-400'); setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-emerald-400'), 3000) }
         else throw new Error(`Grok: ${pData.error || 'Empty'}`)
         pipeline?.setStatus('step-prompt', 'done')
 

@@ -1387,6 +1387,11 @@ class AIEngine:
         if is_gemini_model(model) and "gemini" in self._providers:
             return self._providers["gemini"]
         if is_claude_model(model):
+            # Prefer OpenAI-compatible endpoint for Claude models on third-party
+            # proxies (e.g. tryallai) — their /v1/chat/completions is more
+            # reliable than /v1/messages which can route to dead upstreams.
+            if "openai" in self._providers:
+                return self._providers["openai"]
             if "anthropic" in self._providers:
                 return self._providers["anthropic"]
             if "claude_compatible" in self._providers:

@@ -166,13 +166,13 @@ import { Button } from 'astro-pure/user'
 
   // Export Prompt Text
   document.getElementById('export-prompt')?.addEventListener('click', () => {
-    const prompt = (document.getElementById('grok-prompt-text') as HTMLTextAreaElement)?.value
+    const prompt = (document.getElementById('stylist-prompt-text') as HTMLTextAreaElement)?.value
     if (!prompt) return
     const blob = new Blob([prompt], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'grok-prompt.txt'
+    a.download = 'stylist-prompt.txt'
     a.click()
     URL.revokeObjectURL(url)
   })

@@ -502,6 +502,13 @@ async def api_beautify(request_data: dict) -> JSONResponse:
         # Build scaffold from layouted graph
         scaffold = build_scaffold(layouted)
 
+        # Enrich scaffold with SVG icons from Iconify (async, non-blocking)
+        try:
+            from backend.pipeline.scaffold_builder import enrich_scaffold_with_icons
+            scaffold = await enrich_scaffold_with_icons(scaffold, layouted)
+        except Exception as icon_err:
+            logger.warning(f"Icon enrichment failed (non-fatal): {icon_err}")
+
         # Generate SVG via NanoBanana bridge
         result = await beautify_with_nanobanana(
             ai_engine=ai_engine,
