@@ -125,6 +125,8 @@ class ScaffoldElement(BaseModel):
     height: float
     style: str = "rounded_rect"
     fill: str = "#E3F2FD"
+    icon_svg: Optional[str] = None    # Raw SVG string from Iconify
+    icon_id: Optional[str] = None     # e.g. "tabler:brain"
 
 
 class ScaffoldConnection(BaseModel):

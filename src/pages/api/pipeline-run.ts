@@ -80,12 +80,8 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     // ── Proxy to Python backend ──────────────────────────────────────
-    // Remap: frontend sends frames_b64, backend expects frames
-    const backendBody = {
-      ...body,
-      frames: body.frames_b64,
-    }
-    delete backendBody.frames_b64
+    // Backend (server_animation_routes.py) expects frames_b64 directly
+    const backendBody = { ...body }
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), BACKEND_TIMEOUT_MS)

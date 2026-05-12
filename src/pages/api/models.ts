@@ -53,7 +53,7 @@ export const GET: APIRoute = async () => {
           { id: 'claude-opus-4-6', name: 'Claude Opus 4.6 (topology)' },
         ],
         openai: [
-          { id: 'grok-4', name: 'Grok 4 (prompt engineering)' },
+          { id: 'claude-opus-4-6', name: 'Claude Opus 4.6 (prompt engineering)' },
         ],
         gemini: [
           { id: 'gemini-3-pro-image-preview', name: 'Gemini 3 Pro Image (figure gen)' },

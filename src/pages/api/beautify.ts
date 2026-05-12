@@ -32,7 +32,7 @@ export const POST: APIRoute = async ({ request }) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         layouted,
-        model: 'grok-4',  // Legacy beautify — 使用 grok-4 替代 gemini-2.5-flash
+        model: 'claude-opus-4-6',  // Was grok-4, migrated to claude
         style: style || 'academic',
         optimize_iterations: optimize_iterations ?? 1,
       }),

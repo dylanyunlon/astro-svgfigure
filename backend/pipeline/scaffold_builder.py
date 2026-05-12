@@ -133,6 +133,91 @@ def build_scaffold(
     return scaffold
 
 
+async def enrich_scaffold_with_icons(
+    scaffold: NanoBananaScaffold,
+    layouted: Any,
+) -> NanoBananaScaffold:
+    """
+    Post-process a scaffold by fetching SVG icons from Iconify for each
+    node that has an iconHint. Runs in parallel with bounded concurrency.
+
+    This is a separate async step because icon fetching requires HTTP
+    calls to Iconify's API, while build_scaffold is synchronous.
+
+    Graceful degradation: if Iconify is unreachable or no icon is found,
+    the element keeps icon_svg=None and renders normally without an icon.
+    """
+    try:
+        from backend.pipeline.svg_icon_fetcher import get_icons_batch
+    except ImportError:
+        logger.debug("svg_icon_fetcher not available, skipping icon enrichment")
+        return scaffold
+
+    # Collect iconHints from the layouted topology
+    hints_map: dict[str, str] = {}  # element_id → hint
+    if isinstance(layouted, dict):
+        _collect_hints_recursive(layouted.get("children", []), hints_map)
+    else:
+        _collect_hints_recursive(
+            [c if isinstance(c, dict) else c.model_dump() for c in (layouted.children or [])],
+            hints_map,
+        )
+
+    if not hints_map:
+        logger.debug("No iconHints found in topology, skipping icon fetch")
+        return scaffold
+
+    logger.info(f"Fetching icons for {len(hints_map)} nodes: {list(hints_map.values())[:5]}...")
+
+    # Fetch all icons in parallel
+    unique_hints = list(set(hints_map.values()))
+    icon_results = await get_icons_batch(unique_hints)
+
+    # Enrich scaffold elements
+    enriched = 0
+    for elem in scaffold.elements:
+        hint = hints_map.get(elem.id)
+        if hint and hint in icon_results and icon_results[hint] is not None:
+            result = icon_results[hint]
+            elem.icon_svg = result.svg
+            elem.icon_id = result.icon_id
+            enriched += 1
+
+    logger.info(f"Icon enrichment complete: {enriched}/{len(hints_map)} nodes got icons")
+    return scaffold
+
+
+def _collect_hints_recursive(
+    children: list,
+    hints_map: dict[str, str],
+) -> None:
+    """Walk the topology tree and collect node_id → iconHint mappings."""
+    for node in children:
+        if isinstance(node, dict):
+            node_id = node.get("id", "")
+            hint = node.get("iconHint")
+            nested = node.get("children", [])
+        else:
+            node_id = getattr(node, "id", "")
+            hint = getattr(node, "iconHint", None)
+            nested = getattr(node, "children", [])
+
+        if hint and node_id:
+            hints_map[node_id] = hint
+        elif node_id:
+            # Use label as fallback hint
+            if isinstance(node, dict):
+                labels = node.get("labels", [])
+                label = labels[0].get("text", "") if labels else ""
+            else:
+                label = node.labels[0].text if getattr(node, "labels", None) else ""
+            if label:
+                hints_map[node_id] = label
+
+        if nested:
+            _collect_hints_recursive(nested, hints_map)
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================

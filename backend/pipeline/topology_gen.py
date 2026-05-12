@@ -108,7 +108,10 @@ Rules:
    exist in some children array.
 9. Edge IDs must be unique strings (e.g., "e1", "e2", "e3").
 10. Output ONLY the JSON object, no markdown fences, no explanation.
-11. For architecture diagrams: parent nodes with children MUST have
+11. IMPORTANT: Keep the topology concise. Maximum 25 nodes and 30 edges.
+    For complex descriptions, capture the HIGH-LEVEL structure only —
+    do NOT create a node for every single sub-detail. Aim for 8-15 nodes.
+12. For architecture diagrams: parent nodes with children MUST have
     "layoutOptions": {"elk.padding": "[top=30,left=10,bottom=10,right=10]"}
 12. Add iconHint field to nodes that should have an icon/illustration.
     Use natural language descriptions (e.g., "microscope", "DNA helix", "brain"),
@@ -651,10 +654,23 @@ def _repair_json(json_str: str, error: json.JSONDecodeError) -> Optional[str]:
             json.loads(text)
             return text
         except json.JSONDecodeError as e2:
-            # If still failing, try recursive repair with new error position
-            if e2.pos != error.pos and e2.pos > 0:
-                logger.debug(f"First repair attempt moved error from {error.pos} to {e2.pos}, trying again...")
-                return _repair_json(text, e2)
+            # Iterative repair: keep fixing until it parses or we hit max attempts
+            # Large LLM outputs (20k+ chars) often have multiple missing commas
+            current = text
+            for attempt in range(10):
+                if e2.pos == error.pos or e2.pos <= 0:
+                    break
+                logger.debug(f"Repair round {attempt+2}: error moved to pos {e2.pos}, retrying...")
+                repaired = _repair_json(current, e2)
+                if repaired is None or repaired == current:
+                    break
+                try:
+                    json.loads(repaired)
+                    logger.info(f"JSON repair succeeded after {attempt+2} rounds")
+                    return repaired
+                except json.JSONDecodeError as e3:
+                    current = repaired
+                    e2 = e3
     
     return None
 

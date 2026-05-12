@@ -764,74 +764,8 @@ def api_removebg_status() -> JSONResponse:
         return JSONResponse({"available": False, "methods": []})
 
 
-@app.post("/api/pipeline-run")
-async def api_pipeline_run(request_data: dict) -> JSONResponse:
-    """
-    POST /api/pipeline-run — Full End-to-End Post-Generation Pipeline
-
-    Chains: removebg → layer separation → edge refinement → outlining → export
-
-    Request body:
-      - frames (list[str]): base64-encoded frames with green background
-      - config (dict, optional): pipeline configuration overrides
-        - removal_method (str): "auto" | "removebgio" | "rembg" | "chroma"
-        - tolerance (int): chroma-key tolerance (default 60)
-        - edge_blur (float): edge feathering
-        - skip_steps (list[str]): stages to skip
-        - outline_stroke (int): outline stroke width
-        - outline_color (str): outline stroke color hex
-        - export_format (str): "png" | "svg" | "zip"
-
-    Returns:
-      - success (bool)
-      - stages (dict): per-stage results with timing
-      - layers (list): exported layer images
-      - export (dict): final export data
-      - total_time_ms (float)
-    """
-    if not _PIPELINE_AVAILABLE:
-        return JSONResponse(
-            {"success": False, "error": "Pipeline modules not installed"},
-            status_code=501,
-        )
-
-    try:
-        frames = request_data.get("frames", [])
-        if not frames:
-            return JSONResponse(
-                {"error": "No frames provided"}, status_code=400
-            )
-
-        from backend.pipeline.pipeline_orchestrator import PipelineConfig
-
-        # Build config from request — field names must match PipelineConfig dataclass
-        cfg_data = request_data.get("config", {})
-        config = PipelineConfig(
-            removal_method=cfg_data.get("removal_method", "auto"),
-            removal_tolerance=cfg_data.get("tolerance", 60),
-            removal_edge_blur=cfg_data.get("edge_blur", 1.0),
-            removal_despill=cfg_data.get("despill", True),
-            skip_steps=cfg_data.get("skip_steps", []),
-            stroke_width=float(cfg_data.get("outline_stroke", 2)),
-            stroke_color=cfg_data.get("outline_color", "#000000"),
-            export_format=cfg_data.get("export_format", "individual"),
-        )
-
-        report = await run_pipeline(
-            frames_b64=frames,
-            config=config,
-        )
-
-        # Use the structured to_dict() which produces frontend-compatible format
-        # (stages as array with stage_name, not raw dataclass dump)
-        result = report.to_dict() if hasattr(report, "to_dict") else report
-        return JSONResponse(result)
-
-    except Exception as e:
-        logger.exception("api_pipeline_run error")
-        return JSONResponse(
-            {"success": False, "error": str(e)}, status_code=500
-        )
+# NOTE: /api/pipeline-run is registered by server_animation_routes.py
+# (expects frames_b64, not frames). Do NOT re-register here.
 
 
 JOBS: dict[str, Job] = {}
