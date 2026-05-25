@@ -506,6 +506,7 @@
 
   let _imageB64 = ''
   let _mimeType = 'image/png'
+  let _elkGraph: any = null
   let _running = false
   let _pipelineResult: any = null
 
@@ -598,6 +599,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           frames_b64: [_imageB64],
+          elk_graph: _elkGraph,
           config,
         }),
       })
@@ -830,9 +832,10 @@
 
   // Expose globally
   ;(window as any).__postGenPanel = {
-    show(imageB64: string, mimeType: string = 'image/png') {
+    show(imageB64: string, mimeType: string = 'image/png', elkGraph: any = null) {
       _imageB64 = imageB64
       _mimeType = mimeType
+      _elkGraph = elkGraph
       panel.classList.remove('hidden')
       runBtn.disabled = false
       resetStages()
@@ -844,6 +847,7 @@
     hide() {
       panel.classList.add('hidden')
       _imageB64 = ''
+      _elkGraph = null
       _pipelineResult = null
     },
     runPipeline,

@@ -903,6 +903,7 @@ const { class: className } = Astro.props
         const config = getConfig()
         const body = {
           frames_b64: pipelineState.frames_b64,
+          elk_graph: pipelineState.elk_graph || null,
           ...config,
         }
 

@@ -361,7 +361,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         // === BRIDGE: Show PostGenPanel and auto-run pipeline ===
         const postGen = (window as any).__postGenPanel
         if (postGen) {
-          postGen.show(currentImageB64, currentMimeType)
+          postGen.show(currentImageB64, currentMimeType, elkGraph)
           // Auto-run the pipeline after a brief pause to let the UI update
           setTimeout(() => postGen.runPipeline(), 500)
         }
