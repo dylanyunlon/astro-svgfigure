@@ -771,6 +771,100 @@ def api_removebg_status() -> JSONResponse:
         return JSONResponse({"available": False, "methods": []})
 
 
+# ── Region Layout Processing (Path 2: layout-guided component extraction) ──
+
+@app.post("/api/region-layout")
+async def api_region_layout(request_data: dict) -> JSONResponse:
+    """
+    POST /api/region-layout — Layout-Guided Region Extraction (Path 2)
+
+    Uses structured layout data (mastergo_all_layoutobj.txt format) to
+    extract, crop, and optionally remove backgrounds from UI components
+    based on precise bounding box coordinates.
+
+    Request body:
+      - layout_data (list, required): Array of {id, name, bbox: {x,y,width,height}}
+      - image_b64 (str, optional): Base64 source screenshot
+      - remove_bg (bool, optional): Run background removal per region (default: true)
+      - api_key (str, optional): remove-bg.io API key
+      - config (dict, optional): Processing configuration overrides
+
+    Response:
+      - success, regions (list), tree (hierarchy), stats, artboard
+    """
+    try:
+        from backend.pipeline.region_layout_processor import handle_region_layout
+        result = await handle_region_layout(request_data)
+        return JSONResponse(result)
+    except ImportError as ie:
+        logger.warning("region_layout_processor not available: %s", ie)
+        return JSONResponse(
+            {"success": False, "error": f"Region layout module not available: {ie}"},
+            status_code=501,
+        )
+    except Exception as e:
+        logger.exception("api_region_layout error")
+        return JSONResponse(
+            {"success": False, "error": str(e)},
+            status_code=500,
+        )
+
+
+@app.post("/api/region-layout/prompts")
+async def api_region_layout_prompts(request_data: dict) -> JSONResponse:
+    """
+    POST /api/region-layout/prompts — Generate Per-Region Image Prompts
+
+    For users without a source screenshot: parses layout data and generates
+    per-region Gemini/DALL-E prompts based on component names, sizes, and
+    positions. Enables "Path 2b": layout → prompts → per-region generation.
+
+    Request body:
+      - layout_data (list, required): mastergo-format layout objects
+      - artboard_width (int, optional): artboard width (default: 1024)
+      - artboard_height (int, optional): artboard height (default: 600)
+      - style_context (str, optional): style description for prompts
+    """
+    try:
+        from backend.pipeline.region_layout_processor import (
+            parse_layout_objects,
+            build_region_tree,
+            generate_region_prompts,
+            RegionConfig,
+        )
+
+        layout_data = request_data.get("layout_data")
+        if not layout_data:
+            return JSONResponse({"success": False, "error": "layout_data is required"})
+
+        objects = parse_layout_objects(layout_data)
+        if not objects:
+            return JSONResponse({"success": False, "error": "No valid layout objects"})
+
+        config = RegionConfig()
+        objects, by_id = build_region_tree(objects, config)
+
+        prompts = generate_region_prompts(
+            objects,
+            artboard_width=float(request_data.get("artboard_width", 1024)),
+            artboard_height=float(request_data.get("artboard_height", 600)),
+            style_context=request_data.get("style_context", ""),
+        )
+
+        return JSONResponse({
+            "success": True,
+            "prompts": prompts,
+            "total_regions": len(prompts),
+        })
+
+    except Exception as e:
+        logger.exception("api_region_layout_prompts error")
+        return JSONResponse(
+            {"success": False, "error": str(e)},
+            status_code=500,
+        )
+
+
 # NOTE: /api/pipeline-run is registered by server_animation_routes.py
 # (expects frames_b64, not frames). Do NOT re-register here.
 
