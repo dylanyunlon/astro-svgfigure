@@ -866,7 +866,37 @@ async def api_region_layout_prompts(request_data: dict) -> JSONResponse:
 
 
 # NOTE: /api/pipeline-run is registered by server_animation_routes.py
-# (expects frames_b64, not frames). Do NOT re-register here.
+# (expects frames_b64 + optional elk_graph). Do NOT re-register here.
+
+
+# ── Vision-LLM UI Detection (screenshot → mastergo-format layout) ──
+
+@app.post("/api/omniparser-detect")
+async def api_omniparser_detect(request_data: dict) -> JSONResponse:
+    """
+    POST /api/omniparser-detect — Screenshot → Mastergo-Format Layout
+
+    Uses Gemini/Claude/GPT-4o vision API to detect UI elements.
+    Returns mastergo-format [{id, name, bbox:{x,y,width,height}}].
+
+    Request: {image_b64: str, config?: {grid_snap, min_element_area, ...}}
+    """
+    try:
+        from backend.pipeline.omniparser_bridge import handle_omniparser_detect
+        return JSONResponse(await handle_omniparser_detect(request_data))
+    except Exception as e:
+        logger.exception("api_omniparser_detect error")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/omniparser-detect/status")
+def api_omniparser_status() -> JSONResponse:
+    """Check vision detection availability (needs API key)."""
+    try:
+        from backend.pipeline.omniparser_bridge import is_omniparser_available
+        return JSONResponse(is_omniparser_available())
+    except Exception:
+        return JSONResponse({"available": False})
 
 
 JOBS: dict[str, Job] = {}

@@ -925,7 +925,8 @@ def register_animation_routes(app: FastAPI) -> None:
                 )
 
             config = config_from_request(request_data)
-            report = await run_pipeline(frames_b64, config)
+            elk_graph = request_data.get("elk_graph")
+            report = await run_pipeline(frames_b64, config, elk_graph=elk_graph)
 
             elapsed_ms = (time.time() - t0) * 1000
             logger.info(

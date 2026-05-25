@@ -753,6 +753,7 @@ async def run_pipeline(
     frames_b64: List[str],
     config: Optional[PipelineConfig] = None,
     progress: Optional[Callable] = None,
+    elk_graph: Optional[Dict[str, Any]] = None,
 ) -> PipelineReport:
     """
     Run the full post-generation pipeline.
@@ -765,6 +766,9 @@ async def run_pipeline(
         Pipeline configuration. Uses defaults if None.
     progress : callable, optional
         Progress callback: progress(stage_name, status, percent)
+    elk_graph : dict, optional
+        ELK structured layout data (from Step 2 /api/layout).
+        If provided, converts to mastergo format and skips vision detection.
 
     Returns
     -------
@@ -796,11 +800,40 @@ async def run_pipeline(
     skip = set(config.skip_steps)
     omniparser_layouts = None  # Will hold per-frame mastergo layout if detected
 
-    # ── Stage 0.5: OmniParser Detection (screenshot → layout) ────────
-    # Runs BEFORE removebg because OmniParser works better with
-    # background present. Layout data is stored for later use by
-    # layer_separate (as hints) and exported in the final result.
-    if "omniparser" not in skip:
+    # ── Stage 0.5: Layout Detection ──────────────────────────────────
+    # Priority: (1) ELK graph from frontend → convert to mastergo format
+    #           (2) Vision-LLM detection on the generated image
+    #           (3) Skip (pipeline continues with CCL in layer_separate)
+    if elk_graph and "omniparser" not in skip:
+        # Path A: ELK Structured Layout Data was passed from frontend
+        # Keep BOTH: mastergo format (for bbox crop/removebg) + original ELK (for edges/semantics)
+        try:
+            from backend.pipeline.omniparser_bridge import elk_to_mastergo, elk_extract_edges
+            mastergo_objects = elk_to_mastergo(elk_graph)
+            elk_edges = elk_extract_edges(elk_graph)
+            # Same layout applies to all frames (same UI, different animation states)
+            omniparser_layouts = [mastergo_objects] * len(frames_b64)
+            report.stages.append(StageResult(
+                success=True,
+                stage_name="omniparser_detect",
+                data=omniparser_layouts,
+                frames_processed=len(frames_b64),
+                diagnostics={
+                    "method": "elk_to_mastergo",
+                    "total_elements": len(mastergo_objects),
+                    "total_edges": len(elk_edges),
+                    "avg_per_frame": len(mastergo_objects),
+                    "elk_edges": elk_edges,         # Preserved: source/target/label/type
+                    "elk_graph_original": elk_graph, # Preserved: FULL ELK with layoutOptions/sections/bendPoints
+                },
+            ))
+            logger.info("ELK→mastergo: %d elements + %d edges, applied to %d frames",
+                        len(mastergo_objects), len(elk_edges), len(frames_b64))
+        except Exception as e:
+            logger.warning("ELK→mastergo conversion failed: %s, trying vision detect", e)
+            elk_graph = None  # Fall through to vision detection below
+
+    if not elk_graph and "omniparser" not in skip:
         try:
             from backend.pipeline.omniparser_bridge import (
                 stage_omniparser_detect,
