@@ -794,6 +794,54 @@ async def run_pipeline(
         return report
 
     skip = set(config.skip_steps)
+    omniparser_layouts = None  # Will hold per-frame mastergo layout if detected
+
+    # ── Stage 0.5: OmniParser Detection (screenshot → layout) ────────
+    # Runs BEFORE removebg because OmniParser works better with
+    # background present. Layout data is stored for later use by
+    # layer_separate (as hints) and exported in the final result.
+    if "omniparser" not in skip:
+        try:
+            from backend.pipeline.omniparser_bridge import (
+                stage_omniparser_detect,
+                VisionDetectConfig,
+            )
+            omni_config = VisionDetectConfig(
+                grid_snap=int(getattr(config, 'omniparser_grid_snap', 0)),
+            )
+            omni_result = await stage_omniparser_detect(
+                frames_b64, omni_config, progress,
+            )
+            report.stages.append(StageResult(
+                success=omni_result.get("success", False),
+                stage_name="omniparser_detect",
+                data=omni_result.get("layouts"),
+                processing_time_ms=omni_result.get("stats", {}).get("processing_time_ms", 0),
+                frames_processed=len(frames_b64),
+                diagnostics=omni_result.get("stats", {}),
+            ))
+            if omni_result.get("layouts"):
+                omniparser_layouts = omni_result["layouts"]
+                logger.info(
+                    "OmniParser: %d elements across %d frames",
+                    omni_result["stats"]["total_elements"], len(frames_b64),
+                )
+        except ImportError:
+            report.stages.append(StageResult(
+                success=True, stage_name="omniparser_detect",
+                diagnostics={"skipped": True, "reason": "module not available"},
+            ))
+        except Exception as e:
+            logger.warning("OmniParser stage failed (non-fatal): %s", e)
+            report.stages.append(StageResult(
+                success=True, stage_name="omniparser_detect",
+                diagnostics={"skipped": True, "reason": str(e)},
+            ))
+    else:
+        report.stages.append(StageResult(
+            success=True, stage_name="omniparser_detect",
+            diagnostics={"skipped": True},
+        ))
 
     # ── Stage 1: Background Removal ──────────────────────────────────
     if "removebg" not in skip:
