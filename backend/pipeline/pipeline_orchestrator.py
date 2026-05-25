@@ -876,6 +876,79 @@ async def run_pipeline(
             diagnostics={"skipped": True},
         ))
 
+    # ── Stage 0.75: Iterative Refinement (crop-and-re-detect) ─────────
+    # If we got a layout from Stage 0.5 (either ELK or vision), refine
+    # each element by cropping its region and re-detecting at higher
+    # relative resolution. Skip if layout came from ELK (already precise).
+    if omniparser_layouts and "refine" not in skip:
+        stage_method = None
+        for s in report.stages:
+            if s.stage_name == "omniparser_detect":
+                stage_method = s.diagnostics.get("method", "")
+                break
+
+        # Only refine vision-detected layouts (ELK is already pixel-precise)
+        if stage_method and stage_method != "elk_to_mastergo":
+            try:
+                from backend.pipeline.omniparser_bridge import iterative_refine
+                t_ref = time.monotonic()
+
+                if progress:
+                    progress("iterative_refine", "starting", 0)
+
+                refined_layouts = []
+                total_stats = {"refined": 0, "total_delta_px": 0}
+
+                for i, layout in enumerate(omniparser_layouts):
+                    refined, stats = await iterative_refine(
+                        frames_b64[i] if i < len(frames_b64) else frames_b64[0],
+                        layout,
+                        max_refine=30,
+                        min_area=400,
+                    )
+                    refined_layouts.append(refined)
+                    total_stats["refined"] += stats.get("refined", 0)
+                    total_stats["total_delta_px"] += stats.get("total_delta_px", 0)
+
+                omniparser_layouts = refined_layouts
+                total_stats["processing_time_ms"] = round((time.monotonic() - t_ref) * 1000, 2)
+
+                report.stages.append(StageResult(
+                    success=True,
+                    stage_name="iterative_refine",
+                    data=omniparser_layouts,
+                    diagnostics=total_stats,
+                ))
+
+                if progress:
+                    progress("iterative_refine", "complete", 100)
+
+                logger.info("Iterative refine: %d elements refined, %dpx total delta",
+                            total_stats["refined"], total_stats["total_delta_px"])
+
+            except ImportError:
+                report.stages.append(StageResult(
+                    success=True, stage_name="iterative_refine",
+                    diagnostics={"skipped": True, "reason": "module not available"},
+                ))
+            except Exception as e:
+                logger.warning("Iterative refine failed (non-fatal): %s", e)
+                report.stages.append(StageResult(
+                    success=True, stage_name="iterative_refine",
+                    diagnostics={"skipped": True, "reason": str(e)},
+                ))
+        else:
+            report.stages.append(StageResult(
+                success=True, stage_name="iterative_refine",
+                diagnostics={"skipped": True, "reason": "elk layout already precise"},
+            ))
+    else:
+        if "refine" in skip:
+            report.stages.append(StageResult(
+                success=True, stage_name="iterative_refine",
+                diagnostics={"skipped": True},
+            ))
+
     # ── Stage 1: Background Removal ──────────────────────────────────
     if "removebg" not in skip:
         stage1 = await _stage_removebg(frames_b64, config, progress)
