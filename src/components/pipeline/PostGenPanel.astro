@@ -109,6 +109,13 @@
     ))}
   </div>
 
+  <!-- Layout Detection Info -->
+  <div class="pg-layout-info hidden" id="pg-layout-info" style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:13px;color:var(--color-muted-foreground,#64748B);">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+    <span id="pg-layout-count">--</span>
+    <button id="pg-bbox-toggle" class="hidden" style="margin-left:auto;padding:2px 8px;font-size:12px;border:1px solid var(--color-border,#E2E8F0);border-radius:4px;background:transparent;cursor:pointer;color:inherit;">Show Layout</button>
+  </div>
+
   <!-- Transparent Preview (before/after) -->
   <div class="pg-preview-row hidden" id="pg-preview-row">
     <div class="pg-preview-col">
@@ -647,6 +654,57 @@
         if (s.frames_b64 && s.frames_b64.length > 0) {
           previewTransparent.src = `data:image/png;base64,${s.frames_b64[0]}`
           previewRow.classList.remove('hidden')
+        }
+      }
+
+      // Stage 0.5: Layout Detection (omniparser_detect / elk_to_mastergo)
+      if (stages.omniparser_detect) {
+        const s = stages.omniparser_detect
+        const method = s.diagnostics?.method || 'unknown'
+        const count = s.diagnostics?.total_elements || s.diagnostics?.avg_per_frame || 0
+        const elCount = document.getElementById('pg-layout-count')
+        if (elCount) {
+          elCount.textContent = `${count} elements (${method})`
+          elCount.parentElement?.classList.remove('hidden')
+        }
+
+        // Build bbox overlay SVG on original image
+        const layoutData = Array.isArray(s.data) ? s.data[0] : null
+        if (layoutData && Array.isArray(layoutData) && previewOriginal.naturalWidth > 0) {
+          const overlayId = 'pg-bbox-overlay'
+          let overlay = document.getElementById(overlayId) as HTMLElement | null
+          if (!overlay) {
+            overlay = document.createElement('div')
+            overlay.id = overlayId
+            overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;display:none;'
+            previewOriginal.parentElement!.style.position = 'relative'
+            previewOriginal.parentElement!.appendChild(overlay)
+          }
+
+          const iw = previewOriginal.naturalWidth
+          const ih = previewOriginal.naturalHeight
+          let svgHtml = `<svg viewBox="0 0 ${iw} ${ih}" style="width:100%;height:100%">`
+          const colors = ['#3B82F6','#10B981','#F59E0B','#EF4444','#8B5CF6','#EC4899','#06B6D4']
+          for (let i = 0; i < layoutData.length; i++) {
+            const el = layoutData[i]
+            const b = el.bbox
+            const c = colors[i % colors.length]
+            svgHtml += `<rect x="${b.x}" y="${b.y}" width="${b.width}" height="${b.height}" fill="${c}" fill-opacity="0.15" stroke="${c}" stroke-width="1.5" rx="2"/>`
+            svgHtml += `<text x="${b.x+3}" y="${b.y+12}" font-size="10" fill="${c}" font-family="system-ui">${el.name}</text>`
+          }
+          svgHtml += '</svg>'
+          overlay.innerHTML = svgHtml
+
+          // Toggle button
+          const toggleBtn = document.getElementById('pg-bbox-toggle')
+          if (toggleBtn) {
+            toggleBtn.classList.remove('hidden')
+            toggleBtn.onclick = () => {
+              const vis = overlay!.style.display === 'none'
+              overlay!.style.display = vis ? 'block' : 'none'
+              toggleBtn.textContent = vis ? 'Hide Layout' : 'Show Layout'
+            }
+          }
         }
       }
 

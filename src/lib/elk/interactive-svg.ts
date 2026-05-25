@@ -1019,6 +1019,39 @@ export class InteractiveSvgEditor {
     return JSON.parse(JSON.stringify(this.graph))
   }
 
+  /** Export current node positions as mastergo-format layout */
+  getMastergoLayout(): Array<{ id: string; name: string; bbox: { x: number; y: number; width: number; height: number } }> {
+    return this.graph.nodes.map(n => ({
+      id: n.id,
+      name: n.label,
+      bbox: { x: Math.round(n.x), y: Math.round(n.y), width: Math.round(n.width), height: Math.round(n.height) },
+    }))
+  }
+
+  /** Set a background image (rendered behind grid and all elements) */
+  setBackgroundImage(dataUri: string, imgWidth: number, imgHeight: number): void {
+    // Remove existing background image
+    this.svg.querySelectorAll('.editor-bg-image').forEach(el => el.remove())
+
+    const img = document.createElementNS('http://www.w3.org/2000/svg', 'image')
+    img.setAttribute('href', dataUri)
+    img.setAttribute('x', '0')
+    img.setAttribute('y', '0')
+    img.setAttribute('width', String(imgWidth))
+    img.setAttribute('height', String(imgHeight))
+    img.setAttribute('opacity', '0.4')
+    img.classList.add('editor-bg-image')
+    img.style.pointerEvents = 'none'
+
+    // Insert after defs (first child) but before everything else
+    const firstChild = this.svg.querySelector('.interactive-edge, .interactive-node, .svg-grid')
+    if (firstChild) {
+      this.svg.insertBefore(img, firstChild)
+    } else {
+      this.svg.appendChild(img)
+    }
+  }
+
   /** Get modified graph as ELK-compatible JSON for re-layout */
   getElkJson(): any {
     return {
