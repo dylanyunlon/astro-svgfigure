@@ -899,6 +899,34 @@ def api_omniparser_status() -> JSONResponse:
         return JSONResponse({"available": False})
 
 
+# ── Training Data Collection ───────────────────────────────────────────
+
+@app.get("/api/training-data/stats")
+def api_training_stats() -> JSONResponse:
+    """Dataset statistics for layout detection training data."""
+    try:
+        from backend.pipeline.training_data import compute_dataset_stats
+        from dataclasses import asdict
+        stats = compute_dataset_stats()
+        return JSONResponse(asdict(stats))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/training-data/export")
+async def api_training_export(request_data: dict) -> JSONResponse:
+    """Export high-quality pairs as fine-tuning JSONL."""
+    try:
+        from backend.pipeline.training_data import export_for_finetuning
+        path, count = export_for_finetuning(
+            min_f1=float(request_data.get("min_f1", 0.5)),
+            format=request_data.get("format", "gemini"),
+        )
+        return JSONResponse({"success": True, "exported": count, "path": path})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 JOBS: dict[str, Job] = {}
 
 

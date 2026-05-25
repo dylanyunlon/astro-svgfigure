@@ -1050,6 +1050,23 @@ async def run_pipeline(
     report.success = True
     report.total_time_ms = (time.monotonic() - t0) * 1000
 
+    # ── Training data collection (non-blocking, non-fatal) ───────────
+    if "collect_training" not in skip and frames_b64:
+        try:
+            from backend.pipeline.training_data import collect_training_pair
+            elk_layout = None
+            detected_layout = None
+            for s in report.stages:
+                if s.stage_name == "omniparser_detect" and s.data:
+                    if s.diagnostics.get("method") == "elk_to_mastergo":
+                        elk_layout = s.data[0] if isinstance(s.data, list) and s.data else None
+                    else:
+                        detected_layout = s.data[0] if isinstance(s.data, list) and s.data else None
+            if elk_layout or detected_layout:
+                collect_training_pair(frames_b64[0], elk_layout, detected_layout)
+        except Exception as e:
+            logger.debug("Training data collection skipped: %s", e)
+
     logger.info(
         "Pipeline complete: %d frames → %d layers, %.0fms, stages: %s",
         report.frames_input,
