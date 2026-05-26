@@ -61,6 +61,7 @@ def extract_components(
     erode_iter: int = 4,
     dilate_iter: int = 3,
     padding: int = 8,
+    elk_layout: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[bytes], Dict[str, Any]]:
     """Extract individual UI components from a generated figure.
 
@@ -89,6 +90,28 @@ def extract_components(
     img = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGBA")
     arr = np.array(img)
     h, w = arr.shape[:2]
+
+    # ELK-guided extraction: use known coordinates directly
+    if elk_layout:
+        valid = [e for e in elk_layout if e.get("bbox",{}).get("width",0) > 0
+                 and not e.get("_elk",{}).get("group")]
+        has_coords = any(e["bbox"].get("x",0) != 0 or e["bbox"].get("y",0) != 0 for e in valid)
+        if has_coords and valid:
+            layout_out, crops_out = [], []
+            for i, elem in enumerate(valid):
+                b = elem["bbox"]
+                x1, y1 = max(0, int(b["x"])-padding), max(0, int(b["y"])-padding)
+                x2, y2 = min(w, int(b["x"])+int(b["width"])+padding), min(h, int(b["y"])+int(b["height"])+padding)
+                if (x2-x1) < min_dim or (y2-y1) < min_dim: continue
+                buf = io.BytesIO()
+                img.crop((x1,y1,x2,y2)).save(buf, format="PNG", optimize=True)
+                layout_out.append({"id": elem.get("id",f"elk_{i}"), "name": elem.get("name",f"c{i}"),
+                                   "bbox": {"x":int(b["x"]),"y":int(b["y"]),"width":int(b["width"]),"height":int(b["height"])}})
+                crops_out.append(buf.getvalue())
+            elapsed = (time.monotonic()-t0)*1000
+            return layout_out, crops_out, {"image_size":[w,h], "method":"elk_guided",
+                    "components_extracted":len(layout_out), "processing_time_ms":round(elapsed,1)}
+
     r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
 
     # Step 1: Background → transparent
