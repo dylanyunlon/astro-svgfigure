@@ -983,16 +983,11 @@ async def run_pipeline(
 
     # Check if Stage 0.9 gave us components to work with
     if extracted_components and extracted_components.get("success"):
-        # Convert extracted crops directly to layer format
-        # This bypasses the broken whole-image removebg → layer_separate path
         import base64 as b64mod
         component_layers = []
-        crops_data = []
 
-        # Get crops from the first frame's extraction
         frame_layouts = extracted_components.get("layouts", [[]])[0] if extracted_components.get("layouts") else []
 
-        # Re-extract to get actual crop bytes (stage only stored layouts)
         if frame_layouts and frames_b64:
             try:
                 from backend.pipeline.component_extractor import extract_components
@@ -1003,32 +998,76 @@ async def run_pipeline(
                         for l in frame_layouts
                     ) else None,
                 )
+
+                # Per-crop remove.bg — THE critical step from the local test
+                # Each crop goes through remove.bg individually for clean transparency
+                removebg_ok = 0
+                REMOVEBG_KEYS = [
+                    "UDZGCeAvXC413qA7ck3eKuv7", "rKh5bL7kRUUv4pF7PGgAKUS9",
+                    "zPcBRZqYomHoiTR8VgtU5coM", "bNB1E7SLV9fsCRit7fxodrS9",
+                ]
+                key_idx = 0
+
                 for i, (el, crop_bytes) in enumerate(zip(relayout, recrops)):
                     crop_b64 = b64mod.b64encode(crop_bytes).decode("ascii")
+                    final_b64 = crop_b64  # default: raw crop
+
+                    # Try remove.bg on this crop
+                    if progress:
+                        progress("removebg", f"crop {i+1}/{len(recrops)}", int(i*100/max(len(recrops),1)))
+
+                    for attempt in range(len(REMOVEBG_KEYS)):
+                        key = REMOVEBG_KEYS[(key_idx + attempt) % len(REMOVEBG_KEYS)]
+                        try:
+                            import requests as req_lib
+                            resp = req_lib.post(
+                                "https://api.remove.bg/v1.0/removebg",
+                                files={"image_file": ("crop.png", crop_bytes, "image/png")},
+                                data={"size": "auto"},
+                                headers={"X-Api-Key": key},
+                                timeout=30,
+                            )
+                            if resp.status_code == 200:
+                                final_b64 = b64mod.b64encode(resp.content).decode("ascii")
+                                removebg_ok += 1
+                                key_idx = (key_idx + attempt) % len(REMOVEBG_KEYS)
+                                break
+                            elif resp.status_code == 402:
+                                continue  # Key exhausted, try next
+                            else:
+                                logger.warning("remove.bg crop %d: HTTP %d", i, resp.status_code)
+                                break
+                        except Exception as e:
+                            logger.warning("remove.bg crop %d failed: %s", i, e)
+                            break
+
                     component_layers.append({
                         "layer_index": i,
                         "name": el.get("name", f"component_{i}"),
-                        "image_b64": crop_b64,
+                        "image_b64": final_b64,
                         "bbox": el.get("bbox", {}),
                     })
+
+                logger.info("Per-crop remove.bg: %d/%d succeeded", removebg_ok, len(recrops))
+
             except Exception as e:
                 logger.warning("Failed to build component layers: %s", e)
 
         if component_layers:
-            logger.info("Using %d extracted components as layers (skipping whole-image removebg)",
-                        len(component_layers))
+            logger.info("Using %d extracted+removebg components as layers", len(component_layers))
             report.stages.append(StageResult(
                 success=True, stage_name="removebg",
-                data=frames_b64,  # Keep original as "transparent" (not actually transparent)
-                diagnostics={"method": "skipped_using_components", "components": len(component_layers)},
+                data=frames_b64,
+                diagnostics={"method": "per_crop_removebg",
+                             "components": len(component_layers),
+                             "removebg_success": removebg_ok if 'removebg_ok' in dir() else 0},
             ))
             report.stages.append(StageResult(
                 success=True, stage_name="layer_separate",
                 data=component_layers,
                 frames_processed=1,
-                diagnostics={"method": "component_extractor", "layers": len(component_layers)},
+                diagnostics={"method": "component_extractor+removebg", "layers": len(component_layers)},
             ))
-            # Skip to Stage 3+
             transparent_frames = frames_b64
         else:
             # Fallback: run old whole-image removebg
