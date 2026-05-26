@@ -85,12 +85,7 @@ except ImportError:
     HAS_PIL = False
     logger.warning("Pillow not available — server-side rembg disabled")
 
-try:
-    from rembg import remove as rembg_remove
-    HAS_REMBG = True
-except ImportError:
-    HAS_REMBG = False
-    logger.info("rembg not installed — U2-Net background removal unavailable")
+HAS_REMBG = False  # rembg/u2net removed — use removebgio or chroma instead
 
 
 # ═══════════════════════════════════════════════════════════════════════

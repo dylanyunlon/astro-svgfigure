@@ -109,30 +109,7 @@ except ImportError:
     Image = None  # type: ignore
     _HAS_PIL = False
 
-try:
-    import importlib
-    _HAS_REMBG = importlib.util.find_spec("rembg") is not None
-except Exception:
-    _HAS_REMBG = False
-
-# Lazy imports — rembg triggers 176MB u2net.onnx download on first import.
-# Only import when actually called, not at server startup.
-rembg_remove = None
-rembg_new_session = None
-
-def _ensure_rembg():
-    global rembg_remove, rembg_new_session, _HAS_REMBG
-    if rembg_remove is not None:
-        return True
-    try:
-        from rembg import remove as _rm, new_session as _ns
-        rembg_remove = _rm
-        rembg_new_session = _ns
-        _HAS_REMBG = True
-        return True
-    except ImportError:
-        _HAS_REMBG = False
-        return False
+_HAS_REMBG = False  # rembg/u2net removed — use removebgio or chroma instead
 
 
 # ═══════════════════════════════════════════════════════════════════════

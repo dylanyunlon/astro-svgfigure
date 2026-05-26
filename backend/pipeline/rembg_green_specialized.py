@@ -99,12 +99,8 @@ except ImportError:
     Image = None  # type: ignore
     _HAS_PIL = False
 
-try:
-    from rembg import remove as rembg_remove
-    _HAS_REMBG = True
-except ImportError:
-    rembg_remove = None  # type: ignore
-    _HAS_REMBG = False
+_HAS_REMBG = False  # rembg/u2net removed
+rembg_remove = None
 
 
 # ═══════════════════════════════════════════════════════════════════════

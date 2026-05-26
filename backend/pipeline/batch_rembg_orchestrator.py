@@ -474,18 +474,7 @@ def _run_rembg(
     except Exception as exc:
         logger.warning("rembg failed: %s", exc)
 
-    # If rembg unavailable, try the rembg library directly
-    try:
-        from rembg import remove
-        result = remove(image)
-        if result is not None:
-            return result.convert("RGBA")
-    except ImportError:
-        pass
-    except Exception as exc:
-        logger.warning("Direct rembg failed: %s", exc)
-
-    # Last resort: return image with no removal
+    # rembg/u2net removed — return image with no removal
     logger.error("All rembg paths failed — returning original image")
     return image.convert("RGBA")
 
