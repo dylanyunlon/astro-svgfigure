@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64, hashlib, io, json, logging, time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 try:
