@@ -180,13 +180,20 @@ class ConstraintSolver:
         edges: List[CanonicalEdge],
         groups: List[CanonicalGroup],
     ) -> SolvedLayout:
-        """Run the 4-layer constraint solver.
+        """Constraint solver with Sugiyama layered layout.
 
-        Layer 0: Sizes already computed by canonicalizer
-        Layer 1: Group sizes from children (bottom-up)
-        Layer 2: Position assignment (topological order)
-        Layer 3: Collision resolution
+        Phase 0: Sizes computed by canonicalizer (type-aware)
+        Phase 1: Group sizes from children (bottom-up propagation)
+        Phase 2: Sugiyama layout for root-level items:
+                 - Cycle removal (DFS back-edge reversal)
+                 - Longest-path layer assignment
+                 - Barycenter crossing minimization (O(|V|·|E|) per sweep)
+                 - Median-aligned coordinate assignment (Brandes-Köpf inspired)
+        Phase 3: Intra-group child layout (direction-aware)
+        Phase 4: Collision resolution
         """
+        from backend.pipeline.topology.constraint.sugiyama import sugiyama_layout
+
         elem_map = {e.id: e for e in elements}
         group_map = {g.id: g for g in groups}
 
@@ -196,15 +203,98 @@ class ConstraintSolver:
             for child_id in g.children_ids:
                 children_of[g.id].append(child_id)
 
-        # ── Layer 1: Group sizes (bottom-up) ──
+        # ── Phase 1: Group sizes (bottom-up) ──
         group_sizes = self._compute_group_sizes(groups, elem_map)
 
-        # ── Layer 2: Position assignment ──
-        solved_elements = self._assign_positions(
-            elements, groups, group_sizes, edges, children_of, elem_map,
+        # ── Phase 2: Sugiyama layout for root-level items ──
+        # Identify root-level items (not inside any group)
+        grouped_elements = set()
+        for g in groups:
+            grouped_elements.update(g.children_ids)
+        group_set = {g.id for g in groups}
+
+        root_ids = []
+        root_widths: Dict[str, int] = {}
+        root_heights: Dict[str, int] = {}
+
+        for g in groups:
+            if g.parent_group is None:
+                root_ids.append(g.id)
+                gw, gh = group_sizes.get(g.id, (200, 100))
+                root_widths[g.id] = gw
+                root_heights[g.id] = gh
+        for e in elements:
+            if e.id not in grouped_elements and e.id not in group_set:
+                root_ids.append(e.id)
+                root_widths[e.id] = e.width
+                root_heights[e.id] = e.height
+
+        # Build root-level edge list (map child→parent group for cross-group edges)
+        elem_to_root: Dict[str, str] = {}
+        for g in groups:
+            for child_id in g.children_ids:
+                elem_to_root[child_id] = g.id
+
+        root_edges: List[tuple] = []
+        seen_root_edges: set = set()
+        for edge in edges:
+            src_root = elem_to_root.get(edge.source, edge.source)
+            tgt_root = elem_to_root.get(edge.target, edge.target)
+            if src_root != tgt_root and src_root in set(root_ids) and tgt_root in set(root_ids):
+                pair = (src_root, tgt_root)
+                if pair not in seen_root_edges:
+                    seen_root_edges.add(pair)
+                    root_edges.append(pair)
+
+        # Run Sugiyama
+        positions, sugiyama_diag = sugiyama_layout(
+            root_ids, root_edges, root_widths, root_heights,
+            canvas_width=self._canvas_w,
+            min_node_gap=40,
+            layer_gap=60,
+            margin=self._margin,
         )
 
-        # ── Layer 3: Collision resolution ──
+        # ── Phase 3: Build solved elements with Sugiyama positions ──
+        solved: Dict[str, SolvedElement] = {}
+
+        for item_id in root_ids:
+            x, y = positions.get(item_id, (self._margin, self._margin))
+
+            if item_id in group_map:
+                group = group_map[item_id]
+                gw, gh = group_sizes.get(item_id, (200, 100))
+                group_elem = SolvedElement(
+                    id=item_id, name=group.label, type="group_container",
+                    x=x, y=y, width=gw, height=gh,
+                    is_group=True, depth=group.depth,
+                )
+                # Layout children inside group
+                group_children = self._layout_children_in_group(
+                    group, elem_map, x, y, gw, gh,
+                )
+                group_elem.children = group_children
+                # Build intra-group edges
+                child_ids = {c.id for c in group_children}
+                group_elem.edges = [
+                    self._make_elk_edge(e)
+                    for e in edges
+                    if e.source in child_ids and e.target in child_ids
+                ]
+                solved[item_id] = group_elem
+                for c in group_children:
+                    solved[c.id] = c
+            elif item_id in elem_map:
+                e = elem_map[item_id]
+                solved[item_id] = SolvedElement(
+                    id=e.id, name=e.name, type=e.type,
+                    x=x, y=y, width=e.width, height=e.height,
+                    icon_hint=e.icon_hint, depth=e.depth,
+                )
+
+        solved_elements = list(solved.values())
+
+        # ── Phase 4: Collision resolution ──
         solved_elements = self._resolve_collisions(solved_elements)
 
         # ── Build edge list for ELK ──
@@ -268,116 +358,6 @@ class ConstraintSolver:
             group_sizes[group.id] = (w, h)
 
         return group_sizes
-
-    # ── Layer 2: Position assignment ──
-
-    def _assign_positions(
-        self,
-        elements: List[CanonicalElement],
-        groups: List[CanonicalGroup],
-        group_sizes: Dict[str, Tuple[int, int]],
-        edges: List[CanonicalEdge],
-        children_of: Dict[str, List[str]],
-        elem_map: Dict[str, CanonicalElement],
-    ) -> List[SolvedElement]:
-        """Assign absolute positions to all elements.
-
-        Strategy:
-            1. Identify root-level elements (not in any group)
-            2. Compute topological layers from edges
-            3. Within each layer, arrange horizontally
-            4. For groups, recursively layout children inside
-        """
-        solved: Dict[str, SolvedElement] = {}
-        group_set = {g.id for g in groups}
-        grouped_elements = set()
-        for g in groups:
-            grouped_elements.update(g.children_ids)
-
-        # ── Topological layering of root-level items ──
-        root_items = []
-        for g in groups:
-            if g.parent_group is None:
-                root_items.append(("group", g.id))
-        for e in elements:
-            if e.id not in grouped_elements and e.id not in group_set:
-                root_items.append(("element", e.id))
-
-        # Simple edge-based layering
-        layers = self._topological_layers(root_items, edges, elem_map, groups)
-
-        # ── Assign positions layer by layer ──
-        current_y = self._margin
-
-        for layer_items in layers:
-            # Compute total width needed for this layer
-            item_widths = []
-            for item_type, item_id in layer_items:
-                if item_type == "group" and item_id in group_sizes:
-                    item_widths.append(group_sizes[item_id][0])
-                elif item_id in elem_map:
-                    item_widths.append(elem_map[item_id].width)
-                else:
-                    item_widths.append(150)
-
-            total_width = sum(item_widths) + max(0, len(item_widths) - 1) * 40
-            start_x = max(self._margin, (self._canvas_w - total_width) // 2)
-            max_height = 0
-
-            for i, (item_type, item_id) in enumerate(layer_items):
-                if item_type == "group":
-                    gw, gh = group_sizes.get(item_id, (200, 100))
-                    group = next((g for g in groups if g.id == item_id), None)
-                    if group:
-                        group_elem = SolvedElement(
-                            id=item_id,
-                            name=group.label,
-                            type="group_container",
-                            x=start_x,
-                            y=current_y,
-                            width=gw,
-                            height=gh,
-                            is_group=True,
-                            depth=group.depth,
-                        )
-                        # Layout children inside group
-                        group_children = self._layout_children_in_group(
-                            group, elem_map, start_x, current_y, gw, gh,
-                        )
-                        group_elem.children = group_children
-                        # Build intra-group edges
-                        child_ids = {c.id for c in group_children}
-                        group_elem.edges = [
-                            self._make_elk_edge(e)
-                            for e in edges
-                            if e.source in child_ids and e.target in child_ids
-                        ]
-                        solved[item_id] = group_elem
-                        for c in group_children:
-                            solved[c.id] = c
-                        max_height = max(max_height, gh)
-                    start_x += gw + 40
-                else:
-                    e = elem_map.get(item_id)
-                    if e:
-                        se = SolvedElement(
-                            id=e.id,
-                            name=e.name,
-                            type=e.type,
-                            x=start_x,
-                            y=current_y,
-                            width=e.width,
-                            height=e.height,
-                            icon_hint=e.icon_hint,
-                            depth=e.depth,
-                        )
-                        solved[item_id] = se
-                        max_height = max(max_height, e.height)
-                    start_x += (e.width if e else 150) + 40
-
-            current_y += max_height + 60  # layer gap
-
-        return list(solved.values())
 
     def _layout_children_in_group(
         self,
@@ -472,76 +452,7 @@ class ConstraintSolver:
 
         return solved
 
-    # ── Topological layering ──
-
-    def _topological_layers(
-        self,
-        root_items: List[Tuple[str, str]],
-        edges: List[CanonicalEdge],
-        elem_map: Dict[str, CanonicalElement],
-        groups: List[CanonicalGroup],
-    ) -> List[List[Tuple[str, str]]]:
-        """Assign items to layers based on edge dependencies.
-
-        Uses longest-path layering (standard in ELK's layered algorithm):
-            - Items with no incoming edges → layer 0
-            - Others → layer = max(source_layer) + 1
-        """
-        item_ids = {item_id for _, item_id in root_items}
-
-        # Build adjacency from edges
-        incoming: Dict[str, Set[str]] = defaultdict(set)
-        outgoing: Dict[str, Set[str]] = defaultdict(set)
-
-        # Map element IDs to their root-level container
-        elem_to_root: Dict[str, str] = {}
-        for g in groups:
-            for child_id in g.children_ids:
-                elem_to_root[child_id] = g.id
-
-        for edge in edges:
-            src_root = elem_to_root.get(edge.source, edge.source)
-            tgt_root = elem_to_root.get(edge.target, edge.target)
-            if src_root != tgt_root and src_root in item_ids and tgt_root in item_ids:
-                incoming[tgt_root].add(src_root)
-                outgoing[src_root].add(tgt_root)
-
-        # Assign layers (BFS from sources)
-        layer_of: Dict[str, int] = {}
-
-        # Initialize: items with no incoming → layer 0
-        queue = []
-        for item_type, item_id in root_items:
-            if item_id not in incoming or not incoming[item_id]:
-                layer_of[item_id] = 0
-                queue.append(item_id)
-
-        # BFS propagation
-        while queue:
-            current = queue.pop(0)
-            current_layer = layer_of[current]
-            for neighbor in outgoing.get(current, set()):
-                new_layer = current_layer + 1
-                if neighbor not in layer_of or layer_of[neighbor] < new_layer:
-                    layer_of[neighbor] = new_layer
-                    queue.append(neighbor)
-
-        # Assign unplaced items to layer 0
-        for item_type, item_id in root_items:
-            if item_id not in layer_of:
-                layer_of[item_id] = 0
-
-        # Group by layer
-        max_layer = max(layer_of.values()) if layer_of else 0
-        layers: List[List[Tuple[str, str]]] = [[] for _ in range(max_layer + 1)]
-        for item_type, item_id in root_items:
-            layer = layer_of.get(item_id, 0)
-            layers[layer].append((item_type, item_id))
-
-        # Remove empty layers
-        return [layer for layer in layers if layer]
-
-    # ── Layer 3: Collision resolution ──
+    # ── Collision resolution ──
 
     def _resolve_collisions(
         self,
