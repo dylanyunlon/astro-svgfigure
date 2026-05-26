@@ -43,6 +43,7 @@ from backend.pipeline.scaffold_builder import build_scaffold
 from backend.pipeline.nanobanana_bridge import beautify_with_nanobanana
 from backend.pipeline.svg_validator import validate_svg as validate_svg_func
 from backend.server_animation_routes import register_animation_routes
+from backend.server_layered_routes import register_layered_routes
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +423,9 @@ def _print_config_status():
 
 # ── Animation pipeline routes ─────────────────────────────────────────
 register_animation_routes(app)
+
+# ── Layered topology pipeline routes (M7) ────────────────────────────
+register_layered_routes(app)
 
 
 # ============================================================================
