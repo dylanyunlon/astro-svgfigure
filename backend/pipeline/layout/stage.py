@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64, hashlib, io, json, logging, time
 from typing import Any, Dict, List, Optional, Tuple
+from backend.pipeline.layout.detect import vision_detect, VisionDetectConfig
 logger = logging.getLogger(__name__)
 try:
     from PIL import Image
