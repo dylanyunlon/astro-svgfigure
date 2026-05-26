@@ -1151,10 +1151,12 @@ def _build_fallback_prompt(method_text: str, svg_content: str) -> str:
 
     return (
         f"[TIER-{tier}: {tier} design points]\n"
-        f"Create a high-quality scientific architecture diagram for an academic paper. "
+        f"Create a high-quality scientific architecture diagram for an academic paper.\n\n"
+        f"=== USER'S DETAILED DESCRIPTION (MUST reflect in the figure) ===\n"
+        f"{method_text}\n\n"
+        f"=== LAYOUT STRUCTURE ===\n"
         f"{hierarchy_instruction}"
-        f"The figure should show: {method_text[:500]}. "
-        f"Key components include: {components}. "
+        f"Key components include: {components}.\n\n"
         f"Style: Clean, professional vector illustration suitable for a top-tier "
         f"machine learning conference (NeurIPS, ICLR, CVPR). "
         f"Use a professional color palette with soft blues, teals, and warm accents. "
