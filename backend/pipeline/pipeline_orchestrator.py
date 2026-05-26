@@ -949,6 +949,32 @@ async def run_pipeline(
                 diagnostics={"skipped": True},
             ))
 
+    # ── Stage 0.9: Component Extraction (color CCL, zero API calls) ────
+    # Fast alternative to removebg+layer_separate: color threshold → erosion
+    # (break arrows) → CCL → individual component crops. ~100ms.
+    extracted_components = None
+    if "extract" not in skip:
+        try:
+            from backend.pipeline.component_extractor import stage_extract_components
+            extract_result = await stage_extract_components(frames_b64, progress)
+            report.stages.append(StageResult(
+                success=extract_result.get("success", False),
+                stage_name="extract_components",
+                data=extract_result.get("layouts"),
+                diagnostics=extract_result.get("stats", {}),
+            ))
+            if extract_result.get("success"):
+                extracted_components = extract_result
+                # Also use as layout if omniparser didn't find anything
+                if not omniparser_layouts and extract_result.get("layouts"):
+                    omniparser_layouts = extract_result["layouts"]
+        except Exception as e:
+            logger.warning("Component extraction failed (non-fatal): %s", e)
+            report.stages.append(StageResult(
+                success=True, stage_name="extract_components",
+                diagnostics={"skipped": True, "reason": str(e)},
+            ))
+
     # ── Stage 1: Background Removal ──────────────────────────────────
     if "removebg" not in skip:
         stage1 = await _stage_removebg(frames_b64, config, progress)

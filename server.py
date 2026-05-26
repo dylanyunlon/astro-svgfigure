@@ -833,6 +833,33 @@ async def api_training_export(request_data: dict) -> JSONResponse:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+# ── Component Extraction (image → split individual components via CCL) ──
+
+@app.post("/api/extract-components")
+async def api_extract_components(request_data: dict) -> JSONResponse:
+    """
+    POST /api/extract-components — Split figure into individual component crops
+
+    Color threshold → erosion (break arrows) → CCL → crop.
+    Zero API calls, ~100ms. Returns mastergo-format layout + component PNGs.
+
+    Request: {image_b64: str, min_area?: int, erode_iter?: int}
+    Response: {success, layout: [{id,name,bbox}], crops_b64: [str], stats}
+    """
+    try:
+        from backend.pipeline.component_extractor import extract_and_encode
+        result = extract_and_encode(
+            request_data.get("image_b64", ""),
+            min_area=int(request_data.get("min_area", 800)),
+            erode_iter=int(request_data.get("erode_iter", 4)),
+            dilate_iter=int(request_data.get("dilate_iter", 3)),
+        )
+        return JSONResponse(result)
+    except Exception as e:
+        logger.exception("api_extract_components error")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 JOBS: dict[str, Job] = {}
 
 
