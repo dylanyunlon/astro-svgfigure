@@ -860,6 +860,23 @@ async def api_extract_components(request_data: dict) -> JSONResponse:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.post("/api/topology-rich")
+async def api_topology_rich(request_data: dict) -> JSONResponse:
+    """5-step topology: entities(>=20) -> edges(>=15) -> groups -> icons -> ELK."""
+    try:
+        from backend.pipeline.topology.topology_steps import generate_rich_topology
+        from backend.config import get_settings
+        from backend.ai_engine import AIEngine
+        text = request_data.get("text", "")
+        if not text:
+            return JSONResponse({"success": False, "error": "text is required"})
+        ai_engine = AIEngine(get_settings())
+        elk, diag = await generate_rich_topology(text, ai_engine, request_data.get("model", ""))
+        return JSONResponse({"success": diag.get("total_entities", 0) > 0, "elk": elk, "diagnostics": diag})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 JOBS: dict[str, Job] = {}
 
 

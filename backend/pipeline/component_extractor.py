@@ -26,12 +26,17 @@ logger = logging.getLogger(__name__)
 # Calibrated on Gemini 3 Pro Image output (blue/pink stage boxes, white bg)
 
 def _build_bg_mask(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Classify background pixels by color. Returns bool mask."""
-    white   = (r > 225) & (g > 225) & (b > 225)
-    lt_blue = (b > 200) & (g > 190) & (r > 150) & (r < 225) & (b.astype(int) - r.astype(int) > 20)
-    lt_pink = (r > 190) & (b > 190) & (g > 160) & (g < 200)
-    lt_gray = (r > 195) & (g > 195) & (b > 195)
-    return white | lt_blue | lt_pink | lt_gray
+    """Classify background pixels. Handles light AND dark themed figures."""
+    ri, gi, bi = r.astype(int), g.astype(int), b.astype(int)
+    white   = (ri > 225) & (gi > 225) & (bi > 225)
+    lt_blue = (bi > 200) & (gi > 190) & (ri > 150) & (ri < 225) & (bi - ri > 20)
+    lt_pink = (ri > 190) & (bi > 190) & (gi > 160) & (gi < 205)
+    lt_gray = (ri > 195) & (gi > 195) & (bi > 195)
+    very_dark = (ri < 35) & (gi < 35) & (bi < 35)
+    bg = white | lt_blue | lt_pink | lt_gray | very_dark
+    if very_dark.sum() / max(r.size, 1) > 0.08:
+        bg = bg | ((ri < 70) & (gi < 70) & (bi < 70))
+    return bg
 
 
 def _break_arrows(binary: np.ndarray, erode: int = 4, dilate: int = 3) -> Tuple[np.ndarray, np.ndarray]:
