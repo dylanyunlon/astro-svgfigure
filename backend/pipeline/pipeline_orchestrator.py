@@ -1098,7 +1098,7 @@ async def run_pipeline(
     # ── Stage 2: Layer Separation ────────────────────────────────────
     # Skip if Stage 0.9 already provided component layers
     has_component_layers = any(s.stage_name == "layer_separate" and s.success
-                               and s.diagnostics.get("method") == "component_extractor"
+                               and "component_extractor" in str(s.diagnostics.get("method", ""))
                                for s in report.stages)
 
     if has_component_layers:
