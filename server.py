@@ -877,6 +877,128 @@ async def api_topology_rich(request_data: dict) -> JSONResponse:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.post("/api/topology-mastergo")
+async def api_topology_mastergo(request_data: dict) -> JSONResponse:
+    """8-step mastergo-quality topology: dense extraction + vision constraint.
+
+    Produces 50+ elements with precise bboxes, matching mastergo_all_layoutobj.txt
+    detail level.  Optional image_b64 screenshot enables vision-guided alignment.
+
+    Request body:
+      - text (required): Paper method description
+      - image_b64 (optional): Base64-encoded screenshot for vision constraint
+      - model (optional): LLM model override
+      - output_format (optional): "elk" (default) or "mastergo"
+
+    Response:
+      - success: bool
+      - elk: ELK graph with dense nodes
+      - mastergo: (if output_format="mastergo") flat element list with bboxes
+      - diagnostics: per-step stats including element counts
+    """
+    try:
+        from backend.pipeline.topology.topology_steps import generate_mastergo_topology
+        from backend.pipeline.topology.mastergo_schema import elk_to_mastergo_layout
+        from backend.config import get_settings
+        from backend.ai_engine import AIEngine
+
+        text = request_data.get("text", "")
+        if not text:
+            return JSONResponse({"success": False, "error": "text is required"})
+
+        image_b64 = request_data.get("image_b64", "")
+        output_format = request_data.get("output_format", "elk")
+
+        ai_engine = AIEngine(get_settings())
+        elk, diag = await generate_mastergo_topology(
+            text=text,
+            image_b64=image_b64,
+            ai_engine=ai_engine,
+            model=request_data.get("model", ""),
+        )
+
+        response = {
+            "success": diag.get("total_entities", 0) > 0,
+            "elk": elk,
+            "diagnostics": diag,
+        }
+
+        # Optionally convert to mastergo flat format
+        if output_format == "mastergo":
+            try:
+                mastergo = elk_to_mastergo_layout(elk)
+                response["mastergo"] = mastergo.to_list()
+                response["mastergo_edges"] = mastergo.edges
+                response["mastergo_stats"] = mastergo.stats()
+            except Exception as e:
+                response["mastergo_error"] = str(e)
+
+        return JSONResponse(response)
+
+    except Exception as e:
+        logger.exception("api_topology_mastergo error")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/topology-constrained")
+async def api_topology_constrained(request_data: dict) -> JSONResponse:
+    """WHITE BOX topology: LLM decides WHAT, constraints decide WHERE/HOW BIG.
+
+    Unlike topology-rich (black box: LLM guesses sizes) and topology-mastergo
+    (enhanced black box: denser extraction but still LLM sizes), this endpoint
+    uses a deterministic constraint system:
+
+        Registry      → per-type size rules (module=140-280px, icon=40-60px, etc.)
+        Canonicalizer → normalizes LLM output to typed form
+        Solver        → computes positions from rules, not LLM
+
+    Request:
+        text (required), model (optional), output_format: "elk"|"mastergo"
+
+    Response:
+        elk: graph with constraint-computed positions
+        mastergo: flat element list with pixel bboxes (if requested)
+        diagnostics: per-step stats showing constraint decisions
+    """
+    try:
+        from backend.pipeline.topology.topology_steps import generate_constrained_topology
+        from backend.config import get_settings
+        from backend.ai_engine import AIEngine
+
+        text = request_data.get("text", "")
+        if not text:
+            return JSONResponse({"success": False, "error": "text is required"})
+
+        output_format = request_data.get("output_format", "elk")
+        canvas_w = int(request_data.get("canvas_width", 900))
+        canvas_h = int(request_data.get("canvas_height", 500))
+
+        ai_engine = AIEngine(get_settings())
+        elk, diag = await generate_constrained_topology(
+            text=text,
+            ai_engine=ai_engine,
+            model=request_data.get("model", ""),
+            canvas_width=canvas_w,
+            canvas_height=canvas_h,
+        )
+
+        response = {
+            "success": diag.get("total_entities", 0) > 0,
+            "elk": elk,
+            "diagnostics": diag,
+        }
+
+        if output_format == "mastergo":
+            response["mastergo"] = diag.get("mastergo_preview", [])
+            response["mastergo_stats"] = diag.get("mastergo_stats", {})
+
+        return JSONResponse(response)
+
+    except Exception as e:
+        logger.exception("api_topology_constrained error")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 JOBS: dict[str, Job] = {}
 
 

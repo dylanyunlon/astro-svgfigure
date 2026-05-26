@@ -42,7 +42,12 @@ async def map_relationships(entities, ai_engine=None, model="", max_retries=3):
 
 HIER_SYSTEM = """Organize entities into visual groups for architecture diagram.
 Output ONLY JSON: [{"name":"group_id","label":"Title","children":["entity1","entity2"]}]
-Every entity must be in exactly one group's children."""
+Every entity must be in exactly one group's children.
+
+NESTING: If a group is logically inside another group, nest it:
+[{"name":"outer","label":"Outer","children":["inner_group"]},
+ {"name":"inner_group","label":"Inner","children":["entity_a","entity_b"]}]
+Architecture figures typically need 2-4 nesting levels. Do NOT flatten everything."""
 
 async def build_hierarchy(entities, ai_engine=None, model=""):
     from backend.pipeline.topology.schema_validator import validate_hierarchy
@@ -151,6 +156,230 @@ async def generate_rich_topology(text, ai_engine=None, model=""):
     diag["total_entities"] = len(entities)
     diag["total_edges"] = len(edges)
     return elk, diag
+
+
+async def generate_mastergo_topology(
+    text: str,
+    image_b64: str = "",
+    ai_engine=None,
+    model: str = "",
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Enhanced pipeline producing mastergo-quality topology with 50+ elements.
+
+    Pipeline steps:
+      1. Dense entity extraction (two-pass: modules + sub-element drill)
+      2. Implicit element injection (hardware icons, data objects LLM missed)
+      3. Adaptive threshold relationship mapping
+      4. Deep hierarchy building (3+ nesting levels)
+      5. Icon classification with visual_hint from entities
+      6. ELK assembly with sub-element generation
+      7. Vision constraint alignment (if screenshot provided)
+      8. MastergoLayout conversion with full element detail
+
+    Args:
+        text: Paper method description
+        image_b64: Optional screenshot for vision-guided layout
+        ai_engine: AIEngine instance
+        model: LLM model to use
+
+    Returns:
+        (elk_graph, diagnostics) — elk_graph has mastergo-quality node density
+    """
+    from backend.pipeline.topology.dense_extractor import (
+        extract_dense, inject_implicit, adaptive_thresholds,
+    )
+    from backend.pipeline.topology.mastergo_schema import (
+        elk_to_mastergo_layout, estimate_figure_complexity,
+    )
+    from backend.pipeline.topology.schema_validator import validate_elk
+
+    if ai_engine is None:
+        from backend.config import get_settings
+        from backend.ai_engine import AIEngine
+        ai_engine = AIEngine(get_settings())
+    if not model:
+        s = ai_engine._settings
+        model = s.ANTHROPIC_DEFAULT_MODEL or s.DEFAULT_MODEL
+
+    diag = {"steps": {}, "pipeline": "mastergo_dense"}
+
+    # ── Step 0: Complexity estimation ──
+    complexity = estimate_figure_complexity(text)
+    thresholds = adaptive_thresholds(text)
+    min_entities = max(complexity["min_entities"], thresholds["min_entities"])
+    diag["steps"]["complexity"] = complexity
+    diag["steps"]["thresholds"] = thresholds
+
+    # ── Step 1: Dense entity extraction (two-pass) ──
+    entities, extract_diag = await extract_dense(
+        text, ai_engine, model,
+        min_entities=min_entities,
+        drill_modules=True,
+    )
+    diag["steps"]["dense_extract"] = extract_diag
+
+    if not entities:
+        logger.warning("Dense extraction produced 0 entities, falling back to basic")
+        return await generate_rich_topology(text, ai_engine, model)
+
+    # ── Step 2: Implicit element injection ──
+    entities = inject_implicit(entities, text)
+    diag["steps"]["implicit_inject"] = {"count_after": len(entities)}
+
+    # ── Step 3: Relationship mapping with adaptive thresholds ──
+    min_edges = max(thresholds["min_edges"], len(entities) // 3)
+    edges, e2 = await map_relationships(entities, ai_engine, model)
+    diag["steps"]["edges"] = {"count": len(edges), "errors": e2}
+
+    # ── Step 4: Deep hierarchy building ──
+    groups, e3 = await build_hierarchy(entities, ai_engine, model)
+    diag["steps"]["hierarchy"] = {"count": len(groups), "errors": e3}
+
+    # ── Step 5: Icon classification (prefer visual_hint from dense extractor) ──
+    icons = {}
+    for e in entities:
+        # Use visual_hint from dense extractor if available
+        if e.get("visual_hint"):
+            icons[e["name"]] = e["visual_hint"]
+        else:
+            name = e.get("name", "").lower()
+            hit = None
+            for kw, hint in _ICON_MAP.items():
+                if kw in name:
+                    hit = hint
+                    break
+            icons[e["name"]] = hit or _TYPE_DEFAULT.get(e.get("type", "module"), "generic block")
+    diag["steps"]["icons"] = {"count": len(icons)}
+
+    # ── Step 6: ELK assembly ──
+    elk = assemble_elk(entities, edges, groups, icons)
+
+    # ── Step 7: Vision constraint alignment ──
+    if image_b64:
+        try:
+            from backend.pipeline.topology.vision_constraint import (
+                vision_constrained_layout,
+            )
+            elk, identified_regions, vision_diag = await vision_constrained_layout(
+                image_b64, elk, ai_engine, model,
+            )
+            diag["steps"]["vision_constraint"] = vision_diag
+        except Exception as e:
+            logger.warning("Vision constraint failed (non-fatal): %s", e)
+            diag["steps"]["vision_constraint"] = {"error": str(e)}
+
+    # ── Step 8: Validation ──
+    ok, e5 = validate_elk(elk)
+    diag["steps"]["assembly"] = {"valid": ok, "errors": e5}
+    diag["total_entities"] = len(entities)
+    diag["total_edges"] = len(edges)
+
+    # ── MastergoLayout stats (for diagnostics, not returned as main output) ──
+    try:
+        mastergo = elk_to_mastergo_layout(elk)
+        diag["mastergo_stats"] = mastergo.stats()
+    except Exception:
+        pass
+
+    return elk, diag
+
+
+async def generate_constrained_topology(
+    text: str,
+    image_b64: str = "",
+    ai_engine=None,
+    model: str = "",
+    canvas_width: int = 900,
+    canvas_height: int = 500,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """WHITE BOX topology generation.
+
+    The LLM decides WHAT (entities, relationships, groups).
+    The constraint system decides WHERE and HOW BIG — deterministically.
+
+    This replaces the black-box approach:
+        OLD: LLM → assemble_elk(entities) → hope sizes are right
+        NEW: LLM → Canonicalizer → Solver → guaranteed correct sizes
+
+    Architecture (osdk-ts pattern):
+        Registry      = type → size/padding rules (like ObjectCacheKeyRegistry)
+        Canonicalizer  = normalize LLM output (like GenericCanonicalizer)
+        Solver         = deterministic position computation (like Store)
+
+    Pipeline:
+        1. Entity extraction (LLM — decides WHAT)
+        2. Relationship mapping (LLM — decides connections)
+        3. Hierarchy building (LLM — decides grouping)
+        4. Canonicalization (RULES — normalizes types, computes sizes)
+        5. Constraint solving (RULES — computes positions)
+        6. Output in ELK or mastergo format
+    """
+    from backend.pipeline.topology.entity_extractor import extract_entities
+    from backend.pipeline.topology.constraint import (
+        ConstraintRegistry, LayoutCanonicalizer, ConstraintSolver,
+    )
+
+    if ai_engine is None:
+        from backend.config import get_settings
+        from backend.ai_engine import AIEngine
+        ai_engine = AIEngine(get_settings())
+    if not model:
+        s = ai_engine._settings
+        model = s.ANTHROPIC_DEFAULT_MODEL or s.DEFAULT_MODEL
+
+    diag = {"steps": {}, "pipeline": "constrained"}
+
+    # ── Step 1: Entity extraction (LLM decides WHAT) ──
+    entities, e1 = await extract_entities(text, ai_engine, model)
+    diag["steps"]["entities"] = {"count": len(entities), "errors": e1}
+    if not entities:
+        return {"id": "root", "children": [], "edges": []}, diag
+
+    # ── Step 2: Relationship mapping (LLM decides connections) ──
+    edges, e2 = await map_relationships(entities, ai_engine, model)
+    diag["steps"]["edges"] = {"count": len(edges), "errors": e2}
+
+    # ── Step 3: Hierarchy building (LLM decides grouping) ──
+    groups, e3 = await build_hierarchy(entities, ai_engine, model)
+    diag["steps"]["hierarchy"] = {"count": len(groups), "errors": e3}
+
+    # ════════════════════════════════════════════════════════════
+    # BELOW THIS LINE: NO MORE LLM CALLS. PURE DETERMINISTIC RULES.
+    # ════════════════════════════════════════════════════════════
+
+    # ── Step 4: Canonicalization (RULES decide types + sizes) ──
+    registry = ConstraintRegistry()
+    canon = LayoutCanonicalizer(registry)
+
+    c_elements = canon.canonicalize_entities(entities)
+    c_element_ids = {e.id for e in c_elements}
+    c_edges = canon.canonicalize_edges(edges, c_element_ids)
+    c_groups = canon.canonicalize_groups(groups, c_elements)
+
+    diag["steps"]["canonicalize"] = {
+        "elements": len(c_elements),
+        "edges": len(c_edges),
+        "groups": len(c_groups),
+        "group_types": {g.id: g.layout_type for g in c_groups},
+    }
+
+    # ── Step 5: Constraint solving (RULES decide positions) ──
+    solver = ConstraintSolver(registry, canvas_width, canvas_height)
+    layout = solver.solve(c_elements, c_edges, c_groups)
+
+    diag["steps"]["solver"] = layout.stats()
+    diag["total_entities"] = len(c_elements)
+    diag["total_edges"] = len(c_edges)
+
+    # ── Output: ELK graph with deterministic positions ──
+    elk = layout.to_elk_graph()
+
+    # Also provide mastergo format in diagnostics
+    diag["mastergo_preview"] = layout.to_mastergo_list()[:5]  # first 5 as preview
+    diag["mastergo_stats"] = layout.stats()
+
+    return elk, diag
+
 
 def _parse_json(raw):
     c = raw.strip()
