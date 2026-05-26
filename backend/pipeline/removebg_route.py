@@ -110,10 +110,29 @@ except ImportError:
     _HAS_PIL = False
 
 try:
-    from rembg import remove as rembg_remove, new_session as rembg_new_session
-    _HAS_REMBG = True
-except ImportError:
+    import importlib
+    _HAS_REMBG = importlib.util.find_spec("rembg") is not None
+except Exception:
     _HAS_REMBG = False
+
+# Lazy imports — rembg triggers 176MB u2net.onnx download on first import.
+# Only import when actually called, not at server startup.
+rembg_remove = None
+rembg_new_session = None
+
+def _ensure_rembg():
+    global rembg_remove, rembg_new_session, _HAS_REMBG
+    if rembg_remove is not None:
+        return True
+    try:
+        from rembg import remove as _rm, new_session as _ns
+        rembg_remove = _rm
+        rembg_new_session = _ns
+        _HAS_REMBG = True
+        return True
+    except ImportError:
+        _HAS_REMBG = False
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -222,7 +241,7 @@ def _tier2_rembg_single(frame_b64: str, model: str = "u2net") -> Dict[str, Any]:
     histogram analysis. Finally, perfect the base64 round-trip
     encoding.
     """
-    if not _HAS_REMBG or not _HAS_PIL:
+    if not _HAS_REMBG or not _ensure_rembg() or not _HAS_PIL:
         return {"success": False, "error": "rembg not available"}
 
     t0 = time.monotonic()
@@ -293,7 +312,7 @@ async def _tier2_rembg(
     Uses asyncio.get_event_loop().run_in_executor for CPU-bound inference
     so we don't block the event loop.
     """
-    if not _HAS_REMBG:
+    if not _HAS_REMBG or not _ensure_rembg():
         logger.debug("Tier 2 skip: rembg not installed")
         return None
 
