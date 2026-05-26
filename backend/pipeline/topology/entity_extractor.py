@@ -1,7 +1,8 @@
 """entity_extractor.py - Step 1: Paper Text -> Exhaustive Entity List"""
 from __future__ import annotations
-import json, logging, re
+import logging, re
 from typing import Any, Dict, List, Tuple
+from backend.pipeline.topology.parse_utils import parse_json_array
 logger = logging.getLogger(__name__)
 
 ENTITY_TYPES = ["input","module","submodule","data_object","operation","resource","output","annotation"]
@@ -52,7 +53,7 @@ async def extract_entities(
                           {"role":"user","content":prompt}],
                 model=model, temperature=0.3+attempt*0.15, max_tokens=8192,
             )
-            entities = _parse_json_array(resp.get("content",""))
+            entities = parse_json_array(resp.get("content",""))
             if not entities:
                 all_errors.append(f"attempt {attempt+1}: JSON parse failed"); continue
             ok, errors = validate_entities(entities, min_entities)
@@ -64,20 +65,3 @@ async def extract_entities(
         except Exception as e:
             all_errors.append(f"attempt {attempt+1}: {e}")
     return best, all_errors
-
-
-def _parse_json_array(raw: str) -> List[Dict]:
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r'^```\w*\n?', '', cleaned)
-        cleaned = re.sub(r'\n?```$', '', cleaned)
-    try:
-        data = json.loads(cleaned)
-        if isinstance(data, list): return [d for d in data if isinstance(d, dict)]
-    except json.JSONDecodeError: pass
-    match = re.search(r'\[.*\]', cleaned, re.DOTALL)
-    if match:
-        try:
-            return json.loads(re.sub(r',\s*([}\]])', r'\1', match.group()))
-        except json.JSONDecodeError: pass
-    return []

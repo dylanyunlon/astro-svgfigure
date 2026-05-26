@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json, logging, re, math
 from typing import Any, Dict, List, Tuple
+from backend.pipeline.topology.parse_utils import parse_json_array
 logger = logging.getLogger(__name__)
 
 EDGE_SYSTEM = """Map relationships between system components.
@@ -32,7 +33,7 @@ async def map_relationships(entities, ai_engine=None, model="", max_retries=3):
             resp = await ai_engine._select_provider(model).get_completion(
                 messages=[{"role":"system","content":EDGE_SYSTEM},{"role":"user","content":prompt}],
                 model=model, temperature=0.3, max_tokens=4096)
-            edges = _parse_json(resp.get("content",""))
+            edges = parse_json_array(resp.get("content",""))
             ok, e = validate_edges(edges, entity_names, min_edges)
             if ok: return edges, []
             errs.extend(e)
@@ -63,7 +64,7 @@ async def build_hierarchy(entities, ai_engine=None, model=""):
             messages=[{"role":"system","content":HIER_SYSTEM},
                       {"role":"user","content":f"Organize: {json.dumps([e['name'] for e in entities])}"}],
             model=model, temperature=0.3, max_tokens=4096)
-        groups = _parse_json(resp.get("content",""))
+        groups = parse_json_array(resp.get("content",""))
         ok, e = validate_hierarchy(groups, entity_names)
         return groups, e
     except Exception as e: return [], [str(e)]
@@ -379,17 +380,3 @@ async def generate_constrained_topology(
     diag["mastergo_stats"] = layout.stats()
 
     return elk, diag
-
-
-def _parse_json(raw):
-    c = raw.strip()
-    if c.startswith("```"): c = re.sub(r'^```\w*\n?','',c); c = re.sub(r'\n?```$','',c)
-    try:
-        d = json.loads(c)
-        return d if isinstance(d, list) else []
-    except json.JSONDecodeError:
-        m = re.search(r'\[.*\]', c, re.DOTALL)
-        if m:
-            try: return json.loads(re.sub(r',\s*([}\]])',r'\1',m.group()))
-            except: pass
-    return []

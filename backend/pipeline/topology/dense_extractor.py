@@ -24,6 +24,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.pipeline.topology.parse_utils import parse_json_array
+
 logger = logging.getLogger(__name__)
 
 
@@ -145,7 +147,7 @@ async def extract_dense(
                 temperature=0.3 + attempt * 0.1,
                 max_tokens=8192,
             )
-            parsed = _parse_json_array(resp.get("content", ""))
+            parsed = parse_json_array(resp.get("content", ""))
             if len(parsed) >= min_entities:
                 modules = parsed
                 break
@@ -191,7 +193,7 @@ async def extract_dense(
                     temperature=0.3,
                     max_tokens=2048,
                 )
-                subs = _parse_json_array(resp.get("content", ""))
+                subs = parse_json_array(resp.get("content", ""))
                 # Tag sub-elements with parent
                 for sub in subs:
                     sub["parent_module"] = module["name"]
@@ -294,39 +296,3 @@ def adaptive_thresholds(text: str) -> Dict[str, int]:
         "tech_terms": len(tech_terms),
         "enum_patterns": enum_count,
     }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  §6  JSON parsing (robust, handles LLM quirks)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _parse_json_array(raw: str) -> List[Dict]:
-    """Parse LLM output as JSON array, handling common issues."""
-    cleaned = raw.strip()
-
-    # Strip markdown fences
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r'^```\w*\n?', '', cleaned)
-        cleaned = re.sub(r'\n?```$', '', cleaned)
-
-    # Try direct parse
-    try:
-        data = json.loads(cleaned)
-        if isinstance(data, list):
-            return [d for d in data if isinstance(d, dict)]
-    except json.JSONDecodeError:
-        pass
-
-    # Try extracting array
-    match = re.search(r'\[.*\]', cleaned, re.DOTALL)
-    if match:
-        try:
-            # Fix trailing commas
-            fixed = re.sub(r',\s*([}\]])', r'\1', match.group())
-            data = json.loads(fixed)
-            if isinstance(data, list):
-                return [d for d in data if isinstance(d, dict)]
-        except json.JSONDecodeError:
-            pass
-
-    return []

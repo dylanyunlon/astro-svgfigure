@@ -23,11 +23,12 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+from backend.pipeline.topology.parse_utils import parse_json_array
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +322,7 @@ async def identify_regions(
             max_tokens=4096,
         )
         raw = resp.get("content", "")
-        identified = _parse_json_array(raw)
+        identified = parse_json_array(raw)
 
         # Merge with CCL region data
         id_map = {item.get("region_id"): item for item in identified}
@@ -538,27 +539,3 @@ def _count_aligned(node: Dict[str, Any]) -> int:
     for child in node.get("children", []):
         count += _count_aligned(child)
     return count
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  §5  JSON parsing utility
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _parse_json_array(raw: str) -> List[Dict]:
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r'^```\w*\n?', '', cleaned)
-        cleaned = re.sub(r'\n?```$', '', cleaned)
-    try:
-        data = json.loads(cleaned)
-        if isinstance(data, list):
-            return [d for d in data if isinstance(d, dict)]
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r'\[.*\]', cleaned, re.DOTALL)
-    if match:
-        try:
-            return json.loads(re.sub(r',\s*([}\]])', r'\1', match.group()))
-        except json.JSONDecodeError:
-            pass
-    return []
