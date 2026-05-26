@@ -20,7 +20,7 @@ except ImportError:
 @dataclass
 class VisionDetectConfig:
     """Configuration for vision-LLM UI detection."""
-    model: str = ""                   # Empty = use project default (gemini-2.5-flash)
+    model: str = ""                   # Empty = auto (prefer Claude for vision)
     grid_snap: int = 0                # Snap bbox to grid (0=off, 4=4px grid)
     min_element_area: int = 64        # Skip elements smaller than 8×8
     max_elements: int = 200           # Cap output count
@@ -142,14 +142,21 @@ async def vision_detect(
     ]
 
     # Pick model
-    model = config.model or None  # None = AIEngine picks default
+    # Pick model: prefer Claude for vision → structured JSON
+    # Claude outputs more precise bbox coordinates than Gemini for UI analysis
+    if config.model:
+        detect_model = config.model
+    elif ai_engine._settings.ANTHROPIC_API_KEY or ai_engine._settings.CLAUDE_COMPATIBLE_API_KEY:
+        detect_model = ai_engine._settings.ANTHROPIC_DEFAULT_MODEL or "claude-sonnet-4-20250514"
+    else:
+        detect_model = ai_engine._settings.DEFAULT_MODEL
 
     t0 = time.monotonic()
     try:
-        provider = ai_engine._select_provider(model or ai_engine._settings.DEFAULT_MODEL)
+        provider = ai_engine._select_provider(detect_model)
         response = await provider.get_completion(
             messages=messages,
-            model=model or ai_engine._settings.DEFAULT_MODEL,
+            model=detect_model,
             temperature=config.temperature,
             max_tokens=8192,
         )

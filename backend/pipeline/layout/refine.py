@@ -109,10 +109,14 @@ async def refine_single_region(
     ]
 
     try:
-        provider = ai_engine._select_provider(ai_engine._settings.DEFAULT_MODEL)
+        # Prefer Claude for vision analysis (better structured JSON)
+        s = ai_engine._settings
+        refine_model = s.ANTHROPIC_DEFAULT_MODEL or "claude-sonnet-4-20250514" \
+            if (s.ANTHROPIC_API_KEY or s.CLAUDE_COMPATIBLE_API_KEY) else s.DEFAULT_MODEL
+        provider = ai_engine._select_provider(refine_model)
         response = await provider.get_completion(
             messages=messages,
-            model=ai_engine._settings.DEFAULT_MODEL,
+            model=refine_model,
             temperature=0.05,
             max_tokens=256,
         )
