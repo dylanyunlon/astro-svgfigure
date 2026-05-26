@@ -950,13 +950,16 @@ async def run_pipeline(
             ))
 
     # ── Stage 0.9: Component Extraction (color CCL, zero API calls) ────
-    # Fast alternative to removebg+layer_separate: color threshold → erosion
-    # (break arrows) → CCL → individual component crops. ~100ms.
     extracted_components = None
     if "extract" not in skip:
         try:
             from backend.pipeline.component_extractor import stage_extract_components
-            extract_result = await stage_extract_components(frames_b64, progress)
+            # Pass elk layout for guided extraction when available
+            extract_kwargs = {}
+            if omniparser_layouts and isinstance(omniparser_layouts, list) and omniparser_layouts:
+                extract_kwargs["elk_layout"] = omniparser_layouts[0]
+
+            extract_result = await stage_extract_components(frames_b64, progress, **extract_kwargs)
             report.stages.append(StageResult(
                 success=extract_result.get("success", False),
                 stage_name="extract_components",
@@ -965,7 +968,6 @@ async def run_pipeline(
             ))
             if extract_result.get("success"):
                 extracted_components = extract_result
-                # Also use as layout if omniparser didn't find anything
                 if not omniparser_layouts and extract_result.get("layouts"):
                     omniparser_layouts = extract_result["layouts"]
         except Exception as e:
@@ -976,7 +978,65 @@ async def run_pipeline(
             ))
 
     # ── Stage 1: Background Removal ──────────────────────────────────
-    if "removebg" not in skip:
+    # When Stage 0.9 produced components, run remove.bg on EACH crop
+    # instead of the whole image (which treats everything as one blob).
+
+    # Check if Stage 0.9 gave us components to work with
+    if extracted_components and extracted_components.get("success"):
+        # Convert extracted crops directly to layer format
+        # This bypasses the broken whole-image removebg → layer_separate path
+        import base64 as b64mod
+        component_layers = []
+        crops_data = []
+
+        # Get crops from the first frame's extraction
+        frame_layouts = extracted_components.get("layouts", [[]])[0] if extracted_components.get("layouts") else []
+
+        # Re-extract to get actual crop bytes (stage only stored layouts)
+        if frame_layouts and frames_b64:
+            try:
+                from backend.pipeline.component_extractor import extract_components
+                relayout, recrops, restats = extract_components(
+                    frames_b64[0],
+                    elk_layout=frame_layouts if any(
+                        l.get("bbox", {}).get("x", 0) != 0 or l.get("bbox", {}).get("y", 0) != 0
+                        for l in frame_layouts
+                    ) else None,
+                )
+                for i, (el, crop_bytes) in enumerate(zip(relayout, recrops)):
+                    crop_b64 = b64mod.b64encode(crop_bytes).decode("ascii")
+                    component_layers.append({
+                        "layer_index": i,
+                        "name": el.get("name", f"component_{i}"),
+                        "image_b64": crop_b64,
+                        "bbox": el.get("bbox", {}),
+                    })
+            except Exception as e:
+                logger.warning("Failed to build component layers: %s", e)
+
+        if component_layers:
+            logger.info("Using %d extracted components as layers (skipping whole-image removebg)",
+                        len(component_layers))
+            report.stages.append(StageResult(
+                success=True, stage_name="removebg",
+                data=frames_b64,  # Keep original as "transparent" (not actually transparent)
+                diagnostics={"method": "skipped_using_components", "components": len(component_layers)},
+            ))
+            report.stages.append(StageResult(
+                success=True, stage_name="layer_separate",
+                data=component_layers,
+                frames_processed=1,
+                diagnostics={"method": "component_extractor", "layers": len(component_layers)},
+            ))
+            # Skip to Stage 3+
+            transparent_frames = frames_b64
+        else:
+            # Fallback: run old whole-image removebg
+            stage1 = await _stage_removebg(frames_b64, config, progress)
+            report.stages.append(stage1)
+            transparent_frames = stage1.data if stage1.success else frames_b64
+
+    elif "removebg" not in skip:
         stage1 = await _stage_removebg(frames_b64, config, progress)
         report.stages.append(stage1)
 
@@ -997,7 +1057,15 @@ async def run_pipeline(
         ))
 
     # ── Stage 2: Layer Separation ────────────────────────────────────
-    if "layer_separate" not in skip:
+    # Skip if Stage 0.9 already provided component layers
+    has_component_layers = any(s.stage_name == "layer_separate" and s.success
+                               and s.diagnostics.get("method") == "component_extractor"
+                               for s in report.stages)
+
+    if has_component_layers:
+        layers = next(s.data for s in report.stages
+                      if s.stage_name == "layer_separate" and s.success)
+    elif "layer_separate" not in skip:
         stage2 = await _stage_layer_separate(transparent_frames, config, progress)
         report.stages.append(stage2)
 
