@@ -401,11 +401,14 @@ async def _stage_layer_separate(
             if fr.get("success"):
                 frames_ok += 1
                 for layer in fr.get("layers", []):
+                    bbox = layer["bbox"]  # [x, y, width, height]
                     all_layers.append({
                         "frame_index": fr["frame_index"],
                         "layer_id": layer["layer_id"],
                         "image_b64": layer["image_b64"],
-                        "bbox": layer["bbox"],
+                        "bbox": bbox,
+                        "width": bbox[2] if len(bbox) >= 3 else None,
+                        "height": bbox[3] if len(bbox) >= 4 else None,
                         "area": layer["area"],
                         "centroid": layer["centroid"],
                     })

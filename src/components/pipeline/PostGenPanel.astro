@@ -841,7 +841,17 @@
 
       const info = document.createElement('div')
       info.className = 'pg-layer-info'
-      info.innerHTML = `<span>Layer ${idx + 1}</span><span>${layer.width || '?'}×${layer.height || '?'}</span>`
+      const w = layer.width || (layer.bbox && layer.bbox[2]) || '?'
+      const h = layer.height || (layer.bbox && layer.bbox[3]) || '?'
+      info.innerHTML = `<span>Layer ${idx + 1}</span><span>${w}×${h}</span>`
+      // If backend didn't provide dims, read from decoded image
+      if (w === '?' || h === '?') {
+        img.onload = () => {
+          if (img.naturalWidth > 0) {
+            info.innerHTML = `<span>Layer ${idx + 1}</span><span>${img.naturalWidth}×${img.naturalHeight}</span>`
+          }
+        }
+      }
       card.appendChild(info)
 
       // Click to download individual layer
