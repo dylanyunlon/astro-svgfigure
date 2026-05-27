@@ -284,8 +284,12 @@ function renderNode(
   const h = node.height || 60
   const isGroup = (Array.isArray(node.children) && node.children.length > 0) || node.group
   const label = node.labels?.[0]?.text || node.id
+  const nodeType = isGroup ? 'group' : 'leaf'
 
-  let svg = ''
+  // Wrap each node in a <g> with semantic attributes for SVG-native layer separation.
+  // svg-layer-separator.ts reads data-node-id, data-node-type, and data-bbox
+  // to extract layers without rasterization.
+  let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}">\n`
 
   if (isGroup) {
     // Group container: dashed border, subtle fill, label at top
@@ -335,6 +339,7 @@ function renderNode(
     }
   }
 
+  svg += `  </g>\n`
   return svg
 }
 

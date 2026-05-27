@@ -175,21 +175,29 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   const strokeW = isGroup ? 2 : 1.5
   const strokeDash = isGroup ? ' stroke-dasharray="6,3"' : ''
   const label = node.labels?.[0]?.text || node.id
+  const nodeType = isGroup ? 'group' : 'leaf'
 
   // Smart label truncation based on node width
   const maxChars = Math.max(6, Math.floor(w / 8))
   const dl = label.length > maxChars ? label.slice(0, maxChars - 2) + '\u2026' : label
 
-  let svg = `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${strokeW}" rx="8"${strokeDash} />`
+  // Wrap each node in a <g> with semantic attributes for SVG-native layer separation.
+  // svg-layer-separator.ts reads data-node-id, data-node-type, and data-bbox
+  // to extract layers without rasterization.
+  let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}">`
+
+  svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${strokeW}" rx="8"${strokeDash} />`
 
   // For group nodes, put label at top
   const labelY = isGroup ? y + 16 : y + h / 2
   const fontSize = isGroup ? 11 : 12
   const fontWeight = isGroup ? '600' : '500'
-  svg += `  <text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
+  svg += `<text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
 
   // Nested children: pass parent's absolute position as offset (minus PADDING since children add it again)
   if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
+
+  svg += `</g>`
   return svg
 }
 
