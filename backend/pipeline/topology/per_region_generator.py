@@ -303,33 +303,30 @@ async def generate_all_regions(
     ai_engine,
     model: str = "",
     context: Optional[PassContext] = None,
+    max_concurrent: int = 3,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Generate ELK subgraphs for all regions.
+    """Generate ELK subgraphs for all regions in parallel.
 
-    This is the dispatch loop — the `for (; pass < num_passes; pass++)`
-    in CCCL's dispatch function.
+    Like CCCL's thread blocks executing on different SMs — independent
+    regions run concurrently via asyncio.gather with a semaphore.
 
-    Currently sequential (each region depends on knowing what others
-    generated for cross-region edges).  Future optimization: parallel
-    generation for independent regions, sequential for dependent ones.
+    CCCL:
+        // Each thread block processes a tile independently
+        // Grid launch: all blocks start concurrently
+        launcher(topk_grid_size, block_threads, 0, stream)
+            .doit(topk_kernel, ...);
 
-    Like CCCL:
-        int pass = 1;
-        for (; pass < num_passes; pass++) {
-            launcher.doit(topk_kernel, ...);
-            key_bufs.selector ^= 1;  // swap
-        }
+    We do:
+        sem = Semaphore(max_concurrent)   // like SM occupancy limit
+        tasks = [_gen_one(r) for r in regions]  // like grid launch
+        await gather(*tasks)              // all start, sem limits concurrency
 
-    Args:
-        regions: Planned regions from M1
-        text: Full user text
-        intent: Parsed user intent from M2
-        ai_engine: AIEngine instance
-        model: LLM model override
-        context: Pipeline counter state
+    The semaphore (default 3) prevents overwhelming the LLM API,
+    like CCCL's SM occupancy capping concurrent thread blocks.
 
-    Returns:
-        (list_of_subgraphs, diagnostics)
+    Cross-region edges are resolved AFTER all regions complete,
+    in the compositor — just as CCCL's global histogram merge
+    happens in finalize_pass after all blocks finish.
     """
     if context is None:
         context = PassContext()
@@ -337,27 +334,37 @@ async def generate_all_regions(
     diag: Dict[str, Any] = {
         "pass": "per_region_generation",
         "region_count": len(regions),
+        "parallel": True,
+        "max_concurrent": max_concurrent,
         "regions": {},
     }
 
-    subgraphs: List[Dict[str, Any]] = []
-
-    # Sort by priority (region_planner assigns priority)
     sorted_regions = sorted(regions, key=lambda r: r.priority)
+    sem = asyncio.Semaphore(max_concurrent)
 
-    for region in sorted_regions:
-        subgraph, region_diag = await generate_region(
-            region=region,
-            text=text,
-            intent=intent,
-            all_regions=regions,
-            ai_engine=ai_engine,
-            model=model,
-            context=context,
-        )
-        subgraphs.append(subgraph)
-        diag["regions"][region.id] = region_diag
+    # Pre-allocate results array indexed by priority order
+    results: List[Optional[Dict[str, Any]]] = [None] * len(sorted_regions)
+    region_diags: Dict[str, Dict] = {}
 
+    async def _gen_one(idx: int, region: PlannedRegion):
+        async with sem:
+            subgraph, rd = await generate_region(
+                region=region,
+                text=text,
+                intent=intent,
+                all_regions=regions,
+                ai_engine=ai_engine,
+                model=model,
+                context=context,
+            )
+            results[idx] = subgraph
+            region_diags[region.id] = rd
+
+    tasks = [_gen_one(i, r) for i, r in enumerate(sorted_regions)]
+    await asyncio.gather(*tasks)
+
+    subgraphs = [r for r in results if r is not None]
+    diag["regions"] = region_diags
     diag["total_nodes"] = context.total_entities
     diag["total_edges"] = context.total_edges
 
