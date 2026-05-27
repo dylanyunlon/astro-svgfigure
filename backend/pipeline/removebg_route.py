@@ -123,6 +123,78 @@ DEFAULT_EDGE_BLUR = 1.0
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  Tier 0: remove.bg (Canva) with key pool rotation
+# ═══════════════════════════════════════════════════════════════════════
+
+async def _tier0_removebg_canva(
+    frames_b64: List[str],
+) -> Optional[Dict[str, Any]]:
+    """
+    Attempt background removal via remove.bg (Canva) API with key pool.
+
+    Keys are sourced from REMOVEBG_API_KEYS env var (comma-separated)
+    or from the 纹图 platform key pool. When a key returns 402
+    (insufficient credits), it's automatically rotated to the next.
+
+    Returns None if no keys configured or all keys exhausted.
+    """
+    import os
+    keys_str = os.environ.get("REMOVEBG_API_KEYS", "")
+    keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+
+    if not keys:
+        logger.debug("Tier 0 skip: no remove.bg (Canva) API keys")
+        return None
+
+    try:
+        from backend.pipeline.removebg_canva_client import RemoveBgCanvaClient
+
+        client = RemoveBgCanvaClient(keys=keys)
+        results = await client.remove_background_batch(frames_b64)
+
+        processed = []
+        all_failed = True
+        for result in results:
+            if result.success and result.image_b64:
+                all_failed = False
+                processed.append({
+                    "success": True,
+                    "image_b64": result.image_b64,
+                    "method_used": "removebg_canva",
+                    "quality_score": 0.95,
+                    "processing_time_ms": result.processing_time_ms,
+                    "key_used": result.key_used,
+                })
+            else:
+                processed.append({
+                    "success": False,
+                    "image_b64": None,
+                    "method_used": "removebg_canva",
+                    "quality_score": 0.0,
+                    "error": result.error or "Unknown error",
+                })
+
+        if all_failed:
+            logger.warning("Tier 0: all frames failed via remove.bg (Canva)")
+            return None
+
+        return {
+            "success": True,
+            "results": processed,
+            "method": "removebg_canva",
+            "tier": 0,
+            "pool_status": client.pool.status() if client.pool else {},
+        }
+
+    except ImportError:
+        logger.debug("Tier 0 skip: removebg_canva_client not available")
+        return None
+    except Exception as exc:
+        logger.warning("Tier 0 failed: %s", exc)
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  Tier 1: remove-bg.io Cloud API
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -543,6 +615,13 @@ async def handle_removebg(
         return {"success": False, "error": f"Max {MAX_FRAMES} frames per request"}
 
     # Forced method
+    if force_method == "removebg_canva":
+        result = await _tier0_removebg_canva(frames_b64)
+        if result:
+            result["total_time_ms"] = int((time.monotonic() - t0) * 1000)
+            return result
+        return {"success": False, "error": "remove.bg (Canva) failed (forced method)"}
+
     if force_method == "removebgio":
         result = await _tier1_removebgio(frames_b64, api_key)
         if result:
@@ -563,6 +642,37 @@ async def handle_removebg(
         return result
 
     # Auto: Tiered fallback chain
+    # Tier 0: remove.bg (Canva) with key pool
+    tier0 = await _tier0_removebg_canva(frames_b64)
+    if tier0:
+        failed_indices = [
+            i for i, r in enumerate(tier0["results"])
+            if not r.get("success")
+        ]
+        if not failed_indices:
+            tier0["total_time_ms"] = int((time.monotonic() - t0) * 1000)
+            return tier0
+        # Partial success — fill failures with lower tiers
+        logger.info(
+            "Tier 0: %d/%d frames failed, falling through",
+            len(failed_indices), len(frames_b64),
+        )
+        failed_frames = [frames_b64[i] for i in failed_indices]
+        # Try Tier 1 for failures
+        fill = await _tier1_removebgio(failed_frames, api_key)
+        if fill is None:
+            fill = await _tier2_rembg(failed_frames)
+        if fill is None:
+            fill = await _tier3_chroma(
+                failed_frames, tolerance, edge_blur, despill,
+            )
+        if fill:
+            for j, idx in enumerate(failed_indices):
+                if j < len(fill["results"]):
+                    tier0["results"][idx] = fill["results"][j]
+        tier0["total_time_ms"] = int((time.monotonic() - t0) * 1000)
+        return tier0
+
     # Tier 1: remove-bg.io
     tier1 = await _tier1_removebgio(frames_b64, api_key)
     if tier1:
@@ -633,14 +743,19 @@ def get_removebg_status() -> Dict[str, Any]:
         or os.environ.get("REMOVE_BG_IO_API_KEY", "")
     )
 
+    canva_keys_str = os.environ.get("REMOVEBG_API_KEYS", "")
+    canva_keys = [k.strip() for k in canva_keys_str.split(",") if k.strip()]
+
     return {
         "available_methods": {
+            "removebg_canva": len(canva_keys) > 0,
             "removebgio": bool(removebgio_key),
             "rembg_u2net": _HAS_REMBG,
             "chroma_key": _HAS_PIL,
         },
         "recommended": (
-            "removebgio" if removebgio_key
+            "removebg_canva" if canva_keys
+            else "removebgio" if removebgio_key
             else "rembg_u2net" if _HAS_REMBG
             else "chroma_key" if _HAS_PIL
             else None
@@ -650,5 +765,6 @@ def get_removebg_status() -> Dict[str, Any]:
             "pillow": _HAS_PIL,
             "rembg": _HAS_REMBG,
             "removebgio_api_key": bool(removebgio_key),
+            "removebg_canva_keys": len(canva_keys),
         },
     }
