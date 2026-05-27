@@ -225,9 +225,11 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       layoutedPre.textContent = JSON.stringify(layoutData.layouted, null, 2)
 
       currentSkeletonSvg = layoutData.skeletonSvg || ''
+      const currentIconSvg = layoutData.iconSvg || ''
       if (currentSkeletonSvg) {
         // Pass both SVG and layouted JSON — enables interactive editor
         preview?.showSkeleton(currentSkeletonSvg, layoutData.layouted)
+        if (currentIconSvg) preview?.showIconSvg(currentIconSvg)
         preview?.show(currentSkeletonSvg)
         // Auto-switch to skeleton tab so user can verify components
         document.getElementById('tab-skeleton')?.click()
@@ -236,6 +238,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         // SVG generation failed but we have layouted data — try interactive rendering
         console.warn('skeletonSvg empty, falling back to interactive render from layouted JSON')
         preview?.showSkeleton('', layoutData.layouted)
+        if (currentIconSvg) preview?.showIconSvg(currentIconSvg)
         document.getElementById('tab-skeleton')?.click()
         exportPanel?.enable()
       }
@@ -419,6 +422,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       const data = await res.json()
       if (data.layouted) {
         preview?.showSkeleton(data.skeletonSvg || '', data.layouted)
+        if (data.iconSvg) preview?.showIconSvg(data.iconSvg)
         currentSkeletonSvg = data.skeletonSvg || preview?.getSkeletonSvg() || ''
         layoutedPre.textContent = JSON.stringify(data.layouted, null, 2)
       }

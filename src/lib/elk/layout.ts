@@ -196,6 +196,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     // Generate skeleton SVG from layouted graph (non-fatal if it fails)
     let skeletonSvg = ''
+    let iconSvg = ''
     try {
       // Use relative import to avoid Vite alias resolution issues in SSR
       const { elkToSvg } = await import('../../lib/elk/to-svg')
@@ -211,11 +212,22 @@ export const POST: APIRoute = async ({ request }) => {
       console.error('Skeleton SVG generation failed:', svgErr.message, svgErr.stack?.slice(0, 300))
     }
 
+    // Generate icon-enriched SVG (non-fatal if it fails)
+    try {
+      const { elkToSvgIcons } = await import('../../lib/elk/to-svg-icons')
+      if (layouted && layouted.children && layouted.children.length > 0) {
+        iconSvg = elkToSvgIcons(layouted)
+      }
+    } catch (iconErr: any) {
+      console.error('Icon SVG generation failed:', iconErr.message)
+    }
+
     return new Response(
       JSON.stringify({
         success: true,
         layouted,
         skeletonSvg,
+        iconSvg,
         options: layoutOptions,
       }),
       {
