@@ -265,6 +265,38 @@ async def generate_layered_topology(
         )
 
         # ══════════════════════════════════════════════════════════════
+        #  Stage 2.5: Refinement pass (second radix pass)
+        #  CCCL:
+        #    // Passes 2..N refine with higher radix bits
+        #    key_bufs.selector ^= 1;
+        #
+        #  Each region reads its pass-1 result + neighbor context,
+        #  writes a refined subgraph.  DoubleBuffer swap after each.
+        #  Skip if: simple input, or caller requested skip_refinement.
+        # ══════════════════════════════════════════════════════════════
+
+        if not skip_refinement and n_regions >= 2 and intent.confidence >= 0.3:
+            t_stage = time.monotonic()
+
+            from backend.pipeline.topology.per_region_generator import (
+                refine_all_regions,
+            )
+
+            subgraphs, refine_diag = await refine_all_regions(
+                regions=regions,
+                subgraphs=subgraphs,
+                ai_engine=ai_engine,
+                model=model,
+                context=context,
+            )
+
+            diag["stages"]["refinement"] = {
+                "elapsed_ms": _ms(t_stage),
+                **refine_diag,
+            }
+            logger.info("Refinement pass completed for %d regions", len(regions))
+
+        # ══════════════════════════════════════════════════════════════
         #  Stage 3: Canvas composition (invoke_last_filter + merge)
         #  CCCL: invoke_last_filter(key_bufs.Current(), ...);
         # ══════════════════════════════════════════════════════════════

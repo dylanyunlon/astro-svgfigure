@@ -448,3 +448,193 @@ def _fallback_subgraph(region: PlannedRegion) -> Dict[str, Any]:
         "children": children,
         "edges": edges,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §5  Refinement pass — the second radix pass (DoubleBuffer swap)
+# ═══════════════════════════════════════════════════════════════════════════
+
+REFINE_SYSTEM = """\
+You are refining ONE REGION of a technical architecture diagram.
+You will receive the current subgraph JSON and its neighboring regions.
+
+Your task: improve the subgraph WITHOUT changing the node set.
+  - Adjust node widths/heights for visual balance with neighbors
+  - Fix edge routing hints if nodes are reordered
+  - Add iconHint if missing (1-3 word natural language description)
+  - Ensure compound node nesting is correct
+
+RULES:
+1. Do NOT add or remove nodes. Only adjust sizes, order, and metadata.
+2. Do NOT change node IDs.
+3. Keep all existing edges. You may adjust edge routing hints.
+4. Output the complete refined subgraph JSON.
+"""
+
+REFINE_USER = """\
+=== CURRENT SUBGRAPH (from Pass 1) ===
+{current_json}
+
+=== REGION INFO ===
+Region: {region_name} ({bbox_w}×{bbox_h} pixels)
+
+=== NEIGHBORING REGIONS (for size reference) ===
+{neighbor_info}
+
+Refine the subgraph. Output ONLY the JSON:"""
+
+
+async def refine_region(
+    region: PlannedRegion,
+    current_subgraph: Dict[str, Any],
+    neighbor_subgraphs: List[Tuple[PlannedRegion, Dict[str, Any]]],
+    ai_engine,
+    model: str = "",
+    context: Optional[PassContext] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Refine a region's subgraph using neighbor context.
+
+    Like CCCL's pass 2+ with higher radix bits: reads from
+    Current() (the pass 1 result), writes to Alternate()
+    (the refined subgraph).  After this, the caller does
+    selector ^= 1.
+
+    The refinement adjusts node sizes, adds missing iconHints,
+    and ensures visual balance across regions — things that
+    the initial generation (pass 1) can't do because it doesn't
+    see the other regions' results.
+
+    Returns (refined_subgraph, diagnostics).
+    """
+    import json
+
+    if context:
+        context.advance("refine_region")
+
+    diag: Dict[str, Any] = {"region": region.id}
+
+    # Build neighbor summary
+    neighbor_lines = []
+    for nr, ns in neighbor_subgraphs:
+        n_nodes = len(ns.get("children", []))
+        avg_w = 0
+        if ns.get("children"):
+            avg_w = sum(c.get("width", 150) for c in ns["children"]) // n_nodes
+        neighbor_lines.append(
+            f"  {nr.name}: {nr.bbox['width']}×{nr.bbox['height']}, "
+            f"{n_nodes} nodes, avg_width={avg_w}"
+        )
+    neighbor_info = "\n".join(neighbor_lines) if neighbor_lines else "  (none)"
+
+    current_json = json.dumps(current_subgraph, indent=2, ensure_ascii=False)
+
+    user_prompt = REFINE_USER.format(
+        current_json=current_json[:4000],  # truncate if very large
+        region_name=region.name,
+        bbox_w=region.bbox["width"],
+        bbox_h=region.bbox["height"],
+        neighbor_info=neighbor_info,
+    )
+
+    try:
+        messages = [
+            {"role": "system", "content": REFINE_SYSTEM},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        raw_response = await ai_engine.chat(
+            messages=messages, model=model,
+        )
+
+        from backend.pipeline.topology.finalize_pass import (
+            finalize_pass, validate_elk_subgraph,
+        )
+
+        validated = finalize_pass(
+            raw_output=raw_response,
+            context=context,
+            validator=validate_elk_subgraph,
+            counter_updater=lambda ctx, data: None,
+        )
+
+        if validated and validated.get("children"):
+            # Preserve original node IDs — don't let LLM rename them
+            original_ids = {
+                c["id"] for c in current_subgraph.get("children", [])
+                if isinstance(c, dict) and c.get("id")
+            }
+            refined_ids = {
+                c["id"] for c in validated.get("children", [])
+                if isinstance(c, dict) and c.get("id")
+            }
+
+            if original_ids and refined_ids == original_ids:
+                _constrain_to_bbox(validated, region.bbox)
+                diag["status"] = "refined"
+                diag["node_count"] = len(validated.get("children", []))
+                return validated, diag
+            else:
+                diag["status"] = "id_mismatch"
+                diag["original_ids"] = len(original_ids)
+                diag["refined_ids"] = len(refined_ids)
+                logger.warning(
+                    "Refinement changed node IDs for %s, keeping original",
+                    region.id,
+                )
+                return current_subgraph, diag
+
+    except Exception as e:
+        diag["status"] = "error"
+        diag["error"] = str(e)
+        logger.warning("Refinement failed for %s: %s", region.id, e)
+
+    return current_subgraph, diag
+
+
+async def refine_all_regions(
+    regions: List[PlannedRegion],
+    subgraphs: List[Dict[str, Any]],
+    ai_engine,
+    model: str = "",
+    context: Optional[PassContext] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Refine all regions with neighbor context.
+
+    Like CCCL's multi-pass loop:
+        for pass in range(1, num_passes):
+            topk_kernel(key_bufs.Current(), key_bufs.Alternate(), ...);
+            key_bufs.selector ^= 1;
+
+    Each region reads the pass-1 results of its neighbors.
+    """
+    from backend.pipeline.topology.canvas_compositor import DoubleBuffer
+
+    diag: Dict[str, Any] = {"regions": {}}
+
+    # Initialize DoubleBuffers for each region
+    buffers = [DoubleBuffer(initial=sg) for sg in subgraphs]
+
+    for i, region in enumerate(regions):
+        # Collect neighbors: adjacent regions by bbox proximity
+        neighbors = []
+        for j, other in enumerate(regions):
+            if i == j:
+                continue
+            neighbors.append((other, buffers[j].current()))
+
+        refined, region_diag = await refine_region(
+            region=region,
+            current_subgraph=buffers[i].current(),
+            neighbor_subgraphs=neighbors[:4],  # limit context size
+            ai_engine=ai_engine,
+            model=model,
+            context=context,
+        )
+
+        # Write to Alternate, then swap — selector ^= 1
+        buffers[i].set_alternate(refined)
+        diag["regions"][region.id] = region_diag
+
+    # Read final results from Current() of each buffer
+    results = [buf.current() for buf in buffers]
+    return results, diag
