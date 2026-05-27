@@ -62,153 +62,33 @@ PREFERRED_COLLECTIONS = [
     "iconoir",         # 1500+ geometric icons, MIT
 ]
 
-# Mapping from common academic/ML terms to better search queries
-# (LLM iconHints are often too specific for icon search)
-TERM_ALIASES: Dict[str, str] = {
-    "neural network": "brain",
-    "neural net": "brain",
-    "deep learning": "brain",
-    "machine learning": "brain",
-    "transformer": "layers",
-    "attention": "eye",
-    "self-attention": "eye",
-    "embedding": "grid",
-    "encoder": "arrow-right",
-    "decoder": "arrow-left",
-    "loss function": "chart-line",
-    "gradient": "trending-down",
-    "optimization": "settings",
-    "backpropagation": "refresh",
-    "convolution": "grid",
-    "pooling": "minimize",
-    "activation": "bolt",
-    "softmax": "chart-bar",
-    "tokenizer": "scissors",
-    "vocabulary": "book",
-    "corpus": "library",
-    "dataset": "database",
-    "training": "dumbbell",
-    "inference": "rocket",
-    "fine-tuning": "adjustments",
-    "quantization": "grid-dots",
-    "pruning": "scissors",
-    "distillation": "flask",
-    "augmentation": "photo-plus",
-    "batch": "stack",
-    "epoch": "repeat",
-    "pipeline": "git-branch",
-    "api": "plug",
-    "endpoint": "plug",
-    "microservice": "box",
-    "container": "package",
-    "kubernetes": "ship",
-    "docker": "package",
-    "cloud": "cloud",
-    "server": "server",
-    "database": "database",
-    "storage": "hard-drive",
-    "cache": "bolt",
-    "queue": "list",
-    "message": "mail",
-    "notification": "bell",
-    "authentication": "lock",
-    "authorization": "shield",
-    "user": "user",
-    "admin": "crown",
-    "dashboard": "dashboard",
-    "analytics": "chart-bar",
-    "monitoring": "activity",
-    "logging": "file-text",
-    "testing": "check-circle",
-    "deployment": "rocket",
-    "ci/cd": "git-merge",
-    "version control": "git-branch",
-    "code review": "code",
-    "documentation": "book",
-    "requirement": "clipboard",
-    "specification": "file-text",
-    "architecture": "building",
-    "design": "palette",
-    "prototype": "layout",
-    "iteration": "repeat",
-    "feedback": "message-circle",
-    "validation": "check",
-    "verification": "shield-check",
-    "generation": "wand",
-    "retrieval": "search",
-    "similarity": "git-compare",
-    "clustering": "circles",
-    "classification": "tags",
-    "regression": "trending-up",
-    "segmentation": "layout-grid",
-    "detection": "scan",
-    "recognition": "eye",
-    "prediction": "trending-up",
-    "recommendation": "thumbs-up",
-    "decomposition": "puzzle",
-    "matrix": "grid",
-    "graph": "share-2",
-    "tree": "git-branch",
-    "dependency": "link",
-    "sparse": "grid-dots",
-    "dense": "square",
-    "residual": "minus",
-    "low-rank": "layers",
-    "factorization": "puzzle",
-    "codebase": "code",
-    "source code": "code",
-    "function": "code",
-    "class": "box",
-    "module": "package",
-    "component": "component",
-    "layer": "layers",
-    "block": "square",
-    "input": "arrow-right-circle",
-    "output": "arrow-left-circle",
-    "merge": "git-merge",
-    "split": "git-branch",
-    "filter": "filter",
-    "transform": "refresh-cw",
-    "aggregate": "layers",
-    "normalize": "sliders",
-    "regularize": "shield",
-    "dropout": "x-circle",
-    "mask": "eye-off",
-    "prompt": "terminal",
-    "response": "message-square",
-    "token": "hash",
-    "latent": "eye-off",
-    "feature": "star",
-    "weight": "sliders",
-    "bias": "minus-circle",
-    "parameter": "settings",
-    "hyperparameter": "sliders",
-    "benchmark": "bar-chart",
-    "evaluation": "check-square",
-    "metric": "bar-chart-2",
-    "accuracy": "target",
-    "precision": "crosshair",
-    "recall": "rotate-ccw",
-    "f1": "award",
-    "auc": "trending-up",
-    "confusion": "grid",
-    "heatmap": "grid",
-    "adjacency": "grid",
-    "accept": "check",
-    "reject": "x",
-    "refine": "edit",
-    "regenerate": "refresh-cw",
-    "consistency": "check-circle",
-    "jaccard": "circle",
-    "overlap": "layers",
-    "intersection": "circle",
-    "semantic": "brain",
-    "structural": "box",
-    "vector": "arrow-right",
-    "embedding space": "scatter-chart",
-    "memory bank": "database",
-    "retrieval set": "search",
-}
+# Mapping from common academic/ML terms to better search queries.
+# Loaded from shared/icon-aliases.json — the SINGLE SOURCE OF TRUTH
+# also consumed by src/lib/elk/to-svg-icons.ts on the frontend.
+# To add a new alias, edit shared/icon-aliases.json only.
+import json as _json
+from pathlib import Path as _Path
+
+def _load_aliases() -> Dict[str, str]:
+    """Load icon aliases from shared JSON. Falls back to empty dict."""
+    # Resolve path relative to this file: backend/pipeline/ → ../../shared/
+    _candidates = [
+        _Path(__file__).resolve().parent.parent.parent / "shared" / "icon-aliases.json",
+        _Path.cwd() / "shared" / "icon-aliases.json",
+    ]
+    for p in _candidates:
+        if p.is_file():
+            try:
+                data = _json.loads(p.read_text(encoding="utf-8"))
+                aliases = data.get("aliases", {})
+                logger.debug(f"Loaded {len(aliases)} icon aliases from {p}")
+                return aliases
+            except Exception as e:
+                logger.warning(f"Failed to load icon aliases from {p}: {e}")
+    logger.warning("shared/icon-aliases.json not found, using empty aliases")
+    return {}
+
+TERM_ALIASES: Dict[str, str] = _load_aliases()
 
 
 @dataclass

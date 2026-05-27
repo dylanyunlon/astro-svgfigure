@@ -8,122 +8,36 @@
  *
  * Architecture:
  *   node.iconHint ("database", "neural activations", …)
- *     → TERM_ALIASES local mapping → canonical icon name
+ *     → shared/icon-aliases.json (single source of truth, also used by Python)
  *     → Iconify CDN <image href="https://api.iconify.design/{prefix}/{name}.svg">
  *     → embedded in SVG node alongside label text
  *
  * Falls back gracefully: if no iconHint or no alias match, node renders
  * as a clean colored box with text (same as to-svg.ts).
  *
- * Ported logic from:
- *   - backend/pipeline/svg_icon_fetcher.py  (TERM_ALIASES, PREFERRED_COLLECTIONS)
+ * Icon alias data:
+ *   - shared/icon-aliases.json is the SINGLE SOURCE OF TRUTH
+ *   - Python backend/pipeline/svg_icon_fetcher.py reads the same file
+ *   - Adding a new alias in the JSON automatically works in both runtimes
+ *
+ * Other ported logic:
  *   - backend/pipeline/scaffold_builder.py  (color palette, group handling)
  *   - src/lib/elk/to-svg.ts                 (edge routing, arrow markers)
  *
  * GitHub: kieler/elkjs, Iconify/api, EmilStenstrom/elkjs-svg
  */
 
-// ── Term Aliases (ported from svg_icon_fetcher.py) ──────────────────
-// Maps natural-language iconHint → Iconify icon ID (prefix:name)
-// Uses tabler as primary collection for visual consistency
-const TERM_ALIASES: Record<string, string> = {
-  // ML / Deep Learning
-  'neural network': 'tabler:brain',
-  'neural net': 'tabler:brain',
-  'deep learning': 'tabler:brain',
-  'machine learning': 'tabler:brain',
-  'AI agent': 'tabler:robot',
-  'transformer': 'tabler:layers-intersect',
-  'transformer block': 'tabler:layers-intersect',
-  'attention': 'tabler:eye',
-  'self-attention': 'tabler:eye',
-  'vision transformer': 'tabler:eye-scan',
-  'embedding': 'tabler:grid-dots',
-  'encoder': 'tabler:arrow-bar-right',
-  'decoder': 'tabler:arrow-bar-left',
-  'loss function': 'tabler:chart-line',
-  'loss curve': 'tabler:chart-line',
-  'gradient': 'tabler:trending-down',
-  'optimization': 'tabler:settings',
-  'backpropagation': 'tabler:refresh',
-  'convolution': 'tabler:grid-pattern',
-  'pooling': 'tabler:arrow-autofit-content',
-  'activation': 'tabler:bolt',
-  'softmax': 'tabler:chart-bar',
-  'probability distribution': 'tabler:chart-bar',
-  'tokenizer': 'tabler:scissors',
-  'sequence generation': 'tabler:text-wrap',
-  'next token': 'tabler:text-wrap',
-  'neural activations': 'tabler:wave-sine',
-  'hidden state': 'tabler:wave-sine',
+// ── Icon Aliases (loaded from shared single source of truth) ────────
+// shared/icon-aliases.json is also consumed by Python svg_icon_fetcher.py
+// Format: { "default_collection": "tabler", "aliases": { "hint": "icon-name" } }
+import iconAliasData from '../../../shared/icon-aliases.json'
 
-  // Data
-  'database': 'tabler:database',
-  'dataset': 'tabler:database',
-  'clean data': 'tabler:database-smile',
-  'storage': 'tabler:server',
-  'JSON document': 'tabler:file-code',
-  'JSON': 'tabler:file-code',
-  'tree outline': 'tabler:binary-tree',
-  'tree structure': 'tabler:binary-tree',
+const ICON_ALIASES: Record<string, string> = iconAliasData.aliases || {}
+const DEFAULT_COLLECTION: string = iconAliasData.default_collection || 'tabler'
 
-  // Code / Dev
-  'code editor': 'tabler:code',
-  'code file': 'tabler:file-code-2',
-  'HTML tag': 'tabler:brand-html5',
-  'CSS stylesheet': 'tabler:brand-css3',
-  'merged document': 'tabler:file-symlink',
-
-  // Images / Vision
-  'high resolution screenshot': 'tabler:photo-scan',
-  'high resolution': 'tabler:photo-scan',
-  'screenshot': 'tabler:app-window',
-  'browser window': 'tabler:app-window',
-  'cropped image': 'tabler:photo-edit',
-  'image': 'tabler:photo',
-  'webpage render': 'tabler:browser',
-
-  // Layout / Structure
-  'grid patches': 'tabler:layout-grid',
-  'grid': 'tabler:layout-grid',
-  'bounding boxes': 'tabler:box-multiple',
-  'structured layout': 'tabler:layout',
-  'layout': 'tabler:layout',
-
-  // Processing / Filter
-  'filter funnel': 'tabler:filter',
-  'filter': 'tabler:filter',
-  'heuristic': 'tabler:filter',
-  'transform': 'tabler:transform',
-  'dynamic scaling': 'tabler:arrows-maximize',
-
-  // Status / Warning
-  'warning sign': 'tabler:alert-triangle',
-  'warning': 'tabler:alert-triangle',
-  'error icon': 'tabler:alert-circle',
-  'error': 'tabler:alert-circle',
-  'hidden eye': 'tabler:eye-off',
-
-  // Hardware / Resources
-  'memory chip': 'tabler:cpu',
-  'RAM': 'tabler:cpu',
-  'speedometer': 'tabler:gauge',
-
-  // Math / Matrix
-  'matrix': 'tabler:math-function',
-  'weight matrix': 'tabler:math-function',
-
-  // Style / Design
-  'style brush': 'tabler:brush',
-
-  // Generic fallbacks
-  'pipeline': 'tabler:git-branch',
-  'input': 'tabler:arrow-right-circle',
-  'output': 'tabler:arrow-left-circle',
-  'settings': 'tabler:settings',
-  'search': 'tabler:search',
-  'link': 'tabler:link',
-}
+// Pre-sort alias keys by length (longest first) for substring matching.
+// Computed once at module load, not per-call.
+const SORTED_ALIAS_KEYS: string[] = Object.keys(ICON_ALIASES).sort((a, b) => b.length - a.length)
 
 // ── Iconify CDN URL builder ─────────────────────────────────────────
 
@@ -131,27 +45,27 @@ function resolveIconUrl(hint: string): string | null {
   if (!hint) return null
   const low = hint.trim().toLowerCase()
 
-  // 1) Exact match
-  if (TERM_ALIASES[low]) return _iconifyUrl(TERM_ALIASES[low])
+  // 1) Exact match against shared aliases
+  if (ICON_ALIASES[low]) return _iconifyUrl(ICON_ALIASES[low])
 
-  // 2) Partial / substring match (longest first)
-  const sorted = Object.keys(TERM_ALIASES).sort((a, b) => b.length - a.length)
-  for (const term of sorted) {
-    if (low.includes(term)) return _iconifyUrl(TERM_ALIASES[term])
+  // 2) Partial / substring match (longest alias first to avoid false positives)
+  for (const term of SORTED_ALIAS_KEYS) {
+    if (low.includes(term)) return _iconifyUrl(ICON_ALIASES[term])
   }
 
-  // 3) Try matching individual words
+  // 3) Try matching individual words from the hint
   const words = low.replace(/[^a-z0-9\s-]/g, '').split(/\s+/)
   for (const w of words) {
-    if (TERM_ALIASES[w]) return _iconifyUrl(TERM_ALIASES[w])
+    if (ICON_ALIASES[w]) return _iconifyUrl(ICON_ALIASES[w])
   }
 
   return null
 }
 
-function _iconifyUrl(iconId: string): string {
-  const [prefix, name] = iconId.split(':')
-  return `https://api.iconify.design/${prefix}/${name}.svg?width=28&height=28`
+function _iconifyUrl(iconName: string): string {
+  // iconName is just the name part (e.g. "database", "brain")
+  // Prefix with default collection to form full Iconify CDN URL
+  return `https://api.iconify.design/${DEFAULT_COLLECTION}/${iconName}.svg?width=28&height=28`
 }
 
 // ── Color Palette (from scaffold_builder.py) ────────────────────────
