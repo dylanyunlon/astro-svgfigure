@@ -563,3 +563,179 @@ def sugiyama_layout(
     diag["quality"] = quality
 
     return positions, diag
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Per-region constrained layout (M9)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def layout_within_bbox(
+    nodes: List[str],
+    edges: List[Tuple[str, str]],
+    node_widths: Dict[str, int],
+    node_heights: Dict[str, int],
+    bbox: Dict[str, int],
+    padding: int = 20,
+    min_node_gap: int = 20,
+    layer_gap: int = 40,
+    max_sweeps: int = 16,
+) -> Tuple[Dict[str, Tuple[int, int]], Dict[str, Any]]:
+    """Sugiyama layout constrained to a bounding box.
+
+    Like CCCL's per-pass candidate refinement: each pass operates
+    within the reduced candidate set (buffer), not the full input.
+    Here each region's nodes are laid out within that region's bbox,
+    not the full canvas.
+
+    After layout, positions are bbox-relative (origin at bbox corner).
+    The compositor transforms them to absolute canvas coordinates.
+
+    Coordinate compression: if the unconstrained layout exceeds the
+    bbox, we scale positions and gaps to fit, preserving the topology
+    (relative ordering and crossing count).
+
+    Args:
+        nodes: Node IDs in this region
+        edges: Edges (source, target) within this region
+        node_widths: Width per node
+        node_heights: Height per node
+        bbox: {x, y, width, height} — the region's bounding box
+        padding: Internal padding within the bbox
+        min_node_gap: Minimum horizontal gap between nodes
+        layer_gap: Vertical gap between Sugiyama layers
+        max_sweeps: Barycenter sweep count for crossing minimization
+
+    Returns:
+        (positions, diagnostics) where positions are bbox-relative
+    """
+    if not nodes:
+        return {}, {"phases": {}, "constrained": True}
+
+    inner_w = bbox["width"] - 2 * padding
+    inner_h = bbox["height"] - 2 * padding
+
+    if inner_w < 100 or inner_h < 60:
+        # Too small for Sugiyama — simple vertical stack
+        positions: Dict[str, Tuple[int, int]] = {}
+        cy = padding
+        for n in nodes:
+            w = node_widths.get(n, 100)
+            h = node_heights.get(n, 40)
+            positions[n] = (padding + (inner_w - w) // 2, cy)
+            cy += h + 8
+        return positions, {"phases": {}, "constrained": True, "fallback": "stack"}
+
+    # Run full Sugiyama within the inner dimensions
+    positions, diag = sugiyama_layout(
+        nodes, edges, node_widths, node_heights,
+        canvas_width=inner_w,
+        min_node_gap=min_node_gap,
+        layer_gap=layer_gap,
+        margin=0,
+        max_sweeps=max_sweeps,
+    )
+
+    if not positions:
+        return positions, diag
+
+    # ── Coordinate compression: fit within bbox ──
+    # Find bounding box of the layout
+    min_x = min(x for x, _ in positions.values())
+    min_y = min(y for _, y in positions.values())
+    max_x = max(x + node_widths.get(n, 100) for n, (x, _) in positions.items())
+    max_y = max(y + node_heights.get(n, 40) for n, (_, y) in positions.items())
+
+    layout_w = max_x - min_x
+    layout_h = max_y - min_y
+
+    # Scale factors (only shrink, never expand)
+    sx = min(1.0, inner_w / max(layout_w, 1))
+    sy = min(1.0, inner_h / max(layout_h, 1))
+    scale = min(sx, sy)  # uniform scale to preserve aspect ratio
+
+    # Apply scale + offset to place within bbox (with padding)
+    compressed: Dict[str, Tuple[int, int]] = {}
+    for n, (x, y) in positions.items():
+        nx = int((x - min_x) * scale) + padding
+        ny = int((y - min_y) * scale) + padding
+        compressed[n] = (nx, ny)
+
+    # Also scale node sizes if we had to compress
+    if scale < 1.0:
+        for n in nodes:
+            if n in node_widths:
+                node_widths[n] = max(60, int(node_widths[n] * scale))
+            if n in node_heights:
+                node_heights[n] = max(30, int(node_heights[n] * scale))
+
+    diag["constrained"] = True
+    diag["scale"] = round(scale, 3)
+    diag["bbox"] = bbox
+
+    return compressed, diag
+
+
+def apply_layout_to_subgraph(
+    subgraph: Dict[str, Any],
+    bbox: Dict[str, int],
+) -> Dict[str, Any]:
+    """Apply Sugiyama layout to an ELK subgraph within a bbox.
+
+    Convenience wrapper: extracts nodes/edges from ELK format,
+    runs layout_within_bbox, writes positions back into the subgraph.
+
+    Args:
+        subgraph: ELK subgraph dict with children[] and edges[]
+        bbox: Region bounding box
+
+    Returns:
+        The subgraph with x, y coordinates assigned to children
+    """
+    children = subgraph.get("children", [])
+    if not children:
+        return subgraph
+
+    # Extract node info
+    nodes = []
+    widths: Dict[str, int] = {}
+    heights: Dict[str, int] = {}
+    for child in children:
+        if isinstance(child, dict) and child.get("id"):
+            nid = child["id"]
+            nodes.append(nid)
+            widths[nid] = child.get("width", 150)
+            heights[nid] = child.get("height", 50)
+
+    # Extract edges
+    edges: List[Tuple[str, str]] = []
+    for edge in subgraph.get("edges", []):
+        sources = edge.get("sources", [])
+        targets = edge.get("targets", [])
+        for s in sources:
+            for t in targets:
+                # Skip cross-region references
+                if "." not in t and s in set(nodes) and t in set(nodes):
+                    edges.append((s, t))
+
+    if not nodes:
+        return subgraph
+
+    # Run constrained layout
+    positions, _ = layout_within_bbox(
+        nodes, edges, widths, heights, bbox,
+    )
+
+    # Write positions back
+    for child in children:
+        if isinstance(child, dict) and child.get("id") in positions:
+            nid = child["id"]
+            x, y = positions[nid]
+            child["x"] = x
+            child["y"] = y
+            # Update sizes if compressed
+            if nid in widths:
+                child["width"] = widths[nid]
+            if nid in heights:
+                child["height"] = heights[nid]
+
+    return subgraph
