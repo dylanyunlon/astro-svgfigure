@@ -1,25 +1,25 @@
 /**
  * src/middleware.ts — IP Firewall v3 ("French Beach + Underwear Thief")
  *
- * Three-layer defense:
+ * Five-layer defense:
  *
- *   Layer 0 — Whitelist
+ *   Layer 0   — Whitelist
  *     Your own servers, private ranges. Always pass, zero cost.
  *
- *   Layer 1 — Behavior traps (the "underwear thief" detector)
- *     Normal users visit /generate, /blog, /docs, /gallery.
+ *   Layer 0.5 — HTTP Method Filter
+ *     Block WebDAV (PROPFIND) and exotic methods instantly. Zero cost.
+ *
+ *   Layer 1   — Behavior traps (the "underwear thief" detector)
  *     Scanners probe /.env, /wp-admin, /actuator, /swagger…
  *     First suspicious path = instant ban + cached for 24h.
- *     Zero API calls, zero external dependencies, catches ANY scanner
- *     regardless of how clean their IP reputation is.
  *
- *   Layer 2 — IP reputation (AbuseIPDB / Scamalytics / proxycheck)
- *     Only queried for IPs that haven't hit a trap and aren't cached.
- *     Catches known botnets / Tor exits before they even try a trap path.
+ *   Layer 1.5 — Burst Detection (sliding window rate limiter)
+ *     Same IP > 30 requests in 10s → auto-ban 1h.
+ *
+ *   Layer 2   — IP reputation (AbuseIPDB / Scamalytics / proxycheck)
+ *     Catches known botnets / Tor exits before they try a trap path.
  *
  * Cache: in-memory LRU, 4096 entries, 24h for trap bans, 1h for reputation.
- *
- * File: src/middleware.ts  (Astro auto-discovers)
  */
 
 import { defineMiddleware } from 'astro:middleware';
@@ -58,9 +58,6 @@ const BLOCKED_METHODS: ReadonlySet<string> = new Set([
 
 /* ──────────────────────────────────────────────────────────────────────
  * Layer 0 — Whitelist
- *
- * Your own IPs + RFC1918 private ranges. Set IP_WHITELIST in .env as
- * a comma-separated list: IP_WHITELIST=167.160.187.143,1.2.3.4
  * ────────────────────────────────────────────────────────────────────── */
 
 const WHITELIST: ReadonlySet<string> = new Set(
@@ -86,39 +83,14 @@ function isTrustedIp(ip: string): boolean {
 
 /* ──────────────────────────────────────────────────────────────────────
  * Layer 1 — Behavior traps
- *
- * These are paths that NO legitimate visitor would ever request.
- * Hitting any one of them = immediate 24h ban. Like catching someone
- * rummaging through beach bags — you don't need to check their ID,
- * you just saw them do it.
- *
- * Two categories:
- *   TRAP_EXACT  — exact path match (lowercase)
- *   TRAP_PREFIX — starts-with match
- *
- * The lists are derived directly from the 09:45:xx scan burst in
- * production logs. Each entry maps to a real attack vector observed.
  * ────────────────────────────────────────────────────────────────────── */
 
 const TRAP_EXACT: ReadonlySet<string> = new Set([
-  // Server info disclosure
-  '/server',
-  '/server-status',
-  '/server-info',
-  // Application exploits
-  '/login.action',              // Struts / Confluence RCE
-  '/debug/default/view',        // Yii debug
-  '/trace.axd',                 // ASP.NET trace
-  '/info.php',                  // phpinfo()
-  '/phpinfo.php',
-  '/config.json',               // App config leak
-  '/telescope/requests',        // Laravel Telescope
-  // Metadata files
-  '/.ds_store',
-  '/.vscode/sftp.json',         // VSCode SFTP creds
-  // API docs (we don't run swagger)
-  '/swagger.json',
-  '/swagger-ui',
+  '/server', '/server-status', '/server-info',
+  '/login.action', '/debug/default/view', '/trace.axd',
+  '/info.php', '/phpinfo.php', '/config.json', '/telescope/requests',
+  '/.ds_store', '/.vscode/sftp.json',
+  '/swagger.json', '/swagger-ui',
 ]);
 
 const TRAP_PREFIXES: readonly string[] = [
@@ -130,28 +102,27 @@ const TRAP_PREFIXES: readonly string[] = [
   '/cpanel', '/whm',
   // Docker registry
   '/v2/_catalog',
-  // Microsoft Exchange
-  '/ecp/', '/owa/', '/autodiscover/',
+  // Microsoft Exchange / Outlook (observed: /owa/auth/logon.aspx)
+  '/ecp/', '/owa/', '/autodiscover/', '/remote/',
   // Atlassian
-  '/s/8323',                    // Jira metadata probe
+  '/s/8323',
   // Spring Boot
   '/actuator/',
   // Source / config leak
   '/.env', '/.git/', '/.svn/', '/.hg/',
-  '/proc/',                     // /proc/self/environ
-  '/etc/passwd',
+  '/proc/', '/etc/passwd',
+  // Subfolder .env scanning (observed: /public/.env, /shared/.env, etc.)
+  '/public/.env', '/shared/.env', '/app/.env', '/web/.env', '/www/.env',
+  '/src/.env', '/config/.env', '/backend/.env', '/api/.env',
   // Swagger family
   '/swagger/', '/swagger/v1/', '/api-docs/',
   '/v2/api-docs', '/v3/api-docs', '/webjars/swagger',
-  // GraphQL scanning (we don't have graphql)
+  // GraphQL
   '/graphql',
   // Admin panels
   '/phpmyadmin', '/adminer', '/pma/',
   // Node.js internals
   '/node_modules/', '/.npmrc',
-  // Subfolder .env scanning (observed in production)
-  '/public/.env', '/shared/.env', '/app/.env', '/web/.env', '/www/.env',
-  '/src/.env', '/config/.env', '/backend/.env', '/api/.env',
   // Login / auth probes
   '/login', '/signin', '/admin', '/administrator',
   '/auth/', '/oauth/', '/sso/',
@@ -163,49 +134,36 @@ const TRAP_PREFIXES: readonly string[] = [
   '/backup', '/db.sql', '/dump.sql', '/database.sql',
 ];
 
-/**
- * Substrings that indicate traversal or injection in any path position.
- */
 const TRAP_SUBSTRINGS: readonly string[] = [
-  'META-INF/',
-  'WEB-INF/',
-  '..%2f',                      // Encoded path traversal
-  '..%5c',
-  '%00',                        // Null byte injection
-  'pom.properties',             // Maven metadata
-  '.php?',                      // PHP query string on non-PHP site
-  'cgi-bin/',                   // CGI probes
-  '.asp?', '.aspx?', '.jsp?',  // Other server tech probes
+  'META-INF/', 'WEB-INF/',
+  '..%2f', '..%5c', '%00',
+  'pom.properties',
+  '.php?', 'cgi-bin/',
+  '.asp?', '.aspx?', '.jsp?',
 ];
 
 function isTrapPath(pathname: string): boolean {
   const lower = pathname.toLowerCase();
-
   if (TRAP_EXACT.has(lower)) return true;
-
   for (const p of TRAP_PREFIXES) {
     if (lower.startsWith(p)) return true;
   }
-
   for (const s of TRAP_SUBSTRINGS) {
     if (lower.includes(s)) return true;
   }
-
   return false;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
- * LRU Cache (shared across Layer 1 and Layer 2)
+ * LRU Cache
  * ────────────────────────────────────────────────────────────────────── */
 
 interface CacheEntry {
   score: number;
-  provider: string;       // 'trap', 'abuseipdb', 'proxycheck', etc.
+  provider: string;
   ts: number;
   blocked: boolean;
-  /** Which trap path triggered the ban (for logging) */
   trapPath?: string;
-  /** Custom TTL override — trap bans last 24h, reputation 1h */
   ttlMs: number;
 }
 
@@ -223,6 +181,11 @@ function cacheGet(ip: string): CacheEntry | null {
   return entry;
 }
 
+function cacheSet(ip: string, entry: CacheEntry): void {
+  if (cache.size >= CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
   cache.set(ip, entry);
 }
 
@@ -230,14 +193,14 @@ function cacheGet(ip: string): CacheEntry | null {
  * Layer 1.5 — Burst Detection (sliding window rate limiter)
  * ────────────────────────────────────────────────────────────────────── */
 
-const BURST_WINDOW_MS = 10_000;   // 10 seconds
-const BURST_LIMIT = 30;           // max 30 requests per window
-const BURST_BAN_MS = 3_600_000;   // 1 hour ban
+const BURST_WINDOW_MS = 10_000;
+const BURST_LIMIT = 30;
+const BURST_BAN_MS = 3_600_000;
 
 const burstMap = new Map<string, number[]>();
 
 let burstCleanupTimer: ReturnType<typeof setInterval> | null = null;
-function ensureBurstCleanup() {
+function ensureBurstCleanup(): void {
   if (burstCleanupTimer) return;
   burstCleanupTimer = setInterval(() => {
     const cutoff = Date.now() - BURST_WINDOW_MS * 2;
@@ -254,8 +217,13 @@ function recordAndCheckBurst(ip: string): boolean {
   const now = Date.now();
   const cutoff = now - BURST_WINDOW_MS;
   let timestamps = burstMap.get(ip);
-  if (!timestamps) { timestamps = []; burstMap.set(ip, timestamps); }
-  while (timestamps.length > 0 && timestamps[0] < cutoff) { timestamps.shift(); }
+  if (!timestamps) {
+    timestamps = [];
+    burstMap.set(ip, timestamps);
+  }
+  while (timestamps.length > 0 && timestamps[0] < cutoff) {
+    timestamps.shift();
+  }
   timestamps.push(now);
   return timestamps.length > BURST_LIMIT;
 }
@@ -322,7 +290,6 @@ async function queryProxyCheck(ip: string): Promise<number | null> {
   } catch { return null; }
 }
 
-/** Query all providers in parallel, return highest score. */
 async function getIpScore(ip: string): Promise<{ score: number; provider: string } | null> {
   const queries = await Promise.allSettled([
     queryAbuseIPDB(ip).then((s) => s !== null ? { score: s, provider: 'abuseipdb' } : null),
@@ -352,7 +319,7 @@ function logBlock(ip: string, reason: string, extra?: string): void {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
- * Middleware — the three layers wired together
+ * Middleware — five layers wired together
  * ────────────────────────────────────────────────────────────────────── */
 
 export const onRequest = defineMiddleware(async ({ request }, next) => {
@@ -371,10 +338,14 @@ export const onRequest = defineMiddleware(async ({ request }, next) => {
   // ── Layer 0.5: HTTP Method Filter ──────────────────────────────────
   if (BLOCKED_METHODS.has(method)) {
     const ip = extractIp(request);
-    cacheSet(ip, { score: 100, provider: 'method', ts: Date.now(), blocked: true, trapPath: `${method} ${pathname}`, ttlMs: TRAP_BAN_MS });
+    cacheSet(ip, {
+      score: 100, provider: 'method', ts: Date.now(),
+      blocked: true, trapPath: `${method} ${pathname}`, ttlMs: TRAP_BAN_MS,
+    });
     logBlock(ip, 'method', `method=${method} path=${pathname}`);
     return new Response(null, { status: 403 });
   }
+
   if (!ALLOWED_METHODS.has(method)) {
     return new Response(null, { status: 405 });
   }
@@ -384,16 +355,18 @@ export const onRequest = defineMiddleware(async ({ request }, next) => {
   // ── Layer 0: Whitelist ─────────────────────────────────────────────
   if (isTrustedIp(ip)) return next();
 
-  // ── Check cache (covers both trap bans and reputation bans) ────────
+  // ── Check cache (covers trap bans, reputation bans, burst bans) ───
   const cached = cacheGet(ip);
   if (cached) {
     if (cached.blocked) {
-      // Don't re-log every request from a banned IP — too noisy
       return new Response(null, { status: 403 });
     }
     // Known clean — still check burst
     if (recordAndCheckBurst(ip)) {
-      cacheSet(ip, { score: 100, provider: 'burst', ts: Date.now(), blocked: true, ttlMs: BURST_BAN_MS });
+      cacheSet(ip, {
+        score: 100, provider: 'burst', ts: Date.now(),
+        blocked: true, ttlMs: BURST_BAN_MS,
+      });
       logBlock(ip, 'burst', `limit=${BURST_LIMIT}/${BURST_WINDOW_MS}ms`);
       return new Response(null, { status: 429 });
     }
@@ -401,15 +374,10 @@ export const onRequest = defineMiddleware(async ({ request }, next) => {
   }
 
   // ── Layer 1: Behavior trap ─────────────────────────────────────────
-  // Caught stealing underwear → instant 24h ban, zero API cost
   if (isTrapPath(pathname)) {
     const entry: CacheEntry = {
-      score: 100,
-      provider: 'trap',
-      ts: Date.now(),
-      blocked: true,
-      trapPath: pathname,
-      ttlMs: TRAP_BAN_MS,
+      score: 100, provider: 'trap', ts: Date.now(),
+      blocked: true, trapPath: pathname, ttlMs: TRAP_BAN_MS,
     };
     cacheSet(ip, entry);
     logBlock(ip, 'trap', `path=${pathname}`);
@@ -418,7 +386,10 @@ export const onRequest = defineMiddleware(async ({ request }, next) => {
 
   // ── Layer 1.5: Burst detection ─────────────────────────────────────
   if (recordAndCheckBurst(ip)) {
-    cacheSet(ip, { score: 100, provider: 'burst', ts: Date.now(), blocked: true, ttlMs: BURST_BAN_MS });
+    cacheSet(ip, {
+      score: 100, provider: 'burst', ts: Date.now(),
+      blocked: true, ttlMs: BURST_BAN_MS,
+    });
     logBlock(ip, 'burst', `limit=${BURST_LIMIT}/${BURST_WINDOW_MS}ms`);
     return new Response(null, { status: 429 });
   }
@@ -427,24 +398,17 @@ export const onRequest = defineMiddleware(async ({ request }, next) => {
   const result = await getIpScore(ip);
 
   if (result === null) {
-    // All providers failed — fail open, short cache
     cacheSet(ip, {
-      score: 0,
-      provider: 'fail-open',
-      ts: Date.now(),
-      blocked: false,
-      ttlMs: 300_000,           // retry in 5 min
+      score: 0, provider: 'fail-open', ts: Date.now(),
+      blocked: false, ttlMs: 300_000,
     });
     return next();
   }
 
   const blocked = result.score >= BLOCK_THRESHOLD;
   const entry: CacheEntry = {
-    score: result.score,
-    provider: result.provider,
-    ts: Date.now(),
-    blocked,
-    ttlMs: CACHE_TTL_MS,
+    score: result.score, provider: result.provider,
+    ts: Date.now(), blocked, ttlMs: CACHE_TTL_MS,
   };
   cacheSet(ip, entry);
 
