@@ -191,6 +191,43 @@ class MastergoLayer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  §3b  MastergoLayer — per-region layer metadata (M14)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class MastergoLayer:
+    """One layer in the MasterGo layer panel, mapping 1:1 to a pipeline region."""
+    id: str
+    name: str
+    region_id: str
+    z_index: int = 0
+    visible: bool = True
+    locked: bool = False
+    opacity: float = 1.0
+    bbox: Optional[BBox] = None
+    element_ids: List[str] = field(default_factory=list)
+    color_tag: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            "id": self.id,
+            "name": self.name,
+            "region_id": self.region_id,
+            "z_index": self.z_index,
+            "visible": self.visible,
+            "locked": self.locked,
+            "opacity": self.opacity,
+        }
+        if self.bbox:
+            d["bbox"] = self.bbox.to_dict()
+        if self.element_ids:
+            d["element_ids"] = self.element_ids
+        if self.color_tag:
+            d["color_tag"] = self.color_tag
+        return d
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  §4  MastergoLayout — the complete layout document
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -968,4 +1005,183 @@ def layered_to_mastergo_layout(
             "style": cr_edge.get("style"),
         })
 
+    return layout
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §7  MasterGo Node Serializer — element → import-API node (M14)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TYPE_TO_MASTERGO = {
+    "group_container": "GROUP", "panel": "GROUP", "section_header": "TEXT",
+    "module_box": "RECTANGLE", "submodule_box": "RECTANGLE",
+    "operation_node": "RECTANGLE", "data_object": "RECTANGLE",
+    "icon": "RECTANGLE", "label": "TEXT", "badge": "RECTANGLE",
+    "connector_arrow": "VECTOR", "annotation": "TEXT",
+    "input_port": "ELLIPSE", "output_port": "ELLIPSE",
+}
+
+
+def _element_to_mastergo_node(elem: MastergoElement, frame_bbox: Optional[BBox]) -> Dict[str, Any]:
+    """Convert a MastergoElement to a MasterGo import API node."""
+    mg_type = _TYPE_TO_MASTERGO.get(elem.type, "RECTANGLE")
+    rel_x = (elem.bbox.x - frame_bbox.x) if frame_bbox else elem.bbox.x
+    rel_y = (elem.bbox.y - frame_bbox.y) if frame_bbox else elem.bbox.y
+    node: Dict[str, Any] = {
+        "id": elem.id, "name": elem.name, "type": mg_type,
+        "absoluteBoundingBox": elem.bbox.to_dict(),
+        "relativeTransform": [[1, 0, rel_x], [0, 1, rel_y]],
+        "size": {"x": elem.bbox.width, "y": elem.bbox.height},
+    }
+    if elem.style:
+        if elem.style.get("fill"):
+            node["fills"] = [{"type": "SOLID", "color": _parse_color(elem.style["fill"])}]
+        if elem.style.get("stroke"):
+            node["strokes"] = [{"type": "SOLID", "color": _parse_color(elem.style["stroke"])}]
+    if elem.iconHint and mg_type == "RECTANGLE":
+        node["imageRef"] = {"hint": elem.iconHint, "status": "pending"}
+    if mg_type == "TEXT":
+        node["characters"] = elem.name
+        node["style"] = {"fontSize": 12 if elem.type == "annotation" else 14, "fontFamily": "Inter"}
+    return node
+
+
+def _parse_color(hex_or_name: str) -> Dict[str, float]:
+    h = hex_or_name.lstrip("#")
+    if len(h) == 6:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return {"r": r / 255, "g": g / 255, "b": b / 255, "a": 1.0}
+    return {"r": 0.5, "g": 0.5, "b": 0.5, "a": 1.0}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §8  Layered Pipeline → MasterGo Layout (M14 core)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_LAYER_COLORS = [
+    "#4F46E5", "#059669", "#D97706", "#DC2626", "#7C3AED", "#2563EB",
+    "#DB2777", "#65A30D", "#0891B2", "#EA580C", "#4338CA", "#047857",
+]
+
+
+def layered_to_mastergo_layout(layered_result: Any) -> MastergoLayout:
+    """Convert LayeredResult to MastergoLayout with full region → layer mapping."""
+    canvas = getattr(layered_result, "canvas", None)
+    regions = getattr(layered_result, "regions", [])
+    intent = getattr(layered_result, "intent", None)
+
+    if not canvas:
+        elk = getattr(layered_result, "elk_graph", {})
+        if elk:
+            return elk_to_mastergo_layout(elk)
+        return MastergoLayout()
+
+    layout = MastergoLayout(
+        canvas_width=canvas.width, canvas_height=canvas.height,
+        metadata={
+            "source": "layered_pipeline",
+            "title": intent.summary().get("raw_text", "")[:80] if intent else "",
+            "region_count": len(regions),
+        },
+    )
+
+    region_map = {}
+    for i, region in enumerate(regions):
+        rid = region.id if hasattr(region, "id") else region.get("id", f"region_{i}")
+        rname = region.name if hasattr(region, "name") else region.get("name", f"Region {i+1}")
+        rbbox_raw = region.bbox if hasattr(region, "bbox") else region.get("bbox", {})
+        rbbox = BBox(
+            x=rbbox_raw.get("x", 0), y=rbbox_raw.get("y", 0),
+            width=rbbox_raw.get("width", 200), height=rbbox_raw.get("height", 200),
+        ) if isinstance(rbbox_raw, dict) else BBox(x=0, y=0, width=200, height=200)
+        layer = MastergoLayer(
+            id=f"layer_{rid}", name=rname, region_id=rid, z_index=i,
+            bbox=rbbox, color_tag=_LAYER_COLORS[i % len(_LAYER_COLORS)],
+        )
+        layout.add_layer(layer)
+        region_map[rid] = {"layer": layer, "bbox": rbbox}
+
+    elk = canvas.elk_graph or {}
+
+    def _safe_id(raw: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9_]', '_', raw.lower()).strip('_')[:60]
+
+    def _find_layer(node_id: str) -> Optional[MastergoLayer]:
+        nid_lower = node_id.lower()
+        for rid, info in region_map.items():
+            if rid.lower() in nid_lower or nid_lower.startswith(_safe_id(rid)):
+                return info["layer"]
+        return None
+
+    def _walk_elk(node, px, py, parent_id, depth, inherited_layer):
+        nid = node.get("id", "")
+        if not nid or nid == "root":
+            for child in node.get("children", []):
+                _walk_elk(child, px, py, None, depth, None)
+            return
+        safe = _safe_id(nid)
+        labels = node.get("labels", [])
+        name = labels[0].get("text", "") if labels else nid
+        ax = px + float(node.get("x", 0))
+        ay = py + float(node.get("y", 0))
+        w = float(node.get("width", 150))
+        h = float(node.get("height", 50))
+        layer = _find_layer(nid) or inherited_layer
+        is_group = bool(node.get("children"))
+        has_icon = bool(node.get("iconHint"))
+        if is_group: etype = "group_container"
+        elif "input" in nid.lower(): etype = "input_port"
+        elif "output" in nid.lower(): etype = "output_port"
+        elif has_icon and w <= 60 and h <= 60: etype = "icon"
+        elif any(kw in nid.lower() for kw in ("filter", "join", "aggregate", "scan")): etype = "operation_node"
+        elif any(kw in nid.lower() for kw in ("table", "index", "column", "code", "exe")): etype = "data_object"
+        elif depth >= 2: etype = "submodule_box"
+        else: etype = "module_box"
+        style = None
+        adv = node.get("advanced", {})
+        if adv:
+            style = {}
+            if adv.get("strokeColor"): style["stroke"] = adv["strokeColor"]
+            if adv.get("fillColor"): style["fill"] = adv["fillColor"]
+        elem = MastergoElement(
+            id=safe, name=name,
+            bbox=BBox(x=round(ax), y=round(ay), width=round(w), height=round(h)),
+            type=etype, parent=_safe_id(parent_id) if parent_id else None,
+            depth=depth, iconHint=node.get("iconHint"), style=style,
+            layer_id=layer.id if layer else None,
+        )
+        children = node.get("children", [])
+        if children:
+            elem.children = [_safe_id(c.get("id", "")) for c in children if c.get("id")]
+        layout.add(elem)
+        if layer:
+            layer.element_ids.append(safe)
+        if has_icon and not is_group and w >= 80:
+            icon_w = min(40, int(w * 0.3))
+            icon_elem = MastergoElement(
+                id=f"{safe}_icon", name=f"{name} icon",
+                bbox=BBox(x=round(ax + 4), y=round(ay + (h - icon_w) / 2), width=icon_w, height=icon_w),
+                type="icon", parent=safe, depth=depth + 1,
+                iconHint=node.get("iconHint"), layer_id=layer.id if layer else None,
+            )
+            layout.add(icon_elem)
+            if layer: layer.element_ids.append(f"{safe}_icon")
+            label_elem = MastergoElement(
+                id=f"{safe}_label", name=name,
+                bbox=BBox(x=round(ax + icon_w + 8), y=round(ay + 4), width=round(w - icon_w - 12), height=round(h - 8)),
+                type="label", parent=safe, depth=depth + 1, layer_id=layer.id if layer else None,
+            )
+            layout.add(label_elem)
+            if layer: layer.element_ids.append(f"{safe}_label")
+        for child in children:
+            _walk_elk(child, ax, ay, nid, depth + 1, layer)
+
+    _walk_elk(elk, 0, 0, None, 0, None)
+    layout.edges = _extract_edges_recursive(elk)
+    for cr_edge in (canvas.cross_region_edges or []):
+        layout.edges.append({
+            "id": cr_edge.get("id", ""), "source": cr_edge.get("source", ""),
+            "target": cr_edge.get("target", ""), "label": cr_edge.get("label", ""),
+            "type": "cross_region", "style": cr_edge.get("style"),
+        })
     return layout

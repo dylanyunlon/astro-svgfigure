@@ -330,3 +330,44 @@ def register_layered_routes(app: FastAPI) -> None:
                 {"success": False, "error": str(e)},
                 status_code=500,
             )
+
+
+    # ── M14: Dedicated MasterGo export endpoint ──
+
+    class MastergoExportRequest(BaseModel):
+        elk: dict = Field(..., description="ELK graph from previous pipeline run")
+        regions: list = Field(default=[], description="Region plans from previous run")
+        canvas_width: int = Field(900, ge=400, le=4000)
+        canvas_height: int = Field(500, ge=300, le=3000)
+        format: str = Field("import", description="'import' | 'layered' | 'flat'")
+
+    @app.post("/api/mastergo-export")
+    async def api_mastergo_export(request_data: MastergoExportRequest) -> JSONResponse:
+        """Convert existing topology to MasterGo format without re-running LLM."""
+        try:
+            from backend.pipeline.topology.mastergo_schema import (
+                elk_to_mastergo_layout, layered_to_mastergo_layout,
+            )
+            if request_data.regions:
+                from types import SimpleNamespace
+                canvas = SimpleNamespace(
+                    width=request_data.canvas_width, height=request_data.canvas_height,
+                    elk_graph=request_data.elk, cross_region_edges=[],
+                )
+                regions = [SimpleNamespace(
+                    id=r.get("id", f"region_{i}"),
+                    name=r.get("name", f"Region {i+1}"),
+                    bbox=r.get("bbox", {"x": 0, "y": 0, "width": 200, "height": 200}),
+                ) for i, r in enumerate(request_data.regions)]
+                mastergo = layered_to_mastergo_layout(SimpleNamespace(canvas=canvas, regions=regions, intent=None))
+            else:
+                mastergo = elk_to_mastergo_layout(request_data.elk, request_data.canvas_width, request_data.canvas_height)
+            fmt = request_data.format
+            if fmt == "import": data = mastergo.to_mastergo_import()
+            elif fmt == "layered": data = mastergo.to_layered_dict()
+            else: data = {"elements": mastergo.to_list(), "edges": mastergo.edges}
+            return JSONResponse({"success": True, "format": fmt, "data": data, "stats": mastergo.stats()})
+        except Exception as e:
+            logger.exception("api_mastergo_export error")
+            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+

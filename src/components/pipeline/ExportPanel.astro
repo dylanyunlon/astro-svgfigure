@@ -65,6 +65,20 @@ import { Button } from 'astro-pure/user'
     </button>
 
     <button
+      id='export-scaffold'
+      class='group inline-flex items-center gap-x-1.5 rounded-lg border bg-muted px-3 py-1.5 text-sm text-muted-foreground transition-all hover:bg-card hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed'
+      disabled
+    >
+      <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' class='stroke-muted-foreground group-hover:stroke-primary'>
+        <rect x='3' y='3' width='7' height='7' />
+        <rect x='14' y='3' width='7' height='7' />
+        <rect x='3' y='14' width='7' height='7' />
+        <rect x='14' y='14' width='7' height='7' />
+      </svg>
+      Scaffold JSON
+    </button>
+
+    <button
       id='export-prompt'
       class='group inline-flex items-center gap-x-1.5 rounded-lg border bg-muted px-3 py-1.5 text-sm text-muted-foreground transition-all hover:bg-card hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed'
       disabled
@@ -150,18 +164,90 @@ import { Button } from 'astro-pure/user'
   // Expose globally
   ;(window as any).__exportPanel = { enable: enableExport, disable: disableExport }
 
-  // Export Topology JSON
+  // Export Topology JSON (now includes both raw topology + layouted with coordinates)
   document.getElementById('export-json')?.addEventListener('click', () => {
-    const jsonPre = document.getElementById('topology-json')
-    const text = jsonPre?.textContent || ''
-    if (!text || text === 'Waiting...') return
-    const blob = new Blob([text], { type: 'application/json' })
+    const topoPre = document.getElementById('topology-json')
+    const layoutPre = document.getElementById('layouted-json')
+    const topoText = topoPre?.textContent || ''
+    const layoutText = layoutPre?.textContent || ''
+    if ((!topoText || topoText === 'Waiting...') && (!layoutText || layoutText === 'Waiting...')) return
+
+    let exportData: Record<string, unknown> = {}
+    try {
+      if (topoText && topoText !== 'Waiting...') {
+        exportData.topology = JSON.parse(topoText)
+      }
+      if (layoutText && layoutText !== 'Waiting...') {
+        exportData.layouted = JSON.parse(layoutText)
+      }
+    } catch {
+      // Fallback: raw text
+      exportData = { raw_topology: topoText, raw_layouted: layoutText }
+    }
+
+    exportData._meta = {
+      exported_at: new Date().toISOString(),
+      source: 'astro-svgfigure',
+      description: 'ELK topology (raw) + layouted graph (with x,y coordinates). Use layouted.children for node positions.',
+    }
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'topology.json'
+    a.download = 'topology-with-layout.json'
     a.click()
     URL.revokeObjectURL(url)
+  })
+
+  // Export Scaffold JSON (calls backend to build scaffold with icons)
+  document.getElementById('export-scaffold')?.addEventListener('click', async () => {
+    const layoutPre = document.getElementById('layouted-json')
+    const layoutText = layoutPre?.textContent || ''
+    if (!layoutText || layoutText === 'Waiting...') return
+
+    const btn = document.getElementById('export-scaffold') as HTMLButtonElement
+    const origText = btn.textContent
+    btn.textContent = '  Building...'
+    btn.disabled = true
+
+    try {
+      const layouted = JSON.parse(layoutText)
+      const res = await fetch('/api/render-svg', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layouted }),
+      })
+      const data = await res.json()
+
+      // Export the scaffold data (elements, connections, canvas, icons)
+      const scaffoldExport = {
+        _meta: {
+          exported_at: new Date().toISOString(),
+          source: 'astro-svgfigure',
+          description: 'Scaffold with precise coordinates, styles, and SVG icons. Each element has x,y,width,height,fill,label,icon_svg.',
+          element_count: data.element_count,
+          connection_count: data.connection_count,
+        },
+        layouted,
+        svg: data.svg,
+      }
+
+      const blob = new Blob([JSON.stringify(scaffoldExport, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'scaffold-with-svg.json'
+      a.click()
+      URL.revokeObjectURL(url)
+
+      btn.textContent = '  Exported!'
+      setTimeout(() => { btn.textContent = origText; btn.disabled = false }, 2000)
+    } catch (err) {
+      console.error('Scaffold export failed:', err)
+      btn.textContent = origText
+      btn.disabled = false
+    }
   })
 
   // Export Prompt Text

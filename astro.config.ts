@@ -137,7 +137,10 @@ export default defineConfig({
       include: ['elkjs/lib/elk.bundled.js']
     },
     server: {
-      allowedHosts: ['baloonet.tech', 'www.baloonet.tech', 'localhost']
+      allowedHosts: ['baloonet.tech', 'www.baloonet.tech', 'localhost'],
+      fs: {
+        deny: ['.env', '.env.*', '.git', '.svn', '.hg', '.npmrc', '.DS_Store'],
+      }
     }
   }
 })

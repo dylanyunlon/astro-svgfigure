@@ -1,5 +1,5 @@
 /**
- * src/middleware.ts — IP Firewall v2 ("French Beach + Underwear Thief")
+ * src/middleware.ts — IP Firewall v3 ("French Beach + Underwear Thief")
  *
  * Three-layer defense:
  *
@@ -44,6 +44,17 @@ const ENABLED = (import.meta.env.IP_FIREWALL_ENABLED ?? 'true') === 'true';
 
 /** Paths that bypass ALL checks (static assets the framework itself serves) */
 const BYPASS_PREFIXES = ['/_image', '/_astro/', '/favicon', '/fonts/', '/icons/'];
+
+/** HTTP methods that legitimate browsers actually use. */
+const ALLOWED_METHODS: ReadonlySet<string> = new Set([
+  'GET', 'POST', 'HEAD', 'OPTIONS',
+]);
+
+/** Suspicious methods (WebDAV, exotic verbs) → instant ban. */
+const BLOCKED_METHODS: ReadonlySet<string> = new Set([
+  'PROPFIND', 'PROPPATCH', 'MKCOL', 'COPY', 'MOVE', 'LOCK', 'UNLOCK',
+  'PATCH', 'DELETE', 'TRACE', 'CONNECT', 'SEARCH', 'PURGE',
+]);
 
 /* ──────────────────────────────────────────────────────────────────────
  * Layer 0 — Whitelist
@@ -138,6 +149,18 @@ const TRAP_PREFIXES: readonly string[] = [
   '/phpmyadmin', '/adminer', '/pma/',
   // Node.js internals
   '/node_modules/', '/.npmrc',
+  // Subfolder .env scanning (observed in production)
+  '/public/.env', '/shared/.env', '/app/.env', '/web/.env', '/www/.env',
+  '/src/.env', '/config/.env', '/backend/.env', '/api/.env',
+  // Login / auth probes
+  '/login', '/signin', '/admin', '/administrator',
+  '/auth/', '/oauth/', '/sso/',
+  // Common CMS
+  '/cms/', '/umbraco/', '/sitecore/', '/typo3/',
+  // Shell / webshell
+  '/shell', '/cmd', '/exec', '/c99',
+  // Backup files
+  '/backup', '/db.sql', '/dump.sql', '/database.sql',
 ];
 
 /**
@@ -150,6 +173,9 @@ const TRAP_SUBSTRINGS: readonly string[] = [
   '..%5c',
   '%00',                        // Null byte injection
   'pom.properties',             // Maven metadata
+  '.php?',                      // PHP query string on non-PHP site
+  'cgi-bin/',                   // CGI probes
+  '.asp?', '.aspx?', '.jsp?',  // Other server tech probes
 ];
 
 function isTrapPath(pathname: string): boolean {
@@ -197,12 +223,41 @@ function cacheGet(ip: string): CacheEntry | null {
   return entry;
 }
 
-function cacheSet(ip: string, entry: CacheEntry): void {
-  if (cache.size >= CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
-  }
   cache.set(ip, entry);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Layer 1.5 — Burst Detection (sliding window rate limiter)
+ * ────────────────────────────────────────────────────────────────────── */
+
+const BURST_WINDOW_MS = 10_000;   // 10 seconds
+const BURST_LIMIT = 30;           // max 30 requests per window
+const BURST_BAN_MS = 3_600_000;   // 1 hour ban
+
+const burstMap = new Map<string, number[]>();
+
+let burstCleanupTimer: ReturnType<typeof setInterval> | null = null;
+function ensureBurstCleanup() {
+  if (burstCleanupTimer) return;
+  burstCleanupTimer = setInterval(() => {
+    const cutoff = Date.now() - BURST_WINDOW_MS * 2;
+    for (const [ip, timestamps] of burstMap) {
+      if (timestamps.length === 0 || timestamps[timestamps.length - 1] < cutoff) {
+        burstMap.delete(ip);
+      }
+    }
+  }, 60_000);
+}
+
+function recordAndCheckBurst(ip: string): boolean {
+  ensureBurstCleanup();
+  const now = Date.now();
+  const cutoff = now - BURST_WINDOW_MS;
+  let timestamps = burstMap.get(ip);
+  if (!timestamps) { timestamps = []; burstMap.set(ip, timestamps); }
+  while (timestamps.length > 0 && timestamps[0] < cutoff) { timestamps.shift(); }
+  timestamps.push(now);
+  return timestamps.length > BURST_LIMIT;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -311,6 +366,19 @@ export const onRequest = defineMiddleware(async ({ request }, next) => {
     return next();
   }
 
+  const method = request.method.toUpperCase();
+
+  // ── Layer 0.5: HTTP Method Filter ──────────────────────────────────
+  if (BLOCKED_METHODS.has(method)) {
+    const ip = extractIp(request);
+    cacheSet(ip, { score: 100, provider: 'method', ts: Date.now(), blocked: true, trapPath: `${method} ${pathname}`, ttlMs: TRAP_BAN_MS });
+    logBlock(ip, 'method', `method=${method} path=${pathname}`);
+    return new Response(null, { status: 403 });
+  }
+  if (!ALLOWED_METHODS.has(method)) {
+    return new Response(null, { status: 405 });
+  }
+
   const ip = extractIp(request);
 
   // ── Layer 0: Whitelist ─────────────────────────────────────────────
@@ -323,7 +391,12 @@ export const onRequest = defineMiddleware(async ({ request }, next) => {
       // Don't re-log every request from a banned IP — too noisy
       return new Response(null, { status: 403 });
     }
-    // Known clean — skip everything
+    // Known clean — still check burst
+    if (recordAndCheckBurst(ip)) {
+      cacheSet(ip, { score: 100, provider: 'burst', ts: Date.now(), blocked: true, ttlMs: BURST_BAN_MS });
+      logBlock(ip, 'burst', `limit=${BURST_LIMIT}/${BURST_WINDOW_MS}ms`);
+      return new Response(null, { status: 429 });
+    }
     return next();
   }
 
@@ -341,6 +414,13 @@ export const onRequest = defineMiddleware(async ({ request }, next) => {
     cacheSet(ip, entry);
     logBlock(ip, 'trap', `path=${pathname}`);
     return new Response(null, { status: 403 });
+  }
+
+  // ── Layer 1.5: Burst detection ─────────────────────────────────────
+  if (recordAndCheckBurst(ip)) {
+    cacheSet(ip, { score: 100, provider: 'burst', ts: Date.now(), blocked: true, ttlMs: BURST_BAN_MS });
+    logBlock(ip, 'burst', `limit=${BURST_LIMIT}/${BURST_WINDOW_MS}ms`);
+    return new Response(null, { status: 429 });
   }
 
   // ── Layer 2: IP reputation (only for first-time clean-path visitors)
