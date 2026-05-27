@@ -66,6 +66,7 @@ class DetectedNode:
     avg_color: Tuple[int, int, int]  # (R, G, B)
     pixel_count: int
     area: int  # bbox area
+    avg_saturation: float = 0.0
 
     @property
     def x(self) -> int: return self.bbox[0]
@@ -76,6 +77,13 @@ class DetectedNode:
     @property
     def height(self) -> int: return self.bbox[3]
 
+    @property
+    def is_pale(self) -> bool:
+        """Pale nodes (avg_sat < 0.15) are containers/backgrounds, not real nodes.
+        They should be skipped for removebg (waste of API credits) or
+        rendered with transparent background directly."""
+        return self.avg_saturation < 0.15
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "index": self.index,
@@ -83,6 +91,8 @@ class DetectedNode:
                      "width": self.bbox[2], "height": self.bbox[3]},
             "color": list(self.avg_color),
             "pixel_count": self.pixel_count,
+            "avg_saturation": round(self.avg_saturation, 3),
+            "is_pale": self.is_pale,
         }
 
 
@@ -173,9 +183,10 @@ def detect_colored_nodes(
         if w < min_bbox_width or h < min_bbox_height:
             continue
 
-        # Average color of the region
+        # Average color and saturation of the region
         region_pixels = arr_uint8[ys, xs]
         avg = region_pixels.mean(axis=0).astype(int)
+        region_sat = float(sat[ys, xs].mean())
 
         nodes.append(DetectedNode(
             index=len(nodes),
@@ -183,6 +194,7 @@ def detect_colored_nodes(
             avg_color=(int(avg[0]), int(avg[1]), int(avg[2])),
             pixel_count=len(xs),
             area=w * h,
+            avg_saturation=region_sat,
         ))
 
     # Sort top-to-bottom
@@ -275,6 +287,13 @@ async def extract_icons(
 ) -> List[ExtractedIcon]:
     """Full pipeline: detect → crop → removebg → extract icons.
 
+    Pale nodes (avg_sat < 0.15) are containers/backgrounds:
+      → background made transparent locally via color thresholding
+      → no API call wasted (saves credits)
+
+    Saturated nodes (avg_sat ≥ 0.15) are real colored blocks:
+      → sent to remove.bg for clean background removal
+
     Args:
         image: Source architecture figure (RGB)
         nodes: Pre-detected nodes (if None, runs detect_colored_nodes)
@@ -291,10 +310,37 @@ async def extract_icons(
     if not nodes:
         return []
 
-    # Crop all regions
     crops = crop_all_nodes(image, nodes, padding)
 
-    # Try to use removebg for second-pass background removal
+    # Separate pale vs saturated nodes
+    pale_crops = [(i, n, c) for i, (n, c) in enumerate(crops) if n.is_pale]
+    saturated_crops = [(i, n, c) for i, (n, c) in enumerate(crops) if not n.is_pale]
+
+    results: List[Optional[ExtractedIcon]] = [None] * len(crops)
+
+    # Handle pale nodes locally — make pale background transparent
+    for idx, node, crop_img in pale_crops:
+        transparent = _make_pale_transparent(crop_img, node.avg_color)
+        buf = io.BytesIO()
+        transparent.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        results[idx] = ExtractedIcon(
+            node=node,
+            icon_b64=b64,
+            icon_width=transparent.width,
+            icon_height=transparent.height,
+            success=True,
+        )
+
+    logger.info(
+        "Pale nodes: %d handled locally, %d saturated for removebg",
+        len(pale_crops), len(saturated_crops),
+    )
+
+    # Handle saturated nodes via removebg API
+    if not saturated_crops:
+        return [r for r in results if r is not None]
+
     client = None
     if removebg_keys:
         try:
@@ -304,24 +350,20 @@ async def extract_icons(
             logger.warning("removebg_canva_client not available")
 
     if client is None:
-        # No removebg available — return crops as-is (with color bg)
-        results = []
-        for node, crop_img in crops:
+        # No API — return raw crops for saturated nodes
+        for idx, node, crop_img in saturated_crops:
             buf = io.BytesIO()
             crop_img.save(buf, format="PNG")
             b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            results.append(ExtractedIcon(
-                node=node,
-                icon_b64=b64,
-                icon_width=crop_img.width,
-                icon_height=crop_img.height,
+            results[idx] = ExtractedIcon(
+                node=node, icon_b64=b64,
+                icon_width=crop_img.width, icon_height=crop_img.height,
                 success=True,
-            ))
-        return results
+            )
+        return [r for r in results if r is not None]
 
-    # Batch removebg with semaphore
+    # Batch removebg for saturated nodes only
     sem = asyncio.Semaphore(concurrency)
-    results: List[ExtractedIcon] = [None] * len(crops)  # type: ignore
 
     async def _process(idx: int, node: DetectedNode, crop_img: Image.Image):
         async with sem:
@@ -339,23 +381,52 @@ async def extract_icons(
                     success=True,
                 )
             else:
-                # Fallback: use crop with color background
                 b64 = base64.b64encode(crop_bytes).decode("ascii")
                 results[idx] = ExtractedIcon(
-                    node=node,
-                    icon_b64=b64,
-                    icon_width=crop_img.width,
-                    icon_height=crop_img.height,
-                    success=False,
-                    error=result.error,
+                    node=node, icon_b64=b64,
+                    icon_width=crop_img.width, icon_height=crop_img.height,
+                    success=False, error=result.error,
                 )
 
-    tasks = [
-        _process(i, node, crop_img)
-        for i, (node, crop_img) in enumerate(crops)
-    ]
+    tasks = [_process(i, n, c) for i, n, c in saturated_crops]
     await asyncio.gather(*tasks)
-    return results
+    return [r for r in results if r is not None]
+
+
+def _make_pale_transparent(
+    crop: Image.Image,
+    bg_color: Tuple[int, int, int],
+    tolerance: int = 40,
+) -> Image.Image:
+    """Make pale background transparent via color distance thresholding.
+
+    For pale nodes (avg_sat < 0.15), the "background" is the pale color
+    itself (e.g., rgb(232,242,254)).  Dark elements (text, icons) are
+    kept opaque; pixels close to bg_color become transparent.
+
+    This avoids wasting a remove.bg API call on something we can
+    handle with simple color math.
+    """
+    rgba = crop.convert("RGBA")
+    arr = np.array(rgba)
+
+    # Color distance from background
+    r_diff = arr[:, :, 0].astype(float) - bg_color[0]
+    g_diff = arr[:, :, 1].astype(float) - bg_color[1]
+    b_diff = arr[:, :, 2].astype(float) - bg_color[2]
+    dist = np.sqrt(r_diff**2 + g_diff**2 + b_diff**2)
+
+    # Also make white/near-white transparent
+    brightness = arr[:, :, :3].max(axis=2).astype(float)
+    is_white = brightness > 240
+
+    # Transparent if close to bg_color OR near-white
+    is_bg = (dist < tolerance) | is_white
+
+    # Smooth edge: partial transparency for border pixels
+    arr[:, :, 3] = np.where(is_bg, 0, 255).astype(np.uint8)
+
+    return Image.fromarray(arr)
 
 
 # ═══════════════════════════════════════════════════════════════════════
