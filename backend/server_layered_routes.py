@@ -135,17 +135,25 @@ def register_layered_routes(app: FastAPI) -> None:
 
             response = result.to_dict()
 
-            # Optional mastergo conversion
+            # Optional mastergo conversion (M14: prefer layered converter)
             if request_data.output_format in ("mastergo", "both") and result.canvas:
                 try:
                     from backend.pipeline.topology.mastergo_schema import (
+                        layered_to_mastergo_layout,
                         elk_to_mastergo_layout,
                     )
-                    elk = result.canvas.elk_graph
-                    w = result.canvas.width
-                    h = result.canvas.height
-                    mastergo = elk_to_mastergo_layout(elk, w, h)
-                    response["mastergo"] = mastergo.to_list()
+                    # M14: use region-aware converter when regions are available
+                    if result.regions:
+                        mastergo = layered_to_mastergo_layout(result)
+                        response["mastergo"] = mastergo.to_layered_dict()
+                        response["mastergo_import"] = mastergo.to_mastergo_import()
+                    else:
+                        # Fallback to flat ELK converter
+                        elk = result.canvas.elk_graph
+                        w = result.canvas.width
+                        h = result.canvas.height
+                        mastergo = elk_to_mastergo_layout(elk, w, h)
+                        response["mastergo"] = mastergo.to_list()
                     response["mastergo_stats"] = mastergo.stats()
                 except Exception as e:
                     response["mastergo_error"] = str(e)
@@ -224,6 +232,100 @@ def register_layered_routes(app: FastAPI) -> None:
 
         except Exception as e:
             logger.exception("api_region_regenerate error")
+            return JSONResponse(
+                {"success": False, "error": str(e)},
+                status_code=500,
+            )
+
+    # ── M14: Dedicated MasterGo export endpoint ──
+
+    class MastergoExportRequest(BaseModel):
+        """Request to export an existing topology result as MasterGo format.
+
+        The client sends back a previous pipeline result (elk + regions)
+        and gets back the MasterGo Import API compatible JSON.
+        This avoids re-running the LLM pipeline just to change export format.
+        """
+        elk: dict = Field(..., description="ELK graph from previous pipeline run")
+        regions: list = Field(default=[], description="Region plans from previous run")
+        canvas_width: int = Field(900, ge=400, le=4000)
+        canvas_height: int = Field(500, ge=300, le=3000)
+        format: str = Field("import", description="'import' for MasterGo API, 'flat' for element list, 'layered' for full")
+
+    @app.post("/api/mastergo-export")
+    async def api_mastergo_export(request_data: MastergoExportRequest) -> JSONResponse:
+        """Convert an existing topology to MasterGo export format.
+
+        Like CCCL's final output formatting: the computation is done,
+        we're just reshaping the result for a different consumer (MasterGo
+        instead of the web renderer).
+
+        Supports three output formats:
+          - 'import': MasterGo Import API document structure (frames/groups/rectangles)
+          - 'layered': Full layout with layer metadata and element-to-layer mapping
+          - 'flat': Simple element list (legacy mastergo_all_layoutobj.txt format)
+        """
+        try:
+            from backend.pipeline.topology.mastergo_schema import (
+                elk_to_mastergo_layout,
+                layered_to_mastergo_layout,
+                MastergoLayout,
+                BBox,
+            )
+
+            if request_data.regions:
+                # Build a lightweight result-like object for the layered converter
+                from types import SimpleNamespace
+
+                # Reconstruct canvas
+                canvas = SimpleNamespace(
+                    width=request_data.canvas_width,
+                    height=request_data.canvas_height,
+                    elk_graph=request_data.elk,
+                    cross_region_edges=[],
+                )
+
+                # Reconstruct regions as namespace objects
+                regions = []
+                for i, r in enumerate(request_data.regions):
+                    regions.append(SimpleNamespace(
+                        id=r.get("id", f"region_{i}"),
+                        name=r.get("name", f"Region {i+1}"),
+                        bbox=r.get("bbox", {"x": 0, "y": 0, "width": 200, "height": 200}),
+                    ))
+
+                fake_result = SimpleNamespace(
+                    canvas=canvas,
+                    regions=regions,
+                    intent=None,
+                )
+
+                mastergo = layered_to_mastergo_layout(fake_result)
+            else:
+                mastergo = elk_to_mastergo_layout(
+                    request_data.elk,
+                    request_data.canvas_width,
+                    request_data.canvas_height,
+                )
+
+            # Choose output format
+            fmt = request_data.format
+            if fmt == "import":
+                data = mastergo.to_mastergo_import()
+            elif fmt == "layered":
+                data = mastergo.to_layered_dict()
+            else:
+                data = {"elements": mastergo.to_list(), "edges": mastergo.edges}
+
+            return JSONResponse({
+                "success": True,
+                "format": fmt,
+                "data": data,
+                "stats": mastergo.stats(),
+            })
+
+        except Exception as e:
+            logger.exception("api_mastergo_export error")
             return JSONResponse(
                 {"success": False, "error": str(e)},
                 status_code=500,

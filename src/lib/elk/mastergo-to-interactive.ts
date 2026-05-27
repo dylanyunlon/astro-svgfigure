@@ -33,6 +33,28 @@ export interface MastergoEdge {
   style?: { strokeColor?: string; lineStyle?: string; strokeWidth?: number }
 }
 
+// M14: Layered format types
+export interface MastergoLayer {
+  id: string
+  name: string
+  region_id: string
+  z_index: number
+  visible: boolean
+  locked: boolean
+  opacity: number
+  bbox?: { x: number; y: number; width: number; height: number }
+  element_ids: string[]
+  color_tag?: string
+}
+
+export interface MastergoLayeredData {
+  canvas: { width: number; height: number }
+  layers: MastergoLayer[]
+  elements: (MastergoElement & { layer_id?: string })[]
+  edges: MastergoEdge[]
+  metadata?: Record<string, any>
+}
+
 // ── Color palette for detected elements ──────────────────────────────
 
 const PALETTE = [
@@ -122,4 +144,86 @@ export function interactiveToMastergo(graph: InteractiveGraph): MastergoElement[
       height: Math.round(node.height),
     },
   }))
+}
+
+
+// ── M14: Layered Mastergo → InteractiveGraph ──────────────────────────
+// Uses layer color_tag for per-region coloring instead of index-based palette
+
+export function mastergoLayeredToInteractive(
+  data: MastergoLayeredData,
+): InteractiveGraph {
+  const layerColorMap = new Map<string, string>()
+  for (const layer of data.layers) {
+    if (layer.color_tag) {
+      layerColorMap.set(layer.id, layer.color_tag)
+    }
+  }
+
+  // Filter to visible layers only
+  const visibleLayerIds = new Set(
+    data.layers.filter(l => l.visible).map(l => l.id)
+  )
+
+  const elements = data.elements.filter(
+    el => !el.layer_id || visibleLayerIds.has(el.layer_id)
+  )
+
+  let maxX = 0, maxY = 0
+  for (const el of elements) {
+    const r = el.bbox.x + el.bbox.width
+    const b = el.bbox.y + el.bbox.height
+    if (r > maxX) maxX = r
+    if (b > maxY) maxY = b
+  }
+
+  const nodes: InteractiveNode[] = elements.map((el, i) => ({
+    id: el.id,
+    x: el.bbox.x,
+    y: el.bbox.y,
+    width: el.bbox.width,
+    height: el.bbox.height,
+    label: el.name,
+    fill: el.layer_id
+      ? (layerColorMap.get(el.layer_id) || colorForIndex(i))
+      : colorForIndex(i),
+    isGroup: el._elk?.group ?? false,
+  }))
+
+  const edgeList: InteractiveEdge[] = data.edges.map((e, i) => {
+    const src = elements.find(el => el.id === e.source)
+    const tgt = elements.find(el => el.id === e.target)
+
+    let points: { x: number; y: number }[] = []
+    if (e.sections?.[0]?.startPoint && e.sections?.[0]?.endPoint) {
+      const s = e.sections[0]
+      points.push(s.startPoint)
+      if (s.bendPoints) points.push(...s.bendPoints)
+      points.push(s.endPoint)
+    } else if (src && tgt) {
+      points = [
+        { x: src.bbox.x + src.bbox.width / 2, y: src.bbox.y + src.bbox.height / 2 },
+        { x: tgt.bbox.x + tgt.bbox.width / 2, y: tgt.bbox.y + tgt.bbox.height / 2 },
+      ]
+    }
+
+    const style = e.style ?? {}
+    return {
+      id: e.id || `edge_${i}`,
+      sourceId: e.source,
+      targetId: e.target,
+      points,
+      label: e.label || undefined,
+      color: e.type === 'cross_region' ? '#EF4444' : (style.strokeColor || '#94A3B8'),
+      dashArray: e.type === 'cross_region' ? '8,4' : (style.lineStyle === 'dashed' ? '6,4' : undefined),
+      strokeWidth: style.strokeWidth || 1.5,
+    }
+  })
+
+  return {
+    nodes,
+    edges: edgeList,
+    width: data.canvas?.width || Math.max(maxX + 40, 800),
+    height: data.canvas?.height || Math.max(maxY + 40, 600),
+  }
 }

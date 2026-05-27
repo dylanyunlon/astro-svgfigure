@@ -9,16 +9,16 @@
 | 2nd | ✅ Done | M5-M6 | canvas_compositor (DoubleBuffer), layered_pipeline (dispatch) |
 | 3rd | ✅ Done | M7 | server_layered_routes, /api/topology-layered endpoint |
 | 4th | ✅ Done | M8-M9 + removebg | prompt_templates (PolicySelector+Iconify), layout_within_bbox, remove.bg Canva key pool Tier 0 |
+| 5th | ✅ Done | M10-M11 | RegionCanvas.astro interactive layer editor, cross-region edge routing |
+| 6th | ✅ Done | M12-M13 | DoubleBuffer refinement pass, e2e test suite M1-M16 |
+| 7th | ✅ Done | M14 | MasterGo per-region export: MastergoLayer, layered_to_mastergo_layout, /api/mastergo-export, MasterGo Import API format |
+| 8th | ✅ Done | M15 | icon_extractor 3-pass pipeline (saturation detection + two-pass removebg) |
+| 9th | ✅ Done | M16 | Async parallel region generation (asyncio.gather + dependency graph) |
 
 ### Upcoming Plan
 
 | Claude # | Tasks | Description |
 |----------|-------|-------------|
-| 5th  | M10-M11 | Frontend `RegionCanvas.astro` — interactive layer editor + cross-region edge routing (A* on boundary graph) |
-| 6th  | M12-M13 | Refinement pass (DoubleBuffer 2nd LLM pass) + end-to-end test `test_layered_pipeline.py` |
-| 7th  | M14 | MasterGo export enhancement — per-region layer metadata, region→MastergoElement |
-| 8th  | M15 | Icon extraction from generated figures — crop→removebg→crop icon→embed in ELK skeleton |
-| 9th  | M16 | Async parallel region generation — `asyncio.gather` with dependency graph |
 | 10th | M17 | Replace topology_gen.py monolith — wire /api/topology-layered as default |
 | 11th | M18 | Prompt engineering — few-shot examples per diagram type, test with GenDB/UICopilot |
 | 12th | M19 | Icon post-processing — auto-crop whitespace, normalize to 32×32, embed as data URI |

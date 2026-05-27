@@ -118,6 +118,7 @@ class MastergoElement:
     iconHint: Optional[str] = None
     style: Optional[Dict[str, Any]] = None
     children: List[str] = field(default_factory=list)
+    layer_id: Optional[str] = None    # M14: which layer (region) owns this element
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
@@ -136,6 +137,56 @@ class MastergoElement:
             d["style"] = self.style
         if self.children:
             d["children"] = self.children
+        if self.layer_id:
+            d["layer_id"] = self.layer_id
+        return d
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §3b  MastergoLayer — per-region layer metadata (M14)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class MastergoLayer:
+    """One layer in the MasterGo layer panel, mapping 1:1 to a pipeline region.
+
+    MasterGo / Figma layer model:
+      - Each layer groups visual elements from one spatial region
+      - Layers are ordered by z_index (higher = on top)
+      - Layers can be hidden, locked, or have reduced opacity
+      - The layer panel supports reordering via drag-and-drop
+
+    From CCCL's DoubleBuffer pattern: each pass writes to a layer
+    (Alternate buffer), and layers are composited in z-order just as
+    DoubleBuffer.selector picks which buffer is 'Current'.
+    """
+    id: str
+    name: str
+    region_id: str                              # back-reference to PlannedRegion.id
+    z_index: int = 0
+    visible: bool = True
+    locked: bool = False
+    opacity: float = 1.0
+    bbox: Optional[BBox] = None                 # region's canvas-level bounding box
+    element_ids: List[str] = field(default_factory=list)   # elements in this layer
+    color_tag: Optional[str] = None             # MasterGo color label for the layer
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            "id": self.id,
+            "name": self.name,
+            "region_id": self.region_id,
+            "z_index": self.z_index,
+            "visible": self.visible,
+            "locked": self.locked,
+            "opacity": self.opacity,
+        }
+        if self.bbox:
+            d["bbox"] = self.bbox.to_dict()
+        if self.element_ids:
+            d["element_ids"] = self.element_ids
+        if self.color_tag:
+            d["color_tag"] = self.color_tag
         return d
 
 
@@ -156,6 +207,7 @@ class MastergoLayout:
     """
     elements: List[MastergoElement] = field(default_factory=list)
     edges: List[Dict[str, Any]] = field(default_factory=list)
+    layers: List[MastergoLayer] = field(default_factory=list)  # M14: per-region layers
     canvas_width: int = 900
     canvas_height: int = 500
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -163,11 +215,18 @@ class MastergoLayout:
     def add(self, elem: MastergoElement) -> None:
         self.elements.append(elem)
 
+    def add_layer(self, layer: MastergoLayer) -> None:
+        self.layers.append(layer)
+
     def find(self, elem_id: str) -> Optional[MastergoElement]:
         for e in self.elements:
             if e.id == elem_id:
                 return e
         return None
+
+    def elements_in_layer(self, layer_id: str) -> List[MastergoElement]:
+        """Return all elements belonging to a given layer."""
+        return [e for e in self.elements if e.layer_id == layer_id]
 
     def by_type(self, element_type: str) -> List[MastergoElement]:
         return [e for e in self.elements if e.type == element_type]
@@ -211,17 +270,130 @@ class MastergoLayout:
         """Export as list of dicts (mastergo_all_layoutobj.txt format)."""
         return [e.to_dict() for e in self.elements]
 
+    def to_layered_dict(self) -> Dict[str, Any]:
+        """Export full layout with layer structure (M14 format).
+
+        Returns a dict with:
+          - canvas: {width, height}
+          - layers: ordered layer metadata with element_ids
+          - elements: flat list of all elements (each tagged with layer_id)
+          - edges: all edges
+          - metadata: extra info
+        """
+        return {
+            "canvas": {"width": self.canvas_width, "height": self.canvas_height},
+            "layers": [l.to_dict() for l in sorted(self.layers, key=lambda x: x.z_index)],
+            "elements": self.to_list(),
+            "edges": self.edges,
+            "metadata": self.metadata,
+        }
+
+    def to_mastergo_import(self) -> Dict[str, Any]:
+        """Export in MasterGo Import API compatible format.
+
+        MasterGo's plugin import API expects:
+          - document: { id, name, type: "DOCUMENT" }
+          - document.children → pages
+          - page.children → frames
+          - frame.children → groups/rectangles/text/vectors
+
+        We map:
+          - MastergoLayer → Frame (one frame per region)
+          - MastergoElement of type group_container → Group
+          - MastergoElement of type icon → Rectangle with imageRef
+          - MastergoElement of type label → Text
+          - Other MastergoElements → Rectangle
+
+        The geometry is absolute-positioned within each frame, and
+        frames are positioned according to their region bbox.
+        """
+        layers_sorted = sorted(self.layers, key=lambda x: x.z_index)
+
+        frames = []
+        for layer in layers_sorted:
+            frame_children = []
+            for elem in self.elements_in_layer(layer.id):
+                node = _element_to_mastergo_node(elem, layer.bbox)
+                frame_children.append(node)
+
+            frame = {
+                "id": layer.id,
+                "name": layer.name,
+                "type": "FRAME",
+                "visible": layer.visible,
+                "locked": layer.locked,
+                "opacity": layer.opacity,
+                "absoluteBoundingBox": layer.bbox.to_dict() if layer.bbox else {
+                    "x": 0, "y": 0,
+                    "width": self.canvas_width,
+                    "height": self.canvas_height,
+                },
+                "children": frame_children,
+            }
+            if layer.color_tag:
+                frame["colorTag"] = layer.color_tag
+            frames.append(frame)
+
+        # Elements not assigned to any layer go into a "misc" frame
+        orphan_elems = [e for e in self.elements if not e.layer_id]
+        if orphan_elems:
+            misc_children = [_element_to_mastergo_node(e, None) for e in orphan_elems]
+            frames.append({
+                "id": "layer_misc",
+                "name": "Misc Elements",
+                "type": "FRAME",
+                "visible": True,
+                "locked": False,
+                "opacity": 1.0,
+                "absoluteBoundingBox": {
+                    "x": 0, "y": 0,
+                    "width": self.canvas_width,
+                    "height": self.canvas_height,
+                },
+                "children": misc_children,
+            })
+
+        page = {
+            "id": "page_topology",
+            "name": "Topology Figure",
+            "type": "PAGE",
+            "children": frames,
+        }
+
+        return {
+            "document": {
+                "id": "doc_root",
+                "name": self.metadata.get("title", "Generated Topology"),
+                "type": "DOCUMENT",
+                "children": [page],
+            },
+            "canvas": {"width": self.canvas_width, "height": self.canvas_height},
+            "schemaVersion": "1.0",
+            "generator": "astro-svgfigure/m14",
+        }
+
     def stats(self) -> Dict[str, Any]:
         types = {}
         for e in self.elements:
             types[e.type] = types.get(e.type, 0) + 1
         max_depth = max((e.depth for e in self.elements), default=0)
+        layer_stats = []
+        for layer in self.layers:
+            layer_stats.append({
+                "id": layer.id,
+                "name": layer.name,
+                "element_count": len(layer.element_ids),
+                "z_index": layer.z_index,
+                "visible": layer.visible,
+            })
         return {
             "total_elements": len(self.elements),
             "total_edges": len(self.edges),
+            "total_layers": len(self.layers),
             "max_nesting_depth": max_depth,
             "type_distribution": types,
             "canvas": f"{self.canvas_width}x{self.canvas_height}",
+            "layers": layer_stats,
         }
 
 
@@ -465,3 +637,335 @@ def estimate_figure_complexity(text: str) -> Dict[str, Any]:
         "min_entities": max(20, estimated // 2),
         "min_edges": max(15, estimated // 3),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §7  MasterGo Node Serializer — element → import-API node (M14)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TYPE_TO_MASTERGO = {
+    "group_container": "GROUP",
+    "panel":           "GROUP",
+    "section_header":  "TEXT",
+    "module_box":      "RECTANGLE",
+    "submodule_box":   "RECTANGLE",
+    "operation_node":  "RECTANGLE",
+    "data_object":     "RECTANGLE",
+    "icon":            "RECTANGLE",  # with imageRef
+    "label":           "TEXT",
+    "badge":           "RECTANGLE",
+    "connector_arrow": "VECTOR",
+    "annotation":      "TEXT",
+    "input_port":      "ELLIPSE",
+    "output_port":     "ELLIPSE",
+}
+
+
+def _element_to_mastergo_node(
+    elem: MastergoElement,
+    frame_bbox: Optional[BBox],
+) -> Dict[str, Any]:
+    """Convert a MastergoElement to a MasterGo import API node.
+
+    Positions are made relative to the frame_bbox if provided (since
+    MasterGo frames use local coordinates for children).
+    """
+    mg_type = _TYPE_TO_MASTERGO.get(elem.type, "RECTANGLE")
+
+    # Compute position relative to frame origin
+    if frame_bbox:
+        rel_x = elem.bbox.x - frame_bbox.x
+        rel_y = elem.bbox.y - frame_bbox.y
+    else:
+        rel_x = elem.bbox.x
+        rel_y = elem.bbox.y
+
+    node: Dict[str, Any] = {
+        "id": elem.id,
+        "name": elem.name,
+        "type": mg_type,
+        "absoluteBoundingBox": elem.bbox.to_dict(),
+        "relativeTransform": [[1, 0, rel_x], [0, 1, rel_y]],
+        "size": {"x": elem.bbox.width, "y": elem.bbox.height},
+    }
+
+    # Style → fills / strokes
+    if elem.style:
+        if elem.style.get("fill"):
+            node["fills"] = [{"type": "SOLID", "color": _parse_color(elem.style["fill"])}]
+        if elem.style.get("stroke"):
+            node["strokes"] = [{"type": "SOLID", "color": _parse_color(elem.style["stroke"])}]
+        if elem.style.get("borderless"):
+            node["strokes"] = []
+
+    # Icon hint → imageRef placeholder
+    if elem.iconHint and mg_type == "RECTANGLE":
+        node["imageRef"] = {"hint": elem.iconHint, "status": "pending"}
+
+    # Text nodes get characters field
+    if mg_type == "TEXT":
+        node["characters"] = elem.name
+        node["style"] = {
+            "fontSize": 12 if elem.type == "annotation" else 14,
+            "fontFamily": "Inter",
+            "textAlignHorizontal": "LEFT",
+        }
+
+    return node
+
+
+def _parse_color(hex_or_name: str) -> Dict[str, float]:
+    """Parse a hex color string to MasterGo RGBA dict."""
+    h = hex_or_name.lstrip("#")
+    if len(h) == 6:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return {"r": r / 255, "g": g / 255, "b": b / 255, "a": 1.0}
+    return {"r": 0.5, "g": 0.5, "b": 0.5, "a": 1.0}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §8  Layered Pipeline → MasterGo Layout (M14 core)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Color tags for layers in the MasterGo panel (cycling palette)
+_LAYER_COLORS = [
+    "#4F46E5",  # indigo
+    "#059669",  # emerald
+    "#D97706",  # amber
+    "#DC2626",  # red
+    "#7C3AED",  # violet
+    "#2563EB",  # blue
+    "#DB2777",  # pink
+    "#65A30D",  # lime
+    "#0891B2",  # cyan
+    "#EA580C",  # orange
+    "#4338CA",  # indigo-dark
+    "#047857",  # emerald-dark
+]
+
+
+def layered_to_mastergo_layout(
+    layered_result: Any,
+) -> MastergoLayout:
+    """Convert LayeredResult to MastergoLayout with full region → layer mapping.
+
+    This is the M14 core function: it bridges the layered pipeline's
+    multi-region output to MasterGo's layer-based design model.
+
+    From CCCL's output composition pattern: each pass produces a partial
+    result (one region's subgraph), and the final step assembles them
+    into a unified output.  MasterGo layers are the visual equivalent
+    of CCCL's DoubleBuffer slots — each region occupies a buffer (layer)
+    that can be independently shown, hidden, locked, or reordered.
+
+    Input: LayeredResult with:
+      - canvas: ComposedCanvas (elk_graph, layers, cross_region_edges)
+      - regions: List[PlannedRegion] (id, name, bbox, description)
+      - intent: UserIntent
+
+    Output: MastergoLayout with:
+      - layers: One MastergoLayer per region (z-ordered)
+      - elements: All elements tagged with layer_id
+      - edges: All edges (intra-region + cross-region)
+      - MasterGo Import API compatible export via to_mastergo_import()
+    """
+    canvas = getattr(layered_result, "canvas", None)
+    regions = getattr(layered_result, "regions", [])
+    intent = getattr(layered_result, "intent", None)
+
+    if not canvas:
+        # Fallback: if no canvas, try to build from elk_graph on result
+        elk = getattr(layered_result, "elk_graph", {})
+        if elk:
+            return elk_to_mastergo_layout(elk)
+        return MastergoLayout()
+
+    layout = MastergoLayout(
+        canvas_width=canvas.width,
+        canvas_height=canvas.height,
+        metadata={
+            "source": "layered_pipeline",
+            "title": intent.summary().get("raw_text", "")[:80] if intent else "",
+            "region_count": len(regions),
+        },
+    )
+
+    # ── Step 1: Create layers from regions ──
+    # Like CCCL's buffer allocation: one buffer (layer) per pass (region)
+    region_map = {}  # region_id → PlannedRegion
+    for i, region in enumerate(regions):
+        rid = region.id if hasattr(region, "id") else region.get("id", f"region_{i}")
+        rname = region.name if hasattr(region, "name") else region.get("name", f"Region {i+1}")
+        rbbox_raw = region.bbox if hasattr(region, "bbox") else region.get("bbox", {})
+
+        rbbox = BBox(
+            x=rbbox_raw.get("x", 0),
+            y=rbbox_raw.get("y", 0),
+            width=rbbox_raw.get("width", 200),
+            height=rbbox_raw.get("height", 200),
+        ) if isinstance(rbbox_raw, dict) else BBox(x=0, y=0, width=200, height=200)
+
+        layer = MastergoLayer(
+            id=f"layer_{rid}",
+            name=rname,
+            region_id=rid,
+            z_index=i,
+            visible=True,
+            locked=False,
+            opacity=1.0,
+            bbox=rbbox,
+            color_tag=_LAYER_COLORS[i % len(_LAYER_COLORS)],
+        )
+        layout.add_layer(layer)
+        region_map[rid] = {
+            "region": region,
+            "layer": layer,
+            "bbox": rbbox,
+        }
+
+    # ── Step 2: Walk ELK graph, assign elements to layers ──
+    # The composed ELK graph has top-level children that map to regions.
+    # Each top-level child's id prefix matches its region.
+    elk = canvas.elk_graph or {}
+
+    def _safe_id(raw: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9_]', '_', raw.lower()).strip('_')[:60]
+
+    def _find_layer_for_node(node_id: str) -> Optional[MastergoLayer]:
+        """Match a node to its owning layer by region prefix."""
+        nid_lower = node_id.lower()
+        for rid, info in region_map.items():
+            if rid.lower() in nid_lower or nid_lower.startswith(_safe_id(rid)):
+                return info["layer"]
+        return None
+
+    def _walk_elk(
+        node: Dict[str, Any],
+        px: float, py: float,
+        parent_id: Optional[str],
+        depth: int,
+        inherited_layer: Optional[MastergoLayer],
+    ) -> None:
+        nid = node.get("id", "")
+        if not nid or nid == "root":
+            for child in node.get("children", []):
+                _walk_elk(child, px, py, None, depth, None)
+            return
+
+        safe = _safe_id(nid)
+        labels = node.get("labels", [])
+        name = labels[0].get("text", "") if labels else nid
+
+        ax = px + float(node.get("x", 0))
+        ay = py + float(node.get("y", 0))
+        w = float(node.get("width", 150))
+        h = float(node.get("height", 50))
+
+        # Determine owning layer: check node id, then inherit from parent
+        layer = _find_layer_for_node(nid) or inherited_layer
+
+        is_group = bool(node.get("children"))
+        has_icon = bool(node.get("iconHint"))
+
+        # Element type classification (same logic as elk_to_mastergo_layout)
+        if is_group:
+            etype = "group_container"
+        elif node.get("type") == "input" or "input" in nid.lower():
+            etype = "input_port"
+        elif node.get("type") == "output" or "output" in nid.lower():
+            etype = "output_port"
+        elif has_icon and w <= 60 and h <= 60:
+            etype = "icon"
+        elif any(kw in nid.lower() for kw in ("filter", "join", "aggregate", "scan")):
+            etype = "operation_node"
+        elif any(kw in nid.lower() for kw in ("table", "index", "column", "code", "exe")):
+            etype = "data_object"
+        elif depth >= 2:
+            etype = "submodule_box"
+        else:
+            etype = "module_box"
+
+        # Style
+        style = None
+        adv = node.get("advanced", {})
+        if adv:
+            style = {}
+            if adv.get("strokeColor"):
+                style["stroke"] = adv["strokeColor"]
+            if adv.get("fillColor"):
+                style["fill"] = adv["fillColor"]
+            if node.get("borderless"):
+                style["borderless"] = True
+
+        elem = MastergoElement(
+            id=safe,
+            name=name,
+            bbox=BBox(x=round(ax), y=round(ay), width=round(w), height=round(h)),
+            type=etype,
+            parent=_safe_id(parent_id) if parent_id else None,
+            depth=depth,
+            iconHint=node.get("iconHint"),
+            style=style,
+            layer_id=layer.id if layer else None,
+        )
+
+        children = node.get("children", [])
+        if children:
+            elem.children = [_safe_id(c.get("id", "")) for c in children if c.get("id")]
+
+        layout.add(elem)
+
+        # Register element in its layer
+        if layer:
+            layer.element_ids.append(safe)
+
+        # Sub-elements for icon + label
+        if has_icon and not is_group and w >= 80:
+            icon_w = min(40, int(w * 0.3))
+            icon_elem = MastergoElement(
+                id=f"{safe}_icon",
+                name=f"{name} icon",
+                bbox=BBox(x=round(ax + 4), y=round(ay + (h - icon_w) / 2), width=icon_w, height=icon_w),
+                type="icon",
+                parent=safe,
+                depth=depth + 1,
+                iconHint=node.get("iconHint"),
+                layer_id=layer.id if layer else None,
+            )
+            layout.add(icon_elem)
+            if layer:
+                layer.element_ids.append(f"{safe}_icon")
+
+            label_elem = MastergoElement(
+                id=f"{safe}_label",
+                name=name,
+                bbox=BBox(x=round(ax + icon_w + 8), y=round(ay + 4), width=round(w - icon_w - 12), height=round(h - 8)),
+                type="label",
+                parent=safe,
+                depth=depth + 1,
+                layer_id=layer.id if layer else None,
+            )
+            layout.add(label_elem)
+            if layer:
+                layer.element_ids.append(f"{safe}_label")
+
+        for child in children:
+            _walk_elk(child, ax, ay, nid, depth + 1, layer)
+
+    _walk_elk(elk, 0, 0, None, 0, None)
+
+    # ── Step 3: Extract edges (intra + cross-region) ──
+    layout.edges = _extract_edges_recursive(elk)
+
+    # Add cross-region edges from compositor
+    for cr_edge in (canvas.cross_region_edges or []):
+        layout.edges.append({
+            "id": cr_edge.get("id", ""),
+            "source": cr_edge.get("source", ""),
+            "target": cr_edge.get("target", ""),
+            "label": cr_edge.get("label", ""),
+            "type": "cross_region",
+            "style": cr_edge.get("style"),
+        })
+
+    return layout
