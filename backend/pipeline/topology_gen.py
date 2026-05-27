@@ -108,9 +108,9 @@ Rules:
    exist in some children array.
 9. Edge IDs must be unique strings (e.g., "e1", "e2", "e3").
 10. Output ONLY the JSON object, no markdown fences, no explanation.
-11. IMPORTANT: Keep the topology concise. Maximum 25 nodes and 30 edges.
-    For complex descriptions, capture the HIGH-LEVEL structure only —
-    do NOT create a node for every single sub-detail. Aim for 8-15 nodes.
+11. Follow the COMPLEXITY-AWARE NODE GENERATION guide above to determine
+    how many nodes to generate.  Do NOT oversimplify complex descriptions.
+    {complexity_override}
 12. For architecture diagrams: parent nodes with children MUST have
     "layoutOptions": {"elk.padding": "[top=30,left=10,bottom=10,right=10]"}
 12. Add iconHint field to nodes that should have an icon/illustration.
@@ -183,12 +183,142 @@ that captures the computational/data flow as a directed graph.
 Algorithm hint: {algorithm}
 Direction hint: {direction}
 
+{intent_supplement}
+
 Paper method description:
 ---
 {text}
 ---
 
+{entity_hint_section}
+
 Output the ELK JSON topology:"""
+
+
+# ============================================================================
+# Intent-Aware Prompt Supplements
+# ============================================================================
+
+_INTENT_SUPPLEMENTS = {
+    "engineering": """\
+=== ENGINEERING / DEVOPS FLOW DETECTED ===
+The user's description includes engineering actions (git clone, tree, build, etc.).
+- Generate nodes for EACH action step: "git clone", "tree inspect", "build", etc.
+- Include resource nodes: repositories, configs, output artifacts
+- Action nodes should have iconHint matching the tool (e.g., "git logo",
+  "terminal window", "file tree", "docker container")
+- Use sequential edges: clone → inspect → configure → build → test → deploy
+- If the user mentions specific repos/tools (CCCL, NCCL, NVLINK, megatron-core),
+  each becomes a node or compound node with its sub-components
+- Group related actions into compound nodes (e.g., "Setup Phase", "Build Phase")
+""",
+    "recursive": """\
+=== RECURSIVE CHAIN PATTERN DETECTED ===
+The user's description follows the pattern:
+  "从 C 这个好例子开始 → 实现 D → 让 E 可以 F → G 引入 H..."
+  (from C start → implement D → let E do F → G introduces H...)
+- Each "implement/introduce/integrate" step is a compound node containing:
+  - The component being implemented (child node)
+  - The capability it enables (child node with edge)
+  - The pattern it follows from the previous example (edge back)
+- Show the full chain, do NOT truncate steps
+- Each step builds on the previous: edges flow forward AND reference back
+- Use descriptive labels that capture BOTH the component and its purpose
+""",
+    "architecture": """\
+=== ARCHITECTURE DIAGRAM DETECTED ===
+- Use COMPOUND NODES extensively: modules contain sub-modules
+- Nesting depth ≥ 2 for complex modules (e.g., PLTR OSDK containing CCCL, NCCL)
+- Every major system/library/framework the user mentions becomes a compound node
+  with its internal components as children
+- Cross-boundary edges connect components across different systems
+""",
+    "comparison": """\
+=== COMPARISON LAYOUT DETECTED ===
+- Side-by-side or parallel columns for compared items
+- Matching nodes at the same level for comparable components
+- Shared elements appear once with edges to both sides
+""",
+    "data_flow": """\
+=== DATA FLOW / PIPELINE DETECTED ===
+- Each processing stage is a node
+- Data transformations are labeled on edges
+- Branch/merge points are explicit nodes
+""",
+}
+
+_COMPLEXITY_OVERRIDES = {
+    "simple": "Aim for 8-15 nodes and up to 20 edges.",
+    "medium": "Generate 20-30 nodes and up to 40 edges.  Do NOT oversimplify.",
+    "complex": "Generate 35-50 nodes and up to 60 edges.  Capture ALL components.",
+    "dense": "Generate 50-80 nodes and up to 100 edges.  This is a complex system — every component matters.",
+}
+
+
+def _build_intent_supplement(intent) -> str:
+    """Build the intent-specific prompt supplement from parsed UserIntent."""
+    parts = []
+    dtype = getattr(intent, "diagram_type", None)
+    if dtype:
+        dtype_val = dtype.value if hasattr(dtype, "value") else str(dtype)
+        supplement = _INTENT_SUPPLEMENTS.get(dtype_val, "")
+        if supplement:
+            parts.append(supplement)
+
+    # Inject detected action chain as explicit hints
+    action_chain = getattr(intent, "action_chain", [])
+    if action_chain:
+        steps_str = " → ".join(
+            f"{step.verb} {step.object}" + (f" (via {step.tool})" if step.tool else "")
+            for step in action_chain
+        )
+        parts.append(f"=== DETECTED ACTION CHAIN ===\n{steps_str}\nGenerate a node for EACH step above.")
+
+    # Inject containment groups
+    containment = getattr(intent, "containment_groups", {})
+    if containment:
+        lines = []
+        for parent, children in containment.items():
+            lines.append(f"  {parent} contains: {', '.join(children)}")
+        parts.append(f"=== DETECTED CONTAINMENT ===\n" + "\n".join(lines) +
+                      "\nModel these as compound nodes with nested children.")
+
+    # Inject style cues
+    style_cues = getattr(intent, "style_cues", [])
+    for cue in style_cues:
+        if cue.cue_type == "density" and cue.value in ("dense", "detailed", "comprehensive"):
+            parts.append("The user explicitly requested a DETAILED diagram — maximize node count.")
+        elif cue.cue_type == "nesting":
+            parts.append(f"The user requested {cue.value} levels of nesting depth.")
+
+    return "\n\n".join(parts)
+
+
+def _build_entity_hint_section(intent) -> str:
+    """Build a section listing pre-extracted entities for the LLM."""
+    entities = getattr(intent, "entities", [])
+    if not entities:
+        return ""
+
+    entity_lines = []
+    for e in entities[:80]:  # cap at 80 to avoid prompt overflow
+        parent_str = f" (inside {e.parent_hint})" if e.parent_hint else ""
+        entity_lines.append(f"  - {e.name} [{e.entity_type}]{parent_str}")
+
+    return (
+        "=== PRE-EXTRACTED ENTITIES (from user text — include ALL of these as nodes) ===\n"
+        + "\n".join(entity_lines)
+        + f"\n\nTotal: {len(entities)} entities detected.  Generate at least this many nodes."
+    )
+
+
+def _get_complexity_override(intent) -> str:
+    """Return the complexity-appropriate node limit string."""
+    complexity = getattr(intent, "complexity", None)
+    if complexity:
+        cval = complexity.value if hasattr(complexity, "value") else str(complexity)
+        return _COMPLEXITY_OVERRIDES.get(cval, _COMPLEXITY_OVERRIDES["simple"])
+    return _COMPLEXITY_OVERRIDES["simple"]
 
 
 # ============================================================================
@@ -201,6 +331,7 @@ async def generate_topology(
     model: Optional[str] = None,
     algorithm: ElkAlgorithm = ElkAlgorithm.LAYERED,
     direction: ElkDirection = ElkDirection.DOWN,
+    intent=None,
 ) -> TopologyResponse:
     """
     Generate ELK topology from paper method text using LLM.
@@ -211,14 +342,39 @@ async def generate_topology(
         model: LLM model to use (auto-detected if None)
         algorithm: ELK layout algorithm hint for the LLM
         direction: ELK layout direction hint
+        intent: Optional pre-parsed UserIntent from user_intent_parser.
+                If None, the parser will be called automatically.
 
     Returns:
         TopologyResponse with the ELK graph or error
     """
+    # ── Parse user intent if not provided ──
+    if intent is None:
+        try:
+            from .topology.user_intent_parser import parse_user_intent
+            intent = parse_user_intent(text)
+            logger.info(
+                f"Auto-parsed intent: type={intent.diagram_type.value} "
+                f"entities={len(intent.entities)} complexity={intent.complexity.value}"
+            )
+        except Exception as e:
+            logger.warning(f"Intent parsing failed (non-fatal): {e}")
+            intent = None
+
+    # ── Build intent-aware prompt components ──
+    intent_supplement = _build_intent_supplement(intent) if intent else ""
+    entity_hint_section = _build_entity_hint_section(intent) if intent else ""
+    complexity_override = _get_complexity_override(intent) if intent else _COMPLEXITY_OVERRIDES["simple"]
+
+    # ── Inject complexity_override into system prompt ──
+    system_prompt = TOPOLOGY_SYSTEM_PROMPT.replace("{complexity_override}", complexity_override)
+
     prompt = TOPOLOGY_USER_PROMPT_TEMPLATE.format(
         text=text,
         algorithm=algorithm.value,
         direction=direction.value,
+        intent_supplement=intent_supplement,
+        entity_hint_section=entity_hint_section,
     )
 
     # Track raw_output for error reporting
@@ -242,7 +398,7 @@ async def generate_topology(
 
         result = await ai_engine.get_completion(
             messages=[
-                {"role": "system", "content": get_topology_prompt_with_edge_routing(TOPOLOGY_SYSTEM_PROMPT)},
+                {"role": "system", "content": get_topology_prompt_with_edge_routing(system_prompt)},
                 {"role": "user", "content": prompt},
             ],
             model=model,
