@@ -193,11 +193,36 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
     const fontSize = h > 30 ? 13 : 11
     svg += `<text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="600">${escapeXml(dl)}</text>`
   } else {
-    svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${strokeW}" rx="4"${strokeDash} />`
+    // ── Organic scattered rounded-rect style ──
+    // Seeded PRNG from node id for deterministic randomness
+    let seed = 0
+    for (let i = 0; i < node.id.length; i++) seed = ((seed << 5) - seed + node.id.charCodeAt(i)) | 0
+    const seededRand = () => { seed = (seed * 16807 + 0) % 2147483647; return (seed & 0x7fffffff) / 2147483647 }
+
+    const mainRx = Math.min(12, Math.min(w, h) * 0.15)
+    svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${isGroup ? 1.5 : 0.8}" rx="${mainRx}"${strokeDash} />`
+
+    // Scatter 3-6 small decorative rounded rects
+    if (!isGroup) {
+      const numScatter = 3 + Math.floor(seededRand() * 4)
+      const pad = 4
+      for (let si = 0; si < numScatter; si++) {
+        const sw2 = w * (0.15 + seededRand() * 0.35)
+        const sh2 = h * (0.12 + seededRand() * 0.25)
+        const sx = x + pad + seededRand() * Math.max(0, w - sw2 - pad * 2)
+        const sy = y + pad + seededRand() * Math.max(0, h - sh2 - pad * 2)
+        const srx = 3 + seededRand() * 8
+        const sOpacity = 0.04 + seededRand() * 0.08
+        const sRotate = (seededRand() - 0.5) * 6
+        svg += `<rect x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${sw2.toFixed(1)}" height="${sh2.toFixed(1)}" rx="${srx.toFixed(1)}" fill="${STROKE_COLOR}" opacity="${sOpacity.toFixed(3)}" transform="rotate(${sRotate.toFixed(1)} ${(sx+sw2/2).toFixed(1)} ${(sy+sh2/2).toFixed(1)})" />`
+      }
+    }
 
     // For group nodes, put label at top — larger, bolder
+    const hasIcon = !!(node as any).iconHint
     const labelY = isGroup ? y + 20 : y + h / 2
-    const fontSize = isGroup ? 14 : 12
+    // Font size: smaller when node has icon (icon takes visual priority)
+    const fontSize = isGroup ? 14 : (hasIcon && h >= 50) ? 9 : 12
     const fontWeight = isGroup ? '600' : '500'
     svg += `<text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
   }

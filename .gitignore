@@ -40,3 +40,4 @@ bunfig.toml
 /src/content/blog/test.*
 /test/
 __pycache__/
+package-lock.json
