@@ -179,6 +179,28 @@ def test_m223_export():
     else:
         assert "cairosvg" in (rp.error or "").lower() or rp.error
         msg = f"PDF degraded gracefully ({(rp.error or '')[:40]})"
+
+    # Regression (smoke-test finding): a root <svg> with the responsive
+    # style="max-width:100%;height:auto;" must still rasterize NON-BLANK via
+    # cairosvg (_prep_for_raster strips that style). Only assert when cairosvg
+    # is installed.
+    try:
+        import cairosvg  # noqa: F401
+        import numpy as np
+        from PIL import Image as _Img
+        styled = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" '
+            'width="120" height="120" style="max-width:100%;height:auto;">'
+            '<rect width="120" height="120" fill="#FFFFFF"/>'
+            '<rect x="20" y="20" width="80" height="80" fill="#1A1A1A"/></svg>'
+        )
+        rr = export_mod.export_png(styled)
+        assert rr.success and rr.data
+        arr = np.asarray(_Img.open(io.BytesIO(rr.data)).convert("RGBA"))
+        assert (arr[:, :, 3] > 0).any(), "styled-root SVG rasterized BLANK"
+        msg += "; styled-root non-blank OK"
+    except ImportError:
+        pass
     print(f"  [M223] export: self-contained SVG OK, external ref refused, {msg}")
 
 

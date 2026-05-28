@@ -66,6 +66,22 @@ class ExportResult:
 # Matches href / xlink:href values on <image> elements.
 _HREF_RE = re.compile(r'(?:xlink:)?href\s*=\s*"([^"]*)"')
 
+# The root <svg> from to-svg.ts carries style="max-width:100%;height:auto;".
+# Browsers honor it, but cairosvg interprets it as a zero/auto size and
+# rasterizes a BLANK canvas. Strip it (root tag only) before rasterizing.
+_ROOT_STYLE_RE = re.compile(r'(<svg\b[^>]*?)\s+style="[^"]*"', re.IGNORECASE)
+
+
+def _prep_for_raster(svg: str) -> str:
+    """Make an elkToSvg() string safe for cairosvg rasterization.
+
+    cairosvg renders nothing when the root <svg> has the responsive
+    style="max-width:100%;height:auto;" attribute (it resolves to a 0-size
+    viewport). The explicit width/height + viewBox are sufficient, so we drop
+    the style on the root tag. No-op for SVGs that lack it.
+    """
+    return _ROOT_STYLE_RE.sub(r"\1", svg, count=1)
+
 
 def audit_self_contained(svg: str) -> Dict[str, Any]:
     """Report whether every <image> href is an inline data URI.
@@ -133,7 +149,7 @@ def export_pdf(
             kwargs["output_width"] = int(width * scale)
         if height:
             kwargs["output_height"] = int(height * scale)
-        pdf_bytes = cairosvg.svg2pdf(bytestring=svg.encode("utf-8"), **kwargs)
+        pdf_bytes = cairosvg.svg2pdf(bytestring=_prep_for_raster(svg).encode("utf-8"), **kwargs)
         return ExportResult(
             success=bool(pdf_bytes), fmt="pdf", data=pdf_bytes,
             mime_type="application/pdf", diagnostics=audit,
@@ -168,7 +184,7 @@ def export_png(
             kwargs["output_width"] = int(width * scale)
         if height:
             kwargs["output_height"] = int(height * scale)
-        png_bytes = cairosvg.svg2png(bytestring=svg.encode("utf-8"), **kwargs)
+        png_bytes = cairosvg.svg2png(bytestring=_prep_for_raster(svg).encode("utf-8"), **kwargs)
         return ExportResult(
             success=bool(png_bytes), fmt="png", data=png_bytes,
             mime_type="image/png", diagnostics=audit,
