@@ -133,7 +133,7 @@ The SVG layout may contain RICH visual hints beyond basic boxes. Translate these
 into specific drawing instructions in your numbered points:
 - "visualShape: circle" + "mathSymbol: tensor_product" → draw a CIRCLE with ⊗ inside
 - "fillPattern: hatching" → draw the region with DIAGONAL LINE FILL (like technical drawings)
-- "contentGrid: {rows:3,cols:4,shape:circle}" → draw a 3×4 grid of small dots INSIDE the node
+- "contentGrid: {{rows:3,cols:4,shape:circle}}" → draw a 3×4 grid of small dots INSIDE the node
 - "embeddedImage: photo of a dog" → draw/depict the described image inside the node area
 - "textOrientation: vertical" → rotate the text label 90 degrees
 - "nodeStyle: label" → just text, NO surrounding box
