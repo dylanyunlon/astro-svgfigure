@@ -128,8 +128,11 @@ def _sam3_detect(image_path: str, prompt: str, confidence: float = 0.3) -> List[
         logger.error("gradio_client not installed")
         return []
 
+    import os
+    hf_token = os.environ.get("HF_TOKEN", "") or None
+
     try:
-        client = Client("prithivMLmods/SAM3-Demo")
+        client = Client("prithivMLmods/SAM3-Demo", token=hf_token)
         result = client.predict(
             source_img=handle_file(image_path),
             text_query=prompt,

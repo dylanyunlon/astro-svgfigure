@@ -125,6 +125,7 @@ class SAM3Client:
         default_prompt: str = "rectangle",
         confidence_threshold: float = 0.3,
         timeout: float = 30.0,
+        hf_token: Optional[str] = None,
     ):
         self.spaces = spaces or _DEFAULT_SPACES
         self.default_prompt = default_prompt
@@ -132,6 +133,10 @@ class SAM3Client:
         self.timeout = timeout
         self._client = None
         self._connected_space: Optional[str] = None
+
+        # HF token: explicit param > env var
+        import os
+        self.hf_token = hf_token or os.environ.get("HF_TOKEN", "")
 
     def _ensure_connected(self) -> bool:
         """Connect to the first available SAM3 Space."""
@@ -144,10 +149,12 @@ class SAM3Client:
             logger.error("gradio_client not installed. Run: pip install gradio_client")
             return False
 
+        token = self.hf_token or None  # empty string → None
+
         for space in self.spaces:
             try:
-                logger.info("Connecting to SAM3 Space: %s", space)
-                self._client = Client(space)
+                logger.info("Connecting to SAM3 Space: %s (token=%s)", space, "yes" if token else "no")
+                self._client = Client(space, token=token)
                 self._connected_space = space
                 logger.info("Connected to %s", space)
                 return True
