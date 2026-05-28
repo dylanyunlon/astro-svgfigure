@@ -85,10 +85,8 @@ except ImportError:
 # ── Enums & Config ────────────────────────────────────────────────────
 
 class RemovalMethod(str, Enum):
-    """Background-removal method identifiers."""
-    CHROMA_KEY = "chroma_key"
-    REMBG_U2NET = "rembg_u2net"
-    HYBRID = "hybrid"
+    """Background-removal method identifiers — cloud API only."""
+    REMOVEBG_CANVA = "removebg_canva"   # remove.bg (Canva) API with key pool
     NONE = "none"
 
 
@@ -413,111 +411,56 @@ def detect_green_confidence(image: "Image.Image", border_fraction: float = 0.05)
     return confidence
 
 
-# ── Method Runners ────────────────────────────────────────────────────
+# ── Method Runner — Cloud API Only ─────────────────────────────────────
 
-def _run_chroma_key(
+def _run_removebg_canva(
     image: "Image.Image",
     config: OrchestratorConfig,
 ) -> "Image.Image":
-    """Run HSV chroma-key removal via green_screen_advanced module."""
-    try:
-        from backend.pipeline.green_screen_advanced import (
-            GreenScreenConfig,
-            process_frames_hsv,
-        )
-        gs_config = GreenScreenConfig(
-            hue_tolerance=config.chroma_tolerance_hsv,
-            edge_blur=config.edge_blur_px,
-            despill=config.despill_enabled,
-        )
-        results = process_frames_hsv([image], gs_config)
-        if results and results[0] is not None:
-            return results[0]
-    except ImportError:
-        logger.warning("green_screen_advanced not available, fallback to basic chroma")
-    except Exception as exc:
-        logger.warning("Chroma-key failed: %s", exc)
+    """Run remove.bg (Canva) cloud API for background removal.
 
-    # Fallback: basic RGB chroma-key inline
-    return _basic_rgb_chroma(image, tolerance=60)
-
-
-def _basic_rgb_chroma(image: "Image.Image", tolerance: int = 60) -> "Image.Image":
-    """Minimal RGB green-screen removal as last-resort fallback.
-
-    This is intentionally simple — the advanced module should handle
-    most cases.  Pattern: fallback exists so the pipeline never crashes.
+    Uses key pool from RemoveBgCanvaClient with auto-rotation on 402.
+    No local fallback — cloud API is the sole removal method.
     """
-    if not _HAS_NUMPY:
+    import asyncio
+    from backend.pipeline.removebg_canva_client import RemoveBgCanvaClient
+
+    import os
+    keys_str = os.environ.get("REMOVEBG_API_KEYS", "")
+    keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+    if not keys:
+        logger.error("REMOVEBG_API_KEYS not set — cannot remove background")
         return image.convert("RGBA")
 
-    rgba = image.convert("RGBA")
-    arr = np.array(rgba).copy()
-    r, g, b = arr[:, :, 0].astype(int), arr[:, :, 1].astype(int), arr[:, :, 2].astype(int)
-    green_mask = (g > 100) & ((g - r) > tolerance) & ((g - b) > tolerance)
-    arr[green_mask, 3] = 0
-    return Image.fromarray(arr, "RGBA")
+    client = RemoveBgCanvaClient(keys=keys)
 
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
 
-def _run_rembg(
-    image: "Image.Image",
-    config: OrchestratorConfig,
-) -> "Image.Image":
-    """Run rembg U2-Net-based removal via rembg_processor module."""
     try:
-        from backend.pipeline.rembg_processor import remove_background_rembg
-        result = remove_background_rembg(image, model_name=config.rembg_model)
-        if result is not None:
-            return result
-    except ImportError:
-        logger.warning("rembg_processor not available")
-    except Exception as exc:
-        logger.warning("rembg failed: %s", exc)
+        result = asyncio.run(client.remove_background(image_bytes))
+    except RuntimeError:
+        # Event loop already running (e.g. inside FastAPI)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            result = pool.submit(
+                lambda: asyncio.run(client.remove_background(image_bytes))
+            ).result(timeout=60)
 
-    # rembg/u2net removed — return image with no removal
-    logger.error("All rembg paths failed — returning original image")
-    return image.convert("RGBA")
+    if not result.success:
+        logger.warning("remove.bg API error: %s", result.error)
+        return image.convert("RGBA")
 
-
-def _run_hybrid(
-    image: "Image.Image",
-    config: OrchestratorConfig,
-) -> "Image.Image":
-    """Hybrid pipeline: chroma-key first, then rembg on residual.
-
-    Step 1: Chroma-key removes the obvious green.
-    Step 2: rembg cleans up non-green background remnants (shadows,
-            reflections, translucent edges).
-    Step 3: Merge — take the intersection of both alpha masks to
-            minimise false-positive removal.
-
-    This mirrors NCCL's two-phase AllReduce: local reduce (chroma)
-    then global reduce (rembg) with final broadcast (merge).
-    """
-    chroma_result = _run_chroma_key(image, config)
-    rembg_result = _run_rembg(image, config)
-
-    if not _HAS_NUMPY:
-        return chroma_result
-
-    chroma_arr = np.array(chroma_result)
-    rembg_arr = np.array(rembg_result)
-
-    # Ensure same size
-    if chroma_arr.shape != rembg_arr.shape:
-        rembg_result = rembg_result.resize(chroma_result.size, Image.LANCZOS)
-        rembg_arr = np.array(rembg_result)
-
-    # Merge alpha: take MINIMUM of both alphas (conservative — only keep
-    # pixels both methods agree are foreground)
-    merged_alpha = np.minimum(chroma_arr[:, :, 3], rembg_arr[:, :, 3])
-
-    # Use chroma's RGB (it preserves color better since it does spill
-    # correction) but apply merged alpha
-    merged = chroma_arr.copy()
-    merged[:, :, 3] = merged_alpha
-
-    return Image.fromarray(merged, "RGBA")
+    try:
+        result_bytes = base64.b64decode(result.image_b64)
+        result_img = Image.open(io.BytesIO(result_bytes)).convert("RGBA")
+        if result_img.size != image.size:
+            result_img = result_img.resize(image.size, Image.LANCZOS)
+        return result_img
+    except Exception as e:
+        logger.error("Failed to decode remove.bg result: %s", e)
+        return image.convert("RGBA")
 
 
 # ── Single-Frame Processor ───────────────────────────────────────────
@@ -528,83 +471,17 @@ def _process_single_frame(
     config: OrchestratorConfig,
     force_method: Optional[RemovalMethod] = None,
 ) -> FrameRemovalResult:
-    """Process one frame through the optimal removal pipeline.
+    """Process one frame via remove.bg (Canva) cloud API.
 
-    Logic:
-      1. Detect green confidence.
-      2. If green_confidence >= threshold → chroma-key.
-      3. Else if hybrid enabled → hybrid.
-      4. Else → rembg.
-      5. Score the result.
-      6. If score < quality_floor and we haven't tried hybrid → try hybrid.
+    Cloud-only: no local chroma-key, no local rembg.
     """
     t0 = time.perf_counter()
     result = FrameRemovalResult(frame_index=frame_index)
 
-    # ── Step 1: Green confidence ─────────────────────────────────────
-    green_conf = detect_green_confidence(image)
-    result.green_confidence = green_conf
-
-    # ── Step 2: Route to method ──────────────────────────────────────
-    if force_method is not None:
-        chosen = force_method
-    elif green_conf >= config.green_confidence_threshold:
-        chosen = RemovalMethod.CHROMA_KEY
-    elif config.enable_hybrid:
-        chosen = RemovalMethod.HYBRID
-    else:
-        chosen = RemovalMethod.REMBG_U2NET
-
-    # ── Step 3: Execute ──────────────────────────────────────────────
-    method_scores: dict[RemovalMethod, float] = {}
-
-    if chosen == RemovalMethod.CHROMA_KEY:
-        rgba = _run_chroma_key(image, config)
-    elif chosen == RemovalMethod.REMBG_U2NET:
-        rgba = _run_rembg(image, config)
-    else:
-        rgba = _run_hybrid(image, config)
-
+    chosen = RemovalMethod.REMOVEBG_CANVA
+    rgba = _run_removebg_canva(image, config)
     scores = QualityScorer.score(rgba)
-    method_scores[chosen] = scores["total"]
 
-    # ── Step 4: Fallback if below quality floor ──────────────────────
-    if (
-        scores["total"] < config.quality_floor
-        and force_method is None
-        and chosen != RemovalMethod.HYBRID
-        and config.enable_hybrid
-    ):
-        logger.info(
-            "Frame %d: %s scored %.1f < %.1f, trying hybrid",
-            frame_index, chosen.value, scores["total"], config.quality_floor,
-        )
-        hybrid_rgba = _run_hybrid(image, config)
-        hybrid_scores = QualityScorer.score(hybrid_rgba)
-        method_scores[RemovalMethod.HYBRID] = hybrid_scores["total"]
-
-        if hybrid_scores["total"] > scores["total"]:
-            rgba = hybrid_rgba
-            scores = hybrid_scores
-            chosen = RemovalMethod.HYBRID
-            logger.info("Frame %d: hybrid improved to %.1f", frame_index, scores["total"])
-
-    # If still below floor, try rembg standalone
-    if (
-        scores["total"] < config.quality_floor
-        and force_method is None
-        and chosen != RemovalMethod.REMBG_U2NET
-    ):
-        rembg_rgba = _run_rembg(image, config)
-        rembg_scores = QualityScorer.score(rembg_rgba)
-        method_scores[RemovalMethod.REMBG_U2NET] = rembg_scores["total"]
-
-        if rembg_scores["total"] > scores["total"]:
-            rgba = rembg_rgba
-            scores = rembg_scores
-            chosen = RemovalMethod.REMBG_U2NET
-
-    # ── Step 5: Populate result ──────────────────────────────────────
     result.method_used = chosen
     result.quality_score = scores.get("total", 0.0)
     result.quality_grade = _score_to_grade(result.quality_score)
@@ -614,13 +491,12 @@ def _process_single_frame(
     result.processing_time_ms = (time.perf_counter() - t0) * 1000
 
     result.diagnostics = {
-        "method_scores": {k.value: round(v, 2) for k, v in method_scores.items()},
+        "method_scores": {chosen.value: round(scores.get("total", 0), 2)},
         "scoring_breakdown": {
             k: v for k, v in scores.items() if k != "total"
         },
     }
 
-    # ── Step 6: Encode to base64 ─────────────────────────────────────
     buf = io.BytesIO()
     rgba.save(buf, format="PNG", optimize=True)
     result.image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")

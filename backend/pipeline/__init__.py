@@ -33,12 +33,11 @@ from .animation_prompt_designer import design_animation_prompt
 from .frame_generator import generate_animation_frames
 
 
-# Green-screen removal & advanced background processing (Step 4)
+# Cloud background removal (Step 4) — remove.bg (Canva) API only
 try:
-    from .green_screen_advanced import (
-        process_frames_hsv,
-        GreenScreenConfig,
-        get_grok_green_screen_requirements,
+    from .removebg_canva_client import (
+        RemoveBgCanvaClient,
+        RemoveBgCanvaKeyPool,
     )
     from .batch_rembg_orchestrator import (
         orchestrate_batch_removal,
@@ -46,7 +45,7 @@ try:
         config_from_params,
     )
 except ImportError:
-    pass  # numpy/PIL may not be installed in all environments
+    pass  # httpx may not be installed in all environments
 
 # Layer separation (Step 5)
 try:
@@ -83,16 +82,7 @@ try:
 except ImportError:
     pass
 
-# remove-bg.io cloud API client (free HD background removal)
-try:
-    from .removebg_client import (
-        RemoveBgIoClient,
-        RemoveBgIoConfig,
-        is_removebgio_available,
-        process_frame_removebgio,
-    )
-except ImportError:
-    pass
+
 
 __all__ = [
     "generate_topology",
