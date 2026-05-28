@@ -610,7 +610,7 @@ def _merge_to_elk(
         "edges": root_edges,
         "layoutOptions": {
             "elk.algorithm": "layered",
-            "elk.direction": "DOWN",
+            "elk.direction": "RIGHT",
             "elk.spacing.nodeNode": "16",
             "elk.padding": "[top=20,left=20,bottom=20,right=20]",
         },

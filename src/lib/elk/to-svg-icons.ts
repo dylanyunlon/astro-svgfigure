@@ -209,6 +209,37 @@ export function elkToSvgIcons(graph: ElkGraph): string {
     gh = Math.max(gh, 150)
   }
 
+  // ── Auto-center: shift content to canvas center if off by >5% ──────
+  let minCx = Infinity, minCy = Infinity, maxCx = 0, maxCy = 0
+  function computeContentBbox(nodes: ElkNode[], ox: number, oy: number) {
+    for (const child of nodes) {
+      const cx = (child.x || 0) + ox
+      const cy = (child.y || 0) + oy
+      const right = cx + (child.width || 160)
+      const bottom = cy + (child.height || 60)
+      if (cx < minCx) minCx = cx
+      if (cy < minCy) minCy = cy
+      if (right > maxCx) maxCx = right
+      if (bottom > maxCy) maxCy = bottom
+      if (Array.isArray(child.children) && child.children.length > 0) {
+        computeContentBbox(child.children, cx, cy)
+      }
+    }
+  }
+  computeContentBbox(graph.children || [], 0, 0)
+
+  let centerOffsetX = 0, centerOffsetY = 0
+  if (minCx < Infinity && maxCx > 0) {
+    const contentW = maxCx - minCx
+    const contentH = maxCy - minCy
+    const dxNeeded = gw / 2 - (minCx + contentW / 2)
+    const dyNeeded = gh / 2 - (minCy + contentH / 2)
+    if (Math.abs(dxNeeded) > gw * 0.05) centerOffsetX = Math.round(dxNeeded)
+    if (Math.abs(dyNeeded) > gh * 0.05) centerOffsetY = Math.round(dyNeeded)
+    if (minCx + centerOffsetX < 0) centerOffsetX = -Math.round(minCx)
+    if (minCy + centerOffsetY < 0) centerOffsetY = -Math.round(minCy)
+  }
+
   const width = gw + PADDING * 2
   const height = gh + PADDING * 2
   const parts: string[] = []
@@ -254,6 +285,12 @@ export function elkToSvgIcons(graph: ElkGraph): string {
   // Background: pure white for academic paper figures
   parts.push(`  <rect width="${width}" height="${height}" fill="#FFFFFF" />`)
 
+  // Wrap content in centering offset if needed
+  const hasOffset = centerOffsetX !== 0 || centerOffsetY !== 0
+  if (hasOffset) {
+    parts.push(`  <g transform="translate(${centerOffsetX},${centerOffsetY})">`)
+  }
+
   // Render edges (bottom layer) — root level
   if (Array.isArray(graph.edges)) {
     for (const edge of graph.edges) {
@@ -285,6 +322,10 @@ export function elkToSvgIcons(graph: ElkGraph): string {
     graph.children.slice(0, 200).forEach((node, i) => {
       if (node) parts.push(renderNode(node, i, 0))
     })
+  }
+
+  if (hasOffset) {
+    parts.push(`  </g>`)
   }
 
   parts.push('</svg>')

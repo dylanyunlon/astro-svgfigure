@@ -111,7 +111,7 @@ class ElkEdge(BaseModel):
 class ElkLayoutOptions(BaseModel):
     """ELK layout configuration."""
     algorithm: ElkAlgorithm = ElkAlgorithm.LAYERED
-    direction: ElkDirection = ElkDirection.DOWN
+    direction: ElkDirection = ElkDirection.RIGHT
     node_spacing: float = 80
     layer_spacing: float = 100
 
@@ -185,7 +185,7 @@ class TopologyRequest(BaseModel):
     text: str = Field(..., min_length=10, description="Paper method description text")
     model: Optional[str] = None
     algorithm: ElkAlgorithm = ElkAlgorithm.LAYERED
-    direction: ElkDirection = ElkDirection.DOWN
+    direction: ElkDirection = ElkDirection.RIGHT
 
 
 class LayoutRequest(BaseModel):

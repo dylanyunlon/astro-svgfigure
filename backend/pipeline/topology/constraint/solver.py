@@ -121,7 +121,7 @@ class SolvedLayout:
             "id": "root",
             "layoutOptions": {
                 "elk.algorithm": "layered",
-                "elk.direction": "DOWN",
+                "elk.direction": "RIGHT",
                 "elk.layered.spacing.nodeNodeBetweenLayers": "60",
                 "elk.spacing.nodeNode": "40",
             },

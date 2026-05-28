@@ -135,7 +135,7 @@ def assemble_elk(entities, edges, groups, icons):
     for edge in edges:
         sg, tg = group_children.get(edge["source"]), group_children.get(edge["target"])
         if sg != tg or sg is None: root_edges.append(_edge(edge))
-    return {"id":"root","layoutOptions":{"elk.algorithm":"layered","elk.direction":"DOWN"},
+    return {"id":"root","layoutOptions":{"elk.algorithm":"layered","elk.direction":"RIGHT"},
             "children":root_children,"edges":root_edges}
 
 async def generate_rich_topology(text, ai_engine=None, model=""):

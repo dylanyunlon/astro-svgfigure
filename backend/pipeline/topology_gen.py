@@ -42,7 +42,7 @@ Your output must be valid ELK JSON (Eclipse Layout Kernel format) with:
 - id: "root"
 - children: array of nodes, each with {id, width, height, labels: [{text}]}
 - edges: array of connections, each with {id, sources: [nodeId], targets: [nodeId]}
-- layoutOptions: {"elk.algorithm": "layered", "elk.direction": "DOWN"}
+- layoutOptions: {"elk.algorithm": "layered", "elk.direction": "RIGHT"}
 
 === CRITICAL RULE: EDGE INTEGRITY ===
 EVERY edge's "sources" and "targets" MUST reference node IDs that EXIST in
@@ -143,7 +143,7 @@ Cross-group edges reference child IDs directly (ELK resolves hierarchy automatic
 Example output with nesting (architecture diagram):
 {
   "id": "root",
-  "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "DOWN"},
+  "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "RIGHT"},
   "children": [
     {"id": "input", "width": 150, "height": 50, "labels": [{"text": "Input"}]},
     {"id": "input_dim", "width": 80, "height": 24, "labels": [{"text": "768-dim"}], "labelOnly": true},
@@ -173,7 +173,7 @@ Example output with nesting (architecture diagram):
 Example output (simple flowchart):
 {
   "id": "root",
-  "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "DOWN"},
+  "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "RIGHT"},
   "children": [
     {"id": "input", "width": 150, "height": 50, "labels": [{"text": "Input"}]},
     {"id": "encoder", "width": 160, "height": 50, "labels": [{"text": "Encoder"}]},
@@ -340,7 +340,7 @@ async def generate_topology(
     text: str,
     model: Optional[str] = None,
     algorithm: ElkAlgorithm = ElkAlgorithm.LAYERED,
-    direction: ElkDirection = ElkDirection.DOWN,
+    direction: ElkDirection = ElkDirection.RIGHT,
     intent=None,
 ) -> TopologyResponse:
     """
@@ -1233,7 +1233,7 @@ def _fix_edge_list(
 def create_example_topology(
     name: str = "transformer",
     algorithm: ElkAlgorithm = ElkAlgorithm.LAYERED,
-    direction: ElkDirection = ElkDirection.DOWN,
+    direction: ElkDirection = ElkDirection.RIGHT,
 ) -> ElkGraph:
     """
     Create a built-in example topology for testing / demos.

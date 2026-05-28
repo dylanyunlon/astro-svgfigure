@@ -441,6 +441,132 @@ def _svg_to_png_b64(svg_content: str, target_width: int = 1024) -> Optional[str]
 # Gemini 3 Pro Image Generation — Step b
 # ============================================================================
 
+# ============================================================================
+# OpenAI Images API path (gpt-image-2, dall-e-3, etc.)
+# ============================================================================
+
+_ASPECT_TO_OPENAI_SIZE = {
+    "1:1": "1024x1024", "16:9": "1536x1024", "9:16": "1024x1536",
+    "4:3": "1536x1024", "3:4": "1024x1536",
+}
+
+
+async def _generate_image_openai_format(
+    prompt: str,
+    svg_content: str,
+    elk_graph: Optional[Dict],
+    model: str,
+    api_key: str,
+    api_base: str,
+    aspect_ratio: str = "16:9",
+    skeleton_png_b64: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Generate image using OpenAI /v1/images/generations endpoint.
+
+    Used for gpt-image-2, dall-e-3, and other OpenAI-format image models
+    served via tryallai.com or compatible proxies.
+    """
+    import time
+    t0 = time.monotonic()
+
+    base_url = (api_base or "https://api.openai.com").rstrip("/")
+    if not base_url.endswith("/v1"):
+        endpoint = f"{base_url}/v1/images/generations"
+    else:
+        endpoint = f"{base_url}/images/generations"
+
+    svg_summary = _extract_svg_structure(svg_content, elk_graph=elk_graph)
+    clean_prompt = _strip_think_and_clean(prompt)
+    if len(clean_prompt) < 20 and len(prompt) > 100:
+        clean_prompt = prompt
+
+    combined_prompt = (
+        f"{clean_prompt}\n\n"
+        f"=== SPATIAL LAYOUT REFERENCE ===\n"
+        f"{svg_summary}\n\n"
+        f"IMPORTANT: Create a high-quality, publication-ready scientific figure image. "
+        f"The spatial layout (node positions, sizes, connection topology) MUST closely "
+        f"follow the layout reference above. Use academic paper figure style: white background, "
+        f"thin dark borders, monochrome arrows, no drop shadows, print-friendly."
+    )
+
+    size = _ASPECT_TO_OPENAI_SIZE.get(aspect_ratio, "1536x1024")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    body: Dict[str, Any] = {
+        "model": model,
+        "prompt": combined_prompt,
+        "n": 1,
+        "size": size,
+    }
+
+    logger.info(
+        f"OpenAI image gen: model={model}, size={size}, "
+        f"prompt_len={len(combined_prompt)}, endpoint={endpoint[:60]}..."
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
+            response = await client.post(endpoint, json=body, headers=headers)
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        if response.status_code != 200:
+            error_text = response.text[:500]
+            logger.error(f"OpenAI image API error {response.status_code}: {error_text}")
+            return {
+                "success": False,
+                "error": f"API error {response.status_code}: {error_text}",
+                "model_used": model,
+                "endpoint_used": endpoint,
+            }
+
+        data = response.json()
+        items = data.get("data", [])
+        if not items:
+            return {"success": False, "error": "API returned empty data array", "model_used": model}
+
+        item = items[0]
+        image_b64 = item.get("b64_json", "")
+
+        if not image_b64 and item.get("url"):
+            logger.info(f"Fetching image from URL: {item['url'][:80]}...")
+            async with httpx.AsyncClient(timeout=60.0) as dl_client:
+                img_resp = await dl_client.get(item["url"])
+                if img_resp.status_code == 200:
+                    import base64 as b64mod
+                    image_b64 = b64mod.b64encode(img_resp.content).decode("ascii")
+
+        if not image_b64:
+            return {"success": False, "error": "No image data in API response", "model_used": model}
+
+        usage = data.get("usage", {})
+        logger.info(
+            f"OpenAI image gen success: model={model}, {elapsed_ms}ms, "
+            f"b64_len={len(image_b64)}, usage={usage}"
+        )
+
+        return {
+            "success": True,
+            "image_b64": image_b64,
+            "mime_type": "image/png",
+            "text_response": "",
+            "model_used": model,
+            "elapsed_ms": elapsed_ms,
+            "usage": usage,
+        }
+
+    except httpx.TimeoutException:
+        return {"success": False, "error": f"Timeout after 600s calling {model}", "model_used": model}
+    except Exception as e:
+        logger.exception(f"OpenAI image gen failed: {e}")
+        return {"success": False, "error": str(e), "model_used": model}
+
+
 async def generate_image_with_gemini(
     svg_content: str,
     prompt: str,
@@ -479,6 +605,28 @@ async def generate_image_with_gemini(
 
     if not api_key:
         return {"success": False, "error": "GEMINI_API_KEY not configured"}
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  OpenAI Images API path (gpt-image-2, dall-e-3, etc.)
+    #  POST /v1/images/generations — prompt-only, no inline image input.
+    # ═══════════════════════════════════════════════════════════════════
+    is_openai_image_model = (
+        model.startswith("gpt-image")
+        or model.startswith("dall-e")
+        or model.startswith("gpt-4o")
+    )
+
+    if is_openai_image_model:
+        return await _generate_image_openai_format(
+            prompt=prompt,
+            svg_content=svg_content,
+            elk_graph=elk_graph,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+            aspect_ratio=aspect_ratio,
+            skeleton_png_b64=skeleton_png_b64,
+        )
 
     # Determine endpoint
     # Proxy format: {base}/v1beta/models/{model}:generateContent
