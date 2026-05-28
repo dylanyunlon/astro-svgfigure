@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # engineering tasks. Sonnet 4.5 is a good cost/quality tradeoff.
     # Override via .env: DEFAULT_PROMPT_MODEL=claude-opus-4-6
     DEFAULT_PROMPT_MODEL: str = "claude-sonnet-4-5-20250929"    # Prompt engineering
-    DEFAULT_IMAGE_MODEL: str = "gpt-image-2"                   # Image gen (OpenAI format via tryallai)
+    DEFAULT_IMAGE_MODEL: str = "gemini-3-pro-image-preview"                   # Image gen (OpenAI format via tryallai)
 
     # ── Server ──────────────────────────────────────────────────────────
     HOST: str = "0.0.0.0"
