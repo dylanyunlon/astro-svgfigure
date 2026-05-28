@@ -423,32 +423,60 @@ function renderNode(
       svg += `  <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="${tagTextColor}" font-weight="700">${escapeXml(label)}</text>\n`
 
     } else {
-      // ── Normal boxed node: academic style ───────────────────────
-      // White fill, thin dark border, no shadow — clean for print.
-      // Supports per-node fillColor/strokeColor override.
+      // ── Normal boxed node: organic scattered rounded-rect style ──
+      // Instead of a single clean rect, fill the node area with
+      // multiple small rounded rects at random offsets/rotations.
+      // This creates an organic, hand-illustrated look like Adobe
+      // Illustrator academic figures — NOT a rigid flowchart.
       const iconUrl = resolveIconUrl(node.iconHint || '')
       const hasIcon = !!iconUrl
 
-      const nodeRx = 4
       const nodeFill = (node as any).fillColor || '#FFFFFF'
       const nodeStroke = (node as any).strokeColor || '#4A4A4A'
 
-      svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${nodeFill}" stroke="${nodeStroke}" stroke-width="1.2" rx="${nodeRx}" />\n`
+      // ── Scattered rounded rects background ──
+      // Seeded PRNG from node id for deterministic "randomness"
+      let seed = 0
+      for (let i = 0; i < node.id.length; i++) seed = ((seed << 5) - seed + node.id.charCodeAt(i)) | 0
+      const seededRand = () => { seed = (seed * 16807 + 0) % 2147483647; return (seed & 0x7fffffff) / 2147483647 }
+
+      // Main bounding rect: very light stroke, rounded
+      const mainRx = Math.min(12, Math.min(w, h) * 0.15)
+      svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${nodeFill}" stroke="${nodeStroke}" stroke-width="0.8" rx="${mainRx}" />\n`
+
+      // Scatter 3-6 small decorative rounded rects inside the node area
+      const numScatter = 3 + Math.floor(seededRand() * 4)
+      const padding = 4
+      for (let si = 0; si < numScatter; si++) {
+        const sw2 = w * (0.15 + seededRand() * 0.35)  // 15-50% of node width
+        const sh2 = h * (0.12 + seededRand() * 0.25)  // 12-37% of node height
+        const sx = x + padding + seededRand() * (w - sw2 - padding * 2)
+        const sy = y + padding + seededRand() * (h - sh2 - padding * 2)
+        const srx = 3 + seededRand() * 8
+        const sOpacity = 0.04 + seededRand() * 0.08  // very subtle
+        const sRotate = (seededRand() - 0.5) * 6  // ±3 degrees
+        svg += `  <rect x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${sw2.toFixed(1)}" height="${sh2.toFixed(1)}" rx="${srx.toFixed(1)}" fill="${nodeStroke}" opacity="${sOpacity.toFixed(3)}" transform="rotate(${sRotate.toFixed(1)} ${(sx + sw2/2).toFixed(1)} ${(sy + sh2/2).toFixed(1)})" />\n`
+      }
 
       // Smart label truncation
       const maxChars = Math.max(6, Math.floor(w / 8))
       const dl = label.length > maxChars ? label.slice(0, maxChars - 2) + '\u2026' : label
 
       if (hasIcon) {
-        // Layout: icon (28×28) centered above text
-        const iconSize = 28
+        // ── Icon + text layout ──
+        // Icon size scales with node size, text shrinks when icon is large
+        const iconSize = Math.min(36, Math.max(20, Math.min(w, h) * 0.4))
         const iconX = x + (w - iconSize) / 2
-        const totalContent = iconSize + 4 + 14 // icon + gap + text height
+        // Font size: smaller when icon is big (proportional)
+        const fontSize = iconSize >= 30 ? 9 : iconSize >= 24 ? 10 : 11
+        const textHeight = fontSize + 2
+        const gap = 3
+        const totalContent = iconSize + gap + textHeight
         const iconY = y + (h - totalContent) / 2
-        const textY = iconY + iconSize + 4 + 10
+        const textY = iconY + iconSize + gap + fontSize * 0.8
 
-        svg += `  <image href="${iconUrl}" x="${iconX}" y="${iconY}" width="${iconSize}" height="${iconSize}" opacity="0.85" />\n`
-        svg += `  <text x="${x + w / 2}" y="${textY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="${PALETTE.text}" font-weight="500">${escapeXml(dl)}</text>\n`
+        svg += `  <image href="${iconUrl}" x="${iconX.toFixed(1)}" y="${iconY.toFixed(1)}" width="${iconSize.toFixed(1)}" height="${iconSize.toFixed(1)}" opacity="0.85" />\n`
+        svg += `  <text x="${x + w / 2}" y="${textY.toFixed(1)}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${PALETTE.text}" font-weight="500">${escapeXml(dl)}</text>\n`
       } else {
         // No icon: center text vertically
         svg += `  <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="${PALETTE.text}" font-weight="500">${escapeXml(dl)}</text>\n`

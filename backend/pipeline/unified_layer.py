@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 class UnifiedLayer:
     """Single canonical layer type for the entire pipeline.
 
-    Every layer producer (CCL, SAM3, ELK-guided, manual) outputs this.
+    Every layer producer (CCL, ELK-guided, manual) outputs this.
     Every consumer (edge_refiner, outliner, export, frontend) accepts this.
     """
     layer_id: int
@@ -41,7 +41,7 @@ class UnifiedLayer:
     centroid_x: float = 0.0
     centroid_y: float = 0.0
     name: str = ""
-    source: Literal["ccl", "elk_guided", "sam3", "manual", "unknown"] = "unknown"
+    source: Literal["ccl", "elk_guided", "manual", "unknown"] = "unknown"
     confidence: float = 1.0
     original_width: int = 0
     original_height: int = 0
