@@ -67,6 +67,35 @@ export interface ElkNode {
   iconHint?: string
   /** Node shape override: defaults to 'box' */
   shape?: 'box' | 'circle' | 'diamond' | 'parallelogram' | 'cylinder' | 'ellipse'
+  /** Render-mode contract (set by backend node_classifier, M210):
+   *  - 'text'   : naked label (operators handled by renderMathOperator)
+   *  - 'icon'   : standard Iconify glyph (to-svg-icons)
+   *  - 'sprite' : AI-generated micro-illustration injected via spriteRef
+   *  The renderer dispatches on this field and never re-classifies. */
+  renderMode?: 'text' | 'icon' | 'sprite'
+  /** Only meaningful when renderMode === 'text': true for math operators
+   *  (⊗ ⊕ ○ …) so the renderer draws them as pure SVG via renderMathOperator. */
+  isOperator?: boolean
+  /** Sprite-family id (set when renderMode === 'sprite'); members of a family
+   *  are generated as an identity-locked sequence (backend M215). */
+  familyId?: string
+  /** Injected sprite reference (backend M214). When present and renderMode is
+   *  'sprite', the renderer draws an <image> (png) or inlines <path> (svg)
+   *  contain-fit + centered into this node's bbox. Absent → fall back to text. */
+  spriteRef?: SpriteRef
+}
+
+/** A sprite injected into a node box. */
+export interface SpriteRef {
+  format: 'png' | 'svg'
+  /** data URI for png sprites (data:image/png;base64,...) */
+  url?: string
+  /** raw inline SVG markup for vectorized sprites (M217) */
+  svg?: string
+  /** alpha bounding box within the sprite asset image: [x, y, w, h] */
+  bbox?: [number, number, number, number]
+  /** fit strategy; only 'contain' is currently supported */
+  fit?: 'contain'
 }
 
 // ============================================================

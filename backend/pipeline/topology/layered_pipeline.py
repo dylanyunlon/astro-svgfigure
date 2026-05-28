@@ -420,3 +420,139 @@ async def regenerate_single_region(
 def _ms(t0: float) -> float:
     """Elapsed milliseconds since t0."""
     return round((time.monotonic() - t0) * 1000, 1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §4  Sprite pipeline — classify → prompt → sheet → split → inject (M210-M214)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# This is the component-level AI-sprite chain assembled by the second Claude.
+# It runs AFTER compose() (which owns layout) and fills ELK-positioned cells:
+#
+#   M210 classify_nodes      → stamp renderMode/familyId on every leaf
+#   M211 design_prompts      → one series-consistent prompt per sprite node
+#   M212 plan_sheets + gen   → pack sprites into grid sheets, 1 AI call each
+#   M213 split_and_clean     → remove green bg, crop cells, tighten, QC
+#   M214 inject_sprites      → attach spriteRef to nodes (contain-fit)
+#
+# Every stage degrades gracefully: a failure flips the affected nodes back to
+# text (inject_sprites enforces this), so the figure is always renderable.
+# M218 (third Claude) will wrap this in StageResult + progress callbacks and
+# call it from generate_layered_topology; here it is a standalone callable so
+# M219's e2e test can exercise the whole chain in isolation.
+
+
+@dataclass
+class SpritePipelineResult:
+    """Outcome of the sprite fill pass."""
+    canvas: Optional[ComposedCanvas] = None
+    classification: Dict[str, Any] = field(default_factory=dict)
+    sheets: int = 0
+    sprites_injected: int = 0
+    sprites_fell_back: int = 0
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    success: bool = False
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "classification": self.classification,
+            "sheets": self.sheets,
+            "sprites_injected": self.sprites_injected,
+            "sprites_fell_back": self.sprites_fell_back,
+            "diagnostics": self.diagnostics,
+            "success": self.success,
+            "error": self.error,
+        }
+
+
+async def run_sprite_pipeline(
+    canvas: ComposedCanvas,
+    *,
+    settings: Optional[Any] = None,
+    model: str = "gemini-3-pro-image-preview",
+    api_key: str = "",
+    gemini_callable=None,
+    removebg_callable=None,
+    run_qc: bool = True,
+) -> SpritePipelineResult:
+    """Run the M210-M214 sprite fill on an already-composed canvas.
+
+    Args:
+        canvas: ComposedCanvas from compose() (has elk_graph with layout).
+        settings: backend Settings (forwarded to the image generator).
+        model: image model name.
+        api_key: remove-bg.io key (optional).
+        gemini_callable / removebg_callable: dependency-injection seams for
+            tests (mock the AI + background removal so CI needs no network).
+        run_qc: run per-sprite transparency QC.
+
+    Returns:
+        SpritePipelineResult; canvas is mutated in place with spriteRefs.
+    """
+    from backend.pipeline.topology.node_classifier import classify_nodes
+    from backend.pipeline.topology.sprite_prompt_designer import (
+        design_prompts_for_classified,
+    )
+    from backend.pipeline.topology.sprite_batch_generator import (
+        plan_sheets, generate_sprite_sheet,
+    )
+    from backend.pipeline.topology.sprite_sheet_splitter import split_and_clean
+
+    res = SpritePipelineResult(canvas=canvas)
+    try:
+        elk = canvas.elk_graph or {}
+
+        # M210 — classify every leaf, detect sprite families.
+        report = classify_nodes(elk)
+        res.classification = report.to_dict()
+
+        if not report.families:
+            # No sprite nodes — pure vector figure, nothing to generate.
+            res.success = True
+            res.diagnostics["note"] = "no sprite nodes; vector-only figure"
+            return res
+
+        # M211 — design series-consistent prompts, family by family.
+        prompts = design_prompts_for_classified(elk, report.families)
+        if not prompts:
+            res.success = True
+            res.diagnostics["note"] = "no prompts produced"
+            return res
+
+        # M212 — pack into sheets and generate each (one AI call per sheet).
+        sheets = plan_sheets(prompts)
+        res.sheets = len(sheets)
+        all_assets: List[Any] = []
+        # node_id → family_id, to annotate assets after split.
+        fam_by_node = {p.node_id: p.family_id for p in prompts}
+        for sheet_prompts in sheets:
+            sheet = await generate_sprite_sheet(
+                sheet_prompts, settings=settings, model=model,
+                gemini_callable=gemini_callable,
+            )
+            # M213 — slice + clean this sheet into per-node sprites.
+            split = await split_and_clean(
+                sheet, api_key=api_key,
+                removebg_callable=removebg_callable, run_qc=run_qc,
+            )
+            for a in split.assets:
+                a.family_id = fam_by_node.get(a.node_id, "")
+            all_assets.extend(split.assets)
+
+        # M214 — inject sprites; dropped/failed nodes fall back to text.
+        from backend.pipeline.topology.canvas_compositor import inject_sprites
+        inject_sprites(canvas, all_assets)
+
+        diag = canvas.diagnostics or {}
+        res.sprites_injected = int(diag.get("sprites_injected", 0))
+        res.sprites_fell_back = int(diag.get("sprites_fell_back", 0))
+        res.diagnostics["total_assets"] = len(all_assets)
+        res.success = True
+        return res
+
+    except Exception as e:
+        logger.exception("sprite pipeline failed")
+        res.success = False
+        res.error = str(e)
+        return res

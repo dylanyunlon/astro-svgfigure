@@ -775,3 +775,106 @@ def recompose_region(
             "total_edges": len(elk.get("edges", [])),
         },
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §13  Sprite injection — fill ELK-positioned cells with AI sprites (M214)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# canvas_compositor already turns each region into a named Layer via
+# _generate_layers(); sprite injection is the "fill" that happens after.  The
+# guiding principle is the inverse of the old big-image flow: ELK owns the
+# layout completely, and the AI only fills boxes ELK already positioned.  So
+# inject_sprites NEVER moves a node — it only attaches a spriteRef to a node's
+# existing bbox.  contain-fit + center keeps aspect ratio (no stretch); arrow
+# endpoints are snapped to the ELK box edge by to-svg's snapEndpointToBox
+# (M204), not to the sprite's alpha edge — that is what stops "arrow into box"
+# and "arrow floating" once a raster sprite sits inside the box.
+
+
+def _find_node_by_id(elk: Dict[str, Any], node_id: str) -> Optional[Dict[str, Any]]:
+    """Locate a node anywhere in the (possibly nested) ELK graph by id."""
+    stack: List[Dict[str, Any]] = list(elk.get("children", []))
+    while stack:
+        n = stack.pop()
+        if not isinstance(n, dict):
+            continue
+        if n.get("id") == node_id:
+            return n
+        kids = n.get("children")
+        if isinstance(kids, list):
+            stack.extend(kids)
+    return None
+
+
+def inject_sprites(
+    canvas: "ComposedCanvas",
+    assets: List[Any],
+) -> "ComposedCanvas":
+    """Attach generated sprites to their ELK nodes, writing spriteManifest.
+
+    For each asset that was not dropped, find its node, set node["spriteRef"]
+    to a contain-fit reference (the renderer does the actual fit math against
+    the node bbox), and mirror it into elk_graph["spriteManifest"][node_id]
+    (the M206 top-level contract slot).  Dropped assets clear any spriteRef and
+    flip the node back to renderMode "text" so to-svg falls back to a label
+    rather than rendering an empty box.
+
+    Layout is never modified: node x/y/width/height are untouched — the AI only
+    fills cells ELK positioned.  Result is deterministic given the same assets.
+    """
+    elk = canvas.elk_graph or {}
+    manifest: Dict[str, Any] = dict(elk.get("spriteManifest") or {})
+    injected = 0
+    fell_back = 0
+
+    for asset in assets:
+        node_id = getattr(asset, "node_id", "")
+        node = _find_node_by_id(elk, node_id)
+        if node is None:
+            continue
+
+        dropped = getattr(asset, "dropped", False)
+        image_b64 = getattr(asset, "image_b64", None)
+        if dropped or not image_b64:
+            # Graceful fallback: clear sprite, render as text label.
+            node.pop("spriteRef", None)
+            manifest.pop(node_id, None)
+            node["renderMode"] = "text"
+            fell_back += 1
+            continue
+
+        fmt = getattr(asset, "format", "png")
+        tb = list(getattr(asset, "true_bbox", (0, 0, 0, 0)))
+        if fmt == "svg":
+            # M217 vectorized sprite: inline path payload (kept all-vector).
+            sprite_ref = {
+                "format": "svg",
+                "svg": image_b64,            # M217 stores raw <path/g> markup
+                "bbox": tb,
+                "fit": "contain",
+            }
+        else:
+            # Raster sprite: data URI for an <image> element.
+            sprite_ref = {
+                "format": "png",
+                "url": f"data:image/png;base64,{image_b64}",
+                "bbox": tb,
+                "fit": "contain",
+            }
+        node["spriteRef"] = sprite_ref
+        # Ensure the node is marked sprite so to-svg dispatches correctly.
+        node["renderMode"] = "sprite"
+        manifest[node_id] = sprite_ref
+        injected += 1
+
+    if manifest:
+        elk["spriteManifest"] = manifest
+    canvas.elk_graph = elk
+
+    diag = dict(canvas.diagnostics or {})
+    diag["sprites_injected"] = injected
+    diag["sprites_fell_back"] = fell_back
+    canvas.diagnostics = diag
+    logger.info("Injected %d sprites, %d fell back to text", injected, fell_back)
+    return canvas

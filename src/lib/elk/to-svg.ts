@@ -16,6 +16,8 @@ interface AdvancedEdge {
 interface ElkNode {
   id: string; x?: number; y?: number; width?: number; height?: number
   labels?: { text: string }[]; children?: ElkNode[]
+  renderMode?: 'text' | 'icon' | 'sprite'; isOperator?: boolean; familyId?: string
+  spriteRef?: { format: 'png' | 'svg'; url?: string; svg?: string; bbox?: [number, number, number, number]; fit?: 'contain' }
 }
 
 interface ElkEdge {
@@ -183,7 +185,23 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   // Wrap each node in a <g> with semantic attributes for SVG-native layer separation.
   // svg-layer-separator.ts reads data-node-id, data-node-type, and data-bbox
   // to extract layers without rasterization.
-  let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}">`
+  let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}" data-render-mode="${node.renderMode || 'text'}">`
+
+  // ── Sprite mode (M214): an AI-generated micro-illustration injected by the
+  // backend. Render only when a valid spriteRef is present; otherwise fall
+  // through to the normal text/box path (graceful fallback — never an empty
+  // box). Layout is fixed by ELK; the sprite is contain-fit + centered into
+  // the node's bbox, so arrows (snapped to the box edge by snapEndpointToBox,
+  // M204) stay aligned regardless of the sprite's own alpha bounds.
+  const spriteSvg = (!isGroup && node.renderMode === 'sprite' && node.spriteRef)
+    ? renderSprite(node, x, y, w, h)
+    : ''
+  if (spriteSvg) {
+    svg += spriteSvg
+    if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
+    svg += `</g>`
+    return svg
+  }
 
   const isLabelOnly = !!(node as any).labelOnly
     || (h <= 30 && !(node as any).iconHint)
@@ -232,6 +250,38 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
 
   svg += `</g>`
   return svg
+}
+
+function renderSprite(node: ElkNode, x: number, y: number, w: number, h: number): string {
+  const ref = node.spriteRef
+  if (!ref) return ''
+  // Inner padding so the sprite never touches the node's logical edge — keeps
+  // a small margin like a real figure element inside its slot.
+  const pad = Math.min(6, Math.min(w, h) * 0.08)
+  const boxW = Math.max(1, w - pad * 2)
+  const boxH = Math.max(1, h - pad * 2)
+
+  // Native sprite dimensions from its alpha bbox (fallback to the slot box).
+  const natW = ref.bbox?.[2] || boxW
+  const natH = ref.bbox?.[3] || boxH
+  // contain-fit: scale to fit inside boxW×boxH preserving aspect ratio.
+  const scale = Math.min(boxW / natW, boxH / natH)
+  const drawW = natW * scale
+  const drawH = natH * scale
+  // center within the slot
+  const dx = x + pad + (boxW - drawW) / 2
+  const dy = y + pad + (boxH - drawH) / 2
+
+  if (ref.format === 'svg' && ref.svg) {
+    // Vectorized sprite (M217): inline markup, translated + scaled into place.
+    return `<g transform="translate(${dx.toFixed(2)} ${dy.toFixed(2)}) scale(${scale.toFixed(4)})" data-sprite="svg">${ref.svg}</g>`
+  }
+  if (ref.url) {
+    // Raster sprite: <image> via data URI. preserveAspectRatio is redundant
+    // with our explicit fit but set defensively.
+    return `<image href="${ref.url}" x="${dx.toFixed(2)}" y="${dy.toFixed(2)}" width="${drawW.toFixed(2)}" height="${drawH.toFixed(2)}" preserveAspectRatio="xMidYMid meet" data-sprite="png" />`
+  }
+  return ''
 }
 
 function renderEdge(edge: ElkEdge, offsetX: number = 0, offsetY: number = 0): string {
