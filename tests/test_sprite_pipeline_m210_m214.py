@@ -240,6 +240,25 @@ async def run_async_chain():
     assert all(a.dropped for a in dead_split.assets)
     print("  [fallback] failed sheet → all cells dropped (→ text) OK")
 
+    # Regression (production audit): a cell whose coords exceed the sheet
+    # bounds must NOT crash PIL crop (right<left) — it must drop gracefully.
+    class _Sheet:
+        def __init__(s, img, cells):
+            s.image_b64 = img; s.cells = cells
+            s.sheet_w = 300; s.sheet_h = 300; s.family_ids = []
+    class _Cell:
+        def __init__(s, nid, x, y, w, h):
+            s.node_id = nid; s.x = x; s.y = y; s.w = w; s.h = h
+    from PIL import Image as _I
+    _img = _I.new("RGB", (300, 300), (0, 255, 0))
+    _b = io.BytesIO(); _img.save(_b, format="PNG")
+    _green = base64.b64encode(_b.getvalue()).decode()
+    _oob = await spl.split_and_clean(
+        _Sheet(_green, [_Cell("oob", 9000, 9000, 150, 150)]),
+        removebg_callable=mock_removebg, run_qc=False)
+    assert all(a.dropped for a in _oob.assets), "out-of-bounds cell must drop, not crash"
+    print("  [regression] out-of-bounds cell → graceful drop (no PIL crash) OK")
+
 
 if __name__ == "__main__":
     print("Testing M210–M214 sprite pipeline (mocked AI + removebg)…")

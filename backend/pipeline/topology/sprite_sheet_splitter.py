@@ -190,13 +190,24 @@ async def split_and_clean(
     dropped_ids: List[str] = []
     for cell in cells:
         nid = cell.node_id
-        # Crop the cell rectangle (clamp to image bounds).
-        box = (
-            max(0, cell.x), max(0, cell.y),
-            min(sheet_img.width, cell.x + cell.w),
-            min(sheet_img.height, cell.y + cell.h),
-        )
-        cell_img = sheet_img.crop(box)
+        # Crop the cell rectangle, fully clamped to image bounds. A cell whose
+        # origin lies outside the sheet (x/y >= width/height) would otherwise
+        # yield right<left and crash PIL's crop with "Coordinate 'right' is
+        # less than 'left'" — clamp BOTH the origin and the extent, then verify
+        # the box is non-degenerate before cropping (else drop gracefully).
+        W, H = sheet_img.width, sheet_img.height
+        left = min(max(0, cell.x), W)
+        top = min(max(0, cell.y), H)
+        right = min(max(left, cell.x + cell.w), W)
+        bottom = min(max(top, cell.y + cell.h), H)
+        if right - left < 1 or bottom - top < 1:
+            # Cell falls outside / collapses within the sheet → drop to text.
+            dropped_ids.append(nid)
+            assets.append(SpriteAsset(node_id=nid, image_b64=None,
+                                      true_bbox=(0, 0, 0, 0), dropped=True,
+                                      issues=["cell outside sheet bounds"]))
+            continue
+        cell_img = sheet_img.crop((left, top, right, bottom))
 
         abox = _alpha_bbox(cell_img)
         if abox is None or abox[2] < 4 or abox[3] < 4:

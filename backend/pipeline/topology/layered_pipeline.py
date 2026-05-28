@@ -654,9 +654,13 @@ async def run_sprite_pipeline(
             )
             # Wrap each green-screen frame as a single-cell "sheet" so M213's
             # split_and_clean removes bg + tightens it exactly like grid cells.
+            # The single cell must cover the WHOLE frame — size it to the
+            # frame's actual decoded dimensions (not a magic sentinel), so a
+            # frame of any resolution is fully covered with zero clipping.
             from backend.pipeline.topology.sprite_batch_generator import (
-                SpriteSheet, CellBox, CELL_PX, GUTTER_PX,
+                SpriteSheet, CellBox,
             )
+            import base64 as _b64, io as _io
             for idx, nid in enumerate(seq.member_node_ids):
                 frame = seq.frames_b64[idx] if idx < len(seq.frames_b64) else None
                 if not frame:
@@ -666,11 +670,23 @@ async def run_sprite_pipeline(
                         dropped=True, family_id=fam.family_id,
                         issues=["sequence frame missing"]))
                     continue
+                # Decode just the frame size to bound the single cell exactly.
+                try:
+                    from PIL import Image as _Img
+                    with _Img.open(_io.BytesIO(_b64.b64decode(frame))) as _im:
+                        fw, fh = _im.width, _im.height
+                except Exception:
+                    # Undecodable frame → drop gracefully (→ text at M214).
+                    all_assets.append(SpriteAsset(
+                        node_id=nid, image_b64=None, true_bbox=(0, 0, 0, 0),
+                        dropped=True, family_id=fam.family_id,
+                        issues=["sequence frame undecodable"]))
+                    continue
                 one = SpriteSheet(
                     image_b64=frame,
                     cells=[CellBox(node_id=nid, row=0, col=0,
-                                   x=0, y=0, w=10_000, h=10_000)],
-                    grid_rows=1, grid_cols=1, sheet_w=10_000, sheet_h=10_000,
+                                   x=0, y=0, w=fw, h=fh)],
+                    grid_rows=1, grid_cols=1, sheet_w=fw, sheet_h=fh,
                     seed=0, family_ids=[fam.family_id], success=True,
                 )
                 split = await split_and_clean(
