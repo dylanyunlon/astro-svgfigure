@@ -14,47 +14,12 @@
   },
   "children": [
     {
-      "id": "input_image",
-      "width": 180,
-      "height": 50,
+      "id": "input_group",
+      "width": 360,
+      "height": 160,
       "labels": [
         {
-          "text": "High-Resolution Design Image",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "iconHint": "screenshot image",
-      "$H": 277,
-      "x": 205,
-      "y": 407
-    },
-    {
-      "id": "task_description",
-      "width": 120,
-      "height": 24,
-      "labels": [
-        {
-          "text": "Webpage Code Generation Task",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "$H": 281,
-      "x": 445,
-      "y": 225
-    },
-    {
-      "id": "stage_1_group",
-      "width": 248.33333333333334,
-      "height": 525,
-      "labels": [
-        {
-          "text": "Stage 1: Coarse DOM Layout Generation",
+          "text": "Input Phase",
           "x": 0,
           "y": 0,
           "width": 0,
@@ -62,13 +27,31 @@
         }
       ],
       "layoutOptions": {
-        "elk.padding": "[top=35,left=10,bottom=10,right=10]"
+        "elk.padding": "[top=30,left=10,bottom=10,right=10]"
       },
       "group": true,
       "borderless": true,
       "children": [
         {
-          "id": "image_patches",
+          "id": "high_resolution_image",
+          "width": 180,
+          "height": 50,
+          "labels": [
+            {
+              "text": "High-Resolution Design",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "screenshot image",
+          "$H": 281,
+          "x": 150,
+          "y": 30
+        },
+        {
+          "id": "input_patches",
           "width": 160,
           "height": 50,
           "labels": [
@@ -80,104 +63,372 @@
               "height": 0
             }
           ],
-          "iconHint": "grid of image patches",
+          "iconHint": "grid of tiles",
+          "$H": 284,
+          "x": 190,
+          "y": 100
+        },
+        {
+          "id": "resolution_label",
+          "width": 120,
+          "height": 24,
+          "labels": [
+            {
+              "text": "Various Resolutions",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
           "$H": 287,
+          "x": 10,
+          "y": 43
+        }
+      ],
+      "edges": [
+        {
+          "id": "ie1",
+          "sources": [
+            "high_resolution_image"
+          ],
+          "targets": [
+            "input_patches"
+          ],
+          "sections": [
+            {
+              "id": "ie1_s0",
+              "startPoint": {
+                "x": 270,
+                "y": 80
+              },
+              "endPoint": {
+                "x": 270,
+                "y": 100
+              },
+              "incomingShape": "high_resolution_image",
+              "outgoingShape": "input_patches"
+            }
+          ],
+          "container": "input_group"
+        }
+      ],
+      "$H": 277,
+      "x": 352,
+      "y": 12
+    },
+    {
+      "id": "stage1_group",
+      "width": 400,
+      "height": 560,
+      "labels": [
+        {
+          "text": "Stage 1: Coarse DOM Layout Generation",
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        }
+      ],
+      "layoutOptions": {
+        "elk.padding": "[top=30,left=10,bottom=10,right=10]"
+      },
+      "group": true,
+      "borderless": true,
+      "children": [
+        {
+          "id": "structure_model_group",
+          "width": 380,
+          "height": 370,
+          "labels": [
+            {
+              "text": "Structure Model (Pix2Struct)",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "layoutOptions": {
+            "elk.padding": "[top=30,left=10,bottom=10,right=10]"
+          },
+          "group": true,
+          "borderless": true,
+          "children": [
+            {
+              "id": "vit_encoder",
+              "width": 170,
+              "height": 50,
+              "labels": [
+                {
+                  "text": "ViT Encoder (Enc_θ)",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "neural network encoder",
+              "$H": 296,
+              "x": 195,
+              "y": 30
+            },
+            {
+              "id": "hidden_states",
+              "width": 170,
+              "height": 50,
+              "labels": [
+                {
+                  "text": "Hidden State Vectors",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "vector embeddings",
+              "$H": 299,
+              "x": 195,
+              "y": 100
+            },
+            {
+              "id": "transformer_decoder",
+              "width": 180,
+              "height": 50,
+              "labels": [
+                {
+                  "text": "Transformer Decoder (Dec_φ)",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "transformer block",
+              "$H": 302,
+              "x": 190,
+              "y": 170
+            },
+            {
+              "id": "next_token_prediction",
+              "width": 180,
+              "height": 50,
+              "labels": [
+                {
+                  "text": "Next-Token Prediction",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "sequence generation",
+              "$H": 305,
+              "x": 190,
+              "y": 240
+            },
+            {
+              "id": "softmax_layer",
+              "width": 160,
+              "height": 50,
+              "labels": [
+                {
+                  "text": "Softmax Layer",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "probability distribution",
+              "$H": 308,
+              "x": 36.666666666666664,
+              "y": 310
+            },
+            {
+              "id": "weight_matrix",
+              "width": 160,
+              "height": 50,
+              "labels": [
+                {
+                  "text": "Weight Matrix W",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "matrix",
+              "$H": 311,
+              "x": 10,
+              "y": 240
+            }
+          ],
+          "edges": [
+            {
+              "id": "se1",
+              "sources": [
+                "vit_encoder"
+              ],
+              "targets": [
+                "hidden_states"
+              ],
+              "advanced": {
+                "semanticType": "data_flow",
+                "routing": "ORTHOGONAL"
+              },
+              "sections": [
+                {
+                  "id": "se1_s0",
+                  "startPoint": {
+                    "x": 280,
+                    "y": 80
+                  },
+                  "endPoint": {
+                    "x": 280,
+                    "y": 100
+                  },
+                  "incomingShape": "vit_encoder",
+                  "outgoingShape": "hidden_states"
+                }
+              ],
+              "container": "structure_model_group"
+            },
+            {
+              "id": "se2",
+              "sources": [
+                "hidden_states"
+              ],
+              "targets": [
+                "transformer_decoder"
+              ],
+              "advanced": {
+                "semanticType": "data_flow",
+                "routing": "ORTHOGONAL"
+              },
+              "sections": [
+                {
+                  "id": "se2_s0",
+                  "startPoint": {
+                    "x": 280,
+                    "y": 150
+                  },
+                  "endPoint": {
+                    "x": 280,
+                    "y": 170
+                  },
+                  "incomingShape": "hidden_states",
+                  "outgoingShape": "transformer_decoder"
+                }
+              ],
+              "container": "structure_model_group"
+            },
+            {
+              "id": "se3",
+              "sources": [
+                "transformer_decoder"
+              ],
+              "targets": [
+                "next_token_prediction"
+              ],
+              "advanced": {
+                "semanticType": "data_flow",
+                "routing": "ORTHOGONAL"
+              },
+              "sections": [
+                {
+                  "id": "se3_s0",
+                  "startPoint": {
+                    "x": 280,
+                    "y": 220
+                  },
+                  "endPoint": {
+                    "x": 280,
+                    "y": 240
+                  },
+                  "incomingShape": "transformer_decoder",
+                  "outgoingShape": "next_token_prediction"
+                }
+              ],
+              "container": "structure_model_group"
+            },
+            {
+              "id": "se4",
+              "sources": [
+                "next_token_prediction"
+              ],
+              "targets": [
+                "softmax_layer"
+              ],
+              "advanced": {
+                "semanticType": "data_flow",
+                "routing": "ORTHOGONAL"
+              },
+              "sections": [
+                {
+                  "id": "se4_s0",
+                  "startPoint": {
+                    "x": 280,
+                    "y": 290
+                  },
+                  "endPoint": {
+                    "x": 143.33333333333334,
+                    "y": 310
+                  },
+                  "bendPoints": [
+                    {
+                      "x": 280,
+                      "y": 300
+                    },
+                    {
+                      "x": 143.33333333333334,
+                      "y": 300
+                    }
+                  ],
+                  "incomingShape": "next_token_prediction",
+                  "outgoingShape": "softmax_layer"
+                }
+              ],
+              "container": "structure_model_group"
+            },
+            {
+              "id": "se5",
+              "sources": [
+                "weight_matrix"
+              ],
+              "targets": [
+                "softmax_layer"
+              ],
+              "advanced": {
+                "semanticType": "data_flow",
+                "lineStyle": "dashed",
+                "routing": "ORTHOGONAL"
+              },
+              "sections": [
+                {
+                  "id": "se5_s0",
+                  "startPoint": {
+                    "x": 90,
+                    "y": 290
+                  },
+                  "endPoint": {
+                    "x": 90,
+                    "y": 310
+                  },
+                  "incomingShape": "weight_matrix",
+                  "outgoingShape": "softmax_layer"
+                }
+              ],
+              "container": "structure_model_group"
+            }
+          ],
+          "$H": 293,
           "x": 10,
           "y": 35
         },
         {
-          "id": "vit_encoder",
-          "width": 170,
-          "height": 55,
-          "labels": [
-            {
-              "text": "ViT Encoder (Enc_θ)",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "vision transformer",
-          "$H": 290,
-          "x": 33.333333333333336,
-          "y": 105
-        },
-        {
-          "id": "hidden_states",
-          "width": 160,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Hidden State Vectors",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "vector embeddings",
-          "$H": 293,
-          "x": 38.333333333333336,
-          "y": 180
-        },
-        {
-          "id": "transformer_decoder",
-          "width": 180,
-          "height": 55,
-          "labels": [
-            {
-              "text": "Transformer Decoder (Dec_φ)",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "transformer block",
-          "$H": 296,
-          "x": 58.333333333333336,
-          "y": 250
-        },
-        {
-          "id": "next_token_prediction",
-          "width": 170,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Next-Token Prediction",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "sequence generation",
-          "$H": 299,
-          "x": 63.333333333333336,
-          "y": 325
-        },
-        {
-          "id": "softmax_layer",
-          "width": 150,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Softmax (W · h_t)",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "probability distribution",
-          "$H": 302,
-          "x": 73.33333333333334,
-          "y": 395
-        },
-        {
           "id": "json_dom_output",
-          "width": 170,
+          "width": 180,
           "height": 50,
           "labels": [
             {
@@ -189,159 +440,50 @@
             }
           ],
           "iconHint": "JSON document",
-          "$H": 305,
-          "x": 63.333333333333336,
-          "y": 465
+          "$H": 314,
+          "x": 195,
+          "y": 430
+        },
+        {
+          "id": "coarse_grained_tree",
+          "width": 180,
+          "height": 50,
+          "labels": [
+            {
+              "text": "Coarse-Grained DOM Tree",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "tree structure",
+          "$H": 317,
+          "x": 195,
+          "y": 500
+        },
+        {
+          "id": "loss_function",
+          "width": 150,
+          "height": 50,
+          "labels": [
+            {
+              "text": "Training Loss",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "loss curve",
+          "$H": 320,
+          "x": 25,
+          "y": 430
         }
       ],
       "edges": [
         {
-          "id": "s1_e1",
-          "sources": [
-            "image_patches"
-          ],
-          "targets": [
-            "vit_encoder"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s1_e1_s0",
-              "startPoint": {
-                "x": 90,
-                "y": 85
-              },
-              "endPoint": {
-                "x": 90,
-                "y": 105
-              },
-              "incomingShape": "image_patches",
-              "outgoingShape": "vit_encoder"
-            }
-          ],
-          "container": "stage_1_group"
-        },
-        {
-          "id": "s1_e2",
-          "sources": [
-            "vit_encoder"
-          ],
-          "targets": [
-            "hidden_states"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s1_e2_s0",
-              "startPoint": {
-                "x": 118.33333333333334,
-                "y": 160
-              },
-              "endPoint": {
-                "x": 118.33333333333334,
-                "y": 180
-              },
-              "incomingShape": "vit_encoder",
-              "outgoingShape": "hidden_states"
-            }
-          ],
-          "container": "stage_1_group"
-        },
-        {
-          "id": "s1_e3",
-          "sources": [
-            "hidden_states"
-          ],
-          "targets": [
-            "transformer_decoder"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s1_e3_s0",
-              "startPoint": {
-                "x": 118.33333333333334,
-                "y": 230
-              },
-              "endPoint": {
-                "x": 118.33333333333334,
-                "y": 250
-              },
-              "incomingShape": "hidden_states",
-              "outgoingShape": "transformer_decoder"
-            }
-          ],
-          "container": "stage_1_group"
-        },
-        {
-          "id": "s1_e4",
-          "sources": [
-            "transformer_decoder"
-          ],
-          "targets": [
-            "next_token_prediction"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s1_e4_s0",
-              "startPoint": {
-                "x": 148.33333333333334,
-                "y": 305
-              },
-              "endPoint": {
-                "x": 148.33333333333334,
-                "y": 325
-              },
-              "incomingShape": "transformer_decoder",
-              "outgoingShape": "next_token_prediction"
-            }
-          ],
-          "container": "stage_1_group"
-        },
-        {
-          "id": "s1_e5",
-          "sources": [
-            "next_token_prediction"
-          ],
-          "targets": [
-            "softmax_layer"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s1_e5_s0",
-              "startPoint": {
-                "x": 148.33333333333334,
-                "y": 375
-              },
-              "endPoint": {
-                "x": 148.33333333333334,
-                "y": 395
-              },
-              "incomingShape": "next_token_prediction",
-              "outgoingShape": "softmax_layer"
-            }
-          ],
-          "container": "stage_1_group"
-        },
-        {
-          "id": "s1_e6",
+          "id": "s1e1",
           "sources": [
             "softmax_layer"
           ],
@@ -354,65 +496,100 @@
           },
           "sections": [
             {
-              "id": "s1_e6_s0",
+              "id": "s1e1_s0",
               "startPoint": {
-                "x": 148.33333333333334,
-                "y": 445
+                "x": 153.33333333333334,
+                "y": 395
               },
               "endPoint": {
-                "x": 148.33333333333334,
-                "y": 465
+                "x": 284.99999999999994,
+                "y": 430
               },
+              "bendPoints": [
+                {
+                  "x": 153.3333333333333,
+                  "y": 420
+                },
+                {
+                  "x": 284.99999999999994,
+                  "y": 420
+                }
+              ],
               "incomingShape": "softmax_layer",
               "outgoingShape": "json_dom_output"
             }
           ],
-          "container": "stage_1_group"
-        }
-      ],
-      "$H": 284,
-      "x": 202,
-      "y": 867
-    },
-    {
-      "id": "pix2struct_model",
-      "width": 180,
-      "height": 50,
-      "labels": [
+          "container": "stage1_group"
+        },
         {
-          "text": "Pix2Struct Model",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "iconHint": "neural network model",
-      "$H": 308,
-      "x": 292,
-      "y": 712
-    },
-    {
-      "id": "resolution_handling",
-      "width": 100,
-      "height": 24,
-      "labels": [
+          "id": "s1e2",
+          "sources": [
+            "json_dom_output"
+          ],
+          "targets": [
+            "coarse_grained_tree"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s1e2_s0",
+              "startPoint": {
+                "x": 285,
+                "y": 480
+              },
+              "endPoint": {
+                "x": 285,
+                "y": 500
+              },
+              "incomingShape": "json_dom_output",
+              "outgoingShape": "coarse_grained_tree"
+            }
+          ],
+          "container": "stage1_group"
+        },
         {
-          "text": "Various Resolutions",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
+          "id": "s1e3",
+          "sources": [
+            "softmax_layer"
+          ],
+          "targets": [
+            "loss_function"
+          ],
+          "advanced": {
+            "semanticType": "gradient_flow",
+            "lineStyle": "dashed",
+            "strokeColor": "#E57373",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s1e3_s0",
+              "startPoint": {
+                "x": 100,
+                "y": 395
+              },
+              "endPoint": {
+                "x": 99.99999999999994,
+                "y": 430
+              },
+              "incomingShape": "softmax_layer",
+              "outgoingShape": "loss_function"
+            }
+          ],
+          "container": "stage1_group"
         }
       ],
-      "$H": 311,
-      "x": 625,
-      "y": 225
+      "$H": 290,
+      "x": 304,
+      "y": 792
     },
     {
       "id": "data_pruning_group",
-      "width": 350,
-      "height": 445,
+      "width": 580,
+      "height": 400,
       "labels": [
         {
           "text": "BBox-Based Data Pruning",
@@ -423,7 +600,7 @@
         }
       ],
       "layoutOptions": {
-        "elk.padding": "[top=35,left=10,bottom=10,right=10]"
+        "elk.padding": "[top=30,left=10,bottom=10,right=10]"
       },
       "group": true,
       "borderless": true,
@@ -442,9 +619,9 @@
             }
           ],
           "iconHint": "database",
-          "$H": 317,
-          "x": 35,
-          "y": 35
+          "$H": 326,
+          "x": 176.66666666666666,
+          "y": 30
         },
         {
           "id": "real_world_webpages",
@@ -460,63 +637,87 @@
             }
           ],
           "iconHint": "web browser",
-          "$H": 320,
-          "x": 35,
-          "y": 105
-        },
-        {
-          "id": "noise_detection",
-          "width": 180,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Noise Detection",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "filter funnel",
-          "$H": 323,
-          "x": 30,
-          "y": 175
-        },
-        {
-          "id": "empty_elements",
-          "width": 150,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Empty/Small Elements",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "warning sign",
-          "$H": 326,
-          "x": 190,
-          "y": 245
-        },
-        {
-          "id": "hidden_elements",
-          "width": 160,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Visually Hidden Parts",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "hidden eye",
           "$H": 329,
+          "x": 205,
+          "y": 100
+        },
+        {
+          "id": "noise_group",
+          "width": 560,
+          "height": 80,
+          "labels": [
+            {
+              "text": "Noise Sources",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "layoutOptions": {
+            "elk.padding": "[top=30,left=10,bottom=10,right=10]"
+          },
+          "group": true,
+          "borderless": true,
+          "children": [
+            {
+              "id": "empty_elements",
+              "width": 160,
+              "height": 40,
+              "labels": [
+                {
+                  "text": "Empty/Small Elements",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "warning sign",
+              "$H": 335,
+              "x": 200,
+              "y": 30
+            },
+            {
+              "id": "hidden_elements",
+              "width": 170,
+              "height": 40,
+              "labels": [
+                {
+                  "text": "Visually Hidden Parts",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "hidden eye",
+              "$H": 338,
+              "x": 380,
+              "y": 30
+            },
+            {
+              "id": "display_errors",
+              "width": 170,
+              "height": 40,
+              "labels": [
+                {
+                  "text": "Display Errors",
+                  "x": 0,
+                  "y": 0,
+                  "width": 0,
+                  "height": 0
+                }
+              ],
+              "iconHint": "error icon",
+              "$H": 341,
+              "x": 10,
+              "y": 30
+            }
+          ],
+          "$H": 332,
           "x": 10,
-          "y": 245
+          "y": 170
         },
         {
           "id": "heuristic_rules",
@@ -531,10 +732,10 @@
               "height": 0
             }
           ],
-          "iconHint": "rule checklist",
-          "$H": 332,
-          "x": 36.666666666666664,
-          "y": 315
+          "iconHint": "filter funnel",
+          "$H": 344,
+          "x": 210,
+          "y": 270
         },
         {
           "id": "pruned_dataset",
@@ -550,14 +751,31 @@
             }
           ],
           "iconHint": "clean document",
-          "$H": 335,
-          "x": 36.666666666666664,
-          "y": 385
+          "$H": 347,
+          "x": 210,
+          "y": 340
+        },
+        {
+          "id": "convergence_label",
+          "width": 140,
+          "height": 24,
+          "labels": [
+            {
+              "text": "Accelerated Convergence",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "$H": 350,
+          "x": 367.66666666666663,
+          "y": 43
         }
       ],
       "edges": [
         {
-          "id": "dp_e1",
+          "id": "dp1",
           "sources": [
             "vision2ui_dataset"
           ],
@@ -570,14 +788,14 @@
           },
           "sections": [
             {
-              "id": "dp_e1_s0",
+              "id": "dp1_s0",
               "startPoint": {
-                "x": 120,
-                "y": 85
+                "x": 261.66666666666663,
+                "y": 80
               },
               "endPoint": {
-                "x": 120,
-                "y": 105
+                "x": 261.66666666666663,
+                "y": 100
               },
               "incomingShape": "vision2ui_dataset",
               "outgoingShape": "real_world_webpages"
@@ -586,12 +804,12 @@
           "container": "data_pruning_group"
         },
         {
-          "id": "dp_e2",
+          "id": "dp2",
           "sources": [
             "real_world_webpages"
           ],
           "targets": [
-            "noise_detection"
+            "noise_group"
           ],
           "advanced": {
             "semanticType": "data_flow",
@@ -599,159 +817,52 @@
           },
           "sections": [
             {
-              "id": "dp_e2_s0",
+              "id": "dp2_s0",
               "startPoint": {
-                "x": 120,
-                "y": 155
+                "x": 290,
+                "y": 150
               },
               "endPoint": {
-                "x": 120,
-                "y": 175
+                "x": 290,
+                "y": 170
               },
               "incomingShape": "real_world_webpages",
-              "outgoingShape": "noise_detection"
+              "outgoingShape": "noise_group"
             }
           ],
           "container": "data_pruning_group"
         },
         {
-          "id": "dp_e3",
+          "id": "dp3",
           "sources": [
-            "noise_detection"
-          ],
-          "targets": [
-            "empty_elements"
-          ],
-          "advanced": {
-            "semanticType": "fan_out",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "dp_e3_s0",
-              "startPoint": {
-                "x": 150,
-                "y": 225
-              },
-              "endPoint": {
-                "x": 265,
-                "y": 245
-              },
-              "bendPoints": [
-                {
-                  "x": 150,
-                  "y": 235
-                },
-                {
-                  "x": 265,
-                  "y": 235
-                }
-              ],
-              "incomingShape": "noise_detection",
-              "outgoingShape": "empty_elements"
-            }
-          ],
-          "container": "data_pruning_group"
-        },
-        {
-          "id": "dp_e4",
-          "sources": [
-            "noise_detection"
-          ],
-          "targets": [
-            "hidden_elements"
-          ],
-          "advanced": {
-            "semanticType": "fan_out",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "dp_e4_s0",
-              "startPoint": {
-                "x": 90,
-                "y": 225
-              },
-              "endPoint": {
-                "x": 90,
-                "y": 245
-              },
-              "incomingShape": "noise_detection",
-              "outgoingShape": "hidden_elements"
-            }
-          ],
-          "container": "data_pruning_group"
-        },
-        {
-          "id": "dp_e5",
-          "sources": [
-            "empty_elements"
+            "noise_group"
           ],
           "targets": [
             "heuristic_rules"
           ],
           "advanced": {
-            "semanticType": "fan_in",
+            "semanticType": "data_flow",
             "routing": "ORTHOGONAL"
           },
           "sections": [
             {
-              "id": "dp_e5_s0",
+              "id": "dp3_s0",
               "startPoint": {
-                "x": 265,
-                "y": 295
+                "x": 290,
+                "y": 250
               },
               "endPoint": {
-                "x": 143.33333333333334,
-                "y": 315
+                "x": 290,
+                "y": 270
               },
-              "bendPoints": [
-                {
-                  "x": 265,
-                  "y": 305
-                },
-                {
-                  "x": 143.33333333333334,
-                  "y": 305
-                }
-              ],
-              "incomingShape": "empty_elements",
+              "incomingShape": "noise_group",
               "outgoingShape": "heuristic_rules"
             }
           ],
           "container": "data_pruning_group"
         },
         {
-          "id": "dp_e6",
-          "sources": [
-            "hidden_elements"
-          ],
-          "targets": [
-            "heuristic_rules"
-          ],
-          "advanced": {
-            "semanticType": "fan_in",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "dp_e6_s0",
-              "startPoint": {
-                "x": 90,
-                "y": 295
-              },
-              "endPoint": {
-                "x": 90,
-                "y": 315
-              },
-              "incomingShape": "hidden_elements",
-              "outgoingShape": "heuristic_rules"
-            }
-          ],
-          "container": "data_pruning_group"
-        },
-        {
-          "id": "dp_e7",
+          "id": "dp4",
           "sources": [
             "heuristic_rules"
           ],
@@ -764,14 +875,14 @@
           },
           "sections": [
             {
-              "id": "dp_e7_s0",
+              "id": "dp4_s0",
               "startPoint": {
-                "x": 116.66666666666666,
-                "y": 365
+                "x": 290,
+                "y": 320
               },
               "endPoint": {
-                "x": 116.66666666666666,
-                "y": 385
+                "x": 290,
+                "y": 340
               },
               "incomingShape": "heuristic_rules",
               "outgoingShape": "pruned_dataset"
@@ -780,14 +891,14 @@
           "container": "data_pruning_group"
         }
       ],
-      "$H": 314,
-      "x": 785,
-      "y": 12
+      "$H": 323,
+      "x": 12,
+      "y": 282
     },
     {
-      "id": "stage_2_group",
-      "width": 437.66666666666663,
-      "height": 380,
+      "id": "stage2_group",
+      "width": 493,
+      "height": 530,
       "labels": [
         {
           "text": "Stage 2: Fine-Grained Code Synthesis",
@@ -798,51 +909,15 @@
         }
       ],
       "layoutOptions": {
-        "elk.padding": "[top=35,left=10,bottom=10,right=10]"
+        "elk.padding": "[top=30,left=10,bottom=10,right=10]"
       },
       "group": true,
       "borderless": true,
       "children": [
         {
-          "id": "coarse_dom_tree",
-          "width": 170,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Coarse DOM Tree",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "tree structure",
-          "$H": 341,
-          "x": 252.66666666666666,
-          "y": 35
-        },
-        {
-          "id": "leaf_nodes",
-          "width": 160,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Leaf Node Images",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "leaf node",
-          "$H": 344,
-          "x": 257.66666666666663,
-          "y": 105
-        },
-        {
           "id": "mllm_code_agent",
           "width": 180,
-          "height": 55,
+          "height": 50,
           "labels": [
             {
               "text": "MLLM Code Agent",
@@ -852,10 +927,28 @@
               "height": 0
             }
           ],
-          "iconHint": "AI agent",
-          "$H": 347,
-          "x": 217.66666666666666,
-          "y": 175
+          "iconHint": "AI robot",
+          "$H": 356,
+          "x": 10,
+          "y": 330
+        },
+        {
+          "id": "leaf_node_images",
+          "width": 170,
+          "height": 50,
+          "labels": [
+            {
+              "text": "Leaf Node Local Images",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "image crop",
+          "$H": 359,
+          "x": 302,
+          "y": 240
         },
         {
           "id": "local_code_gen",
@@ -871,381 +964,12 @@
             }
           ],
           "iconHint": "code editor",
-          "$H": 350,
-          "x": 10,
-          "y": 250
-        },
-        {
-          "id": "link_back_tree",
-          "width": 160,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Link Back to Tree",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "link chain",
-          "$H": 353,
-          "x": 50.99999999999997,
-          "y": 35
-        },
-        {
-          "id": "integrated_code",
-          "width": 160,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Integrated Code",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "merged code",
-          "$H": 356,
-          "x": 77.66666666666666,
-          "y": 105
-        },
-        {
-          "id": "non_leaf_styles",
-          "width": 180,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Non-Leaf Node Styles",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "CSS stylesheet",
-          "$H": 359,
-          "x": 247.66666666666666,
-          "y": 250
-        },
-        {
-          "id": "style_attributes",
-          "width": 170,
-          "height": 50,
-          "labels": [
-            {
-              "text": "Styles & Attributes",
-              "x": 0,
-              "y": 0,
-              "width": 0,
-              "height": 0
-            }
-          ],
-          "iconHint": "paint palette",
           "$H": 362,
-          "x": 252.66666666666666,
-          "y": 320
-        }
-      ],
-      "edges": [
-        {
-          "id": "s2_e1",
-          "sources": [
-            "coarse_dom_tree"
-          ],
-          "targets": [
-            "leaf_nodes"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s2_e1_s0",
-              "startPoint": {
-                "x": 337.66666666666663,
-                "y": 85
-              },
-              "endPoint": {
-                "x": 337.66666666666663,
-                "y": 105
-              },
-              "incomingShape": "coarse_dom_tree",
-              "outgoingShape": "leaf_nodes"
-            }
-          ],
-          "container": "stage_2_group"
+          "x": 47,
+          "y": 30
         },
         {
-          "id": "s2_e2",
-          "sources": [
-            "leaf_nodes"
-          ],
-          "targets": [
-            "mllm_code_agent"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s2_e2_s0",
-              "startPoint": {
-                "x": 337.66666666666663,
-                "y": 155
-              },
-              "endPoint": {
-                "x": 337.66666666666663,
-                "y": 175
-              },
-              "incomingShape": "leaf_nodes",
-              "outgoingShape": "mllm_code_agent"
-            }
-          ],
-          "container": "stage_2_group"
-        },
-        {
-          "id": "s2_e3",
-          "sources": [
-            "mllm_code_agent"
-          ],
-          "targets": [
-            "local_code_gen"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s2_e3_s0",
-              "startPoint": {
-                "x": 277.66666666666663,
-                "y": 230
-              },
-              "endPoint": {
-                "x": 123.33333333333333,
-                "y": 250
-              },
-              "bendPoints": [
-                {
-                  "x": 277.66666666666663,
-                  "y": 240
-                },
-                {
-                  "x": 123.33333333333333,
-                  "y": 240
-                }
-              ],
-              "incomingShape": "mllm_code_agent",
-              "outgoingShape": "local_code_gen"
-            }
-          ],
-          "container": "stage_2_group"
-        },
-        {
-          "id": "s2_e4",
-          "sources": [
-            "local_code_gen"
-          ],
-          "targets": [
-            "link_back_tree"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s2_e4_s0",
-              "startPoint": {
-                "x": 66.66666666666666,
-                "y": 250
-              },
-              "endPoint": {
-                "x": 104.33333333333331,
-                "y": 85
-              },
-              "bendPoints": [
-                {
-                  "x": 66.66666666666666,
-                  "y": 95
-                },
-                {
-                  "x": 104.33333333333331,
-                  "y": 95
-                }
-              ],
-              "incomingShape": "local_code_gen",
-              "outgoingShape": "link_back_tree"
-            }
-          ],
-          "container": "stage_2_group"
-        },
-        {
-          "id": "s2_e5",
-          "sources": [
-            "link_back_tree"
-          ],
-          "targets": [
-            "integrated_code"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s2_e5_s0",
-              "startPoint": {
-                "x": 157.66666666666663,
-                "y": 85
-              },
-              "endPoint": {
-                "x": 157.66666666666666,
-                "y": 105
-              },
-              "incomingShape": "link_back_tree",
-              "outgoingShape": "integrated_code"
-            }
-          ],
-          "container": "stage_2_group"
-        },
-        {
-          "id": "s2_e6",
-          "sources": [
-            "integrated_code"
-          ],
-          "targets": [
-            "mllm_code_agent"
-          ],
-          "advanced": {
-            "semanticType": "feedback",
-            "lineStyle": "dashed",
-            "routing": "SPLINES",
-            "curvature": 0.6,
-            "strokeColor": "#7E57C2",
-            "edgeLabels": [
-              {
-                "text": "feedback",
-                "position": 0.5
-              }
-            ]
-          },
-          "sections": [
-            {
-              "id": "s2_e6_s0",
-              "startPoint": {
-                "x": 157.66666666666666,
-                "y": 155
-              },
-              "endPoint": {
-                "x": 277.66666666666663,
-                "y": 175
-              },
-              "bendPoints": [
-                {
-                  "x": 157.66666666666666,
-                  "y": 165
-                },
-                {
-                  "x": 277.66666666666663,
-                  "y": 165
-                }
-              ],
-              "incomingShape": "integrated_code",
-              "outgoingShape": "mllm_code_agent"
-            }
-          ],
-          "container": "stage_2_group"
-        },
-        {
-          "id": "s2_e7",
-          "sources": [
-            "mllm_code_agent"
-          ],
-          "targets": [
-            "non_leaf_styles"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s2_e7_s0",
-              "startPoint": {
-                "x": 337.66666666666663,
-                "y": 230
-              },
-              "endPoint": {
-                "x": 337.66666666666663,
-                "y": 250
-              },
-              "incomingShape": "mllm_code_agent",
-              "outgoingShape": "non_leaf_styles"
-            }
-          ],
-          "container": "stage_2_group"
-        },
-        {
-          "id": "s2_e8",
-          "sources": [
-            "non_leaf_styles"
-          ],
-          "targets": [
-            "style_attributes"
-          ],
-          "advanced": {
-            "semanticType": "data_flow",
-            "routing": "ORTHOGONAL"
-          },
-          "sections": [
-            {
-              "id": "s2_e8_s0",
-              "startPoint": {
-                "x": 337.66666666666663,
-                "y": 300
-              },
-              "endPoint": {
-                "x": 337.66666666666663,
-                "y": 320
-              },
-              "incomingShape": "non_leaf_styles",
-              "outgoingShape": "style_attributes"
-            }
-          ],
-          "container": "stage_2_group"
-        }
-      ],
-      "$H": 338,
-      "x": 12,
-      "y": 1502
-    },
-    {
-      "id": "output_group",
-      "width": 340,
-      "height": 165,
-      "labels": [
-        {
-          "text": "Final Output",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "layoutOptions": {
-        "elk.padding": "[top=35,left=10,bottom=10,right=10]"
-      },
-      "group": true,
-      "borderless": true,
-      "children": [
-        {
-          "id": "html_output",
+          "id": "html_code",
           "width": 150,
           "height": 50,
           "labels": [
@@ -1257,18 +981,18 @@
               "height": 0
             }
           ],
-          "iconHint": "HTML document",
-          "$H": 368,
-          "x": 10,
-          "y": 35
+          "iconHint": "HTML tag",
+          "$H": 365,
+          "x": 57,
+          "y": 100
         },
         {
-          "id": "css_output",
+          "id": "css_code",
           "width": 150,
           "height": 50,
           "labels": [
             {
-              "text": "CSS Code",
+              "text": "CSS Styles",
               "x": 0,
               "y": 0,
               "width": 0,
@@ -1276,10 +1000,457 @@
             }
           ],
           "iconHint": "CSS stylesheet",
-          "$H": 371,
-          "x": 180,
-          "y": 35
+          "$H": 368,
+          "x": 227,
+          "y": 100
         },
+        {
+          "id": "tree_linking",
+          "width": 170,
+          "height": 50,
+          "labels": [
+            {
+              "text": "Link Back to Tree",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "tree connection",
+          "$H": 371,
+          "x": 75.33333333333334,
+          "y": 170
+        },
+        {
+          "id": "integrated_code",
+          "width": 170,
+          "height": 50,
+          "labels": [
+            {
+              "text": "Integrated Code",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "merged document",
+          "$H": 374,
+          "x": 75.33333333333334,
+          "y": 240
+        },
+        {
+          "id": "non_leaf_styling",
+          "width": 180,
+          "height": 50,
+          "labels": [
+            {
+              "text": "Non-Leaf Node Styling",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "style brush",
+          "$H": 377,
+          "x": 10,
+          "y": 400
+        },
+        {
+          "id": "ui_output",
+          "width": 160,
+          "height": 50,
+          "labels": [
+            {
+              "text": "Final UI Code Output",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "webpage render",
+          "$H": 380,
+          "x": 20,
+          "y": 470
+        }
+      ],
+      "edges": [
+        {
+          "id": "s2e1",
+          "sources": [
+            "leaf_node_images"
+          ],
+          "targets": [
+            "mllm_code_agent"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e1_s0",
+              "startPoint": {
+                "x": 387,
+                "y": 290
+              },
+              "endPoint": {
+                "x": 118,
+                "y": 330
+              },
+              "bendPoints": [
+                {
+                  "x": 387,
+                  "y": 310
+                },
+                {
+                  "x": 118,
+                  "y": 310
+                }
+              ],
+              "incomingShape": "leaf_node_images",
+              "outgoingShape": "mllm_code_agent"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e2",
+          "sources": [
+            "mllm_code_agent"
+          ],
+          "targets": [
+            "local_code_gen"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e2_s0",
+              "startPoint": {
+                "x": 46,
+                "y": 330
+              },
+              "endPoint": {
+                "x": 89.5,
+                "y": 80
+              },
+              "bendPoints": [
+                {
+                  "x": 46,
+                  "y": 90
+                },
+                {
+                  "x": 89.5,
+                  "y": 90
+                }
+              ],
+              "incomingShape": "mllm_code_agent",
+              "outgoingShape": "local_code_gen"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e3",
+          "sources": [
+            "local_code_gen"
+          ],
+          "targets": [
+            "html_code"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e3_s0",
+              "startPoint": {
+                "x": 132,
+                "y": 80
+              },
+              "endPoint": {
+                "x": 132,
+                "y": 100
+              },
+              "incomingShape": "local_code_gen",
+              "outgoingShape": "html_code"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e4",
+          "sources": [
+            "local_code_gen"
+          ],
+          "targets": [
+            "css_code"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e4_s0",
+              "startPoint": {
+                "x": 174.5,
+                "y": 80
+              },
+              "endPoint": {
+                "x": 302,
+                "y": 100
+              },
+              "bendPoints": [
+                {
+                  "x": 174.5,
+                  "y": 90
+                },
+                {
+                  "x": 302,
+                  "y": 90
+                }
+              ],
+              "incomingShape": "local_code_gen",
+              "outgoingShape": "css_code"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e5",
+          "sources": [
+            "html_code"
+          ],
+          "targets": [
+            "tree_linking"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e5_s0",
+              "startPoint": {
+                "x": 132,
+                "y": 150
+              },
+              "endPoint": {
+                "x": 132,
+                "y": 170
+              },
+              "incomingShape": "html_code",
+              "outgoingShape": "tree_linking"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e6",
+          "sources": [
+            "css_code"
+          ],
+          "targets": [
+            "tree_linking"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e6_s0",
+              "startPoint": {
+                "x": 302,
+                "y": 150
+              },
+              "endPoint": {
+                "x": 188.66666666666669,
+                "y": 170
+              },
+              "bendPoints": [
+                {
+                  "x": 302,
+                  "y": 160
+                },
+                {
+                  "x": 188.66666666666669,
+                  "y": 160
+                }
+              ],
+              "incomingShape": "css_code",
+              "outgoingShape": "tree_linking"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e7",
+          "sources": [
+            "tree_linking"
+          ],
+          "targets": [
+            "integrated_code"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e7_s0",
+              "startPoint": {
+                "x": 160.33333333333334,
+                "y": 220
+              },
+              "endPoint": {
+                "x": 160.33333333333334,
+                "y": 240
+              },
+              "incomingShape": "tree_linking",
+              "outgoingShape": "integrated_code"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e8",
+          "sources": [
+            "integrated_code"
+          ],
+          "targets": [
+            "mllm_code_agent"
+          ],
+          "advanced": {
+            "semanticType": "feedback",
+            "lineStyle": "dashed",
+            "strokeColor": "#9C27B0",
+            "routing": "SPLINES",
+            "curvature": 0.6,
+            "edgeLabels": [
+              {
+                "text": "feedback loop",
+                "position": 0.5
+              }
+            ]
+          },
+          "sections": [
+            {
+              "id": "s2e8_s0",
+              "startPoint": {
+                "x": 160.33333333333334,
+                "y": 290
+              },
+              "endPoint": {
+                "x": 82,
+                "y": 330
+              },
+              "bendPoints": [
+                {
+                  "x": 160.33333333333334,
+                  "y": 300
+                },
+                {
+                  "x": 82,
+                  "y": 300
+                }
+              ],
+              "incomingShape": "integrated_code",
+              "outgoingShape": "mllm_code_agent"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e9",
+          "sources": [
+            "mllm_code_agent"
+          ],
+          "targets": [
+            "non_leaf_styling"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e9_s0",
+              "startPoint": {
+                "x": 100,
+                "y": 380
+              },
+              "endPoint": {
+                "x": 100,
+                "y": 400
+              },
+              "incomingShape": "mllm_code_agent",
+              "outgoingShape": "non_leaf_styling"
+            }
+          ],
+          "container": "stage2_group"
+        },
+        {
+          "id": "s2e10",
+          "sources": [
+            "non_leaf_styling"
+          ],
+          "targets": [
+            "ui_output"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "s2e10_s0",
+              "startPoint": {
+                "x": 100,
+                "y": 450
+              },
+              "endPoint": {
+                "x": 100,
+                "y": 470
+              },
+              "incomingShape": "non_leaf_styling",
+              "outgoingShape": "ui_output"
+            }
+          ],
+          "container": "stage2_group"
+        }
+      ],
+      "$H": 353,
+      "x": 264,
+      "y": 1462
+    },
+    {
+      "id": "output_group",
+      "width": 530,
+      "height": 160,
+      "labels": [
+        {
+          "text": "Output Evaluation",
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        }
+      ],
+      "layoutOptions": {
+        "elk.padding": "[top=30,left=10,bottom=10,right=10]"
+      },
+      "group": true,
+      "borderless": true,
+      "children": [
         {
           "id": "rendered_webpage",
           "width": 170,
@@ -1293,20 +1464,74 @@
               "height": 0
             }
           ],
-          "iconHint": "web browser window",
-          "$H": 374,
-          "x": 28.333333333333336,
-          "y": 105
+          "iconHint": "web browser render",
+          "$H": 386,
+          "x": 47.5,
+          "y": 30
+        },
+        {
+          "id": "structure_alignment",
+          "width": 160,
+          "height": 40,
+          "labels": [
+            {
+              "text": "Structure Alignment",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "alignment check",
+          "$H": 389,
+          "x": 190,
+          "y": 110
+        },
+        {
+          "id": "style_alignment",
+          "width": 150,
+          "height": 40,
+          "labels": [
+            {
+              "text": "Style Alignment",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "paint palette",
+          "$H": 392,
+          "x": 370,
+          "y": 110
+        },
+        {
+          "id": "content_alignment",
+          "width": 160,
+          "height": 40,
+          "labels": [
+            {
+              "text": "Content Alignment",
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "iconHint": "text comparison",
+          "$H": 395,
+          "x": 10,
+          "y": 110
         }
       ],
       "edges": [
         {
-          "id": "out_e1",
+          "id": "oe1",
           "sources": [
-            "html_output"
+            "rendered_webpage"
           ],
           "targets": [
-            "rendered_webpage"
+            "structure_alignment"
           ],
           "advanced": {
             "semanticType": "data_flow",
@@ -1314,28 +1539,38 @@
           },
           "sections": [
             {
-              "id": "out_e1_s0",
+              "id": "oe1_s0",
               "startPoint": {
-                "x": 85,
-                "y": 85
+                "x": 132.5,
+                "y": 80
               },
               "endPoint": {
-                "x": 85,
-                "y": 105
+                "x": 270,
+                "y": 110
               },
-              "incomingShape": "html_output",
-              "outgoingShape": "rendered_webpage"
+              "bendPoints": [
+                {
+                  "x": 132.5,
+                  "y": 100
+                },
+                {
+                  "x": 270,
+                  "y": 100
+                }
+              ],
+              "incomingShape": "rendered_webpage",
+              "outgoingShape": "structure_alignment"
             }
           ],
           "container": "output_group"
         },
         {
-          "id": "out_e2",
+          "id": "oe2",
           "sources": [
-            "css_output"
+            "rendered_webpage"
           ],
           "targets": [
-            "rendered_webpage"
+            "style_alignment"
           ],
           "advanced": {
             "semanticType": "data_flow",
@@ -1343,127 +1578,104 @@
           },
           "sections": [
             {
-              "id": "out_e2_s0",
+              "id": "oe2_s0",
               "startPoint": {
-                "x": 255,
-                "y": 85
+                "x": 175,
+                "y": 80
               },
               "endPoint": {
-                "x": 141.66666666666666,
-                "y": 105
+                "x": 445,
+                "y": 110
               },
               "bendPoints": [
                 {
-                  "x": 255,
-                  "y": 95
+                  "x": 175,
+                  "y": 90
                 },
                 {
-                  "x": 141.66666666666666,
-                  "y": 95
+                  "x": 445,
+                  "y": 90
                 }
               ],
-              "incomingShape": "css_output",
-              "outgoingShape": "rendered_webpage"
+              "incomingShape": "rendered_webpage",
+              "outgoingShape": "style_alignment"
+            }
+          ],
+          "container": "output_group"
+        },
+        {
+          "id": "oe3",
+          "sources": [
+            "rendered_webpage"
+          ],
+          "targets": [
+            "content_alignment"
+          ],
+          "advanced": {
+            "semanticType": "data_flow",
+            "routing": "ORTHOGONAL"
+          },
+          "sections": [
+            {
+              "id": "oe3_s0",
+              "startPoint": {
+                "x": 90,
+                "y": 80
+              },
+              "endPoint": {
+                "x": 90,
+                "y": 110
+              },
+              "incomingShape": "rendered_webpage",
+              "outgoingShape": "content_alignment"
             }
           ],
           "container": "output_group"
         }
       ],
-      "$H": 365,
-      "x": 236,
-      "y": 1992
-    },
-    {
-      "id": "structure_label",
-      "width": 80,
-      "height": 24,
-      "labels": [
-        {
-          "text": "Structure",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "$H": 377,
-      "x": 1195,
-      "y": 225
-    },
-    {
-      "id": "style_label",
-      "width": 60,
-      "height": 24,
-      "labels": [
-        {
-          "text": "Style",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "$H": 380,
-      "x": 1335,
-      "y": 225
-    },
-    {
-      "id": "content_label",
-      "width": 70,
-      "height": 24,
-      "labels": [
-        {
-          "text": "Content",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
       "$H": 383,
-      "x": 1455,
-      "y": 225
+      "x": 231,
+      "y": 2102
     },
     {
-      "id": "well_formed_structure",
-      "width": 180,
+      "id": "ram_resource",
+      "width": 140,
       "height": 50,
       "labels": [
         {
-          "text": "Well-Formed Structure",
+          "text": "RAM / GPU Memory",
           "x": 0,
           "y": 0,
           "width": 0,
           "height": 0
         }
       ],
-      "iconHint": "validated checkmark",
-      "$H": 386,
-      "x": 259,
-      "y": 2262
+      "iconHint": "memory chip",
+      "$H": 398,
+      "x": 653,
+      "y": 632
     },
     {
-      "id": "ui_code",
-      "width": 150,
-      "height": 50,
+      "id": "well_formed_label",
+      "width": 130,
+      "height": 24,
       "labels": [
         {
-          "text": "UI Code Output",
+          "text": "Well-Formed Output",
           "x": 0,
           "y": 0,
           "width": 0,
           "height": 0
         }
       ],
-      "iconHint": "user interface",
-      "$H": 389,
-      "x": 274,
-      "y": 2412
+      "$H": 401,
+      "x": 162,
+      "y": 82.5
     },
     {
-      "id": "on_the_fly_resolution",
-      "width": 180,
-      "height": 50,
+      "id": "on_the_fly_label",
+      "width": 140,
+      "height": 24,
       "labels": [
         {
           "text": "On-the-Fly Resolution",
@@ -1473,137 +1685,44 @@
           "height": 0
         }
       ],
-      "iconHint": "dynamic scaling",
-      "$H": 392,
-      "x": 292,
-      "y": 562
-    },
-    {
-      "id": "model_training",
-      "width": 160,
-      "height": 50,
-      "labels": [
-        {
-          "text": "Model Training",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "iconHint": "training loop",
-      "$H": 395,
-      "x": 532,
-      "y": 562
-    },
-    {
-      "id": "convergence",
-      "width": 80,
-      "height": 24,
-      "labels": [
-        {
-          "text": "Accelerated Convergence",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "$H": 398,
-      "x": 1585,
-      "y": 225
-    },
-    {
-      "id": "accuracy",
-      "width": 80,
-      "height": 24,
-      "labels": [
-        {
-          "text": "Enhanced Accuracy",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "$H": 401,
-      "x": 1725,
-      "y": 225
-    },
-    {
-      "id": "loss_function",
-      "width": 150,
-      "height": 50,
-      "labels": [
-        {
-          "text": "Loss Function",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "iconHint": "loss curve",
       "$H": 404,
-      "x": 564,
-      "y": 712
-    },
-    {
-      "id": "ram_resource",
-      "width": 150,
-      "height": 50,
-      "labels": [
-        {
-          "text": "RAM / Memory",
-          "x": 0,
-          "y": 0,
-          "width": 0,
-          "height": 0
-        }
-      ],
-      "iconHint": "RAM chip",
-      "$H": 407,
-      "x": 1865,
-      "y": 407
+      "x": 772,
+      "y": 82.5
     }
   ],
   "edges": [
     {
       "id": "e1",
       "sources": [
-        "input_image"
+        "input_patches"
       ],
       "targets": [
-        "stage_1_group"
+        "vit_encoder"
       ],
       "advanced": {
         "semanticType": "data_flow",
         "routing": "ORTHOGONAL",
-        "strokeWidth": 2
+        "crossesGroupBoundary": true
       },
       "sections": [
         {
           "id": "e1_s0",
           "startPoint": {
-            "x": 250,
-            "y": 457
+            "x": 622,
+            "y": 162
           },
           "endPoint": {
-            "x": 282,
-            "y": 867
+            "x": 622.3333333333333,
+            "y": 857
           },
           "bendPoints": [
             {
-              "x": 250,
-              "y": 782
-            },
-            {
-              "x": 282,
-              "y": 782
+              "x": 622.3333333333333,
+              "y": 787
             }
           ],
-          "incomingShape": "input_image",
-          "outgoingShape": "stage_1_group"
+          "incomingShape": "input_patches",
+          "outgoingShape": "vit_encoder"
         }
       ],
       "container": "root"
@@ -1611,60 +1730,7 @@
     {
       "id": "e2",
       "sources": [
-        "input_image"
-      ],
-      "targets": [
-        "image_patches"
-      ],
-      "advanced": {
-        "semanticType": "data_flow",
-        "routing": "ORTHOGONAL",
-        "edgeLabels": [
-          {
-            "text": "patch split",
-            "position": 0.5
-          }
-        ]
-      },
-      "sections": [
-        {
-          "id": "e2_s0",
-          "startPoint": {
-            "x": 295,
-            "y": 457
-          },
-          "endPoint": {
-            "x": 292,
-            "y": 902
-          },
-          "bendPoints": [
-            {
-              "x": 295,
-              "y": 472
-            },
-            {
-              "x": 261,
-              "y": 472
-            },
-            {
-              "x": 261,
-              "y": 772
-            },
-            {
-              "x": 292,
-              "y": 772
-            }
-          ],
-          "incomingShape": "input_image",
-          "outgoingShape": "image_patches"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e3",
-      "sources": [
-        "pix2struct_model"
+        "pruned_dataset"
       ],
       "targets": [
         "vit_encoder"
@@ -1673,9 +1739,60 @@
         "semanticType": "data_flow",
         "lineStyle": "dashed",
         "routing": "ORTHOGONAL",
+        "crossesGroupBoundary": true,
         "edgeLabels": [
           {
-            "text": "base model",
+            "text": "training data",
+            "position": 0.5
+          }
+        ]
+      },
+      "sections": [
+        {
+          "id": "e2_s0",
+          "startPoint": {
+            "x": 302,
+            "y": 672
+          },
+          "endPoint": {
+            "x": 565.6666666666666,
+            "y": 857
+          },
+          "bendPoints": [
+            {
+              "x": 302,
+              "y": 697
+            },
+            {
+              "x": 566,
+              "y": 697
+            },
+            {
+              "x": 565.6666666666666,
+              "y": 787
+            }
+          ],
+          "incomingShape": "pruned_dataset",
+          "outgoingShape": "vit_encoder"
+        }
+      ],
+      "container": "root"
+    },
+    {
+      "id": "e3",
+      "sources": [
+        "coarse_grained_tree"
+      ],
+      "targets": [
+        "leaf_node_images"
+      ],
+      "advanced": {
+        "semanticType": "data_flow",
+        "routing": "ORTHOGONAL",
+        "crossesGroupBoundary": true,
+        "edgeLabels": [
+          {
+            "text": "extract leaves",
             "position": 0.5
           }
         ]
@@ -1684,25 +1801,25 @@
         {
           "id": "e3_s0",
           "startPoint": {
-            "x": 382,
-            "y": 762
+            "x": 589,
+            "y": 1342
           },
           "endPoint": {
-            "x": 348.66666666666663,
-            "y": 972
+            "x": 651,
+            "y": 1702
           },
           "bendPoints": [
             {
-              "x": 382,
-              "y": 962
+              "x": 589,
+              "y": 1367
             },
             {
-              "x": 348.66666666666663,
-              "y": 962
+              "x": 651,
+              "y": 1367
             }
           ],
-          "incomingShape": "pix2struct_model",
-          "outgoingShape": "vit_encoder"
+          "incomingShape": "coarse_grained_tree",
+          "outgoingShape": "leaf_node_images"
         }
       ],
       "container": "root"
@@ -1710,28 +1827,35 @@
     {
       "id": "e4",
       "sources": [
-        "on_the_fly_resolution"
+        "ui_output"
       ],
       "targets": [
-        "pix2struct_model"
+        "rendered_webpage"
       ],
       "advanced": {
         "semanticType": "data_flow",
-        "routing": "ORTHOGONAL"
+        "routing": "ORTHOGONAL",
+        "crossesGroupBoundary": true
       },
       "sections": [
         {
           "id": "e4_s0",
           "startPoint": {
-            "x": 382,
-            "y": 612
+            "x": 364,
+            "y": 1982
           },
           "endPoint": {
-            "x": 382,
-            "y": 712
+            "x": 363.5,
+            "y": 2132
           },
-          "incomingShape": "on_the_fly_resolution",
-          "outgoingShape": "pix2struct_model"
+          "bendPoints": [
+            {
+              "x": 363.5,
+              "y": 2097
+            }
+          ],
+          "incomingShape": "ui_output",
+          "outgoingShape": "rendered_webpage"
         }
       ],
       "container": "root"
@@ -1739,43 +1863,44 @@
     {
       "id": "e5",
       "sources": [
-        "pruned_dataset"
+        "ram_resource"
       ],
       "targets": [
-        "model_training"
+        "structure_model_group"
       ],
       "advanced": {
-        "semanticType": "data_flow",
-        "routing": "ORTHOGONAL",
-        "strokeWidth": 2
+        "semanticType": "optional_path",
+        "lineStyle": "dotted",
+        "strokeColor": "#757575",
+        "routing": "ORTHOGONAL"
       },
       "sections": [
         {
           "id": "e5_s0",
           "startPoint": {
-            "x": 901.6666666666666,
-            "y": 447
+            "x": 700,
+            "y": 682
           },
           "endPoint": {
-            "x": 585,
-            "y": 562
+            "x": 632.3333333333333,
+            "y": 827
           },
           "bendPoints": [
             {
-              "x": 902,
-              "y": 462
+              "x": 700,
+              "y": 697
             },
             {
-              "x": 902,
-              "y": 472
+              "x": 632,
+              "y": 697
             },
             {
-              "x": 585,
-              "y": 472
+              "x": 632.3333333333333,
+              "y": 787
             }
           ],
-          "incomingShape": "pruned_dataset",
-          "outgoingShape": "model_training"
+          "incomingShape": "ram_resource",
+          "outgoingShape": "structure_model_group"
         }
       ],
       "container": "root"
@@ -1783,46 +1908,41 @@
     {
       "id": "e6",
       "sources": [
-        "model_training"
+        "ram_resource"
       ],
       "targets": [
-        "stage_1_group"
+        "mllm_code_agent"
       ],
       "advanced": {
-        "semanticType": "data_flow",
-        "routing": "ORTHOGONAL"
+        "semanticType": "optional_path",
+        "lineStyle": "dotted",
+        "strokeColor": "#757575",
+        "routing": "ORTHOGONAL",
+        "crossesGroupBoundary": true
       },
       "sections": [
         {
           "id": "e6_s0",
           "startPoint": {
-            "x": 585,
-            "y": 612
+            "x": 746,
+            "y": 682
           },
           "endPoint": {
-            "x": 392,
-            "y": 867
+            "x": 418,
+            "y": 1792
           },
           "bendPoints": [
             {
-              "x": 585,
-              "y": 622
+              "x": 746,
+              "y": 1782
             },
             {
-              "x": 502,
-              "y": 622
-            },
-            {
-              "x": 502,
-              "y": 772
-            },
-            {
-              "x": 392,
-              "y": 772
+              "x": 418,
+              "y": 1782
             }
           ],
-          "incomingShape": "model_training",
-          "outgoingShape": "stage_1_group"
+          "incomingShape": "ram_resource",
+          "outgoingShape": "mllm_code_agent"
         }
       ],
       "container": "root"
@@ -1830,354 +1950,66 @@
     {
       "id": "e7",
       "sources": [
-        "json_dom_output"
+        "high_resolution_image"
       ],
       "targets": [
-        "coarse_dom_tree"
+        "real_world_webpages"
       ],
       "advanced": {
-        "semanticType": "cross_boundary",
+        "semanticType": "data_flow",
+        "lineStyle": "dashed",
+        "routing": "SPLINES",
         "crossesGroupBoundary": true,
-        "routing": "ORTHOGONAL",
-        "strokeWidth": 2
+        "edgeLabels": [
+          {
+            "text": "source context",
+            "position": 0.5
+          }
+        ]
       },
       "sections": [
         {
           "id": "e7_s0",
           "startPoint": {
-            "x": 350.33333333333337,
-            "y": 1382
+            "x": 562,
+            "y": 92
           },
           "endPoint": {
-            "x": 349.66666666666663,
-            "y": 1537
+            "x": 330.3333333333333,
+            "y": 382
           },
           "bendPoints": [
             {
-              "x": 350,
-              "y": 1397
+              "x": 562,
+              "y": 102
             },
             {
-              "x": 349.66666666666663,
-              "y": 1497
+              "x": 531,
+              "y": 102
+            },
+            {
+              "x": 531,
+              "y": 187
+            },
+            {
+              "x": 369,
+              "y": 187
+            },
+            {
+              "x": 368.66666666666663,
+              "y": 277
+            },
+            {
+              "x": 368.66666666666663,
+              "y": 372
+            },
+            {
+              "x": 330.3333333333333,
+              "y": 372
             }
           ],
-          "incomingShape": "json_dom_output",
-          "outgoingShape": "coarse_dom_tree"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e8",
-      "sources": [
-        "style_attributes"
-      ],
-      "targets": [
-        "html_output"
-      ],
-      "advanced": {
-        "semanticType": "cross_boundary",
-        "crossesGroupBoundary": true,
-        "routing": "ORTHOGONAL"
-      },
-      "sections": [
-        {
-          "id": "e8_s0",
-          "startPoint": {
-            "x": 321.3333333333333,
-            "y": 1872
-          },
-          "endPoint": {
-            "x": 321,
-            "y": 2027
-          },
-          "bendPoints": [
-            {
-              "x": 321,
-              "y": 1887
-            }
-          ],
-          "incomingShape": "style_attributes",
-          "outgoingShape": "html_output"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e9",
-      "sources": [
-        "style_attributes"
-      ],
-      "targets": [
-        "css_output"
-      ],
-      "advanced": {
-        "semanticType": "cross_boundary",
-        "crossesGroupBoundary": true,
-        "routing": "ORTHOGONAL"
-      },
-      "sections": [
-        {
-          "id": "e9_s0",
-          "startPoint": {
-            "x": 378,
-            "y": 1872
-          },
-          "endPoint": {
-            "x": 491,
-            "y": 2027
-          },
-          "bendPoints": [
-            {
-              "x": 378,
-              "y": 1897
-            },
-            {
-              "x": 491,
-              "y": 1897
-            }
-          ],
-          "incomingShape": "style_attributes",
-          "outgoingShape": "css_output"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e10",
-      "sources": [
-        "rendered_webpage"
-      ],
-      "targets": [
-        "well_formed_structure"
-      ],
-      "advanced": {
-        "semanticType": "data_flow",
-        "routing": "ORTHOGONAL"
-      },
-      "sections": [
-        {
-          "id": "e10_s0",
-          "startPoint": {
-            "x": 349.33333333333337,
-            "y": 2147
-          },
-          "endPoint": {
-            "x": 349,
-            "y": 2262
-          },
-          "bendPoints": [
-            {
-              "x": 349,
-              "y": 2162
-            }
-          ],
-          "incomingShape": "rendered_webpage",
-          "outgoingShape": "well_formed_structure"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e11",
-      "sources": [
-        "well_formed_structure"
-      ],
-      "targets": [
-        "ui_code"
-      ],
-      "advanced": {
-        "semanticType": "data_flow",
-        "routing": "ORTHOGONAL"
-      },
-      "sections": [
-        {
-          "id": "e11_s0",
-          "startPoint": {
-            "x": 349,
-            "y": 2312
-          },
-          "endPoint": {
-            "x": 349,
-            "y": 2412
-          },
-          "incomingShape": "well_formed_structure",
-          "outgoingShape": "ui_code"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e12",
-      "sources": [
-        "loss_function"
-      ],
-      "targets": [
-        "transformer_decoder"
-      ],
-      "advanced": {
-        "semanticType": "gradient_flow",
-        "lineStyle": "dashed",
-        "strokeDasharray": "8,4",
-        "strokeColor": "#E57373",
-        "routing": "SPLINES",
-        "edgeLabels": [
-          {
-            "text": "backprop",
-            "position": 0.5
-          }
-        ]
-      },
-      "sections": [
-        {
-          "id": "e12_s0",
-          "startPoint": {
-            "x": 639,
-            "y": 762
-          },
-          "endPoint": {
-            "x": 380.33333333333337,
-            "y": 1117
-          },
-          "bendPoints": [
-            {
-              "x": 639,
-              "y": 782
-            },
-            {
-              "x": 415,
-              "y": 782
-            },
-            {
-              "x": 415.33333333333337,
-              "y": 862
-            },
-            {
-              "x": 415.33333333333337,
-              "y": 1107
-            },
-            {
-              "x": 380.33333333333337,
-              "y": 1107
-            }
-          ],
-          "incomingShape": "loss_function",
-          "outgoingShape": "transformer_decoder"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e13",
-      "sources": [
-        "model_training"
-      ],
-      "targets": [
-        "loss_function"
-      ],
-      "advanced": {
-        "semanticType": "data_flow",
-        "routing": "ORTHOGONAL"
-      },
-      "sections": [
-        {
-          "id": "e13_s0",
-          "startPoint": {
-            "x": 639,
-            "y": 612
-          },
-          "endPoint": {
-            "x": 639,
-            "y": 712
-          },
-          "incomingShape": "model_training",
-          "outgoingShape": "loss_function"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e14",
-      "sources": [
-        "ram_resource"
-      ],
-      "targets": [
-        "model_training"
-      ],
-      "advanced": {
-        "semanticType": "data_flow",
-        "lineStyle": "dotted",
-        "routing": "ORTHOGONAL",
-        "edgeLabels": [
-          {
-            "text": "resource",
-            "position": 0.5
-          }
-        ]
-      },
-      "sections": [
-        {
-          "id": "e14_s0",
-          "startPoint": {
-            "x": 1940,
-            "y": 457
-          },
-          "endPoint": {
-            "x": 639,
-            "y": 562
-          },
-          "bendPoints": [
-            {
-              "x": 1940,
-              "y": 482
-            },
-            {
-              "x": 639,
-              "y": 482
-            }
-          ],
-          "incomingShape": "ram_resource",
-          "outgoingShape": "model_training"
-        }
-      ],
-      "container": "root"
-    },
-    {
-      "id": "e15",
-      "sources": [
-        "input_image"
-      ],
-      "targets": [
-        "on_the_fly_resolution"
-      ],
-      "advanced": {
-        "semanticType": "data_flow",
-        "routing": "ORTHOGONAL"
-      },
-      "sections": [
-        {
-          "id": "e15_s0",
-          "startPoint": {
-            "x": 340,
-            "y": 457
-          },
-          "endPoint": {
-            "x": 382,
-            "y": 562
-          },
-          "bendPoints": [
-            {
-              "x": 340,
-              "y": 472
-            },
-            {
-              "x": 382,
-              "y": 472
-            }
-          ],
-          "incomingShape": "input_image",
-          "outgoingShape": "on_the_fly_resolution"
+          "incomingShape": "high_resolution_image",
+          "outgoingShape": "real_world_webpages"
         }
       ],
       "container": "root"
@@ -2186,6 +2018,6 @@
   "$H": 13,
   "x": 0,
   "y": 0,
-  "width": 2027,
-  "height": 2474
+  "width": 924,
+  "height": 2274
 }
