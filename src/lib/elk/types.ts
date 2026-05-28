@@ -55,6 +55,18 @@ export interface ElkNode {
   edges?: ElkEdge[]
   layoutOptions?: ElkLayoutOptions
   properties?: Record<string, unknown>
+  /** When true, render as bare text — no rect, no background, no border.
+   *  Used for annotation labels like "Join Pattern", "Selectivity" in
+   *  academic figures, which float as naked text near the diagram. */
+  labelOnly?: boolean
+  /** When true, this is a group container node */
+  group?: boolean
+  /** When true, group container has no visible border */
+  borderless?: boolean
+  /** Natural-language icon hint resolved to Iconify CDN icon */
+  iconHint?: string
+  /** Node shape override: defaults to 'box' */
+  shape?: 'box' | 'circle' | 'diamond' | 'parallelogram' | 'cylinder' | 'ellipse'
 }
 
 // ============================================================

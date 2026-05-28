@@ -116,6 +116,15 @@ Rules:
 12. Add iconHint field to nodes that should have an icon/illustration.
     Use natural language descriptions (e.g., "microscope", "DNA helix", "brain"),
     NOT emoji or Unicode. The image generator will create these from text.
+13. Add "labelOnly": true to nodes that are ANNOTATION LABELS — short text
+    that should float naked on the diagram WITHOUT any box/rect around them.
+    Academic figures use this for descriptive labels like "Join Pattern",
+    "Selectivity", "Cardinality", "Code", "Columnar Storage", dimension
+    annotations like "180x50 px", or category headers like "Workload",
+    "Resource", "User".  These appear near the actual processing nodes
+    they describe, connected by dashed/dotted edges or no edge at all.
+    Nodes that are actual processing components (Encoder, Decoder, Filter,
+    Query Planner) should NOT be labelOnly — they get the normal box.
 
 === CRITICAL: NO HYPEREDGES ===
 Each edge MUST have EXACTLY ONE source and EXACTLY ONE target:
@@ -137,6 +146,7 @@ Example output with nesting (architecture diagram):
   "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "DOWN"},
   "children": [
     {"id": "input", "width": 150, "height": 50, "labels": [{"text": "Input"}]},
+    {"id": "input_dim", "width": 80, "height": 24, "labels": [{"text": "768-dim"}], "labelOnly": true},
     {
       "id": "encoder_block", "width": 250, "height": 200,
       "labels": [{"text": "Encoder Block"}],
@@ -1108,6 +1118,8 @@ def _fix_node_list(
             fixed_node["group"] = True
         if node.get("borderless"):
             fixed_node["borderless"] = True
+        if node.get("labelOnly"):
+            fixed_node["labelOnly"] = True
         if node.get("iconHint"):
             fixed_node["iconHint"] = node["iconHint"]
         # Only preserve layoutOptions if it's a non-null dict

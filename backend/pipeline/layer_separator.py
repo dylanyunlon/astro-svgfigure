@@ -602,13 +602,11 @@ async def separate_layers_batch(
     successful = [r for r in results if r.success]
     layer_counts = [len(r.layers) for r in successful]
 
-    # Consistency check: are all frames producing similar component counts?
-    consistent = True
-    if len(layer_counts) >= 2:
-        avg = sum(layer_counts) / len(layer_counts)
-        variance = sum((c - avg) ** 2 for c in layer_counts) / len(layer_counts)
-        if variance > avg * 0.5:
-            consistent = False
+    # M104: Use statistically correct CV-based consistency check
+    from backend.pipeline.frame_consistency import FrameConsistencyChecker
+    checker = FrameConsistencyChecker()
+    consistency = checker.check(layer_counts)
+    consistent = consistency.consistent
 
     return {
         "success": len(successful) > 0,

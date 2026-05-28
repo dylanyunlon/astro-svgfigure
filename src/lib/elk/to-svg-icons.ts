@@ -308,34 +308,54 @@ function renderNode(
       })
     }
   } else {
-    // Leaf node: colored box with optional icon + label
-    const { fill, stroke } = getNodeColor(node.id, depth)
-    const iconUrl = resolveIconUrl(node.iconHint || '')
-    const hasIcon = !!iconUrl
+    // ── Leaf node ──────────────────────────────────────────────────
+    // Two rendering modes:
+    //   1. labelOnly=true  → bare text, no rect/border/fill (academic annotations)
+    //   2. normal (default) → colored box with optional icon + label
 
-    // Node dimensions
-    const nodeRx = 8
-    const shadowFilter = depth < 2 ? ' filter="url(#shadow)"' : ''
+    const isLabelOnly = !!(node as any).labelOnly
 
-    svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.5" rx="${nodeRx}"${shadowFilter} />\n`
+    if (isLabelOnly) {
+      // ── Label-only node: naked text, no box ─────────────────────
+      // Like "Join Pattern", "Selectivity", "Code" in academic figures.
+      // Just text floating at the node position, maybe with a subtle
+      // font weight to distinguish it from edge labels.
+      const fontSize = h > 30 ? 13 : 11
+      const fontWeight = '600'
+      const textColor = PALETTE.text
 
-    // Smart label truncation
-    const maxChars = Math.max(6, Math.floor(w / 8))
-    const dl = label.length > maxChars ? label.slice(0, maxChars - 2) + '\u2026' : label
+      // Smart label: no truncation needed since there's no box constraint
+      svg += `  <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${textColor}" font-weight="${fontWeight}">${escapeXml(label)}</text>\n`
 
-    if (hasIcon) {
-      // Layout: icon (28×28) centered above text
-      const iconSize = 28
-      const iconX = x + (w - iconSize) / 2
-      const totalContent = iconSize + 4 + 14 // icon + gap + text height
-      const iconY = y + (h - totalContent) / 2
-      const textY = iconY + iconSize + 4 + 10
-
-      svg += `  <image href="${iconUrl}" x="${iconX}" y="${iconY}" width="${iconSize}" height="${iconSize}" opacity="0.85" />\n`
-      svg += `  <text x="${x + w / 2}" y="${textY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="${PALETTE.text}" font-weight="500">${escapeXml(dl)}</text>\n`
     } else {
-      // No icon: center text vertically
-      svg += `  <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="${PALETTE.text}" font-weight="500">${escapeXml(dl)}</text>\n`
+      // ── Normal boxed node ───────────────────────────────────────
+      const { fill, stroke } = getNodeColor(node.id, depth)
+      const iconUrl = resolveIconUrl(node.iconHint || '')
+      const hasIcon = !!iconUrl
+
+      const nodeRx = 8
+      const shadowFilter = depth < 2 ? ' filter="url(#shadow)"' : ''
+
+      svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.5" rx="${nodeRx}"${shadowFilter} />\n`
+
+      // Smart label truncation
+      const maxChars = Math.max(6, Math.floor(w / 8))
+      const dl = label.length > maxChars ? label.slice(0, maxChars - 2) + '\u2026' : label
+
+      if (hasIcon) {
+        // Layout: icon (28×28) centered above text
+        const iconSize = 28
+        const iconX = x + (w - iconSize) / 2
+        const totalContent = iconSize + 4 + 14 // icon + gap + text height
+        const iconY = y + (h - totalContent) / 2
+        const textY = iconY + iconSize + 4 + 10
+
+        svg += `  <image href="${iconUrl}" x="${iconX}" y="${iconY}" width="${iconSize}" height="${iconSize}" opacity="0.85" />\n`
+        svg += `  <text x="${x + w / 2}" y="${textY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="${PALETTE.text}" font-weight="500">${escapeXml(dl)}</text>\n`
+      } else {
+        // No icon: center text vertically
+        svg += `  <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="${PALETTE.text}" font-weight="500">${escapeXml(dl)}</text>\n`
+      }
     }
   }
 

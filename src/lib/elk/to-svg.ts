@@ -186,13 +186,22 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   // to extract layers without rasterization.
   let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}">`
 
-  svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${strokeW}" rx="8"${strokeDash} />`
+  const isLabelOnly = !!(node as any).labelOnly
 
-  // For group nodes, put label at top
-  const labelY = isGroup ? y + 16 : y + h / 2
-  const fontSize = isGroup ? 11 : 12
-  const fontWeight = isGroup ? '600' : '500'
-  svg += `<text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
+  if (isLabelOnly) {
+    // Label-only node: naked text, no rect/box/fill.
+    // Academic annotations like "Join Pattern", "Selectivity", "Code".
+    const fontSize = h > 30 ? 13 : 11
+    svg += `<text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="600">${escapeXml(dl)}</text>`
+  } else {
+    svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${strokeW}" rx="8"${strokeDash} />`
+
+    // For group nodes, put label at top
+    const labelY = isGroup ? y + 16 : y + h / 2
+    const fontSize = isGroup ? 11 : 12
+    const fontWeight = isGroup ? '600' : '500'
+    svg += `<text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
+  }
 
   // Nested children: pass parent's absolute position as offset (minus PADDING since children add it again)
   if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
