@@ -448,6 +448,10 @@ class SpritePipelineResult:
     canvas: Optional[ComposedCanvas] = None
     classification: Dict[str, Any] = field(default_factory=dict)
     sheets: int = 0
+    sequences: int = 0              # M215 families generated via edit-sequence
+    single_shot_families: int = 0   # M212 families generated via grid sheet
+    aligned_families: int = 0       # M216 families re-canvased
+    vectorized_sprites: int = 0     # M217 sprites upgraded to inline SVG
     sprites_injected: int = 0
     sprites_fell_back: int = 0
     diagnostics: Dict[str, Any] = field(default_factory=dict)
@@ -458,6 +462,10 @@ class SpritePipelineResult:
         return {
             "classification": self.classification,
             "sheets": self.sheets,
+            "sequences": self.sequences,
+            "single_shot_families": self.single_shot_families,
+            "aligned_families": self.aligned_families,
+            "vectorized_sprites": self.vectorized_sprites,
             "sprites_injected": self.sprites_injected,
             "sprites_fell_back": self.sprites_fell_back,
             "diagnostics": self.diagnostics,
@@ -475,17 +483,35 @@ async def run_sprite_pipeline(
     gemini_callable=None,
     removebg_callable=None,
     run_qc: bool = True,
+    base_image_callable=None,
+    edit_callable=None,
+    enable_vectorize: bool = True,
+    enable_alignment: bool = True,
 ) -> SpritePipelineResult:
-    """Run the M210-M214 sprite fill on an already-composed canvas.
+    """Run the full M210-M217 sprite fill on an already-composed canvas.
+
+    Stages (each degrades gracefully — a failure flips affected nodes to text):
+        M210 classify       → renderMode/familyId on every leaf
+        M211 design prompts → series-consistent prompts, family by family
+        per family, M215 choose_family_strategy:
+          single_shot → M212 grid sheet (1 AI call), M213 split+clean
+          sequence    → M215 identity-locked edit sequence, M213 split+clean
+        M216 align          → re-canvas each family to a common size (optional)
+        M217 vectorize      → upgrade simple sprites to inline SVG (optional)
+        M214 inject         → attach spriteRef; dropped nodes → text
 
     Args:
         canvas: ComposedCanvas from compose() (has elk_graph with layout).
-        settings: backend Settings (forwarded to the image generator).
+        settings: backend Settings (forwarded to the generators).
         model: image model name.
         api_key: remove-bg.io key (optional).
-        gemini_callable / removebg_callable: dependency-injection seams for
-            tests (mock the AI + background removal so CI needs no network).
+        gemini_callable / removebg_callable: DI seams for the grid path + bg
+            removal (tests mock them → no network).
         run_qc: run per-sprite transparency QC.
+        base_image_callable / edit_callable: DI seams for the M215 sequence
+            path (base sprite + per-variant edit).
+        enable_vectorize: run M217 (simple sprites → inline SVG).
+        enable_alignment: run M216 (per-family common-canvas alignment).
 
     Returns:
         SpritePipelineResult; canvas is mutated in place with spriteRefs.
@@ -497,7 +523,12 @@ async def run_sprite_pipeline(
     from backend.pipeline.topology.sprite_batch_generator import (
         plan_sheets, generate_sprite_sheet,
     )
-    from backend.pipeline.topology.sprite_sheet_splitter import split_and_clean
+    from backend.pipeline.topology.sprite_sheet_splitter import (
+        split_and_clean, SpriteAsset,
+    )
+    from backend.pipeline.topology.sprite_sequence_generator import (
+        choose_family_strategy, generate_family_sequence,
+    )
 
     res = SpritePipelineResult(canvas=canvas)
     try:
@@ -520,25 +551,112 @@ async def run_sprite_pipeline(
             res.diagnostics["note"] = "no prompts produced"
             return res
 
-        # M212 — pack into sheets and generate each (one AI call per sheet).
-        sheets = plan_sheets(prompts)
-        res.sheets = len(sheets)
-        all_assets: List[Any] = []
-        # node_id → family_id, to annotate assets after split.
+        prompt_by_node = {p.node_id: p for p in prompts}
         fam_by_node = {p.node_id: p.family_id for p in prompts}
-        for sheet_prompts in sheets:
-            sheet = await generate_sprite_sheet(
-                sheet_prompts, settings=settings, model=model,
-                gemini_callable=gemini_callable,
+
+        # Partition families by generation strategy (M215 chooses).
+        single_shot_families = []
+        sequence_families = []
+        for fam in report.families:
+            if choose_family_strategy(fam) == "sequence":
+                sequence_families.append(fam)
+            else:
+                single_shot_families.append(fam)
+        res.single_shot_families = len(single_shot_families)
+        res.sequences = len(sequence_families)
+
+        # Map node_id → its family object (for alignment grouping later).
+        fam_obj_by_node = {
+            nid: fam for fam in report.families
+            for nid in getattr(fam, "member_node_ids", [])
+        }
+
+        all_assets: List[Any] = []
+
+        # ── Single-shot families → M212 grid sheets (1 AI call each) ──
+        single_shot_prompts = [
+            prompt_by_node[nid]
+            for fam in single_shot_families
+            for nid in getattr(fam, "member_node_ids", [])
+            if nid in prompt_by_node
+        ]
+        if single_shot_prompts:
+            sheets = plan_sheets(single_shot_prompts)
+            res.sheets = len(sheets)
+            for sheet_prompts in sheets:
+                sheet = await generate_sprite_sheet(
+                    sheet_prompts, settings=settings, model=model,
+                    gemini_callable=gemini_callable,
+                )
+                # M213 — slice + clean this sheet into per-node sprites.
+                split = await split_and_clean(
+                    sheet, api_key=api_key,
+                    removebg_callable=removebg_callable, run_qc=run_qc,
+                )
+                for a in split.assets:
+                    a.family_id = fam_by_node.get(a.node_id, "")
+                all_assets.extend(split.assets)
+
+        # ── Sequence families → M215 identity-locked edit sequences ──
+        for fam in sequence_families:
+            seq = await generate_family_sequence(
+                fam, settings=settings, model=model,
+                base_image_callable=base_image_callable,
+                edit_callable=edit_callable,
             )
-            # M213 — slice + clean this sheet into per-node sprites.
-            split = await split_and_clean(
-                sheet, api_key=api_key,
-                removebg_callable=removebg_callable, run_qc=run_qc,
+            # Wrap each green-screen frame as a single-cell "sheet" so M213's
+            # split_and_clean removes bg + tightens it exactly like grid cells.
+            from backend.pipeline.topology.sprite_batch_generator import (
+                SpriteSheet, CellBox, CELL_PX, GUTTER_PX,
             )
-            for a in split.assets:
-                a.family_id = fam_by_node.get(a.node_id, "")
-            all_assets.extend(split.assets)
+            for idx, nid in enumerate(seq.member_node_ids):
+                frame = seq.frames_b64[idx] if idx < len(seq.frames_b64) else None
+                if not frame:
+                    # Failed variant → dropped asset (M214 → text).
+                    all_assets.append(SpriteAsset(
+                        node_id=nid, image_b64=None, true_bbox=(0, 0, 0, 0),
+                        dropped=True, family_id=fam.family_id,
+                        issues=["sequence frame missing"]))
+                    continue
+                one = SpriteSheet(
+                    image_b64=frame,
+                    cells=[CellBox(node_id=nid, row=0, col=0,
+                                   x=0, y=0, w=10_000, h=10_000)],
+                    grid_rows=1, grid_cols=1, sheet_w=10_000, sheet_h=10_000,
+                    seed=0, family_ids=[fam.family_id], success=True,
+                )
+                split = await split_and_clean(
+                    one, api_key=api_key,
+                    removebg_callable=removebg_callable, run_qc=run_qc,
+                )
+                for a in split.assets:
+                    a.family_id = fam.family_id
+                all_assets.extend(split.assets)
+
+        # ── M216 — align each family's assets to a common canvas ──
+        if enable_alignment:
+            from backend.pipeline.topology.sprite_family_aligner import (
+                align_family_assets,
+            )
+            by_family: Dict[str, List[Any]] = {}
+            for a in all_assets:
+                by_family.setdefault(getattr(a, "family_id", ""), []).append(a)
+            for fam_id, fam_assets in by_family.items():
+                if not fam_id or len(fam_assets) < 2:
+                    continue
+                ar = align_family_assets(fam_assets, run_consistency=run_qc)
+                if ar.diagnostics.get("members_aligned"):
+                    res.aligned_families += 1
+
+        # ── M217 — vectorize simple sprites (keep complex ones raster) ──
+        if enable_vectorize:
+            from backend.pipeline.topology.sprite_vectorizer import (
+                vectorize_assets,
+            )
+            stats = vectorize_assets(
+                [a for a in all_assets if not getattr(a, "dropped", False)]
+            )
+            res.vectorized_sprites = sum(1 for s in stats if s.vectorized)
 
         # M214 — inject sprites; dropped/failed nodes fall back to text.
         from backend.pipeline.topology.canvas_compositor import inject_sprites
