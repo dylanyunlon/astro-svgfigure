@@ -128,6 +128,19 @@ IMPORTANT RULES:
 - Bent/orthogonal arrows for complex routing, curved arrows for skip connections
 - Each numbered point must be concrete and directly actionable
 
+=== VISUAL VOCABULARY HINTS ===
+The SVG layout may contain RICH visual hints beyond basic boxes. Translate these
+into specific drawing instructions in your numbered points:
+- "visualShape: circle" + "mathSymbol: tensor_product" → draw a CIRCLE with ⊗ inside
+- "fillPattern: hatching" → draw the region with DIAGONAL LINE FILL (like technical drawings)
+- "contentGrid: {rows:3,cols:4,shape:circle}" → draw a 3×4 grid of small dots INSIDE the node
+- "embeddedImage: photo of a dog" → draw/depict the described image inside the node area
+- "textOrientation: vertical" → rotate the text label 90 degrees
+- "nodeStyle: label" → just text, NO surrounding box
+- "nodeStyle: tag" → small colored pill/badge
+- "visualEmphasis: highlighted" → make this node visually prominent (thicker border, accent color)
+These create REAL academic paper figure quality — not generic flowcharts.
+
 Generate your tier-tagged numbered design points now:"""
 
 
@@ -1168,6 +1181,17 @@ def _build_fallback_prompt(method_text: str, svg_content: str) -> str:
     )
 
 
+def _node_label(node: Dict) -> str:
+    """Extract display label from an ELK node dict."""
+    labels = node.get("labels", [])
+    if labels and isinstance(labels, list) and len(labels) > 0:
+        lbl = labels[0]
+        if isinstance(lbl, dict):
+            return lbl.get("text", node.get("id", "?"))
+        return str(lbl)
+    return node.get("label", node.get("id", "?"))
+
+
 def _extract_svg_structure(svg_content: str, elk_graph: Optional[Dict] = None) -> str:
     """
     Extract RICH spatial layout info from SVG + optional ELK graph data.
@@ -1193,9 +1217,18 @@ def _extract_svg_structure(svg_content: str, elk_graph: Optional[Dict] = None) -
     if elk_graph and isinstance(elk_graph, dict):
         # Support both flat format (nodes) and ELK standard format (children)
         nodes_data = elk_graph.get("nodes", []) or elk_graph.get("children", [])
-        edges_data = elk_graph.get("edges", [])
+        edges_data = list(elk_graph.get("edges", []))
         canvas_w = elk_graph.get("width", 800)
         canvas_h = elk_graph.get("height", 600)
+
+        # Collect edges from nested compound nodes too
+        def _collect_nested_edges(nodes):
+            for n in nodes:
+                for e in n.get("edges", []):
+                    edges_data.append(e)
+                if n.get("children"):
+                    _collect_nested_edges(n["children"])
+        _collect_nested_edges(nodes_data)
 
         if nodes_data:
             parts.append(f"=== SPATIAL LAYOUT (canvas {canvas_w}×{canvas_h}px) ===")
@@ -1228,30 +1261,161 @@ def _extract_svg_structure(svg_content: str, elk_graph: Optional[Dict] = None) -
                     parts.append(f"\n  Row/Layer {li + 1} (y ≈ {int(layer[0].get('y', 0))}px):")
 
                 for node in layer:
-                    label = node.get("label", node.get("id", "?"))
+                    label = _node_label(node)
                     x = int(node.get("x", 0))
                     y = int(node.get("y", 0))
                     w = int(node.get("width", 160))
                     h = int(node.get("height", 60))
-                    is_group = node.get("isGroup", False)
+                    is_group = node.get("isGroup", False) or node.get("group", False)
                     node_type = "GROUP" if is_group else "node"
-                    parts.append(
-                        f"    [{node_type}] \"{label}\" at ({x},{y}), size {w}×{h}px"
+
+                    # ── Build rich visual description ──
+                    vis_parts = []
+                    vis_parts.append(
+                        f'    [{node_type}] "{label}" at ({x},{y}), size {w}×{h}px'
                     )
+
+                    # Visual shape (default rect is omitted for brevity)
+                    shape = node.get("visualShape", "")
+                    if shape and shape != "rect":
+                        vis_parts.append(f"      shape: {shape}")
+
+                    # Node style
+                    ns = node.get("nodeStyle", "")
+                    if ns == "label":
+                        vis_parts.append("      render as: NAKED TEXT (no box, no border)")
+                    elif ns == "tag":
+                        vis_parts.append("      render as: SMALL COLORED TAG/PILL")
+
+                    # Colors
+                    fc = node.get("fillColor", "")
+                    sc = node.get("strokeColor", "")
+                    if fc:
+                        vis_parts.append(f"      fill color: {fc}")
+                    if sc:
+                        vis_parts.append(f"      border color: {sc}")
+
+                    # Fill pattern (hatching, dots, etc.)
+                    fp = node.get("fillPattern", "")
+                    if fp and fp != "solid":
+                        vis_parts.append(f"      fill pattern: {fp} (diagonal lines / crosshatch texture)")
+
+                    # Math operator symbol
+                    ms = node.get("mathSymbol", "")
+                    if ms:
+                        symbol_map = {
+                            "tensor_product": "⊗ (circle with × inside)",
+                            "direct_sum": "⊕ (circle with + inside)",
+                            "composition": "○ (hollow circle)",
+                            "multiply": "× (multiplication cross)",
+                            "concatenate": "⊕ or [concat] (merge symbol)",
+                        }
+                        vis_parts.append(f"      draw math symbol: {symbol_map.get(ms, ms)}")
+
+                    # Content grid (e.g. 3×4 grid of dots inside the node)
+                    cg = node.get("contentGrid")
+                    if cg and isinstance(cg, dict):
+                        rows = cg.get("rows", 2)
+                        cols = cg.get("cols", 2)
+                        shape = cg.get("shape", "circle")
+                        vis_parts.append(
+                            f"      content: draw a {rows}×{cols} grid of small {shape}s inside this node"
+                        )
+
+                    # Icon description
+                    icon = node.get("iconHint", "") or node.get("visualIcon", "")
+                    if icon:
+                        vis_parts.append(f"      icon: draw a small '{icon}' illustration inside")
+
+                    # Embedded image
+                    ei = node.get("embeddedImage", "")
+                    if ei:
+                        vis_parts.append(f"      embedded image: depict '{ei}'")
+
+                    # Text orientation
+                    to = node.get("textOrientation", "")
+                    if to == "vertical":
+                        vis_parts.append("      text: ROTATED 90° VERTICAL")
+
+                    # Visual emphasis
+                    ve = node.get("visualEmphasis", "")
+                    if ve and ve != "normal":
+                        vis_parts.append(f"      emphasis: {ve}")
+
+                    # Group-specific: borderless or dashed
+                    if is_group:
+                        if node.get("borderless"):
+                            vis_parts.append("      container style: BORDERLESS (no visible border)")
+                        else:
+                            vis_parts.append("      container style: dashed border rectangle")
+
+                    # Recurse into children for hierarchical description
+                    children = node.get("children", [])
+                    if children:
+                        vis_parts.append(f"      contains {len(children)} child nodes:")
+                        for ci, child in enumerate(children):
+                            cl = _node_label(child)
+                            cns = child.get("nodeStyle", "")
+                            cms = child.get("mathSymbol", "")
+                            cfp = child.get("fillPattern", "")
+                            cfc = child.get("fillColor", "")
+                            cvs = child.get("visualShape", "")
+                            child_desc = f'        - "{cl}"'
+                            extras = []
+                            if cns: extras.append(f"style={cns}")
+                            if cvs and cvs != "rect": extras.append(f"shape={cvs}")
+                            if cms: extras.append(f"symbol={cms}")
+                            if cfp and cfp != "solid": extras.append(f"pattern={cfp}")
+                            if cfc: extras.append(f"color={cfc}")
+                            if child.get("iconHint"): extras.append(f"icon='{child['iconHint']}'")
+                            if child.get("contentGrid"): extras.append("has content grid")
+                            if extras:
+                                child_desc += f" ({', '.join(extras)})"
+                            vis_parts.append(child_desc)
+
+                    parts.append("\n".join(vis_parts))
 
             # ── Connection topology ──
             if edges_data:
                 parts.append("\nCONNECTIONS (arrows):")
-                node_id_to_label = {
-                    n.get("id", ""): n.get("label", n.get("id", "?"))
-                    for n in nodes_data
-                }
+                node_id_to_label = {}
+                def _collect_labels(nodes):
+                    for n in nodes:
+                        nid = n.get("id", "")
+                        nl = _node_label(n)
+                        node_id_to_label[nid] = nl
+                        for c in n.get("children", []):
+                            _collect_labels([c])
+                _collect_labels(nodes_data)
+
                 for edge in edges_data:
-                    src = node_id_to_label.get(edge.get("sourceId", ""), edge.get("sourceId", "?"))
-                    tgt = node_id_to_label.get(edge.get("targetId", ""), edge.get("targetId", "?"))
+                    # Support both flat (sourceId/targetId) and ELK (sources/targets)
+                    src_id = edge.get("sourceId", "")
+                    tgt_id = edge.get("targetId", "")
+                    if not src_id and edge.get("sources"):
+                        src_id = edge["sources"][0] if edge["sources"] else ""
+                    if not tgt_id and edge.get("targets"):
+                        tgt_id = edge["targets"][0] if edge["targets"] else ""
+                    src = node_id_to_label.get(src_id, src_id or "?")
+                    tgt = node_id_to_label.get(tgt_id, tgt_id or "?")
+
                     edge_label = edge.get("label", "")
+                    adv = edge.get("advanced", {}) or {}
+                    style_parts = []
+                    if adv.get("lineStyle") == "dashed":
+                        style_parts.append("dashed line")
+                    if adv.get("lineStyle") == "dotted":
+                        style_parts.append("dotted line")
+                    if adv.get("semanticType"):
+                        style_parts.append(adv["semanticType"].replace("_", " "))
+                    if adv.get("edgeLabels"):
+                        for el in adv["edgeLabels"]:
+                            if el.get("text"):
+                                edge_label = el["text"]
+
                     label_str = f' (label: "{edge_label}")' if edge_label else ""
-                    parts.append(f'    "{src}" → "{tgt}"{label_str}')
+                    style_str = f" [{', '.join(style_parts)}]" if style_parts else ""
+                    parts.append(f'    "{src}" → "{tgt}"{label_str}{style_str}')
 
             # ── Flow direction detection ──
             if len(layers) > 1:

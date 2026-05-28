@@ -74,6 +74,24 @@ class ElkNode(BaseModel):
     fillColor: Optional[str] = None
     strokeColor: Optional[str] = None
     labelOnly: Optional[bool] = None
+    # ── Rich visual vocabulary for Gemini prompt generation ──
+    # These fields describe HOW the node should look in the final figure,
+    # beyond what ELK layout can express. The Grok prompt translator
+    # reads these and generates specific Gemini drawing instructions.
+    visualShape: Optional[str] = None       # "rect" (default), "circle", "ellipse",
+                                            # "diamond", "hexagon", "pill", "trapezoid"
+    visualIcon: Optional[str] = None        # Natural-language icon description for INSIDE the node
+                                            # e.g. "small snowflake symbol", "fire/flame symbol"
+    fillPattern: Optional[str] = None       # "solid" (default), "hatching", "crosshatch",
+                                            # "dots", "diagonal-stripes", "none"
+    contentGrid: Optional[Dict[str, Any]] = None  # Grid of sub-elements inside the node
+                                            # e.g. {"rows": 3, "cols": 4, "shape": "circle", "filled": [0,1,3]}
+    mathSymbol: Optional[str] = None        # Math operator: "tensor_product", "direct_sum",
+                                            # "composition", "multiply", "concatenate"
+    textOrientation: Optional[str] = None   # "horizontal" (default), "vertical"
+    embeddedImage: Optional[str] = None     # Natural-language description of an image to embed
+                                            # e.g. "photo of a dog", "augmented views grid 2x2"
+    visualEmphasis: Optional[str] = None    # "normal", "highlighted", "dimmed", "dashed-border"
     # After layout, these are populated:
     x: Optional[float] = None
     y: Optional[float] = None

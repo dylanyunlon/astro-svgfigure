@@ -108,7 +108,47 @@ Typically: ~60% box, ~25% label, ~15% tag.
 6. Use iconHint for visual elements (natural language icon descriptions).
 7. Do NOT include x, y coordinates — the compositor assigns positions.
 8. Node IDs: snake_case, descriptive, unique within this region.
-"""
+
+=== RICH VISUAL VOCABULARY (for publication-quality figures) ===
+Beyond basic boxes, use these OPTIONAL fields to create diverse visual elements:
+
+SHAPES (visualShape):
+  "circle" — for math operators (⊗ ⊕ ○), merge points, binary operations
+  "ellipse" — for grouped concepts, cloud-like containers
+  "diamond" — for decision points, conditional logic
+  "hexagon" — for processing stages
+  "pill" — for tags, labels, attribute values
+
+MATH OPERATORS (mathSymbol) — draw as circles with symbol inside:
+  "tensor_product" — ⊗ (cross in circle), for tensor/matrix multiply
+  "direct_sum" — ⊕ (plus in circle), for element-wise addition/concat
+  "composition" — ○ (hollow circle), for function composition
+  "multiply" — × for scalar multiply
+  Example: {{"id": "fuse_op", "width": 30, "height": 30,
+            "labels": [{{"text": ""}}], "visualShape": "circle",
+            "mathSymbol": "tensor_product"}}
+
+FILL PATTERNS (fillPattern) — for cache/storage/memory regions:
+  "hatching" — diagonal line fill (like technical drawing)
+  "crosshatch" — cross-diagonal fill (denser)
+  "dots" — dotted fill pattern
+  Example: {{"id": "cache", "fillPattern": "hatching",
+            "labels": [{{"text": "Class-Wise Cache"}}]}}
+
+CONTENT GRIDS (contentGrid) — draw mini-elements inside a node:
+  {{"rows": 3, "cols": 4, "shape": "circle"}} — 3×4 dot grid
+  {{"rows": 2, "cols": 3, "shape": "rect"}} — 2×3 block grid
+  Use for: cache contents, feature maps, visual codes, matrix views
+
+EMBEDDED IMAGES (embeddedImage) — describe what to depict:
+  "photo of a border collie dog" — for showing real data samples
+  "augmented image views in 2×2 grid" — for data augmentation
+  "colored bar chart" — for visualizing logits/scores
+
+TEXT ORIENTATION (textOrientation):
+  "vertical" — for tall narrow containers (rotate label 90°)
+
+Use these to create figures like real ML papers, NOT generic flowcharts!"""
 
 # Diagram-type-specific additions to the system prompt
 _TYPE_SUPPLEMENTS = {
