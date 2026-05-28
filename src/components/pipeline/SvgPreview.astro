@@ -99,6 +99,55 @@
     }
   }
 
+  // ── M222: progressive sprite rendering + client-side fallback ──
+  // The renderer (to-svg.ts, M214) draws sprite nodes as <image> data-URIs.
+  // Should a sprite fail to decode/load (corrupt base64, oversized payload),
+  // we don't want an empty hole: replace the broken <image> with a text label
+  // of the node, mirroring the backend's never-leave-a-hole contract. We wire
+  // an onerror on every sprite <image> right after the SVG lands in the DOM.
+  function wireSpriteFallbacks(container: HTMLElement | null) {
+    if (!container) return
+    const images = container.querySelectorAll('image[data-sprite]')
+    images.forEach((img) => {
+      const el = img as SVGImageElement
+      if ((el as any).__fallbackWired) return
+      ;(el as any).__fallbackWired = true
+      el.addEventListener('error', () => {
+        try {
+          const g = el.closest('g[data-node-id]') as SVGGElement | null
+          const x = parseFloat(el.getAttribute('x') || '0')
+          const y = parseFloat(el.getAttribute('y') || '0')
+          const w = parseFloat(el.getAttribute('width') || '0')
+          const h = parseFloat(el.getAttribute('height') || '0')
+          const label = g?.getAttribute('data-node-id') || ''
+          const ns = 'http://www.w3.org/2000/svg'
+          // Draw a light box + the node label so the slot is never blank.
+          const rect = document.createElementNS(ns, 'rect')
+          rect.setAttribute('x', String(x)); rect.setAttribute('y', String(y))
+          rect.setAttribute('width', String(w)); rect.setAttribute('height', String(h))
+          rect.setAttribute('rx', '6'); rect.setAttribute('fill', '#FFFFFF')
+          rect.setAttribute('stroke', '#4A4A4A'); rect.setAttribute('stroke-width', '0.8')
+          const text = document.createElementNS(ns, 'text')
+          text.setAttribute('x', String(x + w / 2))
+          text.setAttribute('y', String(y + h / 2))
+          text.setAttribute('text-anchor', 'middle')
+          text.setAttribute('dominant-baseline', 'central')
+          text.setAttribute('font-family', 'system-ui, sans-serif')
+          text.setAttribute('font-size', '11'); text.setAttribute('fill', '#1A1A1A')
+          text.textContent = label.length > 18 ? label.slice(0, 16) + '…' : label
+          el.replaceWith(rect, text)
+        } catch { /* best-effort fallback */ }
+      })
+    })
+  }
+
+  // Observe svg-render so any innerHTML SVG injection (skeleton/icons/final)
+  // gets sprite fallbacks wired automatically, without touching every site.
+  if (svgRender) {
+    const mo = new MutationObserver(() => wireSpriteFallbacks(svgRender))
+    mo.observe(svgRender, { childList: true, subtree: true })
+  }
+
   zoomIn?.addEventListener('click', () => setZoom(currentZoom + 25))
   zoomOut?.addEventListener('click', () => setZoom(currentZoom - 25))
   zoomFit?.addEventListener('click', () => {

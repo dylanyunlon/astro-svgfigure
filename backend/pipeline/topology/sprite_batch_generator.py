@@ -290,3 +290,83 @@ def plan_sheets(prompts: List["object"]) -> List[List["object"]]:
     if current:
         sheets.append(current)
     return sheets
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §6  Concurrent multi-sheet generation (M221)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Megatron-LM's 1F1B schedule keeps several microbatches in flight across the
+# pipeline at once instead of running them strictly serially.  We borrow the
+# "bounded in-flight set" idea: a figure needing K sheets generates them
+# concurrently rather than one after another, turning end-to-end latency from
+# sum(per-sheet) into ~max(per-sheet).  A semaphore bounds concurrency so we
+# never overwhelm the tryallai proxy (frame_generator's no-retry + long
+# timeout means an overloaded provider would just fail K calls at once).
+#
+# Determinism is preserved: each sheet's seed is still derived from its own
+# prompt set, so concurrency changes timing, not pixels. Partial-success is
+# preserved: a failed sheet returns a SpriteSheet with image_b64=None and its
+# cells intact, so the splitter falls those nodes back to text.
+
+import asyncio
+
+# Default cap on simultaneous image-generation calls. Conservative because the
+# proxy is the bottleneck, not local CPU.
+DEFAULT_MAX_CONCURRENCY = 4
+
+
+async def generate_sheets_concurrent(
+    sheet_prompt_groups: List[List["object"]],
+    *,
+    settings: Optional["object"] = None,
+    model: str = "gemini-3-pro-image-preview",
+    gemini_callable=None,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+) -> List[SpriteSheet]:
+    """Generate many sprite sheets concurrently, bounded by a semaphore.
+
+    Args:
+        sheet_prompt_groups: output of plan_sheets() — a list of prompt-lists,
+            one per sheet.
+        settings / model / gemini_callable: forwarded to generate_sprite_sheet.
+        max_concurrency: max simultaneous generation calls.
+
+    Returns:
+        SpriteSheets in the SAME ORDER as the input groups (gather preserves
+        order). Individual failures surface as failed SpriteSheets, never as a
+        raised exception (return_exceptions is handled internally).
+    """
+    if not sheet_prompt_groups:
+        return []
+
+    # Adapt concurrency to the workload — no point spinning more slots than
+    # sheets, and never less than 1.
+    cap = max(1, min(max_concurrency, len(sheet_prompt_groups)))
+    sem = asyncio.Semaphore(cap)
+
+    async def _one(group: List["object"], idx: int) -> SpriteSheet:
+        async with sem:
+            try:
+                return await generate_sprite_sheet(
+                    group, settings=settings, model=model,
+                    gemini_callable=gemini_callable,
+                )
+            except Exception as e:  # defensive — should be caught inside, but
+                logger.exception("sheet %d generation raised", idx)
+                # Reconstruct a failed sheet so downstream falls back to text.
+                node_ids = [getattr(p, "node_id", "") for p in group]
+                cells, rows, cols, sw, sh = _layout_cells(
+                    node_ids, {nid: "" for nid in node_ids}
+                )
+                return SpriteSheet(
+                    image_b64=None, cells=cells, grid_rows=rows, grid_cols=cols,
+                    sheet_w=sw, sheet_h=sh, seed=0, success=False, error=str(e),
+                )
+
+    tasks = [_one(g, i) for i, g in enumerate(sheet_prompt_groups)]
+    results = await asyncio.gather(*tasks)
+    n_ok = sum(1 for s in results if s.success)
+    logger.info("Generated %d/%d sheets concurrently (cap=%d)",
+                n_ok, len(results), cap)
+    return list(results)

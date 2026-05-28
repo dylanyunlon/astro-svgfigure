@@ -487,6 +487,9 @@ async def run_sprite_pipeline(
     edit_callable=None,
     enable_vectorize: bool = True,
     enable_alignment: bool = True,
+    use_cache: bool = True,
+    sprite_cache=None,
+    max_concurrency: int = 4,
 ) -> SpritePipelineResult:
     """Run the full M210-M217 sprite fill on an already-composed canvas.
 
@@ -512,6 +515,11 @@ async def run_sprite_pipeline(
             path (base sprite + per-variant edit).
         enable_vectorize: run M217 (simple sprites → inline SVG).
         enable_alignment: run M216 (per-family common-canvas alignment).
+        use_cache: M220 content-addressed cache (skip generation for sprites
+            whose prompt content key is already stored).
+        sprite_cache: inject a SpriteCache instance (else the process default;
+            tests pass an isolated one).
+        max_concurrency: M221 cap on simultaneous sheet generation calls.
 
     Returns:
         SpritePipelineResult; canvas is mutated in place with spriteRefs.
@@ -521,13 +529,16 @@ async def run_sprite_pipeline(
         design_prompts_for_classified,
     )
     from backend.pipeline.topology.sprite_batch_generator import (
-        plan_sheets, generate_sprite_sheet,
+        plan_sheets, generate_sprite_sheet, generate_sheets_concurrent,
     )
     from backend.pipeline.topology.sprite_sheet_splitter import (
         split_and_clean, SpriteAsset,
     )
     from backend.pipeline.topology.sprite_sequence_generator import (
         choose_family_strategy, generate_family_sequence,
+    )
+    from backend.pipeline.topology.sprite_cache import (
+        get_default_cache as _get_default_cache,
     )
 
     res = SpritePipelineResult(canvas=canvas)
@@ -573,7 +584,11 @@ async def run_sprite_pipeline(
 
         all_assets: List[Any] = []
 
-        # ── Single-shot families → M212 grid sheets (1 AI call each) ──
+        # ── Single-shot families → M212 grid sheets, with M220 cache + M221
+        #    concurrency. We split the prompts into cache HITS (instant, no AI)
+        #    and MISSES; only the misses are packed into sheets and generated,
+        #    and those sheets generate concurrently. Hits are reconstructed
+        #    from the content-addressed store and stamped to the asking node. ──
         single_shot_prompts = [
             prompt_by_node[nid]
             for fam in single_shot_families
@@ -581,21 +596,54 @@ async def run_sprite_pipeline(
             if nid in prompt_by_node
         ]
         if single_shot_prompts:
-            sheets = plan_sheets(single_shot_prompts)
-            res.sheets = len(sheets)
-            for sheet_prompts in sheets:
-                sheet = await generate_sprite_sheet(
-                    sheet_prompts, settings=settings, model=model,
+            cache = sprite_cache if sprite_cache is not None else (
+                _get_default_cache() if use_cache else None
+            )
+            miss_prompts = []
+            cache_hits = 0
+            if cache is not None:
+                from backend.pipeline.topology.sprite_cache import (
+                    cache_dict_to_asset,
+                )
+                for p in single_shot_prompts:
+                    hit = cache.get(p.cache_key)
+                    if hit is not None:
+                        asset = cache_dict_to_asset(hit, p.node_id, SpriteAsset)
+                        asset.family_id = fam_by_node.get(p.node_id, "")
+                        all_assets.append(asset)
+                        cache_hits += 1
+                    else:
+                        miss_prompts.append(p)
+            else:
+                miss_prompts = list(single_shot_prompts)
+            res.diagnostics["cache_hits"] = cache_hits
+
+            if miss_prompts:
+                sheets = plan_sheets(miss_prompts)
+                res.sheets = len(sheets)
+                # M221 — generate all miss-sheets concurrently (bounded).
+                generated = await generate_sheets_concurrent(
+                    sheets, settings=settings, model=model,
                     gemini_callable=gemini_callable,
+                    max_concurrency=max_concurrency,
                 )
-                # M213 — slice + clean this sheet into per-node sprites.
-                split = await split_and_clean(
-                    sheet, api_key=api_key,
-                    removebg_callable=removebg_callable, run_qc=run_qc,
-                )
-                for a in split.assets:
-                    a.family_id = fam_by_node.get(a.node_id, "")
-                all_assets.extend(split.assets)
+                for sheet in generated:
+                    # M213 — slice + clean this sheet into per-node sprites.
+                    split = await split_and_clean(
+                        sheet, api_key=api_key,
+                        removebg_callable=removebg_callable, run_qc=run_qc,
+                    )
+                    for a in split.assets:
+                        a.family_id = fam_by_node.get(a.node_id, "")
+                        # M220 — store freshly-produced sprites for reuse.
+                        if cache is not None and not a.dropped and a.image_b64:
+                            from backend.pipeline.topology.sprite_cache import (
+                                asset_to_cache_dict,
+                            )
+                            ck = prompt_by_node.get(a.node_id)
+                            if ck is not None:
+                                cache.put(ck.cache_key, asset_to_cache_dict(a))
+                    all_assets.extend(split.assets)
 
         # ── Sequence families → M215 identity-locked edit sequences ──
         for fam in sequence_families:
