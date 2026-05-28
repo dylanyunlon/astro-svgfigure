@@ -69,6 +69,11 @@ class ElkNode(BaseModel):
     group: Optional[bool] = None
     borderless: Optional[bool] = None
     iconHint: Optional[str] = None
+    # Node rendering style: "label" (naked text), "tag" (colored pill), "box" (default)
+    nodeStyle: Optional[str] = None
+    fillColor: Optional[str] = None
+    strokeColor: Optional[str] = None
+    labelOnly: Optional[bool] = None
     # After layout, these are populated:
     x: Optional[float] = None
     y: Optional[float] = None

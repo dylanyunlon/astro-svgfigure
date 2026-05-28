@@ -73,6 +73,27 @@ placed at the region's bbox coordinates by the compositor.
   ]
 }}
 
+=== NODE RENDERING STYLES ===
+Not all nodes are boxed! Academic figures use THREE visual styles:
+
+A) ANNOTATION LABELS — naked text, NO box:
+   Short labels, category names, metrics, dimension notes.
+   Set: "nodeStyle": "label", "height": 20, NO iconHint.
+   Examples: "Join Pattern", "Selectivity", "Cardinality", "Structure", "Style"
+
+B) OPERATOR TAGS — small colored pills:
+   Compact action/type tags differentiated by color.
+   Set: "nodeStyle": "tag", "width": 50-70, "height": 24,
+        "fillColor": "#RRGGBB", "strokeColor": "#RRGGBB"
+   Examples: "Filter" (red), "Join" (green), "Table" (gray), "CPU" (blue)
+
+C) MAIN COMPONENT BOXES — white box with icon + label (DEFAULT):
+   Standard nodes with iconHint. No need to set nodeStyle.
+   Examples: "Workload Analyzer", "Query Planner", "ViT Encoder"
+
+Use a MIX of these styles! A figure with ALL boxed nodes looks artificial.
+Typically: ~60% box, ~25% label, ~15% tag.
+
 === RULES ===
 1. EVERY entity in the region's entity_hints MUST appear as a node.
 2. Node sizes must fit within the region bbox:

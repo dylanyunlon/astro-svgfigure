@@ -121,47 +121,37 @@ class RecursiveSegmentationResult:
 # ═══════════════════════════════════════════════════════════════════════
 
 def _sam3_detect(image_path: str, prompt: str, confidence: float = 0.3) -> List[Dict]:
-    """Call SAM3 and return list of {label, confidence, mask_path}."""
+    """Call SAM3 and return list of {label, confidence, mask_path}.
+
+    Uses SAM3Client for connection reuse instead of creating a new
+    gradio Client on every call (avoids 145× handshake overhead in
+    deep recursion).
+    """
     try:
-        from gradio_client import Client, handle_file
+        from .sam3_client import SAM3Client
     except ImportError:
-        logger.error("gradio_client not installed")
+        logger.error("sam3_client not importable")
         return []
 
-    import os
-    hf_token = os.environ.get("HF_TOKEN", "") or None
+    # Module-level singleton for connection reuse across recursive calls
+    global _shared_sam3_client
+    if '_shared_sam3_client' not in globals() or _shared_sam3_client is None:
+        _shared_sam3_client = SAM3Client(default_prompt=prompt, confidence_threshold=confidence)
 
-    try:
-        client = Client("prithivMLmods/SAM3-Demo", token=hf_token)
-        result = client.predict(
-            source_img=handle_file(image_path),
-            text_query=prompt,
-            conf_thresh=confidence,
-            api_name="/run_image_segmentation",
-        )
-
-        detections = []
-        for ann in result.get("annotations", []):
-            label_str = ann.get("label", "")
-            conf = 0.0
-            name = label_str
-            if "(" in label_str and ")" in label_str:
-                parts = label_str.rsplit("(", 1)
-                name = parts[0].strip()
-                try:
-                    conf = float(parts[1].rstrip(")").strip())
-                except ValueError:
-                    pass
-            detections.append({
-                "label": name,
-                "confidence": conf,
-                "mask_path": ann.get("image", ""),
-            })
-        return detections
-
-    except Exception as e:
-        logger.warning("SAM3 detection failed: %s", e)
+    result = _shared_sam3_client.segment(image_path, prompt, confidence)
+    if not result.success:
         return []
+
+    detections = []
+    for mask in result.masks:
+        detections.append({
+            "label": mask.label,
+            "confidence": mask.confidence,
+            "mask_path": mask.mask_image_path,
+        })
+    return detections
+
+_shared_sam3_client = None
 
 
 def _mask_to_bbox(mask_path: str, target_size: Tuple[int, int]) -> Optional[Tuple[int, int, int, int]]:
@@ -381,6 +371,16 @@ def recursive_segment(
         "Recursive segmentation complete: %d total regions, max depth %d, %.0fms",
         total_count, max_depth_hit, elapsed,
     )
+
+    # Clean up temporary sub-crop files from recursion
+    import glob
+    tmp_dir = output_dir or "/tmp"
+    for tmp_file in glob.glob(str(Path(tmp_dir) / "_sub_*.png")):
+        try:
+            import os
+            os.unlink(tmp_file)
+        except OSError:
+            pass
 
     return result
 

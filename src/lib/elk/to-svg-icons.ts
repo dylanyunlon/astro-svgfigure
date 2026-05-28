@@ -127,6 +127,16 @@ interface ElkNode {
   labels?: { text: string }[]; children?: ElkNode[]; edges?: ElkEdge[]
   iconHint?: string; group?: boolean; borderless?: boolean
   layoutOptions?: Record<string, string>
+  // ── Node rendering hints (LLM or user can set) ──
+  // nodeStyle controls which rendering path to use:
+  //   "label"    → naked text, no box (like "Join Pattern", "Selectivity" in GenDB)
+  //   "tag"      → small colored pill (like "Filter" red, "Join" green, "Table" gray in GenDB)
+  //   "box"      → normal white boxed node with optional icon (default)
+  //   undefined  → auto-detect from dimensions/iconHint
+  nodeStyle?: 'label' | 'tag' | 'box'
+  // fillColor/strokeColor override for tag-style nodes (e.g. "#D32F2F" for red Filter)
+  fillColor?: string
+  strokeColor?: string
 }
 
 interface AdvancedEdge {
@@ -324,36 +334,63 @@ function renderNode(
     }
   } else {
     // ── Leaf node ──────────────────────────────────────────────────
-    // Two rendering modes:
-    //   1. labelOnly=true  → bare text, no rect/border/fill (academic annotations)
-    //   2. normal (default) → colored box with optional icon + label
+    // Four rendering modes (matching academic paper conventions like GenDB):
+    //   1. label  → naked text, no box (annotations: "Join Pattern", "Selectivity")
+    //   2. tag    → small colored pill (operators: "Filter", "Join", "Table")
+    //   3. box    → white boxed node with optional icon (main components)
+    //   4. auto   → detect from nodeStyle / labelOnly / dimensions / iconHint
 
-    const isLabelOnly = !!(node as any).labelOnly
-      // Auto-detect: nodes with height ≤ 30 and no icon are annotation labels
-      // (dimension notes, category headers like "Structure", "Style", "Content")
-      || (h <= 30 && !node.iconHint)
+    // ── Determine rendering mode ────────────────────────────────────
+    const explicitStyle = (node as any).nodeStyle as string | undefined
+    const explicitLabelOnly = !!(node as any).labelOnly
 
-    if (isLabelOnly) {
+    let mode: 'label' | 'tag' | 'box'
+    if (explicitStyle === 'label' || explicitStyle === 'tag' || explicitStyle === 'box') {
+      mode = explicitStyle
+    } else if (explicitLabelOnly) {
+      mode = 'label'
+    } else if (h <= 30 && !node.iconHint) {
+      // Auto-detect: short nodes without icons are annotation labels
+      mode = 'label'
+    } else if (h <= 30 && w <= 80) {
+      // Auto-detect: very small nodes are operator tags even with iconHint
+      mode = 'tag'
+    } else {
+      mode = 'box'
+    }
+
+    if (mode === 'label') {
       // ── Label-only node: naked text, no box ─────────────────────
       // Like "Join Pattern", "Selectivity", "Code" in academic figures.
-      // Just text floating at the node position, maybe with a subtle
-      // font weight to distinguish it from edge labels.
       const fontSize = h > 30 ? 13 : 11
       const fontWeight = '600'
       const textColor = PALETTE.text
-
-      // Smart label: no truncation needed since there's no box constraint
       svg += `  <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${textColor}" font-weight="${fontWeight}">${escapeXml(label)}</text>\n`
+
+    } else if (mode === 'tag') {
+      // ── Tag node: small colored pill ────────────────────────────
+      // Like "Filter" (red), "Join" (green), "Table" (gray) in GenDB.
+      // Compact, colored background, high border-radius, bold text.
+      const tagFill = (node as any).fillColor || '#E0E0E0'
+      const tagStroke = (node as any).strokeColor || '#999999'
+      const tagRx = Math.min(8, h / 2)
+      // Dark text for light fills, white for dark fills
+      const fillBrightness = parseInt(tagFill.replace('#', '').slice(0, 2), 16) || 200
+      const tagTextColor = fillBrightness > 160 ? '#1A1A1A' : '#FFFFFF'
+
+      svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${tagFill}" stroke="${tagStroke}" stroke-width="1" rx="${tagRx}" />\n`
+      svg += `  <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="${tagTextColor}" font-weight="700">${escapeXml(label)}</text>\n`
 
     } else {
       // ── Normal boxed node: academic style ───────────────────────
       // White fill, thin dark border, no shadow — clean for print.
+      // Supports per-node fillColor/strokeColor override.
       const iconUrl = resolveIconUrl(node.iconHint || '')
       const hasIcon = !!iconUrl
 
-      const nodeRx = 4    // Small radius — academic, not bubbly
-      const nodeFill = '#FFFFFF'
-      const nodeStroke = '#4A4A4A'
+      const nodeRx = 4
+      const nodeFill = (node as any).fillColor || '#FFFFFF'
+      const nodeStroke = (node as any).strokeColor || '#4A4A4A'
 
       svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${nodeFill}" stroke="${nodeStroke}" stroke-width="1.2" rx="${nodeRx}" />\n`
 
