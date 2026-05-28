@@ -29,29 +29,28 @@ interface ElkGraph {
   children?: ElkNode[]; edges?: ElkEdge[]
 }
 
-// T4: Clean neutral colors — no rainbow, ReactFlow-inspired
-// All nodes use same neutral fill; selection handled by interactive editor
-const NODE_FILL = '#F8FAFC'
-const NODE_FILL_GROUP = '#F8FAFC80'
-const STROKE_COLOR = '#E2E8F0'
-const TEXT_COLOR = '#1E293B'
-const DEFAULT_EDGE_COLOR = '#94A3B8'
+// Academic paper style: white nodes, dark borders, monochrome edges
+const NODE_FILL = '#FFFFFF'
+const NODE_FILL_GROUP = 'none'
+const STROKE_COLOR = '#4A4A4A'
+const TEXT_COLOR = '#1A1A1A'
+const DEFAULT_EDGE_COLOR = '#4A4A4A'
 const ARROW_SIZE = 8
 const PADDING = 20
 
 const SEMANTIC_STYLES: Record<string, Partial<AdvancedEdge>> = {
-  data_flow: { strokeColor: '#78909C', strokeWidth: 1.5 },
-  gradient_flow: { strokeColor: '#E57373', strokeDasharray: '8,4', strokeWidth: 1.5 },
-  skip_connection: { strokeColor: '#4CAF50', strokeWidth: 2, curvature: 0.7 },
-  optional_path: { strokeColor: '#9E9E9E', strokeDasharray: '5,5', strokeWidth: 1 },
-  inference_only: { strokeColor: '#7986CB', strokeDasharray: '10,3,3,3', strokeWidth: 1.5 },
-  fan_out: { strokeColor: '#FF9800', strokeWidth: 1.5 },
-  fan_in: { strokeColor: '#2196F3', strokeWidth: 1.5 },
-  feedback: { strokeColor: '#AB47BC', strokeDasharray: '6,3', strokeWidth: 1.5 },
-  attention: { strokeColor: '#F44336', strokeDasharray: '2,4', strokeWidth: 2 },
-  concatenation: { strokeColor: '#009688', strokeWidth: 2 },
-  residual: { strokeColor: '#4CAF50', strokeWidth: 2, curvature: 0.6 },
-  cross_boundary: { strokeColor: '#607D8B', strokeWidth: 1.5 },
+  data_flow: { strokeColor: '#4A4A4A', strokeWidth: 1.2 },
+  gradient_flow: { strokeColor: '#555555', strokeDasharray: '8,4', strokeWidth: 1.2 },
+  skip_connection: { strokeColor: '#4A4A4A', strokeWidth: 1.5, curvature: 0.7 },
+  optional_path: { strokeColor: '#777777', strokeDasharray: '4,4', strokeWidth: 1 },
+  inference_only: { strokeColor: '#555555', strokeDasharray: '10,3,3,3', strokeWidth: 1.2 },
+  fan_out: { strokeColor: '#4A4A4A', strokeWidth: 1.2 },
+  fan_in: { strokeColor: '#4A4A4A', strokeWidth: 1.2 },
+  feedback: { strokeColor: '#555555', strokeDasharray: '6,3', strokeWidth: 1.2 },
+  attention: { strokeColor: '#4A4A4A', strokeDasharray: '2,4', strokeWidth: 1.5 },
+  concatenation: { strokeColor: '#4A4A4A', strokeWidth: 1.5 },
+  residual: { strokeColor: '#4A4A4A', strokeWidth: 1.5, curvature: 0.6 },
+  cross_boundary: { strokeColor: '#4A4A4A', strokeWidth: 1.5 },
 }
 
 export function elkToSvg(graph: ElkGraph): string {
@@ -129,7 +128,7 @@ export function elkToSvg(graph: ElkGraph): string {
     parts.push(`    </marker>`)
   }
   parts.push(`  </defs>`)
-  parts.push(`  <rect width="${width}" height="${height}" fill="#FAFAFA" rx="4" />`)
+  parts.push(`  <rect width="${width}" height="${height}" fill="#FFFFFF" />`)
 
   if (Array.isArray(graph.edges)) {
     for (const edge of graph.edges) {
@@ -187,18 +186,18 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}">`
 
   const isLabelOnly = !!(node as any).labelOnly
+    || (h <= 30 && !(node as any).iconHint)
 
   if (isLabelOnly) {
     // Label-only node: naked text, no rect/box/fill.
-    // Academic annotations like "Join Pattern", "Selectivity", "Code".
     const fontSize = h > 30 ? 13 : 11
     svg += `<text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="600">${escapeXml(dl)}</text>`
   } else {
-    svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${strokeW}" rx="8"${strokeDash} />`
+    svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${strokeW}" rx="4"${strokeDash} />`
 
-    // For group nodes, put label at top
-    const labelY = isGroup ? y + 16 : y + h / 2
-    const fontSize = isGroup ? 11 : 12
+    // For group nodes, put label at top — larger, bolder
+    const labelY = isGroup ? y + 20 : y + h / 2
+    const fontSize = isGroup ? 14 : 12
     const fontWeight = isGroup ? '600' : '500'
     svg += `<text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
   }

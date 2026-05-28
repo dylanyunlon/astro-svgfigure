@@ -70,41 +70,53 @@ function _iconifyUrl(iconName: string): string {
 
 // ── Color Palette (from scaffold_builder.py) ────────────────────────
 
+// ── Color Palette: Academic Paper Style ──────────────────────────────
+// Monochrome with minimal color. White nodes, dark borders, no pastel fills.
+// Matches the style of academic architecture figures (GenDB, Pix2Struct papers).
+
 const PALETTE = {
+  // Node fills: white for all — academic figures use white/very-light boxes
   fills: [
-    '#E3F2FD', '#E8F5E9', '#FFF3E0', '#F3E5F5',
-    '#E0F7FA', '#FBE9E7', '#F1F8E9', '#EDE7F6',
-    '#FCE4EC', '#E0F2F1',
+    '#FFFFFF', '#FFFFFF', '#FFFFFF', '#FFFFFF',
+    '#FFFFFF', '#FFFFFF', '#FFFFFF', '#FFFFFF',
+    '#FFFFFF', '#FFFFFF',
   ],
+  // Node strokes: dark gray for all — thin, clean borders
   strokes: [
-    '#42A5F5', '#66BB6A', '#FFA726', '#AB47BC',
-    '#26C6DA', '#FF7043', '#9CCC65', '#7E57C2',
-    '#EC407A', '#26A69A',
+    '#4A4A4A', '#4A4A4A', '#4A4A4A', '#4A4A4A',
+    '#4A4A4A', '#4A4A4A', '#4A4A4A', '#4A4A4A',
+    '#4A4A4A', '#4A4A4A',
   ],
-  groupFill: '#FAFBFC',
-  groupStroke: '#CBD5E1',
-  text: '#1E293B',
-  textSecondary: '#475569',
+  // Group containers: transparent interior with dashed dark border
+  groupFill: 'rgba(245, 245, 245, 0.3)',
+  groupStroke: '#555555',
+  // Text: near-black for high contrast (print-friendly)
+  text: '#1A1A1A',
+  textSecondary: '#333333',
 }
 
 // ── Semantic Edge Styles (from to-svg.ts) ───────────────────────────
 
+// ── Semantic Edge Styles: Academic Monochrome ────────────────────────
+// Dark gray lines. Semantic types differentiated by dash pattern, not color.
+// This ensures the figure is print-friendly (grayscale-safe).
+
 const SEMANTIC_STYLES: Record<string, { color: string; dash: string; width: number }> = {
-  data_flow:        { color: '#78909C', dash: '',      width: 1.5 },
-  gradient_flow:    { color: '#E57373', dash: '8,4',   width: 1.5 },
-  skip_connection:  { color: '#4CAF50', dash: '',      width: 2 },
-  optional_path:    { color: '#9E9E9E', dash: '5,5',   width: 1 },
-  inference_only:   { color: '#7986CB', dash: '10,3,3,3', width: 1.5 },
-  fan_out:          { color: '#FF9800', dash: '',      width: 1.5 },
-  fan_in:           { color: '#2196F3', dash: '',      width: 1.5 },
-  feedback:         { color: '#AB47BC', dash: '6,3',   width: 1.5 },
-  attention:        { color: '#F44336', dash: '2,4',   width: 2 },
-  concatenation:    { color: '#009688', dash: '',      width: 2 },
-  residual:         { color: '#4CAF50', dash: '',      width: 2 },
-  cross_boundary:   { color: '#607D8B', dash: '',      width: 1.5 },
+  data_flow:        { color: '#4A4A4A', dash: '',        width: 1.2 },
+  gradient_flow:    { color: '#555555', dash: '8,4',     width: 1.2 },
+  skip_connection:  { color: '#4A4A4A', dash: '',        width: 1.5 },
+  optional_path:    { color: '#777777', dash: '4,4',     width: 1 },
+  inference_only:   { color: '#555555', dash: '10,3,3,3', width: 1.2 },
+  fan_out:          { color: '#4A4A4A', dash: '',        width: 1.2 },
+  fan_in:           { color: '#4A4A4A', dash: '',        width: 1.2 },
+  feedback:         { color: '#555555', dash: '6,3',     width: 1.2 },
+  attention:        { color: '#4A4A4A', dash: '2,4',     width: 1.5 },
+  concatenation:    { color: '#4A4A4A', dash: '',        width: 1.5 },
+  residual:         { color: '#4A4A4A', dash: '',        width: 1.5 },
+  cross_boundary:   { color: '#4A4A4A', dash: '',        width: 1.5 },
 }
 
-const DEFAULT_EDGE_COLOR = '#94A3B8'
+const DEFAULT_EDGE_COLOR = '#4A4A4A'
 const ARROW_SIZE = 8
 const PADDING = 20
 
@@ -195,7 +207,7 @@ export function elkToSvgIcons(graph: ElkGraph): string {
 
   // Defs: arrow markers + drop shadow filter
   parts.push(`  <defs>`)
-  parts.push(`    <filter id="shadow" x="-4%" y="-4%" width="108%" height="108%"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000" flood-opacity="0.08"/></filter>`)
+  // No drop shadow — academic figures are flat and print-friendly
   parts.push(`    <marker id="ah-default" markerWidth="${ARROW_SIZE}" markerHeight="${ARROW_SIZE / 1.5}" refX="${ARROW_SIZE}" refY="${ARROW_SIZE / 3}" orient="auto" markerUnits="strokeWidth">`)
   parts.push(`      <polygon points="0 0, ${ARROW_SIZE} ${ARROW_SIZE / 3}, 0 ${ARROW_SIZE / 1.5}" fill="${DEFAULT_EDGE_COLOR}" />`)
   parts.push(`    </marker>`)
@@ -229,8 +241,8 @@ export function elkToSvgIcons(graph: ElkGraph): string {
   }
   parts.push(`  </defs>`)
 
-  // Background
-  parts.push(`  <rect width="${width}" height="${height}" fill="#FAFAFA" rx="6" />`)
+  // Background: pure white for academic paper figures
+  parts.push(`  <rect width="${width}" height="${height}" fill="#FFFFFF" />`)
 
   // Render edges (bottom layer) — root level
   if (Array.isArray(graph.edges)) {
@@ -292,14 +304,17 @@ function renderNode(
   let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}">\n`
 
   if (isGroup) {
-    // Group container: dashed border, subtle fill, label at top
+    // Group container: academic style — dashed dark border, NO colored fill.
+    // Like GenDB paper: groups are just dashed boxes with a title at the top.
     const isBorderless = node.borderless
     const groupStroke = isBorderless ? 'none' : PALETTE.groupStroke
-    const groupDash = isBorderless ? '' : ' stroke-dasharray="6,3"'
-    const groupFill = isBorderless ? 'transparent' : `${PALETTE.groupFill}`
+    const groupDash = isBorderless ? '' : ' stroke-dasharray="8,4"'
+    // No background fill — academic figures use white/transparent group interiors
+    const groupFill = 'none'
 
-    svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${groupFill}" stroke="${groupStroke}" stroke-width="1.5" rx="12"${groupDash} />\n`
-    svg += `  <text x="${x + 12}" y="${y + 18}" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="${PALETTE.textSecondary}" font-weight="600" letter-spacing="0.3">${escapeXml(label)}</text>\n`
+    svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${groupFill}" stroke="${groupStroke}" stroke-width="1.5" rx="4"${groupDash} />\n`
+    // Group title: larger, bolder, dark — academic section headers are prominent
+    svg += `  <text x="${x + 12}" y="${y + 20}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="${PALETTE.text}" font-weight="700" letter-spacing="0.2">${escapeXml(label)}</text>\n`
 
     // Render children with offset
     if (node.children) {
@@ -314,6 +329,9 @@ function renderNode(
     //   2. normal (default) → colored box with optional icon + label
 
     const isLabelOnly = !!(node as any).labelOnly
+      // Auto-detect: nodes with height ≤ 30 and no icon are annotation labels
+      // (dimension notes, category headers like "Structure", "Style", "Content")
+      || (h <= 30 && !node.iconHint)
 
     if (isLabelOnly) {
       // ── Label-only node: naked text, no box ─────────────────────
@@ -328,15 +346,16 @@ function renderNode(
       svg += `  <text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${textColor}" font-weight="${fontWeight}">${escapeXml(label)}</text>\n`
 
     } else {
-      // ── Normal boxed node ───────────────────────────────────────
-      const { fill, stroke } = getNodeColor(node.id, depth)
+      // ── Normal boxed node: academic style ───────────────────────
+      // White fill, thin dark border, no shadow — clean for print.
       const iconUrl = resolveIconUrl(node.iconHint || '')
       const hasIcon = !!iconUrl
 
-      const nodeRx = 8
-      const shadowFilter = depth < 2 ? ' filter="url(#shadow)"' : ''
+      const nodeRx = 4    // Small radius — academic, not bubbly
+      const nodeFill = '#FFFFFF'
+      const nodeStroke = '#4A4A4A'
 
-      svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.5" rx="${nodeRx}"${shadowFilter} />\n`
+      svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${nodeFill}" stroke="${nodeStroke}" stroke-width="1.2" rx="${nodeRx}" />\n`
 
       // Smart label truncation
       const maxChars = Math.max(6, Math.floor(w / 8))
@@ -434,8 +453,8 @@ function renderEdge(edge: ElkEdge, offsetX: number = 0, offsetY: number = 0): st
     const fs = lbl.fontSize || 10
     const bg = lbl.backgroundColor || '#FFFFFF'
 
-    svg += `  <rect x="${px - lbl.text.length * fs * 0.3}" y="${py - fs * 0.7}" width="${lbl.text.length * fs * 0.6}" height="${fs * 1.4}" fill="${bg}" rx="3" opacity="0.92" />\n`
-    svg += `  <text x="${px}" y="${py + fs * 0.15}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="${fs}" fill="${color}" font-weight="500">${escapeXml(lbl.text)}</text>\n`
+    svg += `  <rect x="${px - lbl.text.length * fs * 0.3}" y="${py - fs * 0.7}" width="${lbl.text.length * fs * 0.6}" height="${fs * 1.4}" fill="#FFFFFF" rx="2" opacity="0.9" />\n`
+    svg += `  <text x="${px}" y="${py + fs * 0.15}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="${fs}" fill="#333333" font-style="italic" font-weight="400">${escapeXml(lbl.text)}</text>\n`
   }
 
   return svg
