@@ -17,7 +17,7 @@ interface ElkNode {
   id: string; x?: number; y?: number; width?: number; height?: number
   labels?: { text: string }[]; children?: ElkNode[]
   renderMode?: 'text' | 'icon' | 'sprite'; isOperator?: boolean; familyId?: string
-  spriteRef?: { format: 'png' | 'svg'; url?: string; svg?: string; bbox?: [number, number, number, number]; fit?: 'contain' }
+  spriteRef?: { format: 'png' | 'svg' | 'stack'; url?: string; svg?: string; bbox?: [number, number, number, number]; fit?: 'contain'; stackCount?: number }
 }
 
 interface ElkEdge {
@@ -309,15 +309,65 @@ function renderMathOperator(symbol: string, cx: number, cy: number, r: number): 
     + `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${Math.max(9, r*0.9)}" fill="${TEXT_COLOR}">${escapeXml(s)}</text>`
 }
 
+function renderCardStack(node: ElkNode, x: number, y: number, w: number, h: number): string {
+  // Draw the "feature-map / tensor" visual the user described: a GROUP of small
+  // rounded rectangles layered diagonally (like a stack of cards / stacked
+  // feature-map slices). The cards are offset along a diagonal so the overall
+  // silhouette is irregular, while the center ~80% region is filled. Pure SVG,
+  // deterministic (offsets seeded from node.id), no AI. This is one of the two
+  // sprite visuals (the other being AI sequence frames).
+  //
+  // Layer count comes from spriteRef.stackCount when the backend set it (e.g.
+  // a family variant's channel density); else a deterministic 3–5.
+  let seed = 0
+  for (let i = 0; i < node.id.length; i++) seed = ((seed << 5) - seed + node.id.charCodeAt(i)) | 0
+  const rand = () => { seed = (seed * 16807) % 2147483647; return (seed & 0x7fffffff) / 2147483647 }
+
+  const ref = node.spriteRef
+  const layers = Math.max(2, Math.min(8, (ref && (ref as any).stackCount) || (3 + Math.floor(rand() * 3))))
+
+  // The stack must FILL ~80% of the box. The diagonal spread consumes part of
+  // the box, so each card is sized so that (card + total offset) == 80% box.
+  const fill = 0.8
+  const targetW = w * fill
+  const targetH = h * fill
+  // Total diagonal travel across all layers ≈ 22% of the card span.
+  const spreadX = targetW * 0.22
+  const spreadY = targetH * 0.22
+  const cardW = targetW - spreadX
+  const cardH = targetH - spreadY
+  const stepX = layers > 1 ? spreadX / (layers - 1) : 0
+  const stepY = layers > 1 ? spreadY / (layers - 1) : 0
+  // Center the whole stack (card + spread) in the node box.
+  const originX = x + (w - (cardW + spreadX)) / 2
+  const originY = y + (h - (cardH + spreadY)) / 2
+  const rx = Math.min(8, Math.min(cardW, cardH) * 0.14)
+
+  let out = ''
+  // Draw back-to-front so the front card sits on top. Back cards slightly
+  // lighter to read as depth.
+  for (let i = 0; i < layers; i++) {
+    const cx0 = originX + stepX * i
+    const cy0 = originY + stepY * i
+    const shade = i === layers - 1 ? NODE_FILL : '#F4F4F5'
+    out += `<rect x="${cx0.toFixed(1)}" y="${cy0.toFixed(1)}" width="${cardW.toFixed(1)}" height="${cardH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${shade}" stroke="${STROKE_COLOR}" stroke-width="1.4" />`
+  }
+  return out
+}
+
 function renderSprite(node: ElkNode, x: number, y: number, w: number, h: number): string {
   const ref = node.spriteRef
   if (!ref) return ''
-  // The sprite IS the node's body (no rounded-rect underneath it — sprite and
-  // box are mutually exclusive). Fill ~80% of the node's center region rather
-  // than contain-fitting a small image: the sprite stretches to that target,
-  // so a feature-map block visibly occupies its slot like a real academic
-  // figure element. Margin = 10% each side → 80% width/height filled. Stretch
-  // is allowed (no aspect-ratio preservation): the user wants the slot filled.
+  // Card-stack visual: a group of layered rounded rects (feature-map / tensor
+  // look). Used when the backend marks format 'stack', OR as the default when
+  // a sprite node has no real image payload yet (so the slot shows the stacked
+  // visual instead of nothing). The sprite IS the node body — no box beneath.
+  if (ref.format === 'stack' || (!ref.url && !ref.svg)) {
+    return renderCardStack(node, x, y, w, h)
+  }
+  // Otherwise the sprite is an image (AI sequence frame / vectorized). Fill
+  // ~80% of the node's center region (stretch allowed) rather than contain-
+  // fitting a small image, so it visibly occupies its slot.
   const FILL = 0.8
   const drawW = Math.max(1, w * FILL)
   const drawH = Math.max(1, h * FILL)
