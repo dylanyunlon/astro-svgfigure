@@ -85,11 +85,18 @@ def _build_interleaved_prompt(sprite_nodes: List[Dict[str, Any]]) -> str:
     Gemini interleaved output: when responseModalities includes IMAGE,
     the model can return multiple images in one response, each as a
     separate part with inline_data. We ask it to generate them in order.
+
+    CRITICAL: background must be solid pure green #00FF00 so the existing
+    chroma-key pipeline (Tier 3 in handle_removebg) can strip it without
+    needing paid API keys (remove.bg / Canva).
     """
     lines = [
         "Generate one small illustration for EACH of the following items, "
         "in the EXACT order listed. Each illustration should be a flat 2D "
-        "academic-figure style icon/diagram on a pure white background. "
+        "academic-figure style icon/diagram. "
+        "CRITICAL: The background of EVERY image MUST be solid pure green "
+        "#00FF00 (RGB 0,255,0). No gradients, no shadows, no other background "
+        "colors. The subject floats on the pure green background. "
         "Clean thin outlines, no text labels, no 3D, centered composition. "
         "Generate EXACTLY one image per item, then name it.\n",
     ]
@@ -103,7 +110,8 @@ def _build_interleaved_prompt(sprite_nodes: List[Dict[str, Any]]) -> str:
 
     lines.append(
         f"\nGenerate {len(sprite_nodes)} images total, one per item above, "
-        "in the same order. Each image should be square, ~256px, white background."
+        "in the same order. Each image should be square, ~256px. "
+        "REMEMBER: solid pure #00FF00 green background on EVERY image, no exceptions."
     )
     return "\n".join(lines)
 
