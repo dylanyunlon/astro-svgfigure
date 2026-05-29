@@ -63,6 +63,17 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
           <span id='generate-figure-text'>Step 2→3: Generate Figure</span>
         </button>
 
+        <button id='generate-sprites-btn' disabled
+          class='group flex w-full items-center justify-center gap-x-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-all hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed'>
+          <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+            <rect x='3' y='3' width='7' height='7' rx='1' />
+            <rect x='14' y='3' width='7' height='7' rx='1' />
+            <rect x='3' y='14' width='7' height='7' rx='1' />
+            <rect x='14' y='14' width='7' height='7' rx='1' />
+          </svg>
+          <span id='generate-sprites-text'>Generate Sprites (per-node AI)</span>
+        </button>
+
         <Collapse title='Advanced Options'>
           <div class='flex flex-col gap-y-3 pb-2'>
             <div class='flex flex-col gap-y-1'>
@@ -149,6 +160,8 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
   const generateBtnText = document.getElementById('generate-btn-text') as HTMLSpanElement
   const generateFigureBtn = document.getElementById('generate-figure-btn') as HTMLButtonElement
   const generateFigureText = document.getElementById('generate-figure-text') as HTMLSpanElement
+  const generateSpritesBtn = document.getElementById('generate-sprites-btn') as HTMLButtonElement
+  const generateSpritesText = document.getElementById('generate-sprites-text') as HTMLSpanElement
   const textarea = document.getElementById('method-text') as HTMLTextAreaElement
   const statusText = document.getElementById('pipeline-status-text') as HTMLElement
   const elapsedEl = document.getElementById('pipeline-elapsed') as HTMLElement
@@ -499,8 +512,55 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       steps?.setStatus('step-edit', 'done')
       // Enable Step 2→3 button
       generateFigureBtn.disabled = false
-      statusText.textContent = 'Draft confirmed! Click "Step 2→3" to generate figure.'
+      // Enable sprite generation button
+      generateSpritesBtn.disabled = false
+      statusText.textContent = 'Draft confirmed! Click "Generate Sprites" for per-node AI, or "Step 2→3" for full figure.'
       statusText.style.color = ''
+    }
+  })
+
+  // ===== GENERATE SPRITES (per-node Gemini interleaved) =====
+  generateSpritesBtn?.addEventListener('click', async () => {
+    const editor = preview?.getEditor()
+    const elkGraph = editor ? editor.getGraph() : preview?.getElkJson()
+    if (!elkGraph) {
+      statusText.textContent = 'No layout data — run Step 1 first'
+      return
+    }
+
+    generateSpritesBtn.disabled = true
+    generateSpritesText.textContent = 'Generating sprites...'
+    statusText.textContent = 'Calling Gemini for per-node sprites...'
+
+    try {
+      const res = await fetch('/api/sprite-generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elk_graph: elkGraph }),
+      })
+      const data = await res.json()
+
+      if (data.success && data.elk_graph) {
+        // Re-render the SVG with sprite data embedded
+        // The to-svg renderer will read spriteRef and show real images
+        const { elkToSvg } = await import('@/lib/elk/to-svg')
+        const newSvg = elkToSvg(data.elk_graph)
+        if (newSvg) {
+          currentSkeletonSvg = newSvg
+          preview?.show(newSvg)
+          document.getElementById('tab-skeleton')?.click()
+        }
+
+        const diag = data.diagnostics || {}
+        statusText.textContent = `Sprites done: ${diag.refs_stamped || 0} generated, ${diag.fallback_to_blob || 0} blob fallback`
+      } else {
+        statusText.textContent = `Sprite error: ${data.error || 'Unknown'}`
+      }
+    } catch (err: any) {
+      statusText.textContent = `Sprite error: ${err.message}`
+    } finally {
+      generateSpritesBtn.disabled = false
+      generateSpritesText.textContent = 'Generate Sprites (per-node AI)'
     }
   })
 
