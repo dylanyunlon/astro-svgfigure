@@ -238,6 +238,39 @@ async def inject_sprites(
         result.errors.append(str(e))
         images = [None] * len(sprite_nodes)
 
+    # ── Step 3.5: Remove background from each sprite ──
+    # Gemini outputs images with white/colored backgrounds, not transparent.
+    # To fill into ELK node slots without visible background rectangles,
+    # we need transparent PNGs. Use the existing tiered rembg pipeline:
+    #   Tier 0: remove.bg (Canva) → Tier 1: remove-bg.io → Tier 2: rembg U2-Net → Tier 3: chroma
+    images_with_bg = [img for img in images if img is not None]
+    if images_with_bg:
+        try:
+            from backend.pipeline.removebg_route import handle_removebg
+
+            rb_result = await handle_removebg(images_with_bg)
+            if rb_result.get("success"):
+                transparent_images = [
+                    r.get("image_b64") for r in rb_result.get("results", [])
+                ]
+                # Map back to the full images list (None slots stay None)
+                ti_iter = iter(transparent_images)
+                images = [
+                    next(ti_iter) if img is not None else None
+                    for img in images
+                ]
+                logger.info(
+                    "rembg: %d/%d sprites background-removed (method: %s)",
+                    len(transparent_images), len(images_with_bg),
+                    rb_result.get("method", "unknown"),
+                )
+            else:
+                logger.warning("rembg failed: %s — using images with background",
+                               rb_result.get("error", "unknown"))
+        except Exception as e:
+            logger.exception("rembg call failed — using images with background")
+            result.errors.append(f"rembg: {e}")
+
     # ── Step 4: Stamp each image onto its node ──
     for i, (node, img_b64) in enumerate(zip(sprite_nodes, images)):
         if img_b64:
