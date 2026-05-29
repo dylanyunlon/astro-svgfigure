@@ -312,31 +312,32 @@ function renderMathOperator(symbol: string, cx: number, cy: number, r: number): 
 function renderSprite(node: ElkNode, x: number, y: number, w: number, h: number): string {
   const ref = node.spriteRef
   if (!ref) return ''
-  // Inner padding so the sprite never touches the node's logical edge — keeps
-  // a small margin like a real figure element inside its slot.
-  const pad = Math.min(6, Math.min(w, h) * 0.08)
-  const boxW = Math.max(1, w - pad * 2)
-  const boxH = Math.max(1, h - pad * 2)
-
-  // Native sprite dimensions from its alpha bbox (fallback to the slot box).
-  const natW = ref.bbox?.[2] || boxW
-  const natH = ref.bbox?.[3] || boxH
-  // contain-fit: scale to fit inside boxW×boxH preserving aspect ratio.
-  const scale = Math.min(boxW / natW, boxH / natH)
-  const drawW = natW * scale
-  const drawH = natH * scale
-  // center within the slot
-  const dx = x + pad + (boxW - drawW) / 2
-  const dy = y + pad + (boxH - drawH) / 2
+  // The sprite IS the node's body (no rounded-rect underneath it — sprite and
+  // box are mutually exclusive). Fill ~80% of the node's center region rather
+  // than contain-fitting a small image: the sprite stretches to that target,
+  // so a feature-map block visibly occupies its slot like a real academic
+  // figure element. Margin = 10% each side → 80% width/height filled. Stretch
+  // is allowed (no aspect-ratio preservation): the user wants the slot filled.
+  const FILL = 0.8
+  const drawW = Math.max(1, w * FILL)
+  const drawH = Math.max(1, h * FILL)
+  const dx = x + (w - drawW) / 2
+  const dy = y + (h - drawH) / 2
 
   if (ref.format === 'svg' && ref.svg) {
-    // Vectorized sprite (M217): inline markup, translated + scaled into place.
-    return `<g transform="translate(${dx.toFixed(2)} ${dy.toFixed(2)}) scale(${scale.toFixed(4)})" data-sprite="svg">${ref.svg}</g>`
+    // Vectorized sprite (M217): inline markup. Its path coords are in the
+    // sprite's native pixel space (true_bbox); scale X and Y independently so
+    // it stretches to fill drawW×drawH (matches the raster fill behavior).
+    const natW = ref.bbox?.[2] || drawW
+    const natH = ref.bbox?.[3] || drawH
+    const sx = drawW / natW
+    const sy = drawH / natH
+    return `<g transform="translate(${dx.toFixed(2)} ${dy.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)})" data-sprite="svg">${ref.svg}</g>`
   }
   if (ref.url) {
-    // Raster sprite: <image> via data URI. preserveAspectRatio is redundant
-    // with our explicit fit but set defensively.
-    return `<image href="${ref.url}" x="${dx.toFixed(2)}" y="${dy.toFixed(2)}" width="${drawW.toFixed(2)}" height="${drawH.toFixed(2)}" preserveAspectRatio="xMidYMid meet" data-sprite="png" />`
+    // Raster sprite: <image> stretched to fill the 80% box. preserveAspect-
+    // Ratio="none" lets it stretch (the user explicitly wants fill, not fit).
+    return `<image href="${ref.url}" x="${dx.toFixed(2)}" y="${dy.toFixed(2)}" width="${drawW.toFixed(2)}" height="${drawH.toFixed(2)}" preserveAspectRatio="none" data-sprite="png" />`
   }
   return ''
 }
