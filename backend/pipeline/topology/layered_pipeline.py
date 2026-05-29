@@ -297,6 +297,59 @@ async def generate_layered_topology(
             logger.info("Refinement pass completed for %d regions", len(regions))
 
         # ══════════════════════════════════════════════════════════════
+        #  Stage 2.8: Sprite injection (device_inspect pass)
+        #  The classified nodes have renderMode="sprite" but no spriteRef.
+        #  This stage runs the full Gemini→rembg→stamp pipeline:
+        #    classify → prompt design → sheet gen → split → stamp spriteRef
+        #  On failure at any step, affected nodes get spriteRef.format='stack'
+        #  (organic blob fallback) — never a silent hole.
+        # ══════════════════════════════════════════════════════════════
+
+        t_stage = time.monotonic()
+
+        from backend.pipeline.topology.sprite_injector import inject_sprites
+
+        # The elk_graph is built during composition (Stage 3), but sprite
+        # injection needs to run on the subgraphs BEFORE they're merged.
+        # So we run node_classifier on each subgraph and inject sprites per-region.
+        from backend.pipeline.topology.node_classifier import classify_nodes
+
+        sprite_diag: Dict[str, Any] = {"per_region": {}}
+        total_injected = 0
+        total_fallback = 0
+
+        for region, subgraph in zip(regions, subgraphs):
+            if not subgraph or not isinstance(subgraph, dict):
+                continue
+            # Classify all leaf nodes (sets renderMode, familyId)
+            try:
+                classify_nodes(subgraph)
+            except Exception as e:
+                logger.warning("classify_nodes failed for %s: %s", region.id, e)
+                continue
+
+            # Inject sprites (Gemini → rembg → stamp spriteRef)
+            try:
+                inj_result = await inject_sprites(
+                    subgraph,
+                    settings=getattr(ai_engine, 'settings', None),
+                )
+                sprite_diag["per_region"][region.id] = inj_result.to_dict()
+                total_injected += inj_result.refs_stamped
+                total_fallback += inj_result.fallback_to_blob
+            except Exception as e:
+                logger.exception("inject_sprites failed for %s", region.id)
+                sprite_diag["per_region"][region.id] = {"error": str(e)}
+
+        sprite_diag["total_injected"] = total_injected
+        sprite_diag["total_fallback"] = total_fallback
+        diag["stages"]["sprite_injection"] = {
+            "elapsed_ms": _ms(t_stage),
+            **sprite_diag,
+        }
+        logger.info("Sprites: %d injected, %d blob fallback", total_injected, total_fallback)
+
+        # ══════════════════════════════════════════════════════════════
         #  Stage 3: Canvas composition (invoke_last_filter + merge)
         #  CCCL: invoke_last_filter(key_bufs.Current(), ...);
         # ══════════════════════════════════════════════════════════════
