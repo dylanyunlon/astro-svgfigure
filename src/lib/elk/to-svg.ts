@@ -58,13 +58,16 @@ const SEMANTIC_STYLES: Record<string, Partial<AdvancedEdge>> = {
 // Render options. `clean` suppresses the decorative scattered rounded-rects
 // (skeleton sketch texture) — used for final/export output where the grey
 // blobs read as noise. Default false keeps the existing skeleton look so no
-// caller breaks. Module-level because renderNode recurses synchronously in a
-// single pass; there is no re-entrancy across renders.
+// caller breaks.
+//
+// cleanMode is threaded as a parameter through renderNode — not a module-level
+// mutable — to avoid SSR race conditions.  In Astro SSR, module-level vars
+// persist across requests; if user A sets clean=true and user B starts a render
+// before A finishes, B inherits A's clean state.
 export interface ToSvgOptions { clean?: boolean }
-let _cleanMode = false
 
 export function elkToSvg(graph: ElkGraph, opts?: ToSvgOptions): string {
-  _cleanMode = !!(opts && opts.clean)
+  const cleanMode = !!(opts && opts.clean)
   if (!graph) {
     console.warn('[elkToSvg] graph is null/undefined')
     return _fallbackSvg('No graph data')
@@ -169,7 +172,7 @@ export function elkToSvg(graph: ElkGraph, opts?: ToSvgOptions): string {
 
   if (Array.isArray(graph.children)) {
     graph.children.slice(0, 100).forEach((node, i) => {
-      if (node) parts.push(renderNode(node, i, 0))
+      if (node) parts.push(renderNode(node, i, 0, 0, 0, cleanMode))
     })
   }
 
@@ -177,13 +180,41 @@ export function elkToSvg(graph: ElkGraph, opts?: ToSvgOptions): string {
   return parts.join('\n')
 }
 
-function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: number = 0, offsetY: number = 0): string {
+// ═══════════════════════════════════════════════════════════════════════════
+//  §4  Skeleton group colors — the 2-3 largest parent groups get colored
+//      background panels, like FreqSelect's green / orange / yellow regions
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SKELETON_FILLS = [
+  { bg: '#EBF5EB', stroke: '#A5D6A7' },  // green  (FreqSelect)
+  { bg: '#FFF3E0', stroke: '#FFCC80' },  // orange (AdaDR)
+  { bg: '#FFF8E1', stroke: '#FFE082' },  // yellow (AdaKern)
+  { bg: '#E3F2FD', stroke: '#90CAF9' },  // blue
+  { bg: '#F3E5F5', stroke: '#CE93D8' },  // purple
+]
+
+// Per-family palette: nodes in the same family share the first color, each
+// member gets a slightly different tint for micro-diff.
+const FAMILY_PALETTES: string[][] = [
+  ['#B3D4FC', '#9EC5F0', '#89B6E4', '#74A7D8'],  // blues  (feature maps)
+  ['#F8BBD0', '#F48FB1', '#F06292', '#EC407A'],  // pinks  (attention / selection)
+  ['#C8E6C9', '#A5D6A7', '#81C784', '#66BB6A'],  // greens (decomposed)
+  ['#FFE0B2', '#FFCC80', '#FFB74D', '#FFA726'],  // oranges
+  ['#D1C4E9', '#B39DDB', '#9575CD', '#7E57C2'],  // purples
+  ['#B2EBF2', '#80DEEA', '#4DD0E1', '#26C6DA'],  // cyans
+]
+
+function _familyPalette(familyId: string): string[] {
+  if (!familyId) return FAMILY_PALETTES[0]
+  let h = 0
+  for (let i = 0; i < familyId.length; i++) h = Math.imul(h ^ familyId.charCodeAt(i), 16777619)
+  return FAMILY_PALETTES[((h >>> 0) % FAMILY_PALETTES.length)]
+}
+
+function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: number = 0, offsetY: number = 0, cleanMode: boolean = false): string {
   const x = (node.x || 0) + PADDING + offsetX, y = (node.y || 0) + PADDING + offsetY
   const w = node.width || 160, h = node.height || 60
   const isGroup = Array.isArray(node.children) && node.children.length > 0
-  const fill = isGroup ? NODE_FILL_GROUP : NODE_FILL
-  const strokeW = isGroup ? 2 : 1.5
-  const strokeDash = isGroup ? ' stroke-dasharray="6,3"' : ''
   const label = node.labels?.[0]?.text || node.id
   const nodeType = isGroup ? 'group' : 'leaf'
 
@@ -191,83 +222,116 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   const maxChars = Math.max(6, Math.floor(w / 8))
   const dl = label.length > maxChars ? label.slice(0, maxChars - 2) + '\u2026' : label
 
-  // Wrap each node in a <g> with semantic attributes for SVG-native layer separation.
-  // svg-layer-separator.ts reads data-node-id, data-node-type, and data-bbox
-  // to extract layers without rasterization.
   let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}" data-render-mode="${node.renderMode || 'text'}">`
 
-  // ── Sprite mode (M214): an AI-generated micro-illustration injected by the
-  // backend. Render only when a valid spriteRef is present; otherwise fall
-  // through to the normal text/box path (graceful fallback — never an empty
-  // box). Layout is fixed by ELK; the sprite is contain-fit + centered into
-  // the node's bbox, so arrows (snapped to the box edge by snapEndpointToBox,
-  // M204) stay aligned regardless of the sprite's own alpha bounds.
-  const spriteSvg = (!isGroup && node.renderMode === 'sprite' && node.spriteRef)
-    ? renderSprite(node, x, y, w, h)
-    : ''
-  if (spriteSvg) {
-    svg += spriteSvg
-    if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
-    svg += `</g>`
-    return svg
-  }
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  Path A: Skeleton group — the 2-3 largest parent groups become colored
+  //  background panels (see FreqSelect reference: green / orange / yellow).
+  //  Only top-level and second-level groups; deeper groups are borderless.
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  if (isGroup) {
+    const rx = Math.min(16, Math.min(w, h) * 0.03)
 
-  // ── Operator mode (M207): math operators (⊗ ⊕ ⊙ ○ …) classified with
-  // isOperator render as a pure SVG circle+glyph centered in the node box —
-  // NOT as text + scattered decoration. This is the zero-cost vector path
-  // (no AI). Takes priority over sprite/label/box for leaf nodes.
-  if (!isGroup && (node as any).isOperator) {
-    svg += renderMathOperator(dl, x + w / 2, y + h / 2, Math.min(w, h) * 0.4)
-    if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
-    svg += `</g>`
-    return svg
-  }
-
-  const isLabelOnly = !!(node as any).labelOnly
-    || (h <= 30 && !(node as any).iconHint)
-
-  if (isLabelOnly) {
-    // Label-only node: naked text, no rect/box/fill.
-    const fontSize = h > 30 ? 13 : 11
-    svg += `<text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="600">${escapeXml(dl)}</text>`
-  } else {
-    // ── Organic scattered rounded-rect style ──
-    // Seeded PRNG from node id for deterministic randomness
-    let seed = 0
-    for (let i = 0; i < node.id.length; i++) seed = ((seed << 5) - seed + node.id.charCodeAt(i)) | 0
-    const seededRand = () => { seed = (seed * 16807 + 0) % 2147483647; return (seed & 0x7fffffff) / 2147483647 }
-
-    const mainRx = Math.min(12, Math.min(w, h) * 0.15)
-    svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${isGroup ? 1.5 : 0.8}" rx="${mainRx}"${strokeDash} />`
-
-    // Scatter 3-6 small decorative rounded rects (skeleton sketch texture).
-    // Suppressed in clean mode (final/export) where they read as noise.
-    if (!isGroup && !_cleanMode) {
-      const numScatter = 3 + Math.floor(seededRand() * 4)
-      const pad = 4
-      for (let si = 0; si < numScatter; si++) {
-        const sw2 = w * (0.15 + seededRand() * 0.35)
-        const sh2 = h * (0.12 + seededRand() * 0.25)
-        const sx = x + pad + seededRand() * Math.max(0, w - sw2 - pad * 2)
-        const sy = y + pad + seededRand() * Math.max(0, h - sh2 - pad * 2)
-        const srx = 3 + seededRand() * 8
-        const sOpacity = 0.04 + seededRand() * 0.08
-        const sRotate = (seededRand() - 0.5) * 6
-        svg += `<rect x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${sw2.toFixed(1)}" height="${sh2.toFixed(1)}" rx="${srx.toFixed(1)}" fill="${STROKE_COLOR}" opacity="${sOpacity.toFixed(3)}" transform="rotate(${sRotate.toFixed(1)} ${(sx+sw2/2).toFixed(1)} ${(sy+sh2/2).toFixed(1)})" />`
-      }
+    if (depth <= 1) {
+      // Top-level skeleton: colored background panel
+      const palette = SKELETON_FILLS[index % SKELETON_FILLS.length]
+      svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${palette.bg}" stroke="${palette.stroke}" stroke-width="1.5" rx="${rx}" />`
+      // Group label: top-left, italic, small — like academic figure captions
+      svg += `<text x="${x + 12}" y="${y + 18}" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="${palette.stroke}" font-weight="700" font-style="italic">${escapeXml(dl)}</text>`
+    } else {
+      // Deeper group: borderless transparent container, just a label
+      svg += `<text x="${x + 8}" y="${y + 14}" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#888" font-weight="600" font-style="italic">${escapeXml(dl)}</text>`
     }
 
-    // For group nodes, put label at top — larger, bolder
-    const hasIcon = !!(node as any).iconHint
-    const labelY = isGroup ? y + 20 : y + h / 2
-    // Font size: smaller when node has icon (icon takes visual priority)
-    const fontSize = isGroup ? 14 : (hasIcon && h >= 50) ? 9 : 12
-    const fontWeight = isGroup ? '600' : '500'
-    svg += `<text x="${x+w/2}" y="${labelY}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="${fontWeight}">${escapeXml(dl)}</text>`
+    if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, i, depth + 1, x - PADDING, y - PADDING, cleanMode) })
+    svg += `</g>`
+    return svg
   }
 
-  // Nested children: pass parent's absolute position as offset (minus PADDING since children add it again)
-  if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  Path B: Operator nodes — pure SVG circle + glyph (⊗ ⊕ ⊙ ...)
+  //  Zero-cost vector path, no AI, no box. Priority over everything else.
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  if ((node as any).isOperator) {
+    svg += renderMathOperator(dl, x + w / 2, y + h / 2, Math.min(w, h) * 0.4)
+    svg += `</g>`
+    return svg
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  Path C: Sprite nodes — the blob IS the node body, NO white box
+  //  underneath.  Label goes BELOW the blob, small font, like in real
+  //  academic figures where "C×H×W" is a tiny caption under a drawn
+  //  feature map block.
+  //
+  //  Family-aware: nodes in the same family share a color palette,
+  //  differing only in blob seed (micro-diff on one axis).
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  if (node.renderMode === 'sprite') {
+    // If a real AI sprite is available, use it
+    if (node.spriteRef && (node.spriteRef.url || node.spriteRef.svg)) {
+      svg += renderSprite(node, x, y, w, h)
+    } else {
+      // Organic blob — the sprite placeholder / default visual.
+      // Use family palette for color consistency within families.
+      const familyId = (node as any).familyId || ''
+      const palette = _familyPalette(familyId)
+
+      // Temporarily set fillColor from family palette so renderOrganicBlob picks it up
+      const origColor = (node as any).fillColor
+      ;(node as any).fillColor = palette[0]
+      svg += renderOrganicBlob(node, x, y, w, Math.max(h - 18, h * 0.7))
+      ;(node as any).fillColor = origColor
+    }
+
+    // Small label BELOW the blob — like academic figure captions
+    const labelY = y + h - 4
+    const fontSize = Math.max(7, Math.min(10, w / dl.length * 1.2))
+    svg += `<text x="${x + w / 2}" y="${labelY}" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize.toFixed(1)}" fill="${TEXT_COLOR}" font-weight="500" font-style="italic">${escapeXml(dl)}</text>`
+
+    svg += `</g>`
+    return svg
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  Path D: Label-only nodes (height ≤ 30, no icon) — naked text
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const isLabelOnly = !!(node as any).labelOnly || (h <= 30 && !(node as any).iconHint)
+  if (isLabelOnly) {
+    const fontSize = h > 30 ? 13 : 11
+    svg += `<text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="600">${escapeXml(dl)}</text>`
+    svg += `</g>`
+    return svg
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //  Path E: Regular leaf nodes — white box + scattered rects + centered label
+  //  This is the default for icon/text nodes that aren't sprites or operators.
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const nodeRand = _seededRand(node.id)
+  const mainRx = Math.min(12, Math.min(w, h) * 0.15)
+  svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${NODE_FILL}" stroke="${STROKE_COLOR}" stroke-width="0.8" rx="${mainRx}" />`
+
+  // Scatter 3-6 small decorative rounded rects (skeleton sketch texture).
+  if (!cleanMode) {
+    const numScatter = 3 + Math.floor(nodeRand() * 4)
+    const pad = 4
+    for (let si = 0; si < numScatter; si++) {
+      const sw2 = w * (0.15 + nodeRand() * 0.35)
+      const sh2 = h * (0.12 + nodeRand() * 0.25)
+      const sx = x + pad + nodeRand() * Math.max(0, w - sw2 - pad * 2)
+      const sy = y + pad + nodeRand() * Math.max(0, h - sh2 - pad * 2)
+      const srx = 3 + nodeRand() * 8
+      const sOpacity = 0.04 + nodeRand() * 0.08
+      const sRotate = (nodeRand() - 0.5) * 6
+      svg += `<rect x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${sw2.toFixed(1)}" height="${sh2.toFixed(1)}" rx="${srx.toFixed(1)}" fill="${STROKE_COLOR}" opacity="${sOpacity.toFixed(3)}" transform="rotate(${sRotate.toFixed(1)} ${(sx+sw2/2).toFixed(1)} ${(sy+sh2/2).toFixed(1)})" />`
+    }
+  }
+
+  // Label: centered, normal size
+  const hasIcon = !!(node as any).iconHint
+  const fontSize = (hasIcon && h >= 50) ? 9 : 12
+  svg += `<text x="${x+w/2}" y="${y+h/2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="${TEXT_COLOR}" font-weight="500">${escapeXml(dl)}</text>`
 
   svg += `</g>`
   return svg
@@ -309,72 +373,247 @@ function renderMathOperator(symbol: string, cx: number, cy: number, r: number): 
     + `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${Math.max(9, r*0.9)}" fill="${TEXT_COLOR}">${escapeXml(s)}</text>`
 }
 
-function renderCardStack(node: ElkNode, x: number, y: number, w: number, h: number): string {
-  // The visual from the user's reference: a real UNION of many rounded
-  // rectangles — slightly rotated, overlapping, same color — whose merged
-  // outline is organic with BOTH convex bulges and CONCAVE pinches (cloud /
-  // petal edge), not a smooth convex egg. We get the union (with rounded,
-  // gooey joins between rects) via a metaball filter: blur the rect group, then
-  // a steep alpha threshold (feColorMatrix) snaps it back to a hard edge — so
-  // overlapping rects fuse and the silhouette pinches inward between clusters.
-  // Pure SVG, deterministic (seeded from node.id), no AI.
-  let seed = 0
-  for (let i = 0; i < node.id.length; i++) seed = ((seed << 5) - seed + node.id.charCodeAt(i)) | 0
-  const rand = () => { seed = (seed * 16807) % 2147483647; return (seed & 0x7fffffff) / 2147483647 }
+// ═══════════════════════════════════════════════════════════════════════════
+//  §1  Seeded PRNG — FNV-1a + sfc32
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Port of g-harel/blobs internal/rand.ts (L5-37).
+// Replaces the Java String.hashCode PRNG that had known collisions
+// ("Aa" == "BB").  FNV-1a produces no collisions for short ASCII strings;
+// sfc32 has 2^128 period and passes TestU01.
+//
+// CCCL analogy: this is the `init_histograms()` shared primitive that both
+// the histogram-only kernel and the fused filter+histogram kernel call.
+// The callers don't know or care how bins are zeroed — they just call it.
 
-  const ref = node.spriteRef
-  // Rect count: enough to overlap into one organic mass. stackCount nudges it
-  // so family variants differ; else deterministic 7–11.
-  const count = Math.max(6, Math.min(16,
-    (ref && (ref as any).stackCount) ? 5 + (ref as any).stackCount : 7 + Math.floor(rand() * 5)))
+function _fnv1a(str: string): () => number {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 16777619)
+  }
+  return () => {
+    h += h << 13; h ^= h >>> 7; h += h << 3; h ^= h >>> 17
+    return (h += h << 5) >>> 0
+  }
+}
 
-  const fillColor = (node as any).fillColor || '#C9B8F0'
-  const fid = `blob-${node.id.replace(/[^a-zA-Z0-9_-]/g, '')}`
+function _sfc32(a: number, b: number, c: number, d: number): () => number {
+  return () => {
+    a >>>= 0; b >>>= 0; c >>>= 0; d >>>= 0
+    const t = (a + b) | 0
+    a = b ^ (b >>> 9)
+    b = (c + (c << 3)) | 0
+    c = (c << 21) | (c >>> 11)
+    d = (d + 1) | 0
+    const r = (t + d) | 0
+    c = (c + r) | 0
+    return (r >>> 0) / 4294967296
+  }
+}
+
+function _seededRand(seed: string): () => number {
+  const sg = _fnv1a(seed)
+  return _sfc32(sg(), sg(), sg(), sg())
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  §2  Organic blob — the extracted histogram-only kernel
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// CCCL f984c90 extracted the first pass from a generic if-constexpr-IsFirstPass
+// branch into `DeviceTopKHistogramKernel` — a dedicated kernel that only does
+// histogram computation, no filtering.  The old `filter_and_histogram<true>`
+// was a fused path; the new `invoke_histogram_only()` has zero branching.
+//
+// We apply the same refactor.  The old `renderCardStack()` was a fused
+// "if metaball / else raster / else svg" path.  Now `renderOrganicBlob()`
+// is a dedicated pure-SVG kernel: it ONLY generates the organic blob shape.
+// No filtering, no fallback logic, no image handling — just geometry.
+//
+// Algorithm ported from g-harel/blobs:
+//   _genBlobygon():  uniform points on unit circle, radial offset per point
+//   _smoothBlob():   cubic Bézier handles via (4/3)·tan(θ/4) / sin(θ/2) / 2
+//   _blobPath():     M...C...C... closed SVG path, no <filter> needed
+//
+// Multi-blob composition follows the reference images (图2/图3):
+//   2-4 overlapping organic shapes, each a different color, opacity 0.7.
+//   The overlap creates the "hand-painted" look.  No path boolean union
+//   needed — visual overlap with alpha is the intended effect.
+
+const BLOB_PALETTE = [
+  '#E8D5F5',  // lavender
+  '#D5E8F5',  // sky
+  '#F5E8D5',  // peach
+  '#D5F5E0',  // mint
+  '#F5D5E0',  // rose
+  '#F5F0D5',  // cream
+]
+
+interface BlobPoint {
+  x: number; y: number
+  handleIn:  { angle: number; length: number }
+  handleOut: { angle: number; length: number }
+}
+
+// Generate raw polygon vertices on unit circle with radial perturbation.
+// Port of g-harel/blobs internal/gen.ts L14-29.
+function _genBlobygon(
+  pointCount: number,
+  offset: (i: number) => number,
+): BlobPoint[] {
+  const angle = (Math.PI * 2) / pointCount
+  const points: BlobPoint[] = []
+  for (let i = 0; i < pointCount; i++) {
+    const r = offset(i)
+    points.push({
+      x: 0.5 + Math.sin(i * angle) * r,
+      y: 0.5 + Math.cos(i * angle) * r,
+      handleIn:  { angle: 0, length: 0 },
+      handleOut: { angle: 0, length: 0 },
+    })
+  }
+  return points
+}
+
+// Assign cubic Bézier handles so the polygon becomes C2-continuous.
+// Port of g-harel/blobs internal/util.ts L143-159.
+// Handle direction: perpendicular to the prev→next chord.
+// Handle length:    strength · dist(curr, neighbor).
+// Smoothing strength from internal/gen.ts L9:
+//   ((4/3) · tan(θ/4)) / sin(θ/2) / 2  where θ = 2π/N
+function _smoothBlob(points: BlobPoint[]): BlobPoint[] {
+  const theta = (Math.PI * 2) / points.length
+  const strength = ((4 / 3) * Math.tan(theta / 4)) / Math.sin(theta / 2) / 2
+
+  return points.map((curr, i) => {
+    const prev = points[(i - 1 + points.length) % points.length]
+    const next = points[(i + 1) % points.length]
+
+    const dx = next.x - prev.x
+    const dy = -(next.y - prev.y)
+    const raw = Math.atan2(dy, dx)
+    const angle = raw < 0 ? Math.abs(raw) : 2 * Math.PI - raw
+
+    const distPrev = Math.sqrt((curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2)
+    const distNext = Math.sqrt((curr.x - next.x) ** 2 + (curr.y - next.y) ** 2)
+
+    return {
+      x: curr.x, y: curr.y,
+      handleIn:  { angle: angle + Math.PI, length: strength * distPrev },
+      handleOut: { angle,                  length: strength * distNext },
+    }
+  })
+}
+
+// Convert smoothed BlobPoints to a closed SVG <path> d-attribute.
+// Port of g-harel/blobs internal/render/svg.ts L26-36.
+// Maps from unit-square [0,1]² to the target elliptical region (cx,cy,rx,ry).
+function _blobPath(
+  points: BlobPoint[],
+  cx: number, cy: number, rx: number, ry: number,
+): string {
+  const sx = (p: BlobPoint) => cx + (p.x - 0.5) * 2 * rx
+  const sy = (p: BlobPoint) => cy + (p.y - 0.5) * 2 * ry
+
+  const hx = (p: BlobPoint, h: { angle: number; length: number }) =>
+    sx(p) + h.length * rx * 2 * Math.cos(h.angle)
+  const hy = (p: BlobPoint, h: { angle: number; length: number }) =>
+    sy(p) + h.length * ry * 2 * Math.sin(h.angle)
+
+  let d = `M${sx(points[0]).toFixed(1)},${sy(points[0]).toFixed(1)}`
+  for (let i = 0; i < points.length; i++) {
+    const curr = points[i]
+    const next = points[(i + 1) % points.length]
+    d += `C${hx(curr, curr.handleOut).toFixed(1)},${hy(curr, curr.handleOut).toFixed(1)},`
+       + `${hx(next, next.handleIn).toFixed(1)},${hy(next, next.handleIn).toFixed(1)},`
+       + `${sx(next).toFixed(1)},${sy(next).toFixed(1)}`
+  }
+  return d + 'Z'
+}
+
+// The dedicated kernel: pure geometry, zero side effects.
+// Input: (node, x, y, w, h) → Output: SVG markup string.
+// Like invoke_histogram_only() in CCCL: it doesn't filter candidates,
+// doesn't manage buffers, doesn't touch counters — just computes bins.
+function renderOrganicBlob(
+  node: ElkNode,
+  x: number, y: number, w: number, h: number,
+): string {
+  const rand = _seededRand(node.id)
+  const ref = (node as any).spriteRef
+
+  // Number of overlapping blobs: 2-4 for visual richness.
+  // Family stackCount nudges count so variants differ.
+  const blobCount = Math.max(2, Math.min(4,
+    (ref && ref.stackCount) ? 2 + (ref.stackCount % 3) : 2 + Math.floor(rand() * 3)))
 
   const cx = x + w / 2
   const cy = y + h / 2
-  // Rects scatter around center; spread + size tuned so the union fills the
-  // box with an irregular (concave-capable) edge. Blur radius scales with box.
-  const spreadX = w * 0.16
-  const spreadY = h * 0.16
-  const blur = Math.max(2, Math.min(w, h) * 0.06)
+  let svg = ''
 
-  let rects = ''
-  for (let i = 0; i < count; i++) {
-    const rw = w * (0.40 + rand() * 0.22)
-    const rh = h * (0.40 + rand() * 0.22)
-    const ox = (rand() + rand() - 1) * spreadX   // triangular → dense center
-    const oy = (rand() + rand() - 1) * spreadY
-    const rcx = cx + ox
-    const rcy = cy + oy
-    const rot = (rand() - 0.5) * 50               // ±25° gentle rotation
-    const rx = Math.min(rw, rh) * (0.30 + rand() * 0.15)  // chunky round corners
-    rects += `<rect x="${(rcx - rw / 2).toFixed(1)}" y="${(rcy - rh / 2).toFixed(1)}" width="${rw.toFixed(1)}" height="${rh.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${fillColor}" transform="rotate(${rot.toFixed(1)} ${rcx.toFixed(1)} ${rcy.toFixed(1)})" />`
+  for (let bi = 0; bi < blobCount; bi++) {
+    // Each blob: 5-8 control points, randomness 4-8
+    const pointCount = 5 + Math.floor(rand() * 4)
+    const randomness = 4 + rand() * 4
+    const rangeStart = 1 / (1 + randomness / 10)
+
+    const raw = _genBlobygon(pointCount, () => {
+      return (rangeStart + rand() * (1 - rangeStart)) / 2
+    })
+    const smooth = _smoothBlob(raw)
+
+    // Each blob is offset slightly from center — the cluster overlap
+    // creates organic concave-convex edges without path boolean ops.
+    const ox = (rand() + rand() - 1) * w * 0.08
+    const oy = (rand() + rand() - 1) * h * 0.08
+    const rx = w * (0.28 + rand() * 0.10)
+    const ry = h * (0.28 + rand() * 0.10)
+
+    const color = (node as any).fillColor
+      || BLOB_PALETTE[bi % BLOB_PALETTE.length]
+
+    const d = _blobPath(smooth, cx + ox, cy + oy, rx, ry)
+    svg += `<path d="${d}" fill="${color}" opacity="0.70" />`
   }
 
-  // Metaball filter: blur merges nearby rects; the steep alpha ramp in
-  // feColorMatrix (last row 18·A − 7) re-hardens the edge so the union reads
-  // as one solid organic shape with pinched concavities between rect clusters.
-  return `<defs><filter id="${fid}" x="-20%" y="-20%" width="140%" height="140%">`
-    + `<feGaussianBlur in="SourceGraphic" stdDeviation="${blur.toFixed(1)}" result="b" />`
-    + `<feColorMatrix in="b" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" />`
-    + `</filter></defs>`
-    + `<g filter="url(#${fid})" data-sprite="blob">${rects}</g>`
+  return svg
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  §3  renderSprite — the dispatch() function
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// CCCL f984c90's dispatch() is pure orchestration:
+//
+//   // Pass 0: dedicated histogram-only kernel
+//   { launcher.doit(histogram_kernel, ...); }
+//
+//   // Passes 1..N: fused filter+histogram with DoubleBuffer
+//   for (; pass < num_passes; pass++) {
+//       launcher.doit(topk_kernel, key_bufs.Current(), ...);
+//       key_bufs.selector ^= 1;
+//   }
+//
+//   // Final: invoke_last_filter on key_bufs.Current()
+//
+// Our renderSprite is the same: pure routing, zero rendering logic.
+//   format 'stack' / no payload  → renderOrganicBlob  (histogram-only kernel)
+//   format 'svg' with inline SVG → scale + translate   (fused kernel)
+//   format 'png' with URL        → <image>             (fused kernel, different op)
+//   fallback                     → dashed box + label   (invoke_last_filter)
 
 function renderSprite(node: ElkNode, x: number, y: number, w: number, h: number): string {
   const ref = node.spriteRef
   if (!ref) return ''
-  // Card-stack visual: a group of layered rounded rects (feature-map / tensor
-  // look). Used when the backend marks format 'stack', OR as the default when
-  // a sprite node has no real image payload yet (so the slot shows the stacked
-  // visual instead of nothing). The sprite IS the node body — no box beneath.
+
+  // ── Pass 0: organic blob (no AI image available yet, or format 'stack')
   if (ref.format === 'stack' || (!ref.url && !ref.svg)) {
-    return renderCardStack(node, x, y, w, h)
+    return renderOrganicBlob(node, x, y, w, h)
   }
-  // Otherwise the sprite is an image (AI sequence frame / vectorized). Fill
-  // ~80% of the node's center region (stretch allowed) rather than contain-
-  // fitting a small image, so it visibly occupies its slot.
+
+  // ── Passes 1..N: AI-generated sprite — fill ~80% of node center
   const FILL = 0.8
   const drawW = Math.max(1, w * FILL)
   const drawH = Math.max(1, h * FILL)
@@ -382,21 +621,24 @@ function renderSprite(node: ElkNode, x: number, y: number, w: number, h: number)
   const dy = y + (h - drawH) / 2
 
   if (ref.format === 'svg' && ref.svg) {
-    // Vectorized sprite (M217): inline markup. Its path coords are in the
-    // sprite's native pixel space (true_bbox); scale X and Y independently so
-    // it stretches to fill drawW×drawH (matches the raster fill behavior).
     const natW = ref.bbox?.[2] || drawW
     const natH = ref.bbox?.[3] || drawH
     const sx = drawW / natW
     const sy = drawH / natH
     return `<g transform="translate(${dx.toFixed(2)} ${dy.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)})" data-sprite="svg">${ref.svg}</g>`
   }
+
   if (ref.url) {
-    // Raster sprite: <image> stretched to fill the 80% box. preserveAspect-
-    // Ratio="none" lets it stretch (the user explicitly wants fill, not fit).
     return `<image href="${ref.url}" x="${dx.toFixed(2)}" y="${dy.toFixed(2)}" width="${drawW.toFixed(2)}" height="${drawH.toFixed(2)}" preserveAspectRatio="none" data-sprite="png" />`
   }
-  return ''
+
+  // ── invoke_last_filter: fallback dashed box — never silently empty.
+  // The old code returned '' here, leaving arrows pointing at empty space.
+  const fallbackLabel = node.labels?.[0]?.text || node.id
+  const maxC = Math.max(6, Math.floor(w / 8))
+  const fbl = fallbackLabel.length > maxC ? fallbackLabel.slice(0, maxC - 2) + '\u2026' : fallbackLabel
+  return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#FFFFFF" stroke="#999" stroke-width="0.8" rx="6" stroke-dasharray="4,3" />`
+    + `<text x="${x + w / 2}" y="${y + h / 2}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#999" font-style="italic">${escapeXml(fbl)}</text>`
 }
 
 function renderEdge(edge: ElkEdge, offsetX: number = 0, offsetY: number = 0): string {
