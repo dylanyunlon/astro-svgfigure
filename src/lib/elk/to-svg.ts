@@ -310,71 +310,56 @@ function renderMathOperator(symbol: string, cx: number, cy: number, r: number): 
 }
 
 function renderCardStack(node: ElkNode, x: number, y: number, w: number, h: number): string {
-  // Organic blob, generated with the g-harel/blobs technique (the algorithm
-  // behind blobmaker.app): place N points around a circle, perturb each
-  // point's radius randomly, then connect them with cubic-bezier handles
-  // computed so the closed curve is smooth (Catmull-Rom-style tangents). The
-  // result is a soft, hand-painted-looking organic shape — NOT a pile of
-  // rotated rectangles. Pure SVG, deterministic (seeded from node.id), no AI.
-  // Reference: github.com/g-harel/blobs (internal/gen.ts + internal/util.ts).
+  // The visual from the user's reference: a real UNION of many rounded
+  // rectangles — slightly rotated, overlapping, same color — whose merged
+  // outline is organic with BOTH convex bulges and CONCAVE pinches (cloud /
+  // petal edge), not a smooth convex egg. We get the union (with rounded,
+  // gooey joins between rects) via a metaball filter: blur the rect group, then
+  // a steep alpha threshold (feColorMatrix) snaps it back to a hard edge — so
+  // overlapping rects fuse and the silhouette pinches inward between clusters.
+  // Pure SVG, deterministic (seeded from node.id), no AI.
   let seed = 0
   for (let i = 0; i < node.id.length; i++) seed = ((seed << 5) - seed + node.id.charCodeAt(i)) | 0
   const rand = () => { seed = (seed * 16807) % 2147483647; return (seed & 0x7fffffff) / 2147483647 }
 
   const ref = node.spriteRef
-  // Point count = blob complexity (more points → more lobes). stackCount (a
-  // family variant's axis) nudges it so "same-type, slightly-different"
-  // variants get distinct silhouettes; else a deterministic 6–9.
-  const pointCount = Math.max(5, Math.min(14,
-    (ref && (ref as any).stackCount) ? 5 + (ref as any).stackCount : 6 + Math.floor(rand() * 4)))
+  // Rect count: enough to overlap into one organic mass. stackCount nudges it
+  // so family variants differ; else deterministic 7–11.
+  const count = Math.max(6, Math.min(16,
+    (ref && (ref as any).stackCount) ? 5 + (ref as any).stackCount : 7 + Math.floor(rand() * 5)))
 
   const fillColor = (node as any).fillColor || '#C9B8F0'
+  const fid = `blob-${node.id.replace(/[^a-zA-Z0-9_-]/g, '')}`
 
-  // Blob fills ~88% of the box. radius oscillates between rMin and rMax of the
-  // half-extent so the outline gently bulges in and out (the organic look).
   const cx = x + w / 2
   const cy = y + h / 2
-  const halfW = (w * 0.88) / 2
-  const halfH = (h * 0.88) / 2
-  const rMin = 0.74   // closest a point comes to center (fraction of half-extent)
+  // Rects scatter around center; spread + size tuned so the union fills the
+  // box with an irregular (concave-capable) edge. Blur radius scales with box.
+  const spreadX = w * 0.16
+  const spreadY = h * 0.16
+  const blur = Math.max(2, Math.min(w, h) * 0.06)
 
-  // 1) polar points with per-point random radius
-  const angleStep = (Math.PI * 2) / pointCount
-  type P = { x: number; y: number }
-  const pts: P[] = []
-  for (let i = 0; i < pointCount; i++) {
-    const r = rMin + rand() * (1 - rMin)          // in [rMin, 1]
-    const a = i * angleStep
-    pts.push({ x: cx + Math.sin(a) * r * halfW, y: cy + Math.cos(a) * r * halfH })
+  let rects = ''
+  for (let i = 0; i < count; i++) {
+    const rw = w * (0.40 + rand() * 0.22)
+    const rh = h * (0.40 + rand() * 0.22)
+    const ox = (rand() + rand() - 1) * spreadX   // triangular → dense center
+    const oy = (rand() + rand() - 1) * spreadY
+    const rcx = cx + ox
+    const rcy = cy + oy
+    const rot = (rand() - 0.5) * 50               // ±25° gentle rotation
+    const rx = Math.min(rw, rh) * (0.30 + rand() * 0.15)  // chunky round corners
+    rects += `<rect x="${(rcx - rw / 2).toFixed(1)}" y="${(rcy - rh / 2).toFixed(1)}" width="${rw.toFixed(1)}" height="${rh.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${fillColor}" transform="rotate(${rot.toFixed(1)} ${rcx.toFixed(1)} ${rcy.toFixed(1)})" />`
   }
 
-  // 2) smooth: per the blobs lib, each point's bezier handle is tangent to the
-  // line through its neighbours, length = strength * distance to that neighbour.
-  // strength = (4/3)*tan(angle/4) / sin(angle/2) / 2 for a circle of pointCount.
-  const strength = ((4 / 3) * Math.tan(angleStep / 4)) / Math.sin(angleStep / 2) / 2
-  const n = pts.length
-  const dist = (a: P, b: P) => Math.hypot(a.x - b.x, a.y - b.y)
-  // handleOut[i] points toward next; handleIn[i] points toward prev (opposite).
-  const outH: P[] = [], inH: P[] = []
-  for (let i = 0; i < n; i++) {
-    const prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n], curr = pts[i]
-    const ang = Math.atan2(prev.y - next.y, next.x - prev.x)   // tangent dir
-    const lenOut = strength * dist(curr, next)
-    const lenIn = strength * dist(curr, prev)
-    // handleOut along +tangent, handleIn along -tangent (note SVG y is down)
-    outH.push({ x: curr.x + Math.cos(-ang) * lenOut, y: curr.y + Math.sin(-ang) * lenOut })
-    inH.push({ x: curr.x - Math.cos(-ang) * lenIn, y: curr.y - Math.sin(-ang) * lenIn })
-  }
-
-  // 3) emit closed cubic-bezier path
-  let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`
-  for (let i = 0; i < n; i++) {
-    const next = (i + 1) % n
-    const c1 = outH[i], c2 = inH[next], p = pts[next]
-    d += `C${c1.x.toFixed(1)},${c1.y.toFixed(1)},${c2.x.toFixed(1)},${c2.y.toFixed(1)},${p.x.toFixed(1)},${p.y.toFixed(1)}`
-  }
-  d += 'Z'
-  return `<path d="${d}" fill="${fillColor}" data-sprite="blob" />`
+  // Metaball filter: blur merges nearby rects; the steep alpha ramp in
+  // feColorMatrix (last row 18·A − 7) re-hardens the edge so the union reads
+  // as one solid organic shape with pinched concavities between rect clusters.
+  return `<defs><filter id="${fid}" x="-20%" y="-20%" width="140%" height="140%">`
+    + `<feGaussianBlur in="SourceGraphic" stdDeviation="${blur.toFixed(1)}" result="b" />`
+    + `<feColorMatrix in="b" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" />`
+    + `</filter></defs>`
+    + `<g filter="url(#${fid})" data-sprite="blob">${rects}</g>`
 }
 
 function renderSprite(node: ElkNode, x: number, y: number, w: number, h: number): string {
