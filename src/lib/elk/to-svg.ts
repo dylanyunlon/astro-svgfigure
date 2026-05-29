@@ -55,7 +55,16 @@ const SEMANTIC_STYLES: Record<string, Partial<AdvancedEdge>> = {
   cross_boundary: { strokeColor: '#4A4A4A', strokeWidth: 1.5 },
 }
 
-export function elkToSvg(graph: ElkGraph): string {
+// Render options. `clean` suppresses the decorative scattered rounded-rects
+// (skeleton sketch texture) — used for final/export output where the grey
+// blobs read as noise. Default false keeps the existing skeleton look so no
+// caller breaks. Module-level because renderNode recurses synchronously in a
+// single pass; there is no re-entrancy across renders.
+export interface ToSvgOptions { clean?: boolean }
+let _cleanMode = false
+
+export function elkToSvg(graph: ElkGraph, opts?: ToSvgOptions): string {
+  _cleanMode = !!(opts && opts.clean)
   if (!graph) {
     console.warn('[elkToSvg] graph is null/undefined')
     return _fallbackSvg('No graph data')
@@ -231,8 +240,9 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
     const mainRx = Math.min(12, Math.min(w, h) * 0.15)
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${STROKE_COLOR}" stroke-width="${isGroup ? 1.5 : 0.8}" rx="${mainRx}"${strokeDash} />`
 
-    // Scatter 3-6 small decorative rounded rects
-    if (!isGroup) {
+    // Scatter 3-6 small decorative rounded rects (skeleton sketch texture).
+    // Suppressed in clean mode (final/export) where they read as noise.
+    if (!isGroup && !_cleanMode) {
       const numScatter = 3 + Math.floor(seededRand() * 4)
       const pad = 4
       for (let si = 0; si < numScatter; si++) {

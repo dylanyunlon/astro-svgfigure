@@ -297,7 +297,7 @@ export const POST: APIRoute = async ({ request }) => {
     try {
       const { elkToSvgIcons } = await import('../../lib/elk/to-svg-icons')
       if (layouted && layouted.children && layouted.children.length > 0) {
-        iconSvg = elkToSvgIcons(layouted)
+        iconSvg = elkToSvgIcons(layouted, { clean: true })
       }
     } catch (iconErr: any) {
       console.error('Icon SVG generation failed:', iconErr.message)

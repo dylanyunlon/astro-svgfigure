@@ -178,7 +178,14 @@ function resetColors() {
 
 // ── Main Export ─────────────────────────────────────────────────────
 
-export function elkToSvgIcons(graph: ElkGraph): string {
+// Render options. `clean` suppresses the decorative scattered rounded-rects
+// (skeleton sketch texture) for final/export output. Default false keeps the
+// existing look. Module-level: renderNode recurses synchronously, single pass.
+export interface ToSvgIconsOptions { clean?: boolean }
+let _cleanModeIcons = false
+
+export function elkToSvgIcons(graph: ElkGraph, opts?: ToSvgIconsOptions): string {
+  _cleanModeIcons = !!(opts && opts.clean)
   if (!graph) return _fallbackSvg('No graph data')
 
   const hasChildren = Array.isArray(graph.children) && graph.children.length > 0
@@ -444,8 +451,9 @@ function renderNode(
       const mainRx = Math.min(12, Math.min(w, h) * 0.15)
       svg += `  <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${nodeFill}" stroke="${nodeStroke}" stroke-width="0.8" rx="${mainRx}" />\n`
 
-      // Scatter 3-6 small decorative rounded rects inside the node area
-      const numScatter = 3 + Math.floor(seededRand() * 4)
+      // Scatter 3-6 small decorative rounded rects inside the node area.
+      // Suppressed in clean mode (final/export) where they read as noise.
+      const numScatter = _cleanModeIcons ? 0 : 3 + Math.floor(seededRand() * 4)
       const padding = 4
       for (let si = 0; si < numScatter; si++) {
         const sw2 = w * (0.15 + seededRand() * 0.35)  // 15-50% of node width
