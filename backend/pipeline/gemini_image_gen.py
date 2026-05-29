@@ -1264,6 +1264,40 @@ async def generate_scientific_figure(
     except Exception as e:
         logger.warning(f"Skeleton PNG render failed: {e}")
 
+    # ═══════════════════════════════════════════════════════════════════
+    #  Stage 2.8: Sprite injection — Gemini fills INDIVIDUAL grid cells
+    #
+    #  The old flow sent one big prompt to Gemini and got one big image.
+    #  Now we first inject per-node sprites into the elk_graph, so Gemini
+    #  gets a richer input (SVG with embedded sprites vs bare text boxes).
+    #
+    #  Gemini interleaved output (responseModalities: [TEXT, IMAGE]):
+    #  one request → N independent images as separate parts[].inline_data.
+    #  No sprite sheets needed. Natural style consistency within same call.
+    #
+    #  On failure at any step, affected nodes keep organic blob fallback.
+    # ═══════════════════════════════════════════════════════════════════
+    if elk_graph and isinstance(elk_graph, dict) and elk_graph.get("children"):
+        try:
+            from backend.pipeline.topology.node_classifier import classify_nodes
+            from backend.pipeline.topology.sprite_injector import inject_sprites
+
+            classify_nodes(elk_graph)
+
+            inj_result = await inject_sprites(
+                elk_graph,
+                settings=settings,
+                model=image_model,
+            )
+            logger.info(
+                "Sprite injection: %d stamped, %d blob fallback (%.0fms)",
+                inj_result.refs_stamped,
+                inj_result.fallback_to_blob,
+                inj_result.elapsed_ms,
+            )
+        except Exception as e:
+            logger.exception("Sprite injection failed, continuing with original SVG")
+
     # Step b: Generate image (full prompt, no compression)
     image_result = await generate_image_with_gemini(
         svg_content=svg_content,
