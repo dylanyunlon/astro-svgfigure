@@ -310,47 +310,53 @@ function renderMathOperator(symbol: string, cx: number, cy: number, r: number): 
 }
 
 function renderCardStack(node: ElkNode, x: number, y: number, w: number, h: number): string {
-  // Draw the "feature-map / tensor" visual the user described: a GROUP of small
-  // rounded rectangles layered diagonally (like a stack of cards / stacked
-  // feature-map slices). The cards are offset along a diagonal so the overall
-  // silhouette is irregular, while the center ~80% region is filled. Pure SVG,
-  // deterministic (offsets seeded from node.id), no AI. This is one of the two
-  // sprite visuals (the other being AI sequence frames).
-  //
-  // Layer count comes from spriteRef.stackCount when the backend set it (e.g.
-  // a family variant's channel density); else a deterministic 3–5.
+  // The visual the user wants: a DENSE CLUSTER of small rounded rectangles,
+  // each randomly rotated / positioned / sized, heavily overlapping and filled
+  // with the SAME color (no stroke). Overlap dissolves the individual borders,
+  // leaving an organic, hand-painted-looking blob whose silhouette is the
+  // petal/cloud edge of the union. "Looks hand-drawn, actually just a pile of
+  // rounded rectangles." Pure SVG, deterministic (seeded from node.id), no AI.
   let seed = 0
   for (let i = 0; i < node.id.length; i++) seed = ((seed << 5) - seed + node.id.charCodeAt(i)) | 0
   const rand = () => { seed = (seed * 16807) % 2147483647; return (seed & 0x7fffffff) / 2147483647 }
 
   const ref = node.spriteRef
-  const layers = Math.max(2, Math.min(8, (ref && (ref as any).stackCount) || (3 + Math.floor(rand() * 3))))
+  // Density: many rects → full fusion. stackCount (from a family's variation
+  // axis) nudges count so "same-type, slightly-different" variants differ in
+  // density; else a deterministic 30–45.
+  const baseCount = (ref && (ref as any).stackCount)
+    ? 20 + (ref as any).stackCount * 4
+    : 30 + Math.floor(rand() * 16)
+  const count = Math.max(18, Math.min(60, baseCount))
 
-  // The stack must FILL ~80% of the box. The diagonal spread consumes part of
-  // the box, so each card is sized so that (card + total offset) == 80% box.
-  const fill = 0.8
-  const targetW = w * fill
-  const targetH = h * fill
-  // Total diagonal travel across all layers ≈ 22% of the card span.
-  const spreadX = targetW * 0.22
-  const spreadY = targetH * 0.22
-  const cardW = targetW - spreadX
-  const cardH = targetH - spreadY
-  const stepX = layers > 1 ? spreadX / (layers - 1) : 0
-  const stepY = layers > 1 ? spreadY / (layers - 1) : 0
-  // Center the whole stack (card + spread) in the node box.
-  const originX = x + (w - (cardW + spreadX)) / 2
-  const originY = y + (h - (cardH + spreadY)) / 2
-  const rx = Math.min(8, Math.min(cardW, cardH) * 0.14)
+  // Fill color: the node's fill (group/sprite tint) or a soft default.
+  const fillColor = (node as any).fillColor || '#C9B8F0'
+
+  // Cluster centered in the box, occupying ~the full slot; each rect is a
+  // fraction of the box and is scattered around center with a 2D gaussian-ish
+  // spread so the middle is dense (filled) and edges feather out (organic).
+  const cx = x + w / 2
+  const cy = y + h / 2
+  // Spread: how far rect centers stray from the middle (keeps union inside box).
+  const spreadX = w * 0.26
+  const spreadY = h * 0.26
 
   let out = ''
-  // Draw back-to-front so the front card sits on top. Back cards slightly
-  // lighter to read as depth.
-  for (let i = 0; i < layers; i++) {
-    const cx0 = originX + stepX * i
-    const cy0 = originY + stepY * i
-    const shade = i === layers - 1 ? NODE_FILL : '#F4F4F5'
-    out += `<rect x="${cx0.toFixed(1)}" y="${cy0.toFixed(1)}" width="${cardW.toFixed(1)}" height="${cardH.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${shade}" stroke="${STROKE_COLOR}" stroke-width="1.4" />`
+  for (let i = 0; i < count; i++) {
+    // Each rect: 45–70% of box dimensions, so a handful already cover center.
+    const rw = w * (0.45 + rand() * 0.25)
+    const rh = h * (0.45 + rand() * 0.25)
+    // Center offset: sum of two uniforms ≈ triangular → denser in the middle.
+    const ox = (rand() + rand() - 1) * spreadX
+    const oy = (rand() + rand() - 1) * spreadY
+    const rcx = cx + ox
+    const rcy = cy + oy
+    const rot = (rand() - 0.5) * 70           // ±35° random rotation
+    const rx = Math.min(rw, rh) * (0.18 + rand() * 0.12)
+    // top-left from center
+    const rxs = rcx - rw / 2
+    const rys = rcy - rh / 2
+    out += `<rect x="${rxs.toFixed(1)}" y="${rys.toFixed(1)}" width="${rw.toFixed(1)}" height="${rh.toFixed(1)}" rx="${rx.toFixed(1)}" fill="${fillColor}" transform="rotate(${rot.toFixed(1)} ${rcx.toFixed(1)} ${rcy.toFixed(1)})" />`
   }
   return out
 }
