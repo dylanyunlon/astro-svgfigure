@@ -259,6 +259,23 @@ async def run_async_chain():
     assert all(a.dropped for a in _oob.assets), "out-of-bounds cell must drop, not crash"
     print("  [regression] out-of-bounds cell → graceful drop (no PIL crash) OK")
 
+    # Regression (end-to-end audit on operator chains): a node classified
+    # isOperator must be RENDERABLE as a vector symbol. We can't run the TS
+    # renderer here, but we assert the backend produces the contract the
+    # renderer needs: classify_nodes stamps isOperator=True on ⊗ / ⊕ so
+    # to-svg.ts's renderMathOperator branch fires (verified visually in env).
+    _opg = {"id": "root", "children": [{"id": "g", "group": True, "children": [
+        {"id": "mul", "x": 0, "y": 0, "width": 44, "height": 44, "labels": [{"text": "⊗"}]},
+        {"id": "add", "x": 60, "y": 0, "width": 44, "height": 44, "labels": [{"text": "⊕"}]},
+        {"id": "feat", "x": 0, "y": 60, "width": 120, "height": 90,
+         "labels": [{"text": "feature C×H×W"}], "iconHint": "feature map"},
+    ]}]}
+    _rep = nc.classify_nodes(_opg)
+    _ops = [c for c in _opg["children"][0]["children"] if c.get("isOperator")]
+    assert len(_ops) == 2, f"⊗ and ⊕ must be isOperator, got {len(_ops)}"
+    assert all(c["renderMode"] == "text" for c in _ops), "operators are text-mode + isOperator"
+    print(f"  [M207] ⊗/⊕ classified isOperator (renderMathOperator contract) OK")
+
 
 if __name__ == "__main__":
     print("Testing M210–M214 sprite pipeline (mocked AI + removebg)…")

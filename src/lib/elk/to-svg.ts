@@ -203,6 +203,17 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
     return svg
   }
 
+  // ── Operator mode (M207): math operators (⊗ ⊕ ⊙ ○ …) classified with
+  // isOperator render as a pure SVG circle+glyph centered in the node box —
+  // NOT as text + scattered decoration. This is the zero-cost vector path
+  // (no AI). Takes priority over sprite/label/box for leaf nodes.
+  if (!isGroup && (node as any).isOperator) {
+    svg += renderMathOperator(dl, x + w / 2, y + h / 2, Math.min(w, h) * 0.4)
+    if (node.children) node.children.forEach((c, i) => { svg += renderNode(c, index*10+i, depth+1, x - PADDING, y - PADDING) })
+    svg += `</g>`
+    return svg
+  }
+
   const isLabelOnly = !!(node as any).labelOnly
     || (h <= 30 && !(node as any).iconHint)
 
@@ -250,6 +261,42 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
 
   svg += `</g>`
   return svg
+}
+
+function renderMathOperator(symbol: string, cx: number, cy: number, r: number): string {
+  // Draw a math operator as a circle plus a vector glyph, centered at (cx,cy).
+  // Radius r is min(w,h)*0.4 so it scales with the node box. Pure SVG, no AI,
+  // no text — crisp at any zoom. Falls back to a centered glyph for unknown
+  // symbols (still vector text, never the scattered-rect decoration).
+  r = Math.max(6, r)
+  const s = (symbol || '').trim()
+  const circle = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${NODE_FILL}" stroke="${STROKE_COLOR}" stroke-width="1.6" />`
+  const sw = 1.6
+  // inscribe glyph at ~0.62r so it sits inside the circle
+  const g = r * 0.62
+  if (s === '⊗' || /^(x|×|⨂)$/i.test(s)) {
+    // diagonal cross (multiply)
+    const d = g * Math.SQRT1_2
+    return circle
+      + `<line x1="${cx-d}" y1="${cy-d}" x2="${cx+d}" y2="${cy+d}" stroke="${STROKE_COLOR}" stroke-width="${sw}" stroke-linecap="round" />`
+      + `<line x1="${cx-d}" y1="${cy+d}" x2="${cx+d}" y2="${cy-d}" stroke="${STROKE_COLOR}" stroke-width="${sw}" stroke-linecap="round" />`
+  }
+  if (s === '⊕' || /^(\+|⨁)$/.test(s)) {
+    // upright plus (add)
+    return circle
+      + `<line x1="${cx-g}" y1="${cy}" x2="${cx+g}" y2="${cy}" stroke="${STROKE_COLOR}" stroke-width="${sw}" stroke-linecap="round" />`
+      + `<line x1="${cx}" y1="${cy-g}" x2="${cx}" y2="${cy+g}" stroke="${STROKE_COLOR}" stroke-width="${sw}" stroke-linecap="round" />`
+  }
+  if (s === '⊙' || s === '·' || s === '∘') {
+    // center dot (Hadamard / composition)
+    return circle + `<circle cx="${cx}" cy="${cy}" r="${Math.max(1.5, r*0.18)}" fill="${STROKE_COLOR}" />`
+  }
+  if (s === '○' || s === '◯') {
+    return circle  // hollow circle
+  }
+  // Unknown operator-like symbol: circle + the glyph as small centered text.
+  return circle
+    + `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-size="${Math.max(9, r*0.9)}" fill="${TEXT_COLOR}">${escapeXml(s)}</text>`
 }
 
 function renderSprite(node: ElkNode, x: number, y: number, w: number, h: number): string {
