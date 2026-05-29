@@ -132,14 +132,22 @@ const TRAP_PREFIXES: readonly string[] = [
   '/shell', '/cmd', '/exec', '/c99',
   // Backup files
   '/backup', '/db.sql', '/dump.sql', '/database.sql',
+  // PHP dependency scanners (phpunit RCE CVE-2017-9841 etc.)
+  '/vendor/', '/lib/phpunit/', '/phpunit/',
+  // ThinkPHP RCE probes
+  '/index.php',
+  // Docker / container info leak
+  '/containers/',
+  // Common PHP entry-point probes (hello.world, root POST)
+  '/hello.',
 ];
 
 const TRAP_SUBSTRINGS: readonly string[] = [
   'META-INF/', 'WEB-INF/',
   '..%2f', '..%5c', '%00',
   'pom.properties',
-  '.php?', 'cgi-bin/',
-  '.asp?', '.aspx?', '.jsp?',
+  '.php', 'cgi-bin/',
+  '.asp', '.aspx', '.jsp',
 ];
 
 function isTrapPath(pathname: string): boolean {
