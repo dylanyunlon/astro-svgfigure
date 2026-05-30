@@ -499,24 +499,31 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
 
   // ===== CONFIRM EDIT =====
   document.getElementById('btn-confirm-edit')?.addEventListener('click', () => {
+    // Try to get updated SVG from interactive editor or tldraw
     const editor = preview?.getEditor()
-    if (editor) {
-      // Lock the editor
+    const tldrawApi = (window as any).__tldrawEditor
+
+    if (tldrawApi) {
+      const g = tldrawApi.exportGraph()
+      if (g) {
+        import('@/lib/elk/to-svg').then(({ default: elkToSvg }) => {
+          currentSkeletonSvg = elkToSvg(g) || currentSkeletonSvg
+        })
+      }
+    } else if (editor) {
       editor.confirmEdit()
-      // Update skeleton SVG from editor
       currentSkeletonSvg = editor.toStaticSvg() || currentSkeletonSvg
-      // Visual feedback
-      const svgEditor = (window as any).__svgEditor
-      svgEditor?.setConfirmed(true)
-      // Mark edit step as done
-      steps?.setStatus('step-edit', 'done')
-      // Enable Step 2→3 button
-      generateFigureBtn.disabled = false
-      // Enable sprite generation button
-      generateSpritesBtn.disabled = false
-      statusText.textContent = 'Draft confirmed! Click "Generate Sprites" for per-node AI, or "Step 2→3" for full figure.'
-      statusText.style.color = ''
     }
+    // else: no editor, but currentSkeletonSvg from Step 1 is still valid
+
+    // Visual feedback — always runs regardless of editor state
+    const svgEditor = (window as any).__svgEditor
+    svgEditor?.setConfirmed(true)
+    steps?.setStatus('step-edit', 'done')
+    generateFigureBtn.disabled = false
+    generateSpritesBtn.disabled = false
+    statusText.textContent = 'Draft confirmed! Click "Generate Sprites" for per-node AI, or "Step 2→3" for full figure.'
+    statusText.style.color = ''
   })
 
   // ===== GENERATE SPRITES (per-node Gemini interleaved) =====
