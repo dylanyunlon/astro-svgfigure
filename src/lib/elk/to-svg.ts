@@ -407,8 +407,18 @@ function renderSpriteNode(
   node: ElkNode, x: number, y: number, w: number, h: number, label: string, depth: number,
 ): string {
   let svg = openNodeGroup(node, x, y, w, h, false, depth)
-  svg += resolveNodeVisual(node, x, y, w, Math.max(h - 18, h * 0.7))
-  svg += nodeCaptionBelow(label, x, y, w, h)
+  // Sprite nodes need adequate visual area.  ELK may allocate only 50px
+  // height (text-box size), but a feature-map illustration needs at least
+  // square aspect ratio.  Expand the visual area while keeping the label
+  // below.  The node's layout position stays the same; the visual just
+  // extends downward (academic figures routinely have tall feature-map blocks).
+  const minVisualH = Math.max(w * 0.75, 80)  // at least 75% of width or 80px
+  const visualH = Math.max(h - 18, minVisualH)
+  svg += resolveNodeVisual(node, x, y, w, visualH)
+  const labelY = y + visualH + 14
+  const dl = truncateLabel(label, w)
+  const fontSize = Math.max(7, Math.min(10, w / dl.length * 1.2))
+  svg += `<text x="${x + w / 2}" y="${labelY}" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="${fontSize.toFixed(1)}" fill="${TEXT_COLOR}" font-weight="500" font-style="italic">${escapeXml(dl)}</text>`
   svg += `</g>`
   return svg
 }
@@ -465,19 +475,15 @@ function resolveNodeVisual(
   const ref = node.spriteRef
 
   // Level 0: AI-generated sprite — <image> or inline <g>
+  // Use the FULL node area, preserving aspect ratio via xMidYMid meet.
+  // The image was generated at 256x256; let the browser scale it properly.
   if (ref && ref.url) {
-    const FILL = 0.8
-    const drawW = Math.max(1, w * FILL), drawH = Math.max(1, h * FILL)
-    const dx = x + (w - drawW) / 2, dy = y + (h - drawH) / 2
-    return `<image href="${ref.url}" x="${dx.toFixed(2)}" y="${dy.toFixed(2)}" width="${drawW.toFixed(2)}" height="${drawH.toFixed(2)}" preserveAspectRatio="none" data-sprite="png" />`
+    return `<image href="${ref.url}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" preserveAspectRatio="xMidYMid meet" data-sprite="png" />`
   }
   if (ref && ref.format === 'svg' && ref.svg) {
-    const FILL = 0.8
-    const drawW = Math.max(1, w * FILL), drawH = Math.max(1, h * FILL)
-    const dx = x + (w - drawW) / 2, dy = y + (h - drawH) / 2
-    const natW = ref.bbox?.[2] || drawW, natH = ref.bbox?.[3] || drawH
-    const sx = drawW / natW, sy = drawH / natH
-    return `<g transform="translate(${dx.toFixed(2)} ${dy.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)})" data-sprite="svg">${ref.svg}</g>`
+    const natW = ref.bbox?.[2] || w, natH = ref.bbox?.[3] || h
+    const sx = w / natW, sy = h / natH
+    return `<g transform="translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)})" data-sprite="svg">${ref.svg}</g>`
   }
 
   // Level 1: 3D feature-map stack

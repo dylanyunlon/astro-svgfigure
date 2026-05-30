@@ -120,15 +120,51 @@ def _load_icon_aliases() -> Dict[str, str]:
 # iconHint substrings that signal a paper-specific visual object: something a
 # generic Iconify glyph cannot convey, but that benefits from a small drawn
 # illustration.  These are matched against the iconHint (preferred) and label.
+#
+# Design principle: in academic figures (FreqSelect, AdaDR, Pix2Struct),
+# almost every node on the operator chain is a VISUAL object — feature maps,
+# encoder outputs, hidden states, kernel weights, probability distributions.
+# These are best conveyed as drawn illustrations (3D tensor slabs, heatmaps,
+# grid visualizations), not as text labels or generic Iconify icons.
+#
+# The classifier is intentionally BROAD here: it's better to generate a
+# small illustration for "ViT Encoder" than to show a generic gear icon.
+# The sprite pipeline can always fall back to blob if generation fails.
 _SPRITE_CUES = (
+    # Feature maps / tensor volumes
     "feature map", "feature maps", "featuremap",
+    "feature", "features",  # "Input feature", "Output feature"
+    "tensor", "volume", "c x h x w", "c×h×w", "cxhxw", "h x w",
+    "channel", "channels",
+    # Frequency / spectral
     "frequency", "spectrum", "spectral", "fourier", "wavelet",
     "decompose", "decomposed", "decomposition", "decomp",
+    "low-freq", "high-freq", "band",
+    # Attention / selection / activation
     "selection map", "attention map", "saliency", "heat map", "heatmap",
-    "tensor", "c x h x w", "c×h×w", "cxhxw", "h x w", "channel",
-    "patch grid", "patches", "tokens grid",
+    "activation map", "response map", "latent map", "embedding map",
+    "dilation map", "dilation rate",
+    # Patches / grids / kernels
+    "patch grid", "patches", "tokens grid", "patch",
     "spatial", "receptive field", "kernel grid", "filter bank",
-    "latent map", "embedding map", "activation map", "response map",
+    "kernel", "convolution kernel", "adaptive kernel",
+    # Encoders / decoders / model components (visual blocks in academic figs)
+    "encoder", "decoder", "transformer", "vit",
+    "hidden state", "hidden states", "state vector",
+    "embedding", "embeddings", "vector embedding",
+    # Neural network layer outputs
+    "softmax", "sigmoid", "relu", "activation",
+    "prediction", "token prediction", "next-token",
+    "probability", "distribution",
+    # Visual outputs
+    "output feature", "input feature", "global feature",
+    "dom tree", "dom layout", "coarse dom",
+    "code generation", "code agent",
+    # Image / screenshot inputs
+    "screenshot", "image", "photograph", "resolution",
+    "leaf node image", "leaf image",
+    # Weight matrices
+    "weight matrix", "weight", "matrix",
 )
 
 # Tensor-shape pattern, e.g. "C×H×W", "1 x H x W", "B×C×H×W", "256x256".
@@ -267,16 +303,33 @@ def classify_node(node: Dict[str, Any], aliases: Dict[str, str]) -> Tuple[Render
 # Map a sprite node to its (base_concept, variation_axis) by cue.
 _FAMILY_RULES: List[Tuple[Tuple[str, ...], str, str]] = [
     (("feature map", "featuremap", "feature maps", "activation map",
-      "response map", "latent map"),
+      "response map", "latent map", "feature", "output feature",
+      "input feature", "global feature"),
      "feature map", "spatial resolution and channel count"),
-    (("frequency", "spectrum", "spectral", "fourier", "wavelet"),
+    (("frequency", "spectrum", "spectral", "fourier", "wavelet",
+      "low-freq", "high-freq", "band"),
      "frequency representation", "frequency band emphasis"),
     (("decompose", "decomposed", "decomposition", "decomp"),
      "decomposed feature", "decomposition depth"),
-    (("selection map", "saliency", "attention map", "heatmap", "heat map"),
+    (("selection map", "saliency", "attention map", "heatmap", "heat map",
+      "dilation map", "dilation"),
      "selection / attention map", "highlighted region"),
-    (("patch", "tokens grid", "patch grid"),
+    (("patch", "tokens grid", "patch grid", "image patch"),
      "patch grid", "patch density"),
+    (("encoder", "vit", "vision transformer"),
+     "encoder block", "layer depth"),
+    (("decoder", "transformer decoder"),
+     "decoder block", "decoding stage"),
+    (("hidden state", "state vector", "embedding", "vector"),
+     "hidden representation", "representation layer"),
+    (("kernel", "filter bank", "convolution"),
+     "convolution kernel", "kernel configuration"),
+    (("softmax", "sigmoid", "relu", "activation", "probability"),
+     "activation function", "nonlinearity type"),
+    (("prediction", "token prediction", "next-token"),
+     "prediction output", "sequence position"),
+    (("screenshot", "image", "photograph", "resolution"),
+     "input image", "resolution"),
 ]
 
 
