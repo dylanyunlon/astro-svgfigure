@@ -4,7 +4,7 @@
  *
  * 渲染生成的 SVG + 缩放控制 + 暗色/亮色背景切换
  * GitHub 背书: svgdotjs/svg.js, cworld1/astro-theme-pure
- * tldraw integration: ElkCanvas for drag-to-edit ELK nodes
+ * tldraw integration: ElkCanvas for drag-to-edit ELK nodes (client-only)
  */
 import TldrawEditor from './TldrawEditor.tsx'
 ---
@@ -68,9 +68,9 @@ import TldrawEditor from './TldrawEditor.tsx'
     <div id='svg-render' class='absolute inset-0' style='display:none;'>
     </div>
 
-    {/* tldraw editor — React island, shown when Editor tab is active */}
+    {/* tldraw editor — React island, client:only skips SSR import chain */}
     <div id='tldraw-container' class='absolute inset-0' style='display:none; width:100%; height:100%;'>
-      <TldrawEditor client:load />
+      <TldrawEditor client:only="react" />
     </div>
     </div>
   </div>

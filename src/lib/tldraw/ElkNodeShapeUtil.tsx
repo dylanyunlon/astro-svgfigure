@@ -14,8 +14,10 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  RecordProps,
   T,
+} from 'tldraw'
+import type {
+  RecordProps,
   TLShape,
 } from 'tldraw'
 

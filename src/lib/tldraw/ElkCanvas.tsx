@@ -12,7 +12,8 @@
  *   - No mermaid parsing, no CSS animations, no pipeline state atom
  */
 import { useCallback, useEffect, useRef } from 'react'
-import { Editor, Tldraw, TLComponents } from 'tldraw'
+import { Tldraw } from 'tldraw'
+import type { Editor, TLComponents } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { ElkNodeShapeUtil } from './ElkNodeShapeUtil'
 import { elkToTldraw, tldrawToElk } from './elkBridge'
