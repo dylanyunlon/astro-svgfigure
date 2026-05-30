@@ -528,8 +528,9 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
 
   // ===== GENERATE SPRITES (per-node Gemini interleaved) =====
   generateSpritesBtn?.addEventListener('click', async () => {
-    const editor = preview?.getEditor()
-    const elkGraph = editor ? editor.getGraph() : preview?.getElkJson()
+    // Use the original ELK layouted JSON (nested children tree with renderMode etc),
+    // NOT the interactive editor's flat graph — classify_nodes needs the nested structure.
+    const elkGraph = preview?.getLayoutedJson() || preview?.getElkJson()
     if (!elkGraph) {
       statusText.textContent = 'No layout data — run Step 1 first'
       return

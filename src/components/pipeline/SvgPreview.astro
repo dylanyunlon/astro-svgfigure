@@ -527,5 +527,12 @@ import TldrawEditor from './TldrawEditor.tsx'
     getElkJson(): any {
       return editor?.getElkJson() || null
     },
+
+    /** Returns the original ELK layouted JSON with full nested structure,
+     *  renderMode, familyId, spriteRef etc — needed by sprite-generate API
+     *  which runs classify_nodes on the nested children tree. */
+    getLayoutedJson(): any {
+      return skeletonLayouted
+    },
   }
 </script>
