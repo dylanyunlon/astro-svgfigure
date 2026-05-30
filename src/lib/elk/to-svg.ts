@@ -269,6 +269,9 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
     // If a real AI sprite is available, use it
     if (node.spriteRef && (node.spriteRef.url || node.spriteRef.svg)) {
       svg += renderSprite(node, x, y, w, h)
+    } else if (node.spriteRef && node.spriteRef.format === 'stack') {
+      // 3D feature-map stack — the academic-figure visual
+      svg += renderFeatureMapStack(node, x, y, w, Math.max(h - 18, h * 0.7))
     } else {
       // Organic blob — the sprite placeholder / default visual.
       // Use family palette for color consistency within families.
@@ -549,6 +552,96 @@ function _renderGroupBlob(
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  §2c  Feature-map stack — 3D parallelogram stack (FreqSelect reference)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Draws the academic-figure visual for feature maps / tensor volumes:
+//   - Front face: filled rectangle with procedural texture (seeded noise)
+//   - N back faces: offset diagonally (up-right), progressive opacity
+//   - stackCount: how many layers in the 3D stack (1 = single slab)
+//   - memberIndex: within a family, picks texture seed for micro-diff
+//
+// This is the visual that replaces text boxes for sprite nodes — the blob
+// IS the node body, no white box underneath.  Caption goes below.
+//
+// Reference: FreqSelect figure — "Input feature C×H×W", "Decomposed feats",
+// "Selection map 1×H×W" are all drawn as these stacked parallelogram slabs.
+function renderFeatureMapStack(
+  node: ElkNode,
+  x: number, y: number, w: number, h: number,
+): string {
+  const rand = _seededRand(node.id)
+  const ref = (node as any).spriteRef
+  const familyId = (node as any).familyId || ''
+  const palette = _familyPalette(familyId)
+  const color = (node as any).fillColor || palette[0]
+
+  // Stack depth: from spriteRef.stackCount or default 3
+  const stackCount = Math.max(1, (ref && ref.stackCount) || 3)
+
+  // 3D offset per layer
+  const dx = Math.min(4, w * 0.05)
+  const dy = Math.min(4, h * 0.05)
+
+  // Total offset consumed by stacking
+  const totalDx = dx * (stackCount - 1)
+  const totalDy = dy * (stackCount - 1)
+
+  // Front face dimensions (shrink to fit stack within bbox)
+  const fw = w - totalDx
+  const fh = h - totalDy
+  const fx = x
+  const fy = y + totalDy
+
+  let svg = ''
+
+  // Back layers (drawn first, back-to-front)
+  for (let i = stackCount - 1; i >= 1; i--) {
+    const lx = fx + dx * i
+    const ly = fy - dy * i
+    const backOpacity = 0.25 + (i / stackCount) * 0.30
+    svg += `<rect x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" width="${fw.toFixed(1)}" height="${fh.toFixed(1)}" `
+         + `fill="${color}" opacity="${backOpacity.toFixed(2)}" stroke="#666" stroke-width="0.4" />`
+  }
+
+  // Front face
+  svg += `<rect x="${fx.toFixed(1)}" y="${fy.toFixed(1)}" width="${fw.toFixed(1)}" height="${fh.toFixed(1)}" `
+       + `fill="${color}" opacity="0.55" stroke="#555" stroke-width="0.6" />`
+
+  // Procedural texture on front face — seeded noise rectangles that
+  // give the "image content" look.  memberIndex (from familyId hash)
+  // shifts texture pattern so family members share the same color
+  // but have different internal detail (micro-diff on one axis).
+  let memberHash = 0
+  for (let i = 0; i < familyId.length; i++) memberHash = Math.imul(memberHash ^ familyId.charCodeAt(i), 0x5bd1e995)
+  const memberIndex = (memberHash >>> 0) % 6
+
+  const textureCount = 6 + Math.floor(rand() * 4)
+  for (let t = 0; t < textureCount; t++) {
+    const tw = fw * (0.12 + rand() * 0.35)
+    const th = fh * (0.10 + rand() * 0.30)
+    const tx = fx + rand() * Math.max(0, fw - tw)
+    const ty = fy + rand() * Math.max(0, fh - th)
+    const texOpacity = 0.06 + rand() * 0.16
+    const texColor = (memberIndex + t) % 2 === 0 ? '#ffffff' : '#000000'
+    svg += `<rect x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" width="${tw.toFixed(1)}" height="${th.toFixed(1)}" `
+         + `rx="1" fill="${texColor}" opacity="${texOpacity.toFixed(2)}" />`
+  }
+
+  // Diagonal connecting lines (3D perspective edges)
+  for (let i = 0; i < stackCount - 1; i++) {
+    const x1 = fx + dx * i + fw
+    const y1 = fy - dy * i
+    const x2 = fx + dx * (i + 1) + fw
+    const y2 = fy - dy * (i + 1)
+    svg += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#888" stroke-width="0.3" />`
+  }
+
+  return svg
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  §3  renderSprite — the dispatch() function
 // ═══════════════════════════════════════════════════════════════════════════
 //
@@ -566,17 +659,23 @@ function _renderGroupBlob(
 //   // Final: invoke_last_filter on key_bufs.Current()
 //
 // Our renderSprite is the same: pure routing, zero rendering logic.
-//   format 'stack' / no payload  → renderOrganicBlob  (histogram-only kernel)
-//   format 'svg' with inline SVG → scale + translate   (fused kernel)
-//   format 'png' with URL        → <image>             (fused kernel, different op)
-//   fallback                     → dashed box + label   (invoke_last_filter)
+//   format 'stack'              → renderFeatureMapStack  (3D parallelogram stack)
+//   no payload (no url, no svg) → renderOrganicBlob      (rounded-rect union blob)
+//   format 'svg' with inline SVG → scale + translate      (fused kernel)
+//   format 'png' with URL        → <image>                (fused kernel, different op)
+//   fallback                     → dashed box + label      (invoke_last_filter)
 
 function renderSprite(node: ElkNode, x: number, y: number, w: number, h: number): string {
   const ref = node.spriteRef
   if (!ref) return ''
 
-  // ── Pass 0: organic blob (no AI image available yet, or format 'stack')
-  if (ref.format === 'stack' || (!ref.url && !ref.svg)) {
+  // ── Pass 0a: 3D feature-map stack (explicit 'stack' format)
+  if (ref.format === 'stack') {
+    return renderFeatureMapStack(node, x, y, w, h)
+  }
+
+  // ── Pass 0b: organic blob fallback (no AI image yet)
+  if (!ref.url && !ref.svg) {
     return renderOrganicBlob(node, x, y, w, h)
   }
 
