@@ -168,15 +168,28 @@ async def _call_gemini_interleaved(
         logger.exception("Gemini interleaved call failed")
         return [None] * n_expected
 
-    # Parse response: extract all inline_data images in order
+    # Parse response: extract all inline_data images in order.
+    # Some proxies (tryallai) embed images in text parts as markdown:
+    #   ![image](data:image/jpeg;base64,...)
+    # We handle both formats.
+    import re
     images: List[Optional[str]] = []
     candidates = data.get("candidates", [])
     if candidates:
         parts = candidates[0].get("content", {}).get("parts", [])
         for part in parts:
+            # Standard Gemini format: inlineData
             inline = part.get("inlineData") or part.get("inline_data")
             if inline and inline.get("data"):
                 images.append(inline["data"])
+                continue
+            # Proxy format: base64 embedded in text as markdown image
+            text = part.get("text", "")
+            if text:
+                for m in re.finditer(
+                    r'data:image/(?:jpeg|png);base64,([A-Za-z0-9+/=]+)', text
+                ):
+                    images.append(m.group(1))
 
     logger.info("Gemini returned %d images (expected %d)", len(images), n_expected)
 

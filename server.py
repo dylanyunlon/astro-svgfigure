@@ -731,7 +731,7 @@ async def api_sprite_generate(request_data: dict) -> JSONResponse:
 
         # Step 2: generate sprites (Gemini interleaved → stamp spriteRef)
         settings = get_settings()
-        model = request_data.get("model", "gemini-2.0-flash-preview-image-generation")
+        model = request_data.get("model", settings.DEFAULT_IMAGE_MODEL)
         inj_result = await inject_sprites(
             elk_graph,
             settings=settings,
