@@ -225,17 +225,15 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   let svg = `  <g data-node-id="${escapeXml(node.id)}" data-node-type="${nodeType}" data-depth="${depth}" data-bbox="${x},${y},${w},${h}" data-render-mode="${node.renderMode || 'text'}">`
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  //  Path A: Skeleton group — the 2-3 largest parent groups become colored
-  //  background panels (see FreqSelect reference: green / orange / yellow).
-  //  Only top-level and second-level groups; deeper groups are borderless.
+  //  Path A: Skeleton group — parent groups get organic blob backgrounds
+  //  using the rounded-rect union technique (cloud/petal edges).
+  //  No rectangular frames — the blob IS the group container.
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   if (isGroup) {
-    const rx = Math.min(16, Math.min(w, h) * 0.03)
-
     if (depth <= 1) {
-      // Top-level skeleton: colored background panel
+      // Top-level / second-level: rounded-rect blob background
       const palette = SKELETON_FILLS[index % SKELETON_FILLS.length]
-      svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${palette.bg}" stroke="${palette.stroke}" stroke-width="1.5" rx="${rx}" />`
+      svg += _renderGroupBlob(node.id + '_group', x, y, w, h, palette.bg)
       // Group label: top-left, italic, small — like academic figure captions
       svg += `<text x="${x + 12}" y="${y + 18}" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="${palette.stroke}" font-weight="700" font-style="italic">${escapeXml(dl)}</text>`
     } else {
@@ -418,28 +416,27 @@ function _seededRand(seed: string): () => number {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  §2  Organic blob — the extracted histogram-only kernel
+//  §2  Organic blob — rounded-rectangle union
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// CCCL f984c90 extracted the first pass from a generic if-constexpr-IsFirstPass
-// branch into `DeviceTopKHistogramKernel` — a dedicated kernel that only does
-// histogram computation, no filtering.  The old `filter_and_histogram<true>`
-// was a fused path; the new `invoke_histogram_only()` has zero branching.
+// "你以为这是手绘的？实际上这只是一群圆角矩形"
 //
-// We apply the same refactor.  The old `renderCardStack()` was a fused
-// "if metaball / else raster / else svg" path.  Now `renderOrganicBlob()`
-// is a dedicated pure-SVG kernel: it ONLY generates the organic blob shape.
-// No filtering, no fallback logic, no image handling — just geometry.
+// Technique: 8-12 opaque same-color rounded rectangles, each slightly
+// rotated (±3° to ±12°) and offset from center.  Because they share one
+// fill and opacity=1, overlapping regions merge visually into a single
+// organic silhouette with concave dips and convex bumps — cloud/petal
+// edges, not smooth convex ellipses.  No path boolean union, no
+// <filter>, no Bézier — just <rect> stacking.
 //
-// Algorithm ported from g-harel/blobs:
-//   _genBlobygon():  uniform points on unit circle, radial offset per point
-//   _smoothBlob():   cubic Bézier handles via (4/3)·tan(θ/4) / sin(θ/2) / 2
-//   _blobPath():     M...C...C... closed SVG path, no <filter> needed
+// This replaces the previous g-harel/blobs Bézier algorithm (c0e6191)
+// to match the hand-drawn look of the reference figures.
 //
-// Multi-blob composition follows the reference images (图2/图3):
-//   2-4 overlapping organic shapes, each a different color, opacity 0.7.
-//   The overlap creates the "hand-painted" look.  No path boolean union
-//   needed — visual overlap with alpha is the intended effect.
+// Parameters tuned from the reference image analysis:
+//   rectCount:  8-12 (family stackCount nudges for micro-diff)
+//   sizeRange:  each rect is 35-80% of bbox in each axis
+//   rxRange:    corner radius 25-45% of min(rw,rh) — very rounded
+//   rotRange:   ±3° to ±12° — subtle but enough for edge texture
+//   offsetRange: center ±17.5% of bbox — keeps cluster cohesive
 
 const BLOB_PALETTE = [
   '#E8D5F5',  // lavender
@@ -450,92 +447,12 @@ const BLOB_PALETTE = [
   '#F5F0D5',  // cream
 ]
 
-interface BlobPoint {
-  x: number; y: number
-  handleIn:  { angle: number; length: number }
-  handleOut: { angle: number; length: number }
-}
-
-// Generate raw polygon vertices on unit circle with radial perturbation.
-// Port of g-harel/blobs internal/gen.ts L14-29.
-function _genBlobygon(
-  pointCount: number,
-  offset: (i: number) => number,
-): BlobPoint[] {
-  const angle = (Math.PI * 2) / pointCount
-  const points: BlobPoint[] = []
-  for (let i = 0; i < pointCount; i++) {
-    const r = offset(i)
-    points.push({
-      x: 0.5 + Math.sin(i * angle) * r,
-      y: 0.5 + Math.cos(i * angle) * r,
-      handleIn:  { angle: 0, length: 0 },
-      handleOut: { angle: 0, length: 0 },
-    })
-  }
-  return points
-}
-
-// Assign cubic Bézier handles so the polygon becomes C2-continuous.
-// Port of g-harel/blobs internal/util.ts L143-159.
-// Handle direction: perpendicular to the prev→next chord.
-// Handle length:    strength · dist(curr, neighbor).
-// Smoothing strength from internal/gen.ts L9:
-//   ((4/3) · tan(θ/4)) / sin(θ/2) / 2  where θ = 2π/N
-function _smoothBlob(points: BlobPoint[]): BlobPoint[] {
-  const theta = (Math.PI * 2) / points.length
-  const strength = ((4 / 3) * Math.tan(theta / 4)) / Math.sin(theta / 2) / 2
-
-  return points.map((curr, i) => {
-    const prev = points[(i - 1 + points.length) % points.length]
-    const next = points[(i + 1) % points.length]
-
-    const dx = next.x - prev.x
-    const dy = -(next.y - prev.y)
-    const raw = Math.atan2(dy, dx)
-    const angle = raw < 0 ? Math.abs(raw) : 2 * Math.PI - raw
-
-    const distPrev = Math.sqrt((curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2)
-    const distNext = Math.sqrt((curr.x - next.x) ** 2 + (curr.y - next.y) ** 2)
-
-    return {
-      x: curr.x, y: curr.y,
-      handleIn:  { angle: angle + Math.PI, length: strength * distPrev },
-      handleOut: { angle,                  length: strength * distNext },
-    }
-  })
-}
-
-// Convert smoothed BlobPoints to a closed SVG <path> d-attribute.
-// Port of g-harel/blobs internal/render/svg.ts L26-36.
-// Maps from unit-square [0,1]² to the target elliptical region (cx,cy,rx,ry).
-function _blobPath(
-  points: BlobPoint[],
-  cx: number, cy: number, rx: number, ry: number,
-): string {
-  const sx = (p: BlobPoint) => cx + (p.x - 0.5) * 2 * rx
-  const sy = (p: BlobPoint) => cy + (p.y - 0.5) * 2 * ry
-
-  const hx = (p: BlobPoint, h: { angle: number; length: number }) =>
-    sx(p) + h.length * rx * 2 * Math.cos(h.angle)
-  const hy = (p: BlobPoint, h: { angle: number; length: number }) =>
-    sy(p) + h.length * ry * 2 * Math.sin(h.angle)
-
-  let d = `M${sx(points[0]).toFixed(1)},${sy(points[0]).toFixed(1)}`
-  for (let i = 0; i < points.length; i++) {
-    const curr = points[i]
-    const next = points[(i + 1) % points.length]
-    d += `C${hx(curr, curr.handleOut).toFixed(1)},${hy(curr, curr.handleOut).toFixed(1)},`
-       + `${hx(next, next.handleIn).toFixed(1)},${hy(next, next.handleIn).toFixed(1)},`
-       + `${sx(next).toFixed(1)},${sy(next).toFixed(1)}`
-  }
-  return d + 'Z'
-}
-
 // The dedicated kernel: pure geometry, zero side effects.
 // Input: (node, x, y, w, h) → Output: SVG markup string.
-// Like invoke_histogram_only() in CCCL: it doesn't filter candidates,
-// doesn't manage buffers, doesn't touch counters — just computes bins.
+//
+// Each rounded rect is positioned around the blob center with random
+// offset, size, corner radius, and rotation.  The deterministic PRNG
+// ensures identical output for the same node ID across renders.
 function renderOrganicBlob(
   node: ElkNode,
   x: number, y: number, w: number, h: number,
@@ -543,38 +460,88 @@ function renderOrganicBlob(
   const rand = _seededRand(node.id)
   const ref = (node as any).spriteRef
 
-  // Number of overlapping blobs: 2-4 for visual richness.
-  // Family stackCount nudges count so variants differ.
-  const blobCount = Math.max(2, Math.min(4,
-    (ref && ref.stackCount) ? 2 + (ref.stackCount % 3) : 2 + Math.floor(rand() * 3)))
+  // 8-12 rounded rects, nudged by family stackCount for variant diversity.
+  const rectCount = Math.max(8, Math.min(14,
+    (ref && ref.stackCount) ? 8 + (ref.stackCount % 5) : 8 + Math.floor(rand() * 5)))
 
+  const cx = x + w / 2
+  const cy = y + h / 2
+  const color = (node as any).fillColor || BLOB_PALETTE[0]
+  let svg = ''
+
+  for (let i = 0; i < rectCount; i++) {
+    // Rect dimensions: 35-80% of bounding box
+    const rw = w * (0.35 + rand() * 0.45)
+    const rh = h * (0.30 + rand() * 0.40)
+
+    // Corner radius: 25-45% of shorter edge — very rounded, pill-ish
+    const rrx = Math.min(rw, rh) * (0.25 + rand() * 0.20)
+
+    // Position: offset from center by up to ±17.5% of bbox
+    const ox = (rand() - 0.5) * w * 0.35
+    const oy = (rand() - 0.5) * h * 0.35
+    const rx = cx - rw / 2 + ox
+    const ry = cy - rh / 2 + oy
+
+    // Rotation: ±3° to ±12° around rect center
+    const rot = (rand() - 0.5) * 2 * (3 + rand() * 9)
+    const rcx = rx + rw / 2
+    const rcy = ry + rh / 2
+
+    svg += `<rect x="${rx.toFixed(1)}" y="${ry.toFixed(1)}" `
+         + `width="${rw.toFixed(1)}" height="${rh.toFixed(1)}" `
+         + `rx="${rrx.toFixed(1)}" `
+         + `fill="${color}" opacity="1" `
+         + `transform="rotate(${rot.toFixed(1)} ${rcx.toFixed(1)} ${rcy.toFixed(1)})" />`
+  }
+
+  return svg
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  §2b  Group blob — same rounded-rect union, tuned for large containers
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Like renderOrganicBlob but for parent group backgrounds:
+//   - Fewer rects (6-8) so the edge texture is gentler at large sizes
+//   - Larger relative size per rect (50-90% of bbox) for better coverage
+//   - Smaller rotation range (±2° to ±6°) — subtler at scale
+//   - Opacity 1.0 — opaque fill, children render on top
+function _renderGroupBlob(
+  seed: string,
+  x: number, y: number, w: number, h: number,
+  color: string,
+): string {
+  const rand = _seededRand(seed)
+  const rectCount = 6 + Math.floor(rand() * 3) // 6-8
   const cx = x + w / 2
   const cy = y + h / 2
   let svg = ''
 
-  for (let bi = 0; bi < blobCount; bi++) {
-    // Each blob: 5-8 control points, randomness 4-8
-    const pointCount = 5 + Math.floor(rand() * 4)
-    const randomness = 4 + rand() * 4
-    const rangeStart = 1 / (1 + randomness / 10)
+  for (let i = 0; i < rectCount; i++) {
+    // Rect dimensions: 50-90% of bounding box — larger for better coverage
+    const rw = w * (0.50 + rand() * 0.40)
+    const rh = h * (0.45 + rand() * 0.40)
 
-    const raw = _genBlobygon(pointCount, () => {
-      return (rangeStart + rand() * (1 - rangeStart)) / 2
-    })
-    const smooth = _smoothBlob(raw)
+    // Corner radius: 20-35% of shorter edge
+    const rrx = Math.min(rw, rh) * (0.20 + rand() * 0.15)
 
-    // Each blob is offset slightly from center — the cluster overlap
-    // creates organic concave-convex edges without path boolean ops.
-    const ox = (rand() + rand() - 1) * w * 0.08
-    const oy = (rand() + rand() - 1) * h * 0.08
-    const rx = w * (0.28 + rand() * 0.10)
-    const ry = h * (0.28 + rand() * 0.10)
+    // Position: offset from center by up to ±12.5% of bbox — tighter cluster
+    const ox = (rand() - 0.5) * w * 0.25
+    const oy = (rand() - 0.5) * h * 0.25
+    const rx = cx - rw / 2 + ox
+    const ry = cy - rh / 2 + oy
 
-    const color = (node as any).fillColor
-      || BLOB_PALETTE[bi % BLOB_PALETTE.length]
+    // Rotation: ±2° to ±6° — subtler at large scale
+    const rot = (rand() - 0.5) * 2 * (2 + rand() * 4)
+    const rcx = rx + rw / 2
+    const rcy = ry + rh / 2
 
-    const d = _blobPath(smooth, cx + ox, cy + oy, rx, ry)
-    svg += `<path d="${d}" fill="${color}" opacity="0.70" />`
+    svg += `<rect x="${rx.toFixed(1)}" y="${ry.toFixed(1)}" `
+         + `width="${rw.toFixed(1)}" height="${rh.toFixed(1)}" `
+         + `rx="${rrx.toFixed(1)}" `
+         + `fill="${color}" opacity="1" `
+         + `transform="rotate(${rot.toFixed(1)} ${rcx.toFixed(1)} ${rcy.toFixed(1)})" />`
   }
 
   return svg
