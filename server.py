@@ -704,17 +704,21 @@ async def api_sprite_generate(request_data: dict) -> JSONResponse:
     """
     POST /api/sprite-generate — Generate per-node sprites via Gemini interleaved output.
 
-    Runs the sprite pipeline ONLY (no big-image generation):
-      1. classify_nodes(elk_graph) → marks renderMode='sprite'
-      2. inject_sprites(elk_graph) → Gemini interleaved → stamp spriteRef
+    M412 enhanced: supports dry_run mode for classification-only testing.
+
+    Runs the sprite pipeline:
+      1. classify_nodes(elk_graph) → marks renderMode='sprite'/'kernel'
+      2. inject_sprites(elk_graph) → Gemini interleaved → chroma-key → stamp spriteRef
 
     Request body:
       - elk_graph (dict): ELK layouted JSON with children/edges
+      - dry_run (bool, optional): If true, only classify — skip Gemini generation
+      - model (str, optional): Gemini model name override
 
     Returns:
       - success (bool)
       - elk_graph (dict): Same graph with spriteRef stamped on sprite nodes
-      - diagnostics (dict): Injection stats
+      - diagnostics (dict): Classification + injection stats
     """
     try:
         elk_graph = request_data.get("elk_graph")
@@ -723,26 +727,33 @@ async def api_sprite_generate(request_data: dict) -> JSONResponse:
                 {"error": "elk_graph is required"}, status_code=400
             )
 
+        dry_run = request_data.get("dry_run", False)
+
         from backend.pipeline.topology.node_classifier import classify_nodes, consolidate_layers
         from backend.pipeline.topology.sprite_injector import inject_sprites
 
-        # Step 1: classify nodes + consolidate layers (M300)
-        classify_nodes(elk_graph)
+        # Step 1: classify nodes + consolidate layers (M300 + M410)
+        report = classify_nodes(elk_graph)
         consolidate_layers(elk_graph, top_k=3)
 
-        # Step 2: generate sprites (Gemini interleaved → stamp spriteRef)
+        # Step 2: generate sprites (or skip if dry_run)
         settings = get_settings()
         model = request_data.get("model", settings.DEFAULT_IMAGE_MODEL)
         inj_result = await inject_sprites(
             elk_graph,
             settings=settings,
             model=model,
+            skip_generation=dry_run,
         )
 
         return JSONResponse({
             "success": True,
             "elk_graph": elk_graph,
-            "diagnostics": inj_result.to_dict(),
+            "diagnostics": {
+                "classification": report.to_dict(),
+                "injection": inj_result.to_dict(),
+                "dry_run": dry_run,
+            },
         })
 
     except Exception as e:

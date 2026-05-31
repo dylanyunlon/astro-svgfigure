@@ -55,7 +55,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-RenderMode = Literal["text", "icon", "sprite"]
+RenderMode = Literal["text", "icon", "sprite", "kernel"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -65,7 +65,7 @@ RenderMode = Literal["text", "icon", "sprite"]
 # Math operators that M207 (renderMathOperator) draws as pure SVG.  These are
 # matched in node labels.  Kept deliberately tight: a lone glyph or the glyph
 # with whitespace, not e.g. a "+" inside a longer word.
-_OPERATOR_GLYPHS = "⊗⊕⊙⊘⊖∘×·⨂⨁∑∏∫"
+_OPERATOR_GLYPHS = "⊗⊕⊙⊘⊖⊛∘×·⨂⨁∑∏∫"
 _OPERATOR_RE = re.compile(rf"^\s*[{_OPERATOR_GLYPHS}]\s*$")
 # Plain-ASCII operator-only labels ("+", "x", "*", "concat") also qualify.
 _ASCII_OPERATOR_RE = re.compile(r"^\s*([+\-×*]|concat|concatenate|sum|prod|dot)\s*$", re.I)
@@ -266,14 +266,51 @@ def _is_sprite_candidate(label: str, icon_hint: str) -> bool:
     return False
 
 
+def _is_kernel_node(label: str, icon_hint: str) -> bool:
+    """M410: Detect kernel/filter/weight nodes that need grid rendering.
+
+    These get renderMode='kernel' → NxN weighted cell grid (AdaKern reference).
+    Distinct from sprite because they use deterministic geometry, not AI images.
+    """
+    blob = f"{icon_hint} {label}".lower()
+    _KERNEL_KEYWORDS = (
+        "static kernel", "low-freq kernel", "high-freq kernel",
+        "adaptive kernel", "conv kernel", "convolution kernel",
+        "kernel grid", "filter bank", "weight matrix",
+        "low-freq kern", "hi-freq kern",
+    )
+    return any(kw in blob for kw in _KERNEL_KEYWORDS)
+
+
+def _is_heatmap_node(label: str, icon_hint: str) -> bool:
+    """M410: Detect heatmap/selection-map nodes.
+
+    These are single-channel spatial maps (1×H×W) rendered as color gradients.
+    They get renderMode='sprite' with a specialized heatmap prompt.
+    """
+    blob = f"{icon_hint} {label}".lower()
+    _HEATMAP_KEYWORDS = (
+        "selection map", "dilation map", "attention map",
+        "saliency map", "heat map", "heatmap", "activation map",
+        "response map",
+    )
+    return any(kw in blob for kw in _HEATMAP_KEYWORDS)
+
+
 def classify_node(node: Dict[str, Any], aliases: Dict[str, str]) -> Tuple[RenderMode, bool]:
     """Classify ONE leaf node.  Returns (render_mode, is_operator).
 
-    Priority order (highest first), so each node lands in exactly one bucket:
-        1. operator  → ("text", True)   [M207 vector path]
-        2. sprite    → ("sprite", False)
-        3. icon      → ("icon", False)
-        4. default   → ("text", False)
+    M410 enhanced priority order (highest first):
+        1. operator  → ("text", True)   [M207 vector path: ⊗ ⊕ ⊛ ⊖]
+        2. kernel    → ("kernel", False) [M402 grid path: static/adaptive kernel]
+        3. sprite    → ("sprite", False) [AI illustration: feature maps, heatmaps]
+        4. icon      → ("icon", False)   [Iconify standard glyph]
+        5. default   → ("text", False)   [plain label]
+
+    M410 additions:
+        - kernel renderMode for kernel/filter/weight nodes
+        - familyId auto-inheritance from parent group (set in classify_nodes)
+        - heatmap nodes get sprite + specialized prompt hint
     """
     label = _node_label(node)
     icon_hint = (node.get("iconHint") or "").strip()
@@ -282,17 +319,25 @@ def classify_node(node: Dict[str, Any], aliases: Dict[str, str]) -> Tuple[Render
     if _is_operator(label, icon_hint):
         return "text", True
 
-    # 2. Sprite candidates: paper-specific visual objects.
+    # 2. Kernel nodes: NxN grid rendering (M402 renderKernelGrid).
+    if _is_kernel_node(label, icon_hint):
+        return "kernel", False
+
+    # 3. Sprite candidates: paper-specific visual objects.
     #    Checked BEFORE icon so "feature map" doesn't get swallowed by a
     #    weak first-word alias match.
+    #    M410: heatmap nodes also land here but get a prompt hint.
     if _is_sprite_candidate(label, icon_hint):
+        # M410: tag heatmap nodes with a prompt hint for Gemini
+        if _is_heatmap_node(label, icon_hint):
+            node["_spriteHint"] = "heatmap"
         return "sprite", False
 
-    # 3. Standard concepts with a known Iconify alias.
+    # 4. Standard concepts with a known Iconify alias.
     if _icon_alias_hit(label, icon_hint, aliases):
         return "icon", False
 
-    # 4. Everything else: plain text label.
+    # 5. Everything else: plain text label.
     return "text", False
 
 
@@ -399,21 +444,40 @@ def classify_nodes(elk_graph: Dict[str, Any]) -> ClassificationReport:
     """Classify every leaf node IN PLACE and return a ClassificationReport.
 
     Mutates each leaf node with:
-        node["renderMode"]  : "text" | "icon" | "sprite"
+        node["renderMode"]  : "text" | "icon" | "sprite" | "kernel"
         node["isOperator"]  : bool  (only meaningful when renderMode == "text")
         node["familyId"]    : str   (only set when renderMode == "sprite")
 
-    This is the M206 contract written onto the graph; to-svg.ts reads
-    renderMode and dispatches, the sprite pipeline (M211→M214) reads
-    familyId / renderMode to know what to generate.
+    M410 enhancements:
+        - kernel renderMode for kernel/filter/weight nodes (AdaKern pattern)
+        - familyId auto-inheritance: sprite nodes under same parent group
+          share a familyId based on the parent group's ID
+        - heatmap nodes tagged with _spriteHint for specialized Gemini prompts
     """
     aliases = _load_icon_aliases()
     report = ClassificationReport()
 
     leaves: List[Dict[str, Any]] = []
+    # M410: also track parent group context for familyId inheritance
+    parent_map: Dict[str, str] = {}  # node_id → parent_group_id
+
+    def _walk_with_parent(node: Dict[str, Any], parent_group_id: str) -> None:
+        children = node.get("children")
+        if isinstance(children, list) and children:
+            # This is a group node — use its ID as parent for children
+            group_id = node.get("id", parent_group_id)
+            for c in children:
+                if isinstance(c, dict):
+                    _walk_with_parent(c, group_id)
+        else:
+            leaves.append(node)
+            node_id = node.get("id", "")
+            if node_id and parent_group_id:
+                parent_map[node_id] = parent_group_id
+
     for child in elk_graph.get("children", []):
         if isinstance(child, dict):
-            _walk_leaves(child, leaves)
+            _walk_with_parent(child, "")
 
     report.total_leaves = len(leaves)
     sprite_nodes: List[Tuple[str, Dict[str, Any]]] = []
@@ -434,7 +498,11 @@ def classify_nodes(elk_graph: Dict[str, Any]) -> ClassificationReport:
         nid: fam.family_id for fam in families for nid in fam.member_node_ids
     }
     for node_id, node in sprite_nodes:
-        node["familyId"] = id_to_family.get(node_id, "")
+        fam_id = id_to_family.get(node_id, "")
+        # M410: If no family detected, inherit from parent group
+        if not fam_id and node_id in parent_map:
+            fam_id = f"group_{parent_map[node_id]}"
+        node["familyId"] = fam_id
     report.families = families
 
     logger.info(

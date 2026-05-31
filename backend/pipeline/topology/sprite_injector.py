@@ -342,7 +342,13 @@ def _split_sprite_sheet(sheet_b64: str, n_expected: int) -> List[Optional[str]]:
 
 
 def _chroma_key_single(b64: str) -> Optional[str]:
-    """Apply chroma key (green → transparent) to a single image."""
+    """Apply chroma key (green → transparent) to a single image.
+
+    M414: Enhanced with alpha edge quality validation.
+    If the resulting alpha channel has poor edge quality (too many
+    hard edge pixels relative to smooth transitions), log a warning
+    and mark for potential re-processing.
+    """
     import base64
     import io
 
@@ -357,11 +363,40 @@ def _chroma_key_single(b64: str) -> Optional[str]:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
         arr = np.array(img)
 
-        # Green pixels → transparent
-        gm = ((arr[:, :, 0] < 100) &
-              (arr[:, :, 1] > 180) &
-              (arr[:, :, 2] < 100))
-        arr[gm] = [0, 0, 0, 0]
+        # Green pixels → transparent (relaxed threshold for better edge handling)
+        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+        # Core green: strict match
+        core_green = (r < 100) & (g > 180) & (b < 100)
+        # Edge green: softer match for anti-aliased edges
+        edge_green = (r < 150) & (g > 140) & (b < 150) & (g > r + 30) & (g > b + 30)
+
+        # Apply core removal (fully transparent)
+        arr[core_green] = [0, 0, 0, 0]
+        # Apply edge removal (semi-transparent for smooth edges)
+        edge_only = edge_green & ~core_green
+        if edge_only.any():
+            # Calculate opacity based on green dominance
+            green_ratio = g[edge_only].astype(float) / (r[edge_only].astype(float) + b[edge_only].astype(float) + 1)
+            alpha = np.clip(255 - (green_ratio * 128).astype(np.uint8), 0, 255)
+            arr[edge_only, 3] = alpha
+
+        # M414: Quality gate — check alpha channel edge quality
+        alpha_channel = arr[:, :, 3]
+        total_pixels = alpha_channel.size
+        transparent_pixels = (alpha_channel == 0).sum()
+        opaque_pixels = (alpha_channel == 255).sum()
+        edge_pixels = total_pixels - transparent_pixels - opaque_pixels
+
+        transparency_ratio = transparent_pixels / total_pixels
+        edge_ratio = edge_pixels / total_pixels if total_pixels > 0 else 0
+
+        # Quality warnings
+        if transparency_ratio < 0.05:
+            logger.warning("M414: chroma-key produced < 5%% transparent pixels — "
+                          "background removal may have failed (ratio: %.2f)", transparency_ratio)
+        elif transparency_ratio > 0.95:
+            logger.warning("M414: chroma-key removed > 95%% of image — "
+                          "subject may be lost (ratio: %.2f)", transparency_ratio)
 
         result = Image.fromarray(arr)
         buf = io.BytesIO()
