@@ -560,12 +560,14 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
           // old SVG (without sprites) instead of our new sprite-enriched SVG.
           const ed = preview?.getEditor()
           if (ed) { ed.destroy(); }
-          preview?.showSkeleton(newSvg, null)
+          // Pass the sprite-enriched graph so tldraw Editor tab can
+          // pick up spriteRef URLs when user switches to Editor tab
+          preview?.showSkeleton(newSvg, data.elk_graph)
           document.getElementById('tab-skeleton')?.click()
         }
 
         const diag = data.diagnostics || {}
-        statusText.textContent = `Sprites done: ${diag.refs_stamped || 0} generated, ${diag.fallback_to_blob || 0} blob fallback`
+        statusText.textContent = `Sprites done: ${diag.refs_stamped || 0} generated, ${diag.fallback_to_blob || 0} blob fallback — visible in Skeleton + Editor tabs`
       } else {
         statusText.textContent = `Sprite error: ${data.error || 'Unknown'}`
       }

@@ -226,9 +226,14 @@ import TldrawEditor from './TldrawEditor.tsx'
         if (tldrawContainer) {
           tldrawContainer.style.display = ''
           // Load the current layouted graph into tldraw
+          // Prefer sprite-enriched graph (has spriteRef with real URLs)
+          // over original skeletonLayouted (blob-only fallback)
           const tldrawApi = (window as any).__tldrawEditor
-          if (tldrawApi && skeletonLayouted) {
-            tldrawApi.loadGraph(skeletonLayouted)
+          if (tldrawApi) {
+            const graphToLoad = tldrawApi._pendingSpriteGraph || skeletonLayouted
+            if (graphToLoad) {
+              tldrawApi.loadGraph(graphToLoad)
+            }
           }
         }
         hideEmptyAndLoading()
@@ -446,6 +451,19 @@ import TldrawEditor from './TldrawEditor.tsx'
 
         // Show editor toolbar
         ;(window as any).__svgEditor?.show()
+      }
+
+      // Store sprite-enriched graph for deferred tldraw Editor tab import.
+      // When user switches to Editor tab, it picks up this graph
+      // (which has spriteRef URLs) instead of the original blob-only graph.
+      if (layoutedData) {
+        const tldrawApi = (window as any).__tldrawEditor
+        if (tldrawApi) {
+          tldrawApi._pendingSpriteGraph = layoutedData
+          if (activeTab === 'editor') {
+            tldrawApi.loadGraph(layoutedData)
+          }
+        }
       }
     },
 

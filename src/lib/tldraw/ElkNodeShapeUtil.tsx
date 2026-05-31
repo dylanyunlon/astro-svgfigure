@@ -204,22 +204,23 @@ function ElkNodeComponent({ shape }: { shape: ElkNodeShape }) {
               src={spriteUrl}
               alt={label}
               style={{
-                width: w * 0.8, height: (h - 16) * 0.9,
+                width: w * 0.85, height: Math.max((h - 20) * 0.9, 40),
                 objectFit: 'contain',
+                borderRadius: 4,
               }}
               draggable={false}
             />
           ) : (
             // Organic blob placeholder — colored rounded rect
             <div style={{
-              width: w * 0.7, height: (h - 16) * 0.7,
+              width: w * 0.7, height: Math.max((h - 16) * 0.7, 30),
               borderRadius: '40% 60% 55% 45% / 50% 40% 60% 50%',
               backgroundColor: color,
               opacity: 0.7,
             }} />
           )}
           <span style={{
-            fontSize: Math.max(7, Math.min(10, w / label.length * 1.1)),
+            fontSize: Math.max(7, Math.min(10, w / Math.max(label.length, 1) * 1.1)),
             color: '#1A1A1A', fontStyle: 'italic',
             fontFamily: 'system-ui, -apple-system, sans-serif',
             marginTop: 2, textAlign: 'center',
