@@ -79,8 +79,16 @@ def _node_label(node: Dict[str, Any]) -> str:
     return node.get("id", "?")
 
 
-def _build_interleaved_prompt(sprite_nodes: List[Dict[str, Any]]) -> str:
+def _build_interleaved_prompt(
+    sprite_nodes: List[Dict[str, Any]],
+    family_prompts: Optional[Dict[str, str]] = None,
+) -> str:
     """Build a single prompt that asks Gemini to generate one image per node.
+
+    M301 upgrade: if family_prompts is provided (from sprite_prompt_designer),
+    use series-consistent per-node prompts instead of generic descriptions.
+    This ensures same-family sprites share identical base descriptions and
+    differ only along the variation_axis — matching "同类型不同含义、只有微小差别".
 
     Gemini interleaved output: when responseModalities includes IMAGE,
     the model can return multiple images in one response, each as a
@@ -89,11 +97,6 @@ def _build_interleaved_prompt(sprite_nodes: List[Dict[str, Any]]) -> str:
     CRITICAL: background must be solid pure green #00FF00 so the existing
     chroma-key pipeline (Tier 3 in handle_removebg) can strip it without
     needing paid API keys (remove.bg / Canva).
-
-    Image style: academic figure illustrations like those in FreqSelect,
-    Pix2Struct, AdaDR papers — feature maps as colored rectangular blocks,
-    encoders/decoders as stacked layer diagrams, attention maps as heatmaps,
-    kernels as small grids with colored cells.
     """
     lines = [
         "You are generating illustrations for a scientific/academic paper figure. "
@@ -108,22 +111,35 @@ def _build_interleaved_prompt(sprite_nodes: List[Dict[str, Any]]) -> str:
         "- Kernels / filters: draw as a small NxN grid with colored cells.\n"
         "- Input images: draw as a colorful photograph thumbnail (landscape/scene).\n"
         "- Each illustration MUST be 256x256 pixels, square, centered.\n"
-        "- No text labels inside the illustration. No 3D effects. Thin clean outlines.\n\n"
-        "ITEMS TO ILLUSTRATE:\n",
+        "- No text labels inside the illustration. No 3D effects. Thin clean outlines.\n"
     ]
+
+    # M301: series-consistency clause for families
+    if family_prompts:
+        lines.append(
+            "- SERIES CONSISTENCY: some items belong to the same family. "
+            "Family members MUST be visually identical except for the stated difference. "
+            "Same color palette, same stroke weight, same overall shape, same composition.\n"
+        )
+
+    lines.append("ITEMS TO ILLUSTRATE:\n")
+
     for i, node in enumerate(sprite_nodes):
-        label = _node_label(node)
-        hint = node.get("iconHint", "")
-        family_id = node.get("familyId", "")
+        node_id = node.get("id", "")
 
-        # Build a richer description based on the node's semantic role
-        desc = f"{label}"
-        if hint:
-            desc += f" — visual concept: {hint}"
-        if family_id:
-            desc += f" [family: {family_id}]"
-
-        lines.append(f"  {i+1}. {desc}")
+        # M301: prefer family-aware designed prompt over generic description
+        if family_prompts and node_id in family_prompts:
+            lines.append(f"  {i+1}. {family_prompts[node_id]}")
+        else:
+            label = _node_label(node)
+            hint = node.get("iconHint", "")
+            family_id = node.get("familyId", "")
+            desc = f"{label}"
+            if hint:
+                desc += f" — visual concept: {hint}"
+            if family_id:
+                desc += f" [family: {family_id}]"
+            lines.append(f"  {i+1}. {desc}")
 
     lines.append(
         f"\nGenerate EXACTLY {len(sprite_nodes)} images, one per item, in order. "
@@ -365,8 +381,16 @@ async def inject_sprites(
 ) -> SpriteInjectionResult:
     """Run the full sprite pipeline on a composed ELK graph.
 
-    New approach: Gemini interleaved output (one call → N images).
-    No sprite sheets. No rembg. No sheet splitting.
+    M301-M304 upgrade: family-aware series-consistent pipeline.
+
+    Pipeline:
+      M300  consolidate_layers() — merge small groups into top-K parents
+      M210  classify_nodes()     — stamp renderMode/familyId on every leaf
+      M301  design family prompts — series-consistent per-node descriptions
+      M302  Gemini interleaved   — one call → N images (green #00FF00 bg)
+      M302  chroma-key / rembg   — green → transparent PNG
+      M303  stamp spriteRef      — write base64 PNG into ELK node
+      M304  family consistency   — validate intra-family visual coherence
 
     Args:
         elk_graph: The composed ELK graph dict (mutated in place).
@@ -378,6 +402,15 @@ async def inject_sprites(
     import time
     t0 = time.monotonic()
     result = SpriteInjectionResult()
+
+    # ── M300: Layer consolidation ──
+    # Merge small groups into top-K parents before classification.
+    # This reduces the number of sprite nodes, making generation more efficient.
+    try:
+        from backend.pipeline.topology.node_classifier import consolidate_layers
+        consolidate_layers(elk_graph, top_k=3)
+    except Exception as e:
+        logger.warning("consolidate_layers failed (non-fatal): %s", e)
 
     # ── Step 1: Collect sprite nodes ──
     sprite_nodes: List[Dict[str, Any]] = []
@@ -397,11 +430,36 @@ async def inject_sprites(
         result.elapsed_ms = (time.monotonic() - t0) * 1000
         return result
 
-    # ── Step 2: Build interleaved prompt ──
-    prompt = _build_interleaved_prompt(sprite_nodes)
+    # ── M301: Design family-aware prompts ──
+    # Use sprite_prompt_designer for series-consistent descriptions.
+    # This ensures same-family nodes share identical base + differ on axis.
+    family_prompts: Optional[Dict[str, str]] = None
+    try:
+        from backend.pipeline.topology.node_classifier import (
+            classify_nodes, ClassificationReport,
+        )
+        from backend.pipeline.topology.sprite_prompt_designer import (
+            design_prompts_for_classified,
+        )
+
+        # classify_nodes has already run (caller did it), but we need the
+        # families list.  Re-classifying is idempotent (same result).
+        report = classify_nodes(elk_graph)
+        if report.families:
+            designed = design_prompts_for_classified(elk_graph, report.families)
+            if designed:
+                family_prompts = {p.node_id: p.prompt for p in designed}
+                logger.info(
+                    "M301: %d family-aware prompts designed (%d families)",
+                    len(family_prompts), len(report.families),
+                )
+    except Exception as e:
+        logger.warning("M301 family prompt design failed (fallback to basic): %s", e)
+
+    # ── M302: Build prompt + call Gemini ──
+    prompt = _build_interleaved_prompt(sprite_nodes, family_prompts=family_prompts)
     result.prompts_designed = len(sprite_nodes)
 
-    # ── Step 3: One Gemini call → N images ──
     try:
         images = await _call_gemini_interleaved(
             prompt=prompt,
@@ -415,11 +473,9 @@ async def inject_sprites(
         result.errors.append(str(e))
         images = [None] * len(sprite_nodes)
 
-    # ── Step 3.5: Remove background from each sprite ──
-    # Gemini outputs images with white/colored backgrounds, not transparent.
-    # To fill into ELK node slots without visible background rectangles,
-    # we need transparent PNGs. Use the existing tiered rembg pipeline:
-    #   Tier 0: remove.bg (Canva) → Tier 1: remove-bg.io → Tier 2: rembg U2-Net → Tier 3: chroma
+    # ── M302: Remove background from each sprite ──
+    # Gemini outputs images with green #00FF00 backgrounds.
+    # Chroma-key → transparent PNGs for embedding into ELK node slots.
     images_with_bg = [img for img in images if img is not None]
     if images_with_bg:
         try:
@@ -430,25 +486,32 @@ async def inject_sprites(
                 transparent_images = [
                     r.get("image_b64") for r in rb_result.get("results", [])
                 ]
-                # Map back to the full images list (None slots stay None)
                 ti_iter = iter(transparent_images)
                 images = [
                     next(ti_iter) if img is not None else None
                     for img in images
                 ]
                 logger.info(
-                    "rembg: %d/%d sprites background-removed (method: %s)",
+                    "M302 rembg: %d/%d sprites background-removed (method: %s)",
                     len(transparent_images), len(images_with_bg),
                     rb_result.get("method", "unknown"),
                 )
             else:
-                logger.warning("rembg failed: %s — using images with background",
+                logger.warning("rembg failed: %s — using chroma-key fallback",
                                rb_result.get("error", "unknown"))
+                # Fallback: apply chroma-key directly
+                images = [
+                    _chroma_key_single(img) if img is not None else None
+                    for img in images
+                ]
         except Exception as e:
-            logger.exception("rembg call failed — using images with background")
-            result.errors.append(f"rembg: {e}")
+            logger.warning("rembg unavailable — chroma-key fallback: %s", e)
+            images = [
+                _chroma_key_single(img) if img is not None else None
+                for img in images
+            ]
 
-    # ── Step 4: Stamp each image onto its node ──
+    # ── M303: Stamp each image onto its node (spriteRef embedding) ──
     for i, (node, img_b64) in enumerate(zip(sprite_nodes, images)):
         if img_b64:
             _stamp_sprite_ref(node, image_b64=img_b64, stack_count=3)
@@ -457,6 +520,15 @@ async def inject_sprites(
             _stamp_sprite_ref(node, image_b64=None, stack_count=2 + (i % 3))
             result.fallback_to_blob += 1
 
+    # ── M304: Family consistency validation ──
+    # Check that sprites within the same family have similar visual properties.
+    # If a sprite deviates too much, mark it for re-generation (future: trigger
+    # re-gen; for now: log warning + add to diagnostics).
+    try:
+        _validate_family_consistency(sprite_nodes, images, result)
+    except Exception as e:
+        logger.warning("M304 consistency validation failed (non-fatal): %s", e)
+
     result.elapsed_ms = (time.monotonic() - t0) * 1000
     logger.info(
         "Sprite injection: %d nodes, %d stamped, %d blob fallback, %.0fms",
@@ -464,3 +536,67 @@ async def inject_sprites(
         result.fallback_to_blob, result.elapsed_ms,
     )
     return result
+
+
+def _validate_family_consistency(
+    sprite_nodes: List[Dict[str, Any]],
+    images: List[Optional[str]],
+    result: SpriteInjectionResult,
+) -> None:
+    """M304: Validate intra-family visual consistency.
+
+    Groups sprite nodes by familyId, checks that all members within a family
+    have similar image dimensions and non-empty content.  Logs warnings for
+    families where members have inconsistent sizes (which would indicate
+    Gemini produced mismatched illustrations).
+
+    Future enhancement: compute perceptual hash (pHash) distance between
+    family members and trigger re-generation if delta exceeds threshold.
+    """
+    import base64
+    import io
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return  # no Pillow → skip validation
+
+    # Group by familyId
+    families: Dict[str, List[tuple]] = {}
+    for node, img_b64 in zip(sprite_nodes, images):
+        fam_id = node.get("familyId", "")
+        if fam_id and img_b64:
+            families.setdefault(fam_id, []).append((node.get("id", ""), img_b64))
+
+    inconsistent_families = []
+    for fam_id, members in families.items():
+        if len(members) < 2:
+            continue
+
+        # Check dimensions consistency
+        sizes = []
+        for node_id, b64 in members:
+            try:
+                img = Image.open(io.BytesIO(base64.b64decode(b64)))
+                sizes.append((img.width, img.height))
+            except Exception:
+                sizes.append((0, 0))
+
+        # All members should have similar dimensions (within 20% tolerance)
+        if sizes:
+            avg_w = sum(s[0] for s in sizes) / len(sizes)
+            avg_h = sum(s[1] for s in sizes) / len(sizes)
+            for node_id, (w, h) in zip([m[0] for m in members], sizes):
+                if avg_w > 0 and abs(w - avg_w) / avg_w > 0.2:
+                    inconsistent_families.append(fam_id)
+                    logger.warning(
+                        "M304: family %s member %s has inconsistent width "
+                        "(%d vs avg %.0f)",
+                        fam_id, node_id, w, avg_w,
+                    )
+                    break
+
+    if inconsistent_families:
+        result.errors.append(
+            f"M304: {len(inconsistent_families)} families with size inconsistency"
+        )

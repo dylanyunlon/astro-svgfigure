@@ -723,11 +723,12 @@ async def api_sprite_generate(request_data: dict) -> JSONResponse:
                 {"error": "elk_graph is required"}, status_code=400
             )
 
-        from backend.pipeline.topology.node_classifier import classify_nodes
+        from backend.pipeline.topology.node_classifier import classify_nodes, consolidate_layers
         from backend.pipeline.topology.sprite_injector import inject_sprites
 
-        # Step 1: classify nodes
+        # Step 1: classify nodes + consolidate layers (M300)
         classify_nodes(elk_graph)
+        consolidate_layers(elk_graph, top_k=3)
 
         # Step 2: generate sprites (Gemini interleaved → stamp spriteRef)
         settings = get_settings()
