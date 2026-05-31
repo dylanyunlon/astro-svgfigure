@@ -549,58 +549,31 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       const data = await res.json()
 
       if (data.success && data.elk_graph) {
-        // ═══ ARCHITECTURAL CHANGE: sprites → tldraw Editor (not SVG) ═══
-        // The sprite-enriched ELK graph goes directly to the tldraw
-        // Editor tab where users can drag, resize, and edit nodes.
-        // Static SVG is kept as fallback but Editor is primary output.
+        // ═══ ARCHITECTURE: sprites → Skeleton interactive editor (not tldraw) ═══
+        // The sprite-enriched ELK graph goes to the existing InteractiveSvgEditor
+        // in the Skeleton tab — same drag/resize/zoom UX, but with Gemini sprite
+        // images rendered as <image> elements inside SVG nodes.
+        // This preserves the clean ELK-native rendering (arrows, groups, labels)
+        // that tldraw couldn't match.
 
-        // 1. Also update skeleton SVG as fallback (always works)
+        // 1. Generate static SVG (for export/fallback)
         const { elkToSvg } = await import('@/lib/elk/to-svg')
         const newSvg = elkToSvg(data.elk_graph)
         if (newSvg) {
           currentSkeletonSvg = newSvg
-          // Store both SVG and enriched graph data
-          preview?.showSkeleton(newSvg, data.elk_graph)
         }
 
-        // 2. Switch to Editor tab FIRST — tldraw container must be visible
-        //    before loadGraph so canvas gets correct dimensions.
-        document.getElementById('tab-editor')?.click()
+        // 2. Load enriched graph into interactive editor (Skeleton tab)
+        //    showSkeleton with layoutedData triggers initInteractiveEditor,
+        //    which now renders sprite images via InteractiveNode.spriteUrl
+        preview?.showSkeleton(newSvg || '', data.elk_graph)
 
-        // 3. Load sprite-enriched graph into tldraw Editor with retry.
-        //    tldraw needs time to: (a) unhide container → (b) measure canvas
-        //    → (c) hydrate React island (client:only). We retry until the API
-        //    is available and the editor has non-zero dimensions.
-        const loadIntoEditor = () => {
-          const tldrawApi = (window as any).__tldrawEditor
-          if (tldrawApi) {
-            tldrawApi._pendingSpriteGraph = data.elk_graph
-            tldrawApi.loadGraph(data.elk_graph)
-            // Force tldraw to recalculate viewport after load
-            const editor = tldrawApi.getEditor?.()
-            if (editor) {
-              requestAnimationFrame(() => {
-                try { editor.zoomToFit() } catch (_) {}
-              })
-            }
-            return true
-          }
-          return false
-        }
-
-        // Retry: tldraw React island may not be hydrated yet (client:only)
-        if (!loadIntoEditor()) {
-          let retries = 0
-          const interval = setInterval(() => {
-            if (loadIntoEditor() || ++retries > 20) {
-              clearInterval(interval)
-            }
-          }, 200)
-        }
+        // 3. Switch to Skeleton tab — the primary editing surface
+        document.getElementById('tab-skeleton')?.click()
 
         const diag = data.diagnostics || {}
         const injDiag = diag.injection || diag
-        statusText.textContent = `Sprites done: ${injDiag.refs_stamped || 0} injected — editing in Editor tab. Drag nodes to rearrange.`
+        statusText.textContent = `Sprites done: ${injDiag.refs_stamped || 0} injected. Drag nodes to rearrange.`
       } else {
         statusText.textContent = `Sprite error: ${data.error || 'Unknown'}`
       }

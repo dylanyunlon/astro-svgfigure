@@ -28,6 +28,12 @@ interface ElkLayoutedNode {
   height?: number
   labels?: { text: string }[]
   children?: ElkLayoutedNode[]
+  // Sprite/render fields from classify_nodes + inject_sprites
+  renderMode?: string
+  isOperator?: boolean
+  familyId?: string
+  iconHint?: string
+  spriteRef?: { format?: string; url?: string; svg?: string; stackCount?: number }
 }
 
 interface ElkLayoutedEdge {
@@ -133,6 +139,13 @@ function flattenNode(node: ElkLayoutedNode, index: number, out: InteractiveNode[
     label: node.labels?.[0]?.text || node.id,
     fill: NODE_FILL_NEUTRAL,
     isGroup: hasChildren,
+    // Sprite/render metadata from classify_nodes + inject_sprites
+    renderMode: node.renderMode,
+    isOperator: node.isOperator,
+    familyId: node.familyId,
+    iconHint: node.iconHint,
+    spriteUrl: node.spriteRef?.url,
+    spriteFormat: node.spriteRef?.format,
   })
 
   if (hasChildren) {

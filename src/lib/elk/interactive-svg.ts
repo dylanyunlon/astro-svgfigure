@@ -28,6 +28,13 @@ export interface InteractiveNode {
   fill: string
   children?: InteractiveNode[]
   isGroup?: boolean
+  // Sprite/render metadata — carried from ELK classify_nodes output
+  renderMode?: string       // 'text' | 'icon' | 'sprite' | 'kernel'
+  isOperator?: boolean
+  familyId?: string
+  spriteUrl?: string        // data:image/png;base64,... from Gemini
+  spriteFormat?: string     // 'png' | 'svg' | 'stack'
+  iconHint?: string
 }
 
 export interface InteractiveEdge {
@@ -352,7 +359,99 @@ export class InteractiveSvgEditor {
     g.style.cursor = 'grab'
     g.style.transition = 'opacity 0.15s ease'
 
-    // Main rect — with subtle shadow via filter
+    // ── Path B: Operator nodes — circle + glyph (⊗ ⊕ ⊛ ⊖) ──
+    if (node.isOperator) {
+      const r = Math.min(node.width, node.height) * 0.38
+      const cx = node.x + node.width / 2
+      const cy = node.y + node.height / 2
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+      circle.setAttribute('cx', String(cx))
+      circle.setAttribute('cy', String(cy))
+      circle.setAttribute('r', String(r))
+      circle.setAttribute('fill', '#FFFFFF')
+      circle.setAttribute('stroke', this.theme.nodeStroke)
+      circle.setAttribute('stroke-width', '1.5')
+      g.appendChild(circle)
+
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+      text.setAttribute('x', String(cx))
+      text.setAttribute('y', String(cy))
+      text.setAttribute('text-anchor', 'middle')
+      text.setAttribute('dominant-baseline', 'central')
+      text.setAttribute('font-family', 'system-ui, -apple-system, sans-serif')
+      text.setAttribute('font-size', String(Math.max(12, r * 1.1)))
+      text.setAttribute('fill', this.theme.textColor)
+      text.textContent = node.label
+      g.appendChild(text)
+
+      // Interaction events
+      this.attachNodeEvents(g, node)
+      return g
+    }
+
+    // ── Path C: Sprite nodes with real AI image ──
+    const hasRealSprite = node.spriteUrl && node.spriteFormat !== 'stack'
+    if (node.renderMode === 'sprite' && hasRealSprite) {
+      // Transparent background — sprite IS the visual
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      rect.setAttribute('x', String(node.x))
+      rect.setAttribute('y', String(node.y))
+      rect.setAttribute('width', String(node.width))
+      rect.setAttribute('height', String(node.height))
+      rect.setAttribute('fill', 'transparent')
+      rect.setAttribute('stroke', 'none')
+      g.appendChild(rect)
+
+      // Sprite image — preserveAspectRatio keeps it sharp
+      const imgH = Math.max(node.height - 18, 40)
+      const img = document.createElementNS('http://www.w3.org/2000/svg', 'image')
+      img.setAttribute('href', node.spriteUrl!)
+      img.setAttribute('x', String(node.x + 2))
+      img.setAttribute('y', String(node.y + 2))
+      img.setAttribute('width', String(node.width - 4))
+      img.setAttribute('height', String(imgH))
+      img.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+      g.appendChild(img)
+
+      // Label below image
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+      const maxChars = Math.max(6, Math.floor(node.width / 7))
+      const dl = node.label.length > maxChars ? node.label.slice(0, maxChars - 2) + '…' : node.label
+      text.setAttribute('x', String(node.x + node.width / 2))
+      text.setAttribute('y', String(node.y + imgH + 14))
+      text.setAttribute('text-anchor', 'middle')
+      text.setAttribute('font-family', 'system-ui, -apple-system, sans-serif')
+      text.setAttribute('font-size', '10')
+      text.setAttribute('font-weight', '500')
+      text.setAttribute('font-style', 'italic')
+      text.setAttribute('fill', this.theme.textColor)
+      text.setAttribute('pointer-events', 'none')
+      text.textContent = dl
+      g.appendChild(text)
+
+      // Hover rect for interaction feedback
+      const hoverRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      hoverRect.setAttribute('x', String(node.x))
+      hoverRect.setAttribute('y', String(node.y))
+      hoverRect.setAttribute('width', String(node.width))
+      hoverRect.setAttribute('height', String(node.height))
+      hoverRect.setAttribute('fill', 'transparent')
+      hoverRect.setAttribute('stroke', 'transparent')
+      hoverRect.setAttribute('stroke-width', '1.5')
+      hoverRect.setAttribute('rx', '6')
+      g.addEventListener('mouseenter', () => {
+        if (!this.confirmed) hoverRect.setAttribute('stroke', this.theme.selectionColor + '60')
+      })
+      g.addEventListener('mouseleave', () => {
+        if (this.selectedNodeId !== node.id) hoverRect.setAttribute('stroke', 'transparent')
+      })
+      g.appendChild(hoverRect)
+
+      this.attachNodeEvents(g, node)
+      return g
+    }
+
+    // ── Default path: Regular nodes (text, icon, sprite-blob, group) ──
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
     rect.setAttribute('x', String(node.x))
     rect.setAttribute('y', String(node.y))
@@ -364,11 +463,11 @@ export class InteractiveSvgEditor {
     rect.setAttribute('rx', '8')
     if (node.isGroup) rect.setAttribute('stroke-dasharray', '6,3')
 
-    // Hover effect — Task 9
+    // Hover effect
     g.addEventListener('mouseenter', () => {
       if (!this.confirmed) {
         rect.setAttribute('stroke-width', node.isGroup ? '2.5' : '2')
-        rect.setAttribute('stroke', this.theme.selectionColor + '80') // 50% opacity accent
+        rect.setAttribute('stroke', this.theme.selectionColor + '80')
       }
     })
     g.addEventListener('mouseleave', () => {
@@ -419,26 +518,25 @@ export class InteractiveSvgEditor {
       g.appendChild(handle)
     }
 
-    // Drag events
+    this.attachNodeEvents(g, node)
+    return g
+  }
+
+  /** Attach drag/click/dblclick to a node group — shared by all render paths */
+  private attachNodeEvents(g: SVGGElement, node: InteractiveNode) {
     g.addEventListener('mousedown', (e) => {
       if ((e.target as Element).classList.contains('resize-handle')) return
       e.stopPropagation()
       this.startDrag(node.id, e)
     })
-
-    // Double-click to edit label
     g.addEventListener('dblclick', (e) => {
       e.stopPropagation()
       this.startLabelEdit(node.id)
     })
-
-    // Click to select
     g.addEventListener('click', (e) => {
       e.stopPropagation()
       this.selectNode(node.id)
     })
-
-    return g
   }
 
   private createEdgeGroup(edge: InteractiveEdge): SVGGElement {
