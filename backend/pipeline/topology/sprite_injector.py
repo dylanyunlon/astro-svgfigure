@@ -3,7 +3,7 @@
 Gemini responseModalities: ['TEXT','IMAGE'] returns interleaved multi-image
 output in ONE request. We describe all sprite nodes in a single prompt, and
 Gemini returns N independent images as separate parts[].inline_data — each
-one corresponds to one node. No sprite sheets, no rembg, no cropping.
+one corresponds to one node. Background removal via remove.bg (Canva) API.
 
 Pipeline:
   classify_nodes()             — already done (marks renderMode='sprite')
@@ -94,15 +94,15 @@ def _build_interleaved_prompt(
     the model can return multiple images in one response, each as a
     separate part with inline_data. We ask it to generate them in order.
 
-    CRITICAL: background must be solid pure green #00FF00 so the existing
-    chroma-key pipeline (Tier 3 in handle_removebg) can strip it without
-    needing paid API keys (remove.bg / Canva).
+    Background: WHITE #FFFFFF. remove.bg (Canva) API does AI-based segmentation
+    to produce transparent PNGs. White produces cleaner edges than green
+    because Gemini has fewer color-bleeding artifacts on white.
     """
     lines = [
         "You are generating illustrations for a scientific/academic paper figure. "
         "Generate one illustration for EACH item below, in EXACT order.\n\n"
         "STYLE REQUIREMENTS (CRITICAL — follow ALL of these):\n"
-        "- Background: solid pure green #00FF00 (RGB 0,255,0). NO gradients, NO shadows.\n"
+        "- Background: solid pure WHITE #FFFFFF. NO gradients, NO shadows, NO borders.\n"
         "- Style: academic paper figure illustration, clean and minimal.\n"
         "- Feature maps / tensors: draw as a colored rectangular slab with subtle "
         "texture patterns (like a heatmap or activation visualization).\n"
@@ -110,7 +110,7 @@ def _build_interleaved_prompt(
         "- Attention / selection maps: draw as a red-yellow-blue heatmap.\n"
         "- Kernels / filters: draw as a small NxN grid with colored cells.\n"
         "- Input images: draw as a colorful photograph thumbnail (landscape/scene).\n"
-        "- Each illustration MUST be 256x256 pixels, square, centered.\n"
+        "- Each illustration MUST be 256x256 pixels, square, centered on white.\n"
         "- No text labels inside the illustration. No 3D effects. Thin clean outlines.\n"
     ]
 
@@ -143,7 +143,7 @@ def _build_interleaved_prompt(
 
     lines.append(
         f"\nGenerate EXACTLY {len(sprite_nodes)} images, one per item, in order. "
-        "Each 256x256 px. Solid #00FF00 green background. Academic figure style."
+        "Each 256x256 px. Solid WHITE #FFFFFF background. Academic figure style."
     )
     return "\n".join(lines)
 
@@ -205,8 +205,8 @@ async def _call_gemini_interleaved(
     # Two formats:
     #   A) Standard Gemini: N separate inlineData parts, one per image.
     #   B) Proxy (tryallai): ONE image containing all N illustrations
-    #      arranged in a grid with green #00FF00 separators — a "sprite sheet".
-    #      We detect this case, split the sheet into cells, chroma-key each,
+    #      arranged in a grid — a "sprite sheet".
+    #      We detect this case, split the sheet into individual cells,
     #      and return N individual base64 images.
     import re
     raw_images: List[str] = []  # base64 strings before sheet splitting
@@ -243,9 +243,8 @@ async def _call_gemini_interleaved(
     elif len(raw_images) >= n_expected:
         # Standard case: N separate images
         for b64 in raw_images:
-            # Still chroma-key each individual image
-            cleaned = _chroma_key_single(b64)
-            images.append(cleaned)
+            # Pass through RAW — bg removal by remove.bg downstream
+            images.append(b64)
     # else: 0 images → all None
 
     # Pad or truncate to n_expected
@@ -255,155 +254,48 @@ async def _call_gemini_interleaved(
 
 
 def _split_sprite_sheet(sheet_b64: str, n_expected: int) -> List[Optional[str]]:
-    """Split a sprite sheet with green #00FF00 separators into individual cells.
-
-    The sheet is a grid of illustrations separated by green bands.
-    We detect green rows/columns, find non-green rectangular cells,
-    chroma-key each cell (green → transparent), and return as base64 PNGs.
-    """
-    import base64
-    import io
-
+    """Split a proxy sprite sheet into individual cells (no bg removal)."""
+    import base64, io
     try:
         from PIL import Image
         import numpy as np
     except ImportError:
-        logger.warning("Pillow/numpy not available — cannot split sprite sheet")
-        return [sheet_b64]  # return the whole sheet as one image
-
+        return [sheet_b64]
     try:
         img_bytes = base64.b64decode(sheet_b64)
         img = Image.open(io.BytesIO(img_bytes))
         arr = np.array(img.convert("RGB"))
         h, w = arr.shape[:2]
-
-        # Detect green pixels: R<100, G>180, B<100
-        green = (arr[:, :, 0] < 100) & (arr[:, :, 1] > 180) & (arr[:, :, 2] < 100)
-
-        # Find row and column segments that are NOT green
-        row_green = green.mean(axis=1) > 0.7
-        col_green = green.mean(axis=0) > 0.7
-
-        def find_segments(mask: np.ndarray, min_size: int = 40) -> List[tuple]:
-            segs = []
-            start = None
-            for i, v in enumerate(mask):
-                if not v and start is None:
-                    start = i
+        row_std = arr.std(axis=1).mean(axis=1)
+        col_std = arr.std(axis=0).mean(axis=1)
+        row_sep = row_std < 15
+        col_sep = col_std < 15
+        def find_segments(mask, min_size=40):
+            segs, start = [], None
+            for j, v in enumerate(mask):
+                if not v and start is None: start = j
                 elif v and start is not None:
-                    if i - start >= min_size:
-                        segs.append((start, i))
+                    if j - start >= min_size: segs.append((start, j))
                     start = None
             if start is not None and len(mask) - start >= min_size:
                 segs.append((start, len(mask)))
             return segs
-
-        row_segs = find_segments(row_green)
-        col_segs = find_segments(col_green)
-
-        logger.info("Sheet %dx%d → %d row segments, %d col segments",
-                     w, h, len(row_segs), len(col_segs))
-
+        row_segs = find_segments(row_sep)
+        col_segs = find_segments(col_sep)
         if not row_segs or not col_segs:
-            logger.warning("No green grid detected — returning sheet as single image")
-            cleaned = _chroma_key_single(sheet_b64)
-            return [cleaned]
-
-        # Extract cells row by row, left to right
+            return [sheet_b64]
         cells: List[Optional[str]] = []
         for ry0, ry1 in row_segs:
             for cx0, cx1 in col_segs:
-                # Skip cells that are mostly green (empty)
-                cell_region = green[ry0:ry1, cx0:cx1]
-                if cell_region.mean() > 0.8:
-                    continue
-
-                cell = img.crop((cx0, ry0, cx1, ry1)).convert("RGBA")
-                cell_arr = np.array(cell)
-
-                # Chroma key: green → transparent
-                gm = ((cell_arr[:, :, 0] < 100) &
-                      (cell_arr[:, :, 1] > 180) &
-                      (cell_arr[:, :, 2] < 100))
-                cell_arr[gm] = [0, 0, 0, 0]
-
-                result = Image.fromarray(cell_arr)
+                cell = img.crop((cx0, ry0, cx1, ry1))
                 buf = io.BytesIO()
-                result.save(buf, format="PNG")
-                b64 = base64.b64encode(buf.getvalue()).decode()
-                cells.append(b64)
-
-        logger.info("Extracted %d cells from sprite sheet", len(cells))
+                cell.save(buf, format="PNG")
+                cells.append(base64.b64encode(buf.getvalue()).decode())
         return cells if cells else [sheet_b64]
-
     except Exception as e:
         logger.exception("Sprite sheet split failed: %s", e)
         return [sheet_b64]
 
-
-def _chroma_key_single(b64: str) -> Optional[str]:
-    """Apply chroma key (green → transparent) to a single image.
-
-    M414: Enhanced with alpha edge quality validation.
-    If the resulting alpha channel has poor edge quality (too many
-    hard edge pixels relative to smooth transitions), log a warning
-    and mark for potential re-processing.
-    """
-    import base64
-    import io
-
-    try:
-        from PIL import Image
-        import numpy as np
-    except ImportError:
-        return b64  # no Pillow → return as-is
-
-    try:
-        img_bytes = base64.b64decode(b64)
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
-        arr = np.array(img)
-
-        # Green pixels → transparent (relaxed threshold for better edge handling)
-        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
-        # Core green: strict match
-        core_green = (r < 100) & (g > 180) & (b < 100)
-        # Edge green: softer match for anti-aliased edges
-        edge_green = (r < 150) & (g > 140) & (b < 150) & (g > r + 30) & (g > b + 30)
-
-        # Apply core removal (fully transparent)
-        arr[core_green] = [0, 0, 0, 0]
-        # Apply edge removal (semi-transparent for smooth edges)
-        edge_only = edge_green & ~core_green
-        if edge_only.any():
-            # Calculate opacity based on green dominance
-            green_ratio = g[edge_only].astype(float) / (r[edge_only].astype(float) + b[edge_only].astype(float) + 1)
-            alpha = np.clip(255 - (green_ratio * 128).astype(np.uint8), 0, 255)
-            arr[edge_only, 3] = alpha
-
-        # M414: Quality gate — check alpha channel edge quality
-        alpha_channel = arr[:, :, 3]
-        total_pixels = alpha_channel.size
-        transparent_pixels = (alpha_channel == 0).sum()
-        opaque_pixels = (alpha_channel == 255).sum()
-        edge_pixels = total_pixels - transparent_pixels - opaque_pixels
-
-        transparency_ratio = transparent_pixels / total_pixels
-        edge_ratio = edge_pixels / total_pixels if total_pixels > 0 else 0
-
-        # Quality warnings
-        if transparency_ratio < 0.05:
-            logger.warning("M414: chroma-key produced < 5%% transparent pixels — "
-                          "background removal may have failed (ratio: %.2f)", transparency_ratio)
-        elif transparency_ratio > 0.95:
-            logger.warning("M414: chroma-key removed > 95%% of image — "
-                          "subject may be lost (ratio: %.2f)", transparency_ratio)
-
-        result = Image.fromarray(arr)
-        buf = io.BytesIO()
-        result.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode()
-    except Exception:
-        return b64
 
 
 async def inject_sprites(
@@ -422,8 +314,8 @@ async def inject_sprites(
       M300  consolidate_layers() — merge small groups into top-K parents
       M210  classify_nodes()     — stamp renderMode/familyId on every leaf
       M301  design family prompts — series-consistent per-node descriptions
-      M302  Gemini interleaved   — one call → N images (green #00FF00 bg)
-      M302  chroma-key / rembg   — green → transparent PNG
+      M302  Gemini interleaved   — one call → N images (white bg)
+      M302  remove.bg (Canva)    — AI segmentation → transparent PNG
       M303  stamp spriteRef      — write base64 PNG into ELK node
       M304  family consistency   — validate intra-family visual coherence
 
@@ -508,9 +400,9 @@ async def inject_sprites(
         result.errors.append(str(e))
         images = [None] * len(sprite_nodes)
 
-    # ── M302: Remove background from each sprite ──
-    # Gemini outputs images with green #00FF00 backgrounds.
-    # Chroma-key → transparent PNGs for embedding into ELK node slots.
+    # ── M302: Remove background via remove.bg (Canva) API ──
+    # remove.bg does AI segmentation (not color matching).
+    # REMOVEBG_API_KEYS: 4 keys × 50/month = 200 calls/month.
     images_with_bg = [img for img in images if img is not None]
     if images_with_bg:
         try:
@@ -527,22 +419,22 @@ async def inject_sprites(
                     for img in images
                 ]
                 logger.info(
-                    "M302 rembg: %d/%d sprites background-removed (method: %s)",
+                    "M302: %d/%d sprites bg-removed (method: %s, tier: %s)",
                     len(transparent_images), len(images_with_bg),
-                    rb_result.get("method", "unknown"),
+                    rb_result.get("method", "unknown"), rb_result.get("tier", "?"),
                 )
             else:
-                logger.warning("rembg failed: %s — using chroma-key fallback",
+                logger.warning("M302: remove.bg failed (%s) — keeping originals",
                                rb_result.get("error", "unknown"))
-                # Fallback: apply chroma-key directly
+                # Keep original images — no content damage
                 images = [
-                    _chroma_key_single(img) if img is not None else None
+                    img  # keep original
                     for img in images
                 ]
         except Exception as e:
-            logger.warning("rembg unavailable — chroma-key fallback: %s", e)
+            logger.warning("M302: removebg unavailable (%s) — keeping originals", e)
             images = [
-                _chroma_key_single(img) if img is not None else None
+                img  # keep original — no content damage
                 for img in images
             ]
 
