@@ -187,6 +187,59 @@ function ElkNodeComponent({ shape }: { shape: ElkNodeShape }) {
     )
   }
 
+  // Path B2: Kernel grid — 3×3 weighted cell grid (AdaKern reference)
+  // Triggers on renderMode='kernel' or iconHint containing 'kernel'/'grid'
+  if (renderMode === 'kernel' || /kernel|grid|filter/i.test(props.iconHint)) {
+    const color = fillColor || familyColor(familyId, 0)
+    const gridSize = 3
+    const cellW = Math.floor((w - 8) / gridSize)
+    const cellH = Math.floor((h - 24) / gridSize)
+    // Generate deterministic weights from label hash
+    let hash = 0
+    for (let i = 0; i < (label + familyId).length; i++)
+      hash = Math.imul(hash ^ (label + familyId).charCodeAt(i), 0x5bd1e995)
+    const cells = Array.from({ length: gridSize * gridSize }, (_, idx) => {
+      const v = ((hash >>> (idx * 3)) & 0x7) / 7
+      return v
+    })
+
+    return (
+      <HTMLContainer style={{ width: w, height: h }}>
+        <div style={{
+          width: '100%', height: '100%',
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 2,
+        }}>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${gridSize}, ${cellW}px)`,
+            gridTemplateRows: `repeat(${gridSize}, ${cellH}px)`,
+            gap: 1,
+          }}>
+            {cells.map((v, i) => (
+              <div key={i} style={{
+                width: cellW, height: cellH,
+                backgroundColor: color,
+                opacity: 0.3 + v * 0.7,
+                border: `0.5px solid ${color}`,
+                borderRadius: 1,
+              }} />
+            ))}
+          </div>
+          <span style={{
+            fontSize: Math.max(7, Math.min(10, w / Math.max(label.length, 1) * 1.1)),
+            color: '#1A1A1A', fontStyle: 'italic',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            textAlign: 'center', maxWidth: w,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {label}
+          </span>
+        </div>
+      </HTMLContainer>
+    )
+  }
+
   // Path C: Sprite — blob IS the body, small label below
   if (renderMode === 'sprite') {
     const color = fillColor || familyColor(familyId, 0)

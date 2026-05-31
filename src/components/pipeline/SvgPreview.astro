@@ -98,6 +98,20 @@ import TldrawEditor from './TldrawEditor.tsx'
   let iconSvg = ''
   let activeTab = 'skeleton'
 
+  // Check if an ELK graph has real Gemini-generated sprites
+  // (spriteRef with url, not just format='stack' blobs)
+  function _graphHasSprites(graph: any): boolean {
+    if (!graph?.children) return false
+    function walk(nodes: any[]): boolean {
+      for (const n of nodes) {
+        if (n.spriteRef?.url) return true
+        if (n.children && walk(n.children)) return true
+      }
+      return false
+    }
+    return walk(graph.children)
+  }
+
   function setZoom(val: number) {
     currentZoom = Math.max(25, Math.min(300, val))
     if (zoomLevel) zoomLevel.textContent = `${currentZoom}%`
@@ -453,14 +467,17 @@ import TldrawEditor from './TldrawEditor.tsx'
         ;(window as any).__svgEditor?.show()
       }
 
-      // Store sprite-enriched graph for deferred tldraw Editor tab import.
-      // When user switches to Editor tab, it picks up this graph
-      // (which has spriteRef URLs) instead of the original blob-only graph.
+      // Store sprite-enriched graph for tldraw Editor tab.
+      // When sprites are present (spriteRef URLs in nodes), the tldraw
+      // Editor becomes the primary editing surface — not static SVG.
       if (layoutedData) {
         const tldrawApi = (window as any).__tldrawEditor
         if (tldrawApi) {
           tldrawApi._pendingSpriteGraph = layoutedData
-          if (activeTab === 'editor') {
+
+          // Check if this graph has real sprites (not just blobs)
+          const hasSprites = _graphHasSprites(layoutedData)
+          if (hasSprites && activeTab === 'editor') {
             tldrawApi.loadGraph(layoutedData)
           }
         }

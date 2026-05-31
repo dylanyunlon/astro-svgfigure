@@ -522,7 +522,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
     steps?.setStatus('step-edit', 'done')
     generateFigureBtn.disabled = false
     generateSpritesBtn.disabled = false
-    statusText.textContent = 'Draft confirmed! Click "Generate Sprites" for per-node AI, or "Step 2→3" for full figure.'
+    statusText.textContent = 'Draft confirmed! Click "Generate Sprites" → Gemini AI images will replace placeholders in the Editor tab.'
     statusText.style.color = ''
   })
 
@@ -549,25 +549,33 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       const data = await res.json()
 
       if (data.success && data.elk_graph) {
-        // Re-render the SVG with sprite data embedded
+        // ═══ ARCHITECTURAL CHANGE: sprites → tldraw Editor (not SVG) ═══
+        // The sprite-enriched ELK graph goes directly to the tldraw
+        // Editor tab where users can drag, resize, and edit nodes.
+        // Static SVG is kept as fallback but Editor is primary output.
+
+        // 1. Store enriched graph for tldraw Editor
+        const tldrawApi = (window as any).__tldrawEditor
+        if (tldrawApi) {
+          tldrawApi._pendingSpriteGraph = data.elk_graph
+          // If Editor tab is already active, load immediately
+          tldrawApi.loadGraph(data.elk_graph)
+        }
+
+        // 2. Also update skeleton SVG as fallback
         const { elkToSvg } = await import('@/lib/elk/to-svg')
         const newSvg = elkToSvg(data.elk_graph)
         if (newSvg) {
           currentSkeletonSvg = newSvg
-          // Destroy the interactive editor so the skeleton tab handler
-          // falls through to the static SVG path (skeletonSvg).
-          // Otherwise editor still exists → tab handler shows editor's
-          // old SVG (without sprites) instead of our new sprite-enriched SVG.
-          const ed = preview?.getEditor()
-          if (ed) { ed.destroy(); }
-          // Pass the sprite-enriched graph so tldraw Editor tab can
-          // pick up spriteRef URLs when user switches to Editor tab
+          // Store both SVG and enriched graph data
           preview?.showSkeleton(newSvg, data.elk_graph)
-          document.getElementById('tab-skeleton')?.click()
         }
 
+        // 3. Switch to Editor tab — the editable canvas is the output
+        document.getElementById('tab-editor')?.click()
+
         const diag = data.diagnostics || {}
-        statusText.textContent = `Sprites done: ${diag.refs_stamped || 0} generated, ${diag.fallback_to_blob || 0} blob fallback — visible in Skeleton + Editor tabs`
+        statusText.textContent = `Sprites done: ${diag.refs_stamped || 0} injected — editing in Editor tab. Drag nodes to rearrange.`
       } else {
         statusText.textContent = `Sprite error: ${data.error || 'Unknown'}`
       }

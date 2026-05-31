@@ -276,7 +276,36 @@ function renderFeatureMapStack(
 }
 
 /**
- * Math operator — SVG circle + inscribed vector glyph (⊗ ⊕ ⊙).
+ * Kernel grid — NxN colored cell grid (AdaKern reference).
+ * Renders weighted cells where opacity/shade encodes weight magnitude.
+ * Deterministic: same node ID always produces the same grid pattern.
+ */
+function renderKernelGrid(
+  node: ElkNode, x: number, y: number, w: number, h: number,
+): string {
+  const rand = _seededRand(node.id)
+  const familyId = (node as any).familyId || ''
+  const palette = _familyPalette(familyId)
+  const color = (node as any).fillColor || palette[0]
+  const gridSize = 3
+  const pad = 4
+  const cellW = Math.floor((w - pad * 2 - (gridSize - 1)) / gridSize)
+  const cellH = Math.floor((h - pad * 2 - 18 - (gridSize - 1)) / gridSize)
+  let svg = ''
+
+  for (let row = 0; row < gridSize; row++) {
+    for (let col = 0; col < gridSize; col++) {
+      const cx = x + pad + col * (cellW + 1)
+      const cy = y + pad + row * (cellH + 1)
+      const weight = 0.25 + rand() * 0.75
+      svg += `<rect x="${cx}" y="${cy}" width="${cellW}" height="${cellH}" rx="1" fill="${color}" opacity="${weight.toFixed(2)}" stroke="${STROKE_COLOR}" stroke-width="0.3" />`
+    }
+  }
+  return svg
+}
+
+/**
+ * Math operator — SVG circle + inscribed vector glyph (⊗ ⊕ ⊙ ⊛ ⊖).
  * Pure vector, no AI, no text rendering, crisp at any zoom.
  */
 function renderMathOperator(symbol: string, cx: number, cy: number, r: number): string {
@@ -296,6 +325,18 @@ function renderMathOperator(symbol: string, cx: number, cy: number, r: number): 
     return circle
       + `<line x1="${cx-g}" y1="${cy}" x2="${cx+g}" y2="${cy}" stroke="${STROKE_COLOR}" stroke-width="${sw}" stroke-linecap="round" />`
       + `<line x1="${cx}" y1="${cy-g}" x2="${cx}" y2="${cy+g}" stroke="${STROKE_COLOR}" stroke-width="${sw}" stroke-linecap="round" />`
+  }
+  if (s === '⊖' || s === '−' || s === '–') {
+    return circle
+      + `<line x1="${cx-g}" y1="${cy}" x2="${cx+g}" y2="${cy}" stroke="${STROKE_COLOR}" stroke-width="${sw}" stroke-linecap="round" />`
+  }
+  if (s === '⊛' || s === '✱' || /^(\*|⊛|conv)$/i.test(s)) {
+    const d2 = g * 0.7
+    return circle
+      + `<line x1="${cx-g}" y1="${cy}" x2="${cx+g}" y2="${cy}" stroke="${STROKE_COLOR}" stroke-width="${sw*0.8}" stroke-linecap="round" />`
+      + `<line x1="${cx}" y1="${cy-g}" x2="${cx}" y2="${cy+g}" stroke="${STROKE_COLOR}" stroke-width="${sw*0.8}" stroke-linecap="round" />`
+      + `<line x1="${cx-d2}" y1="${cy-d2}" x2="${cx+d2}" y2="${cy+d2}" stroke="${STROKE_COLOR}" stroke-width="${sw*0.6}" stroke-linecap="round" />`
+      + `<line x1="${cx-d2}" y1="${cy+d2}" x2="${cx+d2}" y2="${cy-d2}" stroke="${STROKE_COLOR}" stroke-width="${sw*0.6}" stroke-linecap="round" />`
   }
   if (s === '⊙' || s === '·' || s === '∘') {
     return circle + `<circle cx="${cx}" cy="${cy}" r="${Math.max(1.5, r*0.18)}" fill="${STROKE_COLOR}" />`
@@ -523,6 +564,13 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   if (isGroup) return renderGroupNode(node, index, depth, x, y, w, h, label, cleanMode)
   if ((node as any).isOperator) return renderOperatorNode(node, x, y, w, h, label, depth)
   if (node.renderMode === 'sprite') return renderSpriteNode(node, x, y, w, h, label, depth)
+  if ((node as any).renderMode === 'kernel') {
+    let svg = openNodeGroup(node, x, y, w, h, false, depth)
+    svg += renderKernelGrid(node, x, y, w, h)
+    svg += nodeCaptionBelow(label, x, y, w, h)
+    svg += `</g>`
+    return svg
+  }
   const isLabelOnly = !!(node as any).labelOnly || (h <= 30 && !(node as any).iconHint)
   if (isLabelOnly) return renderLabelNode(node, x, y, w, h, label, depth)
   return renderLeafNode(node, x, y, w, h, label, depth, cleanMode)
