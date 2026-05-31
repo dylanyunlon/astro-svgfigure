@@ -550,12 +550,17 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
 
       if (data.success && data.elk_graph) {
         // Re-render the SVG with sprite data embedded
-        // The to-svg renderer will read spriteRef and show real images
         const { elkToSvg } = await import('@/lib/elk/to-svg')
         const newSvg = elkToSvg(data.elk_graph)
         if (newSvg) {
           currentSkeletonSvg = newSvg
-          preview?.show(newSvg)
+          // Destroy the interactive editor so the skeleton tab handler
+          // falls through to the static SVG path (skeletonSvg).
+          // Otherwise editor still exists → tab handler shows editor's
+          // old SVG (without sprites) instead of our new sprite-enriched SVG.
+          const ed = preview?.getEditor()
+          if (ed) { ed.destroy(); }
+          preview?.showSkeleton(newSvg, null)
           document.getElementById('tab-skeleton')?.click()
         }
 
