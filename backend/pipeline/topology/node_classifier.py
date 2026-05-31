@@ -443,3 +443,166 @@ def classify_nodes(elk_graph: Dict[str, Any]) -> ClassificationReport:
         report.operator_count, len(families),
     )
     return report
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §8  Layer consolidation — keep 2–3 largest parent groups, merge the rest
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Academic figures like AdaKern / FreqSelect have a clear visual hierarchy:
+#   - 2–3 major regions (FreqSelect, AdaDR, AdaKern) with colored backgrounds
+#   - Many small sub-elements (operators, feature maps, kernels)
+#
+# The problem: the topology generator often creates too many nested groups,
+# producing visual clutter.  This pass consolidates:
+#   1. Count descendant leaves per top-level group
+#   2. Keep the TOP_K (default 3) largest groups as parent regions with borders
+#   3. Merge smaller sibling groups into the nearest large parent
+#   4. Flatten single-child groups (remove wrapper if only 1 child)
+#
+# This mirrors the user's request: "只保留 2–3 个最大的父类元素群仍保留外部框,
+# 其余小子元素群分到大父类" — keep only 2–3 largest parent element groups
+# with their outer border, merge remaining small sub-groups into the large parents.
+
+TOP_K_PARENTS = 3  # max parent regions to keep as bordered groups
+
+
+def _count_leaves(node: Dict[str, Any]) -> int:
+    """Count leaf descendants of a node (including itself if it's a leaf)."""
+    children = node.get("children")
+    if not isinstance(children, list) or not children:
+        return 1
+    return sum(_count_leaves(c) for c in children if isinstance(c, dict))
+
+
+def _flatten_single_child_groups(node: Dict[str, Any]) -> None:
+    """Recursively flatten groups that have exactly one child group.
+
+    If a group has one child that is also a group, promote the grandchildren
+    up and merge labels (keeps the deeper label to preserve semantic info).
+    """
+    children = node.get("children")
+    if not isinstance(children, list):
+        return
+
+    i = 0
+    while i < len(children):
+        child = children[i]
+        if not isinstance(child, dict):
+            i += 1
+            continue
+
+        # Recurse first
+        _flatten_single_child_groups(child)
+
+        # Check: is this a single-child group whose only child is also a group?
+        cc = child.get("children")
+        if (isinstance(cc, list) and len(cc) == 1
+                and isinstance(cc[0], dict)
+                and isinstance(cc[0].get("children"), list)
+                and len(cc[0].get("children", [])) > 0):
+            grandchild = cc[0]
+            # Promote grandchild's children into this child
+            child["children"] = grandchild.get("children", [])
+            # Keep grandchild's label if it's more specific
+            gc_labels = grandchild.get("labels")
+            if gc_labels and isinstance(gc_labels, list) and gc_labels:
+                child.setdefault("labels", gc_labels)
+            # Re-process the same index
+            continue
+        i += 1
+
+
+def consolidate_layers(
+    elk_graph: Dict[str, Any],
+    top_k: int = TOP_K_PARENTS,
+) -> Dict[str, Any]:
+    """Consolidate the ELK graph's top-level groups into at most `top_k` parents.
+
+    Steps:
+      1. Flatten single-child wrapper groups
+      2. Rank top-level groups by descendant count
+      3. Keep top_k largest as bordered parent regions
+      4. Merge smaller groups' children into the nearest large parent
+         (nearest = smallest Euclidean distance between bounding-box centers)
+      5. Mark kept parents with `_isTopRegion: true` for the renderer
+
+    Returns the mutated elk_graph.
+    """
+    children = elk_graph.get("children")
+    if not isinstance(children, list) or len(children) <= top_k:
+        # Nothing to consolidate
+        return elk_graph
+
+    # Step 1: flatten single-child wrappers
+    _flatten_single_child_groups(elk_graph)
+
+    # Step 2: rank by descendant count
+    groups = []
+    leaves_at_top = []
+    for c in children:
+        if not isinstance(c, dict):
+            continue
+        cc = c.get("children")
+        if isinstance(cc, list) and len(cc) > 0:
+            groups.append((c, _count_leaves(c)))
+        else:
+            leaves_at_top.append(c)
+
+    if len(groups) <= top_k:
+        return elk_graph
+
+    # Sort descending by leaf count
+    groups.sort(key=lambda pair: pair[1], reverse=True)
+    kept = groups[:top_k]
+    merged = groups[top_k:]
+
+    # Mark kept parents
+    for g, _ in kept:
+        g["_isTopRegion"] = True
+
+    # Step 3: merge smaller groups into nearest kept parent
+    def _bbox_center(node: Dict[str, Any]):
+        x = node.get("x", 0)
+        y = node.get("y", 0)
+        w = node.get("width", 160)
+        h = node.get("height", 60)
+        return (x + w / 2, y + h / 2)
+
+    kept_centers = [(_bbox_center(g), g) for g, _ in kept]
+
+    for small_group, _ in merged:
+        scx, scy = _bbox_center(small_group)
+        # Find nearest kept parent
+        best_dist = float("inf")
+        best_parent = kept[0][0]
+        for (kcx, kcy), kgroup in kept_centers:
+            d = ((scx - kcx) ** 2 + (scy - kcy) ** 2) ** 0.5
+            if d < best_dist:
+                best_dist = d
+                best_parent = kgroup
+
+        # Move small group's children into best_parent
+        small_children = small_group.get("children", [])
+        if isinstance(small_children, list):
+            best_parent.setdefault("children", []).extend(small_children)
+        else:
+            # It's a leaf masquerading as a group — add the node itself
+            best_parent.setdefault("children", []).append(small_group)
+
+        logger.debug(
+            "Merged group '%s' (%d leaves) into '%s'",
+            small_group.get("id", "?"),
+            _count_leaves(small_group),
+            best_parent.get("id", "?"),
+        )
+
+    # Rebuild elk_graph.children: kept groups + top-level leaves
+    new_children = [g for g, _ in kept] + leaves_at_top
+    elk_graph["children"] = new_children
+
+    logger.info(
+        "Layer consolidation: %d groups → %d parents (%d merged, %d top-level leaves)",
+        len(groups), len(kept), len(merged), len(leaves_at_top),
+    )
+    return elk_graph

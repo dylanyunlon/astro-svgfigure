@@ -602,6 +602,13 @@ async def run_sprite_pipeline(
         report = classify_nodes(elk)
         res.classification = report.to_dict()
 
+        # M210.5 — layer consolidation: merge small groups into top-K parents.
+        # This reduces visual clutter by keeping only 2-3 major parent regions
+        # with colored borders, merging smaller groups into the nearest parent.
+        from backend.pipeline.topology.node_classifier import consolidate_layers
+        consolidate_layers(elk, top_k=3)
+        res.diagnostics["layer_consolidation"] = "applied"
+
         if not report.families:
             # No sprite nodes — pure vector figure, nothing to generate.
             res.success = True
