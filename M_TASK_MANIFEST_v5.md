@@ -283,7 +283,7 @@ README 重写、交互式 demo 页面、API endpoint 文档 (OpenAPI/Swagger)。
 | Claude | 任务范围 | 重点 | 状态 |
 |--------|---------|------|------|
 | **第一位** | **M400-M406** | **架构颠覆：Sprites→Editor 主输出 + 新渲染内核** | **✅ 已完成** |
-| 第二位 | M410-M416 | 后端管线贯通：classify→inject→Gemini 实调 | 🔲 待开发 |
+| **第二位** | **M410-M416** | **后端管线贯通：classify→inject→Gemini 实调 + 11/11 测试** | **✅ 已完成** |
 | 第三位 | M420-M426 | tldraw 交互增强：双击替换/右键菜单/连线编辑 | 🔲 待开发 |
 | 第四位 | M430-M436 | 微差序列帧：family-aware prompt + 热力图 | 🔲 待开发 |
 | 第五位 | M440-M446 | 导出管线：SVG/PDF/PPTX/标注/字体 | 🔲 待开发 |
