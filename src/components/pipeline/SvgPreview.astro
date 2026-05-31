@@ -239,15 +239,36 @@ import TldrawEditor from './TldrawEditor.tsx'
         const tldrawContainer = document.getElementById('tldraw-container')
         if (tldrawContainer) {
           tldrawContainer.style.display = ''
-          // Load the current layouted graph into tldraw
-          // Prefer sprite-enriched graph (has spriteRef with real URLs)
-          // over original skeletonLayouted (blob-only fallback)
-          const tldrawApi = (window as any).__tldrawEditor
-          if (tldrawApi) {
+
+          // Load graph into tldraw editor with retry.
+          // tldraw (client:only React island) may still be hydrating, and
+          // needs a visible container with non-zero dimensions to render.
+          const attemptLoad = () => {
+            const tldrawApi = (window as any).__tldrawEditor
+            if (!tldrawApi) return false
+
             const graphToLoad = tldrawApi._pendingSpriteGraph || skeletonLayouted
             if (graphToLoad) {
               tldrawApi.loadGraph(graphToLoad)
+              // Force viewport recalculation after container is visible
+              const editor = tldrawApi.getEditor?.()
+              if (editor) {
+                requestAnimationFrame(() => {
+                  try { editor.zoomToFit() } catch (_) {}
+                })
+              }
             }
+            return true
+          }
+
+          if (!attemptLoad()) {
+            // Retry until tldraw React island is hydrated
+            let retries = 0
+            const interval = setInterval(() => {
+              if (attemptLoad() || ++retries > 15) {
+                clearInterval(interval)
+              }
+            }, 200)
           }
         }
         hideEmptyAndLoading()
@@ -471,15 +492,32 @@ import TldrawEditor from './TldrawEditor.tsx'
       // When sprites are present (spriteRef URLs in nodes), the tldraw
       // Editor becomes the primary editing surface — not static SVG.
       if (layoutedData) {
-        const tldrawApi = (window as any).__tldrawEditor
-        if (tldrawApi) {
+        const storeAndLoad = () => {
+          const tldrawApi = (window as any).__tldrawEditor
+          if (!tldrawApi) return false
           tldrawApi._pendingSpriteGraph = layoutedData
 
           // Check if this graph has real sprites (not just blobs)
           const hasSprites = _graphHasSprites(layoutedData)
           if (hasSprites && activeTab === 'editor') {
             tldrawApi.loadGraph(layoutedData)
+            const editor = tldrawApi.getEditor?.()
+            if (editor) {
+              requestAnimationFrame(() => {
+                try { editor.zoomToFit() } catch (_) {}
+              })
+            }
           }
+          return true
+        }
+
+        if (!storeAndLoad()) {
+          let retries = 0
+          const interval = setInterval(() => {
+            if (storeAndLoad() || ++retries > 10) {
+              clearInterval(interval)
+            }
+          }, 300)
         }
       }
     },

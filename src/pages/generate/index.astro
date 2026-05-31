@@ -554,15 +554,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         // Editor tab where users can drag, resize, and edit nodes.
         // Static SVG is kept as fallback but Editor is primary output.
 
-        // 1. Store enriched graph for tldraw Editor
-        const tldrawApi = (window as any).__tldrawEditor
-        if (tldrawApi) {
-          tldrawApi._pendingSpriteGraph = data.elk_graph
-          // If Editor tab is already active, load immediately
-          tldrawApi.loadGraph(data.elk_graph)
-        }
-
-        // 2. Also update skeleton SVG as fallback
+        // 1. Also update skeleton SVG as fallback (always works)
         const { elkToSvg } = await import('@/lib/elk/to-svg')
         const newSvg = elkToSvg(data.elk_graph)
         if (newSvg) {
@@ -571,11 +563,44 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
           preview?.showSkeleton(newSvg, data.elk_graph)
         }
 
-        // 3. Switch to Editor tab — the editable canvas is the output
+        // 2. Switch to Editor tab FIRST — tldraw container must be visible
+        //    before loadGraph so canvas gets correct dimensions.
         document.getElementById('tab-editor')?.click()
 
+        // 3. Load sprite-enriched graph into tldraw Editor with retry.
+        //    tldraw needs time to: (a) unhide container → (b) measure canvas
+        //    → (c) hydrate React island (client:only). We retry until the API
+        //    is available and the editor has non-zero dimensions.
+        const loadIntoEditor = () => {
+          const tldrawApi = (window as any).__tldrawEditor
+          if (tldrawApi) {
+            tldrawApi._pendingSpriteGraph = data.elk_graph
+            tldrawApi.loadGraph(data.elk_graph)
+            // Force tldraw to recalculate viewport after load
+            const editor = tldrawApi.getEditor?.()
+            if (editor) {
+              requestAnimationFrame(() => {
+                try { editor.zoomToFit() } catch (_) {}
+              })
+            }
+            return true
+          }
+          return false
+        }
+
+        // Retry: tldraw React island may not be hydrated yet (client:only)
+        if (!loadIntoEditor()) {
+          let retries = 0
+          const interval = setInterval(() => {
+            if (loadIntoEditor() || ++retries > 20) {
+              clearInterval(interval)
+            }
+          }, 200)
+        }
+
         const diag = data.diagnostics || {}
-        statusText.textContent = `Sprites done: ${diag.refs_stamped || 0} injected — editing in Editor tab. Drag nodes to rearrange.`
+        const injDiag = diag.injection || diag
+        statusText.textContent = `Sprites done: ${injDiag.refs_stamped || 0} injected — editing in Editor tab. Drag nodes to rearrange.`
       } else {
         statusText.textContent = `Sprite error: ${data.error || 'Unknown'}`
       }

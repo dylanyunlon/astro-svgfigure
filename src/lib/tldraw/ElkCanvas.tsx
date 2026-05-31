@@ -77,12 +77,16 @@ export function ElkCanvas({
     const editor = editorRef.current
     if (!editor || !layoutedJson) return
 
-    // Skip if same reference (avoid re-import on parent re-render)
-    if (layoutedJson === graphRef.current) return
+    // Always re-import when prop changes — TldrawEditor.loadGraph uses
+    // { ...elkJson } spread to ensure a new reference each time.
     graphRef.current = layoutedJson
 
     elkToTldraw(editor, layoutedJson, { clearFirst: true })
-    editor.zoomToFit()
+    // Use requestAnimationFrame to ensure tldraw canvas has measured its
+    // container AFTER display:none → display:'' transition completes.
+    requestAnimationFrame(() => {
+      try { editor.zoomToFit() } catch (_) {}
+    })
   }, [layoutedJson])
 
   // Export function for parent to call
