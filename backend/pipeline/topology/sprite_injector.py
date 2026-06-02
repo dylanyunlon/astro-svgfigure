@@ -510,40 +510,61 @@ async def inject_sprites(
     # ── M302: Remove background via remove.bg (Canva) API ──
     # remove.bg does AI segmentation (not color matching).
     # REMOVEBG_API_KEYS: 4 keys × 50/month = 200 calls/month.
+    # CRITICAL: remove.bg has MAX_FRAMES=16 per request.
+    # With 35 sprites we must batch into chunks of ≤16.
+    REMOVEBG_BATCH = 16
+
     images_with_bg = [img for img in images if img is not None]
     if images_with_bg:
         try:
             from backend.pipeline.removebg_route import handle_removebg
 
-            rb_result = await handle_removebg(images_with_bg)
-            if rb_result.get("success"):
-                transparent_images = [
-                    r.get("image_b64") for r in rb_result.get("results", [])
-                ]
-                ti_iter = iter(transparent_images)
-                images = [
-                    next(ti_iter) if img is not None else None
-                    for img in images
-                ]
-                logger.info(
-                    "M302: %d/%d sprites bg-removed (method: %s, tier: %s)",
-                    len(transparent_images), len(images_with_bg),
-                    rb_result.get("method", "unknown"), rb_result.get("tier", "?"),
-                )
-            else:
-                logger.warning("M302: remove.bg failed (%s) — keeping originals",
-                               rb_result.get("error", "unknown"))
-                # Keep original images — no content damage
-                images = [
-                    img  # keep original
-                    for img in images
-                ]
-        except Exception as e:
-            logger.warning("M302: removebg unavailable (%s) — keeping originals", e)
+            # Split into chunks of REMOVEBG_BATCH
+            all_transparent: List[Optional[str]] = []
+            n_chunks = (len(images_with_bg) + REMOVEBG_BATCH - 1) // REMOVEBG_BATCH
+            logger.info(
+                "M302: sending %d sprites to remove.bg in %d chunk(s) (max %d/chunk)",
+                len(images_with_bg), n_chunks, REMOVEBG_BATCH,
+            )
+
+            for ci in range(0, len(images_with_bg), REMOVEBG_BATCH):
+                chunk = images_with_bg[ci:ci + REMOVEBG_BATCH]
+                chunk_idx = ci // REMOVEBG_BATCH + 1
+                t_rb = time.monotonic()
+
+                rb_result = await handle_removebg(chunk)
+                elapsed_rb = (time.monotonic() - t_rb) * 1000
+
+                if rb_result.get("success"):
+                    chunk_transparent = [
+                        r.get("image_b64") for r in rb_result.get("results", [])
+                    ]
+                    all_transparent.extend(chunk_transparent)
+                    logger.info(
+                        "M302: removebg chunk[%d/%d] ✓ %d images in %.0fms (method: %s)",
+                        chunk_idx, n_chunks, len(chunk_transparent), elapsed_rb,
+                        rb_result.get("method", "?"),
+                    )
+                else:
+                    # Chunk failed — keep originals for this chunk
+                    logger.warning(
+                        "M302: removebg chunk[%d/%d] ✗ %s — keeping %d originals",
+                        chunk_idx, n_chunks, rb_result.get("error", "?"), len(chunk),
+                    )
+                    all_transparent.extend(chunk)  # originals as fallback
+
+            # Reassemble: map transparent images back to full images list
+            ti_iter = iter(all_transparent)
             images = [
-                img  # keep original — no content damage
+                next(ti_iter) if img is not None else None
                 for img in images
             ]
+            logger.info(
+                "M302: bg-removal complete, %d/%d sprites processed",
+                len(all_transparent), len(images_with_bg),
+            )
+        except Exception as e:
+            logger.warning("M302: removebg unavailable (%s) — keeping originals", e)
 
     # ── M303: Stamp each image onto its node (spriteRef embedding) ──
     for i, (node, img_b64) in enumerate(zip(sprite_nodes, images)):
