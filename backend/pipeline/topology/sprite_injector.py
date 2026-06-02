@@ -386,16 +386,16 @@ async def inject_sprites(
         logger.warning("M301 family prompt design failed (fallback to basic): %s", e)
 
     # ── M302: Batched Gemini generation — per-family, max 6 per batch ──
-    # Instead of one giant call with all 37 nodes (timeout), we group nodes
-    # by family and call Gemini once per batch.  Each batch produces a
-    # sequence of visually consistent sprites.
-    MAX_BATCH = 6  # Gemini handles 6 images per call reliably within 60s
+    # Key insight: families already capped at ≤6 by detect_sprite_families().
+    # Here we just double-check and add diagnostic instrumentation.
+    MAX_BATCH = 6  # Must match node_classifier.MAX_FAMILY_SIZE
 
     # Build node_id → node lookup for batch assembly
     node_id_map = {n.get("id", f"__idx_{i}"): n for i, n in enumerate(sprite_nodes)}
 
-    # Build batches from families
+    # Build batches from families — families already ≤6 members each
     batches: List[List[Dict[str, Any]]] = []
+    batch_labels: List[str] = []  # human-readable label per batch for debugging
     claimed_ids: set = set()
 
     if families_list:
@@ -403,32 +403,59 @@ async def inject_sprites(
             fam_nodes = [node_id_map[nid] for nid in fam.member_node_ids if nid in node_id_map]
             if not fam_nodes:
                 continue
-            # Split large families into sub-batches of MAX_BATCH
+            # Safety: re-split if family somehow exceeded MAX_BATCH
             for j in range(0, len(fam_nodes), MAX_BATCH):
-                batches.append(fam_nodes[j:j + MAX_BATCH])
+                chunk = fam_nodes[j:j + MAX_BATCH]
+                batches.append(chunk)
+                batch_labels.append(f"{fam.family_id}[{j}:{j+len(chunk)}]")
             claimed_ids.update(n.get("id", "") for n in fam_nodes)
 
     # Catch any nodes not claimed by a family
     unclaimed = [n for n in sprite_nodes if n.get("id", "") not in claimed_ids]
     for j in range(0, len(unclaimed), MAX_BATCH):
-        batches.append(unclaimed[j:j + MAX_BATCH])
+        chunk = unclaimed[j:j + MAX_BATCH]
+        batches.append(chunk)
+        batch_labels.append(f"unclaimed[{j}:{j+len(chunk)}]")
 
     result.prompts_designed = len(sprite_nodes)
 
     # Map: node_id → generated image (filled by batch results)
     image_map: Dict[str, Optional[str]] = {n.get("id", f"__idx_{i}"): None for i, n in enumerate(sprite_nodes)}
 
+    # ── Diagnostic: full batch plan dump ──
     logger.info(
-        "M302: %d sprite nodes grouped into %d batches (max %d per batch)",
+        "┌─ M302 BATCH PLAN: %d sprite nodes → %d batches (cap=%d/batch)",
         len(sprite_nodes), len(batches), MAX_BATCH,
     )
+    for bi, (bnodes, blabel) in enumerate(zip(batches, batch_labels)):
+        ids = [n.get("id", "?") for n in bnodes]
+        labels = [_node_label(n)[:15] for n in bnodes]
+        logger.info(
+            "│  batch[%d] %s: %d nodes  ids=%s  labels=%s",
+            bi, blabel, len(bnodes), ids, labels,
+        )
+    logger.info("└─ Total Gemini calls planned: %d", len(batches))
 
     for batch_idx, batch_nodes in enumerate(batches):
         batch_ids = [n.get("id", "?") for n in batch_nodes]
-        logger.info("M302 batch %d/%d: %d nodes %s", batch_idx + 1, len(batches), len(batch_nodes), batch_ids)
+        blabel = batch_labels[batch_idx] if batch_idx < len(batch_labels) else "?"
 
         prompt = _build_interleaved_prompt(batch_nodes, family_prompts=family_prompts)
 
+        # ── Diagnostic: prompt size check ──
+        prompt_chars = len(prompt)
+        prompt_words = len(prompt.split())
+        if prompt_chars > 4000:
+            logger.warning(
+                "│  ⚠ batch[%d] prompt is %d chars / %d words — may cause slow Gemini response",
+                batch_idx, prompt_chars, prompt_words,
+            )
+        logger.info(
+            "│  batch[%d/%d] %s: sending %d nodes, prompt=%d chars",
+            batch_idx + 1, len(batches), blabel, len(batch_nodes), prompt_chars,
+        )
+
+        t_batch = time.monotonic()
         try:
             batch_images = await _call_gemini_interleaved(
                 prompt=prompt,
@@ -436,19 +463,33 @@ async def inject_sprites(
                 settings=settings,
                 model=model,
             )
+            elapsed_batch = (time.monotonic() - t_batch) * 1000
+            got = sum(1 for img in batch_images if img)
             for node, img in zip(batch_nodes, batch_images):
                 nid = node.get("id", "")
                 if img:
                     image_map[nid] = img
                     result.images_received += 1
             logger.info(
-                "M302 batch %d/%d: got %d/%d images",
-                batch_idx + 1, len(batches),
-                sum(1 for img in batch_images if img), len(batch_nodes),
+                "│  batch[%d/%d] ✓ got %d/%d images in %.0fms (%.0fms/image)",
+                batch_idx + 1, len(batches), got, len(batch_nodes),
+                elapsed_batch, elapsed_batch / max(got, 1),
             )
         except Exception as e:
-            logger.exception("M302 batch %d failed: %s", batch_idx + 1, e)
-            result.errors.append(f"batch {batch_idx + 1}: {e}")
+            elapsed_batch = (time.monotonic() - t_batch) * 1000
+            logger.exception(
+                "│  batch[%d/%d] ✗ FAILED after %.0fms: %s",
+                batch_idx + 1, len(batches), elapsed_batch, e,
+            )
+            result.errors.append(f"batch {batch_idx + 1} ({blabel}): {e}")
+
+    # ── Diagnostic: final image map summary ──
+    got_total = sum(1 for v in image_map.values() if v)
+    miss_ids = [k for k, v in image_map.items() if v is None]
+    logger.info(
+        "M302 DONE: %d/%d images received, %d missing: %s",
+        got_total, len(image_map), len(miss_ids), miss_ids[:10],
+    )
 
     # Reassemble images in sprite_nodes order
     images: List[Optional[str]] = []

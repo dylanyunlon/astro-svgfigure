@@ -227,15 +227,120 @@ export async function routeSpriteResult(
 
   onSuccess?.({ refsStamped, svgGenerated: staticSvg.length > 0 })
 
-  // ── Debug: dump final state ──
-  console.log('[sprite-router] complete', {
-    refsStamped,
-    svgLength: staticSvg.length,
-    traceEntries: _routeTrace.length,
-    elkGraphNodeCount: (apiData.elk_graph as Record<string, unknown[]>).children?.length ?? '?',
-  })
+  // ── Debug: dump final state with full graph inspection ──
+  const elkChildren = (apiData.elk_graph as Record<string, unknown[]>).children ?? []
+  const graphStats = _inspectElkGraph(apiData.elk_graph)
+
+  console.group('[sprite-router] ✓ ROUTING COMPLETE')
+  console.log('refs stamped:', refsStamped)
+  console.log('SVG generated:', staticSvg.length > 0, `(${staticSvg.length} chars)`)
+  console.log('ELK graph stats:', graphStats)
+  console.log('trace entries:', _routeTrace.length)
+  console.log('total time:', _routeTrace.length > 1
+    ? `${(_routeTrace[_routeTrace.length-1].ts - _routeTrace[0].ts).toFixed(0)}ms`
+    : 'N/A')
+  console.groupEnd()
 
   return true
+}
+
+// ── Graph inspection helper ───────────────────────────────
+// Walks the ELK graph and prints sprite coverage statistics
+
+interface ElkGraphStats {
+  totalNodes: number
+  spriteNodes: number
+  operatorNodes: number
+  groupNodes: number
+  leafNodes: number
+  familyCount: number
+  spriteCoverage: string
+  families: Record<string, number>
+  missingSprites: string[]
+}
+
+function _inspectElkGraph(elkGraph: Record<string, unknown>): ElkGraphStats {
+  const stats: ElkGraphStats = {
+    totalNodes: 0, spriteNodes: 0, operatorNodes: 0,
+    groupNodes: 0, leafNodes: 0, familyCount: 0,
+    spriteCoverage: '0%', families: {}, missingSprites: [],
+  }
+
+  const stack: Record<string, unknown>[] = []
+  const children = elkGraph.children as Record<string, unknown>[] | undefined
+  if (Array.isArray(children)) stack.push(...children)
+
+  while (stack.length > 0) {
+    const node = stack.pop()!
+    stats.totalNodes++
+
+    const kids = node.children as Record<string, unknown>[] | undefined
+    if (Array.isArray(kids) && kids.length > 0) {
+      stats.groupNodes++
+      stack.push(...kids)
+    } else {
+      stats.leafNodes++
+    }
+
+    if (node.isOperator) stats.operatorNodes++
+
+    const spriteRef = node.spriteRef as Record<string, unknown> | undefined
+    const renderMode = node.renderMode as string | undefined
+
+    if (renderMode === 'sprite') {
+      if (spriteRef?.url) {
+        stats.spriteNodes++
+      } else {
+        stats.missingSprites.push(node.id as string ?? '?')
+      }
+    }
+
+    const famId = node.familyId as string | undefined
+    if (famId) {
+      stats.families[famId] = (stats.families[famId] ?? 0) + 1
+    }
+  }
+
+  stats.familyCount = Object.keys(stats.families).length
+  const spriteEligible = stats.leafNodes - stats.operatorNodes - stats.groupNodes
+  stats.spriteCoverage = spriteEligible > 0
+    ? `${Math.round(100 * stats.spriteNodes / Math.max(spriteEligible, 1))}%`
+    : 'N/A'
+
+  return stats
+}
+
+/** Print comprehensive routing report — batch progress + ELK graph analysis */
+export function printFullRouteReport(elkGraph?: Record<string, unknown>): void {
+  console.log(`\n${'━'.repeat(50)}`)
+  console.log('  SPRITE ROUTE FULL REPORT')
+  console.log(`${'━'.repeat(50)}`)
+
+  printSpriteRouteTrace()
+
+  if (elkGraph) {
+    const stats = _inspectElkGraph(elkGraph)
+    console.group('[sprite-router] ELK graph analysis')
+    console.log(`  Total nodes:       ${stats.totalNodes}`)
+    console.log(`  Leaf nodes:        ${stats.leafNodes}`)
+    console.log(`  Group nodes:       ${stats.groupNodes}`)
+    console.log(`  Operator nodes:    ${stats.operatorNodes}`)
+    console.log(`  Sprite nodes:      ${stats.spriteNodes}`)
+    console.log(`  Sprite coverage:   ${stats.spriteCoverage}`)
+    console.log(`  Families:          ${stats.familyCount}`)
+    if (Object.keys(stats.families).length > 0) {
+      console.log(`  Family breakdown:`)
+      for (const [fid, count] of Object.entries(stats.families)) {
+        console.log(`    ${fid}: ${count} members`)
+      }
+    }
+    if (stats.missingSprites.length > 0) {
+      console.warn(`  ⚠ Missing sprites:`, stats.missingSprites)
+    }
+    console.groupEnd()
+  }
+
+  console.log(`${'━'.repeat(50)}\n`)
 }
 
 // ── Legacy compatibility shim ──────────────────────────────

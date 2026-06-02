@@ -394,15 +394,31 @@ def detect_sprite_families(
 ) -> List[SpriteFamily]:
     """Group sprite nodes into families by shared visual concept.
 
-    Two-tier strategy:
-      1. Try LLM-powered grouping (Claude) — understands semantic similarity
-         even for nodes the rule table never heard of.
-      2. Fall back to rule-based _family_signature() if no API key or LLM fails.
+    Three-tier strategy:
+      1. Try LLM-powered grouping (Claude) — semantic similarity.
+      2. Fall back to rule-based _family_signature().
+      3. Post-process: enforce MAX_FAMILY_SIZE cap — any family bigger
+         than the Gemini batch limit gets split into sub-families,
+         so each Gemini call stays small and focused.
 
-    The LLM path runs synchronously via asyncio because classify_nodes() is
-    a sync call chain.  The LLM call is pure text (no images), takes ~2-5s.
+    This is the fix for "gemini一次性接受太多内容了" — even when the LLM
+    lumps 15 nodes into one family, Gemini only sees ≤6 at a time.
     """
+    MAX_FAMILY_SIZE = 6  # Gemini sweet spot: ≤6 images per call
+
+    # ── Diagnostic: dump input state ──
+    logger.info(
+        "┌─ detect_sprite_families: %d sprite nodes entering",
+        len(sprite_nodes),
+    )
+    for i, (nid, nd) in enumerate(sprite_nodes):
+        logger.info(
+            "│  [%02d] id=%-24s label=%-20s hint=%-12s",
+            i, nid, _node_label(nd)[:20], (nd.get("iconHint") or "")[:12],
+        )
+
     # ── Tier 1: Try LLM-powered grouping ──
+    raw_families: Optional[List[SpriteFamily]] = None
     try:
         from backend.config import get_settings
         settings = get_settings()
@@ -415,26 +431,69 @@ def detect_sprite_families(
                 loop = None
 
             if loop and loop.is_running():
-                # Already inside an async context — use nest_asyncio or thread
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    families = pool.submit(
+                    raw_families = pool.submit(
                         lambda: asyncio.run(_llm_detect_families(sprite_nodes, settings))
                     ).result(timeout=30)
             else:
-                families = asyncio.run(_llm_detect_families(sprite_nodes, settings))
+                raw_families = asyncio.run(_llm_detect_families(sprite_nodes, settings))
 
-            if families:
+            if raw_families:
                 logger.info(
-                    "LLM family detection: %d nodes → %d families",
-                    len(sprite_nodes), len(families),
+                    "│  LLM returned %d raw families", len(raw_families),
                 )
-                return families
     except Exception as e:
-        logger.warning("LLM family detection failed, falling back to rules: %s", e)
+        logger.warning("│  LLM family detection failed, falling back to rules: %s", e)
 
     # ── Tier 2: Rule-based fallback ──
-    return _rule_based_families(sprite_nodes)
+    if not raw_families:
+        raw_families = _rule_based_families(sprite_nodes)
+        logger.info("│  Rule-based fallback produced %d families", len(raw_families))
+
+    # ── Tier 3: Enforce MAX_FAMILY_SIZE — split oversized families ──
+    # This is the key fix: a 15-member family becomes three 5-member
+    # sub-families, each getting its own Gemini batch call.
+    capped_families: List[SpriteFamily] = []
+    for fam in raw_families:
+        members = fam.member_node_ids
+        if len(members) <= MAX_FAMILY_SIZE:
+            capped_families.append(fam)
+        else:
+            # Split into sub-families of ≤MAX_FAMILY_SIZE
+            n_splits = (len(members) + MAX_FAMILY_SIZE - 1) // MAX_FAMILY_SIZE
+            logger.info(
+                "│  ✂ Splitting oversized family %s (%d members) → %d sub-families",
+                fam.family_id, len(members), n_splits,
+            )
+            for k in range(0, len(members), MAX_FAMILY_SIZE):
+                chunk = members[k:k + MAX_FAMILY_SIZE]
+                sub_id = f"{fam.family_id}_s{k // MAX_FAMILY_SIZE}"
+                capped_families.append(SpriteFamily(
+                    family_id=sub_id,
+                    member_node_ids=chunk,
+                    base_concept=fam.base_concept,
+                    variation_axis=fam.variation_axis,
+                ))
+
+    # ── Diagnostic: print final family layout ──
+    logger.info("├─ Final family layout: %d families", len(capped_families))
+    total_assigned = 0
+    for fam in capped_families:
+        logger.info(
+            "│  fam=%-28s members=%d  concept=%s  axis=%s  ids=%s",
+            fam.family_id, len(fam.member_node_ids),
+            fam.base_concept[:30], fam.variation_axis[:20],
+            fam.member_node_ids,
+        )
+        total_assigned += len(fam.member_node_ids)
+    logger.info(
+        "└─ %d/%d nodes assigned to families (%.0f%% coverage)",
+        total_assigned, len(sprite_nodes),
+        100 * total_assigned / max(len(sprite_nodes), 1),
+    )
+
+    return capped_families
 
 
 def _rule_based_families(
@@ -490,8 +549,9 @@ async def _llm_detect_families(
         "Rules:\n"
         "- Group nodes that represent the SAME visual concept (e.g. all 'input images' "
         "together, all 'code/document outputs' together, all 'neural network layers' together)\n"
-        "- Each family should have 2-8 members ideally (for batch Gemini generation)\n"
-        "- Singletons are OK for truly unique concepts\n"
+        "- HARD LIMIT: each family MUST have ≤6 members (Gemini generates "
+        "one batch per family; >6 images per call causes timeout)\n"
+        "- Aim for 2-6 members per family; singletons OK for unique concepts\n"
         "- A node can only belong to ONE family\n"
         "- Aim for 4-8 families total, not 30+ singletons\n\n"
         f"Nodes ({len(node_list)}):\n"

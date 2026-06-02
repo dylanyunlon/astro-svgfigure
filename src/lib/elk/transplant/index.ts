@@ -37,6 +37,7 @@ export {
   getSpriteRouteTrace,
   clearSpriteRouteTrace,
   printSpriteRouteTrace,
+  printFullRouteReport,
   type SpriteRouteOptions,
 } from './sprite-route-handler'
 
@@ -46,7 +47,7 @@ export {
 
 import { elkToInteractive, enableAdapterTrace, flushAdapterTrace, dumpAdapterState } from './elk-graph-adapter'
 import { CanvasEditor } from './canvas-editor'
-import { printSpriteRouteTrace, clearSpriteRouteTrace } from './sprite-route-handler'
+import { printSpriteRouteTrace, clearSpriteRouteTrace, printFullRouteReport } from './sprite-route-handler'
 
 /**
  * Run a self-test of the transplanted pipeline.
@@ -197,6 +198,7 @@ if (typeof window !== 'undefined') {
     adapterTrace: flushAdapterTrace,
     routeTrace: printSpriteRouteTrace,
     clearRouteTrace: clearSpriteRouteTrace,
+    fullRouteReport: (elkGraph?: Record<string, unknown>) => printFullRouteReport(elkGraph),
 
     /** Print editor state (requires editor to be mounted) */
     canvasState: () => {
@@ -219,11 +221,34 @@ if (typeof window !== 'undefined') {
       else console.warn('no editor mounted')
     },
 
-    /** Print everything */
+    /** Print render dispatch map — which strategy each node uses */
+    renderMap: () => {
+      const editor = (window as any).__transplantEditor as CanvasEditor | undefined
+      if (editor) editor.printRenderDispatchMap()
+      else console.warn('no editor mounted')
+    },
+
+    /** Print sprite inventory — all sprite URLs/formats/families */
+    spriteInventory: () => {
+      const editor = (window as any).__transplantEditor as CanvasEditor | undefined
+      if (editor) editor.printSpriteInventory()
+      else console.warn('no editor mounted')
+    },
+
+    /** Full diagnostic — everything in one call */
+    fullDiagnostic: () => {
+      const editor = (window as any).__transplantEditor as CanvasEditor | undefined
+      if (editor) editor.printFullDiagnostic()
+      else console.warn('no editor mounted')
+    },
+
+    /** Print everything (legacy + new) */
     printAll: () => {
       console.group('[transplant] full debug dump')
       debug.canvasState()
       debug.nodeTree()
+      debug.renderMap()
+      debug.spriteInventory()
       debug.mutationHistory()
       debug.routeTrace()
       console.groupEnd()
@@ -231,5 +256,12 @@ if (typeof window !== 'undefined') {
   }
 
   ;(window as any).__transplantDebug = debug
-  console.log('[transplant] debug surface ready — try window.__transplantDebug.printAll()')
+  console.log(
+    '[transplant] debug surface ready — try:\n' +
+    '  window.__transplantDebug.printAll()        // everything\n' +
+    '  window.__transplantDebug.fullDiagnostic()   // canvas editor deep dump\n' +
+    '  window.__transplantDebug.renderMap()        // which strategy per node\n' +
+    '  window.__transplantDebug.spriteInventory()  // sprite URL/format table\n' +
+    '  window.__transplantDebug.fullRouteReport()  // routing + ELK analysis'
+  )
 }

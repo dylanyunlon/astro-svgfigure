@@ -1400,6 +1400,85 @@ export class CanvasEditor {
   getMutationRecords(): MutationRecord[] {
     return this.mutations.dump()
   }
+
+  // ──── Extended debug surface (transplant enhancement) ────
+
+  /** Print which render strategy each node will use — catch miscategorization */
+  printRenderDispatchMap() {
+    console.group('[CanvasEditor] render dispatch map')
+    const counts = { operator: 0, sprite: 0, default: 0 }
+    for (const n of this.graph.nodes) {
+      const strategy = pickRenderStrategy(n)
+      const label = strategy === renderOperatorNode ? 'operator'
+        : strategy === renderSpriteNode ? 'sprite'
+        : 'default'
+      if (label === 'operator') counts.operator++
+      else if (label === 'sprite') counts.sprite++
+      else counts.default++
+      console.log(
+        `  ${n.id.padEnd(24)} → ${label.padEnd(10)} ` +
+        `renderMode=${(n.renderMode ?? '-').padEnd(8)} ` +
+        `isOp=${String(!!n.isOperator).padEnd(5)} ` +
+        `sprite=${n.spriteUrl ? '✓' : '-'} ` +
+        `fmt=${n.spriteFormat ?? '-'}`
+      )
+    }
+    console.log(`\n  Summary: ${counts.operator} operator, ${counts.sprite} sprite, ${counts.default} default`)
+    console.groupEnd()
+  }
+
+  /** Print all sprite nodes with their URL length and format */
+  printSpriteInventory() {
+    const sprites = this.graph.nodes.filter(n => n.spriteUrl)
+    console.group(`[CanvasEditor] sprite inventory (${sprites.length} nodes)`)
+    for (const s of sprites) {
+      const urlLen = s.spriteUrl?.length ?? 0
+      const isBase64 = s.spriteUrl?.startsWith('data:') ?? false
+      const approxKB = isBase64 ? Math.round(urlLen * 0.75 / 1024) : 0
+      console.log(
+        `  ${s.id.padEnd(24)} fmt=${(s.spriteFormat ?? '?').padEnd(5)} ` +
+        `family=${(s.familyId ?? '-').padEnd(16)} ` +
+        `url=${isBase64 ? `base64(~${approxKB}KB)` : s.spriteUrl?.slice(0, 50)}`
+      )
+    }
+    if (sprites.length === 0) console.log('  (no sprite nodes found)')
+    console.groupEnd()
+  }
+
+  /** One-call full diagnostic — everything you need for a bug report */
+  printFullDiagnostic() {
+    const ts = new Date().toISOString()
+    console.log(`\n${'═'.repeat(60)}`)
+    console.log(`  CANVAS EDITOR DIAGNOSTIC DUMP — ${ts}`)
+    console.log(`${'═'.repeat(60)}\n`)
+
+    this.printCanvasState()
+    this.printNodeTree()
+    this.printRenderDispatchMap()
+    this.printSpriteInventory()
+    this.printMutationHistory()
+
+    // Summary stats
+    const nodes = this.graph.nodes
+    const spriteCount = nodes.filter(n => n.spriteUrl).length
+    const opCount = nodes.filter(n => n.isOperator).length
+    const groupCount = nodes.filter(n => n.isGroup).length
+    const familyIds = new Set(nodes.map(n => n.familyId).filter(Boolean))
+
+    console.log(`\n--- SUMMARY ---`)
+    console.log(`  Total nodes:  ${nodes.length}`)
+    console.log(`  Total edges:  ${this.graph.edges.length}`)
+    console.log(`  Sprites:      ${spriteCount} (${Math.round(100*spriteCount/Math.max(nodes.length,1))}%)`)
+    console.log(`  Operators:    ${opCount}`)
+    console.log(`  Groups:       ${groupCount}`)
+    console.log(`  Families:     ${familyIds.size} unique`)
+    console.log(`  Canvas:       ${this.graph.width}×${this.graph.height}`)
+    console.log(`  Viewport:     (${this.viewport.x.toFixed(0)},${this.viewport.y.toFixed(0)}) ${this.viewport.w.toFixed(0)}×${this.viewport.h.toFixed(0)}`)
+    console.log(`  Zoom:         ${this.currentZoom.toFixed(2)}`)
+    console.log(`  Locked:       ${this.locked}`)
+    console.log(`  Mutations:    ${this.mutations.dump().length} recorded`)
+    console.log(`${'═'.repeat(60)}\n`)
+  }
 }
 
 export default CanvasEditor
