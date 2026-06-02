@@ -110,7 +110,7 @@ def _build_interleaved_prompt(
         "- Attention / selection maps: draw as a red-yellow-blue heatmap.\n"
         "- Kernels / filters: draw as a small NxN grid with colored cells.\n"
         "- Input images: draw as a colorful photograph thumbnail (landscape/scene).\n"
-        "- Each illustration MUST be 128x128 pixels, square, centered on white.\n"
+        "- Each illustration MUST be 512x512 pixels, square, centered on white.\n"
         "- No text labels inside the illustration. No 3D effects. Thin clean outlines.\n"
     ]
 
@@ -143,7 +143,7 @@ def _build_interleaved_prompt(
 
     lines.append(
         f"\nGenerate EXACTLY {len(sprite_nodes)} image(s), one per item, in order. "
-        "Each 128x128 px. Solid WHITE #FFFFFF background. Academic figure style."
+        "Each 512x512 px. Solid WHITE #FFFFFF background. Academic figure style."
     )
     return "\n".join(lines)
 
@@ -390,8 +390,9 @@ async def inject_sprites(
     # generated in ONE inference call to guarantee visual consistency
     # (same style, palette, stroke weight). Splitting = destroying consistency.
     #
-    # FIX for 524 timeout: shrink image size 256→128px (generation ~2x faster).
-    # 6 sprites × 128px ≈ 40-70s, fits inside tryallai's ~100s CF gateway.
+    # FIX for 524 timeout: prompt写512px → Gemini实际返回1024×1024 (upscale行为)。
+    # 基准测试实证: 1 sprite@512px = 20s ✓, 1 sprite@1024px = 126s ✗(524)
+    # 所以prompt写512, Gemini给1024大图, 序列帧分割后每张sprite≥170px。
     # Families already capped at ≤6 members by node_classifier.
     MAX_CONCURRENT = 3  # parallel family calls (independent families)
 
