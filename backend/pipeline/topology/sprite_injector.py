@@ -229,6 +229,42 @@ async def _call_gemini_interleaved(
 
     logger.info("Gemini returned %d raw image(s) (expected %d)", len(raw_images), n_expected)
 
+    # ── DUMP to 0531/ for debugging ──
+    try:
+        import base64 as _b64
+        from pathlib import Path
+        dump_dir = Path("0531")
+        dump_dir.mkdir(exist_ok=True)
+        # Use a call counter to distinguish multiple calls
+        existing = list(dump_dir.glob("call_*_prompt.txt"))
+        call_idx = len(existing)
+        prefix = f"call_{call_idx:02d}"
+
+        # Save prompt
+        (dump_dir / f"{prefix}_prompt.txt").write_text(prompt, encoding="utf-8")
+
+        # Save raw images (before sheet split)
+        for ri, raw_b64 in enumerate(raw_images):
+            try:
+                raw_bytes = _b64.b64decode(raw_b64)
+                (dump_dir / f"{prefix}_raw_{ri}.png").write_bytes(raw_bytes)
+                # Also save dimensions
+                try:
+                    from PIL import Image as _Img
+                    import io as _io
+                    _im = _Img.open(_io.BytesIO(raw_bytes))
+                    (dump_dir / f"{prefix}_raw_{ri}_dims.txt").write_text(
+                        f"{_im.width}x{_im.height} mode={_im.mode}", encoding="utf-8"
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        logger.info("DUMP: saved %s to 0531/ (%d raw images)", prefix, len(raw_images))
+    except Exception as dump_err:
+        logger.warning("DUMP failed (non-fatal): %s", dump_err)
+
     # ── Sprite sheet detection and splitting ──
     # If we got fewer images than expected (typically 1 sprite sheet for N nodes),
     # attempt to split the sheet into individual cells.
@@ -246,6 +282,26 @@ async def _call_gemini_interleaved(
             # Pass through RAW — bg removal by remove.bg downstream
             images.append(b64)
     # else: 0 images → all None
+
+    # ── DUMP split cells to 0531/ ──
+    try:
+        import base64 as _b64
+        from pathlib import Path
+        dump_dir = Path("0531")
+        # Reuse the call_idx from the raw dump above
+        existing_prompts = list(dump_dir.glob("call_*_prompt.txt"))
+        ci = max(0, len(existing_prompts) - 1)  # last call index
+        pfx = f"call_{ci:02d}"
+        for si, cell_b64 in enumerate(images):
+            if cell_b64:
+                try:
+                    cell_bytes = _b64.b64decode(cell_b64)
+                    (dump_dir / f"{pfx}_cell_{si}.png").write_bytes(cell_bytes)
+                except Exception:
+                    pass
+        logger.info("DUMP: saved %d cells as %s_cell_*.png", sum(1 for c in images if c), pfx)
+    except Exception:
+        pass
 
     # Pad or truncate to n_expected
     while len(images) < n_expected:
