@@ -361,6 +361,7 @@ async def inject_sprites(
     # Use sprite_prompt_designer for series-consistent descriptions.
     # This ensures same-family nodes share identical base + differ on axis.
     family_prompts: Optional[Dict[str, str]] = None
+    families_list = []
     try:
         from backend.pipeline.topology.node_classifier import (
             classify_nodes, ClassificationReport,
@@ -372,6 +373,7 @@ async def inject_sprites(
         # classify_nodes has already run (caller did it), but we need the
         # families list.  Re-classifying is idempotent (same result).
         report = classify_nodes(elk_graph)
+        families_list = report.families or []
         if report.families:
             designed = design_prompts_for_classified(elk_graph, report.families)
             if designed:
@@ -383,22 +385,76 @@ async def inject_sprites(
     except Exception as e:
         logger.warning("M301 family prompt design failed (fallback to basic): %s", e)
 
-    # ── M302: Build prompt + call Gemini ──
-    prompt = _build_interleaved_prompt(sprite_nodes, family_prompts=family_prompts)
+    # ── M302: Batched Gemini generation — per-family, max 6 per batch ──
+    # Instead of one giant call with all 37 nodes (timeout), we group nodes
+    # by family and call Gemini once per batch.  Each batch produces a
+    # sequence of visually consistent sprites.
+    MAX_BATCH = 6  # Gemini handles 6 images per call reliably within 60s
+
+    # Build node_id → node lookup for batch assembly
+    node_id_map = {n.get("id", f"__idx_{i}"): n for i, n in enumerate(sprite_nodes)}
+
+    # Build batches from families
+    batches: List[List[Dict[str, Any]]] = []
+    claimed_ids: set = set()
+
+    if families_list:
+        for fam in families_list:
+            fam_nodes = [node_id_map[nid] for nid in fam.member_node_ids if nid in node_id_map]
+            if not fam_nodes:
+                continue
+            # Split large families into sub-batches of MAX_BATCH
+            for j in range(0, len(fam_nodes), MAX_BATCH):
+                batches.append(fam_nodes[j:j + MAX_BATCH])
+            claimed_ids.update(n.get("id", "") for n in fam_nodes)
+
+    # Catch any nodes not claimed by a family
+    unclaimed = [n for n in sprite_nodes if n.get("id", "") not in claimed_ids]
+    for j in range(0, len(unclaimed), MAX_BATCH):
+        batches.append(unclaimed[j:j + MAX_BATCH])
+
     result.prompts_designed = len(sprite_nodes)
 
-    try:
-        images = await _call_gemini_interleaved(
-            prompt=prompt,
-            n_expected=len(sprite_nodes),
-            settings=settings,
-            model=model,
-        )
-        result.images_received = sum(1 for img in images if img is not None)
-    except Exception as e:
-        logger.exception("Gemini interleaved generation failed")
-        result.errors.append(str(e))
-        images = [None] * len(sprite_nodes)
+    # Map: node_id → generated image (filled by batch results)
+    image_map: Dict[str, Optional[str]] = {n.get("id", f"__idx_{i}"): None for i, n in enumerate(sprite_nodes)}
+
+    logger.info(
+        "M302: %d sprite nodes grouped into %d batches (max %d per batch)",
+        len(sprite_nodes), len(batches), MAX_BATCH,
+    )
+
+    for batch_idx, batch_nodes in enumerate(batches):
+        batch_ids = [n.get("id", "?") for n in batch_nodes]
+        logger.info("M302 batch %d/%d: %d nodes %s", batch_idx + 1, len(batches), len(batch_nodes), batch_ids)
+
+        prompt = _build_interleaved_prompt(batch_nodes, family_prompts=family_prompts)
+
+        try:
+            batch_images = await _call_gemini_interleaved(
+                prompt=prompt,
+                n_expected=len(batch_nodes),
+                settings=settings,
+                model=model,
+            )
+            for node, img in zip(batch_nodes, batch_images):
+                nid = node.get("id", "")
+                if img:
+                    image_map[nid] = img
+                    result.images_received += 1
+            logger.info(
+                "M302 batch %d/%d: got %d/%d images",
+                batch_idx + 1, len(batches),
+                sum(1 for img in batch_images if img), len(batch_nodes),
+            )
+        except Exception as e:
+            logger.exception("M302 batch %d failed: %s", batch_idx + 1, e)
+            result.errors.append(f"batch {batch_idx + 1}: {e}")
+
+    # Reassemble images in sprite_nodes order
+    images: List[Optional[str]] = []
+    for node in sprite_nodes:
+        nid = node.get("id", "")
+        images.append(image_map.get(nid))
 
     # ── M302: Remove background via remove.bg (Canva) API ──
     # remove.bg does AI segmentation (not color matching).

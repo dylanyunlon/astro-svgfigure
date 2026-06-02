@@ -392,24 +392,61 @@ def _family_signature(label: str, icon_hint: str) -> Optional[Tuple[str, str]]:
 def detect_sprite_families(
     sprite_nodes: List[Tuple[str, Dict[str, Any]]],
 ) -> List[SpriteFamily]:
-    """Group sprite nodes into families by shared (base_concept, axis).
+    """Group sprite nodes into families by shared visual concept.
 
-    Args:
-        sprite_nodes: list of (node_id, node_dict) for nodes classified sprite.
+    Two-tier strategy:
+      1. Try LLM-powered grouping (Claude) — understands semantic similarity
+         even for nodes the rule table never heard of.
+      2. Fall back to rule-based _family_signature() if no API key or LLM fails.
 
-    Returns:
-        One SpriteFamily per concept that has >= 1 member.  Singletons are
-        still returned as a 1-member family so M215 can decide per-family
-        whether to use the sequence path (multi-member) or single-shot
-        (singleton) generation.
+    The LLM path runs synchronously via asyncio because classify_nodes() is
+    a sync call chain.  The LLM call is pure text (no images), takes ~2-5s.
     """
+    # ── Tier 1: Try LLM-powered grouping ──
+    try:
+        from backend.config import get_settings
+        settings = get_settings()
+        api_key = settings.ANTHROPIC_API_KEY or settings.CLAUDE_COMPATIBLE_API_KEY
+        if api_key and len(sprite_nodes) >= 2:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                # Already inside an async context — use nest_asyncio or thread
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    families = pool.submit(
+                        lambda: asyncio.run(_llm_detect_families(sprite_nodes, settings))
+                    ).result(timeout=30)
+            else:
+                families = asyncio.run(_llm_detect_families(sprite_nodes, settings))
+
+            if families:
+                logger.info(
+                    "LLM family detection: %d nodes → %d families",
+                    len(sprite_nodes), len(families),
+                )
+                return families
+    except Exception as e:
+        logger.warning("LLM family detection failed, falling back to rules: %s", e)
+
+    # ── Tier 2: Rule-based fallback ──
+    return _rule_based_families(sprite_nodes)
+
+
+def _rule_based_families(
+    sprite_nodes: List[Tuple[str, Dict[str, Any]]],
+) -> List[SpriteFamily]:
+    """Original rule-based family detection (kept as fallback)."""
     buckets: Dict[Tuple[str, str], List[str]] = {}
     for node_id, node in sprite_nodes:
         label = _node_label(node)
         icon_hint = (node.get("iconHint") or "").strip()
         sig = _family_signature(label, icon_hint)
         if sig is None:
-            # Sprite but unfamiliar — its own singleton family keyed on id.
             sig = (f"misc:{node_id}", "appearance")
         buckets.setdefault(sig, []).append(node_id)
 
@@ -424,6 +461,128 @@ def detect_sprite_families(
             )
         )
     return families
+
+
+async def _llm_detect_families(
+    sprite_nodes: List[Tuple[str, Dict[str, Any]]],
+    settings: Any,
+) -> Optional[List[SpriteFamily]]:
+    """Call Claude to semantically group sprite nodes into families.
+
+    Prompt: give Claude the list of (id, label, iconHint), ask it to return
+    JSON grouping them into families of visually similar concepts.
+    Each family gets one Gemini batch call for sequence-consistent sprites.
+    """
+    import json as _json
+
+    # Build compact node list for the prompt
+    node_list = []
+    for node_id, node in sprite_nodes:
+        label = _node_label(node)
+        hint = (node.get("iconHint") or "").strip()
+        node_list.append({"id": node_id, "label": label, "iconHint": hint})
+
+    prompt = (
+        "You are grouping nodes from a scientific paper figure into visual families "
+        "for batch sprite generation. Nodes in the same family will be drawn with "
+        "the same visual style (same shape, color palette, composition) but differ "
+        "in one dimension.\n\n"
+        "Rules:\n"
+        "- Group nodes that represent the SAME visual concept (e.g. all 'input images' "
+        "together, all 'code/document outputs' together, all 'neural network layers' together)\n"
+        "- Each family should have 2-8 members ideally (for batch Gemini generation)\n"
+        "- Singletons are OK for truly unique concepts\n"
+        "- A node can only belong to ONE family\n"
+        "- Aim for 4-8 families total, not 30+ singletons\n\n"
+        f"Nodes ({len(node_list)}):\n"
+    )
+    for n in node_list:
+        prompt += f'  - id="{n["id"]}", label="{n["label"]}", iconHint="{n["iconHint"]}"\n'
+
+    prompt += (
+        "\nRespond with ONLY a JSON array, no markdown, no explanation:\n"
+        '[\n'
+        '  {"family": "short_name", "concept": "what they look like", '
+        '"axis": "how members differ", "members": ["id1", "id2", ...]},\n'
+        '  ...\n'
+        ']\n'
+    )
+
+    # Call Claude
+    api_key = settings.ANTHROPIC_API_KEY or settings.CLAUDE_COMPATIBLE_API_KEY
+    api_base = settings.ANTHROPIC_API_BASE if settings.ANTHROPIC_API_KEY else settings.CLAUDE_COMPATIBLE_API_BASE
+    model = "claude-sonnet-4-20250514"
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_base}/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": model,
+                "max_tokens": 2048,
+                "temperature": 0.2,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    # Parse response
+    text = ""
+    for block in data.get("content", []):
+        if block.get("type") == "text":
+            text += block.get("text", "")
+
+    # Extract JSON from response (handle markdown fences)
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r'^```\w*\n?', '', text)
+        text = re.sub(r'\n?```$', '', text)
+        text = text.strip()
+
+    groups = _json.loads(text)
+    if not isinstance(groups, list):
+        return None
+
+    # Convert to SpriteFamily objects
+    valid_ids = {nid for nid, _ in sprite_nodes}
+    families: List[SpriteFamily] = []
+    claimed: set = set()
+
+    for i, g in enumerate(groups):
+        members = [m for m in g.get("members", []) if m in valid_ids and m not in claimed]
+        if not members:
+            continue
+        claimed.update(members)
+        fam_name = g.get("family", f"group_{i}")
+        families.append(SpriteFamily(
+            family_id=f"fam_{i}_{re.sub(r'[^a-z0-9]+', '_', fam_name.lower())[:16]}",
+            member_node_ids=members,
+            base_concept=g.get("concept", fam_name),
+            variation_axis=g.get("axis", "appearance"),
+        ))
+
+    # Catch unclaimed nodes — put them in a misc family
+    unclaimed = [nid for nid, _ in sprite_nodes if nid not in claimed]
+    if unclaimed:
+        families.append(SpriteFamily(
+            family_id=f"fam_{len(families)}_unclaimed",
+            member_node_ids=unclaimed,
+            base_concept="miscellaneous",
+            variation_axis="appearance",
+        ))
+
+    logger.info(
+        "LLM grouped %d sprite nodes into %d families: %s",
+        len(sprite_nodes), len(families),
+        [(f.family_id, len(f.member_node_ids)) for f in families],
+    )
+    return families if families else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
