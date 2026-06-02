@@ -391,18 +391,17 @@ def _family_signature(label: str, icon_hint: str) -> Optional[Tuple[str, str]]:
 
 def detect_sprite_families(
     sprite_nodes: List[Tuple[str, Dict[str, Any]]],
+    parent_map: Optional[Dict[str, str]] = None,
 ) -> List[SpriteFamily]:
     """Group sprite nodes into families by shared visual concept.
 
-    Three-tier strategy:
-      1. Try LLM-powered grouping (Claude) — semantic similarity.
-      2. Fall back to rule-based _family_signature().
-      3. Post-process: enforce MAX_FAMILY_SIZE cap — any family bigger
-         than the Gemini batch limit gets split into sub-families,
-         so each Gemini call stays small and focused.
-
-    This is the fix for "gemini一次性接受太多内容了" — even when the LLM
-    lumps 15 nodes into one family, Gemini only sees ≤6 at a time.
+    Four-tier strategy:
+      0. ELK parent group (NEW, best) — nodes under the same parent group
+         in the ELK tree form a natural family. Zero LLM cost, most accurate
+         because the topology generator already knows the semantic structure.
+      1. LLM-powered grouping (Claude) — if no parent_map or too few groups.
+      2. Rule-based _family_signature() — keyword matching fallback.
+      3. Post-process: enforce MAX_FAMILY_SIZE cap on all families.
     """
     MAX_FAMILY_SIZE = 6  # Gemini sweet spot: ≤6 images per call
 
@@ -413,38 +412,66 @@ def detect_sprite_families(
     )
     for i, (nid, nd) in enumerate(sprite_nodes):
         logger.info(
-            "│  [%02d] id=%-24s label=%-20s hint=%-12s",
+            "│  [%02d] id=%-24s label=%-20s hint=%-12s parent=%s",
             i, nid, _node_label(nd)[:20], (nd.get("iconHint") or "")[:12],
+            (parent_map or {}).get(nid, "?"),
         )
 
-    # ── Tier 1: Try LLM-powered grouping ──
+    # ── Tier 0: ELK parent group → family (best, zero-cost) ──
     raw_families: Optional[List[SpriteFamily]] = None
-    try:
-        from backend.config import get_settings
-        settings = get_settings()
-        api_key = settings.ANTHROPIC_API_KEY or settings.CLAUDE_COMPATIBLE_API_KEY
-        if api_key and len(sprite_nodes) >= 2:
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    raw_families = pool.submit(
-                        lambda: asyncio.run(_llm_detect_families(sprite_nodes, settings))
-                    ).result(timeout=30)
+    if parent_map:
+        group_buckets: Dict[str, List[str]] = {}
+        for nid, _ in sprite_nodes:
+            pg = parent_map.get(nid, "")
+            if pg:
+                group_buckets.setdefault(pg, []).append(nid)
             else:
-                raw_families = asyncio.run(_llm_detect_families(sprite_nodes, settings))
+                group_buckets.setdefault("__root__", []).append(nid)
 
-            if raw_families:
-                logger.info(
-                    "│  LLM returned %d raw families", len(raw_families),
-                )
-    except Exception as e:
-        logger.warning("│  LLM family detection failed, falling back to rules: %s", e)
+        # Only use Tier 0 if it produces meaningful groups (≥2 families)
+        if len(group_buckets) >= 2:
+            raw_families = []
+            for gid, members in group_buckets.items():
+                fam_id = f"elk_{re.sub(r'[^a-z0-9]+', '_', gid.lower())[:20]}"
+                raw_families.append(SpriteFamily(
+                    family_id=fam_id,
+                    member_node_ids=members,
+                    base_concept=f"nodes in {gid}",
+                    variation_axis="role within group",
+                ))
+            logger.info(
+                "│  Tier 0 (ELK parent group): %d groups → %s",
+                len(raw_families),
+                [(f.family_id, len(f.member_node_ids)) for f in raw_families],
+            )
+    # ── Tier 1: LLM-powered grouping (skip if Tier 0 already worked) ──
+    if not raw_families:
+        try:
+            from backend.config import get_settings
+            settings = get_settings()
+            api_key = settings.ANTHROPIC_API_KEY or settings.CLAUDE_COMPATIBLE_API_KEY
+            if api_key and len(sprite_nodes) >= 2:
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop and loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        raw_families = pool.submit(
+                            lambda: asyncio.run(_llm_detect_families(sprite_nodes, settings))
+                        ).result(timeout=30)
+                else:
+                    raw_families = asyncio.run(_llm_detect_families(sprite_nodes, settings))
+
+                if raw_families:
+                    logger.info(
+                        "│  LLM returned %d raw families", len(raw_families),
+                    )
+        except Exception as e:
+            logger.warning("│  LLM family detection failed, falling back to rules: %s", e)
 
     # ── Tier 2: Rule-based fallback ──
     if not raw_families:
@@ -712,7 +739,7 @@ def classify_nodes(elk_graph: Dict[str, Any]) -> ClassificationReport:
             sprite_nodes.append((node.get("id", ""), node))
 
     # Group sprite nodes into families and stamp familyId onto each member.
-    families = detect_sprite_families(sprite_nodes)
+    families = detect_sprite_families(sprite_nodes, parent_map=parent_map)
     id_to_family = {
         nid: fam.family_id for fam in families for nid in fam.member_node_ids
     }
