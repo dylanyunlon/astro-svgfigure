@@ -308,13 +308,38 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
 
     try {
       // Get latest SVG from interactive editor (user may have edited it)
-      const editorSvg = preview?.getSkeletonSvg()
-      if (editorSvg) currentSkeletonSvg = editorSvg
-
-      // Extract structured graph data from interactive editor (nodes with x,y,w,h + edges)
-      // This provides Gemini with EXACT spatial layout information the user confirmed
+      // ═══ FIX Break 2: use exportFullSvg() which serializes the LIVE DOM ═══
+      // including <image> tags with sprite data: URIs + user-dragged positions.
+      // Before this fix, we called getSkeletonSvg() → editor.toStaticSvg()
+      // which was correct for basic export, but exportFullSvg() additionally
+      // computes tight viewBox from actual node bounds and logs sprite stats.
       const editor = preview?.getEditor()
-      const elkGraph = editor ? editor.getGraph() : null
+      if (editor) {
+        // Use the sprite-rich DOM serialization, not elkToSvg() re-render
+        currentSkeletonSvg = editor.exportFullSvg()
+        // Debug: print state so developer can verify data at this breakpoint
+        console.log('[runFigureGen] Editor state at generation time:')
+        editor.debugDumpState()
+      } else {
+        const editorSvg = preview?.getSkeletonSvg()
+        if (editorSvg) currentSkeletonSvg = editorSvg
+        console.log('[runFigureGen] No interactive editor — using static SVG, length=' + currentSkeletonSvg.length)
+      }
+
+      // ═══ FIX Break 3: pass the FULL layouted JSON (nested children + spriteRef) ═══
+      // editor.getGraph() returns InteractiveGraph (flat), which loses spriteRef/familyId.
+      // preview.getLayoutedJson() returns the original ELK JSON with nested structure +
+      // spriteRef URLs from inject_sprites. This is what the backend needs for classify_nodes.
+      const elkGraph = preview?.getLayoutedJson() || (editor ? editor.getGraph() : null)
+
+      // Debug: log what we're sending so developer can verify Break 3 is fixed
+      const _elkChildren = elkGraph?.children?.length || 0
+      const _elkEdges = elkGraph?.edges?.length || 0
+      const _hasSprites = JSON.stringify(elkGraph || '').includes('spriteRef')
+      console.log(
+        `[runFigureGen] POST payload: svg_content=${currentSkeletonSvg.length} chars, ` +
+        `elk_graph=${_elkChildren} children/${_elkEdges} edges, hasSprites=${_hasSprites}`
+      )
 
       // Mark edit step as done
       steps?.setStatus('step-edit', 'done')

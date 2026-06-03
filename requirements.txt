@@ -36,3 +36,4 @@ reportlab>=4.0
 # SAM3 is used in local backend mode but is installed separately:
 #   git clone https://github.com/facebookresearch/sam3.git
 #   cd sam3 && pip install -e .
+playwright>=1.40.0  # headless Chromium for SVG→PNG (renders <image> data URIs that cairosvg cannot)

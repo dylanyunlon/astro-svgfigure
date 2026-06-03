@@ -398,20 +398,88 @@ def _count_numbered_points(prompt: str) -> int:
 # SVG → PNG Rendering (for Gemini image input)
 # ============================================================================
 
-def _svg_to_png_b64(svg_content: str, target_width: int = 1024) -> Optional[str]:
+async def _svg_to_png_b64_playwright(svg_content: str, target_width: int = 1024) -> Optional[str]:
     """
-    Render SVG string to PNG and return as base64.
-    Uses cairosvg (listed in requirements.txt).
+    Render SVG string to PNG using Playwright headless Chromium.
 
-    The rendered skeleton image is sent to Gemini as visual reference
-    so the model can see the EXACT spatial layout the user confirmed.
+    This replaces cairosvg for the critical path because cairosvg CANNOT render
+    <image href="data:image/png;base64,..."> tags — it silently drops them.
+    Chromium renders everything a browser would: embedded images, CSS, fonts.
 
-    Args:
-        svg_content: SVG XML string
-        target_width: Output width in pixels (height auto-scales)
+    FIX for Break 1: Gemini now sees the sprite-enriched skeleton (not empty boxes).
 
-    Returns:
-        Base64-encoded PNG string, or None if rendering fails
+    Debug: logs sprite count and PNG size so you can verify sprites are in the output.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        logger.warning(
+            "playwright not installed — run: pip install playwright && playwright install chromium\n"
+            "Falling back to cairosvg (which CANNOT render embedded sprite images)"
+        )
+        return _svg_to_png_b64_cairosvg(svg_content, target_width)
+
+    # Debug: count sprites in input SVG
+    sprite_count = svg_content.count('data:image/png;base64,')
+    image_tag_count = svg_content.count('<image ')
+    logger.info(
+        f"[_svg_to_png_b64_playwright] Input SVG: {len(svg_content)} chars, "
+        f"{image_tag_count} <image> tags, {sprite_count} base64 sprites"
+    )
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(viewport={"width": target_width, "height": 800})
+
+            # Wrap SVG in minimal HTML — white background, no margin
+            html = (
+                f'<!DOCTYPE html><html><head><style>'
+                f'body{{margin:0;background:#fff;display:flex;justify-content:center}}'
+                f'svg{{max-width:{target_width}px;height:auto}}'
+                f'</style></head><body>{svg_content}</body></html>'
+            )
+            await page.set_content(html, wait_until="networkidle")
+
+            # Wait for all <image> elements to load (sprites are data: URIs, should be instant)
+            await page.wait_for_timeout(500)
+
+            # Screenshot the SVG element directly for tight cropping
+            svg_el = await page.query_selector("svg")
+            if svg_el:
+                png_bytes = await svg_el.screenshot(type="png")
+            else:
+                # Fallback: screenshot full page
+                png_bytes = await page.screenshot(type="png", full_page=True)
+
+            await browser.close()
+
+        if not png_bytes or len(png_bytes) < 100:
+            logger.warning(f"Playwright produced tiny PNG ({len(png_bytes)} bytes)")
+            return None
+
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        logger.info(
+            f"[_svg_to_png_b64_playwright] Output PNG: {len(png_bytes)} bytes "
+            f"({len(png_bytes)/1024:.1f} KB), base64={len(b64)} chars. "
+            f"Sprites in input: {sprite_count} — if >0, they SHOULD be visible in the PNG."
+        )
+        return b64
+
+    except Exception as e:
+        logger.warning(f"Playwright SVG→PNG failed: {e}, falling back to cairosvg")
+        return _svg_to_png_b64_cairosvg(svg_content, target_width)
+
+
+def _svg_to_png_b64_cairosvg(svg_content: str, target_width: int = 1024) -> Optional[str]:
+    """
+    Render SVG to PNG via cairosvg. FAST but CANNOT render <image> data: URIs.
+
+    WARNING: If svg_content contains <image href="data:image/png;base64,...">
+    (i.e. sprite-enriched SVGs), those sprites will be INVISIBLE in the output.
+    Use _svg_to_png_b64_playwright() instead for sprite-enriched SVGs.
+
+    This is kept as a fast fallback for simple SVGs (no sprites, text+rects only).
     """
     try:
         import cairosvg
@@ -419,8 +487,15 @@ def _svg_to_png_b64(svg_content: str, target_width: int = 1024) -> Optional[str]
         logger.warning("cairosvg not installed — cannot render SVG to PNG for Gemini input")
         return None
 
+    # Debug: warn if sprites are present (they'll be lost)
+    sprite_count = svg_content.count('data:image/png;base64,')
+    if sprite_count > 0:
+        logger.warning(
+            f"[cairosvg fallback] SVG has {sprite_count} embedded sprites — "
+            f"cairosvg WILL NOT render them! Install playwright for full rendering."
+        )
+
     try:
-        # Render SVG to PNG bytes
         png_bytes = cairosvg.svg2png(
             bytestring=svg_content.encode("utf-8"),
             output_width=target_width,
@@ -430,11 +505,53 @@ def _svg_to_png_b64(svg_content: str, target_width: int = 1024) -> Optional[str]
             return None
 
         b64 = base64.b64encode(png_bytes).decode("ascii")
-        logger.info(f"SVG→PNG rendered: {len(png_bytes)} bytes, {len(b64)} base64 chars (width={target_width})")
+        logger.info(f"SVG→PNG (cairosvg): {len(png_bytes)} bytes, {len(b64)} base64 chars (width={target_width})")
         return b64
     except Exception as e:
         logger.warning(f"SVG→PNG rendering failed: {e}")
         return None
+
+
+def _svg_to_png_b64(svg_content: str, target_width: int = 1024) -> Optional[str]:
+    """
+    Smart router: uses Playwright if sprites are detected, cairosvg otherwise.
+
+    This is the main entry point called by generate_image_with_gemini().
+    It checks whether the SVG contains embedded sprite images:
+      - If yes → Playwright (headless Chromium, renders everything)
+      - If no  → cairosvg (fast, lightweight, good enough for text+rects)
+    """
+    has_sprites = 'data:image/png;base64,' in svg_content
+    node_count = svg_content.count('data-node-id=') or svg_content.count('class="interactive-node"')
+
+    logger.info(
+        f"[_svg_to_png_b64] SVG analysis: {len(svg_content)} chars, "
+        f"has_sprites={has_sprites}, ~{node_count} nodes, target_width={target_width}"
+    )
+
+    if has_sprites:
+        logger.info("[_svg_to_png_b64] Sprites detected → routing to Playwright (async)")
+        # Playwright is async; run in event loop
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # We're inside an async context — create a task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    _svg_to_png_b64_playwright(svg_content, target_width)
+                )
+                return future.result(timeout=30)
+        else:
+            return asyncio.run(_svg_to_png_b64_playwright(svg_content, target_width))
+    else:
+        logger.info("[_svg_to_png_b64] No sprites → using cairosvg (fast path)")
+        return _svg_to_png_b64_cairosvg(svg_content, target_width)
 
 
 # ============================================================================

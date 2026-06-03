@@ -288,3 +288,4 @@ README 重写、交互式 demo 页面、API endpoint 文档 (OpenAPI/Swagger)。
 | 第四位 | M430-M436 | 微差序列帧：family-aware prompt + 热力图 | 🔲 待开发 |
 | 第五位 | M440-M446 | 导出管线：SVG/PDF/PPTX/标注/字体 | 🔲 待开发 |
 | 第六位 | M450-M456 | 生产化：限流/缓存/WebSocket/Docker/监控 | 🔲 待开发 |
+| **第七位** | **M460-M462** | **三断裂修复：exportFullSvg + elk_graph传递 + Playwright渲染** | **✅ 已完成** |

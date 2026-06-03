@@ -1182,6 +1182,101 @@ export class InteractiveSvgEditor {
     return new XMLSerializer().serializeToString(clone)
   }
 
+  /**
+   * Export full SVG with all embedded sprites (data: URIs) + user positions.
+   *
+   * Unlike toStaticSvg() which just serializes the current DOM (which already
+   * contains <image href="data:image/png;base64,..."> from createNodeGroup),
+   * this method ensures the serialized SVG is fully self-contained:
+   *   1. Removes interactive handles/editors
+   *   2. Inlines all sprite <image> href as data: URIs (they already are)
+   *   3. Sets explicit viewBox from actual node bounds (not editor viewport)
+   *   4. Returns a clean SVG string safe for headless rendering
+   *
+   * This fixes Break 2: ImageGenPanel was using elkToSvg() output (no sprites)
+   * instead of the editor's live DOM state (with sprites + user drag positions).
+   */
+  exportFullSvg(): string {
+    const clone = this.svg.cloneNode(true) as SVGSVGElement
+    // Strip interactive-only elements
+    clone.querySelectorAll('.resize-handle, .label-editor-fo, .svg-grid').forEach(el => el.remove())
+    // Reset selection highlights
+    clone.querySelectorAll('.interactive-node rect:not(.resize-handle)').forEach(rect => {
+      rect.setAttribute('stroke', this.theme.nodeStroke)
+    })
+    // Compute tight viewBox from actual node positions (user may have dragged)
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of this.graph.nodes) {
+      if (n.x < minX) minX = n.x
+      if (n.y < minY) minY = n.y
+      if (n.x + n.width > maxX) maxX = n.x + n.width
+      if (n.y + n.height > maxY) maxY = n.y + n.height
+    }
+    const pad = this.opts.padding
+    const vbX = Math.max(0, minX - pad), vbY = Math.max(0, minY - pad)
+    const vbW = (maxX - minX) + pad * 2, vbH = (maxY - minY) + pad * 2
+    clone.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`)
+    clone.setAttribute('width', String(Math.round(vbW)))
+    clone.setAttribute('height', String(Math.round(vbH)))
+
+    const svgStr = new XMLSerializer().serializeToString(clone)
+    // Debug: log sprite presence so developers can verify Break 2 is fixed
+    const spriteCount = (svgStr.match(/data:image\/png;base64,/g) || []).length
+    const nodeCount = this.graph.nodes.length
+    console.log(
+      `[exportFullSvg] ${nodeCount} nodes, ${spriteCount} embedded sprites, ` +
+      `viewBox=${vbX.toFixed(0)},${vbY.toFixed(0)},${vbW.toFixed(0)},${vbH.toFixed(0)}, ` +
+      `SVG length=${svgStr.length} chars`
+    )
+    return svgStr
+  }
+
+  /**
+   * Debug: dump current editor state to console for breakpoint-free debugging.
+   *
+   * Call from browser console: __svgPreview.getEditor().debugDumpState()
+   * Prints node positions, sprite presence, edge counts, and graph dimensions.
+   * Useful during experiments to verify the pipeline data flow at each step.
+   */
+  debugDumpState(): { nodes: any[]; edges: any[]; meta: any } {
+    const nodes = this.graph.nodes.map(n => ({
+      id: n.id,
+      label: n.label,
+      x: Math.round(n.x), y: Math.round(n.y),
+      w: Math.round(n.width), h: Math.round(n.height),
+      renderMode: n.renderMode || 'text',
+      hasSprite: !!(n.spriteUrl && n.spriteUrl.startsWith('data:')),
+      spriteBytes: n.spriteUrl ? Math.round(n.spriteUrl.length * 0.75) : 0,
+      familyId: n.familyId || '',
+    }))
+    const edges = this.graph.edges.map(e => ({
+      id: e.id, from: e.sourceId, to: e.targetId,
+      points: e.points.length, label: e.label || '',
+    }))
+    const totalSpriteBytes = nodes.reduce((s, n) => s + n.spriteBytes, 0)
+    const meta = {
+      totalNodes: nodes.length,
+      totalEdges: edges.length,
+      nodesWithSprites: nodes.filter(n => n.hasSprite).length,
+      nodesWithoutSprites: nodes.filter(n => !n.hasSprite).length,
+      totalSpriteSizeKB: Math.round(totalSpriteBytes / 1024),
+      graphWidth: this.graph.width,
+      graphHeight: this.graph.height,
+      zoom: this.zoom.toFixed(2),
+      viewBox: { ...this.viewBox },
+      confirmed: this.confirmed,
+      selectedNode: this.selectedNodeId,
+    }
+
+    console.group('[InteractiveSvgEditor] State Dump')
+    console.log('Meta:', meta)
+    console.table(nodes)
+    if (edges.length <= 30) console.table(edges)
+    else console.log(`Edges (${edges.length}): first 10 =`, edges.slice(0, 10))
+    console.groupEnd()
+    return { nodes, edges, meta }
+  }
+
   /** Add a new node */
   addNode(label: string): InteractiveNode {
     const id = `node_${Date.now()}`
