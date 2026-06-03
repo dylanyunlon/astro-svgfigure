@@ -126,20 +126,38 @@ def _build_interleaved_prompt(
 
     for i, node in enumerate(sprite_nodes):
         node_id = node.get("id", "")
+        label = _node_label(node)
+        hint = node.get("iconHint", "")
+        family_id = node.get("familyId", "")
 
-        # M301: prefer family-aware designed prompt over generic description
+        # ALWAYS start with the node's own identity (label + iconHint).
+        # This was the bug: family_prompts replaced the node description entirely,
+        # resulting in "A small nodes in stage2_group" instead of "ViT Encoder".
+        desc = f"{label}"
+        if hint:
+            desc += f" — visual concept: {hint}"
+
+        # M301: append family consistency constraint as SUPPLEMENT, not replacement
         if family_prompts and node_id in family_prompts:
-            lines.append(f"  {i+1}. {family_prompts[node_id]}")
-        else:
-            label = _node_label(node)
-            hint = node.get("iconHint", "")
-            family_id = node.get("familyId", "")
-            desc = f"{label}"
-            if hint:
-                desc += f" — visual concept: {hint}"
-            if family_id:
-                desc += f" [family: {family_id}]"
-            lines.append(f"  {i+1}. {desc}")
+            fam_prompt = family_prompts[node_id]
+            # Extract only the style/consistency part, skip the generic description
+            # Look for "variant X of Y" or "consistent series" keywords
+            if "consistent series" in fam_prompt or "variant" in fam_prompt:
+                # Keep only the consistency instruction, not the generic "A small nodes..." part
+                import re as _re
+                consistency_part = _re.search(
+                    r'(This is variant.*)', fam_prompt, _re.DOTALL
+                )
+                if consistency_part:
+                    desc += f". {consistency_part.group(1).strip()}"
+            else:
+                # Unknown format — append the whole thing but after the node identity
+                desc += f". Style: {fam_prompt}"
+
+        if family_id:
+            desc += f" [family: {family_id}]"
+
+        lines.append(f"  {i+1}. {desc}")
 
     lines.append(
         f"\nGenerate EXACTLY {len(sprite_nodes)} image(s), one per item, in order. "
