@@ -48,6 +48,11 @@ export const POST: APIRoute = async ({ request }) => {
           image_size: body.image_size || '4K',
           custom_prompt: body.custom_prompt || null,
           elk_graph: body.elk_graph || null,
+          // Per-node sprite images for multi-image Gemini input (max 13 + 1 skeleton = 14)
+          sprite_images: body.sprite_images || null,
+          // media_resolution hints: HIGH for skeleton, LOW for sprites
+          skeleton_media_resolution: body.skeleton_media_resolution || null,
+          sprite_media_resolution: body.sprite_media_resolution || null,
         }),
         signal: controller.signal,
       })

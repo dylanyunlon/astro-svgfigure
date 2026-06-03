@@ -684,6 +684,46 @@ async def _generate_image_openai_format(
         return {"success": False, "error": str(e), "model_used": model}
 
 
+def _collect_sprites_from_elk(elk_graph: Dict) -> List[tuple]:
+    """
+    Walk ELK graph tree and collect (nodeId, label, base64) for nodes with spriteRef.url.
+
+    Returns list of (node_id, label, b64_data) tuples, sorted by node order.
+    Used as fallback when frontend doesn't send sprite_images separately.
+
+    Debug: prints each found sprite so developer can trace the data flow.
+    """
+    results = []
+
+    def _walk(nodes):
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            ref = node.get("spriteRef") or {}
+            url = ref.get("url", "")
+            if url and isinstance(url, str) and url.startswith("data:image/"):
+                b64 = url.split(",", 1)[1] if "," in url else ""
+                if b64:
+                    label = ""
+                    labels = node.get("labels")
+                    if isinstance(labels, list) and labels:
+                        label = labels[0].get("text", node.get("id", ""))
+                    else:
+                        label = node.get("id", "unknown")
+                    results.append((node.get("id", ""), label, b64))
+                    logger.debug(
+                        f"[_collect_sprites_from_elk] Found sprite: "
+                        f"node={node.get('id')}, label='{label}', b64_len={len(b64)}"
+                    )
+            children = node.get("children")
+            if isinstance(children, list):
+                _walk(children)
+
+    _walk(elk_graph.get("children", []))
+    logger.info(f"[_collect_sprites_from_elk] Collected {len(results)} sprites from elk_graph")
+    return results
+
+
 async def generate_image_with_gemini(
     svg_content: str,
     prompt: str,
@@ -693,6 +733,7 @@ async def generate_image_with_gemini(
     image_size: str = "4K",
     elk_graph: Optional[Dict] = None,
     skeleton_png_b64: Optional[str] = None,
+    **kwargs,  # sprite_images, skeleton_media_resolution, sprite_media_resolution
 ) -> Dict[str, Any]:
     """
     Step b: Use Gemini 3 Pro Image model (via tryallai.com proxy)
@@ -719,6 +760,7 @@ async def generate_image_with_gemini(
 
     api_key = settings.GEMINI_API_KEY
     api_base = settings.GEMINI_API_BASE
+    is_direct_google_api = not api_base  # Moved early: needed for media_resolution on request parts
 
     if not api_key:
         return {"success": False, "error": "GEMINI_API_KEY not configured"}
@@ -790,6 +832,12 @@ async def generate_image_with_gemini(
     if not skeleton_png_b64:
         skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
 
+    # ═══ media_resolution support (Gemini 3 feature) ═══
+    # skeleton gets HIGH (1120 tokens) — Gemini needs to see exact layout
+    # per-node sprites get LOW (280 tokens) — just style/texture reference
+    skeleton_res = kwargs.get("skeleton_media_resolution", "media_resolution_high")
+    sprite_res = kwargs.get("sprite_media_resolution", "media_resolution_low")
+
     if skeleton_png_b64:
         request_parts.append({
             "text": (
@@ -800,15 +848,82 @@ async def generate_image_with_gemini(
                 "publication-quality scientific figure while keeping the structure identical."
             )
         })
-        request_parts.append({
+        skeleton_part: Dict[str, Any] = {
             "inlineData": {
                 "mimeType": "image/png",
                 "data": skeleton_png_b64,
             }
-        })
-        logger.info("Attached skeleton PNG as visual reference for Gemini")
+        }
+        # Add media_resolution for Gemini 3 (direct Google API only)
+        if is_direct_google_api and skeleton_res:
+            skeleton_part["media_resolution"] = {"level": skeleton_res}
+        request_parts.append(skeleton_part)
+        logger.info(
+            f"Attached skeleton PNG as visual reference (resolution={skeleton_res}, "
+            f"b64_len={len(skeleton_png_b64)})"
+        )
     else:
         logger.warning("Could not render skeleton PNG — Gemini will rely on text description only")
+
+    # ═══ Per-node sprite images (Gemini 3 Pro Image: up to 14 images/prompt) ═══
+    # Each sprite is sent as a separate inlineData part with LOW resolution
+    # (280 tokens each vs 1120 for HIGH). 13 sprites × 280 = 3,640 tokens.
+    # This gives Gemini visual style references for each component.
+    sprite_images = kwargs.get("sprite_images") or []
+    if sprite_images and isinstance(sprite_images, list):
+        sprite_count = min(len(sprite_images), 13)  # 13 sprites + 1 skeleton = 14 max
+        logger.info(
+            f"Attaching {sprite_count} per-node sprite images "
+            f"(resolution={sprite_res}, max=13)"
+        )
+
+        # Add a text description of what follows
+        sprite_labels = [s.get("label", s.get("nodeId", "?")) for s in sprite_images[:sprite_count]]
+        request_parts.append({
+            "text": (
+                f"Below are {sprite_count} individual component illustrations from the diagram. "
+                f"Components: {', '.join(sprite_labels)}. "
+                f"Use these as style references — each component in your final figure should "
+                f"maintain a similar visual style and level of detail as these sprites."
+            )
+        })
+
+        for i, sprite_info in enumerate(sprite_images[:sprite_count]):
+            sprite_b64 = sprite_info.get("b64", "")
+            if not sprite_b64:
+                continue
+            sprite_part: Dict[str, Any] = {
+                "inlineData": {
+                    "mimeType": "image/png",
+                    "data": sprite_b64,
+                }
+            }
+            if is_direct_google_api and sprite_res:
+                sprite_part["media_resolution"] = {"level": sprite_res}
+            request_parts.append(sprite_part)
+            logger.info(
+                f"  Sprite {i+1}/{sprite_count}: "
+                f"label='{sprite_info.get('label', '?')}', "
+                f"b64_len={len(sprite_b64)}"
+            )
+    elif elk_graph and isinstance(elk_graph, dict):
+        # Fallback: extract sprites from elk_graph if not sent separately
+        _sprites_from_graph = _collect_sprites_from_elk(elk_graph)
+        if _sprites_from_graph:
+            sprite_count = min(len(_sprites_from_graph), 13)
+            logger.info(f"Extracted {sprite_count} sprites from elk_graph (fallback)")
+            request_parts.append({
+                "text": (
+                    f"Below are {sprite_count} component illustrations extracted from the graph. "
+                    f"Use these as visual references for the final figure."
+                )
+            })
+            for i, (node_id, label, b64) in enumerate(_sprites_from_graph[:sprite_count]):
+                sprite_part = {"inlineData": {"mimeType": "image/png", "data": b64}}
+                if is_direct_google_api and sprite_res:
+                    sprite_part["media_resolution"] = {"level": sprite_res}
+                request_parts.append(sprite_part)
+                logger.info(f"  Sprite {i+1}/{sprite_count}: label='{label}', b64_len={len(b64)}")
 
     request_parts.append({"text": combined_prompt})
 
@@ -1322,6 +1437,7 @@ async def generate_scientific_figure(
     custom_prompt: Optional[str] = None,
     elk_graph: Optional[Dict] = None,
     settings: Optional[Settings] = None,
+    **kwargs,  # sprite_images, skeleton_media_resolution, sprite_media_resolution
 ) -> Dict[str, Any]:
     """
     Combined Step 5 pipeline:
@@ -1425,6 +1541,7 @@ async def generate_scientific_figure(
         image_size=image_size,
         elk_graph=elk_graph,
         skeleton_png_b64=skeleton_png_b64,
+        **kwargs,  # sprite_images, media_resolution hints
     )
 
     return {

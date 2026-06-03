@@ -643,6 +643,10 @@ async def api_generate_image(request_data: dict) -> JSONResponse:
             image_size=request_data.get("image_size", "4K"),
             custom_prompt=request_data.get("custom_prompt"),
             elk_graph=request_data.get("elk_graph"),
+            # Per-node sprite images + media_resolution for enriched figure generation
+            sprite_images=request_data.get("sprite_images"),
+            skeleton_media_resolution=request_data.get("skeleton_media_resolution"),
+            sprite_media_resolution=request_data.get("sprite_media_resolution"),
         )
 
         return JSONResponse(result)

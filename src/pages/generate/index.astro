@@ -74,6 +74,16 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
           <span id='generate-sprites-text'>Generate Sprites (per-node AI)</span>
         </button>
 
+        <button id='generate-enriched-figure-btn' disabled
+          class='group flex w-full items-center justify-center gap-x-2 rounded-xl border border-purple-400/30 bg-purple-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed'>
+          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+            <path d='M15 8h.01M3 6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6z' />
+            <path d='m3 16 5-5c.928-.893 2.072-.893 3 0l5 5' />
+            <circle cx='18' cy='5' r='2' fill='currentColor' opacity='0.5' />
+          </svg>
+          <span id='generate-enriched-figure-text'>Step 2→3: Sprite-Enriched Figure</span>
+        </button>
+
         <Collapse title='Advanced Options'>
           <div class='flex flex-col gap-y-3 pb-2'>
             <div class='flex flex-col gap-y-1'>
@@ -162,6 +172,8 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
   const generateFigureText = document.getElementById('generate-figure-text') as HTMLSpanElement
   const generateSpritesBtn = document.getElementById('generate-sprites-btn') as HTMLButtonElement
   const generateSpritesText = document.getElementById('generate-sprites-text') as HTMLSpanElement
+  const generateEnrichedBtn = document.getElementById('generate-enriched-figure-btn') as HTMLButtonElement
+  const generateEnrichedText = document.getElementById('generate-enriched-figure-text') as HTMLSpanElement
   const textarea = document.getElementById('method-text') as HTMLTextAreaElement
   const statusText = document.getElementById('pipeline-status-text') as HTMLElement
   const elapsedEl = document.getElementById('pipeline-elapsed') as HTMLElement
@@ -599,6 +611,16 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         const diag = data.diagnostics || {}
         const injDiag = diag.injection || diag
         statusText.textContent = `Sprites done: ${injDiag.refs_stamped || 0} injected. Drag nodes to rearrange.`
+
+        // Enable the "Sprite-Enriched Figure" button now that we have sprites
+        if (generateEnrichedBtn) {
+          generateEnrichedBtn.disabled = false
+          console.log(
+            `[Sprites] Enriched figure button enabled. ` +
+            `refs_stamped=${injDiag.refs_stamped || 0}, ` +
+            `elk_graph children=${data.elk_graph?.children?.length || 0}`
+          )
+        }
       } else {
         statusText.textContent = `Sprite error: ${data.error || 'Unknown'}`
       }
@@ -607,6 +629,152 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
     } finally {
       generateSpritesBtn.disabled = false
       generateSpritesText.textContent = 'Generate Sprites (per-node AI)'
+    }
+  })
+
+  // ===== SPRITE-ENRICHED FIGURE (new button: Step 2→3 with sprite references) =====
+  // This button does what "Step 2→3: Generate Figure" does, but additionally:
+  //   1. Uses exportFullSvg() → Playwright rendering (Break 1 fix: sprites in PNG)
+  //   2. Extracts per-node sprite images from elk_graph.children[].spriteRef.url
+  //   3. Sends up to 13 sprite images + 1 skeleton PNG as separate inlineData parts
+  //   4. Uses media_resolution: HIGH for skeleton, LOW for individual sprites
+  //   5. Sends the full nested elk_graph (Break 3 fix: not null)
+  generateEnrichedBtn?.addEventListener('click', async () => {
+    if (running || !currentSkeletonSvg) return
+    const text = textarea?.value?.trim()
+    if (!text) return
+
+    running = true
+    generateEnrichedBtn.disabled = true
+    generateEnrichedText.textContent = 'Generating enriched figure...'
+    generateFigureBtn.disabled = true
+    generateBtn.disabled = true
+    errorDisplay?.hide()
+    finalImageSection?.classList.add('hidden')
+    ;(window as any).__postGenPanel?.hide()
+    startTimer()
+
+    const aspect = (document.getElementById('opt-aspect') as HTMLSelectElement)?.value
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 300000)
+
+    try {
+      // Step A: Get sprite-rich SVG from editor (Break 2 fix)
+      const editor = preview?.getEditor()
+      if (editor) {
+        currentSkeletonSvg = editor.exportFullSvg()
+        console.log('[EnrichedFigure] exportFullSvg() called:')
+        editor.debugDumpState()
+      }
+
+      // Step B: Get nested ELK graph with spriteRef URLs (Break 3 fix)
+      const elkGraph = preview?.getLayoutedJson()
+
+      // Step C: Collect per-node sprite images from elk_graph
+      const spriteImages: Array<{nodeId: string, label: string, b64: string}> = []
+      function collectSprites(nodes: any[]) {
+        if (!Array.isArray(nodes)) return
+        for (const node of nodes) {
+          if (node.spriteRef?.url && typeof node.spriteRef.url === 'string'
+              && node.spriteRef.url.startsWith('data:image/')) {
+            const b64 = node.spriteRef.url.replace(/^data:image\/\w+;base64,/, '')
+            spriteImages.push({
+              nodeId: node.id,
+              label: node.labels?.[0]?.text || node.id,
+              b64: b64,
+            })
+          }
+          if (Array.isArray(node.children)) collectSprites(node.children)
+        }
+      }
+      if (elkGraph?.children) collectSprites(elkGraph.children)
+
+      console.log(
+        `[EnrichedFigure] Collected ${spriteImages.length} sprite images from elk_graph. ` +
+        `Labels: ${spriteImages.map(s => s.label).join(', ')}. ` +
+        `Total sprite bytes: ${spriteImages.reduce((s, i) => s + i.b64.length, 0)} chars base64`
+      )
+
+      steps?.setStatus('step-edit', 'done')
+
+      // Step D: Generate stylist prompt
+      steps?.setStatus('step-stylist-prompt', 'running')
+      let customPrompt = promptTextarea.value?.trim() || ''
+      if (!customPrompt) {
+        statusText.textContent = 'Step 2: Stylist refining description...'
+        const pRes = await fetch('/api/generate-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            method_text: text, svg_content: currentSkeletonSvg,
+            elk_graph: elkGraph,
+          }),
+          signal: controller.signal,
+        })
+        if (!pRes.ok) { const e = await pRes.json(); throw new Error(`Stylist: ${e.error || 'Failed'}`) }
+        const pData = await pRes.json()
+        if (pData.success && pData.prompt) {
+          promptTextarea.value = pData.prompt
+          customPrompt = pData.prompt
+        } else { throw new Error(`Stylist: ${pData.error || 'Empty prompt'}`) }
+      }
+      steps?.setStatus('step-stylist-prompt', 'done')
+
+      // Step E: Call enriched-image endpoint with per-node sprites
+      steps?.setStatus('step-gemini-image', 'running')
+      statusText.textContent = `Step 3: Generating with ${spriteImages.length} sprite references...`
+
+      const iRes = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          svg_content: currentSkeletonSvg,
+          method_text: text,
+          custom_prompt: customPrompt,
+          aspect_ratio: aspect || '16:9',
+          image_size: '4K',
+          elk_graph: elkGraph,
+          // NEW: per-node sprite images for Gemini multi-image input
+          sprite_images: spriteImages.slice(0, 13), // max 13 sprites + 1 skeleton = 14 images
+          // NEW: media_resolution hints
+          skeleton_media_resolution: 'media_resolution_high',
+          sprite_media_resolution: 'media_resolution_low',
+        }),
+        signal: controller.signal,
+      })
+      if (!iRes.ok) { const e = await iRes.json(); throw new Error(`Gemini: ${e.error || 'Failed'}`) }
+      const iData = await iRes.json()
+
+      if (iData.success && iData.image_b64) {
+        currentImageB64 = iData.image_b64
+        currentMimeType = iData.mime_type || 'image/png'
+        finalImage.src = `data:${currentMimeType};base64,${currentImageB64}`
+        finalImageSection?.classList.remove('hidden')
+        document.getElementById('tab-final')?.click()
+        finalImageInfo.textContent = `Enriched: ${spriteImages.length} sprites → ${iData.image_model_used || '?'} | ${elapsed()}s`
+        steps?.setStatus('step-gemini-image', 'done')
+        statusText.textContent = `Enriched figure generated (${elapsed()}s) with ${spriteImages.length} sprite references.`
+        statusText.style.color = ''
+
+        const postGen = (window as any).__postGenPanel
+        if (postGen) {
+          postGen.show(currentImageB64, currentMimeType, elkGraph)
+          setTimeout(() => postGen.runPipeline(), 500)
+        }
+      } else { throw new Error(`Gemini: ${iData.error || 'No image'}`) }
+
+    } catch (err: any) {
+      document.querySelectorAll('.pipeline-step[data-status="running"]').forEach(el => {
+        ;(el as HTMLElement).dataset.status = 'error'
+      })
+      let msg = err.name === 'AbortError' ? 'Timed out (5 min)' : (err.message || 'Unknown error')
+      errorDisplay?.show({ title: 'Enriched Figure Error', message: msg, hint: '', step: 'Step 2-3 (Enriched)' })
+      statusText.textContent = `Error: ${msg}`
+      statusText.style.color = 'hsl(0 72.2% 50.6%)'
+    } finally {
+      clearTimeout(timeoutId); stopTimer(); running = false
+      generateEnrichedBtn.disabled = false; generateFigureBtn.disabled = false; generateBtn.disabled = false
+      generateEnrichedText.textContent = 'Step 2→3: Sprite-Enriched Figure'
     }
   })
 
