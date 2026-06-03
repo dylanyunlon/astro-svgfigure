@@ -1,1 +1,1 @@
-1408x768 mode=RGB
+2048x2048 mode=RGB

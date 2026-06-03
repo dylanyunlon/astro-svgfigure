@@ -15,6 +15,6 @@ STYLE REQUIREMENTS (CRITICAL — follow ALL of these):
 
 ITEMS TO ILLUSTRATE:
 
-  1. JSON DOM Tree — visual concept: JSON document. Style: A small nodes in coarse_dom_stage, flat 2D vector illustration, academic paper figure style, clean thin outlines, monochrome with subtle grayscale shading, no perspective, no 3D, centered composition, generous margin. [family: elk_coarse_dom_stage]
+  1. DOM Tree. Style: A small nodes in __root__, flat 2D vector illustration, academic paper figure style, clean thin outlines, monochrome with subtle grayscale shading, no perspective, no 3D, centered composition, generous margin. [family: elk__root_]
 
 Generate EXACTLY 1 image(s), one per item, in order. Each 512x512 px. Solid WHITE #FFFFFF background. Academic figure style.
