@@ -520,17 +520,25 @@ def _svg_to_png_b64(svg_content: str, target_width: int = 1024) -> Optional[str]
     It checks whether the SVG contains embedded sprite images:
       - If yes → Playwright (headless Chromium, renders everything)
       - If no  → cairosvg (fast, lightweight, good enough for text+rects)
+
+    FIX: Also checks for <image> tags without the specific data: prefix
+    (some SVGs use href="data:image/png;base64,..." or xlink:href variants).
     """
-    has_sprites = 'data:image/png;base64,' in svg_content
+    has_sprites = (
+        'data:image/png;base64,' in svg_content
+        or 'data:image/jpeg;base64,' in svg_content
+    )
+    has_image_tags = '<image ' in svg_content and 'href=' in svg_content
     node_count = svg_content.count('data-node-id=') or svg_content.count('class="interactive-node"')
 
     logger.info(
         f"[_svg_to_png_b64] SVG analysis: {len(svg_content)} chars, "
-        f"has_sprites={has_sprites}, ~{node_count} nodes, target_width={target_width}"
+        f"has_sprites={has_sprites}, has_image_tags={has_image_tags}, "
+        f"~{node_count} nodes, target_width={target_width}"
     )
 
-    if has_sprites:
-        logger.info("[_svg_to_png_b64] Sprites detected → routing to Playwright (async)")
+    if has_sprites or has_image_tags:
+        logger.info("[_svg_to_png_b64] Sprites/images detected → routing to Playwright (async)")
         # Playwright is async; run in event loop
         import asyncio
         try:
@@ -1491,26 +1499,46 @@ async def generate_scientific_figure(
             prompt_model_used = prompt_result.get("model_used", "unknown")
 
     # Pre-render skeleton PNG once for reuse
+    # ═══ FIX Break 1: Force Playwright when SVG contains sprite images ═══
+    # _svg_to_png_b64() routes based on 'data:image/png;base64,' presence.
+    # If the enriched endpoint already rebuilt SVG with sprites, Playwright
+    # path activates automatically. But we also check elk_graph as backup.
     skeleton_png_b64 = None
+    has_sprites_in_svg = 'data:image/png;base64,' in svg_content
+    has_sprites_in_elk = bool(
+        elk_graph and isinstance(elk_graph, dict)
+        and 'spriteRef' in json.dumps(elk_graph)[:20000]
+    )
     try:
-        skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+        if has_sprites_in_svg:
+            logger.info(
+                "[generate_scientific_figure] SVG contains sprite base64 → "
+                "forcing Playwright for faithful skeleton PNG"
+            )
+            skeleton_png_b64 = await _svg_to_png_b64_playwright(
+                svg_content, target_width=1024
+            )
+        else:
+            skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
     except Exception as e:
         logger.warning(f"Skeleton PNG render failed: {e}")
 
     # ═══════════════════════════════════════════════════════════════════
     #  Stage 2.8: Sprite injection — Gemini fills INDIVIDUAL grid cells
     #
-    #  The old flow sent one big prompt to Gemini and got one big image.
-    #  Now we first inject per-node sprites into the elk_graph, so Gemini
-    #  gets a richer input (SVG with embedded sprites vs bare text boxes).
-    #
-    #  Gemini interleaved output (responseModalities: [TEXT, IMAGE]):
-    #  one request → N independent images as separate parts[].inline_data.
-    #  No sprite sheets needed. Natural style consistency within same call.
-    #
-    #  On failure at any step, affected nodes keep organic blob fallback.
+    #  SKIP this step if sprites are already present (enriched endpoint
+    #  restored them from cache). Re-running inject_sprites would call
+    #  Gemini AGAIN to generate NEW sprites, overwriting the user's
+    #  confirmed sprite versions — a redundant API call that wastes
+    #  time and money, and may produce style-inconsistent results.
     # ═══════════════════════════════════════════════════════════════════
-    if elk_graph and isinstance(elk_graph, dict) and elk_graph.get("children"):
+    already_has_sprites = has_sprites_in_svg or bool(kwargs.get("sprite_images"))
+    if (
+        not already_has_sprites
+        and elk_graph
+        and isinstance(elk_graph, dict)
+        and elk_graph.get("children")
+    ):
         try:
             from backend.pipeline.topology.node_classifier import classify_nodes
             from backend.pipeline.topology.sprite_injector import inject_sprites
@@ -1530,6 +1558,12 @@ async def generate_scientific_figure(
             )
         except Exception as e:
             logger.exception("Sprite injection failed, continuing with original SVG")
+    elif already_has_sprites:
+        logger.info(
+            "[generate_scientific_figure] Sprites already present "
+            f"(in_svg={has_sprites_in_svg}, sprite_images={bool(kwargs.get('sprite_images'))})"
+            " — skipping redundant inject_sprites call"
+        )
 
     # Step b: Generate image (full prompt, no compression)
     image_result = await generate_image_with_gemini(

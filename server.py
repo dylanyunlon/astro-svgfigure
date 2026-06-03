@@ -368,8 +368,13 @@ import time as _time
 from collections import OrderedDict
 
 class _SpriteCache:
-    """LRU sprite cache with TTL. Max 20 sessions, 30 min TTL."""
-    def __init__(self, max_entries: int = 20, ttl_seconds: int = 1800):
+    """LRU sprite cache with TTL. Max 20 sessions, 60 min TTL.
+
+    FIX: Extended TTL from 30min to 60min to reduce cache misses
+    during slow Gemini image generation (which can take 2-5 minutes).
+    Added age tracking for diagnostic output.
+    """
+    def __init__(self, max_entries: int = 20, ttl_seconds: int = 3600):
         self._store: OrderedDict[str, tuple[float, dict]] = OrderedDict()
         self._max = max_entries
         self._ttl = ttl_seconds
@@ -380,18 +385,32 @@ class _SpriteCache:
         self._store[key] = (_time.time(), sprites)
         self._store.move_to_end(key)
         total_kb = sum(len(v) for v in sprites.values()) // 1024
-        logger.info(f"[SpriteCache] PUT key={key}: {len(sprites)} sprites, ~{total_kb} KB")
+        logger.info(f"[SpriteCache] PUT key={key}: {len(sprites)} sprites, ~{total_kb} KB, TTL={self._ttl}s")
 
     def get(self, key: str) -> dict[str, str] | None:
         """Retrieve sprites by key, or None if expired/missing."""
         self._evict()
         entry = self._store.get(key)
         if entry is None:
-            logger.warning(f"[SpriteCache] MISS key={key}")
+            logger.warning(
+                f"[SpriteCache] MISS key={key} — "
+                f"cache has {len(self._store)} entries: [{', '.join(self._store.keys())}]. "
+                f"Sprites may need re-generation."
+            )
             return None
         ts, sprites = entry
-        logger.info(f"[SpriteCache] HIT key={key}: {len(sprites)} sprites, age={_time.time()-ts:.0f}s")
+        age = _time.time() - ts
+        remaining = self._ttl - age
+        logger.info(
+            f"[SpriteCache] HIT key={key}: {len(sprites)} sprites, "
+            f"age={age:.0f}s, remaining={remaining:.0f}s"
+        )
         return sprites
+
+    def has(self, key: str) -> bool:
+        """Check if key exists and is not expired."""
+        self._evict()
+        return key in self._store
 
     def _evict(self):
         now = _time.time()
@@ -907,11 +926,107 @@ async def api_generate_image_enriched(request_data: dict) -> JSONResponse:
         else:
             logger.info("[enriched] No sprite_cache_key — using elk_graph as-is")
 
-        # ── If SVG was stripped, reconstruct from elk_graph sprites ──
-        # The frontend may have stripped <image> tags from svg_content.
-        # We need the full SVG for Playwright rendering.
-        if svg_content and "sprite-stripped" in svg_content and elk_graph:
-            logger.info("[enriched] SVG was stripped — will render skeleton from elk_graph via Playwright")
+        # ── FIX Break 1+2: Rebuild SVG with restored sprites ──────────
+        # The frontend stripped <image> tags to keep payload small (~30KB).
+        # After restoring spriteRef.url from cache above, we inject them
+        # BACK into svg_content so _svg_to_png_b64 → Playwright renders
+        # a skeleton PNG that Gemini can actually see with sprites.
+        if svg_content and "sprite-stripped" in svg_content and elk_graph and restored_count > 0:
+            import re as _re
+            # Build node_id → base64 map from the restored elk_graph
+            _sprite_map: dict[str, str] = {}
+            def _collect_for_rebuild(nodes):
+                if not isinstance(nodes, list):
+                    return
+                for node in nodes:
+                    nid = node.get("id", "")
+                    ref = node.get("spriteRef") or {}
+                    url = ref.get("url", "")
+                    if url and isinstance(url, str) and url.startswith("data:image/"):
+                        _sprite_map[nid] = url
+                    children = node.get("children")
+                    if isinstance(children, list):
+                        _collect_for_rebuild(children)
+            _collect_for_rebuild(elk_graph.get("children", []))
+
+            if _sprite_map:
+                def _inject_sprite_into_g(match):
+                    full_g = match.group(0)
+                    node_id_m = _re.search(r'data-node-id="([^"]*)"', full_g)
+                    if not node_id_m:
+                        return full_g
+                    nid = node_id_m.group(1)
+                    if nid not in _sprite_map:
+                        return full_g
+                    data_url = _sprite_map[nid]
+                    # Parse the first <rect> for position/size
+                    rect_m = _re.search(
+                        r'<rect\s+x="([^"]*)"\s+y="([^"]*)"\s+width="([^"]*)"\s+height="([^"]*)"',
+                        full_g
+                    )
+                    if rect_m:
+                        rx, ry, rw, rh = rect_m.groups()
+                        image_tag = (
+                            f'<image href="{data_url}" '
+                            f'x="{rx}" y="{ry}" width="{rw}" height="{rh}" '
+                            f'preserveAspectRatio="xMidYMid meet" />'
+                        )
+                        full_g = full_g.replace(
+                            "<!-- sprite-stripped-for-payload -->", image_tag
+                        )
+                    return full_g
+
+                svg_content = _re.sub(
+                    r'<g\s+data-node-id="[^"]*"[^>]*class="interactive-node"[^>]*>.*?</g>',
+                    _inject_sprite_into_g,
+                    svg_content,
+                    flags=_re.DOTALL,
+                )
+                logger.info(
+                    f"[enriched] Rebuilt SVG: injected {len(_sprite_map)} sprites back "
+                    f"into svg_content ({len(svg_content)} chars). "
+                    f"Playwright will now see them."
+                )
+        elif svg_content and "sprite-stripped" in svg_content:
+            logger.warning(
+                "[enriched] SVG is stripped but no sprites restored "
+                f"(restored_count={restored_count}, cache_key={cache_key}). "
+                "Gemini will see empty boxes."
+            )
+
+        # ── FIX Break 3: Extract sprite images list for Gemini multi-image input ──
+        # Even if SVG rebuild works, also send individual sprite PNGs as separate
+        # inlineData parts — gives Gemini per-component style references.
+        sprite_images_for_gemini = []
+        if elk_graph and restored_count > 0:
+            def _extract_sprite_images(nodes):
+                if not isinstance(nodes, list):
+                    return
+                for node in nodes:
+                    ref = node.get("spriteRef") or {}
+                    url = ref.get("url", "")
+                    if url and isinstance(url, str) and url.startswith("data:image/"):
+                        b64 = url.split(",", 1)[1] if "," in url else ""
+                        if b64:
+                            label = ""
+                            labels = node.get("labels")
+                            if isinstance(labels, list) and labels:
+                                label = labels[0].get("text", node.get("id", ""))
+                            else:
+                                label = node.get("id", "unknown")
+                            sprite_images_for_gemini.append({
+                                "nodeId": node.get("id", ""),
+                                "label": label,
+                                "b64": b64,
+                            })
+                    children = node.get("children")
+                    if isinstance(children, list):
+                        _extract_sprite_images(children)
+            _extract_sprite_images(elk_graph.get("children", []))
+            logger.info(
+                f"[enriched] Extracted {len(sprite_images_for_gemini)} sprite images "
+                f"for Gemini multi-image input"
+            )
 
         engine = _get_ai_engine()
         settings = get_settings()
@@ -932,9 +1047,12 @@ async def api_generate_image_enriched(request_data: dict) -> JSONResponse:
             settings=settings,
             skeleton_media_resolution=request_data.get("skeleton_media_resolution"),
             sprite_media_resolution=request_data.get("sprite_media_resolution"),
+            sprite_images=sprite_images_for_gemini if sprite_images_for_gemini else None,
         )
 
         result["sprites_restored"] = restored_count
+        result["sprites_in_svg"] = len(_sprite_map) if '_sprite_map' in dir() else 0
+        result["sprites_sent_to_gemini"] = len(sprite_images_for_gemini)
         return JSONResponse(result)
 
     except Exception as e:

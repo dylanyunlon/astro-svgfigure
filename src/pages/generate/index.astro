@@ -807,10 +807,32 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         finalImage.src = `data:${currentMimeType};base64,${currentImageB64}`
         finalImageSection?.classList.remove('hidden')
         document.getElementById('tab-final')?.click()
-        finalImageInfo.textContent = `Enriched: ${spriteCount} sprites → ${iData.image_model_used || '?'} | ${elapsed()}s`
-        steps?.setStatus('step-gemini-image', 'done')
-        statusText.textContent = `Enriched figure generated (${elapsed()}s) with ${spriteCount} sprite references.`
-        statusText.style.color = ''
+
+        // Show enriched diagnostics — how many sprites Gemini actually saw
+        const spritesRestored = iData.sprites_restored ?? '?'
+        const spritesInSvg = iData.sprites_in_svg ?? '?'
+        const spritesSent = iData.sprites_sent_to_gemini ?? '?'
+        finalImageInfo.textContent =
+          `Enriched: ${spriteCount} local → ${spritesRestored} restored → ` +
+          `${spritesInSvg} in SVG → ${spritesSent} sent to ${iData.image_model_used || '?'} | ${elapsed()}s`
+
+        // Warn user if sprites were lost
+        if (spritesRestored === 0 && spriteCount > 0) {
+          console.warn(
+            `[EnrichedFigure] WARNING: ${spriteCount} sprites in editor but 0 restored! ` +
+            `Cache may have expired (key=${spriteCacheKey}). Try re-generating sprites.`
+          )
+          statusText.textContent =
+            `Figure generated (${elapsed()}s) but sprite cache expired — ` +
+            `Gemini saw empty boxes. Re-run "Generate Sprites" and try again.`
+          statusText.style.color = 'hsl(38 92% 50%)'  // amber warning
+        } else {
+          steps?.setStatus('step-gemini-image', 'done')
+          statusText.textContent =
+            `Enriched figure generated (${elapsed()}s): ` +
+            `${spritesRestored} sprites restored, ${spritesSent} sent to Gemini.`
+          statusText.style.color = ''
+        }
 
         const postGen = (window as any).__postGenPanel
         if (postGen) {
