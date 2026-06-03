@@ -164,11 +164,6 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
   </main>
 </GenerateLayout>
 
-<script is:inline define:vars={{ pyBackendUrl: import.meta.env.PYTHON_BACKEND_URL || import.meta.env.BACKEND_URL || 'http://127.0.0.1:8000' }}>
-  // Expose Python backend URL for direct API calls (bypassing nginx proxy)
-  window.__PYTHON_BACKEND_URL = pyBackendUrl
-</script>
-
 <script>
   // === 3-Step Pipeline Orchestrator ===
   const generateBtn = document.getElementById('generate-btn') as HTMLButtonElement
@@ -762,14 +757,11 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       }
       steps?.setStatus('step-stylist-prompt', 'done')
 
-      // Step E: Call PYTHON BACKEND DIRECTLY (bypasses nginx body size limit)
-      // The enriched endpoint restores sprites from server-side cache,
-      // so we only send ~30 KB instead of ~10 MB.
+      // Step E: POST via Astro proxy → Python backend
+      // Payload is ~30 KB (sprites stripped, cache_key only) — safe for nginx.
+      // Python backend restores sprites from server-side cache.
       steps?.setStatus('step-gemini-image', 'running')
       statusText.textContent = `Step 3: Generating with ${spriteCount} sprite references...`
-
-      // Resolve Python backend URL
-      const pyBackend = (window as any).__PYTHON_BACKEND_URL || 'http://127.0.0.1:8000'
 
       const postBody = JSON.stringify({
         svg_content: svgForPayload,
@@ -784,11 +776,11 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       })
 
       console.log(
-        `[EnrichedFigure] POST to ${pyBackend}/api/generate-image-enriched: ` +
-        `${(postBody.length / 1024).toFixed(0)} KB (was ~${(currentSkeletonSvg.length / 1024).toFixed(0)} KB unstripped)`
+        `[EnrichedFigure] POST /api/generate-image-enriched: ` +
+        `${(postBody.length / 1024).toFixed(0)} KB, sprite_cache_key=${spriteCacheKey}`
       )
 
-      const iRes = await fetch(`${pyBackend}/api/generate-image-enriched`, {
+      const iRes = await fetch('/api/generate-image-enriched', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: postBody,
