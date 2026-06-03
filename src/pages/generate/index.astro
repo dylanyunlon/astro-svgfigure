@@ -696,10 +696,17 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       }
       if (elkGraph?.children) collectSprites(elkGraph.children)
 
+      // Strip inline base64 images from SVG — used by both Step D and Step E.
+      // Backend extracts sprites from elk_graph.spriteRef.url, not from SVG text.
+      const svgForPayload = currentSkeletonSvg.replace(
+        /<image[^>]*href="data:image\/[^"]{1000,}"[^>]*\/?\s*>/g,
+        '<!-- sprite-stripped-for-payload -->'
+      )
+
       console.log(
         `[EnrichedFigure] Collected ${spriteImages.length} sprite images from elk_graph. ` +
         `Labels: ${spriteImages.map(s => s.label).join(', ')}. ` +
-        `Total sprite bytes: ${spriteImages.reduce((s, i) => s + i.b64.length, 0)} chars base64`
+        `SVG stripped: ${currentSkeletonSvg.length} → ${svgForPayload.length} chars`
       )
 
       steps?.setStatus('step-edit', 'done')
@@ -742,15 +749,6 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       // Also strip sprite base64 from svg_content to reduce payload further.
       steps?.setStatus('step-gemini-image', 'running')
       statusText.textContent = `Step 3: Generating with ${spriteImages.length} sprite references...`
-
-      // Strip inline base64 images from SVG to reduce payload size.
-      // Backend will use elk_graph.spriteRef.url to extract sprites for Gemini,
-      // and will re-render the skeleton via Playwright from elk_graph if needed.
-      // Each sprite is ~100-200KB base64; stripping 12 sprites saves ~1.5-2.5MB.
-      const svgForPayload = currentSkeletonSvg.replace(
-        /<image[^>]*href="data:image\/[^"]{1000,}"[^>]*\/?\s*>/g,
-        '<!-- sprite-stripped-for-payload -->'
-      )
 
       const postBody = JSON.stringify({
         svg_content: svgForPayload,
