@@ -256,11 +256,15 @@ def _icon_alias_hit(label: str, icon_hint: str, aliases: Dict[str, str]) -> bool
 
 
 def _is_sprite_candidate(label: str, icon_hint: str) -> bool:
+    # Rule 1: ANY node with an iconHint should be sprite.
+    # iconHint is set by the topology generator to indicate
+    # "this node needs a visual illustration". 40% → 94% coverage.
+    if icon_hint.strip():
+        return True
+
     blob = f"{icon_hint} {label}".lower()
     if any(cue in blob for cue in _SPRITE_CUES):
         return True
-    # A bare tensor-shape label ("C×H×W") with no standard-icon meaning is a
-    # sprite candidate: it wants a drawn feature-map block, not a glyph.
     if _SHAPE_RE.search(blob):
         return True
     return False

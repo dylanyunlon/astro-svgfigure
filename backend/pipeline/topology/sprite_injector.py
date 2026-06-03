@@ -328,7 +328,10 @@ async def _call_gemini_interleaved(
 
 
 def _split_sprite_sheet(sheet_b64: str, n_expected: int) -> List[Optional[str]]:
-    """Split a proxy sprite sheet into individual cells (no bg removal)."""
+    """Split a Gemini sprite sheet into individual sprites.
+
+    rembg去背景 → 连通区域 → 层次聚类合并为n_expected个sprite。
+    """
     import base64, io
     try:
         from PIL import Image
@@ -338,33 +341,106 @@ def _split_sprite_sheet(sheet_b64: str, n_expected: int) -> List[Optional[str]]:
     try:
         img_bytes = base64.b64decode(sheet_b64)
         img = Image.open(io.BytesIO(img_bytes))
-        arr = np.array(img.convert("RGB"))
-        h, w = arr.shape[:2]
-        row_std = arr.std(axis=1).mean(axis=1)
-        col_std = arr.std(axis=0).mean(axis=1)
-        row_sep = row_std < 15
-        col_sep = col_std < 15
-        def find_segments(mask, min_size=40):
-            segs, start = [], None
-            for j, v in enumerate(mask):
-                if not v and start is None: start = j
-                elif v and start is not None:
-                    if j - start >= min_size: segs.append((start, j))
-                    start = None
-            if start is not None and len(mask) - start >= min_size:
-                segs.append((start, len(mask)))
-            return segs
-        row_segs = find_segments(row_sep)
-        col_segs = find_segments(col_sep)
-        if not row_segs or not col_segs:
+        w, h = img.size
+
+        # Step 1: Remove background via remove.bg API
+        transparent_img = None
+        try:
+            import os, httpx
+            keys_str = os.environ.get("REMOVEBG_API_KEYS", "")
+            keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+            if keys:
+                resp = httpx.post(
+                    "https://api.remove.bg/v1.0/removebg",
+                    files={"image_file": ("sheet.png", img_bytes, "image/png")},
+                    data={"size": "auto"},
+                    headers={"X-Api-Key": keys[0]},
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    transparent_img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+                    logger.info("Sheet split: remove.bg OK (%dx%d)", *transparent_img.size)
+                else:
+                    logger.warning("Sheet split: remove.bg %d, fallback to threshold", resp.status_code)
+        except Exception as e:
+            logger.warning("Sheet split: remove.bg failed (%s), fallback", e)
+
+        # Fallback: white-threshold removal
+        if transparent_img is None:
+            arr = np.array(img.convert("RGBA"))
+            white_mask = (arr[:, :, :3] > 240).all(axis=2)
+            arr[white_mask, 3] = 0
+            transparent_img = Image.fromarray(arr)
+
+        # Step 2: Connected components
+        alpha = np.array(transparent_img)[:, :, 3]
+        from scipy import ndimage
+        labeled, n_features = ndimage.label(alpha > 10)
+
+        centers = []
+        for i in range(1, n_features + 1):
+            ys, xs = np.where(labeled == i)
+            if len(ys) < 100:
+                continue
+            centers.append({
+                "idx": i, "area": len(ys),
+                "cx": float(xs.mean()), "cy": float(ys.mean()),
+                "x0": int(xs.min()), "y0": int(ys.min()),
+                "x1": int(xs.max()), "y1": int(ys.max()),
+            })
+
+        logger.info("Sheet split: %d components, %d significant", n_features, len(centers))
+
+        if not centers:
             return [sheet_b64]
-        cells: List[Optional[str]] = []
-        for ry0, ry1 in row_segs:
-            for cx0, cx1 in col_segs:
-                cell = img.crop((cx0, ry0, cx1, ry1))
+
+        if len(centers) <= n_expected:
+            centers.sort(key=lambda c: (c["y0"], c["x0"]))
+            cells = []
+            for c in centers:
+                pad = 10
+                crop = transparent_img.crop((
+                    max(0, c["x0"]-pad), max(0, c["y0"]-pad),
+                    min(w, c["x1"]+pad), min(h, c["y1"]+pad),
+                ))
                 buf = io.BytesIO()
-                cell.save(buf, format="PNG")
+                crop.save(buf, format="PNG")
                 cells.append(base64.b64encode(buf.getvalue()).decode())
+            return cells
+
+        # Step 3: Hierarchical clustering → n_expected groups
+        from scipy.cluster.hierarchy import fcluster, linkage
+        pts = np.array([[c["cx"], c["cy"]] for c in centers])
+        Z = linkage(pts, method="ward")
+        cluster_ids = fcluster(Z, t=n_expected, criterion="maxclust")
+
+        sprites = []
+        for ci in range(1, n_expected + 1):
+            members = [c for c, cid in zip(centers, cluster_ids) if cid == ci]
+            if not members:
+                continue
+            sprites.append({
+                "x0": min(m["x0"] for m in members),
+                "y0": min(m["y0"] for m in members),
+                "x1": max(m["x1"] for m in members),
+                "y1": max(m["y1"] for m in members),
+                "n_parts": len(members),
+            })
+        sprites.sort(key=lambda s: (s["y0"], s["x0"]))
+
+        logger.info("Sheet split: clustered → %d sprites", len(sprites))
+
+        cells = []
+        for s in sprites:
+            pad = 10
+            crop = transparent_img.crop((
+                max(0, s["x0"]-pad), max(0, s["y0"]-pad),
+                min(w, s["x1"]+pad), min(h, s["y1"]+pad),
+            ))
+            buf = io.BytesIO()
+            crop.save(buf, format="PNG")
+            cells.append(base64.b64encode(buf.getvalue()).decode())
+
         return cells if cells else [sheet_b64]
     except Exception as e:
         logger.exception("Sprite sheet split failed: %s", e)
