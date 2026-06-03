@@ -164,6 +164,11 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
   </main>
 </GenerateLayout>
 
+<script is:inline define:vars={{ pyBackendUrl: import.meta.env.PYTHON_BACKEND_URL || import.meta.env.BACKEND_URL || 'http://127.0.0.1:8000' }}>
+  // Expose Python backend URL for direct API calls (bypassing nginx proxy)
+  window.__PYTHON_BACKEND_URL = pyBackendUrl
+</script>
+
 <script>
   // === 3-Step Pipeline Orchestrator ===
   const generateBtn = document.getElementById('generate-btn') as HTMLButtonElement
@@ -192,6 +197,7 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
 
   let running = false, startTime = 0, timerInterval: number | null = null
   let currentSkeletonSvg = '', currentImageB64 = '', currentMimeType = 'image/png'
+  let spriteCacheKey = ''  // Server-side sprite cache key from /api/sprite-generate
 
   function startTimer() {
     startTime = Date.now()
@@ -622,10 +628,13 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         // Enable the "Sprite-Enriched Figure" button now that we have sprites
         if (generateEnrichedBtn) {
           generateEnrichedBtn.disabled = false
+          // Store server-side sprite cache key — avoids re-sending 7+ MB through nginx
+          spriteCacheKey = data.sprite_cache_key || ''
           console.log(
             `[Sprites] Enriched figure button enabled. ` +
             `refs_stamped=${injDiag.refs_stamped || 0}, ` +
-            `elk_graph children=${data.elk_graph?.children?.length || 0}`
+            `elk_graph children=${data.elk_graph?.children?.length || 0}, ` +
+            `sprite_cache_key=${spriteCacheKey}`
           )
         }
       } else {
@@ -674,55 +683,69 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         editor.debugDumpState()
       }
 
-      // Step B: Get nested ELK graph with spriteRef URLs (Break 3 fix)
+      // Step B: Get nested ELK graph with spriteRef URLs
       const elkGraph = preview?.getLayoutedJson()
 
-      // Step C: Collect per-node sprite images from elk_graph
-      const spriteImages: Array<{nodeId: string, label: string, b64: string}> = []
-      function collectSprites(nodes: any[]) {
-        if (!Array.isArray(nodes)) return
-        for (const node of nodes) {
-          if (node.spriteRef?.url && typeof node.spriteRef.url === 'string'
-              && node.spriteRef.url.startsWith('data:image/')) {
-            const b64 = node.spriteRef.url.replace(/^data:image\/\w+;base64,/, '')
-            spriteImages.push({
-              nodeId: node.id,
-              label: node.labels?.[0]?.text || node.id,
-              b64: b64,
-            })
+      // Step C: Build lightweight elk_graph — strip spriteRef.url base64
+      // The server-side sprite cache (sprite_cache_key) has them.
+      // This drops ~7 MB from the payload.
+      function stripSpriteUrls(obj: any): any {
+        if (obj === null || obj === undefined) return obj
+        if (Array.isArray(obj)) return obj.map(stripSpriteUrls)
+        if (typeof obj !== 'object') return obj
+        const out: any = {}
+        for (const [k, v] of Object.entries(obj)) {
+          if (k === 'spriteRef' && v && typeof v === 'object') {
+            // Keep spriteRef metadata but strip the huge base64 url
+            const ref = { ...(v as any) }
+            if (ref.url && typeof ref.url === 'string' && ref.url.length > 500) {
+              ref.url = '__cached__'  // Placeholder — backend restores from cache
+            }
+            out[k] = ref
+          } else {
+            out[k] = stripSpriteUrls(v)
           }
-          if (Array.isArray(node.children)) collectSprites(node.children)
+        }
+        return out
+      }
+      const lightElk = elkGraph ? stripSpriteUrls(elkGraph) : null
+
+      // Count sprite nodes for display
+      let spriteCount = 0
+      function countSprites(nodes: any[]) {
+        if (!Array.isArray(nodes)) return
+        for (const n of nodes) {
+          if (n.spriteRef?.url) spriteCount++
+          if (Array.isArray(n.children)) countSprites(n.children)
         }
       }
-      if (elkGraph?.children) collectSprites(elkGraph.children)
+      if (elkGraph?.children) countSprites(elkGraph.children)
 
-      // Strip inline base64 images from SVG — used by both Step D and Step E.
-      // Backend extracts sprites from elk_graph.spriteRef.url, not from SVG text.
+      // Strip SVG inline base64 images too
       const svgForPayload = currentSkeletonSvg.replace(
         /<image[^>]*href="data:image\/[^"]{1000,}"[^>]*\/?\s*>/g,
         '<!-- sprite-stripped-for-payload -->'
       )
 
       console.log(
-        `[EnrichedFigure] Collected ${spriteImages.length} sprite images from elk_graph. ` +
-        `Labels: ${spriteImages.map(s => s.label).join(', ')}. ` +
-        `SVG stripped: ${currentSkeletonSvg.length} → ${svgForPayload.length} chars`
+        `[EnrichedFigure] ${spriteCount} sprites. ` +
+        `SVG: ${currentSkeletonSvg.length} → ${svgForPayload.length} chars. ` +
+        `sprite_cache_key=${spriteCacheKey}`
       )
 
       steps?.setStatus('step-edit', 'done')
 
-      // Step D: Generate stylist prompt
+      // Step D: Generate stylist prompt (lightweight — no sprite data)
       steps?.setStatus('step-stylist-prompt', 'running')
       let customPrompt = promptTextarea.value?.trim() || ''
       if (!customPrompt) {
         statusText.textContent = 'Step 2: Stylist refining description...'
-        // Send lightweight payload — stylist only needs layout structure, not sprite pixels
         const pRes = await fetch('/api/generate-prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             method_text: text, svg_content: svgForPayload,
-            elk_graph: elkGraph,
+            elk_graph: lightElk,
           }),
           signal: controller.signal,
         })
@@ -739,16 +762,14 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       }
       steps?.setStatus('step-stylist-prompt', 'done')
 
-      // Step E: Call enriched-image endpoint
-      // IMPORTANT: Do NOT send sprite base64 in POST body — the payload would be
-      // 3× the sprite data (sprite_images[] + elk_graph.spriteRef.url + svg_content <image>).
-      // This blows past Vercel's 4.5MB serverless function body limit → HTML 413 error.
-      //
-      // Instead: send elk_graph WITH spriteRef URLs intact — the Python backend
-      // uses _collect_sprites_from_elk() to extract them server-side.
-      // Also strip sprite base64 from svg_content to reduce payload further.
+      // Step E: Call PYTHON BACKEND DIRECTLY (bypasses nginx body size limit)
+      // The enriched endpoint restores sprites from server-side cache,
+      // so we only send ~30 KB instead of ~10 MB.
       steps?.setStatus('step-gemini-image', 'running')
-      statusText.textContent = `Step 3: Generating with ${spriteImages.length} sprite references...`
+      statusText.textContent = `Step 3: Generating with ${spriteCount} sprite references...`
+
+      // Resolve Python backend URL
+      const pyBackend = (window as any).__PYTHON_BACKEND_URL || 'http://127.0.0.1:8000'
 
       const postBody = JSON.stringify({
         svg_content: svgForPayload,
@@ -756,19 +777,18 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         custom_prompt: customPrompt,
         aspect_ratio: aspect || '16:9',
         image_size: '4K',
-        elk_graph: elkGraph,
-        // Sprites are in elk_graph.children[].spriteRef.url — backend extracts them.
-        // NOT sending sprite_images[] separately to avoid 3× payload duplication.
+        elk_graph: lightElk,
+        sprite_cache_key: spriteCacheKey,
         skeleton_media_resolution: 'media_resolution_high',
         sprite_media_resolution: 'media_resolution_low',
       })
 
       console.log(
-        `[EnrichedFigure] POST body size: ${(postBody.length / 1024).toFixed(0)} KB. ` +
-        `(svg_content stripped: ${svgForPayload.length} chars, elk_graph has ${spriteImages.length} sprites)`
+        `[EnrichedFigure] POST to ${pyBackend}/api/generate-image-enriched: ` +
+        `${(postBody.length / 1024).toFixed(0)} KB (was ~${(currentSkeletonSvg.length / 1024).toFixed(0)} KB unstripped)`
       )
 
-      const iRes = await fetch('/api/generate-image', {
+      const iRes = await fetch(`${pyBackend}/api/generate-image-enriched`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: postBody,
@@ -795,9 +815,9 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         finalImage.src = `data:${currentMimeType};base64,${currentImageB64}`
         finalImageSection?.classList.remove('hidden')
         document.getElementById('tab-final')?.click()
-        finalImageInfo.textContent = `Enriched: ${spriteImages.length} sprites → ${iData.image_model_used || '?'} | ${elapsed()}s`
+        finalImageInfo.textContent = `Enriched: ${spriteCount} sprites → ${iData.image_model_used || '?'} | ${elapsed()}s`
         steps?.setStatus('step-gemini-image', 'done')
-        statusText.textContent = `Enriched figure generated (${elapsed()}s) with ${spriteImages.length} sprite references.`
+        statusText.textContent = `Enriched figure generated (${elapsed()}s) with ${spriteCount} sprite references.`
         statusText.style.color = ''
 
         const postGen = (window as any).__postGenPanel

@@ -354,6 +354,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Server-side sprite cache ──────────────────────────────────────────
+# After inject_sprites generates per-node sprite PNGs (~50-200KB each),
+# caching them server-side avoids round-tripping 7+ MB of base64 through
+# nginx (which enforces client_max_body_size, typically 1-10MB).
+#
+# Flow:
+#   1. /api/sprite-generate → inject_sprites → cache sprites → return cache_key
+#   2. /api/generate-image-enriched → receive cache_key → restore from cache
+#
+# TTL: 30 minutes (sprites are regenerated if expired)
+import time as _time
+from collections import OrderedDict
+
+class _SpriteCache:
+    """LRU sprite cache with TTL. Max 20 sessions, 30 min TTL."""
+    def __init__(self, max_entries: int = 20, ttl_seconds: int = 1800):
+        self._store: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+        self._max = max_entries
+        self._ttl = ttl_seconds
+
+    def put(self, key: str, sprites: dict[str, str]) -> None:
+        """Store {node_id: base64_png} dict."""
+        self._evict()
+        self._store[key] = (_time.time(), sprites)
+        self._store.move_to_end(key)
+        total_kb = sum(len(v) for v in sprites.values()) // 1024
+        logger.info(f"[SpriteCache] PUT key={key}: {len(sprites)} sprites, ~{total_kb} KB")
+
+    def get(self, key: str) -> dict[str, str] | None:
+        """Retrieve sprites by key, or None if expired/missing."""
+        self._evict()
+        entry = self._store.get(key)
+        if entry is None:
+            logger.warning(f"[SpriteCache] MISS key={key}")
+            return None
+        ts, sprites = entry
+        logger.info(f"[SpriteCache] HIT key={key}: {len(sprites)} sprites, age={_time.time()-ts:.0f}s")
+        return sprites
+
+    def _evict(self):
+        now = _time.time()
+        # Remove expired
+        expired = [k for k, (ts, _) in self._store.items() if now - ts > self._ttl]
+        for k in expired:
+            del self._store[k]
+            logger.info(f"[SpriteCache] EVICT expired key={k}")
+        # LRU eviction
+        while len(self._store) > self._max:
+            k, _ = self._store.popitem(last=False)
+            logger.info(f"[SpriteCache] EVICT LRU key={k}")
+
+sprite_cache = _SpriteCache()
+
 # ── AI Engine singleton ───────────────────────────────────────────────
 _ai_engine: AIEngine | None = None
 
@@ -750,18 +803,142 @@ async def api_sprite_generate(request_data: dict) -> JSONResponse:
             skip_generation=dry_run,
         )
 
+        # ── Cache sprites server-side ──
+        # Extract all spriteRef.url base64 from the mutated elk_graph
+        # so the enriched-figure endpoint can restore them without
+        # the frontend sending 7+ MB through nginx.
+        import uuid as _uuid
+        cache_key = _uuid.uuid4().hex[:12]
+        cached_sprites: dict[str, str] = {}
+
+        def _extract_sprites(nodes):
+            if not isinstance(nodes, list):
+                return
+            for node in nodes:
+                ref = node.get("spriteRef") or {}
+                url = ref.get("url", "")
+                if url and isinstance(url, str) and url.startswith("data:image/"):
+                    cached_sprites[node.get("id", "")] = url
+                children = node.get("children")
+                if isinstance(children, list):
+                    _extract_sprites(children)
+
+        _extract_sprites(elk_graph.get("children", []))
+        if cached_sprites:
+            sprite_cache.put(cache_key, cached_sprites)
+
         return JSONResponse({
             "success": True,
             "elk_graph": elk_graph,
+            "sprite_cache_key": cache_key,  # Frontend stores this, sends it back
             "diagnostics": {
                 "classification": report.to_dict(),
                 "injection": inj_result.to_dict(),
                 "dry_run": dry_run,
+                "cached_sprites": len(cached_sprites),
             },
         })
 
     except Exception as e:
         logger.exception("api_sprite_generate error")
+        return JSONResponse(
+            {"success": False, "error": str(e)}, status_code=500
+        )
+
+
+@app.post("/api/generate-image-enriched")
+async def api_generate_image_enriched(request_data: dict) -> JSONResponse:
+    """
+    POST /api/generate-image-enriched — Sprite-enriched figure generation.
+
+    The frontend sends a LIGHTWEIGHT payload (~30 KB):
+      - svg_content: stripped SVG (no base64 images)
+      - method_text: user's method description
+      - elk_graph: layout structure with spriteRef.url STRIPPED to just node IDs
+      - sprite_cache_key: key returned by /api/sprite-generate
+      - custom_prompt, aspect_ratio, image_size, media_resolution hints
+
+    This endpoint:
+      1. Restores sprite base64 from server-side cache → elk_graph
+      2. Re-renders skeleton PNG via Playwright (with sprites)
+      3. Extracts per-node sprites as separate Gemini image inputs
+      4. Calls Gemini with: 1 skeleton (HIGH res) + up to 13 sprites (LOW res)
+
+    This avoids the nginx 413 error caused by sending 7+ MB of base64 through
+    the Astro proxy. The sprites never leave the Python server.
+    """
+    try:
+        svg_content = request_data.get("svg_content", "")
+        method_text = request_data.get("method_text", "")
+        cache_key = request_data.get("sprite_cache_key", "")
+
+        if not method_text:
+            return JSONResponse({"error": "method_text is required"}, status_code=400)
+
+        # ── Restore sprites from cache ──
+        elk_graph = request_data.get("elk_graph")
+        restored_count = 0
+
+        if cache_key:
+            cached = sprite_cache.get(cache_key)
+            if cached and elk_graph:
+                def _restore_sprites(nodes):
+                    nonlocal restored_count
+                    if not isinstance(nodes, list):
+                        return
+                    for node in nodes:
+                        nid = node.get("id", "")
+                        if nid in cached:
+                            if "spriteRef" not in node:
+                                node["spriteRef"] = {}
+                            node["spriteRef"]["url"] = cached[nid]
+                            restored_count += 1
+                        children = node.get("children")
+                        if isinstance(children, list):
+                            _restore_sprites(children)
+
+                _restore_sprites(elk_graph.get("children", []))
+                logger.info(
+                    f"[enriched] Restored {restored_count} sprites from cache "
+                    f"(key={cache_key}, total cached={len(cached)})"
+                )
+            elif not cached:
+                logger.warning(f"[enriched] Cache MISS for key={cache_key} — sprites expired or never cached")
+        else:
+            logger.info("[enriched] No sprite_cache_key — using elk_graph as-is")
+
+        # ── If SVG was stripped, reconstruct from elk_graph sprites ──
+        # The frontend may have stripped <image> tags from svg_content.
+        # We need the full SVG for Playwright rendering.
+        if svg_content and "sprite-stripped" in svg_content and elk_graph:
+            logger.info("[enriched] SVG was stripped — will render skeleton from elk_graph via Playwright")
+
+        engine = _get_ai_engine()
+        settings = get_settings()
+
+        from backend.pipeline.gemini_image_gen import generate_scientific_figure
+
+        result = await generate_scientific_figure(
+            ai_engine=engine,
+            method_text=method_text,
+            svg_content=svg_content,
+            reference_image_b64=request_data.get("reference_image_b64"),
+            prompt_model=request_data.get("prompt_model"),
+            image_model=request_data.get("image_model", "gemini-3-pro-image-preview"),
+            aspect_ratio=request_data.get("aspect_ratio", "16:9"),
+            image_size=request_data.get("image_size", "4K"),
+            custom_prompt=request_data.get("custom_prompt"),
+            elk_graph=elk_graph,
+            settings=settings,
+            skeleton_media_resolution=request_data.get("skeleton_media_resolution"),
+            sprite_media_resolution=request_data.get("sprite_media_resolution"),
+        )
+
+        result["sprites_restored"] = restored_count
+        return JSONResponse(result)
+
+    except Exception as e:
+        logger.exception("api_generate_image_enriched error")
         return JSONResponse(
             {"success": False, "error": str(e)}, status_code=500
         )
