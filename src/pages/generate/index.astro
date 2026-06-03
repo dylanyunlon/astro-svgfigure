@@ -396,6 +396,13 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         }),
         signal: controller.signal,
       })
+      // Guard: handle HTML error responses (Vercel 413 body too large, Astro 404, etc.)
+      const _ct = iRes.headers.get('content-type') || ''
+      if (!_ct.includes('application/json')) {
+        const _body = await iRes.text()
+        console.error('[runFigureGen] Non-JSON response:', iRes.status, _body.slice(0, 300))
+        throw new Error(`Server returned ${iRes.status} (not JSON). Body may be too large or route missing.`)
+      }
       if (!iRes.ok) { const e = await iRes.json(); throw new Error(`Gemini: ${e.error || 'Failed'}`) }
       const iData = await iRes.json()
 
@@ -702,15 +709,20 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       let customPrompt = promptTextarea.value?.trim() || ''
       if (!customPrompt) {
         statusText.textContent = 'Step 2: Stylist refining description...'
+        // Send lightweight payload — stylist only needs layout structure, not sprite pixels
         const pRes = await fetch('/api/generate-prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            method_text: text, svg_content: currentSkeletonSvg,
+            method_text: text, svg_content: svgForPayload,
             elk_graph: elkGraph,
           }),
           signal: controller.signal,
         })
+        const pCT = pRes.headers.get('content-type') || ''
+        if (!pCT.includes('application/json')) {
+          throw new Error(`Stylist returned ${pRes.status} (not JSON). Payload may be too large.`)
+        }
         if (!pRes.ok) { const e = await pRes.json(); throw new Error(`Stylist: ${e.error || 'Failed'}`) }
         const pData = await pRes.json()
         if (pData.success && pData.prompt) {
@@ -720,28 +732,62 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
       }
       steps?.setStatus('step-stylist-prompt', 'done')
 
-      // Step E: Call enriched-image endpoint with per-node sprites
+      // Step E: Call enriched-image endpoint
+      // IMPORTANT: Do NOT send sprite base64 in POST body — the payload would be
+      // 3× the sprite data (sprite_images[] + elk_graph.spriteRef.url + svg_content <image>).
+      // This blows past Vercel's 4.5MB serverless function body limit → HTML 413 error.
+      //
+      // Instead: send elk_graph WITH spriteRef URLs intact — the Python backend
+      // uses _collect_sprites_from_elk() to extract them server-side.
+      // Also strip sprite base64 from svg_content to reduce payload further.
       steps?.setStatus('step-gemini-image', 'running')
       statusText.textContent = `Step 3: Generating with ${spriteImages.length} sprite references...`
+
+      // Strip inline base64 images from SVG to reduce payload size.
+      // Backend will use elk_graph.spriteRef.url to extract sprites for Gemini,
+      // and will re-render the skeleton via Playwright from elk_graph if needed.
+      // Each sprite is ~100-200KB base64; stripping 12 sprites saves ~1.5-2.5MB.
+      const svgForPayload = currentSkeletonSvg.replace(
+        /<image[^>]*href="data:image\/[^"]{1000,}"[^>]*\/?\s*>/g,
+        '<!-- sprite-stripped-for-payload -->'
+      )
+
+      const postBody = JSON.stringify({
+        svg_content: svgForPayload,
+        method_text: text,
+        custom_prompt: customPrompt,
+        aspect_ratio: aspect || '16:9',
+        image_size: '4K',
+        elk_graph: elkGraph,
+        // Sprites are in elk_graph.children[].spriteRef.url — backend extracts them.
+        // NOT sending sprite_images[] separately to avoid 3× payload duplication.
+        skeleton_media_resolution: 'media_resolution_high',
+        sprite_media_resolution: 'media_resolution_low',
+      })
+
+      console.log(
+        `[EnrichedFigure] POST body size: ${(postBody.length / 1024).toFixed(0)} KB. ` +
+        `(svg_content stripped: ${svgForPayload.length} chars, elk_graph has ${spriteImages.length} sprites)`
+      )
 
       const iRes = await fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          svg_content: currentSkeletonSvg,
-          method_text: text,
-          custom_prompt: customPrompt,
-          aspect_ratio: aspect || '16:9',
-          image_size: '4K',
-          elk_graph: elkGraph,
-          // NEW: per-node sprite images for Gemini multi-image input
-          sprite_images: spriteImages.slice(0, 13), // max 13 sprites + 1 skeleton = 14 images
-          // NEW: media_resolution hints
-          skeleton_media_resolution: 'media_resolution_high',
-          sprite_media_resolution: 'media_resolution_low',
-        }),
+        body: postBody,
         signal: controller.signal,
       })
+
+      // Handle HTML error responses (Vercel 413, Astro 404, etc.)
+      const contentType = iRes.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) {
+        const htmlBody = await iRes.text()
+        console.error('[EnrichedFigure] Non-JSON response:', iRes.status, htmlBody.slice(0, 200))
+        throw new Error(
+          `Server returned ${iRes.status} (${contentType.split(';')[0] || 'unknown'}). ` +
+          `POST body was ${(postBody.length / 1024).toFixed(0)} KB — may exceed size limit.`
+        )
+      }
+
       if (!iRes.ok) { const e = await iRes.json(); throw new Error(`Gemini: ${e.error || 'Failed'}`) }
       const iData = await iRes.json()
 
