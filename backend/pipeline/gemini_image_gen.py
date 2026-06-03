@@ -408,15 +408,31 @@ async def _svg_to_png_b64_playwright(svg_content: str, target_width: int = 1024)
 
     FIX for Break 1: Gemini now sees the sprite-enriched skeleton (not empty boxes).
 
+    Fallback chain when Playwright is unavailable:
+      1. Pillow composite (extracts sprites + rects, composites onto canvas)
+      2. cairosvg (fast but drops sprites entirely)
+
     Debug: logs sprite count and PNG size so you can verify sprites are in the output.
     """
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        logger.warning(
-            "playwright not installed — run: pip install playwright && playwright install chromium\n"
-            "Falling back to cairosvg (which CANNOT render embedded sprite images)"
-        )
+        sprite_count = svg_content.count('data:image/png;base64,')
+        if sprite_count > 0:
+            logger.warning(
+                f"playwright not installed — trying Pillow composite for {sprite_count} sprites. "
+                f"For best quality: pip install playwright && playwright install chromium"
+            )
+            # Pillow composite preserves sprites; cairosvg would lose them
+            result = _svg_to_png_b64_pillow_composite(svg_content, target_width)
+            if result:
+                return result
+            logger.warning(
+                "Pillow composite also failed — falling back to cairosvg "
+                "(sprites will be INVISIBLE in the skeleton PNG)"
+            )
+        else:
+            logger.info("playwright not installed, no sprites — using cairosvg")
         return _svg_to_png_b64_cairosvg(svg_content, target_width)
 
     # Debug: count sprites in input SVG
@@ -467,8 +483,160 @@ async def _svg_to_png_b64_playwright(svg_content: str, target_width: int = 1024)
         return b64
 
     except Exception as e:
-        logger.warning(f"Playwright SVG→PNG failed: {e}, falling back to cairosvg")
+        logger.warning(f"Playwright SVG→PNG failed: {e}")
+        # Try Pillow composite before cairosvg when sprites exist
+        sprite_count = svg_content.count('data:image/png;base64,')
+        if sprite_count > 0:
+            logger.info(f"[playwright fallback] Trying Pillow composite for {sprite_count} sprites")
+            result = _svg_to_png_b64_pillow_composite(svg_content, target_width)
+            if result:
+                return result
+        logger.info("[playwright fallback] Using cairosvg (sprites may be lost)")
         return _svg_to_png_b64_cairosvg(svg_content, target_width)
+
+
+def _svg_to_png_b64_pillow_composite(svg_content: str, target_width: int = 1024) -> Optional[str]:
+    """
+    Fallback renderer: composites sprite images onto a white canvas using Pillow.
+
+    When Playwright is not installed and cairosvg can't render <image> data URIs,
+    this function extracts sprite base64 PNGs and their positions from the SVG,
+    then composites them onto a white canvas with Pillow. It also draws
+    rectangles and text labels for non-sprite nodes.
+
+    This is NOT pixel-perfect (no arrow rendering, simplified text), but ensures
+    Gemini sees the sprites in their correct positions — which is the critical
+    requirement for style-consistent final figure generation.
+
+    Requires: Pillow (already in requirements.txt)
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        from io import BytesIO
+    except ImportError:
+        logger.warning("[pillow_composite] Pillow not installed — cannot render")
+        return None
+
+    sprite_count = svg_content.count('data:image/png;base64,')
+    if sprite_count == 0:
+        logger.info("[pillow_composite] No sprites in SVG — skipping Pillow composite")
+        return None
+
+    logger.info(
+        f"[pillow_composite] Rendering {sprite_count} sprites via Pillow composite "
+        f"(Playwright unavailable, cairosvg cannot render <image> data URIs)"
+    )
+
+    try:
+        # Parse SVG viewBox for canvas dimensions
+        vb_match = re.search(r'viewBox="([^"]*)"', svg_content)
+        if vb_match:
+            parts = vb_match.group(1).split()
+            if len(parts) == 4:
+                svg_w, svg_h = float(parts[2]), float(parts[3])
+            else:
+                svg_w, svg_h = 1400, 2000
+        else:
+            w_match = re.search(r'width="(\d+)"', svg_content)
+            h_match = re.search(r'height="(\d+)"', svg_content)
+            svg_w = float(w_match.group(1)) if w_match else 1400
+            svg_h = float(h_match.group(1)) if h_match else 2000
+
+        # Scale to target width
+        scale = target_width / svg_w if svg_w > 0 else 1.0
+        canvas_w = int(svg_w * scale)
+        canvas_h = int(svg_h * scale)
+
+        canvas = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))
+        draw = ImageDraw.Draw(canvas)
+
+        # Try to get a decent font
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", max(9, int(10 * scale)))
+        except Exception:
+            font = ImageFont.load_default()
+
+        # Parse all interactive-node <g> elements
+        node_pattern = re.compile(
+            r'<g\s+data-node-id="([^"]*)"[^>]*class="interactive-node"[^>]*>(.*?)</g>',
+            re.DOTALL
+        )
+
+        for m in node_pattern.finditer(svg_content):
+            node_id = m.group(1)
+            inner = m.group(2)
+
+            # Extract first <rect> for position
+            rect_m = re.search(
+                r'<rect\s+x="([^"]*)"\s+y="([^"]*)"\s+width="([^"]*)"\s+height="([^"]*)"',
+                inner
+            )
+            if not rect_m:
+                continue
+
+            rx = float(rect_m.group(1)) * scale
+            ry = float(rect_m.group(2)) * scale
+            rw = float(rect_m.group(3)) * scale
+            rh = float(rect_m.group(4)) * scale
+
+            # Draw node rectangle (light border)
+            draw.rectangle(
+                [rx, ry, rx + rw, ry + rh],
+                outline=(200, 210, 220),
+                width=max(1, int(1.5 * scale)),
+            )
+
+            # Check for sprite image
+            img_m = re.search(
+                r'<image[^>]*href="data:image/png;base64,([^"]*)"',
+                inner
+            )
+            if img_m:
+                try:
+                    sprite_b64 = img_m.group(1)
+                    sprite_bytes = base64.b64decode(sprite_b64)
+                    sprite_img = Image.open(BytesIO(sprite_bytes)).convert("RGBA")
+                    # Resize sprite to fit the rect
+                    sprite_img = sprite_img.resize(
+                        (max(1, int(rw)), max(1, int(rh))),
+                        Image.LANCZOS
+                    )
+                    # Paste with alpha
+                    canvas.paste(sprite_img, (int(rx), int(ry)), sprite_img)
+                except Exception as e:
+                    logger.debug(f"[pillow_composite] Failed to paste sprite {node_id}: {e}")
+
+            # Draw text label
+            text_m = re.search(r'>([^<]{2,50})</', inner)
+            if text_m:
+                label = text_m.group(1).strip()
+                text_x = rx + rw / 2
+                text_y = ry + rh + 2 * scale
+                try:
+                    draw.text(
+                        (text_x, text_y), label,
+                        fill=(30, 41, 59), font=font, anchor="mt"
+                    )
+                except Exception:
+                    draw.text((int(text_x), int(text_y)), label, fill=(30, 41, 59), font=font)
+
+        # Encode to PNG base64
+        buf = BytesIO()
+        canvas.save(buf, format="PNG", optimize=True)
+        png_bytes = buf.getvalue()
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+
+        logger.info(
+            f"[pillow_composite] Output: {len(png_bytes)} bytes "
+            f"({len(png_bytes)/1024:.1f} KB), {canvas_w}x{canvas_h}px, "
+            f"{sprite_count} sprites composited. "
+            f"Note: arrows/groups not rendered — sprites ARE visible."
+        )
+        return b64
+
+    except Exception as e:
+        logger.warning(f"[pillow_composite] Failed: {e}")
+        return None
 
 
 def _svg_to_png_b64_cairosvg(svg_content: str, target_width: int = 1024) -> Optional[str]:
