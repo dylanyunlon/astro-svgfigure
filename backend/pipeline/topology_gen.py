@@ -113,9 +113,15 @@ Rules:
     {complexity_override}
 12. For architecture diagrams: parent nodes with children MUST have
     "layoutOptions": {"elk.padding": "[top=30,left=10,bottom=10,right=10]"}
-12. Add iconHint field to nodes that should have an icon/illustration.
-    Use natural language descriptions (e.g., "microscope", "DNA helix", "brain"),
-    NOT emoji or Unicode. The image generator will create these from text.
+12. EVERY leaf node (nodes without children) MUST have an iconHint field,
+    UNLESS it is a labelOnly annotation node (see rule 13).
+    iconHint is a natural language description of a small illustration to
+    generate for that node (e.g., "UI mockup screen", "loss curve chart",
+    "HTML code snippet", "CSS stylesheet icon", "database with pruning",
+    "neural network encoder block", "data flow arrows", "accuracy meter").
+    Do NOT use emoji or Unicode — the image generator creates visuals from
+    text descriptions. Missing iconHint = the node renders as a plain text
+    box, which looks unprofessional in academic figures.
 13. Add "labelOnly": true to nodes that are ANNOTATION LABELS — short text
     that should float naked on the diagram WITHOUT any box/rect around them.
     Academic figures use this for descriptive labels like "Join Pattern",
