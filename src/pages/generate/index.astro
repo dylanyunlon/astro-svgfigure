@@ -769,6 +769,8 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
         custom_prompt: customPrompt,
         aspect_ratio: aspect || '16:9',
         image_size: '4K',
+        image_model: (document.getElementById('img-gen-model') as HTMLSelectElement)?.value
+                     || 'gemini-3.1-flash-image-preview',
         elk_graph: lightElk,
         sprite_cache_key: spriteCacheKey,
         skeleton_media_resolution: 'media_resolution_high',

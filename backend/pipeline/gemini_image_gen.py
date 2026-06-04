@@ -993,12 +993,19 @@ async def generate_image_with_gemini(
         )
         clean_prompt = prompt  # Fall back to original if cleaning removed everything meaningful
     combined_prompt = (
-        f"Generate an image: {clean_prompt}\n\n"
-        f"Layout structure reference:\n{svg_summary}\n\n"
-        f"IMPORTANT: You MUST generate and return an IMAGE. "
-        f"Create a high-quality, publication-ready scientific figure image. "
-        f"The spatial layout (node positions, sizes, connection topology) MUST closely "
-        f"follow the reference layout described above and shown in the attached skeleton image."
+        f"TASK: Polish and refine the attached scientific figure to publication quality.\n\n"
+        f"Design specification:\n{clean_prompt}\n\n"
+        f"Layout structure (for verification):\n{svg_summary}\n\n"
+        f"CRITICAL INSTRUCTIONS:\n"
+        f"1. The attached image is the FINISHED diagram, not a wireframe.\n"
+        f"2. PRESERVE all existing component icons exactly as they appear — "
+        f"do NOT replace them with your own interpretations.\n"
+        f"3. PRESERVE the exact spatial layout — same positions, same connections.\n"
+        f"4. ENHANCE: improve line quality, text clarity, color consistency, "
+        f"subtle depth/shadows, professional arrow routing.\n"
+        f"5. Apply the color palette and typography from the design specification.\n"
+        f"6. Output a single polished, publication-ready scientific figure image.\n"
+        f"7. You MUST generate and return an IMAGE."
     )
 
     # ── Build request parts: skeleton image first, then text ──
@@ -1014,14 +1021,35 @@ async def generate_image_with_gemini(
     skeleton_res = kwargs.get("skeleton_media_resolution", "media_resolution_high")
     sprite_res = kwargs.get("sprite_media_resolution", "media_resolution_low")
 
+    # ═══ Determine Object Fidelity limits per model ═══
+    # Flash: 10 obj fidelity + 4 character = 14 total
+    # Pro:    6 obj fidelity + 5 character = 11 total
+    # skeleton PNG counts as 1 image → sprite slots = limit - 1
+    is_flash = "flash" in model.lower()
+    max_obj_fidelity = 10 if is_flash else 6
+    max_sprite_slots = max_obj_fidelity - 1  # 1 reserved for skeleton PNG
+    logger.info(
+        f"Model={model}, is_flash={is_flash}, "
+        f"max_obj_fidelity={max_obj_fidelity}, sprite_slots={max_sprite_slots}"
+    )
+
     if skeleton_png_b64:
+        # ═══ REFINE-NOT-REDRAW: Skeleton as base image to polish ═══
+        # Instead of "generate from scratch using this layout", we tell Gemini:
+        # "Here is the FINISHED diagram, polish it to publication quality."
+        # This makes Gemini preserve the exact sprite icons rather than
+        # re-interpreting them from scratch.
         request_parts.append({
             "text": (
-                "Below is the SKELETON LAYOUT image showing the exact spatial arrangement "
-                "of nodes and connections that the user has confirmed. Your generated figure "
-                "MUST preserve this exact layout — same node positions, same connection "
-                "topology, same spatial relationships. Enhance it into a professional, "
-                "publication-quality scientific figure while keeping the structure identical."
+                "Below is the COMPLETE scientific figure with all component illustrations "
+                "already in place. This is NOT a wireframe — the icons and visual elements "
+                "are FINAL design assets that must be preserved exactly as shown. "
+                "Your task is to REFINE and POLISH this existing figure to publication "
+                "quality: enhance line crispness, improve text readability, add subtle "
+                "shadows and depth, ensure professional color consistency, and make "
+                "arrow routing clean. Do NOT replace or re-draw the component "
+                "illustrations — they are approved design assets. Keep every icon, "
+                "every label, every connection exactly as positioned in this image."
             )
         })
         skeleton_part: Dict[str, Any] = {
@@ -1035,32 +1063,35 @@ async def generate_image_with_gemini(
             skeleton_part["media_resolution"] = {"level": skeleton_res}
         request_parts.append(skeleton_part)
         logger.info(
-            f"Attached skeleton PNG as visual reference (resolution={skeleton_res}, "
+            f"Attached skeleton PNG as BASE IMAGE to refine (resolution={skeleton_res}, "
             f"b64_len={len(skeleton_png_b64)})"
         )
     else:
         logger.warning("Could not render skeleton PNG — Gemini will rely on text description only")
 
-    # ═══ Per-node sprite images (Gemini 3 Pro Image: up to 14 images/prompt) ═══
-    # Each sprite is sent as a separate inlineData part with LOW resolution
-    # (280 tokens each vs 1120 for HIGH). 13 sprites × 280 = 3,640 tokens.
-    # This gives Gemini visual style references for each component.
+    # ═══ Per-node sprite images as Object Fidelity references ═══
+    # With Flash model: up to 9 sprites (10 obj fidelity - 1 skeleton).
+    # With Pro model: up to 5 sprites (6 obj fidelity - 1 skeleton).
+    # Mark each sprite as an OBJECT that must be reproduced with high fidelity,
+    # not just a "style reference" that Gemini can freely re-interpret.
     sprite_images = kwargs.get("sprite_images") or []
     if sprite_images and isinstance(sprite_images, list):
-        sprite_count = min(len(sprite_images), 13)  # 13 sprites + 1 skeleton = 14 max
+        sprite_count = min(len(sprite_images), max_sprite_slots)
         logger.info(
-            f"Attaching {sprite_count} per-node sprite images "
-            f"(resolution={sprite_res}, max=13)"
+            f"Attaching {sprite_count}/{len(sprite_images)} sprites as Object Fidelity "
+            f"references (max_slots={max_sprite_slots}, resolution={sprite_res})"
         )
 
-        # Add a text description of what follows
+        # Object Fidelity prompt: tell Gemini these are exact assets to preserve
         sprite_labels = [s.get("label", s.get("nodeId", "?")) for s in sprite_images[:sprite_count]]
         request_parts.append({
             "text": (
-                f"Below are {sprite_count} individual component illustrations from the diagram. "
+                f"Below are {sprite_count} component icons used in the diagram above. "
                 f"Components: {', '.join(sprite_labels)}. "
-                f"Use these as style references — each component in your final figure should "
-                f"maintain a similar visual style and level of detail as these sprites."
+                f"These are OBJECT FIDELITY references — reproduce each icon EXACTLY "
+                f"as shown (same shape, same colors, same level of detail) at its "
+                f"corresponding position in the polished figure. Do NOT re-draw or "
+                f"re-interpret these icons. They are approved visual assets."
             )
         })
 
@@ -1078,20 +1109,29 @@ async def generate_image_with_gemini(
                 sprite_part["media_resolution"] = {"level": sprite_res}
             request_parts.append(sprite_part)
             logger.info(
-                f"  Sprite {i+1}/{sprite_count}: "
+                f"  ObjFidelity sprite {i+1}/{sprite_count}: "
                 f"label='{sprite_info.get('label', '?')}', "
                 f"b64_len={len(sprite_b64)}"
             )
+
+        # If we had more sprites than slots, log what was dropped
+        if len(sprite_images) > max_sprite_slots:
+            dropped = [s.get("label", s.get("nodeId", "?")) for s in sprite_images[max_sprite_slots:]]
+            logger.warning(
+                f"Dropped {len(dropped)} sprites exceeding {max_sprite_slots} slots: "
+                f"{', '.join(dropped[:10])}{'...' if len(dropped) > 10 else ''}"
+            )
+
     elif elk_graph and isinstance(elk_graph, dict):
         # Fallback: extract sprites from elk_graph if not sent separately
         _sprites_from_graph = _collect_sprites_from_elk(elk_graph)
         if _sprites_from_graph:
-            sprite_count = min(len(_sprites_from_graph), 13)
+            sprite_count = min(len(_sprites_from_graph), max_sprite_slots)
             logger.info(f"Extracted {sprite_count} sprites from elk_graph (fallback)")
             request_parts.append({
                 "text": (
-                    f"Below are {sprite_count} component illustrations extracted from the graph. "
-                    f"Use these as visual references for the final figure."
+                    f"Below are {sprite_count} component icons from the diagram. "
+                    f"Reproduce each EXACTLY as shown — these are Object Fidelity assets."
                 )
             })
             for i, (node_id, label, b64) in enumerate(_sprites_from_graph[:sprite_count]):
@@ -1099,7 +1139,7 @@ async def generate_image_with_gemini(
                 if is_direct_google_api and sprite_res:
                     sprite_part["media_resolution"] = {"level": sprite_res}
                 request_parts.append(sprite_part)
-                logger.info(f"  Sprite {i+1}/{sprite_count}: label='{label}', b64_len={len(b64)}")
+                logger.info(f"  ObjFidelity sprite {i+1}/{sprite_count}: label='{label}', b64_len={len(b64)}")
 
     request_parts.append({"text": combined_prompt})
 
