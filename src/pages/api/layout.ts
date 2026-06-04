@@ -219,6 +219,12 @@ export const POST: APIRoute = async ({ request }) => {
       if (node.group) result.group = true
       if (node.borderless) result.borderless = true
       if (node.iconHint) result.iconHint = node.iconHint
+      if (node.labelOnly) result.labelOnly = true
+      // Preserve sprite/render metadata through re-layout
+      if (node.renderMode) result.renderMode = node.renderMode
+      if (node.familyId) result.familyId = node.familyId
+      if (node.spriteRef) result.spriteRef = node.spriteRef
+      if (node.isOperator) result.isOperator = node.isOperator
 
       // Recursively sanitize nested children
       if (Array.isArray(node.children) && node.children.length > 0) {

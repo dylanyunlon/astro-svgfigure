@@ -87,20 +87,14 @@ export const ELK_DIRECTIONS: Record<ElkDirection, string> = {
 export const DEFAULT_LAYOUT_OPTIONS: ElkLayoutOptions = {
   'elk.algorithm': 'layered',
   'elk.direction': 'DOWN',
-  // 层间距离 — ReactFlow elkjs example uses 80
-  'elk.spacing.nodeNode': '80',
-  // 层与层之间的距离 — ReactFlow elkjs example uses 100
-  'elk.layered.spacing.nodeNodeBetweenLayers': '100',
-  // 边与节点的间距
-  'elk.spacing.edgeNode': '40',
-  // 边与边的间距
-  'elk.spacing.edgeEdge': '25',
-  // 端口约束 (固定端口在边框上的位置)
+  // Academic figures: moderate spacing, not as loose as 80/100 but not cramped
+  'elk.spacing.nodeNode': '50',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '65',
+  'elk.spacing.edgeNode': '25',
+  'elk.spacing.edgeEdge': '18',
   'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-  // 边路由策略
   'elk.edgeRouting': 'ORTHOGONAL',
-  // 内边距 — more generous
-  'elk.padding': '[top=40,left=40,bottom=40,right=40]'
+  'elk.padding': '[top=30,left=25,bottom=25,right=25]'
 } as const
 
 // ============================================================

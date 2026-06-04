@@ -96,8 +96,12 @@ Rules:
 2. Data flow or sequential connections become edges.
 3. Use descriptive but short labels (max 4 words per label).
 4. Node IDs should be snake_case, descriptive (e.g., "self_attention", "feed_forward").
-5. Set reasonable default sizes: width=150, height=50 for standard nodes,
-   width=200, height=60 for complex nodes, width=250, height=80 for group containers.
+5. Set node sizes based on content type:
+   - Nodes WITH iconHint (illustrated): width=150, height=100 (square-ish for illustration)
+   - Operator nodes (⊕, ⊗, +): width=60, height=60 (circle)
+   - labelOnly annotation nodes: width=120, height=30 (text only)
+   - Group container nodes: width=250, height=80+ (expand to fit children)
+   DO NOT use height=50 for nodes with iconHint — illustrations need vertical space.
 6. Do NOT include x, y coordinates — ELK will compute them.
 7. For hierarchical structures, use nested children (compound nodes).
    Example: a "Transformer Block" parent containing "Multi-Head Attention",
@@ -151,7 +155,7 @@ Example output with nesting (architecture diagram):
   "id": "root",
   "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "RIGHT"},
   "children": [
-    {"id": "input", "width": 150, "height": 50, "labels": [{"text": "Input"}]},
+    {"id": "input", "width": 150, "height": 100, "labels": [{"text": "Input"}], "iconHint": "input data stream"},
     {"id": "input_dim", "width": 80, "height": 24, "labels": [{"text": "768-dim"}], "labelOnly": true},
     {
       "id": "encoder_block", "width": 250, "height": 200,
@@ -159,9 +163,9 @@ Example output with nesting (architecture diagram):
       "group": true, "borderless": true,
       "layoutOptions": {"elk.padding": "[top=30,left=10,bottom=10,right=10]"},
       "children": [
-        {"id": "self_attn", "width": 150, "height": 50, "labels": [{"text": "Self Attention"}], "iconHint": "attention mechanism"},
-        {"id": "ffn", "width": 150, "height": 50, "labels": [{"text": "Feed Forward"}]},
-        {"id": "layer_norm", "width": 150, "height": 50, "labels": [{"text": "Layer Norm"}]}
+        {"id": "self_attn", "width": 150, "height": 105, "labels": [{"text": "Self Attention"}], "iconHint": "attention mechanism"},
+        {"id": "ffn", "width": 150, "height": 105, "labels": [{"text": "Feed Forward"}], "iconHint": "neural network layers"},
+        {"id": "layer_norm", "width": 150, "height": 105, "labels": [{"text": "Layer Norm"}], "iconHint": "normalization curve"}
       ],
       "edges": [
         {"id": "inner_e1", "sources": ["self_attn"], "targets": ["ffn"]},
@@ -181,9 +185,9 @@ Example output (simple flowchart):
   "id": "root",
   "layoutOptions": {"elk.algorithm": "layered", "elk.direction": "RIGHT"},
   "children": [
-    {"id": "input", "width": 150, "height": 50, "labels": [{"text": "Input"}]},
-    {"id": "encoder", "width": 160, "height": 50, "labels": [{"text": "Encoder"}]},
-    {"id": "output", "width": 150, "height": 50, "labels": [{"text": "Output"}]}
+    {"id": "input", "width": 150, "height": 100, "labels": [{"text": "Input"}], "iconHint": "input data"},
+    {"id": "encoder", "width": 160, "height": 100, "labels": [{"text": "Encoder"}], "iconHint": "neural encoder block"},
+    {"id": "output", "width": 150, "height": 100, "labels": [{"text": "Output"}], "iconHint": "output result"}
   ],
   "edges": [
     {"id": "e1", "sources": ["input"], "targets": ["encoder"]},
@@ -1104,6 +1108,22 @@ def _fix_node_list(
             "width": node.get("width") or (250 if "children" in node else 150),
             "height": node.get("height") or (200 if "children" in node else 50),
         }
+
+        # ═══ Enforce minimum sizes for illustrated nodes ═══
+        # Nodes with iconHint will become sprite illustrations — they need
+        # enough height for the image to be visible, not squished into 50px.
+        # This is the root fix for "sprites are too small" in the output.
+        has_icon = bool(node.get("iconHint"))
+        is_label_only = bool(node.get("labelOnly"))
+        has_children = "children" in node and isinstance(node.get("children"), list) and len(node.get("children", [])) > 0
+
+        if has_icon and not is_label_only and not has_children:
+            min_sprite_h = max(100, fixed_node["width"] * 0.7)  # at least 100px or 70% of width
+            if fixed_node["height"] < min_sprite_h:
+                fixed_node["height"] = int(min_sprite_h)
+            # Ensure width is at least 120px for sprite visibility
+            if fixed_node["width"] < 120:
+                fixed_node["width"] = 120
 
         # Ensure labels (handle null labels from LLM)
         labels = node.get("labels")

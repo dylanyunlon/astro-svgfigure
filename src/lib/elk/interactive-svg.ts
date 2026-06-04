@@ -452,16 +452,33 @@ export class InteractiveSvgEditor {
     }
 
     // ── Default path: Regular nodes (text, icon, sprite-blob, group) ──
+    // ═══ FIX: nodes with iconHint get a colored placeholder, NOT a white box ═══
+    // Before sprites are generated, nodes with iconHint should look like
+    // illustration placeholders (colored background), not text-in-white-box.
+    // This prevents Gemini from learning "white boxes with text" as the style.
+    const hasIconHint = !!(node.iconHint)
+    const isPlaceholder = hasIconHint && !node.isGroup
+
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
     rect.setAttribute('x', String(node.x))
     rect.setAttribute('y', String(node.y))
     rect.setAttribute('width', String(node.width))
     rect.setAttribute('height', String(node.height))
-    rect.setAttribute('fill', node.fill || this.theme.nodeFill)
-    rect.setAttribute('stroke', this.theme.nodeStroke)
-    rect.setAttribute('stroke-width', node.isGroup ? '2' : '1.5')
-    rect.setAttribute('rx', '8')
-    if (node.isGroup) rect.setAttribute('stroke-dasharray', '6,3')
+
+    if (isPlaceholder) {
+      // Soft colored placeholder — signals "illustration goes here"
+      const placeholderColors = ['#E8F5E9', '#FFF3E0', '#E3F2FD', '#F3E5F5', '#FFF8E1', '#E0F2F1']
+      const colorIdx = Math.abs(node.id.split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % placeholderColors.length
+      rect.setAttribute('fill', placeholderColors[colorIdx])
+      rect.setAttribute('stroke', 'none')
+      rect.setAttribute('rx', '6')
+    } else {
+      rect.setAttribute('fill', node.fill || this.theme.nodeFill)
+      rect.setAttribute('stroke', this.theme.nodeStroke)
+      rect.setAttribute('stroke-width', node.isGroup ? '2' : '1.5')
+      rect.setAttribute('rx', '8')
+      if (node.isGroup) rect.setAttribute('stroke-dasharray', '6,3')
+    }
 
     // Hover effect
     g.addEventListener('mouseenter', () => {
@@ -472,8 +489,13 @@ export class InteractiveSvgEditor {
     })
     g.addEventListener('mouseleave', () => {
       if (this.selectedNodeId !== node.id) {
-        rect.setAttribute('stroke-width', node.isGroup ? '2' : '1.5')
-        rect.setAttribute('stroke', this.theme.nodeStroke)
+        if (isPlaceholder) {
+          rect.setAttribute('stroke-width', '0')
+          rect.setAttribute('stroke', 'none')
+        } else {
+          rect.setAttribute('stroke-width', node.isGroup ? '2' : '1.5')
+          rect.setAttribute('stroke', this.theme.nodeStroke)
+        }
       }
     })
 
@@ -484,14 +506,25 @@ export class InteractiveSvgEditor {
     const maxChars = Math.max(6, Math.floor(node.width / 8))
     const dl = node.label.length > maxChars ? node.label.slice(0, maxChars - 2) + '…' : node.label
     text.setAttribute('x', String(node.x + node.width / 2))
-    text.setAttribute('y', String(node.isGroup ? node.y + 16 : node.y + node.height / 2))
     text.setAttribute('text-anchor', 'middle')
-    text.setAttribute('dominant-baseline', 'central')
     text.setAttribute('font-family', 'system-ui, -apple-system, sans-serif')
-    text.setAttribute('font-size', node.isGroup ? '11' : '12')
-    text.setAttribute('font-weight', node.isGroup ? '600' : '500')
-    text.setAttribute('fill', this.theme.textColor)
     text.setAttribute('pointer-events', 'none')
+
+    if (isPlaceholder) {
+      // Placeholder: small italic caption at bottom (like sprite nodes)
+      text.setAttribute('y', String(node.y + node.height - 6))
+      text.setAttribute('dominant-baseline', 'auto')
+      text.setAttribute('font-size', '9')
+      text.setAttribute('font-weight', '500')
+      text.setAttribute('font-style', 'italic')
+      text.setAttribute('fill', '#666')
+    } else {
+      text.setAttribute('y', String(node.isGroup ? node.y + 16 : node.y + node.height / 2))
+      text.setAttribute('dominant-baseline', 'central')
+      text.setAttribute('font-size', node.isGroup ? '11' : '12')
+      text.setAttribute('font-weight', node.isGroup ? '600' : '500')
+      text.setAttribute('fill', this.theme.textColor)
+    }
     text.textContent = dl
     g.appendChild(text)
 

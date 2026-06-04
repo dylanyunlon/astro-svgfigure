@@ -446,13 +446,20 @@ async def _svg_to_png_b64_playwright(svg_content: str, target_width: int = 1024)
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(viewport={"width": target_width, "height": 800})
+            # ═══ Use deviceScaleFactor=2 for sharp rendering of sprites ═══
+            # This makes the browser rasterize at 2× pixel density, producing
+            # crisp edges on text and sprites without inflating the viewport.
+            page = await browser.new_page(
+                viewport={"width": target_width, "height": 800},
+                device_scale_factor=2,
+            )
 
             # Wrap SVG in minimal HTML — white background, no margin
+            # Set SVG width explicitly to target_width so it fills the viewport
             html = (
                 f'<!DOCTYPE html><html><head><style>'
-                f'body{{margin:0;background:#fff;display:flex;justify-content:center}}'
-                f'svg{{max-width:{target_width}px;height:auto}}'
+                f'body{{margin:0;padding:0;background:#fff;display:flex;justify-content:center;align-items:flex-start}}'
+                f'svg{{width:{target_width}px;height:auto}}'
                 f'</style></head><body>{svg_content}</body></html>'
             )
             await page.set_content(html, wait_until="networkidle")
@@ -1011,7 +1018,11 @@ async def generate_image_with_gemini(
         f"Only group/region backgrounds (semi-transparent colored areas) are allowed.\n"
         f"   ILLUSTRATION DOMINANCE: Illustrations (3D tensors, feature maps, network "
         f"blocks, data visualizations) should cover ~25% of the total figure area. "
-        f"Each illustration should fill its allocated space, not shrink to a small icon.\n"
+        f"Each illustration should FILL its allocated space generously — draw them "
+        f"LARGE enough to be clearly visible and detailed at print resolution. "
+        f"A feature map tensor should be at least 80×80 pixels in the output, not "
+        f"a tiny 20px thumbnail. Scale illustrations to match their containing node's "
+        f"full width and height.\n"
         f"   COLORED REGION BACKGROUNDS: Group regions (parent modules) should use "
         f"semi-transparent colored fills (~60% of figure area) — soft green, warm "
         f"orange, light beige — with no hard borders. Region title in bold italic "
@@ -1024,6 +1035,10 @@ async def generate_image_with_gemini(
         f"   TEXT SIZING: All text labels should be small relative to illustrations. "
         f"Operation labels (like 'Conv3', 'sampling') appear as tiny annotations "
         f"near arrows, not as large standalone elements.\n"
+        f"   OUTPUT RESOLUTION: Generate the image at the HIGHEST resolution possible. "
+        f"The output must be sharp enough for 300 DPI printing in a paper column "
+        f"(~3.5 inches = ~1050 pixels minimum width). Aim for at least 1500×1500 "
+        f"pixels. Do NOT generate a low-resolution thumbnail.\n"
         f"7. You MUST generate and return an IMAGE."
     )
 
@@ -1032,7 +1047,14 @@ async def generate_image_with_gemini(
 
     # Use pre-rendered skeleton PNG or render fresh
     if not skeleton_png_b64:
-        skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+        # ═══ Dynamic target_width: parse viewBox for the fallback path too ═══
+        _fallback_target = 2048
+        _fb_vb = re.search(r'viewBox="([^"]+)"', svg_content)
+        if _fb_vb:
+            _fb_parts = _fb_vb.group(1).split()
+            if len(_fb_parts) == 4:
+                _fallback_target = min(3072, max(1536, int(float(_fb_parts[2]) * 2)))
+        skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=_fallback_target)
 
     # ═══ media_resolution support (Gemini 3 feature) ═══
     # skeleton gets HIGH (1120 tokens) — Gemini needs to see exact layout
@@ -1736,6 +1758,24 @@ async def generate_scientific_figure(
         elk_graph and isinstance(elk_graph, dict)
         and 'spriteRef' in json.dumps(elk_graph)[:20000]
     )
+
+    # ═══ DYNAMIC target_width: derive from SVG viewBox instead of hardcoded 1024 ═══
+    # The old hardcoded 1024 squashed large layouts into low-res PNGs, causing
+    # Gemini to produce small blurry output. Now we scale the natural SVG width
+    # by 2× (capped at 2048) so sprites remain sharp in the skeleton PNG.
+    _skeleton_target_width = 2048  # default for missing viewBox
+    _vb_match = re.search(r'viewBox="([^"]+)"', svg_content)
+    if _vb_match:
+        _vb_parts = _vb_match.group(1).split()
+        if len(_vb_parts) == 4:
+            _nat_w = float(_vb_parts[2])
+            # Scale up to at least 2× natural, capped at 3072
+            _skeleton_target_width = min(3072, max(1536, int(_nat_w * 2)))
+    logger.info(
+        f"[generate_scientific_figure] Skeleton target_width={_skeleton_target_width} "
+        f"(viewBox={'×'.join(_vb_parts[2:4]) if _vb_match and len(_vb_parts) >= 4 else '?'})"
+    )
+
     try:
         if has_sprites_in_svg:
             logger.info(
@@ -1743,10 +1783,10 @@ async def generate_scientific_figure(
                 "forcing Playwright for faithful skeleton PNG"
             )
             skeleton_png_b64 = await _svg_to_png_b64_playwright(
-                svg_content, target_width=1024
+                svg_content, target_width=_skeleton_target_width
             )
         else:
-            skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=1024)
+            skeleton_png_b64 = _svg_to_png_b64(svg_content, target_width=_skeleton_target_width)
     except Exception as e:
         logger.warning(f"Skeleton PNG render failed: {e}")
 

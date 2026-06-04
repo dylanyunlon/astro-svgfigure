@@ -84,6 +84,19 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
           <span id='generate-enriched-figure-text'>Step 2→3: Sprite-Enriched Figure</span>
         </button>
 
+        <button id='export-hires-btn' disabled
+          class='group flex w-full items-center justify-center gap-x-2 rounded-xl border border-emerald-400/30 bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:from-emerald-700 hover:to-teal-700 disabled:opacity-40 disabled:cursor-not-allowed'>
+          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+            <rect x='2' y='2' width='20' height='20' rx='3' />
+            <path d='M7 2v20' opacity='0.3' />
+            <path d='M17 2v20' opacity='0.3' />
+            <path d='M2 7h20' opacity='0.3' />
+            <path d='M2 17h20' opacity='0.3' />
+            <circle cx='12' cy='12' r='3' fill='currentColor' opacity='0.6' />
+          </svg>
+          <span id='export-hires-text'>Export Hi-Res Composite</span>
+        </button>
+
         <Collapse title='Advanced Options'>
           <div class='flex flex-col gap-y-3 pb-2'>
             <div class='flex flex-col gap-y-1'>
@@ -110,6 +123,16 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
                 <option value='4:3'>4:3</option>
                 <option value='1:1'>1:1 (Square)</option>
               </select>
+            </div>
+            <div class='flex flex-col gap-y-1'>
+              <label class='text-xs text-muted-foreground' for='opt-export-scale'>Hi-Res Export Scale</label>
+              <select id='opt-export-scale' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+                <option value='2'>2× (Good)</option>
+                <option value='3' selected>3× (Recommended)</option>
+                <option value='4'>4× (Best, slower)</option>
+                <option value='5'>5× (Maximum)</option>
+              </select>
+              <p class='text-[10px] text-muted-foreground mt-0.5'>Multiplies SVG natural size. 3× ≈ 3000-4000px wide.</p>
             </div>
           </div>
         </Collapse>
@@ -142,6 +165,22 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
             <img id='final-image' class='h-auto w-full' alt='Generated scientific figure' />
           </div>
           <p id='final-image-info' class='mt-1 text-xs text-muted-foreground'></p>
+        </div>
+
+        <div id='hires-composite-section' class='hidden'>
+          <div class='flex items-center justify-between mb-2'>
+            <div class='flex items-center gap-x-2'>
+              <span class='text-sm font-medium'>Hi-Res Composite</span>
+              <span id='hires-dims-badge' class='inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600'>--</span>
+            </div>
+            <div class='flex gap-x-2'>
+              <button id='download-hires-btn' class='rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 transition-colors'>Download Hi-Res PNG</button>
+            </div>
+          </div>
+          <div class='overflow-hidden rounded-xl border-2 border-emerald-200'>
+            <canvas id='hires-canvas' class='h-auto w-full' style='image-rendering: -webkit-optimize-contrast;'></canvas>
+          </div>
+          <p id='hires-info' class='mt-1 text-xs text-muted-foreground'></p>
         </div>
 
         {/* Post-Generation Pipeline: removebg → layers → edges → export */}
@@ -860,5 +899,258 @@ import PostGenPanel from '@/components/pipeline/PostGenPanel.astro'
 
   // Update currentSkeletonSvg from editor when Step 2 is about to run
   const origRunFigureGen = runFigureGen
+
+  // ===== HI-RES COMPOSITE EXPORT (client-side, bypasses Gemini resolution limits) =====
+  const exportHiresBtn = document.getElementById('export-hires-btn') as HTMLButtonElement
+  const exportHiresText = document.getElementById('export-hires-text') as HTMLSpanElement
+  const hiresSection = document.getElementById('hires-composite-section') as HTMLElement
+  const hiresCanvas = document.getElementById('hires-canvas') as HTMLCanvasElement
+  const hiresDimsBadge = document.getElementById('hires-dims-badge') as HTMLSpanElement
+  const hiresInfo = document.getElementById('hires-info') as HTMLElement
+  const downloadHiresBtn = document.getElementById('download-hires-btn') as HTMLButtonElement
+
+  // Enable hi-res export when sprites are generated (alongside enriched button)
+  const _origSpriteClickHandler = generateSpritesBtn?.onclick
+  ;(() => {
+    // Patch: after sprites done, also enable the hi-res export button
+    const origSpritesHandler = generateSpritesBtn?.getAttribute('data-patched')
+    if (!origSpritesHandler) {
+      generateSpritesBtn?.setAttribute('data-patched', 'true')
+      const origListener = (generateSpritesBtn as any)?._hiresPatched
+      if (!origListener) {
+        ;(generateSpritesBtn as any)._hiresPatched = true
+        // Watch for sprites completing — enable hi-res button
+        const mo = new MutationObserver(() => {
+          if (exportHiresBtn && generateEnrichedBtn && !generateEnrichedBtn.disabled) {
+            exportHiresBtn.disabled = false
+          }
+        })
+        if (generateEnrichedBtn) {
+          mo.observe(generateEnrichedBtn, { attributes: true, attributeFilter: ['disabled'] })
+        }
+      }
+    }
+  })()
+
+  /**
+   * Render an SVG to a high-resolution PNG via offscreen canvas.
+   *
+   * Strategy:
+   *   1. Use provided SVG string (from ELK re-layout) or editor's exportFullSvg()
+   *   2. Parse the SVG viewBox to get natural dimensions
+   *   3. Create an offscreen canvas at scaleFactor × natural dimensions
+   *   4. Render SVG as a Blob URL → Image → Canvas drawImage
+   *   5. Output the canvas as a high-res PNG
+   *
+   * When svgOverride is provided (from ELK re-layout), the positions are
+   * professionally computed by ELK — proper hierarchy, edge routing, spacing.
+   */
+  async function renderHiResComposite(scaleFactor: number = 3, svgOverride?: string): Promise<void> {
+    let svgStr = svgOverride || ''
+
+    if (!svgStr) {
+      // Fallback: use editor's live DOM
+      const editor = preview?.getEditor()
+      if (!editor) {
+        statusText.textContent = 'No editor available — run Step 1 and generate sprites first.'
+        return
+      }
+      svgStr = editor.exportFullSvg()
+    }
+
+    if (!svgStr || svgStr.length < 100) {
+      statusText.textContent = 'SVG is empty — generate sprites first.'
+      return
+    }
+
+    // Parse viewBox to get natural dimensions
+    const vbMatch = svgStr.match(/viewBox="([^"]+)"/)
+    const widthMatch = svgStr.match(/\bwidth="(\d+(?:\.\d+)?)"/)
+    const heightMatch = svgStr.match(/\bheight="(\d+(?:\.\d+)?)"/)
+
+    let natW = 800, natH = 600
+    if (vbMatch) {
+      const parts = vbMatch[1].split(/\s+/).map(Number)
+      if (parts.length === 4) {
+        natW = parts[2]
+        natH = parts[3]
+      }
+    } else if (widthMatch && heightMatch) {
+      natW = parseFloat(widthMatch[1])
+      natH = parseFloat(heightMatch[1])
+    }
+
+    // Compute output dimensions
+    const outW = Math.round(natW * scaleFactor)
+    const outH = Math.round(natH * scaleFactor)
+
+    // Browser canvas limit safety check
+    const maxDim = 16384
+    if (outW > maxDim || outH > maxDim) {
+      const safeScale = Math.floor(Math.min(maxDim / natW, maxDim / natH))
+      statusText.textContent = `Scale ${scaleFactor}× exceeds canvas limits (${outW}×${outH}). Max safe scale: ${safeScale}×.`
+      statusText.style.color = 'hsl(38 92% 50%)'
+      return
+    }
+
+    console.log(
+      `[HiRes] Rendering at ${scaleFactor}× scale: ` +
+      `natural ${natW}×${natH} → output ${outW}×${outH}px, ` +
+      `SVG ${svgStr.length} chars`
+    )
+
+    // Inject explicit width/height into the SVG for the Image renderer.
+    // The key: set width/height to the OUTPUT size so the browser rasterizes
+    // at full resolution including all embedded sprite <image> elements.
+    let renderSvg = svgStr
+    // Replace or add width/height attributes on the root <svg> to match output size
+    renderSvg = renderSvg.replace(
+      /(<svg[^>]*?)(\s+width="[^"]*")/,
+      `$1 width="${outW}"`
+    )
+    renderSvg = renderSvg.replace(
+      /(<svg[^>]*?)(\s+height="[^"]*")/,
+      `$1 height="${outH}"`
+    )
+    // If width/height weren't present, add them
+    if (!renderSvg.includes(`width="${outW}"`)) {
+      renderSvg = renderSvg.replace('<svg', `<svg width="${outW}" height="${outH}"`)
+    }
+
+    // Create a Blob URL from the SVG
+    const blob = new Blob([renderSvg], { type: 'image/svg+xml;charset=utf-8' })
+    const blobUrl = URL.createObjectURL(blob)
+
+    try {
+      // Load SVG as an Image
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image()
+        image.onload = () => resolve(image)
+        image.onerror = (e) => reject(new Error(`SVG image load failed: ${e}`))
+        image.src = blobUrl
+      })
+
+      // Draw onto canvas at full resolution
+      hiresCanvas.width = outW
+      hiresCanvas.height = outH
+      const ctx = hiresCanvas.getContext('2d')!
+      // White background (academic figures need white bg)
+      ctx.fillStyle = '#FFFFFF'
+      ctx.fillRect(0, 0, outW, outH)
+      // Enable high-quality image scaling
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+      // Draw the SVG
+      ctx.drawImage(img, 0, 0, outW, outH)
+
+      // Show the result
+      hiresSection.classList.remove('hidden')
+      hiresDimsBadge.textContent = `${outW}×${outH}px`
+      hiresInfo.textContent =
+        `${scaleFactor}× scale | ` +
+        `Natural: ${Math.round(natW)}×${Math.round(natH)} → Output: ${outW}×${outH}px | ` +
+        `SVG sprites: ${(svgStr.match(/data:image\/png;base64,/g) || []).length}`
+
+      // Switch to final tab if it exists
+      document.getElementById('tab-final')?.click()
+
+      console.log(
+        `[HiRes] Canvas rendered: ${outW}×${outH}px, ` +
+        `canvas data size: ${hiresCanvas.toDataURL('image/png').length} chars`
+      )
+
+    } finally {
+      URL.revokeObjectURL(blobUrl)
+    }
+  }
+
+  // Hi-Res Export button click handler
+  exportHiresBtn?.addEventListener('click', async () => {
+    if (running) return
+    const scaleFactor = parseInt(
+      (document.getElementById('opt-export-scale') as HTMLSelectElement)?.value || '3',
+      10
+    )
+
+    exportHiresBtn.disabled = true
+    exportHiresText.textContent = `Re-laying out...`
+    statusText.textContent = `Step 1/2: ELK re-layout for export...`
+    statusText.style.color = ''
+    startTimer()
+
+    try {
+      // ═══ Step 1: ELK re-layout from the sprite-enriched graph ═══
+      // Users may have dragged nodes around for easier editing. Rather than
+      // exporting those loose positions, we send the graph back to ELK for
+      // a fresh layout pass. ELK preserves hierarchy, edge routing, and
+      // proper academic figure spacing — we just get clean positions.
+      //
+      // getLayoutedJson() has the full nested structure (spriteRef, renderMode,
+      // iconHint, familyId) from the sprite generation step.
+      const layoutedJson = preview?.getLayoutedJson()
+      if (!layoutedJson) {
+        throw new Error('No layout data available — run Step 1 first.')
+      }
+
+      // Strip x/y from all nodes so ELK recomputes positions from scratch,
+      // but preserve width/height/spriteRef/renderMode/iconHint/children/edges.
+      function stripPositions(node: any): any {
+        const clean: any = { ...node }
+        delete clean.x
+        delete clean.y
+        if (Array.isArray(clean.children)) {
+          clean.children = clean.children.map(stripPositions)
+        }
+        return clean
+      }
+      const graphForLayout = stripPositions(layoutedJson)
+
+      const preset = (document.getElementById('opt-preset') as HTMLSelectElement)?.value
+      const direction = (document.getElementById('opt-direction') as HTMLSelectElement)?.value
+
+      statusText.textContent = `Step 1/2: ELK computing layout...`
+      const layoutRes = await fetch('/api/layout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ graph: graphForLayout, preset, options: { direction } }),
+      })
+      if (!layoutRes.ok) throw new Error('ELK re-layout failed')
+      const layoutData = await layoutRes.json()
+
+      if (!layoutData.skeletonSvg) {
+        throw new Error('ELK returned no SVG')
+      }
+
+      // ═══ Step 2: Render SVG to hi-res canvas ═══
+      exportHiresText.textContent = `Rendering ${scaleFactor}×...`
+      statusText.textContent = `Step 2/2: Rendering at ${scaleFactor}× scale...`
+
+      // Use elkToSvg output — this already has correct positions from ELK,
+      // and renderNode() uses renderSpriteNode for sprite/iconHint nodes.
+      const exportSvg = layoutData.skeletonSvg as string
+
+      await renderHiResComposite(scaleFactor, exportSvg)
+      statusText.textContent = `Hi-res composite exported (${elapsed()}s) — ELK layout + ${scaleFactor}× render.`
+      statusText.style.color = ''
+    } catch (err: any) {
+      statusText.textContent = `Hi-res export error: ${err.message}`
+      statusText.style.color = 'hsl(0 72.2% 50.6%)'
+      console.error('[HiRes] Export error:', err)
+    } finally {
+      stopTimer()
+      exportHiresBtn.disabled = false
+      exportHiresText.textContent = 'Export Hi-Res Composite'
+    }
+  })
+
+  // Download hi-res PNG
+  downloadHiresBtn?.addEventListener('click', () => {
+    if (!hiresCanvas || hiresCanvas.width === 0) return
+    const dataUrl = hiresCanvas.toDataURL('image/png')
+    const link = document.createElement('a')
+    link.href = dataUrl
+    link.download = `figure-hires-${hiresCanvas.width}x${hiresCanvas.height}.png`
+    link.click()
+  })
 
 </script>

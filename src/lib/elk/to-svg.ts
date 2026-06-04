@@ -573,6 +573,14 @@ function renderNode(node: ElkNode, index: number, depth: number = 0, offsetX: nu
   }
   const isLabelOnly = !!(node as any).labelOnly || (h <= 30 && !(node as any).iconHint)
   if (isLabelOnly) return renderLabelNode(node, x, y, w, h, label, depth)
+
+  // ═══ FIX: nodes with iconHint → sprite path (no white box) ═══
+  // Even BEFORE classify_nodes() runs, nodes with iconHint should render
+  // as sprites (blob placeholder + caption below), NOT as white boxes with
+  // centered text. This ensures the skeleton SVG that Gemini receives
+  // has NO white rounded-rect boxes — which Gemini would copy into output.
+  if ((node as any).iconHint) return renderSpriteNode(node, x, y, w, h, label, depth)
+
   return renderLeafNode(node, x, y, w, h, label, depth, cleanMode)
 }
 
