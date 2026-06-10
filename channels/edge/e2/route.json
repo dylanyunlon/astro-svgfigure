@@ -1,0 +1,12 @@
+{
+  "edge_id": "e2",
+  "sources": [
+    "pos_encode"
+  ],
+  "targets": [
+    "self_attn"
+  ],
+  "advanced": {},
+  "points": [],
+  "z": 2
+}

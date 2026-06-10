@@ -1,0 +1,37 @@
+{
+  "add_norm2": {
+    "dx": 0,
+    "dy": 0,
+    "dz": 0
+  },
+  "self_attn": {
+    "dx": 0,
+    "dy": 0,
+    "dz": 0
+  },
+  "input_embed": {
+    "dx": 0,
+    "dy": 0,
+    "dz": 0
+  },
+  "add_norm1": {
+    "dx": 0,
+    "dy": 0,
+    "dz": 0
+  },
+  "pos_encode": {
+    "dx": 0,
+    "dy": 0,
+    "dz": 0
+  },
+  "ffn": {
+    "dx": 0,
+    "dy": 0,
+    "dz": 0
+  },
+  "output": {
+    "dx": 0,
+    "dy": 0,
+    "dz": 0
+  }
+}

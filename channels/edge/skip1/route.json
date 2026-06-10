@@ -1,0 +1,16 @@
+{
+  "edge_id": "skip1",
+  "sources": [
+    "pos_encode"
+  ],
+  "targets": [
+    "add_norm1"
+  ],
+  "advanced": {
+    "semanticType": "skip_connection",
+    "routing": "SPLINES",
+    "curvature": 0.6
+  },
+  "points": [],
+  "z": 5
+}

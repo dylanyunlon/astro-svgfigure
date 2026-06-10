@@ -1,0 +1,5 @@
+<g id="cell-output" data-z="3" transform="translate(220,675)">
+<rect x="0" y="0" width="160" height="50" rx="8" fill="#ECEFF1" stroke="#455A64" stroke-width="1.5"/>
+<polygon points="32.0,17.0 128.0,25.0 32.0,33.0" fill="#455A64" opacity="0.5"/>
+<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#263238">Output</text>
+</g>

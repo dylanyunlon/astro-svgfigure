@@ -1,0 +1,16 @@
+<g id="cell-self_attn" data-z="3" transform="translate(220,260)">
+<rect x="0" y="0" width="160" height="50" rx="8" fill="#E8EAF6" stroke="#3F51B5" stroke-width="1.5"/>
+<line x1="86.3" y1="25.0" x2="101.0" y2="25.0" stroke="#3F51B5" stroke-width="1" opacity="0.60"/>
+<line x1="85.1" y1="28.7" x2="97.0" y2="37.3" stroke="#3F51B5" stroke-width="1" opacity="0.56"/>
+<line x1="81.9" y1="31.0" x2="86.5" y2="45.0" stroke="#3F51B5" stroke-width="1" opacity="0.52"/>
+<line x1="78.1" y1="31.0" x2="73.5" y2="45.0" stroke="#3F51B5" stroke-width="1" opacity="0.47"/>
+<line x1="74.9" y1="28.7" x2="63.0" y2="37.3" stroke="#3F51B5" stroke-width="1" opacity="0.43"/>
+<line x1="73.7" y1="25.0" x2="59.0" y2="25.0" stroke="#3F51B5" stroke-width="1" opacity="0.39"/>
+<line x1="74.9" y1="21.3" x2="63.0" y2="12.7" stroke="#3F51B5" stroke-width="1" opacity="0.35"/>
+<line x1="78.1" y1="19.0" x2="73.5" y2="5.0" stroke="#3F51B5" stroke-width="1" opacity="0.31"/>
+<line x1="81.9" y1="19.0" x2="86.5" y2="5.0" stroke="#3F51B5" stroke-width="1" opacity="0.26"/>
+<line x1="85.1" y1="21.3" x2="97.0" y2="12.7" stroke="#3F51B5" stroke-width="1" opacity="0.22"/>
+<circle cx="80.0" cy="25.0" r="4.2" fill="#3F51B5" opacity="0.7"/>
+<circle cx="80.0" cy="25.0" r="1.68" fill="#E8EAF6"/>
+<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1A237E">Multi-Head Attention</text>
+</g>

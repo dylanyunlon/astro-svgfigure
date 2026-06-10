@@ -1,0 +1,9 @@
+<g id="cell-input_embed" data-z="3" transform="translate(220,40)">
+<rect x="0" y="0" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
+<line x1="57.9" y1="36.3" x2="102.1" y2="17.7" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.5" y1="31.8" x2="103.5" y2="22.2" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.0" y1="27.0" x2="104.0" y2="27.0" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.5" y1="22.2" x2="103.5" y2="31.8" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="57.9" y1="17.7" x2="102.1" y2="36.3" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
+<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Input Embedding</text>
+</g>

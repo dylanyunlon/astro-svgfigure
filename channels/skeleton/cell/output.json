@@ -1,0 +1,24 @@
+{
+  "cell_id": "output",
+  "label": "Output",
+  "species": "cil-arrow-right",
+  "gene_traits": {
+    "primary_shape": "arrow",
+    "pattern": "flow",
+    "line_style": "directed",
+    "family": "dataflow"
+  },
+  "initial_bbox": {
+    "x": 220,
+    "y": 675,
+    "w": 160,
+    "h": 50,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "e6"
+    ],
+    "outgoing_edges": []
+  }
+}

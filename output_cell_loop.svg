@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 785" width="440" height="785" style="max-width:100%;height:auto;">
+  <rect width="440" height="785" fill="#FAFAFA" rx="4"/>
+  <defs>
+    <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#2E7D32"/>
+    </marker>
+  </defs>
+  <g id="z3-layer">
+    <!-- cell: self_attn -->
+    <g id="cell-self_attn" data-z="3" transform="translate(220,260)">
+<rect x="0" y="0" width="160" height="50" rx="8" fill="#E8EAF6" stroke="#3F51B5" stroke-width="1.5"/>
+<line x1="86.3" y1="25.0" x2="101.0" y2="25.0" stroke="#3F51B5" stroke-width="1" opacity="0.60"/>
+<line x1="85.1" y1="28.7" x2="97.0" y2="37.3" stroke="#3F51B5" stroke-width="1" opacity="0.56"/>
+<line x1="81.9" y1="31.0" x2="86.5" y2="45.0" stroke="#3F51B5" stroke-width="1" opacity="0.52"/>
+<line x1="78.1" y1="31.0" x2="73.5" y2="45.0" stroke="#3F51B5" stroke-width="1" opacity="0.47"/>
+<line x1="74.9" y1="28.7" x2="63.0" y2="37.3" stroke="#3F51B5" stroke-width="1" opacity="0.43"/>
+<line x1="73.7" y1="25.0" x2="59.0" y2="25.0" stroke="#3F51B5" stroke-width="1" opacity="0.39"/>
+<line x1="74.9" y1="21.3" x2="63.0" y2="12.7" stroke="#3F51B5" stroke-width="1" opacity="0.35"/>
+<line x1="78.1" y1="19.0" x2="73.5" y2="5.0" stroke="#3F51B5" stroke-width="1" opacity="0.31"/>
+<line x1="81.9" y1="19.0" x2="86.5" y2="5.0" stroke="#3F51B5" stroke-width="1" opacity="0.26"/>
+<line x1="85.1" y1="21.3" x2="97.0" y2="12.7" stroke="#3F51B5" stroke-width="1" opacity="0.22"/>
+<circle cx="80.0" cy="25.0" r="4.2" fill="#3F51B5" opacity="0.7"/>
+<circle cx="80.0" cy="25.0" r="1.68" fill="#E8EAF6"/>
+<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1A237E">Multi-Head Attention</text>
+</g>
+    <!-- cell: input_embed -->
+    <g id="cell-input_embed" data-z="3" transform="translate(220,40)">
+<rect x="0" y="0" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
+<line x1="57.9" y1="36.3" x2="102.1" y2="17.7" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.5" y1="31.8" x2="103.5" y2="22.2" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.0" y1="27.0" x2="104.0" y2="27.0" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.5" y1="22.2" x2="103.5" y2="31.8" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="57.9" y1="17.7" x2="102.1" y2="36.3" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
+<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Input Embedding</text>
+</g>
+    <!-- cell: ffn -->
+    <g id="cell-ffn" data-z="3" transform="translate(230,470)">
+<rect x="0" y="0" width="140" height="45" rx="8" fill="#FFF3E0" stroke="#E65100" stroke-width="1.5"/>
+<polyline points="10.0,27.5 30.0,27.5 50.0,27.5 70.0,27.5 90.0,21.5 110.0,15.5 130.0,9.5" fill="none" stroke="#E65100" stroke-width="2" opacity="0.7"/>
+<text x="70.0" y="39" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#BF360C">Feed Forward</text>
+</g>
+    <!-- cell: output -->
+    <g id="cell-output" data-z="3" transform="translate(220,675)">
+<rect x="0" y="0" width="160" height="50" rx="8" fill="#ECEFF1" stroke="#455A64" stroke-width="1.5"/>
+<polygon points="32.0,17.0 128.0,25.0 32.0,33.0" fill="#455A64" opacity="0.5"/>
+<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#263238">Output</text>
+</g>
+  </g>
+  <g id="z5-layer">
+    <!-- cell: add_norm2 -->
+    <g id="cell-add_norm2" data-z="5" transform="translate(230,575)">
+<rect x="0" y="0" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
+<line x1="60.0" y1="20.0" x2="80.0" y2="20.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
+<line x1="70.0" y1="10.0" x2="70.0" y2="30.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
+<line x1="58.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="82.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="58.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="82.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<text x="70.0" y="34" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#B71C1C">Add and Norm</text>
+</g>
+    <!-- cell: add_norm1 -->
+    <g id="cell-add_norm1" data-z="5" transform="translate(230,370)">
+<rect x="0" y="0" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
+<line x1="60.0" y1="20.0" x2="80.0" y2="20.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
+<line x1="70.0" y1="10.0" x2="70.0" y2="30.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
+<line x1="58.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="82.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="58.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="82.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<text x="70.0" y="34" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#B71C1C">Add and Norm</text>
+</g>
+    <!-- cell: pos_encode -->
+    <g id="cell-pos_encode" data-z="5" transform="translate(220,150)">
+<rect x="0" y="0" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
+<line x1="57.9" y1="36.3" x2="102.1" y2="17.7" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.5" y1="31.8" x2="103.5" y2="22.2" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.0" y1="27.0" x2="104.0" y2="27.0" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="56.5" y1="22.2" x2="103.5" y2="31.8" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
+<line x1="57.9" y1="17.7" x2="102.1" y2="36.3" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
+<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Positional Encoding</text>
+</g>
+  </g>
+</svg>

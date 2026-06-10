@@ -1,0 +1,24 @@
+{
+  "cell_id": "input_embed",
+  "label": "Input Embedding",
+  "species": "cil-vector",
+  "gene_traits": {
+    "primary_shape": "arrow_vec",
+    "pattern": "magnitude",
+    "line_style": "weighted",
+    "family": "embedding"
+  },
+  "initial_bbox": {
+    "x": 220,
+    "y": 40,
+    "w": 160,
+    "h": 50,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": [
+      "e1"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "edge_id": "e1",
+  "sources": [
+    "input_embed"
+  ],
+  "targets": [
+    "pos_encode"
+  ],
+  "advanced": {},
+  "points": [],
+  "z": 2
+}

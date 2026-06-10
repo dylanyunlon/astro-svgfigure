@@ -1,0 +1,28 @@
+{
+  "cell_id": "add_norm1",
+  "label": "Add and Norm",
+  "species": "cil-plus",
+  "gene_traits": {
+    "primary_shape": "cross",
+    "pattern": "merge",
+    "line_style": "converge",
+    "family": "aggregation"
+  },
+  "initial_bbox": {
+    "x": 230,
+    "y": 370,
+    "w": 140,
+    "h": 40,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [
+      "e3",
+      "skip1"
+    ],
+    "outgoing_edges": [
+      "e4",
+      "skip2"
+    ]
+  }
+}

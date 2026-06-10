@@ -1,0 +1,26 @@
+{
+  "cell_id": "self_attn",
+  "label": "Multi-Head Attention",
+  "species": "cil-eye",
+  "gene_traits": {
+    "primary_shape": "radial",
+    "pattern": "heatmap",
+    "line_style": "ray",
+    "family": "attention"
+  },
+  "initial_bbox": {
+    "x": 220,
+    "y": 260,
+    "w": 160,
+    "h": 50,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "e2"
+    ],
+    "outgoing_edges": [
+      "e3"
+    ]
+  }
+}

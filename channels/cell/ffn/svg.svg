@@ -1,0 +1,5 @@
+<g id="cell-ffn" data-z="3" transform="translate(230,470)">
+<rect x="0" y="0" width="140" height="45" rx="8" fill="#FFF3E0" stroke="#E65100" stroke-width="1.5"/>
+<polyline points="10.0,27.5 30.0,27.5 50.0,27.5 70.0,27.5 90.0,21.5 110.0,15.5 130.0,9.5" fill="none" stroke="#E65100" stroke-width="2" opacity="0.7"/>
+<text x="70.0" y="39" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#BF360C">Feed Forward</text>
+</g>

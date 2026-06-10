@@ -1,0 +1,12 @@
+{
+  "edge_id": "e3",
+  "sources": [
+    "self_attn"
+  ],
+  "targets": [
+    "add_norm1"
+  ],
+  "advanced": {},
+  "points": [],
+  "z": 2
+}

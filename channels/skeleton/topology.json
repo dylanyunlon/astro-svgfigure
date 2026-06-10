@@ -1,0 +1,30 @@
+{
+  "id": "root",
+  "layoutOptions": {
+    "elk.algorithm": "layered",
+    "elk.direction": "DOWN",
+    "elk.spacing.nodeNode": "50",
+    "elk.edgeRouting": "ORTHOGONAL"
+  },
+  "children": [
+    {"id": "input_embed", "width": 160, "height": 50, "labels": [{"text": "Input Embedding"}]},
+    {"id": "pos_encode", "width": 160, "height": 50, "labels": [{"text": "Positional Encoding"}]},
+    {"id": "self_attn", "width": 160, "height": 50, "labels": [{"text": "Multi-Head Attention"}]},
+    {"id": "add_norm1", "width": 140, "height": 40, "labels": [{"text": "Add and Norm"}]},
+    {"id": "ffn", "width": 140, "height": 45, "labels": [{"text": "Feed Forward"}]},
+    {"id": "add_norm2", "width": 140, "height": 40, "labels": [{"text": "Add and Norm"}]},
+    {"id": "output", "width": 160, "height": 50, "labels": [{"text": "Output"}]}
+  ],
+  "edges": [
+    {"id": "e1", "sources": ["input_embed"], "targets": ["pos_encode"]},
+    {"id": "e2", "sources": ["pos_encode"], "targets": ["self_attn"]},
+    {"id": "e3", "sources": ["self_attn"], "targets": ["add_norm1"]},
+    {"id": "e4", "sources": ["add_norm1"], "targets": ["ffn"]},
+    {"id": "e5", "sources": ["ffn"], "targets": ["add_norm2"]},
+    {"id": "e6", "sources": ["add_norm2"], "targets": ["output"]},
+    {"id": "skip1", "sources": ["pos_encode"], "targets": ["add_norm1"],
+      "advanced": {"semanticType": "skip_connection", "routing": "SPLINES", "curvature": 0.6}},
+    {"id": "skip2", "sources": ["add_norm1"], "targets": ["add_norm2"],
+      "advanced": {"semanticType": "skip_connection", "routing": "SPLINES", "curvature": 0.6}}
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "cell_id": "ffn",
+  "label": "Feed Forward",
+  "species": "cil-bolt",
+  "gene_traits": {
+    "primary_shape": "zigzag",
+    "pattern": "gradient",
+    "line_style": "angular",
+    "family": "activation"
+  },
+  "initial_bbox": {
+    "x": 230,
+    "y": 470,
+    "w": 140,
+    "h": 45,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "e4"
+    ],
+    "outgoing_edges": [
+      "e5"
+    ]
+  }
+}

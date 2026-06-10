@@ -1,0 +1,10 @@
+<g id="cell-add_norm2" data-z="5" transform="translate(230,575)">
+<rect x="0" y="0" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
+<line x1="60.0" y1="20.0" x2="80.0" y2="20.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
+<line x1="70.0" y1="10.0" x2="70.0" y2="30.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
+<line x1="58.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="82.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="58.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<line x1="82.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
+<text x="70.0" y="34" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#B71C1C">Add and Norm</text>
+</g>

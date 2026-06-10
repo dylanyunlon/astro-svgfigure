@@ -1,0 +1,12 @@
+{
+  "edge_id": "e5",
+  "sources": [
+    "ffn"
+  ],
+  "targets": [
+    "add_norm2"
+  ],
+  "advanced": {},
+  "points": [],
+  "z": 2
+}

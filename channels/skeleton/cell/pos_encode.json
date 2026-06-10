@@ -1,0 +1,27 @@
+{
+  "cell_id": "pos_encode",
+  "label": "Positional Encoding",
+  "species": "cil-vector",
+  "gene_traits": {
+    "primary_shape": "arrow_vec",
+    "pattern": "magnitude",
+    "line_style": "weighted",
+    "family": "embedding"
+  },
+  "initial_bbox": {
+    "x": 220,
+    "y": 150,
+    "w": 160,
+    "h": 50,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [
+      "e1"
+    ],
+    "outgoing_edges": [
+      "e2",
+      "skip1"
+    ]
+  }
+}
