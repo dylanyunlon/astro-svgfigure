@@ -632,6 +632,158 @@ def compute_capsule_shadow_params(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] PostProcessAmbientOcclusion → Python port  (commit 33e27b7)
+#
+# Ported from FAstroConstraintAO / PostProcessAmbientOcclusion.cpp:
+#   upstream/unreal-renderer/CompositionLighting/PostProcessAmbientOcclusion.cpp
+#
+# FAstroConstraintAOParams (→ _CROWDING_THRESHOLD, _ATTENUATION_CURVE):
+#   KernelRadius        — analogue: bbox sampling radius (not needed in 2-D;
+#                         every overlapping neighbour is one kernel "sample")
+#   CrowdingThreshold   — fraction of occluded samples above which crowding
+#                         attenuation begins.  Default 0.5 (AmbientOcclusionMipBlend)
+#   AttenuationCurve    — power of the suppression curve.  Default 2.0
+#                         (AmbientOcclusionPower).
+#
+# FAstroConstraintAO::ComputeConstraintWeight (→ compute_crowding_opacity()):
+#   Pass 1 — raw overlap accumulation
+#       Each neighbour bbox that overlaps the receiver cell in 2-D contributes
+#       one "occluded sample".  raw_occlusion = occluded_count / total_neighbours.
+#       (SSAO analogue: hemisphere depth samples above shaded surface.)
+#
+#   Pass 2 — crowding attenuation
+#       When occluded_fraction > CrowdingThreshold a suppression multiplier is
+#       computed (mirrors AstroCrowdingScale packed into Value[4].w):
+#           CrowdingExcess  = clamp((f − threshold) / (1 − threshold), 0, 1)
+#           AttenuationMult = 1 − CrowdingExcess ** AttenuationCurve
+#
+#   Pass 3 — mutual-constraint cancellation
+#       Geometric-mean blend: sqrt(raw*(1−raw))*2 × AttenuationMult
+#       lerped with raw value using occluded_fraction as BlendAlpha —
+#       same formula as FAstroConstraintAO::ComputeConstraintWeight Pass 3.
+#
+# SVG output:
+#   constraint_opacity = 1 − final_ao_weight  (high AO → lower cell opacity)
+#   Written as opacity="…" attribute on the outermost <g> of the cell.
+#   Mirrors AstroCrowdingScale written to ScreenSpaceAOParams[4].w which the
+#   USF kernel loop reads to modulate the per-pixel AO contribution.
+#
+# 2-D channel adaptation:
+#   SSAO kernel sample  → neighbour bbox overlap test (O(n) pass over all_bboxes)
+#   HorizonAngle weight → bbox intersection-area / self-area ratio
+#   ProximityFade       → Z-layer distance fade (same _CAPSULE_MAX_DIST guard)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Fraction of overlapping neighbours above which crowding attenuation starts.
+# Mirrors FAstroConstraintAOParams::CrowdingThreshold (AmbientOcclusionMipBlend).
+_CROWDING_THRESHOLD: float = 0.5
+
+# Power of the crowding-suppression curve.
+# Mirrors FAstroConstraintAOParams::AttenuationCurve (AmbientOcclusionPower).
+_ATTENUATION_CURVE: float = 2.0
+
+# Minimum cell fill opacity floor — even a maximally crowded cell stays legible.
+_CROWDING_OPACITY_FLOOR: float = 0.35
+
+
+def compute_crowding_opacity(cell_id: str, bbox: dict, all_bboxes: dict) -> float:
+    """
+    Python equivalent of FAstroConstraintAO::ComputeConstraintWeight().
+
+    Samples the neighbour bbox set (= SSAO kernel), computes the crowding
+    fraction, applies 3-pass constraint-space attenuation, and returns a
+    fill-opacity value in [_CROWDING_OPACITY_FLOOR, 1.0].
+
+    High density (many overlapping neighbours) → low opacity (cell recedes).
+    Low density (sparse layout) → opacity near 1.0 (cell fully visible).
+
+    @param cell_id    ID of the cell being rendered (excluded from its own kernel)
+    @param bbox       Receiver cell bbox dict  {x, y, w, h, z}
+    @param all_bboxes Dict of all sibling bbox dicts keyed by cell_id
+    @return           fill opacity in [_CROWDING_OPACITY_FLOOR, 1.0]
+    """
+    receiver_z = float(bbox.get("z", 3))
+    rx0 = bbox["x"]
+    ry0 = bbox["y"]
+    rx1 = rx0 + bbox["w"]
+    ry1 = ry0 + bbox["h"]
+    self_area = max(bbox["w"] * bbox["h"], 1.0)
+
+    # ── Pass 1: neighbour bbox sampling (SSAO kernel sample loop) ────────────
+    # Each neighbour that overlaps the receiver in 2-D is one "occluded sample".
+    # We weight by intersection area / self_area (≈ ProximityFade × HorizonWeight
+    # in the C++ hemisphere kernel).
+    raw_occlusion_sum: float = 0.0
+    occluded_count: int = 0
+    total_samples: int = 0
+
+    for other_id, other_bbox in all_bboxes.items():
+        if other_id == cell_id:
+            continue
+
+        total_samples += 1
+
+        other_z = float(other_bbox.get("z", 3))
+        # Z-proximity fade: distant layers contribute diminishing pressure.
+        # Mirrors ProximityFade = clamp(DepthDelta / KernelRadius, 0, 1).
+        z_dist = abs(other_z - receiver_z)
+        z_fade = max(0.0, 1.0 - z_dist / max(_CAPSULE_MAX_DIST, 1e-6))
+        if z_fade <= 0.0:
+            continue
+
+        ox0 = other_bbox["x"]
+        oy0 = other_bbox["y"]
+        ox1 = ox0 + other_bbox["w"]
+        oy1 = oy0 + other_bbox["h"]
+
+        # 2-D AABB overlap test (horizon-angle analogue: does sample sit "above"?)
+        inter_w = max(0.0, min(rx1, ox1) - max(rx0, ox0))
+        inter_h = max(0.0, min(ry1, oy1) - max(ry0, oy0))
+        if inter_w <= 0.0 or inter_h <= 0.0:
+            continue  # sample not occluding — below horizon in SSAO terms
+
+        # Intersection area / self area → HorizonWeight × ProximityFade analogue
+        horizon_weight = min(1.0, (inter_w * inter_h) / self_area)
+        raw_occlusion_sum += horizon_weight * z_fade
+        occluded_count += 1
+
+    if total_samples == 0:
+        return 1.0  # no neighbours — fully lit, no crowding
+
+    normalised_occlusion = raw_occlusion_sum / float(total_samples)
+    occluded_fraction = float(occluded_count) / float(total_samples)
+
+    # ── Pass 2: crowding attenuation ─────────────────────────────────────────
+    # Mirrors Value[4].w = AstroCrowdingScale = 1/(threshold*curve).
+    #   CrowdingExcess  = clamp((f − threshold) / (1 − threshold), 0, 1)
+    #   AttenuationMult = 1 − CrowdingExcess ** AttenuationCurve
+    attenuation_mult = 1.0
+    if occluded_fraction > _CROWDING_THRESHOLD:
+        threshold_range = max(1.0 - _CROWDING_THRESHOLD, 1e-6)
+        crowding_excess = min(1.0, (occluded_fraction - _CROWDING_THRESHOLD)
+                              / threshold_range)
+        attenuation_mult = 1.0 - (crowding_excess ** _ATTENUATION_CURVE)
+
+    # ── Pass 3: mutual-constraint cancellation ────────────────────────────────
+    # Geometric mean restores [0,0.5]→[0,1]; scaled by attenuation_mult.
+    # BlendAlpha = saturate(occluded_fraction / threshold) — lerps between raw
+    # SSAO (sparse) and constraint-space AO (crowded).
+    constraint_occlusion = (
+        math.sqrt(max(0.0, normalised_occlusion * (1.0 - normalised_occlusion)))
+        * 2.0
+        * attenuation_mult
+    )
+    blend_alpha = min(1.0, occluded_fraction
+                      / max(_CROWDING_THRESHOLD, 1e-6))
+    final_ao = (1.0 - blend_alpha) * normalised_occlusion \
+               + blend_alpha * constraint_occlusion
+
+    # AO weight → fill opacity (invert: high AO = lower opacity)
+    fill_opacity = max(_CROWDING_OPACITY_FLOOR, 1.0 - final_ao)
+    return round(fill_opacity, 4)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # [ASTRO-CELL] PostProcessDeferredDecals → Python port
 #
 # Ported from commit 80cc569:
@@ -1222,6 +1374,15 @@ def proc(cell_id: str):
     shadow_blur    = sp["blur"]
     shadow_opacity = sp["opacity"]
 
+    # ── [ASTRO-CELL] PostProcessAO — crowding attenuation (commit 33e27b7) ────
+    # FAstroConstraintAO::ComputeConstraintWeight() port.
+    # Reads neighbour bboxes as the SSAO kernel; computes 3-pass constraint-
+    # space AO weight; maps to fill opacity on the cell's outermost <g>.
+    # High neighbour density → lower opacity (crowd suppresses the cell's
+    # visual weight, preventing the SVG equivalent of SSAO black halos in
+    # packed cell regions).
+    crowding_opacity = compute_crowding_opacity(cell_id, bbox, all_bboxes)
+
     # SVG <filter> definition with feDropShadow
     # stdDeviation  ← blur radius (capsule radius analogue)
     # dx/dy         ← offset driven by z-depth
@@ -1237,10 +1398,16 @@ def proc(cell_id: str):
         f'</defs>'
     )
 
-    # Wrap in positioned <g> with z-layer data attribute and shadow filter ref
+    # Wrap in positioned <g> with z-layer data attribute, shadow filter ref,
+    # and crowding-attenuation opacity (PostProcessAO port, commit 33e27b7).
+    # opacity attr mirrors AstroCrowdingScale → per-pixel AO weight in USF;
+    # here it modulates the entire cell group so dense regions visually recede.
     full_svg = (
         f'{shadow_filter_def}\n'
+        f'<!-- [ASTRO-CELL] PostProcessAO crowding_opacity={crowding_opacity:.4f} '
+        f'(FAstroConstraintAO::ComputeConstraintWeight port) -->\n'
         f'<g id="cell-{cell_id}" data-z="{bbox["z"]}" '
+        f'opacity="{crowding_opacity:.4f}" '
         f'filter="url(#shadow-{cell_id})" '
         f'transform="translate({bbox["x"]},{bbox["y"]})">\n'
         f'{svg_content}\n'
@@ -1301,7 +1468,8 @@ def proc(cell_id: str):
         register_cell_in_z_layer(cell_id, published_bbox, species, current_epoch)
 
     print(f"[Cell {cell_id}] species={species} bbox=({bbox['x']},{bbox['y']},{bbox['w']},{bbox['h']}) z={bbox['z']} "
-          f"shadow(dx={shadow_dx},dy={shadow_dy},blur={shadow_blur},opacity={shadow_opacity})")
+          f"shadow(dx={shadow_dx},dy={shadow_dy},blur={shadow_blur},opacity={shadow_opacity}) "
+          f"crowding_opacity={crowding_opacity}")
     return full_svg
 
 
