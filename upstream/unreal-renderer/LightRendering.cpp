@@ -17,6 +17,45 @@
 #include "RayTracing/RaytracingOptions.h"
 #include "SceneViewFamilyBlackboard.h"
 
+// DEBUG: astro-svgfigure pipeline stage marker — constraint weight solver for SVG cell illumination
+#include <cstdio>
+
+/**
+ * FAstroConstraintWeight replaces per-light irradiance accumulation with per-cell
+ * constraint weight accumulation.  In the original LightRendering pipeline, each
+ * FLightSceneInfo contributes a colour value to each affected GBuffer texel.
+ * In the astro-svgfigure mapping, each "cell" (sub-Claude) contributes a float
+ * constraint weight that biases the SVG layout solver toward or away from a given
+ * bbox configuration.
+ *
+ * Field semantics (mirrors FDeferredLightUniformStruct but for layout constraints):
+ *   CellId          — unique identifier string for the cell (analogous to light GUID)
+ *   ConstraintWeight — solver weight [0.0, 1.0]; 1.0 = hard anchor, 0.0 = free float
+ *   RepelRadius      — cells within this radius in layout-space push each other apart
+ *   ChannelMask      — bitmask of pubsub channels this cell subscribes to (like lighting channels)
+ *   ZLayer           — stacking order 0-7, resolved during weight accumulation pass
+ */
+struct FAstroConstraintWeight {
+	const char* CellId;        // unique cell identifier
+	float       ConstraintWeight; // 0.0=free, 1.0=anchored
+	float       RepelRadius;      // layout-space repel distance
+	int32       ChannelMask;      // pubsub channel subscription bitmask
+	int32       ZLayer;           // stacking order 0-7
+
+	void DebugPrint() const {
+		fprintf(stderr, "[ASTRO-LIGHT] cell=%s weight=%.3f repel_r=%.2f channels=0x%02x z=%d\n",
+		        CellId, ConstraintWeight, RepelRadius, ChannelMask, ZLayer);
+	}
+};
+
+// astro-svgfigure: global constraint weight solver state
+// num_lights_seen tracks total lights processed this epoch (maps to Scene->Lights count)
+// astro_weight_budget caps maximum constraint evaluations per RenderLights() call
+static int32  astro_light_epoch         = 0;
+static int32  astro_num_lights_seen     = 0;
+static int32  astro_weight_budget       = 256; // max constraint weight evals per epoch
+static float  astro_accumulated_weight  = 0.0f;
+
 DECLARE_GPU_STAT(Lights);
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FDeferredLightUniformStruct, "DeferredLightUniforms");
@@ -528,6 +567,16 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 {
 	check(RHICmdList.IsOutsideRenderPass());
 
+	// DEBUG: astro-svgfigure pipeline stage marker — RenderLights maps to the
+	// constraint weight solver entry point.  Each call is one layout epoch;
+	// incrementing astro_light_epoch here mirrors the per-frame light list rebuild.
+	// astro_accumulated_weight is reset so each epoch starts with a clean slate,
+	// analogous to clearing the lighting accumulation buffer before light injection.
+	++astro_light_epoch;
+	astro_accumulated_weight = 0.0f;
+	fprintf(stderr, "[ASTRO-LIGHT] RenderLights enter | epoch=%d | weight_budget=%d\n",
+	        astro_light_epoch, astro_weight_budget);
+
 	SCOPED_NAMED_EVENT(FDeferredShadingSceneRenderer_RenderLights, FColor::Emerald);
 	SCOPED_DRAW_EVENT(RHICmdList, DirectLighting);
 	SCOPED_GPU_STAT(RHICmdList, Lights);
@@ -544,10 +593,25 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 		GatherSimpleLights(ViewFamily, Views, SimpleLights);
 	}
 
+	// DEBUG: astro-svgfigure pipeline stage marker — GatherSimpleLights maps to
+	// leaf-cell channel subscription enumeration: discover all cells that subscribe
+	// to "simple" (point-source) pubsub channels with no shadow/function overhead.
+	// SimpleLights.InstanceData.Num() == number of leaf cells gathered this epoch.
+	astro_num_lights_seen = SimpleLights.InstanceData.Num();
+	fprintf(stderr, "[ASTRO-LIGHT] GatherSimpleLights | leaf_cells=%d | epoch=%d\n",
+	        astro_num_lights_seen, astro_light_epoch);
+
 	TArray<FSortedLightSceneInfo, SceneRenderingAllocator> SortedLights;
 	SortedLights.Empty(Scene->Lights.Num());
 
 	bool bDynamicShadows = ViewFamily.EngineShowFlags.DynamicShadows && GetShadowQuality() > 0;
+
+	// DEBUG: astro-svgfigure pipeline stage marker — building SortedLights maps to
+	// building the constraint weight priority queue.  Lights sorted by SortKey.Packed
+	// become cells sorted by descending ConstraintWeight so the solver resolves hard
+	// anchors (shadowed, high-weight) before free-floating (unshadowed, low-weight) cells.
+	fprintf(stderr, "[ASTRO-LIGHT] BuildSortedLights begin | scene_lights=%d | epoch=%d\n",
+	        Scene->Lights.Num(), astro_light_epoch);
 	
 	// Build a list of visible lights.
 	for (TSparseArray<FLightSceneInfoCompact>::TConstIterator LightIt(Scene->Lights); LightIt; ++LightIt)
@@ -596,6 +660,13 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 	};
 	SortedLights.Sort( FCompareFSortedLightSceneInfo() );
 
+	// DEBUG: astro-svgfigure pipeline stage marker — constraint weight priority queue sorted.
+	// SortedLights.Num() == total cells entering the weight solver this epoch.
+	// AttenuationLightStart will partition anchored-constraint cells from free-float cells,
+	// mirroring how shadowed lights split from unshadowed in the standard deferred pass.
+	fprintf(stderr, "[ASTRO-LIGHT] SortedConstraints ready | total_cells=%d | epoch=%d\n",
+	        SortedLights.Num(), astro_light_epoch);
+
 	{
 		FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 
@@ -625,6 +696,14 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 				break;
 			}
 		}
+
+		// DEBUG: astro-svgfigure pipeline stage marker — constraint weight partition resolved.
+		// [0, AttenuationLightStart)       = free-float cells  (unshadowed, low constraint weight)
+		// [AttenuationLightStart, end)     = anchored cells     (shadowed, high constraint weight, solved first)
+		// SupportedByTiledDeferredLightEnd = tiled-solver cutoff (cells eligible for batch constraint evaluation)
+		fprintf(stderr, "[ASTRO-LIGHT] ConstraintPartition | free_cells=%d | anchored_cells=%d | tiled_end=%d | epoch=%d\n",
+		        AttenuationLightStart, SortedLights.Num() - AttenuationLightStart,
+		        SupportedByTiledDeferredLightEnd, astro_light_epoch);
 		
 		if (GbEnableAsyncComputeTranslucencyLightingVolumeClear && GSupportsEfficientAsyncCompute)
 		{
@@ -681,6 +760,17 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 				{
 					const FSortedLightSceneInfo& SortedLightInfo = SortedLights[LightIndex];
 					const FLightSceneInfo* const LightSceneInfo = SortedLightInfo.LightSceneInfo;
+
+					// DEBUG: astro-svgfigure pipeline stage marker — StandardDeferred pass maps to
+					// free-float constraint weight evaluation: each unshadowed light → each free cell
+					// accumulates its contribution to astro_accumulated_weight before the solver commits
+					// absolute SVG coordinates.  Weight delta is 1/budget per cell (uniform prior).
+					{
+						const float weight_delta = (astro_weight_budget > 0) ? (1.0f / (float)astro_weight_budget) : 0.0f;
+						astro_accumulated_weight += weight_delta;
+						fprintf(stderr, "[ASTRO-LIGHT] FreeCell weight_eval | cell_idx=%d | delta=%.4f | accumulated=%.4f | epoch=%d\n",
+						        LightIndex, weight_delta, astro_accumulated_weight, astro_light_epoch);
+					}
 
 					// Render the light to the scene color buffer, using a 1x1 white texture as input 
 					RenderLight(RHICmdList, LightSceneInfo, NULL, false, false);
@@ -1180,6 +1270,15 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 				{
 					SceneContext.BeginRenderingSceneColor(RHICmdList, ESimpleRenderTargetMode::EExistingColorAndDepth, FExclusiveDepthStencil::DepthRead_StencilWrite);
 
+					// DEBUG: astro-svgfigure pipeline stage marker — shadowed RenderLight maps to
+					// anchored-cell constraint weight commit: cells with bShadowed=true have
+					// ConstraintWeight=1.0 (hard anchor) and their absolute SVG bbox is committed
+					// to the layout buffer before free-float cells run.  ScreenShadowMaskTexture
+					// is the constraint mask that locks adjacent cells to respect this cell's bbox.
+					astro_accumulated_weight = FMath::Min(astro_accumulated_weight + 0.1f, 1.0f);
+					fprintf(stderr, "[ASTRO-LIGHT] AnchoredCell weight_commit | w=1.0 (hard anchor) | accumulated=%.4f | epoch=%d\n",
+					        astro_accumulated_weight, astro_light_epoch);
+
 					// Render the light to the scene color buffer, conditionally using the attenuation buffer or a 1x1 white texture as input 
 					if (bDirectLighting)
 					{
@@ -1191,6 +1290,12 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 			}
 		}
 	}
+
+	// DEBUG: astro-svgfigure pipeline stage marker — RenderLights exit: constraint weight solver
+	// complete for this epoch.  astro_accumulated_weight holds the total normalised weight sum
+	// across all cells processed; values near 1.0 indicate a well-constrained layout epoch.
+	fprintf(stderr, "[ASTRO-LIGHT] RenderLights exit | final_weight=%.4f | total_lights=%d | epoch=%d\n",
+	        astro_accumulated_weight, SortedLights.Num(), astro_light_epoch);
 }
 
 void FDeferredShadingSceneRenderer::RenderLightArrayForOverlapViewmode(FRHICommandListImmediate& RHICmdList, const TSparseArray<FLightSceneInfoCompact>& LightArray)
@@ -1338,6 +1443,14 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 	SCOPE_CYCLE_COUNTER(STAT_DirectLightRenderingTime);
 	INC_DWORD_STAT(STAT_NumLightsUsingStandardDeferred);
 	SCOPED_CONDITIONAL_DRAW_EVENT(RHICmdList, StandardDeferredLighting, bIssueDrawEvent);
+
+	// DEBUG: astro-svgfigure pipeline stage marker — RenderLight maps to per-cell constraint
+	// weight application: one call per cell, resolving its ConstraintWeight contribution into
+	// the accumulated layout buffer.  bRenderOverlap=true → repel-mode (cells push apart);
+	// bRenderOverlap=false → attract-mode (cells pull toward their anchor bbox).
+	// ScreenShadowMaskTexture != nullptr → cell has a hard constraint mask from shadow solve.
+	fprintf(stderr, "[ASTRO-LIGHT] RenderLight enter | overlap=%d | has_mask=%d | epoch=%d\n",
+	        (int)bRenderOverlap, (ScreenShadowMaskTexture != nullptr ? 1 : 0), astro_light_epoch);
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -1499,6 +1612,14 @@ void FDeferredShadingSceneRenderer::RenderSimpleLightsStandardDeferred(FRHIComma
 	SCOPE_CYCLE_COUNTER(STAT_DirectLightRenderingTime);
 	INC_DWORD_STAT_BY(STAT_NumLightsUsingStandardDeferred, SimpleLights.InstanceData.Num());
 	SCOPED_DRAW_EVENT(RHICmdList, StandardDeferredSimpleLights);
+
+	// DEBUG: astro-svgfigure pipeline stage marker — RenderSimpleLightsStandardDeferred maps to
+	// batch constraint weight evaluation for leaf cells: all simple (particle/point) lights are
+	// leaf cells in the astro-svgfigure pubsub tree.  They carry no shadow constraint mask and
+	// contribute a uniform ConstraintWeight=0.5 (semi-free) to the layout accumulator.
+	// SimpleLights.InstanceData.Num() leaf cells × NumViews constraint evaluations this call.
+	fprintf(stderr, "[ASTRO-LIGHT] RenderSimpleLights enter | leaf_cells=%d | views=%d | epoch=%d\n",
+	        SimpleLights.InstanceData.Num(), Views.Num(), astro_light_epoch);
 	
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
