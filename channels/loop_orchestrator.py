@@ -116,6 +116,143 @@ def _sweep_line_overlaps(rects_by_z):
     return pairs
 
 
+def _propagate_constraints(bboxes, force_field):
+    """
+    [ASTRO] Global Constraint Propagation via Distance Field.
+
+    Ported from FAstroGlobalConstraintPropagation::Propagate() introduced in
+    commit 7c6f675 of upstream/unreal-renderer/DistanceFieldGlobalIllumination.cpp.
+
+    The C++ version propagates GI displacement constraints across the scene using
+    the signed distance field as a conductance medium: each source cell emits a
+    constraint impulse that attenuates with SDF-measured geodesic distance to
+    every receiver, letting indirect constraints travel through geometry without
+    explicit ray marching.
+
+    Python adaptation:
+      - "World position" → bbox centre (cx, cy).
+      - "SDF value at receiver" → proxy: inverse of the receiver's accumulated
+        raw force magnitude.  A cell sitting in open space (small raw force) has
+        high free-SDF and passes signal well; a heavily-pushed cell is occluded
+        and attenuates incoming constraints.
+      - "Displacement" → (dx, dy) force components already in force_field.
+      - kMaxPropagationRadius kept proportional to the scene diagonal so the
+        algorithm scales with canvas size rather than using a hard-wired cm value.
+      - kFalloffExponent = 2.0 (unchanged from C++).
+
+    Result: for every receiver cell the function accumulates weighted displacement
+    from all source cells and blends it back into force_field, giving a global
+    "field spreading" effect that simple collision-response cannot produce.
+    """
+    if not bboxes:
+        return
+
+    _FALLOFF_EXP = 2.0
+
+    # Compute scene diagonal to get a scale-invariant propagation radius,
+    # mirroring kMaxPropagationRadius = 8000 cm in a 40 m × 40 m scene.
+    all_cx = [(b["x"] + b["w"] * 0.5) for b in bboxes.values()]
+    all_cy = [(b["y"] + b["h"] * 0.5) for b in bboxes.values()]
+    scene_w = max(all_cx) - min(all_cx) if len(all_cx) > 1 else 1.0
+    scene_h = max(all_cy) - min(all_cy) if len(all_cy) > 1 else 1.0
+    max_radius = math.sqrt(scene_w ** 2 + scene_h ** 2)
+    max_radius = max(max_radius, 1.0)   # guard against degenerate single-cell scenes
+    max_radius_sq = max_radius * max_radius
+    radius_norm = 1.0 / max_radius      # maps [0, max_radius] → [0, 1]
+
+    # Build per-cell centroid + current force snapshot (the "source" state).
+    # Snapshot before the accumulation loop so sources and receivers read from
+    # the same epoch — mirrors the C++ passing SourceCells as a const TArray.
+    cell_ids = list(bboxes.keys())
+    cx = {cid: bboxes[cid]["x"] + bboxes[cid]["w"] * 0.5 for cid in cell_ids}
+    cy = {cid: bboxes[cid]["y"] + bboxes[cid]["h"] * 0.5 for cid in cell_ids}
+
+    src_dx  = {cid: force_field[cid]["dx"] for cid in cell_ids}
+    src_dy  = {cid: force_field[cid]["dy"] for cid in cell_ids}
+    src_mag = {cid: math.sqrt(src_dx[cid] ** 2 + src_dy[cid] ** 2)
+               for cid in cell_ids}
+
+    # Receiver occlusion proxy: cells with low existing force are in "free space"
+    # (occlusion_conductance → 1); cells already heavily pushed are "embedded in
+    # geometry" (occlusion_conductance → 0).  Max raw force across all cells
+    # provides the normalising denominator, analogous to AOParams.ObjectMaxOcclusionDistance.
+    max_force = max(src_mag.values()) if src_mag else 0.0
+    _KINDA_SMALL = 1e-6
+
+    def _occlusion_conductance(recv_id):
+        # High existing force → occluded → low conductance (signal is blocked).
+        # Low existing force → free space → high conductance (signal passes through).
+        # Clamp to [0, 1].
+        raw = src_mag[recv_id] / max(max_force, _KINDA_SMALL)
+        return max(0.0, min(1.0, 1.0 - raw))
+
+    # Core propagation loop — O(N²) over cells, same asymptotic class as the
+    # C++ TArray<FCellConstraint> double loop; acceptable for the sub-100-cell
+    # scenes this orchestrator handles.
+    accumulated_dx = {cid: 0.0 for cid in cell_ids}
+    accumulated_dy = {cid: 0.0 for cid in cell_ids}
+
+    for recv_id in cell_ids:
+        rx, ry = cx[recv_id], cy[recv_id]
+        occ_cond = _occlusion_conductance(recv_id)
+
+        total_weight  = 0.0
+        acc_dx        = 0.0
+        acc_dy        = 0.0
+
+        for src_id in cell_ids:
+            if src_id == recv_id:
+                continue
+
+            # Vector from receiver to source (matches C++ Delta computation).
+            ddx = rx - cx[src_id]
+            ddy = ry - cy[src_id]
+            dist_sq = ddx * ddx + ddy * ddy
+
+            if dist_sq > max_radius_sq:
+                # Beyond propagation radius — cull, same as the C++ continue.
+                continue
+
+            dist = math.sqrt(dist_sq)
+            norm_dist = dist * radius_norm                      # ∈ [0, 1]
+
+            # Distance-based conductance: (1 − d̂)^k, kFalloffExponent = 2.
+            # Decays quadratically: cells far apart share little constraint energy.
+            dist_cond = (1.0 - norm_dist) ** _FALLOFF_EXP
+
+            # Combined weight = distance conductance × occlusion conductance
+            # × source weight (source force magnitude as proxy for source strength).
+            combined = dist_cond * occ_cond * src_mag[src_id]
+
+            acc_dx      += src_dx[src_id] * combined
+            acc_dy      += src_dy[src_id] * combined
+            total_weight += combined
+
+        # Normalise by total weight so more sources don't artificially amplify
+        # the result — direct port of the TotalWeight normalisation in C++.
+        if total_weight > _KINDA_SMALL:
+            accumulated_dx[recv_id] = acc_dx / total_weight
+            accumulated_dy[recv_id] = acc_dy / total_weight
+
+    # Blend propagated displacement back into force_field.
+    # Using a 0.5 blend factor so constraint propagation supplements — not
+    # replaces — the direct collision response already in force_field.
+    _BLEND = 0.5
+    for cid in cell_ids:
+        force_field[cid]["dx"] += accumulated_dx[cid] * _BLEND
+        force_field[cid]["dy"] += accumulated_dy[cid] * _BLEND
+
+    non_trivial = sum(
+        1 for cid in cell_ids
+        if abs(accumulated_dx[cid]) > _KINDA_SMALL or abs(accumulated_dy[cid]) > _KINDA_SMALL
+    )
+    print(
+        f"[DistanceFieldGI] Constraint propagation complete: "
+        f"{non_trivial}/{len(cell_ids)} cells received non-zero influence "
+        f"(max_radius={max_radius:.1f}px, falloff_exp={_FALLOFF_EXP})"
+    )
+
+
 def physics_engine():
     """
     Physics Engine organ — reads all cell/*/bbox.json, detects 3D collisions,
@@ -124,6 +261,10 @@ def physics_engine():
     Collision detection replaced with FAstroCellSweepLine sweep-line algorithm
     ported from commit 0b4b199 of upstream/unreal-renderer/SceneSoftwareOcclusion.cpp.
     Complexity: O((N+K) log N) vs the previous O(N²) brute-force double loop.
+
+    After local collision response, global constraint propagation via distance
+    field (_propagate_constraints) is applied — ported from commit 7c6f675 of
+    upstream/unreal-renderer/DistanceFieldGlobalIllumination.cpp.
 
     Only same-z cells can collide. Different z = no collision (preserved).
     """
@@ -176,6 +317,13 @@ def physics_engine():
             else:
                 force_field[cell_a]["dy"] += push
                 force_field[cell_b]["dy"] -= push
+
+    # --- 4. Global constraint propagation via distance field --------------------
+    # Ported from FAstroGlobalConstraintPropagation::Propagate() (commit 7c6f675).
+    # Spreads accumulated collision forces across the scene using distance-field
+    # conductance so that constraint energy originating at one cell can influence
+    # geometrically distant cells — a capability absent from pure collision response.
+    _propagate_constraints(bboxes, force_field)
 
     write_channel("physics/force_field.json", force_field)
     write_channel("physics/collision.json", {"collisions": collisions, "count": len(collisions)})
