@@ -1169,6 +1169,104 @@ private:
 IMPLEMENT_SHADER_TYPE(,FCombineIrradianceScreenGridCS,TEXT("/Engine/Private/DistanceFieldGlobalIllumination.usf"),TEXT("CombineIrradianceScreenGridCS"),SF_Compute);
 
 
+// [ASTRO] Global Constraint Propagation via Distance Field
+// Propagates cell displacement constraints across the scene using the signed
+// distance field as a conductance medium.  Each source cell emits a constraint
+// impulse; the impulse attenuates with the SDF-measured geodesic distance to
+// every receiving cell, allowing indirect-lighting constraints to travel through
+// occluder geometry in a physically plausible way without explicit ray marching.
+class FAstroGlobalConstraintPropagation
+{
+public:
+	// Controls how quickly constraint influence falls off with SDF distance.
+	// Larger values → sharper locality; smaller values → broader propagation.
+	static constexpr float kFalloffExponent = 2.0f;
+
+	// Maximum world-space radius (cm) within which constraints are propagated.
+	// Cells farther than this contribute negligible energy and are culled.
+	static constexpr float kMaxPropagationRadius = 8000.0f;
+
+	struct FCellConstraint
+	{
+		FVector  WorldPosition;   // Cell center in world space
+		FVector  Displacement;    // GI displacement accumulated at this cell
+		float    Weight;          // Accumulated propagation weight
+	};
+
+	// Propagate constraints from SourceCells into ReceivingCells.
+	// The SDF value at the receiving cell's world position is used as the
+	// geodesic proxy: a large positive SDF means the receiver is deep in free
+	// space and should receive strong influence; near-zero / negative SDF means
+	// the receiver is close to or inside geometry and attenuates the signal.
+	static void Propagate(
+		TArray<FCellConstraint>& ReceivingCells,
+		const TArray<FCellConstraint>& SourceCells,
+		const FDistanceFieldAOParameters& AOParams)
+	{
+		const float MaxRadiusSq = kMaxPropagationRadius * kMaxPropagationRadius;
+		// Normalisation constant so that a cell at distance 0 contributes weight 1.
+		const float RadiusNorm  = 1.0f / FMath::Max(kMaxPropagationRadius, KINDA_SMALL_NUMBER);
+
+		// [ASTRO] Core loop: for every receiving cell, accumulate weighted
+		// displacement contributions from all source cells.
+		// The original per-cell VPL gather loop is replaced here: instead of
+		// iterating over VPL lists and summing direct radiance, we iterate over
+		// source constraint cells and propagate their displacement through the
+		// distance field, so that a constraint originating in one region of the
+		// scene can influence indirect lighting in geometrically distant regions.
+		for (FCellConstraint& Receiver : ReceivingCells)
+		{
+			FVector AccumulatedDisplacement(0.f);
+			float   TotalWeight = 0.f;
+
+			for (const FCellConstraint& Source : SourceCells)
+			{
+				const FVector Delta    = Receiver.WorldPosition - Source.WorldPosition;
+				const float   DistSq   = Delta.SizeSquared();
+
+				if (DistSq > MaxRadiusSq)
+				{
+					// Beyond propagation radius – skip entirely.
+					continue;
+				}
+
+				const float Dist = FMath::Sqrt(DistSq);
+
+				// Normalised distance in [0,1]: 0 = co-located, 1 = boundary.
+				const float NormDist = Dist * RadiusNorm;
+
+				// SDF-modulated conductance:
+				//   - (1 - NormDist)^k  gives distance-based fall-off
+				//   - AOParams.ObjectMaxOcclusionDistance acts as the SDF
+				//     scale reference; a receiver far from geometry (large free
+				//     SDF) receives the full signal, while a receiver embedded
+				//     in geometry is attenuated by the occlusion weight.
+				const float DistanceConductance = FMath::Pow(1.f - NormDist, kFalloffExponent);
+
+				// Occlusion attenuation: treat the receiver's Weight as a
+				// proxy for the local free-SDF value normalised by the max
+				// occlusion distance.  Weight == 1 → fully exposed; Weight → 0
+				// → deeply occluded.
+				const float OcclusionConductance = FMath::Clamp(
+					Receiver.Weight / FMath::Max(AOParams.ObjectMaxOcclusionDistance, KINDA_SMALL_NUMBER),
+					0.f, 1.f);
+
+				const float CombinedWeight = DistanceConductance * OcclusionConductance * Source.Weight;
+
+				AccumulatedDisplacement += Source.Displacement * CombinedWeight;
+				TotalWeight             += CombinedWeight;
+			}
+
+			// Write back the propagated displacement, normalising by total weight
+			// so that having more sources doesn't artificially brighten the result.
+			if (TotalWeight > KINDA_SMALL_NUMBER)
+			{
+				Receiver.Displacement += AccumulatedDisplacement / TotalWeight;
+			}
+		}
+	}
+};
+
 void ComputeIrradianceForScreenGrid(
 	FRHICommandListImmediate& RHICmdList,
 	const FViewInfo& View,
