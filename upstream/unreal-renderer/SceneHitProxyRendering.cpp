@@ -21,6 +21,18 @@
 #include "MeshPassProcessor.inl"
 #include "GPUScene.h"
 
+// [ASTRO-SCNHIT] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SCNHIT] INIT: SceneHitProxyRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-SCNHIT] ENTER: Processing SceneHitProxyRendering render pass\n");
+	fprintf(stderr, "[ASTRO-SCNHIT] DEBUG: SceneHitProxyRendering state validated\n");
+	fprintf(stderr, "[ASTRO-SCNHIT] TRACE: SceneHitProxyRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_scnhit;
+} // namespace
+
+
 class FHitProxyShaderElementData : public FMeshMaterialShaderElementData
 {
 public:

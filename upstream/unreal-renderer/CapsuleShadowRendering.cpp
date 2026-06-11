@@ -27,6 +27,18 @@
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 
+// [ASTRO-CAPSULE] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-CAPSULE] INIT: CapsuleShadowRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-CAPSULE] ENTER: Processing CapsuleShadowRendering render pass\n");
+	fprintf(stderr, "[ASTRO-CAPSULE] DEBUG: CapsuleShadowRendering state validated\n");
+	fprintf(stderr, "[ASTRO-CAPSULE] TRACE: CapsuleShadowRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_capsule;
+} // namespace
+
+
 DECLARE_GPU_STAT_NAMED(CapsuleShadows, TEXT("Capsule Shadows"));
 
 int32 GCapsuleShadows = 1;

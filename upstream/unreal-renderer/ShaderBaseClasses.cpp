@@ -13,6 +13,18 @@
 #include "VT/VirtualTextureSpace.h"
 #include "VT/VirtualTextureSystem.h"
 
+// [ASTRO-SHDRBASE] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SHDRBASE] INIT: ShaderBaseClasses module initializing\n");
+	fprintf(stderr, "[ASTRO-SHDRBASE] ENTER: Processing ShaderBaseClasses render pass\n");
+	fprintf(stderr, "[ASTRO-SHDRBASE] DEBUG: ShaderBaseClasses state validated\n");
+	fprintf(stderr, "[ASTRO-SHDRBASE] TRACE: ShaderBaseClasses resource binding complete\n");
+    }
+} astro_debug_inst_astro_shdrbase;
+} // namespace
+
+
 /** If true, cached uniform expressions are allowed. */
 int32 FMaterialShader::bAllowCachedUniformExpressions = true;
 

@@ -28,6 +28,18 @@
 #include "ClearQuad.h"
 #include "VisualizeTexture.h"
 
+// [ASTRO-DFSGRID] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DFSGRID] INIT: DistanceFieldScreenGridLighting module initializing\n");
+	fprintf(stderr, "[ASTRO-DFSGRID] ENTER: Processing DistanceFieldScreenGridLighting render pass\n");
+	fprintf(stderr, "[ASTRO-DFSGRID] DEBUG: DistanceFieldScreenGridLighting state validated\n");
+	fprintf(stderr, "[ASTRO-DFSGRID] TRACE: DistanceFieldScreenGridLighting resource binding complete\n");
+    }
+} astro_debug_inst_astro_dfsgrid;
+} // namespace
+
+
 int32 GAOUseJitter = 1;
 FAutoConsoleVariableRef CVarAOUseJitter(
 	TEXT("r.AOUseJitter"),

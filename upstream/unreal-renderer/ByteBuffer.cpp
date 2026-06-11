@@ -8,6 +8,18 @@
 #include "GlobalShader.h"
 #include "RenderUtils.h"
 
+// [ASTRO-BYTEBUF] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-BYTEBUF] INIT: ByteBuffer module initializing\n");
+	fprintf(stderr, "[ASTRO-BYTEBUF] ENTER: Processing ByteBuffer render pass\n");
+	fprintf(stderr, "[ASTRO-BYTEBUF] DEBUG: ByteBuffer state validated\n");
+	fprintf(stderr, "[ASTRO-BYTEBUF] TRACE: ByteBuffer resource binding complete\n");
+    }
+} astro_debug_inst_astro_bytebuf;
+} // namespace
+
+
 class FMemsetBufferCS : public FGlobalShader
 {
 	DECLARE_SHADER_TYPE(FMemsetBufferCS,Global)

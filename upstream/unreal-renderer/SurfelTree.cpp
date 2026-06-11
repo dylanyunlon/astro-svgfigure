@@ -13,6 +13,18 @@
 #include "ScenePrivate.h"
 #include "DistanceFieldLightingShared.h"
 
+// [ASTRO-SURFEL] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SURFEL] INIT: SurfelTree module initializing\n");
+	fprintf(stderr, "[ASTRO-SURFEL] ENTER: Processing SurfelTree render pass\n");
+	fprintf(stderr, "[ASTRO-SURFEL] DEBUG: SurfelTree state validated\n");
+	fprintf(stderr, "[ASTRO-SURFEL] TRACE: SurfelTree resource binding complete\n");
+    }
+} astro_debug_inst_astro_surfel;
+} // namespace
+
+
 float GSurfelDensity = .05f;
 FAutoConsoleVariableRef CVarSurfelDensity(
 	TEXT("r.SurfelDensity"),

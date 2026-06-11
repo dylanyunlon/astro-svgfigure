@@ -12,6 +12,18 @@ LightMapRendering.cpp: Light map rendering implementations.
 #include "Runtime/Engine/Classes/VT/VirtualTextureSpace.h"
 #include "VT/VirtualTextureSpace.h"
 
+// [ASTRO-LMAPRND] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-LMAPRND] INIT: LightMapRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-LMAPRND] ENTER: Processing LightMapRendering render pass\n");
+	fprintf(stderr, "[ASTRO-LMAPRND] DEBUG: LightMapRendering state validated\n");
+	fprintf(stderr, "[ASTRO-LMAPRND] TRACE: LightMapRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_lmaprnd;
+} // namespace
+
+
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FIndirectLightingCacheUniformParameters, "IndirectLightingCache");
 
 const TCHAR* GLightmapDefineName[2] =

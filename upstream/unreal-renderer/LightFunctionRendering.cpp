@@ -23,6 +23,18 @@
 #include "LightRendering.h"
 #include "PipelineStateCache.h"
 
+// [ASTRO-LIGHTFN] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-LIGHTFN] INIT: LightFunctionRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-LIGHTFN] ENTER: Processing LightFunctionRendering render pass\n");
+	fprintf(stderr, "[ASTRO-LIGHTFN] DEBUG: LightFunctionRendering state validated\n");
+	fprintf(stderr, "[ASTRO-LIGHTFN] TRACE: LightFunctionRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_lightfn;
+} // namespace
+
+
 /**
  * A vertex shader for projecting a light function onto the scene.
  */

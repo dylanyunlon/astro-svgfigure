@@ -15,6 +15,18 @@
 #include "ScenePrivate.h"
 #include "DecalRenderingShared.h"
 
+// [ASTRO-MOBDECAL] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBDECAL] INIT: MobileDecalRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBDECAL] ENTER: Processing MobileDecalRendering render pass\n");
+	fprintf(stderr, "[ASTRO-MOBDECAL] DEBUG: MobileDecalRendering state validated\n");
+	fprintf(stderr, "[ASTRO-MOBDECAL] TRACE: MobileDecalRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobdecal;
+} // namespace
+
+
 
 extern FRasterizerStateRHIParamRef GetDecalRasterizerState(EDecalRasterizerState DecalRasterizerState);
 

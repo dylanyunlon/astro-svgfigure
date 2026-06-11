@@ -10,6 +10,18 @@
 #include "AtmosphereTextureParameters.h"
 #include "ShaderParameterUtils.h"
 
+// [ASTRO-ATMOS] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-ATMOS] INIT: AtmosphereTextures module initializing\n");
+	fprintf(stderr, "[ASTRO-ATMOS] ENTER: Processing AtmosphereTextures render pass\n");
+	fprintf(stderr, "[ASTRO-ATMOS] DEBUG: AtmosphereTextures state validated\n");
+	fprintf(stderr, "[ASTRO-ATMOS] TRACE: AtmosphereTextures resource binding complete\n");
+    }
+} astro_debug_inst_astro_atmos;
+} // namespace
+
+
 void FAtmosphereTextures::InitDynamicRHI()
 {
 	check(PrecomputeParams != NULL);

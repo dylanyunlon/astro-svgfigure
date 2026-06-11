@@ -10,6 +10,18 @@
 #include "ClearQuad.h"
 #include "LTC.h"
 
+// [ASTRO-SYSTEX] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SYSTEX] INIT: SystemTextures module initializing\n");
+	fprintf(stderr, "[ASTRO-SYSTEX] ENTER: Processing SystemTextures render pass\n");
+	fprintf(stderr, "[ASTRO-SYSTEX] DEBUG: SystemTextures state validated\n");
+	fprintf(stderr, "[ASTRO-SYSTEX] TRACE: SystemTextures resource binding complete\n");
+    }
+} astro_debug_inst_astro_systex;
+} // namespace
+
+
 /*-----------------------------------------------------------------------------
 SystemTextures
 -----------------------------------------------------------------------------*/

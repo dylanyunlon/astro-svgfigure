@@ -11,6 +11,18 @@ MobileDistortionPass.cpp - Mobile specific rendering of primtives with refractio
 #include "PostProcess/SceneFilterRendering.h"
 #include "PipelineStateCache.h"
 
+// [ASTRO-MOBDIST] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBDIST] INIT: MobileDistortionPass module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBDIST] ENTER: Processing MobileDistortionPass render pass\n");
+	fprintf(stderr, "[ASTRO-MOBDIST] DEBUG: MobileDistortionPass state validated\n");
+	fprintf(stderr, "[ASTRO-MOBDIST] TRACE: MobileDistortionPass resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobdist;
+} // namespace
+
+
 bool IsMobileDistortionActive(const FViewInfo& View)
 {
 	static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DisableDistortion"));

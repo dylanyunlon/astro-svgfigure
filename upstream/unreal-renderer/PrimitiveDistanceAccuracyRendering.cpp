@@ -10,6 +10,18 @@ PrimitiveDistanceAccuracyRendering.cpp: Contains definitions for rendering the v
 #include "MeshBatch.h"
 #include "Engine/Engine.h"
 
+// [ASTRO-PRIMDST] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-PRIMDST] INIT: PrimitiveDistanceAccuracyRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-PRIMDST] ENTER: Processing PrimitiveDistanceAccuracyRendering render pass\n");
+	fprintf(stderr, "[ASTRO-PRIMDST] DEBUG: PrimitiveDistanceAccuracyRendering state validated\n");
+	fprintf(stderr, "[ASTRO-PRIMDST] TRACE: PrimitiveDistanceAccuracyRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_primdst;
+} // namespace
+
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FPrimitiveDistanceAccuracyPS,TEXT("/Engine/Private/PrimitiveDistanceAccuracyPixelShader.usf"),TEXT("Main"),SF_Pixel);

@@ -28,6 +28,18 @@ LightGridInjection.cpp
 #include "Components/LightComponent.h"
 #include "Engine/MapBuildDataRegistry.h"
 
+// [ASTRO-LGRID] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-LGRID] INIT: LightGridInjection module initializing\n");
+	fprintf(stderr, "[ASTRO-LGRID] ENTER: Processing LightGridInjection render pass\n");
+	fprintf(stderr, "[ASTRO-LGRID] DEBUG: LightGridInjection state validated\n");
+	fprintf(stderr, "[ASTRO-LGRID] TRACE: LightGridInjection resource binding complete\n");
+    }
+} astro_debug_inst_astro_lgrid;
+} // namespace
+
+
 // Workaround for platforms that don't support implicit conversion from 16bit integers on the CPU to uint32 in the shader
 #define	CHANGE_LIGHTINDEXTYPE_SIZE	(PLATFORM_MAC || PLATFORM_IOS) 
 

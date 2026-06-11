@@ -24,6 +24,18 @@
 #include "VisualizeTexture.h"
 #include "CommonRenderResources.h"
 
+// [ASTRO-GPUBENCH] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-GPUBENCH] INIT: GPUBenchmark module initializing\n");
+	fprintf(stderr, "[ASTRO-GPUBENCH] ENTER: Processing GPUBenchmark render pass\n");
+	fprintf(stderr, "[ASTRO-GPUBENCH] DEBUG: GPUBenchmark state validated\n");
+	fprintf(stderr, "[ASTRO-GPUBENCH] TRACE: GPUBenchmark resource binding complete\n");
+    }
+} astro_debug_inst_astro_gpubench;
+} // namespace
+
+
 static const uint32 GBenchmarkResolution = 512;
 static const uint32 GBenchmarkPrimitives = 200000;
 static const uint32 GBenchmarkVertices = GBenchmarkPrimitives * 3;

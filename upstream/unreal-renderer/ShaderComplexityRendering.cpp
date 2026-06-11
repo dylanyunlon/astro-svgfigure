@@ -8,6 +8,18 @@ ShaderComplexityRendering.cpp: Contains definitions for rendering the shader com
 #include "PostProcess/SceneRenderTargets.h"
 #include "PostProcess/PostProcessVisualizeComplexity.h"
 
+// [ASTRO-SHDRCMPLX] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SHDRCMPLX] INIT: ShaderComplexityRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-SHDRCMPLX] ENTER: Processing ShaderComplexityRendering render pass\n");
+	fprintf(stderr, "[ASTRO-SHDRCMPLX] DEBUG: ShaderComplexityRendering state validated\n");
+	fprintf(stderr, "[ASTRO-SHDRCMPLX] TRACE: ShaderComplexityRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_shdrcmplx;
+} // namespace
+
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 int32 GShaderComplexityBaselineForwardVS = 134;

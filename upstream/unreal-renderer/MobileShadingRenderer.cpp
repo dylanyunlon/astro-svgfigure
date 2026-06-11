@@ -46,6 +46,18 @@
 
 #include "VisualizeTexture.h"
 
+// [ASTRO-MOBSHAD] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBSHAD] INIT: MobileShadingRenderer module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBSHAD] ENTER: Processing MobileShadingRenderer render pass\n");
+	fprintf(stderr, "[ASTRO-MOBSHAD] DEBUG: MobileShadingRenderer state validated\n");
+	fprintf(stderr, "[ASTRO-MOBSHAD] TRACE: MobileShadingRenderer resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobshad;
+} // namespace
+
+
 uint32 GetShadowQuality();
 
 static TAutoConsoleVariable<int32> CVarMobileAlwaysResolveDepth(

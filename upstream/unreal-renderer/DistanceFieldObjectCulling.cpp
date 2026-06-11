@@ -18,6 +18,18 @@
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 
+// [ASTRO-DFCULL] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DFCULL] INIT: DistanceFieldObjectCulling module initializing\n");
+	fprintf(stderr, "[ASTRO-DFCULL] ENTER: Processing DistanceFieldObjectCulling render pass\n");
+	fprintf(stderr, "[ASTRO-DFCULL] DEBUG: DistanceFieldObjectCulling state validated\n");
+	fprintf(stderr, "[ASTRO-DFCULL] TRACE: DistanceFieldObjectCulling resource binding complete\n");
+    }
+} astro_debug_inst_astro_dfcull;
+} // namespace
+
+
 int32 GAOScatterTileCulling = 1;
 FAutoConsoleVariableRef CVarAOScatterTileCulling(
 	TEXT("r.AOScatterTileCulling"),

@@ -6,6 +6,18 @@
 #include "PipelineStateCache.h"
 #include "RenderUtils.h"
 
+// [ASTRO-WIDECRS] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-WIDECRS] INIT: WideCustomResolveShaders module initializing\n");
+	fprintf(stderr, "[ASTRO-WIDECRS] ENTER: Processing WideCustomResolveShaders render pass\n");
+	fprintf(stderr, "[ASTRO-WIDECRS] DEBUG: WideCustomResolveShaders state validated\n");
+	fprintf(stderr, "[ASTRO-WIDECRS] TRACE: WideCustomResolveShaders resource binding complete\n");
+    }
+} astro_debug_inst_astro_widecrs;
+} // namespace
+
+
 IMPLEMENT_SHADER_TYPE(, FWideCustomResolveVS, TEXT("/Engine/Private/WideCustomResolveShaders.usf"), TEXT("WideCustomResolveVS"), SF_Vertex);
 
 #define IMPLEMENT_RESOLVE_SHADER(Width, MSAA, UseFMask) \

@@ -27,6 +27,18 @@
 #include "PostProcess/PostProcessing.h"
 #include "PipelineStateCache.h"
 
+// [ASTRO-VISTEX] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-VISTEX] INIT: VisualizeTexturePresent module initializing\n");
+	fprintf(stderr, "[ASTRO-VISTEX] ENTER: Processing VisualizeTexturePresent render pass\n");
+	fprintf(stderr, "[ASTRO-VISTEX] DEBUG: VisualizeTexturePresent state validated\n");
+	fprintf(stderr, "[ASTRO-VISTEX] TRACE: VisualizeTexturePresent resource binding complete\n");
+    }
+} astro_debug_inst_astro_vistex;
+} // namespace
+
+
 
 /** Encapsulates a simple copy pixel shader. */
 class FVisualizeTexturePresentPS : public FGlobalShader

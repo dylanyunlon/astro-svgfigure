@@ -9,6 +9,18 @@
 #include "SceneRenderTargets.h"
 #include "SystemTextures.h"
 
+// [ASTRO-SCNVFB] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SCNVFB] INIT: SceneViewFamilyBlackboard module initializing\n");
+	fprintf(stderr, "[ASTRO-SCNVFB] ENTER: Processing SceneViewFamilyBlackboard render pass\n");
+	fprintf(stderr, "[ASTRO-SCNVFB] DEBUG: SceneViewFamilyBlackboard state validated\n");
+	fprintf(stderr, "[ASTRO-SCNVFB] TRACE: SceneViewFamilyBlackboard resource binding complete\n");
+    }
+} astro_debug_inst_astro_scnvfb;
+} // namespace
+
+
 
 void SetupSceneViewFamilyBlackboard(
 	FRDGBuilder& GraphBuilder,

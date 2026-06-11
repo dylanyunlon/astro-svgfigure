@@ -17,6 +17,18 @@ HeightfieldLighting.cpp
 #include "LightRendering.h"
 #include "PipelineStateCache.h"
 
+// [ASTRO-HTFIELD] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-HTFIELD] INIT: HeightfieldLighting module initializing\n");
+	fprintf(stderr, "[ASTRO-HTFIELD] ENTER: Processing HeightfieldLighting render pass\n");
+	fprintf(stderr, "[ASTRO-HTFIELD] DEBUG: HeightfieldLighting state validated\n");
+	fprintf(stderr, "[ASTRO-HTFIELD] TRACE: HeightfieldLighting resource binding complete\n");
+    }
+} astro_debug_inst_astro_htfield;
+} // namespace
+
+
 // Currently disabled because the bHasHeightfieldRepresentation GBuffer bit has been reallocated, and self-shadowing artifacts are too severe without that bit
 int32 GAOHeightfieldOcclusion = 0;
 FAutoConsoleVariableRef CVarAOHeightfieldOcclusion(

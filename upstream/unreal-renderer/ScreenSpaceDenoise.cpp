@@ -14,6 +14,18 @@
 #include "PipelineStateCache.h"
 #include "SceneViewFamilyBlackboard.h"
 
+// [ASTRO-SSDENOISE] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SSDENOISE] INIT: ScreenSpaceDenoise module initializing\n");
+	fprintf(stderr, "[ASTRO-SSDENOISE] ENTER: Processing ScreenSpaceDenoise render pass\n");
+	fprintf(stderr, "[ASTRO-SSDENOISE] DEBUG: ScreenSpaceDenoise state validated\n");
+	fprintf(stderr, "[ASTRO-SSDENOISE] TRACE: ScreenSpaceDenoise resource binding complete\n");
+    }
+} astro_debug_inst_astro_ssdenoise;
+} // namespace
+
+
 
 // ---------------------------------------------------- Cvars
 

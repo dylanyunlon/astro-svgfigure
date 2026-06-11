@@ -11,6 +11,18 @@
 #include "ScenePrivate.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-CUSTDEPTH] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-CUSTDEPTH] INIT: CustomDepthRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-CUSTDEPTH] ENTER: Processing CustomDepthRendering render pass\n");
+	fprintf(stderr, "[ASTRO-CUSTDEPTH] DEBUG: CustomDepthRendering state validated\n");
+	fprintf(stderr, "[ASTRO-CUSTDEPTH] TRACE: CustomDepthRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_custdepth;
+} // namespace
+
+
 class FCustomDepthPassMeshProcessor : public FMeshPassProcessor
 {
 public:

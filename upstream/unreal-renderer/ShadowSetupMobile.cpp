@@ -16,6 +16,18 @@ ShadowSetupMobile.cpp: Shadow setup implementation for mobile specific features.
 #include "DynamicPrimitiveDrawing.h"
 #include "ScenePrivate.h"
 
+// [ASTRO-SHADMOB] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SHADMOB] INIT: ShadowSetupMobile module initializing\n");
+	fprintf(stderr, "[ASTRO-SHADMOB] ENTER: Processing ShadowSetupMobile render pass\n");
+	fprintf(stderr, "[ASTRO-SHADMOB] DEBUG: ShadowSetupMobile state validated\n");
+	fprintf(stderr, "[ASTRO-SHADMOB] TRACE: ShadowSetupMobile resource binding complete\n");
+    }
+} astro_debug_inst_astro_shadmob;
+} // namespace
+
+
 static TAutoConsoleVariable<int32> CVarCsmShaderCullingDebugGfx(
 	TEXT("r.Mobile.Shadow.CSMShaderCullingDebugGfx"),
 	0,

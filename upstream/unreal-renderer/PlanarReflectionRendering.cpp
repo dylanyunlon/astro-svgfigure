@@ -32,6 +32,18 @@
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 
+// [ASTRO-PLANARR] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-PLANARR] INIT: PlanarReflectionRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-PLANARR] ENTER: Processing PlanarReflectionRendering render pass\n");
+	fprintf(stderr, "[ASTRO-PLANARR] DEBUG: PlanarReflectionRendering state validated\n");
+	fprintf(stderr, "[ASTRO-PLANARR] TRACE: PlanarReflectionRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_planarr;
+} // namespace
+
+
 void SetupPlanarReflectionUniformParameters(const class FSceneView& View, const FPlanarReflectionSceneProxy* ReflectionSceneProxy, FPlanarReflectionUniformParameters& OutParameters)
 {
 	// Degenerate plane causes shader to branch around the reflection lookup

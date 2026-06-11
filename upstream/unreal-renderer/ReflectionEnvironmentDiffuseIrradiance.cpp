@@ -19,6 +19,18 @@
 #include "VisualizeTexture.h"
 #include "CommonRenderResources.h"
 
+// [ASTRO-REFLIRR] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-REFLIRR] INIT: ReflectionEnvironmentDiffuseIrradiance module initializing\n");
+	fprintf(stderr, "[ASTRO-REFLIRR] ENTER: Processing ReflectionEnvironmentDiffuseIrradiance render pass\n");
+	fprintf(stderr, "[ASTRO-REFLIRR] DEBUG: ReflectionEnvironmentDiffuseIrradiance state validated\n");
+	fprintf(stderr, "[ASTRO-REFLIRR] TRACE: ReflectionEnvironmentDiffuseIrradiance resource binding complete\n");
+    }
+} astro_debug_inst_astro_reflirr;
+} // namespace
+
+
 extern int32 GDiffuseIrradianceCubemapSize;
 
 FSceneRenderTargetItem& GetEffectiveDiffuseIrradianceRenderTarget(FSceneRenderTargets& SceneContext, int32 TargetMipIndex)

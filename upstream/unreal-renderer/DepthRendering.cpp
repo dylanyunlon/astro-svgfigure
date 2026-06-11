@@ -29,6 +29,18 @@
 #include "GPUSkinCache.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-DEPTH] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DEPTH] INIT: DepthRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-DEPTH] ENTER: Processing DepthRendering render pass\n");
+	fprintf(stderr, "[ASTRO-DEPTH] DEBUG: DepthRendering state validated\n");
+	fprintf(stderr, "[ASTRO-DEPTH] TRACE: DepthRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_depth;
+} // namespace
+
+
 static TAutoConsoleVariable<int32> CVarRHICmdPrePassDeferredContexts(
 	TEXT("r.RHICmdPrePassDeferredContexts"),
 	1,

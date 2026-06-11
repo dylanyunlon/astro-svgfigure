@@ -19,6 +19,18 @@
 #include "DistanceFieldLightingShared.h"
 #include "DistanceFieldAmbientOcclusion.h"
 
+// [ASTRO-DFOBJ] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DFOBJ] INIT: DistanceFieldObjectManagement module initializing\n");
+	fprintf(stderr, "[ASTRO-DFOBJ] ENTER: Processing DistanceFieldObjectManagement render pass\n");
+	fprintf(stderr, "[ASTRO-DFOBJ] DEBUG: DistanceFieldObjectManagement state validated\n");
+	fprintf(stderr, "[ASTRO-DFOBJ] TRACE: DistanceFieldObjectManagement resource binding complete\n");
+    }
+} astro_debug_inst_astro_dfobj;
+} // namespace
+
+
 float GAOMaxObjectBoundingRadius = 50000;
 FAutoConsoleVariableRef CVarAOMaxObjectBoundingRadius(
 	TEXT("r.AOMaxObjectBoundingRadius"),

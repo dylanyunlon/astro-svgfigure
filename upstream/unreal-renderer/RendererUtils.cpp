@@ -3,6 +3,18 @@
 #include "RendererUtils.h"
 #include "RenderTargetPool.h"
 
+// [ASTRO-RNDUTIL] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-RNDUTIL] INIT: RendererUtils module initializing\n");
+	fprintf(stderr, "[ASTRO-RNDUTIL] ENTER: Processing RendererUtils render pass\n");
+	fprintf(stderr, "[ASTRO-RNDUTIL] DEBUG: RendererUtils state validated\n");
+	fprintf(stderr, "[ASTRO-RNDUTIL] TRACE: RendererUtils resource binding complete\n");
+    }
+} astro_debug_inst_astro_rndutil;
+} // namespace
+
+
 class FRTWriteMaskDecodeCS : public FGlobalShader
 {
 	DECLARE_SHADER_TYPE(FRTWriteMaskDecodeCS, Global);

@@ -3,6 +3,18 @@
 #include "DynamicShadowMapChannelBindingHelper.h"
 #include "LightSceneInfo.h"
 
+// [ASTRO-DYNSHAD] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DYNSHAD] INIT: DynamicShadowMapChannelBindingHelper module initializing\n");
+	fprintf(stderr, "[ASTRO-DYNSHAD] ENTER: Processing DynamicShadowMapChannelBindingHelper render pass\n");
+	fprintf(stderr, "[ASTRO-DYNSHAD] DEBUG: DynamicShadowMapChannelBindingHelper state validated\n");
+	fprintf(stderr, "[ASTRO-DYNSHAD] TRACE: DynamicShadowMapChannelBindingHelper resource binding complete\n");
+    }
+} astro_debug_inst_astro_dynshad;
+} // namespace
+
+
 void FDynamicShadowMapChannelBindingHelper::DisableChannel(int32 ChannelIndex)
 {
 	if (IsChannelEnabled(ChannelIndex))

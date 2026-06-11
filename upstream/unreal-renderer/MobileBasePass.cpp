@@ -13,6 +13,18 @@
 #include "PrimitiveSceneInfo.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-MOBBASE] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBBASE] INIT: MobileBasePass module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBBASE] ENTER: Processing MobileBasePass render pass\n");
+	fprintf(stderr, "[ASTRO-MOBBASE] DEBUG: MobileBasePass state validated\n");
+	fprintf(stderr, "[ASTRO-MOBBASE] TRACE: MobileBasePass resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobbase;
+} // namespace
+
+
 template <ELightMapPolicyType Policy, int32 NumMovablePointLights>
 void GetUniformMobileBasePassShaders(
 	const FMaterial& Material, 

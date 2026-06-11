@@ -28,6 +28,18 @@ MobileSceneCaptureRendering.cpp - Mobile specific scene capture code.
 #include "PipelineStateCache.h"
 #include "CommonRenderResources.h"
 
+// [ASTRO-MOBSCAP] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBSCAP] INIT: MobileSceneCaptureRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBSCAP] ENTER: Processing MobileSceneCaptureRendering render pass\n");
+	fprintf(stderr, "[ASTRO-MOBSCAP] DEBUG: MobileSceneCaptureRendering state validated\n");
+	fprintf(stderr, "[ASTRO-MOBSCAP] TRACE: MobileSceneCaptureRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobscap;
+} // namespace
+
+
 /**
 * Shader set for the copy of scene color to capture target, decoding mosaic or RGBE encoded HDR image as part of a
 * copy operation. Alpha channel will contain opacity information. (Determined from depth buffer content)

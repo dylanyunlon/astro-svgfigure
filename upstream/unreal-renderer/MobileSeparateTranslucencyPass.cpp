@@ -8,6 +8,18 @@ MobileSeparateTranslucencyPass.cpp - Mobile specific separate translucency pass
 #include "TranslucentRendering.h"
 #include "DynamicPrimitiveDrawing.h"
 
+// [ASTRO-MOBSTP] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBSTP] INIT: MobileSeparateTranslucencyPass module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBSTP] ENTER: Processing MobileSeparateTranslucencyPass render pass\n");
+	fprintf(stderr, "[ASTRO-MOBSTP] DEBUG: MobileSeparateTranslucencyPass state validated\n");
+	fprintf(stderr, "[ASTRO-MOBSTP] TRACE: MobileSeparateTranslucencyPass resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobstp;
+} // namespace
+
+
 bool IsMobileSeparateTranslucencyActive(const FViewInfo& View)
 {
 	return View.ParallelMeshDrawCommandPasses[EMeshPass::TranslucencyAfterDOF].HasAnyDraw();

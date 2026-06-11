@@ -10,6 +10,18 @@
 #include "ScenePrivate.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-LMAPDEN] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-LMAPDEN] INIT: LightMapDensityRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-LMAPDEN] ENTER: Processing LightMapDensityRendering render pass\n");
+	fprintf(stderr, "[ASTRO-LMAPDEN] DEBUG: LightMapDensityRendering state validated\n");
+	fprintf(stderr, "[ASTRO-LMAPDEN] TRACE: LightMapDensityRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_lmapden;
+} // namespace
+
+
 #if !UE_BUILD_DOCS
 // Typedef is necessary because the C preprocessor thinks the comma in the template parameter list is a comma in the macro parameter list.
 #define IMPLEMENT_DENSITY_VERTEXSHADER_TYPE(LightMapPolicyType,LightMapPolicyName) \

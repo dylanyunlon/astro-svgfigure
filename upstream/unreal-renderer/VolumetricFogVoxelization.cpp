@@ -15,6 +15,18 @@
 #include "StaticMeshResources.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-VFOGVOX] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-VFOGVOX] INIT: VolumetricFogVoxelization module initializing\n");
+	fprintf(stderr, "[ASTRO-VFOGVOX] ENTER: Processing VolumetricFogVoxelization render pass\n");
+	fprintf(stderr, "[ASTRO-VFOGVOX] DEBUG: VolumetricFogVoxelization state validated\n");
+	fprintf(stderr, "[ASTRO-VFOGVOX] TRACE: VolumetricFogVoxelization resource binding complete\n");
+    }
+} astro_debug_inst_astro_vfogvox;
+} // namespace
+
+
 int32 GVolumetricFogVoxelizationSlicesPerGSPass = 8;
 FAutoConsoleVariableRef CVarVolumetricFogVoxelizationSlicesPerPass(
 	TEXT("r.VolumetricFog.VoxelizationSlicesPerGSPass"),

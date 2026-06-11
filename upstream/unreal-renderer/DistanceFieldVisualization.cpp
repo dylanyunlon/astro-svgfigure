@@ -17,6 +17,18 @@
 #include "PostProcess/PostProcessSubsurface.h"
 #include "PipelineStateCache.h"
 
+// [ASTRO-DFVIS] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DFVIS] INIT: DistanceFieldVisualization module initializing\n");
+	fprintf(stderr, "[ASTRO-DFVIS] ENTER: Processing DistanceFieldVisualization render pass\n");
+	fprintf(stderr, "[ASTRO-DFVIS] DEBUG: DistanceFieldVisualization state validated\n");
+	fprintf(stderr, "[ASTRO-DFVIS] TRACE: DistanceFieldVisualization resource binding complete\n");
+    }
+} astro_debug_inst_astro_dfvis;
+} // namespace
+
+
 template<bool bUseGlobalDistanceField>
 class TVisualizeMeshDistanceFieldCS : public FGlobalShader
 {

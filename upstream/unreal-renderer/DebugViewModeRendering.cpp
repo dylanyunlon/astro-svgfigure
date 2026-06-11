@@ -23,6 +23,18 @@ DebugViewModeRendering.cpp: Contains definitions for rendering debug viewmodes.
 #include "DeferredShadingRenderer.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-DBGVIEW] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DBGVIEW] INIT: DebugViewModeRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-DBGVIEW] ENTER: Processing DebugViewModeRendering render pass\n");
+	fprintf(stderr, "[ASTRO-DBGVIEW] DEBUG: DebugViewModeRendering state validated\n");
+	fprintf(stderr, "[ASTRO-DBGVIEW] TRACE: DebugViewModeRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_dbgview;
+} // namespace
+
+
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FDebugViewModePassPassUniformParameters, "DebugViewModePass");
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)

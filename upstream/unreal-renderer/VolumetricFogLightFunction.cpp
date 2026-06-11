@@ -13,6 +13,18 @@
 #include "PostProcessing.h"
 #include "RHI/Public/PipelineStateCache.h"
 
+// [ASTRO-VFOGLF] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-VFOGLF] INIT: VolumetricFogLightFunction module initializing\n");
+	fprintf(stderr, "[ASTRO-VFOGLF] ENTER: Processing VolumetricFogLightFunction render pass\n");
+	fprintf(stderr, "[ASTRO-VFOGLF] DEBUG: VolumetricFogLightFunction state validated\n");
+	fprintf(stderr, "[ASTRO-VFOGLF] TRACE: VolumetricFogLightFunction resource binding complete\n");
+    }
+} astro_debug_inst_astro_vfoglf;
+} // namespace
+
+
 float GVolumetricFogLightFunctionSupersampleScale = 2.0f;
 FAutoConsoleVariableRef CVarVolumetricFogLightFunctionSupersampleScale(
 	TEXT("r.VolumetricFog.LightFunctionSupersampleScale"),

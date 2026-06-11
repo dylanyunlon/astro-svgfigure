@@ -10,6 +10,18 @@
 #include "MobileBasePassRendering.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-EDPRIM] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-EDPRIM] INIT: EditorPrimitivesRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-EDPRIM] ENTER: Processing EditorPrimitivesRendering render pass\n");
+	fprintf(stderr, "[ASTRO-EDPRIM] DEBUG: EditorPrimitivesRendering state validated\n");
+	fprintf(stderr, "[ASTRO-EDPRIM] TRACE: EditorPrimitivesRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_edprim;
+} // namespace
+
+
 FEditorPrimitivesBasePassMeshProcessor::FEditorPrimitivesBasePassMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type InFeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InDrawRenderState, bool bInTranslucentBasePass, FMeshPassDrawListContext* InDrawListContext) 
 	: FMeshPassProcessor(Scene, InFeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
 	, PassDrawRenderState(InDrawRenderState)

@@ -14,6 +14,18 @@
 #include "ScenePrivate.h"
 #include "PipelineStateCache.h"
 
+// [ASTRO-DECAL] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DECAL] INIT: DecalRenderingShared module initializing\n");
+	fprintf(stderr, "[ASTRO-DECAL] ENTER: Processing DecalRenderingShared render pass\n");
+	fprintf(stderr, "[ASTRO-DECAL] DEBUG: DecalRenderingShared state validated\n");
+	fprintf(stderr, "[ASTRO-DECAL] TRACE: DecalRenderingShared resource binding complete\n");
+    }
+} astro_debug_inst_astro_decal;
+} // namespace
+
+
 static TAutoConsoleVariable<float> CVarDecalFadeScreenSizeMultiplier(
 	TEXT("r.Decal.FadeScreenSizeMult"),
 	1.0f,

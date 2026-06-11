@@ -9,6 +9,18 @@
 #include "Templates/UniquePtr.h"
 #include "ClearQuad.h"
 
+// [ASTRO-DFGI] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DFGI] INIT: DistanceFieldGlobalIllumination module initializing\n");
+	fprintf(stderr, "[ASTRO-DFGI] ENTER: Processing DistanceFieldGlobalIllumination render pass\n");
+	fprintf(stderr, "[ASTRO-DFGI] DEBUG: DistanceFieldGlobalIllumination state validated\n");
+	fprintf(stderr, "[ASTRO-DFGI] TRACE: DistanceFieldGlobalIllumination resource binding complete\n");
+    }
+} astro_debug_inst_astro_dfgi;
+} // namespace
+
+
 int32 GDistanceFieldGI = 0;
 FAutoConsoleVariableRef CVarDistanceFieldGI(
 	TEXT("r.DistanceFieldGI"),

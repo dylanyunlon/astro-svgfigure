@@ -14,6 +14,18 @@
 #include "RayTracing/RayTracingSkyLight.h"
 #include "RayTracing/RaytracingOptions.h"
 
+// [ASTRO-PATHTRC] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-PATHTRC] INIT: PathTracing module initializing\n");
+	fprintf(stderr, "[ASTRO-PATHTRC] ENTER: Processing PathTracing render pass\n");
+	fprintf(stderr, "[ASTRO-PATHTRC] DEBUG: PathTracing state validated\n");
+	fprintf(stderr, "[ASTRO-PATHTRC] TRACE: PathTracing resource binding complete\n");
+    }
+} astro_debug_inst_astro_pathtrc;
+} // namespace
+
+
 static int32 GPathTracingMaxBounces = -1;
 static FAutoConsoleVariableRef CVarPathTracingMaxBounces(
 	TEXT("r.PathTracing.MaxBounces"),

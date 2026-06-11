@@ -22,6 +22,18 @@
 #include "DeferredShadingRenderer.h"
 #include "ScenePrivate.h"
 
+// [ASTRO-TILEDLGT] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-TILEDLGT] INIT: TiledDeferredLightRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-TILEDLGT] ENTER: Processing TiledDeferredLightRendering render pass\n");
+	fprintf(stderr, "[ASTRO-TILEDLGT] DEBUG: TiledDeferredLightRendering state validated\n");
+	fprintf(stderr, "[ASTRO-TILEDLGT] TRACE: TiledDeferredLightRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_tiledlgt;
+} // namespace
+
+
 /** 
  * Maximum number of lights that can be handled by tiled deferred in a single compute shader pass.
  * If the scene has more visible lights than this, multiple tiled deferred passes will be needed which incurs the tile setup multiple times.

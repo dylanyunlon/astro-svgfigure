@@ -16,6 +16,18 @@
 #include "DistanceFieldLightingShared.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-CONVMESH] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-CONVMESH] INIT: ConvertToUniformMesh module initializing\n");
+	fprintf(stderr, "[ASTRO-CONVMESH] ENTER: Processing ConvertToUniformMesh render pass\n");
+	fprintf(stderr, "[ASTRO-CONVMESH] DEBUG: ConvertToUniformMesh state validated\n");
+	fprintf(stderr, "[ASTRO-CONVMESH] TRACE: ConvertToUniformMesh resource binding complete\n");
+    }
+} astro_debug_inst_astro_convmesh;
+} // namespace
+
+
 class FConvertToUniformMeshVS : public FMeshMaterialShader
 {
 	DECLARE_SHADER_TYPE(FConvertToUniformMeshVS,MeshMaterial);

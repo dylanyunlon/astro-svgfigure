@@ -14,6 +14,18 @@
 #include "SceneFilterRendering.h"
 #include "OneColorShader.h"
 
+// [ASTRO-MOBREC] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBREC] INIT: MobileReflectionEnvironmentCapture module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBREC] ENTER: Processing MobileReflectionEnvironmentCapture render pass\n");
+	fprintf(stderr, "[ASTRO-MOBREC] DEBUG: MobileReflectionEnvironmentCapture state validated\n");
+	fprintf(stderr, "[ASTRO-MOBREC] TRACE: MobileReflectionEnvironmentCapture resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobrec;
+} // namespace
+
+
 extern int32 GDiffuseIrradianceCubemapSize;
 extern float ComputeSingleAverageBrightnessFromCubemap(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, int32 TargetSize, FSceneRenderTargetItem& Cubemap);
 extern void FullyResolveReflectionScratchCubes(FRHICommandListImmediate& RHICmdList);

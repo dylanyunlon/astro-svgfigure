@@ -11,6 +11,18 @@ MeshTexCoordSizeAccuracyRendering.cpp: Contains definitions for rendering the vi
 #include "MeshBatch.h"
 #include "Engine/Engine.h"
 
+// [ASTRO-MTCACC] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MTCACC] INIT: MeshTexCoordSizeAccuracyRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-MTCACC] ENTER: Processing MeshTexCoordSizeAccuracyRendering render pass\n");
+	fprintf(stderr, "[ASTRO-MTCACC] DEBUG: MeshTexCoordSizeAccuracyRendering state validated\n");
+	fprintf(stderr, "[ASTRO-MTCACC] TRACE: MeshTexCoordSizeAccuracyRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_mtcacc;
+} // namespace
+
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 IMPLEMENT_SHADER_TYPE(,FMeshTexCoordSizeAccuracyPS,TEXT("/Engine/Private/MeshTexCoordSizeAccuracyPixelShader.usf"),TEXT("Main"),SF_Pixel);

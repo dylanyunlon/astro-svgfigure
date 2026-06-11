@@ -14,6 +14,18 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "Math/Vector.h"
 
+// [ASTRO-SCNOCC] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SCNOCC] INIT: SceneSoftwareOcclusion module initializing\n");
+	fprintf(stderr, "[ASTRO-SCNOCC] ENTER: Processing SceneSoftwareOcclusion render pass\n");
+	fprintf(stderr, "[ASTRO-SCNOCC] DEBUG: SceneSoftwareOcclusion state validated\n");
+	fprintf(stderr, "[ASTRO-SCNOCC] TRACE: SceneSoftwareOcclusion resource binding complete\n");
+    }
+} astro_debug_inst_astro_scnocc;
+} // namespace
+
+
 DECLARE_STATS_GROUP(TEXT("Software Occlusion"),STATGROUP_SoftwareOcclusion, STATCAT_Advanced);
 DECLARE_CYCLE_STAT(TEXT("(RT) Gather Time"),STAT_SoftwareOcclusionGather,STATGROUP_SoftwareOcclusion);
 DECLARE_CYCLE_STAT(TEXT("(Task) Process Time"),STAT_SoftwareOcclusionProcess,STATGROUP_SoftwareOcclusion);

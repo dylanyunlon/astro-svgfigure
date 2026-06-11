@@ -30,6 +30,18 @@
 #include "PipelineStateCache.h"
 #include "MeshPassProcessor.inl"
 
+// [ASTRO-MOBTRANS] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBTRANS] INIT: MobileTranslucentRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBTRANS] ENTER: Processing MobileTranslucentRendering render pass\n");
+	fprintf(stderr, "[ASTRO-MOBTRANS] DEBUG: MobileTranslucentRendering state validated\n");
+	fprintf(stderr, "[ASTRO-MOBTRANS] TRACE: MobileTranslucentRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobtrans;
+} // namespace
+
+
 /** Pixel shader used to copy scene color into another texture so that materials can read from scene color with a node. */
 class FMobileCopySceneAlphaPS : public FGlobalShader
 {

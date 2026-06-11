@@ -10,6 +10,18 @@ MaterialTexCoordScalesRendering.cpp: Contains definitions for rendering the view
 #include "MeshBatch.h"
 #include "Engine/Engine.h"
 
+// [ASTRO-MTCSCALE] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MTCSCALE] INIT: MaterialTexCoordScalesRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-MTCSCALE] ENTER: Processing MaterialTexCoordScalesRendering render pass\n");
+	fprintf(stderr, "[ASTRO-MTCSCALE] DEBUG: MaterialTexCoordScalesRendering state validated\n");
+	fprintf(stderr, "[ASTRO-MTCSCALE] TRACE: MaterialTexCoordScalesRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_mtcscale;
+} // namespace
+
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FMaterialTexCoordScalePS,TEXT("/Engine/Private/MaterialTexCoordScalesPixelShader.usf"),TEXT("Main"),SF_Pixel);

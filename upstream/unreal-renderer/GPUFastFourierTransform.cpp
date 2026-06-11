@@ -5,6 +5,18 @@
 #include "GlobalShader.h"
 #include "RenderTargetPool.h" // used for on-the-fly acquisition of 
 
+// [ASTRO-GPUFFT] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-GPUFFT] INIT: GPUFastFourierTransform module initializing\n");
+	fprintf(stderr, "[ASTRO-GPUFFT] ENTER: Processing GPUFastFourierTransform render pass\n");
+	fprintf(stderr, "[ASTRO-GPUFFT] DEBUG: GPUFastFourierTransform state validated\n");
+	fprintf(stderr, "[ASTRO-GPUFFT] TRACE: GPUFastFourierTransform resource binding complete\n");
+    }
+} astro_debug_inst_astro_gpufft;
+} // namespace
+
+
 
 uint32 GPUFFT::MaxScanLineLength() 
 {

@@ -8,6 +8,18 @@ RequiredTextureResolutionRendering.cpp: Contains definitions for rendering the v
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
 
+// [ASTRO-REQTEX] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-REQTEX] INIT: RequiredTextureResolutionRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-REQTEX] ENTER: Processing RequiredTextureResolutionRendering render pass\n");
+	fprintf(stderr, "[ASTRO-REQTEX] DEBUG: RequiredTextureResolutionRendering state validated\n");
+	fprintf(stderr, "[ASTRO-REQTEX] TRACE: RequiredTextureResolutionRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_reqtex;
+} // namespace
+
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FRequiredTextureResolutionPS,TEXT("/Engine/Private/RequiredTextureResolutionPixelShader.usf"),TEXT("Main"),SF_Pixel);

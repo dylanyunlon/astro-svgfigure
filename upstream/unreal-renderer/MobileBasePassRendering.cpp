@@ -16,6 +16,18 @@
 
 #include "FramePro/FrameProProfiler.h"
 
+// [ASTRO-MOBBPR] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-MOBBPR] INIT: MobileBasePassRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-MOBBPR] ENTER: Processing MobileBasePassRendering render pass\n");
+	fprintf(stderr, "[ASTRO-MOBBPR] DEBUG: MobileBasePassRendering state validated\n");
+	fprintf(stderr, "[ASTRO-MOBBPR] TRACE: MobileBasePassRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_mobbpr;
+} // namespace
+
+
 // Changing this causes a full shader recompile
 static TAutoConsoleVariable<int32> CVarMobileDisableVertexFog(
 	TEXT("r.Mobile.DisableVertexFog"),

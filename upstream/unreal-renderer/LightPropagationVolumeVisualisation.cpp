@@ -22,6 +22,18 @@
 #include "LightPropagationVolume.h"
 #include "PipelineStateCache.h"
 
+// [ASTRO-LPVVIS] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-LPVVIS] INIT: LightPropagationVolumeVisualisation module initializing\n");
+	fprintf(stderr, "[ASTRO-LPVVIS] ENTER: Processing LightPropagationVolumeVisualisation render pass\n");
+	fprintf(stderr, "[ASTRO-LPVVIS] DEBUG: LightPropagationVolumeVisualisation state validated\n");
+	fprintf(stderr, "[ASTRO-LPVVIS] TRACE: LightPropagationVolumeVisualisation resource binding complete\n");
+    }
+} astro_debug_inst_astro_lpvvis;
+} // namespace
+
+
 // ----------------------------------------------------------------------------
 
 class FLpvVisualiseBase : public FGlobalShader

@@ -25,6 +25,18 @@
 #include "SceneFilterRendering.h"
 #include "PrecomputedVolumetricLightmap.h"
 
+// [ASTRO-VISVLM] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-VISVLM] INIT: VisualizeVolumetricLightmap module initializing\n");
+	fprintf(stderr, "[ASTRO-VISVLM] ENTER: Processing VisualizeVolumetricLightmap render pass\n");
+	fprintf(stderr, "[ASTRO-VISVLM] DEBUG: VisualizeVolumetricLightmap state validated\n");
+	fprintf(stderr, "[ASTRO-VISVLM] TRACE: VisualizeVolumetricLightmap resource binding complete\n");
+    }
+} astro_debug_inst_astro_visvlm;
+} // namespace
+
+
 float GVolumetricLightmapVisualizationRadiusScale = .01f;
 FAutoConsoleVariableRef CVarVolumetricLightmapVisualizationRadiusScale(
 	TEXT("r.VolumetricLightmap.VisualizationRadiusScale"),

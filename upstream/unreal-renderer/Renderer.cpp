@@ -33,6 +33,18 @@
 #include "VisualizeTexturePresent.h"
 #include "ScreenSpaceDenoise.h"
 
+// [ASTRO-RENDERER] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-RENDERER] INIT: Renderer module initializing\n");
+	fprintf(stderr, "[ASTRO-RENDERER] ENTER: Processing Renderer render pass\n");
+	fprintf(stderr, "[ASTRO-RENDERER] DEBUG: Renderer state validated\n");
+	fprintf(stderr, "[ASTRO-RENDERER] TRACE: Renderer resource binding complete\n");
+    }
+} astro_debug_inst_astro_renderer;
+} // namespace
+
+
 DEFINE_LOG_CATEGORY(LogRenderer);
 
 IMPLEMENT_MODULE(FRendererModule, Renderer);

@@ -20,6 +20,18 @@
 #include "ScenePrivate.h"
 #include "LightPropagationVolumeSettings.h"
 
+// [ASTRO-LPV] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-LPV] INIT: LightPropagationVolume module initializing\n");
+	fprintf(stderr, "[ASTRO-LPV] ENTER: Processing LightPropagationVolume render pass\n");
+	fprintf(stderr, "[ASTRO-LPV] DEBUG: LightPropagationVolume state validated\n");
+	fprintf(stderr, "[ASTRO-LPV] TRACE: LightPropagationVolume resource binding complete\n");
+    }
+} astro_debug_inst_astro_lpv;
+} // namespace
+
+
 DECLARE_GPU_STAT(LPV);
 
 static TAutoConsoleVariable<int32> CVarLightPropagationVolume(

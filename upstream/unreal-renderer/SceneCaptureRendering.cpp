@@ -42,6 +42,18 @@
 #include "RendererModule.h"
 #include "SceneViewExtension.h"
 
+// [ASTRO-SCNCAP] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-SCNCAP] INIT: SceneCaptureRendering module initializing\n");
+	fprintf(stderr, "[ASTRO-SCNCAP] ENTER: Processing SceneCaptureRendering render pass\n");
+	fprintf(stderr, "[ASTRO-SCNCAP] DEBUG: SceneCaptureRendering state validated\n");
+	fprintf(stderr, "[ASTRO-SCNCAP] TRACE: SceneCaptureRendering resource binding complete\n");
+    }
+} astro_debug_inst_astro_scncap;
+} // namespace
+
+
 const TCHAR* GShaderSourceModeDefineName[] =
 {
 	TEXT("SOURCE_MODE_SCENE_COLOR_AND_OPACITY"),

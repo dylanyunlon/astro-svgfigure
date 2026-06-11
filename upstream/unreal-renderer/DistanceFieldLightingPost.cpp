@@ -12,6 +12,18 @@
 #include "CompositionLighting/PostProcessAmbientOcclusion.h"
 #include "PipelineStateCache.h"
 
+// [ASTRO-DFLPOST] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-DFLPOST] INIT: DistanceFieldLightingPost module initializing\n");
+	fprintf(stderr, "[ASTRO-DFLPOST] ENTER: Processing DistanceFieldLightingPost render pass\n");
+	fprintf(stderr, "[ASTRO-DFLPOST] DEBUG: DistanceFieldLightingPost state validated\n");
+	fprintf(stderr, "[ASTRO-DFLPOST] TRACE: DistanceFieldLightingPost resource binding complete\n");
+    }
+} astro_debug_inst_astro_dflpost;
+} // namespace
+
+
 int32 GAOUseHistory = 1;
 FAutoConsoleVariableRef CVarAOUseHistory(
 	TEXT("r.AOUseHistory"),

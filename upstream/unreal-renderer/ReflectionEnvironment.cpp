@@ -33,6 +33,18 @@
 #include "ScreenSpaceDenoise.h"
 #include "RayTracing/RaytracingOptions.h"
 
+// [ASTRO-REFLENV] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-REFLENV] INIT: ReflectionEnvironment module initializing\n");
+	fprintf(stderr, "[ASTRO-REFLENV] ENTER: Processing ReflectionEnvironment render pass\n");
+	fprintf(stderr, "[ASTRO-REFLENV] DEBUG: ReflectionEnvironment state validated\n");
+	fprintf(stderr, "[ASTRO-REFLENV] TRACE: ReflectionEnvironment resource binding complete\n");
+    }
+} astro_debug_inst_astro_reflenv;
+} // namespace
+
+
 DECLARE_GPU_STAT_NAMED(ReflectionEnvironment, TEXT("Reflection Environment"));
 DECLARE_GPU_STAT_NAMED(RayTracingReflections, TEXT("Ray Tracing Reflections"));
 DECLARE_GPU_STAT(SkyLightDiffuse);

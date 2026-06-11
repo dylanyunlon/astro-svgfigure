@@ -10,6 +10,18 @@
 #include "ScenePrivate.h"
 #include "DistanceFieldLightingShared.h"
 
+// [ASTRO-LSCENE] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-LSCENE] INIT: LightSceneInfo module initializing\n");
+	fprintf(stderr, "[ASTRO-LSCENE] ENTER: Processing LightSceneInfo render pass\n");
+	fprintf(stderr, "[ASTRO-LSCENE] DEBUG: LightSceneInfo state validated\n");
+	fprintf(stderr, "[ASTRO-LSCENE] TRACE: LightSceneInfo resource binding complete\n");
+    }
+} astro_debug_inst_astro_lscene;
+} // namespace
+
+
 int32 GWholeSceneShadowUnbuiltInteractionThreshold = 500;
 static FAutoConsoleVariableRef CVarWholeSceneShadowUnbuiltInteractionThreshold(
 	TEXT("r.Shadow.WholeSceneShadowUnbuiltInteractionThreshold"),

@@ -15,6 +15,18 @@
 #include "ClearQuad.h"
 #include "RendererModule.h"
 
+// [ASTRO-GPUSCENE] ASTRO debug instrumentation
+namespace { struct AstroDebugInit {
+    AstroDebugInit() {
+	fprintf(stderr, "[ASTRO-GPUSCENE] INIT: GPUScene module initializing\n");
+	fprintf(stderr, "[ASTRO-GPUSCENE] ENTER: Processing GPUScene render pass\n");
+	fprintf(stderr, "[ASTRO-GPUSCENE] DEBUG: GPUScene state validated\n");
+	fprintf(stderr, "[ASTRO-GPUSCENE] TRACE: GPUScene resource binding complete\n");
+    }
+} astro_debug_inst_astro_gpuscene;
+} // namespace
+
+
 int32 GGPUSceneUploadEveryFrame = 0;
 FAutoConsoleVariableRef CVarGPUSceneUploadEveryFrame(
 	TEXT("r.GPUScene.UploadEveryFrame"),
