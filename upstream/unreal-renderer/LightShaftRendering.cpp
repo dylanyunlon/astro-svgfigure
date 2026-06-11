@@ -643,6 +643,25 @@ void ApplyRadialBlurPasses(
 	const uint32 DownsampledSizeY = View.ViewRect.Height() / DownsampleFactor;
 	const uint32 NumPasses = FMath::Max(GLightShaftBlurPasses, 0);
 
+	// [ASTRO-SHAFT] Constraint connection line highlight debug: light shafts are repurposed as
+	// constraint connection lines in the cell pub-sub overlay. Each radial blur pass accumulates
+	// highlight intensity along the shaft axis from light origin to screen edge.
+	// Log the blur geometry so the constraint renderer can derive line endpoint projections.
+	{
+		const FVector WorldSpaceBlurOrigin = LightSceneInfo->Proxy->GetLightPositionForLightShafts(View.ViewMatrices.GetViewOrigin());
+		FVector4 ProjectedOrigin = View.ViewMatrices.GetViewProjectionMatrix().TransformPosition(WorldSpaceBlurOrigin);
+		float ScreenX = (ProjectedOrigin.W > 0.0f) ? (ProjectedOrigin.X / ProjectedOrigin.W) : 0.0f;
+		float ScreenY = (ProjectedOrigin.W > 0.0f) ? (ProjectedOrigin.Y / ProjectedOrigin.W) : 0.0f;
+		UE_LOG(LogRenderer, VeryVerbose,
+			TEXT("[ASTRO-SHAFT] ConstraintLine highlight: NumPasses=%u DownsampleFactor=%u "
+				 "FilterBuffer=(%d,%d) DownsampledRegion=(%d,%d,%ux%u) "
+				 "LightOriginNDC=(%.4f,%.4f) W=%.4f"),
+			NumPasses, DownsampleFactor,
+			FilterBufferSize.X, FilterBufferSize.Y,
+			DownSampledXY.X, DownSampledXY.Y, DownsampledSizeX, DownsampledSizeY,
+			ScreenX, ScreenY, ProjectedOrigin.W);
+	}
+
 	for (uint32 PassIndex = 0; PassIndex < NumPasses; PassIndex++)
 	{
 		FRHIRenderPassInfo RPInfo(LightShaftsDest->GetRenderTargetItem().TargetableTexture, ERenderTargetActions::Load_Store);
@@ -836,7 +855,18 @@ void FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(FRHICommandListImm
 							if (ShouldRenderLightShaftsForLight(View, LightSceneInfo))
 							{
 								INC_DWORD_STAT(STAT_LightShaftsLights);
-		
+
+								// [ASTRO-SHAFT] Constraint connection line: shaft occlusion confirmed for this view/light.
+								// This is the activation point where a light shaft becomes a rendered constraint line
+								// highlight in the cell pub-sub overlay. Log light type and occlusion parameters
+								// so the constraint renderer can calibrate highlight intensity along the line.
+								UE_LOG(LogRenderer, VeryVerbose,
+									TEXT("[ASTRO-SHAFT] ConstraintLine activated: View[%d] ViewSize=(%dx%d) "
+										 "LightType=%d OcclusionDepthRange=%.2f OcclusionDarkness=%.4f"),
+									ViewIndex, View.ViewRect.Width(), View.ViewRect.Height(),
+									(int32)LightSceneInfo->Proxy->GetLightType(),
+									OcclusionDepthRange, OcclusionMaskDarkness);
+
 								// Create a downsampled occlusion mask from scene depth, result will be in LightShafts0
 								DownsamplePass<true>(RHICmdList, View, LightSceneInfo, LightShafts0, LightShafts1);
 		

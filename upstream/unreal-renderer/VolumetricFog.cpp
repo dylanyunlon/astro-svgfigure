@@ -854,6 +854,17 @@ FVector GetVolumetricFogGridZParams(float NearPlane, float FarPlane, int32 GridS
 	float NSlice = FMath::Log2(FloatN*FloatB + FloatO) * FloatS;
 	float NearPlaneSlice = FMath::Log2(NearPlane*FloatB + FloatO) * FloatS;
 	float FSlice = FMath::Log2(FloatF*FloatB + FloatO) * FloatS;
+
+	// [ASTRO-VOLFOG] Z-layer depth gradient debug: log froxel z-slice boundaries and
+	// the exponential depth distribution parameters driving the gradient remap.
+	// Gradient is computed per-froxel: NormalizedZ = (slice / GridSizeZ), then remapped
+	// through the log2 inverse to produce a smooth near-to-far density gradient for
+	// the cell pub-sub volume fog compositing layer.
+	UE_LOG(LogRenderer, VeryVerbose,
+		TEXT("[ASTRO-VOLFOG] ZGradient params: GridSizeZ=%d Near=%.2f Far=%.2f "
+			 "B=%.6f O=%.6f S=%.2f | SliceN=%.3f SliceNear=%.3f SliceF=%.3f"),
+		GridSizeZ, (float)N, FloatF, FloatB, FloatO, FloatS,
+		NSlice, NearPlaneSlice, FSlice);
 	// y = log2(z*B + O) * S
 	// f(N) = 0 = log2(N*B + O) * S
 	// 1 = N*B + O
@@ -984,6 +995,17 @@ void FDeferredShadingSceneRenderer::ComputeVolumetricFog(FRHICommandListImmediat
 
 			const FIntVector VolumetricFogGridSize = GetVolumetricFogGridSize(View.ViewRect.Size());
 			const FVector GridZParams = GetVolumetricFogGridZParams(View.NearClippingDistance, FogInfo.VolumetricFogDistance, VolumetricFogGridSize.Z);
+
+			// [ASTRO-VOLFOG] Per-view z-layer depth gradient: emit grid resolution and ZParams
+			// so downstream cell pub-sub consumers can reconstruct the per-froxel depth gradient.
+			// GridZParams = (B, O, S) — the exponential remap coefficients for z-slice → world depth.
+			UE_LOG(LogRenderer, VeryVerbose,
+				TEXT("[ASTRO-VOLFOG] View[%d] GridSize=(%d,%d,%d) ZParams=(B=%.6f,O=%.6f,S=%.2f) "
+					 "Near=%.2f FogDist=%.2f"),
+				ViewIndex,
+				VolumetricFogGridSize.X, VolumetricFogGridSize.Y, VolumetricFogGridSize.Z,
+				GridZParams.X, GridZParams.Y, GridZParams.Z,
+				View.NearClippingDistance, FogInfo.VolumetricFogDistance);
 
 			//@DW - graph todo
 			//SCOPED_DRAW_EVENT(RHICmdList, VolumetricFog);
