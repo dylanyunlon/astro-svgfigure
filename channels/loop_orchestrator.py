@@ -1295,11 +1295,295 @@ def assemble_final_svg():
     return output_path
 
 
+# =============================================================================
+# [ASTRO] EpochSnapshotManager
+# Python port of FAstroEpochSnapshotManager from
+# upstream/unreal-renderer/SceneCaptureRendering.cpp commit d31c85e.
+#
+# Mapping:
+#   FAstroCellGroupSnapshot  → EpochSnapshot  (dict-based, JSON-serialisable)
+#   FAstroCellState          → per-cell dict read from cell/*/bbox.json
+#   CaptureEpochSnapshot()   → EpochSnapshotManager.capture()
+#   DiffSnapshots()          → EpochSnapshotManager.diff()
+#   RollbackToSnapshot()     → EpochSnapshotManager.rollback()
+#
+# Divergence guard (Python addition):
+#   total_force = sum of |dx|+|dy| across all cells in physics/force_field.json.
+#   If epoch N total_force > epoch N-1 → diverging → rollback to N-1 snapshot.
+#
+# Ring buffer capacity mirrors kMaxSnapshotHistory = 16 in the C++ source.
+# =============================================================================
+
+import time as _time
+
+
+class EpochSnapshotManager:
+    """
+    Epoch snapshot manager — serialize / diff / rollback cell group state
+    across epochs.  Ported from FAstroEpochSnapshotManager (d31c85e).
+
+    Each snapshot is:
+        {
+          "epoch":    <int>,
+          "ts":       <float ms>,
+          "checksum": <int>,
+          "cells": {
+              "<cell_id>": { ...bbox fields... }
+          },
+          "total_force": <float>   # sum of |dx|+|dy| across all cells
+        }
+
+    Ring buffer of capacity MAX_HISTORY; oldest entry is overwritten when full,
+    mirroring the (HistoryHead + 1) % kMaxSnapshotHistory scheme in C++.
+    """
+
+    MAX_HISTORY = 16
+
+    def __init__(self, channels_root: str) -> None:
+        self._root       = channels_root
+        self._history: list = []   # ordered oldest→newest, max MAX_HISTORY entries
+        self._current_epoch: int = 0
+
+    # ------------------------------------------------------------------
+    # _compute_checksum
+    # XOR-fold over cell IDs + bbox epoch field, mirrors ComputeChecksum()
+    # in FAstroCellGroupSnapshot: rotate-left-7 per char, rotate-left-13
+    # per LastEpochIndex.  Python integers are unbounded, so we mask to
+    # uint32 at each step with & 0xFFFFFFFF.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_checksum(cells: dict) -> int:
+        crc = 0x5A5A5A5A
+        for cell_id in sorted(cells):
+            for ch in cell_id:
+                crc ^= ord(ch)
+                crc  = ((crc << 7) | (crc >> 25)) & 0xFFFFFFFF
+            epoch_val = cells[cell_id].get("epoch", 0)
+            crc ^= epoch_val & 0xFFFFFFFF
+            crc  = ((crc << 13) | (crc >> 19)) & 0xFFFFFFFF
+        return crc
+
+    # ------------------------------------------------------------------
+    # _read_cells
+    # Read all cell/*/bbox.json files → dict keyed by cell_id.
+    # Analogous to the InCells parameter passed to CaptureEpochSnapshot().
+    # ------------------------------------------------------------------
+    def _read_cells(self) -> dict:
+        pattern = os.path.join(self._root, "cell", "*", "bbox.json")
+        cells = {}
+        for bf in sorted(glob.glob(pattern)):
+            cell_id = os.path.basename(os.path.dirname(bf))
+            with open(bf) as f:
+                cells[cell_id] = json.load(f)
+        return cells
+
+    # ------------------------------------------------------------------
+    # _read_total_force
+    # Compute total_force = Σ |dx| + |dy| from physics/force_field.json.
+    # Used for divergence detection (Python extension, no direct C++ analog
+    # but driven by the same intent as the "roll back on divergence" comment
+    # in the Rollback block of the original source).
+    # ------------------------------------------------------------------
+    def _read_total_force(self) -> float:
+        ff_path = os.path.join(self._root, "physics", "force_field.json")
+        if not os.path.exists(ff_path):
+            return 0.0
+        with open(ff_path) as f:
+            ff = json.load(f)
+        total = 0.0
+        for v in ff.values():
+            total += abs(v.get("dx", 0.0)) + abs(v.get("dy", 0.0))
+        return total
+
+    # ------------------------------------------------------------------
+    # capture
+    # Serialize current cell group state → snapshot → push into ring buffer.
+    # Returns the snapshot dict (caller may persist / transmit it).
+    # Mirrors CaptureEpochSnapshot() including the fprintf progress log.
+    # ------------------------------------------------------------------
+    def capture(self) -> dict:
+        cells     = self._read_cells()
+        checksum  = self._compute_checksum(cells)
+        ts_ms     = _time.time() * 1000.0
+        total_force = self._read_total_force()
+
+        snap = {
+            "epoch":       self._current_epoch,
+            "ts":          ts_ms,
+            "checksum":    checksum,
+            "cells":       cells,
+            "total_force": total_force,
+        }
+
+        # Ring buffer: drop oldest when full, mirrors HistoryHead wrap-around.
+        self._history.append(snap)
+        if len(self._history) > self.MAX_HISTORY:
+            self._history.pop(0)
+
+        print(
+            f"[ASTRO-EPOCH] capture: epoch={snap['epoch']} "
+            f"cells={len(cells)} checksum=0x{checksum:08X} "
+            f"total_force={total_force:.2f} ts={ts_ms:.0f}"
+        )
+        self._current_epoch += 1
+        return snap
+
+    # ------------------------------------------------------------------
+    # diff
+    # Compute Added / Removed / Modified entries between two epoch snapshots.
+    # Mirrors DiffSnapshots(): fast-path on checksum equality, then field-level
+    # comparison for every cell.  Returns list of dicts:
+    #   {"cell_id": ..., "change": "added"|"removed"|"modified",
+    #    "changed_fields": [...]}   # changed_fields only for "modified"
+    # ------------------------------------------------------------------
+    def diff(self, epoch_a: int, epoch_b: int) -> list:
+        snap_a = self._find_snapshot(epoch_a)
+        snap_b = self._find_snapshot(epoch_b)
+
+        if snap_a is None or snap_b is None:
+            print(
+                f"[ASTRO-EPOCH] diff: snapshot not found for epoch "
+                f"{epoch_a} or {epoch_b}"
+            )
+            return []
+
+        # Fast path: identical checksum → no diff (mirrors C++ early return).
+        if snap_a["checksum"] == snap_b["checksum"]:
+            print(
+                f"[ASTRO-EPOCH] diff: epoch {epoch_a}→{epoch_b} "
+                f"checksum match, no diff"
+            )
+            return []
+
+        cells_a = snap_a["cells"]
+        cells_b = snap_b["cells"]
+        entries = []
+
+        # Added / Modified (iterate new snapshot, same as C++ SeenIDs pattern)
+        seen = set()
+        for cell_id, state_b in cells_b.items():
+            seen.add(cell_id)
+            if cell_id not in cells_a:
+                entries.append({"cell_id": cell_id, "change": "added", "changed_fields": []})
+            else:
+                state_a = cells_a[cell_id]
+                # Compare every field present in either snapshot
+                all_keys = set(state_a) | set(state_b)
+                changed  = [
+                    k for k in sorted(all_keys)
+                    if state_a.get(k) != state_b.get(k)
+                ]
+                if changed:
+                    entries.append({
+                        "cell_id":       cell_id,
+                        "change":        "modified",
+                        "changed_fields": changed,
+                    })
+
+        # Removed (in old but not new, mirrors C++ Removed scan)
+        for cell_id in cells_a:
+            if cell_id not in seen:
+                entries.append({"cell_id": cell_id, "change": "removed", "changed_fields": []})
+
+        print(
+            f"[ASTRO-EPOCH] diff: epoch {epoch_a}→{epoch_b} "
+            f"diff_entries={len(entries)}"
+        )
+        return entries
+
+    # ------------------------------------------------------------------
+    # check_divergence
+    # Compare total_force of the two most recent snapshots.
+    # If epoch N > epoch N-1 the loop is diverging: rollback to N-1 and
+    # return True so run_loop() can skip the convergence check this round.
+    # ------------------------------------------------------------------
+    def check_divergence(self) -> bool:
+        if len(self._history) < 2:
+            return False
+
+        snap_new  = self._history[-1]
+        snap_prev = self._history[-2]
+
+        force_new  = snap_new["total_force"]
+        force_prev = snap_prev["total_force"]
+
+        if force_new > force_prev:
+            print(
+                f"[ASTRO-EPOCH] DIVERGENCE detected: "
+                f"epoch {snap_new['epoch']} force={force_new:.2f} > "
+                f"epoch {snap_prev['epoch']} force={force_prev:.2f} — "
+                f"rolling back to epoch {snap_prev['epoch']}"
+            )
+            self.rollback(snap_prev["epoch"])
+            return True
+
+        print(
+            f"[ASTRO-EPOCH] convergence OK: "
+            f"force {force_prev:.2f}→{force_new:.2f}"
+        )
+        return False
+
+    # ------------------------------------------------------------------
+    # rollback
+    # Restore cell/*/bbox.json files from the target epoch snapshot and
+    # rewind _current_epoch to target+1.
+    # Mirrors RollbackToSnapshot(): OutCells = Snap->Cells; CurrentEpoch = target+1.
+    # ------------------------------------------------------------------
+    def rollback(self, target_epoch: int) -> bool:
+        snap = self._find_snapshot(target_epoch)
+        if snap is None:
+            print(
+                f"[ASTRO-EPOCH] rollback: epoch {target_epoch} not in history "
+                f"(history_count={len(self._history)})"
+            )
+            return False
+
+        # Write restored cell states back to bbox.json files.
+        for cell_id, state in snap["cells"].items():
+            bbox_path = os.path.join(self._root, "cell", cell_id, "bbox.json")
+            if os.path.exists(os.path.dirname(bbox_path)):
+                with open(bbox_path, "w") as f:
+                    json.dump(state, f, indent=2)
+
+        # Rewind epoch counter, exactly as C++ CurrentEpoch = TargetEpoch + 1.
+        self._current_epoch = target_epoch + 1
+        # Trim history to exclude snapshots after the rollback target.
+        self._history = [s for s in self._history if s["epoch"] <= target_epoch]
+
+        print(
+            f"[ASTRO-EPOCH] rollback: restored epoch={target_epoch} "
+            f"cells={len(snap['cells'])}"
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # _find_snapshot  (mirrors FindSnapshot — linear scan, O(N), N ≤ 16)
+    # ------------------------------------------------------------------
+    def _find_snapshot(self, epoch_idx: int):
+        # Scan from newest to oldest, mirrors C++ (HistoryHead-1-i) traversal.
+        for snap in reversed(self._history):
+            if snap["epoch"] == epoch_idx:
+                return snap
+        return None
+
+    @property
+    def current_epoch(self) -> int:
+        return self._current_epoch
+
+    @property
+    def history_count(self) -> int:
+        return len(self._history)
+
+
 def run_loop(max_epochs=5):
     """Main pub/sub loop."""
     print("=" * 60)
     print("astro-svgfigure Cell Pub/Sub Loop")
     print("=" * 60)
+
+    # [ASTRO] Instantiate epoch snapshot manager (mirrors GAstroSnapshotManager
+    # module-level singleton in SceneCaptureRendering.cpp d31c85e).
+    snapshot = EpochSnapshotManager(CHANNELS)
 
     for epoch in range(max_epochs):
         print(f"\n--- Epoch {epoch} ---")
@@ -1313,14 +1597,35 @@ def run_loop(max_epochs=5):
         # 2. Physics engine computes forces
         collisions = physics_engine()
 
-        # 3. Convergence check
+        # 3. [ASTRO] Capture epoch snapshot — serialize all cell/*/bbox.json
+        #    into ring buffer. Mirrors CaptureEpochSnapshot() call site in
+        #    FScene::UpdateSceneCaptureContents() (d31c85e).
+        snap = snapshot.capture()
+
+        # Emit diff vs previous epoch when history is deep enough.
+        # Mirrors the DiffSnapshots block added in d31c85e.
+        if snapshot.history_count >= 2:
+            diff_entries = snapshot.diff(snap["epoch"] - 1, snap["epoch"])
+            if diff_entries:
+                print(
+                    f"[ASTRO-EPOCH] {len(diff_entries)} cell(s) changed "
+                    f"since epoch {snap['epoch'] - 1}"
+                )
+
+        # 4. [ASTRO] Divergence guard — if total_force grew, rollback and skip
+        #    convergence check this round (cell states already restored).
+        if snapshot.check_divergence():
+            print(f"[ASTRO-EPOCH] Epoch {epoch} rolled back; retrying next iteration.")
+            continue
+
+        # 5. Convergence check
         if convergence_judge():
             print(f"\n✓ Converged at epoch {epoch}!")
             break
     else:
         print(f"\n⚠ Max epochs ({max_epochs}) reached without full convergence")
 
-    # 4. Assemble final SVG
+    # 6. Assemble final SVG
     write_channel("skeleton/epoch.json", {
         "current": epoch, "max": max_epochs, "status": "converged"
     })
