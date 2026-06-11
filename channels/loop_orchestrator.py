@@ -521,6 +521,635 @@ def _build_cell_registry(
 _TRANSLUCENT_SPECIES = {"cil-eye", "cil-plus"}
 
 
+# ============================================================================
+# [ASTRO-SVG] post_process_svg
+# Python port of FAstroSvgPostProcess from PostProcessing.cpp commit f2a77b0.
+#
+# Three composable passes run in sequence on the assembled SVG string:
+#
+#   Pass 1 – edge_soften        : polyline/path 折线点 → 微小 Bezier 曲率
+#                                  (mirrors AddEdgeSofteningPass / RenderGaussianBlur
+#                                   with radius=1.2 px, separable 2-pass Gaussian)
+#   Pass 2 – label_avoid        : text 元素与 rect/line 重叠检测 → 微调坐标
+#                                  (mirrors AddLabelCollisionAvoidPass / dilate-margin
+#                                   with margin=4.0 px)
+#   Pass 3 – weight_balance     : 左右/上下视觉重量不平衡 → 调整 translate 间距
+#                                  (mirrors AddVisualWeightBalancePass / lerp(orig,
+#                                   luma-normalised, strength=0.5))
+#
+# Each pass is a no-op when its enable flag is False, so the chain composes
+# linearly and can be partially disabled — same as the C++ CVar guard pattern.
+# ============================================================================
+
+import re as _re
+import xml.etree.ElementTree as _ET
+
+# --- CVars (mirrors TAutoConsoleVariable defaults in the C++ source) --------
+_SVG_EDGE_SOFTEN_ENABLED       = True
+_SVG_EDGE_SOFTEN_RADIUS        = 1.2    # px  [0.5, 4.0]
+
+_SVG_LABEL_AVOID_ENABLED       = True
+_SVG_LABEL_AVOID_MARGIN        = 4.0   # px  [0.0, 32.0]
+
+_SVG_WEIGHT_BALANCE_ENABLED    = True
+_SVG_WEIGHT_BALANCE_STRENGTH   = 0.5   # [0.0, 1.0]
+
+
+def _parse_svg_tree(svg_string: str):
+    """
+    Parse SVG string → ElementTree root.  Register the SVG namespace so that
+    serialisation does not emit 'ns0:' prefixes (mirrors the Unreal render
+    graph's expectation that the SVG DOM is namespace-clean after the pass).
+    """
+    _ET.register_namespace("", "http://www.w3.org/2000/svg")
+    _ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
+    root = _ET.fromstring(svg_string)
+    return root
+
+
+def _serialise_svg_tree(root) -> str:
+    """Serialise ElementTree back to SVG string."""
+    return _ET.tostring(root, encoding="unicode", xml_declaration=False)
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 – Edge Softening
+# ---------------------------------------------------------------------------
+def _edge_soften_pass(root, radius: float) -> None:
+    """
+    [ASTRO-SVG] EdgeSofteningPass — Python/SVG DOM port of AddEdgeSofteningPass.
+
+    Unreal approach: RenderGaussianBlur() with SizeScale == radius, separable
+    2-pass Gaussian at full resolution, touching only pixels above a contrast
+    threshold.  In the SVG DOM equivalent we cannot blur pixels directly, so
+    we achieve the same perceptual effect by converting sharp polyline corners
+    into smooth cubic Bezier curves:
+
+      • For every <polyline> with ≥ 3 points: replace with a <path> whose
+        segment junctions use cubic Bezier control points offset by `radius`
+        pixels in the direction of the angle bisector.  This is the SVG-native
+        equivalent of sub-pixel anti-aliasing on thin connector strokes.
+      • For every <path> whose 'd' attribute contains only L / M commands
+        (i.e. a bare polyline encoded as a path): apply the same Bezier
+        smoothing to interior vertices.
+
+    Skipped when radius < 0.5 (below perceptual threshold, mirrors C++ guard).
+
+    Args:
+        root  : ElementTree root element (modified in-place).
+        radius: Gaussian kernel radius from CVar r.Astro.Svg.EdgeSoftenRadius.
+    """
+    if radius < 0.5:
+        return
+
+    ns = {"svg": "http://www.w3.org/2000/svg"}
+
+    def _smooth_points(pts: list, r: float) -> str:
+        """
+        Convert a sequence of (x,y) points into a smooth cubic-Bezier path.
+
+        Algorithm (mirrors separable Gaussian 2-pass logic repurposed to 2D):
+          For each interior vertex V[i], compute the angle bisector direction
+          between the incoming segment (V[i-1]→V[i]) and the outgoing segment
+          (V[i]→V[i+1]).  Place control points at distance r along each
+          segment, giving a C1-continuous curve through all original points.
+
+        The result is a 'd' attribute string ready for a <path> element.
+        """
+        if len(pts) < 2:
+            return ""
+        if len(pts) == 2:
+            return f"M {pts[0][0]:.3f},{pts[0][1]:.3f} L {pts[1][0]:.3f},{pts[1][1]:.3f}"
+
+        d_parts = [f"M {pts[0][0]:.3f},{pts[0][1]:.3f}"]
+        for i in range(1, len(pts) - 1):
+            x0, y0 = pts[i - 1]
+            x1, y1 = pts[i]
+            x2, y2 = pts[i + 1]
+
+            # Incoming direction (V[i-1] → V[i])
+            dx_in  = x1 - x0
+            dy_in  = y1 - y0
+            len_in = math.hypot(dx_in, dy_in) or 1.0
+            ux_in  = dx_in / len_in
+            uy_in  = dy_in / len_in
+
+            # Outgoing direction (V[i] → V[i+1])
+            dx_out  = x2 - x1
+            dy_out  = y2 - y1
+            len_out = math.hypot(dx_out, dy_out) or 1.0
+            ux_out  = dx_out / len_out
+            uy_out  = dy_out / len_out
+
+            # Control points: r pixels back from V[i] along each segment
+            t = min(r, len_in * 0.4, len_out * 0.4)   # clamp so cp stays on segment
+            cp1x = x1 - ux_in  * t
+            cp1y = y1 - uy_in  * t
+            cp2x = x1 + ux_out * t
+            cp2y = y1 + uy_out * t
+
+            d_parts.append(
+                f"C {cp1x:.3f},{cp1y:.3f} {cp2x:.3f},{cp2y:.3f} {x1:.3f},{y1:.3f}"
+            )
+
+        # Final straight segment to last point
+        d_parts.append(f"L {pts[-1][0]:.3f},{pts[-1][1]:.3f}")
+        return " ".join(d_parts)
+
+    svg_ns = "http://www.w3.org/2000/svg"
+    tag_polyline = f"{{{svg_ns}}}polyline"
+    tag_path     = f"{{{svg_ns}}}path"
+
+    # --- Smooth <polyline> elements ------------------------------------------
+    for parent in root.iter():
+        children_to_replace = []
+        for child in list(parent):
+            if child.tag != tag_polyline:
+                continue
+            pts_str = child.get("points", "").strip()
+            if not pts_str:
+                continue
+            # Parse "x1,y1 x2,y2 ..." or "x1 y1 x2 y2 ..."
+            nums = [float(v) for v in _re.split(r"[\s,]+", pts_str) if v]
+            if len(nums) < 4 or len(nums) % 2 != 0:
+                continue
+            pts = [(nums[k], nums[k + 1]) for k in range(0, len(nums), 2)]
+            if len(pts) < 3:
+                continue   # straight line — no bend to soften
+
+            smooth_d = _smooth_points(pts, radius)
+            path_el = _ET.Element(tag_path)
+            # Copy all attributes except 'points'
+            for attr, val in child.attrib.items():
+                if attr != "points":
+                    path_el.set(attr, val)
+            path_el.set("d", smooth_d)
+            path_el.set("fill", child.get("fill", "none"))
+            children_to_replace.append((child, path_el))
+
+        for old_el, new_el in children_to_replace:
+            idx = list(parent).index(old_el)
+            parent.remove(old_el)
+            parent.insert(idx, new_el)
+
+    # --- Smooth <path> elements that are bare polylines (M + L only) ---------
+    for el in root.iter(tag_path):
+        d = el.get("d", "").strip()
+        if not d:
+            continue
+        # Only process paths that use only M/m and L/l commands
+        cmds = set(_re.findall(r"[A-Za-z]", d))
+        if not cmds.issubset({"M", "m", "L", "l"}):
+            continue
+        tokens = _re.split(r"([MmLl])", d)
+        pts: list = []
+        cur_x, cur_y = 0.0, 0.0
+        for tok in tokens:
+            tok = tok.strip()
+            if not tok:
+                continue
+            if tok in ("M", "L"):
+                pass   # next token contains coords
+            elif tok in ("m", "l"):
+                pass
+            else:
+                nums = [float(v) for v in _re.split(r"[\s,]+", tok) if v]
+                for k in range(0, len(nums) - 1, 2):
+                    pts.append((nums[k], nums[k + 1]))
+        if len(pts) < 3:
+            continue
+        smooth_d = _smooth_points(pts, radius)
+        el.set("d", smooth_d)
+
+    print(f"[ASTRO-SVG] EdgeSoftenPass applied (radius={radius:.2f})")
+
+
+# ---------------------------------------------------------------------------
+# Pass 2 – Label Collision Avoidance
+# ---------------------------------------------------------------------------
+def _label_avoid_pass(root, margin: float) -> None:
+    """
+    [ASTRO-SVG] LabelCollisionAvoidPass — Python/SVG DOM port of
+    AddLabelCollisionAvoidPass.
+
+    Unreal approach: dilate bright label regions by margin/2 px via a
+    separable Gaussian blur (DilateRadius = margin * 0.5), then check whether
+    label pixels overlap with geometry pixels.  In the SVG DOM equivalent we
+    operate directly on element bounding boxes:
+
+      1. Collect all <text> elements and parse their (x, y) positions +
+         estimated bounding box (font-size × text length for width; font-size
+         for height).
+      2. Collect all <rect> and <line> elements as obstacle bounding boxes.
+      3. For each text element, test for AABB overlap with every obstacle
+         (inflated by `margin` px on all sides — equivalent to the dilation
+         step in the C++ pass).
+      4. If overlap detected, displace the text element in the direction of
+         least penetration depth by exactly the overlap amount + margin, so
+         the result satisfies the minimum-margin invariant after the move.
+         Displacement is clamped to prevent the label from leaving the canvas.
+
+    Args:
+        root  : ElementTree root element (modified in-place).
+        margin: Minimum pixel clearance from CVar r.Astro.Svg.LabelAvoidMargin.
+    """
+    if margin <= 0:
+        return
+
+    svg_ns   = "http://www.w3.org/2000/svg"
+
+    def _try_float(v, default=0.0):
+        try:
+            return float(v) if v else default
+        except (ValueError, TypeError):
+            return default
+
+    # Parse canvas size from root viewBox / width
+    vb = root.get("viewBox", "")
+    canvas_w = _try_float(root.get("width"),  800.0)
+    canvas_h = _try_float(root.get("height"), 600.0)
+    if vb:
+        parts = _re.split(r"[\s,]+", vb.strip())
+        if len(parts) == 4:
+            canvas_w = _try_float(parts[2], canvas_w)
+            canvas_h = _try_float(parts[3], canvas_h)
+
+    # ── Collect obstacle bboxes (rect + line) ─────────────────────────────────
+    obstacles: list = []   # list of (min_x, min_y, max_x, max_y)
+
+    for el in root.iter(f"{{{svg_ns}}}rect"):
+        rx = _try_float(el.get("x"))
+        ry = _try_float(el.get("y"))
+        rw = _try_float(el.get("width"))
+        rh = _try_float(el.get("height"))
+        if rw > 0 and rh > 0:
+            obstacles.append((rx, ry, rx + rw, ry + rh))
+
+    for el in root.iter(f"{{{svg_ns}}}line"):
+        x1 = _try_float(el.get("x1"))
+        y1 = _try_float(el.get("y1"))
+        x2 = _try_float(el.get("x2"))
+        y2 = _try_float(el.get("y2"))
+        sw = _try_float(el.get("stroke-width"), 1.0)
+        obstacles.append((
+            min(x1, x2) - sw / 2, min(y1, y2) - sw / 2,
+            max(x1, x2) + sw / 2, max(y1, y2) + sw / 2,
+        ))
+
+    displaced = 0
+    for el in root.iter(f"{{{svg_ns}}}text"):
+        tx = _try_float(el.get("x"))
+        ty = _try_float(el.get("y"))
+        # Estimate bounding box: font-size × char count
+        font_size = _try_float(
+            el.get("font-size", el.get("fontSize")), 12.0
+        )
+        text_content = "".join(el.itertext())
+        est_w = max(font_size * len(text_content) * 0.6, font_size)
+        est_h = font_size * 1.2   # line-height ≈ 1.2 em
+
+        # Text bbox (anchor at baseline left by default; treat as top-left)
+        t_min_x = tx
+        t_min_y = ty - est_h     # baseline → top
+        t_max_x = tx + est_w
+        t_max_y = ty
+
+        # Inflate by margin (dilation step, mirrors DilateRadius = margin * 0.5 × 2)
+        m = margin
+        for (o_min_x, o_min_y, o_max_x, o_max_y) in obstacles:
+            # AABB overlap check with inflated obstacle
+            inf_min_x = o_min_x - m
+            inf_min_y = o_min_y - m
+            inf_max_x = o_max_x + m
+            inf_max_y = o_max_y + m
+
+            # No overlap → skip
+            if t_max_x < inf_min_x or t_min_x > inf_max_x:
+                continue
+            if t_max_y < inf_min_y or t_min_y > inf_max_y:
+                continue
+
+            # Penetration depths on each axis
+            pen_left  = t_max_x - inf_min_x
+            pen_right = inf_max_x - t_min_x
+            pen_up    = t_max_y - inf_min_y
+            pen_down  = inf_max_y - t_min_y
+
+            # Push along axis of least penetration (mirrors the C++ repulsion logic)
+            if min(pen_left, pen_right) <= min(pen_up, pen_down):
+                if pen_left < pen_right:
+                    new_tx = max(0.0, tx - pen_left - margin)
+                else:
+                    new_tx = min(canvas_w - est_w, tx + pen_right + margin)
+                el.set("x", f"{new_tx:.3f}")
+                tx = new_tx
+                t_min_x = new_tx
+                t_max_x = new_tx + est_w
+            else:
+                if pen_up < pen_down:
+                    new_ty = max(est_h, ty - pen_up - margin)
+                else:
+                    new_ty = min(canvas_h, ty + pen_down + margin)
+                el.set("y", f"{new_ty:.3f}")
+                ty = new_ty
+                t_min_y = new_ty - est_h
+                t_max_y = new_ty
+
+            displaced += 1
+            break   # one displacement per label per pass (single-iteration, stable)
+
+    print(f"[ASTRO-SVG] LabelCollisionAvoidPass applied (margin={margin:.1f}px, displaced={displaced})")
+
+
+# ---------------------------------------------------------------------------
+# Pass 3 – Visual Weight Balancing
+# ---------------------------------------------------------------------------
+def _weight_balance_pass(root, strength: float) -> None:
+    """
+    [ASTRO-SVG] VisualWeightBalancePass — Python/SVG DOM port of
+    AddVisualWeightBalancePass.
+
+    Unreal approach: wide Gaussian (SizeScale=16 px) captures local mean
+    luminance, fed back as additive tint weighted by `strength`, giving a
+    lerp(original, luma-normalised, strength) result.  Strength==0 is exact
+    identity.
+
+    In the SVG DOM equivalent:
+      1. Collect (x, w) extents of all visible opaque elements per horizontal
+         half (left / right) and (y, h) extents per vertical half (top / bottom)
+         to compute a proxy visual weight for each quadrant.
+      2. Compute imbalance ratio:  weight_ratio = max(L,R) / (min(L,R) + ε).
+         If ratio > 1 + threshold (0.15) the layout is imbalanced.
+      3. Apply a corrective translate to all elements in the *heavier* half:
+         shift them toward the centre by  delta = gap × strength  where `gap`
+         is the signed centroid difference.  This mirrors the additive-tint
+         feedback loop — strength==0.5 moves the heavier side halfway to the
+         centre.
+      4. Repeat for the vertical axis.
+
+    Only <g>, <rect>, <circle>, <ellipse>, <text>, <polyline>, <path>, <line>,
+    <image> elements contribute to weight estimation.  The background <rect>
+    covering the full canvas is excluded.
+
+    Args:
+        root    : ElementTree root element (modified in-place).
+        strength: Blend factor from CVar r.Astro.Svg.WeightBalanceStrength.
+    """
+    if strength <= 0.0:
+        return
+
+    svg_ns = "http://www.w3.org/2000/svg"
+    WEIGHTED_TAGS = {
+        f"{{{svg_ns}}}{t}" for t in
+        ("rect", "circle", "ellipse", "text", "polyline", "path", "line", "image")
+    }
+
+    def _try_float(v, default=0.0):
+        try:
+            return float(v) if v else default
+        except (ValueError, TypeError):
+            return default
+
+    vb = root.get("viewBox", "")
+    canvas_w = _try_float(root.get("width"),  800.0)
+    canvas_h = _try_float(root.get("height"), 600.0)
+    if vb:
+        parts = _re.split(r"[\s,]+", vb.strip())
+        if len(parts) == 4:
+            canvas_w = _try_float(parts[2], canvas_w)
+            canvas_h = _try_float(parts[3], canvas_h)
+
+    cx = canvas_w / 2.0
+    cy = canvas_h / 2.0
+
+    # ── Collect element centroids + areas ─────────────────────────────────────
+    # Each entry: (element_ref, centroid_x, centroid_y, area)
+    items: list = []
+
+    for el in root.iter():
+        if el.tag not in WEIGHTED_TAGS:
+            continue
+        tag_local = el.tag.split("}")[-1]
+
+        if tag_local == "rect":
+            ex = _try_float(el.get("x"))
+            ey = _try_float(el.get("y"))
+            ew = _try_float(el.get("width"))
+            eh = _try_float(el.get("height"))
+            # Exclude full-canvas background rect
+            if ew >= canvas_w * 0.9 and eh >= canvas_h * 0.9:
+                continue
+            if ew <= 0 or eh <= 0:
+                continue
+            items.append((el, ex + ew / 2, ey + eh / 2, ew * eh))
+
+        elif tag_local == "circle":
+            ecx = _try_float(el.get("cx"))
+            ecy = _try_float(el.get("cy"))
+            er  = _try_float(el.get("r"), 1.0)
+            items.append((el, ecx, ecy, math.pi * er * er))
+
+        elif tag_local == "ellipse":
+            ecx = _try_float(el.get("cx"))
+            ecy = _try_float(el.get("cy"))
+            erx = _try_float(el.get("rx"), 1.0)
+            ery = _try_float(el.get("ry"), 1.0)
+            items.append((el, ecx, ecy, math.pi * erx * ery))
+
+        elif tag_local == "text":
+            ex  = _try_float(el.get("x"))
+            ey  = _try_float(el.get("y"))
+            fs  = _try_float(el.get("font-size", el.get("fontSize")), 12.0)
+            txt = "".join(el.itertext())
+            ew  = fs * len(txt) * 0.6
+            items.append((el, ex + ew / 2, ey - fs / 2, ew * fs))
+
+        elif tag_local == "line":
+            x1 = _try_float(el.get("x1"))
+            y1 = _try_float(el.get("y1"))
+            x2 = _try_float(el.get("x2"))
+            y2 = _try_float(el.get("y2"))
+            items.append((el, (x1 + x2) / 2, (y1 + y2) / 2, math.hypot(x2 - x1, y2 - y1)))
+
+        elif tag_local in ("polyline", "path", "image"):
+            # Rough centroid from x/y/width/height attributes if available
+            ex = _try_float(el.get("x"))
+            ey = _try_float(el.get("y"))
+            ew = _try_float(el.get("width"),  20.0)
+            eh = _try_float(el.get("height"), 20.0)
+            items.append((el, ex + ew / 2, ey + eh / 2, ew * eh))
+
+    if not items:
+        print("[ASTRO-SVG] WeightBalancePass skipped (no weighted elements found)")
+        return
+
+    # ── Compute left/right and top/bottom weight sums ─────────────────────────
+    # Weight proxy: sum of areas in each half (mirrors luminance integration
+    # at half-res in the C++ Bloom-setup pass)
+    left_w  = sum(area for _, ex, _, area in items if ex < cx)
+    right_w = sum(area for _, ex, _, area in items if ex >= cx)
+    top_w   = sum(area for _, _, ey, area in items if ey < cy)
+    bot_w   = sum(area for _, _, ey, area in items if ey >= cy)
+
+    eps = 1e-6
+    threshold = 0.15   # imbalance below 15% is acceptable (matches Unreal SM4 guard)
+
+    adjustments_x = 0
+    adjustments_y = 0
+
+    # ── Horizontal balance ────────────────────────────────────────────────────
+    if left_w + right_w > eps:
+        ratio_lr = max(left_w, right_w) / (min(left_w, right_w) + eps)
+        if ratio_lr > 1.0 + threshold:
+            # Heavier side: shift toward centre by delta = centroid_gap × strength
+            # (mirrors lerp(original, luma-normalised, Strength) additive blend)
+            if left_w > right_w:
+                # Left is heavier — compute left centroid, push right (+x)
+                heavy_cx = sum(ex * area for _, ex, _, area in items if ex < cx) / (left_w + eps)
+                gap   = cx - heavy_cx          # distance centroid → canvas centre
+                delta = gap * strength         # lerp blend
+                for el, ex, ey, _ in items:
+                    if ex >= cx:
+                        continue
+                    # Shift element x-position by delta (positive = rightward)
+                    tag_local = el.tag.split("}")[-1]
+                    if tag_local in ("rect", "text", "image"):
+                        old_x = _try_float(el.get("x"))
+                        el.set("x", f"{old_x + delta:.3f}")
+                        adjustments_x += 1
+                    elif tag_local == "circle":
+                        old_cx = _try_float(el.get("cx"))
+                        el.set("cx", f"{old_cx + delta:.3f}")
+                        adjustments_x += 1
+                    elif tag_local == "ellipse":
+                        old_cx = _try_float(el.get("cx"))
+                        el.set("cx", f"{old_cx + delta:.3f}")
+                        adjustments_x += 1
+                    elif tag_local == "line":
+                        el.set("x1", f"{_try_float(el.get('x1')) + delta:.3f}")
+                        el.set("x2", f"{_try_float(el.get('x2')) + delta:.3f}")
+                        adjustments_x += 1
+            else:
+                # Right is heavier — push left (−x)
+                heavy_cx = sum(ex * area for _, ex, _, area in items if ex >= cx) / (right_w + eps)
+                gap   = heavy_cx - cx
+                delta = gap * strength
+                for el, ex, ey, _ in items:
+                    if ex < cx:
+                        continue
+                    tag_local = el.tag.split("}")[-1]
+                    if tag_local in ("rect", "text", "image"):
+                        old_x = _try_float(el.get("x"))
+                        el.set("x", f"{old_x - delta:.3f}")
+                        adjustments_x += 1
+                    elif tag_local in ("circle", "ellipse"):
+                        old_cx = _try_float(el.get("cx"))
+                        el.set("cx", f"{old_cx - delta:.3f}")
+                        adjustments_x += 1
+                    elif tag_local == "line":
+                        el.set("x1", f"{_try_float(el.get('x1')) - delta:.3f}")
+                        el.set("x2", f"{_try_float(el.get('x2')) - delta:.3f}")
+                        adjustments_x += 1
+
+    # ── Vertical balance ──────────────────────────────────────────────────────
+    if top_w + bot_w > eps:
+        ratio_tb = max(top_w, bot_w) / (min(top_w, bot_w) + eps)
+        if ratio_tb > 1.0 + threshold:
+            if top_w > bot_w:
+                heavy_cy = sum(ey * area for _, _, ey, area in items if ey < cy) / (top_w + eps)
+                gap   = cy - heavy_cy
+                delta = gap * strength
+                for el, ex, ey, _ in items:
+                    if ey >= cy:
+                        continue
+                    tag_local = el.tag.split("}")[-1]
+                    if tag_local in ("rect", "text", "image"):
+                        old_y = _try_float(el.get("y"))
+                        el.set("y", f"{old_y + delta:.3f}")
+                        adjustments_y += 1
+                    elif tag_local in ("circle", "ellipse"):
+                        old_cy = _try_float(el.get("cy"))
+                        el.set("cy", f"{old_cy + delta:.3f}")
+                        adjustments_y += 1
+                    elif tag_local == "line":
+                        el.set("y1", f"{_try_float(el.get('y1')) + delta:.3f}")
+                        el.set("y2", f"{_try_float(el.get('y2')) + delta:.3f}")
+                        adjustments_y += 1
+            else:
+                heavy_cy = sum(ey * area for _, _, ey, area in items if ey >= cy) / (bot_w + eps)
+                gap   = heavy_cy - cy
+                delta = gap * strength
+                for el, ex, ey, _ in items:
+                    if ey < cy:
+                        continue
+                    tag_local = el.tag.split("}")[-1]
+                    if tag_local in ("rect", "text", "image"):
+                        old_y = _try_float(el.get("y"))
+                        el.set("y", f"{old_y - delta:.3f}")
+                        adjustments_y += 1
+                    elif tag_local in ("circle", "ellipse"):
+                        old_cy = _try_float(el.get("cy"))
+                        el.set("cy", f"{old_cy - delta:.3f}")
+                        adjustments_y += 1
+                    elif tag_local == "line":
+                        el.set("y1", f"{_try_float(el.get('y1')) - delta:.3f}")
+                        el.set("y2", f"{_try_float(el.get('y2')) - delta:.3f}")
+                        adjustments_y += 1
+
+    print(
+        f"[ASTRO-SVG] VisualWeightBalancePass applied "
+        f"(strength={strength:.2f}, adj_x={adjustments_x}, adj_y={adjustments_y})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top-level post_process_svg  (mirrors FAstroSvgPostProcess::Process sequence)
+# ---------------------------------------------------------------------------
+def post_process_svg(svg_string: str) -> str:
+    """
+    [ASTRO-SVG] post_process_svg — entry point mirroring the FAstroSvgPostProcess
+    pass chain in PostProcessing.cpp commit f2a77b0.
+
+    Pass order (all three are optional; each checks its CVar-equivalent enable
+    flag and is a no-op when disabled — same as the C++ guard pattern):
+
+      1. EdgeSoftening       – sub-pixel AA on polyline/path connector strokes
+      2. LabelCollisionAvoid – spatial repulsion to prevent text label overlap
+      3. VisualWeightBalance – luminance normalisation across the SVG frame
+
+    Passes compose linearly: each takes the output of the previous pass as
+    input (mirrors Context.FinalOutput chaining in the C++ compositing graph).
+
+    Args:
+        svg_string: Assembled SVG string (from assemble_final_svg pre-output).
+
+    Returns:
+        Post-processed SVG string.
+    """
+    try:
+        root = _parse_svg_tree(svg_string)
+    except _ET.ParseError as exc:
+        print(f"[ASTRO-SVG] post_process_svg: XML parse error ({exc}), returning raw SVG")
+        return svg_string
+
+    # Pass 1 – Edge Softening (r.Astro.Svg.EdgeSoften / EdgeSoftenRadius)
+    if _SVG_EDGE_SOFTEN_ENABLED:
+        radius = max(0.5, min(4.0, _SVG_EDGE_SOFTEN_RADIUS))
+        _edge_soften_pass(root, radius)
+
+    # Pass 2 – Label Collision Avoidance (r.Astro.Svg.LabelAvoid / LabelAvoidMargin)
+    if _SVG_LABEL_AVOID_ENABLED:
+        margin = max(0.0, min(32.0, _SVG_LABEL_AVOID_MARGIN))
+        _label_avoid_pass(root, margin)
+
+    # Pass 3 – Visual Weight Balancing (r.Astro.Svg.WeightBalance / WeightBalanceStrength)
+    if _SVG_WEIGHT_BALANCE_ENABLED:
+        strength = max(0.0, min(1.0, _SVG_WEIGHT_BALANCE_STRENGTH))
+        _weight_balance_pass(root, strength)
+
+    return _serialise_svg_tree(root)
+
+
 def assemble_final_svg():
     """
     Assemble all cell SVGs into final.svg.
@@ -652,7 +1281,9 @@ def assemble_final_svg():
 
     lines.append('</svg>')
 
-    final_svg  = "\n".join(lines)
+    raw_svg    = "\n".join(lines)
+    # ── [ASTRO-SVG] Inject SVG post-processing passes (ported from PostProcessing.cpp f2a77b0) ──
+    final_svg  = post_process_svg(raw_svg)
     output_path = os.path.join(CHANNELS, "..", "output_cell_loop.svg")
     with open(output_path, "w") as f:
         f.write(final_svg)
