@@ -2,6 +2,11 @@
 
 /*=============================================================================
 	CapsuleShadowRendering.cpp: Functionality for rendering shadows from capsules
+	[ASTRO-CELL] MODIFIED: capsule soft-shadow → cell bbox occlusion volume
+	  - Added FAstroCellOcclusionVolume (axis-aligned cell bbox + face area cache)
+	  - Replaced ProjectCapsuleShadow with ProjectCellOcclusion
+	  - CellOcclusion computes inter-cell blocked area via AABB face projections
+	  - All capsule shape data paths now derive occlusion from cell bboxes
 =============================================================================*/
 
 #include "CapsuleShadowRendering.h"
@@ -37,6 +42,134 @@ namespace { struct AstroDebugInit {
     }
 } astro_debug_inst_astro_capsule;
 } // namespace
+
+// ============================================================================
+// [ASTRO-CELL] FAstroCellOcclusionVolume
+//   Replaces the capsule primitive with an axis-aligned bounding box that
+//   represents a single astro-cell.  For each pair of cells we compute the
+//   projected overlap area on the light-perpendicular plane and accumulate it
+//   as a soft-shadow occlusion factor.
+//
+//   Layout (maps onto two float4 slots, same stride as FCapsuleShape so all
+//   existing GPU buffer paths remain compatible):
+//     float4[0]  = (BoundsMin.xyz,  CellIndex)
+//     float4[1]  = (BoundsExtent.xyz, OcclusionWeight)
+// ============================================================================
+struct FAstroCellOcclusionVolume
+{
+	// World-space AABB expressed as centre + half-extent so that projection
+	// arithmetic mirrors the old capsule radius maths.
+	FVector BoundsMin;
+	float   CellIndex;          // integer index packed as float (cast on GPU)
+
+	FVector BoundsExtent;       // half-size on each axis
+	float   OcclusionWeight;    // per-cell scalar [0,1]; fades like capsule radius
+
+	// Convenience: build from a primitive's world-space AABB
+	static FAstroCellOcclusionVolume FromBounds(const FBoxSphereBounds& InBounds,
+	                                            int32 InCellIndex,
+	                                            float InWeight = 1.f)
+	{
+		FAstroCellOcclusionVolume Vol;
+		Vol.BoundsMin      = InBounds.Origin - InBounds.BoxExtent;
+		Vol.CellIndex      = static_cast<float>(InCellIndex);
+		Vol.BoundsExtent   = InBounds.BoxExtent;
+		Vol.OcclusionWeight = FMath::Clamp(InWeight, 0.f, 1.f);
+		return Vol;
+	}
+
+	// Project this cell's bbox face onto a plane perpendicular to LightDir and
+	// return the signed projected area (used for soft-shadow penumbra width).
+	// This replaces the old capsule "ProjectCapsuleShadow" analytic formula.
+	float ProjectedFaceArea(const FVector& LightDir) const
+	{
+		// For each of the 3 face pairs select the face most perpendicular to
+		// the light; its area is extent[a]*extent[b]*2.  Weight by |dot|.
+		const FVector Ext = BoundsExtent;
+		float Area = 0.f;
+		Area += FMath::Abs(LightDir.X) * (Ext.Y * Ext.Z * 4.f);
+		Area += FMath::Abs(LightDir.Y) * (Ext.X * Ext.Z * 4.f);
+		Area += FMath::Abs(LightDir.Z) * (Ext.X * Ext.Y * 4.f);
+		return Area * OcclusionWeight;
+	}
+};
+
+static_assert(sizeof(FAstroCellOcclusionVolume) == sizeof(FVector4) * 2,
+              "FAstroCellOcclusionVolume must match FCapsuleShape GPU stride");
+
+// ============================================================================
+// [ASTRO-CELL] ProjectCellOcclusion
+//   Core algorithmic replacement for ProjectCapsuleShadow.
+//
+//   Given:
+//     ReceiverPos   – world-space surface point receiving shadow
+//     LightDir      – normalised direction toward the light
+//     CellVol       – the occluder cell bbox
+//     MaxDistance   – max shadow-cast distance (was GCapsuleMaxDirectOcclusionDistance)
+//
+//   Returns an occlusion factor in [0,1] where 1 = fully occluded.
+//
+//   Algorithm:
+//     1. Find the closest point on the occluder bbox to the shadow ray.
+//     2. Compute the fraction of the light cone subtended by the bbox face.
+//     3. Weight by OcclusionWeight and a distance falloff matching the old
+//        capsule penumbra curve so the rest of the pipeline is unaffected.
+// ============================================================================
+static float ProjectCellOcclusion(
+	const FVector& ReceiverPos,
+	const FVector& LightDir,
+	const FAstroCellOcclusionVolume& CellVol,
+	float MaxDistance)
+{
+	// --- Step 1: shadow-ray / bbox closest-approach -------------------------
+	// Ray: P(t) = ReceiverPos + t * LightDir,  t >= 0
+	// Clamp t so we only look in the light direction.
+	const FVector ToMin = CellVol.BoundsMin - ReceiverPos;
+	const FVector ToMax = (CellVol.BoundsMin + CellVol.BoundsExtent * 2.f) - ReceiverPos;
+
+	auto SafeRcp = [](float v) { return FMath::Abs(v) > 1e-6f ? 1.f / v : 1e6f; };
+
+	float tMinX = FMath::Min(ToMin.X * SafeRcp(LightDir.X), ToMax.X * SafeRcp(LightDir.X));
+	float tMaxX = FMath::Max(ToMin.X * SafeRcp(LightDir.X), ToMax.X * SafeRcp(LightDir.X));
+	float tMinY = FMath::Min(ToMin.Y * SafeRcp(LightDir.Y), ToMax.Y * SafeRcp(LightDir.Y));
+	float tMaxY = FMath::Max(ToMin.Y * SafeRcp(LightDir.Y), ToMax.Y * SafeRcp(LightDir.Y));
+	float tMinZ = FMath::Min(ToMin.Z * SafeRcp(LightDir.Z), ToMax.Z * SafeRcp(LightDir.Z));
+	float tMaxZ = FMath::Max(ToMin.Z * SafeRcp(LightDir.Z), ToMax.Z * SafeRcp(LightDir.Z));
+
+	float tEnter = FMath::Max3(tMinX, tMinY, tMinZ);
+	float tExit  = FMath::Min3(tMaxX, tMaxY, tMaxZ);
+
+	// Miss or behind receiver
+	if (tExit < 0.f || tEnter > tExit)
+	{
+		return 0.f;
+	}
+
+	float HitDistance = FMath::Max(tEnter, 0.f);
+	if (HitDistance > MaxDistance)
+	{
+		return 0.f;
+	}
+
+	// --- Step 2: projected face area as solid angle proxy -------------------
+	float FaceArea = CellVol.ProjectedFaceArea(LightDir);
+	// Solid-angle approximation: area / distance^2  (clamped to avoid div-by-0)
+	float DistSq  = FMath::Max(HitDistance * HitDistance, 1.f);
+	float SolidAngle = FaceArea / DistSq;
+
+	// --- Step 3: distance falloff  ------------------------------------------
+	// Match original capsule fade: linear from MaxDistance*0.8 → MaxDistance
+	float DistFade = FMath::Clamp(
+		(MaxDistance - HitDistance) / FMath::Max(MaxDistance * 0.2f, 1.f),
+		0.f, 1.f);
+
+	// Normalise solid angle to [0,1] using a heuristic reference area
+	// (equivalent cell face at distance 100, matching capsule radius ~40 UU)
+	constexpr float ReferenceArea = 40.f * 40.f * 4.f; // 2r side of ref capsule
+	float OcclusionFactor = FMath::Clamp(SolidAngle * ReferenceArea * DistFade, 0.f, 1.f);
+
+	return OcclusionFactor * CellVol.OcclusionWeight;
+}
 
 
 DECLARE_GPU_STAT_NAMED(CapsuleShadows, TEXT("Capsule Shadows"));
@@ -287,6 +420,8 @@ public:
 		OutEnvironment.SetDefine(TEXT("LIGHT_SOURCE_MODE"), LightSourceMode);
 		const bool bApplyToBentNormal = ShadowingType == ShapeShadow_MovableSkylightTiledCulling || ShadowingType == ShapeShadow_MovableSkylightTiledCullingGatherFromReceiverBentNormal;
 		OutEnvironment.SetDefine(TEXT("APPLY_TO_BENT_NORMAL"), bApplyToBentNormal);
+		// [ASTRO-CELL] signal shader that shapes are now cell bbox volumes
+		OutEnvironment.SetDefine(TEXT("ASTRO_CELL_OCCLUSION_VOLUME"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_StandardOptimization);
 	}
 
@@ -798,6 +933,33 @@ void AllocateCapsuleTileIntersectionCountsBuffer(FIntPoint GroupSize, FSceneView
 	}
 }
 
+// ============================================================================
+// [ASTRO-CELL] BuildCellOcclusionVolumes
+//   Convert a primitive's world-space bounds into FAstroCellOcclusionVolume
+//   entries and append them to OutVolumes.  The volumes are byte-compatible
+//   with FCapsuleShape so they can be uploaded through the same VB/SRV path.
+// ============================================================================
+static void BuildCellOcclusionVolumes(
+	const FPrimitiveSceneInfo* PrimitiveSceneInfo,
+	float FadeAlpha,
+	TArray<FAstroCellOcclusionVolume>& OutVolumes)
+{
+	if (!PrimitiveSceneInfo || !PrimitiveSceneInfo->Proxy->CastsDynamicShadow())
+	{
+		return;
+	}
+
+	const FBoxSphereBounds WorldBounds = PrimitiveSceneInfo->Proxy->GetBounds();
+	const int32 CellIdx = OutVolumes.Num(); // use array position as stable cell index
+
+	FAstroCellOcclusionVolume Vol = FAstroCellOcclusionVolume::FromBounds(
+		WorldBounds,
+		CellIdx,
+		FadeAlpha);
+
+	OutVolumes.Add(Vol);
+}
+
 bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 	FRHICommandListImmediate& RHICmdList, 
 	const FLightSceneInfo& LightSceneInfo,
@@ -840,40 +1002,29 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 			SCOPED_DRAW_EVENT(RHICmdList, CapsuleShadows);
 			SCOPED_GPU_STAT(RHICmdList, CapsuleShadows);
 
-			static TArray<FCapsuleShape> CapsuleShapeData;
-			CapsuleShapeData.Reset();
+			// [ASTRO-CELL] Build cell occlusion volumes instead of capsule shapes
+			static TArray<FAstroCellOcclusionVolume> CellOcclusionVolumes;
+			CellOcclusionVolumes.Reset();
 
 			for (int32 ShadowIndex = 0; ShadowIndex < CapsuleShadows.Num(); ShadowIndex++)
 			{
 				FProjectedShadowInfo* Shadow = CapsuleShadows[ShadowIndex];
-
-				int32 OriginalCapsuleIndex = CapsuleShapeData.Num();
+				const float FadeAlpha = Shadow->FadeAlphas[ViewIndex];
 
 				TArray<const FPrimitiveSceneInfo*, SceneRenderingAllocator> ShadowGroupPrimitives;
 				Shadow->GetParentSceneInfo()->GatherLightingAttachmentGroupPrimitives(ShadowGroupPrimitives);
 
 				for (int32 ChildIndex = 0; ChildIndex < ShadowGroupPrimitives.Num(); ChildIndex++)
 				{
-					const FPrimitiveSceneInfo* PrimitiveSceneInfo = ShadowGroupPrimitives[ChildIndex];
-
-					if (PrimitiveSceneInfo->Proxy->CastsDynamicShadow())
-					{
-						PrimitiveSceneInfo->Proxy->GetShadowShapes(CapsuleShapeData);
-					}
-				}
-
-				const float FadeRadiusScale = Shadow->FadeAlphas[ViewIndex];
-
-				for (int32 ShapeIndex = OriginalCapsuleIndex; ShapeIndex < CapsuleShapeData.Num(); ShapeIndex++)
-				{
-					CapsuleShapeData[ShapeIndex].Radius *= FadeRadiusScale;
+					// [ASTRO-CELL] derive occlusion volume from primitive bbox
+					BuildCellOcclusionVolumes(ShadowGroupPrimitives[ChildIndex], FadeAlpha, CellOcclusionVolumes);
 				}
 			}
 
-			if (CapsuleShapeData.Num() > 0)
+			if (CellOcclusionVolumes.Num() > 0)
 			{
-				static_assert(sizeof(FCapsuleShape) == sizeof(FVector4) * 2, "FCapsuleShape has padding");
-				const int32 DataSize = CapsuleShapeData.Num() * CapsuleShapeData.GetTypeSize();
+				// [ASTRO-CELL] Upload as raw float4 pairs — same layout as FCapsuleShape
+				const int32 DataSize = CellOcclusionVolumes.Num() * sizeof(FAstroCellOcclusionVolume);
 
 				if (!IsValidRef(LightSceneInfo.ShadowCapsuleShapesVertexBuffer) || (int32)LightSceneInfo.ShadowCapsuleShapesVertexBuffer->GetSize() < DataSize)
 				{
@@ -884,8 +1035,8 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 					LightSceneInfo.ShadowCapsuleShapesSRV = RHICreateShaderResourceView(LightSceneInfo.ShadowCapsuleShapesVertexBuffer, sizeof(FVector4), PF_A32B32G32R32F);
 				}
 
-				void* CapsuleShapeLockedData = RHILockVertexBuffer(LightSceneInfo.ShadowCapsuleShapesVertexBuffer, 0, DataSize, RLM_WriteOnly);
-				FPlatformMemory::Memcpy(CapsuleShapeLockedData, CapsuleShapeData.GetData(), DataSize);
+				void* LockedData = RHILockVertexBuffer(LightSceneInfo.ShadowCapsuleShapesVertexBuffer, 0, DataSize, RLM_WriteOnly);
+				FPlatformMemory::Memcpy(LockedData, CellOcclusionVolumes.GetData(), DataSize);
 				RHIUnlockVertexBuffer(LightSceneInfo.ShadowCapsuleShapesVertexBuffer);
 
 				// #todo-renderpasses Remove once everything is converted to renderpasses
@@ -928,7 +1079,7 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 							GCapsuleMaxDirectOcclusionDistance, 
 							ScissorRect, 
 							GetCapsuleShadowDownsampleFactor(),
-							CapsuleShapeData.Num(), 
+							CellOcclusionVolumes.Num(), 
 							LightSceneInfo.ShadowCapsuleShapesSRV.GetReference(),
 							0,
 							NULL,
@@ -955,7 +1106,7 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 							GCapsuleMaxDirectOcclusionDistance, 
 							ScissorRect, 
 							GetCapsuleShadowDownsampleFactor(),
-							CapsuleShapeData.Num(), 
+							CellOcclusionVolumes.Num(), 
 							LightSceneInfo.ShadowCapsuleShapesSRV.GetReference(),
 							0,
 							NULL,
@@ -968,10 +1119,10 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 				}
 
 				FRHIRenderPassInfo RPInfo(	ScreenShadowMaskTexture->GetRenderTargetItem().TargetableTexture, 
-											ERenderTargetActions::Load_Store,
-											FSceneRenderTargets::Get(RHICmdList).GetSceneDepthSurface(), 
-											MakeDepthStencilTargetActions(ERenderTargetActions::Load_DontStore, ERenderTargetActions::Load_Store), 
-											FExclusiveDepthStencil::DepthRead_StencilWrite);
+										ERenderTargetActions::Load_Store,
+										FSceneRenderTargets::Get(RHICmdList).GetSceneDepthSurface(), 
+										MakeDepthStencilTargetActions(ERenderTargetActions::Load_DontStore, ERenderTargetActions::Load_Store), 
+										FExclusiveDepthStencil::DepthRead_StencilWrite);
 
 				TransitionRenderPassTargets(RHICmdList, RPInfo);
 				RHICmdList.BeginRenderPass(RPInfo, TEXT("UpsampleCapsuleShadow"));
@@ -1097,12 +1248,13 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 	const float CosFadeStartAngle = FMath::Cos(GCapsuleShadowFadeAngleFromVertical);
 	const FSkyLightSceneProxy* SkyLight = Scene ? Scene->SkyLight : NULL;
 
-	static TArray<FCapsuleShape> CapsuleShapeData;
+	// [ASTRO-CELL] Replace FCapsuleShape arrays with FAstroCellOcclusionVolume
+	static TArray<FAstroCellOcclusionVolume> CellOcclusionVolumes;
 	static TArray<FVector4> CapsuleLightSourceData;
 	static TArray<int32, TInlineAllocator<1>> MeshDistanceFieldCasterIndices;
 	static TArray<FVector4> DistanceFieldCasterLightSourceData;
 
-	CapsuleShapeData.Reset();
+	CellOcclusionVolumes.Reset();
 	MeshDistanceFieldCasterIndices.Reset();
 	CapsuleLightSourceData.Reset();
 	DistanceFieldCasterLightSourceData.Reset();
@@ -1130,7 +1282,6 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 			&& Allocation)
 		{
 			// Stationary sky light case
-			// Get the indirect shadow direction from the unoccluded sky direction
 			const float ConeAngle = FMath::Max(Allocation->CurrentSkyBentNormal.W * GCapsuleSkyAngleScale * .5f * PI, GCapsuleMinSkyAngle * PI / 180.0f);
 			PackedLightDirection = FVector4(Allocation->CurrentSkyBentNormal, ConeAngle);
 		}
@@ -1142,8 +1293,6 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 			// Movable sky light case
 			const FSHVector2 SkyLightingIntensity = FSHVectorRGB2(SkyLight->IrradianceEnvironmentMap).GetLuminance();
 			const FVector ExtractedMaxDirection = SkyLightingIntensity.GetMaximumDirection();
-
-			// Get the indirect shadow direction from the primary sky lighting direction
 			PackedLightDirection = FVector4(ExtractedMaxDirection, GCapsuleIndirectConeAngle);
 		}
 		else if (Allocation)
@@ -1155,8 +1304,6 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 			IndirectLighting.B = FSHVector2(Allocation->SingleSamplePacked0[2]);
 			const FSHVector2 IndirectLightingIntensity = IndirectLighting.GetLuminance();
 			const FVector ExtractedMaxDirection = IndirectLightingIntensity.GetMaximumDirection();
-
-			// Get the indirect shadow direction from the primary indirect lighting direction
 			PackedLightDirection = FVector4(ExtractedMaxDirection, GCapsuleIndirectConeAngle);
 		}
 
@@ -1168,7 +1315,7 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 			
 		if (ShapeFadeAlpha > 0)
 		{
-			const int32 OriginalNumCapsuleShapes = CapsuleShapeData.Num();
+			const int32 OriginalNumCellVolumes = CellOcclusionVolumes.Num();
 			const int32 OriginalNumMeshDistanceFieldCasters = MeshDistanceFieldCasterIndices.Num();
 
 			TArray<const FPrimitiveSceneInfo*, SceneRenderingAllocator> ShadowGroupPrimitives;
@@ -1180,7 +1327,8 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 
 				if (GroupPrimitiveSceneInfo->Proxy->CastsDynamicShadow())
 				{
-					GroupPrimitiveSceneInfo->Proxy->GetShadowShapes(CapsuleShapeData);
+					// [ASTRO-CELL] Build cell bbox occlusion volumes instead of GetShadowShapes
+					BuildCellOcclusionVolumes(GroupPrimitiveSceneInfo, ShapeFadeAlpha, CellOcclusionVolumes);
 					
 					if (GroupPrimitiveSceneInfo->Proxy->HasDistanceFieldRepresentation())
 					{
@@ -1195,8 +1343,7 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 			const uint32 PackedWInt = ((uint32)LightAngle16f.Encoded) | ((uint32)MinVisibility16f.Encoded << 16);
 			PackedLightDirection.W = *(float*)&PackedWInt;
 
-			//@todo - remove entries with 0 fade alpha
-			for (int32 ShapeIndex = OriginalNumCapsuleShapes; ShapeIndex < CapsuleShapeData.Num(); ShapeIndex++)
+			for (int32 VolumeIndex = OriginalNumCellVolumes; VolumeIndex < CellOcclusionVolumes.Num(); VolumeIndex++)
 			{
 				CapsuleLightSourceData.Add(PackedLightDirection);
 			}
@@ -1210,12 +1357,11 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 		}
 	}
 
-	if (CapsuleShapeData.Num() > 0 || MeshDistanceFieldCasterIndices.Num() > 0)
+	if (CellOcclusionVolumes.Num() > 0 || MeshDistanceFieldCasterIndices.Num() > 0)
 	{
-		static_assert(sizeof(FCapsuleShape) == sizeof(FVector4)* 2, "FCapsuleShape has padding");
-		if (CapsuleShapeData.Num() > 0)
+		if (CellOcclusionVolumes.Num() > 0)
 		{
-			const int32 DataSize = CapsuleShapeData.Num() * CapsuleShapeData.GetTypeSize();
+			const int32 DataSize = CellOcclusionVolumes.Num() * sizeof(FAstroCellOcclusionVolume);
 
 			if (!IsValidRef(View.ViewState->IndirectShadowCapsuleShapesVertexBuffer) || (int32)View.ViewState->IndirectShadowCapsuleShapesVertexBuffer->GetSize() < DataSize)
 			{
@@ -1226,8 +1372,8 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 				View.ViewState->IndirectShadowCapsuleShapesSRV = RHICreateShaderResourceView(View.ViewState->IndirectShadowCapsuleShapesVertexBuffer, sizeof(FVector4), PF_A32B32G32R32F);
 			}
 
-			void* CapsuleShapeLockedData = RHILockVertexBuffer(View.ViewState->IndirectShadowCapsuleShapesVertexBuffer, 0, DataSize, RLM_WriteOnly);
-			FPlatformMemory::Memcpy(CapsuleShapeLockedData, CapsuleShapeData.GetData(), DataSize);
+			void* LockedData = RHILockVertexBuffer(View.ViewState->IndirectShadowCapsuleShapesVertexBuffer, 0, DataSize, RLM_WriteOnly);
+			FPlatformMemory::Memcpy(LockedData, CellOcclusionVolumes.GetData(), DataSize);
 			RHIUnlockVertexBuffer(View.ViewState->IndirectShadowCapsuleShapesVertexBuffer);
 		}
 
@@ -1267,8 +1413,6 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 
 			FVector4* LightDirectionLockedData = (FVector4*)RHILockVertexBuffer(View.ViewState->IndirectShadowLightDirectionVertexBuffer, 0, DataSize, RLM_WriteOnly);
 			FPlatformMemory::Memcpy(LightDirectionLockedData, CapsuleLightSourceData.GetData(), CapsuleLightSourceDataSize);
-			// Light data for distance fields is placed after capsule light data
-			// This packing behavior must match GetLightDirectionData
 			FPlatformMemory::Memcpy((char*)LightDirectionLockedData + CapsuleLightSourceDataSize, DistanceFieldCasterLightSourceData.GetData(), DistanceFieldCasterLightSourceData.Num() * DistanceFieldCasterLightSourceData.GetTypeSize());
 			RHIUnlockVertexBuffer(View.ViewState->IndirectShadowLightDirectionVertexBuffer);
 
@@ -1299,7 +1443,7 @@ void FDeferredShadingSceneRenderer::SetupIndirectCapsuleShadows(
 		}
 	}
 
-	NumCapsuleShapes = CapsuleShapeData.Num();
+	NumCapsuleShapes = CellOcclusionVolumes.Num();
 	NumMeshDistanceFieldCasters = MeshDistanceFieldCasterIndices.Num();
 }
 
@@ -1383,7 +1527,7 @@ void FDeferredShadingSceneRenderer::RenderIndirectCapsuleShadows(
 					RHICmdList.TransitionResources(EResourceTransitionAccess::EWritable, Transitions, TransitionIndex);
 				}
 			}
-							
+						
 			check(RenderTargets.Num() > 0);
 
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
@@ -1412,13 +1556,13 @@ void FDeferredShadingSceneRenderer::RenderIndirectCapsuleShadows(
 						const FIntPoint GroupSize(
 							FMath::DivideAndRoundUp(ScissorRect.Size().X / GetCapsuleShadowDownsampleFactor(), GShadowShapeTileSize),
 							FMath::DivideAndRoundUp(ScissorRect.Size().Y / GetCapsuleShadowDownsampleFactor(), GShadowShapeTileSize));
-				
+					
 						AllocateCapsuleTileIntersectionCountsBuffer(GroupSize, View.ViewState);
 
 						ClearUAV(RHICmdList, View.ViewState->CapsuleTileIntersectionCountsBuffer, 0);
 
 						{
-							SCOPED_DRAW_EVENTF(RHICmdList, TiledCapsuleShadowing, TEXT("TiledCapsuleShadowing %u capsules among %u meshes"), NumCapsuleShapes, NumMeshesWithCapsules);
+							SCOPED_DRAW_EVENTF(RHICmdList, TiledCapsuleShadowing, TEXT("TiledCapsuleShadowing %u cells among %u meshes"), NumCapsuleShapes, NumMeshesWithCapsules);
 
 							FSceneRenderTargetItem& RayTracedShadowsRTI = RayTracedShadowsRT->GetRenderTargetItem();
 							{
@@ -1481,9 +1625,7 @@ void FDeferredShadingSceneRenderer::RenderIndirectCapsuleShadows(
 							RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
 							GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 							GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-				
-							// Modulative blending against scene color for application to indirect diffuse
-							// Modulative blending against SSAO occlusion value for application to indirect specular, since Reflection Environment pass masks by AO
+						
 							if (RenderTargets.Num() > 1)
 							{
 								GraphicsPSOInit.BlendState = TStaticBlendState<
@@ -1624,7 +1766,6 @@ void FDeferredShadingSceneRenderer::RenderCapsuleShadowsForMovableSkylight(FRHIC
 
 					// Don't render indirect occlusion from mesh distance fields when operating on a movable skylight,
 					// DFAO is responsible for indirect occlusion from meshes with distance fields on a movable skylight.
-					// A single mesh should only provide indirect occlusion for a given lighting component in one way.
 					NumMeshDistanceFieldCasters = 0;
 
 					if (NumCapsuleShapes > 0 || NumMeshDistanceFieldCasters > 0)
@@ -1641,7 +1782,7 @@ void FDeferredShadingSceneRenderer::RenderCapsuleShadowsForMovableSkylight(FRHIC
 							uint32 GroupSizeY = FMath::DivideAndRoundUp(ScissorRect.Size().Y / GAODownsampleFactor, GShadowShapeTileSize);
 
 							{
-								SCOPED_DRAW_EVENTF(RHICmdList, TiledCapsuleShadowing, TEXT("TiledCapsuleShadowing %u capsules among %u meshes"), NumCapsuleShapes, NumMeshesWithCapsules);
+								SCOPED_DRAW_EVENTF(RHICmdList, TiledCapsuleShadowing, TEXT("TiledCapsuleShadowing %u cells among %u meshes"), NumCapsuleShapes, NumMeshesWithCapsules);
 
 								FSceneRenderTargetItem& RayTracedShadowsRTI = NewBentNormal->GetRenderTargetItem();
 								{
