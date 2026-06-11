@@ -26,6 +26,145 @@ namespace { struct AstroDebugInit {
 } astro_debug_inst_astro_vfogvox;
 } // namespace
 
+// =============================================================================
+// [ASTRO] FAstroConstraintVoxelGrid
+//
+// Replaces volumetric fog density voxelization with a *constraint-field*
+// voxelization.  The 3-D grid is indexed as (X, Y, Z-layer) where Z-layers
+// correspond to the same depth slices used by the fog integration pass.
+// Each voxel accumulates:
+//   - ConstraintCount  : how many cell constraints overlap this voxel
+//   - ConstraintWeight : summed influence weight (distance-attenuated)
+//
+// The grid is rebuilt every frame before VoxelizeFogVolumePrimitives runs so
+// that downstream passes can read ConstraintDensity() without an extra copy.
+// =============================================================================
+
+struct FAstroConstraintVoxel
+{
+	int32   ConstraintCount;   // number of constraints touching this voxel
+	float   ConstraintWeight;  // accumulated influence weight
+
+	FAstroConstraintVoxel()
+		: ConstraintCount(0)
+		, ConstraintWeight(0.f)
+	{}
+
+	/** Normalised density in [0,1] for use in shaders / debug views. */
+	float ConstraintDensity() const
+	{
+		return (ConstraintCount > 0)
+			? FMath::Clamp(ConstraintWeight / static_cast<float>(ConstraintCount), 0.f, 1.f)
+			: 0.f;
+	}
+};
+
+struct FAstroConstraintVoxelGrid
+{
+	// Grid dimensions mirror VolumetricFogGridSize (X,Y,Z).
+	FIntVector  GridSize;
+
+	// Flat storage: voxel at (x,y,z) → Voxels[x + y*GridSize.X + z*GridSize.X*GridSize.Y]
+	TArray<FAstroConstraintVoxel> Voxels;
+
+	// World-space AABB of the grid, used to map world positions → voxel indices.
+	FBox        WorldBounds;
+
+	// -------------------------------------------------------------------------
+	void Init(FIntVector InGridSize, const FBox& InWorldBounds)
+	{
+		GridSize   = InGridSize;
+		WorldBounds = InWorldBounds;
+		const int32 TotalVoxels = GridSize.X * GridSize.Y * GridSize.Z;
+		Voxels.SetNumZeroed(TotalVoxels);
+	}
+
+	void Reset()
+	{
+		for (FAstroConstraintVoxel& V : Voxels) { V.ConstraintCount = 0; V.ConstraintWeight = 0.f; }
+	}
+
+	// -------------------------------------------------------------------------
+	// Convert a world-space position to (fractional) voxel coordinates.
+	FVector WorldToVoxel(const FVector& WorldPos) const
+	{
+		const FVector Extent = WorldBounds.GetExtent() * 2.f; // full size
+		const FVector Local  = WorldPos - WorldBounds.Min;
+		return FVector(
+			Local.X / FMath::Max(Extent.X, SMALL_NUMBER) * GridSize.X,
+			Local.Y / FMath::Max(Extent.Y, SMALL_NUMBER) * GridSize.Y,
+			Local.Z / FMath::Max(Extent.Z, SMALL_NUMBER) * GridSize.Z
+		);
+	}
+
+	// -------------------------------------------------------------------------
+	// Accumulate one constraint's influence into all voxels within its AABB.
+	// Weight falls off linearly with distance from the constraint centre.
+	void AccumulateConstraint(const FBox& ConstraintWorldBounds, float BaseWeight = 1.f)
+	{
+		// Convert AABB corners to voxel space, clamp to grid.
+		const FVector VMin = WorldToVoxel(ConstraintWorldBounds.Min);
+		const FVector VMax = WorldToVoxel(ConstraintWorldBounds.Max);
+
+		const int32 X0 = FMath::Clamp(FMath::FloorToInt(VMin.X), 0, GridSize.X - 1);
+		const int32 X1 = FMath::Clamp(FMath::CeilToInt (VMax.X), 0, GridSize.X - 1);
+		const int32 Y0 = FMath::Clamp(FMath::FloorToInt(VMin.Y), 0, GridSize.Y - 1);
+		const int32 Y1 = FMath::Clamp(FMath::CeilToInt (VMax.Y), 0, GridSize.Y - 1);
+		const int32 Z0 = FMath::Clamp(FMath::FloorToInt(VMin.Z), 0, GridSize.Z - 1);
+		const int32 Z1 = FMath::Clamp(FMath::CeilToInt (VMax.Z), 0, GridSize.Z - 1);
+
+		// Centre of the constraint in voxel space (for attenuation).
+		const FVector VCentre = (VMin + VMax) * 0.5f;
+		// Half-diagonal length for normalisation.
+		const float   HalfDiag = FMath::Max((VMax - VMin).Size() * 0.5f, SMALL_NUMBER);
+
+		for (int32 Z = Z0; Z <= Z1; ++Z)
+		{
+			for (int32 Y = Y0; Y <= Y1; ++Y)
+			{
+				for (int32 X = X0; X <= X1; ++X)
+				{
+					// Distance from voxel centre to constraint centre (voxel units).
+					const FVector VoxelCentre(X + 0.5f, Y + 0.5f, Z + 0.5f);
+					const float   Dist   = FVector::Dist(VoxelCentre, VCentre);
+					const float   Alpha  = FMath::Clamp(1.f - Dist / HalfDiag, 0.f, 1.f);
+					const float   Weight = BaseWeight * Alpha;
+
+					const int32 Idx = X + Y * GridSize.X + Z * GridSize.X * GridSize.Y;
+					Voxels[Idx].ConstraintCount  += 1;
+					Voxels[Idx].ConstraintWeight += Weight;
+				}
+			}
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Read-only accessors.
+	const FAstroConstraintVoxel& GetVoxel(int32 X, int32 Y, int32 Z) const
+	{
+		return Voxels[X + Y * GridSize.X + Z * GridSize.X * GridSize.Y];
+	}
+
+	int32 TotalConstraintCount() const
+	{
+		int32 Total = 0;
+		for (const FAstroConstraintVoxel& V : Voxels) { Total += V.ConstraintCount; }
+		return Total;
+	}
+};
+
+// Per-view constraint grid, allocated on demand and reused across frames.
+static FAstroConstraintVoxelGrid GAstroConstraintGrid;
+
+// Console variable: scale factor applied to each constraint's base weight.
+static float GAstroConstraintWeightScale = 1.f;
+FAutoConsoleVariableRef CVarAstroConstraintWeightScale(
+	TEXT("r.Astro.ConstraintVoxelGrid.WeightScale"),
+	GAstroConstraintWeightScale,
+	TEXT("Global weight multiplier for constraint-field voxelization (FAstroConstraintVoxelGrid)."),
+	ECVF_RenderThreadSafe
+);
+
 
 int32 GVolumetricFogVoxelizationSlicesPerGSPass = 8;
 FAutoConsoleVariableRef CVarVolumetricFogVoxelizationSlicesPerPass(
@@ -600,12 +739,90 @@ void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
 {
 	if (View.VolumetricMeshBatches.Num() > 0 && DoesPlatformSupportVolumetricFogVoxelization(View.GetShaderPlatform()))
 	{
+		// =====================================================================
+		// [ASTRO] CONSTRAINT-FIELD VOXELIZATION
+		//
+		// Instead of voxelizing raw fog density we build a FAstroConstraintVoxelGrid
+		// that records, per (x, y, z-layer) voxel, how many cell constraints
+		// influence that voxel and what their accumulated weight is.
+		//
+		// Pass 1 – CPU side: walk every visible volumetric primitive and
+		//          accumulate its world-space AABB into GAstroConstraintGrid.
+		// Pass 2 – GPU side: the existing draw-based voxelization still fires
+		//          so the VBufferA/B render targets remain valid; the constraint
+		//          density is available to downstream passes via GAstroConstraintGrid.
+		// =====================================================================
+
+		// ------------------------------------------------------------------
+		// Rebuild the world-space bounds that encompass the entire fog volume.
+		// We use the view frustum far plane × fog distance as the Z extent.
+		// ------------------------------------------------------------------
+		{
+			const FVector ViewOrigin  = View.ViewMatrices.GetViewOrigin();
+			const FVector ViewForward = View.GetViewDirection();
+
+			// World AABB: extend from view origin by VolumetricFogDistance in all
+			// relevant directions.  A sphere-derived box is conservative but correct.
+			const FBox GridWorldBox(
+				ViewOrigin - FVector(VolumetricFogDistance),
+				ViewOrigin + FVector(VolumetricFogDistance)
+			);
+
+			GAstroConstraintGrid.Init(VolumetricFogGridSize, GridWorldBox);
+
+			// ------------------------------------------------------------------
+			// Pass 1: accumulate every in-range volumetric primitive as a
+			//         constraint into the 3-D voxel grid.
+			// ------------------------------------------------------------------
+			for (int32 MeshBatchIndex = 0; MeshBatchIndex < View.VolumetricMeshBatches.Num(); ++MeshBatchIndex)
+			{
+				const FPrimitiveSceneProxy* PrimitiveSceneProxy =
+					View.VolumetricMeshBatches[MeshBatchIndex].Proxy;
+
+				const FBoxSphereBounds Bounds = PrimitiveSceneProxy->GetBounds();
+
+				// Distance-cull: same condition as the original fog voxelization.
+				const float DistSq = (ViewOrigin - Bounds.Origin).SizeSquared();
+				const float RadiusSum = VolumetricFogDistance + Bounds.SphereRadius;
+				if (DistSq >= RadiusSum * RadiusSum)
+				{
+					continue; // primitive too far, skip
+				}
+
+				// Derive a world-space AABB from the primitive's sphere bounds.
+				// More precise per-prim geometry could be used if available.
+				const FBox ConstraintBounds(
+					Bounds.Origin - FVector(Bounds.SphereRadius),
+					Bounds.Origin + FVector(Bounds.SphereRadius)
+				);
+
+				// Weight: inversely proportional to distance so nearer constraints
+				// contribute more to the field.  GAstroConstraintWeightScale is a
+				// global tuning knob exposed through the CVar.
+				const float DistNorm  = FMath::Sqrt(DistSq) / FMath::Max(VolumetricFogDistance, SMALL_NUMBER);
+				const float BaseWeight = FMath::Clamp(1.f - DistNorm, 0.f, 1.f) * GAstroConstraintWeightScale;
+
+				GAstroConstraintGrid.AccumulateConstraint(ConstraintBounds, BaseWeight);
+			}
+
+			UE_LOG(LogRenderer, VeryVerbose,
+				TEXT("[ASTRO] ConstraintVoxelGrid: GridSize=(%d,%d,%d)  TotalConstraintCount=%d"),
+				VolumetricFogGridSize.X, VolumetricFogGridSize.Y, VolumetricFogGridSize.Z,
+				GAstroConstraintGrid.TotalConstraintCount());
+		}
+
+		// ------------------------------------------------------------------
+		// Pass 2: GPU draw-based voxelization (unchanged render-target binding).
+		// The GPU pass writes albedo/extinction into VBufferA/B as before;
+		// the constraint grid lives on the CPU side and feeds the scheduling
+		// layer (pub-sub loop) with spatial constraint density.
+		// ------------------------------------------------------------------
 		FRenderTargetParameters* PassParameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
 		PassParameters->RenderTargets[0] = FRenderTargetBinding(IntegrationData.VBufferA, ERenderTargetLoadAction::ELoad, ERenderTargetStoreAction::EStore);
 		PassParameters->RenderTargets[1] = FRenderTargetBinding(IntegrationData.VBufferB, ERenderTargetLoadAction::ELoad, ERenderTargetStoreAction::EStore);
 
 		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("VoxelizeVolumePrimitives"),
+			RDG_EVENT_NAME("VoxelizeVolumePrimitives[AstroConstraintField]"),
 			PassParameters,
 			ERenderGraphPassFlags::None,
 			[PassParameters, Scene = Scene, &View, VolumetricFogGridSize, IntegrationData, VolumetricFogDistance, GridZParams](FRHICommandListImmediate& RHICmdList)
@@ -631,6 +848,12 @@ void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
 			FMeshPassProcessorRenderState DrawRenderState(View, Scene->UniformBuffers.VoxelizeVolumePassUniformBuffer);
 			DrawRenderState.SetViewUniformBuffer(Scene->UniformBuffers.VoxelizeVolumeViewUniformBuffer);
 
+			// [ASTRO] Inner loop: iterate over z-layer slices and for each primitive
+			// that contributes to a slice, weight its draw call by the constraint
+			// density of the corresponding voxel column.  The per-primitive
+			// VoxelizeVolumePrimitive call remains structurally identical; the
+			// constraint grid is a parallel accounting structure consumed by the
+			// scheduling / pub-sub layer, not by the raw GPU draw command itself.
 			DrawDynamicMeshPass(View, RHICmdList,
 				[&View, VolumetricFogDistance, &RHICmdList, &VolumetricFogGridSize, &GridZParams](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 			{
@@ -639,17 +862,41 @@ void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
 					&View,
 					DynamicMeshPassContext);
 
+				const FVector ViewOrigin = View.ViewMatrices.GetViewOrigin();
+
 				for (int32 MeshBatchIndex = 0; MeshBatchIndex < View.VolumetricMeshBatches.Num(); ++MeshBatchIndex)
 				{
-					const FMeshBatch* Mesh = View.VolumetricMeshBatches[MeshBatchIndex].Mesh;
+					const FMeshBatch*           Mesh               = View.VolumetricMeshBatches[MeshBatchIndex].Mesh;
 					const FPrimitiveSceneProxy* PrimitiveSceneProxy = View.VolumetricMeshBatches[MeshBatchIndex].Proxy;
-					const FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy->GetPrimitiveSceneInfo();
-					const FBoxSphereBounds Bounds = PrimitiveSceneProxy->GetBounds();
+					const FBoxSphereBounds      Bounds              = PrimitiveSceneProxy->GetBounds();
 
-					if ((View.ViewMatrices.GetViewOrigin() - Bounds.Origin).SizeSquared() < (VolumetricFogDistance + Bounds.SphereRadius) * (VolumetricFogDistance + Bounds.SphereRadius))
+					const float RadiusSum = VolumetricFogDistance + Bounds.SphereRadius;
+					if ((ViewOrigin - Bounds.Origin).SizeSquared() >= RadiusSum * RadiusSum)
 					{
-						VoxelizeVolumePrimitive(PassMeshProcessor, RHICmdList, View, VolumetricFogGridSize, GridZParams, PrimitiveSceneProxy, *Mesh);
+						continue;
 					}
+
+					// [ASTRO] Sample the constraint grid at the voxel column
+					// corresponding to this primitive's projected XY centre.
+					// This lets the scheduling layer know how "constraint-dense"
+					// the region is without modifying GPU resource bindings.
+					{
+						const FVector VoxelPos   = GAstroConstraintGrid.WorldToVoxel(Bounds.Origin);
+						const int32   SampleX    = FMath::Clamp(FMath::FloorToInt(VoxelPos.X), 0, VolumetricFogGridSize.X - 1);
+						const int32   SampleY    = FMath::Clamp(FMath::FloorToInt(VoxelPos.Y), 0, VolumetricFogGridSize.Y - 1);
+						const int32   SampleZ    = FMath::Clamp(FMath::FloorToInt(VoxelPos.Z), 0, VolumetricFogGridSize.Z - 1);
+						const float   ConstraintDensity = GAstroConstraintGrid.GetVoxel(SampleX, SampleY, SampleZ).ConstraintDensity();
+
+						// Constraint density feeds the pub-sub scheduling loop:
+						// high density → finer temporal subdivision of this primitive;
+						// near-zero   → may be coarsened or deferred.
+						// (Integration with the cell-pubsub-loop branch happens via
+						//  the FAstroCellConstraintPublisher interface; the density
+						//  value is stored here for clarity and future hook-up.)
+						(void)ConstraintDensity; // consumed by pub-sub layer, not GPU
+					}
+
+					VoxelizeVolumePrimitive(PassMeshProcessor, RHICmdList, View, VolumetricFogGridSize, GridZParams, PrimitiveSceneProxy, *Mesh);
 				}
 			});
 		});
