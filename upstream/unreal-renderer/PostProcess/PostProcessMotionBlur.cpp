@@ -20,7 +20,72 @@
 #include "PipelineStateCache.h"
 #include "SpriteIndexBuffer.h"
 
+// [ASTRO-MBLUR] Epoch displacement trail debug system
+// Tracks per-epoch velocity accumulation for inter-epoch trajectory reconstruction.
+// Each epoch boundary resets the trail accumulator; displacement vectors are logged
+// at tile granularity to reconstruct the full inter-epoch motion path offline.
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+// [ASTRO-MBLUR] M116: Epoch counter — incremented each time the motion blur pass fires.
+static TAtomic<uint64> GAstroMBlurEpochCounter(0);
+
+// [ASTRO-MBLUR] M117: Per-epoch peak displacement magnitude (pixels, screen-space).
+static TAtomic<float>  GAstroMBlurEpochPeakDisplacement(0.0f);
+
+// [ASTRO-MBLUR] M118: Cumulative inter-epoch displacement trail length (sum of per-epoch peaks).
+static TAtomic<float>  GAstroMBlurTrailLength(0.0f);
+
+// [ASTRO-MBLUR] M119: Console variable — enable verbose per-tile epoch trail logging.
+static TAutoConsoleVariable<int32> CVarAstroMBlurEpochTrail(
+	TEXT("r.AstroMBlur.EpochTrail"),
+	0,
+	TEXT("[ASTRO-MBLUR] Epoch displacement trail verbosity\n")
+	TEXT("0: off (default)\n")
+	TEXT("1: log epoch summary (peak displacement, trail length) per pass\n")
+	TEXT("2: log per-tile displacement vectors (high volume)\n"),
+	ECVF_Cheat | ECVF_RenderThreadSafe);
+
+// [ASTRO-MBLUR] M120: Helper — record displacement sample for the current epoch.
+// Called once per motion blur pass with the max observed screen-space displacement.
+FORCEINLINE void AstroMBlur_RecordEpochDisplacement(float MaxDisplacementPixels, float MotionBlurScale)
+{
+	const int32 TrailVerbosity = CVarAstroMBlurEpochTrail.GetValueOnRenderThread();
+	if (TrailVerbosity <= 0) { return; }
+
+	const uint64 Epoch = ++GAstroMBlurEpochCounter;
+
+	// Scaled displacement = raw max velocity * current blur scale factor.
+	// This gives the actual on-screen trail length for this epoch segment.
+	const float ScaledDisplacement = MaxDisplacementPixels * FMath::Abs(MotionBlurScale);
+
+	// Atomically update peak — use CAS loop since TAtomic has no built-in float max.
+	float OldPeak = GAstroMBlurEpochPeakDisplacement.Load();
+	while (ScaledDisplacement > OldPeak)
+	{
+		if (GAstroMBlurEpochPeakDisplacement.CompareExchange(OldPeak, ScaledDisplacement))
+		{
+			break;
+		}
+	}
+
+	// Accumulate trail length (inter-epoch path integral approximation).
+	GAstroMBlurTrailLength += ScaledDisplacement;
+
+	UE_LOG(LogRenderer, Verbose,
+		TEXT("[ASTRO-MBLUR] Epoch=%llu  RawMaxDisp=%.2fpx  Scale=%.4f  ScaledDisp=%.2fpx  TrailLen=%.2fpx"),
+		Epoch, MaxDisplacementPixels, MotionBlurScale, ScaledDisplacement,
+		static_cast<float>(GAstroMBlurTrailLength));
+}
+
+// [ASTRO-MBLUR] Helper — reset epoch trail accumulators (e.g. on level transition or explicit flush).
+FORCEINLINE void AstroMBlur_ResetEpochTrail()
+{
+	GAstroMBlurEpochCounter.Store(0);
+	GAstroMBlurEpochPeakDisplacement.Store(0.0f);
+	GAstroMBlurTrailLength.Store(0.0f);
+	UE_LOG(LogRenderer, Log, TEXT("[ASTRO-MBLUR] Epoch displacement trail reset."));
+}
+
 static TAutoConsoleVariable<int32> CVarMotionBlurFiltering(
 	TEXT("r.MotionBlurFiltering"),
 	0,
@@ -859,6 +924,18 @@ void FRCPassPostProcessMotionBlur::Process(FRenderingCompositePassContext& Conte
 	};
 	float Scale = Pass >= 0 ? BlurScaleLUT[ (Pass * 4) + (Quality - 1) ] : 1.0f;
 
+	// [ASTRO-MBLUR] M116-M120: Record epoch displacement trail sample.
+	// MaxVelocity (screen fraction) * SrcRect.Width() * 0.5 gives max pixel displacement
+	// for this epoch segment; multiplied by Scale to obtain the effective blur trail length.
+	{
+		const FVector4 MBParams = GetMotionBlurParameters(Context, Scale);
+		// MBParams.W = PixelScale * MaxVelocity (absolute max velocity in pixels, unscaled).
+		// The actual epoch displacement is MBParams.Y / SrcRect.Width() * 2 * SrcRect.Width()
+		// = 2 * MBParams.Y for the full extent, but we use MBParams.W as the raw pixel cap.
+		const float MaxDisplacementPixels = MBParams.W; // [ASTRO-MBLUR] epoch pixel budget
+		AstroMBlur_RecordEpochDisplacement(MaxDisplacementPixels, Scale);
+	}
+
 	SCOPED_DRAW_EVENTF(Context.RHICmdList, MotionBlur, TEXT("MotionBlur%s %dx%d"),
 		bIsComputePass?TEXT("Compute"):TEXT(""), SrcRect.Width(), SrcRect.Height());
 
@@ -1251,3 +1328,5 @@ FPooledRenderTargetDesc FRCPassPostProcessVisualizeMotionBlur::ComputeOutputDesc
 
 	return Ret;
 }
+
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST) — [ASTRO-MBLUR] epoch trail debug guard
