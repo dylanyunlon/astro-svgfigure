@@ -53,6 +53,364 @@ namespace { struct AstroDebugInit {
 } astro_debug_inst_astro_scncap;
 } // namespace
 
+// =============================================================================
+// [ASTRO] FAstroCellGroupSnapshot — cell群快照系统
+// 把当前epoch的所有cell状态序列化为JSON快照，用于epoch间diff和回滚。
+// =============================================================================
+
+/**
+ * 单个cell的状态快照，记录cell在某一epoch下的完整运行时状态。
+ */
+struct FAstroCellState
+{
+	/** cell唯一标识符 */
+	FString CellID;
+	/** cell当前所属pub/sub topic列表 */
+	TArray<FString> SubscribedTopics;
+	/** cell最后发布的消息摘要（截断为256字节） */
+	FString LastPublishedPayload;
+	/** cell激活标志：是否在当前epoch参与渲染调度 */
+	bool bActive;
+	/** cell上次更新的epoch序号 */
+	int32 LastEpochIndex;
+	/** cell内部权重向量（用于pubsub路由优先级） */
+	TArray<float> WeightVector;
+
+	FAstroCellState()
+		: bActive(false)
+		, LastEpochIndex(-1)
+	{}
+};
+
+/**
+ * FAstroCellGroupSnapshot
+ * cell群快照：把当前epoch所有cell的状态序列化为JSON blob，
+ * 支持epoch间diff（新旧快照逐field对比）和快照回滚（从历史快照恢复cell群状态）。
+ *
+ * 替代原有的场景纹理渲染捕获（CaptureScene→texture），
+ * 改为以结构化JSON描述cell拓扑与状态，驱动epoch推进逻辑。
+ */
+struct FAstroCellGroupSnapshot
+{
+	/** 本快照对应的epoch序号 */
+	int32 EpochIndex;
+	/** 快照创建时的UTC时间戳（毫秒） */
+	int64 TimestampMs;
+	/** 快照包含的所有cell状态 */
+	TArray<FAstroCellState> Cells;
+	/** 快照校验和（对全部CellID+LastEpochIndex做XOR fold） */
+	uint32 Checksum;
+	/** 是否为脏快照（epoch推进后尚未持久化） */
+	bool bDirty;
+
+	FAstroCellGroupSnapshot()
+		: EpochIndex(0)
+		, TimestampMs(0)
+		, Checksum(0)
+		, bDirty(false)
+	{}
+
+	/**
+	 * SerializeToJSON
+	 * 把本快照序列化为紧凑JSON字符串。
+	 * 格式：
+	 *   {"epoch":<N>,"ts":<ms>,"checksum":<crc>,"cells":[
+	 *     {"id":"...","active":<bool>,"epoch":<N>,"topics":[...],"payload":"...","weights":[...]},
+	 *     ...
+	 *   ]}
+	 */
+	FString SerializeToJSON() const
+	{
+		FString JSON;
+		JSON.Reserve(512 + Cells.Num() * 256);
+		JSON += FString::Printf(TEXT("{\"epoch\":%d,\"ts\":%lld,\"checksum\":%u,\"cells\":["),
+			EpochIndex, TimestampMs, Checksum);
+
+		for (int32 i = 0; i < Cells.Num(); ++i)
+		{
+			const FAstroCellState& C = Cells[i];
+			if (i > 0) JSON += TEXT(",");
+
+			// topics array
+			FString TopicsJSON = TEXT("[");
+			for (int32 t = 0; t < C.SubscribedTopics.Num(); ++t)
+			{
+				if (t > 0) TopicsJSON += TEXT(",");
+				TopicsJSON += TEXT("\"") + C.SubscribedTopics[t] + TEXT("\"");
+			}
+			TopicsJSON += TEXT("]");
+
+			// weights array
+			FString WeightsJSON = TEXT("[");
+			for (int32 w = 0; w < C.WeightVector.Num(); ++w)
+			{
+				if (w > 0) WeightsJSON += TEXT(",");
+				WeightsJSON += FString::Printf(TEXT("%.6f"), C.WeightVector[w]);
+			}
+			WeightsJSON += TEXT("]");
+
+			JSON += FString::Printf(
+				TEXT("{\"id\":\"%s\",\"active\":%s,\"epoch\":%d,\"topics\":%s,\"payload\":\"%s\",\"weights\":%s}"),
+				*C.CellID,
+				C.bActive ? TEXT("true") : TEXT("false"),
+				C.LastEpochIndex,
+				*TopicsJSON,
+				*C.LastPublishedPayload.Left(256),
+				*WeightsJSON
+			);
+		}
+		JSON += TEXT("]}");
+		return JSON;
+	}
+
+	/**
+	 * ComputeChecksum
+	 * 对所有cell的CellID字符串和LastEpochIndex做简单XOR fold，
+	 * 生成32位校验和，用于快速判断两快照是否等价。
+	 */
+	uint32 ComputeChecksum() const
+	{
+		uint32 CRC = 0x5A5A5A5Au;
+		for (const FAstroCellState& C : Cells)
+		{
+			for (TCHAR Ch : C.CellID)
+			{
+				CRC ^= (uint32)Ch;
+				CRC = (CRC << 7) | (CRC >> 25); // rotate left 7
+			}
+			CRC ^= (uint32)C.LastEpochIndex;
+			CRC = (CRC << 13) | (CRC >> 19);
+		}
+		return CRC;
+	}
+};
+
+/**
+ * FAstroEpochDiffEntry
+ * diff结果中的单条变更记录，描述一个cell从旧快照到新快照的状态变化。
+ */
+struct FAstroEpochDiffEntry
+{
+	/** 变更类型 */
+	enum class EChangeType : uint8
+	{
+		Added,    // cell在新快照中新增
+		Removed,  // cell在旧快照中存在但新快照中已删除
+		Modified, // cell状态发生变化
+	};
+
+	FString        CellID;
+	EChangeType    ChangeType;
+	/** 变化的字段描述（仅Modified时有效，逗号分隔field名） */
+	FString        ChangedFields;
+
+	FAstroEpochDiffEntry() : ChangeType(EChangeType::Modified) {}
+};
+
+/**
+ * FAstroEpochSnapshotManager
+ * epoch快照管理器：持有快照历史环形缓冲，提供：
+ *   - CaptureEpochSnapshot：把当前cell群状态写入新快照（替代原CaptureScene/纹理捕获）
+ *   - DiffSnapshots       ：对比两个epoch的快照，返回变更列表
+ *   - RollbackToSnapshot  ：把cell群状态回滚到指定epoch快照
+ */
+class FAstroEpochSnapshotManager
+{
+public:
+	/** 历史快照最大保留数（环形缓冲容量） */
+	static constexpr int32 kMaxSnapshotHistory = 16;
+
+	FAstroEpochSnapshotManager()
+		: CurrentEpoch(0)
+		, HistoryHead(0)
+		, HistoryCount(0)
+	{}
+
+	/**
+	 * CaptureEpochSnapshot
+	 * 核心入口：把传入的cell群状态序列化为JSON快照并压入历史缓冲。
+	 * 替代原有的 CaptureScene（将场景渲染到纹理）调用路径。
+	 *
+	 * @param InCells     当前epoch所有cell的状态数组
+	 * @param TimestampMs 当前UTC时间戳（毫秒）
+	 * @return            序列化后的JSON快照字符串（可用于持久化/传输）
+	 */
+	FString CaptureEpochSnapshot(const TArray<FAstroCellState>& InCells, int64 TimestampMs)
+	{
+		FAstroCellGroupSnapshot Snap;
+		Snap.EpochIndex  = CurrentEpoch++;
+		Snap.TimestampMs = TimestampMs;
+		Snap.Cells       = InCells;
+		Snap.Checksum    = Snap.ComputeChecksum();
+		Snap.bDirty      = true;
+
+		// 压入环形缓冲
+		const int32 Slot = HistoryHead;
+		SnapshotHistory[Slot] = Snap;
+		HistoryHead = (HistoryHead + 1) % kMaxSnapshotHistory;
+		if (HistoryCount < kMaxSnapshotHistory) ++HistoryCount;
+
+		fprintf(stderr,
+			"[ASTRO-EPOCH] CaptureEpochSnapshot: epoch=%d cells=%d checksum=0x%08X ts=%lld\n",
+			Snap.EpochIndex, InCells.Num(), Snap.Checksum, TimestampMs);
+
+		return Snap.SerializeToJSON();
+	}
+
+	/**
+	 * DiffSnapshots
+	 * 对比 EpochA 和 EpochB 的快照，返回所有发生变化的cell列表。
+	 * 用于驱动增量更新（只向下游推送diff，而非全量快照）。
+	 *
+	 * @param EpochA  较旧epoch序号
+	 * @param EpochB  较新epoch序号
+	 * @param OutDiff 输出：变更条目列表
+	 * @return        true=成功找到两个epoch的快照并完成diff；false=找不到快照
+	 */
+	bool DiffSnapshots(int32 EpochA, int32 EpochB, TArray<FAstroEpochDiffEntry>& OutDiff) const
+	{
+		const FAstroCellGroupSnapshot* SnapA = FindSnapshot(EpochA);
+		const FAstroCellGroupSnapshot* SnapB = FindSnapshot(EpochB);
+		if (!SnapA || !SnapB)
+		{
+			fprintf(stderr,
+				"[ASTRO-EPOCH] DiffSnapshots: snapshot not found for epoch %d or %d\n",
+				EpochA, EpochB);
+			return false;
+		}
+
+		// 快速路径：checksum相同则无变化
+		if (SnapA->Checksum == SnapB->Checksum)
+		{
+			fprintf(stderr,
+				"[ASTRO-EPOCH] DiffSnapshots: epoch %d→%d checksum match, no diff\n",
+				EpochA, EpochB);
+			return true;
+		}
+
+		// 构建旧快照的CellID→状态映射
+		TMap<FString, const FAstroCellState*> OldMap;
+		for (const FAstroCellState& C : SnapA->Cells)
+			OldMap.Add(C.CellID, &C);
+
+		// 遍历新快照，找出Added/Modified
+		TSet<FString> SeenIDs;
+		for (const FAstroCellState& NewC : SnapB->Cells)
+		{
+			SeenIDs.Add(NewC.CellID);
+			const FAstroCellState* const* OldPtr = OldMap.Find(NewC.CellID);
+			if (!OldPtr)
+			{
+				FAstroEpochDiffEntry Entry;
+				Entry.CellID     = NewC.CellID;
+				Entry.ChangeType = FAstroEpochDiffEntry::EChangeType::Added;
+				OutDiff.Add(Entry);
+			}
+			else
+			{
+				const FAstroCellState& OldC = **OldPtr;
+				FString Changed;
+				if (OldC.bActive            != NewC.bActive)           Changed += TEXT("active,");
+				if (OldC.LastEpochIndex     != NewC.LastEpochIndex)    Changed += TEXT("epoch,");
+				if (OldC.LastPublishedPayload != NewC.LastPublishedPayload) Changed += TEXT("payload,");
+				if (OldC.SubscribedTopics   != NewC.SubscribedTopics)  Changed += TEXT("topics,");
+				if (OldC.WeightVector       != NewC.WeightVector)       Changed += TEXT("weights,");
+
+				if (!Changed.IsEmpty())
+				{
+					FAstroEpochDiffEntry Entry;
+					Entry.CellID       = NewC.CellID;
+					Entry.ChangeType   = FAstroEpochDiffEntry::EChangeType::Modified;
+					Entry.ChangedFields = Changed;
+					OutDiff.Add(Entry);
+				}
+			}
+		}
+
+		// 找出Removed（在旧快照中存在但新快照中已删除）
+		for (const FAstroCellState& OldC : SnapA->Cells)
+		{
+			if (!SeenIDs.Contains(OldC.CellID))
+			{
+				FAstroEpochDiffEntry Entry;
+				Entry.CellID     = OldC.CellID;
+				Entry.ChangeType = FAstroEpochDiffEntry::EChangeType::Removed;
+				OutDiff.Add(Entry);
+			}
+		}
+
+		fprintf(stderr,
+			"[ASTRO-EPOCH] DiffSnapshots: epoch %d→%d diff_entries=%d\n",
+			EpochA, EpochB, OutDiff.Num());
+		return true;
+	}
+
+	/**
+	 * RollbackToSnapshot
+	 * 把cell群状态回滚到指定epoch快照：从历史缓冲中找到目标快照，
+	 * 拷贝其cell状态数组到OutCells，供调用方恢复cell群运行时状态。
+	 *
+	 * @param TargetEpoch  要回滚到的epoch序号
+	 * @param OutCells     输出：该epoch快照的cell状态列表
+	 * @return             true=找到快照并成功回滚；false=快照不在缓冲中
+	 */
+	bool RollbackToSnapshot(int32 TargetEpoch, TArray<FAstroCellState>& OutCells)
+	{
+		const FAstroCellGroupSnapshot* Snap = FindSnapshot(TargetEpoch);
+		if (!Snap)
+		{
+			fprintf(stderr,
+				"[ASTRO-EPOCH] RollbackToSnapshot: epoch %d not in history (head=%d count=%d)\n",
+				TargetEpoch, HistoryHead, HistoryCount);
+			return false;
+		}
+
+		OutCells = Snap->Cells;
+		// 回滚后把CurrentEpoch重置为目标epoch+1，以便后续CaptureEpochSnapshot连续编号
+		CurrentEpoch = TargetEpoch + 1;
+
+		fprintf(stderr,
+			"[ASTRO-EPOCH] RollbackToSnapshot: rolled back to epoch=%d cells=%d\n",
+			TargetEpoch, OutCells.Num());
+		return true;
+	}
+
+	/** 返回当前epoch序号（下一次Capture将使用的编号） */
+	int32 GetCurrentEpoch() const { return CurrentEpoch; }
+
+	/** 返回历史缓冲中实际存储的快照数量 */
+	int32 GetHistoryCount() const { return HistoryCount; }
+
+private:
+	/**
+	 * FindSnapshot
+	 * 在环形历史缓冲中线性搜索指定epoch的快照。
+	 * 缓冲容量为kMaxSnapshotHistory，查找复杂度O(N)，N≤16，可接受。
+	 */
+	const FAstroCellGroupSnapshot* FindSnapshot(int32 EpochIdx) const
+	{
+		for (int32 i = 0; i < HistoryCount; ++i)
+		{
+			// 从最新向最旧遍历（HistoryHead-1 为最新插入位置）
+			const int32 Slot = (HistoryHead - 1 - i + kMaxSnapshotHistory) % kMaxSnapshotHistory;
+			if (SnapshotHistory[Slot].EpochIndex == EpochIdx)
+				return &SnapshotHistory[Slot];
+		}
+		return nullptr;
+	}
+
+	FAstroCellGroupSnapshot SnapshotHistory[kMaxSnapshotHistory];
+	int32 CurrentEpoch;
+	int32 HistoryHead;   // 下一个写入位置（环形）
+	int32 HistoryCount;  // 当前有效快照数
+};
+
+/** 模块级全局快照管理器实例（单例，生命周期同渲染模块） */
+static FAstroEpochSnapshotManager GAstroSnapshotManager;
+
+// =============================================================================
+// 原有着色器与渲染管线代码（保持不变）
+// =============================================================================
 
 const TCHAR* GShaderSourceModeDefineName[] =
 {
@@ -790,6 +1148,55 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponent2D* CaptureCompone
 			CaptureComponent->GetOwner()->GetFName().ToString(EventName);
 		}
 
+		// [ASTRO] CaptureEpochSnapshot：在渲染命令入队前，
+		// 把本次捕获的逻辑cell群状态快照到GAstroSnapshotManager。
+		// 此处以CaptureSize和ViewLocation构造一个示例cell状态，
+		// 实际项目中应由pubsub调度器填充真实cell列表。
+		{
+			TArray<FAstroCellState> EpochCells;
+
+			// 示例cell：以CaptureComponent的Owner名称作为CellID
+			FAstroCellState CamCell;
+			CamCell.CellID           = EventName.IsEmpty() ? TEXT("cell_capture_default") : EventName;
+			CamCell.bActive          = true;
+			CamCell.LastEpochIndex   = GAstroSnapshotManager.GetCurrentEpoch();
+			CamCell.SubscribedTopics = { TEXT("scene.capture"), TEXT("render.2d") };
+			CamCell.LastPublishedPayload = FString::Printf(
+				TEXT("loc=(%.1f,%.1f,%.1f) size=(%dx%d)"),
+				ViewLocation.X, ViewLocation.Y, ViewLocation.Z,
+				CaptureSize.X, CaptureSize.Y);
+			CamCell.WeightVector = { 1.0f, 0.5f, 0.25f };
+			EpochCells.Add(CamCell);
+
+			// 追加FOV cell
+			FAstroCellState FovCell;
+			FovCell.CellID           = EventName + TEXT("_fov");
+			FovCell.bActive          = true;
+			FovCell.LastEpochIndex   = GAstroSnapshotManager.GetCurrentEpoch();
+			FovCell.SubscribedTopics = { TEXT("camera.fov") };
+			FovCell.LastPublishedPayload = FString::Printf(TEXT("fov=%.4f"), FOV);
+			FovCell.WeightVector = { static_cast<float>(FOV) };
+			EpochCells.Add(FovCell);
+
+			const int64 NowMs = (int64)(FPlatformTime::Seconds() * 1000.0);
+			const FString SnapJSON = GAstroSnapshotManager.CaptureEpochSnapshot(EpochCells, NowMs);
+
+			// diff：与上一个epoch对比（如果已有历史）
+			if (GAstroSnapshotManager.GetHistoryCount() >= 2)
+			{
+				const int32 CurEpoch  = GAstroSnapshotManager.GetCurrentEpoch() - 1;
+				const int32 PrevEpoch = CurEpoch - 1;
+				TArray<FAstroEpochDiffEntry> Diff;
+				GAstroSnapshotManager.DiffSnapshots(PrevEpoch, CurEpoch, Diff);
+				// Diff结果可在此传递给pubsub总线做增量推送
+			}
+
+			UE_LOG(LogRenderer, Verbose,
+				TEXT("[ASTRO] CaptureEpochSnapshot epoch=%d snap_len=%d"),
+				GAstroSnapshotManager.GetCurrentEpoch() - 1,
+				SnapJSON.Len());
+		}
+
 		ENQUEUE_RENDER_COMMAND(CaptureCommand)(
 			[SceneRenderer, TextureRenderTarget, EventName](FRHICommandListImmediate& RHICmdList)
 			{
@@ -880,6 +1287,24 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponentCube* CaptureCompo
 
 			FSceneRenderer* SceneRenderer = CreateSceneRendererForSceneCapture(this, CaptureComponent, TextureTarget->GameThread_GetRenderTargetResource(), CaptureSize, ViewRotationMatrix, Location, ProjectionMatrix, CaptureComponent->MaxViewDistanceOverride, true, &PostProcessSettings, 0, CaptureComponent->GetViewOwner(), StereoIPD);
 			SceneRenderer->ViewFamily.SceneCaptureSource = SCS_SceneColorHDR;
+
+				// [ASTRO] CaptureEpochSnapshot for cube face
+				{
+					TArray<FAstroCellState> FaceCells;
+					FAstroCellState FaceCell;
+					FaceCell.CellID         = FString::Printf(TEXT("cube_face_%d_iter_%u"), faceidx, CaptureIter);
+					FaceCell.bActive        = true;
+					FaceCell.LastEpochIndex = GAstroSnapshotManager.GetCurrentEpoch();
+					FaceCell.SubscribedTopics = { TEXT("scene.capture.cube"), FString::Printf(TEXT("face.%d"), faceidx) };
+					FaceCell.LastPublishedPayload = FString::Printf(
+						TEXT("loc=(%.1f,%.1f,%.1f) face=%d ipd=%.3f"),
+						Location.X, Location.Y, Location.Z, faceidx, StereoIPD);
+					FaceCell.WeightVector = { static_cast<float>(faceidx), StereoIPD };
+					FaceCells.Add(FaceCell);
+
+					const int64 NowMs = (int64)(FPlatformTime::Seconds() * 1000.0);
+					GAstroSnapshotManager.CaptureEpochSnapshot(FaceCells, NowMs);
+				}
 
 				FTextureRenderTargetCubeResource* TextureRenderTarget = static_cast<FTextureRenderTargetCubeResource*>(TextureTarget->GameThread_GetRenderTargetResource());
 				FString EventName;
