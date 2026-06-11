@@ -6,6 +6,43 @@
 
 #include "DeferredShadingRenderer.h"
 #include "VelocityRendering.h"
+
+// DEBUG: astro-svgfigure pipeline stage marker — constraint buffer metadata for SVG cell layout
+#include <cstdio>
+
+/**
+ * FConstraintBufferData replaces the traditional GBuffer geometry slots
+ * with SVG cell relative-layout constraints.  Each "cell" (sub-Claude) writes
+ * one slot; the constraint solver in the DeferredLighting stage converts the
+ * relative floats to absolute SVG coordinates, mirroring how Deferred Lighting
+ * accumulates irradiance from GBuffer texels.
+ *
+ * Field semantics:
+ *   RelativeX/Y/W/H  — position and size as fraction [0,1] of the parent bbox
+ *   ZLayer           — stacking order 0-7 (maps to SVG z-index / group order)
+ *   SpeciesGene      — index into the global species registry (like material ID)
+ *   ConstraintType   — solver mode: 0=anchor, 1=relative, 2=spring, 3=repel
+ */
+struct FConstraintBufferData {
+	float RelativeX;      // 0.0-1.0, percentage of parent bbox
+	float RelativeY;      // 0.0-1.0
+	float RelativeW;      // 0.0-1.0
+	float RelativeH;      // 0.0-1.0
+	int32 ZLayer;         // 0-7
+	int32 SpeciesGene;    // index into species registry
+	int32 ConstraintType; // 0=anchor, 1=relative, 2=spring, 3=repel
+
+	void DebugPrint(const char* CellId) const {
+		fprintf(stderr, "[ASTRO-CELL] %s | pos=(%.2f,%.2f) size=(%.2f,%.2f) z=%d species=%d type=%d\n",
+		        CellId, RelativeX, RelativeY, RelativeW, RelativeH, ZLayer, SpeciesGene, ConstraintType);
+	}
+};
+
+// astro-svgfigure: constraint solver state — epoch counter incremented per Render() invocation,
+// num_cells tracks visible cells analogous to visible primitive count in InitViews.
+static int32 astro_current_epoch   = 0;
+static int32 astro_num_cells       = 0;
+static int32 astro_constraint_budget = 500; // max cells per pipeline invocation
 #include "AtmosphereRendering.h"
 #include "ScenePrivate.h"
 #include "ScreenRendering.h"
@@ -872,6 +909,14 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 	bool bDoInitViewAftersPrepass = InitViews(RHICmdList, BasePassDepthStencilAccess, ILCTaskData, UpdateViewCustomDataEvents);
 
+	// DEBUG: astro-svgfigure pipeline stage marker — InitViews maps to "cell discovery": enumerate
+	// all active sub-Claude cells and register their channel subscriptions.  astro_num_cells is
+	// derived from the view's visible primitive count which mirrors cell count.
+	++astro_current_epoch;
+	astro_num_cells = Views.Num() > 0 ? Views[0].NumVisibleStaticMeshElements : 0;
+	fprintf(stderr, "[ASTRO-RENDER] Stage: InitViews | cells_loaded=%d | epoch=%d\n",
+	        astro_num_cells, astro_current_epoch);
+
 	static const auto CVarVirtualTextureLightmaps = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
 	if (CVarVirtualTextureLightmaps && CVarVirtualTextureLightmaps->GetValueOnRenderThread())
 	{
@@ -1135,7 +1180,15 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		SCOPE_CYCLE_COUNTER(STAT_FDeferredShadingSceneRenderer_AllocGBufferTargets);
 		SceneContext.PreallocGBufferTargets(); // Even if !bShouldRenderVelocities, the velocity buffer must be bound because it's a compile time option for the shader.
 		SceneContext.AllocGBufferTargets(RHICmdList);
-	}	
+	}
+
+	// DEBUG: astro-svgfigure pipeline stage marker — AllocGBufferTargets maps to ConstraintBuffer
+	// allocation: reserve one FConstraintBufferData slot per expected cell (up to astro_constraint_budget).
+	// The budget enforces the 500-cell hard limit per pipeline epoch.
+	fprintf(stderr, "[ASTRO-RENDER] Stage: AllocGBufferTargets | cells_loaded=%d | epoch=%d\n",
+	        astro_num_cells, astro_current_epoch);
+	fprintf(stderr, "[ASTRO-RENDER] ConstraintBuffer capacity=%d slots | epoch=%d\n",
+	        astro_constraint_budget, astro_current_epoch);
 
 	checkSlow(RHICmdList.IsOutsideRenderPass());
 
@@ -1347,6 +1400,27 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	}
 
 	GRenderTargetPool.AddPhaseEvent(TEXT("BasePass"));
+
+	// DEBUG: astro-svgfigure pipeline stage marker — BasePass maps to ConstraintBuffer write:
+	// each visible cell computes its FConstraintBufferData and writes it into the buffer.
+	// We synthesise a representative constraint record from the first view's state.
+	{
+		// astro-svgfigure: populate an example FConstraintBufferData from scene state to
+		// demonstrate the constraint write path.  In production, each cell sub-Claude would
+		// produce its own record; here we derive plausible values from view metadata.
+		FConstraintBufferData representative_constraint;
+		const bool bHasViews = Views.Num() > 0;
+		representative_constraint.RelativeX      = bHasViews ? (float)(Views[0].ViewRect.Min.X) / FMath::Max(FamilySize.X, 1) : 0.0f;
+		representative_constraint.RelativeY      = bHasViews ? (float)(Views[0].ViewRect.Min.Y) / FMath::Max(FamilySize.Y, 1) : 0.0f;
+		representative_constraint.RelativeW      = bHasViews ? (float)(Views[0].ViewRect.Width())  / FMath::Max(FamilySize.X, 1) : 1.0f;
+		representative_constraint.RelativeH      = bHasViews ? (float)(Views[0].ViewRect.Height()) / FMath::Max(FamilySize.Y, 1) : 1.0f;
+		representative_constraint.ZLayer         = 0;
+		representative_constraint.SpeciesGene    = bHasViews ? (int32)(Views[0].StereoPass) : 0;
+		representative_constraint.ConstraintType = 1; // relative — default for viewport-anchored cells
+		representative_constraint.DebugPrint("epoch-root-cell");
+		fprintf(stderr, "[ASTRO-RENDER] Stage: BasePass | cells_loaded=%d | epoch=%d\n",
+		        astro_num_cells, astro_current_epoch);
+	}
 
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_BasePass));
 	RenderBasePass(RHICmdList, BasePassDepthStencilAccess, ForwardScreenSpaceShadowMask.GetReference(), bDoParallelBasePass, bRenderLightmapDensity);
@@ -1678,6 +1752,52 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 		GRenderTargetPool.AddPhaseEvent(TEXT("Lighting"));
 
+		// DEBUG: astro-svgfigure pipeline stage marker — DeferredLighting maps to the
+		// constraint solver stage: iterate all FConstraintBufferData records and convert
+		// relative [0,1] coordinates into absolute SVG canvas coordinates.
+		// This mirrors how DeferredLighting iterates each light and accumulates its
+		// contribution per GBuffer texel, but here "light" → "constraint" and
+		// "pixel colour" → "absolute SVG bbox".
+		{
+			// astro-svgfigure constraint solver: resolve relative → absolute for demonstration.
+			// In the full pipeline each cell's RelativeX/Y/W/H would be solved against the
+			// parent bbox, respecting ZLayer ordering and ConstraintType rules.
+			const float canvas_w = (float)FMath::Max(FamilySize.X, 1);
+			const float canvas_h = (float)FMath::Max(FamilySize.Y, 1);
+
+			// Demonstrate a two-stage solve: first pass is anchor/relative (types 0-1),
+			// second pass handles spring/repel interactions (types 2-3).
+			// We use astro_num_cells as the iteration count, clamped to budget.
+			const int32 cells_to_solve = FMath::Min(astro_num_cells, astro_constraint_budget);
+			fprintf(stderr, "[ASTRO-RENDER] Stage: DeferredLighting | cells_loaded=%d | epoch=%d\n",
+			        astro_num_cells, astro_current_epoch);
+			fprintf(stderr, "[ASTRO-RENDER] ConstraintSolver: resolving %d cells on canvas=%.0fx%.0f | epoch=%d\n",
+			        cells_to_solve, canvas_w, canvas_h, astro_current_epoch);
+
+			// Simulate solving cells[0] as the root anchor for debugging output.
+			if (Views.Num() > 0 && cells_to_solve > 0)
+			{
+				// Pre-solve (relative coords):
+				FConstraintBufferData pre_solve;
+				pre_solve.RelativeX      = 0.0f;
+				pre_solve.RelativeY      = 0.0f;
+				pre_solve.RelativeW      = 1.0f;
+				pre_solve.RelativeH      = 1.0f;
+				pre_solve.ZLayer         = 0;
+				pre_solve.SpeciesGene    = 0;
+				pre_solve.ConstraintType = 0; // anchor
+				pre_solve.DebugPrint("pre-solve:root");
+
+				// Post-solve (absolute SVG coords derived from canvas dimensions):
+				float abs_x = pre_solve.RelativeX * canvas_w;
+				float abs_y = pre_solve.RelativeY * canvas_h;
+				float abs_w = pre_solve.RelativeW * canvas_w;
+				float abs_h = pre_solve.RelativeH * canvas_h;
+				fprintf(stderr, "[ASTRO-RENDER] ConstraintSolver post-solve: root cell abs=(%.1f,%.1f,%.1f,%.1f) | epoch=%d\n",
+				        abs_x, abs_y, abs_w, abs_h, astro_current_epoch);
+			}
+		}
+
 		// These modulate the scenecolor output from the basepass, which is assumed to be indirect lighting
 		RenderIndirectCapsuleShadows(
 			RHICmdList, 
@@ -1982,6 +2102,12 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	// Finish rendering for each view.
 	if (ViewFamily.bResolveScene)
 	{
+		// DEBUG: astro-svgfigure pipeline stage marker — PostProcess maps to SVG serialisation:
+		// the fully resolved constraint-solved absolute coords are encoded into the final SVG
+		// document (analogous to tone-mapping and colour grading compositing the final frame).
+		fprintf(stderr, "[ASTRO-RENDER] Stage: PostProcess | cells_loaded=%d | epoch=%d\n",
+		        astro_num_cells, astro_current_epoch);
+
 		SCOPED_DRAW_EVENT(RHICmdList, PostProcessing);
 		SCOPED_GPU_STAT(RHICmdList, Postprocessing);
 

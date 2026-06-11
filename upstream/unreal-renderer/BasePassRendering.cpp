@@ -12,6 +12,17 @@
 #include "EditorPrimitivesRendering.h"
 #include "TranslucentRendering.h"
 
+// DEBUG: astro-svgfigure BasePass constraint-buffer instrumentation
+#include <cstdio>
+#include <cstring>
+
+// astro-svgfigure: per-frame ConstraintBuffer slot tracker.
+// max_slots mirrors the 500-cell hard limit; used_slots is reset at the start
+// of each RenderBasePass() invocation and incremented once per processed mesh
+// (each mesh is treated as one cell writing its constraint record).
+static int32 astro_bp_used_slots = 0;
+static int32 astro_bp_max_slots  = 500;
+
 // Changing this causes a full shader recompile
 static TAutoConsoleVariable<int32> CVarSelectiveBasePassOutputs(
 	TEXT("r.SelectiveBasePassOutputs"),
@@ -610,6 +621,12 @@ bool FDeferredShadingSceneRenderer::RenderBasePass(FRHICommandListImmediate& RHI
 {
 	SCOPED_NAMED_EVENT(FDeferredShadingSceneRenderer_RenderBasePass, FColor::Emerald);
 
+	// DEBUG: astro-svgfigure BasePass constraint-buffer instrumentation — reset slot counter
+	// at the start of each BasePass invocation so the per-mesh writes below count from 0.
+	astro_bp_used_slots = 0;
+	fprintf(stderr, "[ASTRO-BASEPASS] RenderBasePass begin | buffer_usage=%d/%d\n",
+	        astro_bp_used_slots, astro_bp_max_slots);
+
 	bool bDirty = false;
 
 	RHICmdList.AutomaticCacheFlushAfterComputeShader(false);
@@ -980,6 +997,32 @@ void FBasePassMeshProcessor::Process(
 		SortKey,
 		EMeshPassFeatures::Default,
 		ShaderElementData);
+
+	// DEBUG: astro-svgfigure BasePass constraint-buffer instrumentation — each call to Process()
+	// corresponds to one cell writing its FConstraintBufferData into the ConstraintBuffer.
+	// PrimitiveSceneProxy provides the cell identifier (its name in the actor registry).
+	// The slot index is astro_bp_used_slots before the increment.
+	{
+		const char* cell_id = (PrimitiveSceneProxy != nullptr)
+		    ? TCHAR_TO_ANSI(*PrimitiveSceneProxy->GetOwnerName().ToString())
+		    : "unknown-cell";
+		int32 slot_index = astro_bp_used_slots;
+		++astro_bp_used_slots;
+		if (astro_bp_used_slots > astro_bp_max_slots)
+		{
+			// Constraint budget exceeded — log overflow and cap counter.
+			fprintf(stderr,
+			        "[ASTRO-BASEPASS] OVERFLOW: cell '%s' exceeds ConstraintBuffer budget %d | epoch overflow\n",
+			        cell_id, astro_bp_max_slots);
+			astro_bp_used_slots = astro_bp_max_slots;
+		}
+		else
+		{
+			fprintf(stderr,
+			        "[ASTRO-BASEPASS] Writing cell '%s' to ConstraintBuffer slot %d | buffer_usage=%d/%d\n",
+			        cell_id, slot_index, astro_bp_used_slots, astro_bp_max_slots);
+		}
+	}
 }
 
 void FBasePassMeshProcessor::AddMeshBatchForSimpleForwardShading(

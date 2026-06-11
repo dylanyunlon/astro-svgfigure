@@ -26,6 +26,10 @@
 #include <utility>
 #include <vector>
 
+// DEBUG: astro-svgfigure channel instrumentation
+#include <cstdio>
+#include <cstdint>
+
 #include "cyber/proto/topology_change.pb.h"
 
 #include "cyber/blocker/blocker.h"
@@ -247,11 +251,39 @@ template <typename MessageT>
 void Reader<MessageT>::Enqueue(const std::shared_ptr<MessageT>& msg) {
   second_to_lastest_recv_time_sec_ = latest_recv_time_sec_;
   latest_recv_time_sec_ = Time::Now().ToSecond();
+  // DEBUG: astro-svgfigure channel instrumentation — Enqueue() is the hot path where
+  // an inbound constraint message lands in the cell's local publish queue.
+  // Log the channel, estimated sequence from publish depth, and current timestamp.
+  {
+    const std::string& channel_name = this->role_attr_.channel_name();
+    uint64_t enqueue_seq = static_cast<uint64_t>(blocker_->PublishedSize());
+    uint64_t enqueue_ts  = static_cast<uint64_t>(latest_recv_time_sec_ * 1e6);
+    fprintf(stderr,
+            "[ASTRO-CHANNEL] Reader<%s> enqueued message on channel '%s' | seq=%lu | timestamp=%lu\n",
+            typeid(MessageT).name(), channel_name.c_str(),
+            (unsigned long)enqueue_seq, (unsigned long)enqueue_ts);
+  }
   blocker_->Publish(msg);
 }
 
 template <typename MessageT>
 void Reader<MessageT>::Observe() {
+  // DEBUG: astro-svgfigure channel instrumentation — Observe() is the cell message-poll
+  // gate: when a cell's scheduled coroutine wakes, it calls Observe() to drain its
+  // publish queue into the observe queue before processing constraint updates.
+  // The seq/timestamp fields below are approximated from blocker state; in a full
+  // astro-svgfigure build they would be provided by the CyberRT message header.
+  const std::string& channel_name = this->role_attr_.channel_name();
+  // Derive a monotonic sequence number from the blocker's publish count.
+  // blocker_->PublishedSize() counts messages pushed since last ClearPublished().
+  uint64_t approx_seq = static_cast<uint64_t>(blocker_->PublishedSize());
+  // Use wall-clock microseconds as a proxy timestamp.
+  uint64_t approx_ts  = static_cast<uint64_t>(
+      Time::Now().ToMicrosecond());
+  fprintf(stderr,
+          "[ASTRO-CHANNEL] Reader<%s> observed message on channel '%s' | seq=%lu | timestamp=%lu\n",
+          typeid(MessageT).name(), channel_name.c_str(),
+          (unsigned long)approx_seq, (unsigned long)approx_ts);
   blocker_->Observe();
 }
 

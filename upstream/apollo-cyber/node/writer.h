@@ -21,6 +21,10 @@
 #include <string>
 #include <vector>
 
+// DEBUG: astro-svgfigure channel instrumentation
+#include <cstdio>
+#include <typeinfo>
+
 #include "cyber/proto/topology_change.pb.h"
 
 #include "cyber/common/log.h"
@@ -172,6 +176,17 @@ bool Writer<MessageT>::Write(const MessageT& msg) {
 template <typename MessageT>
 bool Writer<MessageT>::Write(const std::shared_ptr<MessageT>& msg_ptr) {
   RETURN_VAL_IF(!WriterBase::IsInit(), false);
+  // DEBUG: astro-svgfigure channel instrumentation — Write() is the cell constraint
+  // publish event: when a sub-Claude cell finalises its FConstraintBufferData it writes
+  // the payload to its output channel so downstream cells can pick it up via Reader.
+  // sizeof(MessageT) approximates payload size; the actual wire format uses protobuf.
+  {
+    const std::string& channel_name = this->role_attr_.channel_name();
+    fprintf(stderr,
+            "[ASTRO-CHANNEL] Writer<%s> published to channel '%s' | size=%zu bytes\n",
+            typeid(MessageT).name(), channel_name.c_str(),
+            sizeof(MessageT));
+  }
   return transmitter_->Transmit(msg_ptr);
 }
 

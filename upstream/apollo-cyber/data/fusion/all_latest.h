@@ -25,6 +25,9 @@
 #include <typeinfo>
 #include <vector>
 
+// DEBUG: astro-svgfigure ConstraintFusion instrumentation
+#include <cstdio>
+
 #include "cyber/common/types.h"
 #include "cyber/data/channel_buffer.h"
 #include "cyber/data/fusion/data_fusion.h"
@@ -60,6 +63,25 @@ class AllLatest : public DataFusion<M0, M1, M2, M3> {
           if (!buffer_m1_.Latest(m1) || !buffer_m2_.Latest(m2) ||
               !buffer_m3_.Latest(m3)) {
             return;
+          }
+
+          // DEBUG: astro-svgfigure ConstraintFusion instrumentation — AllLatest (4-channel)
+          // maps to ConstraintFusion: when the physics-engine channel (M0, the primary) fires,
+          // we snapshot the latest constraint records from the three secondary cell channels
+          // (M1-M3) and merge their bounding boxes into a unified SVG layout update.
+          // num_secondary=3 for the 4-channel specialisation; fused_cells counts non-null
+          // secondary messages available (all three must be valid to reach this point).
+          {
+            const std::string primary_ch = buffer_m0_.channel_id()
+                ? std::to_string(buffer_m0_.channel_id()) : "primary";
+            int num_secondary = 3; // M1, M2, M3
+            int num_fused     = (m1 != nullptr ? 1 : 0)
+                              + (m2 != nullptr ? 1 : 0)
+                              + (m3 != nullptr ? 1 : 0);
+            fprintf(stderr,
+                    "[ASTRO-FUSION] AllLatest fusion triggered | primary_channel='%s' | "
+                    "secondary_channels=%d | fused_cells=%d\n",
+                    primary_ch.c_str(), num_secondary, num_fused);
           }
 
           auto data = std::make_shared<FusionDataType>(m0, m1, m2, m3);
@@ -112,6 +134,20 @@ class AllLatest<M0, M1, M2, NullType> : public DataFusion<M0, M1, M2> {
             return;
           }
 
+          // DEBUG: astro-svgfigure ConstraintFusion instrumentation — AllLatest (3-channel)
+          // fuses bbox constraints from primary + 2 secondary cell channels.
+          {
+            const std::string primary_ch = buffer_m0_.channel_id()
+                ? std::to_string(buffer_m0_.channel_id()) : "primary";
+            int num_secondary = 2;
+            int num_fused     = (m1 != nullptr ? 1 : 0)
+                              + (m2 != nullptr ? 1 : 0);
+            fprintf(stderr,
+                    "[ASTRO-FUSION] AllLatest fusion triggered | primary_channel='%s' | "
+                    "secondary_channels=%d | fused_cells=%d\n",
+                    primary_ch.c_str(), num_secondary, num_fused);
+          }
+
           auto data = std::make_shared<FusionDataType>(m0, m1, m2);
           std::lock_guard<std::mutex> lg(buffer_fusion_.Buffer()->Mutex());
           buffer_fusion_.Buffer()->Fill(data);
@@ -154,6 +190,19 @@ class AllLatest<M0, M1, NullType, NullType> : public DataFusion<M0, M1> {
           std::shared_ptr<M1> m1;
           if (!buffer_m1_.Latest(m1)) {
             return;
+          }
+
+          // DEBUG: astro-svgfigure ConstraintFusion instrumentation — AllLatest (2-channel)
+          // minimal dual-cell fusion: primary physics channel + 1 secondary constraint channel.
+          {
+            const std::string primary_ch = buffer_m0_.channel_id()
+                ? std::to_string(buffer_m0_.channel_id()) : "primary";
+            int num_secondary = 1;
+            int num_fused     = (m1 != nullptr ? 1 : 0);
+            fprintf(stderr,
+                    "[ASTRO-FUSION] AllLatest fusion triggered | primary_channel='%s' | "
+                    "secondary_channels=%d | fused_cells=%d\n",
+                    primary_ch.c_str(), num_secondary, num_fused);
           }
 
           auto data = std::make_shared<FusionDataType>(m0, m1);
