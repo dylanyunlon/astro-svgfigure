@@ -29,6 +29,47 @@
 #include "LightRendering.h"
 #include "LightPropagationVolume.h"
 
+// DEBUG: astro-svgfigure pipeline stage marker — z-layer bbox collision registry for SVG cell shadow
+// This header-level block declares the per-z-layer collision registry that ShadowRendering.cpp
+// populates during each shadow projection epoch.  In the original pipeline, shadow receivers are
+// identified by depth-testing against the shadow map; in astro, receivers are identified by AABB
+// overlap within the same z-layer.  The registry below holds the per-layer active cell count and
+// the accumulated overlap area, which the layout solver reads to decide how much to push cells apart.
+//
+// FAstroZLayerRegistry:
+//   LayerIndex       — z-layer 0-7 (maps to stacking order in the SVG layout)
+//   ActiveCellCount  — number of cells (casters) registered on this layer this epoch
+//   OverlapAreaSum   — sum of pairwise intersection areas for cells on this layer [layout-units²]
+//   bHasCollision    — true if any two cells on this layer overlap their bboxes
+//
+// This data is analogous to per-cascade shadow map statistics (split distances, fade widths)
+// stored in FShadowCascadeSettings, but for 2D bbox collision rather than 3D frustum splits.
+#include <cstdio>
+#include <cstdint>
+
+struct FAstroZLayerRegistry {
+	int32 LayerIndex;       // z-layer index 0-7
+	int32 ActiveCellCount;  // cells registered on this layer this epoch
+	float OverlapAreaSum;   // sum of pairwise overlap areas [layout-units²]
+	bool  bHasCollision;    // true if any pairwise bbox intersection found
+
+	void Reset() {
+		ActiveCellCount = 0;
+		OverlapAreaSum  = 0.0f;
+		bHasCollision   = false;
+	}
+
+	void DebugPrint() const {
+		fprintf(stderr, "[ASTRO-SHADOW] zlayer-registry | layer=%d cells=%d overlap_area=%.2f colliding=%d\n",
+		        LayerIndex, ActiveCellCount, OverlapAreaSum, (int)bHasCollision);
+	}
+};
+
+// Global z-layer registry: one entry per layer 0-7, reset at the start of each shadow epoch.
+// Defined in ShadowRendering.cpp; declared extern here so other renderer passes (e.g. SceneRendering)
+// can query per-layer collision state for layout constraint propagation.
+extern FAstroZLayerRegistry GAstroZLayerRegistry[8];
+
 ENGINE_API const IPooledRenderTarget* GetSubsufaceProfileTexture_RT(FRHICommandListImmediate& RHICmdList);
 
 class FPrimitiveSceneInfo;

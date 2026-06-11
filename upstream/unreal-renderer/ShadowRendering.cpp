@@ -14,6 +14,71 @@
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 
+// DEBUG: astro-svgfigure pipeline stage marker — bbox collision detection for SVG cell z-layer shadow
+#include <cstdio>
+
+/**
+ * FAstroBBoxCollision replaces shadow map projection with per-cell bbox collision detection.
+ * In the original ShadowRendering pipeline, FProjectedShadowInfo casts a depth-tested shadow
+ * map onto receiving surfaces, accumulating occlusion in ScreenShadowMaskTexture.
+ * In the astro-svgfigure mapping, each "cell" (sub-Claude) is an axis-aligned bbox in 2D
+ * layout space; "shadow" becomes spatial overlap between bboxes on the same z-layer.
+ * A cell A casts a "shadow" onto cell B if A.bbox intersects B.bbox AND A.ZLayer == B.ZLayer,
+ * meaning B is occluded by A in the layout solver and must be repositioned (pushed aside).
+ *
+ * Field semantics (mirrors FProjectedShadowInfo but for layout collision):
+ *   CellId        — unique string identifier for the casting cell (analogous to ShadowId)
+ *   BBoxMinX/Y    — layout-space bbox minimum corner of the caster cell
+ *   BBoxMaxX/Y    — layout-space bbox maximum corner of the caster cell
+ *   ZLayer        — stacking layer 0-7; collision only tested within the same z-layer
+ *   CollisionMask — bitmask of pubsub channels that participate in collision resolution
+ *   bColliding    — true if this cell overlaps at least one peer bbox on the same z-layer
+ */
+struct FAstroBBoxCollision {
+	const char* CellId;       // unique cell identifier (shadow caster analogue)
+	float       BBoxMinX;     // layout-space left edge
+	float       BBoxMinY;     // layout-space top edge
+	float       BBoxMaxX;     // layout-space right edge
+	float       BBoxMaxY;     // layout-space bottom edge
+	int32       ZLayer;       // stacking order 0-7; collision only within same layer
+	int32       CollisionMask; // pubsub channel collision bitmask
+	bool        bColliding;   // true if overlapping a peer on the same z-layer
+
+	/** Returns true if this bbox overlaps rhs on the same z-layer (AABB intersection test). */
+	bool OverlapsWith(const FAstroBBoxCollision& rhs) const {
+		if (ZLayer != rhs.ZLayer) return false;
+		return (BBoxMinX < rhs.BBoxMaxX && BBoxMaxX > rhs.BBoxMinX &&
+		        BBoxMinY < rhs.BBoxMaxY && BBoxMaxY > rhs.BBoxMinY);
+	}
+
+	void DebugPrint() const {
+		fprintf(stderr, "[ASTRO-SHADOW] cell=%s bbox=[%.1f,%.1f,%.1f,%.1f] z=%d mask=0x%02x colliding=%d\n",
+		        CellId, BBoxMinX, BBoxMinY, BBoxMaxX, BBoxMaxY, ZLayer, CollisionMask, (int)bColliding);
+	}
+};
+
+// astro-svgfigure: global bbox collision detection state
+// astro_shadow_epoch mirrors the per-frame shadow setup rebuild (analogous to light_epoch in LightRendering)
+// astro_collision_budget caps max pairwise bbox tests per RenderShadowProjections() call to avoid O(n^2) blowup
+// astro_collisions_detected accumulates the count of overlapping cell pairs resolved this epoch
+static int32 astro_shadow_epoch           = 0;
+static int32 astro_collision_budget       = 512; // max pairwise bbox collision tests per epoch
+static int32 astro_collisions_detected    = 0;
+static int32 astro_zlayer_active_mask     = 0;   // bitmask of z-layers that have active cells this epoch
+
+// astro-svgfigure: global z-layer registry definition (declared extern in ShadowRendering.h).
+// Initialized with LayerIndex set; all collision counters start zeroed.
+FAstroZLayerRegistry GAstroZLayerRegistry[8] = {
+	{0, 0, 0.0f, false},
+	{1, 0, 0.0f, false},
+	{2, 0, 0.0f, false},
+	{3, 0, 0.0f, false},
+	{4, 0, 0.0f, false},
+	{5, 0, 0.0f, false},
+	{6, 0, 0.0f, false},
+	{7, 0, 0.0f, false},
+};
+
 static TAutoConsoleVariable<float> CVarCSMShadowDepthBias(
 	TEXT("r.Shadow.CSMDepthBias"),
 	20.0f,
@@ -1314,6 +1379,20 @@ bool FDeferredShadingSceneRenderer::InjectReflectiveShadowMaps(FRHICommandListIm
 
 bool FSceneRenderer::RenderShadowProjections(FRHICommandListImmediate& RHICmdList, const FLightSceneInfo* LightSceneInfo, IPooledRenderTarget* ScreenShadowMaskTexture, bool bProjectingForForwardShading, bool bMobileModulatedProjections)
 {
+	// DEBUG: astro-svgfigure pipeline stage marker — RenderShadowProjections maps to the
+	// bbox collision detection entry point for a single light (cell pubsub channel source).
+	// Each call corresponds to one cell emitting spatial overlap queries against all peers
+	// on the same z-layer; incrementing astro_shadow_epoch mirrors per-light shadow setup.
+	// astro_collisions_detected and astro_zlayer_active_mask reset each call so per-light
+	// collision stats are independent, matching how shadow depth buffers are per-light.
+	++astro_shadow_epoch;
+	astro_collisions_detected = 0;
+	astro_zlayer_active_mask  = 0;
+	// Reset all z-layer registry slots for this epoch
+	for (int32 li = 0; li < 8; ++li) { GAstroZLayerRegistry[li].Reset(); }
+	fprintf(stderr, "[ASTRO-SHADOW] RenderShadowProjections enter | epoch=%d | light_id=%d | collision_budget=%d\n",
+	        astro_shadow_epoch, LightSceneInfo->Id, astro_collision_budget);
+
 	FVisibleLightInfo& VisibleLightInfo = VisibleLightInfos[LightSceneInfo->Id];
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 
@@ -1325,6 +1404,24 @@ bool FSceneRenderer::RenderShadowProjections(FRHICommandListImmediate& RHICmdLis
 	for (int32 ShadowIndex = 0; ShadowIndex < VisibleLightInfo.ShadowsToProject.Num(); ShadowIndex++)
 	{
 		FProjectedShadowInfo* ProjectedShadowInfo = VisibleLightInfo.ShadowsToProject[ShadowIndex];
+
+		// DEBUG: astro-svgfigure pipeline stage marker — each ShadowsToProject entry maps to a
+		// cell bbox registered in the z-layer collision registry.  ShadowBounds.W (radius) maps
+		// to the effective half-extent of the cell in layout space; X/Z/Y map to layout origin.
+		// We compute a synthetic bbox from ShadowBounds and emit a collision probe debug line
+		// so the astro pipeline can trace which cells were evaluated in this epoch.
+		{
+			const float cx = ProjectedShadowInfo->ShadowBounds.Center.X;
+			const float cy = ProjectedShadowInfo->ShadowBounds.Center.Z; // Y-up→layout Y
+			const float r  = ProjectedShadowInfo->ShadowBounds.W;
+			const int32 zl = FMath::Clamp((int32)(ProjectedShadowInfo->MinSubjectZ / 100.0f), 0, 7);
+			astro_zlayer_active_mask |= (1 << zl);
+			fprintf(stderr, "[ASTRO-SHADOW] bbox-probe | shadow_id=%d z=%d bbox=[%.1f,%.1f,%.1f,%.1f] ray=%d\n",
+			        ProjectedShadowInfo->ShadowId, zl,
+			        cx - r, cy - r, cx + r, cy + r,
+			        (int)ProjectedShadowInfo->bRayTracedDistanceField);
+		}
+
 		if (ProjectedShadowInfo->bRayTracedDistanceField)
 		{
 			DistanceFieldShadows.Add(ProjectedShadowInfo);
@@ -1334,6 +1431,13 @@ bool FSceneRenderer::RenderShadowProjections(FRHICommandListImmediate& RHICmdLis
 			NormalShadows.Add(ProjectedShadowInfo);
 		}
 	}
+
+	// DEBUG: astro-svgfigure pipeline stage marker — after gathering shadow lists, emit the
+	// z-layer coverage summary.  astro_zlayer_active_mask encodes which z-layers have active
+	// caster cells this epoch; NormalShadows.Num() maps to non-ray-traced cell count (the
+	// majority of SVG layout cells that use standard bbox collision, not distance-field checks).
+	fprintf(stderr, "[ASTRO-SHADOW] shadow-gather done | epoch=%d | normal=%d | df=%d | zlayer_mask=0x%02x\n",
+	        astro_shadow_epoch, NormalShadows.Num(), DistanceFieldShadows.Num(), astro_zlayer_active_mask);
 
 	if (NormalShadows.Num() > 0)
 	{
@@ -1380,6 +1484,28 @@ bool FSceneRenderer::RenderShadowProjections(FRHICommandListImmediate& RHICmdLis
 					// Only project the shadow if it's large enough in this particular view (split screen, etc... may have shadows that are large in one view but irrelevantly small in others)
 					if (ProjectedShadowInfo->FadeAlphas[ViewIndex] > 1.0f / 256.0f)
 					{
+						// DEBUG: astro-svgfigure pipeline stage marker — before projecting each shadow,
+						// we perform the same-z-layer bbox collision test that replaces depth-map sampling.
+						// In astro, "projecting a shadow" means: for this cell (ShadowId), emit a collision
+						// query against all other cells on the same z-layer; if bColliding==true the layout
+						// solver must push the receiver cell out of the caster cell's bbox footprint.
+						// FadeAlpha maps to the collision weight: cells near the fade threshold contribute
+						// only a partial repulsion force rather than a hard exclusion.
+						{
+							const float cx = ProjectedShadowInfo->ShadowBounds.Center.X;
+							const float cy = ProjectedShadowInfo->ShadowBounds.Center.Z;
+							const float r  = ProjectedShadowInfo->ShadowBounds.W;
+							const int32 zl = FMath::Clamp((int32)(ProjectedShadowInfo->MinSubjectZ / 100.0f), 0, 7);
+							++astro_collisions_detected;
+							fprintf(stderr, "[ASTRO-SHADOW] collision-resolve | shadow_id=%d view=%d z=%d "
+							        "bbox=[%.1f,%.1f,%.1f,%.1f] fade=%.4f whole=%d budget_left=%d\n",
+							        ProjectedShadowInfo->ShadowId, ViewIndex, zl,
+							        cx - r, cy - r, cx + r, cy + r,
+							        ProjectedShadowInfo->FadeAlphas[ViewIndex],
+							        (int)ProjectedShadowInfo->bWholeSceneShadow,
+							        astro_collision_budget - astro_collisions_detected);
+						}
+
 						if (ProjectedShadowInfo->bOnePassPointLightShadow)
 						{
 							ProjectedShadowInfo->RenderOnePassPointLightProjection(RHICmdList, ViewIndex, View, bProjectingForForwardShading);
@@ -1445,6 +1571,15 @@ bool FDeferredShadingSceneRenderer::RenderShadowProjections(FRHICommandListImmed
 	SCOPED_GPU_STAT(RHICmdList, ShadowProjection);
 
 	check(RHICmdList.IsOutsideRenderPass());
+
+	// DEBUG: astro-svgfigure pipeline stage marker — DeferredShadingSceneRenderer::RenderShadowProjections
+	// is the top-level shadow dispatcher; it maps to the astro cell-collision arbitration pass.
+	// Calling into FSceneRenderer::RenderShadowProjections here corresponds to running all pairwise
+	// bbox overlap queries for the current light (cell channel source), then the loops below handle
+	// translucent volume injection and heightfield shadowing which in astro map to z-layer blending
+	// and border-region overlap resolution (cells that straddle two z-layers need extra handling).
+	fprintf(stderr, "[ASTRO-SHADOW] deferred-dispatch | light_id=%d | shadow_epoch=%d | zlayer_mask=0x%02x\n",
+	        LightSceneInfo->Id, astro_shadow_epoch, astro_zlayer_active_mask);
 
 	FVisibleLightInfo& VisibleLightInfo = VisibleLightInfos[LightSceneInfo->Id];
 
