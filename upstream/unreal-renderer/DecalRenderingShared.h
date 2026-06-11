@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M184] Debug: decal render state push entry
+
 	DecalRenderingShared.h
 =============================================================================*/
 

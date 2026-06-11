@@ -1,5 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc.All Rights Reserved.
 
+// [ASTRO-M190] Debug: mobile distortion RT bind entry
+
 #pragma once
 
 #include "CoreMinimal.h"

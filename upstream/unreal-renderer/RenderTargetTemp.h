@@ -1,5 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc.All Rights Reserved.
 
+// [ASTRO-M200] Debug: temp render target pool request
+
 #pragma once
 
 #include "CoreMinimal.h"

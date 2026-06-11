@@ -1,6 +1,9 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M194] Debug: translucency pass sort key trace
+// [ASTRO-M195] Debug: translucency RT clear op
+
 TranslucencyPass.h: Translucency pass enum.
 =============================================================================*/
 

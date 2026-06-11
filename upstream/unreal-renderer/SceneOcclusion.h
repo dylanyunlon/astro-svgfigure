@@ -1,5 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
+// [ASTRO-M182] Debug: occlusion query batch submit
+
 #pragma once
 
 #include "CoreMinimal.h"

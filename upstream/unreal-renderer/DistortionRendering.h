@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M192] Debug: distortion accumulation pass entry
+
 	DistortionRendering.h: Distortion rendering implementation.
 =============================================================================*/
 

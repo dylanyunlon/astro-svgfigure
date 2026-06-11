@@ -1,3 +1,6 @@
+// [ASTRO-M181] Debug: LPV injection dispatch trace
+// [ASTRO-M182] Debug: LPV geometry volume clear
+
 //-----------------------------------------------------------------------------
 // File:		LightPropagationVolume.h
 //

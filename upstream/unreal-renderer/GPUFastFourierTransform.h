@@ -1,6 +1,9 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M198] Debug: FFT dispatch size validation
+// [ASTRO-M199] Debug: FFT twiddle factor buffer check
+
 GPUFastFourierTransform.h: Interface for Fast Fourier Transform (FFT) on GPU.
 =============================================================================*/
 

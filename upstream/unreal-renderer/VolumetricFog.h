@@ -1,6 +1,9 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M200] Debug: volumetric fog froxel alloc
+// [ASTRO-M176] Debug: volumetric fog scatter phase
+
 	VolumetricFog.h
 =============================================================================*/
 

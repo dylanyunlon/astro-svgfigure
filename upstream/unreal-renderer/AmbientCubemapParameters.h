@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M176] Debug: ambient cubemap param binding entry
+
 	AmbientCubemapParameters.h: Shared shader parameters for ambient cubemap
 =============================================================================*/
 

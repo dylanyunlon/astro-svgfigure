@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M183] Debug: light render tile stencil entry
+
 	LightRendering.h: Light rendering declarations.
 =============================================================================*/
 

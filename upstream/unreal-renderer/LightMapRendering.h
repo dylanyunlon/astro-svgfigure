@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M180] Debug: lightmap coordinate scale check
+
 	LightMapRendering.h: Light map rendering definitions.
 =============================================================================*/
 

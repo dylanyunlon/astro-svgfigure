@@ -1,6 +1,9 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M179] Debug: scene core proxy list traversal
+// [ASTRO-M180] Debug: scene core frame index increment
+
 	SceneCore.h: Core scene definitions.
 =============================================================================*/
 

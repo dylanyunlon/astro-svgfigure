@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M188] Debug: texcoord size accuracy dispatch
+
 MeshTexCoordSizeAccuracyRendering.h: Declarations used for the viewmode.
 =============================================================================*/
 

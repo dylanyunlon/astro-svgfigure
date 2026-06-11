@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M198] Debug: visualize texture present blit
+
 	VisualizeTexturePresent.h: Display texture visualization on screen.
 =============================================================================*/
 

@@ -1,5 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
+// [ASTRO-M192] Debug: sprite index buffer upload trace
+
 #pragma once
 
 template< uint32 NumSprites >

@@ -1,5 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
+// [ASTRO-M188] Debug: SS denoise history validity check
+// [ASTRO-M189] Debug: SS denoise dispatch thread group
+
 #pragma once
 
 #include "RenderGraph.h"

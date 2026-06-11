@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M183] Debug: debug view mode shader selection
+
 DebugViewModeRendering.h: Contains definitions for rendering debug viewmodes.
 =============================================================================*/
 

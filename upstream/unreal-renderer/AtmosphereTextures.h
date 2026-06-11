@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M178] Debug: atmosphere texture allocation trace
+
 	AtmosphereTextures.h: System textures definitions.
 =============================================================================*/
 

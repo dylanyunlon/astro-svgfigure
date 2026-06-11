@@ -1,5 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc.All Rights Reserved.
 
+// [ASTRO-M192] Debug: mobile scene capture rect clip
+
 #pragma once
 
 #include "CoreMinimal.h"

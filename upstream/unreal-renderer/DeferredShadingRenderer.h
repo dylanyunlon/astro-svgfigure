@@ -1,6 +1,9 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M185] Debug: deferred shading renderer init checkpoint
+// [ASTRO-M186] Debug: GBuffer layout validation
+
 	DeferredShadingRenderer.h: Scene rendering definitions.
 =============================================================================*/
 

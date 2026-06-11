@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M199] Debug: reflection capture mip generation
+
 	Functionality for capturing the scene into reflection capture cubemaps, and prefiltering
 =============================================================================*/
 

@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M190] Debug: DF lighting post-process barrier
+
 	DistanceFieldLightingPost.h
 =============================================================================*/
 

@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M197] Debug: GPU benchmark dispatch entry
+
 	GPUBenchmark.h: GPUBenchmark to compute performance index to set video options automatically
 =============================================================================*/
 

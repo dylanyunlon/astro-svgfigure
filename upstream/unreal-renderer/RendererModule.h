@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M176] Debug: renderer module startup hook
+
 	RendererPrivate.h: Renderer interface private definitions.
 =============================================================================*/
 

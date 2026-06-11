@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M188] Debug: DFAO sample cone count trace
+
 	DistanceFieldAmbientOcclusion.h
 =============================================================================*/
 

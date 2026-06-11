@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M185] Debug: scene private base render seq
+
 	ScenePrivate.h: Private scene manager definitions.
 =============================================================================*/
 

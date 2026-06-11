@@ -1,6 +1,9 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M179] Debug: base pass shader binding checkpoint
+// [ASTRO-M180] Debug: base pass vertex factory validation
+
 	BasePassRendering.h: Base pass rendering definitions.
 =============================================================================*/
 

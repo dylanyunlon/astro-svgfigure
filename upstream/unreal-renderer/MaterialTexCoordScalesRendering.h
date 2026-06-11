@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M185] Debug: texcoord scale render pass init
+
 MaterialTexCoordScalesRendering.h: Declarations used for the viewmode.
 =============================================================================*/
 

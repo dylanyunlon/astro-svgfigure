@@ -1,3 +1,5 @@
+// [ASTRO-M178] Debug: LTC matrix lookup entry
+
 #pragma once
 
 static const int LTC_Size = 64;

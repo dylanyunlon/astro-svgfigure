@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M193] Debug: dynamic primitive draw command trace
+
 	DynamicPrimitiveDrawing.h: Dynamic primitive drawing definitions.
 =============================================================================*/
 

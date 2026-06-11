@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M196] Debug: primitive distance accuracy pass
+
 PrimitiveDistanceAccuracyRendering.h: Declarations used for the viewmode.
 =============================================================================*/
 

@@ -4,6 +4,8 @@
 
 =============================================================================*/
 
+// [ASTRO-M191] Debug: mobile reflection capture mip count
+
 #pragma once
 
 #include "CoreMinimal.h"

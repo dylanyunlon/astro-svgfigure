@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M195] Debug: planar reflection clip plane trace
+
 PlanarReflectionRendering.h: shared planar reflection rendering declarations.
 =============================================================================*/
 

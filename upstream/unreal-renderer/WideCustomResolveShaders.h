@@ -1,5 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
+// [ASTRO-M178] Debug: wide resolve shader dispatch size
+
 #pragma once
 
 #include "CoreMinimal.h"

@@ -1,5 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
+// [ASTRO-M200] Debug: GPU scene primitive upload trace
+
 #pragma once
 
 #include "RenderResource.h"

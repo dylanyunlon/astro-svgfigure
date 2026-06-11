@@ -1,6 +1,9 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M183] Debug: scene private view state entry
+// [ASTRO-M184] Debug: scene private shadow atlas resize
+
 	ScenePrivate.h: Private scene manager definitions.
 =============================================================================*/
 

@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M177] Debug: renderer private state init trace
+
 	RendererPrivate.h: Renderer interface private definitions.
 =============================================================================*/
 

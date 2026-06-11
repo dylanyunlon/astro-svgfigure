@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M194] Debug: shadow channel binding helper init
+
 	DynamicShadowMapChannelBindingHelper.h: 
 =============================================================================*/
 

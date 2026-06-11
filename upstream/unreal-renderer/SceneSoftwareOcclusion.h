@@ -1,5 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
+// [ASTRO-M186] Debug: software occlusion raster tile
+
 #pragma once
 
 #include "CoreMinimal.h"

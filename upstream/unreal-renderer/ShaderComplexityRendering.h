@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M191] Debug: shader complexity accumulate pass
+
 ShaderComplexityRendering.h: Declarations used for the shader complexity viewmode.
 =============================================================================*/
 

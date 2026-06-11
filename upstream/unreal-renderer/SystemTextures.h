@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M193] Debug: system texture init sequence
+
 	SystemTextures.h: System textures definitions.
 =============================================================================*/
 

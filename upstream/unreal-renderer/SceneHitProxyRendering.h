@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M181] Debug: hit proxy ID allocation trace
+
 	SceneHitProxyRendering.h: Scene hit proxy rendering.
 =============================================================================*/
 

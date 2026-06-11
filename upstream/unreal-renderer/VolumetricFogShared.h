@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M177] Debug: volumetric fog shared UB trace
+
 	VolumetricFogShared.h
 =============================================================================*/
 

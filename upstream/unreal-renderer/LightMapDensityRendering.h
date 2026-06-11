@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M179] Debug: lightmap density shader bind
+
 	LightMapDensityRendering.h: Definitions for rendering lightmap density.
 =============================================================================*/
 

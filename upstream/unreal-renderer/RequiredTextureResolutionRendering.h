@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M178] Debug: required texture resolution pass
+
 RequiredTextureResolutionRendering.h: Declarations used for the viewmode.
 =============================================================================*/
 

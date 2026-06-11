@@ -1,6 +1,9 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M197] Debug: reflection cubemap capture alloc
+// [ASTRO-M198] Debug: reflection tile classify pass
+
 	Reflection Environment common declarations
 =============================================================================*/
 

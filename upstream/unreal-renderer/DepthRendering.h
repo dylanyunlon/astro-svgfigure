@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
+// [ASTRO-M187] Debug: depth pass draw call counter
+
 	DepthRendering.h: Depth rendering definitions.
 =============================================================================*/
 
