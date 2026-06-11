@@ -4,6 +4,11 @@
 	Scene.cpp: Scene manager implementation.
 =============================================================================*/
 
+// [ASTRO-RSCENE] Cell scene management debug instrumentation
+// Tracks cell primitive lifecycle, scene allocation, and transform routing
+// through the Unreal renderer scene graph for the Astro cell pubsub pipeline.
+#include <cstdio>
+
 #include "CoreMinimal.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Stats/Stats.h"
@@ -476,6 +481,12 @@ void FDistanceFieldSceneData::VerifyIntegrity()
 
 void FScene::UpdateSceneSettings(AWorldSettings* WorldSettings)
 {
+	// [ASTRO-RSCENE] Cell scene settings update — occlusion/DF/shadow params refreshed for cell topology
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::UpdateSceneSettings — cell scene param sync: maxDFOcclusion=%.3f dfViewDist=%.3f indirectShadowIntensity=%.3f\n",
+		WorldSettings->DefaultMaxDistanceFieldOcclusionDistance,
+		WorldSettings->GlobalDistanceFieldViewDistance,
+		FMath::Clamp(WorldSettings->DynamicIndirectShadowsSelfShadowingIntensity, 0.0f, 1.0f));
+
 	FScene* Scene = this;
 	float InDefaultMaxDistanceFieldOcclusionDistance = WorldSettings->DefaultMaxDistanceFieldOcclusionDistance;
 	float InGlobalDistanceFieldViewDistance = WorldSettings->GlobalDistanceFieldViewDistance;
@@ -741,7 +752,13 @@ static void TArraySwapElements(TArray<T>& Array, int i1, int i2)
 void FScene::AddPrimitiveSceneInfo_RenderThread(FRHICommandListImmediate& RHICmdList, FPrimitiveSceneInfo* PrimitiveSceneInfo)
 {
 	SCOPE_CYCLE_COUNTER(STAT_AddScenePrimitiveRenderThreadTime);
-	
+
+	// [ASTRO-RSCENE] Cell node fully inserted into render-thread scene graph — packed index assigned
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::AddPrimitiveSceneInfo_RenderThread — cell node RT register: sceneInfo=%p proxy=%p currentPrimCount=%d\n",
+		(void*)PrimitiveSceneInfo,
+		(void*)(PrimitiveSceneInfo ? PrimitiveSceneInfo->Proxy : nullptr),
+		Primitives.Num());
+
 	CheckPrimitiveArrays();
 
 	Primitives.Add(PrimitiveSceneInfo);
@@ -1082,10 +1099,18 @@ FScene::FScene(UWorld* InWorld, bool bInRequiresHitProxies, bool bInIsEditorScen
 	});
 
 	UpdateEarlyZPassMode();
+
+	// [ASTRO-RSCENE] Cell scene allocated — log world ptr and feature level for pubsub topology tracing
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::ctor — cell scene allocated: world=%p featureLevel=%d isEditor=%d hasFX=%d\n",
+		(void*)InWorld, (int)InFeatureLevel, (int)bInIsEditorScene, (int)bCreateFXSystem);
 }
 
 FScene::~FScene()
 {
+	// [ASTRO-RSCENE] Cell scene teardown — release all cell primitive slots and GPU skin cache
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::dtor — cell scene teardown: primitiveCount=%d lightCount=%d\n",
+		Primitives.Num(), Lights.Num());
+
 #if 0 // if you have component that has invalid scene, try this code to see this is reason. 
 	for (FObjectIterator Iter(UActorComponent::StaticClass()); Iter; ++Iter)
 	{
@@ -1127,6 +1152,10 @@ void FScene::AddPrimitive(UPrimitiveComponent* Primitive)
 	SCOPE_CYCLE_COUNTER(STAT_AddScenePrimitiveGT);
 
 	checkf(!Primitive->IsUnreachable(), TEXT("%s"), *Primitive->GetFullName());
+
+	// [ASTRO-RSCENE] Cell primitive registration on game thread — begin cell node attach to scene graph
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::AddPrimitive — cell node attach GT: primitive=%p name=%s\n",
+		(void*)Primitive, TCHAR_TO_UTF8(*Primitive->GetFullName()));
 
 	const float WorldTime = GetWorld()->GetTimeSeconds();
 	// Save the world transform for next time the primitive is added to the scene
@@ -1230,6 +1259,12 @@ void FScene::UpdatePrimitiveTransform_RenderThread(FRHICommandListImmediate& RHI
 {
 	SCOPE_CYCLE_COUNTER(STAT_UpdatePrimitiveTransformRenderThreadTime);
 
+	// [ASTRO-RSCENE] Cell node transform applied on render thread — re-inserting into octree with updated cell world position
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::UpdatePrimitiveTransform_RenderThread — cell RT transform apply: proxy=%p origin=(%.2f,%.2f,%.2f) radius=%.2f\n",
+		(void*)PrimitiveSceneProxy,
+		WorldBounds.Origin.X, WorldBounds.Origin.Y, WorldBounds.Origin.Z,
+		WorldBounds.SphereRadius);
+
 	FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy->GetPrimitiveSceneInfo();
 
 	const bool bUpdateStaticDrawLists = !PrimitiveSceneProxy->StaticElementsAlwaysUseProxyPrimitiveUniformBuffer() 
@@ -1272,6 +1307,10 @@ void FScene::UpdatePrimitiveTransform_RenderThread(FRHICommandListImmediate& RHI
 void FScene::UpdatePrimitiveTransform(UPrimitiveComponent* Primitive)
 {
 	SCOPE_CYCLE_COUNTER(STAT_UpdatePrimitiveTransformGT);
+
+	// [ASTRO-RSCENE] Cell node transform update routed — GT dispatch for cell position sync
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::UpdatePrimitiveTransform — cell transform route GT: primitive=%p hasProxy=%d\n",
+		(void*)Primitive, (int)(Primitive->SceneProxy != nullptr));
 
 	// Save the world transform for next time the primitive is added to the scene
 	const float WorldTime = GetWorld()->GetTimeSeconds();
@@ -1427,6 +1466,12 @@ void FScene::RemovePrimitiveSceneInfo_RenderThread(FPrimitiveSceneInfo* Primitiv
 {
 	SCOPE_CYCLE_COUNTER(STAT_RemoveScenePrimitiveTime);
 
+	// [ASTRO-RSCENE] Cell node evicted from render-thread scene graph — slot reclaimed via swap-tail
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::RemovePrimitiveSceneInfo_RenderThread — cell node RT evict: sceneInfo=%p packedIndex=%d remainingPrims=%d\n",
+		(void*)PrimitiveSceneInfo,
+		PrimitiveSceneInfo ? PrimitiveSceneInfo->PackedIndex : -1,
+		Primitives.Num());
+
 	// clear it up, parent is getting removed
 	SceneLODHierarchy.UpdateNodeSceneInfo(PrimitiveSceneInfo->PrimitiveComponentId, nullptr);
 
@@ -1546,6 +1591,10 @@ void FScene::RemovePrimitiveSceneInfo_RenderThread(FPrimitiveSceneInfo* Primitiv
 void FScene::RemovePrimitive( UPrimitiveComponent* Primitive )
 {
 	SCOPE_CYCLE_COUNTER(STAT_RemoveScenePrimitiveGT);
+
+	// [ASTRO-RSCENE] Cell node detach requested on game thread — proxy disassociation and RT command enqueue
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::RemovePrimitive — cell node detach GT: primitive=%p hasProxy=%d\n",
+		(void*)Primitive, (int)(Primitive->SceneProxy != nullptr));
 
 	FPrimitiveSceneProxy* PrimitiveSceneProxy = Primitive->SceneProxy;
 
@@ -3472,6 +3521,10 @@ FSceneInterface* FRendererModule::AllocateScene(UWorld* World, bool bInRequiresH
 {
 	check(IsInGameThread());
 
+	// [ASTRO-RSCENE] Cell scene allocation dispatch — choosing full FScene vs NULL stub for cell pipeline
+	fprintf(stderr, "[ASTRO-RSCENE] FRendererModule::AllocateScene — cell scene dispatch: world=%p isClient=%d canRender=%d nullRHI=%d\n",
+		(void*)World, (int)GIsClient, (int)FApp::CanEverRender(), (int)GUsingNullRHI);
+
 	// Create a full fledged scene if we have something to render.
 	if (GIsClient && FApp::CanEverRender() && !GUsingNullRHI)
 	{
@@ -3489,6 +3542,9 @@ FSceneInterface* FRendererModule::AllocateScene(UWorld* World, bool bInRequiresH
 void FRendererModule::RemoveScene(FSceneInterface* Scene)
 {
 	check(IsInGameThread());
+	// [ASTRO-RSCENE] Cell scene removed from renderer module registry — pubsub pipeline detach
+	fprintf(stderr, "[ASTRO-RSCENE] FRendererModule::RemoveScene — cell scene unregister: scene=%p allocatedSceneCount=%d\n",
+		(void*)Scene, AllocatedScenes.Num());
 	AllocatedScenes.Remove(Scene);
 }
 
