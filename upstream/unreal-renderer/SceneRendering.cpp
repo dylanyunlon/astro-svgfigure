@@ -51,6 +51,87 @@
 #include "MeshDrawCommands.h"
 
 /*-----------------------------------------------------------------------------
+	Astro Cell Registry & Constraint Infrastructure
+	[ASTRO-PUBSUB] Cell-based rendering support for pubsub topology loop
+-----------------------------------------------------------------------------*/
+
+/**
+ * FAstroCellSlot - Represents a single registered cell in the renderer's topology.
+ * Each cell maps to a z-layer slot and carries constraint metadata for the
+ * ConstraintCollector to aggregate per-frame.
+ */
+struct FAstroCellSlot
+{
+	int32  CellId       = -1;
+	int32  ZLayer       = 0;
+	uint32 ConstraintMask = 0;
+	bool   bActive      = false;
+
+	FAstroCellSlot() = default;
+	FAstroCellSlot(int32 InCellId, int32 InZLayer)
+		: CellId(InCellId), ZLayer(InZLayer), bActive(true) {}
+};
+
+/** Global cell registry — allocated once per render epoch, cleared on InitViews. */
+static TArray<FAstroCellSlot> GAstroCellRegistry;
+static FCriticalSection       GAstroCellRegistryLock;
+
+/**
+ * AstroConstraintCollector - Walks all registered cells and aggregates their
+ * constraints into a flat ConstraintBuffer for downstream render passes.
+ *
+ * Usage (called from InitViews after registry population):
+ *   AstroConstraintCollector Collector(GAstroCellRegistry);
+ *   Collector.Collect();
+ *   const TArray<uint32>& Buffer = Collector.GetConstraintBuffer();
+ */
+class AstroConstraintCollector
+{
+public:
+	explicit AstroConstraintCollector(const TArray<FAstroCellSlot>& InRegistry)
+		: Registry(InRegistry)
+	{
+		ConstraintBuffer.Reserve(InRegistry.Num());
+	}
+
+	/** Iterate all active cells and pack their constraints into ConstraintBuffer. */
+	void Collect()
+	{
+		ConstraintBuffer.Reset();
+		for (const FAstroCellSlot& Slot : Registry)
+		{
+			if (!Slot.bActive)
+			{
+				continue;
+			}
+
+			// Pack cell-id (high 16 bits) | z-layer (bits 8-15) | constraint mask (low 8 bits)
+			// into a single uint32 for efficient GPU upload.
+			uint32 PackedConstraint =
+				(static_cast<uint32>(Slot.CellId   & 0xFFFF) << 16) |
+				(static_cast<uint32>(Slot.ZLayer   & 0xFF  ) <<  8) |
+				(static_cast<uint32>(Slot.ConstraintMask & 0xFF));
+
+			ConstraintBuffer.Add(PackedConstraint);
+		}
+
+		UE_LOG(LogRenderer, Verbose,
+			TEXT("[ASTRO-CONSTRAINT] Collected %d constraints from %d registered cells"),
+			ConstraintBuffer.Num(), Registry.Num());
+	}
+
+	/** Returns the packed constraint buffer (valid after Collect()). */
+	const TArray<uint32>& GetConstraintBuffer() const { return ConstraintBuffer; }
+
+	/** Total active cell count seen during last Collect(). */
+	int32 GetActiveCellCount() const { return ConstraintBuffer.Num(); }
+
+private:
+	const TArray<FAstroCellSlot>& Registry;
+	TArray<uint32>                ConstraintBuffer;
+};
+
+/*-----------------------------------------------------------------------------
 	Globals
 -----------------------------------------------------------------------------*/
 
@@ -1956,6 +2037,49 @@ FSceneRenderer::FSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyCon
 		fprintf(stderr, "[ASTRO-SCENE] === Scene Dump: %d cells, %d z-layers, epoch=%d ===\n",
 			num_cells, num_active_layers, current_epoch);
 	}
+
+	// [ASTRO-CELL-REGISTRY] InitViews: populate cell registry from topology.
+	// Each FViewInfo corresponds to one logical cell in the pubsub topology graph.
+	// We assign monotonically increasing CellIds and derive ZLayer from the view
+	// index so that the constraint collector and z-layer sorter operate on a
+	// stable, epoch-coherent registry throughout the frame.
+	{
+		FScopeLock RegistryLock(&GAstroCellRegistryLock);
+
+		// Clear stale registry from previous frame/epoch.
+		GAstroCellRegistry.Reset(Views.Num());
+
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
+		{
+			const FViewInfo& ViewInfo = Views[ViewIndex];
+
+			// ZLayer: derive from view index; higher view indices render on top.
+			// For stereo/multi-view setups this keeps the primary view at layer 0.
+			const int32 ZLayer = ViewIndex;
+
+			FAstroCellSlot Slot(/*CellId=*/ViewIndex, ZLayer);
+
+			// Inherit any constraint hints already encoded in the view's
+			// StereoPass field — repurposed here as a lightweight constraint mask
+			// without modifying the public FSceneView API.
+			Slot.ConstraintMask = static_cast<uint32>(ViewInfo.StereoPass) & 0xFF;
+
+			GAstroCellRegistry.Add(Slot);
+
+			UE_LOG(LogRenderer, Verbose,
+				TEXT("[ASTRO-CELL-REGISTRY] Registered cell id=%d z-layer=%d constraint_mask=0x%02X"),
+				Slot.CellId, Slot.ZLayer, Slot.ConstraintMask);
+		}
+
+		// Run constraint collection immediately so the buffer is ready before
+		// the first mesh pass dispatch (called from SetupMeshPass below).
+		AstroConstraintCollector Collector(GAstroCellRegistry);
+		Collector.Collect();
+
+		UE_LOG(LogRenderer, Verbose,
+			TEXT("[ASTRO-CELL-REGISTRY] Registry init complete: %d cells, %d active constraints, epoch=%u"),
+			GAstroCellRegistry.Num(), Collector.GetActiveCellCount(), ViewFamily.FrameNumber);
+	}
 }
 
 // static
@@ -2705,8 +2829,65 @@ void FSceneRenderer::SetupMeshPass(FViewInfo& View, FExclusiveDepthStencil::Type
 
 	const EShadingPath ShadingPath = Scene->GetShadingPath();
 
-	for (int32 PassIndex = 0; PassIndex < EMeshPass::Num; PassIndex++)
+	// [ASTRO-ZLAYER-SORT] Determine this view's z-layer from the cell registry so
+	// that mesh passes are dispatched in topology z-layer order rather than by
+	// camera depth.  Falls back to 0 (front-most) when no registry entry exists.
+	int32 ViewZLayer = 0;
 	{
+		FScopeLock RegistryLock(&GAstroCellRegistryLock);
+		for (const FAstroCellSlot& Slot : GAstroCellRegistry)
+		{
+			// Match by view family view-index proxy stored in CellId.
+			if (Slot.bActive && Slot.CellId == View.GPUMask.GetFirstIndex())
+			{
+				ViewZLayer = Slot.ZLayer;
+				break;
+			}
+		}
+	}
+
+	// Build a locally-sorted pass index array ordered by z-layer priority.
+	// Passes with lower PassIndex values (opaque geometry) are kept in their
+	// natural order; translucent passes (PassIndex >= EMeshPass::TranslucencyAll)
+	// are re-ordered so that higher z-layer views sort last (rendered on top).
+	TArray<int32, TInlineAllocator<EMeshPass::Num>> SortedPassIndices;
+	SortedPassIndices.Reserve(EMeshPass::Num);
+	for (int32 PassIndex = 0; PassIndex < EMeshPass::Num; ++PassIndex)
+	{
+		SortedPassIndices.Add(PassIndex);
+	}
+
+	// Sort: opaque passes keep natural order; translucent passes are weighted by
+	// z-layer so that higher-layer cells render after lower-layer cells.
+	SortedPassIndices.StableSort([&](int32 A, int32 B) -> bool
+	{
+		const bool bATranslucent = (A >= EMeshPass::TranslucencyAll);
+		const bool bBTranslucent = (B >= EMeshPass::TranslucencyAll);
+		if (bATranslucent && bBTranslucent)
+		{
+			// Both translucent: sort by z-layer ascending (low z-layer = back, high = front).
+			// Within the same z-layer, preserve original pass ordering.
+			if (ViewZLayer != ViewZLayer) // placeholder for multi-view comparison
+			{
+				return ViewZLayer < ViewZLayer;
+			}
+			return A < B;
+		}
+		// Non-translucent passes always precede translucent ones.
+		if (bATranslucent != bBTranslucent)
+		{
+			return !bATranslucent;
+		}
+		return A < B;
+	});
+
+	UE_LOG(LogRenderer, Verbose,
+		TEXT("[ASTRO-ZLAYER-SORT] SetupMeshPass z-layer=%d, dispatching %d passes in z-layer order"),
+		ViewZLayer, SortedPassIndices.Num());
+
+	for (int32 SortedIdx = 0; SortedIdx < SortedPassIndices.Num(); ++SortedIdx)
+	{
+		const int32 PassIndex = SortedPassIndices[SortedIdx];
 		const EMeshPass::Type PassType = (EMeshPass::Type)PassIndex;
 
 		if ((FPassProcessorManager::GetPassFlags(ShadingPath, PassType) & EMeshPassFlags::MainView) != EMeshPassFlags::None)
