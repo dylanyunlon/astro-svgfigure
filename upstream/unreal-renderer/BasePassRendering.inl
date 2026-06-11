@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-BASEPASS] Inline constraint buffer write implementations
 
 /*=============================================================================
 	BasePassRendering.inl: Base pass rendering implementations.

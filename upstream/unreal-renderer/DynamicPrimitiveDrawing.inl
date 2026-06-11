@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DRAWCMD] Dynamic cell primitive emit implementation
 
 /*=============================================================================
 	DynamicPrimitiveDrawing.inl: Dynamic primitive drawing implementation.
