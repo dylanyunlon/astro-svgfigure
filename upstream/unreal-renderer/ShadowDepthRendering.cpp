@@ -1292,6 +1292,43 @@ void FSceneRenderer::RenderShadowDepthMapAtlases(FRHICommandListImmediate& RHICm
 	bool bCanUseParallelDispatch = RHICmdList.IsImmediate() &&  // translucent shadows are draw on the render thread, using a recursive cmdlist (which is not immediate)
 		GRHICommandList.UseParallelAlgorithms() && CVarParallelShadows.GetValueOnRenderThread();
 
+	// [ASTRO-SDEPTH] Z-layer depth sort: re-order shadow atlases by MinSubjectZ so that
+	// nearer casters (lower z) are rendered first, matching the z-layer compositing order
+	// used by the cell/pubsub pipeline's depth-buffer stack.
+	{
+		const int32 NumAtlases = SortedShadowsForShadowDepthPass.ShadowMapAtlases.Num();
+		UE_LOG(LogRenderer, Verbose,
+			TEXT("[ASTRO-SDEPTH] RenderShadowDepthMapAtlases: begin z-layer sort, NumAtlases=%d"),
+			NumAtlases);
+
+		// Stable sort each atlas's shadow list by MinSubjectZ (ascending) so that
+		// front-to-back z-layer depth order is preserved in the depth pass.
+		for (int32 AtlasIdx = 0; AtlasIdx < NumAtlases; ++AtlasIdx)
+		{
+			FSortedShadowMapAtlas& Atlas = SortedShadowsForShadowDepthPass.ShadowMapAtlases[AtlasIdx];
+			Atlas.Shadows.StableSort([](const FProjectedShadowInfo* A, const FProjectedShadowInfo* B)
+			{
+				// Sort ascending by MinSubjectZ: smaller z = closer to camera = higher layer priority
+				return A->MinSubjectZ < B->MinSubjectZ;
+			});
+
+			UE_LOG(LogRenderer, Verbose,
+				TEXT("[ASTRO-SDEPTH]   Atlas[%d] sorted %d shadows by MinSubjectZ (z-layer depth order)"),
+				AtlasIdx, Atlas.Shadows.Num());
+
+			for (int32 ShadowIdx = 0; ShadowIdx < Atlas.Shadows.Num(); ++ShadowIdx)
+			{
+				const FProjectedShadowInfo* SI = Atlas.Shadows[ShadowIdx];
+				UE_LOG(LogRenderer, VeryVerbose,
+					TEXT("[ASTRO-SDEPTH]     Atlas[%d] Shadow[%d]: MinSubjectZ=%.4f, InvMaxSubjectDepth=%.6f"),
+					AtlasIdx, ShadowIdx, SI->MinSubjectZ, SI->InvMaxSubjectDepth);
+			}
+		}
+
+		UE_LOG(LogRenderer, Verbose,
+			TEXT("[ASTRO-SDEPTH] RenderShadowDepthMapAtlases: z-layer sort complete"));
+	}
+
 	for (int32 AtlasIndex = 0; AtlasIndex < SortedShadowsForShadowDepthPass.ShadowMapAtlases.Num(); AtlasIndex++)
 	{
 		const FSortedShadowMapAtlas& ShadowMapAtlas = SortedShadowsForShadowDepthPass.ShadowMapAtlases[AtlasIndex];
@@ -1447,6 +1484,16 @@ void FSceneRenderer::RenderShadowDepthMaps(FRHICommandListImmediate& RHICmdList)
 
 	SCOPED_DRAW_EVENT(RHICmdList, ShadowDepths);
 	SCOPED_GPU_STAT(RHICmdList, ShadowDepths);
+
+	// [ASTRO-SDEPTH] Log total shadow map pass counts before dispatch so the
+	// z-layer depth sort results can be correlated against final render order.
+	UE_LOG(LogRenderer, Verbose,
+		TEXT("[ASTRO-SDEPTH] RenderShadowDepthMaps: Atlases=%d Cubemaps=%d Preshadow=%d TranslucencyAtlases=%d RSMAtlases=%d"),
+		SortedShadowsForShadowDepthPass.ShadowMapAtlases.Num(),
+		SortedShadowsForShadowDepthPass.ShadowMapCubemaps.Num(),
+		SortedShadowsForShadowDepthPass.PreshadowCache.Shadows.Num(),
+		SortedShadowsForShadowDepthPass.TranslucencyShadowMapAtlases.Num(),
+		SortedShadowsForShadowDepthPass.RSMAtlases.Num());
 
 	FSceneRenderer::RenderShadowDepthMapAtlases(RHICmdList);
 

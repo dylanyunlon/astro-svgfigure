@@ -538,6 +538,30 @@ bool FProjectedShadowInfo::SetupPerObjectProjection(
 {
 	check(InParentSceneInfo);
 
+	// [ASTRO-SSETUP] Collision detection initialization: log shadow volume origin and
+	// sphere radius so that the cell/pubsub broadphase can validate AABB overlap queries
+	// against this caster before issuing shadow depth draws.
+	{
+		const FVector ShadowOrigin = Initializer.SubjectBounds.Origin - Initializer.PreShadowTranslation;
+		const float   ShadowRadius = Initializer.SubjectBounds.SphereRadius;
+		UE_LOG(LogRenderer, Verbose,
+			TEXT("[ASTRO-SSETUP] SetupPerObjectProjection: collision init "
+			     "Origin=(%.2f,%.2f,%.2f) Radius=%.2f ResX=%u bPreShadow=%d bTranslucent=%d"),
+			ShadowOrigin.X, ShadowOrigin.Y, ShadowOrigin.Z,
+			ShadowRadius, InResolutionX,
+			(int32)bInPreShadow, (int32)bInTranslucentShadow);
+
+		// Validate that the bounding sphere is non-degenerate; degenerate bounds
+		// break broadphase overlap tests and should be flagged for the cell dispatcher.
+		if (ShadowRadius <= KINDA_SMALL_NUMBER)
+		{
+			UE_LOG(LogRenderer, Warning,
+				TEXT("[ASTRO-SSETUP] SetupPerObjectProjection: degenerate collision sphere "
+				     "(Radius=%.6f) — broadphase overlap will be skipped for this caster"),
+				ShadowRadius);
+		}
+	}
+
 	LightSceneInfo = InLightSceneInfo;
 	LightSceneInfoCompact = InLightSceneInfo;
 	ParentSceneInfo = InParentSceneInfo;
@@ -676,6 +700,34 @@ void FProjectedShadowInfo::SetupWholeSceneProjection(
 	bTransmission = InLightSceneInfo->Proxy->Transmission();
 	bReflectiveShadowmap = bInReflectiveShadowMap; 
 	BorderSize = InBorderSize;
+
+	// [ASTRO-SSETUP] Collision detection initialization for whole-scene shadow projection:
+	// record cascade split distances and subject bounds so the broadphase can cull
+	// per-cell overlap tests against the correct cascade volume.
+	{
+		UE_LOG(LogRenderer, Verbose,
+			TEXT("[ASTRO-SSETUP] SetupWholeSceneProjection: collision init "
+			     "ResX=%u ResY=%u bDirectional=%d bOnePassPoint=%d bRSM=%d bRayTraced=%d "
+			     "SplitNear=%.2f SplitFar=%.2f"),
+			InResolutionX, InResolutionY,
+			(int32)(InLightSceneInfo->Proxy->GetLightType() == LightType_Directional),
+			(int32)Initializer.bOnePassPointLightShadow,
+			(int32)bInReflectiveShadowMap,
+			(int32)Initializer.bRayTracedDistanceField,
+			Initializer.CascadeSettings.SplitNear,
+			Initializer.CascadeSettings.SplitFar);
+
+		// Check cascade interval validity for broadphase: a zero-width or inverted cascade
+		// would cause all cell overlap tests to vacuously pass, flooding the depth pass.
+		if (Initializer.CascadeSettings.SplitFar <= Initializer.CascadeSettings.SplitNear)
+		{
+			UE_LOG(LogRenderer, Warning,
+				TEXT("[ASTRO-SSETUP] SetupWholeSceneProjection: degenerate cascade interval "
+				     "[SplitNear=%.4f >= SplitFar=%.4f] — collision broadphase may over-cull"),
+				Initializer.CascadeSettings.SplitNear,
+				Initializer.CascadeSettings.SplitFar);
+		}
+	}
 
 	FVector	XAxis, YAxis;
 	Initializer.FaceDirection.FindBestAxisVectors(XAxis,YAxis);
