@@ -20,6 +20,177 @@ DECLARE_GPU_STAT_NAMED(SSAOSetup, TEXT("ScreenSpace AO Setup") );
 DECLARE_GPU_STAT_NAMED(SSAO, TEXT("ScreenSpace AO") );
 DECLARE_GPU_STAT_NAMED(BasePassAO, TEXT("BasePass AO") );
 
+// --------------------------------------------------------
+// FAstroConstraintAO
+//
+// Replaces the standard SSAO hemisphere kernel with a constraint-space
+// occlusion model designed for dense Astro cell layouts:
+//
+//   • Each sample kernel point is treated as a "constraint agent" that
+//     exerts occlusion pressure on its neighbours.
+//   • In crowded (high-density) screen regions the mutual occlusion
+//     contributions cancel each other out, lowering the effective AO
+//     weight for the pixel (crowding attenuation).  This prevents the
+//     all-too-common black halos that SSAO produces when many cells are
+//     packed together.
+//   • In sparse regions the algorithm degrades gracefully to standard
+//     hemisphere SSAO behaviour.
+//
+// Usage:
+//   FAstroConstraintAO Solver(KernelRadius, CrowdingThreshold, AttenuationCurve);
+//   float AOWeight = Solver.ComputeConstraintWeight(SampleDepths, SampleCount,
+//                                                    CenterDepth, SceneNormal);
+// --------------------------------------------------------
+
+struct FAstroConstraintAOParams
+{
+	// World-space radius of the sampling kernel (mirrors AmbientOcclusionRadius)
+	float KernelRadius;
+
+	// Fraction of occluded samples above which crowding attenuation kicks in.
+	// Range [0,1].  Default 0.5 means "more than half the kernel is occluded".
+	float CrowdingThreshold;
+
+	// Controls how aggressively crowding suppresses AO.
+	// 1.0 = linear fall-off;  >1 = faster suppression for very dense areas.
+	float AttenuationCurve;
+
+	FAstroConstraintAOParams()
+		: KernelRadius(40.0f)
+		, CrowdingThreshold(0.5f)
+		, AttenuationCurve(2.0f)
+	{}
+};
+
+class FAstroConstraintAO
+{
+public:
+	explicit FAstroConstraintAO(const FAstroConstraintAOParams& InParams)
+		: Params(InParams)
+	{}
+
+	// Compute the constraint-space occlusion weight for a single pixel.
+	//
+	// @param SampleDepths      Linear depth of each kernel sample (world units).
+	// @param SampleCount       Number of valid samples in the kernel.
+	// @param CenterDepth       Linear depth of the shaded pixel.
+	// @param SceneNormal       World-space unit normal at the shaded pixel.
+	// @param HorizonAngles     Pre-computed horizon angle per sample (radians).
+	//
+	// @return  Occlusion weight in [0,1] where 0 = fully lit, 1 = fully occluded.
+	float ComputeConstraintWeight(
+		const float*    SampleDepths,
+		int32           SampleCount,
+		float           CenterDepth,
+		const FVector&  SceneNormal,
+		const float*    HorizonAngles) const
+	{
+		if (SampleCount <= 0)
+		{
+			return 0.0f;
+		}
+
+		// ── Pass 1: standard hemisphere occlusion accumulation ────────────
+		// Each sample contributes raw occlusion proportional to how much it
+		// sits above the shaded surface in depth.
+		float RawOcclusionSum    = 0.0f;
+		int32 OccludedCount      = 0;
+
+		for (int32 i = 0; i < SampleCount; ++i)
+		{
+			const float DepthDelta = CenterDepth - SampleDepths[i];
+
+			// Sample is above (occluding) the surface when DepthDelta > 0.
+			if (DepthDelta > KINDA_SMALL_NUMBER)
+			{
+				// Attenuate by proximity – samples very close to the surface
+				// have diminishing influence to avoid self-occlusion halos.
+				const float ProximityFade = FMath::Clamp(
+					DepthDelta / FMath::Max(Params.KernelRadius, KINDA_SMALL_NUMBER),
+					0.0f, 1.0f);
+
+				// Horizon-angle contribution (raises occlusion for samples that
+				// are geometrically above the tangent plane).
+				const float HorizonWeight = FMath::Clamp(
+					FMath::Sin(HorizonAngles[i]), 0.0f, 1.0f);
+
+				RawOcclusionSum += ProximityFade * HorizonWeight;
+				++OccludedCount;
+			}
+		}
+
+		const float NormalisedOcclusion =
+			RawOcclusionSum / static_cast<float>(SampleCount);
+
+		// ── Pass 2: constraint-space crowding attenuation ─────────────────
+		// Fraction of kernel samples that are occluded.
+		const float OccludedFraction =
+			static_cast<float>(OccludedCount) / static_cast<float>(SampleCount);
+
+		// When OccludedFraction exceeds CrowdingThreshold the region is
+		// considered "crowded".  The excess fraction drives an attenuation
+		// multiplier that reduces the visual AO weight.
+		//
+		//   CrowdingExcess   = saturate((f - threshold) / (1 - threshold))
+		//   AttenuationMult  = 1 - CrowdingExcess ^ AttenuationCurve
+		//
+		// At threshold the multiplier is 1 (no change).
+		// At OccludedFraction == 1 the multiplier approaches 0 (full
+		// suppression of AO in maximally crowded regions).
+		float AttenuationMult = 1.0f;
+
+		if (OccludedFraction > Params.CrowdingThreshold)
+		{
+			const float ThresholdRange =
+				FMath::Max(1.0f - Params.CrowdingThreshold, KINDA_SMALL_NUMBER);
+			const float CrowdingExcess = FMath::Clamp(
+				(OccludedFraction - Params.CrowdingThreshold) / ThresholdRange,
+				0.0f, 1.0f);
+
+			AttenuationMult = 1.0f -
+				FMath::Pow(CrowdingExcess, Params.AttenuationCurve);
+		}
+
+		// ── Pass 3: mutual-constraint cancellation ────────────────────────
+		// In the constraint-space model, each occluding sample exerts
+		// "pressure" back onto its neighbours.  We approximate this
+		// cancellation analytically: the effective occlusion is the
+		// geometric mean of the raw value and its complement, scaled by the
+		// attenuation multiplier.  This keeps sparse regions near the raw
+		// SSAO value while aggressively reducing halos in dense clusters.
+		const float ConstraintOcclusion =
+			FMath::Sqrt(NormalisedOcclusion * (1.0f - NormalisedOcclusion))
+			* 2.0f          // restore [0,0.5] → [0,1] range
+			* AttenuationMult;
+
+		// Blend between raw SSAO (reliable in sparse areas) and constraint
+		// occlusion (reliable in crowded areas) using OccludedFraction as
+		// the mixing weight.
+		const float BlendAlpha = FMath::Clamp(
+			OccludedFraction / FMath::Max(Params.CrowdingThreshold, KINDA_SMALL_NUMBER),
+			0.0f, 1.0f);
+
+		return FMath::Lerp(NormalisedOcclusion, ConstraintOcclusion, BlendAlpha);
+	}
+
+	// Convenience: build a kernel-radius-matching params struct from the
+	// existing post-process settings so callers need not duplicate logic.
+	static FAstroConstraintAOParams MakeFromPostProcessSettings(
+		const FFinalPostProcessSettings& Settings)
+	{
+		FAstroConstraintAOParams P;
+		P.KernelRadius       = Settings.AmbientOcclusionRadius;
+		// Expose crowding threshold via the existing MipBlend slider so
+		// artists can dial it without a code change.
+		P.CrowdingThreshold  = FMath::Clamp(Settings.AmbientOcclusionMipBlend, 0.1f, 0.9f);
+		P.AttenuationCurve   = FMath::Clamp(Settings.AmbientOcclusionPower,    1.0f, 4.0f);
+		return P;
+	}
+
+private:
+	FAstroConstraintAOParams Params;
+};
+
 // Tile size for the AmbientOcclusion compute shader, tweaked for 680 GTX. */
 // see GCN Performance Tip 21 http://developer.amd.com/wordpress/media/2013/05/GCNPerformanceTweets.pdf 
 const int32 GAmbientOcclusionTileSizeX = 16;
@@ -264,12 +435,59 @@ public:
 		const float HzbStepMipLevelFactorValue = FMath::Clamp(FSSAOHelper::GetAmbientOcclusionStepMipLevelFactor(), 0.0f, 100.0f);
 		const float InvAmbientOcclusionDistance = 1.0f / FMath::Max(Settings.AmbientOcclusionDistance_DEPRECATED, KINDA_SMALL_NUMBER);
 
+		// ── Astro Constraint-Space AO: kernel sampling loop modification ──────────
+		//
+		// Stock SSAO accumulates raw hemisphere occlusion and outputs it directly.
+		// The constraint-space model (FAstroConstraintAO) adds two more passes on
+		// top of that accumulated value:
+		//
+		//   Pass 2 – Crowding Attenuation
+		//     When the fraction of occluded samples in the kernel exceeds
+		//     CrowdingThreshold (encoded in AmbientOcclusionMipBlend), a
+		//     suppression multiplier is computed:
+		//
+		//       CrowdingExcess  = saturate((occludedFrac - threshold) / (1-threshold))
+		//       AttenuationMult = 1 - pow(CrowdingExcess, AttenuationCurve)
+		//
+		//     This reduces AO weight in densely packed cell regions.
+		//
+		//   Pass 3 – Mutual-Constraint Cancellation
+		//     The geometric-mean term sqrt(rawAO*(1-rawAO))*2 represents the
+		//     mutual pressure cancellation between neighbouring constraints.
+		//     It is blended with the raw value proportional to OccludedFraction:
+		//
+		//       FinalAO = lerp(rawAO, constraintAO, saturate(occludedFrac/threshold))
+		//
+		// CPU-side: FAstroConstraintAO::ComputeConstraintWeight() replicates the
+		// above for unit-testing and debug visualisation without a GPU round-trip.
+		//
+		// Shader-side constant packing (no new cbuffer needed):
+		//   Value[4].w  ← AstroCrowdingScale = 1/(threshold*curve)
+		//     Previously hard-coded 0; the USF kernel loop reads
+		//     ScreenSpaceAOParams[4].w and uses it to normalise the per-sample
+		//     constraint accumulator in a single fma instead of a branch.
+		// ─────────────────────────────────────────────────────────────────────
+
+		// Derive constraint parameters from post-process settings.
+		const FAstroConstraintAOParams ConstraintParams =
+			FAstroConstraintAO::MakeFromPostProcessSettings(Settings);
+
+		// Pre-compute crowding scale for the kernel sampling loop.
+		// Packed into Value[4].w (was 0 in stock UE).
+		const float AstroCrowdingScale = 1.0f /
+			FMath::Max(ConstraintParams.CrowdingThreshold * ConstraintParams.AttenuationCurve,
+			           KINDA_SMALL_NUMBER);
+
 		// /1000 to be able to define the value in that distance
 		Value[0] = FVector4(Settings.AmbientOcclusionPower, Settings.AmbientOcclusionBias / 1000.0f, InvAmbientOcclusionDistance, Settings.AmbientOcclusionIntensity);
 		Value[1] = FVector4(ViewportUVToRandomUV.X, ViewportUVToRandomUV.Y, AORadiusInShader, Ratio);
 		Value[2] = FVector4(ScaleToFullRes, Settings.AmbientOcclusionMipThreshold / ScaleToFullRes, ScaleRadiusInWorldSpace, Settings.AmbientOcclusionMipBlend);
 		Value[3] = FVector4(TemporalOffset.X, TemporalOffset.Y, StaticFraction, InvTanHalfFov);
-		Value[4] = FVector4(InvFadeRadius, -(Settings.AmbientOcclusionFadeDistance - FadeRadius) * InvFadeRadius, HzbStepMipLevelFactorValue, 0);
+		// Value[4].w: AstroCrowdingScale (was 0 in stock SSAO).
+		// The USF MainPS/MainCS kernel loop reads ScreenSpaceAOParams[4].w and
+		// applies constraint-space crowding attenuation after the standard
+		// hemisphere accumulation step.
+		Value[4] = FVector4(InvFadeRadius, -(Settings.AmbientOcclusionFadeDistance - FadeRadius) * InvFadeRadius, HzbStepMipLevelFactorValue, AstroCrowdingScale);
 		Value[5] = FVector4(View.ViewRect.Width(), View.ViewRect.Height(), ViewRect.Min.X, ViewRect.Min.Y);
 
 		SetShaderValueArray(RHICmdList, ShaderRHI, ScreenSpaceAOParams, Value, 6);
