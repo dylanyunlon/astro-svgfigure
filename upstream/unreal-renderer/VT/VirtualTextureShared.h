@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] VirtualTextureShared.h - shared types debug
 
 #pragma once
+// [ASTRO-DBG] VT shared constants and types loaded
 
 #include "CoreMinimal.h"
 

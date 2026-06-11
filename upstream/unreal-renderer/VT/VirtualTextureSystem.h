@@ -26,6 +26,7 @@ struct FPageUpdateBuffer;
 extern uint32 GetTypeHash(const FAllocatedVTDescription& Description);
 
 class FVirtualTextureSystem
+// [ASTRO-DBG] VirtualTextureSystem.h - system debug
 {
 public:
 	static void Initialize();
@@ -67,6 +68,7 @@ private:
 	friend class FGatherRequestsTask;
 
 	FVirtualTextureSystem();
+// [ASTRO-DBG] FVirtualTextureSystem constructor declaration
 	~FVirtualTextureSystem();
 
 	void DestroyPendingVirtualTextures();

@@ -5,6 +5,7 @@
 #include "VirtualTexturing.h"
 
 FVirtualTextureAllocator::FVirtualTextureAllocator(uint32 Dimensions )
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureAllocator::ctor Dimensions=%u\n", InDimensions);
 	: vDimensions( Dimensions )
 	, LogSize(0u)
 	, NumAllocations(0u)
@@ -70,6 +71,7 @@ void FVirtualTextureAllocator::Grow()
 
 // returns SortedIndex
 uint32 FVirtualTextureAllocator::Find(uint32 vAddress ) const
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureAllocator::Alloc called\n");
 {
 	uint32 Min = 0;
 	uint32 Max = SortedAddresses.Num();

@@ -36,9 +36,11 @@ inline bool operator!=(const FVTPhysicalSpaceDescription& Lhs, const FVTPhysical
 }
 
 class FVirtualTexturePhysicalSpace : public FRenderResource
+// [ASTRO-DBG] VirtualTexturePhysicalSpace.h - physical space debug
 {
 public:
 	FVirtualTexturePhysicalSpace(const FVTPhysicalSpaceDescription& InDesc, uint16 InID);
+// [ASTRO-DBG] FVirtualTexturePhysicalSpace constructor declaration
 	virtual ~FVirtualTexturePhysicalSpace();
 
 	inline const FVTPhysicalSpaceDescription& GetDescription() const { return Description; }

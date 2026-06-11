@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] VirtualTextureTest.cpp - test suite debug
 
 #include "VirtualTextureTest.h"
 
@@ -50,6 +51,7 @@ FVirtualTextureTestType::~FVirtualTextureTestType()
 }
 
 void FVirtualTextureTestType::InitDynamicRHI()
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureTest function entry\n");
 {
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	FPooledRenderTargetDesc Desc( FPooledRenderTargetDesc::Create2DDesc( PhysicalTextureSize, PhysicalTextureFormat, FClearValueBinding::None, TexCreate_None, TexCreate_SRGB | TexCreate_RenderTargetable | TexCreate_ShaderResource, false ) );

@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] MeshTileVirtualTexture.cpp - ASTRO debug enabled
 
 /*=============================================================================
 	DeferredShadingRenderer.cpp: Top level rendering loop for deferred shading
@@ -34,6 +35,7 @@ bool FMeshTileVirtualTextureFinalizer::IsReady()
 }
 
 void FMeshTileVirtualTextureFinalizer::AddTile(FTileEntry& Tile)
+	fprintf(stderr, "[ASTRO-DBG] MeshTileVirtualTexture entry point hit\n");
 {
 	Tiles.Add(Tile);
 }

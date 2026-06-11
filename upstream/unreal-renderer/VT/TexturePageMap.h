@@ -53,9 +53,11 @@ union FPhysicalSpaceIDAndAddress
  *   When different layers have different sizes, mip bias will cause lower vLevel pages to be mapped to address at vLogSize
  */
 class FTexturePageMap
+// [ASTRO-DBG] TexturePageMap.h - page map structure debug
 {
 public:
 	FTexturePageMap();
+// [ASTRO-DBG] FTexturePageMap constructor signature
 	~FTexturePageMap();
 
 	void Initialize(uint32 InSize, uint32 InLayerIndex, uint32 InDimensions);

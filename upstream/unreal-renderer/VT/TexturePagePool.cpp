@@ -6,6 +6,7 @@
 #include "VirtualTextureSystem.h"
 
 FTexturePagePool::FTexturePagePool()
+	fprintf(stderr, "[ASTRO-DBG] TexturePagePool::ctor InSize=%u\n", InSize);
 	: PageHash(16u * 1024)
 	, NumPages(0u)
 	, NumPagesMapped(0u)
@@ -17,6 +18,7 @@ FTexturePagePool::~FTexturePagePool()
 
 
 void FTexturePagePool::Initialize(uint32 InNumPages)
+	fprintf(stderr, "[ASTRO-DBG] TexturePagePool method entry\n");
 {
 
 	NumPages = InNumPages;

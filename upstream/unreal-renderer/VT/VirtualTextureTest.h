@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] VirtualTextureTest.h - test header debug
 
 #pragma once
 
@@ -54,3 +55,4 @@ public:
 
 extern TGlobalResource< FVirtualTextureTestType > GVirtualTextureTestType;
 #endif
+// [ASTRO-DBG] VirtualTextureTest.h fallback debug line 1

@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] RuntimeVirtualTextureRender.h - ASTRO debug header
 
 #pragma once
 
@@ -10,6 +11,7 @@ class FRHITexture2D;
 class FScene;
 
 namespace RuntimeVirtualTexture
+// [ASTRO-DBG] RuntimeVirtualTextureRender namespace scope
 {
 	// Render a single page of a virtual texture with a given material
 	//todo[vt]: Likely to be more optimal to batch several pages at a time and share setup/visibility/render targets

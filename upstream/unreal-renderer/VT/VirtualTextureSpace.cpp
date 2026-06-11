@@ -45,6 +45,7 @@ static EPixelFormat GetFormatForNumLayers(uint32 NumLayers, EVTPageTableFormat F
 }
 
 FVirtualTextureSpace::FVirtualTextureSpace(FVirtualTextureSystem* InSystem, uint8 InID, const FVTSpaceDescription& InDesc, uint32 InSizeNeeded)
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureSpace::ctor ID=%u\n", InID);
 	: Description(InDesc)
 	, Allocator(InDesc.Dimensions)
 	, PageTableSize(0u)
@@ -110,6 +111,7 @@ uint32 FVirtualTextureSpace::AllocateVirtualTexture(FAllocatedVirtualTexture* Vi
 }
 
 void FVirtualTextureSpace::FreeVirtualTexture(FAllocatedVirtualTexture* VirtualTexture)
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureSpace method entry\n");
 {
 	Allocator.Free(VirtualTexture);
 }

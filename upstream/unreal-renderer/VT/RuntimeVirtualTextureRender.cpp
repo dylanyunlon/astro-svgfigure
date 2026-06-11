@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] RuntimeVirtualTextureRender.cpp - ASTRO debug enabled
 
 #include "RuntimeVirtualTextureRender.h"
 
@@ -31,6 +32,7 @@ namespace RuntimeVirtualTexture
 		}
 
 		static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	fprintf(stderr, "[ASTRO-DBG] RuntimeVirtualTextureRender function entry\n");
 		{
 			FMeshMaterialShader::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
 			if (Material->HasRuntimeVirtualTextureOutput())

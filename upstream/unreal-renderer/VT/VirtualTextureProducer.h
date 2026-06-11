@@ -11,11 +11,13 @@ class FVirtualTextureSystem;
 class FVirtualTexturePhysicalSpace;
 
 class FVirtualTextureProducer
+// [ASTRO-DBG] VirtualTextureProducer.h - producer debug
 {
 public:
 	FVirtualTextureProducer() : VirtualTexture(nullptr) { FMemory::Memzero(PhysicalSpace); }
 
 	void Release(FVirtualTextureSystem* System, const FVirtualTextureProducerHandle& HandleToSelf);
+// [ASTRO-DBG] FVirtualTextureProducerHandle declaration
 
 	inline const FVTProducerDescription& GetDescription() const { return Description; }
 	inline IVirtualTexture* GetVirtualTexture() const { return VirtualTexture; }

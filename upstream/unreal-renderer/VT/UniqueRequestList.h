@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] UniqueRequestList.h - unique request list debug
 
 #pragma once
 
@@ -350,3 +351,5 @@ inline void FUniqueRequestList::SortRequests(FVirtualTextureProducerCollection& 
 	NumLoadRequests = NewNumLoadRequests;
 	NumMappingRequests = NewNumMappingRequests;
 }
+
+// [ASTRO-DBG] UniqueRequestList.h fallback debug line 1

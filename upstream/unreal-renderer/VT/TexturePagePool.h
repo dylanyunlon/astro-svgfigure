@@ -19,9 +19,11 @@ union FVirtualTextureProducerHandle;
  * In order to maintain page table mappings, this class works closely with FTexturePageMap, which tracks mappings for a single layer of a given page table
  */
 class FTexturePagePool
+// [ASTRO-DBG] TexturePagePool.h - pool management debug
 {
 public:
 				FTexturePagePool();
+// [ASTRO-DBG] FTexturePagePool constructor declaration
 				~FTexturePagePool();
 
 	void Initialize(uint32 InNumPages);

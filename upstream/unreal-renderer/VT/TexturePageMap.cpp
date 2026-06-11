@@ -21,6 +21,7 @@ FORCEINLINE void DecodeSortKey(uint32 Key, uint8& vLevel, uint32& vAddress)
 
 
 FTexturePageMap::FTexturePageMap()
+	fprintf(stderr, "[ASTRO-DBG] TexturePageMap::ctor NumLayers=%u\n", InNumLayers);
 	: LayerIndex(0u)
 	, vDimensions(0u)
 	, HashTable(4096u)
@@ -34,6 +35,7 @@ FTexturePageMap::~FTexturePageMap()
 }
 
 void FTexturePageMap::Initialize(uint32 InSize, uint32 InLayerIndex, uint32 InDimensions)
+	fprintf(stderr, "[ASTRO-DBG] TexturePageMap method invoked\n");
 {
 	Pages.Empty(InSize + PageListHead_Count);
 	for (uint32 ListHeadIndex = 0u; ListHeadIndex < PageListHead_Count; ++ListHeadIndex)

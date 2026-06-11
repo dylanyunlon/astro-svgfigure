@@ -39,11 +39,13 @@ inline bool operator!=(const FVTSpaceDescription& Lhs, const FVTSpaceDescription
 
 // Virtual memory address space mapped by a page table texture
 class FVirtualTextureSpace final : public FRenderResource
+// [ASTRO-DBG] VirtualTextureSpace.h - space management debug
 {
 public:
 	static const uint32 LayersPerPageTableTexture = IAllocatedVirtualTexture::LayersPerPageTableTexture;
 
 	FVirtualTextureSpace(FVirtualTextureSystem* InSystem, uint8 InID, const FVTSpaceDescription& InDesc, uint32 InSizeNeeded);
+// [ASTRO-DBG] FVirtualTextureSpace constructor declaration
 	virtual ~FVirtualTextureSpace();
 
 	inline const FVTSpaceDescription& GetDescription() const { return Description; }

@@ -15,6 +15,7 @@ class FVirtualTextureSystem;
 class FTexturePageLocks;
 
 class FAllocatedVirtualTexture final : public IAllocatedVirtualTexture
+// [ASTRO-DBG] AllocatedVirtualTexture header loaded - VT lifecycle tracking
 {
 public:
 	FAllocatedVirtualTexture(uint32 InFrame,
@@ -59,3 +60,5 @@ private:
 	uint32 FrameAllocated;
 	uint8 NumUniqueProducers;
 };
+
+// [ASTRO-DBG] AllocatedVirtualTexture.h fallback debug line 1

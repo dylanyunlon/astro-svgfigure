@@ -13,6 +13,7 @@ class RENDERER_API FVirtualTextureAllocator
 {
 public:
 						FVirtualTextureAllocator(uint32 Dimensions);
+// [ASTRO-DBG] FVirtualTextureAllocator constructor declaration
 						~FVirtualTextureAllocator() {}
 
 	inline uint32 GetNumAllocations() const { return NumAllocations; }
@@ -92,3 +93,5 @@ private:
 	uint32					NumAllocations;
 	uint32					NumAllocatedPages;
 };
+
+// [ASTRO-DBG] VirtualTextureAllocator.h fallback debug line 1

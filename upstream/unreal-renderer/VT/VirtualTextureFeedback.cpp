@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] VirtualTextureFeedback.cpp - feedback system debug
 
 #include "VirtualTextureFeedback.h"
 #include "VisualizeTexture.h"
@@ -14,6 +15,7 @@ FVirtualTextureFeedback::FVirtualTextureFeedback()
 }
 
 void FVirtualTextureFeedback::ReleaseResources()
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureFeedback function entry\n");
 {
 	GRenderTargetPool.FreeUnusedResource( FeedbackTextureGPU );
 	for (int i = 0; i < TargetCapacity; ++i)

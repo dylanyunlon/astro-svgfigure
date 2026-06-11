@@ -5,6 +5,7 @@
 #include "VirtualTexturePhysicalSpace.h"
 
 void FVirtualTextureProducer::Release(FVirtualTextureSystem* System, const FVirtualTextureProducerHandle& HandleToSelf)
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureProducer entry\n");
 {
 	if (Description.bPersistentHighestMip)
 	{
@@ -125,3 +126,5 @@ FVirtualTextureProducerCollection::FProducerEntry* FVirtualTextureProducerCollec
 	}
 	return nullptr;
 }
+
+// [ASTRO-DBG] VirtualTextureProducer.cpp fallback debug line 1

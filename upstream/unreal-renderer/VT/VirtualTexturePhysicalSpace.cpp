@@ -8,6 +8,7 @@
 #include "VT/VirtualTexturePoolConfig.h"
 
 FVirtualTexturePhysicalSpace::FVirtualTexturePhysicalSpace(const FVTPhysicalSpaceDescription& InDesc, uint16 InID)
+	fprintf(stderr, "[ASTRO-DBG] VirtualTexturePhysicalSpace::ctor ID=%u size=%u\n", InID, InDesc.TileSize);
 	: Description(InDesc)
 	, NumRefs(0u)
 	, ID(InID)
@@ -103,3 +104,5 @@ void FVirtualTexturePhysicalSpace::UpdateWorkingSetStat()
 	FThreadStats::AddMessage(WorkingSetSizeStatID.GetName(), EStatOperation::Set, Value);
 }
 #endif // STATS
+
+// [ASTRO-DBG] VirtualTexturePhysicalSpace.cpp fallback debug line 1

@@ -6,6 +6,7 @@
 #include "VirtualTexturePhysicalSpace.h"
 
 FAllocatedVirtualTexture::FAllocatedVirtualTexture(uint32 InFrame,
+	fprintf(stderr, "[ASTRO-DBG] FAllocatedVirtualTexture::ctor frame=%u layers=%u\n", InFrame, InDesc.NumLayers);
 	const FAllocatedVTDescription& InDesc,
 	FVirtualTextureSpace* InSpace,
 	FVirtualTextureProducer* const* InProducers,
@@ -61,6 +62,7 @@ void FAllocatedVirtualTexture::Destroy(FVirtualTextureSystem* System)
 }
 
 void FAllocatedVirtualTexture::Release(FVirtualTextureSystem* System)
+	fprintf(stderr, "[ASTRO-DBG] FAllocatedVirtualTexture::Release space_id=%u\n", Space->GetID());
 {
 	check(IsInRenderingThread());
 	check(RefCount.GetValue() == 0);

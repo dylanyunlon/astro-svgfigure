@@ -190,6 +190,7 @@ FVirtualTextureSystem& FVirtualTextureSystem::Get()
 }
 
 FVirtualTextureSystem::FVirtualTextureSystem()
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureSystem::ctor initialized\n");
 	: Frame(1u), // Need to start on Frame 1, otherwise the first call to update will fail to allocate any pages
 	bFlushCaches(false),
 	FlushCachesCommand(TEXT("r.VT.Flush"), TEXT("Flush all the physical caches in the VT system."),
@@ -668,6 +669,7 @@ void FVirtualTextureSystem::FeedbackAnalysisTask(const FFeedbackAnalysisParamete
 }
 
 void FVirtualTextureSystem::Update(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel)
+	fprintf(stderr, "[ASTRO-DBG] VirtualTextureSystem::Update frame tick\n");
 {
 	check(IsInRenderingThread());
 

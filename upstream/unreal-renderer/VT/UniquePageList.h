@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] UniquePageList.h - unique page list debug
 
 #pragma once
 
@@ -84,3 +85,5 @@ void FUniquePageList::MergePages(const FUniquePageList* RESTRICT Other)
 		Add(Other->Pages[Index], Other->Counts[Index]);
 	}
 }
+
+// [ASTRO-DBG] UniquePageList.h fallback debug line 1

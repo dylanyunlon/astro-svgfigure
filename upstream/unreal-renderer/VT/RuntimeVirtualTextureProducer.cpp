@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] RuntimeVirtualTextureProducer.cpp - ASTRO debug enabled
 
 #include "RuntimeVirtualTextureProducer.h"
 
@@ -23,6 +24,7 @@ bool FRuntimeVirtualTextureFinalizer::IsReady()
 }
 
 void FRuntimeVirtualTextureFinalizer::AddTile(FTileEntry& Tile)
+	fprintf(stderr, "[ASTRO-DBG] RuntimeVirtualTextureProducer function entry\n");
 {
 	Tiles.Add(Tile);
 }

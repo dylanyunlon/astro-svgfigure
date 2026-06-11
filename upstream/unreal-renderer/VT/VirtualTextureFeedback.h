@@ -1,4 +1,5 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// [ASTRO-DBG] VirtualTextureFeedback.h - feedback debug header
 
 #pragma once
 
@@ -56,3 +57,5 @@ private:
 	uint32 CPUReadIndex;
 	uint32 PendingTargetCount;
 };
+
+// [ASTRO-DBG] VirtualTextureFeedback.h fallback debug line 1
