@@ -1,3 +1,4 @@
+// [ASTRO-CYBER] upstream/apollo-cyber/scheduler/common/pin_thread.h
 /******************************************************************************
  * Copyright 2019 The Apollo Authors. All Rights Reserved.
  *

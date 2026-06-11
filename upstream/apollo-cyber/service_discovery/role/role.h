@@ -1,3 +1,4 @@
+// [ASTRO-CYBER] upstream/apollo-cyber/service_discovery/role/role.h
 /******************************************************************************
  * Copyright 2018 The Apollo Authors. All Rights Reserved.
  *

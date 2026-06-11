@@ -1,3 +1,4 @@
+// [ASTRO-CYBER] upstream/apollo-cyber/examples/timer_component_example/timer_component_example.cc
 /******************************************************************************
  * Copyright 2018 The Apollo Authors. All Rights Reserved.
  *

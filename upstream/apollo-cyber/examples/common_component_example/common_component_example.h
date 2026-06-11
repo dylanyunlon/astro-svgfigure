@@ -1,3 +1,4 @@
+// [ASTRO-CYBER] upstream/apollo-cyber/examples/common_component_example/common_component_example.h
 /******************************************************************************
  * Copyright 2018 The Apollo Authors. All Rights Reserved.
  *
