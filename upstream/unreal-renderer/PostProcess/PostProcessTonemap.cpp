@@ -7,6 +7,13 @@
 	drives the color-harmony channel of the cell pubsub loop.
 =============================================================================*/
 
+// [ASTRO-TONEMAP] ToneMapping → SVG color-space harmonization pass (M091-M095)
+// Tonemapper is repurposed as the ASTRO cell color-constraint solver:
+//   ColorGamut       → SVG color profile selection (sRGB/P3/Rec2020/ACES)
+//   GammaOnly        → fast-path when cell color is already within gamut
+//   SharpenFactor    → edge sharpness weight for SVG stroke contrast enhancement
+//   ScreenPercentage → cell canvas upscale ratio for high-DPI SVG emission
+
 #include "PostProcess/PostProcessTonemap.h"
 #include "EngineGlobals.h"
 #include "ScenePrivate.h"
@@ -16,6 +23,7 @@
 #include "PostProcess/PostProcessMobile.h"
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
+#include <cstdio>
 
 
 // ---------------------------------------------------- CVars
@@ -969,6 +977,14 @@ void FRCPassPostProcessTonemap::Process(FRenderingCompositePassContext& Context)
 	FIntPoint SrcSize = InputDesc->Extent;
 	FIntPoint DestSize = PassOutputs[0].RenderTargetDesc.Extent;
 
+	// [ASTRO-TONEMAP] SVG cell color-space harmonization pass (M091-M093)
+	// bDoGammaOnly skips full tonemapping for cells already in target gamut.
+	// bDoScreenPercentageInTonemapper triggers SVG canvas upscale at emit time.
+	// SrcRect→ input cell viewport; DestRect→ output SVG color-harmonized frame.
+	fprintf(stderr, "[ASTRO-TONEMAP] Tonemap::Process  srcW=%d srcH=%d dstW=%d dstH=%d gammaOnly=%d screenPct=%d isCompute=%d\n",
+		SrcRect.Width(), SrcRect.Height(), DestRect.Width(), DestRect.Height(),
+		bDoGammaOnly ? 1 : 0, bDoScreenPercentageInTonemapper ? 1 : 0, bIsComputePass ? 1 : 0);
+
 	SCOPED_DRAW_EVENTF(Context.RHICmdList, PostProcessTonemap, TEXT("Tonemapper(%s GammaOnly=%d HandleScreenPercentage=%d) %dx%d"),
 		bIsComputePass ? TEXT("CS") : TEXT("PS"), bDoGammaOnly, bDoScreenPercentageInTonemapper, DestRect.Width(), DestRect.Height());
 
@@ -1667,6 +1683,14 @@ void FRCPassPostProcessTonemapES2::Process(FRenderingCompositePassContext& Conte
 	FIntRect DestRect = bDoScreenPercentageInTonemapper ? View.UnscaledViewRect : View.ViewRect;
 	FIntPoint SrcSize = InputDesc->Extent;
 	FIntPoint DstSize = OutputDesc.Extent;
+
+	// [ASTRO-TONEMAP] mobile ES2 cell color harmonization pass (M094-M095)
+	// ES2 path maps mobile SVG cells to sRGB gamut with framebuffer fetch optimization.
+	// bUsedFramebufferFetch enables in-place cell color correction without readback.
+	// bSRGBAwareTarget indicates cells already carry linearized SVG color annotations.
+	fprintf(stderr, "[ASTRO-TONEMAP] TonemapES2::Process  srcW=%d srcH=%d dstW=%d dstH=%d fbFetch=%d srgbAware=%d screenPct=%d\n",
+		SrcRect.Width(), SrcRect.Height(), DestRect.Width(), DestRect.Height(),
+		bUsedFramebufferFetch ? 1 : 0, bSRGBAwareTarget ? 1 : 0, bDoScreenPercentageInTonemapper ? 1 : 0);
 
 	ERenderTargetLoadAction LoadAction = ERenderTargetLoadAction::ELoad;
 

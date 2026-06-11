@@ -7,12 +7,19 @@
 	quality level maps to boundary precision tier in the pubsub cell loop.
 =============================================================================*/
 
+// [ASTRO-AA] FXAA → SVG cell edge constraint pass (M096-M098)
+// Anti-aliasing maps to SVG stroke edge constraint resolution:
+//   Quality level → SVG edge search radius (1=fast/coarse … 6=precise/thorough)
+//   SrcRect/DestRect → input cell viewport → output edge-constrained SVG frame
+//   FXAA sub-pixel blend → blends overlapping cell boundary SVG paths
+
 #include "PostProcess/PostProcessAA.h"
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"
 #include "PostProcess/SceneFilterRendering.h"
 #include "SceneRendering.h"
 #include "PipelineStateCache.h"
+#include <cstdio>
 
 /** Encapsulates the post processing anti aliasing pixel shader. */
 // Quality 1..6
@@ -261,6 +268,12 @@ void FRCPassPostProcessAA::Process(FRenderingCompositePassContext& Context)
 
 	FIntPoint SrcSize = InputDesc->Extent;
 	FIntPoint DestSize = PassOutputs[0].RenderTargetDesc.Extent;
+
+	// [ASTRO-AA] FXAA cell edge constraint pass (M096-M098)
+	// Quality controls FXAA search iteration depth: higher = more SVG edge boundary resolution.
+	// SrcRect → cell input region; DestRect → edge-constrained SVG output viewport.
+	fprintf(stderr, "[ASTRO-AA] FXAA::Process  quality=%d srcW=%d srcH=%d dstW=%d dstH=%d\n",
+		(int)Quality, SrcRect.Width(), SrcRect.Height(), DestRect.Width(), DestRect.Height());
 
 	SCOPED_DRAW_EVENTF(Context.RHICmdList, PostProcessFXAA, TEXT("PostProcessFXAA %dx%d"), DestRect.Width(), DestRect.Height());
 

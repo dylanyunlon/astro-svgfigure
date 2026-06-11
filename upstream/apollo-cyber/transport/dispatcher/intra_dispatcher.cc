@@ -14,15 +14,31 @@
  * limitations under the License.
  *****************************************************************************/
 
+// [ASTRO-TRANSPORT] IntraDispatcher → in-process SVG cell direct-publish (M108-M110)
+// IntraDispatcher routes cell messages within one process epoch boundary:
+//   ChannelChain → ordered list of cell subscribers for a given SVG element channel
+//   Zero-copy delivery → SVG cell data referenced by pointer, no serialization overhead
+
 #include "cyber/transport/dispatcher/intra_dispatcher.h"
+
+#include <cstdio>
 
 namespace apollo {
 namespace cyber {
 namespace transport {
 
-IntraDispatcher::IntraDispatcher() { chain_.reset(new ChannelChain()); }
+IntraDispatcher::IntraDispatcher() {
+  chain_.reset(new ChannelChain());
+  // [ASTRO-TRANSPORT] intra-process cell channel chain init (M108-M110)
+  // ChannelChain is the ASTRO in-process pubsub backbone for SVG cell direct-dispatch.
+  // Each channel in the chain corresponds to one SVG element type subscription group.
+  fprintf(stderr, "[ASTRO-TRANSPORT] IntraDispatcher::ctor  channelChain=%p\n",
+    (void*)chain_.get());
+}
 
-IntraDispatcher::~IntraDispatcher() {}
+IntraDispatcher::~IntraDispatcher() {
+  fprintf(stderr, "[ASTRO-TRANSPORT] IntraDispatcher::dtor  channelChain released\n");
+}
 
 }  // namespace transport
 }  // namespace cyber

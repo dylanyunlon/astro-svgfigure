@@ -4,6 +4,13 @@
 	PostProcessTemporalAA.cpp: Post process MotionBlur implementation.
 =============================================================================*/
 
+// [ASTRO-TAA] Temporal AA → SVG cell temporal coherence pass (M099-M100)
+// TAA history accumulation maps to ASTRO cell epoch-over-epoch consistency:
+//   InputHistory     → previous epoch's SVG cell frame for temporal diff
+//   bCameraCut       → forces cell pubsub full-reset (epoch boundary event)
+//   SrcRect/DestRect → per-epoch cell viewport for incremental SVG update
+//   DownsamplePossible → enables half-resolution cell proxy for fast epoch diff
+
 #include "PostProcess/PostProcessTemporalAA.h"
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"
@@ -17,6 +24,7 @@
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
 #include "PostProcessing.h"
+#include <cstdio>
 
 const int32 GTemporalAATileSizeX = 8;
 const int32 GTemporalAATileSizeY = 8;
@@ -768,6 +776,15 @@ void FRCPassPostProcessTemporalAA::Process(FRenderingCompositePassContext& Conte
 
 	// Name of the pass.
 	const TCHAR* PassName = kTAAPassNames[static_cast<int32>(Parameters.Pass)];
+
+	// [ASTRO-TAA] temporal cell coherence pass (M099-M100)
+	// bCameraCut signals epoch boundary: forces full cell pubsub reset, no history blend.
+	// bIsMainPass distinguishes primary SVG frame accumulation from DOF/upsampling sub-passes.
+	// bDownsamplePossible enables half-res cell proxy diff for low-latency epoch comparison.
+	fprintf(stderr, "[ASTRO-TAA] TemporalAA::Process  pass=%d srcW=%d srcH=%d dstW=%d dstH=%d cameraCut=%d mainPass=%d compute=%d downsample=%d\n",
+		(int)Parameters.Pass,
+		SrcRect.Width(), SrcRect.Height(), DestRect.Width(), DestRect.Height(),
+		bCameraCut ? 1 : 0, bIsMainPass ? 1 : 0, bIsComputePass ? 1 : 0, bDownsamplePossible ? 1 : 0);
 
 	// Stats.
 	SCOPED_GPU_STAT(Context.RHICmdList, TAA);

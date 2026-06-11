@@ -18,9 +18,18 @@
 // epoch slot. NotifyProcessor triggers epoch boundary advancement in the pubsub loop.
 // CheckSchedStatus doubles as epoch health monitor; snap_info feeds the epoch log.
 
+// [ASTRO-SCHEDULER] CyberRT Scheduler → ASTRO cell epoch control (M111-M125)
+// Scheduler maps CRoutine tasks to ASTRO cell epoch dispatch slots:
+//   CreateTask      → register a new SVG cell constraint coroutine for epoch execution
+//   DispatchTask    → assign the cell coroutine to a processor epoch slot
+//   NotifyProcessor → trigger epoch tick for a specific cell constraint routine
+//   CheckSchedStatus→ emit per-epoch cell processor utilization snapshot
+//   Shutdown        → drain all epoch slots and teardown cell processor pool
+
 #include "cyber/scheduler/scheduler.h"
 
 #include <sched.h>
+#include <cstdio>
 
 #include <utility>
 
@@ -58,12 +67,12 @@ bool Scheduler::CreateTask(std::function<void()>&& func,
   cr->set_name(name);
   AINFO << "create croutine: " << name;
 
-  // [ASTRO-SCHEDULER] Cell epoch-slot registration: task_id maps to epoch bucket.
+  // [ASTRO-SCHEDULER] cell epoch slot assignment (M111-M113)
+  // task_id is the ASTRO cell constraint coroutine identifier in the epoch dispatch table.
+  // DispatchTask assigns this cell routine to a processor epoch slot based on policy.
   // visitor != nullptr means data-driven cell (subscribes to pubsub channel).
-  fprintf(stderr, "[ASTRO-SCHEDULER] CreateTask: cell='%s' epoch_id=%lu"
-      " data_driven=%d\n",
-      name.c_str(), static_cast<unsigned long>(task_id),
-      visitor != nullptr ? 1 : 0);
+  fprintf(stderr, "[ASTRO-SCHEDULER] CreateTask  name=%s taskId=%lu hasVisitor=%d\n",
+    name.c_str(), (unsigned long)task_id, visitor != nullptr ? 1 : 0);
 
   if (!DispatchTask(cr)) {
     return false;
@@ -84,6 +93,9 @@ bool Scheduler::NotifyTask(uint64_t crid) {
   if (cyber_unlikely(stop_.load())) {
     return true;
   }
+  // [ASTRO-SCHEDULER] cell epoch tick notify (M114-M115)
+  // Triggers the epoch processor to re-evaluate the cell constraint routine crid.
+  fprintf(stderr, "[ASTRO-SCHEDULER] NotifyTask  crid=%lu\n", (unsigned long)crid);
   return NotifyProcessor(crid);
 }
 
@@ -129,6 +141,11 @@ void Scheduler::CheckSchedStatus() {
     snap_info.append(", ");
   }
   snap_info.append("timestamp: ").append(std::to_string(now));
+  // [ASTRO-SCHEDULER] per-epoch cell processor utilization snapshot (M116-M120)
+  // snap_info encodes the current epoch's cell constraint execution timeline.
+  // Each processor_id:routine_name:execute_time entry maps to one cell constraint slot.
+  fprintf(stderr, "[ASTRO-SCHEDULER] CheckSchedStatus  epoch_ns=%lu processors=%zu snap=%s\n",
+    (unsigned long)now, processors_.size(), snap_info.c_str());
   AINFO << snap_info;
   // [ASTRO-SCHEDULER] Epoch health snapshot: active cells and their run-time logged.
   // snap_info feeds the epoch monitor; long-running cells may stall epoch advancement.
@@ -144,6 +161,12 @@ void Scheduler::Shutdown() {
   if (cyber_unlikely(stop_.exchange(true))) {
     return;
   }
+
+  // [ASTRO-SCHEDULER] epoch processor pool teardown (M121-M125)
+  // Context shutdown drains pending cell constraint routines from each epoch slot.
+  // RemoveCRoutine unregisters each cell routine from the epoch dispatch table.
+  fprintf(stderr, "[ASTRO-SCHEDULER] Shutdown  draining %zu processor contexts\n",
+    pctxs_.size());
 
   for (auto& ctx : pctxs_) {
     ctx->Shutdown();

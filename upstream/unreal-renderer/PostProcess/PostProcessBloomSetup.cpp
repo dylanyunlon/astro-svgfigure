@@ -7,6 +7,13 @@
 	into the cell pubsub loop for downstream emphasis scoring.
 =============================================================================*/
 
+// [ASTRO-BLOOM] Bloom → SVG visual-emphasis pass (M086-M090)
+// Bloom threshold becomes the cell visual-emphasis activation gate:
+//   BloomThreshold  → minimum luminance for a cell to emit an emphasis ring
+//   EyeAdaptation   → per-frame epoch exposure normalization factor
+//   DestSize        → SVG canvas tile dimensions for bloom halo geometry
+//   ComputeTileSize → cell grid granularity for parallel emphasis dispatch
+
 #include "PostProcess/PostProcessBloomSetup.h"
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"
@@ -16,6 +23,7 @@
 #include "PostProcess/PostProcessEyeAdaptation.h"
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
+#include <cstdio>
 
 const int32 GBloomSetupComputeTileSizeX = 8;
 const int32 GBloomSetupComputeTileSizeY = 8;
@@ -232,6 +240,13 @@ void FRCPassPostProcessBloomSetup::Process(FRenderingCompositePassContext& Conte
 	FIntPoint SrcSize = InputDesc->Extent;
 	FIntPoint DestSize = PassOutputs[0].RenderTargetDesc.Extent;
 
+	// [ASTRO-BLOOM] visual-emphasis bloom threshold pass (M086-M088)
+	// BloomThreshold gates which SVG cells receive an emphasis halo overlay.
+	// SrcSize→ input cell canvas resolution; DestSize→ output emphasis tile grid.
+	// bIsComputePass selects async compute path for parallel cell emphasis dispatch.
+	fprintf(stderr, "[ASTRO-BLOOM] BloomSetup::Process  srcW=%d srcH=%d dstW=%d dstH=%d isCompute=%d\n",
+		SrcSize.X, SrcSize.Y, DestSize.X, DestSize.Y, bIsComputePass ? 1 : 0);
+
 	// e.g. 4 means the input texture is 4x smaller than the buffer size
 	uint32 ScaleFactor = FMath::DivideAndRoundUp(Context.ReferenceBufferSize.Y, SrcSize.Y);
 
@@ -347,12 +362,18 @@ void FRCPassPostProcessBloomSetup::DispatchCS(TRHICmdList& RHICmdList, FRenderin
 	RHICmdList.SetComputeShader(ComputeShader->GetComputeShader());
 
 	FIntPoint DestSize(DestRect.Width(), DestRect.Height());
-	ComputeShader->SetParameters(RHICmdList, Context, DestSize, DestUAV, EyeAdaptationTex);
 
+	// [ASTRO-BLOOM] async compute cell emphasis dispatch (M089-M090)
+	// GroupSizeX/Y tile the SVG canvas into parallel emphasis computation domains.
+	// Each thread group independently evaluates bloom threshold for its cell cluster.
 	uint32 GroupSizeX = FMath::DivideAndRoundUp(DestSize.X, GBloomSetupComputeTileSizeX);
 	uint32 GroupSizeY = FMath::DivideAndRoundUp(DestSize.Y, GBloomSetupComputeTileSizeY);
-	DispatchComputeShader(RHICmdList, *ComputeShader, GroupSizeX, GroupSizeY, 1);
+	fprintf(stderr, "[ASTRO-BLOOM] DispatchCS  dstW=%d dstH=%d groupsX=%u groupsY=%u tileX=%d tileY=%d\n",
+		DestSize.X, DestSize.Y, GroupSizeX, GroupSizeY,
+		GBloomSetupComputeTileSizeX, GBloomSetupComputeTileSizeY);
 
+	ComputeShader->SetParameters(RHICmdList, Context, DestSize, DestUAV, EyeAdaptationTex);
+	DispatchComputeShader(RHICmdList, *ComputeShader, GroupSizeX, GroupSizeY, 1);
 	ComputeShader->UnsetParameters(RHICmdList);
 }
 

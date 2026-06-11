@@ -20,8 +20,16 @@
 //   rtps_dispatcher   → inter-node Git-channel relay (participant = repo endpoint)
 // All Shutdown paths flush pending epoch messages before teardown.
 
+// [ASTRO-TRANSPORT] Apollo CyberRT transport → ASTRO cell pub/sub channel (M101-M107)
+// Transport layer maps to the ASTRO inter-cell data channel infrastructure:
+//   IntraDispatcher  → in-process SVG cell direct-publish (zero-copy same-epoch)
+//   ShmDispatcher    → shared-memory SVG cell broadcast (cross-process epoch sync)
+//   RtpsDispatcher   → network SVG cell pub/sub (distributed cell topology)
+//   Participant      → named ASTRO node identity (hostname+pid → cell-pubsub address)
+
 #include "cyber/transport/transport.h"
 
+#include <cstdio>
 #include "cyber/common/global_data.h"
 
 namespace apollo {
@@ -35,10 +43,15 @@ Transport::Transport() {
   shm_dispatcher_ = ShmDispatcher::Instance();
   rtps_dispatcher_ = RtpsDispatcher::Instance();
   rtps_dispatcher_->set_participant(participant_);
-  // [ASTRO-TRANSPORT] Git-channel pub/sub transport initialized.
-  // rtps_dispatcher participant acts as remote repo endpoint for epoch relay.
-  fprintf(stderr, "[ASTRO-TRANSPORT] Transport::ctor: git-channel routing READY"
-      " intra+shm+rtps dispatchers online\n");
+  // [ASTRO-TRANSPORT] cell pub/sub transport layer init (M101-M103)
+  // Three dispatchers form the ASTRO cell channel stack:
+  //   intra → local epoch sync; shm → process-boundary cell sync; rtps → network cell mesh.
+  // Git-channel: rtps_dispatcher participant is the remote repo endpoint for epoch relay.
+  fprintf(stderr, "[ASTRO-TRANSPORT] Transport::ctor  intra=%p shm=%p rtps=%p participant=%p\n",
+    (void*)intra_dispatcher_.get(),
+    (void*)shm_dispatcher_.get(),
+    (void*)rtps_dispatcher_.get(),
+    (void*)participant_.get());
 }
 
 Transport::~Transport() { Shutdown(); }
@@ -48,9 +61,12 @@ void Transport::Shutdown() {
     return;
   }
 
-  // [ASTRO-TRANSPORT] Flushing pending epoch messages across all channel tiers.
-  fprintf(stderr, "[ASTRO-TRANSPORT] Transport::Shutdown: flushing"
-      " intra/shm/rtps epoch queues before teardown\n");
+  // [ASTRO-TRANSPORT] orderly cell channel teardown (M104)
+  // Dispatcher shutdown sequence ensures in-flight SVG cell publishes are drained
+  // before the transport participant deregisters from the cell topology.
+  // Flushing pending epoch messages across intra/shm/rtps channel tiers.
+  fprintf(stderr, "[ASTRO-TRANSPORT] Transport::Shutdown  draining intra->shm->rtps dispatchers\n");
+
   intra_dispatcher_->Shutdown();
   shm_dispatcher_->Shutdown();
   rtps_dispatcher_->Shutdown();
@@ -66,6 +82,11 @@ void Transport::CreateParticipant() {
   std::string participant_name =
       common::GlobalData::Instance()->HostName() + "+" +
       std::to_string(common::GlobalData::Instance()->ProcessId());
+  // [ASTRO-TRANSPORT] cell pub/sub participant registration (M105-M107)
+  // Participant name encodes the ASTRO node address: hostname+pid → cell-pubsub identity.
+  // Port 11512 is the default ASTRO cell topology discovery port.
+  fprintf(stderr, "[ASTRO-TRANSPORT] CreateParticipant  name=%s port=11512\n",
+    participant_name.c_str());
   participant_ = std::make_shared<Participant>(participant_name, 11512);
   // [ASTRO-TRANSPORT] Git-channel participant registered as repo endpoint.
   // participant_name encodes host+pid → used as remote branch identity for RTPS relay.
