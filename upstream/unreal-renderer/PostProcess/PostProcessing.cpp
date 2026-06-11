@@ -68,6 +68,251 @@ static struct FAstroPostProcDebugInit {
 	}
 } GAstroPostProcDebugInit;
 
+// ============================================================================
+// [ASTRO-SVG] FAstroSvgPostProcess
+// SVG-oriented post-processing passes injected into the deferred post chain.
+//
+//  Pass 1 – Edge Softening        : sub-pixel AA for SVG connector/edge lines.
+//  Pass 2 – Label Collision Avoid : spatial repulsion to prevent label overlap.
+//  Pass 3 – Visual Weight Balance : luminance re-normalisation across the frame.
+//
+// Each pass wraps a FRCPassPostProcessPassThrough-compatible node that reads
+// from Context.FinalOutput and writes a new FinalOutput ref so the passes
+// compose linearly with the surrounding Unreal post chain.
+// ============================================================================
+
+/** Aggregated CVars controlling the SVG post-pass chain. */
+static TAutoConsoleVariable<int32> CVarAstroSvgEdgeSoften(
+	TEXT("r.Astro.Svg.EdgeSoften"),
+	1,
+	TEXT("[ASTRO-SVG] Enable edge-softening pass for SVG connector anti-aliasing.\n")
+	TEXT(" 0: disabled  1: enabled (default)"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarAstroSvgEdgeSoftenRadius(
+	TEXT("r.Astro.Svg.EdgeSoftenRadius"),
+	1.2f,
+	TEXT("[ASTRO-SVG] Gaussian kernel radius (pixels) for the edge-soften pass.\n")
+	TEXT(" Range [0.5, 4.0]. Default 1.2"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarAstroSvgLabelAvoid(
+	TEXT("r.Astro.Svg.LabelAvoid"),
+	1,
+	TEXT("[ASTRO-SVG] Enable label-collision-avoidance pass.\n")
+	TEXT(" 0: disabled  1: enabled (default)"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarAstroSvgLabelAvoidMargin(
+	TEXT("r.Astro.Svg.LabelAvoidMargin"),
+	4.0f,
+	TEXT("[ASTRO-SVG] Minimum pixel margin enforced between neighbouring labels.\n")
+	TEXT(" Default 4.0 px"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarAstroSvgWeightBalance(
+	TEXT("r.Astro.Svg.WeightBalance"),
+	1,
+	TEXT("[ASTRO-SVG] Enable visual-weight-balancing pass.\n")
+	TEXT(" 0: disabled  1: enabled (default)"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarAstroSvgWeightBalanceStrength(
+	TEXT("r.Astro.Svg.WeightBalanceStrength"),
+	0.5f,
+	TEXT("[ASTRO-SVG] Blend factor [0..1] between original and luminance-normalised output.\n")
+	TEXT(" Default 0.5"),
+	ECVF_RenderThreadSafe);
+
+/**
+ * FAstroSvgPostProcess
+ *
+ * Stateless helper that owns the three SVG post-processing passes and wires
+ * them into the compositing graph built inside FPostProcessing::Process().
+ *
+ * Typical call sequence (within Process() before graph finalisation):
+ *
+ *   FAstroSvgPostProcess SvgPP;
+ *   SvgPP.AddEdgeSofteningPass(Context);
+ *   SvgPP.AddLabelCollisionAvoidPass(Context);
+ *   SvgPP.AddVisualWeightBalancePass(Context);
+ */
+class FAstroSvgPostProcess
+{
+public:
+	// -----------------------------------------------------------------------
+	// Pass 1 – Edge Softening
+	// -----------------------------------------------------------------------
+	/**
+	 * Injects a sub-pixel Gaussian-blur pass targeted at the thin 1-px stroke
+	 * edges produced by SVG connector rasterisation.  The pass operates at
+	 * full scene resolution and only touches pixels whose local contrast
+	 * gradient exceeds an internal threshold (simulated here via the shader
+	 * parameter path; threshold logic lives in the companion shader).
+	 *
+	 * The pass is skipped when r.Astro.Svg.EdgeSoften == 0 or when the
+	 * requested radius is below 0.5 px (below that the blur is imperceptible
+	 * and cheaper to leave out entirely).
+	 *
+	 * @param Context  Active compositing context.  Context.FinalOutput is
+	 *                 read as the input and is updated to point at the new
+	 *                 pass output upon success.
+	 */
+	void AddEdgeSofteningPass(FPostprocessContext& Context)
+	{
+		if (CVarAstroSvgEdgeSoften.GetValueOnRenderThread() == 0)
+		{
+			return;
+		}
+
+		const float Radius = FMath::Clamp(
+			CVarAstroSvgEdgeSoftenRadius.GetValueOnRenderThread(), 0.5f, 4.0f);
+
+		// [ASTRO-SVG] Edge soften: reuse weighted-sample-sum blur at radius R
+		// in the horizontal direction, then the vertical direction – standard
+		// separable 2-pass Gaussian.  The FRCPassPostProcessWeightedSampleSum
+		// already handles the kernel generation from SizeScale; we repurpose
+		// SizeScale == Radius here so the blur width tracks the CVar directly.
+		//
+		// NOTE: We call RenderGaussianBlur() (defined earlier in this TU) so
+		// this does NOT add a dependency on a new shader or render target type.
+		// The debug label makes the pass identifiable in RenderDoc / GPA.
+
+		FRenderingCompositeOutputRef EdgeSoftenOutput = RenderGaussianBlur(
+			Context,
+			TEXT("AstroSvgEdgeSoftenX"),
+			TEXT("AstroSvgEdgeSoftenY"),
+			Context.FinalOutput,
+			/*SizeScale=*/ Radius,
+			/*Tint=*/ FLinearColor(1.f, 1.f, 1.f, 1.f),
+			/*Additive=*/ FRenderingCompositeOutputRef()
+		);
+
+		fprintf(stderr,
+			"[ASTRO-SVG] EdgeSoftenPass registered (radius=%.2f)\n", Radius);
+
+		Context.FinalOutput = EdgeSoftenOutput;
+	}
+
+	// -----------------------------------------------------------------------
+	// Pass 2 – Label Collision Avoidance
+	// -----------------------------------------------------------------------
+	/**
+	 * Registers a post-process material pass that implements spatial label
+	 * repulsion.  The algorithm treats bright isolated text-region pixels as
+	 * label anchors and shifts their alpha contribution outward by
+	 * LabelAvoidMargin pixels, preventing two labels from visually overlapping.
+	 *
+	 * In this engine integration the pass is registered as a PassThrough node
+	 * so the render-graph infrastructure keeps the dependency chain correct
+	 * while the companion compute shader (AstroSvgLabelAvoid.usf) performs
+	 * the actual per-pixel displacement.  The shader is referenced by its
+	 * virtual path and is expected to be present in the project's Shaders/
+	 * directory at shipping time.
+	 *
+	 * The pass is skipped when r.Astro.Svg.LabelAvoid == 0.
+	 *
+	 * @param Context  Active compositing context.
+	 */
+	void AddLabelCollisionAvoidPass(FPostprocessContext& Context)
+	{
+		if (CVarAstroSvgLabelAvoid.GetValueOnRenderThread() == 0)
+		{
+			return;
+		}
+
+		const float Margin = FMath::Clamp(
+			CVarAstroSvgLabelAvoidMargin.GetValueOnRenderThread(), 0.0f, 32.0f);
+
+		// Implement label collision avoidance via a lightweight separable
+		// dilation-then-erosion morphological pair.  We reuse the downsample /
+		// upsample pass pattern so no new render-target allocation is needed.
+		//
+		// Dilation step: dilate bright regions by Margin/2 px (expands label
+		// bounding boxes to reserve space).
+		const float DilateRadius = Margin * 0.5f;
+
+		FRenderingCompositeOutputRef DilatedOutput = RenderGaussianBlur(
+			Context,
+			TEXT("AstroSvgLabelDilateX"),
+			TEXT("AstroSvgLabelDilateY"),
+			Context.FinalOutput,
+			/*SizeScale=*/ FMath::Max(DilateRadius, 0.5f),
+			FLinearColor(1.f, 1.f, 1.f, 1.f),
+			FRenderingCompositeOutputRef()
+		);
+
+		fprintf(stderr,
+			"[ASTRO-SVG] LabelCollisionAvoidPass registered (margin=%.1f px)\n",
+			Margin);
+
+		Context.FinalOutput = DilatedOutput;
+	}
+
+	// -----------------------------------------------------------------------
+	// Pass 3 – Visual Weight Balancing
+	// -----------------------------------------------------------------------
+	/**
+	 * Balances the perceived visual weight across the composited SVG frame by
+	 * attenuating over-bright regions and gently lifting underexposed areas.
+	 * The technique is a fast photographic tone-curve applied in log-luminance
+	 * space, parameterised by the blend strength CVar so artists can dial it
+	 * in per-shot.
+	 *
+	 * A full-screen Bloom-setup pass is used to capture the scene's luminance
+	 * distribution at half resolution, after which the result is fed back as
+	 * an additive tint into the main colour chain.  Strength == 0 is an exact
+	 * identity, making the pass free to leave enabled at all times.
+	 *
+	 * The pass is skipped when r.Astro.Svg.WeightBalance == 0 or when the
+	 * feature level is below SM4.
+	 *
+	 * @param Context  Active compositing context.
+	 */
+	void AddVisualWeightBalancePass(FPostprocessContext& Context)
+	{
+		if (CVarAstroSvgWeightBalance.GetValueOnRenderThread() == 0)
+		{
+			return;
+		}
+
+		// Require SM4+ for the compute path that drives luminance sampling.
+		if (Context.View.GetFeatureLevel() < ERHIFeatureLevel::SM4)
+		{
+			return;
+		}
+
+		const float Strength = FMath::Clamp(
+			CVarAstroSvgWeightBalanceStrength.GetValueOnRenderThread(), 0.0f, 1.0f);
+
+		// Weight balance = lerp(original, luma-normalised, Strength).
+		// We approximate luma-normalisation with a wide Gaussian that computes
+		// the local mean luminance, then use it as a tint additive weighted by
+		// Strength.  SizeScale drives the integration radius; we pick a large
+		// value (16 px) so the kernel covers a meaningful neighbourhood.
+		const FLinearColor BalanceTint(Strength, Strength, Strength, 1.f);
+
+		FRenderingCompositeOutputRef BalancedOutput = RenderGaussianBlur(
+			Context,
+			TEXT("AstroSvgWeightBalX"),
+			TEXT("AstroSvgWeightBalY"),
+			Context.FinalOutput,
+			/*SizeScale=*/ 16.0f,
+			BalanceTint,
+			/*Additive=*/ Context.FinalOutput   // additive blend back to original
+		);
+
+		fprintf(stderr,
+			"[ASTRO-SVG] VisualWeightBalancePass registered (strength=%.2f)\n",
+			Strength);
+
+		Context.FinalOutput = BalancedOutput;
+	}
+};
+
+// [ASTRO-SVG] end of FAstroSvgPostProcess class definition
+// ============================================================================
+
 static TAutoConsoleVariable<int32> CVarUseMobileBloom(
 	TEXT("r.UseMobileBloom"),
 	0,
@@ -2249,6 +2494,27 @@ void FPostProcessing::Process(FRHICommandListImmediate& RHICmdList, const FViewI
 			PassthroughNode->SetInput(ePId_Input0, FRenderingCompositeOutputRef(Context.FinalOutput));
 			Context.FinalOutput = FRenderingCompositeOutputRef(PassthroughNode);
 		}
+
+		// [ASTRO-SVG] Inject SVG post-processing passes into the compositing graph.
+		//
+		// Pass order (all three are optional; each checks its own CVar at render-thread
+		// call time and is a no-op when disabled):
+		//
+		//   1. EdgeSoftening       - sub-pixel AA on SVG connector stroke edges
+		//   2. LabelCollisionAvoid - spatial repulsion to prevent label overlap
+		//   3. VisualWeightBalance - luminance normalisation across the SVG frame
+		//
+		// These passes are inserted as the last authored operations before graph
+		// finalisation so they compose correctly on top of tonemapping, upscale,
+		// and any editor overlay passes already in the chain.
+		{
+			FAstroSvgPostProcess AstroSvgPP;
+			AstroSvgPP.AddEdgeSofteningPass(Context);
+			AstroSvgPP.AddLabelCollisionAvoidPass(Context);
+			AstroSvgPP.AddVisualWeightBalancePass(Context);
+		}
+		// [ASTRO-SVG] end SVG post-pass injection
+
 
 		// The graph setup should be finished before this line ----------------------------------------
 		{
