@@ -741,6 +741,236 @@ void FScene::DumpMeshDrawCommandMemoryStats()
 	UE_LOG(LogRenderer, Log, TEXT("PSO one frame Id %.1fKb"), FGraphicsMinimalPipelineStateId::GetOneFrameIdTableSize() / 1024.0f);
 }
 
+// ============================================================================
+// [ASTRO-CELL] FAstroCellSceneProxy — lightweight descriptor for an Astro cell
+// node registered in the renderer scene.  Each cell carries a z-layer index
+// (used for deterministic draw-order bucketing) and a cached AABB that feeds
+// the UpdateCellConstraint path when the cell's bounds change at runtime.
+// ============================================================================
+
+/**
+ * FAstroCellBBox - axis-aligned bounding box cached per cell node.
+ * Stored in world space; updated by UpdateCellConstraint whenever the
+ * owning UPrimitiveComponent reports a bounds change.
+ */
+struct FAstroCellBBox
+{
+	FVector Min;
+	FVector Max;
+
+	FAstroCellBBox()
+		: Min(FVector(FLT_MAX, FLT_MAX, FLT_MAX))
+		, Max(FVector(-FLT_MAX, -FLT_MAX, -FLT_MAX))
+	{}
+
+	FAstroCellBBox(const FBoxSphereBounds& Bounds)
+		: Min(Bounds.Origin - Bounds.BoxExtent)
+		, Max(Bounds.Origin + Bounds.BoxExtent)
+	{}
+
+	/** Returns true when the new bounds differ from the cached ones by more than Tolerance. */
+	bool HasChanged(const FAstroCellBBox& NewBBox, float Tolerance = 0.01f) const
+	{
+		return !Min.Equals(NewBBox.Min, Tolerance) || !Max.Equals(NewBBox.Max, Tolerance);
+	}
+
+	FVector Extent() const { return (Max - Min) * 0.5f; }
+	FVector Center() const { return (Max + Min) * 0.5f; }
+};
+
+/**
+ * FAstroCellSceneProxy — the scene-side descriptor registered for every
+ * Astro cell primitive.  Owned by the z-layer registry table below; the
+ * lifetime mirrors that of the corresponding FPrimitiveSceneInfo entry.
+ *
+ * ZLayer:   Logical depth bucket [0 … N).  Cells in the same z-layer are
+ *           rendered together and sorted within the layer by PackedIndex.
+ *           Layer assignment is derived from the cell's origin Z at the
+ *           time of AddCell registration.
+ *
+ * BBox:     World-space AABB, updated in-place by UpdateCellConstraint on
+ *           the render thread whenever the upstream game-thread transform
+ *           push detects a bounds change.
+ *
+ * bDirty:   Set to true by UpdateCellConstraint; consumed and cleared by
+ *           the next FScene::BuildCellConstraintBuffer pass (not yet
+ *           implemented — placeholder for the pubsub constraint buffer
+ *           flush).
+ */
+struct FAstroCellSceneProxy
+{
+	/** Packed index into FScene::Primitives (same epoch as the PrimitiveSceneInfo slot). */
+	int32             PackedIndex;
+
+	/** Z-layer bucket this cell belongs to.  Determined at AddCell time. */
+	int32             ZLayer;
+
+	/** Cached world-space AABB — updated by UpdateCellConstraint. */
+	FAstroCellBBox    BBox;
+
+	/** Dirty flag: bbox changed since last constraint-buffer flush. */
+	bool              bDirty;
+
+	/** Back-pointer to the owning PrimitiveSceneInfo (render-thread only). */
+	FPrimitiveSceneInfo* SceneInfo;
+
+	FAstroCellSceneProxy()
+		: PackedIndex(INDEX_NONE)
+		, ZLayer(0)
+		, bDirty(false)
+		, SceneInfo(nullptr)
+	{}
+};
+
+// ---------------------------------------------------------------------------
+// [ASTRO-CELL] Z-layer registry
+//
+// ZLayerCellGroups[layer] → array of FAstroCellSceneProxy* registered in
+// that layer, in insertion order.  Indexed by integer z-layer derived from
+// the cell's world-Z origin divided by AstroCellZLayerHeight.
+//
+// Access is render-thread-only (all mutations occur inside ENQUEUE_RENDER_COMMAND
+// closures or AddPrimitiveSceneInfo_RenderThread / RemovePrimitiveSceneInfo_RenderThread).
+// ---------------------------------------------------------------------------
+
+/** Spatial granularity of a single z-layer in world units. */
+static constexpr float AstroCellZLayerHeight = 100.0f;
+
+/** Maximum number of distinct z-layers the registry will track. */
+static constexpr int32 AstroCellMaxZLayers = 64;
+
+/**
+ * Compute the z-layer index for a world-space origin.
+ * Clamped to [0, AstroCellMaxZLayers).
+ */
+static FORCEINLINE int32 AstroComputeZLayer(const FVector& WorldOrigin)
+{
+	const int32 RawLayer = FMath::FloorToInt(WorldOrigin.Z / AstroCellZLayerHeight);
+	return FMath::Clamp(RawLayer, 0, AstroCellMaxZLayers - 1);
+}
+
+/**
+ * Per-scene z-layer registry.  Keyed by z-layer index; each bucket holds
+ * the set of FAstroCellSceneProxy descriptors registered in that layer.
+ *
+ * NOTE: This is a file-scope singleton to keep the diff self-contained.
+ *       In production it would be a member of FScene.
+ */
+static TArray<FAstroCellSceneProxy*> GAstroCellZLayerRegistry[AstroCellMaxZLayers];
+
+/**
+ * Register a new cell proxy in the z-layer registry.
+ * Called on the render thread from AddCell (AddPrimitiveSceneInfo_RenderThread path).
+ */
+static FAstroCellSceneProxy* AstroRegisterCellInZLayer(FPrimitiveSceneInfo* SceneInfo, int32 PackedIndex, const FBoxSphereBounds& WorldBounds)
+{
+	FAstroCellSceneProxy* CellProxy = new FAstroCellSceneProxy();
+	CellProxy->PackedIndex = PackedIndex;
+	CellProxy->ZLayer      = AstroComputeZLayer(WorldBounds.Origin);
+	CellProxy->BBox        = FAstroCellBBox(WorldBounds);
+	CellProxy->bDirty      = false;
+	CellProxy->SceneInfo   = SceneInfo;
+
+	GAstroCellZLayerRegistry[CellProxy->ZLayer].Add(CellProxy);
+
+	fprintf(stderr,
+		"[ASTRO-CELL] AstroRegisterCellInZLayer — cell registered: packedIdx=%d zLayer=%d "
+		"origin=(%.1f,%.1f,%.1f) bboxMin=(%.1f,%.1f,%.1f) bboxMax=(%.1f,%.1f,%.1f) "
+		"layerSize=%d\n",
+		CellProxy->PackedIndex, CellProxy->ZLayer,
+		WorldBounds.Origin.X, WorldBounds.Origin.Y, WorldBounds.Origin.Z,
+		CellProxy->BBox.Min.X, CellProxy->BBox.Min.Y, CellProxy->BBox.Min.Z,
+		CellProxy->BBox.Max.X, CellProxy->BBox.Max.Y, CellProxy->BBox.Max.Z,
+		GAstroCellZLayerRegistry[CellProxy->ZLayer].Num());
+
+	return CellProxy;
+}
+
+/**
+ * Evict a cell proxy from the z-layer registry.
+ * Called on the render thread from RemoveCell (RemovePrimitiveSceneInfo_RenderThread path).
+ * Performs a swap-remove to keep the bucket contiguous.
+ */
+static void AstroEvictCellFromZLayer(FAstroCellSceneProxy* CellProxy)
+{
+	if (!CellProxy) { return; }
+
+	const int32 Layer = CellProxy->ZLayer;
+	if (Layer >= 0 && Layer < AstroCellMaxZLayers)
+	{
+		TArray<FAstroCellSceneProxy*>& Bucket = GAstroCellZLayerRegistry[Layer];
+		const int32 Idx = Bucket.IndexOfByKey(CellProxy);
+		if (Idx != INDEX_NONE)
+		{
+			Bucket.RemoveAtSwap(Idx, 1, /*bAllowShrinking=*/false);
+		}
+
+		fprintf(stderr,
+			"[ASTRO-CELL] AstroEvictCellFromZLayer — cell evicted: packedIdx=%d zLayer=%d "
+			"remainingInLayer=%d\n",
+			CellProxy->PackedIndex, Layer, Bucket.Num());
+	}
+
+	delete CellProxy;
+}
+
+/**
+ * Update the cached bbox of a cell proxy already in the registry.
+ * Called on the render thread from UpdateCellConstraint.
+ * Marks the proxy dirty so the next constraint-buffer flush picks it up.
+ */
+static void AstroUpdateCellConstraint(FAstroCellSceneProxy* CellProxy, const FBoxSphereBounds& NewWorldBounds)
+{
+	if (!CellProxy) { return; }
+
+	FAstroCellBBox NewBBox(NewWorldBounds);
+	if (CellProxy->BBox.HasChanged(NewBBox))
+	{
+		const int32 OldLayer = CellProxy->ZLayer;
+		const int32 NewLayer = AstroComputeZLayer(NewWorldBounds.Origin);
+
+		// If the cell crossed a z-layer boundary, re-register it in the new bucket.
+		if (NewLayer != OldLayer)
+		{
+			// Evict from old layer without freeing the proxy.
+			TArray<FAstroCellSceneProxy*>& OldBucket = GAstroCellZLayerRegistry[OldLayer];
+			const int32 OldIdx = OldBucket.IndexOfByKey(CellProxy);
+			if (OldIdx != INDEX_NONE)
+			{
+				OldBucket.RemoveAtSwap(OldIdx, 1, /*bAllowShrinking=*/false);
+			}
+
+			CellProxy->ZLayer = NewLayer;
+			GAstroCellZLayerRegistry[NewLayer].Add(CellProxy);
+
+			fprintf(stderr,
+				"[ASTRO-CELL] AstroUpdateCellConstraint — cell crossed z-layer: packedIdx=%d "
+				"oldLayer=%d newLayer=%d origin=(%.1f,%.1f,%.1f)\n",
+				CellProxy->PackedIndex, OldLayer, NewLayer,
+				NewWorldBounds.Origin.X, NewWorldBounds.Origin.Y, NewWorldBounds.Origin.Z);
+		}
+
+		CellProxy->BBox   = NewBBox;
+		CellProxy->bDirty = true;
+
+		fprintf(stderr,
+			"[ASTRO-CELL] AstroUpdateCellConstraint — constraint updated: packedIdx=%d zLayer=%d "
+			"bboxMin=(%.1f,%.1f,%.1f) bboxMax=(%.1f,%.1f,%.1f)\n",
+			CellProxy->PackedIndex, CellProxy->ZLayer,
+			NewBBox.Min.X, NewBBox.Min.Y, NewBBox.Min.Z,
+			NewBBox.Max.X, NewBBox.Max.Y, NewBBox.Max.Z);
+	}
+}
+
+// ============================================================================
+// [ASTRO-CELL] Per-PrimitiveSceneInfo cell-proxy association map (RT-only).
+// Maps FPrimitiveSceneInfo* → FAstroCellSceneProxy* so that Remove and Update
+// paths can look up the proxy without storing it in FPrimitiveSceneInfo itself.
+// ============================================================================
+static TMap<FPrimitiveSceneInfo*, FAstroCellSceneProxy*> GAstroCellProxyMap;
+
+// ============================================================================
+
 template<typename T>
 static void TArraySwapElements(TArray<T>& Array, int i1, int i2)
 {
@@ -889,6 +1119,28 @@ void FScene::AddPrimitiveSceneInfo_RenderThread(FRHICommandListImmediate& RHICmd
 	// I update if the parent component ID is still valid
 	// @Todo : really remove it if you know this is being destroyed - should happen from game thread as streaming in/out
 	SceneLODHierarchy.UpdateNodeSceneInfo(PrimitiveSceneInfo->PrimitiveComponentId, PrimitiveSceneInfo);
+
+	// -------------------------------------------------------------------------
+	// [ASTRO-CELL] AddCell — register the new cell node in the z-layer registry.
+	//
+	// Every primitive that enters the render-thread scene graph is treated as an
+	// Astro cell node.  We derive its z-layer from its world-space origin Z and
+	// insert a FAstroCellSceneProxy descriptor into the appropriate z-layer bucket
+	// of GAstroCellZLayerRegistry.  The proxy is also stored in GAstroCellProxyMap
+	// keyed on PrimitiveSceneInfo so that RemoveCell and UpdateCellConstraint can
+	// retrieve it in O(1) without touching the proxy type-offset table.
+	// -------------------------------------------------------------------------
+	{
+		const FBoxSphereBounds CellWorldBounds = PrimitiveSceneInfo->Proxy->GetBounds();
+		FAstroCellSceneProxy* CellProxy = AstroRegisterCellInZLayer(PrimitiveSceneInfo, SourceIndex, CellWorldBounds);
+		GAstroCellProxyMap.Add(PrimitiveSceneInfo, CellProxy);
+
+		fprintf(stderr,
+			"[ASTRO-CELL] AddCell complete: sceneInfo=%p packedIdx=%d zLayer=%d "
+			"totalCells=%d\n",
+			(void*)PrimitiveSceneInfo, SourceIndex, CellProxy->ZLayer,
+			GAstroCellProxyMap.Num());
+	}
 }
 
 /**
@@ -1297,6 +1549,25 @@ void FScene::UpdatePrimitiveTransform_RenderThread(FRHICommandListImmediate& RHI
 
 	DistanceFieldSceneData.UpdatePrimitive(PrimitiveSceneInfo);
 
+	// -------------------------------------------------------------------------
+	// [ASTRO-CELL] UpdateCellConstraint — when a cell's world bounding box
+	// changes (detected by comparing the new WorldBounds against the cached bbox
+	// in the FAstroCellSceneProxy), propagate the new constraint into the z-layer
+	// registry.
+	//
+	// If the updated origin places the cell in a different z-layer bucket, the
+	// proxy is migrated: removed from the old bucket and inserted into the new
+	// one.  The proxy is marked dirty (bDirty=true) to signal that the constraint
+	// buffer needs a flush on the next BuildCellConstraintBuffer pass.
+	// -------------------------------------------------------------------------
+	{
+		FAstroCellSceneProxy** CellProxyPtr = GAstroCellProxyMap.Find(PrimitiveSceneInfo);
+		if (CellProxyPtr && *CellProxyPtr)
+		{
+			AstroUpdateCellConstraint(*CellProxyPtr, WorldBounds);
+		}
+	}
+
 	// If the primitive has static mesh elements, it should have returned true from ShouldRecreateProxyOnUpdateTransform!
 	check(!(bUpdateStaticDrawLists && PrimitiveSceneInfo->StaticMeshes.Num()));
 
@@ -1583,6 +1854,33 @@ void FScene::RemovePrimitiveSceneInfo_RenderThread(FPrimitiveSceneInfo* Primitiv
 	AddPrimitiveToUpdateGPU(*this, PrimitiveIndex);
 
 	DistanceFieldSceneData.RemovePrimitive(PrimitiveSceneInfo);
+
+	// -------------------------------------------------------------------------
+	// [ASTRO-CELL] RemoveCell — evict the departing cell node from the z-layer
+	// registry.  We look up the FAstroCellSceneProxy in GAstroCellProxyMap, then
+	// call AstroEvictCellFromZLayer which performs a swap-remove from the bucket
+	// and frees the proxy allocation.
+	// -------------------------------------------------------------------------
+	{
+		FAstroCellSceneProxy** CellProxyPtr = GAstroCellProxyMap.Find(PrimitiveSceneInfo);
+		if (CellProxyPtr)
+		{
+			fprintf(stderr,
+				"[ASTRO-CELL] RemoveCell: evicting sceneInfo=%p packedIdx=%d zLayer=%d\n",
+				(void*)PrimitiveSceneInfo,
+				(*CellProxyPtr)->PackedIndex,
+				(*CellProxyPtr)->ZLayer);
+
+			AstroEvictCellFromZLayer(*CellProxyPtr);
+			GAstroCellProxyMap.Remove(PrimitiveSceneInfo);
+		}
+		else
+		{
+			fprintf(stderr,
+				"[ASTRO-CELL] RemoveCell: no cell proxy found for sceneInfo=%p (non-cell primitive)\n",
+				(void*)PrimitiveSceneInfo);
+		}
+	}
 
 	// free the primitive scene proxy.
 	delete PrimitiveSceneInfo->Proxy;
