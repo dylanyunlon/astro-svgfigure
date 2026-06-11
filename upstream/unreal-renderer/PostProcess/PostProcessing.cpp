@@ -60,6 +60,14 @@
 /** The global center for all post processing activities. */
 FPostProcessing GPostProcessing;
 
+// [ASTRO-POSTPROC] debug: trace SVG post-pass pipeline init and pass graph entry
+#include <cstdio>
+static struct FAstroPostProcDebugInit {
+	FAstroPostProcDebugInit() {
+		fprintf(stderr, "[ASTRO-POSTPROC] PostProcessing module loaded: SVG post-pass chain + tonemap/bloom graph ready\n");
+	}
+} GAstroPostProcDebugInit;
+
 static TAutoConsoleVariable<int32> CVarUseMobileBloom(
 	TEXT("r.UseMobileBloom"),
 	0,

@@ -28,6 +28,14 @@
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 
+// [ASTRO-DFSHADOW] debug: trace shadow ray march and tile culling pass
+#include <cstdio>
+static struct FAstroDFShadowDebugInit {
+	FAstroDFShadowDebugInit() {
+		fprintf(stderr, "[ASTRO-DFSHADOW] DistanceFieldShadowing module loaded: shadow tile cull + ray march pipeline ready\n");
+	}
+} GAstroDFShadowDebugInit;
+
 int32 GDistanceFieldShadowing = 1;
 FAutoConsoleVariableRef CVarDistanceFieldShadowing(
 	TEXT("r.DistanceFieldShadowing"),

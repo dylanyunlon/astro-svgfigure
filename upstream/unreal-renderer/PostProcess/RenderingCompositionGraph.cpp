@@ -26,6 +26,14 @@
 
 void ExecuteCompositionGraphDebug();
 
+// [ASTRO-COMPOSE] debug: trace z-layer DAG construction and node execution order
+#include <cstdio>
+static struct FAstroComposeDebugInit {
+	FAstroComposeDebugInit() {
+		fprintf(stderr, "[ASTRO-COMPOSE] RenderingCompositionGraph module loaded: z-layer DAG builder + node dependency resolver ready\n");
+	}
+} GAstroComposeDebugInit;
+
 static TAutoConsoleVariable<int32> CVarCompositionGraphOrder(
 	TEXT("r.CompositionGraphOrder"),
 	1,

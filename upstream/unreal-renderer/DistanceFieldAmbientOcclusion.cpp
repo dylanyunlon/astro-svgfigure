@@ -20,6 +20,14 @@
 #include "VisualizeTexture.h"
 #include "RayTracing/RaytracingOptions.h"
 
+// [ASTRO-DFAO] debug: trace DFAO cell spacing and occlusion pass entry
+#include <cstdio>
+static struct FAstroDFAODebugInit {
+	FAstroDFAODebugInit() {
+		fprintf(stderr, "[ASTRO-DFAO] DistanceFieldAmbientOcclusion module loaded: cell spacing init, occlusion cone march ready\n");
+	}
+} GAstroDFAODebugInit;
+
 int32 GDistanceFieldAO = 1;
 FAutoConsoleVariableRef CVarDistanceFieldAO(
 	TEXT("r.DistanceFieldAO"),
