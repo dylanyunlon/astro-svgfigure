@@ -1,6 +1,8 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 #include "PostProcess/PostProcessOutput.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 
 FRCPassPostProcessOutput::FRCPassPostProcessOutput(TRefCountPtr<IPooledRenderTarget>* InExternalRenderTarget)
 	: ExternalRenderTarget(InExternalRenderTarget)

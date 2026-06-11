@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessMaterial.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "Materials/Material.h"
 #include "MaterialShaderType.h"
 #include "MaterialShader.h"

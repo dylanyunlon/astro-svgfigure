@@ -6,6 +6,8 @@
 =============================================================================*/
 
 #include "PostProcess/DiaphragmDOF.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "PostProcess/DiaphragmDOFPasses.h"
 #include "PostProcess/PostProcessTemporalAA.h"
 #include "PostProcess/PostProcessInput.h"

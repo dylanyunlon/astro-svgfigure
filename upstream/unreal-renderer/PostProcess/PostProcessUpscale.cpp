@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessUpscale.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "StaticBoundShaderState.h"

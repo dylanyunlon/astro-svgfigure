@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessWeightedSampleSum.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "ClearQuad.h"
 #include "RendererModule.h"
 #include "StaticBoundShaderState.h"

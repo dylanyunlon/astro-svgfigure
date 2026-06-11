@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessDownsample.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "ClearQuad.h"
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"

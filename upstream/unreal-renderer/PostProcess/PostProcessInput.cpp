@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessInput.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 
 FRCPassPostProcessInput::FRCPassPostProcessInput(const TRefCountPtr<IPooledRenderTarget>& InData)
 	: Data(InData)

@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessHMD.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "IHeadMountedDisplay.h"

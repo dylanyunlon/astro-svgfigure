@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessCombineLUTs.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"
 #include "TranslucentRendering.h"

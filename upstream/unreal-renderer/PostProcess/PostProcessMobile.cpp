@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessMobile.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"
 #include "SceneRenderTargetParameters.h"

@@ -5,6 +5,8 @@ PostProcessFFTBlooom.cpp: Post processing blom using an FFT-based convolution.
 =============================================================================*/
 
 #include "PostProcess/PostProcessFFTBloom.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "PostProcess/RenderingCompositionGraph.h"
 #include "GPUFastFourierTransform.h"
 #include "ScenePrivate.h"

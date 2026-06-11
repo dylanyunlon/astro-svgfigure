@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/SceneRenderTargets.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "Shader.h"
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"

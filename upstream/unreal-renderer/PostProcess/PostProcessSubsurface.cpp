@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessSubsurface.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "EngineGlobals.h"
 #include "Engine/SubsurfaceProfile.h"
 #include "StaticBoundShaderState.h"

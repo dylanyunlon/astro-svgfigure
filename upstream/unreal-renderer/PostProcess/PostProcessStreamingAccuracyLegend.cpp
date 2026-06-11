@@ -5,6 +5,8 @@ PostProcessVisualizeComplexity.cpp: Contains definitions for complexity viewmode
 =============================================================================*/
 
 #include "PostProcess/PostProcessStreamingAccuracyLegend.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "CanvasTypes.h"
 #include "UnrealEngine.h"
 #include "RenderTargetTemp.h"

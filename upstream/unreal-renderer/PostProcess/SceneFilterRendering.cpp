@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/SceneFilterRendering.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "Containers/DynamicRHIResourceArray.h"
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"

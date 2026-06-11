@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessEyeAdaptation.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/PostProcessing.h"
 #include "ClearQuad.h"

@@ -5,6 +5,8 @@ PostProcessVisualizeComplexity.cpp: Contains definitions for complexity viewmode
 =============================================================================*/
 
 #include "PostProcess/PostProcessVisualizeComplexity.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "EngineGlobals.h"
 #include "StaticBoundShaderState.h"
 #include "CanvasTypes.h"

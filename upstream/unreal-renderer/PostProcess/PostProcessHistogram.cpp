@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/PostProcessHistogram.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "SceneUtils.h"
 #include "PostProcess/PostProcessEyeAdaptation.h"
 

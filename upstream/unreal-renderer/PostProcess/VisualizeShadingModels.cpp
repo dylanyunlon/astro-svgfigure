@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "PostProcess/VisualizeShadingModels.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "StaticBoundShaderState.h"
 #include "CanvasTypes.h"
 #include "UnrealEngine.h"

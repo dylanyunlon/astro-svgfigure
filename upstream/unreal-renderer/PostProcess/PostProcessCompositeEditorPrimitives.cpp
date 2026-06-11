@@ -2,6 +2,8 @@
 
 
 #include "PostProcess/PostProcessCompositeEditorPrimitives.h"
+fprintf(stderr,"[ASTRO-PP] %s
+",__FILE__);
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"
 #include "PostProcess/SceneRenderTargets.h"
