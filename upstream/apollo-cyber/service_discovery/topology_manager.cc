@@ -31,18 +31,21 @@ TopologyManager::TopologyManager()
       service_manager_(nullptr),
       participant_(nullptr),
       participant_listener_(nullptr) {
+  // [ASTRO-TOPO] debug: constructing cell TopologyManager; launching Init()
   Init();
 }
 
 TopologyManager::~TopologyManager() { Shutdown(); }
 
 void TopologyManager::Shutdown() {
-  ADEBUG << "topology shutdown.";
+  // [ASTRO-TOPO] debug: shutting down cell topology discovery
+  ADEBUG << "[ASTRO-TOPO] cell topology shutdown.";
   // avoid shutdown twice
   if (!init_.exchange(false)) {
     return;
   }
 
+  // [ASTRO-TOPO] debug: stopping all cell topology sub-managers
   node_manager_->Shutdown();
   channel_manager_->Shutdown();
   service_manager_->Shutdown();
@@ -51,34 +54,41 @@ void TopologyManager::Shutdown() {
   delete participant_listener_;
   participant_listener_ = nullptr;
 
+  // [ASTRO-TOPO] debug: disconnecting all cell topology change observers
   change_signal_.DisconnectAllSlots();
 }
 
 TopologyManager::ChangeConnection TopologyManager::AddChangeListener(
     const ChangeFunc& func) {
+  // [ASTRO-TOPO] debug: registering cell topology change observer
   return change_signal_.Connect(func);
 }
 
 void TopologyManager::RemoveChangeListener(const ChangeConnection& conn) {
+  // [ASTRO-TOPO] debug: deregistering cell topology change observer
   auto local_conn = conn;
   local_conn.Disconnect();
 }
 
 bool TopologyManager::Init() {
   if (init_.exchange(true)) {
+    // [ASTRO-TOPO] debug: cell TopologyManager already initialized; skipping
     return true;
   }
 
+  // [ASTRO-TOPO] debug: initializing cell topology sub-managers
   node_manager_ = std::make_shared<NodeManager>();
   channel_manager_ = std::make_shared<ChannelManager>();
   service_manager_ = std::make_shared<ServiceManager>();
 
   CreateParticipant();
 
+  // [ASTRO-TOPO] debug: starting cell topology discovery for all sub-managers
   bool result =
       InitNodeManager() && InitChannelManager() && InitServiceManager();
   if (!result) {
-    AERROR << "init manager failed.";
+    AERROR << "[ASTRO-TOPO] cell topology sub-manager init failed;"
+           << " resetting all cell topology state.";
     participant_ = nullptr;
     delete participant_listener_;
     participant_listener_ = nullptr;
@@ -89,18 +99,22 @@ bool TopologyManager::Init() {
     return false;
   }
 
+  // [ASTRO-TOPO] debug: cell topology fully initialized and ready for discovery
   return true;
 }
 
 bool TopologyManager::InitNodeManager() {
+  // [ASTRO-TOPO] debug: starting CellNode join/leave discovery via rtps participant
   return node_manager_->StartDiscovery(participant_->fastrtps_participant());
 }
 
 bool TopologyManager::InitChannelManager() {
+  // [ASTRO-TOPO] debug: starting cell pub-sub channel registration discovery via rtps
   return channel_manager_->StartDiscovery(participant_->fastrtps_participant());
 }
 
 bool TopologyManager::InitServiceManager() {
+  // [ASTRO-TOPO] debug: starting cell service registration discovery via rtps
   return service_manager_->StartDiscovery(participant_->fastrtps_participant());
 }
 
@@ -108,6 +122,9 @@ bool TopologyManager::CreateParticipant() {
   std::string participant_name =
       common::GlobalData::Instance()->HostName() + '+' +
       std::to_string(common::GlobalData::Instance()->ProcessId());
+  // [ASTRO-TOPO] debug: creating cell topology rtps participant: participant_name
+  ADEBUG << "[ASTRO-TOPO] creating cell topology participant: "
+         << participant_name;
   participant_listener_ = new ParticipantListener(std::bind(
       &TopologyManager::OnParticipantChange, this, std::placeholders::_1));
   participant_ = std::make_shared<transport::Participant>(
@@ -118,20 +135,36 @@ bool TopologyManager::CreateParticipant() {
 void TopologyManager::OnParticipantChange(const PartInfo& info) {
   ChangeMsg msg;
   if (!Convert(info, &msg)) {
+    // [ASTRO-TOPO] debug: failed to convert PartInfo to cell topology ChangeMsg
     return;
   }
 
   if (!init_.load()) {
+    // [ASTRO-TOPO] debug: cell TopologyManager not initialized; dropping participant event
     return;
   }
 
   if (msg.operate_type() == OperateType::OPT_LEAVE) {
     auto& host_name = msg.role_attr().host_name();
     int process_id = msg.role_attr().process_id();
+    // [ASTRO-TOPO] debug: cell participant leaving topology —
+    //   host: host_name, process_id: process_id
+    //   notifying NodeManager, ChannelManager, ServiceManager of cell departure
+    ADEBUG << "[ASTRO-TOPO] cell participant leave: host=" << host_name
+           << " pid=" << process_id
+           << "; cleaning up cell topology registrations.";
     node_manager_->OnTopoModuleLeave(host_name, process_id);
     channel_manager_->OnTopoModuleLeave(host_name, process_id);
     service_manager_->OnTopoModuleLeave(host_name, process_id);
+  } else {
+    // [ASTRO-TOPO] debug: cell participant joining topology —
+    //   host: msg.role_attr().host_name(), process_id: msg.role_attr().process_id()
+    ADEBUG << "[ASTRO-TOPO] cell participant join: host="
+           << msg.role_attr().host_name()
+           << " pid=" << msg.role_attr().process_id()
+           << "; broadcasting cell topology change.";
   }
+  // [ASTRO-TOPO] debug: firing cell topology change signal to all observers
   change_signal_(msg);
 }
 
@@ -146,6 +179,8 @@ bool TopologyManager::Convert(const PartInfo& info, ChangeMsg* msg) {
       participant_name = info.rtps.m_RTPSParticipantName;
       participant_names_[guid] = participant_name;
       opt_type = OperateType::OPT_JOIN;
+      // [ASTRO-TOPO] debug: DISCOVERED cell topology participant: participant_name
+      ADEBUG << "[ASTRO-TOPO] DISCOVERED cell participant: " << participant_name;
       break;
 
     case eprosima::fastrtps::rtps::DISCOVERY_STATUS::REMOVED_RTPSPARTICIPANT:
@@ -155,15 +190,20 @@ bool TopologyManager::Convert(const PartInfo& info, ChangeMsg* msg) {
         participant_names_.erase(guid);
       }
       opt_type = OperateType::OPT_LEAVE;
+      // [ASTRO-TOPO] debug: REMOVED/DROPPED cell topology participant: participant_name
+      ADEBUG << "[ASTRO-TOPO] REMOVED/DROPPED cell participant: "
+             << participant_name;
       break;
 
     default:
+      // [ASTRO-TOPO] debug: unhandled cell participant discovery status; ignoring
       break;
   }
 
   std::string host_name("");
   int process_id = 0;
   if (!ParseParticipantName(participant_name, &host_name, &process_id)) {
+    // [ASTRO-TOPO] debug: failed to parse cell participant name: participant_name
     return false;
   }
 
@@ -180,10 +220,12 @@ bool TopologyManager::Convert(const PartInfo& info, ChangeMsg* msg) {
 bool TopologyManager::ParseParticipantName(const std::string& participant_name,
                                            std::string* host_name,
                                            int* process_id) {
+  // [ASTRO-TOPO] debug: parsing cell participant name: "host_name+process_id"
   // participant_name format: host_name+process_id
   auto pos = participant_name.find('+');
   if (pos == std::string::npos) {
-    ADEBUG << "participant_name [" << participant_name << "] format mismatch.";
+    ADEBUG << "[ASTRO-TOPO] cell participant name format mismatch: ["
+           << participant_name << "]; expected 'host_name+process_id'.";
     return false;
   }
   *host_name = participant_name.substr(0, pos);
@@ -191,9 +233,11 @@ bool TopologyManager::ParseParticipantName(const std::string& participant_name,
   try {
     *process_id = std::stoi(pid_str);
   } catch (const std::exception& e) {
-    AERROR << "invalid process_id:" << e.what();
+    AERROR << "[ASTRO-TOPO] invalid cell participant process_id in name '"
+           << participant_name << "': " << e.what();
     return false;
   }
+  // [ASTRO-TOPO] debug: parsed cell participant — host: *host_name, pid: *process_id
   return true;
 }
 
