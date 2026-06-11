@@ -1690,6 +1690,13 @@ void FScene::AddLightSceneInfo_RenderThread(FLightSceneInfo* LightSceneInfo)
 {
 	SCOPE_CYCLE_COUNTER(STAT_AddSceneLightTime);
 
+	// [ASTRO-RSCENE] Cell scene light registered on render thread — cell illumination node added to scene compact array
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::AddLightSceneInfo_RenderThread — cell light RT register: lightInfo=%p type=%d castShadow=%d totalLights=%d\n",
+		(void*)LightSceneInfo,
+		LightSceneInfo->Proxy ? (int)LightSceneInfo->Proxy->GetLightType() : -1,
+		LightSceneInfo->Proxy ? (int)LightSceneInfo->Proxy->CastsDynamicShadow() : -1,
+		Lights.Num());
+
 	check(LightSceneInfo->bVisible);
 
 	// Add the light to the light list.
@@ -1754,6 +1761,10 @@ void FScene::AddLightSceneInfo_RenderThread(FLightSceneInfo* LightSceneInfo)
 
 void FScene::AddLight(ULightComponent* Light)
 {
+	// [ASTRO-RSCENE] Cell scene light attach on game thread — routing to RT for cell illumination topology update
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::AddLight — cell light attach GT: light=%p\n",
+		(void*)Light);
+
 	// Create the light's scene proxy.
 	FLightSceneProxy* Proxy = Light->CreateSceneProxy();
 	if(Proxy)
@@ -2520,6 +2531,10 @@ void FScene::RemoveLightSceneInfo_RenderThread(FLightSceneInfo* LightSceneInfo)
 {
 	SCOPE_CYCLE_COUNTER(STAT_RemoveSceneLightTime);
 
+	// [ASTRO-RSCENE] Cell scene light evicted on render thread — cell illumination node removed from compact array
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::RemoveLightSceneInfo_RenderThread — cell light RT evict: lightInfo=%p visible=%d\n",
+		(void*)LightSceneInfo, (int)LightSceneInfo->bVisible);
+
 	if (LightSceneInfo->bVisible)
 	{
 		// check SimpleDirectionalLight
@@ -2619,6 +2634,10 @@ void FScene::RemoveLightSceneInfo_RenderThread(FLightSceneInfo* LightSceneInfo)
 
 void FScene::RemoveLight(ULightComponent* Light)
 {
+	// [ASTRO-RSCENE] Cell scene light detach on game thread — cell illumination node unbinding from scene topology
+	fprintf(stderr, "[ASTRO-RSCENE] FScene::RemoveLight — cell light detach GT: light=%p hasProxy=%d\n",
+		(void*)Light, (int)(Light->SceneProxy != nullptr));
+
 	if(Light->SceneProxy)
 	{
 		FLightSceneInfo* LightSceneInfo = Light->SceneProxy->GetLightSceneInfo();
