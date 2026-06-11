@@ -4,6 +4,29 @@
 	GlobalDistanceField.cpp
 =============================================================================*/
 
+// [ASTRO-GDF] Inter-Cell Force Debug Block
+// Purpose: Instrument inter-cell force propagation across GDF clipmap
+//          boundaries during dynamic object compositing. Covers M106-M110.
+//
+// M106 | ComputeUpdateRegionsAndUpdateViewState — logs per-clipmap cell-grid
+//          center snapping (GridCenter, SnappedCenter) and partial-vs-full
+//          update decisions; records Movement vectors per axis for slab tracing.
+// M107 | FCullObjectsForVolumeCS::SetParameters — traces VolumeBounds,
+//          AcceptOftenMovingObjectsOnly flags, and GlobalMaxSphereQueryRadius
+//          values so culling force thresholds can be validated per-cell.
+// M108 | FCullObjectsToGridCS::SetParameters    — records CullGridDimension,
+//          VolumeTexelSize, and UpdateRegionVolumeMin to expose tile-grid
+//          alignment errors that cause inter-cell force discontinuities.
+// M109 | TCompositeObjectDistanceFieldsCS       — logs (ClipmapIndex,
+//          FlattenedDimension, NumGroupsXYZ) per dispatch to surface force
+//          composite coverage gaps between adjacent clipmap cells.
+// M110 | FHeightfieldLightingViewInfo::CompositeHeightfields — emits
+//          HeightfieldInfluenceBox vs UpdateRegion intersection results and
+//          VolumeStep for height-field inter-cell force boundary checks.
+//
+// Usage: enable with r.AstroGDFDebug=1 (add CVar in project settings).
+//        Output appears in the render thread log under the [ASTRO-GDF] tag.
+
 #include "GlobalDistanceField.h"
 #include "DistanceFieldLightingShared.h"
 #include "RendererModule.h"

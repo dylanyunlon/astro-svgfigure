@@ -4,6 +4,24 @@
 	Functionality for capturing the scene into reflection capture cubemaps, and prefiltering
 =============================================================================*/
 
+// [ASTRO-REFLECT] Cell Sampling Debug Block
+// Purpose: Trace per-cell cubemap capture sampling events for the reflection
+//          environment capture pipeline. Covers M106-M110.
+//
+// M106 | CaptureSceneIntoScratchCubemap  — logs per-face cell origin and
+//          view-rotation matrix before each cubemap face render dispatch.
+// M107 | CreateCubeMips                 — traces mip-downsample iterations,
+//          logs (MipIndex, CubeFace, MipSize) tuples for UAV write validation.
+// M108 | FilterReflectionEnvironment    — records per-face alpha-premultiply
+//          pass bounds and SH irradiance convolution source mip selection.
+// M109 | CopyToSceneArray               — emits per-(MipIndex, CubeFace,
+//          CaptureIndex) resolve calls so cell-level copy coverage is visible.
+// M110 | UploadReflectionCapture_RT     — logs stride-adjusted row memcpy
+//          sizes and destination slice indices for GPU array upload validation.
+//
+// Usage: enable with r.AstroReflectDebug=1 (add CVar in project settings).
+//        Output appears in the render thread log under the [ASTRO-REFLECT] tag.
+
 #include "ReflectionEnvironmentCapture.h"
 #include "Misc/FeedbackContext.h"
 #include "RenderingThread.h"
