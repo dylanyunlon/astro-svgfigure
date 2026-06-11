@@ -167,6 +167,158 @@ struct FOcclusionSceneData
 	int32							NumOccluderTriangles;
 };
 
+// [ASTRO-SWEEPLINE] Cell bounding-box sweep-line structure for 2D overlap detection.
+// Replaces the per-triangle CPU rasterizer for the coarse occlusion pass.
+// Each cell on the same Z-layer is represented as an axis-aligned 2D rectangle
+// in screen space.  The sweep-line algorithm sorts events by X and scans active
+// intervals on the Y axis to detect overlaps in O((N+K) log N) instead of
+// pixel-filling the full framebuffer.
+struct FAstroCellSweepLine
+{
+	// A single cell AABB projected to 2-D screen coordinates (integer pixels).
+	struct FCellRect
+	{
+		int32 MinX, MinY, MaxX, MaxY;
+		float Depth;                        // view-space Z (smaller = farther)
+		FPrimitiveComponentId PrimId;
+		bool  bIsOccluder;                  // true → occluder slab, false → occludee query
+	};
+
+	// Sweep event: a cell enters (bOpen=true) or leaves (bOpen=false) the active set.
+	struct FSweepEvent
+	{
+		int32 X;
+		bool  bOpen;
+		int32 RectIndex;
+
+		FORCEINLINE bool operator<(const FSweepEvent& O) const
+		{
+			return X < O.X || (X == O.X && (int32)bOpen > (int32)O.bOpen);
+		}
+	};
+
+	TArray<FCellRect>    Rects;
+	TArray<FSweepEvent>  Events;
+
+	void Reset()
+	{
+		Rects.Reset();
+		Events.Reset();
+	}
+
+	void AddRect(int32 MinX, int32 MinY, int32 MaxX, int32 MaxY,
+	             float Depth, FPrimitiveComponentId PrimId, bool bIsOccluder)
+	{
+		if (MinX > MaxX || MinY > MaxY) return;          // degenerate
+		FCellRect R;
+		R.MinX = MinX; R.MinY = MinY;
+		R.MaxX = MaxX; R.MaxY = MaxY;
+		R.Depth = Depth;
+		R.PrimId = PrimId;
+		R.bIsOccluder = bIsOccluder;
+		int32 Idx = Rects.Add(R);
+
+		FSweepEvent Open;  Open.X  = MinX; Open.bOpen  = true;  Open.RectIndex = Idx;
+		FSweepEvent Close; Close.X = MaxX; Close.bOpen = false; Close.RectIndex = Idx;
+		Events.Add(Open);
+		Events.Add(Close);
+	}
+
+	// Run the sweep and fill VisibilityMap.
+	// An occludee is considered occluded if every pixel row of its Y-interval is
+	// fully covered by occluder intervals that are strictly closer (larger Depth).
+	void Execute(TMap<FPrimitiveComponentId, bool>& VisibilityMap)
+	{
+		if (Events.Num() == 0) return;
+
+		Events.Sort();
+
+		// Active set: rect indices whose X-interval contains the current sweep X.
+		TArray<int32> ActiveOccluders;    // bIsOccluder == true
+		TArray<int32> ActiveOccludees;    // bIsOccluder == false
+		ActiveOccluders.Reserve(64);
+		ActiveOccludees.Reserve(64);
+
+		for (const FSweepEvent& Ev : Events)
+		{
+			const FCellRect& R = Rects[Ev.RectIndex];
+
+			if (Ev.bOpen)
+			{
+				if (R.bIsOccluder)
+				{
+					ActiveOccluders.Add(Ev.RectIndex);
+				}
+				else
+				{
+					ActiveOccludees.Add(Ev.RectIndex);
+				}
+			}
+			else
+			{
+				// Remove from active set
+				if (R.bIsOccluder)
+				{
+					ActiveOccluders.RemoveSingleSwap(Ev.RectIndex, false);
+				}
+				else
+				{
+					// When an occludee leaves the sweep, test whether its Y-interval
+					// is fully covered by active occluders at this X position.
+					bool bVisible = true;
+
+					if (ActiveOccluders.Num() > 0)
+					{
+						// Build a coverage bitset over the occludee's Y range.
+						// We use a simple sorted-interval merge on Y.
+						const int32 OccludeeMinY = R.MinY;
+						const int32 OccludeeMaxY = R.MaxY;
+						const int32 YSpan        = OccludeeMaxY - OccludeeMinY + 1;
+
+						// Collect Y-intervals from occluders that (a) overlap Y and
+						// (b) are closer than the occludee (Depth > R.Depth means closer).
+						TArray<TPair<int32,int32>> YIntervals;
+						YIntervals.Reserve(ActiveOccluders.Num());
+						for (int32 OIdx : ActiveOccluders)
+						{
+							const FCellRect& OR = Rects[OIdx];
+							if (OR.Depth > R.Depth &&            // closer
+							    OR.MaxY  >= OccludeeMinY &&
+							    OR.MinY  <= OccludeeMaxY)
+							{
+								int32 Lo = FMath::Max(OR.MinY, OccludeeMinY) - OccludeeMinY;
+								int32 Hi = FMath::Min(OR.MaxY, OccludeeMaxY) - OccludeeMinY;
+								YIntervals.Add(TPair<int32,int32>(Lo, Hi));
+							}
+						}
+
+						if (YIntervals.Num() > 0)
+						{
+							// Sort intervals by start, then merge to check full coverage.
+							YIntervals.Sort([](const TPair<int32,int32>& A, const TPair<int32,int32>& B){
+								return A.Key < B.Key;
+							});
+
+							int32 Covered = 0; // next uncovered row relative to OccludeeMinY
+							for (const TPair<int32,int32>& Iv : YIntervals)
+							{
+								if (Iv.Key > Covered) break;  // gap → not fully covered
+								Covered = FMath::Max(Covered, Iv.Value + 1);
+							}
+							bVisible = (Covered < YSpan);      // not fully covered → visible
+						}
+					}
+
+					bool& VisBit = VisibilityMap.FindOrAdd(R.PrimId);
+					VisBit |= bVisible;
+
+					ActiveOccludees.RemoveSingleSwap(Ev.RectIndex, false);
+				}
+			}
+		}
+	}
+};
+
 inline uint64 ComputeBinRowMask(int32 BinMinX, float fX0, float fX1)
 {
 	int32 X0 = FMath::RoundToInt(fX0) - BinMinX;
@@ -817,75 +969,149 @@ public:
 	FPrimitiveComponentId CurrentPrimitiveId;
 };
 
+// [ASTRO-SWEEPLINE] Helper: project an AABB min/max pair to a 2D screen rect.
+// Returns false if the box is clipped by the near plane.
+static bool ProjectBoxToScreenRect(const FMatrix& WorldToFB, const FVector& BoxMin, const FVector& BoxMax,
+                                   int32& OutMinX, int32& OutMinY, int32& OutMaxX, int32& OutMaxY, float& OutDepth)
+{
+	const float W_CLIP = WorldToFB.M[3][2];
+
+	FVector2D ScreenMin( MAX_flt,  MAX_flt);
+	FVector2D ScreenMax(-MAX_flt, -MAX_flt);
+	float     Depth = 0.f;
+
+	for (int32 i = 0; i < NUM_CUBE_VTX; ++i)
+	{
+		float X = (sBBxInd[i] == 1) ? BoxMax.X : BoxMin.X;
+		float Y = (sBByInd[i] == 1) ? BoxMax.Y : BoxMin.Y;
+		float Z = (sBBzInd[i] == 1) ? BoxMax.Z : BoxMin.Z;
+
+		FVector4 V(
+			WorldToFB.M[0][0]*X + WorldToFB.M[1][0]*Y + WorldToFB.M[2][0]*Z + WorldToFB.M[3][0],
+			WorldToFB.M[0][1]*X + WorldToFB.M[1][1]*Y + WorldToFB.M[2][1]*Z + WorldToFB.M[3][1],
+			WorldToFB.M[0][2]*X + WorldToFB.M[1][2]*Y + WorldToFB.M[2][2]*Z + WorldToFB.M[3][2],
+			WorldToFB.M[0][3]*X + WorldToFB.M[1][3]*Y + WorldToFB.M[2][3]*Z + WorldToFB.M[3][3]
+		);
+
+		if (V.W < W_CLIP) return false;   // near-clipped → treat as visible upstream
+
+		V.X /= V.W; V.Y /= V.W; V.Z /= V.W;
+
+		ScreenMin.X = FMath::Min(ScreenMin.X, V.X);
+		ScreenMin.Y = FMath::Min(ScreenMin.Y, V.Y);
+		ScreenMax.X = FMath::Max(ScreenMax.X, V.X);
+		ScreenMax.Y = FMath::Max(ScreenMax.Y, V.Y);
+		Depth       = FMath::Max(Depth, V.Z);
+	}
+
+	// Pixel-snap and clamp to framebuffer
+	OutMinX = FMath::Max((int32)(ScreenMin.X + 0.5f), 0);
+	OutMinY = FMath::Max((int32)(ScreenMin.Y + 0.5f), 0);
+	OutMaxX = FMath::Min((int32)(ScreenMax.X + 0.5f), FRAMEBUFFER_WIDTH  - 1);
+	OutMaxY = FMath::Min((int32)(ScreenMax.Y + 0.5f), FRAMEBUFFER_HEIGHT - 1);
+	OutDepth = Depth;
+	return true;
+}
+
 static void ProcessOcclusionFrame(const FOcclusionSceneData& InSceneData, FOcclusionFrameResults& OutResults)
 {
-	FOcclusionFrameData FrameData;
-	int32 NumExpectedTriangles = InSceneData.NumOccluderTriangles + InSceneData.OccludeeBoxPrimId.Num(); // one triangle for each occludee
-	FrameData.ReserveBuffers(NumExpectedTriangles);
-		
-	{
-		SCOPE_CYCLE_COUNTER(STAT_SoftwareOcclusionProcessOccluder)
-		ProcessOccluderGeom(InSceneData, FrameData);
-	}
+	// [ASTRO-SWEEPLINE] Replace the CPU triangle rasterizer with a cell bbox
+	// sweep-line 2D overlap detector.  The algorithm:
+	//
+	//   1. Project every occluder mesh AABB and every occludee AABB to 2-D screen
+	//      rectangles (same projection math as the old rasterizer).
+	//   2. Feed all rectangles into FAstroCellSweepLine – one instance per Z-layer
+	//      (here we use a single global sweep since cells are already in screen space
+	//       and depth ordering is preserved via the Depth field).
+	//   3. Execute the sweep: sorts events by X, maintains active Y-interval sets,
+	//      and for each occludee tests whether its Y-interval is fully covered by
+	//      closer occluder intervals at the moment the occludee leaves the sweep.
+	//   4. Write results to OutResults.VisibilityMap.
+	//
+	// Stat counters reuse the existing Rasterize stat to preserve dashboard compat.
 
-	{
-		SCOPE_CYCLE_COUNTER(STAT_SoftwareOcclusionProcessOccludee)
-		// Generate screen quads from all collected occludee bboxes
-		ProcessOccludeeGeom(InSceneData, FrameData, OutResults.VisibilityMap);
-	}
+	SCOPE_CYCLE_COUNTER(STAT_SoftwareOcclusionRasterize);
 
-	int32 NumRasterizedOccluderTris = 0;
-	int32 NumRasterizedOccludeeTris = 0;
-	{
-		SCOPE_CYCLE_COUNTER(STAT_SoftwareOcclusionRasterize);
+	const FMatrix WorldToFB = InSceneData.ViewProj * FramebufferMat;
 
-		const uint8* MeshFlags = FrameData.ScreenTrianglesFlags.GetData();
-		const FPrimitiveComponentId* PrimitiveIds = FrameData.ScreenTrianglesPrimID.GetData();
-		const FScreenTriangle* Tris = FrameData.ScreenTriangles.GetData();
-						
-		for (int32 BinIdx = 0; BinIdx < BIN_NUM; ++BinIdx)
+	FAstroCellSweepLine SweepLine;
+	int32 NumCells = InSceneData.OccluderData.Num() + InSceneData.OccludeeBoxPrimId.Num();
+	SweepLine.Rects.Reserve(NumCells);
+	SweepLine.Events.Reserve(NumCells * 2);
+
+	int32 NumOccluderRects = 0;
+	int32 NumOccludeeRects = 0;
+
+	// --- 1. Project occluder mesh AABBs -----------------------------------------
+	{
+		SCOPE_CYCLE_COUNTER(STAT_SoftwareOcclusionProcessOccluder);
+
+		for (const FOcclusionMeshData& Mesh : InSceneData.OccluderData)
 		{
-			// Sort triangles in the bin by depth
-			FrameData.SortedTriangles[BinIdx].Sort([](const FSortedIndexDepth& A, const FSortedIndexDepth& B) { 
-				// biggerZ (closer) first 
-				return A.Depth > B.Depth; 
-			});
-
-			const FSortedIndexDepth* SortedTriIndices = FrameData.SortedTriangles[BinIdx].GetData();
-			const int32 NumTris = FrameData.SortedTriangles[BinIdx].Num();
-			const int32 BinMinX = BinIdx*BIN_WIDTH;
-			FFramebufferBin& Bin = OutResults.Bins[BinIdx];
-			// TODO: add a way to check when bin is already fully rasterized, so we can skip this work
-						
-			for (int32 TriIdx = 0; TriIdx < NumTris; ++TriIdx)
+			// Compute mesh local AABB from vertices
+			FVector MeshMin( MAX_flt,  MAX_flt,  MAX_flt);
+			FVector MeshMax(-MAX_flt, -MAX_flt, -MAX_flt);
+			for (const FVector& V : *Mesh.VerticesSP)
 			{
-				int32 TriID = SortedTriIndices[TriIdx].Index;
-				uint8 Flags = MeshFlags[TriID];
-				FPrimitiveComponentId PrimitiveId = PrimitiveIds[TriID];
-				const FScreenTriangle& Tri = Tris[TriID];
+				FVector WV = Mesh.LocalToWorld.TransformPosition(V);
+				MeshMin.X = FMath::Min(MeshMin.X, WV.X);
+				MeshMin.Y = FMath::Min(MeshMin.Y, WV.Y);
+				MeshMin.Z = FMath::Min(MeshMin.Z, WV.Z);
+				MeshMax.X = FMath::Max(MeshMax.X, WV.X);
+				MeshMax.Y = FMath::Max(MeshMax.Y, WV.Y);
+				MeshMax.Z = FMath::Max(MeshMax.Z, WV.Z);
+			}
 
-				if (Flags != 0)
-				{
-					// rasterize occluder
-					RasterizeOccluderTri(Tri, Bin.Data, BinMinX);
-					NumRasterizedOccluderTris++;
-				}
-				else
-				{
-					// rasterize occludee
-					bool& VisBit = OutResults.VisibilityMap.FindOrAdd(PrimitiveId);
-					bool bVisible = RasterizeOccludeeQuad(Tri, Bin.Data, BinMinX);
-					VisBit|= bVisible;
-					NumRasterizedOccludeeTris++;
-				}
+			int32 MinX, MinY, MaxX, MaxY; float Depth;
+			if (ProjectBoxToScreenRect(WorldToFB, MeshMin, MeshMax, MinX, MinY, MaxX, MaxY, Depth))
+			{
+				SweepLine.AddRect(MinX, MinY, MaxX, MaxY, Depth, Mesh.PrimId, /*bIsOccluder=*/true);
+				NumOccluderRects++;
 			}
 		}
 	}
-	
-	int32 NumTotalTris = FrameData.ScreenTriangles.Num();
-	INC_DWORD_STAT_BY(STAT_SoftwareTriangles, NumTotalTris);
-	INC_DWORD_STAT_BY(STAT_SoftwareOccluderTris, NumRasterizedOccluderTris);
-	INC_DWORD_STAT_BY(STAT_SoftwareOccludeeTris, NumRasterizedOccludeeTris);
+
+	// --- 2. Project occludee AABBs -----------------------------------------------
+	{
+		SCOPE_CYCLE_COUNTER(STAT_SoftwareOcclusionProcessOccludee);
+
+		const int32 NumBoxes = InSceneData.OccludeeBoxPrimId.Num();
+		const FVector* MinMax = InSceneData.OccludeeBoxMinMax.GetData();
+		const FPrimitiveComponentId* PrimIds = InSceneData.OccludeeBoxPrimId.GetData();
+
+		for (int32 k = 0; k < NumBoxes; ++k)
+		{
+			const FVector& BoxMin = MinMax[k * 2 + 0];
+			const FVector& BoxMax = MinMax[k * 2 + 1];
+			FPrimitiveComponentId PrimId = PrimIds[k];
+
+			int32 MinX, MinY, MaxX, MaxY; float Depth;
+			if (!ProjectBoxToScreenRect(WorldToFB, BoxMin, BoxMax, MinX, MinY, MaxX, MaxY, Depth))
+			{
+				// Near-clipped → always visible
+				OutResults.VisibilityMap.FindOrAdd(PrimId) = true;
+				continue;
+			}
+
+			if (MinX > MaxX || MinY > MaxY)
+			{
+				// Off screen → occluded
+				OutResults.VisibilityMap.FindOrAdd(PrimId) = false;
+				continue;
+			}
+
+			SweepLine.AddRect(MinX, MinY, MaxX, MaxY, Depth, PrimId, /*bIsOccluder=*/false);
+			NumOccludeeRects++;
+		}
+	}
+
+	// --- 3. Execute sweep-line overlap detection ---------------------------------
+	SweepLine.Execute(OutResults.VisibilityMap);
+
+	// Stat accounting (reuse existing counters; "tris" now means "cell rects")
+	INC_DWORD_STAT_BY(STAT_SoftwareTriangles,     NumOccluderRects + NumOccludeeRects);
+	INC_DWORD_STAT_BY(STAT_SoftwareOccluderTris,  NumOccluderRects);
+	INC_DWORD_STAT_BY(STAT_SoftwareOccludeeTris,  NumOccludeeRects);
 }
 
 FSceneSoftwareOcclusion::FSceneSoftwareOcclusion()
