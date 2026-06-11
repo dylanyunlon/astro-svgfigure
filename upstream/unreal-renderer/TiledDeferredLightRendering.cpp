@@ -33,6 +33,174 @@ namespace { struct AstroDebugInit {
 } astro_debug_inst_astro_tiledlgt;
 } // namespace
 
+// [ASTRO-TILEDSOLVER] Per-tile cell constraint solver
+// Mirrors tiled deferred lighting culling: each tile only resolves constraints
+// whose owning cells overlap that tile's canvas region.  This avoids a global
+// O(N*C) solve and keeps constraint work proportional to visible coverage.
+//
+//  Unreal concept          astro-svgfigure concept
+//  ────────────────────    ─────────────────────────
+//  Light                   Cell constraint (bbox overlap)
+//  Screen tile             Canvas tile region
+//  Compute thread group    Constraint solver worker
+//  LightData CBs           ConstraintBatch per tile
+//
+struct FAstroTileConstraintBatch
+{
+	// Indices into the global cell constraint list that overlap this tile.
+	// Populated during the tile-cull phase before solving begins.
+	TArray<int32, TInlineAllocator<32>> ConstraintIndices;
+
+	// Tile origin in canvas space (pixels).
+	int32 TileOriginX = 0;
+	int32 TileOriginY = 0;
+
+	// How many constraints were culled away for this tile (diagnostic).
+	int32 NumCulled = 0;
+};
+
+/**
+ * FAstroTiledConstraintSolver
+ *
+ * Splits the canvas into tiles of size (SolverTileSizeX × SolverTileSizeY)
+ * and, for each tile, collects only the cell constraints whose axis-aligned
+ * bounding boxes intersect the tile region.  Those constraints are then
+ * resolved independently, matching the tiled-deferred pattern.
+ *
+ * Usage (parallel to SetShaderTemplTiledLighting):
+ *
+ *   FAstroTiledConstraintSolver Solver(CanvasW, CanvasH, AllConstraints);
+ *   Solver.BuildTileBatches();          // cull phase
+ *   Solver.ResolveAll();               // solve phase — one tile at a time
+ */
+class FAstroTiledConstraintSolver
+{
+public:
+	// Tile granularity mirrors GDeferredLightTileSizeX/Y so the two systems
+	// share the same spatial decomposition.
+	static constexpr int32 SolverTileSizeX = GDeferredLightTileSizeX;   // 16
+	static constexpr int32 SolverTileSizeY = GDeferredLightTileSizeY;   // 16
+
+	// A single cell constraint: relative position demand between two cells.
+	struct FConstraint
+	{
+		int32  CellA;          // source cell index
+		int32  CellB;          // target cell index
+		float  MinDeltaX;      // desired minimum X separation
+		float  MinDeltaY;      // desired minimum Y separation
+		float  BBoxMinX;       // AABB of the constraint's affected region
+		float  BBoxMinY;
+		float  BBoxMaxX;
+		float  BBoxMaxY;
+	};
+
+	FAstroTiledConstraintSolver(int32 InCanvasW, int32 InCanvasH,
+	                             const TArray<FConstraint>& InConstraints)
+		: CanvasW(InCanvasW)
+		, CanvasH(InCanvasH)
+		, Constraints(InConstraints)
+	{
+		fprintf(stderr,
+			"[ASTRO-TILEDSOLVER] INIT: canvas=%dx%d tile=%dx%d constraints=%d\n",
+			CanvasW, CanvasH, SolverTileSizeX, SolverTileSizeY,
+			Constraints.Num());
+	}
+
+	// Cull phase — build per-tile constraint batches.
+	void BuildTileBatches()
+	{
+		const int32 NumTilesX = FMath::DivideAndRoundUp(CanvasW, SolverTileSizeX);
+		const int32 NumTilesY = FMath::DivideAndRoundUp(CanvasH, SolverTileSizeY);
+
+		fprintf(stderr,
+			"[ASTRO-TILEDSOLVER] BUILD: tilegrid=%dx%d totalTiles=%d\n",
+			NumTilesX, NumTilesY, NumTilesX * NumTilesY);
+
+		Tiles.SetNum(NumTilesX * NumTilesY);
+
+		for (int32 TY = 0; TY < NumTilesY; ++TY)
+		{
+			for (int32 TX = 0; TX < NumTilesX; ++TX)
+			{
+				const int32 TileIdx = TY * NumTilesX + TX;
+				FAstroTileConstraintBatch& Batch = Tiles[TileIdx];
+				Batch.TileOriginX = TX * SolverTileSizeX;
+				Batch.TileOriginY = TY * SolverTileSizeY;
+
+				const float TileMinX = (float)Batch.TileOriginX;
+				const float TileMinY = (float)Batch.TileOriginY;
+				const float TileMaxX = TileMinX + (float)SolverTileSizeX;
+				const float TileMaxY = TileMinY + (float)SolverTileSizeY;
+
+				// Cull: only keep constraints whose AABB overlaps this tile.
+				for (int32 CI = 0; CI < Constraints.Num(); ++CI)
+				{
+					const FConstraint& C = Constraints[CI];
+					const bool bOverlaps =
+						C.BBoxMaxX > TileMinX && C.BBoxMinX < TileMaxX &&
+						C.BBoxMaxY > TileMinY && C.BBoxMinY < TileMaxY;
+
+					if (bOverlaps)
+					{
+						Batch.ConstraintIndices.Add(CI);
+					}
+					else
+					{
+						++Batch.NumCulled;
+					}
+				}
+
+				fprintf(stderr,
+					"[ASTRO-TILEDSOLVER] TILE: tile=(%d,%d) kept=%d culled=%d\n",
+					TX, TY,
+					Batch.ConstraintIndices.Num(),
+					Batch.NumCulled);
+			}
+		}
+	}
+
+	// Solve phase — resolve constraints tile by tile.
+	// Each tile only iterates its own (culled) constraint list.
+	void ResolveAll()
+	{
+		int32 TotalResolved = 0;
+
+		for (int32 TileIdx = 0; TileIdx < Tiles.Num(); ++TileIdx)
+		{
+			const FAstroTileConstraintBatch& Batch = Tiles[TileIdx];
+			const int32 NumLocal = Batch.ConstraintIndices.Num();
+
+			fprintf(stderr,
+				"[ASTRO-TILEDSOLVER] SOLVE: tile=%d origin=(%d,%d) numConstraints=%d\n",
+				TileIdx, Batch.TileOriginX, Batch.TileOriginY, NumLocal);
+
+			// Per-tile constraint resolution: iterate only the culled subset.
+			// In the full engine this calls into the cell layout solver;
+			// here we accumulate a diagnostic count mirroring the pass loop.
+			for (int32 LocalIdx = 0; LocalIdx < NumLocal; ++LocalIdx)
+			{
+				const int32 CI = Batch.ConstraintIndices[LocalIdx];
+				const FConstraint& C = Constraints[CI];
+
+				// [ASTRO-TILEDSOLVER] placeholder: apply relative→absolute
+				// position delta for CellA/CellB within this tile's region.
+				(void)C;
+				++TotalResolved;
+			}
+		}
+
+		fprintf(stderr,
+			"[ASTRO-TILEDSOLVER] DONE: totalResolved=%d tiles=%d\n",
+			TotalResolved, Tiles.Num());
+	}
+
+private:
+	int32                                CanvasW;
+	int32                                CanvasH;
+	const TArray<FConstraint>&           Constraints;
+	TArray<FAstroTileConstraintBatch>    Tiles;
+};
+
 
 /** 
  * Maximum number of lights that can be handled by tiled deferred in a single compute shader pass.
@@ -387,6 +555,53 @@ void FDeferredShadingSceneRenderer::RenderTiledDeferredLighting(FRHICommandListI
 
 		UnbindRenderTargets(RHICmdList);
 
+		// [ASTRO-TILEDSOLVER] Build the per-tile cell constraint solver once for
+		// this lighting pass.  We derive canvas dimensions from the first view's
+		// rect so the tile grid matches the GPU dispatch grid exactly.
+		// Constraint data (cell bboxes, spacing demands) comes from the scene's
+		// cell layout state; here we construct a minimal placeholder array that
+		// mirrors the real constraint pipeline.  The solver's BuildTileBatches()
+		// culls global constraints to per-tile subsets — analogous to how the
+		// GPU compute shader culls lights per tile via shared memory min-max depth.
+		const FIntPoint CanvasSize = Views.Num() > 0
+			? Views[0].ViewRect.Size()
+			: FIntPoint(1920, 1080);
+
+		// Placeholder constraint list — in production this is populated from the
+		// cell pub-sub channel (channels/cell/<name>/bbox.json).
+		TArray<FAstroTiledConstraintSolver::FConstraint> CellConstraints;
+		for (int32 LightIdx = 0; LightIdx < NumLightsToRender; ++LightIdx)
+		{
+			// Map each light to a synthetic constraint whose AABB approximates
+			// the light's influence region on the canvas.  Real implementation
+			// reads from the cell constraint store keyed by cell channel name.
+			FAstroTiledConstraintSolver::FConstraint C;
+			C.CellA      = LightIdx;
+			C.CellB      = (LightIdx + 1) % FMath::Max(NumLightsToRender, 1);
+			C.MinDeltaX  = 0.f;
+			C.MinDeltaY  = 0.f;
+			// Influence radius proportional to light index — placeholder geometry.
+			const float R = 64.f + (float)(LightIdx % 8) * 32.f;
+			const float CX = (float)(CanvasSize.X / 2);
+			const float CY = (float)(CanvasSize.Y / 2);
+			C.BBoxMinX   = CX - R;
+			C.BBoxMinY   = CY - R;
+			C.BBoxMaxX   = CX + R;
+			C.BBoxMaxY   = CY + R;
+			CellConstraints.Add(C);
+		}
+
+		FAstroTiledConstraintSolver ConstraintSolver(
+			CanvasSize.X, CanvasSize.Y, CellConstraints);
+
+		// Cull phase: assign constraints to tiles (O(numTiles * numConstraints),
+		// but each tile only retains the overlapping subset for the solve phase).
+		fprintf(stderr,
+			"[ASTRO-TILEDSOLVER] ENTER: RenderTiledDeferredLighting "
+			"lights=%d canvas=%dx%d\n",
+			NumLightsToRender, CanvasSize.X, CanvasSize.Y);
+		ConstraintSolver.BuildTileBatches();
+
 		// Determine how many compute shader passes will be needed to process all the lights
 		const int32 NumPassesNeeded = FMath::DivideAndRoundUp(NumLightsToRender, GMaxNumTiledDeferredLights);
 		for (int32 PassIndex = 0; PassIndex < NumPassesNeeded; PassIndex++)
@@ -394,6 +609,10 @@ void FDeferredShadingSceneRenderer::RenderTiledDeferredLighting(FRHICommandListI
 			const int32 StartIndex = PassIndex * GMaxNumTiledDeferredLights;
 			const int32 NumThisPass = (PassIndex == NumPassesNeeded - 1) ? NumLightsToRender - StartIndex : GMaxNumTiledDeferredLights;
 			check(NumThisPass > 0);
+
+			fprintf(stderr,
+				"[ASTRO-TILEDSOLVER] PASS: passIndex=%d/%d startLight=%d numThisPass=%d\n",
+				PassIndex, NumPassesNeeded, StartIndex, NumThisPass);
 
 			// One some hardware we can read and write from the same UAV with a 32 bit format. We don't do that yet.
 			TRefCountPtr<IPooledRenderTarget> OutTexture;
@@ -411,10 +630,18 @@ void FDeferredShadingSceneRenderer::RenderTiledDeferredLighting(FRHICommandListI
 
 				IPooledRenderTarget& InTexture = *SceneContext.GetSceneColor();
 
+				// [ASTRO-TILEDSOLVER] Per-view tile traversal.
+				// For each view we first dispatch the GPU lighting compute shader
+				// (unchanged from upstream), then run the CPU-side constraint
+				// solver for the same tile grid.  The solver resolves only the
+				// constraints whose BBOXes fall inside each tile, keeping the
+				// per-tile work proportional to local cell density rather than
+				// global constraint count.
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 				{
 					const FViewInfo& View = Views[ViewIndex];
 
+					// --- GPU lighting dispatch (upstream behaviour preserved) ---
 					if(View.Family->EngineShowFlags.VisualizeLightCulling)
 					{
 						SetShaderTemplTiledLighting<1>(RHICmdList, View, ViewIndex, Views.Num(), SortedLights, NumLightsToRenderInSortedLights, SimpleLights, StartIndex, NumThisPass, InTexture, *OutTexture);
@@ -423,11 +650,34 @@ void FDeferredShadingSceneRenderer::RenderTiledDeferredLighting(FRHICommandListI
 					{
 						SetShaderTemplTiledLighting<0>(RHICmdList, View, ViewIndex, Views.Num(), SortedLights, NumLightsToRenderInSortedLights, SimpleLights, StartIndex, NumThisPass, InTexture, *OutTexture);
 					}
+
+					// --- CPU-side per-tile constraint solve (ASTRO addition) ---
+					// Mirrors the tile loop inside the compute shader:
+					// tile (TX,TY) → solve only constraints[tile].
+					// ResolveAll() is invoked once after all passes complete
+					// (below), so here we emit a per-view trace only.
+					fprintf(stderr,
+						"[ASTRO-TILEDSOLVER] VIEW: viewIndex=%d pass=%d "
+						"viewRect=(%d,%d,%d,%d)\n",
+						ViewIndex, PassIndex,
+						View.ViewRect.Min.X, View.ViewRect.Min.Y,
+						View.ViewRect.Max.X, View.ViewRect.Max.Y);
 				}
 			}
 
 			// swap with the former SceneColor
 			SceneContext.SetSceneColor(OutTexture);
 		}
+
+		// [ASTRO-TILEDSOLVER] Solve phase: run after all GPU passes so the
+		// constraint system has the full tiled light set visible.
+		// Each tile resolves only its culled constraint subset — O(T * K) where
+		// T = number of tiles, K = average constraints per tile (≪ global N).
+		ConstraintSolver.ResolveAll();
+
+		fprintf(stderr,
+			"[ASTRO-TILEDSOLVER] EXIT: RenderTiledDeferredLighting complete "
+			"passes=%d\n",
+			NumPassesNeeded);
 	}
 }
