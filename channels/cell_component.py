@@ -16,6 +16,398 @@ import os
 import sys
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] RendererScene → Python port
+#
+# Ported from commit 72c4d0c:
+#   upstream/unreal-renderer/RendererScene.cpp
+#
+# FAstroCellBBox:
+#   Axis-aligned bounding box cached per cell node, stored in world space.
+#   Updated by update_cell_constraint() whenever the owning cell reports a
+#   bounds change.  HasChanged() mirrors the Tolerance=0.01 float comparison.
+#
+# FAstroCellSceneProxy (→ cell_registry entry):
+#   Lightweight descriptor for each Astro cell node registered in the scene.
+#   Carries z_layer (derived from world-Z / AstroCellZLayerHeight) and a
+#   cached bbox.  dirty flag set by update_cell_constraint; consumed on the
+#   next registry flush (BuildCellConstraintBuffer analogue).
+#
+# GAstroCellZLayerRegistry (→ cell_registry.json):
+#   Per-scene z-layer registry.  ZLayerCellGroups[layer] → list of cell
+#   descriptors registered in that layer, in insertion order.  The JSON
+#   file is the pub/sub channel equivalent — all cells share one global
+#   state view (Apollo "scene graph" concept).
+#
+# GAstroCellProxyMap (→ cell_registry.json top-level keyed by cell_id):
+#   Maps cell_id → FAstroCellSceneProxy descriptor so RemoveCell and
+#   UpdateCellConstraint can look up the proxy in O(1).
+#
+# 2-D channel adaptation:
+#   AddPrimitiveSceneInfo_RenderThread  → register_cell_in_z_layer() called
+#     from proc() immediately after the bbox channel write.
+#   UpdatePrimitiveTransform_RenderThread → update_cell_constraint() called
+#     from proc() when bbox changed vs. cached registry entry.
+#   RemovePrimitiveSceneInfo_RenderThread → evict_cell_from_z_layer() (not
+#     called by proc() itself; available for orchestrator / epoch teardown).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Spatial granularity of a single z-layer in world units
+# (AstroCellZLayerHeight = 100.0f in C++; scaled to 1.0 here because the
+# Python channel uses integer z-layer indices 0-7, not full world-space Z).
+_ASTRO_CELL_Z_LAYER_HEIGHT: float = 1.0
+
+# Maximum number of distinct z-layers the registry will track
+# (AstroCellMaxZLayers = 64 in C++).
+_ASTRO_CELL_MAX_Z_LAYERS: int = 64
+
+# Tolerance for bbox change detection (HasChanged Tolerance=0.01f in C++).
+_ASTRO_BBOX_TOLERANCE: float = 0.01
+
+# Path of the shared cell_registry channel (GAstroCellZLayerRegistry +
+# GAstroCellProxyMap serialised to a single JSON file).
+_CELL_REGISTRY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "physics", "cell_registry.json",
+)
+
+
+# ---------------------------------------------------------------------------
+# FAstroCellBBox — Python equivalent
+# ---------------------------------------------------------------------------
+
+class AstroCellBBox:
+    """
+    Python equivalent of FAstroCellBBox.
+
+    Stores a world-space AABB as (min_x, min_y, min_z, max_x, max_y, max_z).
+    The 2-D screen bbox (x, y, w, h, z) maps to:
+        min  = (x,       y,       z      )
+        max  = (x + w,   y + h,   z      )
+    z_min == z_max is fine; the Z axis is used only for layer bucketing.
+    """
+    __slots__ = ("min_x", "min_y", "min_z", "max_x", "max_y", "max_z")
+
+    def __init__(self, min_x: float, min_y: float, min_z: float,
+                 max_x: float, max_y: float, max_z: float):
+        self.min_x = min_x
+        self.min_y = min_y
+        self.min_z = min_z
+        self.max_x = max_x
+        self.max_y = max_y
+        self.max_z = max_z
+
+    @classmethod
+    def from_bbox(cls, bbox: dict) -> "AstroCellBBox":
+        """Construct from a channel bbox dict (x, y, w, h, z)."""
+        z = float(bbox.get("z", 0))
+        return cls(
+            min_x=float(bbox["x"]),
+            min_y=float(bbox["y"]),
+            min_z=z,
+            max_x=float(bbox["x"]) + float(bbox["w"]),
+            max_y=float(bbox["y"]) + float(bbox["h"]),
+            max_z=z,
+        )
+
+    def has_changed(self, other: "AstroCellBBox",
+                    tolerance: float = _ASTRO_BBOX_TOLERANCE) -> bool:
+        """
+        Returns True when the new bounds differ from the cached ones by more
+        than tolerance — mirrors FAstroCellBBox::HasChanged().
+        """
+        return (
+            abs(self.min_x - other.min_x) > tolerance or
+            abs(self.min_y - other.min_y) > tolerance or
+            abs(self.min_z - other.min_z) > tolerance or
+            abs(self.max_x - other.max_x) > tolerance or
+            abs(self.max_y - other.max_y) > tolerance or
+            abs(self.max_z - other.max_z) > tolerance
+        )
+
+    def center_z(self) -> float:
+        """World-space Z of the bbox centre (used for z-layer computation)."""
+        return (self.min_z + self.max_z) * 0.5
+
+    def to_dict(self) -> dict:
+        return {
+            "min": [self.min_x, self.min_y, self.min_z],
+            "max": [self.max_x, self.max_y, self.max_z],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AstroCellBBox":
+        mn = d["min"]
+        mx = d["max"]
+        return cls(mn[0], mn[1], mn[2], mx[0], mx[1], mx[2])
+
+
+# ---------------------------------------------------------------------------
+# AstroComputeZLayer — Python equivalent
+# ---------------------------------------------------------------------------
+
+def astro_compute_z_layer(world_z: float) -> int:
+    """
+    Compute the z-layer index for a world-space origin Z.
+    Clamped to [0, _ASTRO_CELL_MAX_Z_LAYERS).
+
+    Mirrors:
+        static FORCEINLINE int32 AstroComputeZLayer(const FVector& WorldOrigin)
+        {
+            const int32 RawLayer = FMath::FloorToInt(WorldOrigin.Z / AstroCellZLayerHeight);
+            return FMath::Clamp(RawLayer, 0, AstroCellMaxZLayers - 1);
+        }
+    """
+    raw_layer = int(math.floor(world_z / _ASTRO_CELL_Z_LAYER_HEIGHT))
+    return max(0, min(raw_layer, _ASTRO_CELL_MAX_Z_LAYERS - 1))
+
+
+# ---------------------------------------------------------------------------
+# cell_registry channel I/O
+# ---------------------------------------------------------------------------
+
+def _load_cell_registry() -> dict:
+    """
+    Load GAstroCellZLayerRegistry + GAstroCellProxyMap from the JSON channel.
+
+    Schema:
+    {
+      "cells": {
+        "<cell_id>": {
+          "bbox":            { "min": [x,y,z], "max": [x,y,z] },
+          "species":         "<string>",
+          "z":               <int>,          # z-layer bucket index
+          "constraint_mask": <int>,          # bDirty flag (0 or 1)
+          "epoch":           <int>
+        },
+        ...
+      },
+      "z_layers": {
+        "<layer_index_str>": ["<cell_id>", ...]   # insertion-order bucket
+      }
+    }
+    """
+    if not os.path.isfile(_CELL_REGISTRY_PATH):
+        return {"cells": {}, "z_layers": {}}
+    try:
+        with open(_CELL_REGISTRY_PATH) as _f:
+            data = json.load(_f)
+        if "cells" not in data:
+            data["cells"] = {}
+        if "z_layers" not in data:
+            data["z_layers"] = {}
+        return data
+    except (json.JSONDecodeError, OSError):
+        return {"cells": {}, "z_layers": {}}
+
+
+def _save_cell_registry(registry: dict) -> None:
+    """Atomically persist registry to the physics/cell_registry.json channel."""
+    os.makedirs(os.path.dirname(_CELL_REGISTRY_PATH), exist_ok=True)
+    with open(_CELL_REGISTRY_PATH, "w") as _f:
+        json.dump(registry, _f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# AstroRegisterCellInZLayer — Python equivalent
+# ---------------------------------------------------------------------------
+
+def register_cell_in_z_layer(
+    cell_id: str,
+    bbox: dict,
+    species: str,
+    epoch: int,
+) -> dict:
+    """
+    Register a new cell proxy in the z-layer registry and persist to channel.
+
+    Mirrors AstroRegisterCellInZLayer() + the AddCell block in
+    AddPrimitiveSceneInfo_RenderThread:
+
+        FAstroCellSceneProxy* CellProxy = AstroRegisterCellInZLayer(
+            PrimitiveSceneInfo, SourceIndex, CellWorldBounds);
+        GAstroCellProxyMap.Add(PrimitiveSceneInfo, CellProxy);
+
+    Returns the newly created proxy descriptor dict.
+    """
+    cell_bbox = AstroCellBBox.from_bbox(bbox)
+    z_layer   = astro_compute_z_layer(cell_bbox.center_z())
+
+    proxy = {
+        "bbox":            cell_bbox.to_dict(),
+        "species":         species,
+        "z":               z_layer,
+        "constraint_mask": 0,      # bDirty = false at registration
+        "epoch":           epoch,
+    }
+
+    registry = _load_cell_registry()
+
+    # ── Evict any stale entry for this cell (re-registration path) ──────────
+    old_entry = registry["cells"].get(cell_id)
+    if old_entry is not None:
+        old_layer_key = str(old_entry["z"])
+        bucket = registry["z_layers"].get(old_layer_key, [])
+        if cell_id in bucket:
+            bucket.remove(cell_id)          # swap-remove equivalent
+        registry["z_layers"][old_layer_key] = bucket
+
+    # ── Insert into the new z-layer bucket (GAstroCellZLayerRegistry) ───────
+    layer_key = str(z_layer)
+    bucket = registry["z_layers"].get(layer_key, [])
+    if cell_id not in bucket:
+        bucket.append(cell_id)
+    registry["z_layers"][layer_key] = bucket
+
+    # ── Store in the proxy map (GAstroCellProxyMap) ──────────────────────────
+    registry["cells"][cell_id] = proxy
+
+    _save_cell_registry(registry)
+
+    print(
+        f"[ASTRO-CELL] AstroRegisterCellInZLayer — cell registered: "
+        f"cell_id={cell_id} zLayer={z_layer} "
+        f"bboxMin=({cell_bbox.min_x:.1f},{cell_bbox.min_y:.1f},{cell_bbox.min_z:.1f}) "
+        f"bboxMax=({cell_bbox.max_x:.1f},{cell_bbox.max_y:.1f},{cell_bbox.max_z:.1f}) "
+        f"layerSize={len(bucket)}",
+        file=sys.stderr,
+    )
+
+    return proxy
+
+
+# ---------------------------------------------------------------------------
+# AstroUpdateCellConstraint — Python equivalent
+# ---------------------------------------------------------------------------
+
+def update_cell_constraint(
+    cell_id: str,
+    new_bbox: dict,
+    epoch: int,
+) -> None:
+    """
+    Update the cached bbox of a cell proxy already in the registry.
+
+    Mirrors AstroUpdateCellConstraint() + the UpdateCellConstraint block in
+    UpdatePrimitiveTransform_RenderThread:
+
+        FAstroCellSceneProxy** CellProxyPtr = GAstroCellProxyMap.Find(...);
+        if (CellProxyPtr && *CellProxyPtr)
+            AstroUpdateCellConstraint(*CellProxyPtr, WorldBounds);
+
+    If the cell crossed a z-layer boundary, migrates the proxy to the new
+    bucket (swap-remove from old, append to new).
+    Sets constraint_mask=1 (bDirty=true) to signal a pending constraint-buffer
+    flush.
+    """
+    registry = _load_cell_registry()
+    entry = registry["cells"].get(cell_id)
+    if entry is None:
+        return  # no proxy registered for this cell — non-cell primitive path
+
+    cached_bbox = AstroCellBBox.from_dict(entry["bbox"])
+    incoming    = AstroCellBBox.from_bbox(new_bbox)
+
+    if not cached_bbox.has_changed(incoming):
+        return  # bbox unchanged — nothing to do
+
+    old_layer = entry["z"]
+    new_layer = astro_compute_z_layer(incoming.center_z())
+
+    # ── Z-layer migration (cell crossed a z-layer boundary) ─────────────────
+    if new_layer != old_layer:
+        old_key = str(old_layer)
+        old_bucket = registry["z_layers"].get(old_key, [])
+        if cell_id in old_bucket:
+            old_bucket.remove(cell_id)
+        registry["z_layers"][old_key] = old_bucket
+
+        new_key = str(new_layer)
+        new_bucket = registry["z_layers"].get(new_key, [])
+        if cell_id not in new_bucket:
+            new_bucket.append(cell_id)
+        registry["z_layers"][new_key] = new_bucket
+
+        entry["z"] = new_layer
+
+        print(
+            f"[ASTRO-CELL] AstroUpdateCellConstraint — cell crossed z-layer: "
+            f"cell_id={cell_id} oldLayer={old_layer} newLayer={new_layer} "
+            f"originZ={incoming.center_z():.1f}",
+            file=sys.stderr,
+        )
+
+    # ── Update bbox + mark dirty (bDirty = true) ─────────────────────────────
+    entry["bbox"]            = incoming.to_dict()
+    entry["constraint_mask"] = 1    # dirty — pending constraint-buffer flush
+    entry["epoch"]           = epoch
+
+    registry["cells"][cell_id] = entry
+    _save_cell_registry(registry)
+
+    print(
+        f"[ASTRO-CELL] AstroUpdateCellConstraint — constraint updated: "
+        f"cell_id={cell_id} zLayer={entry['z']} "
+        f"bboxMin=({incoming.min_x:.1f},{incoming.min_y:.1f},{incoming.min_z:.1f}) "
+        f"bboxMax=({incoming.max_x:.1f},{incoming.max_y:.1f},{incoming.max_z:.1f})",
+        file=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
+# AstroEvictCellFromZLayer — Python equivalent
+# ---------------------------------------------------------------------------
+
+def evict_cell_from_z_layer(cell_id: str) -> None:
+    """
+    Evict the departing cell node from the z-layer registry.
+
+    Mirrors AstroEvictCellFromZLayer() + the RemoveCell block in
+    RemovePrimitiveSceneInfo_RenderThread:
+
+        FAstroCellSceneProxy** CellProxyPtr = GAstroCellProxyMap.Find(...);
+        if (CellProxyPtr)
+        {
+            AstroEvictCellFromZLayer(*CellProxyPtr);
+            GAstroCellProxyMap.Remove(PrimitiveSceneInfo);
+        }
+
+    Performs a swap-remove from the bucket to keep it contiguous (mirrors
+    TArray::RemoveAtSwap) then deletes the proxy from GAstroCellProxyMap.
+    Available for use by the orchestrator / epoch teardown.
+    """
+    registry = _load_cell_registry()
+    entry = registry["cells"].get(cell_id)
+    if entry is None:
+        print(
+            f"[ASTRO-CELL] AstroEvictCellFromZLayer: no cell proxy found for "
+            f"cell_id={cell_id} (non-cell primitive)",
+            file=sys.stderr,
+        )
+        return
+
+    layer     = entry["z"]
+    layer_key = str(layer)
+    bucket    = registry["z_layers"].get(layer_key, [])
+
+    # Swap-remove: move last element into the evicted slot then pop
+    if cell_id in bucket:
+        idx = bucket.index(cell_id)
+        last = bucket[-1]
+        bucket[idx] = last
+        bucket.pop()
+    registry["z_layers"][layer_key] = bucket
+
+    del registry["cells"][cell_id]
+    _save_cell_registry(registry)
+
+    print(
+        f"[ASTRO-CELL] AstroEvictCellFromZLayer — cell evicted: "
+        f"cell_id={cell_id} zLayer={layer} remainingInLayer={len(bucket)}",
+        file=sys.stderr,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # [ASTRO-CELL] CapsuleShadowRendering → Python port
 #
 # Ported from commit 1d22562:
@@ -501,21 +893,57 @@ def proc(cell_id: str):
     )
 
     # ── Publish: write to channels ──
+    current_epoch = read_channel("skeleton/epoch.json")["current"]
     cell_dir = f"cell/{cell_id}"
     write_channel(f"{cell_dir}/bbox.json", {
         "x": bbox["x"], "y": bbox["y"],
         "w": bbox["w"], "h": bbox["h"],
         "z": bbox["z"],
         "species": species,
-        "epoch": read_channel("skeleton/epoch.json")["current"]
+        "epoch": current_epoch,
     })
     write_channel(f"{cell_dir}/svg.svg", full_svg)
     write_channel(f"{cell_dir}/status.json", {
         "status": "converged",
         "cell_id": cell_id,
         "species": species,
-        "epoch": read_channel("skeleton/epoch.json")["current"]
+        "epoch": current_epoch,
     })
+
+    # -------------------------------------------------------------------------
+    # [ASTRO-CELL] AddCell / UpdateCellConstraint — register the published bbox
+    # in the global cell_registry channel (GAstroCellZLayerRegistry +
+    # GAstroCellProxyMap pub/sub equivalent).
+    #
+    # Decision mirrors the render-thread paths in RendererScene.cpp 72c4d0c:
+    #
+    #   • First publish (no prior entry in registry)
+    #       → AddPrimitiveSceneInfo_RenderThread → AstroRegisterCellInZLayer
+    #         Creates a FAstroCellSceneProxy, assigns z-layer bucket, appends
+    #         to GAstroCellZLayerRegistry[layer], stores in GAstroCellProxyMap.
+    #
+    #   • Re-publish (entry already present — bounds may have changed)
+    #       → UpdatePrimitiveTransform_RenderThread → AstroUpdateCellConstraint
+    #         Checks HasChanged(Tolerance=0.01); if changed, migrates proxy
+    #         across z-layer buckets if necessary and sets bDirty=true
+    #         (constraint_mask=1) to signal a pending constraint-buffer flush.
+    #
+    # All subsequent cells can read cell_registry.json to obtain the latest
+    # bbox, species, z-layer, and dirty state for every peer — the Apollo
+    # "scene graph" global state view.
+    # -------------------------------------------------------------------------
+    published_bbox = {
+        "x": bbox["x"], "y": bbox["y"],
+        "w": bbox["w"], "h": bbox["h"],
+        "z": bbox["z"],
+    }
+    registry = _load_cell_registry()
+    if cell_id in registry["cells"]:
+        # UpdateCellConstraint path — cell already registered, check for drift
+        update_cell_constraint(cell_id, published_bbox, current_epoch)
+    else:
+        # AddCell path — first time this cell enters the scene graph
+        register_cell_in_z_layer(cell_id, published_bbox, species, current_epoch)
 
     print(f"[Cell {cell_id}] species={species} bbox=({bbox['x']},{bbox['y']},{bbox['w']},{bbox['h']}) z={bbox['z']} "
           f"shadow(dx={shadow_dx},dy={shadow_dy},blur={shadow_blur},opacity={shadow_opacity})")
