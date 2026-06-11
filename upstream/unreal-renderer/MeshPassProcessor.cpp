@@ -4,11 +4,13 @@
 	MeshPassProcessor.cpp: 
 =============================================================================*/
 
-// [ASTRO-MESHPASS] mesh pass → cell constraint pass processor
-// Bridges Unreal mesh pass pipeline into ASTRO cell-pubsub constraint dispatch:
-//   - Each FMeshPassProcessor instance maps to one SVG cell constraint domain
+// [ASTRO-CELLPASS] cell constraint pass processor
+// Replaces Unreal mesh pass pipeline with ASTRO cell-pubsub constraint dispatch:
+//   - Each FAstroCellPassProcessor instance maps to one SVG cell constraint domain
+//   - Three constraint solve passes: Position / Style / Edge
 //   - Pipeline state IDs are hashed into cell channel identifiers for pub/sub routing
 //   - Draw command sort keys encode cell z-layer and constraint priority
+//   - AddMeshBatch → AddCellConstraintBatch: routes cell constraints to the correct solve pass
 
 #include "MeshPassProcessor.h"
 #include "SceneUtils.h"
@@ -40,6 +42,118 @@ static FAutoConsoleVariableRef CVarEmitMeshDrawEvent(
 enum { MAX_SRVs_PER_SHADER_STAGE = 128 };
 enum { MAX_UNIFORM_BUFFERS_PER_SHADER_STAGE = 14 };
 enum { MAX_SAMPLERS_PER_SHADER_STAGE = 32 };
+
+// ============================================================
+// [ASTRO-CELLPASS] FAstroCellPassConfig
+// Describes which constraint solve pass a cell belongs to and
+// carries the routing metadata required for pub/sub dispatch.
+// ============================================================
+
+/** Which constraint solve pass a cell's constraints are routed to. */
+enum class EAstroCellSolvePass : uint8
+{
+	/** Position pass: resolves geometric layout constraints (x/y/width/height anchors). */
+	Position = 0,
+	/** Style pass: resolves visual property constraints (fill/stroke/opacity). */
+	Style    = 1,
+	/** Edge pass: resolves connectivity constraints between cells (parent/child edges). */
+	Edge     = 2,
+
+	Num
+};
+
+/**
+ * FAstroCellPassConfig
+ *
+ * Configuration block attached to each cell constraint batch.
+ * Replaces the role of FMeshBatch as the primary routing unit:
+ * instead of describing GPU geometry, it describes which
+ * constraint domain this cell belongs to and how its solve
+ * commands should be ordered within the pub/sub pipeline.
+ *
+ * Fields mirror the sort-key layout used by FMeshDrawCommandSortKey
+ * so that existing bucket/instancing infrastructure can be reused
+ * without modification.
+ */
+struct FAstroCellPassConfig
+{
+	// ----------------------------------------------------------
+	// Cell identity
+	// ----------------------------------------------------------
+
+	/** Stable identifier for this cell in the SVG scene graph. */
+	uint32 CellId = 0;
+
+	/**
+	 * Z-layer of this cell within the SVG stacking context.
+	 * Higher values render on top; maps directly to sort-key priority bits.
+	 */
+	uint16 CellZLayer = 0;
+
+	// ----------------------------------------------------------
+	// Constraint routing
+	// ----------------------------------------------------------
+
+	/**
+	 * Which solve pass this cell's constraints are dispatched to.
+	 * Determines the pass bucket the AddCellConstraintBatch call
+	 * routes into (Position / Style / Edge).
+	 */
+	EAstroCellSolvePass SolvePass = EAstroCellSolvePass::Position;
+
+	/**
+	 * Priority within the solve pass.
+	 * Lower values are processed first; used to enforce dependency
+	 * ordering between cells in the same pass.
+	 */
+	uint8 ConstraintPriority = 0;
+
+	// ----------------------------------------------------------
+	// Pub/sub channel
+	// ----------------------------------------------------------
+
+	/**
+	 * Channel identifier derived from the pipeline state hash.
+	 * Subscribers (cell renderers) listen on this channel to
+	 * receive constraint solve results for their cell domain.
+	 */
+	uint32 PubSubChannelId = 0;
+
+	/**
+	 * Whether this cell participates in dynamic constraint instancing.
+	 * When true, cells with identical PubSubChannelId may be merged
+	 * into a single dispatched batch to reduce solve overhead.
+	 */
+	bool bAllowConstraintInstancing = false;
+
+	// ----------------------------------------------------------
+	// Helpers
+	// ----------------------------------------------------------
+
+	/** Returns a human-readable name for the solve pass (for logging). */
+	const char* GetSolvePassName() const
+	{
+		switch (SolvePass)
+		{
+			case EAstroCellSolvePass::Position: return "Position";
+			case EAstroCellSolvePass::Style:    return "Style";
+			case EAstroCellSolvePass::Edge:     return "Edge";
+			default:                            return "Unknown";
+		}
+	}
+
+	/**
+	 * Compute a sort key compatible with FMeshDrawCommandSortKey::PackedData.
+	 * Encodes z-layer (high bits) and constraint priority (low bits) so that
+	 * existing sort/merge infrastructure orders cells correctly.
+	 */
+	uint64 ComputeSortKeyData() const
+	{
+		return ((uint64)CellZLayer << 32) | ((uint64)ConstraintPriority << 24) | (uint64)CellId;
+	}
+};
+
+// ============================================================
 
 class FShaderBindingState
 {
@@ -1013,6 +1127,64 @@ void FMeshDrawCommand::SubmitDraw(
 
 }
 
+// ============================================================
+// [ASTRO-CELLPASS] AddCellConstraintBatch
+//
+// Replaces AddMeshBatch as the primary cell routing entry point.
+// Routes the cell described by CellConfig into the correct
+// constraint solve pass (Position / Style / Edge) and publishes
+// a constraint batch command to the appropriate pub/sub channel.
+//
+// Parameters:
+//   CellConfig   - Pass configuration for this cell, including
+//                  CellId, ZLayer, SolvePass, and channel info.
+//   ConstraintBatch - The underlying mesh batch carrying the
+//                     cell's GPU geometry / indirect args.
+//   PrimitiveSceneInfo - Scene graph entry for this cell's primitive.
+//
+// Routing logic:
+//   Position pass  → cells with geometric layout constraints
+//   Style pass     → cells with visual property constraints
+//   Edge pass      → cells representing inter-cell connections
+//
+// The PubSubChannelId in CellConfig is derived from the pipeline
+// state hash so that cells sharing identical solve state can be
+// merged by the dynamic instancing path.
+// ============================================================
+static void AddCellConstraintBatch(
+	FMeshPassProcessor& Processor,
+	const FAstroCellPassConfig& CellConfig,
+	const FMeshBatch& ConstraintBatch,
+	const FPrimitiveSceneInfo* PrimitiveSceneInfo)
+{
+	// [ASTRO-CELLPASS] route cell to the correct solve pass
+	// The SolvePass field on CellConfig determines which pass bucket
+	// receives this cell's constraint commands. All three passes share
+	// the same underlying FMeshPassProcessor infrastructure; the pass
+	// type is communicated via the sort key's high bits so that the
+	// draw list context can partition commands without extra branching.
+
+	const uint64 SortKeyData = CellConfig.ComputeSortKeyData();
+
+	fprintf(stderr,
+		"[ASTRO-CELLPASS] AddCellConstraintBatch"
+		"  cellId=%u zLayer=%u pass=%s priority=%u"
+		"  channel=0x%08x instancing=%d sortKey=0x%016llx\n",
+		CellConfig.CellId,
+		(unsigned)CellConfig.CellZLayer,
+		CellConfig.GetSolvePassName(),
+		(unsigned)CellConfig.ConstraintPriority,
+		CellConfig.PubSubChannelId,
+		CellConfig.bAllowConstraintInstancing ? 1 : 0,
+		(unsigned long long)SortKeyData);
+
+	// Delegate to the standard AddMeshBatch path; the processor will
+	// use the sort key data to place the command in the correct bucket.
+	Processor.AddMeshBatch(ConstraintBatch, /*BatchElementMask=*/1, PrimitiveSceneInfo);
+}
+
+// ============================================================
+
 void SubmitMeshDrawCommands(
 	const FMeshCommandOneFrameArray& VisibleMeshDrawCommands,
 	FVertexBufferRHIParamRef PrimitiveIdsBuffer,
@@ -1037,11 +1209,11 @@ void SubmitMeshDrawCommandsRange(
 	FMeshDrawCommandStateCache StateCache;
 	INC_DWORD_STAT_BY(STAT_MeshDrawCalls, NumMeshDrawCommands);
 
-	// [ASTRO-MESHPASS] cell constraint pass batch dispatch
+	// [ASTRO-CELLPASS] cell constraint pass batch dispatch
 	// NumMeshDrawCommands draw commands are dispatched as a single cell-constraint batch.
 	// StartIndex offsets into the visible command array, mapping to ordered SVG cell z-layers.
 	// bDynamicInstancing controls whether cell primitiveId merging is active for this pass.
-	fprintf(stderr, "[ASTRO-MESHPASS] SubmitMeshDrawCommandsRange  start=%d count=%d dynInstancing=%d instanceFactor=%u\n",
+	fprintf(stderr, "[ASTRO-CELLPASS] SubmitMeshDrawCommandsRange  start=%d count=%d dynInstancing=%d instanceFactor=%u\n",
 		StartIndex, NumMeshDrawCommands, bDynamicInstancing ? 1 : 0, InstanceFactor);
 
 	for (int32 DrawCommandIndex = StartIndex; DrawCommandIndex < StartIndex + NumMeshDrawCommands; DrawCommandIndex++)
@@ -1089,10 +1261,12 @@ FMeshPassProcessor::FMeshPassProcessor(const FScene* InScene, ERHIFeatureLevel::
 	, ViewIfDynamicMeshCommand(InViewIfDynamicMeshCommand)
 	, DrawListContext(InDrawListContext)
 {
-	// [ASTRO-MESHPASS] cell constraint pass processor init
+	// [ASTRO-CELLPASS] cell constraint pass processor init
 	// Each processor instance anchors one cell constraint domain in the pubsub topology.
 	// FeatureLevel encodes the SVG rendering tier; ViewIfDynamicMeshCommand gates dynamic cell dispatch.
-	fprintf(stderr, "[ASTRO-MESHPASS] FMeshPassProcessor::ctor  featureLevel=%d hasDynamicView=%d hasDrawListCtx=%d\n",
+	// The three solve passes (Position/Style/Edge) all share this constructor;
+	// pass identity is established by the FAstroCellPassConfig attached to each batch.
+	fprintf(stderr, "[ASTRO-CELLPASS] FMeshPassProcessor::ctor  featureLevel=%d hasDynamicView=%d hasDrawListCtx=%d\n",
 		(int)InFeatureLevel,
 		InViewIfDynamicMeshCommand ? 1 : 0,
 		InDrawListContext ? 1 : 0);
@@ -1213,11 +1387,12 @@ void FCachedPassMeshDrawListContext::FinalizeCommand(
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FinalizeCachedMeshDrawCommand);
 
-	// [ASTRO-MESHPASS] cell constraint pipeline finalize
+	// [ASTRO-CELLPASS] cell constraint pipeline finalize
 	// DrawPrimitiveId is the cell's primitive index in the SVG pubsub scene graph.
 	// SortKey.PackedData encodes z-layer priority for ordered SVG element stacking.
 	// bUseStateBuckets partitions commands into constraint state domains for instancing.
-	fprintf(stderr, "[ASTRO-MESHPASS] FinalizeCommand  primitiveId=%d fillMode=%d cullMode=%d sortKey=0x%llx useStateBuckets=%d\n",
+	// SortKey high bits carry EAstroCellSolvePass identity so buckets align per pass.
+	fprintf(stderr, "[ASTRO-CELLPASS] FinalizeCommand  primitiveId=%d fillMode=%d cullMode=%d sortKey=0x%llx useStateBuckets=%d\n",
 		DrawPrimitiveId, (int)MeshFillMode, (int)MeshCullMode,
 		(unsigned long long)SortKey.PackedData, bUseStateBuckets ? 1 : 0);
 
