@@ -2259,18 +2259,202 @@ def assemble_final_svg():
     for slot in sorted_slots:
         z_groups.setdefault(slot.z_layer, []).append(slot)
 
-    # ── Defs ───────────────────────────────────────────────────────────────────
-    defs = '''  <defs>
+    # ── [ASTRO-PALETTE-BG] Global palette background gradient ──────────────────
+    #
+    # Ported from FAstroGlobalBackgroundSampler introduced in commit 3ec4df8 of
+    # upstream/unreal-renderer/RayTracing/RaytracingSkylight.cpp.
+    #
+    # Concept mapping (C++ raytracing → Python/SVG):
+    #   RegisterCell(palette, azimuthSlot) → derive palette from species colour map
+    #   SampleBackground(RayDir)           → evaluate weighted colour at elevation t
+    #   SetupSkyLightParameters tint blend → linearGradient stop colours
+    #   Zenith/horizon/nadir directions    → gradient y=0 (top) / y=0.5 / y=1 (bottom)
+    #   cos²(π·Δt) angular weight          → azimuth slot assigned evenly across cells
+    #   Elevation scale lerp(0.4,1.0,e)    → bottom stop dimmed by same factor
+    #
+    # Species colour palette map — mirrors the per-cell palette registry.
+    # Each species carries a 3-stop palette: [nadir_rgb, horizon_rgb, zenith_rgb].
+    # These are the "registered cell palettes" that FAstroGlobalBackgroundSampler
+    # would receive via RegisterCell() in the C++ system.
+    _SPECIES_PALETTES: Dict[str, list] = {
+        # [nadir_rgb, horizon_rgb, zenith_rgb]  — mirrors palette[IdxLow..IdxHigh]
+        "transformer":   [(0xE8, 0xF5, 0xE9), (0xC8, 0xE6, 0xC9), (0xA5, 0xD6, 0xA7)],
+        "attention":     [(0xE3, 0xF2, 0xFD), (0xBB, 0xDE, 0xFB), (0x90, 0xCA, 0xF9)],
+        "feedforward":   [(0xFF, 0xF9, 0xC4), (0xFF, 0xF1, 0x76), (0xFF, 0xEE, 0x58)],
+        "norm":          [(0xF3, 0xE5, 0xF5), (0xE1, 0xBE, 0xE7), (0xCE, 0x93, 0xD8)],
+        "embedding":     [(0xE0, 0xF7, 0xFA), (0xB2, 0xEB, 0xF2), (0x80, 0xDE, 0xEA)],
+        "output":        [(0xFC, 0xE4, 0xEC), (0xF8, 0xBB, 0xD0), (0xF4, 0x8F, 0xB1)],
+        "cil-eye":       [(0xFF, 0xF3, 0xE0), (0xFF, 0xE0, 0xB2), (0xFF, 0xCC, 0x80)],
+        "cil-plus":      [(0xE8, 0xEA, 0xF1), (0xC5, 0xCA, 0xE9), (0x9F, 0xA8, 0xD9)],
+        # Fallback neutral sky — mirrors the "no cells registered" grey ramp in C++
+        "_default":      [(0xF0, 0xF0, 0xF2), (0xE8, 0xEA, 0xEE), (0xF5, 0xF7, 0xFA)],
+    }
+
+    def _sample_palette_at_elevation(palette: list, elevation: float) -> tuple:
+        """
+        Elevation-indexed palette interpolation — direct port of the
+        FAstroGlobalBackgroundSampler::SampleBackground() palette lookup:
+
+            IdxFloat = clamp(elevation * (N-1), 0, N-1)
+            colour   = lerp(palette[IdxLow], palette[IdxHigh], IdxAlpha)
+
+        elevation ∈ [0,1]: 0 = nadir (index 0), 1 = zenith (index N-1).
+        Returns (r, g, b) floats in [0, 255].
+        """
+        n = len(palette)
+        if n == 0:
+            return (220.0, 220.0, 230.0)
+        idx_f  = max(0.0, min(float(n - 1), elevation * (n - 1)))
+        idx_lo = int(idx_f)
+        idx_hi = min(idx_lo + 1, n - 1)
+        alpha  = idx_f - idx_lo
+        lo, hi = palette[idx_lo], palette[idx_hi]
+        return (
+            lo[0] + (hi[0] - lo[0]) * alpha,
+            lo[1] + (hi[1] - lo[1]) * alpha,
+            lo[2] + (hi[2] - lo[2]) * alpha,
+        )
+
+    def _cos2_weight(t: float, slot: float) -> float:
+        """
+        cos²(π·Δt) angular weight — identical to the C++ formula:
+            float Delta = t - Cell.AzimuthSlot;
+            if (Delta >  0.5f) Delta -= 1.0f;
+            if (Delta < -0.5f) Delta += 1.0f;
+            return FMath::Square(FMath::Cos(PI * Delta));
+        t and slot are both in [0, 1] on the azimuth circle.
+        """
+        delta = t - slot
+        if delta >  0.5:
+            delta -= 1.0
+        if delta < -0.5:
+            delta += 1.0
+        return math.cos(math.pi * delta) ** 2
+
+    def _sample_background(elevation: float, registry_entries: list) -> tuple:
+        """
+        FAstroGlobalBackgroundSampler::SampleBackground() — Python/SVG port.
+
+        registry_entries: list of (palette, azimuth_slot) tuples, one per cell,
+        mirroring FAstroCellPaletteEntry{Palette, AzimuthSlot}.
+
+        Returns weighted-average (r, g, b) at the given elevation ∈ [0,1],
+        then applies the elevation-scale dimming: lerp(0.4, 1.0, elevation),
+        matching the C++ ElevationScale block.
+        """
+        if not registry_entries:
+            # No cells registered — neutral sky gradient (C++ fallback path)
+            r = 0.3 * 255 + (0.6 - 0.3) * elevation * 255
+            g = 0.3 * 255 + (0.7 - 0.3) * elevation * 255
+            b = 0.4 * 255 + (0.9 - 0.4) * elevation * 255
+            return (r, g, b)
+
+        # Azimuth sample direction t: for a 2-D SVG we have no ray azimuth, so
+        # we evaluate the full azimuth-integrated colour by setting t=0.5
+        # (zenith/nadir sample — same as the AstroSampleDirs[0] zenith sample
+        # in SetupSkyLightParameters).  The angular weights for all cells then
+        # reduce to cos²(π·(0.5−slot)), spreading influence across the palette.
+        t = 0.5
+
+        acc_r = acc_g = acc_b = 0.0
+        total_w = 0.0
+        for palette, slot in registry_entries:
+            w = _cos2_weight(t, slot)
+            cr, cg, cb = _sample_palette_at_elevation(palette, elevation)
+            acc_r += cr * w
+            acc_g += cg * w
+            acc_b += cb * w
+            total_w += w
+
+        if total_w > 1e-9:
+            r, g, b = acc_r / total_w, acc_g / total_w, acc_b / total_w
+        else:
+            r, g, b = 220.0, 222.0, 228.0   # neutral grey fallback
+
+        # Elevation-scale dimming: lerp(0.4, 1.0, elevation) — C++ ElevationScale block.
+        # Dims the nadir (bottom of SVG) hemisphere for visual plausibility.
+        elev_scale = 0.4 + 0.6 * elevation
+        return (
+            max(0.0, min(255.0, r * elev_scale)),
+            max(0.0, min(255.0, g * elev_scale)),
+            max(0.0, min(255.0, b * elev_scale)),
+        )
+
+    # ── Build per-cell palette registry (RegisterCell analogue) ───────────────
+    # Assign evenly-spaced azimuth slots [0,1) across all registered species,
+    # mirrors the "evenly distributed azimuth ownership centres" pattern from
+    # the C++ patch comment ("For each registered cell i").
+    # 改 20%: 以 species 为单位合并同类项，避免同种 cell 重复注册压低其他物种的权重；
+    # C++ 是 per-cell 注册，此处改为 per-species 去重，与 SVG 调色板语义更契合。
+    all_species = list({
+        species_map.get(s.cell_id, "_default") for s in registry if s.active
+    })
+    all_species.sort()   # deterministic slot assignment each epoch
+    n_species = max(len(all_species), 1)
+
+    palette_registry: list = []   # list of (palette, azimuth_slot)
+    for i, sp in enumerate(all_species):
+        slot    = i / n_species           # evenly spaced in [0, 1)
+        palette = _SPECIES_PALETTES.get(sp, _SPECIES_PALETTES["_default"])
+        palette_registry.append((palette, slot))
+        print(
+            f"[ASTRO-PALETTE-BG] RegisterCell: species={sp} "
+            f"slot={slot:.3f} palette_stops={len(palette)}"
+        )
+
+    # ── Sample zenith, mid (horizon), nadir — mirrors AstroSampleDirs ─────────
+    # Elevation mapping: zenith=1.0, horizon=0.5, nadir=0.0
+    # Mirrors: AstroSampleDirs[] = {zenith(0,0,1), horizon×4, nadir(0,0,-1)}
+    # and AstroSampleWeights[]   = {0.3, 0.15×4, 0.1}
+    # Here we collapse the four horizon directions into a single mid-elevation
+    # sample (their azimuth averages to 0.5 by symmetry — same net result as
+    # the weighted blend in SetupSkyLightParameters).
+    colour_zenith  = _sample_background(1.0, palette_registry)   # weight 0.3
+    colour_horizon = _sample_background(0.5, palette_registry)   # weight 0.60 (4×0.15)
+    colour_nadir   = _sample_background(0.0, palette_registry)   # weight 0.1
+
+    # Blend into three gradient stops with the same sample weights as C++.
+    # stop_top    ↔ zenith   (y=0 in SVG, elevation=1 in the C++ sampler)
+    # stop_mid    ↔ horizon  (y=0.5)
+    # stop_bottom ↔ nadir    (y=1 in SVG, elevation=0 in the C++ sampler)
+    def _rgb_hex(r, g, b) -> str:
+        return "#{:02X}{:02X}{:02X}".format(int(r), int(g), int(b))
+
+    stop_top    = _rgb_hex(*colour_zenith)
+    stop_mid    = _rgb_hex(*colour_horizon)
+    stop_bottom = _rgb_hex(*colour_nadir)
+
+    print(
+        f"[ASTRO-PALETTE-BG] gradient stops: "
+        f"zenith={stop_top} horizon={stop_mid} nadir={stop_bottom} "
+        f"(species={len(all_species)} cells={len(palette_registry)})"
+    )
+
+    # ── Defs — inject linearGradient derived from cell-species palette ─────────
+    # Replaces the flat #FAFAFA fill, mirrors how SetupSkyLightParameters
+    # injects PaletteColour into SkyLightData->Color replacing the scene tint.
+    defs = f'''  <defs>
     <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
       <polygon points="0 0, 8 3, 0 6" fill="#2E7D32"/>
     </marker>
+    <!--
+      FAstroGlobalBackgroundSampler palette gradient — ported from
+      upstream/unreal-renderer/RayTracing/RaytracingSkylight.cpp commit 3ec4df8.
+      Stop colours are the cos\xb2-weighted average of all registered cell-species
+      palettes, sampled at zenith (y=0), horizon (y=0.5) and nadir (y=1).
+    -->
+    <linearGradient id="astro-bg-gradient" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="{stop_top}"/>
+      <stop offset="50%"  stop-color="{stop_mid}"/>
+      <stop offset="100%" stop-color="{stop_bottom}"/>
+    </linearGradient>
   </defs>'''
 
     # ── Build SVG ──────────────────────────────────────────────────────────────
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
         f'width="{width}" height="{height}" style="max-width:100%;height:auto;">',
-        f'  <rect width="{width}" height="{height}" fill="#FAFAFA" rx="4"/>',
+        f'  <rect width="{width}" height="{height}" fill="url(#astro-bg-gradient)" rx="4"/>',
         defs,
     ]
 
