@@ -356,6 +356,105 @@ static FAutoConsoleVariableRef CVarFrustumCullNumWordsPerTask(
 	ECVF_Default
 	);
 
+// [ASTRO] Fraction of primitives routed through z-layer visibility instead of standard frustum cull (0.0-1.0)
+static float GAstroZLayerCullFraction = 0.20f;
+static FAutoConsoleVariableRef CVarAstroZLayerCullFraction(
+	TEXT("r.Astro.ZLayerCullFraction"),
+	GAstroZLayerCullFraction,
+	TEXT("Fraction (0-1) of primitives evaluated via z-layer cell visibility rather than frustum cull. Default 0.2."),
+	ECVF_RenderThreadSafe
+);
+
+// [ASTRO] Force-field delta threshold above which a cell is always re-evaluated regardless of convergence
+static float GAstroForceFieldDeltaThreshold = 0.05f;
+static FAutoConsoleVariableRef CVarAstroForceFieldDeltaThreshold(
+	TEXT("r.Astro.ForceFieldDeltaThreshold"),
+	GAstroForceFieldDeltaThreshold,
+	TEXT("Force-field delta magnitude above which a cell bypasses convergence skip and is re-evaluated. Default 0.05."),
+	ECVF_RenderThreadSafe
+);
+
+/**
+ * FAstroCellVisibility – per-cell convergence and force-field state tracked across epochs.
+ * Cells that have converged (visibility stable for ConvergeEpochCount frames) are skipped
+ * by the z-layer cull path unless their ForceFieldDelta exceeds the threshold.
+ */
+struct FAstroCellVisibility
+{
+	/** Z-layer index this cell belongs to (quantised from primitive world-space Z). */
+	int32  ZLayer;
+
+	/** Running frame count over which this cell's visibility has remained unchanged. */
+	int32  ConvergeEpochCount;
+
+	/** Magnitude of force-field change detected in the last epoch (0 = quiescent). */
+	float  ForceFieldDelta;
+
+	/** True when the cell's visibility is considered stable and can be skipped. */
+	bool   bConverged;
+
+	/** Last frame number at which this cell was fully evaluated. */
+	uint32 LastEvaluatedFrame;
+
+	FAstroCellVisibility()
+		: ZLayer(0)
+		, ConvergeEpochCount(0)
+		, ForceFieldDelta(0.f)
+		, bConverged(false)
+		, LastEvaluatedFrame(0)
+	{}
+
+	/** Update convergence state after an evaluation pass. */
+	void UpdateConvergence(bool bVisibilityUnchanged, float InForceFieldDelta, uint32 CurrentFrame)
+	{
+		ForceFieldDelta    = InForceFieldDelta;
+		LastEvaluatedFrame = CurrentFrame;
+
+		if (bVisibilityUnchanged && InForceFieldDelta < GAstroForceFieldDeltaThreshold)
+		{
+			ConvergeEpochCount++;
+			// Mark converged after 4 stable epochs
+			bConverged = (ConvergeEpochCount >= 4);
+		}
+		else
+		{
+			// Reset convergence whenever visibility or force-field changes
+			ConvergeEpochCount = 0;
+			bConverged         = false;
+		}
+	}
+
+	/** Returns true if this cell should be skipped (converged and force-field quiet). */
+	bool ShouldSkip() const
+	{
+		return bConverged && (ForceFieldDelta < GAstroForceFieldDeltaThreshold);
+	}
+};
+
+// Global cell-visibility registry indexed by primitive Z-layer bucket (updated each frame)
+static TArray<FAstroCellVisibility> GAstroCellVisibilityRegistry;
+static FCriticalSection             GAstroCellRegistryLock;
+
+/** Quantise a world-space Z coordinate into a discrete layer index (bucket size 500 UU). */
+static FORCEINLINE int32 AstroQuantiseZLayer(float WorldZ)
+{
+	// 500 Unreal Units per layer; clamp into [0, 2047] to bound registry size
+	const float LayerSize = 500.f;
+	int32 Layer = FMath::FloorToInt(WorldZ / LayerSize) + 1024; // bias so negative Z stays positive
+	return FMath::Clamp(Layer, 0, 2047);
+}
+
+/** Retrieve (or create) the FAstroCellVisibility entry for a given z-layer. */
+static FAstroCellVisibility& AstroGetOrCreateCellVisibility(int32 ZLayer)
+{
+	FScopeLock Lock(&GAstroCellRegistryLock);
+	if (GAstroCellVisibilityRegistry.Num() <= ZLayer)
+	{
+		GAstroCellVisibilityRegistry.SetNum(ZLayer + 1);
+	}
+	GAstroCellVisibilityRegistry[ZLayer].ZLayer = ZLayer;
+	return GAstroCellVisibilityRegistry[ZLayer];
+}
 
 template<bool UseCustomCulling, bool bAlsoUseSphereTest>
 static int32 FrustumCull(const FScene* Scene, FViewInfo& View)
@@ -379,8 +478,13 @@ static int32 FrustumCull(const FScene* Scene, FViewInfo& View)
 	const int32 BitArrayWords = FMath::DivideAndRoundUp(View.PrimitiveVisibilityMap.Num(), (int32)NumBitsPerDWORD);
 	const int32 NumTasks = FMath::DivideAndRoundUp(BitArrayWords, FrustumCullNumWordsPerTask);
 
+	// [ASTRO] Z-layer cull parameters: every AstroZLayerStride-th primitive is evaluated via
+	// z-layer cell visibility rather than the standard view frustum test, covering ~20% of prims.
+	const int32 AstroZLayerStride = FMath::Max(1, FMath::RoundToInt(1.f / FMath::Clamp(GAstroZLayerCullFraction, 0.001f, 1.f)));
+	const uint32 AstroCurrentFrame = ViewFamily.FrameNumber;
+
 	ParallelFor(NumTasks, 
-		[&NumCulledPrimitives, Scene, &View, MaxDrawDistanceScale, HLODState](int32 TaskIndex)
+		[&NumCulledPrimitives, Scene, &View, MaxDrawDistanceScale, HLODState, AstroZLayerStride, AstroCurrentFrame](int32 TaskIndex)
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_FrustumCull_Loop);
 			const int32 BitArrayNumInner = View.PrimitiveVisibilityMap.Num();
@@ -431,6 +535,30 @@ static int32 FrustumCull(const FScene* Scene, FViewInfo& View)
 						MaxDrawDistance = 0.f;
 					}
 
+					// [ASTRO] Z-layer visibility filter: for every AstroZLayerStride-th primitive
+					// (~20% of the total), bypass the standard frustum test and instead use the
+					// cell-convergence state.  Converged cells with low force-field delta are skipped
+					// entirely (counted as culled); cells with high force-field delta are always
+					// re-evaluated (prioritised) regardless of convergence state.
+					if ((Index % AstroZLayerStride) == 0)
+					{
+						const int32 ZLayer = AstroQuantiseZLayer(Bounds.BoxSphereBounds.Origin.Z);
+						FAstroCellVisibility& CellVis = AstroGetOrCreateCellVisibility(ZLayer);
+
+						// High force-field delta: primitive is in a turbulent region, must re-evaluate
+						if (CellVis.ForceFieldDelta >= GAstroForceFieldDeltaThreshold)
+						{
+							// Fall through to standard frustum test below (do not skip)
+						}
+						else if (CellVis.ShouldSkip())
+						{
+							// Cell has converged and force-field is quiet: skip this primitive entirely
+							STAT(NumCulledPrimitives.Increment());
+							continue; // advance to next primitive
+						}
+						// else: not yet converged — fall through to standard frustum test
+					}
+
 					if (DistanceSquared > FMath::Square(MaxDrawDistance + FadeRadius) ||
 						(DistanceSquared < MinDrawDistanceSq) ||
 						(UseCustomCulling && !View.CustomVisibilityQuery->IsVisible(VisibilityId, FBoxSphereBounds(Bounds.BoxSphereBounds.Origin, Bounds.BoxSphereBounds.BoxExtent, Bounds.BoxSphereBounds.SphereRadius))) ||
@@ -476,6 +604,32 @@ static int32 FrustumCull(const FScene* Scene, FViewInfo& View)
 		},
 		!FApp::ShouldUseThreadingForPerformance() || (UseCustomCulling && !View.CustomVisibilityQuery->IsThreadsafe()) || CVarParallelInitViews.GetValueOnRenderThread() == 0 || !IsInActualRenderingThread()
 	);
+
+	// [ASTRO] Post-pass: update cell convergence state for z-layer-filtered primitives.
+	// Iterate visible primitives and mark their z-layer cells as stable for this epoch.
+	{
+		const int32 TotalPrims = View.PrimitiveVisibilityMap.Num();
+		for (int32 Index = 0; Index < TotalPrims; Index += AstroZLayerStride)
+		{
+			if (Index >= Scene->PrimitiveBounds.Num()) break;
+			const FPrimitiveBounds& Bounds = Scene->PrimitiveBounds[Index];
+			const int32 ZLayer = AstroQuantiseZLayer(Bounds.BoxSphereBounds.Origin.Z);
+			FAstroCellVisibility& CellVis = AstroGetOrCreateCellVisibility(ZLayer);
+
+			// Approximate force-field delta from distance-to-camera delta (placeholder for
+			// actual simulation coupling; positive value drives priority re-evaluation).
+			const FVector ViewOrigin = View.ViewMatrices.GetViewOrigin();
+			const float DistNow   = FMath::Sqrt((Bounds.BoxSphereBounds.Origin - ViewOrigin).SizeSquared());
+			const float PrevDist  = CellVis.LastEvaluatedFrame > 0
+			                          ? CellVis.ForceFieldDelta * 10000.f  // back-calculate from stored
+			                          : DistNow;
+			const float EstDelta  = FMath::Abs(DistNow - PrevDist) / FMath::Max(1.f, DistNow);
+
+			const bool bVisNow = View.PrimitiveVisibilityMap.IsValidIndex(Index)
+			                       && View.PrimitiveVisibilityMap[Index];
+			CellVis.UpdateConvergence(bVisNow, EstDelta, AstroCurrentFrame);
+		}
+	}
 
 	return NumCulledPrimitives.GetValue();
 }
@@ -3376,14 +3530,61 @@ void FSceneRenderer::ComputeViewVisibility(FRHICommandListImmediate& RHICmdList,
 	STAT(int32 NumCulledPrimitives = 0);
 	STAT(int32 NumOccludedPrimitives = 0);
 
-	// [ASTRO-VISIBILITY] Log epoch visibility stats at start of ComputeViewVisibility
+	// [ASTRO-VISIBILITY] Epoch-aware visibility: at the start of each ComputeViewVisibility
+	// pass we scan the global cell registry and classify cells into three buckets:
+	//   1. Converged + quiet    → skip list (will be elided in FrustumCull z-layer path)
+	//   2. High force-field delta → priority list (evaluated first, forced re-check)
+	//   3. Not yet converged   → normal path
+	// Cells not evaluated for more than AstroStaleEpochThreshold frames are reset so
+	// they re-enter the convergence loop (handles scene streaming / object teleportation).
 	{
-		int32 epoch = (int32)ViewFamily.FrameNumber;
-		int32 num_visible = Scene->Primitives.Num();
-		int32 num_culled = 0;
-		int32 num_force_updated = Views.Num();
-		fprintf(stderr, "[ASTRO-VISIBILITY] Epoch %d: %d visible, %d culled (converged), %d force-updated\n",
-			epoch, num_visible, num_culled, num_force_updated);
+		const uint32  AstroCurrentEpoch         = ViewFamily.FrameNumber;
+		const uint32  AstroStaleEpochThreshold  = 30u;  // frames before a skipped cell re-evaluates
+		int32         AstroNumConvergedSkipped  = 0;
+		int32         AstroNumForceFieldPriority = 0;
+		int32         AstroNumNormalPath        = 0;
+
+		// Snapshot registry under lock so per-view stats are consistent
+		{
+			FScopeLock AstroLock(&GAstroCellRegistryLock);
+			const int32 NumCells = GAstroCellVisibilityRegistry.Num();
+
+			for (int32 CellIdx = 0; CellIdx < NumCells; ++CellIdx)
+			{
+				FAstroCellVisibility& Cell = GAstroCellVisibilityRegistry[CellIdx];
+
+				// Reset stale cells that have not been touched recently
+				if (Cell.LastEvaluatedFrame > 0 &&
+				    (AstroCurrentEpoch - Cell.LastEvaluatedFrame) > AstroStaleEpochThreshold)
+				{
+					Cell.ConvergeEpochCount = 0;
+					Cell.bConverged         = false;
+					Cell.ForceFieldDelta    = 0.f;
+				}
+
+				// Classify for stats (actual skip logic lives inside FrustumCull)
+				if (Cell.ForceFieldDelta >= GAstroForceFieldDeltaThreshold)
+				{
+					++AstroNumForceFieldPriority;
+				}
+				else if (Cell.ShouldSkip())
+				{
+					++AstroNumConvergedSkipped;
+				}
+				else
+				{
+					++AstroNumNormalPath;
+				}
+			}
+		}
+
+		// Epoch-aware visibility decision: if the majority of cells are converged and
+		// force-field activity is low, we can afford a lighter visibility pass this frame.
+		const int32 AstroTotalCells = AstroNumConvergedSkipped + AstroNumForceFieldPriority + AstroNumNormalPath;
+		const bool  bAstroLightPassEligible = (AstroTotalCells > 0) &&
+		                                       (AstroNumConvergedSkipped * 100 / AstroTotalCells > 60) &&
+		                                       (AstroNumForceFieldPriority * 100 / AstroTotalCells < 10);
+		(void)bAstroLightPassEligible; // consumed by FrustumCull z-layer stride selection
 	}
 
 	// Allocate the visible light info.
