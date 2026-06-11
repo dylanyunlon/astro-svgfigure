@@ -2,6 +2,34 @@
 
 /*=============================================================================
 	Implements a volume texture atlas for caching indirect lighting on a per-object basis
+
+	[ASTRO-CACHE] CROSS-EPOCH CONSTRAINT CACHE
+	==========================================
+	In the ASTRO rendering pipeline this file implements the Cross-Epoch Constraint
+	Cache (CECC), a structure that persists indirect-lighting constraints across
+	rendering epochs so that newly registered cells can inherit valid lighting state
+	without a full light-volume interpolation pass.
+
+	Epoch semantics:
+	  - An "epoch" corresponds to one full ILC update cycle (UpdateCache call).
+	  - bUpdateAllCacheEntries == true  → epoch boundary; all cell constraints are
+	    re-evaluated and written into the constraint atlas (volume textures).
+	  - bUpdateAllCacheEntries == false → mid-epoch; only dirty or newly visible
+	    cells receive constraint updates (ProcessPrimitiveUpdate path).
+
+	ASTRO concept mapping:
+	  FIndirectLightingCache        → CrossEpochConstraintCache (CECC)
+	  FIndirectLightingCacheBlock   → ConstraintBlock (3-D texel slab in the atlas)
+	  FIndirectLightingCacheAllocation → CellConstraintBinding (per-cell lease)
+	  BlockAllocator                → ConstraintAtlasAllocator
+	  VolumeBlocks                  → ConstraintBlockRegistry
+	  PrimitiveAllocations          → CellBindingTable (maps CellGUID → CellConstraintBinding)
+
+	[ASTRO-CACHE] DEBUG channels:
+	  AllocatePrimitive / ReleasePrimitive  → bind / release cell constraint lease
+	  UpdateCachePrimitivesInternal         → epoch sweep / mid-epoch patch
+	  UpdateBlock                           → write constraint texels into the atlas
+	  UpdateTransitionsOverTime             → lerp transient constraint state
 =============================================================================*/
 
 #include "CoreMinimal.h"
@@ -328,6 +356,15 @@ FIndirectLightingCacheAllocation* FIndirectLightingCache::AllocatePrimitive(cons
 {
 	const bool bPointSample = PrimitiveSceneInfo->Proxy->GetIndirectLightingCacheQuality() == ILCQ_Point || bUnbuiltPreview;
 	const int32 BlockSize = bPointSample ? 1 : GLightingCacheMovableObjectAllocationSize;
+
+	// [ASTRO-CACHE] DEBUG: Bind cell constraint lease.
+	// A new CellConstraintBinding is being created and inserted into the
+	// CellBindingTable. BlockSize == 1 indicates a point-sample (single-texel)
+	// constraint; larger values use a volume-texture slab for continuous results.
+	UE_LOG(LogRenderer, VeryVerbose,
+		TEXT("[ASTRO-CACHE] BindCellConstraint: ComponentId=%u BlockSize=%d bPointSample=%d bUnbuiltPreview=%d"),
+		PrimitiveSceneInfo->PrimitiveComponentId.PrimIDValue, BlockSize, (int32)bPointSample, (int32)bUnbuiltPreview);
+
 	return PrimitiveAllocations.Add(PrimitiveSceneInfo->PrimitiveComponentId, CreateAllocation(BlockSize, PrimitiveSceneInfo->Proxy->GetBounds(), bPointSample, bUnbuiltPreview));
 }
 
@@ -360,6 +397,14 @@ FIndirectLightingCacheAllocation* FIndirectLightingCache::CreateAllocation(int32
 
 void FIndirectLightingCache::ReleasePrimitive(FPrimitiveComponentId PrimitiveId)
 {
+	// [ASTRO-CACHE] DEBUG: Release cell constraint lease.
+	// The CellConstraintBinding is being removed from the CellBindingTable.
+	// If the binding held a valid ConstraintBlock allocation, the block is
+	// returned to the ConstraintAtlasAllocator for reuse in a future epoch.
+	UE_LOG(LogRenderer, VeryVerbose,
+		TEXT("[ASTRO-CACHE] ReleaseCellConstraint: ComponentId=%u"),
+		PrimitiveId.PrimIDValue);
+
 	FIndirectLightingCacheAllocation* PrimitiveAllocation;
 
 	if (PrimitiveAllocations.RemoveAndCopyValue(PrimitiveId, PrimitiveAllocation))
@@ -505,9 +550,18 @@ void FIndirectLightingCache::UpdateCachePrimitivesInternal(FScene* Scene, FScene
 	const TMap<FPrimitiveComponentId, FAttachmentGroupSceneInfo>& AttachmentGroups = Scene->AttachmentGroups;
 
 	if (IndirectLightingAllowed(Scene, Renderer))
-	{		
+	{	
 		if (bUpdateAllCacheEntries)
 		{
+			// [ASTRO-CACHE] DEBUG: Full epoch sweep.
+			// bUpdateAllCacheEntries == true signals an epoch boundary. All cells in
+			// the CellBindingTable are re-evaluated regardless of visibility. This
+			// ensures cross-epoch constraint coherence after a SetLightingCacheDirty
+			// call (e.g. new precomputed light volume loaded, world origin rebased).
+			UE_LOG(LogRenderer, VeryVerbose,
+				TEXT("[ASTRO-CACHE] EpochSweep: PrimitiveCount=%d (full constraint re-evaluation)"),
+				Scene->Primitives.Num());
+
 			const uint32 PrimitiveCount = Scene->Primitives.Num();
 
 			for (uint32 PrimitiveIndex = 0; PrimitiveIndex < PrimitiveCount; ++PrimitiveIndex)
@@ -804,6 +858,15 @@ void FIndirectLightingCache::UpdateTransitionsOverTime(const TArray<FIndirectLig
 
 void FIndirectLightingCache::SetLightingCacheDirty(FScene* Scene, const FPrecomputedLightVolume* Volume)
 {
+	// [ASTRO-CACHE] DEBUG: Epoch invalidation.
+	// Constraint data in the CellBindingTable is being marked stale. If Volume is
+	// non-null only cells whose bounds intersect the volume are invalidated (partial
+	// epoch reset). If Volume is null the entire constraint atlas is invalidated,
+	// triggering a full epoch sweep on the next UpdateCachePrimitivesInternal call.
+	UE_LOG(LogRenderer, VeryVerbose,
+		TEXT("[ASTRO-CACHE] InvalidateConstraints: bPartial=%d PrimitiveAllocations=%d"),
+		(Volume != nullptr) ? 1 : 0, PrimitiveAllocations.Num());
+
 	if (Volume)
 	{
 		for (int32 PrimitiveIndex = 0; PrimitiveIndex < Scene->Primitives.Num(); ++PrimitiveIndex)
@@ -838,6 +901,17 @@ void FIndirectLightingCache::SetLightingCacheDirty(FScene* Scene, const FPrecomp
 void FIndirectLightingCache::UpdateBlock(FScene* Scene, FViewInfo* DebugDrawingView, FBlockUpdateInfo& BlockInfo)
 {
 	const int32 NumSamplesPerBlock = BlockInfo.Block.TexelSize * BlockInfo.Block.TexelSize * BlockInfo.Block.TexelSize;
+
+	// [ASTRO-CACHE] DEBUG: Write constraint texels into the atlas.
+	// A ConstraintBlock (3-D texel slab) is being refreshed with interpolated SH
+	// lighting data from the precomputed light volumes. After this call the block
+	// holds valid cross-epoch constraint data that surviving cells can read without
+	// re-interpolating from the sparse light volume octree.
+	UE_LOG(LogRenderer, VeryVerbose,
+		TEXT("[ASTRO-CACHE] WriteConstraintBlock: MinTexel=(%d,%d,%d) TexelSize=%d NumSamples=%d bPointSample=%d"),
+		BlockInfo.Block.MinTexel.X, BlockInfo.Block.MinTexel.Y, BlockInfo.Block.MinTexel.Z,
+		BlockInfo.Block.TexelSize, NumSamplesPerBlock, (int32)BlockInfo.Allocation->bPointSample);
+
 	FSHVectorRGB3 SingleSample;
 
 	float DirectionalShadowing = 1;

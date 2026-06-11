@@ -2,6 +2,25 @@
 
 /*=============================================================================
 	PrimitiveSceneInfo.cpp: Primitive scene info implementation.
+
+	[ASTRO-PRIMITIVE] CELL META-INFORMATION REGISTRY
+	=================================================
+	In the ASTRO rendering architecture, each FPrimitiveSceneInfo instance
+	corresponds to a registered cell meta-entry in the distributed scene graph.
+	The "primitive" abstraction is repurposed as a logical cell descriptor
+	carrying topology, visibility, and indirect-lighting binding metadata.
+
+	Key ASTRO concepts mapped here:
+	  - PrimitiveComponentId      → CellGUID (globally unique cell identifier)
+	  - PackedIndex               → CellSlot (slot in the flat cell registry array)
+	  - IndirectLightingCacheAllocation → EpochBinding (cross-epoch ILC pointer)
+	  - LightingAttachmentRoot    → ParentCellRef (hierarchical cell grouping)
+	  - OctreeId                  → SpatialHandle (spatial index into the cell octree)
+
+	[ASTRO-PRIMITIVE] DEBUG: Registration lifecycle
+	  AddToScene()    → RegisterCell()   : allocates CellSlot, inserts into octree
+	  RemoveFromScene() → UnregisterCell(): releases CellSlot, tears down octree node
+	  UpdateStaticMeshes() → RefreshCellDrawCommands(): re-caches per-cell draw state
 =============================================================================*/
 
 #include "PrimitiveSceneInfo.h"
@@ -196,6 +215,14 @@ FRayTracingGeometryRHIRef FPrimitiveSceneInfo::GetStaticRayTracingGeometryInstan
 void FPrimitiveSceneInfo::CacheMeshDrawCommands(FRHICommandListImmediate& RHICmdList)
 {
 	check(StaticMeshCommandInfos.Num() == 0);
+
+	// [ASTRO-PRIMITIVE] DEBUG: Per-cell draw command caching.
+	// In ASTRO terms this populates the cell's DrawCommandTable — a flat list of
+	// pre-baked GPU draw submissions keyed by MeshPass. The table is consulted
+	// each frame during cell visibility evaluation to avoid redundant state setup.
+	UE_LOG(LogRenderer, VeryVerbose,
+		TEXT("[ASTRO-PRIMITIVE] RefreshCellDrawCommands: ComponentId=%u StaticMeshCount=%d"),
+		PrimitiveComponentId.PrimIDValue, StaticMeshes.Num());
 
 	int32 MeshWithCachedCommandsNum = 0;
 	for (int32 MeshIndex = 0; MeshIndex < StaticMeshes.Num(); MeshIndex++)
@@ -433,6 +460,14 @@ void FPrimitiveSceneInfo::AddToScene(FRHICommandListImmediate& RHICmdList, bool 
 {
 	check(IsInRenderingThread());
 
+	// [ASTRO-PRIMITIVE] DEBUG: Cell registration entry point.
+	// Primitive is being promoted to an active cell in the ASTRO scene registry.
+	// CellGUID = PrimitiveComponentId, target CellSlot = PackedIndex (assigned by scene).
+	// Cross-epoch ILC binding will be established below if indirect lighting is allowed.
+	UE_LOG(LogRenderer, VeryVerbose,
+		TEXT("[ASTRO-PRIMITIVE] RegisterCell: ComponentId=%u PackedIndex=%d bUpdateStaticDrawLists=%d"),
+		PrimitiveComponentId.PrimIDValue, PackedIndex, (int32)bUpdateStaticDrawLists);
+
 	// Create an indirect lighting cache uniform buffer if we attaching a primitive that may require it, as it may be stored inside a cached mesh command.
 	if (IsIndirectLightingCacheAllowed(Scene->GetFeatureLevel())
 		&& Proxy->WillEverBeLit()
@@ -606,6 +641,14 @@ void FPrimitiveSceneInfo::RemoveStaticMeshes()
 void FPrimitiveSceneInfo::RemoveFromScene(bool bUpdateStaticDrawLists)
 {
 	check(IsInRenderingThread());
+
+	// [ASTRO-PRIMITIVE] DEBUG: Cell deregistration entry point.
+	// Primitive/cell is being evicted from the ASTRO scene registry.
+	// After this call the CellSlot (PackedIndex) is invalid and the spatial
+	// handle (OctreeId) will be released. Any cross-epoch ILC pointer is nulled.
+	UE_LOG(LogRenderer, VeryVerbose,
+		TEXT("[ASTRO-PRIMITIVE] UnregisterCell: ComponentId=%u PackedIndex=%d bUpdateStaticDrawLists=%d"),
+		PrimitiveComponentId.PrimIDValue, PackedIndex, (int32)bUpdateStaticDrawLists);
 
 	// implicit linked list. The destruction will update this "head" pointer to the next item in the list.
 	while(LightList)
