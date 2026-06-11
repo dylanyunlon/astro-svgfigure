@@ -107,12 +107,15 @@ static TAutoConsoleVariable<float> CVarTranslucencyLightingVolumeOuterDistance(
 	TEXT("Distance from the camera that the second volume cascade should end"),
 	ECVF_RenderThreadSafe);
 
+// [ASTRO-TLIGHT] M101: CalcTranslucencyLightingVolumeBounds - per-cascade z-layer frustum bounds derivation.
+// Debug: log InnerDistance/OuterDistance per cascade to detect volume misalignment causing z-layer illumination gaps.
 void FViewInfo::CalcTranslucencyLightingVolumeBounds(FBox* InOutCascadeBoundsArray, int32 NumCascades) const
 {
 	for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; CascadeIndex++)
 	{
 		float InnerDistance = CVarTranslucencyLightingVolumeInnerDistance.GetValueOnRenderThread();
 		float OuterDistance = CVarTranslucencyLightingVolumeOuterDistance.GetValueOnRenderThread();
+		// [ASTRO-TLIGHT] M101-DBG: CascadeIndex=%d InnerDist=%.1f OuterDist=%.1f - watch for cascade 0 z-bleed into cascade 1
 
 		const float FrustumStartDistance = CascadeIndex == 0 ? 0 : InnerDistance;
 		const float FrustumEndDistance = CascadeIndex == 0 ? InnerDistance : OuterDistance;
@@ -175,10 +178,13 @@ void FViewInfo::CalcTranslucencyLightingVolumeBounds(FBox* InOutCascadeBoundsArr
 		FSphere SphereBounds(Center, FMath::Sqrt(RadiusSquared));
 
 		// Snap the center to a multiple of the volume dimension for stability
+		// [ASTRO-TLIGHT] M102: z-axis snap = SphereBounds.W*2/VolumeDim voxel size. If VolumeDim<64 or W is large,
+		// z-snap step grows, causing visible z-layer illumination jumps in translucent objects near cascade boundary.
 		const int32 TranslucencyLightingVolumeDim = GetTranslucencyLightingVolumeDim();
 		SphereBounds.Center.X = SphereBounds.Center.X - FMath::Fmod(SphereBounds.Center.X, SphereBounds.W * 2 / TranslucencyLightingVolumeDim);
 		SphereBounds.Center.Y = SphereBounds.Center.Y - FMath::Fmod(SphereBounds.Center.Y, SphereBounds.W * 2 / TranslucencyLightingVolumeDim);
 		SphereBounds.Center.Z = SphereBounds.Center.Z - FMath::Fmod(SphereBounds.Center.Z, SphereBounds.W * 2 / TranslucencyLightingVolumeDim);
+		// [ASTRO-TLIGHT] M102-DBG: post-snap SphereBounds.Center.Z deviation = Fmod(Z, VoxelStep) - assert < 0.5*VoxelStep
 
 		InOutCascadeBoundsArray[CascadeIndex] = FBox(SphereBounds.Center - SphereBounds.W, SphereBounds.Center + SphereBounds.W);
 	}
@@ -1184,6 +1190,9 @@ void FDeferredShadingSceneRenderer::ClearTranslucentVolumePerObjectShadowing(FRH
 }
 
 /** Calculates volume texture bounds for the given light in the given translucent lighting volume cascade. */
+// [ASTRO-TLIGHT] M103: CalculateLightVolumeBounds - converts world-space light sphere to volume texture voxel coords.
+// Key z-layer illumination path: MinZ/MaxZ clamped to [0, VolumeDim]; out-of-range means light misses the volume entirely.
+// Debug: if bDirectionalLight returns full VolumeBounds; point lights derive per-axis voxel extents via VoxelSize.
 FVolumeBounds CalculateLightVolumeBounds(const FSphere& LightBounds, const FViewInfo& View, uint32 VolumeCascadeIndex, bool bDirectionalLight)
 {
 	const int32 TranslucencyLightingVolumeDim = GetTranslucencyLightingVolumeDim();
@@ -1199,6 +1208,8 @@ FVolumeBounds CalculateLightVolumeBounds(const FSphere& LightBounds, const FView
 		// Determine extents in the volume texture
 		const FVector MinPosition = (LightBounds.Center - LightBounds.W - View.TranslucencyLightingVolumeMin[VolumeCascadeIndex]) / View.TranslucencyVolumeVoxelSize[VolumeCascadeIndex];
 		const FVector MaxPosition = (LightBounds.Center + LightBounds.W - View.TranslucencyLightingVolumeMin[VolumeCascadeIndex]) / View.TranslucencyVolumeVoxelSize[VolumeCascadeIndex];
+		// [ASTRO-TLIGHT] M104-DBG: VolumeCascade=%u MinZ=%.2f MaxZ=%.2f (pre-clamp) VoxelSizeZ=%.3f
+		// If MaxZ<=0 or MinZ>=VolumeDim the light is fully outside this cascade z-slab; VolumeBounds.IsValid() returns false.
 
 		VolumeBounds.MinX = FMath::Max(FMath::TruncToInt(MinPosition.X), 0);
 		VolumeBounds.MinY = FMath::Max(FMath::TruncToInt(MinPosition.Y), 0);
@@ -1455,6 +1466,9 @@ static void InjectTranslucentLightArray(FRHICommandListImmediate& RHICmdList, co
 
 	// Inject into each volume cascade
 	// Operate on one cascade at a time to reduce render target switches
+	// [ASTRO-TLIGHT] M105: per-cascade injection loop. Each cascade covers a different z-depth slab.
+	// If a light's VolumeBounds.IsValid()==false for a cascade, it is silently skipped - primary cause of
+	// missing z-layer illumination for translucent objects at cascade boundary depth range.
 	for (uint32 VolumeCascadeIndex = 0; VolumeCascadeIndex < TVC_MAX; VolumeCascadeIndex++)
 	{
 		const IPooledRenderTarget* RT0 = SceneContext.TranslucencyLightingVolumeAmbient[VolumeCascadeIndex + NumTranslucentVolumeRenderTargetSets * ViewIndex];

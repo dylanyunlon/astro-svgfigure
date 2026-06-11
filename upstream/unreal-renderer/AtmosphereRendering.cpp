@@ -311,10 +311,14 @@ IMPLEMENT_SHADER_TYPE(,FAtmosphericVS,TEXT("/Engine/Private/AtmosphericFogShader
 /** Vertex declaration for the light function fullscreen 2D quad. */
 TGlobalResource<FAtmopshereVertexDeclaration> GAtmophereVertexDeclaration;
 
+// [ASTRO-ATMOS] M103: InitAtmosphereConstantsInView - binds precomputed Transmittance/Irradiance/Inscatter textures to view.
+// Global tone debug: if any texture falls back to GBlackTexture/GBlackVolumeTexture (bInitTextures==false),
+// all atmospheric tone contributions collapse to zero, producing a flat unlit sky - check Scene->AtmosphericFog != NULL.
 void InitAtmosphereConstantsInView(FViewInfo& View)
 {
 	check(IsInRenderingThread());
 	bool bInitTextures = false;
+	// [ASTRO-ATMOS] M103-DBG: assert ShouldRenderAtmosphere() && Scene->AtmosphericFog->TransmittanceResource->TextureRHI.IsValid()
 	if(ShouldRenderAtmosphere(*View.Family))
 	{
 		if (View.Family->Scene)
@@ -340,9 +344,13 @@ void InitAtmosphereConstantsInView(FViewInfo& View)
 	}
 }
 
+// [ASTRO-ATMOS] M101: SetAtmosphericFogShaders - dispatches pixel shader variant by RenderFlag bitmask.
+// Global tone debug: each flag permutation (SunDisk/GroundScattering/LightShaft) affects the final HDR tone accumulated
+// in AtmosphericPixelMain. If sky tone looks wrong, log RenderFlag here to confirm which features are active.
 void SetAtmosphericFogShaders(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, FScene* Scene, const FViewInfo& View, const TRefCountPtr<IPooledRenderTarget>& LightShaftOcclusion)
 {
 	uint32 RenderFlag = Scene->AtmosphericFog->RenderFlag;
+	// [ASTRO-ATMOS] M101-DBG: RenderFlag=0x%02X (bit0=NoSunDisk bit1=NoGroundScatter bit2=NoLightShaft) - verify matches AtmosphericFogComponent settings
 
 	auto ShaderMap = View.ShaderMap;
 
@@ -392,6 +400,9 @@ void SetAtmosphericFogShaders(FRHICommandList& RHICmdList, FGraphicsPipelineStat
 void FDeferredShadingSceneRenderer::RenderAtmosphere(FRHICommandListImmediate& RHICmdList, const FLightShaftsOutput& LightShaftsOutput)
 {
 	// Atmospheric fog?
+	// [ASTRO-ATMOS] M102: RenderAtmosphere entry gate. FeatureLevel>=SM4 && HasAtmosphericFog() required.
+	// Global tone debug: BlendState=BF_One/BF_SourceAlpha means atmosphere additively blends over scene color
+	// using scene alpha as transmittance mask. Incorrect alpha in scene RT causes tone over/under-exposure.
 	if (Scene->GetFeatureLevel() >= ERHIFeatureLevel::SM4 && Scene->HasAtmosphericFog())
 	{
 		FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
@@ -1089,6 +1100,9 @@ void FAtmosphericFogSceneInfo::DrawQuad(FRHICommandList& RHICmdList, const FIntR
 		EDRF_UseTriangleOptimization);
 }
 
+// [ASTRO-ATMOS] M104: GetLayerValue - maps integer layer index to altitude R (km) and horizon/zenith angle limits DhdH.
+// Global tone debug: R determines optical depth column; DhdH=(DMin,DMax,DMinP,DMaxP) bounds inscatter integration.
+// Layer==0 edge guard (+0.01) and Layer==N-1 guard (-0.001) prevent singularities at ground/top-of-atmosphere boundary.
 void FAtmosphericFogSceneInfo::GetLayerValue(int Layer, float& AtmosphereR, FVector4& DhdH)
 {
 	float R = Layer / FMath::Max<float>(Component->PrecomputeParams.InscatterAltitudeSampleNum - 1.f, 1.f);
@@ -1650,6 +1664,9 @@ void FAtmosphericFogSceneInfo::PrecomputeTextures(FRHICommandListImmediate& RHIC
 		{
 			AtmospherePhase = AP_StartOrder;
 			AtmoshpereOrder++;
+			// [ASTRO-ATMOS] M105-DBG: AtmoshpereOrder=%d MaxScatteringOrder=%d - each order adds higher-bounce indirect tone.
+			// Global tone debug: MaxScatteringOrder<4 produces visibly darker atmosphere at large sun-zenith angles (>70 deg).
+			// Confirm AtmoshpereOrder increments to MaxScatteringOrder before AP_CopyInscatterF finalization.
 		}
 
 		if (AtmospherePhase == AP_StartOrder)
