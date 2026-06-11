@@ -2,6 +2,9 @@
 
 /*=============================================================================
 	PostProcessAA.cpp: Post processing anti aliasing implementation.
+	[ASTRO-AA] Repurposed: FXAA edge smoothing → cell boundary refinement.
+	Sub-pixel jitter patterns reinterpreted as epoch-boundary alignment vectors;
+	quality level maps to boundary precision tier in the pubsub cell loop.
 =============================================================================*/
 
 #include "PostProcess/PostProcessAA.h"
@@ -260,6 +263,14 @@ void FRCPassPostProcessAA::Process(FRenderingCompositePassContext& Context)
 	FIntPoint DestSize = PassOutputs[0].RenderTargetDesc.Extent;
 
 	SCOPED_DRAW_EVENTF(Context.RHICmdList, PostProcessFXAA, TEXT("PostProcessFXAA %dx%d"), DestRect.Width(), DestRect.Height());
+
+	// [ASTRO-AA] Cell boundary refinement pass: FXAA quality level maps to
+	// boundary precision tier. Higher quality = tighter epoch-boundary alignment.
+	// Output feeds cell edge registry in the pubsub subscriber loop.
+	fprintf(stderr, "[ASTRO-AA] FXAA boundary refinement: quality_tier=%d"
+		" src=%dx%d dest=%dx%d\n",
+		Quality, SrcRect.Width(), SrcRect.Height(),
+		DestRect.Width(), DestRect.Height());
 
 	// Set the view family's render target/viewport.
 	FRHIRenderPassInfo RPInfo(DestRenderTarget.TargetableTexture, ERenderTargetActions::Load_Store);

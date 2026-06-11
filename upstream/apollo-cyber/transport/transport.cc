@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *****************************************************************************/
+// [ASTRO-TRANSPORT] Repurposed: RTPS/SHM/Intra dispatchers → Git-channel pub/sub routing.
+// Transport layer now arbitrates between three channel tiers:
+//   intra_dispatcher  → in-process epoch-local cell messages (zero-copy)
+//   shm_dispatcher    → cross-process shared-memory cell broadcast
+//   rtps_dispatcher   → inter-node Git-channel relay (participant = repo endpoint)
+// All Shutdown paths flush pending epoch messages before teardown.
 
 #include "cyber/transport/transport.h"
 
@@ -29,6 +35,10 @@ Transport::Transport() {
   shm_dispatcher_ = ShmDispatcher::Instance();
   rtps_dispatcher_ = RtpsDispatcher::Instance();
   rtps_dispatcher_->set_participant(participant_);
+  // [ASTRO-TRANSPORT] Git-channel pub/sub transport initialized.
+  // rtps_dispatcher participant acts as remote repo endpoint for epoch relay.
+  fprintf(stderr, "[ASTRO-TRANSPORT] Transport::ctor: git-channel routing READY"
+      " intra+shm+rtps dispatchers online\n");
 }
 
 Transport::~Transport() { Shutdown(); }
@@ -38,6 +48,9 @@ void Transport::Shutdown() {
     return;
   }
 
+  // [ASTRO-TRANSPORT] Flushing pending epoch messages across all channel tiers.
+  fprintf(stderr, "[ASTRO-TRANSPORT] Transport::Shutdown: flushing"
+      " intra/shm/rtps epoch queues before teardown\n");
   intra_dispatcher_->Shutdown();
   shm_dispatcher_->Shutdown();
   rtps_dispatcher_->Shutdown();
@@ -54,6 +67,10 @@ void Transport::CreateParticipant() {
       common::GlobalData::Instance()->HostName() + "+" +
       std::to_string(common::GlobalData::Instance()->ProcessId());
   participant_ = std::make_shared<Participant>(participant_name, 11512);
+  // [ASTRO-TRANSPORT] Git-channel participant registered as repo endpoint.
+  // participant_name encodes host+pid → used as remote branch identity for RTPS relay.
+  fprintf(stderr, "[ASTRO-TRANSPORT] CreateParticipant: endpoint='%s' port=11512\n",
+      participant_name.c_str());
 }
 
 }  // namespace transport

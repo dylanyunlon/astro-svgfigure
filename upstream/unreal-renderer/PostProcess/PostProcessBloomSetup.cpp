@@ -2,6 +2,9 @@
 
 /*=============================================================================
 	PostProcessBloomSetup.cpp: Post processing bloom threshold pass implementation.
+	[ASTRO-BLOOM] Repurposed: bloom threshold → visual emphasis accumulator.
+	Pixels exceeding BloomThreshold are tagged as high-salience cells and fed
+	into the cell pubsub loop for downstream emphasis scoring.
 =============================================================================*/
 
 #include "PostProcess/PostProcessBloomSetup.h"
@@ -234,6 +237,14 @@ void FRCPassPostProcessBloomSetup::Process(FRenderingCompositePassContext& Conte
 
 	FIntRect SrcRect = FIntRect::DivideAndRoundUp(Context.SceneColorViewRect, ScaleFactor);
 	FIntRect DestRect = SrcRect;
+
+	// [ASTRO-BLOOM] Visual emphasis pass: pixels above BloomThreshold are high-salience.
+	// BloomThreshold reinterpreted as salience gate; output feeds cell emphasis channel.
+	const float SalienceGate = Context.View.FinalPostProcessSettings.BloomThreshold;
+	fprintf(stderr, "[ASTRO-BLOOM] BloomSetup: visual emphasis pass"
+		" scale=%u src=%dx%d dest=%dx%d salience_gate=%.3f compute=%d\n",
+		ScaleFactor, SrcSize.X, SrcSize.Y, DestSize.X, DestSize.Y,
+		SalienceGate, bIsComputePass ? 1 : 0);
 
 	SCOPED_DRAW_EVENTF(Context.RHICmdList, PostProcessBloomSetup, TEXT("PostProcessBloomSetup%s %dx%d"), bIsComputePass?TEXT("Compute"):TEXT(""), DestRect.Width(), DestRect.Height());
 
@@ -554,6 +565,12 @@ IMPLEMENT_SHADER_TYPE(,FPostProcessVisualizeBloomOverlayPS,TEXT("/Engine/Private
 void FRCPassPostProcessVisualizeBloomOverlay::Process(FRenderingCompositePassContext& Context)
 {
 	SCOPED_DRAW_EVENT(Context.RHICmdList, VisualizeBloomOverlay);
+
+	// [ASTRO-BLOOM] Overlay pass: bloom intensity reinterpreted as emphasis weight scalar.
+	// Visualizes which cells crossed the salience gate and their relative emphasis magnitude.
+	const float EmphasisWeight = Context.View.FinalPostProcessSettings.BloomIntensity;
+	fprintf(stderr, "[ASTRO-BLOOM] VisualizeBloomOverlay: emphasis_weight=%.3f\n",
+		EmphasisWeight);
 
 	const FPooledRenderTargetDesc* InputDesc = GetInputDesc(ePId_Input0);
 

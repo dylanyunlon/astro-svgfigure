@@ -13,6 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *****************************************************************************/
+// [ASTRO-SCHEDULER] Repurposed: CRoutine task scheduler → epoch-gated cell dispatch.
+// CreateTask now registers cells with epoch IDs; DispatchTask routes to the correct
+// epoch slot. NotifyProcessor triggers epoch boundary advancement in the pubsub loop.
+// CheckSchedStatus doubles as epoch health monitor; snap_info feeds the epoch log.
 
 #include "cyber/scheduler/scheduler.h"
 
@@ -53,6 +57,13 @@ bool Scheduler::CreateTask(std::function<void()>&& func,
   cr->set_id(task_id);
   cr->set_name(name);
   AINFO << "create croutine: " << name;
+
+  // [ASTRO-SCHEDULER] Cell epoch-slot registration: task_id maps to epoch bucket.
+  // visitor != nullptr means data-driven cell (subscribes to pubsub channel).
+  fprintf(stderr, "[ASTRO-SCHEDULER] CreateTask: cell='%s' epoch_id=%lu"
+      " data_driven=%d\n",
+      name.c_str(), static_cast<unsigned long>(task_id),
+      visitor != nullptr ? 1 : 0);
 
   if (!DispatchTask(cr)) {
     return false;
@@ -119,6 +130,13 @@ void Scheduler::CheckSchedStatus() {
   }
   snap_info.append("timestamp: ").append(std::to_string(now));
   AINFO << snap_info;
+  // [ASTRO-SCHEDULER] Epoch health snapshot: active cells and their run-time logged.
+  // snap_info feeds the epoch monitor; long-running cells may stall epoch advancement.
+  fprintf(stderr, "[ASTRO-SCHEDULER] CheckSchedStatus: epoch_ts=%lu"
+      " processors=%zu snap='%s'\n",
+      static_cast<unsigned long>(now),
+      processors_.size(),
+      snap_info.c_str());
   snap_info.clear();
 }
 

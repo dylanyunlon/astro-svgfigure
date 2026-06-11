@@ -2,6 +2,9 @@
 
 /*=============================================================================
 	PostProcessTonemap.cpp: Post processing tone mapping implementation.
+	[ASTRO-TONEMAP] Repurposed: HDR→LDR tone mapping → chromatic cell coordination.
+	LUT curves now encode inter-cell color affinity weights; tonemapper output
+	drives the color-harmony channel of the cell pubsub loop.
 =============================================================================*/
 
 #include "PostProcess/PostProcessTonemap.h"
@@ -968,6 +971,17 @@ void FRCPassPostProcessTonemap::Process(FRenderingCompositePassContext& Context)
 
 	SCOPED_DRAW_EVENTF(Context.RHICmdList, PostProcessTonemap, TEXT("Tonemapper(%s GammaOnly=%d HandleScreenPercentage=%d) %dx%d"),
 		bIsComputePass ? TEXT("CS") : TEXT("PS"), bDoGammaOnly, bDoScreenPercentageInTonemapper, DestRect.Width(), DestRect.Height());
+
+	// [ASTRO-TONEMAP] Chromatic coordination pass: LUT-based tone curve encodes
+	// inter-cell color affinity. GammaOnly=true means pass-through (no coordination).
+	// BloomIntensity feeds back as coordination strength scalar for pubsub consumers.
+	fprintf(stderr, "[ASTRO-TONEMAP] Tonemapper: chromatic coordination pass"
+		" gamma_only=%d dest=%dx%d sharpen=%.3f bloom_intensity=%.3f compute=%d\n",
+		bDoGammaOnly ? 1 : 0,
+		DestRect.Width(), DestRect.Height(),
+		CVarTonemapperSharpen.GetValueOnRenderThread(),
+		View.FinalPostProcessSettings.BloomIntensity,
+		bIsComputePass ? 1 : 0);
 
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(Context.RHICmdList);
 

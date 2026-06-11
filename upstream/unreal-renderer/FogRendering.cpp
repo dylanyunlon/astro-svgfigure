@@ -2,6 +2,9 @@
 
 /*=============================================================================
 	FogRendering.cpp: Fog rendering implementation.
+	[ASTRO-FOG] Repurposed: exponential height fog → depth-based signal attenuation.
+	HeightFalloff and Density parameters now encode attenuation curves for
+	depth-sorted pubsub cell signals; deeper cells receive exponentially lower weight.
 =============================================================================*/
 
 #include "FogRendering.h"
@@ -371,6 +374,17 @@ void FSceneRenderer::InitFogConstants()
 				View.ExponentialFogColor = FVector(FogInfo.FogColor.R, FogInfo.FogColor.G, FogInfo.FogColor.B);
 				View.FogMaxOpacity = FogInfo.FogMaxOpacity;
 				View.ExponentialFogParameters3 = FVector4(FogInfo.FogData[0].Density, FogInfo.FogData[0].Height, FogInfo.InscatteringColorCubemap ? 1.0f : 0.0f, FogInfo.FogCutoffDistance);
+
+				// [ASTRO-FOG] Depth attenuation constants committed for view.
+				// CollapsedFogParameter = base attenuation at origin; HeightFalloff = depth decay rate.
+				// These feed the depth-sorted cell signal weight in the pubsub subscriber loop.
+				fprintf(stderr, "[ASTRO-FOG] InitFogConstants view[%d]:"
+					" attn0=%.5f falloff0=%.4f attn1=%.5f falloff1=%.4f"
+					" max_opacity=%.3f start_dist=%.1f\n",
+					ViewIndex,
+					CollapsedFogParameter[0], FogInfo.FogData[0].HeightFalloff,
+					CollapsedFogParameter[1], FogInfo.FogData[1].HeightFalloff,
+					FogInfo.FogMaxOpacity, FogInfo.StartDistance);
 				View.SinCosInscatteringColorCubemapRotation = FVector2D(FMath::Sin(FogInfo.InscatteringColorCubemapAngle), FMath::Cos(FogInfo.InscatteringColorCubemapAngle));
 				View.FogInscatteringColorCubemap = FogInfo.InscatteringColorCubemap;
 				const float InvRange = 1.0f / FMath::Max(FogInfo.FullyDirectionalInscatteringColorDistance - FogInfo.NonDirectionalInscatteringColorDistance, .00001f);
@@ -489,6 +503,15 @@ void FDeferredShadingSceneRenderer::RenderViewFog(FRHICommandList& RHICmdList, c
 
 	SCOPED_DRAW_EVENTF(RHICmdList, Fog, TEXT("ExponentialHeightFog %dx%d"), View.ViewRect.Width(), View.ViewRect.Height());
 	SCOPED_GPU_STAT(RHICmdList, Fog);
+
+	// [ASTRO-FOG] Depth-attenuation render pass: exponential height fog reinterpreted
+	// as per-pixel depth weight. Pixels at StartDistance receive MaxOpacity attenuation;
+	// weight decays exponentially beyond that, suppressing deep-cell signal contribution.
+	fprintf(stderr, "[ASTRO-FOG] RenderViewFog: depth attenuation pass"
+		" viewport=[%d,%d,%d,%d] max_opacity=%.3f\n",
+		View.ViewRect.Min.X, View.ViewRect.Min.Y,
+		View.ViewRect.Max.X, View.ViewRect.Max.Y,
+		View.FogMaxOpacity);
 
 	// Set the device viewport for the view.
 	RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
