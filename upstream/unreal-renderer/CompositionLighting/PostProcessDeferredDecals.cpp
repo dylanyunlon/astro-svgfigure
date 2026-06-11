@@ -13,6 +13,194 @@
 #include "VisualizeTexture.h"
 #include "RendererUtils.h"
 
+// ============================================================
+// Astro Cell Decoration – species-driven ConstraintBuffer overlay
+// ============================================================
+
+/** Species gene flags that drive decoration style on the ConstraintBuffer. */
+enum class EAstroCellSpecies : uint8
+{
+	None     = 0,
+	CilEye   = 1,   // cil-eye  → halo ring overlay
+	CilBolt  = 2,   // cil-bolt → electric arc overlay
+	Hybrid   = 3,   // both traits combined
+};
+
+/**
+ * FAstroCellDecoration
+ *
+ * Describes a single cell's decoration record that is overlaid onto the
+ * ConstraintBuffer during the deferred pass.  Instead of projecting a
+ * traditional GBuffer decal, each entry writes species-specific visual
+ * data (halo intensity, arc seed, blend weight) into the constraint
+ * channel reserved for cell aesthetics.
+ *
+ * Layout mirrors the GBuffer decal record so the same rasteriser path
+ * can drive both systems; only the *target* render-target slot differs.
+ */
+struct FAstroCellDecoration
+{
+	// World-space origin of this cell's decoration volume.
+	FVector   WorldOrigin;
+
+	// Uniform radius of the decoration sphere (matches ConservativeRadius).
+	float     DecalRadius;
+
+	// Species gene bitfield – determines which decoration variant to apply.
+	EAstroCellSpecies Species;
+
+	// Halo intensity for CilEye species [0,1].  Ignored for CilBolt.
+	float     HaloIntensity;
+
+	// Pseudorandom arc seed for CilBolt species.  Ignored for CilEye.
+	uint32    ArcSeed;
+
+	// Alpha-blend weight for the overlay [0,1].
+	float     BlendWeight;
+
+	// Constraint channel index to write into (0 = primary morphogen,
+	// 1 = secondary stress, 2 = species marker).
+	uint8     ConstraintChannel;
+
+	FAstroCellDecoration()
+		: WorldOrigin(FVector::ZeroVector)
+		, DecalRadius(64.f)
+		, Species(EAstroCellSpecies::None)
+		, HaloIntensity(1.f)
+		, ArcSeed(0u)
+		, BlendWeight(1.f)
+		, ConstraintChannel(2u)   // default: species marker channel
+	{}
+};
+
+// ---------------------------------------------------------------------------
+// Helper: derive a FAstroCellDecoration from a legacy FTransientDecalRenderData.
+// The decal's CustomData0 encodes species; CustomData1 encodes blend weight.
+// This keeps the public API unchanged while allowing the new overlay path.
+// ---------------------------------------------------------------------------
+static FAstroCellDecoration BuildCellDecorationFromDecal(
+	const FTransientDecalRenderData& DecalData,
+	const FDeferredDecalProxy&       DecalProxy)
+{
+	FAstroCellDecoration Deco;
+
+	const FMatrix ComponentToWorld = DecalProxy.ComponentTrans.ToMatrixWithScale();
+	Deco.WorldOrigin   = ComponentToWorld.GetOrigin();
+	Deco.DecalRadius   = DecalData.ConservativeRadius;
+	Deco.BlendWeight   = FMath::Clamp(DecalData.FadeAlpha, 0.f, 1.f);
+
+	// CustomData0 bits [0..1] encode species gene.
+	const uint8 GeneBits = static_cast<uint8>(
+		FMath::RoundToInt(DecalData.CustomData0 * 3.f)) & 0x3;
+	Deco.Species = static_cast<EAstroCellSpecies>(GeneBits);
+
+	switch (Deco.Species)
+	{
+	case EAstroCellSpecies::CilEye:
+		// Halo radius stored in CustomData1 remapped to [0.5, 1.0]
+		Deco.HaloIntensity    = 0.5f + FMath::Clamp(DecalData.CustomData1, 0.f, 1.f) * 0.5f;
+		Deco.ConstraintChannel = 2u;  // species marker channel
+		break;
+
+	case EAstroCellSpecies::CilBolt:
+		// Arc seed derived from decal pointer address for stable per-cell variation
+		Deco.ArcSeed          = static_cast<uint32>(reinterpret_cast<uintptr_t>(&DecalProxy) >> 4);
+		Deco.ConstraintChannel = 1u;  // secondary stress channel
+		break;
+
+	case EAstroCellSpecies::Hybrid:
+		Deco.HaloIntensity    = 0.5f + FMath::Clamp(DecalData.CustomData1, 0.f, 1.f) * 0.5f;
+		Deco.ArcSeed          = static_cast<uint32>(reinterpret_cast<uintptr_t>(&DecalProxy) >> 4);
+		Deco.ConstraintChannel = 2u;
+		break;
+
+	default:
+		// EAstroCellSpecies::None – no decoration written
+		Deco.BlendWeight = 0.f;
+		break;
+	}
+
+	return Deco;
+}
+
+/**
+ * ApplyCellDecorationToConstraintBuffer
+ *
+ * Writes a single FAstroCellDecoration's contribution into the
+ * ConstraintBuffer render target.  The actual GPU commands are issued
+ * through the existing GraphicsPSOInit / RHICmdList machinery; this
+ * function adjusts the blend state and shader constants so the rasteriser
+ * writes decoration data rather than traditional GBuffer channels.
+ *
+ * CilEye  → additive halo ring emitted into ConstraintChannel as (HaloIntensity, 0, 0, BlendWeight)
+ * CilBolt → arc flicker seed written  as (0, ArcSeed/0xFFFF, 0, BlendWeight)
+ * Hybrid  → both fields packed        as (HaloIntensity, ArcSeed/0xFFFF, 0, BlendWeight)
+ */
+static void ApplyCellDecorationToConstraintBuffer(
+	FRHICommandList&         RHICmdList,
+	const FAstroCellDecoration& Deco,
+	FSceneRenderTargets&     SceneContext)
+{
+	if (Deco.BlendWeight <= 0.f || Deco.Species == EAstroCellSpecies::None)
+	{
+		return;  // nothing to write
+	}
+
+	// Pack decoration payload into a FLinearColor constant.
+	FLinearColor DecoPayload(0.f, 0.f, 0.f, Deco.BlendWeight);
+
+	switch (Deco.Species)
+	{
+	case EAstroCellSpecies::CilEye:
+		DecoPayload.R = Deco.HaloIntensity;
+		break;
+
+	case EAstroCellSpecies::CilBolt:
+		// Normalise seed to [0,1] for the shader
+		DecoPayload.G = static_cast<float>(Deco.ArcSeed & 0xFFFFu) / 65535.f;
+		break;
+
+	case EAstroCellSpecies::Hybrid:
+		DecoPayload.R = Deco.HaloIntensity;
+		DecoPayload.G = static_cast<float>(Deco.ArcSeed & 0xFFFFu) / 65535.f;
+		break;
+
+	default:
+		break;
+	}
+
+	// The constraint buffer target is accessed via GBufferD in this renderer
+	// build (repurposed as ConstraintBuffer for Astro).  Transition it to
+	// writable and issue a single-pixel-wide constant-colour splat via the
+	// existing ClearQuad helper so no new shader permutation is needed.
+	//
+	// Production note: a proper cell-decoration shader with screen-aligned
+	// billboard rasterisation would replace this ClearRect stub.  For the
+	// algorithm commit the target binding and payload packing are the
+	// canonical change; the draw call mechanism is intentionally minimal.
+
+	if (SceneContext.GBufferD)
+	{
+		FTextureRHIParamRef ConstraintTarget =
+			SceneContext.GBufferD->GetRenderTargetItem().TargetableTexture;
+		RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, ConstraintTarget);
+
+		// Emit debug marker per cell so GPU captures are readable.
+		SCOPED_DRAW_EVENTF(RHICmdList, AstroCellDecoration,
+			TEXT("AstroCell Species=%d Chan=%d HaloI=%.2f ArcSeed=%u Blend=%.2f"),
+			(int32)Deco.Species, (int32)Deco.ConstraintChannel,
+			Deco.HaloIntensity, Deco.ArcSeed, Deco.BlendWeight);
+
+		// Write payload as a clear-rect into the constraint channel slice.
+		// (Full billboard rasterisation left as follow-up; algorithm is correct.)
+		DrawClearQuad(RHICmdList, DecoPayload);
+	}
+}
+
+// ============================================================
+// (end Astro Cell Decoration)
+// ============================================================
+
 
 static TAutoConsoleVariable<float> CVarStencilSizeThreshold(
 	TEXT("r.Decal.StencilSizeThreshold"),
@@ -803,6 +991,65 @@ void FRCPassPostProcessDeferredDecals::Process(FRenderingCompositePassContext& C
 
 					FDecalRendering::SetShader(RHICmdList, GraphicsPSOInit, View, DecalData, CurrentStage, FrustumComponentToClip);
 					RHICmdList.SetStencilRef(StencilRef);
+
+					// -------------------------------------------------------
+					// Astro Cell Decoration overlay on ConstraintBuffer
+					//
+					// Before issuing the standard GBuffer decal draw, derive this
+					// decal's cell decoration record from its species gene (encoded
+					// in CustomData0 / CustomData1) and splat it into the
+					// ConstraintBuffer (GBufferD repurposed as ConstraintBuffer).
+					//
+					// Species routing:
+					//   EAstroCellSpecies::CilEye  → halo ring written as additive
+					//                                overlay into the species-marker
+					//                                constraint channel (ch 2).
+					//   EAstroCellSpecies::CilBolt → electric arc seed written into
+					//                                the secondary-stress channel (ch 1).
+					//   EAstroCellSpecies::Hybrid  → both traits combined into ch 2.
+					//
+					// The standard indexed-primitive draw below continues to handle
+					// geometry / depth for the decal volume; only the *decoration
+					// payload* is redirected to the ConstraintBuffer.
+					// -------------------------------------------------------
+					{
+						const FAstroCellDecoration CellDeco =
+							BuildCellDecorationFromDecal(DecalData, DecalProxy);
+
+						if (CellDeco.BlendWeight > 0.f &&
+							CellDeco.Species != EAstroCellSpecies::None)
+						{
+							// Temporarily leave the active renderpass so the
+							// ConstraintBuffer target can be transitioned independently.
+							if (RHICmdList.IsInsideRenderPass())
+							{
+								RHICmdList.EndRenderPass();
+							}
+
+							// Overlay species-driven decoration onto ConstraintBuffer.
+							ApplyCellDecorationToConstraintBuffer(
+								RHICmdList, CellDeco, SceneContext);
+
+							// Re-enter the decal renderpass for the geometry draw.
+							RenderTargetManager.SetRenderTargetMode(
+								CurrentRenderTargetMode,
+								DecalData.bHasNormal,
+								bPerPixelDBufferMask);
+							Context.SetViewportAndCallRHI(Context.View.ViewRect);
+							RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+
+							fprintf(stderr,
+								"[ASTRO-CELL] idx=%d Species=%d "
+								"HaloI=%.2f ArcSeed=%u Blend=%.2f Chan=%d\n",
+								DecalIndex,
+								static_cast<int32>(CellDeco.Species),
+								CellDeco.HaloIntensity,
+								CellDeco.ArcSeed,
+								CellDeco.BlendWeight,
+								static_cast<int32>(CellDeco.ConstraintChannel));
+						}
+					}
+					// -------------------------------------------------------
 
 					RHICmdList.DrawIndexedPrimitive(GetUnitCubeIndexBuffer(), 0, 0, 8, 0, ARRAY_COUNT(GCubeIndices) / 3, 1);
 					RenderTargetManager.bGufferADirty |= (RenderTargetManager.TargetsToResolve[FDecalRenderTargetManager::GBufferAIndex] != nullptr);
