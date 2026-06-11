@@ -25,6 +25,7 @@ enum class ESSAOType
 
 class FSSAOHelper
 {
+// [ASTRO-DEBUG M263] fprintf(stderr, "[ASTRO-DEBUG M263] PostProcessAmbientOcclusion.h: FSSAOHelper class declared\n");
 public:
 
 	// Utility functions for deciding AO logic.
@@ -54,6 +55,7 @@ public:
 // derives from TRenderingCompositePassBase<InputCount, OutputCount> 
 class FRCPassPostProcessAmbientOcclusionSetup : public TRenderingCompositePassBase<2, 1>
 {
+// [ASTRO-DEBUG M264] fprintf(stderr, "[ASTRO-DEBUG M264] PostProcessAmbientOcclusion.h: FRCPassPostProcessAmbientOcclusionSetup class declared\n");
 public:
 
 	// interface FRenderingCompositePass ---------

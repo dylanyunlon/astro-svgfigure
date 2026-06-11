@@ -21,6 +21,7 @@
 // derives from TRenderingCompositePassBase<InputCount, OutputCount> 
 class FRCPassPostProcessLpvIndirect: public TRenderingCompositePassBase<2, 1>
 {
+// [ASTRO-DEBUG M271] fprintf(stderr, "[ASTRO-DEBUG M271] PostProcessLpvIndirect.h: FRCPassPostProcessLpvIndirect declared\n");
 public:
 	// interface FRenderingCompositePass ---------
 	virtual const TCHAR* GetDebugName() { return TEXT("FRCPassPostProcessLpvIndirect"); }
@@ -36,6 +37,7 @@ private:
 // derives from TRenderingCompositePassBase<InputCount, OutputCount> 
 class FRCPassPostProcessVisualizeLPV: public TRenderingCompositePassBase<1, 1>
 {
+// [ASTRO-DEBUG M272] fprintf(stderr, "[ASTRO-DEBUG M272] PostProcessLpvIndirect.h: FRCPassPostProcessVisualizeLPV declared\n");
 public:
 	// interface FRenderingCompositePass ---------
 	virtual const TCHAR* GetDebugName() { return TEXT("FRCPassPostProcessVisualizeLPV"); }

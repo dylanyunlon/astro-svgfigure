@@ -105,6 +105,8 @@ void FRCPassPostProcessAmbient::Render(FRenderingCompositePassContext& Context, 
 void FRCPassPostProcessAmbient::Process(FRenderingCompositePassContext& Context)
 {
 	SCOPED_DRAW_EVENT(Context.RHICmdList, PostProcessAmbient);
+	// [ASTRO-DEBUG M257]
+	fprintf(stderr, "[ASTRO-DEBUG M257] PostProcessAmbient.cpp: FRCPassPostProcessAmbient::Process entered\n");
 
 	const FViewInfo& View = Context.View;
 	const FSceneViewFamily& ViewFamily = *(View.Family);
@@ -147,6 +149,8 @@ void FRCPassPostProcessAmbient::Process(FRenderingCompositePassContext& Context)
 
 FPooledRenderTargetDesc FRCPassPostProcessAmbient::ComputeOutputDesc(EPassOutputId InPassOutputId) const
 {
+	// [ASTRO-DEBUG M258]
+	fprintf(stderr, "[ASTRO-DEBUG M258] PostProcessAmbient.cpp: ComputeOutputDesc called\n");
 	// we assume this pass is additively blended with the scene color so this data is not needed
 	FPooledRenderTargetDesc Ret;
 

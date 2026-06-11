@@ -18,6 +18,7 @@
 // derives from TRenderingCompositePassBase<InputCount, OutputCount> 
 class FRCPassPostProcessDeferredDecals : public TRenderingCompositePassBase<1, 1>
 {
+// [ASTRO-DEBUG M267] fprintf(stderr, "[ASTRO-DEBUG M267] PostProcessDeferredDecals.h: FRCPassPostProcessDeferredDecals declared\n");
 public:
 	// One instance for each render stage
 	FRCPassPostProcessDeferredDecals(EDecalRenderStage InDecalRenderStage);
@@ -42,6 +43,7 @@ static inline bool IsWritingToGBufferA(FDecalRenderingCommon::ERenderTargetMode 
 
 struct FDecalRenderTargetManager
 {
+// [ASTRO-DEBUG M268] fprintf(stderr, "[ASTRO-DEBUG M268] PostProcessDeferredDecals.h: FDecalRenderTargetManager struct declared\n");
 	enum EDecalResolveBufferIndex
 	{
 		SceneColorIndex,

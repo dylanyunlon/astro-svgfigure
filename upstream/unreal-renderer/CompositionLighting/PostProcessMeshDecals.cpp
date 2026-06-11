@@ -355,6 +355,8 @@ void FMeshDecalMeshProcessor::Process(
 void DrawDecalMeshCommands(FRenderingCompositePassContext& Context, EDecalRenderStage CurrentDecalStage, FDecalRenderingCommon::ERenderTargetMode RenderTargetMode)
 {
 	FRHICommandListImmediate& RHICmdList = Context.RHICmdList;
+	// [ASTRO-DEBUG M274]
+	fprintf(stderr, "[ASTRO-DEBUG M274] PostProcessMeshDecals.cpp: DrawDecalMeshCommands entered stage=%d rtMode=%d\n", (int)CurrentDecalStage, (int)RenderTargetMode);
 	const FViewInfo& View = Context.View;
 
 	const bool bPerPixelDBufferMask = IsUsingPerPixelDBufferMask(View.GetShaderPlatform());
@@ -390,6 +392,8 @@ void DrawDecalMeshCommands(FRenderingCompositePassContext& Context, EDecalRender
 void RenderMeshDecals(FRenderingCompositePassContext& Context, EDecalRenderStage CurrentDecalStage)
 {
 	FRHICommandListImmediate& RHICmdList = Context.RHICmdList;
+	// [ASTRO-DEBUG M273]
+	fprintf(stderr, "[ASTRO-DEBUG M273] PostProcessMeshDecals.cpp: RenderMeshDecals entered stage=%d\n", (int)CurrentDecalStage);
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 	const FViewInfo& View = Context.View;
 	FScene* Scene = (FScene*)View.Family->Scene;

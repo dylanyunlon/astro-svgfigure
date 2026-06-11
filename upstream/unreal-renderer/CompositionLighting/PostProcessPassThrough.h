@@ -17,6 +17,7 @@
 class FPostProcessPassThroughPS : public FGlobalShader
 {
 	DECLARE_SHADER_TYPE(FPostProcessPassThroughPS, Global);
+// [ASTRO-DEBUG M277] fprintf(stderr, "[ASTRO-DEBUG M277] PostProcessPassThrough.h: FPostProcessPassThroughPS class declared\n");
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -43,6 +44,7 @@ public:
 // derives from TRenderingCompositePassBase<InputCount, OutputCount> 
 class FRCPassPostProcessPassThrough : public TRenderingCompositePassBase<1, 1>
 {
+// [ASTRO-DEBUG M278] fprintf(stderr, "[ASTRO-DEBUG M278] PostProcessPassThrough.h: FRCPassPostProcessPassThrough class declared\n");
 public:
 	// constructor
 	// @param InDest - 0 if a new intermediate target should be created

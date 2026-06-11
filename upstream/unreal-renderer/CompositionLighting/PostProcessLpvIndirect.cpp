@@ -213,6 +213,8 @@ IMPLEMENT_SHADER_TYPE(,FPostProcessLpvDirectionalOcclusionPS,TEXT("/Engine/Priva
 void FRCPassPostProcessLpvIndirect::Process(FRenderingCompositePassContext& Context)
 {
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(Context.RHICmdList);
+	// [ASTRO-DEBUG M269]
+	fprintf(stderr, "[ASTRO-DEBUG M269] PostProcessLpvIndirect.cpp: LpvIndirect::Process entered\n");
 
 	{
 		FRenderingCompositeOutput* OutputOfMyInput = GetInput(ePId_Input0)->GetOutput();
@@ -362,6 +364,8 @@ void FRCPassPostProcessLpvIndirect::Process(FRenderingCompositePassContext& Cont
 void FRCPassPostProcessLpvIndirect::DoDirectionalOcclusionPass(FRenderingCompositePassContext& Context) const
 {
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(Context.RHICmdList);
+	// [ASTRO-DEBUG M270]
+	fprintf(stderr, "[ASTRO-DEBUG M270] PostProcessLpvIndirect.cpp: DoDirectionalOcclusionPass entered\n");
 
 	SCOPED_DRAW_EVENT(Context.RHICmdList, PostProcessLpvDirectionalOcclusion);
 	const FSceneRenderTargetItem& DestDirectionalOcclusionRenderTarget = SceneContext.DirectionalOcclusion->GetRenderTargetItem();

@@ -15,6 +15,7 @@
 // derives from TRenderingCompositePassBase<InputCount, OutputCount> 
 class FRCPassPostProcessAmbient : public TRenderingCompositePassBase<2, 1>
 {
+// [ASTRO-DEBUG M259] fprintf(stderr, "[ASTRO-DEBUG M259] PostProcessAmbient.h: FRCPassPostProcessAmbient class declared\n");
 public:
 	// interface FRenderingCompositePass ---------
 	virtual const TCHAR* GetDebugName() { return TEXT("FRCPassPostProcessAmbient"); }
@@ -24,5 +25,6 @@ public:
 	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const;
 
 private:
+	// [ASTRO-DEBUG M260] fprintf(stderr, "[ASTRO-DEBUG M260] PostProcessAmbient.h: Render method declared\n");
 	void Render(FRenderingCompositePassContext& Context, FGraphicsPipelineStateInitializer& GraphicsPSOInit);
 };

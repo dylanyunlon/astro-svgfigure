@@ -21,6 +21,8 @@
 
 /** The global center for all deferred lighting activities. */
 FCompositionLighting GCompositionLighting;
+// [ASTRO-DEBUG M251]
+fprintf(stderr, "[ASTRO-DEBUG M251] CompositionLighting.cpp: GCompositionLighting initialized\n");
 
 DECLARE_GPU_STAT_NAMED(CompositionBeforeBasePass, TEXT("Composition BeforeBasePass") );
 DECLARE_GPU_STAT_NAMED(CompositionPreLighting, TEXT("Composition PreLighting") );
@@ -235,6 +237,8 @@ static FRenderingCompositeOutputRef AddPostProcessingAmbientOcclusion(FRHIComman
 void FCompositionLighting::ProcessBeforeBasePass(FRHICommandListImmediate& RHICmdList, FViewInfo& View, bool bDBuffer, uint32 SSAOLevels)
 {
 	check(IsInRenderingThread());
+	// [ASTRO-DEBUG M252]
+	fprintf(stderr, "[ASTRO-DEBUG M252] CompositionLighting.cpp: ProcessBeforeBasePass bDBuffer=%d SSAOLevels=%u\n", (int)bDBuffer, SSAOLevels);
 
 	// so that the passes can register themselves to the graph
 	if (bDBuffer || SSAOLevels)

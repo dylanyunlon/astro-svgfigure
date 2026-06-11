@@ -57,6 +57,8 @@ FRCPassPostProcessPassThrough::FRCPassPostProcessPassThrough(FPooledRenderTarget
 void FRCPassPostProcessPassThrough::Process(FRenderingCompositePassContext& Context)
 {
 	SCOPED_DRAW_EVENT(Context.RHICmdList, PassThrough);
+	// [ASTRO-DEBUG M275]
+	fprintf(stderr, "[ASTRO-DEBUG M275] PostProcessPassThrough.cpp: PassThrough::Process entered\n");
 
 	const FPooledRenderTargetDesc* InputDesc = GetInputDesc(ePId_Input0);
 
@@ -166,6 +168,8 @@ FPooledRenderTargetDesc FRCPassPostProcessPassThrough::ComputeOutputDesc(EPassOu
 void CopyOverOtherViewportsIfNeeded(FRenderingCompositePassContext& Context, const FSceneView& ExcludeView)
 {
 	const FViewInfo& View = Context.View;
+	// [ASTRO-DEBUG M276]
+	fprintf(stderr, "[ASTRO-DEBUG M276] PostProcessPassThrough.cpp: CopyOverOtherViewportsIfNeeded entered\n");
 	const FSceneViewFamily* ViewFamily = View.Family;
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;

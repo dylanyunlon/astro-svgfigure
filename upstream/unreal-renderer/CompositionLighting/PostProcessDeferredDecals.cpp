@@ -520,6 +520,8 @@ const TCHAR* GetStageName(EDecalRenderStage Stage)
 void FRCPassPostProcessDeferredDecals::Process(FRenderingCompositePassContext& Context)
 {
 	FRHICommandListImmediate& RHICmdList = Context.RHICmdList;
+	// [ASTRO-DEBUG M265]
+	fprintf(stderr, "[ASTRO-DEBUG M265] PostProcessDeferredDecals.cpp: DeferredDecals::Process entered stage=%d\n", (int)CurrentStage);
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 
 	const bool bShaderComplexity = Context.View.Family->EngineShowFlags.ShaderComplexity;
@@ -910,6 +912,8 @@ FPooledRenderTargetDesc FRCPassPostProcessDeferredDecals::ComputeOutputDesc(EPas
 void FDecalRenderTargetManager::ResolveTargets()
 {
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+	// [ASTRO-DEBUG M266]
+	fprintf(stderr, "[ASTRO-DEBUG M266] PostProcessDeferredDecals.cpp: FDecalRenderTargetManager::ResolveTargets called\n");
 
 	// If GBuffer A is dirty, mark it as needing resolve since the content of TargetsToResolve[GBufferAIndex] could have been nullified by modes like RTM_SceneColorAndGBufferNoNormal
 	if (bGufferADirty)

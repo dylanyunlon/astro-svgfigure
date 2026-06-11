@@ -364,6 +364,8 @@ public:
 void FRCPassPostProcessAmbientOcclusionSetup::Process(FRenderingCompositePassContext& Context)
 {
 	SCOPED_GPU_STAT(Context.RHICmdList, SSAOSetup);
+	// [ASTRO-DEBUG M261]
+	fprintf(stderr, "[ASTRO-DEBUG M261] PostProcessAmbientOcclusion.cpp: AmbientOcclusionSetup::Process entered\n");
 	const FViewInfo& View = Context.View;
 
 	const FSceneRenderTargetItem& DestRenderTarget = PassOutputs[0].RequestSurface(Context);
@@ -900,6 +902,8 @@ void FRCPassPostProcessAmbientOcclusion::ProcessPS(FRenderingCompositePassContex
 void FRCPassPostProcessAmbientOcclusion::Process(FRenderingCompositePassContext& Context)
 {
 	SCOPED_GPU_STAT(Context.RHICmdList, SSAO);
+	// [ASTRO-DEBUG M262]
+	fprintf(stderr, "[ASTRO-DEBUG M262] PostProcessAmbientOcclusion.cpp: AmbientOcclusion::Process entered AOType=%d\n", (int)AOType);
 
 	const FViewInfo& View = Context.View;
 

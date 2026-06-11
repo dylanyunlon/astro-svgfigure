@@ -14,6 +14,7 @@
  */
 class FCompositionLighting
 {
+// [ASTRO-DEBUG M253] fprintf(stderr, "[ASTRO-DEBUG M253] CompositionLighting.h: FCompositionLighting class declared\n");
 public:
 	void ProcessBeforeBasePass(FRHICommandListImmediate& RHICmdList, FViewInfo& View, bool bDBuffer, uint32 SSAOLevels);
 
@@ -38,5 +39,6 @@ private:
 
 /** The global used for deferred lighting. */
 extern FCompositionLighting GCompositionLighting;
+// [ASTRO-DEBUG M254] fprintf(stderr, "[ASTRO-DEBUG M254] CompositionLighting.h: GCompositionLighting extern declared\n");
 
 extern bool ShouldRenderScreenSpaceAmbientOcclusion(const FViewInfo& View);
