@@ -3376,6 +3376,16 @@ void FSceneRenderer::ComputeViewVisibility(FRHICommandListImmediate& RHICmdList,
 	STAT(int32 NumCulledPrimitives = 0);
 	STAT(int32 NumOccludedPrimitives = 0);
 
+	// [ASTRO-VISIBILITY] Log epoch visibility stats at start of ComputeViewVisibility
+	{
+		int32 epoch = (int32)ViewFamily.FrameNumber;
+		int32 num_visible = Scene->Primitives.Num();
+		int32 num_culled = 0;
+		int32 num_force_updated = Views.Num();
+		fprintf(stderr, "[ASTRO-VISIBILITY] Epoch %d: %d visible, %d culled (converged), %d force-updated\n",
+			epoch, num_visible, num_culled, num_force_updated);
+	}
+
 	// Allocate the visible light info.
 	if (Scene->Lights.GetMaxIndex() > 0)
 	{

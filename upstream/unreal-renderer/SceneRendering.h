@@ -42,6 +42,18 @@ template<typename ShaderMetaType> class TShaderMap;
 
 DECLARE_STATS_GROUP(TEXT("Command List Markers"), STATGROUP_CommandListMarkers, STATCAT_Advanced);
 
+// [ASTRO-SCENE] Cell registry entry for scene-level cell tracking
+struct FAstroCellEntry {
+	const char* CellId;
+	int32 SpeciesGene;
+	int32 ZLayer;
+	bool bConverged;
+	int32 EpochLastUpdated;
+	void DebugPrint() const {
+		fprintf(stderr, "[ASTRO-SCENE] Cell '%s' | species=%d z=%d converged=%d epoch=%d\n",
+			CellId, SpeciesGene, ZLayer, bConverged, EpochLastUpdated);
+	}
+};
 
 /** Mobile only. Information used to determine whether static meshes will be rendered with CSM shaders or not. */
 class FMobileCSMVisibilityInfo

@@ -1277,6 +1277,15 @@ void FSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate& RHICmdList, b
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 	const bool bUseDownsampledDepth = SceneContext.UseDownsizedOcclusionQueries() && IsValidRef(SceneContext.SmallDepthZ) && IsValidRef(SceneContext.GetSmallDepthSurface());	
 
+	// [ASTRO-OCCLUSION] Log z-layer occlusion relationship for front-to-back cell culling
+	{
+		int32 z_front = Views.Num();
+		int32 z_back = FMath::Max(0, z_front - 1);
+		int32 affected = Scene->Primitives.Num();
+		fprintf(stderr, "[ASTRO-OCCLUSION] z=%d occluding z=%d | %d cells affected\n",
+			z_front, z_back, affected);
+	}
+
 	if (bRenderQueries)
 	{
 		int32 const NumBufferedFrames = FOcclusionQueryHelpers::GetNumBufferedFrames(FeatureLevel);

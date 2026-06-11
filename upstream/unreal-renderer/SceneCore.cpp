@@ -112,6 +112,14 @@ uint32 FLightPrimitiveInteraction::GetMemoryPoolSize()
 
 void FLightPrimitiveInteraction::Create(FLightSceneInfo* LightSceneInfo,FPrimitiveSceneInfo* PrimitiveSceneInfo)
 {
+	// [ASTRO-CORE] Log scene creation / lifecycle event for cell canvas tracking
+	{
+		int32 max_cells = PrimitiveSceneInfo->Scene->Primitives.Num();
+		float canvas_w = (float)PrimitiveSceneInfo->Scene->PrimitiveOctree.GetRootBounds().Extent.X;
+		float canvas_h = (float)PrimitiveSceneInfo->Scene->PrimitiveOctree.GetRootBounds().Extent.Y;
+		fprintf(stderr, "[ASTRO-CORE] Scene created: max_cells=%d canvas=(%.0f,%.0f)\n",
+			max_cells, canvas_w, canvas_h);
+	}
 	// Attach the light to the primitive's static meshes.
 	bool bDynamic = true;
 	bool bRelevant = false;

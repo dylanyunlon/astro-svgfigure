@@ -1947,6 +1947,15 @@ FSceneRenderer::FSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyCon
 
 	bDumpMeshDrawCommandInstancingStats = !!GDumpInstancingStats;
 	GDumpInstancingStats = 0;
+
+	// [ASTRO-SCENE] Scene Dump: summarize cell registry state at renderer init
+	{
+		int32 num_cells = Views.Num();
+		int32 num_active_layers = ViewFamily.Views.Num();
+		int32 current_epoch = (int32)ViewFamily.FrameNumber;
+		fprintf(stderr, "[ASTRO-SCENE] === Scene Dump: %d cells, %d z-layers, epoch=%d ===\n",
+			num_cells, num_active_layers, current_epoch);
+	}
 }
 
 // static
