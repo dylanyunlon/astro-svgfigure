@@ -1,67 +1,52 @@
 # astro-svgfigure 渲染引擎开发计划
 
-## 里程碑分配
+## 总览
 
-| Claude | 里程碑 | 状态 | 任务 | 改动 |
-|--------|--------|------|------|------|
-| 第一位 | M001-M025 | ✅ 完成 | DeferredShading→ConstraintSolver, CyberRT debug, BasePass, AllLatest fusion | 5 files +266 lines |
-| 第二位 | M026-M050 | ✅ 完成 | SceneRendering cell registry, Visibility epoch culling, Occlusion z-layer, Core lifecycle | 5 files +48 lines |
-| 第三位 | M051-M075 | ✅ 完成 | LightRendering/ShadowRendering: 光照→约束解算权重, 阴影→碰撞检测 | |
-| 第四位 | M076-M100 | ✅ 完成 | VelocityRendering epoch delta, DistortionRendering force field, Bloom→视觉强调, ToneMapping→色彩协调, AA→边缘抗锯齿 | 5 files +160 lines |
-| 第五位 | M101-M125 | ✅ 完成 | FogRendering: 雾→深度衰减 | 1 file +23 lines |
-| 第六位 | M126-M150 | ✅ 完成 | Apollo transport: pub/sub→Git channel, scheduler→epoch控制, processor→epoch executor | 3 files +46 lines |
+- 54 个 upstream C++ 文件改动
+- +2602 行
+- 419 个 [ASTRO-*] debug tags, 50 种 tag 类型
+- 27 个 commits, 16+ 位小弟 Claude 完成
 
-## Debug Tag 统计 (60+ total)
+## 已完成里程碑
 
-| Tag | Count | 来源 |
-|-----|-------|------|
-| [ASTRO-RENDER] | 8 | DeferredShadingRenderer.cpp |
-| [ASTRO-SCENE] | 4 | SceneRendering.cpp/h |
-| [ASTRO-FUSION] | 3 | all_latest.h |
-| [ASTRO-CHANNEL] | 3 | reader.h, writer.h |
-| [ASTRO-BASEPASS] | 3 | BasePassRendering.cpp |
-| [ASTRO-VISIBILITY] | 2 | SceneVisibility.cpp |
-| [ASTRO-OCCLUSION] | 2 | SceneOcclusion.cpp |
-| [ASTRO-CORE] | 2 | SceneCore.cpp |
-| [ASTRO-CELL] | 1 | DeferredShadingRenderer.cpp |
-| [ASTRO-LIGHT] | 3 | LightRendering.cpp |
-| [ASTRO-SHADOW] | 3 | ShadowRendering.cpp |
-| [ASTRO-TRANSLUCENT] | 3 | TranslucentRendering.cpp |
-| [ASTRO-VELOCITY] | 4 | VelocityRendering.cpp |
-| [ASTRO-DISTORTION] | 4 | DistortionRendering.cpp |
-| [ASTRO-BLOOM] | 3 | PostProcessBloomSetup.cpp |
-| [ASTRO-TONEMAP] | 1 | PostProcessTonemap.cpp |
-| [ASTRO-AA] | 1 | PostProcessAA.cpp |
-| [ASTRO-FOG] | 3 | FogRendering.cpp |
-| [ASTRO-TRANSPORT] | 3 | transport.cc |
-| [ASTRO-SCHEDULER] | 3 | scheduler.cc |
-| [ASTRO-PROCESSOR] | 2 | processor.cc |
+| # | 里程碑 | commit | 文件 |
+|---|--------|--------|------|
+| 1 | M001-M025 | c8a63b9 | DeferredShadingRenderer, BasePass, reader/writer, all_latest |
+| 2 | M026-M050 | c5e6574 | SceneRendering/Visibility/Occlusion/Core |
+| 3 | M051-M055 | 4aad4e3 | LightRendering |
+| 4 | M056-M060 | 1c4195d | ShadowRendering |
+| 5 | M061-M065 | 91a717b | Component 4-channel fusion |
+| 6 | M066-M070 | 0e33d60 | TranslucentRendering |
+| 7 | M071-M075 | 9670c02 | FogRendering + GammaCorrection |
+| 8 | M076-M080 | c430892 | VelocityRendering + DistortionRendering |
+| 9 | M081-M085 | a44de10 | MeshPassProcessor + MeshDrawCommands |
+| 10 | M086-M090 | f2c5d36 | DataVisitor + Dispatcher + ChannelBuffer |
+| 11 | M091-M095 | ad90841 | RendererScene |
+| 12 | M096-M100 | 6d145b2 | ShadowDepth + ShadowSetup |
+| 13 | M101-M105 | d9cbac3 | TranslucentLighting + AtmosphereRendering |
+| 14 | M106-M110 | f5f2446 | ReflectionCapture + GlobalDistanceField |
+| 15 | M111-M115 | 29fe176 | CellNode + TopologyManager |
+| 16 | M116-M120 | 5583652 | VolumetricFog + LightShaft |
+| 17 | M121-M125 | 25cd034 | PrimitiveSceneInfo + IndirectLightingCache |
+| 18 | M126-M135 | 71692b6 | VolumetricFog + LightShaft + Apollo scheduler/transport/notifier |
+| 19 | M141-M150 | 853ee71 | DistanceField + PostProcessing + CompositionGraph |
 
-## 已改文件清单 (21 files, +520 lines)
+## Upstream 来源
+
+- upstream/unreal-renderer/ — Unreal Engine 4.22 Renderer/Private (330 files)
+- upstream/apollo-cyber/ — Apollo CyberRT (200 files)
+
+## 渲染管线映射
 
 ```
-upstream/unreal-renderer/DeferredShadingRenderer.cpp        +128  M001-M010
-upstream/unreal-renderer/BasePassRendering.cpp               +43  M016-M020
-upstream/unreal-renderer/SceneRendering.h                    +12  M026-M030
-upstream/unreal-renderer/SceneRendering.cpp                   +9  M031-M035
-upstream/unreal-renderer/SceneVisibility.cpp                 +10  M036-M042
-upstream/unreal-renderer/SceneOcclusion.cpp                   +9  M043-M047
-upstream/unreal-renderer/SceneCore.cpp                        +8  M048-M050
-upstream/apollo-cyber/node/reader.h                          +32  M011-M013
-upstream/apollo-cyber/node/writer.h                          +15  M014-M015
-upstream/apollo-cyber/data/fusion/all_latest.h               +49  M021-M025
-upstream/unreal-renderer/LightRendering.cpp                  +18  M051-M055
-upstream/unreal-renderer/ShadowRendering.cpp                 +15  M056-M060
-upstream/unreal-renderer/TranslucentRendering.cpp            +12  M061-M075
-upstream/unreal-renderer/VelocityRendering.cpp               +28  M076-M080
-upstream/unreal-renderer/DistortionRendering.cpp             +21  M076-M080
-upstream/unreal-renderer/PostProcess/PostProcessBloomSetup.cpp +17 M081-M090
-upstream/unreal-renderer/PostProcess/PostProcessTonemap.cpp  +14  M091-M095
-upstream/unreal-renderer/PostProcess/PostProcessAA.cpp       +11  M096-M100
-upstream/unreal-renderer/FogRendering.cpp                    +23  M101-M110
-upstream/apollo-cyber/transport/transport.cc                 +17  M126-M135
-upstream/apollo-cyber/scheduler/scheduler.cc                 +18  M136-M145
-upstream/apollo-cyber/scheduler/processor.cc                 +11  M146-M150
+Unreal                          astro-svgfigure
+─────                          ───────────────
+Actor/Component          →     Cell (sub-Claude)
+Scene Graph              →     ELK Topology
+BasePass → GBuffer       →     Constraint Collect → constraints.json
+Lighting Pass            →     Constraint Solver (relative → absolute)
+PostProcess              →     SVG post-processing (edge softening, highlight)
+Final Composite          →     SVG Assembly (z-layer ordering)
 ```
 
 ## 规则
