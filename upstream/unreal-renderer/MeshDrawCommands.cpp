@@ -4,10 +4,18 @@
 MeshDrawCommandSetup.cpp: Mesh draw command setup.
 =============================================================================*/
 
+// [ASTRO-DRAWCMD] draw command → SVG element emit
+// Translates Unreal mesh draw commands into ASTRO SVG element emission events:
+//   - Each FVisibleMeshDrawCommand becomes one SVG <path>/<rect>/<polygon> candidate
+//   - Sort keys map to SVG z-order and layer compositing sequence
+//   - Dynamic instancing merges cell-identical primitives into shared SVG symbol defs
+//   - PrimitiveId vertex buffer uploads correspond to per-cell data channel publish
+
 #include "MeshDrawCommands.h"
 #include "RendererModule.h"
 #include "ScenePrivate.h"
 #include "TranslucentRendering.h"
+#include <cstdio>
 
 TGlobalResource<FPrimitiveIdVertexBufferPool> GPrimitiveIdVertexBufferPool;
 
@@ -145,6 +153,12 @@ void UpdateTranslucentMeshSortKeys(
 	)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_UpdateTranslucentMeshSortKeys);
+
+	// [ASTRO-DRAWCMD] SVG translucent element z-order sort key emit
+	// Sort policy maps to SVG layer compositing mode: distance→painter, axis→orthographic, projectedZ→perspective.
+	// TranslucencyPass selects the SVG group that receives these depth-ordered element emissions.
+	fprintf(stderr, "[ASTRO-DRAWCMD] UpdateTranslucentMeshSortKeys  policy=%d pass=%d numCmds=%d\n",
+		(int)TranslucentSortPolicy, (int)TranslucencyPass, VisibleMeshCommands.Num());
 
 	for (int32 CommandIndex = 0; CommandIndex < VisibleMeshCommands.Num(); ++CommandIndex)
 	{
@@ -370,11 +384,18 @@ void BuildMeshDrawCommandPrimitiveIdBuffer(
 	int32& MaxInstances,
 	int32& VisibleMeshDrawCommandsNum,
 	int32& NewPassVisibleMeshDrawCommandsNum,
-	uint32 InstanceFactor = 1
+	uint32 InstanceFactor
 	)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_BuildMeshDrawCommandPrimitiveIdBuffer);
 	check(PrimitiveIdData && PrimitiveIdDataSize > 0);
+
+	// [ASTRO-DRAWCMD] SVG cell primitiveId buffer emit
+	// PrimitiveIdData is the per-cell channel payload published to SVG element subscribers.
+	// bDynamicInstancing enables SVG <use> symbol reuse across identical cell geometries.
+	// InstanceFactor multiplies SVG element repeat count for tiled cell patterns.
+	fprintf(stderr, "[ASTRO-DRAWCMD] BuildMeshDrawCommandPrimitiveIdBuffer  numCmds=%d dynInstancing=%d bufSize=%d instanceFactor=%u\n",
+		VisibleMeshDrawCommands.Num(), bDynamicInstancing ? 1 : 0, PrimitiveIdDataSize, InstanceFactor);
 
 	const FVisibleMeshDrawCommand* RESTRICT PassVisibleMeshDrawCommands = VisibleMeshDrawCommands.GetData();
 	const int32 NumDrawCommands = VisibleMeshDrawCommands.Num();
@@ -502,6 +523,17 @@ void GenerateDynamicMeshDrawCommands(
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_GenerateDynamicMeshDrawCommands);
 	check(PassMeshProcessor);
 	check((PassType == EMeshPass::Num) == (DynamicMeshElementsPassRelevance == nullptr));
+
+	// [ASTRO-DRAWCMD] SVG element emit — dynamic mesh draw command generation
+	// DynamicMeshElements are traversed and each relevant FMeshBatch is submitted to the
+	// cell constraint pass processor, which emits one SVG element candidate per batch element.
+	// PassType selects the SVG layer group (base, translucent, overlay, etc.).
+	fprintf(stderr, "[ASTRO-DRAWCMD] GenerateDynamicMeshDrawCommands  passType=%d dynElems=%d staticRequests=%d maxDyn=%d maxStatic=%d\n",
+		(int)PassType,
+		DynamicMeshElements.Num(),
+		DynamicMeshCommandBuildRequests.Num(),
+		MaxNumDynamicMeshElements,
+		MaxNumBuildRequestElements);
 
 	FDynamicPassMeshDrawListContext DynamicPassMeshDrawListContext(
 		MeshDrawCommandStorage,

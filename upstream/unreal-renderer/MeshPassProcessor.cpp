@@ -4,6 +4,12 @@
 	MeshPassProcessor.cpp: 
 =============================================================================*/
 
+// [ASTRO-MESHPASS] mesh pass → cell constraint pass processor
+// Bridges Unreal mesh pass pipeline into ASTRO cell-pubsub constraint dispatch:
+//   - Each FMeshPassProcessor instance maps to one SVG cell constraint domain
+//   - Pipeline state IDs are hashed into cell channel identifiers for pub/sub routing
+//   - Draw command sort keys encode cell z-layer and constraint priority
+
 #include "MeshPassProcessor.h"
 #include "SceneUtils.h"
 #include "SceneRendering.h"
@@ -13,6 +19,7 @@
 #include "SceneInterface.h"
 #include "MeshPassProcessor.inl"
 #include "PipelineStateCache.h"
+#include <cstdio>
 
 TSet<FRefCountedGraphicsMinimalPipelineStateInitializer, RefCountedGraphicsMinimalPipelineStateInitializerKeyFuncs> FGraphicsMinimalPipelineStateId::PersistentIdTable;
 TSet<FGraphicsMinimalPipelineStateInitializer> FGraphicsMinimalPipelineStateId::OneFrameIdTable;
@@ -1030,6 +1037,13 @@ void SubmitMeshDrawCommandsRange(
 	FMeshDrawCommandStateCache StateCache;
 	INC_DWORD_STAT_BY(STAT_MeshDrawCalls, NumMeshDrawCommands);
 
+	// [ASTRO-MESHPASS] cell constraint pass batch dispatch
+	// NumMeshDrawCommands draw commands are dispatched as a single cell-constraint batch.
+	// StartIndex offsets into the visible command array, mapping to ordered SVG cell z-layers.
+	// bDynamicInstancing controls whether cell primitiveId merging is active for this pass.
+	fprintf(stderr, "[ASTRO-MESHPASS] SubmitMeshDrawCommandsRange  start=%d count=%d dynInstancing=%d instanceFactor=%u\n",
+		StartIndex, NumMeshDrawCommands, bDynamicInstancing ? 1 : 0, InstanceFactor);
+
 	for (int32 DrawCommandIndex = StartIndex; DrawCommandIndex < StartIndex + NumMeshDrawCommands; DrawCommandIndex++)
 	{
 		SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, MeshEvent, GEmitMeshDrawEvent != 0, TEXT("Mesh Draw"));
@@ -1075,6 +1089,13 @@ FMeshPassProcessor::FMeshPassProcessor(const FScene* InScene, ERHIFeatureLevel::
 	, ViewIfDynamicMeshCommand(InViewIfDynamicMeshCommand)
 	, DrawListContext(InDrawListContext)
 {
+	// [ASTRO-MESHPASS] cell constraint pass processor init
+	// Each processor instance anchors one cell constraint domain in the pubsub topology.
+	// FeatureLevel encodes the SVG rendering tier; ViewIfDynamicMeshCommand gates dynamic cell dispatch.
+	fprintf(stderr, "[ASTRO-MESHPASS] FMeshPassProcessor::ctor  featureLevel=%d hasDynamicView=%d hasDrawListCtx=%d\n",
+		(int)InFeatureLevel,
+		InViewIfDynamicMeshCommand ? 1 : 0,
+		InDrawListContext ? 1 : 0);
 }
 
 enum class EDrawingPolicyOverrideFlags
@@ -1191,6 +1212,14 @@ void FCachedPassMeshDrawListContext::FinalizeCommand(
 	FMeshDrawCommand& MeshDrawCommand)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FinalizeCachedMeshDrawCommand);
+
+	// [ASTRO-MESHPASS] cell constraint pipeline finalize
+	// DrawPrimitiveId is the cell's primitive index in the SVG pubsub scene graph.
+	// SortKey.PackedData encodes z-layer priority for ordered SVG element stacking.
+	// bUseStateBuckets partitions commands into constraint state domains for instancing.
+	fprintf(stderr, "[ASTRO-MESHPASS] FinalizeCommand  primitiveId=%d fillMode=%d cullMode=%d sortKey=0x%llx useStateBuckets=%d\n",
+		DrawPrimitiveId, (int)MeshFillMode, (int)MeshCullMode,
+		(unsigned long long)SortKey.PackedData, bUseStateBuckets ? 1 : 0);
 
 	FGraphicsMinimalPipelineStateId PipelineId;
 	PipelineId = FGraphicsMinimalPipelineStateId::GetPersistentId(PipelineState);
