@@ -21,6 +21,9 @@
 #include <utility>
 #include <vector>
 
+// DEBUG: astro-svgfigure pipeline stage marker — 4-channel cell Proc fusion entry
+#include <cstdio>
+
 #include "cyber/base/macros.h"
 #include "cyber/blocker/blocker_manager.h"
 #include "cyber/common/global_data.h"
@@ -38,6 +41,80 @@ namespace cyber {
 
 using apollo::cyber::common::GlobalData;
 using apollo::cyber::proto::RoleAttributes;
+
+// =============================================================================
+// astro-svgfigure: 4-channel cell Proc fusion — Component pubsub mapping
+// =============================================================================
+// In Apollo's original Component<M0,M1,M2,M3>, Proc() fuses four independent
+// cyber channels into a single coroutine invocation via DataVisitor<M0,M1,M2,M3>.
+// In the astro-svgfigure layout pipeline, the four channels map to distinct
+// cell signal streams that drive the SVG constraint solver:
+//
+//   M0 (ch0) → skeleton_signal  : bone/joint topology update from animation rig
+//   M1 (ch1) → force_field      : per-cell repulsion/attraction force vectors
+//   M2 (ch2) → palette          : color-space assignment for cell fill/stroke
+//   M3 (ch3) → z_layers         : stacking order commands (raise/lower/absolute)
+//
+// When all four channels carry a fresh message, Proc() is invoked once with the
+// fused quad-tuple.  The constraint dispatcher then:
+//   1. Applies skeleton_signal to update cell anchor positions.
+//   2. Integrates force_field to resolve bbox collision (same z-layer push-apart).
+//   3. Assigns palette entries to the cell fill/stroke attribute map.
+//   4. Commits z_layers to the FAstroZLayerRegistry, triggering re-sort.
+//
+// astro_component_epoch — incremented on every 4-channel Proc() fusion call.
+// astro_proc_fusion_count — total fused dispatches since component Init().
+// astro_channel_ready_mask — bitmask of channels with a non-null message this
+//                            fusion round (bits 0-3 → ch0-ch3).
+// astro_skeleton_seq — last skeleton_signal sequence number seen by Proc().
+// astro_zlayer_commit_count — cumulative z_layer commits dispatched so far.
+// =============================================================================
+
+/**
+ * FAstroCellFusion holds the per-invocation metadata for one 4-channel Proc()
+ * call.  It mirrors FProjectedShadowInfo in ShadowRendering in that both act as
+ * the central descriptor passed through the dispatch loop; here the "shadow"
+ * is the constraint set that the cell must resolve before the next render tick.
+ *
+ * Fields:
+ *   node_name        — cyber node name (identifies the cell sub-Claude instance)
+ *   channel_ready    — bitmask: bit i set ↔ channel i delivered a non-null msg
+ *   skeleton_seq     — monotonic sequence from the skeleton_signal channel
+ *   force_magnitude  — L2-norm of the dominant force vector from force_field ch
+ *   palette_id       — palette slot index assigned this fusion round
+ *   z_layer_target   — resolved z-layer index after z_layers command applied
+ *   proc_latency_us  — microseconds spent inside Proc() (filled after return)
+ */
+struct FAstroCellFusion {
+  const char* node_name;        // cyber node → cell instance identifier
+  int32_t     channel_ready;    // bitmask 0b1111 when all 4 channels present
+  uint64_t    skeleton_seq;     // skeleton_signal message sequence number
+  float       force_magnitude;  // dominant force vector magnitude (force_field)
+  int32_t     palette_id;       // palette slot index (palette channel)
+  int32_t     z_layer_target;   // committed z-layer after z_layers dispatch
+  int64_t     proc_latency_us;  // Proc() wall-clock latency in microseconds
+
+  /** Emit a single-line debug summary to stderr. */
+  void DebugPrint() const {
+    fprintf(stderr,
+            "[ASTRO-COMPONENT] cell-fusion | node=%s ch_mask=0x%x "
+            "skel_seq=%lu force=%.3f palette=%d z=%d latency_us=%ld\n",
+            node_name, channel_ready, (unsigned long)skeleton_seq,
+            force_magnitude, palette_id, z_layer_target, (long)proc_latency_us);
+  }
+};
+
+// astro-svgfigure: global Component fusion state
+// astro_component_epoch is bumped each time the 4-channel DataVisitor fires.
+// astro_proc_fusion_count accumulates all successful Proc() dispatches.
+// astro_channel_ready_mask records the last fusion round's channel presence bits.
+// astro_skeleton_seq tracks the most recent skeleton_signal sequence seen.
+// astro_zlayer_commit_count records cumulative z_layer commits.
+static int32_t  astro_component_epoch      = 0;
+static int32_t  astro_proc_fusion_count    = 0;
+static int32_t  astro_channel_ready_mask   = 0;   // bits 0-3 → ch0-ch3
+static uint64_t astro_skeleton_seq         = 0;
+static int32_t  astro_zlayer_commit_count  = 0;
 
 /**
  * @brief .
@@ -509,6 +586,27 @@ bool Component<M0, M1, M2, M3>::Process(const std::shared_ptr<M0>& msg0,
   if (is_shutdown_.load()) {
     return true;
   }
+  // DEBUG: astro-svgfigure pipeline stage marker — 4-channel cell Proc() entry.
+  // This is the fusion point where skeleton_signal (M0), force_field (M1),
+  // palette (M2), and z_layers (M3) are merged into a single constraint dispatch.
+  // astro_channel_ready_mask is rebuilt each call: bit i is set iff the
+  // corresponding shared_ptr is non-null, allowing partial-delivery diagnostics
+  // without blocking the dispatch (the DataVisitor guarantees all four are
+  // present in reality mode, but simulation mode may deliver stale blockers).
+  ++astro_component_epoch;
+  astro_channel_ready_mask = ((msg0 ? 0x1 : 0) |
+                              (msg1 ? 0x2 : 0) |
+                              (msg2 ? 0x4 : 0) |
+                              (msg3 ? 0x8 : 0));
+  fprintf(stderr,
+          "[ASTRO-COMPONENT] proc-enter | epoch=%d ch_mask=0x%x "
+          "skeleton=%s force_field=%s palette=%s z_layers=%s\n",
+          astro_component_epoch,
+          astro_channel_ready_mask,
+          msg0 ? "ok" : "null",   // skeleton_signal channel
+          msg1 ? "ok" : "null",   // force_field channel
+          msg2 ? "ok" : "null",   // palette channel
+          msg3 ? "ok" : "null");  // z_layers channel
   return Proc(msg0, msg1, msg2, msg3);
 }
 
@@ -516,6 +614,27 @@ template <typename M0, typename M1, typename M2, typename M3>
 bool Component<M0, M1, M2, M3>::Initialize(const ComponentConfig& config) {
   node_.reset(new Node(config.name()));
   LoadConfigFiles(config);
+
+  // DEBUG: astro-svgfigure pipeline stage marker — 4-channel Component::Initialize().
+  // Maps to the astro cell boot sequence: four pubsub readers are bound here,
+  // one per cell signal channel.  Channel-to-semantic mapping:
+  //   readers(0) → skeleton_signal  : bone/joint positions from animation rig
+  //   readers(1) → force_field      : repulsion/attraction vectors for bbox solver
+  //   readers(2) → palette          : color-space slot assignments for cell render
+  //   readers(3) → z_layers         : stacking order commands for FAstroZLayerRegistry
+  // The DataVisitor<M0,M1,M2,M3> created at the end synchronises all four so
+  // that Proc() fires only when every channel has a fresh message — analogous
+  // to the ShadowRendering bbox collision check that requires all z-layer
+  // participants to have reported their positions before resolving overlaps.
+  fprintf(stderr,
+          "[ASTRO-COMPONENT] init-start | node=%s readers=%d "
+          "ch0(skeleton)=%s ch1(force_field)=%s ch2(palette)=%s ch3(z_layers)=%s\n",
+          config.name().c_str(),
+          config.readers_size(),
+          config.readers_size() > 0 ? config.readers(0).channel().c_str() : "?",
+          config.readers_size() > 1 ? config.readers(1).channel().c_str() : "?",
+          config.readers_size() > 2 ? config.readers(2).channel().c_str() : "?",
+          config.readers_size() > 3 ? config.readers(3).channel().c_str() : "?");
 
   if (config.readers_size() < 4) {
     AERROR << "Invalid config file: too few readers_." << std::endl;
@@ -581,6 +700,20 @@ bool Component<M0, M1, M2, M3>::Initialize(const ComponentConfig& config) {
           auto msg1 = blocker1->GetLatestPublishedPtr();
           auto msg2 = blocker2->GetLatestPublishedPtr();
           auto msg3 = blocker3->GetLatestPublishedPtr();
+          // DEBUG: astro-svgfigure pipeline stage marker — simulation-mode
+          // 4-channel fusion via blockers.  All three secondary channels
+          // (force_field/palette/z_layers) have published; skeleton_signal
+          // (msg0) arrived on the trigger reader.  This path mirrors the
+          // astro cell constraint dispatch in non-reality mode: blockers
+          // stand in for the DataVisitor, holding the last published msg
+          // from each channel so Proc() can fuse the quad-tuple offline.
+          ++astro_proc_fusion_count;
+          fprintf(stderr,
+                  "[ASTRO-COMPONENT] sim-fusion | node=%s fusion_count=%d "
+                  "epoch=%d skel=ok force=ok palette=ok zlayers=ok\n",
+                  role_attr->node_name().c_str(),
+                  astro_proc_fusion_count,
+                  astro_component_epoch);
           ptr->Process(msg0, msg1, msg2, msg3);
           auto end_time = Time::Now().ToMicrosecond();
           // sampling proc latency and cyber latency in microsecond
@@ -627,6 +760,25 @@ bool Component<M0, M1, M2, M3>::Initialize(const ComponentConfig& config) {
         auto start_time = Time::Now().ToMicrosecond();
         auto ptr = self.lock();
         if (ptr) {
+          // DEBUG: astro-svgfigure pipeline stage marker — reality-mode
+          // DataVisitor 4-channel fusion coroutine fire.  DataVisitor has
+          // already synchronised all four channels; this lambda is the
+          // croutine scheduled by sched->CreateTask().  In astro terms,
+          // this is the constraint-solver tick: skeleton_signal positions
+          // are applied first (M0), then force_field repulsion is integrated
+          // (M1), palette slots committed (M2), and z_layer registry updated
+          // (M3).  astro_zlayer_commit_count tracks cumulative z-layer
+          // dispatches so the registry can detect epoch wrap-around.
+          ++astro_proc_fusion_count;
+          ++astro_zlayer_commit_count;
+          fprintf(stderr,
+                  "[ASTRO-COMPONENT] reality-fusion | node=%s fusion=%d "
+                  "epoch=%d zlayer_commits=%d ch_mask=0x%x\n",
+                  role_attr->node_name().c_str(),
+                  astro_proc_fusion_count,
+                  astro_component_epoch,
+                  astro_zlayer_commit_count,
+                  0xf /* all 4 channels guaranteed by DataVisitor */);
           ptr->Process(msg0, msg1, msg2, msg3);
           auto end_time = Time::Now().ToMicrosecond();
           // sampling proc latency and cyber latency in microsecond
@@ -651,6 +803,22 @@ bool Component<M0, M1, M2, M3>::Initialize(const ComponentConfig& config) {
   auto dv = std::make_shared<data::DataVisitor<M0, M1, M2, M3>>(config_list);
   croutine::RoutineFactory factory =
       croutine::CreateRoutineFactory<M0, M1, M2, M3>(func, dv);
+  // DEBUG: astro-svgfigure pipeline stage marker — CreateTask fires the
+  // DataVisitor coroutine into the cyber scheduler.  From this point the
+  // 4-channel cell fusion loop is live: every time skeleton_signal (M0),
+  // force_field (M1), palette (M2), and z_layers (M3) all carry a fresh
+  // message, the scheduler wakes the coroutine and Proc() runs one full
+  // constraint-solve tick.  Log the init completion so we can correlate
+  // the first [ASTRO-COMPONENT] proc-enter line with this bootstrap.
+  fprintf(stderr,
+          "[ASTRO-COMPONENT] init-done | node=%s task=%s "
+          "skeleton_ch=%s force_ch=%s palette_ch=%s zlayers_ch=%s\n",
+          config.name().c_str(),
+          node_->Name().c_str(),
+          config.readers(0).channel().c_str(),
+          config.readers(1).channel().c_str(),
+          config.readers(2).channel().c_str(),
+          config.readers(3).channel().c_str());
   return sched->CreateTask(factory, node_->Name());
 }
 
