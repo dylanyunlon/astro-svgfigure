@@ -1096,6 +1096,323 @@ def _apply_cell_decoration_overlay(deco: AstroCellDecoration,
 
 CHANNELS = os.path.dirname(os.path.abspath(__file__))
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] ReflectionEnvironment → Python port
+#
+# Ported from commit 5d07a0a:
+#   upstream/unreal-renderer/ReflectionEnvironment.cpp
+#
+# FAstroCellStyleProbe (→ AstroCellStyleProbe):
+#   Per-frame probe that samples the six cardinal neighbour cells' published
+#   status channels, collects their species indices + representative SVG
+#   palette colours, and elects the dominant species by majority vote.
+#   BlendWithCubemap() → blend_toward_neighbour_palette(): given the cell's
+#   own SVG stroke/fill colour, lerp it 20 % toward the neighbour palette
+#   average so the cell visually converges toward its surroundings — the
+#   "style consistency" guarantee from the C++ probe system, translated to the
+#   SVG substrate.  Roughness (0 = smooth, 1 = rough) maps to how strongly the
+#   cell should resist neighbour influence: smooth cells (low roughness) pull
+#   harder; rough cells keep more of their own character.
+#
+# GAstroCellRegistrySnapshot (→ cell_registry.json + per-cell status.json):
+#   In C++ the snapshot is a value-copy written by the game thread before the
+#   render pass.  Here the pub/sub equivalent is the set of already-published
+#   cell/*/status.json + cell/*/bbox.json files in the channels directory.
+#   The probe reads whatever is on disk at proc() call time — i.e. whatever
+#   neighbours have already published in this epoch (or the previous one if a
+#   neighbour hasn't run yet).
+#
+# SampleSurroundingCells():
+#   Walks the six cardinal neighbours in 2-D grid space (±1 grid step in X
+#   and Y; ±1 z-layer step).  Grid step = floor(cell_width) for X/Y, 1 for Z.
+#   For each neighbour that has a published status.json, reads species_index
+#   (integer derived from the species name), representative colour (the
+#   primary SVG fill colour for that species), and accumulates into the probe.
+#
+# BuildAstroCellStyleProbes():
+#   Builds one probe per active cell in the registry, called from proc()
+#   immediately before SVG parameter finalisation so adjustments flow into the
+#   colour attributes written into the SVG string.
+#
+# 2-D channel adaptation:
+#   CubemapArray probe  → per-cell style probe keyed by cell_id
+#   WorldPosition       → bbox (x, y, z) of the cell
+#   InfluenceRadius     → max(w, h) of the cell bbox
+#   DominantSpeciesIndex→ int derived from species name string
+#   Palette[]           → list of (r, g, b) tuples from neighbour cells
+#   CellStyleWeight     → _STYLE_PROBE_WEIGHT global (default 0.20 = 20 %)
+#   BlendWithCubemap    → blend_toward_neighbour_palette() below
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Blend weight: fraction by which this cell drifts toward the neighbour palette.
+# 0.0 = pure own style, 1.0 = fully adopt neighbour palette.
+# 鲁迅式 20 % drift — enough to feel the crowd without losing oneself.
+_STYLE_PROBE_WEIGHT: float = 0.20
+
+# Species name → canonical integer index (mirrors EAstroCellSpecies + extras).
+# Used for majority-vote tallying, same as SpeciesVotes[256] in C++.
+_SPECIES_NAME_TO_INDEX: dict = {
+    "cil-eye":         1,
+    "cil-bolt":        2,
+    "cil-vector":      3,
+    "cil-plus":        4,
+    "cil-arrow-right": 5,
+}
+
+# Species index → primary SVG fill colour (RGB 0-255 tuple).
+# Mirrors RepresentativeColour in FAstroCellRegistry::FCellEntry; values
+# derived from the fill colours used in the generate_svg_* functions below.
+_SPECIES_INDEX_TO_COLOUR: dict = {
+    1: (63,  81, 181),   # cil-eye    → #3F51B5 Indigo
+    2: (255, 111,   0),  # cil-bolt   → #FF6F00 Amber
+    3: (46,  125,  50),  # cil-vector → #2E7D32 Green
+    4: (30,  136, 229),  # cil-plus   → #1E88E5 Blue
+    5: (69,   90, 100),  # cil-arrow-right → #455A64 Blue-Grey
+    0: (144, 164, 174),  # unassigned  → #90A4AE neutral
+}
+
+
+def _species_to_index(species_name: str) -> int:
+    """Map a species name string to its canonical integer index."""
+    return _SPECIES_NAME_TO_INDEX.get(species_name, 0)
+
+
+def _colour_to_hex(rgb: tuple) -> str:
+    """Convert (r, g, b) int tuple to #RRGGBB hex string."""
+    return "#{:02X}{:02X}{:02X}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+
+
+def _lerp_colour(c_own: tuple, c_target: tuple, t: float) -> tuple:
+    """
+    Linear interpolation between two (r,g,b) tuples.
+
+    t=0 → c_own unchanged; t=1 → fully c_target.
+    Mirrors FMath::Lerp(CubemapSample, PaletteAvg, t) from BlendWithCubemap.
+    """
+    t = max(0.0, min(1.0, t))
+    return (
+        c_own[0] + (c_target[0] - c_own[0]) * t,
+        c_own[1] + (c_target[1] - c_own[1]) * t,
+        c_own[2] + (c_target[2] - c_own[2]) * t,
+    )
+
+
+class AstroCellStyleProbe:
+    """
+    Python equivalent of FAstroCellStyleProbe.
+
+    Samples the published status + bbox channels of the six cardinal neighbour
+    cells, accumulates their species indices and representative colours into a
+    palette, then exposes blend_toward_neighbour_palette() which nudges the
+    cell's own SVG colour parameters toward the neighbourhood average.
+
+    Lifetime: created inside proc() each call, discarded after SVG finalisation.
+    """
+
+    # Maximum palette entries — mirrors MaxPaletteEntries = 8 in C++.
+    MAX_PALETTE_ENTRIES: int = 8
+
+    def __init__(self, cell_id: str, bbox: dict, cell_style_weight: float = _STYLE_PROBE_WEIGHT):
+        self.cell_id          = cell_id
+        self.world_x          = float(bbox["x"])
+        self.world_y          = float(bbox["y"])
+        self.world_z          = float(bbox.get("z", 0))
+        self.cell_w           = float(bbox["w"])
+        self.cell_h           = float(bbox["h"])
+        # InfluenceRadius — max half-extent of the bbox (mirrors Comp->InfluenceRadius)
+        self.influence_radius = max(self.cell_w, self.cell_h) / 2.0
+        self.cell_style_weight = max(0.0, min(1.0, cell_style_weight))
+
+        # Palette: list of (r,g,b) tuples from neighbour cells, up to MAX_PALETTE_ENTRIES
+        self.palette: list = []
+        # Dominant species index elected by majority vote
+        self.dominant_species_index: int = 0
+
+    def sample_surrounding_cells(self, channels_dir: str) -> None:
+        """
+        Walk the six cardinal neighbour positions in grid space, read their
+        published status.json + bbox.json channels, accumulate species/palette.
+
+        Mirrors FAstroCellStyleProbe::SampleSurroundingCells() — six cardinal
+        directions, species vote tally, palette fill.
+
+        Grid step: cell_w for X, cell_h for Y, 1.0 for Z (layer index).
+        Neighbours are identified by scanning cell/*/bbox.json files and
+        checking whether their (x, y, z) centre falls within one grid step
+        of this cell's centre in exactly one axis (cardinal, not diagonal).
+        """
+        self.palette.clear()
+        self.dominant_species_index = 0
+
+        cell_base = os.path.join(channels_dir, "cell")
+        if not os.path.isdir(cell_base):
+            return
+
+        # Grid step sizes — mirrors CellSize = 100.f for X/Y; 1.0 for Z-layer
+        step_x = max(self.cell_w, 1.0)
+        step_y = max(self.cell_h, 1.0)
+        step_z = 1.0
+
+        # Self centre
+        cx = self.world_x + self.cell_w / 2.0
+        cy = self.world_y + self.cell_h / 2.0
+        cz = self.world_z
+
+        # Six cardinal offsets: (±step_x, 0, 0), (0, ±step_y, 0), (0, 0, ±step_z)
+        # Mirrors Offsets[6] in the C++ SampleSurroundingCells.
+        cardinal_offsets = [
+            ( step_x,      0,      0),
+            (-step_x,      0,      0),
+            (      0,  step_y,     0),
+            (      0, -step_y,     0),
+            (      0,      0,  step_z),
+            (      0,      0, -step_z),
+        ]
+
+        # Tolerance for "is this a cardinal neighbour?" check.
+        # Mirrors FIntVector equality — we allow a small float tolerance.
+        cardinal_tol = 0.5
+
+        species_votes: dict = {}  # species_index → vote count; mirrors SpeciesVotes[256]
+        max_votes: int = 0
+
+        for sibling in os.listdir(cell_base):
+            if sibling == self.cell_id:
+                continue  # skip self
+
+            bbox_path   = os.path.join(cell_base, sibling, "bbox.json")
+            status_path = os.path.join(cell_base, sibling, "status.json")
+
+            if not os.path.isfile(bbox_path):
+                continue
+
+            try:
+                with open(bbox_path) as _f:
+                    nbr_bbox = json.load(_f)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            # Sibling centre
+            nbr_cx = nbr_bbox["x"] + nbr_bbox["w"] / 2.0
+            nbr_cy = nbr_bbox["y"] + nbr_bbox["h"] / 2.0
+            nbr_cz = float(nbr_bbox.get("z", 0))
+
+            # Check whether sibling is exactly one cardinal step away.
+            # Mirrors FIntVector equality test on CenterCoord + Offsets[i].
+            dx = nbr_cx - cx
+            dy = nbr_cy - cy
+            dz = nbr_cz - cz
+
+            is_cardinal = False
+            for (ox, oy, oz) in cardinal_offsets:
+                if (abs(dx - ox) < cardinal_tol * step_x and
+                        abs(dy - oy) < cardinal_tol * step_y and
+                        abs(dz - oz) < cardinal_tol * max(step_z, 1.0)):
+                    is_cardinal = True
+                    break
+
+            if not is_cardinal:
+                continue  # not a direct neighbour — skip (mirrors Find() returning nullptr)
+
+            # Read species from status.json if available; fall back to bbox.json field.
+            nbr_species_name = nbr_bbox.get("species", "")
+            if not nbr_species_name and os.path.isfile(status_path):
+                try:
+                    with open(status_path) as _f:
+                        nbr_status = json.load(_f)
+                    nbr_species_name = nbr_status.get("species", "")
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            nbr_species_idx = _species_to_index(nbr_species_name)
+            nbr_colour      = _SPECIES_INDEX_TO_COLOUR.get(nbr_species_idx,
+                                                           _SPECIES_INDEX_TO_COLOUR[0])
+
+            # Accumulate palette entry (up to MAX_PALETTE_ENTRIES).
+            if len(self.palette) < self.MAX_PALETTE_ENTRIES:
+                self.palette.append(nbr_colour)
+
+            # Tally species vote — mirrors SpeciesVotes[SI]++
+            species_votes[nbr_species_idx] = species_votes.get(nbr_species_idx, 0) + 1
+            if species_votes[nbr_species_idx] > max_votes:
+                max_votes = species_votes[nbr_species_idx]
+                self.dominant_species_index = nbr_species_idx
+
+    def blend_toward_neighbour_palette(
+        self,
+        own_colour: tuple,
+        roughness: float = 0.5,
+    ) -> tuple:
+        """
+        Nudge own_colour (r,g,b) toward the neighbourhood palette average.
+
+        Direct port of FAstroCellStyleProbe::BlendWithCubemap():
+          - Compute PaletteAvg from palette entries.
+          - Smooth-step blend: smooth surfaces (low roughness) pull more
+            strongly; rough surfaces resist and keep own character.
+          - Scale blend by cell_style_weight (_STYLE_PROBE_WEIGHT = 0.20).
+
+        @param own_colour  Cell's own primary colour as (r, g, b) floats [0,255].
+        @param roughness   Visual roughness of this cell [0,1].  0 = sharp icon
+                           (attaches hard to neighbour style); 1 = rough/noisy
+                           (ignores neighbourhood almost entirely).
+        @return            Blended (r, g, b) tuple, same scale.
+        """
+        if not self.palette:
+            return own_colour   # no neighbours sampled — no-op (PaletteSize==0 path)
+
+        # Accumulate weighted average palette colour — mirrors the palette loop.
+        r_sum = sum(c[0] for c in self.palette)
+        g_sum = sum(c[1] for c in self.palette)
+        b_sum = sum(c[2] for c in self.palette)
+        n = len(self.palette)
+        palette_avg = (r_sum / n, g_sum / n, b_sum / n)
+
+        # Smooth-step blend: smoother surfaces get stronger cell-style push.
+        # At roughness=0 → full palette; at roughness=1 → no palette influence.
+        # Mirrors: t = SmoothStep(0,1, 1-Roughness) * CellStyleWeight
+        inv_r = max(0.0, min(1.0, 1.0 - roughness))
+        # SmoothStep(0,1,x) = x*x*(3-2*x)
+        smooth = inv_r * inv_r * (3.0 - 2.0 * inv_r)
+        t = smooth * self.cell_style_weight
+
+        return _lerp_colour(own_colour, palette_avg, t)
+
+
+def build_astro_cell_style_probes(channels_dir: str) -> dict:
+    """
+    Build one AstroCellStyleProbe per active cell in the registry snapshot.
+
+    Python equivalent of BuildAstroCellStyleProbes() — iterates all published
+    cell/*/bbox.json entries, constructs probes, samples surrounding cells,
+    returns a dict keyed by cell_id.
+
+    Called from proc() before SVG parameter finalisation so that the probe
+    data is ready when adjust_svg_params_for_style_consistency() is called.
+    """
+    probes: dict = {}
+
+    cell_base = os.path.join(channels_dir, "cell")
+    if not os.path.isdir(cell_base):
+        return probes
+
+    for cid in os.listdir(cell_base):
+        bbox_path = os.path.join(cell_base, cid, "bbox.json")
+        if not os.path.isfile(bbox_path):
+            continue
+        try:
+            with open(bbox_path) as _f:
+                bbox = json.load(_f)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        probe = AstroCellStyleProbe(cid, bbox)
+        probe.sample_surrounding_cells(channels_dir)
+        probes[cid] = probe
+
+    return probes
+
 # ═══════════════════════════════════════════════
 # Channel I/O — Apollo Reader/Writer equivalent
 # ═══════════════════════════════════════════════
@@ -1346,6 +1663,74 @@ def proc(cell_id: str):
     generator = SPECIES_GENERATORS.get(species, generate_svg_cil_arrow_right)
     svg_content, actual_bbox = generator(cell_id, label, bbox, gene_traits)
 
+    # ── [ASTRO-CELL] ReflectionEnvironment — cell style probe consistency ─────
+    # Port of FAstroCellStyleProbe::SampleSurroundingCells + BlendWithCubemap
+    # from commit 5d07a0a (upstream/unreal-renderer/ReflectionEnvironment.cpp).
+    #
+    # Build a probe for this cell, sample its six cardinal neighbours from the
+    # already-published cell/*/bbox.json + status.json channels, then nudge the
+    # primary SVG stroke/fill colour of this cell 20 % toward the neighbourhood
+    # palette average (鲁迅式: enough to feel the pull, not enough to surrender).
+    #
+    # roughness maps to the cell's visual complexity:
+    #   simple icon species (cil-eye, cil-bolt) → low roughness → stronger pull
+    #   composite / arrow species → higher roughness → weaker pull
+    _SPECIES_ROUGHNESS: dict = {
+        "cil-eye":         0.1,   # smooth focal icon — very susceptible
+        "cil-bolt":        0.2,   # sharp energy icon — susceptible
+        "cil-plus":        0.3,   # structured cross — moderate
+        "cil-vector":      0.5,   # multi-arrow — moderate resistance
+        "cil-arrow-right": 0.7,   # directional terminal — mostly independent
+    }
+    _probe_roughness = _SPECIES_ROUGHNESS.get(species, 0.5)
+
+    _style_probe = AstroCellStyleProbe(cell_id, bbox)
+    _style_probe.sample_surrounding_cells(CHANNELS)
+
+    # Own primary colour (species fill colour from _SPECIES_INDEX_TO_COLOUR)
+    _own_species_idx   = _species_to_index(species)
+    _own_colour_rgb    = _SPECIES_INDEX_TO_COLOUR.get(_own_species_idx,
+                                                      _SPECIES_INDEX_TO_COLOUR[0])
+    _blended_colour_rgb = _style_probe.blend_toward_neighbour_palette(
+        _own_colour_rgb, roughness=_probe_roughness)
+    _blended_hex = _colour_to_hex(_blended_colour_rgb)
+
+    # Log probe result — mirrors UE_LOG VeryVerbose in CubemapSlot loop.
+    print(
+        f"[ASTRO-CELL] StyleProbe cell_id={cell_id} "
+        f"dominant_species={_style_probe.dominant_species_index} "
+        f"palette_entries={len(_style_probe.palette)} "
+        f"weight={_style_probe.cell_style_weight:.2f} "
+        f"own={_colour_to_hex(_own_colour_rgb)} "
+        f"blended={_blended_hex} "
+        f"roughness={_probe_roughness:.1f}",
+        file=sys.stderr,
+    )
+
+    # Apply blended colour: substitute the species primary fill in svg_content.
+    # This is the Python equivalent of the per-pixel palette blend that in C++
+    # happens in the pixel shader via uniform buffer parameters.  Here we do a
+    # simple string substitution on the already-generated SVG fragment — same
+    # end effect: style convergence toward the neighbourhood without re-running
+    # the generator.
+    _own_hex_upper = _colour_to_hex(_own_colour_rgb).upper()
+    _own_hex_lower = _colour_to_hex(_own_colour_rgb).lower()
+    if _blended_hex.upper() != _own_hex_upper and len(_style_probe.palette) > 0:
+        # Replace the primary fill colour occurrences (fill= and stroke= attrs).
+        svg_content = svg_content.replace(
+            f'fill="{_own_hex_upper}"', f'fill="{_blended_hex}"')
+        svg_content = svg_content.replace(
+            f'fill="{_own_hex_lower}"', f'fill="{_blended_hex}"')
+        svg_content = svg_content.replace(
+            f'stroke="{_own_hex_upper}"', f'stroke="{_blended_hex}"')
+        svg_content = svg_content.replace(
+            f'stroke="{_own_hex_lower}"', f'stroke="{_blended_hex}"')
+        # Also handle mixed-case (generated by f-strings with literal hex)
+        svg_content = svg_content.replace(
+            f'fill="#{_own_hex_upper[1:]}"', f'fill="{_blended_hex}"')
+        svg_content = svg_content.replace(
+            f'stroke="#{_own_hex_upper[1:]}"', f'stroke="{_blended_hex}"')
+
     # ── [ASTRO-CELL] Capsule shadow: collect all sibling cell bboxes ─────────
     # BuildCellOcclusionVolumes equivalent: load every published bbox to build
     # the occluder set (cells that haven't published yet are silently skipped).
@@ -1404,6 +1789,11 @@ def proc(cell_id: str):
     # here it modulates the entire cell group so dense regions visually recede.
     full_svg = (
         f'{shadow_filter_def}\n'
+        f'<!-- [ASTRO-CELL] StyleProbe species={species} '
+        f'dominant_nbr={_style_probe.dominant_species_index} '
+        f'palette={len(_style_probe.palette)} '
+        f'blended_fill={_blended_hex} weight={_style_probe.cell_style_weight:.2f} '
+        f'(FAstroCellStyleProbe::BlendWithCubemap port, commit 5d07a0a) -->\n'
         f'<!-- [ASTRO-CELL] PostProcessAO crowding_opacity={crowding_opacity:.4f} '
         f'(FAstroConstraintAO::ComputeConstraintWeight port) -->\n'
         f'<g id="cell-{cell_id}" data-z="{bbox["z"]}" '
