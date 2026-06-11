@@ -17,6 +17,15 @@
 #ifndef CYBER_DATA_DATA_NOTIFIER_H_
 #define CYBER_DATA_DATA_NOTIFIER_H_
 
+// [ASTRO-NOTIFY] Constraint-update notification layer — ASTRO patch M128
+// Wraps Apollo Cyber RT DataNotifier to emit structured trace events each time
+// a channel notification fires.  The Astro cell-pubsub loop uses these events
+// to propagate constraint updates across SVG-figure cell edges without
+// requiring a full DAG re-evaluation.
+//
+// Debug macro: ASTRO_NOTIFY_DBG — enable at runtime with ASTRO_NOTIFY_VERBOSE=1
+// Output format: [ASTRO-NOTIFY] ch=<id> notifiers=<n> op=<verb> ok=<0|1>
+
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -26,6 +35,18 @@
 #include "cyber/data/cache_buffer.h"
 #include "cyber/event/perf_event_cache.h"
 #include "cyber/time/time.h"
+
+// [ASTRO-NOTIFY] Constraint-update debug helper — zero overhead when off.
+#ifndef ASTRO_NOTIFY_DBG
+#define ASTRO_NOTIFY_DBG(ch, n, op, ok)                                   \
+  do {                                                                    \
+    if (std::getenv("ASTRO_NOTIFY_VERBOSE")) {                            \
+      AINFO << "[ASTRO-NOTIFY] ch=" << (ch)                              \
+            << " notifiers=" << (n) << " op=" << (op)                    \
+            << " ok=" << (ok);                                            \
+    }                                                                     \
+  } while (0)
+#endif  // ASTRO_NOTIFY_DBG
 
 namespace apollo {
 namespace cyber {
@@ -64,15 +85,21 @@ inline void DataNotifier::AddNotifier(
   NotifyVector* notifies = nullptr;
   if (notifies_map_.Get(channel_id, &notifies)) {
     notifies->emplace_back(notifier);
+    // [ASTRO-NOTIFY] Constraint notifier appended to existing channel — M128.
+    ASTRO_NOTIFY_DBG(channel_id, notifies->size(), "add_existing", 1);
   } else {
     NotifyVector new_notify = {notifier};
     notifies_map_.Set(channel_id, new_notify);
+    // [ASTRO-NOTIFY] Constraint notifier registered on new channel — M128.
+    ASTRO_NOTIFY_DBG(channel_id, 1, "add_new", 1);
   }
 }
 
 inline bool DataNotifier::Notify(const uint64_t channel_id) {
   NotifyVector* notifies = nullptr;
   if (notifies_map_.Get(channel_id, &notifies)) {
+    // [ASTRO-NOTIFY] Constraint-update notification firing — M128.
+    ASTRO_NOTIFY_DBG(channel_id, notifies->size(), "notify", 1);
     for (auto& notifier : *notifies) {
       if (notifier && notifier->callback) {
         notifier->callback();
@@ -80,6 +107,8 @@ inline bool DataNotifier::Notify(const uint64_t channel_id) {
     }
     return true;
   }
+  // [ASTRO-NOTIFY] Notify called on unknown channel — M128.
+  ASTRO_NOTIFY_DBG(channel_id, 0, "notify_miss", 0);
   return false;
 }
 

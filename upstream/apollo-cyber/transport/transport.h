@@ -17,6 +17,15 @@
 #ifndef CYBER_TRANSPORT_TRANSPORT_H_
 #define CYBER_TRANSPORT_TRANSPORT_H_
 
+// [ASTRO-TRANS] Git-channel transport layer — ASTRO patch M127
+// Extends Apollo Cyber RT transport with a Git-backed channel abstraction.
+// Each transmitter/receiver creation is intercepted to log channel metadata
+// so the Astro cell-pubsub loop can reconcile in-memory message flow with
+// the SVG-figure Git channel graph stored under channels/.
+//
+// Debug macro: ASTRO_TRANS_DBG — enable at runtime with ASTRO_TRANS_VERBOSE=1
+// Output format: [ASTRO-TRANS] ch=<name> mode=<mode> role=<tx|rx> op=<verb>
+
 #include <atomic>
 #include <memory>
 #include <string>
@@ -40,6 +49,20 @@
 #include "cyber/transport/transmitter/rtps_transmitter.h"
 #include "cyber/transport/transmitter/shm_transmitter.h"
 #include "cyber/transport/transmitter/transmitter.h"
+
+// [ASTRO-TRANS] Git-channel debug helper.
+// Logs channel name, transport mode, and role (transmitter / receiver).
+// Zero overhead when ASTRO_TRANS_VERBOSE is not set.
+#ifndef ASTRO_TRANS_DBG
+#define ASTRO_TRANS_DBG(ch, mode, role, op)                               \
+  do {                                                                    \
+    if (std::getenv("ASTRO_TRANS_VERBOSE")) {                             \
+      AINFO << "[ASTRO-TRANS] ch=" << (ch)                               \
+            << " mode=" << (mode) << " role=" << (role)                  \
+            << " op=" << (op);                                            \
+    }                                                                     \
+  } while (0)
+#endif  // ASTRO_TRANS_DBG
 
 namespace apollo {
 namespace cyber {
@@ -88,6 +111,9 @@ auto Transport::CreateTransmitter(const RoleAttributes& attr,
     return nullptr;
   }
 
+  // [ASTRO-TRANS] Log transmitter creation on the Git-channel layer — M127.
+  ASTRO_TRANS_DBG(attr.channel_name(), static_cast<int>(mode), "tx", "create");
+
   std::shared_ptr<Transmitter<M>> transmitter = nullptr;
   RoleAttributes modified_attr = attr;
   if (!modified_attr.has_qos_profile()) {
@@ -118,6 +144,9 @@ auto Transport::CreateTransmitter(const RoleAttributes& attr,
   RETURN_VAL_IF_NULL(transmitter, nullptr);
   if (mode != OptionalMode::HYBRID) {
     transmitter->Enable();
+    // [ASTRO-TRANS] Transmitter enabled on Git channel — M127.
+    ASTRO_TRANS_DBG(attr.channel_name(), static_cast<int>(mode), "tx",
+                    "enable");
   }
   return transmitter;
 }
@@ -131,6 +160,9 @@ auto Transport::CreateReceiver(
     AINFO << "transport has been shut down.";
     return nullptr;
   }
+
+  // [ASTRO-TRANS] Log receiver creation on the Git-channel layer — M127.
+  ASTRO_TRANS_DBG(attr.channel_name(), static_cast<int>(mode), "rx", "create");
 
   std::shared_ptr<Receiver<M>> receiver = nullptr;
   RoleAttributes modified_attr = attr;
@@ -162,6 +194,9 @@ auto Transport::CreateReceiver(
   RETURN_VAL_IF_NULL(receiver, nullptr);
   if (mode != OptionalMode::HYBRID) {
     receiver->Enable();
+    // [ASTRO-TRANS] Receiver enabled on Git channel — M127.
+    ASTRO_TRANS_DBG(attr.channel_name(), static_cast<int>(mode), "rx",
+                    "enable");
   }
   return receiver;
 }
