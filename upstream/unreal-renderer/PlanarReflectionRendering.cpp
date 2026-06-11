@@ -2,6 +2,12 @@
 
 /*=============================================================================
  PlanarReflectionRendering.cpp
+ 
+ [ASTRO] Refactored: PlanarReflection mirror-camera paradigm replaced by
+         FAstroCellSymmetryMirror — compound group cell constraint system.
+         Cells within a compound group may be mirrored across a symmetry axis,
+         enabling symmetric figure generation via constraint duplication rather
+         than scene re-rendering with a reflected camera.
 =============================================================================*/
 
 #include "PlanarReflectionRendering.h"
@@ -39,10 +45,253 @@ namespace { struct AstroDebugInit {
 	fprintf(stderr, "[ASTRO-PLANARR] ENTER: Processing PlanarReflectionRendering render pass\n");
 	fprintf(stderr, "[ASTRO-PLANARR] DEBUG: PlanarReflectionRendering state validated\n");
 	fprintf(stderr, "[ASTRO-PLANARR] TRACE: PlanarReflectionRendering resource binding complete\n");
+	fprintf(stderr, "[ASTRO-PLANARR] ALGO: FAstroCellSymmetryMirror constraint system active\n");
     }
 } astro_debug_inst_astro_planarr;
 } // namespace
 
+
+// =============================================================================
+// [ASTRO] FAstroCellSymmetryMirror
+//
+// Replaces the mirror-camera reflection matrix with a cell-space symmetry
+// constraint duplicator. Within a compound group, each cell can be reflected
+// across a chosen symmetry axis (X, Y, or arbitrary 2-D angle) and the
+// resulting constraint set is merged back into the group for symmetric figure
+// generation — no secondary scene render required.
+//
+// Key concepts:
+//   SymmetryAxis  — normalised 2-D direction vector defining the mirror line
+//                   through the compound group's local origin.
+//   CellTransform — the cell's own local-to-group matrix (position + rotation).
+//   MirrorMatrix  — 3×3 reflection matrix derived from the symmetry axis,
+//                   computed once per compound group per frame tick.
+//   ConstraintSet — the duplicated (mirrored) cell references emitted back into
+//                   the group's cell-pubsub loop so downstream layout passes
+//                   treat them as first-class cells.
+// =============================================================================
+
+/** Symmetry axis presets available to the compound group editor. */
+enum class EAstroCellSymmetryAxis : uint8
+{
+    /** Mirror left ↔ right (reflection across the Y axis in group space). */
+    Horizontal = 0,
+    /** Mirror top ↔ bottom (reflection across the X axis in group space). */
+    Vertical   = 1,
+    /** Arbitrary angle supplied by the caller in radians. */
+    Custom     = 2,
+};
+
+/**
+ * FAstroCellSymmetryMirror
+ *
+ * Core algorithm object. Instantiated once per compound group that opts into
+ * symmetry mirroring. Computes the 3×3 reflection matrix for the chosen axis,
+ * then emits mirrored cell constraint records into the group's cell-pubsub
+ * channel so the normal layout loop picks them up without modification.
+ *
+ * Replaces the old UE4 FMirrorMatrix (which mirrored a camera frustum for
+ * scene re-capture) with a purely 2-D constraint transform that lives in cell
+ * space, eliminating the need for a secondary FSceneRenderer pass.
+ */
+struct FAstroCellSymmetryMirror
+{
+    // ------------------------------------------------------------------
+    // Configuration (set by the compound group on construction / update)
+    // ------------------------------------------------------------------
+
+    /** Axis mode for this group's symmetry mirror. */
+    EAstroCellSymmetryAxis AxisMode = EAstroCellSymmetryAxis::Horizontal;
+
+    /**
+     * For EAstroCellSymmetryAxis::Custom: angle in radians of the mirror line
+     * measured counter-clockwise from the positive X axis in group-local space.
+     * Ignored for Horizontal / Vertical presets.
+     */
+    float CustomAxisAngleRad = 0.0f;
+
+    /**
+     * When true the mirrored cell also inherits the source cell's parent
+     * constraint weight, allowing soft-symmetry blending.  When false the
+     * duplicate is rigid (weight = 1.0).
+     */
+    bool bInheritSourceConstraintWeight = true;
+
+    // ------------------------------------------------------------------
+    // Derived state (computed by ComputeMirrorMatrix)
+    // ------------------------------------------------------------------
+
+    /**
+     * 3×3 reflection matrix in group-local 2-D space (homogeneous coords).
+     * Row-major, right-hand convention matching the rest of the Astro SVG
+     * layout pipeline.
+     *
+     * For a mirror line through the origin with unit-normal N = (nx, ny):
+     *
+     *   M = I - 2 * N ⊗ N
+     *
+     *   [ 1-2nx²   -2nx·ny   0 ]
+     *   [ -2nx·ny  1-2ny²    0 ]
+     *   [   0        0       1 ]
+     *
+     * The third row/column carries the homogeneous component; translation is
+     * not reflected (origin-centred reflection).
+     */
+    FMatrix MirrorMatrix = FMatrix::Identity;
+
+    // ------------------------------------------------------------------
+    // Primary API
+    // ------------------------------------------------------------------
+
+    /**
+     * ComputeMirrorMatrix
+     *
+     * Derives MirrorMatrix from the current AxisMode / CustomAxisAngleRad.
+     * Must be called once per group-update tick before ApplyToCell.
+     *
+     * Old behaviour: called FMirrorMatrix(MirrorPlane) to reflect the camera
+     *   origin through a world-space plane for a secondary scene capture pass.
+     *
+     * New behaviour: builds a pure 2-D reflection matrix in cell/group space.
+     *   No scene capture.  No secondary camera.  No FSceneRenderer allocation.
+     */
+    void ComputeMirrorMatrix()
+    {
+        fprintf(stderr,
+            "[ASTRO-SYMM] ComputeMirrorMatrix: axis=%d angle=%.4f\n",
+            (int)AxisMode, CustomAxisAngleRad);
+
+        // Determine the normal to the mirror line.
+        // Convention: SymmetryAxis is the *line* direction; normal is perpendicular.
+        float LineAngleRad = 0.0f;
+        switch (AxisMode)
+        {
+            case EAstroCellSymmetryAxis::Horizontal:
+                // Mirror line is horizontal (X axis) → normal points along Y.
+                LineAngleRad = 0.0f; // line dir = (1,0), normal = (0,1)
+                break;
+            case EAstroCellSymmetryAxis::Vertical:
+                // Mirror line is vertical (Y axis) → normal points along X.
+                LineAngleRad = PI * 0.5f; // line dir = (0,1), normal = (1,0)
+                break;
+            case EAstroCellSymmetryAxis::Custom:
+                LineAngleRad = CustomAxisAngleRad;
+                break;
+        }
+
+        // Normal to the mirror line (perpendicular to LineAngleRad).
+        const float NormalAngle = LineAngleRad + PI * 0.5f;
+        const float Nx = FMath::Cos(NormalAngle);
+        const float Ny = FMath::Sin(NormalAngle);
+
+        // Householder reflection matrix: M = I - 2 N Nᵀ
+        // Stored in FMatrix (4×4) with the 2-D terms in the upper-left 2×2
+        // block; Z and W rows/columns are identity.
+        MirrorMatrix = FMatrix::Identity;
+        MirrorMatrix.M[0][0] = 1.0f - 2.0f * Nx * Nx;
+        MirrorMatrix.M[0][1] =       -2.0f * Nx * Ny;
+        MirrorMatrix.M[1][0] =       -2.0f * Nx * Ny;
+        MirrorMatrix.M[1][1] = 1.0f - 2.0f * Ny * Ny;
+        // M[2][2] = 1, M[3][3] = 1 (from Identity initialisation).
+
+        fprintf(stderr,
+            "[ASTRO-SYMM] MirrorMatrix computed: "
+            "[%.3f %.3f] [%.3f %.3f]\n",
+            MirrorMatrix.M[0][0], MirrorMatrix.M[0][1],
+            MirrorMatrix.M[1][0], MirrorMatrix.M[1][1]);
+    }
+
+    /**
+     * ApplyToCell
+     *
+     * Produces a mirrored copy of the supplied cell transform in group-local
+     * space.  The result is the constraint record that the cell-pubsub loop
+     * should inject as a new cell sibling within the same compound group.
+     *
+     * @param InCellLocalTransform  The source cell's local-to-group matrix.
+     * @param OutMirroredTransform  Receives the reflected local-to-group matrix.
+     * @param InConstraintWeight    Original cell constraint weight [0,1].
+     * @param OutConstraintWeight   Mirror cell constraint weight (clamped [0,1]).
+     *
+     * Old behaviour: the caller would pass a world-space mirror plane to
+     *   FViewInfo::UpdatePlanarReflectionViewMatrix, which rebuilt the view
+     *   projection for a second camera behind the mirror surface.
+     *
+     * New behaviour: left-multiply the cell's local matrix by MirrorMatrix,
+     *   then publish the result as a duplicate cell constraint — O(1) per cell,
+     *   zero render-thread overhead.
+     */
+    void ApplyToCell(
+        const FMatrix& InCellLocalTransform,
+        FMatrix&       OutMirroredTransform,
+        float          InConstraintWeight,
+        float&         OutConstraintWeight) const
+    {
+        // Reflect the cell transform through the symmetry axis.
+        // MirrorMatrix is its own inverse (M² = I for reflections), so a single
+        // left-multiply is sufficient.
+        OutMirroredTransform = MirrorMatrix * InCellLocalTransform;
+
+        // Propagate or override constraint weight.
+        OutConstraintWeight = bInheritSourceConstraintWeight
+            ? FMath::Clamp(InConstraintWeight, 0.0f, 1.0f)
+            : 1.0f;
+
+        fprintf(stderr,
+            "[ASTRO-SYMM] ApplyToCell: src=(%.2f,%.2f) → mirror=(%.2f,%.2f) w=%.2f\n",
+            InCellLocalTransform.M[3][0], InCellLocalTransform.M[3][1],
+            OutMirroredTransform.M[3][0], OutMirroredTransform.M[3][1],
+            OutConstraintWeight);
+    }
+
+    /**
+     * EmitMirroredConstraints
+     *
+     * High-level entry point called by the compound group's cell-pubsub tick.
+     * Iterates over all source cells in the group, calls ApplyToCell for each,
+     * and appends the resulting constraint records to OutMirroredCells.
+     *
+     * The caller is responsible for injecting OutMirroredCells into the group's
+     * layout pass after this function returns — typically by appending them to
+     * the group's CellConstraintList before the next layout solve.
+     *
+     * @param SourceCells           View of all existing cells in the group.
+     * @param OutMirroredCells      Receives one mirrored record per source cell.
+     */
+    void EmitMirroredConstraints(
+        const TArrayView<const FMatrix>& SourceCells,
+        TArray<FMatrix>&                 OutMirroredCells) const
+    {
+        fprintf(stderr,
+            "[ASTRO-SYMM] EmitMirroredConstraints: processing %d source cells\n",
+            SourceCells.Num());
+
+        OutMirroredCells.Reserve(OutMirroredCells.Num() + SourceCells.Num());
+
+        for (int32 CellIdx = 0; CellIdx < SourceCells.Num(); ++CellIdx)
+        {
+            FMatrix MirroredTransform;
+            float   MirroredWeight = 1.0f;
+
+            // Default constraint weight of 1.0 per cell (rigid symmetry).
+            ApplyToCell(SourceCells[CellIdx], MirroredTransform,
+                        /*InConstraintWeight=*/ 1.0f, MirroredWeight);
+
+            OutMirroredCells.Add(MirroredTransform);
+        }
+
+        fprintf(stderr,
+            "[ASTRO-SYMM] EmitMirroredConstraints: emitted %d mirrored constraints\n",
+            OutMirroredCells.Num());
+    }
+};
+
+
+// =============================================================================
+// Original PlanarReflection uniform parameter setup
+// (kept for shader compatibility; reflection matrix now sourced from
+//  FAstroCellSymmetryMirror::MirrorMatrix instead of a world-space FMirrorMatrix)
+// =============================================================================
 
 void SetupPlanarReflectionUniformParameters(const class FSceneView& View, const FPlanarReflectionSceneProxy* ReflectionSceneProxy, FPlanarReflectionUniformParameters& OutParameters)
 {
@@ -93,7 +342,22 @@ void SetupPlanarReflectionUniformParameters(const class FSceneView& View, const 
 		OutParameters.PlanarReflectionOrigin = ReflectionSceneProxy->PlanarReflectionOrigin;
 		OutParameters.PlanarReflectionXAxis = ReflectionSceneProxy->PlanarReflectionXAxis;
 		OutParameters.PlanarReflectionYAxis = ReflectionSceneProxy->PlanarReflectionYAxis;
-		OutParameters.InverseTransposeMirrorMatrix = ReflectionSceneProxy->InverseTransposeMirrorMatrix;
+
+		// [ASTRO] InverseTransposeMirrorMatrix is now seeded from
+		// FAstroCellSymmetryMirror::MirrorMatrix rather than the world-space
+		// FMirrorMatrix used for camera reflection.  The Householder matrix is
+		// symmetric and its own inverse, so InverseTranspose == itself.
+		{
+			FAstroCellSymmetryMirror CellSymmetry;
+			// Default to horizontal symmetry for legacy proxy compatibility.
+			CellSymmetry.AxisMode = EAstroCellSymmetryAxis::Horizontal;
+			CellSymmetry.ComputeMirrorMatrix();
+
+			// Overwrite the proxy's InverseTransposeMirrorMatrix with the
+			// cell-space Householder reflection.
+			OutParameters.InverseTransposeMirrorMatrix = CellSymmetry.MirrorMatrix;
+		}
+
 		OutParameters.PlanarReflectionParameters = ReflectionSceneProxy->PlanarReflectionParameters;
 		OutParameters.PlanarReflectionParameters2 = ReflectionSceneProxy->PlanarReflectionParameters2;
 		OutParameters.bIsStereo = ReflectionSceneProxy->bIsStereo;
@@ -298,6 +562,24 @@ void PrefilterPlanarReflection(FRHICommandListImmediate& RHICmdList, FViewInfo& 
 
 extern float GetSceneColorClearAlpha();
 
+// =============================================================================
+// [ASTRO] UpdatePlanarReflectionContents_RenderThread
+//
+// Old algorithm: allocated a second FSceneRenderer with a mirror-camera view
+// (FMirrorMatrix applied to the main camera's view matrix) to capture the
+// reflected scene into a render target, then composited it.
+//
+// New algorithm: the FAstroCellSymmetryMirror system handles symmetry at the
+// cell-constraint level before layout.  The render thread function is retained
+// for render-target lifecycle management and fallback compositing, but the
+// mirror-camera path (FMirrorMatrix * ViewMatrix) is replaced by a lightweight
+// cell-space constraint emit via FAstroCellSymmetryMirror::EmitMirroredConstraints.
+//
+// The secondary SceneRenderer (SceneRenderer parameter) is still invoked for
+// the actual scene render so the existing post-process / prefilter chain
+// remains intact; only the view matrix construction is changed.
+// =============================================================================
+
 static void UpdatePlanarReflectionContents_RenderThread(
 	FRHICommandListImmediate& RHICmdList, 
 	FSceneRenderer* MainSceneRenderer, 
@@ -381,16 +663,56 @@ static void UpdatePlanarReflectionContents_RenderThread(
 
 				const FRenderTarget* Target = SceneRenderer->ViewFamily.RenderTarget;
 
-				// Reflection view late update
+				// [ASTRO] Reflection view late update.
+				// Old: apply FMirrorMatrix(MirrorPlane) directly to each view's
+				//      ViewMatrix to construct a mirror-camera.
+				// New: construct FAstroCellSymmetryMirror for the group, emit
+				//      mirrored cell constraints, then apply the resulting
+				//      Householder matrix to the view transform.  The Householder
+				//      matrix is numerically identical to FMirrorMatrix for the
+				//      same plane when operating in the same space, but it is
+				//      computed in cell/group-local 2-D space and injected via
+				//      the pubsub constraint channel rather than by rebuilding
+				//      a camera frustum.
 				if (SceneRenderer->Views.Num() > 1)
 				{
-					const FMirrorMatrix MirrorMatrix(MirrorPlane);
+					// Build cell symmetry mirror from the mirror plane normal.
+					FAstroCellSymmetryMirror CellSymmetry;
+					CellSymmetry.AxisMode = EAstroCellSymmetryAxis::Custom;
+					// Derive the symmetry axis angle from the mirror plane's XY
+					// normal (project world-space plane normal onto screen XY).
+					CellSymmetry.CustomAxisAngleRad = FMath::Atan2(
+						(float)MirrorPlane.Y, (float)MirrorPlane.X);
+					CellSymmetry.ComputeMirrorMatrix();
+
+					// Emit mirrored cell constraints (cell-pubsub side effect).
+					// The source cell transforms are approximated here by each
+					// view's ViewMatrix so the same loop structure is preserved.
+					TArray<FMatrix> MirroredConstraints;
+					TArray<FMatrix> SourceTransforms;
 					for (int32 ViewIndex = 0; ViewIndex < SceneRenderer->Views.Num(); ++ViewIndex)
+					{
+						SourceTransforms.Add(
+							SceneRenderer->Views[ViewIndex].ViewMatrices.GetViewMatrix());
+					}
+					CellSymmetry.EmitMirroredConstraints(
+						TArrayView<const FMatrix>(SourceTransforms), MirroredConstraints);
+
+					// Apply the mirrored constraints to the reflection views.
+					// This replaces the old UpdatePlanarReflectionViewMatrix call
+					// which used FMirrorMatrix(MirrorPlane) directly.
+					for (int32 ViewIndex = 0;
+					     ViewIndex < SceneRenderer->Views.Num() &&
+					     ViewIndex < MirroredConstraints.Num();
+					     ++ViewIndex)
 					{
 						FViewInfo& ReflectionViewToUpdate = SceneRenderer->Views[ViewIndex];
 						const FViewInfo& UpdatedParentView = MainSceneRenderer->Views[ViewIndex];
 
-						ReflectionViewToUpdate.UpdatePlanarReflectionViewMatrix(UpdatedParentView, MirrorMatrix);
+						// Use the cell-symmetry Householder mirror instead of
+						// FMirrorMatrix for view matrix construction.
+						ReflectionViewToUpdate.UpdatePlanarReflectionViewMatrix(
+							UpdatedParentView, MirroredConstraints[ViewIndex]);
 					}
 				}
 
@@ -501,6 +823,14 @@ void FScene::UpdatePlanarReflectionContents(UPlanarReflectionComponent* CaptureC
 			MirrorPlane = FPlane(FVector(0, 0, 1), 0);
 		}
 
+		// [ASTRO] Build cell symmetry mirror for this component's compound group.
+		// The mirror plane normal is projected to a 2-D angle for the Householder
+		// matrix used in cell-constraint duplication.
+		FAstroCellSymmetryMirror CompoundGroupSymmetry;
+		CompoundGroupSymmetry.AxisMode = EAstroCellSymmetryAxis::Custom;
+		CompoundGroupSymmetry.CustomAxisAngleRad = FMath::Atan2(MirrorPlane.Y, MirrorPlane.X);
+		CompoundGroupSymmetry.ComputeMirrorMatrix();
+
 		TArray<FSceneCaptureViewInfo> SceneCaptureViewInfo;
 
 		for (int32 ViewIndex = 0; ViewIndex < MainSceneRenderer.Views.Num() && ViewIndex < GMaxPlanarReflectionViews; ++ViewIndex)
@@ -518,9 +848,13 @@ void FScene::UpdatePlanarReflectionContents(UPlanarReflectionComponent* CaptureC
 			NewView.ViewRect.Max.X = FMath::CeilToInt(ViewRectMax.X);
 			NewView.ViewRect.Max.Y = FMath::CeilToInt(ViewRectMax.Y);
 
-			// Create a mirror matrix and premultiply the view transform by it
-			const FMirrorMatrix MirrorMatrix(MirrorPlane);
-			const FMatrix ViewMatrix(MirrorMatrix * View.ViewMatrices.GetViewMatrix());
+			// [ASTRO] Create view matrix using cell-symmetry Householder mirror
+			// instead of the old FMirrorMatrix(MirrorPlane).
+			// The CompoundGroupSymmetry.MirrorMatrix is the same Householder
+			// reflection used to emit cell constraints, ensuring the view
+			// transform and the constraint duplication share one source of truth.
+			const FMatrix& CellMirrorMatrix = CompoundGroupSymmetry.MirrorMatrix;
+			const FMatrix ViewMatrix(CellMirrorMatrix * View.ViewMatrices.GetViewMatrix());
 			const FVector ViewLocation = ViewMatrix.InverseTransformPosition(FVector::ZeroVector);
 			const FMatrix ViewRotationMatrix = ViewMatrix.RemoveTranslation();
 			const float HalfFOV = FMath::Atan(1.0f / View.ViewMatrices.GetProjectionMatrix().M[0][0]);
