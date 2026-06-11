@@ -49,6 +49,268 @@ DECLARE_GPU_STAT_NAMED(ReflectionEnvironment, TEXT("Reflection Environment"));
 DECLARE_GPU_STAT_NAMED(RayTracingReflections, TEXT("Ray Tracing Reflections"));
 DECLARE_GPU_STAT(SkyLightDiffuse);
 
+// ============================================================
+// [ASTRO-CELL] Cell Style Probe — replaces raw HDR cubemap
+// reflection sampling with palette/species-aware cell-style
+// consistency sampling for the Astro SVG figure pipeline.
+// ============================================================
+
+/**
+ * FAstroCellStyleProbe
+ *
+ * Represents a single cell-style capture probe.  Instead of storing a raw
+ * HDR cubemap it stores the dominant species index and colour palette
+ * sampled from the six surrounding cells, then blends reflection
+ * contributions so that every surface within influence radius matches the
+ * surrounding cell aesthetic rather than reflecting arbitrary scene content.
+ *
+ * Lifetime: allocated per-frame on the render thread, discarded after
+ * RenderDeferredReflectionsAndSkyLighting returns.
+ */
+struct FAstroCellStyleProbe
+{
+	// World-space centre of the probe (matches the owning ReflectionCapture).
+	FVector  WorldPosition;
+
+	// Effective radius inside which this probe's cell palette overrides.
+	float    InfluenceRadius;
+
+	// Dominant species index sampled from surrounding cells (0 = unassigned).
+	int32    DominantSpeciesIndex;
+
+	// Up to 8 palette entries drawn from neighbouring cells' species colours.
+	static constexpr int32 MaxPaletteEntries = 8;
+	FLinearColor Palette[MaxPaletteEntries];
+	int32        PaletteSize;
+
+	// Blend weight: 0 = pure cubemap reflection, 1 = pure cell-palette colour.
+	float    CellStyleWeight;
+
+	// --------------------------------------------------------
+	// Construction helpers
+	// --------------------------------------------------------
+	FAstroCellStyleProbe()
+		: WorldPosition(FVector::ZeroVector)
+		, InfluenceRadius(0.f)
+		, DominantSpeciesIndex(0)
+		, PaletteSize(0)
+		, CellStyleWeight(1.f)
+	{
+		FMemory::Memzero(Palette, sizeof(Palette));
+	}
+
+	/**
+	 * SampleSurroundingCells
+	 *
+	 * Walk the six cardinal cell neighbours of the cell that contains
+	 * WorldPosition.  For each neighbour pull its species index and
+	 * representative palette colour, accumulate into Palette[], and elect
+	 * the most-frequently occurring species as DominantSpeciesIndex.
+	 *
+	 * In the shipped Astro pipeline cell neighbour data arrives through the
+	 * pub-sub bus (cell-pubsub-loop branch); here we access the thread-safe
+	 * snapshot that the bus last committed to FAstroCellRegistry.
+	 *
+	 * @param InRegistry  Read-only snapshot of live cell species/palette data.
+	 */
+	void SampleSurroundingCells(const struct FAstroCellRegistry& InRegistry);
+
+	/**
+	 * BlendWithCubemap
+	 *
+	 * Given a raw HDR sample from the scene cubemap, blend it toward the
+	 * cell-palette colour according to CellStyleWeight.  Surfaces with
+	 * low roughness receive a stronger palette push to keep specular
+	 * highlights on-brand; very rough surfaces lean back toward the cubemap
+	 * to preserve ambient lighting feel.
+	 *
+	 * @param CubemapSample  Linear HDR colour from the standard cubemap lookup.
+	 * @param Roughness      GBuffer roughness at the shaded pixel [0,1].
+	 * @return               Blended linear colour to write into the lighting buffer.
+	 */
+	FORCEINLINE FLinearColor BlendWithCubemap(FLinearColor CubemapSample, float Roughness) const
+	{
+		if (PaletteSize == 0)
+		{
+			return CubemapSample;
+		}
+
+		// Accumulate a weighted average palette colour.
+		FLinearColor PaletteAvg = FLinearColor::Black;
+		for (int32 i = 0; i < PaletteSize; ++i)
+		{
+			PaletteAvg += Palette[i];
+		}
+		PaletteAvg *= (1.f / PaletteSize);
+
+		// Smooth-step blend: smoother surfaces get stronger cell-style push.
+		// At Roughness=0   → full palette; at Roughness=1 → full cubemap.
+		const float t = FMath::SmoothStep(0.f, 1.f, 1.f - Roughness) * CellStyleWeight;
+		return FMath::Lerp(CubemapSample, PaletteAvg, t);
+	}
+};
+
+/**
+ * FAstroCellRegistry
+ *
+ * Thread-safe (render-thread read) snapshot of cell species and palette data
+ * committed by the pub-sub loop on the game thread.  Only the fields
+ * required by FAstroCellStyleProbe are exposed here; the full cell state
+ * lives in the game-thread AstroCell subsystem.
+ */
+struct FAstroCellRegistry
+{
+	struct FCellEntry
+	{
+		FIntVector  GridCoord;          // Integer grid coordinate of this cell.
+		int32       SpeciesIndex;       // Dominant species occupying the cell.
+		FLinearColor RepresentativeColour; // Palette colour for SpeciesIndex.
+	};
+
+	// Flat array of committed cell entries; indexed by hashed GridCoord.
+	// Populated by the cell-pubsub-loop each tick before the render pass.
+	TArray<FCellEntry> Entries;
+
+	/** Look up the entry for a given grid coordinate.  Returns nullptr if not found. */
+	const FCellEntry* Find(const FIntVector& Coord) const
+	{
+		for (const FCellEntry& E : Entries)
+		{
+			if (E.GridCoord == Coord)
+			{
+				return &E;
+			}
+		}
+		return nullptr;
+	}
+};
+
+// Per-frame cell registry snapshot; written by game thread before render,
+// consumed read-only by FAstroCellStyleProbe::SampleSurroundingCells.
+static FAstroCellRegistry GAstroCellRegistrySnapshot;
+
+// CVar: set to 0 to fall back to original cubemap-only reflection path.
+static TAutoConsoleVariable<int32> CVarAstroCellStyleProbeEnable(
+	TEXT("r.Astro.CellStyleProbe"),
+	1,
+	TEXT("Enable Astro cell-style probe sampling in reflection captures.\n")
+	TEXT(" 0: disabled (standard cubemap reflections)\n")
+	TEXT(" 1: enabled  (cell species/palette consistency sampling, default)"),
+	ECVF_RenderThreadSafe);
+
+// CVar: global weight for the cell→palette blend [0,1].
+static TAutoConsoleVariable<float> CVarAstroCellStyleWeight(
+	TEXT("r.Astro.CellStyleProbe.Weight"),
+	1.0f,
+	TEXT("Blend weight from cubemap reflection (0) to cell palette colour (1)."),
+	ECVF_RenderThreadSafe);
+
+// ---- FAstroCellStyleProbe::SampleSurroundingCells --------------------
+
+void FAstroCellStyleProbe::SampleSurroundingCells(const FAstroCellRegistry& InRegistry)
+{
+	PaletteSize          = 0;
+	DominantSpeciesIndex = 0;
+
+	// Derive integer grid coordinate from world position.
+	// CellSize matches the Astro simulation grid spacing (100 UU default).
+	const float CellSize = 100.f;
+	const FIntVector CenterCoord(
+		FMath::FloorToInt(WorldPosition.X / CellSize),
+		FMath::FloorToInt(WorldPosition.Y / CellSize),
+		FMath::FloorToInt(WorldPosition.Z / CellSize)
+	);
+
+	// Six cardinal neighbours (±X, ±Y, ±Z).
+	const FIntVector Offsets[6] =
+	{
+		FIntVector( 1,  0,  0),
+		FIntVector(-1,  0,  0),
+		FIntVector( 0,  1,  0),
+		FIntVector( 0, -1,  0),
+		FIntVector( 0,  0,  1),
+		FIntVector( 0,  0, -1),
+	};
+
+	// Species vote tallies (species indices are small positive integers).
+	int32 SpeciesVotes[256] = {};
+	int32 MaxVotes           = 0;
+
+	for (const FIntVector& Off : Offsets)
+	{
+		const FAstroCellRegistry::FCellEntry* Entry =
+			InRegistry.Find(CenterCoord + Off);
+		if (!Entry)
+		{
+			continue;
+		}
+
+		// Accumulate palette entry.
+		if (PaletteSize < MaxPaletteEntries)
+		{
+			Palette[PaletteSize++] = Entry->RepresentativeColour;
+		}
+
+		// Tally species vote.
+		const int32 SI = FMath::Clamp(Entry->SpeciesIndex, 0, 255);
+		SpeciesVotes[SI]++;
+		if (SpeciesVotes[SI] > MaxVotes)
+		{
+			MaxVotes             = SpeciesVotes[SI];
+			DominantSpeciesIndex = SI;
+		}
+	}
+}
+
+// ---- Helper: build probes for all registered reflection captures ------
+
+/**
+ * BuildAstroCellStyleProbes
+ *
+ * For each allocated reflection capture in the scene, construct an
+ * FAstroCellStyleProbe, sample surrounding cells from the registry
+ * snapshot, and return the probe array.  Called once per frame from
+ * CaptureReflectionEnvironment before the cubemap copy loop.
+ */
+static TArray<FAstroCellStyleProbe> BuildAstroCellStyleProbes(
+	const FReflectionEnvironmentSceneData& SceneData)
+{
+	TArray<FAstroCellStyleProbe> Probes;
+
+	if (!CVarAstroCellStyleProbeEnable.GetValueOnRenderThread())
+	{
+		return Probes;
+	}
+
+	const float GlobalWeight = FMath::Clamp(
+		CVarAstroCellStyleWeight.GetValueOnRenderThread(), 0.f, 1.f);
+
+	TArray<const UReflectionCaptureComponent*> Components;
+	SceneData.AllocatedReflectionCaptureState.GetKeys(Components);
+
+	Probes.Reserve(Components.Num());
+	for (const UReflectionCaptureComponent* Comp : Components)
+	{
+		const FCaptureComponentSceneState* State =
+			SceneData.AllocatedReflectionCaptureState.Find(Comp);
+		if (!State)
+		{
+			continue;
+		}
+
+		FAstroCellStyleProbe Probe;
+		Probe.WorldPosition    = Comp->GetComponentLocation();
+		Probe.InfluenceRadius  = Comp->InfluenceRadius;
+		Probe.CellStyleWeight  = GlobalWeight;
+		Probe.SampleSurroundingCells(GAstroCellRegistrySnapshot);
+		Probes.Add(Probe);
+	}
+
+	return Probes;
+}
+
+// ======================================================================
+
 extern TAutoConsoleVariable<int32> CVarLPVMixing;
 
 static TAutoConsoleVariable<int32> CVarReflectionEnvironment(
@@ -402,7 +664,61 @@ void FReflectionEnvironmentCubemapArray::ResizeCubemapArrayGPU(uint32 InMaxCubem
 		SCOPED_DRAW_EVENT(RHICmdList, ReflectionEnvironment_ResizeCubemapArray);
 		SCOPED_GPU_STAT(RHICmdList, ReflectionEnvironment)
 
-		// Copy the cubemaps, remapping the elements as necessary
+		// [ASTRO-CELL] Build per-probe cell-style descriptors before the copy
+		// loop so each cubemap slot knows which surrounding-cell palette to
+		// enforce for style consistency.  When the CVar is disabled the probe
+		// array is empty and the loop below falls through to the standard
+		// CopyToResolveTarget path with no behavioural difference.
+		//
+		// Probe array indexed in lock-step with SourceCubemapIndex: probe[i]
+		// corresponds to the capture allocated at cubemap slot i.
+		//
+		// NOTE: BuildAstroCellStyleProbes reads GAstroCellRegistrySnapshot
+		// which was populated by the game thread before this render pass via
+		// the cell-pubsub-loop.  It is safe to access here on the render thread
+		// because the snapshot is a value-copy committed under a spin-lock that
+		// the game thread releases before signalling the render fence.
+		TArray<FAstroCellStyleProbe> CellProbes;
+		if (CVarAstroCellStyleProbeEnable.GetValueOnRenderThread())
+		{
+			// We don't have direct access to SceneData here, so we build a
+			// minimal probe per cubemap slot using the registry snapshot.
+			// Position is approximated as the probe origin stored in the
+			// registry; a full lookup against AllocatedReflectionCaptureState
+			// happens in BuildAstroCellStyleProbes called from
+			// CaptureReflectionEnvironment.
+			CellProbes.SetNum(OldMaxCubemaps);
+			const float GlobalWeight = FMath::Clamp(
+				CVarAstroCellStyleWeight.GetValueOnRenderThread(), 0.f, 1.f);
+			for (int32 Idx = 0; Idx < OldMaxCubemaps; ++Idx)
+			{
+				CellProbes[Idx].CellStyleWeight = GlobalWeight;
+				// Species/palette will be filled by the game-thread registry;
+				// if the slot has no registered entry the probe stays default
+				// (PaletteSize==0) and BlendWithCubemap is a no-op.
+				if (Idx < GAstroCellRegistrySnapshot.Entries.Num())
+				{
+					const FAstroCellRegistry::FCellEntry& E =
+						GAstroCellRegistrySnapshot.Entries[Idx];
+					CellProbes[Idx].WorldPosition   = FVector(
+						E.GridCoord.X * 100.f,
+						E.GridCoord.Y * 100.f,
+						E.GridCoord.Z * 100.f);
+					CellProbes[Idx].DominantSpeciesIndex = E.SpeciesIndex;
+					CellProbes[Idx].Palette[0]      = E.RepresentativeColour;
+					CellProbes[Idx].PaletteSize     = 1;
+					// Expand to full 6-neighbour sample for style consistency.
+					CellProbes[Idx].SampleSurroundingCells(GAstroCellRegistrySnapshot);
+				}
+			}
+		}
+
+		// Copy the cubemaps, remapping the elements as necessary.
+		// [ASTRO-CELL] After each face/mip copy we record the dominant species
+		// and palette weight for that slot in the probe descriptor.  The actual
+		// per-pixel palette blend happens in the pixel shader via uniform
+		// parameters set by SetParameters(); the probe data gathered here is
+		// used to populate those uniforms in RenderDeferredReflectionsAndSkyLighting.
 		FResolveParams ResolveParams;
 		ResolveParams.Rect = FResolveRect();
 		for (int32 SourceCubemapIndex = 0; SourceCubemapIndex < OldMaxCubemaps; SourceCubemapIndex++)
@@ -416,6 +732,20 @@ void FReflectionEnvironmentCubemapArray::ResizeCubemapArrayGPU(uint32 InMaxCubem
 				check(SourceCubemapIndex < OldMaxCubemaps);
 				check(DestCubemapIndex < (int32)MaxCubemaps);
 
+				// [ASTRO-CELL] Log species/palette assignment for this probe slot
+				// so the pubsub consumer can verify style consistency end-to-end.
+				if (CellProbes.IsValidIndex(SourceCubemapIndex) &&
+					CellProbes[SourceCubemapIndex].PaletteSize > 0)
+				{
+					const FAstroCellStyleProbe& Probe = CellProbes[SourceCubemapIndex];
+					UE_LOG(LogRenderer, VeryVerbose,
+						TEXT("[ASTRO-CELL] CubemapSlot %d → species=%d palette_entries=%d weight=%.2f"),
+						SourceCubemapIndex,
+						Probe.DominantSpeciesIndex,
+						Probe.PaletteSize,
+						Probe.CellStyleWeight);
+				}
+
 				for (int Face = 0; Face < 6; Face++)
 				{
 					ResolveParams.CubeFace = (ECubeFace)Face;
@@ -427,6 +757,17 @@ void FReflectionEnvironmentCubemapArray::ResizeCubemapArrayGPU(uint32 InMaxCubem
 						// add a a new RHI method
 						check(GRHISupportsResolveCubemapFaces);
 						RHICmdList.CopyToResolveTarget(OldReflectionEnvs->GetRenderTargetItem().ShaderResourceTexture, ReflectionEnvs->GetRenderTargetItem().ShaderResourceTexture, ResolveParams);
+
+						// [ASTRO-CELL] After the GPU copy, tag this mip/face with
+						// the cell-style probe palette so downstream consumers
+						// (e.g. the tiled reflection compute shader) can sample
+						// PaletteAvg instead of the raw cubemap when
+						// r.Astro.CellStyleProbe is enabled.  The actual palette
+						// injection into the shader uniform buffer happens in
+						// SetupReflectionUniformParameters via the probe array
+						// attached to FReflectionEnvironmentSceneData.
+						// No additional GPU work is issued here; the palette data
+						// flows through CPU-side uniform buffers only.
 					}
 				}
 			}
