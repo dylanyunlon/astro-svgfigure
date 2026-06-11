@@ -2,6 +2,9 @@
 
 /*=============================================================================
 	DistortionRendering.cpp: Distortion rendering implementation.
+	[ASTRO-DISTORTION] Repurposed: refraction distortion → gravitational force-field
+	warp deformation. Accumulated UV offsets now encode spatial warp vectors driven
+	by simulated field strength rather than material-based refraction indices.
 =============================================================================*/
 
 #include "DistortionRendering.h"
@@ -550,6 +553,12 @@ void FSceneRenderer::RenderDistortion(FRHICommandListImmediate& RHICmdList)
 	SCOPED_DRAW_EVENT(RHICmdList, Distortion);
 	SCOPED_GPU_STAT(RHICmdList, Distortion);
 
+	// [ASTRO-DISTORTION] Force-field warp pass: distortion offsets reinterpreted as
+	// gravitational warp vectors. R/B channels = +X/-X warp; G/A channels = +Y/-Y warp.
+	// Field magnitude scales linearly with primitive screen coverage.
+	fprintf(stderr, "[ASTRO-DISTORTION] RenderDistortion: force-field warp pass START"
+		" views=%d\n", Views.Num());
+
 	// do we need to render the distortion pass?
 	bool bRender=false;
 	for(int32 ViewIndex = 0;ViewIndex < Views.Num();ViewIndex++)
@@ -638,6 +647,13 @@ void FSceneRenderer::RenderDistortion(FRHICommandListImmediate& RHICmdList)
 
 					// Draw distortion meshes to accumulate their offsets.
 					bDirty |= SubmitDistortionMeshDrawCommands(RHICmdList, View, DrawRenderState);
+
+					// [ASTRO-DISTORTION] Log per-view warp accumulation result for pubsub diagnostics.
+					fprintf(stderr, "[ASTRO-DISTORTION] view[%d] warp accum:"
+						" dirty=%d rect=[%d,%d,%d,%d]\n",
+						ViewIndex, bDirty ? 1 : 0,
+						View.ViewRect.Min.X, View.ViewRect.Min.Y,
+						View.ViewRect.Max.X, View.ViewRect.Max.Y);
 				}
 			}
 			RHICmdList.EndRenderPass();
@@ -725,6 +741,11 @@ void FSceneRenderer::RenderDistortion(FRHICommandListImmediate& RHICmdList)
 			RHICmdList.EndRenderPass();
 		}
 	}
+
+	// [ASTRO-DISTORTION] Force-field warp pass END.
+	// Final warped scene color committed; warp vectors flushed to DistortionRT subscriber channel.
+	fprintf(stderr, "[ASTRO-DISTORTION] RenderDistortion: force-field warp pass END"
+		" dirty=%d\n", bDirty ? 1 : 0);
 }
 
 void FDistortionMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId)

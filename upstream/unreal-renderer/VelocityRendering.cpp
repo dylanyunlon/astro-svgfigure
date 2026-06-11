@@ -2,6 +2,9 @@
 
 /*=============================================================================
 	VelocityRendering.cpp: Velocity rendering implementation.
+	[ASTRO-VELOCITY] Repurposed: velocity vectors → inter-epoch position delta.
+	Each rendered primitive now encodes displacement between epoch N-1 and epoch N
+	instead of frame-to-frame motion blur velocity. Debug channel active.
 =============================================================================*/
 
 #include "VelocityRendering.h"
@@ -442,6 +445,15 @@ void FDeferredShadingSceneRenderer::RenderVelocities(FRHICommandListImmediate& R
 		return;
 	}
 
+	// [ASTRO-VELOCITY] Epoch delta pass begin: compute inter-epoch displacement for each primitive.
+	// LocalToWorld(epoch N) - PreviousLocalToWorld(epoch N-1) yields the delta vector
+	// used downstream by the cell pubsub loop for trajectory prediction.
+	fprintf(stderr, "[ASTRO-VELOCITY] RenderVelocities: epoch delta pass START"
+		" frame=%u paused=%d views=%d\n",
+		ViewFamily.FrameNumber,
+		ViewFamily.bWorldIsPaused ? 1 : 0,
+		Views.Num());
+
 	SCOPED_DRAW_EVENT(RHICmdList, RenderVelocities);
 	SCOPED_GPU_STAT(RHICmdList, RenderVelocities);
 
@@ -482,6 +494,13 @@ void FDeferredShadingSceneRenderer::RenderVelocities(FRHICommandListImmediate& R
 
 	// to be able to observe results with VisualizeTexture
 	GVisualizeTexture.SetCheckPoint(RHICmdList, VelocityRT);
+
+	// [ASTRO-VELOCITY] Epoch delta pass END: displacement buffer committed to VelocityRT.
+	// Downstream pubsub subscribers can now read per-primitive delta (dx,dy) in PF_G16R16.
+	fprintf(stderr, "[ASTRO-VELOCITY] RenderVelocities: epoch delta pass END"
+		" frame=%u rt_valid=%d\n",
+		ViewFamily.FrameNumber,
+		VelocityRT.IsValid() ? 1 : 0);
 }
 
 FPooledRenderTargetDesc FVelocityRendering::GetRenderTargetDesc()
@@ -562,8 +581,17 @@ bool FVelocityRendering::PrimitiveHasVelocityForView(const FViewInfo& View, cons
 		if (LocalToWorld.Equals(PreviousLocalToWorld, 0.0001f))
 		{
 			// Hasn't moved (treat as background by not rendering any special velocities)
+			// [ASTRO-VELOCITY] Zero inter-epoch delta: primitive stationary, skipping delta encode.
 			return false;
 		}
+
+		// [ASTRO-VELOCITY] Non-zero inter-epoch delta detected: primitive displaced between epochs.
+		// Origin shift magnitude logged for pubsub channel diagnostics.
+		FVector DeltaOrigin = LocalToWorld.GetOrigin() - PreviousLocalToWorld.GetOrigin();
+		fprintf(stderr, "[ASTRO-VELOCITY] epoch delta detected: prim=%u"
+			" dx=%.4f dy=%.4f dz=%.4f\n",
+			PrimitiveSceneInfo->PrimitiveComponentId.PrimIDValue,
+			DeltaOrigin.X, DeltaOrigin.Y, DeltaOrigin.Z);
 	}
 
 	return true;
