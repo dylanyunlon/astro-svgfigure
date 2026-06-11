@@ -318,6 +318,244 @@ def _tiled_constraint_solve(bboxes, force_field, canvas_w=None, canvas_h=None):
     )
     return collisions
 
+def _voxelize_constraint_field(bboxes, force_field, grid_n=8):
+    """
+    [ASTRO] FAstroConstraintVoxelGrid — Python port of the constraint-field
+    voxelization algorithm introduced in commit 5f5cf3a of
+    upstream/unreal-renderer/VolumetricFogVoxelization.cpp.
+
+    The C++ original replaces volumetric fog density voxelization with a 3-D
+    constraint-field grid indexed as (X, Y, Z-layer).  Each voxel accumulates
+    ConstraintCount and ConstraintWeight (distance-attenuated) for every fog
+    primitive (= cell bbox) whose world-space AABB overlaps the voxel.
+    ConstraintDensity() = clamp(weight / count, 0, 1) is then read by the
+    scheduling layer to decide per-primitive temporal subdivision.
+
+    Python adaptation:
+      • "World space"     → canvas pixel space (x, y from bbox).
+      • "Z-layer / depth" → discrete z-layer integer from bbox["z"].
+      • Canvas AABB       → derived dynamically from all bboxes each call,
+                            mirroring GridWorldBox(ViewOrigin ± FogDistance).
+      • Grid dimensions   → grid_n × grid_n × (distinct z-layers), replacing
+                            VolumetricFogGridSize (X, Y, Z).
+      • BaseWeight        → (1 − dist_norm) where dist_norm is the cell
+                            centre's distance to the canvas centre normalised
+                            by the canvas half-diagonal (same formula as
+                            DistNorm = Sqrt(DistSq) / VolumetricFogDistance).
+      • Voxel attenuation → linear falloff (1 − dist/half_diag) clamped [0,1]
+                            inside AccumulateConstraint(), identical to the
+                            C++ Alpha computation.
+      • No numpy: plain Python lists, integer indexing, math.sqrt/hypot.
+
+    Effect on force_field (supplements distance field, does not replace it):
+      High-density voxels → region is crowded → "scatter" force pushes the
+        cell away from the voxel grid centre (repulsion, like fog density
+        preventing further accumulation).
+      Low-density voxels  → region is sparse  → "attract" force nudges the
+        cell toward the canvas centre (attraction, like open space drawing
+        particles in).
+
+    The force magnitude is scaled by _VOXEL_FORCE_SCALE (= 3.0 px per unit
+    density delta) and blended additively into force_field so that voxel-field
+    forces compose with both sweep-line collision response and distance-field
+    propagation without interference.
+
+    Returns the voxel grid as a dict keyed by (gx, gy, z_layer) for debug /
+    persistence use.
+    """
+    if not bboxes:
+        return {}
+
+    _VOXEL_FORCE_SCALE = 3.0   # px per density-unit, tunable CVar equivalent
+    _SMALL = 1e-9
+
+    # ------------------------------------------------------------------
+    # Step 1 – Compute canvas AABB (mirrors GridWorldBox construction).
+    # ------------------------------------------------------------------
+    all_cx = [b["x"] + b["w"] * 0.5 for b in bboxes.values()]
+    all_cy = [b["y"] + b["h"] * 0.5 for b in bboxes.values()]
+    canvas_min_x = min(b["x"]              for b in bboxes.values())
+    canvas_min_y = min(b["y"]              for b in bboxes.values())
+    canvas_max_x = max(b["x"] + b["w"]    for b in bboxes.values())
+    canvas_max_y = max(b["y"] + b["h"]    for b in bboxes.values())
+
+    canvas_w = max(canvas_max_x - canvas_min_x, _SMALL)
+    canvas_h = max(canvas_max_y - canvas_min_y, _SMALL)
+    canvas_cx = (canvas_min_x + canvas_max_x) * 0.5
+    canvas_cy = (canvas_min_y + canvas_max_y) * 0.5
+    canvas_half_diag = math.hypot(canvas_w * 0.5, canvas_h * 0.5)
+    canvas_half_diag = max(canvas_half_diag, _SMALL)
+
+    # Distinct z-layers (mirrors VolumetricFogGridSize.Z = depth slices).
+    z_layers = sorted({b.get("z", 3) for b in bboxes.values()})
+    z_index  = {z: i for i, z in enumerate(z_layers)}
+    nz = len(z_layers)
+
+    # ------------------------------------------------------------------
+    # Step 2 – Allocate flat voxel grid.
+    # voxel at (gx, gy, gz) → voxels[gx + gy*grid_n + gz*grid_n*grid_n]
+    # Each voxel: [constraint_count (int), constraint_weight (float)]
+    # Mirrors TArray<FAstroConstraintVoxel> with SetNumZeroed().
+    # ------------------------------------------------------------------
+    total = grid_n * grid_n * nz
+    voxel_count  = [0]   * total   # FAstroConstraintVoxel.ConstraintCount
+    voxel_weight = [0.0] * total   # FAstroConstraintVoxel.ConstraintWeight
+
+    def _world_to_voxel(px, py, z):
+        """
+        Map canvas pixel (px, py, z) → fractional voxel coordinates.
+        Direct port of FAstroConstraintVoxelGrid::WorldToVoxel().
+        """
+        vx = (px - canvas_min_x) / canvas_w  * grid_n
+        vy = (py - canvas_min_y) / canvas_h  * grid_n
+        vz = float(z_index[z])
+        return vx, vy, vz
+
+    def _clamp_int(v, lo, hi):
+        return max(lo, min(hi, int(v)))
+
+    # ------------------------------------------------------------------
+    # Step 3 – AccumulateConstraint() for every cell.
+    # Mirrors the Pass-1 CPU loop:
+    #   for MeshBatchIndex in View.VolumetricMeshBatches …
+    #       GAstroConstraintGrid.AccumulateConstraint(ConstraintBounds, BaseWeight)
+    # ------------------------------------------------------------------
+    for cell_id, b in bboxes.items():
+        z = b.get("z", 3)
+        gz_idx = z_index[z]
+
+        # Cell centre and AABB corners in canvas space.
+        cell_cx = b["x"] + b["w"] * 0.5
+        cell_cy = b["y"] + b["h"] * 0.5
+
+        # BaseWeight: proximity to canvas centre, mirrors DistNorm formula.
+        # (1 − dist_to_canvas_centre / canvas_half_diag), clamped [0, 1].
+        dist_to_centre = math.hypot(cell_cx - canvas_cx, cell_cy - canvas_cy)
+        base_weight = max(0.0, min(1.0, 1.0 - dist_to_centre / canvas_half_diag))
+
+        # Convert cell AABB → voxel-space corners (mirrors VMin / VMax).
+        vmin_x, vmin_y, _ = _world_to_voxel(b["x"],          b["y"],          z)
+        vmax_x, vmax_y, _ = _world_to_voxel(b["x"] + b["w"], b["y"] + b["h"], z)
+
+        x0 = _clamp_int(math.floor(vmin_x), 0, grid_n - 1)
+        x1 = _clamp_int(math.ceil (vmax_x), 0, grid_n - 1)
+        y0 = _clamp_int(math.floor(vmin_y), 0, grid_n - 1)
+        y1 = _clamp_int(math.ceil (vmax_y), 0, grid_n - 1)
+
+        # Constraint AABB centre in voxel space (mirrors VCentre).
+        vcx = (vmin_x + vmax_x) * 0.5
+        vcy = (vmin_y + vmax_y) * 0.5
+
+        # Half-diagonal of constraint AABB in voxel space (mirrors HalfDiag).
+        half_diag_v = max(
+            math.hypot(vmax_x - vmin_x, vmax_y - vmin_y) * 0.5,
+            _SMALL
+        )
+
+        # Inner triple loop: iterate voxels overlapped by this cell AABB.
+        # Mirrors the Z/Y/X nested loops in AccumulateConstraint().
+        for gx in range(x0, x1 + 1):
+            for gy in range(y0, y1 + 1):
+                gz = gz_idx   # single z-layer per cell (Z-dimension = layer index)
+
+                # Distance from voxel centre to constraint centre (voxel units).
+                # Mirrors: FVector VoxelCentre(X+0.5, Y+0.5, Z+0.5);
+                #          float Dist = FVector::Dist(VoxelCentre, VCentre);
+                vox_cx = gx + 0.5
+                vox_cy = gy + 0.5
+                dist_v = math.hypot(vox_cx - vcx, vox_cy - vcy)
+
+                # Linear attenuation: Alpha = clamp(1 - dist/half_diag, 0, 1).
+                alpha  = max(0.0, min(1.0, 1.0 - dist_v / half_diag_v))
+                weight = base_weight * alpha
+
+                idx = gx + gy * grid_n + gz * grid_n * grid_n
+                voxel_count[idx]  += 1
+                voxel_weight[idx] += weight
+
+    # ------------------------------------------------------------------
+    # Step 4 – Compute ConstraintDensity per voxel.
+    # ConstraintDensity() = clamp(weight / count, 0, 1) when count > 0.
+    # Mirror of FAstroConstraintVoxel::ConstraintDensity().
+    # ------------------------------------------------------------------
+    voxel_density = []
+    for i in range(total):
+        if voxel_count[i] > 0:
+            voxel_density.append(
+                max(0.0, min(1.0, voxel_weight[i] / voxel_count[i]))
+            )
+        else:
+            voxel_density.append(0.0)
+
+    # Global average density (used to distinguish "crowded" vs "sparse").
+    # Mirrors TotalConstraintCount() / grid_volume as a density normaliser.
+    occupied = [d for d in voxel_density if d > 0.0]
+    avg_density = (sum(occupied) / len(occupied)) if occupied else 0.0
+
+    total_constraint_count = sum(voxel_count)
+    print(
+        f"[VoxelConstraintField] grid={grid_n}x{grid_n}x{nz} "
+        f"total_constraints={total_constraint_count} "
+        f"avg_density={avg_density:.3f}"
+    )
+
+    # ------------------------------------------------------------------
+    # Step 5 – Sample each cell's voxel and apply scatter/attract force.
+    # "Pass 2 scheduling" analogue: high density → scatter; low → attract.
+    # (In C++ this is (void)ConstraintDensity consumed by pub-sub layer;
+    # here we materialise it as an explicit force contribution.)
+    # ------------------------------------------------------------------
+    for cell_id, b in bboxes.items():
+        z = b.get("z", 3)
+        gz_idx = z_index[z]
+
+        cell_cx = b["x"] + b["w"] * 0.5
+        cell_cy = b["y"] + b["h"] * 0.5
+
+        # WorldToVoxel → sample voxel at cell centre (mirrors SampleX/Y/Z).
+        vx, vy, _ = _world_to_voxel(cell_cx, cell_cy, z)
+        gx = _clamp_int(math.floor(vx), 0, grid_n - 1)
+        gy = _clamp_int(math.floor(vy), 0, grid_n - 1)
+        gz = gz_idx
+
+        idx = gx + gy * grid_n + gz * grid_n * grid_n
+        density = voxel_density[idx]
+
+        # density > avg_density  → crowded voxel → scatter (repel from centre).
+        # density < avg_density  → sparse voxel  → attract (pull toward centre).
+        density_delta = density - avg_density   # positive = crowded, negative = sparse
+
+        # Direction from canvas centre to this cell (unit vector).
+        to_cx = cell_cx - canvas_cx
+        to_cy = cell_cy - canvas_cy
+        dist_to_c = math.hypot(to_cx, to_cy)
+        if dist_to_c > _SMALL:
+            ux = to_cx / dist_to_c
+            uy = to_cy / dist_to_c
+        else:
+            ux, uy = 0.0, 0.0   # cell is exactly at canvas centre
+
+        # Force: positive density_delta → push outward (scatter);
+        #        negative density_delta → push inward (attract).
+        # Magnitude proportional to |density_delta| × _VOXEL_FORCE_SCALE.
+        fmag = density_delta * _VOXEL_FORCE_SCALE
+        force_field[cell_id]["dx"] += ux * fmag
+        force_field[cell_id]["dy"] += uy * fmag
+
+    # Build output dict keyed by (gx, gy, z_layer) for physics/z_layers.json.
+    grid_out = {}
+    for gx in range(grid_n):
+        for gy in range(grid_n):
+            for zi, z_layer in enumerate(z_layers):
+                idx = gx + gy * grid_n + zi * grid_n * grid_n
+                grid_out[(gx, gy, z_layer)] = {
+                    "count":   voxel_count[idx],
+                    "weight":  round(voxel_weight[idx], 4),
+                    "density": round(voxel_density[idx], 4),
+                }
+
+    return grid_out
+
 
 def _propagate_constraints(bboxes, force_field):
     """
@@ -540,6 +778,23 @@ def physics_engine():
     # conductance so that constraint energy originating at one cell can influence
     # geometrically distant cells — a capability absent from pure collision response.
     _propagate_constraints(bboxes, force_field)
+
+    # --- 5. Volumetric constraint-field voxelization ----------------------------
+    # Ported from FAstroConstraintVoxelGrid in commit 5f5cf3a of
+    # upstream/unreal-renderer/VolumetricFogVoxelization.cpp.
+    # Complements the point-to-point distance field above with an area-density
+    # field: each cell's constraint value is accumulated into an NxN voxel grid
+    # per z-layer; high-density voxels produce scatter forces, low-density voxels
+    # produce attract forces toward the canvas centre.  Density map is persisted
+    # to physics/z_layers.json for the pub-sub scheduling layer to consume
+    # (mirrors GAstroConstraintGrid feeding FAstroCellConstraintPublisher).
+    voxel_grid = _voxelize_constraint_field(bboxes, force_field)
+    # Serialise grid: convert tuple keys → "gx,gy,z" strings for JSON.
+    voxel_grid_json = {
+        f"{gx},{gy},{z}": meta
+        for (gx, gy, z), meta in voxel_grid.items()
+    }
+    write_channel("physics/z_layers.json", voxel_grid_json)
 
     write_channel("physics/force_field.json", force_field)
     write_channel("physics/collision.json", {"collisions": collisions, "count": len(collisions)})
