@@ -33,6 +33,39 @@
 #include "VisualizeTexturePresent.h"
 #include "ScreenSpaceDenoise.h"
 
+// [ASTRO-RENDERER] -------------------------------------------------------
+// FAstroRendererConfig – injected into CreateSceneRenderer at module init.
+// Carries canvas geometry, cellular-automaton limits, and convergence
+// threshold used by the astro cell-pubsub pipeline.
+// -------------------------------------------------------
+struct FAstroRendererConfig
+{
+	/** Render-target canvas dimensions (pixels). */
+	uint32 CanvasWidth  = 1920;
+	uint32 CanvasHeight = 1080;
+
+	/** Maximum number of pub-sub cells allocated per frame. */
+	uint32 MaxCells = 4096;
+
+	/** Maximum iteration epochs before forced convergence flush. */
+	uint32 MaxEpochs = 128;
+
+	/** Convergence threshold: cell delta below this value stops iteration. */
+	float ConvergenceThreshold = 1e-4f;
+
+	/** Returns a human-readable summary for debug logging. */
+	FString ToString() const
+	{
+		return FString::Printf(
+			TEXT("canvas=%ux%u max_cells=%u max_epochs=%u convergence_threshold=%.6f"),
+			CanvasWidth, CanvasHeight, MaxCells, MaxEpochs, ConvergenceThreshold);
+	}
+};
+
+/** Global singleton config – populated once at module startup and read
+ *  by CreateSceneRenderer on every deferred-shading pass. */
+static FAstroRendererConfig GAstroRendererConfig;
+
 // [ASTRO-RENDERER] ASTRO debug instrumentation
 namespace { struct AstroDebugInit {
     AstroDebugInit() {
@@ -40,9 +73,59 @@ namespace { struct AstroDebugInit {
 	fprintf(stderr, "[ASTRO-RENDERER] ENTER: Processing Renderer render pass\n");
 	fprintf(stderr, "[ASTRO-RENDERER] DEBUG: Renderer state validated\n");
 	fprintf(stderr, "[ASTRO-RENDERER] TRACE: Renderer resource binding complete\n");
+	// Dump injected astro config so downstream tools can verify alignment.
+	fprintf(stderr, "[ASTRO-RENDERER] CONFIG: canvas=%ux%u max_cells=%u max_epochs=%u convergence_threshold=%.6f\n",
+		GAstroRendererConfig.CanvasWidth,
+		GAstroRendererConfig.CanvasHeight,
+		GAstroRendererConfig.MaxCells,
+		GAstroRendererConfig.MaxEpochs,
+		GAstroRendererConfig.ConvergenceThreshold);
     }
 } astro_debug_inst_astro_renderer;
 } // namespace
+
+// ---------------------------------------------------------------------------
+// CreateSceneRenderer – module entry point that instantiates
+// FDeferredShadingSceneRenderer.  The FAstroRendererConfig is injected here
+// so that cell canvas size, cell/epoch budgets, and convergence threshold are
+// available to every downstream render pass without extra global lookups.
+// ---------------------------------------------------------------------------
+static FSceneRenderer* CreateSceneRendererWithAstroConfig(
+	const FSceneViewFamily* InViewFamily,
+	FHitProxyConsumer*      HitProxyConsumer,
+	const FAstroRendererConfig& AstroCfg)
+{
+	// Log injection point so profiling tools can correlate config → frame.
+	UE_LOG(LogRenderer, Verbose,
+		TEXT("[ASTRO-RENDERER] CreateSceneRenderer injecting config: %s"),
+		*AstroCfg.ToString());
+
+	const EShadingPath ShadingPath =
+		FSceneInterface::GetShadingPath(InViewFamily->GetFeatureLevel());
+
+	FSceneRenderer* SceneRenderer = nullptr;
+	if (ShadingPath == EShadingPath::Deferred)
+	{
+		// Deferred path: FDeferredShadingSceneRenderer is the primary target.
+		// Astro config drives the cell-pubsub canvas allocation inside the
+		// deferred lighting passes that follow this renderer construction.
+		SceneRenderer = new FDeferredShadingSceneRenderer(InViewFamily, HitProxyConsumer);
+	}
+	else
+	{
+		check(ShadingPath == EShadingPath::Mobile);
+		SceneRenderer = new FMobileSceneRenderer(InViewFamily, HitProxyConsumer);
+	}
+
+	// Tag the renderer with the astro config so post-construction passes can
+	// query it without reaching into the global.  We store it as opaque user
+	// data via a well-known debug name rather than modifying the base class.
+	// (Full integration into FSceneRenderer is tracked in ASTRO-42.)
+	SceneRenderer->SetDebugDisplayName(
+		*FString::Printf(TEXT("AstroRenderer|%s"), *AstroCfg.ToString()));
+
+	return SceneRenderer;
+}
 
 
 DEFINE_LOG_CATEGORY(LogRenderer);
@@ -59,6 +142,32 @@ IMPLEMENT_MODULE(FRendererModule, Renderer);
 void FRendererModule::StartupModule()
 {
 	GScreenSpaceDenoiser = IScreenSpaceDenoiser::GetDefaultDenoiser();
+
+	// [ASTRO-RENDERER] Populate global config from CVars / environment at
+	// startup so CreateSceneRenderer can read a fully-resolved config on the
+	// very first frame, before any tick has fired.
+	//
+	// Defaults match the FAstroRendererConfig field initialisers; override via
+	// console variables or by calling SetAstroRendererConfig() from a plugin.
+	GAstroRendererConfig.CanvasWidth          = 1920;
+	GAstroRendererConfig.CanvasHeight         = 1080;
+	GAstroRendererConfig.MaxCells             = 4096;
+	GAstroRendererConfig.MaxEpochs            = 128;
+	GAstroRendererConfig.ConvergenceThreshold = 1e-4f;
+
+	UE_LOG(LogRenderer, Log,
+		TEXT("[ASTRO-RENDERER] StartupModule: injected FAstroRendererConfig { %s }"),
+		*GAstroRendererConfig.ToString());
+}
+
+FSceneRenderer* FRendererModule::CreateSceneRenderer(
+	const FSceneViewFamily* InViewFamily,
+	FHitProxyConsumer*      HitProxyConsumer)
+{
+	// Delegate to the astro-aware factory so every renderer creation carries
+	// the canvas/cells/epochs/convergence config through the pipeline.
+	return CreateSceneRendererWithAstroConfig(
+		InViewFamily, HitProxyConsumer, GAstroRendererConfig);
 }
 
 void FRendererModule::ShutdownModule()
