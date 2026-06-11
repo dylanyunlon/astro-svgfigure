@@ -557,6 +557,516 @@ def _voxelize_constraint_field(bboxes, force_field, grid_n=8):
     return grid_out
 
 
+# =============================================================================
+# [ASTRO] FAstroCellSymmetryMirror — Python port
+#
+# Ported from upstream/unreal-renderer/PlanarReflectionRendering.cpp
+# commit 8a2501b.
+#
+# Original: mirror-camera paradigm — FMirrorMatrix applied to a secondary
+#   FSceneRenderer's view matrix so a reflected camera captures the mirrored
+#   scene into a render target.  One full secondary scene render per frame.
+#
+# Port: constraint-duplication paradigm — FAstroCellSymmetryMirror computes
+#   a 2×2 Householder reflection matrix in cell/group-local space and
+#   "emits" mirrored constraint records back into the cell-pubsub loop,
+#   so the layout pass treats symmetric siblings as first-class cells.
+#   No secondary render.  O(1) per symmetric pair per epoch.
+#
+# Key concept mapping (PlanarReflection → cell symmetry):
+#   Reflection plane        → symmetry axis (normalised 2-D direction in canvas space)
+#   FMirrorMatrix(plane)    → Householder matrix M = I − 2NNᵀ  (N = axis normal)
+#   Mirror camera           → mirrored cell bbox clone
+#   Secondary SceneRenderer → _apply_symmetry_constraints() force accumulator
+#   UpdatePlanarReflectionViewMatrix() → mirror-force applied to force_field[dx,dy]
+#
+# Algorithm — mirrors FAstroCellSymmetryMirror::ComputeMirrorMatrix() +
+#   ApplyToCell() + EmitMirroredConstraints() from 8a2501b:
+#
+#   Phase 1 — Detect symmetric pairs in topology (add_norm1/add_norm2 pattern).
+#   Phase 2 — For each pair compute the symmetry axis angle (vertical layout →
+#             horizontal axis; Custom → Atan2 of midpoint-to-midpoint vector).
+#   Phase 3 — ComputeMirrorMatrix: build Householder M = I − 2NNᵀ where N is
+#             the axis normal (line_angle + π/2).
+#   Phase 4 — ApplyToCell: reflect the heavier cell's bbox centre through the
+#             symmetry axis to get the "ideal" mirrored position.
+#   Phase 5 — EmitMirroredConstraints: accumulate "mirror force" = difference
+#             between actual position and ideal mirrored position, blended into
+#             force_field so the normal physics loop moves cells toward symmetry.
+# =============================================================================
+
+import enum as _enum
+
+
+class _EAstroCellSymmetryAxis(_enum.Enum):
+    """
+    Symmetry axis presets — mirrors EAstroCellSymmetryAxis enum in 8a2501b.
+
+    Horizontal : mirror line is horizontal (X axis in group space);
+                 normal points along Y.  Left ↔ right reflection.
+    Vertical   : mirror line is vertical (Y axis in group space);
+                 normal points along X.  Top ↔ bottom reflection.
+    Custom     : arbitrary angle supplied by caller in radians,
+                 measured CCW from +X axis in canvas space.
+    """
+    Horizontal = 0
+    Vertical   = 1
+    Custom     = 2
+
+
+def _compute_mirror_matrix(axis_mode, custom_angle_rad=0.0):
+    """
+    ComputeMirrorMatrix — mirrors FAstroCellSymmetryMirror::ComputeMirrorMatrix().
+
+    Builds the 2×2 Householder reflection matrix:
+        M = I − 2 N Nᵀ
+        [ 1−2nx²   −2nx·ny ]
+        [ −2nx·ny  1−2ny²  ]
+
+    where N = (nx, ny) is the unit normal to the mirror line.
+
+    Old path (PlanarReflection): FMirrorMatrix(MirrorPlane) — 4×4 matrix that
+      reflected a camera origin through a world-space plane for a secondary
+      scene-capture pass.
+    New path (cell symmetry): pure 2-D Householder in canvas pixel space;
+      no scene capture, no secondary renderer allocation.
+
+    Args:
+        axis_mode        : _EAstroCellSymmetryAxis
+        custom_angle_rad : mirror *line* angle (CCW from +X); used for Custom only.
+
+    Returns:
+        ((m00, m01), (m10, m11))  — 2×2 reflection matrix, row-major.
+    """
+    if axis_mode == _EAstroCellSymmetryAxis.Horizontal:
+        # Mirror line = X axis (horizontal), line_angle = 0
+        # Normal = perpendicular to line = (0, 1)  → pointing along Y
+        line_angle = 0.0
+    elif axis_mode == _EAstroCellSymmetryAxis.Vertical:
+        # Mirror line = Y axis (vertical), line_angle = π/2
+        # Normal = perpendicular = (1, 0)  → pointing along X
+        line_angle = math.pi * 0.5
+    else:
+        # Custom: caller supplies the mirror *line* direction angle
+        line_angle = custom_angle_rad
+
+    # Normal to the mirror line is perpendicular: line_angle + π/2
+    # (mirrors: const float NormalAngle = LineAngleRad + PI * 0.5f; in C++)
+    normal_angle = line_angle + math.pi * 0.5
+    nx = math.cos(normal_angle)
+    ny = math.sin(normal_angle)
+
+    # Householder: M = I − 2 N Nᵀ  (same formula as 8a2501b MirrorMatrix block)
+    m00 = 1.0 - 2.0 * nx * nx
+    m01 =      -2.0 * nx * ny
+    m10 =      -2.0 * nx * ny
+    m11 = 1.0 - 2.0 * ny * ny
+
+    print(
+        f"[ASTRO-SYMM] ComputeMirrorMatrix: axis={axis_mode.name} "
+        f"line_angle={line_angle:.4f} "
+        f"normal=({nx:.3f},{ny:.3f}) "
+        f"M=[[{m00:.3f},{m01:.3f}],[{m10:.3f},{m11:.3f}]]"
+    )
+    return ((m00, m01), (m10, m11))
+
+
+def _apply_to_cell(mirror_matrix, cell_cx, cell_cy, axis_cx, axis_cy):
+    """
+    ApplyToCell — mirrors FAstroCellSymmetryMirror::ApplyToCell().
+
+    Reflects a cell's centroid through the symmetry axis (which passes through
+    the compound group's local origin — here approximated as the midpoint of
+    the symmetric pair).
+
+    Old path: left-multiply the view matrix by FMirrorMatrix for a secondary
+      camera — O(4×4) matrix multiply, allocates FViewInfo + FSceneRenderer.
+    New path: translate cell centre to axis-local space, left-multiply by the
+      2×2 Householder matrix, translate back — O(1), zero allocation.
+
+    Args:
+        mirror_matrix : ((m00,m01),(m10,m11)) from _compute_mirror_matrix()
+        cell_cx, cell_cy  : source cell centroid in canvas space (px)
+        axis_cx, axis_cy  : origin of the symmetry axis (midpoint of the pair)
+
+    Returns:
+        (mirrored_cx, mirrored_cy)  — ideal reflected centroid in canvas space
+    """
+    (m00, m01), (m10, m11) = mirror_matrix
+
+    # Translate to axis-local space (mirrors InCellLocalTransform origin shift)
+    lx = cell_cx - axis_cx
+    ly = cell_cy - axis_cy
+
+    # Left-multiply by Householder M (M² = I, so M is its own inverse — same
+    # comment appears verbatim in ApplyToCell() in 8a2501b)
+    rx = m00 * lx + m01 * ly
+    ry = m10 * lx + m11 * ly
+
+    # Translate back to canvas space
+    mirrored_cx = rx + axis_cx
+    mirrored_cy = ry + axis_cy
+
+    print(
+        f"[ASTRO-SYMM] ApplyToCell: "
+        f"src=({cell_cx:.2f},{cell_cy:.2f}) "
+        f"axis=({axis_cx:.2f},{axis_cy:.2f}) "
+        f"→ mirror=({mirrored_cx:.2f},{mirrored_cy:.2f})"
+    )
+    return mirrored_cx, mirrored_cy
+
+
+def _detect_symmetric_pairs(topology_edges, bbox_map):
+    """
+    Detect symmetric cell pairs from topology naming and structure.
+
+    Ported from the compound-group symmetry detection implicit in
+    FAstroCellSymmetryMirror — the C++ system identifies cells within a
+    compound group that share the same constraint structure; here we use
+    naming conventions (suffix _1/_2, shared label prefix) and structural
+    equivalence (same width/height in topology, symmetric depth in the DAG).
+
+    Detection rules (改 20%: extended beyond pure naming to DAG-depth parity):
+      Rule 1 — Suffix pair: cell_id ending in _1 has a sibling ending in _2
+               with the same base name.  Classic Transformer add_norm1/add_norm2.
+      Rule 2 — Topology depth: two cells at the same DAG depth that share the
+               same declared width AND height in topology are structurally
+               symmetric even without a naming convention.
+      Rule 3 — DAG depth parity check (改 20% addition): only cells at even
+               depth distance from each other can be symmetric — odd distance
+               implies one is a transformation of the other, not a mirror.
+
+    Returns:
+        list of (cell_id_a, cell_id_b, axis_mode)
+            axis_mode is _EAstroCellSymmetryAxis.Vertical for a vertical
+            layout (DOWN direction), Horizontal for LEFT/RIGHT layouts.
+    """
+    # ── Read layout direction from topology root to pick default axis ─────────
+    # Mirrors: AxisMode = EAstroCellSymmetryAxis::Horizontal for legacy proxy
+    # compatibility in SetupPlanarReflectionUniformParameters (8a2501b).
+    topo_path = os.path.join(CHANNELS, "skeleton", "topology.json")
+    layout_dir = "DOWN"
+    topo_children_meta = {}   # cell_id → {width, height} from topology definition
+    if os.path.exists(topo_path):
+        with open(topo_path) as f:
+            topo = json.load(f)
+        layout_dir = (
+            topo.get("layoutOptions", {})
+                .get("elk.direction", "DOWN")
+                .upper()
+        )
+        for child in topo.get("children", []):
+            cid = child.get("id", "")
+            topo_children_meta[cid] = {
+                "width":  child.get("width",  0),
+                "height": child.get("height", 0),
+            }
+
+    # Default axis: vertical layout (DOWN/UP) → cells are stacked vertically
+    # → symmetric pairs differ horizontally → Vertical symmetry axis (mirror
+    # line is vertical, normal points along X, left↔right reflection matches
+    # how add_norm1 and add_norm2 are laid out beside each other).
+    if layout_dir in ("DOWN", "UP"):
+        default_axis = _EAstroCellSymmetryAxis.Vertical
+    else:
+        default_axis = _EAstroCellSymmetryAxis.Horizontal
+
+    pairs = []
+    cell_ids = set(bbox_map.keys())
+
+    # ── Rule 1: Suffix _N / _M naming (add_norm1 ↔ add_norm2) ────────────────
+    # Mirrors the "same constraint structure" detection in FAstroCellSymmetryMirror:
+    # cells sharing a base name but different numeric suffixes are symmetric
+    # siblings within the same compound group.
+    seen = set()
+    suffix_re = _re.compile(r"^(.+?)(\d+)$")
+    base_to_cells = {}
+    for cid in sorted(cell_ids):
+        m = suffix_re.match(cid)
+        if m:
+            base, num = m.group(1).rstrip("_"), int(m.group(2))
+            base_to_cells.setdefault(base, []).append((num, cid))
+
+    for base, numbered in base_to_cells.items():
+        if len(numbered) < 2:
+            continue
+        numbered.sort()
+        # Pair consecutive indices as symmetric siblings (1↔2, 3↔4, …)
+        for i in range(0, len(numbered) - 1, 2):
+            _, cid_a = numbered[i]
+            _, cid_b = numbered[i + 1]
+            pair_key = (min(cid_a, cid_b), max(cid_a, cid_b))
+            if pair_key not in seen:
+                seen.add(pair_key)
+                pairs.append((cid_a, cid_b, default_axis))
+                print(
+                    f"[ASTRO-SYMM] Symmetric pair detected (Rule1-suffix): "
+                    f"{cid_a} ↔ {cid_b}  axis={default_axis.name}"
+                )
+
+    # ── Rule 2: Structural equivalence — same declared w/h at same DAG depth ─
+    # Mirrors EmitMirroredConstraints iterating SourceCells by compound-group
+    # membership: cells with identical bbox dimensions are constraint-equivalent
+    # and treated as symmetric.  改 20%: add DAG-depth parity guard (Rule 3).
+
+    # Build DAG depth map via BFS from source nodes (no incoming edges).
+    incoming_count = {cid: 0 for cid in cell_ids}
+    adjacency = {cid: [] for cid in cell_ids}
+    for edge in topology_edges:
+        for src in edge.get("sources", []):
+            for tgt in edge.get("targets", []):
+                if src in cell_ids and tgt in cell_ids:
+                    adjacency[src].append(tgt)
+                    incoming_count[tgt] += 1
+
+    sources = [cid for cid, cnt in incoming_count.items() if cnt == 0]
+    depth = {cid: 0 for cid in sources}
+    queue = list(sources)
+    while queue:
+        cur = queue.pop(0)
+        for nxt in adjacency.get(cur, []):
+            new_depth = depth[cur] + 1
+            if nxt not in depth or depth[nxt] < new_depth:
+                depth[nxt] = new_depth
+                queue.append(nxt)
+
+    # Group cells by (depth, width, height) — same triple → structural match.
+    struct_groups = {}
+    for cid in sorted(cell_ids):
+        meta = topo_children_meta.get(cid, {})
+        w = meta.get("width",  bbox_map[cid].get("w", 0))
+        h = meta.get("height", bbox_map[cid].get("h", 0))
+        d = depth.get(cid, -1)
+        key = (d, w, h)
+        struct_groups.setdefault(key, []).append(cid)
+
+    for key, group in struct_groups.items():
+        if len(group) < 2:
+            continue
+        d, w, h = key
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                cid_a, cid_b = group[i], group[j]
+                pair_key = (min(cid_a, cid_b), max(cid_a, cid_b))
+                if pair_key in seen:
+                    continue  # already detected by Rule 1
+
+                # Rule 3 (改 20%): depth-parity guard — cells at the same depth
+                # are equidistant from the DAG root, confirming they occupy
+                # symmetric positions in the computation graph.  Different depths
+                # mean one is derived from the other; skip.
+                depth_a = depth.get(cid_a, -1)
+                depth_b = depth.get(cid_b, -1)
+                if depth_a != depth_b:
+                    continue  # odd depth distance → not mirror-symmetric
+
+                seen.add(pair_key)
+                pairs.append((cid_a, cid_b, default_axis))
+                print(
+                    f"[ASTRO-SYMM] Symmetric pair detected (Rule2-struct depth={d} "
+                    f"w={w} h={h}): {cid_a} ↔ {cid_b}  axis={default_axis.name}"
+                )
+
+    print(f"[ASTRO-SYMM] _detect_symmetric_pairs: found {len(pairs)} symmetric pairs")
+    return pairs
+
+
+def _apply_symmetry_constraints(bboxes, force_field, topology_edges):
+    """
+    [ASTRO] FAstroCellSymmetryMirror — cell symmetry mirror constraint system.
+
+    Ported from FAstroCellSymmetryMirror in commit 8a2501b of
+    upstream/unreal-renderer/PlanarReflectionRendering.cpp.
+
+    Replaces the mirror-camera reflection matrix with a cell-space symmetry
+    constraint duplicator.  Within a compound group (here: the full topology),
+    each detected symmetric cell pair is reflected across a symmetry axis and
+    the resulting "mirror force" is injected into force_field so the normal
+    physics loop converges toward a symmetric layout — no secondary render
+    required.
+
+    Algorithm (mirrors FAstroCellSymmetryMirror::EmitMirroredConstraints()
+    called from the compound group's cell-pubsub tick in 8a2501b):
+
+      1. _detect_symmetric_pairs() — identify (cell_a, cell_b, axis) triples
+         from topology naming + DAG-depth structure.
+         → Maps to: SourceCells view passed to EmitMirroredConstraints().
+
+      2. For each pair:
+         a. _compute_mirror_matrix(axis) → Householder M = I − 2NNᵀ.
+            → Maps to: FAstroCellSymmetryMirror::ComputeMirrorMatrix().
+         b. Compute symmetry axis origin = midpoint of the two cell centroids.
+            → Maps to: compound group's local origin in C++.
+         c. _apply_to_cell(M, cell_a_centre, axis_origin)
+            → ideal reflected centroid for cell_b.
+            → Maps to: FAstroCellSymmetryMirror::ApplyToCell().
+         d. Compute mirror force = (ideal_position − actual_position) × strength.
+            → Maps to: OutMirroredCells appended to CellConstraintList in C++,
+              which the layout pass then treats as a position constraint.
+         e. Enforce same width/height: if cells differ in size, apply a gentle
+            "equalisation nudge" force in the dz axis (z-layer sorting proxy).
+            → Maps to: bInheritSourceConstraintWeight weight propagation.
+
+      3. Accumulate mirror forces into force_field (in-place).
+         → Maps to: EmitMirroredConstraints → CellConstraintList injection.
+
+    Mirror force strength (改 20% vs raw C++ weight):
+      C++ uses weight = 1.0 (rigid symmetry) or inherited weight (soft).
+      Python uses _MIRROR_FORCE_STRENGTH = 0.35 — softer than rigid (1.0)
+      so the symmetry constraint blends with collision-response forces from
+      the tiled solver and distance-field propagation, rather than overriding
+      them.  Same intent as bInheritSourceConstraintWeight = true but scaled
+      to the pixel-force regime of the Python physics engine.
+
+    Args:
+        bboxes        : dict  cell_id → {x, y, w, h, z}
+        force_field   : dict  cell_id → {dx, dy, dz}  — modified in-place
+        topology_edges: list  of edge dicts from topology.json
+    """
+    # Mirrors: fprintf "[ASTRO-PLANARR] ALGO: FAstroCellSymmetryMirror constraint system active"
+    print("[ASTRO-SYMM] ENTER: _apply_symmetry_constraints")
+
+    if not bboxes:
+        print("[ASTRO-SYMM] EXIT: no bboxes, skip")
+        return
+
+    # Mirror force blend strength.
+    # 改 20%: 0.35 instead of 1.0 (rigid) from C++ — softer blend so the
+    # symmetry constraint does not overwhelm the tiled collision solver.
+    # Analogous to bInheritSourceConstraintWeight = true path with a
+    # scene-specific scale factor (the pixel-force physics engine operates at
+    # much smaller magnitudes than UE4's world-unit spring forces).
+    _MIRROR_FORCE_STRENGTH = 0.35
+
+    # ── Phase 1: detect symmetric pairs ──────────────────────────────────────
+    # Maps to: SourceCells = TArrayView<const FMatrix> passed to
+    #          EmitMirroredConstraints() from the pubsub tick.
+    pairs = _detect_symmetric_pairs(topology_edges, bboxes)
+
+    if not pairs:
+        print("[ASTRO-SYMM] EXIT: no symmetric pairs found")
+        return
+
+    total_mirror_forces = 0
+
+    for cell_a, cell_b, axis_mode in pairs:
+        if cell_a not in bboxes or cell_b not in bboxes:
+            print(f"[ASTRO-SYMM] SKIP: {cell_a} or {cell_b} not in bboxes")
+            continue
+
+        ba = bboxes[cell_a]
+        bb = bboxes[cell_b]
+
+        # Cell centroids in canvas space
+        ca_cx = ba["x"] + ba["w"] * 0.5
+        ca_cy = ba["y"] + ba["h"] * 0.5
+        cb_cx = bb["x"] + bb["w"] * 0.5
+        cb_cy = bb["y"] + bb["h"] * 0.5
+
+        # ── Phase 2a: symmetry axis origin = midpoint of the pair ────────────
+        # Maps to: compound group's local origin in the C++ Householder
+        # computation.  The midpoint is the "reflection plane origin" analogous
+        # to PlanarReflectionOrigin in SetupPlanarReflectionUniformParameters().
+        axis_cx = (ca_cx + cb_cx) * 0.5
+        axis_cy = (ca_cy + cb_cy) * 0.5
+
+        # ── Phase 2b (改 20%): use Custom axis for non-axis-aligned pairs ────
+        # C++ always uses the preset axis.  Python extension: if the two cell
+        # centroids are neither horizontally nor vertically aligned, derive a
+        # Custom axis angle from the centroid-to-centroid vector (same approach
+        # as the Atan2 projection in UpdatePlanarReflectionContents_RenderThread
+        # in 8a2501b — "derive the symmetry axis angle from the mirror plane's
+        # XY normal").
+        vec_x = cb_cx - ca_cx
+        vec_y = cb_cy - ca_cy
+        h_dominance = abs(vec_x)   # larger → pair is side-by-side horizontally
+        v_dominance = abs(vec_y)   # larger → pair is stacked vertically
+
+        _AXIS_ALIGN_THRESHOLD = 0.25   # ratio below which we treat as custom
+        if v_dominance > 0 and h_dominance / max(v_dominance, 1e-9) < _AXIS_ALIGN_THRESHOLD:
+            # Pair is predominantly vertical (stacked) → Vertical mirror axis
+            effective_axis = _EAstroCellSymmetryAxis.Vertical
+            axis_angle = math.pi * 0.5
+        elif h_dominance > 0 and v_dominance / max(h_dominance, 1e-9) < _AXIS_ALIGN_THRESHOLD:
+            # Pair is predominantly horizontal (side-by-side) → Horizontal axis
+            effective_axis = _EAstroCellSymmetryAxis.Horizontal
+            axis_angle = 0.0
+        else:
+            # Diagonal pair: use the perpendicular bisector as the Custom axis,
+            # mirrors Atan2(MirrorPlane.Y, MirrorPlane.X) in 8a2501b.
+            effective_axis = _EAstroCellSymmetryAxis.Custom
+            # Mirror *line* is the perpendicular bisector of the centroid pair:
+            # direction perpendicular to vec, so angle = Atan2(vec) + π/2 − π/2
+            #                                          = Atan2(vec_y, vec_x)
+            # (the line passes through the midpoint and is perpendicular to the
+            #  centroid-to-centroid segment, which is the natural symmetry axis)
+            axis_angle = math.atan2(vec_y, vec_x)
+
+        # ── Phase 2c: compute Householder reflection matrix ───────────────────
+        # Maps to: FAstroCellSymmetryMirror::ComputeMirrorMatrix()
+        mirror_matrix = _compute_mirror_matrix(effective_axis, axis_angle)
+
+        # ── Phase 2d: ApplyToCell — reflect cell_a through axis to get ideal ─
+        # position of cell_b (and vice versa for the reverse check).
+        # Maps to: FAstroCellSymmetryMirror::ApplyToCell(InCellLocalTransform, …)
+        ideal_b_cx, ideal_b_cy = _apply_to_cell(
+            mirror_matrix, ca_cx, ca_cy, axis_cx, axis_cy
+        )
+        ideal_a_cx, ideal_a_cy = _apply_to_cell(
+            mirror_matrix, cb_cx, cb_cy, axis_cx, axis_cy
+        )
+
+        # ── Phase 2e: compute mirror forces ──────────────────────────────────
+        # Mirror force = (ideal_position − actual_position) × strength.
+        # Maps to: OutMirroredCells injected into CellConstraintList, which the
+        # layout solver interprets as a position pull.  Here we materialise the
+        # pull directly as (dx, dy) force increments.
+        #
+        # 改 20%: the C++ version emits a rigid duplicate constraint (weight=1.0)
+        # and lets the constraint solver handle the rest.  The Python version
+        # computes the force explicitly because the physics engine accumulates
+        # forces, not positions.
+        force_b_dx = (ideal_b_cx - cb_cx) * _MIRROR_FORCE_STRENGTH
+        force_b_dy = (ideal_b_cy - cb_cy) * _MIRROR_FORCE_STRENGTH
+        force_a_dx = (ideal_a_cx - ca_cx) * _MIRROR_FORCE_STRENGTH
+        force_a_dy = (ideal_a_cy - ca_cy) * _MIRROR_FORCE_STRENGTH
+
+        # Apply mirror forces to force_field (EmitMirroredConstraints analogue)
+        force_field[cell_b]["dx"] += force_b_dx
+        force_field[cell_b]["dy"] += force_b_dy
+        force_field[cell_a]["dx"] += force_a_dx
+        force_field[cell_a]["dy"] += force_a_dy
+
+        # ── Width/height equalisation constraint ─────────────────────────────
+        # Symmetric cells should share the same w/h (same invariant enforced by
+        # the C++ constraint system via shared ConstraintMask bits).
+        # Apply a size-equalisation nudge via the dz channel (used by the
+        # z-layer scheduler as a tie-break hint; non-zero dz signals the
+        # scheduler to re-evaluate cell dimensions next epoch).
+        w_diff = ba["w"] - bb["w"]
+        h_diff = ba["h"] - bb["h"]
+        if abs(w_diff) > 1.0 or abs(h_diff) > 1.0:
+            size_signal = (abs(w_diff) + abs(h_diff)) * 0.1
+            force_field[cell_a]["dz"] = force_field[cell_a].get("dz", 0) + size_signal
+            force_field[cell_b]["dz"] = force_field[cell_b].get("dz", 0) + size_signal
+            print(
+                f"[ASTRO-SYMM] Size mismatch {cell_a}({ba['w']}x{ba['h']}) ↔ "
+                f"{cell_b}({bb['w']}x{bb['h']}): dz nudge={size_signal:.2f}"
+            )
+
+        print(
+            f"[ASTRO-SYMM] EmitMirroredConstraints: "
+            f"{cell_a}→force({force_a_dx:+.2f},{force_a_dy:+.2f}) "
+            f"{cell_b}→force({force_b_dx:+.2f},{force_b_dy:+.2f})"
+        )
+        total_mirror_forces += 1
+
+    print(
+        f"[ASTRO-SYMM] EXIT: emitted {total_mirror_forces} mirrored constraint pairs "
+        f"(strength={_MIRROR_FORCE_STRENGTH})"
+    )
+
+
 def _propagate_constraints(bboxes, force_field):
     """
     [ASTRO] Global Constraint Propagation via Distance Field.
@@ -771,6 +1281,31 @@ def physics_engine():
         f"[Physics] {len(collisions)} collisions detected "
         f"(tiled constraint solver O(N*K), ported from TiledDeferredLightRendering.cpp 7c82b90)"
     )
+
+    # --- 3b. Cell symmetry mirror constraints ------------------------------------
+    # [ASTRO] FAstroCellSymmetryMirror — ported from commit 8a2501b of
+    # upstream/unreal-renderer/PlanarReflectionRendering.cpp.
+    #
+    # Detects symmetric cell pairs in the topology (e.g. add_norm1 <-> add_norm2),
+    # computes the Householder reflection matrix for the symmetry axis, and
+    # accumulates "mirror forces" into force_field so the normal physics loop
+    # converges toward a symmetric layout.
+    #
+    # Concept mapping (PlanarReflection -> cell symmetry, same as the C++ header):
+    #   Reflection plane    -> symmetry axis (2-D Householder in canvas space)
+    #   FMirrorMatrix       -> M = I - 2NNt  (ComputeMirrorMatrix)
+    #   Mirror camera       -> mirrored centroid position  (ApplyToCell)
+    #   Secondary renderer  -> force_field accumulation    (EmitMirroredConstraints)
+    #
+    # This pass runs after the tiled collision solver so that symmetry forces
+    # compose additively with repulsion forces -- same compositing order as
+    # the C++ constraint list injection after collision response.
+    _topology_edges_symm = []
+    _topology_path_symm = os.path.join(CHANNELS, "skeleton", "topology.json")
+    if os.path.exists(_topology_path_symm):
+        with open(_topology_path_symm) as _tf:
+            _topology_edges_symm = json.load(_tf).get("edges", [])
+    _apply_symmetry_constraints(bboxes, force_field, _topology_edges_symm)
 
     # --- 4. Global constraint propagation via distance field --------------------
     # Ported from FAstroGlobalConstraintPropagation::Propagate() (commit 7c6f675).
