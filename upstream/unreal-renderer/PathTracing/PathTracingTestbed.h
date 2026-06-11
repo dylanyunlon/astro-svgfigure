@@ -1,3 +1,4 @@
+fprintf(stderr,"[ASTRO-PT] %s loaded\n",__FILE__);
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 #pragma once 
