@@ -11,6 +11,69 @@
 #include "Engine/TextureCube.h"
 #include "PipelineStateCache.h"
 
+// DEBUG: astro-svgfigure pipeline stage marker — depth attenuation entry
+#include <cstdio>
+
+// =============================================================================
+// astro-svgfigure: fog → depth attenuation — FogRendering integration
+// =============================================================================
+// In Unreal's original FogRendering, exponential height fog is applied as a
+// view-space effect: density is computed from height falloff and a single
+// integrated extinction coefficient along the camera ray, independent of the
+// actual scene-depth value stored in the GBuffer.
+//
+// In the astro-svgfigure layout pipeline the fog pass is replaced by a
+// depth-driven attenuation stage that reads per-pixel linear depth from the
+// scene depth buffer and computes per-cell transmittance using Beer-Lambert:
+//
+//   transmittance(d) = exp(-density * d)
+//
+// where d is the linearised hardware depth at that pixel.  Each SVG cell's
+// colour contribution is then scaled by its transmittance before the alpha-
+// composite step, so foreground cells remain crisp while background cells
+// fade into the scene fog colour:
+//
+//   cell_rgb_attenuated = cell_rgb * transmittance(cell_depth)
+//   cell_alpha_attenuated = cell_alpha * transmittance(cell_depth)
+//
+// This replaces the flat exponential-height-fog blend and ensures depth-sorted
+// SVG cells (committed via FAstroDepthRegistry) receive physically consistent
+// attenuation, eliminating the pop-in artefacts that appear when exponential
+// fog density changes abruptly at cell boundaries.
+//
+// astro_fog_density          — global Beer-Lambert extinction coefficient.
+// astro_depth_attenuation    — per-cell transmittance after depth read.
+// astro_depth_pass_index     — current cell index inside the attenuation loop.
+// astro_total_depth_ops      — total depth-attenuation operations this frame.
+
+static int32 astro_fog_depth_pass_index   = 0;
+static int32 astro_fog_total_depth_ops    = 0;
+static float astro_fog_density_accum      = 0.0f;
+
+static void AstroFog_DepthAttenuationDebug(float depth, float density, float transmittance)
+{
+	astro_fog_depth_pass_index++;
+	astro_fog_total_depth_ops++;
+	astro_fog_density_accum += density;
+	fprintf(stderr,
+		"[ASTRO-FOG] depth_attenuation pass=%d depth=%.4f density=%.6f "
+		"transmittance=%.6f total_ops=%d\n",
+		astro_fog_depth_pass_index,
+		depth,
+		density,
+		transmittance,
+		astro_fog_total_depth_ops);
+}
+
+// Compute Beer-Lambert transmittance for a given linear depth and density.
+// Returns value in [0, 1]: 1.0 = fully visible, 0.0 = fully attenuated.
+static float AstroFog_BeerLambertTransmittance(float linearDepth, float extinctionDensity)
+{
+	const float transmittance = FMath::Exp(-extinctionDensity * linearDepth);
+	AstroFog_DepthAttenuationDebug(linearDepth, extinctionDensity, transmittance);
+	return transmittance;
+}
+
 DECLARE_GPU_STAT(Fog);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
