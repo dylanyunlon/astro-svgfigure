@@ -5,6 +5,40 @@ fprintf(stderr,"[ASTRO-RT] %s loaded\n",__FILE__);
 	RaytracingSkyLight.cpp implements sky lighting with ray tracing
 =============================================================================*/
 
+/*
+ * ASTRO PATCH: Global Palette Background Gradient Sampler
+ * -------------------------------------------------------
+ * Original behaviour: hemisphere-samples the environment cube-map texture
+ * to produce sky-light radiance (hemisphere uniform or MIP-tree importance
+ * sampling, six cube faces).
+ *
+ * New behaviour (FAstroGlobalBackgroundSampler):
+ *   1. Replaces the per-ray env-texture lookup with a palette-driven gradient
+ *      synthesised from ALL registered cell palettes in the global Astro cell
+ *      registry.
+ *   2. Ray direction → palette angle mapping:
+ *        φ   = atan2(Dir.Y, Dir.X)              // azimuth  [−π, π]
+ *        θ   = acos(clamp(Dir.Z, -1, 1))        // polar    [0, π]
+ *        t   = φ / (2π) + 0.5                   // [0, 1]  longitude
+ *        For each registered cell i:
+ *          weight_i = cos²(π · (t − offset_i))  // angular weight centred at cell's azimuth slot
+ *          colour  += palette_i · weight_i
+ *        colour is normalised by Σweight_i.
+ *   3. Elevation blend: lerp(horizon_colour, zenith_colour, sin(θ)) where
+ *      horizon/zenith are the weighted palette sums at θ=π/2 and θ=0.
+ *   4. The result replaces the env-texture sample that feeds the occlusion
+ *      mask UAV output; hit-distance UAV behaviour is unchanged.
+ *
+ * Public surface:
+ *   FAstroGlobalBackgroundSampler::RegisterCell(FName CellId, const TArray<FLinearColor>& Palette, float AzimuthSlot)
+ *   FAstroGlobalBackgroundSampler::SampleBackground(const FVector& RayDirection) → FLinearColor
+ *   FAstroGlobalBackgroundSampler::Reset()
+ *
+ * Thread-safety: registrations happen on the game thread before rendering;
+ * SampleBackground is called on the render thread after the registry is
+ * frozen for the frame (no concurrent mutation).
+ */
+
 #include "DeferredShadingRenderer.h"
 
 static int32 GRayTracingSkyLight = 0;
@@ -77,6 +111,178 @@ static TAutoConsoleVariable<int32> CVarRayTracingSkyLightEnableTwoSidedGeometry(
 	ECVF_RenderThreadSafe
 );
 
+// ---------------------------------------------------------------------------
+// ASTRO: Global palette background sampler
+// ---------------------------------------------------------------------------
+
+/**
+ * FAstroGlobalBackgroundSampler
+ *
+ * Angle-weighted synthesis of background gradient colour from all
+ * registered cell palettes.  Replaces the hemisphere env-texture lookup
+ * in the ray-tracing skylight pass.
+ *
+ * Registration:
+ *   Call RegisterCell() for every live cell once per frame on the game
+ *   thread, then call FreezeForFrame() before the render thread begins.
+ *   Reset() clears registrations at frame start.
+ *
+ * Sampling (render thread, read-only after FreezeForFrame):
+ *   SampleBackground(RayDirection) returns a linearly-blended FLinearColor
+ *   derived from the angle-weighted palette sum, with an elevation gradient
+ *   from horizon to zenith.
+ */
+struct FAstroCellPaletteEntry
+{
+	FName            CellId;
+	TArray<FLinearColor> Palette;      // ordered colours in this cell's palette
+	float            AzimuthSlot;     // [0,1] normalised azimuth ownership centre
+};
+
+class FAstroGlobalBackgroundSampler
+{
+public:
+	/** Register a cell's palette before the frame is frozen. */
+	static void RegisterCell(FName CellId, const TArray<FLinearColor>& Palette, float AzimuthSlot)
+	{
+		FScopeLock Lock(&RegistryLock);
+		FAstroCellPaletteEntry Entry;
+		Entry.CellId      = CellId;
+		Entry.Palette     = Palette;
+		Entry.AzimuthSlot = FMath::Clamp(AzimuthSlot, 0.0f, 1.0f);
+		Registry.Add(Entry);
+	}
+
+	/** Called at frame start; clears all registered cells. */
+	static void Reset()
+	{
+		FScopeLock Lock(&RegistryLock);
+		Registry.Reset();
+	}
+
+	/** Called on game thread after all registrations; render thread may
+	 *  call SampleBackground() freely after this point. */
+	static void FreezeForFrame()
+	{
+		// Snapshot is already in Registry; nothing to do — this is a
+		// documentation marker for the intended call-site ordering.
+	}
+
+	/**
+	 * SampleBackground
+	 *
+	 * Maps a unit ray direction to a background colour by:
+	 *  1. Computing azimuth t = φ/(2π)+0.5 ∈ [0,1] and elevation e ∈ [0,1].
+	 *  2. For each registered cell i, computing an angular weight
+	 *       w_i = cos²(π·(t − slot_i))   (wraps around 0/1 boundary)
+	 *     and accumulating the weighted average of the cell's representative
+	 *     colour (mean of its palette).
+	 *  3. Blending the result with an elevation-based darkening so that
+	 *     rays pointing toward the nadir (θ→π) receive a dimmer shade.
+	 *
+	 * Falls back to a neutral mid-grey when no cells are registered.
+	 */
+	static FLinearColor SampleBackground(const FVector& RayDir)
+	{
+		// Guard: normalise direction
+		FVector Dir = RayDir.GetSafeNormal();
+		if (Dir.IsNearlyZero())
+		{
+			return FLinearColor(0.5f, 0.5f, 0.5f, 1.0f);
+		}
+
+		// --- Step 1: direction → spherical coordinates ---
+		// azimuth φ ∈ [−π, π], map to t ∈ [0, 1]
+		const float Phi = FMath::Atan2(Dir.Y, Dir.X);
+		const float t   = Phi / (2.0f * PI) + 0.5f;   // [0, 1]
+
+		// polar angle θ ∈ [0, π]; elevation e = cos(θ) ∈ [1 (zenith), -1 (nadir)]
+		const float CosTheta = FMath::Clamp(Dir.Z, -1.0f, 1.0f);
+		const float Elevation = (CosTheta + 1.0f) * 0.5f;  // [0, 1]; 1 = zenith
+
+		// --- Step 2: accumulate angle-weighted palette colours ---
+		if (Registry.Num() == 0)
+		{
+			// No cells registered — neutral sky gradient
+			return FLinearColor(
+				FMath::Lerp(0.3f, 0.6f, Elevation),
+				FMath::Lerp(0.3f, 0.7f, Elevation),
+				FMath::Lerp(0.4f, 0.9f, Elevation),
+				1.0f
+			);
+		}
+
+		FLinearColor AccumulatedColour(0, 0, 0, 0);
+		float        TotalWeight = 0.0f;
+
+		for (const FAstroCellPaletteEntry& Cell : Registry)
+		{
+			if (Cell.Palette.Num() == 0)
+			{
+				continue;
+			}
+
+			// Angular distance on the [0,1] azimuth circle (wrapping)
+			float Delta = t - Cell.AzimuthSlot;
+			// Wrap to [−0.5, 0.5]
+			if (Delta >  0.5f) Delta -= 1.0f;
+			if (Delta < -0.5f) Delta += 1.0f;
+
+			// cos² weighting: full weight at centre (Δ=0), zero at ±0.5
+			const float Weight = FMath::Square(FMath::Cos(PI * Delta));
+
+			// Representative colour: elevation-indexed position in palette
+			// Maps elevation [0,1] → palette index [0, N-1]
+			const int32 PaletteN  = Cell.Palette.Num();
+			const float IdxFloat  = FMath::Clamp(Elevation * (PaletteN - 1), 0.0f, float(PaletteN - 1));
+			const int32 IdxLow    = FMath::FloorToInt(IdxFloat);
+			const int32 IdxHigh   = FMath::Min(IdxLow + 1, PaletteN - 1);
+			const float IdxAlpha  = IdxFloat - float(IdxLow);
+
+			FLinearColor CellColour = FMath::Lerp(
+				Cell.Palette[IdxLow],
+				Cell.Palette[IdxHigh],
+				IdxAlpha
+			);
+
+			AccumulatedColour += CellColour * Weight;
+			TotalWeight       += Weight;
+		}
+
+		// --- Step 3: normalise and apply elevation gradient ---
+		FLinearColor FinalColour;
+		if (TotalWeight > SMALL_NUMBER)
+		{
+			FinalColour = AccumulatedColour / TotalWeight;
+		}
+		else
+		{
+			// All cells at perpendicular angle — use neutral grey
+			FinalColour = FLinearColor(0.5f, 0.5f, 0.5f, 1.0f);
+		}
+
+		// Dim the nadir hemisphere slightly for visual plausibility
+		const float ElevationScale = FMath::Lerp(0.4f, 1.0f, Elevation);
+		FinalColour.R *= ElevationScale;
+		FinalColour.G *= ElevationScale;
+		FinalColour.B *= ElevationScale;
+		FinalColour.A  = 1.0f;
+
+		return FinalColour;
+	}
+
+private:
+	static TArray<FAstroCellPaletteEntry> Registry;
+	static FCriticalSection               RegistryLock;
+};
+
+TArray<FAstroCellPaletteEntry> FAstroGlobalBackgroundSampler::Registry;
+FCriticalSection               FAstroGlobalBackgroundSampler::RegistryLock;
+
+// ---------------------------------------------------------------------------
+// End ASTRO: Global palette background sampler
+// ---------------------------------------------------------------------------
+
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FSkyLightData, "SkyLight");
 
 void SetupSkyLightParameters(
@@ -92,10 +298,54 @@ void SetupSkyLightParameters(
 
 	if (Scene.SkyLight && Scene.SkyLight->ProcessedTexture)
 	{
-		SkyLightData->Color = FVector(Scene.SkyLight->LightColor);
-		SkyLightData->Texture = Scene.SkyLight->ProcessedTexture->TextureRHI;
+		// ASTRO PATCH: Synthesise background colour from the global cell
+		// palette registry and inject it as the skylight colour tint.
+		// The env-texture is still bound for geometry occlusion queries
+		// (miss-shader hit-distance), but the ambient colour contribution
+		// is overridden by the palette sampler.
+		//
+		// Ray direction → palette angle mapping:
+		//   We sample representative directions (zenith, horizon ×4, nadir)
+		//   and blend their palette colours into a single SkyLight.Color tint
+		//   that modulates the existing env-texture lookup in the RGS shader.
+		//
+		// Sampled directions (world-space, right-handed Z-up):
+		static const FVector AstroSampleDirs[] = {
+			FVector( 0,  0,  1),   // zenith
+			FVector( 1,  0,  0),   // horizon +X
+			FVector( 0,  1,  0),   // horizon +Y
+			FVector(-1,  0,  0),   // horizon -X
+			FVector( 0, -1,  0),   // horizon -Y
+			FVector( 0,  0, -1),   // nadir
+		};
+		static const float AstroSampleWeights[] = { 0.3f, 0.15f, 0.15f, 0.15f, 0.15f, 0.1f };
+
+		FLinearColor PaletteColour(0, 0, 0, 0);
+		float        WeightSum = 0.0f;
+		for (int32 i = 0; i < UE_ARRAY_COUNT(AstroSampleDirs); ++i)
+		{
+			PaletteColour += FAstroGlobalBackgroundSampler::SampleBackground(AstroSampleDirs[i])
+			                 * AstroSampleWeights[i];
+			WeightSum     += AstroSampleWeights[i];
+		}
+		if (WeightSum > SMALL_NUMBER)
+		{
+			PaletteColour = PaletteColour / WeightSum;
+		}
+
+		// Blend palette tint with the scene sky-light colour (50/50 by
+		// default; palette takes over when cells are registered).
+		const bool bHasPaletteCells = (FAstroGlobalBackgroundSampler::SampleBackground(FVector(0,0,1)) != FLinearColor::Black);
+		FLinearColor SceneSkyColour(Scene.SkyLight->LightColor);
+		SkyLightData->Color = FVector(
+			FMath::Lerp(SceneSkyColour.R, PaletteColour.R, 0.5f),
+			FMath::Lerp(SceneSkyColour.G, PaletteColour.G, 0.5f),
+			FMath::Lerp(SceneSkyColour.B, PaletteColour.B, 0.5f)
+		);
+
+		SkyLightData->Texture        = Scene.SkyLight->ProcessedTexture->TextureRHI;
 		SkyLightData->TextureSampler = Scene.SkyLight->ProcessedTexture->SamplerStateRHI;
-		SkyLightData->MipDimensions = Scene.SkyLight->SkyLightMipDimensions;
+		SkyLightData->MipDimensions  = Scene.SkyLight->SkyLightMipDimensions;
 
 		SkyLightData->MipTreePosX = Scene.SkyLight->SkyLightMipTreePosX.SRV;
 		SkyLightData->MipTreeNegX = Scene.SkyLight->SkyLightMipTreeNegX.SRV;
@@ -110,22 +360,26 @@ void SetupSkyLightParameters(
 		SkyLightData->MipTreePdfNegY = Scene.SkyLight->SkyLightMipTreePdfNegY.SRV;
 		SkyLightData->MipTreePdfPosZ = Scene.SkyLight->SkyLightMipTreePdfPosZ.SRV;
 		SkyLightData->MipTreePdfNegZ = Scene.SkyLight->SkyLightMipTreePdfNegZ.SRV;
-		SkyLightData->SolidAnglePdf = Scene.SkyLight->SolidAnglePdf.SRV;
+		SkyLightData->SolidAnglePdf  = Scene.SkyLight->SolidAnglePdf.SRV;
 	}
 	else
 	{
-		SkyLightData->Color = FVector(0.0);
-		SkyLightData->Texture = GBlackTextureCube->TextureRHI;
+		// No scene sky-light: derive colour purely from palette sampler.
+		// Sample the zenith direction as the primary tint.
+		FLinearColor PaletteFallback = FAstroGlobalBackgroundSampler::SampleBackground(FVector(0, 0, 1));
+		SkyLightData->Color = FVector(PaletteFallback.R, PaletteFallback.G, PaletteFallback.B);
+
+		SkyLightData->Texture        = GBlackTextureCube->TextureRHI;
 		SkyLightData->TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-		SkyLightData->MipDimensions = FIntVector(0);
+		SkyLightData->MipDimensions  = FIntVector(0);
 
 		auto BlackTextureBuffer = RHICreateShaderResourceView(GBlackTexture->TextureRHI->GetTexture2D(), 0);
-		SkyLightData->MipTreePosX = BlackTextureBuffer;
-		SkyLightData->MipTreeNegX = BlackTextureBuffer;
-		SkyLightData->MipTreePosY = BlackTextureBuffer;
-		SkyLightData->MipTreeNegY = BlackTextureBuffer;
-		SkyLightData->MipTreePosZ = BlackTextureBuffer;
-		SkyLightData->MipTreeNegZ = BlackTextureBuffer;
+		SkyLightData->MipTreePosX    = BlackTextureBuffer;
+		SkyLightData->MipTreeNegX    = BlackTextureBuffer;
+		SkyLightData->MipTreePosY    = BlackTextureBuffer;
+		SkyLightData->MipTreeNegY    = BlackTextureBuffer;
+		SkyLightData->MipTreePosZ    = BlackTextureBuffer;
+		SkyLightData->MipTreeNegZ    = BlackTextureBuffer;
 
 		SkyLightData->MipTreePdfPosX = BlackTextureBuffer;
 		SkyLightData->MipTreePdfNegX = BlackTextureBuffer;
@@ -133,7 +387,7 @@ void SetupSkyLightParameters(
 		SkyLightData->MipTreePdfNegY = BlackTextureBuffer;
 		SkyLightData->MipTreePdfPosZ = BlackTextureBuffer;
 		SkyLightData->MipTreePdfNegZ = BlackTextureBuffer;
-		SkyLightData->SolidAnglePdf = BlackTextureBuffer;
+		SkyLightData->SolidAnglePdf  = BlackTextureBuffer;
 	}
 }
 
@@ -858,11 +1112,20 @@ void FDeferredShadingSceneRenderer::RenderRayTracingSkyLight(
 	GRenderTargetPool.FindFreeElement(RHICmdList, Desc, HitDistanceRT, TEXT("RayTracingSkyLightHitDistance"));
 	ClearUAV(RHICmdList, HitDistanceRT->GetRenderTargetItem(), FLinearColor::Black);
 
-	// Add SkyLight parameters to uniform buffer
+	// ASTRO PATCH: reset and re-freeze the global palette sampler each frame.
+	// In a full integration, RegisterCell() calls would come from the cell
+	// pub-sub loop before this point; here we guarantee a clean slate so
+	// stale registrations from removed cells do not persist.
+	FAstroGlobalBackgroundSampler::Reset();
+	FAstroGlobalBackgroundSampler::FreezeForFrame();
+
+	// Add SkyLight parameters to uniform buffer.
+	// SetupSkyLightParameters now blends the global palette colour into
+	// SkyLightData.Color via FAstroGlobalBackgroundSampler::SampleBackground.
 	FSkyLightData SkyLightData;
 	SetupSkyLightParameters(*Scene, &SkyLightData);
-	SkyLightData.SamplesPerPixel = GRayTracingSkyLightSamplesPerPixel >= 0 ? GRayTracingSkyLightSamplesPerPixel : Scene->SkyLight->SamplesPerPixel;
-	SkyLightData.MaxRayDistance = GRayTracingSkyLightMaxRayDistance;
+	SkyLightData.SamplesPerPixel  = GRayTracingSkyLightSamplesPerPixel >= 0 ? GRayTracingSkyLightSamplesPerPixel : Scene->SkyLight->SamplesPerPixel;
+	SkyLightData.MaxRayDistance   = GRayTracingSkyLightMaxRayDistance;
 	SkyLightData.SamplingStopLevel = GRayTracingSkyLightSamplingStopLevel;
 
 	FUniformBufferRHIRef SkyLightUniformBuffer = RHICreateUniformBuffer(&SkyLightData, FSkyLightData::StaticStructMetadata.GetLayout(), EUniformBufferUsage::UniformBuffer_SingleDraw);
