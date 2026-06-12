@@ -19,7 +19,27 @@ import math
 import os
 import glob
 
+from dataclasses import dataclass as _dc_dataclass
+
 CHANNELS = os.path.dirname(os.path.abspath(__file__))
+
+@_dc_dataclass
+class FAstroRendererConfig:
+    """Ported from Renderer.cpp commit 38166e5."""
+    canvas_width: int = 800
+    canvas_height: int = 600
+    max_cells: int = 4096
+    max_epochs: int = 10
+    convergence_threshold: float = 0.5
+    tile_size: int = 16
+    shadow_enabled: bool = True
+    post_process_enabled: bool = True
+
+    def to_string(self) -> str:
+        return (f"canvas={self.canvas_width}x{self.canvas_height} "
+                f"max_epochs={self.max_epochs} threshold={self.convergence_threshold}")
+
+GAstroRendererConfig = FAstroRendererConfig()
 
 def read_channel(path):
     with open(os.path.join(CHANNELS, path)) as f:
@@ -37,11 +57,27 @@ def write_channel(path, data):
 
 
 def run_all_cells():
-    """Execute all cell components (simulate parallel sub-Claude dispatch)."""
+    """
+    Port of MeshPassProcessor.cpp commit d9ca48d: AddCellConstraintBatch.
+    Groups cells by species for batch I/O, then executes per-species.
+    20% change: C++ FAstroCellPassConfig enum → Python species dict grouping.
+    """
     from cell_component import proc
     cells = [f.replace(".json", "") for f in os.listdir(os.path.join(CHANNELS, "skeleton", "cell"))]
+
+    # Batch by species (same-species share algorithm, reduces I/O)
+    species_batches = {}
     for cell_id in sorted(cells):
-        proc(cell_id)
+        skel_path = os.path.join(CHANNELS, "skeleton", "cell", f"{cell_id}.json")
+        with open(skel_path) as f:
+            species = json.load(f).get("species", "unknown")
+        species_batches.setdefault(species, []).append(cell_id)
+
+    z_layers = read_channel("physics/z_layers.json")
+    for species, batch_ids in sorted(species_batches.items()):
+        batch_ids.sort(key=lambda cid: z_layers.get("layers", {}).get(cid, {}).get("z", 3))
+        for cell_id in batch_ids:
+            proc(cell_id)
     return cells
 
 
@@ -2253,6 +2289,22 @@ def assemble_final_svg():
         max_y = max(max_y, b["y"] + b["h"])
     width  = max_x + 60
     height = max_y + 60
+
+    # ── [ASTRO-VISIBILITY] Ported from SceneVisibility.cpp 6d345e7 ──────────
+    culled = set()
+    for i, sa in enumerate(sorted_slots):
+        if sa.cell_id in culled:
+            continue
+        for j, sb in enumerate(sorted_slots):
+            if i == j or sb.cell_id in culled or sa.z_layer != sb.z_layer:
+                continue
+            ba, bb = sa.bbox, sb.bbox
+            if (ba["x"] <= bb["x"] and ba["y"] <= bb["y"] and
+                ba["x"]+ba["w"] >= bb["x"]+bb["w"] and ba["y"]+ba["h"] >= bb["y"]+bb["h"]):
+                culled.add(sb.cell_id)
+    if culled:
+        sorted_slots = [s for s in sorted_slots if s.cell_id not in culled]
+        print(f"[ASTRO-VISIBILITY] Culled {len(culled)} occluded cells: {culled}")
 
     # ── Group sorted slots by z-layer (preserve intra-layer order) ────────────
     z_groups: Dict[int, List[AstroCellSlot]] = {}
