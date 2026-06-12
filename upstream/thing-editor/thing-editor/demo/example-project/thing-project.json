@@ -1,0 +1,27 @@
+{
+	"defaultFont": "Roboto, Arial",
+	"version": "0.0.9",
+	"__loadOnDemandTexturesFolders": {
+		"ondemand": 2
+	},
+	"loadOnDemandTextures": {
+		"ondemand/1.png": 2,
+		"ondemand/2.png": 6,
+		"map/map1.png": 4,
+		"map/floor.png": 4,
+		"blink-wave.png": 8,
+		"perlin.jpg": 8
+	},
+	"__group": "thing-editor-demos",
+	"id": "thing-project-example.pixel-cave.com",
+	"title": "thing-project-example",
+	"icon": "assets/bunny.png",
+	"loadOnDemandSounds": {
+		"mus/gs3_title": 2
+	},
+	"libs": [
+		"example-lib"
+	],
+	"autoFullscreenDesktop": false,
+	"autoFullscreenMobile": false
+}

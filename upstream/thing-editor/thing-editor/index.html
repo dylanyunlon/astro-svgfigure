@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+
+<head><script>
+	const filterDebug = (args) => {
+		return args.some(a => a?.includes('[vite] '));
+	};
+	const originalDebug = console.debug;
+	console.debug = (...args) => {
+		if (!filterDebug(args)) {
+			originalDebug.apply(console, args);
+		}
+	};
+</script>
+	<link rel="stylesheet" href="./src/editor/style.css">
+	<link rel="stylesheet" href="./src/editor/style-timeline.css">
+	<link rel="stylesheet" href="./src/editor/style-spine-sequence.css">
+	<meta charset="UTF-8">
+	<!--meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'"><-->
+	<title>Thing Editor 2.0</title>
+	<script type="module" src="./src/editor/warnings-filter.ts"></script>
+	<script type="module" src="./src/editor/editor.ts"></script>
+</head>
+
+<body>
+	<div id="root"></div>
+	<div id="select-lists-root"></div>
+	<div id="context-menu-root"></div>
+</body>
+
+</html>

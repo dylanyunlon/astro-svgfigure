@@ -1,0 +1,12 @@
+.idea
+.vscode
+node_modules
+*.log
+docs
+dist
+lib
+deploy
+.DS_Store
+/out
+/screenshots
+example.api.*

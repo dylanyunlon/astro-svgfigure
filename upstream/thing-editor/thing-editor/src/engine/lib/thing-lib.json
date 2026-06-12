@@ -1,0 +1,39 @@
+{
+	"mainScene": "main",
+	"defaultFont": "Arial",
+	"jpgQuality": 80,
+	"screenOrientation": "landscape",
+	"width": 1920,
+	"height": 1080,
+	"portraitWidth": 1080,
+	"portraitHeight": 1920,
+	"renderResolution": 1,
+	"renderResolutionMobile": 1,
+	"framesSkipLimit": 4,
+	"dynamicStageSize": true,
+	"preventUpscale": false,
+	"fontHolderText": "ЯSфz",
+	"mipmap": false,
+	"__buildConfigDebug": "thing-editor/electron-main/build-config.js",
+	"__buildConfigRelease": "thing-editor/electron-main/build-config.js",
+	"version": "0.0.1",
+	"soundFormats": [
+		"ogg",
+		"aac"
+	],
+	"soundDefaultBitrate": 48,
+	"loadOnDemandSounds": {},
+	"soundBitRates": {},
+	"loadOnDemandTextures": {
+		"common/ui/spin-icon-blur.png": 8,
+		"preloader/spin.png": 8
+	},
+	"defaultLanguage": "en",
+	"defaultMusVol": 1,
+	"defaultSoundsVol": 1,
+	"embedLocales": true,
+	"autoFullScreenDesktop": false,
+	"autoFullScreenMobile": true,
+	"__group": "slots",
+	"__suspendWarnings": []
+}

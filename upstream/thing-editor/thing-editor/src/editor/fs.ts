@@ -1,0 +1,733 @@
+
+import type { Container } from 'pixi.js';
+import { BitmapFont, Text, Texture } from 'pixi.js';
+import type { ComponentChildren } from 'preact';
+import { editorEvents } from 'thing-editor/src/editor/utils/editor-events';
+import { EDITOR_BACKUP_PREFIX, electron_ThingEditorServer } from 'thing-editor/src/editor/utils/flags';
+import assert from 'thing-editor/src/engine/debug/assert';
+import game from 'thing-editor/src/engine/game';
+import type HowlSound from 'thing-editor/src/engine/HowlSound';
+import Lib, { __onAssetAdded, __onAssetDeleted, __onAssetUpdated } from 'thing-editor/src/engine/lib';
+import Scene from 'thing-editor/src/engine/lib/assets/src/basic/scene.c';
+import { StatusClearingCondition } from './ui/status-clearing-condition';
+import { regeneratePrefabsTypings } from './utils/generate-editor-typings';
+
+
+let wakeLock:WakeLockSentinel | null | true = null;
+
+interface LibInfo {
+	name: string;
+	dir: string;
+	libNum: number;
+	assetsDir: string;
+	isEmbed?: boolean;
+}
+
+const OVERRIDDEN_ASSETS:Set<string> = new Set();
+
+const prefabNameFilter = /[^a-zA-Z\-\/0-9_]/g;
+
+interface FileDesc {
+	/** file name*/
+	fileName: string;
+	assetName: string;
+	assetType: AssetType;
+	/** modification time*/
+	mTime: number;
+	lib: LibInfo | null;
+	libInfoCache?: ComponentChildren;
+	v?: number;
+	_hashedAssetName?: string;
+
+	parentAsset?: FileDesc;
+	/** set true to include unknown json file in to build. Will be available in runtime via Lib.resources['json.name'] */
+	includeToBuild?: boolean;
+
+	asset: SourceMappedConstructor | SerializedObject | Texture | HowlSound | KeyedObject;
+}
+
+interface FileDescClass extends FileDesc {
+	asset: SourceMappedConstructor;
+}
+interface FileDescPrefab extends FileDesc {
+	asset: SerializedObject;
+}
+interface FileDescScene extends FileDesc {
+	asset: SerializedObject;
+}
+
+interface FileDescSound extends FileDesc {
+	asset: HowlSound;
+}
+interface FileDescImage extends FileDesc {
+	asset: Texture;
+}
+interface FileDescL10n extends FileDesc {
+	asset: KeyedObject;
+	dir: string;
+	readOnly?: boolean;
+	lang: string;
+	priority?: number;
+	isDefault?: boolean;
+	__isLangIdPlaceHolder?: boolean;
+	isDirty?: boolean;
+}
+
+enum AssetType {
+	IMAGE = 'IMAGE',
+	SOUND = 'SOUND',
+	SCENE = 'SCENE',
+	PREFAB = 'PREFAB',
+	CLASS = 'CLASS',
+	RESOURCE = 'RESOURCE',
+	BITMAP_FONT = 'BITMAP_FONT',
+	L10N = 'L10N',
+	/** non file asses. Used in enumAssetsPropsRecursive to copy l10n values */
+	L10N_ENTRY = 'L10N_ENTRY',
+	FONT = 'FONT',
+}
+
+const AllAssetsTypes: AssetType[] = Object.values(AssetType);
+
+const assetsListsByType: Map<AssetType, FileDesc[]> = new Map();
+
+let allAssets: FileDesc[] = [];
+
+let prevAssetsByTypeByName: Map<AssetType, Map<string, FileDesc>>;
+let assetsByTypeByName: Map<AssetType, Map<string, FileDesc>>;
+
+const resetAssetsMap = () => {
+	assetsByTypeByName = new Map();
+
+	for (const assetType of AllAssetsTypes) {
+		assetsByTypeByName.set(assetType, new Map());
+		assetsListsByType.set(assetType, []);
+	}
+};
+resetAssetsMap();
+
+const ASSETS_PARSERS = {
+	'.png': AssetType.IMAGE,
+	'.jpg': AssetType.IMAGE,
+	'.svg': AssetType.IMAGE,
+	'.webp': AssetType.IMAGE,
+	'.s.json': AssetType.SCENE,
+	'.p.json': AssetType.PREFAB,
+	'.l.json': AssetType.L10N,
+	'.json': AssetType.RESOURCE,
+	'.woff': AssetType.FONT,
+	'.woff2': AssetType.FONT,
+	'.wav': AssetType.SOUND,
+	'.xml': AssetType.BITMAP_FONT,
+	'.c.ts': AssetType.CLASS
+};
+
+const ASSET_TYPE_TO_EXT = {
+	[AssetType.SCENE]: '.s.json',
+	[AssetType.PREFAB]: '.p.json',
+	[AssetType.CLASS]: '.c.ts'
+};
+
+const ASSET_EXT_CROP_LENGTHS: Map<AssetType, number> = new Map();
+ASSET_EXT_CROP_LENGTHS.set(AssetType.FONT, 0);
+ASSET_EXT_CROP_LENGTHS.set(AssetType.IMAGE, 0);
+ASSET_EXT_CROP_LENGTHS.set(AssetType.SCENE, 7);
+ASSET_EXT_CROP_LENGTHS.set(AssetType.PREFAB, 7);
+ASSET_EXT_CROP_LENGTHS.set(AssetType.L10N, 7);
+ASSET_EXT_CROP_LENGTHS.set(AssetType.SOUND, 4);
+ASSET_EXT_CROP_LENGTHS.set(AssetType.CLASS, 5);
+ASSET_EXT_CROP_LENGTHS.set(AssetType.RESOURCE, 5);
+ASSET_EXT_CROP_LENGTHS.set(AssetType.BITMAP_FONT, 4);
+
+const EMPTY: FileDescImage = {
+	assetName: 'EMPTY',
+	fileName: '/thing-editor/img/EMPTY.png',
+	asset: Texture.EMPTY,
+	assetType: AssetType.IMAGE,
+	mTime: Number.MAX_SAFE_INTEGER,
+	lib: null
+};
+
+const WHITE: FileDescImage = {
+	assetName: 'WHITE',
+	fileName: '/thing-editor/img/WHITE.jpg',
+	asset: Texture.WHITE,
+	assetType: AssetType.IMAGE,
+	mTime: Number.MAX_SAFE_INTEGER,
+	lib: null
+};
+
+const execFs = (command: string, filename?: string | string[] | number, content?: string | boolean | ArrayBuffer, ...args: any[]) => {
+	const ret = electron_ThingEditorServer.fs(command, filename, content, ...args);
+	if (ret instanceof Error) {
+		game.editor.ui.modal.showFatalError('Main process error.', 99999, ret.message);
+		throw ret;
+	}
+	return ret;
+};
+
+const execFsAsync = (command: string, filename?: string | string[], content?: string | boolean, ...args: any[]): Promise<any> => {
+	return electron_ThingEditorServer.fsAsync(command, filename, content, ...args);
+};
+
+let lastAssetsDirs: string[];
+
+let fileChangeDebounceTimeout = 0;
+const fileChangeHandler = () => {
+	fileChangeDebounceTimeout = 0;
+	fs.refreshAssetsList();
+};
+
+electron_ThingEditorServer.onServerMessage((_ev: any, event: string, path: string) => {
+	if (!game.editor.isProjectOpen) {
+		return;
+	}
+	if (event === 'fs/change') {
+		path = '/' + path.replace(/\\/g, '/');
+		if (!ignoreFiles.has(path)) {
+			if (fileChangeDebounceTimeout) {
+				clearTimeout(fileChangeDebounceTimeout);
+			}
+			if (path.endsWith('.ts')) {
+				game.editor.classesUpdatedExternally();
+			} else {
+				fileChangeDebounceTimeout = window.setTimeout(fileChangeHandler, 330);
+			}
+		}
+	} else if (event === 'fs/notify') {
+		game.editor.ui.modal.notify(path);
+	}
+});
+
+const ignoreFiles = new Set();
+function ignoreWatch(fileName: string) {
+	ignoreFiles.add(fileName);
+	window.setTimeout(() => {
+		ignoreFiles.delete(fileName);
+	}, 500);
+}
+
+const assetNameToFileName = (assetName: string, assetType: AssetType, libName = game.editor.currentProjectAssetsDirRooted): string => {
+	const asset = (assetsByTypeByName.get(assetType) as Map<string, FileDesc>).get(assetName);
+	if (asset) {
+		return asset.fileName;
+	}
+	return libName + assetName + (ASSET_TYPE_TO_EXT as KeyedObject)[assetType];
+};
+
+const sortByMTime = (a: FileDesc, b: FileDesc) => {
+	return b.mTime - a.mTime;
+};
+
+const sortAssets = () => {
+	assetsListsByType.forEach((list) => {
+		list.sort(sortByMTime);
+	});
+
+	allAssets.sort(sortByMTime);
+};
+
+export default class fs {
+
+	static getAssetsList(assetType?: AssetType.SOUND): FileDescSound[];
+	static getAssetsList(assetType?: AssetType.IMAGE): FileDescImage[];
+	static getAssetsList(assetType?: AssetType.CLASS): FileDescClass[];
+	static getAssetsList(assetType?: AssetType.SCENE): FileDescScene[];
+	static getAssetsList(assetType?: AssetType.PREFAB): FileDescPrefab[];
+	static getAssetsList(assetType?: AssetType): FileDesc[];
+	static getAssetsList(assetType: AssetType | null = null): FileDesc[] {
+		if (assetType === null) {
+			return allAssets;
+		}
+		return assetsListsByType.get(assetType) as FileDesc[];
+	}
+
+	/** retunrs FileDesc of scene or prefab of given container */
+	static getFileOfRoot(object: Container): FileDescPrefab | FileDescScene {
+		const root = object.getRootContainer() || game.currentContainer;
+		const rootName = root.name as string;
+		if (root instanceof Scene) {
+			return this.getFileByAssetName(rootName, AssetType.SCENE);
+		} else {
+			return this.getFileByAssetName(rootName, AssetType.PREFAB);
+		}
+	}
+
+	static getFileByAssetName(assetName: string, assetType: AssetType.IMAGE): FileDescImage;
+	static getFileByAssetName(assetName: string, assetType: AssetType.SCENE): FileDescScene;
+	static getFileByAssetName(assetName: string, assetType: AssetType.PREFAB): FileDescPrefab;
+	static getFileByAssetName(assetName: string, assetType: AssetType.SOUND): FileDesc;
+	static getFileByAssetName(assetName: string, assetType: AssetType.CLASS): FileDescClass;
+	static getFileByAssetName(assetName: string, assetType: AssetType): FileDesc;
+	static getFileByAssetName(assetName: string, assetType: AssetType): FileDesc {
+		return assetsByTypeByName.get(assetType)!.get(assetName) as FileDesc;
+	}
+
+	static removeSubAsset(assetName: string, type: AssetType) {
+		const file = this.getFileByAssetName(assetName, type);
+		if (file) {
+			const list = (assetsListsByType.get(file.assetType) as FileDesc[]);
+			list.splice(list.indexOf(file), 1);
+			allAssets.splice(allAssets.indexOf(file), 1);
+			assetsByTypeByName.get(file.assetType)!.delete(file.assetName);
+		}
+		if (prevAssetsByTypeByName) {
+			const file = prevAssetsByTypeByName.get(type)!.get(assetName) as FileDesc;
+			if (file) {
+				prevAssetsByTypeByName.get(file.assetType as AssetType)!.delete(assetName);
+			}
+		}
+	}
+
+	static getLastTouch(file: FileDesc):number {
+		let ret = 0;
+		switch (file.assetType) {
+		case AssetType.CLASS:
+			return 0;
+		case AssetType.SCENE:
+			return Lib.scenes[file.assetName].__lastTouch || 0;
+		case AssetType.PREFAB:
+			return Lib.prefabs[file.assetName].__lastTouch || 0;
+		case AssetType.IMAGE:
+			ret = Lib.getTexture(file.assetName).baseTexture.touched;
+			if (ret === 0) {
+				const images = fs.getAssetsList(AssetType.IMAGE);
+				const src = ((file as FileDescImage).asset.baseTexture.resource as any)?.url;
+				if (src) {
+					for (const image of images) {
+						if (image.asset.baseTexture.resource?.src === src) {
+							ret = Math.max(ret, image.asset.baseTexture.touched);
+						}
+					}
+				}
+				game.classes.Spine.__touchedSpines.forEach((time, spineName) => {
+					const spine = Lib.resources[spineName];
+					if (spine.spineAtlas.pages.some((page: any) => {
+						return page.baseTexture.resource.src === src;
+					})) {
+						ret = Math.max(ret, time);
+					}
+				});
+			}
+			return ret;
+		case AssetType.FONT:
+
+			const fontName = file.assetName.split('/').pop()?.replace(/\.woff2?$/, '').toLocaleLowerCase();
+			const names = Array.from(Text.__touchedFonts.keys()) as string[];
+			for (let k of names) {
+				const a = k.toLocaleLowerCase().split(',');
+				if (a.some((fn) => {
+					return fn.trim() == fontName;
+				})) {
+					ret = Math.max(ret, Text.__touchedFonts.get(k)!);
+				}
+			}
+			return ret;
+
+		case AssetType.SOUND:
+			return Lib.getSound(file.assetName).__lastTouch;
+		case AssetType.BITMAP_FONT:
+			const fontTextures = BitmapFont.available[file.assetName.split('/').pop()!].pageTextures;
+			return fontTextures[Object.keys(fontTextures)[0]].baseTexture.touched;
+		case AssetType.RESOURCE:
+			return Lib.resources[file.assetName]?.___lastTouch || Number.MAX_SAFE_INTEGER;
+			debugger;
+		}
+		return Number.MAX_SAFE_INTEGER;
+	}
+
+	static addSubAsset(file: FileDesc) {
+		(assetsListsByType.get(file.assetType) as FileDesc[]).push(file);
+		allAssets.push(file);
+		(assetsByTypeByName.get(file.assetType as AssetType) as Map<string, FileDesc>).set(file.assetName, file);
+	}
+
+	/** returns new mTime */
+	static writeFile(fileName: string, data: string | ArrayBuffer | KeyedObject, separator:string | null = '	'): number {
+		if (typeof data !== 'string' && !(data instanceof ArrayBuffer)) {
+			data = JSON.stringify(data, fs.fieldsFilter, separator as string);
+		}
+		return execFs('fs/saveFile', fileName, data as string) as number;
+	}
+
+	static exists(fileName: string) {
+		return execFs('fs/exists', fileName);
+	}
+
+	static log(message: string) {
+		return execFs('fs/log', message);
+	}
+
+	static openDevTools() {
+		return execFs('fs/devTools');
+	}
+
+	static copyFile(from: string, to: string) {
+		return execFs('fs/copyFile', from, to);
+	}
+
+	static async run(script: string, ...args: any[]) {
+		game.editor.ui.modal.showSpinner();
+		const res = await execFsAsync('fs/run', script, undefined, args);
+
+		game.editor.ui.modal.hideSpinner();
+		if (res instanceof Error) {
+			game.editor.ui.modal.showError(res.stack, undefined, 'Deploy error');
+			return null;
+		}
+		return res;
+	}
+
+	static renameAsset(file: FileDesc) {
+		let ext = '';
+		if (file.assetType === AssetType.IMAGE) {
+			ext = file.assetName.substring(file.assetName.lastIndexOf('.'));
+		}
+		game.editor.ui.modal.showPrompt('Rename asset ' + ext, file.assetName.substring(0, file.assetName.length - ext.length),
+			(val) => { // filter
+				return val.replace(prefabNameFilter, '-');
+			},
+			(val) => { //accept
+				const newAssetName = val + ext;
+				let newFile = fs.getFileByAssetName(newAssetName, file.assetType);
+				if (file === newFile) {
+					return;
+				}
+				if (newFile) {
+					return 'Already exists';
+				}
+				if (val.endsWith('/') || val.startsWith('/')) {
+					return 'name can not begin or end with "/"';
+				}
+			}).then((newName) => {
+			if (newName) {
+				newName += ext;
+				if (newName !== file.assetName) {
+					const i = file.fileName.lastIndexOf(file.assetName);
+					fs.copyFile(file.fileName, file.fileName.substring(0, i) + newName + file.fileName.substring(i + file.assetName.length));
+					fs.deleteFile(file.fileName);
+				}
+			}
+		});
+	}
+
+	static copyAssetToProject(file: FileDesc) {
+		if (file.assetType === AssetType.CLASS) {
+			game.editor.ui.modal.showInfo('Class can not be copied to the project. Create a new class inherited from ' + (file as FileDescClass).asset.__className + ' instead.', 'Can not copy class.');
+			return;
+		}
+		const newFileName = file.fileName.replace(file.lib!.assetsDir, game.editor.currentProjectAssetsDir);
+		OVERRIDDEN_ASSETS.add(newFileName);
+		fs.copyFile(file.fileName, newFileName);
+		fs.refreshAssetsList();
+		game.editor.ui.refresh();
+	}
+
+	static moveAssetToFolder(file: FileDesc, lib: null | LibInfo) {
+		fs.copyFile(file.fileName, file.fileName.replace(file.lib ? file.lib.assetsDir : game.editor.currentProjectAssetsDir, lib ? lib.assetsDir : game.editor.currentProjectAssetsDir));
+		fs.deleteFile(file.fileName);
+		fs.refreshAssetsList();
+		game.editor.ui.refresh();
+	}
+
+	static saveAsset(assetName: string, assetType: AssetType, data: string | Blob | KeyedObject, libName?: string, doNotSetFileAsset = false) {
+		const fileName = assetNameToFileName(assetName, assetType, libName);
+		ignoreWatch(fileName);
+		const mTime = fs.writeFile(fileName, data);
+		const file = fs.getFileByAssetName(assetName, assetType);
+		if (file) {
+			file.mTime = mTime;
+			if (!doNotSetFileAsset) {
+				file.asset = data as SerializedObject;
+			}
+			sortAssets();
+			game.editor.ui.refresh();
+		} else if (!assetName.startsWith(EDITOR_BACKUP_PREFIX)) {
+			fs.refreshAssetsList();
+		}
+		game.editor.scrollAssetInToView(assetName);
+	}
+
+	private static deleteFile(fileName: string) {
+		return execFs('fs/delete', fileName);
+	}
+
+	static deleteAsset(assetName: string, assetType: AssetType) {
+
+		if (assetType === AssetType.SCENE) {
+			if (assetName === game.editor.currentSceneName) {
+				game.editor.openScene(game.projectDesc.mainScene);
+			}
+		}
+
+		const fileName = assetNameToFileName(assetName, assetType);
+		fs.deleteFile(fileName);
+		if (!assetName.startsWith(EDITOR_BACKUP_PREFIX)) {
+			fs.refreshAssetsList();
+		}
+
+		if (assetType === AssetType.PREFAB) {
+			game.editor.ui.refresh();
+			regeneratePrefabsTypings();
+		} else if (assetType === AssetType.CLASS) {
+			game.editor.reloadClasses();
+		} else if (assetType === AssetType.IMAGE) {
+			game.editor.ui.refresh();
+		} else if (assetType === AssetType.SOUND) {
+			game.editor.ui.refresh();
+		}
+
+	}
+
+	static parseJSON(src: string, fileName: string) {
+		try {
+			return JSON.parse(src);
+		} catch (er: any) {
+			game.editor.ui.modal.showFatalError('JSON parse error. ' + fileName + '; ' + er.message, 99999, 'Error in file: ' + fileName + '\n' + (er as Error).message);
+		}
+	}
+
+	static readJSONFile(fileName: string): any {
+		return this.parseJSON(fs.readFile(fileName), fileName);
+	}
+
+	static readJSONFileIfExists(fileName: string) {
+		const src = this.readFileIfExists(fileName);
+		return src && this.parseJSON(src, fileName);
+	}
+
+	static readFileIfExists(fileName: string) {
+		return (execFs('fs/readFileIfExists', fileName) as any as string | null);
+	}
+
+	static readFile(fileName: string) {
+		return (execFs('fs/readFile', fileName) as any as string);
+	}
+
+	static enumProjects(): ProjectDesc[] {
+		return execFs('fs/enumProjects') as ProjectDesc[];
+	}
+
+	static browseDir(path: string) {
+		return execFs('fs/browseDir', path);
+	}
+
+	static showFile(fileName: string) {
+		return execFs('fs/showFile', fileName);
+	}
+
+	static build(projectDir: string, debug: boolean, copyAssets: { from: string; to: string }[], projectDesc:ProjectDesc) {
+		return execFsAsync('fs/build', projectDir, debug, copyAssets, projectDesc);
+	}
+
+	static watchDirs(dirs: string[]) {
+		execFs('fs/watchDirs', dirs);
+	}
+
+	static isFilesEqual(fileName1: string, fileName2: string): false | string {
+		return execFs('fs/isFilesEqual', fileName1, fileName2) as false | string;
+	}
+
+	static rebuildSoundsIfNeed(file: FileDesc) {
+		if (file.assetType === AssetType.SOUND) {
+			scheduledSoundsRebuilds.add(file.lib ? file.lib.dir : game.editor.currentProjectAssetsDir);
+		}
+	}
+
+	static async setProgressBar(progress: number, operationName?:string) {
+		if (progress >= 0) {
+			assert(operationName, 'operationName expected.');
+			if (!wakeLock) {
+				wakeLock = true;
+				try {
+					wakeLock = await navigator.wakeLock.request('screen');
+				} catch (_er) {}
+			}
+		} else {
+			if (wakeLock && wakeLock !== true) {
+				wakeLock.release();
+				wakeLock = null;
+			}
+			assert(!operationName, 'operationName should be empty for progress clear.');
+		}
+		game.editor.ui?.modal.setSpinnerProgress(progress, operationName);
+		execFs('fs/setProgressBar', progress, operationName);
+	}
+
+	static rebuildSounds(dir: string): object {
+		const options = {
+			dir,
+			formats: game.editor.projectDesc.soundFormats,
+			bitRates: game.editor.projectDesc.soundBitRates,
+			defaultBitrate: game.editor.projectDesc.soundDefaultBitrate
+		};
+		return execFs('fs/sounds-build', options as any) as any;
+	}
+
+	static getArgs(): string[] {
+		return execFs('fs/get-args') as any;
+	}
+
+	static getFolderAssets(dirName: string): FileDesc[] {
+		assert(dirName.endsWith('/'), 'dirName should end with slash "/". Got ' + dirName);
+
+		const lib: LibInfo | null = game.editor.currentProjectLibs.find(l => l.assetsDir === dirName) || null;
+		const files = execFs('fs/readDir', dirName, game.editor.projectDesc as any) as FileDesc[];
+		return files.filter((file) => {
+			const wrongSymbol = fs.getWrongSymbol(file.fileName);
+			if (wrongSymbol) {
+				game.editor.ui.status.warn('File ' + file.fileName + ' ignored because of wrong symbol \'' + wrongSymbol + '\' in it\'s name', 32044,
+					() => {
+						fs.showFile(file.fileName);
+					}, undefined, undefined, undefined, StatusClearingCondition.ASSETS_REFRESH);
+				return;
+			}
+			const assetName = file.assetName || file.fileName.substring(dirName.length);
+			for (const ext in ASSETS_PARSERS) {
+				if (assetName.endsWith(ext)) {
+					const assetType = (ASSETS_PARSERS as KeyedObject)[ext];
+					file.assetName = assetName.substring(0, assetName.length - (ASSET_EXT_CROP_LENGTHS.get(assetType) as number));
+					if (assetType === AssetType.CLASS) {
+						file.assetName = file.assetName.replace(/-/g, '');
+					}
+					file.fileName = '/' + file.fileName;
+					if (!file.assetType) { // can be already set in assets-loader.cjs
+						file.assetType = assetType;
+					}
+					file.lib = lib;
+					return true;
+				}
+			}
+		});
+	}
+
+	static refreshAssetsList(dirNames?: string[]) {
+
+		game.editor.ui.status.clearByCondition(StatusClearingCondition.ASSETS_REFRESH);
+
+		if (dirNames) {
+			assert(!lastAssetsDirs, 'dirNames already defined.');
+			lastAssetsDirs = dirNames;
+		} else {
+			assert(lastAssetsDirs, 'dirNames is not defined.');
+			dirNames = lastAssetsDirs;
+		}
+
+		prevAssetsByTypeByName = assetsByTypeByName;
+		resetAssetsMap();
+		allAssets = [];
+
+		//console.log('refresh assets list');
+
+		(assetsByTypeByName.get(AssetType.IMAGE) as Map<string, FileDesc>).set('EMPTY', EMPTY);
+		(assetsByTypeByName.get(AssetType.IMAGE) as Map<string, FileDesc>).set('WHITE', WHITE);
+
+		for (const dirName of dirNames!) {
+			const files = fs.getFolderAssets(dirName);
+			for (const file of files) {
+				const map = assetsByTypeByName.get(file.assetType as AssetType) as Map<string, FileDesc>;
+				if (file.assetType !== AssetType.CLASS && map.has(file.assetName) && !OVERRIDDEN_ASSETS.has(file.fileName)) {
+					const existingFile = map.get(file.assetName)!;
+					window.setTimeout(() => {
+						const warn = fs.isFilesEqual(file.fileName, existingFile.fileName);
+						if (warn) {
+							game.editor.warnEqualFiles(warn, file, existingFile);
+						}
+					}, 0);
+				}
+				map.set(file.assetName, file);
+			}
+		}
+
+		for (const assetsMap of assetsByTypeByName.values()) {
+			for (const file of assetsMap.values()) {
+				(assetsListsByType.get(file.assetType) as FileDesc[]).push(file);
+				allAssets.push(file);
+
+				const oldAsset = prevAssetsByTypeByName.get(file.assetType)!.get(file.assetName);
+				if (!oldAsset) {
+					fs.rebuildSoundsIfNeed(file);
+					__onAssetAdded(file);
+				} else {
+					file.asset = oldAsset.asset;
+					if (oldAsset.mTime !== file.mTime) {
+						file.v = (oldAsset.v || 0) + 1;
+						fs.rebuildSoundsIfNeed(file);
+						__onAssetUpdated(file);
+					} else {
+						file.v = oldAsset.v;
+						file._hashedAssetName = oldAsset._hashedAssetName;
+					}
+				}
+			}
+		}
+
+		prevAssetsByTypeByName.forEach((prevAllAssets) => {
+			prevAllAssets.forEach((file) => {
+				if (!file.assetName.startsWith(EDITOR_BACKUP_PREFIX) && !fs.getFileByAssetName(file.assetName, file.assetType)) {
+					if (file.parentAsset) {
+						const newParentAsset = this.getFileByAssetName(file.parentAsset.assetName, file.parentAsset.assetType);
+						file.parentAsset = newParentAsset;
+						this.addSubAsset(file);
+					} else {
+						fs.rebuildSoundsIfNeed(file);
+						__onAssetDeleted(file);
+					}
+				}
+			});
+		});
+
+		sortAssets();
+
+		let dirsToRebuildSounds = scheduledSoundsRebuilds.values();
+		this.soundsData.clear();
+		for (let dir of dirsToRebuildSounds) {
+			this.soundsData.set(dir, fs.rebuildSounds(dir));
+		}
+
+		scheduledSoundsRebuilds.clear();
+
+		editorEvents.emit('assetsRefreshed');
+	}
+
+	static soundsData: Map<string, KeyedObject> = new Map();
+
+	static soundsRebuildInProgress() {
+		return scheduledSoundsRebuilds.size;
+	}
+
+	static getFileHash(fileName: string): string {
+		return execFs('fs/getFileHash', fileName) as any as string;
+	}
+
+	static getWrongSymbol(fileName: string) {
+		const wrongSymbolPos = fileName.search(/[^@a-zA-Z_\-\.\d\/]/gm);
+		if (wrongSymbolPos >= 0) {
+			return fileName[wrongSymbolPos];
+		}
+	}
+
+	static fieldsFilter = (key: string, value: any) => {
+		if (!key.startsWith('___')) {
+			return value;
+		}
+	};
+
+	static exitWithResult(success: string | undefined, error?: string) {
+		if (error) {
+			console.log((new Error('exitWithResult ' + error).stack));
+		}
+		debugger; // stop before exit
+		execFs('fs/exitWithResult', success, typeof error === 'string' ? error : JSON.stringify(error));
+	}
+
+	static showQuestion(title: string, message: string, yes: string, no: string, cancel?: string): number {
+		return execFs('fs/showQuestion', title, message, yes, no, cancel) as number;
+	}
+}
+
+const scheduledSoundsRebuilds: Set<string> = new Set();
+
+export { AllAssetsTypes, AssetType };
+export type { FileDesc, FileDescClass, FileDescImage, FileDescL10n, FileDescPrefab, FileDescScene, FileDescSound, LibInfo };
+

@@ -1,0 +1,35 @@
+* {
+	box-sizing: border-box;
+}
+
+html {
+	font-family: "Open Sans", sans-serif;
+	text-rendering: optimizeLegibility;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	font-size: 12px;
+	font-weight: 400;
+}
+
+* {
+	font-family: "Open Sans", sans-serif;
+	text-rendering: optimizeLegibility;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	overflow: hidden;
+}
+
+div {
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+button {
+	outline: none;
+}

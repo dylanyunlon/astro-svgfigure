@@ -1,0 +1,658 @@
+import editable from 'thing-editor/src/editor/props-editor/editable';
+import LabelsLogger from 'thing-editor/src/editor/ui/labels-logger';
+import Timeline from 'thing-editor/src/editor/ui/props-editor/props-editors/timeline/timeline';
+import getPrefabDefaults from 'thing-editor/src/editor/utils/get-prefab-defaults';
+import { decorateGotoLabelMethods, gotoLabelHelper } from 'thing-editor/src/editor/utils/goto-label-consumer';
+import makePathForKeyframeAutoSelect from 'thing-editor/src/editor/utils/movie-clip-keyframe-select-path';
+import assert from 'thing-editor/src/engine/debug/assert';
+import game from 'thing-editor/src/engine/game';
+import Lib from 'thing-editor/src/engine/lib';
+import DSprite from 'thing-editor/src/engine/lib/assets/src/basic/d-sprite.c';
+import type { TimelineData, TimelineFieldData, TimelineFrameValuesCache, TimelineKeyFrame, TimelineLabelData, TimelineSerializedData, TimelineSerializedKeyFrame, TimelineSerializedLabelsData } from 'thing-editor/src/engine/lib/assets/src/basic/movie-clip/field-player';
+import FieldPlayer, { TimelineKeyFrameType } from 'thing-editor/src/engine/lib/assets/src/basic/movie-clip/field-player';
+import getValueByPath from 'thing-editor/src/engine/utils/get-value-by-path';
+import Pool from 'thing-editor/src/engine/utils/pool';
+
+/// #if EDITOR
+import type { Container } from 'pixi.js';
+import type { IGoToLabelConsumer } from 'thing-editor/src/editor/editor-env';
+import R from 'thing-editor/src/editor/preact-fabrics';
+import DataPathEditor from 'thing-editor/src/editor/ui/props-editor/props-editors/data-path-editor';
+import { StatusClearingCondition } from 'thing-editor/src/editor/ui/status-clearing-condition';
+import { getCurrentStack, showStack } from 'thing-editor/src/editor/utils/stack-utils';
+export const ACTION_ICON_STOP = R.img({ src: '/thing-editor/img/timeline/stop.png' });
+
+const SELECT_LOG_LEVEL = [
+	{ name: 'disabled', value: 0 },
+	{ name: 'level 1', value: 1 },
+	{ name: 'level 2', value: 2 },
+	{ name: 'break on callbacks', value: 3 }
+];
+/// #endif
+
+let idCounter = 1;
+
+export default class MovieClip extends DSprite implements IGoToLabelConsumer {
+
+	_seed = 0;
+
+	fieldPlayers: FieldPlayer[] = [];
+
+	_goToLabelNextFrame: string | false = false;
+
+	@editable()
+	isPlaying = true;
+
+	@editable({ type: 'timeline', important: true, visible: (o) => !o.__nodeExtendData.isPrefabReference })
+	set timeline(data: TimelineSerializedData) {
+		this._goToLabelNextFrame = false;
+		this._disposePlayers();
+
+		if (data === null) {
+			this._timelineData = null as any;
+			return;
+		}
+
+		let desData!: TimelineData;
+
+		if (!deserializeCache.has(data)
+			/// #if EDITOR
+			|| game.editor.disableFieldsCache
+			/// #endif
+		) {
+			desData = MovieClip._deserializeTimelineData(data);
+			/// #if EDITOR
+			if (!game.editor.disableFieldsCache) {
+				/// #endif
+				deserializeCache.set(data, desData);
+				/// #if EDITOR
+				serializeCache.set(desData, data);
+			}
+			/// #endif
+		} else {
+			desData = deserializeCache.get(data);
+		}
+
+		assert(Array.isArray(data.f), 'Wrong timeline data?');
+		this._timelineData = desData;
+
+		let pow = desData.p;
+		let damper = desData.d;
+		let fieldsData = desData.f;
+		for (let i = 0; i < fieldsData.length; i++) {
+			let p = Pool.create(FieldPlayer);
+			p.init(this, fieldsData[i], pow, damper);
+			this.fieldPlayers.push(p);
+		}
+	}
+
+	/// #if EDITOR
+	//timeline reading has sense in editor mode only
+	get timeline(): TimelineSerializedData | null { // -eslint-disable-line @typescript-eslint/adjacent-overload-signatures
+		if (!this._timelineData) {
+			return null;
+		}
+		if (!serializeCache.has(this._timelineData) ||
+			game.editor.disableFieldsCache
+		) {
+			//console.warn("MovieClip serialization invoked >>>");
+			let tl = this._timelineData;
+			let fields = tl.f.map((f) => {
+				return {
+					n: f.n,
+					t: f.t.map((k): TimelineSerializedKeyFrame => {
+						let ret: TimelineSerializedKeyFrame = Object.assign({}, k);
+						let tmpJ = ret.j as number;
+						if (ret.j === ret.t && !k.___keepLoopPoint) {
+							delete (ret.j);
+						}
+
+						if ((typeof (this as KeyedObject)[f.n]) !== 'number') {
+							delete ret.s;
+						}
+
+						if (ret.m === 0) {
+							delete ret.m;
+						}
+						if (ret.r === 0) {
+							delete ret.r;
+						} else if ((ret.r as number) > 0) {
+							ret.r = Math.min(ret.r as number, (ret.n as TimelineKeyFrame).t as number - tmpJ - 1);
+						}
+						delete ret.n;
+						return ret;
+					})
+				};
+			});
+
+			let labels: TimelineSerializedLabelsData = {};
+			for (let key in tl.l) {
+				let label = tl.l[key];
+				labels[key] = label.t;
+			}
+			let c: TimelineSerializedData = {
+				l: labels,
+				p: tl.p,
+				d: tl.d,
+				f: fields
+			};
+			if (game.editor.disableFieldsCache) {
+				return c;
+			}
+			serializeCache.set(this._timelineData, c);
+		}
+		return serializeCache.get(this._timelineData);
+	}
+
+	/// #endif
+
+	@editable({ min: 0 })
+	delay = 0;
+
+	_timelineData!: TimelineData;
+
+	update() {
+		if (this.isPlaying) {
+			if (this.delay > 0) {
+				this.delay--;
+			} else {
+				if (this._goToLabelNextFrame) {
+					let label = this._timelineData.l[this._goToLabelNextFrame];
+					this._goToLabelNextFrame = false;
+					let l = this.fieldPlayers.length;
+					for (let i = 0; i < l; i++) {
+						this.fieldPlayers[i].goto(label.t, label.n[i]);
+					}
+				}
+
+				for (let p of this.fieldPlayers) {
+					p.update();
+				}
+			}
+		}
+		super.update();
+	}
+
+	static _findNextKeyframe(timeLineData: TimelineKeyFrame[], time: number): TimelineKeyFrame {
+		let ret;
+		for (let f of timeLineData) {
+			if (f.t > time) {
+				return f;
+			}
+			ret = f;
+		}
+		return ret as TimelineKeyFrame;
+	}
+
+	static _deserializeTimelineData(timelineData: TimelineSerializedData): TimelineData {
+		let fields: TimelineFieldData[] = timelineData.f.map((f) => {
+
+			let fieldTimeline = f.t.map((k) => {
+				/// #if EDITOR
+				if (!k.hasOwnProperty('___react_id')) {
+					k.___react_id = MovieClip.__generateKeyframeId();
+				}
+				/// #endif
+				let ret = Object.assign({}, k);
+				if (!ret.hasOwnProperty('j')) {
+					ret.j = ret.t;
+				}
+				if (!ret.hasOwnProperty('m')) {
+					ret.m = TimelineKeyFrameType.SMOOTH;
+				}
+				return ret;
+			});
+			for (let f of fieldTimeline) {
+				f.n = MovieClip._findNextKeyframe(fieldTimeline as TimelineKeyFrame[], f.j as number);
+			}
+			return {
+				n: f.n,
+				t: fieldTimeline
+			} as TimelineFieldData;
+		});
+
+		let labels: KeyedMap<TimelineLabelData> = {};
+		for (let key in timelineData.l) {
+			let labelTime = timelineData.l[key];
+			let nextList = fields.map((field) => {
+				return MovieClip._findNextKeyframe(field.t, labelTime - 1);
+			});
+			labels[key] = { t: labelTime, n: nextList, ___name: key };
+		}
+
+		const ret = {
+			l: labels,
+			p: timelineData.p,
+			d: timelineData.d,
+			f: fields
+		};
+
+		/// #if EDITOR
+		fields.forEach((f, i) => {
+			f.___timelineData = ret;
+			f.___fieldIndex = i;
+		});
+		/// #endif
+
+		return ret;
+	}
+
+	_disposePlayers() {
+		while (this.fieldPlayers.length > 0) {
+			Pool.dispose(this.fieldPlayers.pop());
+		}
+	}
+
+	resetTimeline() {
+		for (let p of this.fieldPlayers) {
+			p.reset();
+		}
+	}
+
+	hasLabel(labelName: string) {
+		/// #if EDITOR
+		if (!this._timelineData) {
+			return;
+		}
+		/// #endif
+		return this._timelineData.l.hasOwnProperty(labelName);
+	}
+
+	gotoLabel(labelName: string) {
+		assert(this.hasLabel(labelName), 'Label \'' + labelName + '\' not found.', 10055);
+		/// #if EDITOR
+		if (this.__logLevel) {
+			let stack = getCurrentStack('gotoLabel');
+			if (this._goToLabelNextFrame && this._goToLabelNextFrame !== labelName) {
+				game.editor.ui.status.warn(
+					'CANCELED label: ' + this._goToLabelNextFrame + '; new label:' + labelName + '; time: ' + game.time,
+					30021,
+					this,
+					undefined,
+					true,
+					undefined,
+					StatusClearingCondition.LAUNCH_GAME
+				);
+			}
+			game.editor.ui.status.warn(
+				R.span(
+					null,
+					R.btn('Show stack...', () => {
+						showStack(stack);
+					}),
+					(this._goToLabelNextFrame === labelName ? 'repeated gotoLabel: ' : 'gotoLabel: ') +
+						labelName +
+						'; time: ' +
+						game.time
+				),
+				30020,
+				this,
+				undefined,
+				true,
+				undefined,
+				StatusClearingCondition.LAUNCH_GAME
+			);
+		}
+		/// #endif
+		this._goToLabelNextFrame = labelName;
+		this.play();
+	}
+
+	gotoRandomLabel() {
+		assert(arguments.length > 1, 'Two or more arguments expected for method gotoRandomLabel.', 10056);
+
+		const labelName = arguments[Math.floor(Math.random() * arguments.length)]; // eslint-disable-line prefer-rest-params
+
+		if (labelName) {
+			this.gotoLabel(labelName);
+		}
+	}
+
+	gotoLabelIf(labelName: string, variablePath: string, invert?: boolean) {
+		if ((!getValueByPath(variablePath, this)) !== (!invert)) {
+			this.gotoLabel(labelName);
+		}
+	}
+
+	play() {
+		this.isPlaying = true;
+	}
+
+	stop() {
+		this.isPlaying = false;
+	}
+
+	playRecursive() {
+		this.isPlaying = true;
+		for (let c of this.findChildrenByType(MovieClip)) {
+			c.isPlaying = true;
+		}
+	}
+
+	stopRecursive() {
+		this.isPlaying = false;
+		for (let c of this.findChildrenByType(MovieClip)) {
+			c.isPlaying = false;
+		}
+	}
+
+	gotoLabelRecursive(labelName: string): void {
+		if (this.hasLabel(labelName)) {
+			this.delay = 0;
+			this.gotoLabel(labelName);
+		}
+		super.gotoLabelRecursive(labelName);
+	}
+
+	init() {
+		super.init();
+		this._seed = Math.floor(Math.random() * 0x80000000);
+		/// #if EDITOR
+
+		if ((this.constructor === MovieClip) && (!this._timelineData || !this._timelineData.f.length)) {
+			game.editor.ui.status.warn('MovieClip ' + this.___info + ' has no timeline.', 32003, this, 'timeline', undefined, undefined, StatusClearingCondition.LAUNCH_GAME);
+		}
+
+		let timelineData = this._timelineData;
+		if (timelineData) {
+			const fieldsData: TimelineFieldData[] = timelineData.f;
+			for (let fieldNum = 0; fieldNum < fieldsData.length; fieldNum++) {
+				const field = fieldsData[fieldNum];
+				for (let kf of field.t) {
+					if (kf.a === 'this.remove') {
+						fieldNum++;
+						for (; fieldNum < fieldsData.length; fieldNum++) {
+							const field2 = fieldsData[fieldNum];
+							for (let kf2 of field2.t) {
+								if (kf2.a && kf2.a.startsWith('this.') && (kf.t === kf2.t)) {
+									game.editor.ui.status.error(
+										'MovieClip \'' + kf2.a + '\' action detected after \'this.remove\'. Its may cause invalid action. Please move \'this.remove\' action to the bottom field of the timeline.', 99999, this, makePathForKeyframeAutoSelect('timeline', field2, kf2));
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		/// #endif
+	}
+
+	/// #if EDITOR
+	static __validateObjectData(data:SerializedObjectProps):SerializedDataValidationError | undefined {
+		const timeline = data.timeline as TimelineData;
+		if (timeline?.f.length === 1) {
+			for (const f of timeline.f) {
+				for (const k of f.t) {
+					if (k.a?.startsWith('this.gotoLabel,')) {
+						return {
+							message: '"this.gotoLabel,..." action can be replaced with keyframe`s loop=' + timeline.l[k.a.split(',')[1]],
+							findObjectCallback: (o:Container) => {
+								return (o as MovieClip)._timelineData?.f.length === 1 && (o as MovieClip)._timelineData.f[0].t.some(_k => k.t === _k.t && _k.a?.startsWith('this.gotoLabel,'));
+							},
+							fieldName: 'timeline,' + f.n + ',' + k.t
+						};
+					}
+				}
+			}
+		}
+	}
+
+	static __findPreviousKeyframe(timeLineData: TimelineKeyFrame[], time: number): TimelineKeyFrame {
+		let ret;
+		for (let f of timeLineData) {
+			if (f.t > time) {
+				return ret as TimelineKeyFrame;
+			}
+			ret = f;
+		}
+		return ret as TimelineKeyFrame;
+	}
+
+	__invalidateSerializeCache() {
+		let timelineData = this._timelineData;
+		Lib.__invalidateSerializationCache(this);
+		deserializeCache.delete(serializeCache.get(timelineData));
+		serializeCache.delete(timelineData);
+		timelineData.f.forEach((f, i) => {
+			f.___timelineData = timelineData;
+			f.___fieldIndex = i;
+		});
+	}
+
+	__onUnselect() {
+		Timeline.deselectMovieClip(this);
+	}
+
+
+	static __generateKeyframeId() {
+		return idCounter++;
+	}
+
+	__afterSerialization(data: SerializedObject) {
+		if (data.p.timeline) { // remove animated props from object props
+			for (let f of data.p.timeline.f) {
+				delete data.p[f.n];
+			}
+		}
+		if (this.__nodeExtendData.isPrefabReference) {
+			delete data.p.timeline;
+		}
+	}
+
+	__checkVisibilityForEditor() {
+		if (game.__EDITOR_mode) {
+			if (this._timelineData && this._timelineData.f) {
+				let fields = this._timelineData.f;
+				if (fields.find(f => f.n === 'visible')) {
+					this.visible = this.visible || !this.__doNotSelectByClick;
+				}
+				if ((this.alpha < 0.1) && fields.find(f => f.n === 'alpha')) {
+					this.alpha = 1;
+				}
+				if ((Math.abs(this.scale.x) < 0.02) && fields.find(f => f.n === 'scale.x')) {
+					this.scale.x = 1;
+				}
+				if ((Math.abs(this.scale.y) < 0.02) && fields.find(f => f.n === 'scale.y')) {
+					this.scale.y = 1;
+				}
+			}
+		}
+	}
+
+	__afterDeserialization() {
+		if (this._timelineData) { // remove animated props from object props
+			for (let f of this._timelineData.f) {
+				(this as KeyedMap<any>)[f.n] = f.t[0].v;
+			}
+		}
+		if (game.__EDITOR_mode) {
+			if ((this.constructor !== MovieClip) && (!this._timelineData)) {
+				this.__initTimeline();
+				Lib.__invalidateSerializationCache(this);
+			}
+			this.resetTimeline();
+		}
+	}
+
+	__onSelect() {
+		super.__onSelect();
+		this.__checkVisibilityForEditor();
+	}
+
+	__onChildSelected() {
+		this.__checkVisibilityForEditor();
+	}
+
+	___previewFrame = 0;
+
+	@editable({ min: 0 })
+	set __previewFrame(v) {
+		this.___previewFrame = v;
+		if (game.__EDITOR_mode) {
+			this.resetTimeline();
+		}
+	}
+
+	get __previewFrame() {
+		return this.___previewFrame;
+	}
+
+	__applyValueToMovieClip(field: TimelineFieldData, time: number) {
+		(this as KeyedObject)[field.n] = MovieClip.__getValueAtTime(field, time);
+	}
+
+	__applyCurrentTimeValuesToFields(time: number) {
+		if (this._timelineData) {
+			for (let f of this._timelineData.f) {
+				this.__applyValueToMovieClip(f, time);
+			}
+		}
+	}
+
+	static __getValueAtTime(field: TimelineFieldData, time: number): number | boolean | string {
+		if (!field.___cacheTimeline) {
+			let fieldPlayer = Pool.create(FieldPlayer);
+			let discretePositions: true[] = [];
+			let c: TimelineFrameValuesCache = [] as any;
+			field.___cacheTimeline = c;
+			field.___discretePositionsCache = discretePositions;
+			let wholeTimelineData = field.___timelineData;
+			fieldPlayer.init({} as any, field, wholeTimelineData.p, wholeTimelineData.d);
+			fieldPlayer.reset(true);
+			calculateCacheSegmentForField(fieldPlayer, c);
+			for (let keyFrame of field.t) {
+				if (keyFrame.m === TimelineKeyFrameType.DISCRETE) {
+					discretePositions[keyFrame.t] = true;
+				}
+			}
+			for (let labelName in wholeTimelineData.l) {
+				const label = wholeTimelineData.l[labelName];
+				if (!c.hasOwnProperty(label.t)) { //time at this label is not calculated yet
+					const prevKeyframe = MovieClip.__findPreviousKeyframe(field.t, label.t);
+					fieldPlayer.val = prevKeyframe.v;
+					fieldPlayer.speed = 0;
+					fieldPlayer.goto(label.t, label.n[field.___fieldIndex]);
+					calculateCacheSegmentForField(fieldPlayer, c);
+				}
+			}
+			let filteredValues = c.filter(filterUndefined);
+
+			c.min = Math.min.apply(null, filteredValues);
+			c.max = Math.max.apply(null, filteredValues);
+			Pool.dispose(fieldPlayer);
+		}
+		if (field.___cacheTimeline.hasOwnProperty(time)) {
+			return field.___cacheTimeline[time];
+		} else {
+			let prevKeyframe = MovieClip.__findPreviousKeyframe(field.t, time);
+			time = prevKeyframe.t;
+			if (field.___cacheTimeline.hasOwnProperty(time)) {
+				return field.___cacheTimeline[time];
+			}
+			return prevKeyframe.v as number;
+		}
+	}
+
+	__initTimeline() {
+		this._timelineData = {
+			d: 0.85,
+			p: 0.02,
+			l: {},
+			f: []
+		};
+	}
+
+	__EDITOR_onCreate() {
+		super.__EDITOR_onCreate();
+		this.__initTimeline();
+	}
+
+	__getLabels():undefined | string[] {
+		if (this.timeline) {
+			return Object.keys(this.timeline.l).filter(l => !l.startsWith('__'));
+		}
+	}
+
+	@editable({name: 'log labels', type: 'btn', onClick: LabelsLogger.toggle })
+	@editable({ select: SELECT_LOG_LEVEL })
+	__logLevel = 0;
+
+	static __isPropertyDisabled(field: EditablePropertyDesc) { //prevent editing of properties animated inside prefab reference
+		for (let o of game.editor.selection) {
+			if (o.__nodeExtendData.isPrefabReference) {
+				let timeline = getPrefabDefaults(o).timeline as TimelineSerializedData;
+				if (timeline && timeline.f.find(f => f.n === field.name)) {
+					return 'The property is disabled, because it is animated inside prefab.';
+				}
+			}
+		}
+	}
+	/// #endif
+}
+
+
+let deserializeCache = new WeakMap();
+
+/// #if EDITOR
+
+
+const filterUndefined = (v: number) => {
+	return v !== undefined;
+};
+
+const calculateCacheSegmentForField = (fieldPlayer: FieldPlayer, cacheArray: TimelineFrameValuesCache) => {
+	fieldPlayer.__doNotCallActions = true;
+	let time;
+	let i = 0;
+	let fields = fieldPlayer.timeline;
+	let limit = fields[fields.length - 1].t;
+	while (!cacheArray.hasOwnProperty(fieldPlayer.time)) {
+		time = fieldPlayer.time;
+		if (time > limit) {
+			break;
+		}
+		fieldPlayer.update(true);
+		cacheArray[time] = fieldPlayer.val;
+		assert(i++ < 100000, 'Timeline values cache calculation looped and failed.');
+	}
+	fieldPlayer.__doNotCallActions = false;
+};
+
+
+(MovieClip.prototype.play as SelectableProperty).___EDITOR_isGoodForChooser = true;
+(MovieClip.prototype.play as SelectableProperty).___EDITOR_isHiddenForDataChooser = true;
+(MovieClip.prototype.stop as SelectableProperty).___EDITOR_isGoodForChooser = true;
+(MovieClip.prototype.stop as SelectableProperty).___EDITOR_isHiddenForDataChooser = true;
+(MovieClip.prototype.stop as SelectableProperty).___EDITOR_actionIcon = ACTION_ICON_STOP;
+(MovieClip.prototype.playRecursive as SelectableProperty).___EDITOR_isHiddenForDataChooser = true;
+(MovieClip.prototype.playRecursive as SelectableProperty).___EDITOR_isGoodForChooser = true;
+(MovieClip.prototype.stopRecursive as SelectableProperty).___EDITOR_isGoodForChooser = true;
+(MovieClip.prototype.stopRecursive as SelectableProperty).___EDITOR_isHiddenForDataChooser = true;
+(MovieClip.prototype.gotoLabel as SelectableProperty).___EDITOR_isGoodForCallbackChooser = true;
+(MovieClip.prototype.gotoLabel as SelectableProperty).___EDITOR_isHiddenForDataChooser = true;
+(MovieClip.prototype.gotoLabelIf as SelectableProperty).___EDITOR_isGoodForCallbackChooser = true;
+(MovieClip.prototype.gotoLabelIf as SelectableProperty).___EDITOR_isHiddenForDataChooser = true;
+(MovieClip.prototype.gotoLabelIf as SelectableProperty).___EDITOR_callbackParameterChooserFunction = async(context: MovieClip) => {
+	const label = await gotoLabelHelper(context);
+	if (label && label.length) {
+		const path = await DataPathEditor.choosePath(' gotoLabelIf condition');
+		if (path) {
+			label.push(path);
+			const isInverted = await game.editor.ui.modal.showListChoose('Invert condition?', [
+				{name: R.span({className: 'danger'}, 'invert'), pureName: 'invert', value: 1},
+				{name: 'no invert', value: 0}
+			]);
+			if (isInverted?.value) {
+				label.push('1');
+			}
+			return label;
+		}
+	}
+};
+
+let serializeCache = new WeakMap();
+
+MovieClip.__EDITOR_icon = 'tree/movie';
+decorateGotoLabelMethods(MovieClip);
+
+/// #endif

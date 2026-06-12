@@ -1,0 +1,598 @@
+{
+    "animations": [
+        {
+            "filename": "shockwave",
+            "delay": 200,
+            "frames": [
+                "shockwave-0",
+                "shockwave-1",
+                "shockwave-2",
+                "shockwave-3",
+                "shockwave-4",
+                "shockwave-5"
+            ]
+        },
+        {
+            "filename": "bulge-pinch",
+            "delay": 500,
+            "frames": [
+                "bulge-pinch-0",
+                "bulge-pinch-1"
+            ]
+        },
+        {
+            "filename": "godray",
+            "delay": 500,
+            "frames": [
+                "godray-0",
+                "godray-1",
+                "godray-2",
+                "godray-3"
+            ]
+        },
+        {
+            "filename": "old-film",
+            "delay": 200,
+            "frames": [
+                "old-film-0",
+                "old-film-1",
+                "old-film-2",
+                "old-film-3",
+                "old-film-4",
+                "old-film-5",
+                "old-film-6",
+                "old-film-7",
+                "old-film-8",
+                "old-film-9"
+            ]
+        }
+    ],
+    "images" : [
+        {
+            "name": "AlphaFilter",
+            "filename": "original"
+        },
+        {
+            "name": "BlurFilter",
+            "filename": "blur"
+        },
+        {
+            "name": "NoiseFilter",
+            "filename": "noise"
+        },
+        {
+            "name": "AsciiFilter",
+            "filename": "ascii"
+        },
+        {
+            "name": "AdvancedBloomFilter",
+            "filename": "advanced-bloom"
+        },
+        {
+            "name": "BevelFilter",
+            "filename": "bevel",
+            "fishOnly": true
+        },
+        {
+            "name": "BloomFilter",
+            "filename": "bloom"
+        },
+        {
+            "name": "BulgePinchFilter",
+            "frame": "bulge-pinch-0",
+            "options": {
+                "radius": 70,
+                "strength": 1
+            }
+        },
+        {
+            "name": "BulgePinchFilter",
+            "frame": "bulge-pinch-1",
+            "options": {
+                "radius": 70,
+                "strength": -1
+            }
+        },
+        {
+            "name": "TwistFilter",
+            "filename": "twist",
+            "options": {
+                "angle": 8,
+                "radius": 70,
+                "offset": {
+                    "x": 135,
+                    "y": 80
+                }
+            }
+        },
+        {
+            "name": "DotFilter",
+            "filename": "dot",
+            "options": {
+                "angle": 1,
+                "scale": 5
+            }
+        },
+        {
+            "name": "EmbossFilter",
+            "filename": "emboss",
+            "options": {
+                "strength": 5
+            }
+        },
+        {
+            "name": "PixelateFilter",
+            "filename": "pixelate",
+            "options": {
+                "sizeX": 8,
+                "sizeY": 8
+            }
+        },
+        {
+            "name": "TiltShiftFilter",
+            "filename": "tilt-shift",
+            "options": {
+                "blur": 100,
+                "gradientBlur": 400,
+                "start": {"x": 0, "y": 35},
+                "end": {"x": 280, "y": 35}
+            }
+        },
+        {
+            "name": "ConvolutionFilter",
+            "filename": "convolution",
+            "options": {
+                "width": 200,
+                "height": 200,
+                "matrix": [0,0,0,1,1,1,0,0,0]
+            }
+        },
+        {
+            "name": "CrossHatchFilter",
+            "filename": "cross-hatch"
+        },
+        {
+            "name": "RGBSplitFilter",
+            "filename": "rgb"
+        },
+        {
+            "name": "ShockwaveFilter",
+            "frame": "shockwave-0",
+            "options": {
+                "center": {"x":130, "y":80},
+                "amplitude": 10,
+                "wavelength": 20,
+                "brightness": 1.3,
+                "time": 0
+            }
+        },
+        {
+            "name": "ShockwaveFilter",
+            "frame": "shockwave-1",
+            "options": {
+                "center": {"x":130, "y":80},
+                "amplitude": 10,
+                "wavelength": 20,
+                "brightness": 1.3,
+                "time": 0.05
+            }
+        },
+        {
+            "name": "ShockwaveFilter",
+            "frame": "shockwave-2",
+            "options": {
+                "center":  {"x":130, "y":80},
+                "amplitude": 10,
+                "wavelength": 20,
+                "brightness": 1.3,
+                "time": 0.1
+            }
+        },
+        {
+            "name": "ShockwaveFilter",
+            "frame": "shockwave-3",
+            "options": {
+                "center": {"x":130, "y":80},
+                "amplitude": 10,
+                "wavelength": 20,
+                "brightness": 1.3,
+                "time": 0.15
+            }
+        },
+        {
+            "name": "ShockwaveFilter",
+            "frame": "shockwave-4",
+            "options": {
+                "center": {"x":130, "y":80},
+                "amplitude": 10,
+                "wavelength": 20,
+                "brightness": 1.3,
+                "time": 0.2
+            }
+        },
+        {
+            "name": "ShockwaveFilter",
+            "frame": "shockwave-5",
+            "options": {
+                "center": {"x":130, "y":80},
+                "amplitude": 10,
+                "wavelength": 20,
+                "brightness": 1.3,
+                "time": 0.25
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-0",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.0001
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-1",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.011234
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-2",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.941723
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-3",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.23512
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-4",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.612311
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-5",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.112351
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-6",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.5017123
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-7",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.312301
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-8",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.123411
+            }
+        },
+        {
+            "name": "OldFilmFilter",
+            "frame": "old-film-9",
+            "options": {
+                "scratchWidth": 0.8,
+                "seed": 0.02132
+            }
+        },
+        {
+            "name": "OutlineFilter",
+            "filename": "outline",
+            "options": {
+                "thickness": 2,
+                "color": 16711680
+            },
+            "fishOnly": true
+        },
+        {
+            "name": "DropShadowFilter",
+            "filename": "drop-shadow",
+            "options": {
+                "offset": {
+                    "x": 2,
+                    "y": 2
+                }
+            },
+            "fishOnly": true
+        },
+        {
+            "name": "GlowFilter",
+            "filename": "glow",
+            "arguments": {
+                "distance": 20,
+                "outerStrength": 2,
+                "innerStrength": 2,
+                "color": 16711680,
+                "quality": 0.5
+            },
+            "fishOnly": true
+        },
+        {
+            "name": "ColorOverlayFilter",
+            "filename": "color-overlay",
+            "options": {
+                "color": 16711680
+            },
+            "fishOnly": true
+        },
+        {
+            "name": "ColorReplaceFilter",
+            "filename": "color-replace",
+            "options": {
+                "originalColor": 405551,
+                "newColor": 0,
+                "epsilon": 0.5
+            }
+        },
+        {
+            "name": "MultiColorReplaceFilter",
+            "filename": "multi-color-replace",
+            "arguments": {
+                "replacements": [
+                    [405551, 0],
+                    [7563943, 65280],
+                    [16737851, 16711680]
+                ],
+                "tolerance": 0.4
+            }
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-desaturate",
+            "func": "desaturate"
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-sepia",
+            "func": "sepia"
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-negative",
+            "func": "negative"
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-lsd",
+            "func": "lsd",
+            "args": [true]
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-kodachrome",
+            "func": "kodachrome",
+            "args": [true]
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-polaroid",
+            "func": "polaroid"
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-contrast",
+            "func": "contrast",
+            "args": [1]
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-predator",
+            "func": "predator",
+            "args": [1]
+        },
+        {
+            "name": "ColorMatrixFilter",
+            "filename": "color-matrix-saturate",
+            "func": "saturate",
+            "args": [1]
+        },
+        {
+            "name": "DisplacementFilter",
+            "filename": "displacement"
+        },
+        {
+            "name": "SimpleLightmapFilter",
+            "filename": "simple-lightmap",
+            "options": {
+                "alpha": 1,
+                "color": 6710886
+            }
+        },
+        {
+            "name": "AlphaFilter",
+            "filename": "alpha",
+            "options": {
+                "alpha": 0.5
+            }
+        },
+        {
+            "name": "GodrayFilter",
+            "frame": "godray-0",
+            "options": {
+                "time": 0,
+                "gain": 0.6,
+                "lacunarity": 2
+            }
+        },
+        {
+            "name": "GodrayFilter",
+            "frame": "godray-1",
+            "options": {
+                "time": 0.1,
+                "gain": 0.6,
+                "lacunarity": 2
+            }
+        },
+        {
+            "name": "GodrayFilter",
+            "frame": "godray-2",
+            "options": {
+                "time": 0.2,
+                "gain": 0.6,
+                "lacunarity": 2
+            }
+        },
+        {
+            "name": "GodrayFilter",
+            "frame": "godray-3",
+            "options": {
+                "time": 0.3,
+                "gain": 0.6,
+                "lacunarity": 2
+            }
+        },
+        {
+            "name": "ZoomBlurFilter",
+            "filename": "zoom-blur",
+            "options": {
+                "strength": 0.3,
+                "center": {"x":130, "y":80},
+                "innerRadius": 40
+            }
+        },
+        {
+            "name": "KawaseBlurFilter",
+            "filename": "kawase-blur",
+            "options": {
+                "blur": 2,
+                "quality": 3
+            }
+        },
+        {
+            "name": "MotionBlurFilter",
+            "filename": "motion-blur",
+            "arguments": {
+                "velocity": { "x": 40, "y": 40 },
+                "kernelSize": 15,
+                "offset": 0
+            }
+        },
+        {
+            "name": "RadialBlurFilter",
+            "filename": "radial-blur",
+            "arguments": {
+                "angle": 30,
+                "center": { "x": 130, "y": 80 },
+                "kernelSize": 15,
+                "radius": 60
+            }
+        },
+        {
+            "name": "GlitchFilter",
+            "filename": "glitch",
+            "arguments": {
+                "slices": 6,
+                "offset": 50,
+                "direction": 0
+            }
+        },
+        {
+            "name": "ReflectionFilter",
+            "filename": "reflection",
+            "arguments": {
+                "alpha": [0.7, 1],
+                "amplitude": [0, 10],
+                "waveLength": [10, 50]
+            }
+        },
+        {
+            "name": "AdjustmentFilter",
+            "filename": "adjustment",
+            "arguments": {
+                "gamma": 1.5,
+                "saturation": 1.5,
+                "contrast": 1.5,
+                "brightness": 1.5,
+                "red": 1.5,
+                "green": 1.5,
+                "blue": 1.5,
+                "alpha": 0.75
+            }
+        },
+        {
+            "name": "CRTFilter",
+            "filename": "crt",
+            "arguments": {
+                "lineWidth": 1.5,
+                "lineContrast": 0.3,
+                "noise": 0.3,
+                "noiseSize": 1.0
+            }
+        },
+        {
+            "name": "ColorMapFilter",
+            "filename": "color-map"
+        },
+        {
+            "name": "GrayscaleFilter",
+            "filename": "grayscale"
+        },
+        {
+            "name": "HslAdjustmentFilter",
+            "filename": "hsl-adjustment",
+            "arguments": {
+                "hue": 180
+            }
+        },
+        {
+            "name": "ColorGradientFilter",
+            "filename": "color-gradient",
+            "fishOnly": true,
+            "arguments": {
+                "type": 0,
+                "stops": [
+                    {"offset": 0.00, "color": 16711680, "alpha": 1.0},
+                    {"offset": 0.50, "color": 65280, "alpha": 1.0},
+                    {"offset": 1.00, "color": 255, "alpha": 1.0}
+                ],
+                "alpha": 0.8
+            }
+        },
+        {
+            "name": "BackdropBlurFilter",
+            "filename": "backdrop-blur",
+            "overlayOnly": true,
+            "overlayOptions": {
+                "alpha": 0.2,
+                "tint": "white"
+            },
+            "arguments": {
+                "strength": 4
+            }
+        },
+        {
+            "name": "SimplexNoiseFilter",
+            "filename": "simplex-noise",
+            "arguments": {
+                "strength": 0.5,
+                "noiseScale": 10
+            }
+        }
+    ]
+}

@@ -1,0 +1,15 @@
+{
+    "extends": "@pixi/extension-scripts/tsconfig",
+    "compilerOptions": {
+        "skipLibCheck": true,
+        "strictNullChecks": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true
+    },
+    "exclude": [
+        "**/test/**"
+    ],
+    "include": [
+        "src"
+    ]
+}
