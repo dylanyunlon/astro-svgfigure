@@ -17,3 +17,18 @@ export { renderCellGraph } from './pixi-cell-renderer';
 export type { CellDescriptor, EdgeDescriptor } from './pixi-cell-renderer';
 
 export { renderCellGraphSDF } from './sdf-cell-renderer';
+
+export {
+  AntimatterAttribute,
+  AntimatterFBO,
+  AntimatterPass,
+  AntimatterSpawn,
+  AntimatterCellCompute,
+  CELL_PHYSICS_VERT,
+  AttributeKind,
+} from './antimatter-compute';
+export type {
+  AntimatterPassOptions,
+  CellSpawnDescriptor,
+  ForceFieldEntry,
+} from './antimatter-compute';
