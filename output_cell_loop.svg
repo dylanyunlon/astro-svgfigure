@@ -1,91 +1,200 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 785" width="440" height="785" style="max-width:100%;height:auto;">
-  <rect width="440" height="785" fill="#FAFAFA" rx="4"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440.0 785.0" width="440.0" height="785.0" style="max-width:100%;height:auto;">
+  <rect width="440.0" height="785.0" fill="url(#astro-bg-gradient)" rx="4" />
   <defs>
     <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#2E7D32"/>
+      <polygon points="0 0, 8 3, 0 6" fill="#2E7D32" />
     </marker>
+    
+    <linearGradient id="astro-bg-gradient" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#D9CAC1" stop-opacity="1" />
+      <stop offset="50%" stop-color="#A09D9D" stop-opacity="1" />
+      <stop offset="100%" stop-color="#615F5E" stop-opacity="1" />
+    </linearGradient>
   </defs>
   <g id="z3-layer">
-    <!-- cell: self_attn -->
-    <g id="cell-self_attn" data-z="3" transform="translate(220,260)">
-<defs><radialGradient id="attn-heat-self_attn" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#3F51B5" stop-opacity="0.9"/><stop offset="60%" stop-color="#7986CB" stop-opacity="0.4"/><stop offset="100%" stop-color="#E8EAF6" stop-opacity="0.0"/></radialGradient></defs>
-<rect x="0" y="0" width="160" height="50" rx="8" fill="#E8EAF6" stroke="#3F51B5" stroke-width="1.5"/>
-<circle cx="80.0" cy="25.0" r="21.0" fill="url(#attn-heat-self_attn)"/>
-<path d="M 89.0,27.9 A 9.5,9.5 0 1,1 89.0,22.1" fill="none" stroke="#283593" stroke-width="1.2" stroke-dasharray="4,2" opacity="0.55"/>
-<path d="M 91.8,31.0 A 13.2,13.2 0 1,1 91.8,19.0" fill="none" stroke="#5C6BC0" stroke-width="1.2" stroke-dasharray="3,3" opacity="0.45"/>
-<path d="M 93.8,35.0 A 17.0,17.0 0 1,1 93.8,15.0" fill="none" stroke="#9FA8DA" stroke-width="1.2" stroke-dasharray="2,4" opacity="0.35"/>
-<line x1="85.2" y1="25.0" x2="101.0" y2="25.0" stroke="#3F51B5" stroke-width="2.0" opacity="0.85"/>
-<line x1="84.2" y1="28.1" x2="94.5" y2="35.5" stroke="#3F51B5" stroke-width="1.6" opacity="0.65"/>
-<line x1="81.6" y1="30.0" x2="84.9" y2="40.0" stroke="#3F51B5" stroke-width="1.3" opacity="0.52"/>
-<line x1="78.4" y1="30.0" x2="73.6" y2="44.6" stroke="#3F51B5" stroke-width="2.0" opacity="0.83"/>
-<line x1="75.8" y1="28.1" x2="64.2" y2="36.5" stroke="#3F51B5" stroke-width="1.8" opacity="0.76"/>
-<line x1="74.8" y1="25.0" x2="66.6" y2="25.0" stroke="#3F51B5" stroke-width="1.0" opacity="0.37"/>
-<line x1="75.8" y1="21.9" x2="64.2" y2="13.5" stroke="#3F51B5" stroke-width="1.8" opacity="0.76"/>
-<line x1="78.4" y1="20.0" x2="73.6" y2="5.4" stroke="#3F51B5" stroke-width="2.0" opacity="0.83"/>
-<line x1="81.6" y1="20.0" x2="84.9" y2="10.0" stroke="#3F51B5" stroke-width="1.3" opacity="0.52"/>
-<line x1="84.2" y1="21.9" x2="94.5" y2="14.5" stroke="#3F51B5" stroke-width="1.6" opacity="0.65"/>
-<circle cx="80.0" cy="49.0" r="4" fill="#C62828" opacity="0.75"/><text x="80.0" y="52.5" text-anchor="middle" font-family="system-ui,sans-serif" font-size="5" font-weight="bold" fill="#FFFFFF">Q</text>
-<circle cx="59.3" cy="12.8" r="4" fill="#1565C0" opacity="0.75"/><text x="59.3" y="16.3" text-anchor="middle" font-family="system-ui,sans-serif" font-size="5" font-weight="bold" fill="#FFFFFF">K</text>
-<circle cx="100.7" cy="12.8" r="4" fill="#1B5E20" opacity="0.75"/><text x="100.7" y="16.3" text-anchor="middle" font-family="system-ui,sans-serif" font-size="5" font-weight="bold" fill="#FFFFFF">V</text>
-<circle cx="80.0" cy="25.0" r="3.8" fill="#3F51B5" opacity="0.85"/>
-<circle cx="80.0" cy="25.0" r="1.5" fill="#E8EAF6" opacity="0.95"/>
-<text x="80.0" y="45" text-anchor="middle" font-family="system-ui,sans-serif" font-size="9" font-weight="600" fill="#1A237E">Multi-Head Attention</text>
+    
+    <defs>
+  <filter id="shadow-ffn" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="2.0" dy="2.0" stdDeviation="3.38" flood-color="#000000" flood-opacity="0.08" />
+  </filter>
+</defs>
+
+
+
+<g id="cell-ffn" data-z="3" opacity="0.0500" filter="url(#shadow-ffn)" transform="translate(230.0,470.0)">
+<rect x="72.458" y="185.817" width="140" height="45" rx="8" fill="#FFF3E0" stroke="#E65100" stroke-width="1.5" />
+<path fill="none" stroke="#E65100" stroke-width="2" opacity="0.7" d="M 10.000,27.500 C 28.800,27.500 31.200,27.500 30.000,27.500 C 48.800,27.500 51.200,27.500 50.000,27.500 C 68.800,27.500 71.149,27.155 70.000,27.500 C 88.851,21.845 91.149,21.155 90.000,21.500 C 108.851,15.845 111.149,15.155 110.000,15.500 L 130.000,9.500" /><text x="142.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#BF360C">Feed Forward</text>
+
+<g class="decal-overlay" opacity="1.000">
+  
+  <path d="M 67.220,14.170 C 71.214,20.553 70.878,22.274 71.850,21.570 C 69.492,23.276 69.172,24.987 68.520,23.980 L 72.590,30.270" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.696" />
+  <path d="M 67.220,14.170 C 71.214,20.553 70.878,22.274 71.850,21.570 C 69.492,23.276 69.172,24.987 68.520,23.980 L 72.590,30.270" fill="none" stroke="#FFE0B2" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.243" />
 </g>
-    <!-- cell: input_embed -->
-    <g id="cell-input_embed" data-z="3" transform="translate(220,40)">
-<rect x="0" y="0" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
-<line x1="57.9" y1="36.3" x2="102.1" y2="17.7" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
-<line x1="56.5" y1="31.8" x2="103.5" y2="22.2" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
-<line x1="56.0" y1="27.0" x2="104.0" y2="27.0" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)"/>
-<line x1="56.5" y1="22.2" x2="103.5" y2="31.8" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
-<line x1="57.9" y1="17.7" x2="102.1" y2="36.3" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
-<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Input Embedding</text>
 </g>
-    <!-- cell: ffn -->
-    <g id="cell-ffn" data-z="3" transform="translate(230,470)">
-<rect x="0" y="0" width="140" height="45" rx="8" fill="#FFF3E0" stroke="#E65100" stroke-width="1.5"/>
-<polyline points="10.0,27.5 30.0,27.5 50.0,27.5 70.0,27.5 90.0,21.5 110.0,15.5 130.0,9.5" fill="none" stroke="#E65100" stroke-width="2" opacity="0.7"/>
-<text x="70.0" y="39" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#BF360C">Feed Forward</text>
+    
+    <defs>
+  <filter id="shadow-input_embed" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="2.0" dy="2.0" stdDeviation="3.75" flood-color="#000000" flood-opacity="0.35" />
+  </filter>
+</defs>
+
+
+
+<g id="cell-input_embed" data-z="3" opacity="0.0500" filter="url(#shadow-input_embed)" transform="translate(220.0,40.0)">
+<rect x="72.458" y="185.817" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5" />
+<line x1="130.358" y1="222.117" x2="174.558" y2="203.517" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.958" y1="217.617" x2="175.958" y2="208.017" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.458" y1="212.817" x2="176.458" y2="212.817" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.958" y1="208.017" x2="175.958" y2="217.617" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="130.358" y1="203.517" x2="174.558" y2="222.117" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)" />
+<text x="152.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Input Embedding</text>
+
+<g class="decal-overlay" opacity="1.000">
+  
+  <defs><marker id="decal-arrow-3110" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350" /></marker></defs>
+  <line x1="146.848" y1="212.177" x2="158.068" y2="209.457" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-3110)" />
 </g>
-    <!-- cell: output -->
-    <g id="cell-output" data-z="3" transform="translate(220,675)">
-<rect x="0" y="0" width="160" height="50" rx="8" fill="#ECEFF1" stroke="#455A64" stroke-width="1.5"/>
-<polygon points="32.0,17.0 128.0,25.0 32.0,33.0" fill="#455A64" opacity="0.5"/>
-<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#263238">Output</text>
+</g>
+    
+    <defs>
+  <filter id="shadow-output" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="2.0" dy="2.0" stdDeviation="3.75" flood-color="#000000" flood-opacity="0.35" />
+  </filter>
+</defs>
+
+
+
+<g id="cell-output" data-z="3" opacity="0.0937" filter="url(#shadow-output)" transform="translate(220.0,675.0)">
+<rect x="72.458" y="185.817" width="160" height="50" rx="8" fill="#ECEFF1" stroke="#455A64" stroke-width="1.5" />
+<polygon points="32.0,17.0 128.0,25.0 32.0,33.0" fill="#455A64" opacity="0.5" />
+<text x="152.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#263238">Output</text>
+</g>
+    
+    <defs>
+  <filter id="shadow-self_attn" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="2.0" dy="2.0" stdDeviation="3.75" flood-color="#000000" flood-opacity="0.35" />
+  </filter>
+</defs>
+
+
+
+<g id="cell-self_attn" data-z="3" opacity="0.0500" filter="url(#shadow-self_attn)" transform="translate(220.0,260.0)">
+<rect x="72.458" y="185.817" width="160" height="50" rx="8" fill="#E8EAF6" stroke="#3F51B5" stroke-width="1.5" />
+<line x1="158.758" y1="210.817" x2="173.458" y2="210.817" stroke="#3F51B5" stroke-width="1" opacity="0.60" />
+<line x1="157.558" y1="214.517" x2="169.458" y2="223.117" stroke="#3F51B5" stroke-width="1" opacity="0.56" />
+<line x1="154.358" y1="216.817" x2="158.958" y2="230.817" stroke="#3F51B5" stroke-width="1" opacity="0.52" />
+<line x1="150.558" y1="216.817" x2="145.958" y2="230.817" stroke="#3F51B5" stroke-width="1" opacity="0.47" />
+<line x1="147.358" y1="214.517" x2="135.458" y2="223.117" stroke="#3F51B5" stroke-width="1" opacity="0.43" />
+<line x1="146.158" y1="210.817" x2="131.458" y2="210.817" stroke="#3F51B5" stroke-width="1" opacity="0.39" />
+<line x1="147.358" y1="207.117" x2="135.458" y2="198.517" stroke="#3F51B5" stroke-width="1" opacity="0.35" />
+<line x1="150.558" y1="204.817" x2="145.958" y2="190.817" stroke="#3F51B5" stroke-width="1" opacity="0.31" />
+<line x1="154.358" y1="204.817" x2="158.958" y2="190.817" stroke="#3F51B5" stroke-width="1" opacity="0.26" />
+<line x1="157.558" y1="207.117" x2="169.458" y2="198.517" stroke="#3F51B5" stroke-width="1" opacity="0.22" />
+<circle cx="152.458" cy="210.817" r="4.2" fill="#3F51B5" opacity="0.7" />
+<circle cx="152.458" cy="210.817" r="1.68" fill="#E8EAF6" />
+<text x="152.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1A237E">Multi-Head Attention</text>
+
+<g class="decal-overlay" opacity="1.000">
+  
+  <circle cx="158.338" cy="204.937" r="2.52" fill="white" opacity="0.450" />
+  <circle cx="160.858" cy="207.457" r="1.13" fill="white" opacity="0.225" />
+</g>
 </g>
   </g>
   <g id="z5-layer">
-    <!-- cell: add_norm2 -->
-    <g id="cell-add_norm2" data-z="5" transform="translate(230,575)">
-<rect x="0" y="0" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
-<line x1="60.0" y1="20.0" x2="80.0" y2="20.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
-<line x1="70.0" y1="10.0" x2="70.0" y2="30.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
-<line x1="58.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
-<line x1="82.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
-<line x1="58.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
-<line x1="82.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
-<text x="70.0" y="34" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#B71C1C">Add and Norm</text>
+    
+    <defs>
+  <filter id="shadow-pos_encode" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="8.0" dy="8.0" stdDeviation="5.35" flood-color="#000000" flood-opacity="0.55" />
+  </filter>
+</defs>
+
+
+
+<g id="cell-pos_encode" data-z="5" opacity="0.0500" filter="url(#shadow-pos_encode)" transform="translate(220.0,150.0)">
+<rect x="72.458" y="185.817" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5" />
+<line x1="130.358" y1="222.117" x2="174.558" y2="203.517" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.958" y1="217.617" x2="175.958" y2="208.017" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.458" y1="212.817" x2="176.458" y2="212.817" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.958" y1="208.017" x2="175.958" y2="217.617" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="130.358" y1="203.517" x2="174.558" y2="222.117" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)" />
+<text x="152.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Positional Encoding</text>
+
+<g class="decal-overlay" opacity="1.000">
+  
+  <defs><marker id="decal-arrow-7518" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350" /></marker></defs>
+  <line x1="146.818" y1="209.557" x2="158.098" y2="212.077" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-7518)" />
 </g>
-    <!-- cell: add_norm1 -->
-    <g id="cell-add_norm1" data-z="5" transform="translate(230,370)">
-<rect x="0" y="0" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
-<line x1="60.0" y1="20.0" x2="80.0" y2="20.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
-<line x1="70.0" y1="10.0" x2="70.0" y2="30.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
-<line x1="58.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
-<line x1="82.0" y1="8.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
-<line x1="58.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
-<line x1="82.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
-<text x="70.0" y="34" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#B71C1C">Add and Norm</text>
 </g>
-    <!-- cell: pos_encode -->
-    <g id="cell-pos_encode" data-z="5" transform="translate(220,150)">
-<rect x="0" y="0" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
-<line x1="57.9" y1="36.3" x2="102.1" y2="17.7" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
-<line x1="56.5" y1="31.8" x2="103.5" y2="22.2" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
-<line x1="56.0" y1="27.0" x2="104.0" y2="27.0" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)"/>
-<line x1="56.5" y1="22.2" x2="103.5" y2="31.8" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
-<line x1="57.9" y1="17.7" x2="102.1" y2="36.3" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
-<text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Positional Encoding</text>
+    
+    <defs>
+  <filter id="shadow-add_norm1" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="8.0" dy="8.0" stdDeviation="4.6" flood-color="#000000" flood-opacity="0.55" />
+  </filter>
+</defs>
+
+
+
+<g id="cell-add_norm1" data-z="5" opacity="0.0500" filter="url(#shadow-add_norm1)" transform="translate(230.0,370.0)">
+<rect x="72.458" y="185.817" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5" />
+<line x1="132.458" y1="205.817" x2="152.458" y2="205.817" stroke="#C62828" stroke-width="2.5" opacity="0.6" />
+<line x1="142.458" y1="195.817" x2="142.458" y2="215.817" stroke="#C62828" stroke-width="2.5" opacity="0.6" />
+<line x1="130.458" y1="193.817" x2="142.458" y2="205.817" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2" />
+<line x1="154.458" y1="193.817" x2="142.458" y2="205.817" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2" />
+<line x1="130.458" y1="217.817" x2="142.458" y2="205.817" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2" />
+<line x1="154.458" y1="217.817" x2="142.458" y2="205.817" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2" />
+<text x="142.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#B71C1C">Add and Norm</text>
+
+<g class="decal-overlay" opacity="1.000">
+  
+  <line x1="133.658" y1="202.937" x2="151.258" y2="202.937" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="133.658" y1="205.817" x2="151.258" y2="205.817" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="133.658" y1="208.697" x2="151.258" y2="208.697" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="139.578" y1="197.017" x2="139.578" y2="214.617" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="142.458" y1="197.017" x2="142.458" y2="214.617" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="145.338" y1="197.017" x2="145.338" y2="214.617" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
 </g>
+</g>
+    
+    <defs>
+  <filter id="shadow-add_norm2" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="8.0" dy="8.0" stdDeviation="4.6" flood-color="#000000" flood-opacity="0.55" />
+  </filter>
+</defs>
+
+
+
+<g id="cell-add_norm2" data-z="5" opacity="0.0500" filter="url(#shadow-add_norm2)" transform="translate(230.0,575.0)">
+<rect x="72.458" y="185.817" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5" />
+<line x1="132.458" y1="205.817" x2="152.458" y2="205.817" stroke="#C62828" stroke-width="2.5" opacity="0.6" />
+<line x1="142.458" y1="195.817" x2="142.458" y2="215.817" stroke="#C62828" stroke-width="2.5" opacity="0.6" />
+<line x1="130.458" y1="193.817" x2="142.458" y2="205.817" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2" />
+<line x1="154.458" y1="193.817" x2="142.458" y2="205.817" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2" />
+<line x1="130.458" y1="217.817" x2="142.458" y2="205.817" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2" />
+<line x1="154.458" y1="217.817" x2="142.458" y2="205.817" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2" />
+<text x="142.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#B71C1C">Add and Norm</text>
+
+<g class="decal-overlay" opacity="1.000">
+  
+  <line x1="133.658" y1="202.937" x2="151.258" y2="202.937" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="133.658" y1="205.817" x2="151.258" y2="205.817" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="133.658" y1="208.697" x2="151.258" y2="208.697" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="139.578" y1="197.017" x2="139.578" y2="214.617" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="142.458" y1="197.017" x2="142.458" y2="214.617" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+  <line x1="145.338" y1="197.017" x2="145.338" y2="214.617" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3" />
+</g>
+</g>
+  </g>
+  <g id="edges-layer" style="pointer-events:none;">
+    <path d="M300.0,90.0 L300.0,150.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M300.0,200.0 L300.0,260.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M300.0,310.0 L300.0,370.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M300.0,410.0 L300.0,470.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M300.0,515.0 L300.0,575.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M300.0,615.0 L300.0,675.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    
+    <path d="M340.0,200.0 C362.4,260.7 324.9,345.7 384.8,321.3 S324.9,345.7 265.0,370.0" stroke="#4CAF50" stroke-width="2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrow-green)" />
+    
+    <path d="M335.0,410.0 C276.1,433.7 241.1,516.2 217.1,457.4 S241.1,516.2 265.0,575.0" stroke="#4CAF50" stroke-width="2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrow-green)" />
   </g>
 </svg>

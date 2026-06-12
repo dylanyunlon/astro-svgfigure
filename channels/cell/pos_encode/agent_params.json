@@ -1,0 +1,16 @@
+{
+  "bbox": {
+    "x": 220.0,
+    "y": 150.0,
+    "w": 160,
+    "h": 50,
+    "z": 5
+  },
+  "opacity": 0.842,
+  "species_params": {
+    "num_arrows": 5,
+    "angle_spread": 0.357,
+    "arrow_weight": 2.047,
+    "arrow_opacity": 0.476
+  }
+}

@@ -6,10 +6,10 @@
     "y": 470.0,
     "w": 140,
     "h": 45,
-    "z": 3.0
+    "z": 3
   },
-  "z": 3.0,
-  "opacity": 1.0,
+  "z": 3,
+  "opacity": 0.05,
   "fill_color": "#FF6F00",
   "stroke_color": "#FF6F00",
   "label": "Feed Forward",
@@ -19,11 +19,11 @@
     "amplitude": 6.0,
     "seg_width": 20.0
   },
-  "epoch": 0,
+  "epoch": 9,
   "shadow": {
     "dx": 2.0,
     "dy": 2.0,
     "blur": 3.38,
-    "opacity": 0.35
+    "opacity": 0.08
   }
 }

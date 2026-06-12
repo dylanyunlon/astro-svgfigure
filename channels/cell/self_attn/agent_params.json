@@ -1,0 +1,17 @@
+{
+  "bbox": {
+    "x": 220.0,
+    "y": 260.0,
+    "w": 160,
+    "h": 50,
+    "z": 3
+  },
+  "opacity": 0.885,
+  "species_params": {
+    "num_rays": 6,
+    "focal_intensity": 0.327,
+    "halo_radius": 0.32,
+    "ray_opacity_min": 0.204,
+    "ray_opacity_max": 0.535
+  }
+}

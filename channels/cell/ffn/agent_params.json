@@ -1,0 +1,16 @@
+{
+  "bbox": {
+    "x": 230.0,
+    "y": 470.0,
+    "w": 140,
+    "h": 45,
+    "z": 3
+  },
+  "opacity": 0.955,
+  "species_params": {
+    "zigzag_segments": 6,
+    "arc_seed": 4090,
+    "stroke_weight": 1.588,
+    "activation_type": "relu"
+  }
+}

@@ -1,10 +1,642 @@
 {
-  "__schema__": "z=0 background, z=1 groups, z=2 edges_below, z=3 nodes, z=4 decorations, z=5 edges_above, z=6 labels, z=7 annotations",
-  "input_embed": 3,
-  "pos_encode": 5,
-  "self_attn": 3,
-  "add_norm1": 5,
-  "ffn": 3,
-  "add_norm2": 5,
-  "output": 3
+  "0,0,3": {
+    "count": 1,
+    "weight": 0.0122,
+    "density": 0.0122
+  },
+  "0,0,5": {
+    "count": 0,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "0,1,3": {
+    "count": 1,
+    "weight": 0.0075,
+    "density": 0.0075
+  },
+  "0,1,5": {
+    "count": 1,
+    "weight": 0.0521,
+    "density": 0.0521
+  },
+  "0,2,3": {
+    "count": 1,
+    "weight": 0.0887,
+    "density": 0.0887
+  },
+  "0,2,5": {
+    "count": 1,
+    "weight": 0.04,
+    "density": 0.04
+  },
+  "0,3,3": {
+    "count": 1,
+    "weight": 0.0816,
+    "density": 0.0816
+  },
+  "0,3,5": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "0,4,3": {
+    "count": 1,
+    "weight": 0.0263,
+    "density": 0.0263
+  },
+  "0,4,5": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "0,5,3": {
+    "count": 1,
+    "weight": 0.0006,
+    "density": 0.0006
+  },
+  "0,5,5": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "0,6,3": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "0,6,5": {
+    "count": 1,
+    "weight": 0.0009,
+    "density": 0.0009
+  },
+  "0,7,3": {
+    "count": 1,
+    "weight": 0.0122,
+    "density": 0.0122
+  },
+  "0,7,5": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "1,0,3": {
+    "count": 1,
+    "weight": 0.0364,
+    "density": 0.0364
+  },
+  "1,0,5": {
+    "count": 0,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "1,1,3": {
+    "count": 1,
+    "weight": 0.0299,
+    "density": 0.0299
+  },
+  "1,1,5": {
+    "count": 1,
+    "weight": 0.1543,
+    "density": 0.1543
+  },
+  "1,2,3": {
+    "count": 1,
+    "weight": 0.2676,
+    "density": 0.2676
+  },
+  "1,2,5": {
+    "count": 1,
+    "weight": 0.1376,
+    "density": 0.1376
+  },
+  "1,3,3": {
+    "count": 1,
+    "weight": 0.2578,
+    "density": 0.2578
+  },
+  "1,3,5": {
+    "count": 1,
+    "weight": 0.2622,
+    "density": 0.2622
+  },
+  "1,4,3": {
+    "count": 1,
+    "weight": 0.1841,
+    "density": 0.1841
+  },
+  "1,4,5": {
+    "count": 1,
+    "weight": 0.2717,
+    "density": 0.2717
+  },
+  "1,5,3": {
+    "count": 1,
+    "weight": 0.1959,
+    "density": 0.1959
+  },
+  "1,5,5": {
+    "count": 1,
+    "weight": 0.1776,
+    "density": 0.1776
+  },
+  "1,6,3": {
+    "count": 1,
+    "weight": 0.143,
+    "density": 0.143
+  },
+  "1,6,5": {
+    "count": 1,
+    "weight": 0.1137,
+    "density": 0.1137
+  },
+  "1,7,3": {
+    "count": 1,
+    "weight": 0.0364,
+    "density": 0.0364
+  },
+  "1,7,5": {
+    "count": 1,
+    "weight": 0.0912,
+    "density": 0.0912
+  },
+  "2,0,3": {
+    "count": 1,
+    "weight": 0.0606,
+    "density": 0.0606
+  },
+  "2,0,5": {
+    "count": 0,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "2,1,3": {
+    "count": 1,
+    "weight": 0.0506,
+    "density": 0.0506
+  },
+  "2,1,5": {
+    "count": 1,
+    "weight": 0.2565,
+    "density": 0.2565
+  },
+  "2,2,3": {
+    "count": 1,
+    "weight": 0.4447,
+    "density": 0.4447
+  },
+  "2,2,5": {
+    "count": 1,
+    "weight": 0.23,
+    "density": 0.23
+  },
+  "2,3,3": {
+    "count": 1,
+    "weight": 0.429,
+    "density": 0.429
+  },
+  "2,3,5": {
+    "count": 1,
+    "weight": 0.5292,
+    "density": 0.5292
+  },
+  "2,4,3": {
+    "count": 1,
+    "weight": 0.3224,
+    "density": 0.3224
+  },
+  "2,4,5": {
+    "count": 1,
+    "weight": 0.5446,
+    "density": 0.5446
+  },
+  "2,5,3": {
+    "count": 1,
+    "weight": 0.3905,
+    "density": 0.3905
+  },
+  "2,5,5": {
+    "count": 1,
+    "weight": 0.4038,
+    "density": 0.4038
+  },
+  "2,6,3": {
+    "count": 1,
+    "weight": 0.3092,
+    "density": 0.3092
+  },
+  "2,6,5": {
+    "count": 1,
+    "weight": 0.2265,
+    "density": 0.2265
+  },
+  "2,7,3": {
+    "count": 1,
+    "weight": 0.0606,
+    "density": 0.0606
+  },
+  "2,7,5": {
+    "count": 1,
+    "weight": 0.1912,
+    "density": 0.1912
+  },
+  "3,0,3": {
+    "count": 1,
+    "weight": 0.0842,
+    "density": 0.0842
+  },
+  "3,0,5": {
+    "count": 0,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "3,1,3": {
+    "count": 1,
+    "weight": 0.0656,
+    "density": 0.0656
+  },
+  "3,1,5": {
+    "count": 1,
+    "weight": 0.3583,
+    "density": 0.3583
+  },
+  "3,2,3": {
+    "count": 1,
+    "weight": 0.6116,
+    "density": 0.6116
+  },
+  "3,2,5": {
+    "count": 1,
+    "weight": 0.3027,
+    "density": 0.3027
+  },
+  "3,3,3": {
+    "count": 1,
+    "weight": 0.5766,
+    "density": 0.5766
+  },
+  "3,3,5": {
+    "count": 1,
+    "weight": 0.7634,
+    "density": 0.7634
+  },
+  "3,4,3": {
+    "count": 1,
+    "weight": 0.414,
+    "density": 0.414
+  },
+  "3,4,5": {
+    "count": 1,
+    "weight": 0.7978,
+    "density": 0.7978
+  },
+  "3,5,3": {
+    "count": 1,
+    "weight": 0.5807,
+    "density": 0.5807
+  },
+  "3,5,5": {
+    "count": 1,
+    "weight": 0.5606,
+    "density": 0.5606
+  },
+  "3,6,3": {
+    "count": 1,
+    "weight": 0.4299,
+    "density": 0.4299
+  },
+  "3,6,5": {
+    "count": 1,
+    "weight": 0.3394,
+    "density": 0.3394
+  },
+  "3,7,3": {
+    "count": 1,
+    "weight": 0.0842,
+    "density": 0.0842
+  },
+  "3,7,5": {
+    "count": 1,
+    "weight": 0.2678,
+    "density": 0.2678
+  },
+  "4,0,3": {
+    "count": 1,
+    "weight": 0.0842,
+    "density": 0.0842
+  },
+  "4,0,5": {
+    "count": 0,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "4,1,3": {
+    "count": 1,
+    "weight": 0.0656,
+    "density": 0.0656
+  },
+  "4,1,5": {
+    "count": 1,
+    "weight": 0.3583,
+    "density": 0.3583
+  },
+  "4,2,3": {
+    "count": 1,
+    "weight": 0.6116,
+    "density": 0.6116
+  },
+  "4,2,5": {
+    "count": 1,
+    "weight": 0.3027,
+    "density": 0.3027
+  },
+  "4,3,3": {
+    "count": 1,
+    "weight": 0.5766,
+    "density": 0.5766
+  },
+  "4,3,5": {
+    "count": 1,
+    "weight": 0.7634,
+    "density": 0.7634
+  },
+  "4,4,3": {
+    "count": 1,
+    "weight": 0.414,
+    "density": 0.414
+  },
+  "4,4,5": {
+    "count": 1,
+    "weight": 0.7978,
+    "density": 0.7978
+  },
+  "4,5,3": {
+    "count": 1,
+    "weight": 0.5807,
+    "density": 0.5807
+  },
+  "4,5,5": {
+    "count": 1,
+    "weight": 0.5606,
+    "density": 0.5606
+  },
+  "4,6,3": {
+    "count": 1,
+    "weight": 0.4299,
+    "density": 0.4299
+  },
+  "4,6,5": {
+    "count": 1,
+    "weight": 0.3394,
+    "density": 0.3394
+  },
+  "4,7,3": {
+    "count": 1,
+    "weight": 0.0842,
+    "density": 0.0842
+  },
+  "4,7,5": {
+    "count": 1,
+    "weight": 0.2678,
+    "density": 0.2678
+  },
+  "5,0,3": {
+    "count": 1,
+    "weight": 0.0606,
+    "density": 0.0606
+  },
+  "5,0,5": {
+    "count": 0,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "5,1,3": {
+    "count": 1,
+    "weight": 0.0506,
+    "density": 0.0506
+  },
+  "5,1,5": {
+    "count": 1,
+    "weight": 0.2565,
+    "density": 0.2565
+  },
+  "5,2,3": {
+    "count": 1,
+    "weight": 0.4447,
+    "density": 0.4447
+  },
+  "5,2,5": {
+    "count": 1,
+    "weight": 0.23,
+    "density": 0.23
+  },
+  "5,3,3": {
+    "count": 1,
+    "weight": 0.429,
+    "density": 0.429
+  },
+  "5,3,5": {
+    "count": 1,
+    "weight": 0.5292,
+    "density": 0.5292
+  },
+  "5,4,3": {
+    "count": 1,
+    "weight": 0.3224,
+    "density": 0.3224
+  },
+  "5,4,5": {
+    "count": 1,
+    "weight": 0.5446,
+    "density": 0.5446
+  },
+  "5,5,3": {
+    "count": 1,
+    "weight": 0.3905,
+    "density": 0.3905
+  },
+  "5,5,5": {
+    "count": 1,
+    "weight": 0.4038,
+    "density": 0.4038
+  },
+  "5,6,3": {
+    "count": 1,
+    "weight": 0.3092,
+    "density": 0.3092
+  },
+  "5,6,5": {
+    "count": 1,
+    "weight": 0.2265,
+    "density": 0.2265
+  },
+  "5,7,3": {
+    "count": 1,
+    "weight": 0.0606,
+    "density": 0.0606
+  },
+  "5,7,5": {
+    "count": 1,
+    "weight": 0.1912,
+    "density": 0.1912
+  },
+  "6,0,3": {
+    "count": 1,
+    "weight": 0.0364,
+    "density": 0.0364
+  },
+  "6,0,5": {
+    "count": 0,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "6,1,3": {
+    "count": 1,
+    "weight": 0.0299,
+    "density": 0.0299
+  },
+  "6,1,5": {
+    "count": 1,
+    "weight": 0.1543,
+    "density": 0.1543
+  },
+  "6,2,3": {
+    "count": 1,
+    "weight": 0.2676,
+    "density": 0.2676
+  },
+  "6,2,5": {
+    "count": 1,
+    "weight": 0.1376,
+    "density": 0.1376
+  },
+  "6,3,3": {
+    "count": 1,
+    "weight": 0.2578,
+    "density": 0.2578
+  },
+  "6,3,5": {
+    "count": 1,
+    "weight": 0.2622,
+    "density": 0.2622
+  },
+  "6,4,3": {
+    "count": 1,
+    "weight": 0.1841,
+    "density": 0.1841
+  },
+  "6,4,5": {
+    "count": 1,
+    "weight": 0.2717,
+    "density": 0.2717
+  },
+  "6,5,3": {
+    "count": 1,
+    "weight": 0.1959,
+    "density": 0.1959
+  },
+  "6,5,5": {
+    "count": 1,
+    "weight": 0.1776,
+    "density": 0.1776
+  },
+  "6,6,3": {
+    "count": 1,
+    "weight": 0.143,
+    "density": 0.143
+  },
+  "6,6,5": {
+    "count": 1,
+    "weight": 0.1137,
+    "density": 0.1137
+  },
+  "6,7,3": {
+    "count": 1,
+    "weight": 0.0364,
+    "density": 0.0364
+  },
+  "6,7,5": {
+    "count": 1,
+    "weight": 0.0912,
+    "density": 0.0912
+  },
+  "7,0,3": {
+    "count": 1,
+    "weight": 0.0122,
+    "density": 0.0122
+  },
+  "7,0,5": {
+    "count": 0,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "7,1,3": {
+    "count": 1,
+    "weight": 0.0075,
+    "density": 0.0075
+  },
+  "7,1,5": {
+    "count": 1,
+    "weight": 0.0521,
+    "density": 0.0521
+  },
+  "7,2,3": {
+    "count": 1,
+    "weight": 0.0887,
+    "density": 0.0887
+  },
+  "7,2,5": {
+    "count": 1,
+    "weight": 0.04,
+    "density": 0.04
+  },
+  "7,3,3": {
+    "count": 1,
+    "weight": 0.0816,
+    "density": 0.0816
+  },
+  "7,3,5": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "7,4,3": {
+    "count": 1,
+    "weight": 0.0263,
+    "density": 0.0263
+  },
+  "7,4,5": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "7,5,3": {
+    "count": 1,
+    "weight": 0.0006,
+    "density": 0.0006
+  },
+  "7,5,5": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "7,6,3": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  },
+  "7,6,5": {
+    "count": 1,
+    "weight": 0.0009,
+    "density": 0.0009
+  },
+  "7,7,3": {
+    "count": 1,
+    "weight": 0.0122,
+    "density": 0.0122
+  },
+  "7,7,5": {
+    "count": 1,
+    "weight": 0.0,
+    "density": 0.0
+  }
 }

@@ -1,0 +1,16 @@
+{
+  "bbox": {
+    "x": 230.0,
+    "y": 575.0,
+    "w": 140,
+    "h": 40,
+    "z": 5
+  },
+  "opacity": 0.732,
+  "species_params": {
+    "arm_ratio": 0.338,
+    "stroke_weight": 3.09,
+    "diag_dasharray": "5,2",
+    "norm_strength": 0.849
+  }
+}

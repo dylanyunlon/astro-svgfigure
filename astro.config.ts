@@ -134,7 +134,16 @@ export default defineConfig({
   // Ref: https://github.com/kieler/elkjs
   vite: {
     optimizeDeps: {
-      include: ['elkjs/lib/elk.bundled.js']
+      include: ['elkjs/lib/elk.bundled.js'],
+      exclude: ['pixi.js']
+    },
+    resolve: {
+      alias: {
+        'worker:./basis.worker.ts': './src/lib/stubs/empty-worker.ts',
+        'worker:./ktx.worker.ts': './src/lib/stubs/empty-worker.ts',
+        'worker:./checkImageBitmap.worker.ts': './src/lib/stubs/empty-worker.ts',
+        'worker:./loadImageBitmap.worker.ts': './src/lib/stubs/empty-worker.ts',
+      }
     }
   }
 })

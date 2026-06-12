@@ -2,14 +2,14 @@
   "cell_id": "pos_encode",
   "species": "cil-vector",
   "bbox": {
-    "x": 96.7532222483888,
-    "y": 227.0166112884575,
+    "x": 220.0,
+    "y": 150.0,
     "w": 160,
     "h": 50,
-    "z": 5.0
+    "z": 5
   },
-  "z": 5.0,
-  "opacity": 1.0,
+  "z": 5,
+  "opacity": 0.05,
   "fill_color": "#2E7D32",
   "stroke_color": "#2E7D32",
   "label": "Positional Encoding",
@@ -19,7 +19,7 @@
     "arrow_length": 48.0,
     "angle_spread": 0.8
   },
-  "epoch": 0,
+  "epoch": 9,
   "shadow": {
     "dx": 8.0,
     "dy": 8.0,

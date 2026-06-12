@@ -6,10 +6,10 @@
     "y": 40.0,
     "w": 160,
     "h": 50,
-    "z": 3.0
+    "z": 3
   },
-  "z": 3.0,
-  "opacity": 1.0,
+  "z": 3,
+  "opacity": 0.05,
   "fill_color": "#2E7D32",
   "stroke_color": "#2E7D32",
   "label": "Input Embedding",
@@ -19,7 +19,7 @@
     "arrow_length": 48.0,
     "angle_spread": 0.8
   },
-  "epoch": 0,
+  "epoch": 9,
   "shadow": {
     "dx": 2.0,
     "dy": 2.0,

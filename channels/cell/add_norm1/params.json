@@ -6,10 +6,10 @@
     "y": 370.0,
     "w": 140,
     "h": 40,
-    "z": 5.0
+    "z": 5
   },
-  "z": 5.0,
-  "opacity": 1.0,
+  "z": 5,
+  "opacity": 0.05,
   "fill_color": "#1E88E5",
   "stroke_color": "#1E88E5",
   "label": "Add and Norm",
@@ -19,7 +19,7 @@
     "stroke_width": 2.5,
     "dash_corners": true
   },
-  "epoch": 0,
+  "epoch": 9,
   "shadow": {
     "dx": 8.0,
     "dy": 8.0,
