@@ -1,10 +1,8 @@
 /**
- * GET /api/cells — Cell descriptor list
+ * POST /api/cell-loop — Trigger cell processing loop
  *
- * Proxies to Python FastAPI backend (localhost:8000/api/cells)
- * which returns a CellDescriptor[] JSON array of live cell status.
- *
- * Used by pixi-cell-renderer.ts pollCellChannels() every 500ms.
+ * Proxies request to Python FastAPI backend (localhost:8000/api/cell-loop)
+ * which starts or advances the cell pubsub processing loop.
  *
  * GitHub 背书: withastro/astro (API Routes), ResearAI/AutoFigure
  */
@@ -15,14 +13,22 @@ export const prerender = false
 const BACKEND_URL =
   import.meta.env.PYTHON_BACKEND_URL || import.meta.env.BACKEND_URL || 'http://127.0.0.1:8000'
 
-export const GET: APIRoute = async () => {
+export const POST: APIRoute = async ({ request }) => {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 10000) // 10s timeout
+  const timeout = setTimeout(() => controller.abort(), 60000) // 60s timeout
 
   try {
-    const backendRes = await fetch(`${BACKEND_URL}/api/cells`, {
-      method: 'GET',
+    let body: unknown = {}
+    try {
+      body = await request.json()
+    } catch {
+      // empty body is fine
+    }
+
+    const backendRes = await fetch(`${BACKEND_URL}/api/cell-loop`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
       signal: controller.signal,
     })
 
@@ -49,16 +55,16 @@ export const GET: APIRoute = async () => {
     const data = await backendRes.json()
     return new Response(JSON.stringify(data), {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      },
+      headers: { 'Content-Type': 'application/json' },
     })
   } catch (fetchErr: any) {
     clearTimeout(timeout)
     if (fetchErr.name === 'AbortError') {
       return new Response(
-        JSON.stringify({ error: 'Request timed out (10s)' }),
+        JSON.stringify({
+          error: 'Request timed out (60s)',
+          hint: 'Cell loop may be running a long epoch. Check backend logs.',
+        }),
         { status: 504, headers: { 'Content-Type': 'application/json' } }
       )
     }
@@ -69,7 +75,7 @@ export const GET: APIRoute = async () => {
         hint: 'Make sure Python backend is running: python server.py',
         debug: {
           backend_url: BACKEND_URL,
-          target: `${BACKEND_URL}/api/cells`,
+          target: `${BACKEND_URL}/api/cell-loop`,
         },
       }),
       { status: 502, headers: { 'Content-Type': 'application/json' } }

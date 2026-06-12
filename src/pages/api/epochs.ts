@@ -1,10 +1,10 @@
 /**
- * GET /api/cells — Cell descriptor list
+ * GET /api/epochs — Epoch history list
  *
- * Proxies to Python FastAPI backend (localhost:8000/api/cells)
- * which returns a CellDescriptor[] JSON array of live cell status.
+ * Proxies to Python FastAPI backend (localhost:8000/api/epochs)
+ * which returns the list of completed training epochs with metadata.
  *
- * Used by pixi-cell-renderer.ts pollCellChannels() every 500ms.
+ * Used by PixiJS renderer to visualise epoch progression.
  *
  * GitHub 背书: withastro/astro (API Routes), ResearAI/AutoFigure
  */
@@ -20,7 +20,7 @@ export const GET: APIRoute = async () => {
   const timeout = setTimeout(() => controller.abort(), 10000) // 10s timeout
 
   try {
-    const backendRes = await fetch(`${BACKEND_URL}/api/cells`, {
+    const backendRes = await fetch(`${BACKEND_URL}/api/epochs`, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
@@ -69,7 +69,7 @@ export const GET: APIRoute = async () => {
         hint: 'Make sure Python backend is running: python server.py',
         debug: {
           backend_url: BACKEND_URL,
-          target: `${BACKEND_URL}/api/cells`,
+          target: `${BACKEND_URL}/api/epochs`,
         },
       }),
       { status: 502, headers: { 'Content-Type': 'application/json' } }
