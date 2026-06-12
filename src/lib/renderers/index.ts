@@ -32,3 +32,18 @@ export type {
   CellSpawnDescriptor,
   ForceFieldEntry,
 } from './antimatter-compute';
+
+export {
+  TweenManager,
+  VelocityTracker,
+  SplineInterpolation,
+  Easing,
+} from '../tween-system';
+export type {
+  EasingFn,
+  TweenHandle,
+  MathTweenHandle,
+  FrameTweenHandle,
+  Velocity,
+  Vec2,
+} from '../tween-system';
