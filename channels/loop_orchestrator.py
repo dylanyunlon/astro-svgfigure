@@ -2199,6 +2199,237 @@ def post_process_svg(svg_string: str) -> str:
     return _serialise_svg_tree(root)
 
 
+# =============================================================================
+# [ASTRO-M009] FAstroEdgeObstacleRouter
+# Obstacle-avoidance edge routing ported from the concept of
+# FAstroPathfinderSolver in upstream/unreal-renderer/NavigationSystem.cpp.
+#
+# Algorithm:
+#   1. Load all cell bboxes as obstacles.
+#   2. For each topology edge compute start (src bottom-centre) and
+#      end (tgt top-centre) anchor points.
+#   3. Straight-line intersection test against every obstacle bbox.
+#   4. If blocked → insert a single waypoint that laterally offsets the path
+#      around the obstacle (choose left or right by which side has more clearance).
+#   5. skip_connection edges use SKIP_OFFSET (larger offset) for visual clarity.
+#   6. Write all computed paths to physics/edge_routes.json.
+# =============================================================================
+
+def _segment_intersects_bbox(x0, y0, x1, y1, bx, by, bw, bh, margin=6):
+    """
+    Test whether segment (x0,y0)→(x1,y1) passes through the bbox
+    inflated by margin on all sides.  Uses parametric slab clipping.
+    Returns True when the segment intersects the inflated bbox.
+    """
+    rx0, ry0 = bx - margin, by - margin
+    rx1, ry1 = bx + bw + margin, by + bh + margin
+
+    dx = x1 - x0
+    dy = y1 - y0
+    t_enter, t_exit = 0.0, 1.0
+
+    for axis_min, axis_max, origin, delta in [
+        (rx0, rx1, x0, dx),
+        (ry0, ry1, y0, dy),
+    ]:
+        if abs(delta) < 1e-9:
+            if origin < axis_min or origin > axis_max:
+                return False
+        else:
+            t1 = (axis_min - origin) / delta
+            t2 = (axis_max - origin) / delta
+            if t1 > t2:
+                t1, t2 = t2, t1
+            t_enter = max(t_enter, t1)
+            t_exit  = min(t_exit,  t2)
+            if t_enter > t_exit:
+                return False
+
+    return True
+
+
+def _choose_waypoint(sx, sy, tx, ty, bx, by, bw, bh, offset):
+    """
+    Compute a single waypoint that routes around an obstacle bbox.
+
+    The waypoint is placed at the segment midpoint displaced laterally
+    by `offset` pixels away from the side the obstacle occupies.
+
+    Returns (wx, wy).
+    """
+    mx, my = (sx + tx) / 2, (sy + ty) / 2
+
+    seg_dx = tx - sx
+    seg_dy = ty - sy
+    seg_len = math.hypot(seg_dx, seg_dy) or 1.0
+    # Perpendicular unit vector (left-hand side of travel direction)
+    perp_x = -seg_dy / seg_len
+    perp_y =  seg_dx / seg_len
+
+    obs_cx = bx + bw / 2
+    obs_cy = by + bh / 2
+
+    # Dot of (obstacle centre − midpoint) onto perp
+    dot = (obs_cx - mx) * perp_x + (obs_cy - my) * perp_y
+
+    # Move waypoint away from obstacle
+    if dot > 0:
+        wx = mx - perp_x * offset
+        wy = my - perp_y * offset
+    else:
+        wx = mx + perp_x * offset
+        wy = my + perp_y * offset
+
+    return wx, wy
+
+
+def compute_edge_routes():
+    """
+    [ASTRO-M009] Obstacle-avoidance edge router.
+
+    Reads:
+      channels/cell/*/bbox.json        → obstacle bboxes
+      channels/skeleton/topology.json  → edge list
+
+    Writes:
+      channels/physics/edge_routes.json
+
+    Each entry:
+      {
+        "edge_id":    str,
+        "sources":    [str],
+        "targets":    [str],
+        "is_skip":    bool,
+        "advanced":   dict,
+        "points":     [{"x": float, "y": float}, ...],
+        "blocked_by": [str, ...]   // cell_ids avoided
+      }
+
+    skip_connection edges use SKIP_OFFSET (90 px) for wider lateral detour
+    and use offset anchors (bot_right → top_left) to separate visually from
+    regular edges.
+    """
+    NORMAL_OFFSET = 40
+    SKIP_OFFSET   = 90
+    MARGIN        = 8
+
+    # ── 1. Load bboxes ────────────────────────────────────────────────────────
+    bbox_files = glob.glob(os.path.join(CHANNELS, "cell", "*", "bbox.json"))
+    bboxes = {}
+    for bf in bbox_files:
+        cid = os.path.basename(os.path.dirname(bf))
+        with open(bf) as f:
+            bboxes[cid] = json.load(f)
+
+    if not bboxes:
+        print("[M009-EdgeRouter] No bboxes found; skipping.")
+        return {}
+
+    def _anchors(b):
+        cx = b["x"] + b["w"] / 2
+        return {
+            "top":       (cx,                     b["y"]),
+            "bot":       (cx,                     b["y"] + b["h"]),
+            "bot_right": (b["x"] + b["w"] * 0.75, b["y"] + b["h"]),
+            "top_left":  (b["x"] + b["w"] * 0.25, b["y"]),
+        }
+
+    anchors = {cid: _anchors(b) for cid, b in bboxes.items()}
+
+    # ── 2. Load topology edges ────────────────────────────────────────────────
+    topo_path = os.path.join(CHANNELS, "skeleton", "topology.json")
+    if not os.path.exists(topo_path):
+        print("[M009-EdgeRouter] topology.json not found; skipping.")
+        return {}
+
+    with open(topo_path) as f:
+        edges = json.load(f).get("edges", [])
+
+    # ── 3. Route each edge ────────────────────────────────────────────────────
+    routed = {}
+
+    for edge in edges:
+        eid      = edge["id"]
+        sources  = edge.get("sources", [])
+        targets  = edge.get("targets", [])
+        advanced = edge.get("advanced", {})
+        is_skip  = advanced.get("semanticType") == "skip_connection"
+        offset   = SKIP_OFFSET if is_skip else NORMAL_OFFSET
+
+        if not sources or not targets:
+            continue
+        src, tgt = sources[0], targets[0]
+
+        if src not in anchors or tgt not in anchors:
+            print(f"[M009-EdgeRouter] Edge {eid}: anchor missing for {src}/{tgt}, skip.")
+            continue
+
+        if is_skip:
+            sx, sy = anchors[src]["bot_right"]
+            tx, ty = anchors[tgt]["top_left"]
+        else:
+            sx, sy = anchors[src]["bot"]
+            tx, ty = anchors[tgt]["top"]
+
+        # ── 4. Obstacle intersection test ─────────────────────────────────────
+        blocked_by = []
+        worst_bbox = None
+        worst_area = 0.0
+
+        for obs_id, ob in bboxes.items():
+            if obs_id in (src, tgt):
+                continue
+            if _segment_intersects_bbox(
+                sx, sy, tx, ty,
+                ob["x"], ob["y"], ob["w"], ob["h"],
+                margin=MARGIN,
+            ):
+                blocked_by.append(obs_id)
+                area = ob["w"] * ob["h"]
+                if area > worst_area:
+                    worst_area = area
+                    worst_bbox = ob
+
+        # ── 5. Build path points ───────────────────────────────────────────────
+        if worst_bbox is None:
+            points = [{"x": sx, "y": sy}, {"x": tx, "y": ty}]
+        else:
+            wx, wy = _choose_waypoint(
+                sx, sy, tx, ty,
+                worst_bbox["x"], worst_bbox["y"],
+                worst_bbox["w"], worst_bbox["h"],
+                offset=offset,
+            )
+            points = [
+                {"x": sx, "y": sy},
+                {"x": wx, "y": wy},
+                {"x": tx, "y": ty},
+            ]
+            print(
+                f"[M009-EdgeRouter] Edge {eid}: blocked_by={blocked_by} "
+                f"→ waypoint ({wx:.1f},{wy:.1f}) offset={offset}"
+            )
+
+        routed[eid] = {
+            "edge_id":    eid,
+            "sources":    sources,
+            "targets":    targets,
+            "is_skip":    is_skip,
+            "advanced":   advanced,
+            "points":     points,
+            "blocked_by": blocked_by,
+        }
+
+    # ── 6. Persist ────────────────────────────────────────────────────────────
+    write_channel("physics/edge_routes.json", routed)
+    n_rerouted = sum(1 for r in routed.values() if r["blocked_by"])
+    print(
+        f"[M009-EdgeRouter] Wrote {len(routed)} routes "
+        f"({n_rerouted} obstacle-avoiding) → physics/edge_routes.json"
+    )
+    return routed
+
+
 def assemble_final_svg():
     """
     Assemble all cell SVGs into final.svg.
@@ -2612,62 +2843,81 @@ def assemble_final_svg():
             lines.append(f'    {svg_map[slot.cell_id]}')
         lines.append(f'  </g>')
 
-    # ── Edge routing — render topology connections ────────────────────────────
+    # ── [M009] Edge routing — read from physics/edge_routes.json ──────────────
+    # compute_edge_routes() runs first (obstacle-avoidance); we just render here.
+    edge_routes_path = os.path.join(CHANNELS, "physics", "edge_routes.json")
+    if not os.path.exists(edge_routes_path):
+        # First run or routes not yet computed: generate them now.
+        print("[Assemble] edge_routes.json missing — running compute_edge_routes()")
+        compute_edge_routes()
+
+    edge_routes: Dict[str, Dict] = {}
+    if os.path.exists(edge_routes_path):
+        with open(edge_routes_path) as _erf:
+            edge_routes = json.load(_erf)
+
     edge_lines = ['  <g id="edges-layer" style="pointer-events:none;">']
-    # Build cell center map for edge endpoints
-    cell_centers = {}
-    for sf in svg_files:
-        cid = os.path.basename(os.path.dirname(sf))
-        bp = os.path.join(os.path.dirname(sf), "bbox.json")
-        if os.path.exists(bp):
-            with open(bp) as f:
-                b = json.load(f)
-            cell_centers[cid] = {
-                "top": (b["x"] + b["w"]/2, b["y"]),
-                "bot": (b["x"] + b["w"]/2, b["y"] + b["h"]),
-                "left": (b["x"], b["y"] + b["h"]/2),
-                "right": (b["x"] + b["w"], b["y"] + b["h"]/2),
-            }
-    # Read edges from skeleton
-    for sf in svg_files:
-        cid = os.path.basename(os.path.dirname(sf))
-        skel = os.path.join(CHANNELS, "skeleton", "cell", f"{cid}.json")
-        if not os.path.exists(skel):
+
+    for eid, route in edge_routes.items():
+        pts     = route.get("points", [])
+        is_skip = route.get("is_skip", False)
+        blocked = route.get("blocked_by", [])
+
+        if len(pts) < 2:
             continue
-        with open(skel) as f:
-            topo = json.load(f).get("topology", {})
-        for eid in topo.get("outgoing_edges", []):
-            # Find target by scanning all cells' incoming
-            for sf2 in svg_files:
-                cid2 = os.path.basename(os.path.dirname(sf2))
-                if cid2 == cid:
-                    continue
-                skel2 = os.path.join(CHANNELS, "skeleton", "cell", f"{cid2}.json")
-                if not os.path.exists(skel2):
-                    continue
-                with open(skel2) as f2:
-                    topo2 = json.load(f2).get("topology", {})
-                if eid in topo2.get("incoming_edges", []):
-                    if cid in cell_centers and cid2 in cell_centers:
-                        sx, sy = cell_centers[cid]["bot"]
-                        tx, ty = cell_centers[cid2]["top"]
-                        is_skip = "skip" in eid
-                        if is_skip:
-                            # Bezier curve for skip connections
-                            cx = sx + 80
-                            edge_lines.append(
-                                f'    <path d="M{sx:.1f},{sy:.1f} C{cx:.1f},{sy:.1f} {cx:.1f},{ty:.1f} {tx:.1f},{ty:.1f}" '
-                                f'stroke="#4CAF50" stroke-width="2" fill="none" stroke-dasharray="4" '
-                                f'marker-end="url(#arrow-green)"/>'
-                            )
-                        else:
-                            edge_lines.append(
-                                f'    <path d="M{sx:.1f},{sy:.1f} L{tx:.1f},{ty:.1f}" '
-                                f'stroke="#999" stroke-width="1.5" fill="none" '
-                                f'marker-end="url(#arrow-green)"/>'
-                            )
-                    break
+
+        # Build SVG path from the routed points list.
+        # 2-point paths → straight line (L command).
+        # 3-point paths → smooth cubic Bezier through the waypoint (C command),
+        # giving a visually pleasing curve around the obstacle while passing
+        # exactly through the avoidance waypoint.
+        p0 = pts[0]
+        if len(pts) == 2:
+            p1 = pts[1]
+            d  = f"M{p0['x']:.1f},{p0['y']:.1f} L{p1['x']:.1f},{p1['y']:.1f}"
+        else:
+            # 3 points: start, waypoint, end → cubic Bezier
+            # Control points: cp1 pulls from start toward waypoint;
+            #                 cp2 pulls from waypoint toward end.
+            pw = pts[1]  # waypoint
+            p2 = pts[2]  # end
+            cp1x = (p0["x"] + pw["x"]) / 2
+            cp1y = (p0["y"] + pw["y"]) / 2
+            cp2x = (pw["x"] + p2["x"]) / 2
+            cp2y = (pw["y"] + p2["y"]) / 2
+            d = (
+                f"M{p0['x']:.1f},{p0['y']:.1f} "
+                f"C{cp1x:.1f},{cp1y:.1f} "
+                f"{cp2x:.1f},{cp2y:.1f} "
+                f"{pw['x']:.1f},{pw['y']:.1f} "
+                f"S{cp2x:.1f},{cp2y:.1f} "
+                f"{p2['x']:.1f},{p2['y']:.1f}"
+            )
+
+        # Visual style: skip connections are green dashed; regular are grey.
+        if is_skip:
+            style = (
+                'stroke="#4CAF50" stroke-width="2" fill="none" '
+                'stroke-dasharray="5,3" marker-end="url(#arrow-green)"'
+            )
+        else:
+            style = (
+                'stroke="#888" stroke-width="1.5" fill="none" '
+                'marker-end="url(#arrow-green)"'
+            )
+
+        # Embed debug info as SVG comment when edge was rerouted
+        if blocked:
+            edge_lines.append(
+                f'    <!-- edge {eid}: obstacle-avoided {blocked} -->'
+            )
+        edge_lines.append(f'    <path d="{d}" {style}/>')
+
     edge_lines.append('  </g>')
+    print(
+        f"[M009-EdgeRouter] Rendered {len(edge_routes)} edges from edge_routes.json "
+        f"({sum(1 for r in edge_routes.values() if r.get('blocked_by'))} rerouted)"
+    )
     lines.extend(edge_lines)
 
     lines.append('</svg>')
@@ -3195,7 +3445,12 @@ def run_loop(max_epochs=10):
             f"{m['collisions']:>10}"
         )
 
+    # ── [M009] Compute obstacle-avoidance edge routes before assembly ──────────
+    print("[run_loop] Computing obstacle-avoidance edge routes (M009)...")
+    compute_edge_routes()
+
     # ── Assemble final SVG ────────────────────────────────────────────────────
+
     write_channel("skeleton/epoch.json", {
         "current": epoch, "max": max_epochs, "status": "converged"
     })

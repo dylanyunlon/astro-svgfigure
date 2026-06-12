@@ -1,0 +1,210 @@
+{
+  "e1": {
+    "edge_id": "e1",
+    "sources": [
+      "input_embed"
+    ],
+    "targets": [
+      "pos_encode"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 344.4000033067457,
+        "y": 90.0
+      },
+      {
+        "x": 310.34441980341035,
+        "y": 182.59889657833259
+      },
+      {
+        "x": 356.119801133907,
+        "y": 270
+      }
+    ],
+    "blocked_by": [
+      "self_attn"
+    ]
+  },
+  "e2": {
+    "edge_id": "e2",
+    "sources": [
+      "pos_encode"
+    ],
+    "targets": [
+      "self_attn"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 356.119801133907,
+        "y": 320.0
+      },
+      {
+        "x": 368.5157411434045,
+        "y": 260
+      }
+    ],
+    "blocked_by": []
+  },
+  "e3": {
+    "edge_id": "e3",
+    "sources": [
+      "self_attn"
+    ],
+    "targets": [
+      "add_norm1"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 368.5157411434045,
+        "y": 314.5076145489082
+      },
+      {
+        "x": 386.1206699235549,
+        "y": 362.8613028854218
+      },
+      {
+        "x": 335.1593934814839,
+        "y": 370
+      }
+    ],
+    "blocked_by": [
+      "pos_encode"
+    ]
+  },
+  "e4": {
+    "edge_id": "e4",
+    "sources": [
+      "add_norm1"
+    ],
+    "targets": [
+      "ffn"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 335.1593934814839,
+        "y": 411.62274123760693
+      },
+      {
+        "x": 344.62538403419114,
+        "y": 470
+      }
+    ],
+    "blocked_by": []
+  },
+  "e5": {
+    "edge_id": "e5",
+    "sources": [
+      "ffn"
+    ],
+    "targets": [
+      "add_norm2"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 344.62538403419114,
+        "y": 518.0651778932576
+      },
+      {
+        "x": 335.1593934814839,
+        "y": 575
+      }
+    ],
+    "blocked_by": []
+  },
+  "e6": {
+    "edge_id": "e6",
+    "sources": [
+      "add_norm2"
+    ],
+    "targets": [
+      "output"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 335.1593934814839,
+        "y": 616.622741237607
+      },
+      {
+        "x": 308.5644676429256,
+        "y": 675
+      }
+    ],
+    "blocked_by": []
+  },
+  "skip1": {
+    "edge_id": "skip1",
+    "sources": [
+      "pos_encode"
+    ],
+    "targets": [
+      "add_norm1"
+    ],
+    "is_skip": true,
+    "advanced": {
+      "semanticType": "skip_connection",
+      "routing": "SPLINES",
+      "curvature": 0.6
+    },
+    "points": [
+      {
+        "x": 424.17970170086056,
+        "y": 320.0
+      },
+      {
+        "x": 383.34604832161324,
+        "y": 429.8647036262324
+      },
+      {
+        "x": 282.57969674074195,
+        "y": 370
+      }
+    ],
+    "blocked_by": [
+      "self_attn"
+    ]
+  },
+  "skip2": {
+    "edge_id": "skip2",
+    "sources": [
+      "add_norm1"
+    ],
+    "targets": [
+      "add_norm2"
+    ],
+    "is_skip": true,
+    "advanced": {
+      "semanticType": "skip_connection",
+      "routing": "SPLINES",
+      "curvature": 0.6
+    },
+    "points": [
+      {
+        "x": 387.73909022222585,
+        "y": 411.62274123760693
+      },
+      {
+        "x": 259.4809778337027,
+        "y": 444.60020757539354
+      },
+      {
+        "x": 282.57969674074195,
+        "y": 575
+      }
+    ],
+    "blocked_by": [
+      "ffn"
+    ]
+  }
+}
