@@ -86,3 +86,7 @@ export type {
   GLUISliderOptions,
   GLUISliderHandle,
 } from './glui-system';
+
+// L3: InteractAI + GLSEO (AT: 36 + 9 refs)
+export { InteractAI, GLSEO } from './interact-ai'
+export type { ChatMessage, InteractAIOptions, CellSEOData } from './interact-ai'
