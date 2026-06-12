@@ -62,3 +62,27 @@ export type {
   Viewport,
   AABBVisibilityResult,
 } from '../matrix-wasm';
+
+export {
+  GLUIObject,
+  GLUIElement,
+  GLUIText,
+  GLUIBatch,
+  GLUIStage,
+  createGLUIButton,
+  createGLUISlider,
+} from './glui-system';
+export type {
+  GLUIPoint,
+  GLUISize,
+  GLUIColor,
+  GLUIEventType,
+  GLUIPointerHandler,
+  GLUITextOptions,
+  BatchEntry,
+  BatchRectEntry,
+  BatchCircleEntry,
+  GLUIButtonOptions,
+  GLUISliderOptions,
+  GLUISliderHandle,
+} from './glui-system';
