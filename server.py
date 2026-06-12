@@ -380,6 +380,156 @@ async def api_generate_prompt(request_data: dict) -> JSONResponse:
         )
 
 
+# ============================================================================
+# Cell Loop API endpoints (cell pub/sub loop — channels/)
+# ============================================================================
+
+_CHANNELS_DIR = BASE_DIR / "channels"
+
+
+@app.post("/api/cell-loop")
+async def api_cell_loop(request_data: dict) -> JSONResponse:
+    """
+    POST /api/cell-loop
+    Body: { "structured_data": {...}, "max_epochs": 10 }
+    Invokes channels/loop_orchestrator.run_loop() and returns all cell params.json.
+    """
+    try:
+        import sys as _sys
+        _channels_str = str(_CHANNELS_DIR)
+        if _channels_str not in _sys.path:
+            _sys.path.insert(0, _channels_str)
+
+        structured_data = request_data.get("structured_data")
+        max_epochs = int(request_data.get("max_epochs", 10))
+
+        # Write structured_data to a temp file if provided so topology_to_skeleton
+        # can pick it up via the --data path used in loop_orchestrator.__main__.
+        if structured_data is not None:
+            import tempfile, json as _json
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False
+            ) as _tmp:
+                _json.dump(structured_data, _tmp)
+                _tmp_path = _tmp.name
+
+            # Pre-populate skeleton from structured_data
+            import os as _os
+            _os.chdir(_channels_str)
+            from topology_to_skeleton import from_structured_data, SKELETON_DIR
+            _skel_dir = Path(SKELETON_DIR)
+            if _skel_dir.exists():
+                for _f in _skel_dir.iterdir():
+                    if _f.suffix == ".json":
+                        _f.unlink()
+            from_structured_data(_tmp_path)
+            import os as _os2
+            _os2.unlink(_tmp_path)
+
+        import importlib, loop_orchestrator as _lo
+        importlib.reload(_lo)
+        output_svg = _lo.run_loop(max_epochs=max_epochs)
+
+        # Collect all cell params.json
+        cells_result = {}
+        for params_file in _CHANNELS_DIR.glob("cell/*/params.json"):
+            cell_id = params_file.parent.name
+            cells_result[cell_id] = json.loads(params_file.read_text())
+
+        return JSONResponse({
+            "success": True,
+            "output_svg": str(output_svg),
+            "cells": cells_result,
+        })
+
+    except Exception as e:
+        logger.exception("api_cell_loop error")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/cells")
+def api_cells() -> JSONResponse:
+    """
+    GET /api/cells
+    Returns CellDescriptor[] — one entry per channels/cell/*/params.json.
+    """
+    try:
+        descriptors = []
+        for params_file in sorted(_CHANNELS_DIR.glob("cell/*/params.json")):
+            cell_id = params_file.parent.name
+            data = json.loads(params_file.read_text())
+            # Merge status if available
+            status_file = params_file.parent / "status.json"
+            if status_file.exists():
+                data["status"] = json.loads(status_file.read_text())
+            descriptors.append(data)
+        return JSONResponse(descriptors)
+    except Exception as e:
+        logger.exception("api_cells error")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/cell/{cell_id}")
+def api_cell(cell_id: str) -> JSONResponse:
+    """
+    GET /api/cell/{cell_id}
+    Returns params.json + status.json for a single cell.
+    """
+    try:
+        cell_dir = _CHANNELS_DIR / "cell" / cell_id
+        params_file = cell_dir / "params.json"
+        if not params_file.exists():
+            raise HTTPException(status_code=404, detail=f"Cell '{cell_id}' not found")
+
+        result = json.loads(params_file.read_text())
+        status_file = cell_dir / "status.json"
+        if status_file.exists():
+            result["status"] = json.loads(status_file.read_text())
+        else:
+            result["status"] = None
+        return JSONResponse(result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("api_cell error")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/epochs")
+def api_epochs() -> JSONResponse:
+    """
+    GET /api/epochs
+    Returns all epoch snapshots from channels/physics/epoch_snapshots/.
+    Falls back to returning current skeleton/epoch.json + physics metadata
+    when no snapshot directory exists yet.
+    """
+    try:
+        snapshots_dir = _CHANNELS_DIR / "physics" / "epoch_snapshots"
+        if snapshots_dir.exists():
+            snapshots = []
+            for snap_file in sorted(snapshots_dir.glob("*.json")):
+                snapshots.append(json.loads(snap_file.read_text()))
+            return JSONResponse({"snapshots": snapshots, "count": len(snapshots)})
+
+        # Fallback: current epoch state
+        epoch_file = _CHANNELS_DIR / "skeleton" / "epoch.json"
+        converged_file = _CHANNELS_DIR / "physics" / "converged.json"
+        collision_file = _CHANNELS_DIR / "physics" / "collision.json"
+
+        current: dict = {}
+        if epoch_file.exists():
+            current["epoch"] = json.loads(epoch_file.read_text())
+        if converged_file.exists():
+            current["convergence"] = json.loads(converged_file.read_text())
+        if collision_file.exists():
+            current["collision"] = json.loads(collision_file.read_text())
+
+        return JSONResponse({"snapshots": [current] if current else [], "count": int(bool(current))})
+    except Exception as e:
+        logger.exception("api_epochs error")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 JOBS: dict[str, Job] = {}
 
 
