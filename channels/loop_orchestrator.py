@@ -2965,6 +2965,12 @@ def run_loop(max_epochs=5):
     print("astro-svgfigure Cell Pub/Sub Loop")
     print("=" * 60)
 
+    # [M002] Import grow_epoch from epoch_controller.
+    # Deferred import here so loop_orchestrator remains independently runnable
+    # without epoch_controller on path (mirrors the lazy-load pattern used for
+    # cell_component in run_all_cells).
+    from epoch_controller import grow_epoch as _grow_epoch
+
     # [ASTRO] Instantiate epoch snapshot manager (mirrors GAstroSnapshotManager
     # module-level singleton in SceneCaptureRendering.cpp d31c85e).
     snapshot = EpochSnapshotManager(CHANNELS)
@@ -2974,6 +2980,17 @@ def run_loop(max_epochs=5):
         write_channel("skeleton/epoch.json", {
             "current": epoch, "max": max_epochs, "status": "running"
         })
+
+        # 0. [M002] Cell growth epoch — natural bbox expansion + push signals.
+        #    FAstroCellGrowthEpoch::Run() port (epoch_controller.py grow_epoch).
+        #    Runs BEFORE cell SVG generation so each cell's proc() already
+        #    operates on the grown bbox for this epoch.
+        #    Returns True when all bbox deltas < CONVERGENCE_PX (2 px).
+        growth_converged = _grow_epoch(epoch)
+        print(
+            f"[GrowEpoch] epoch={epoch} "
+            f"{'growth converged' if growth_converged else 'cells still growing'}"
+        )
 
         # 1. All cells develop (in production: parallel sub-Claude dispatch)
         cells = run_all_cells()
@@ -3002,8 +3019,13 @@ def run_loop(max_epochs=5):
             print(f"[ASTRO-EPOCH] Epoch {epoch} rolled back; retrying next iteration.")
             continue
 
-        # 5. Convergence check
-        if convergence_judge():
+        # 5. Convergence check — both growth AND collision physics must settle.
+        #    [M002] growth_converged is a necessary but not sufficient condition:
+        #    the physics collision judge must also report zero conflicts before
+        #    the loop terminates.  This matches FAstroConvergenceJudge::Evaluate()
+        #    which gates on both FAstroMorphSolver::AllSettled AND
+        #    FAstroCollisionSolver::ZeroConflicts.
+        if growth_converged and convergence_judge():
             print(f"\n✓ Converged at epoch {epoch}!")
             break
     else:
