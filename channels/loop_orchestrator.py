@@ -1367,7 +1367,14 @@ def physics_engine():
     }
     write_channel("physics/z_layers.json", voxel_grid_json)
 
-    write_channel("physics/force_field.json", force_field)
+    # [M004] Replace direct write_channel with broadcast_force_batch so every
+    # force-field update goes through the DataDispatcher → DataNotifier pub/sub
+    # pipeline.  Any DataVisitor subscribed to physics/force_field.json is now
+    # notified atomically after each physics epoch.  Mirrors Apollo
+    # Writer<ForceFieldMsg>::Write() call added in M004.
+    from channel_runtime import broadcast_force_batch as _broadcast_force_batch
+    _broadcast_force_batch(force_field)
+
     write_channel("physics/collision.json", {"collisions": collisions, "count": len(collisions)})
 
     print(f"[Physics] {len(collisions)} collisions detected (sweep-line O((N+K)logN))")

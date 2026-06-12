@@ -311,3 +311,252 @@ def subscribe(channel_path: str) -> Optional[Any]:
 def on_message(channel_path: str, callback: Callable[[], None]):
     """Register a notification callback — Apollo CreateReader with callback."""
     DataNotifier.instance().add_notifier(channel_path, Notifier(callback))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LoopScheduler — M004 addition
+#
+# Manages cell proc() dispatch order by z-layer priority.
+# Ported concept from apollo::cyber::scheduler::Scheduler (scheduler.h):
+#   Original: coroutine task pool ordered by ClassicTask priority field.
+#   ASTRO change: tasks are cell_id strings; priority comes from z_layers.json;
+#   execution is synchronous (no coroutines) — single-threaded epoch loop.
+#
+# Algorithm (mirrors Scheduler::CreateTask → NotifyProcessor → ProcBalance):
+#   1. Register cells with z-layer weights (RegisterCell).
+#   2. Sort registered cells ascending by z (lower z = rendered first → scheduled
+#      first, matching Apollo's lower-priority-value → earlier dispatch).
+#   3. run_epoch(proc_fn) iterates sorted cells and calls proc_fn(cell_id).
+#   4. Cells with the same z are dispatched in stable insertion order (mirrors
+#      Scheduler FIFO within same-priority bucket).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class LoopScheduler:
+    """
+    Cell proc() scheduler ordered by z-layer priority.
+
+    Mirrors apollo::cyber::scheduler::Scheduler with:
+      task_name  → cell_id  (string)
+      priority   → z-layer  (int, lower = higher scheduling priority)
+      processor  → proc_fn  callable
+
+    Usage:
+        sched = LoopScheduler()
+        sched.register_cell("input_embed", z=3)
+        sched.register_cell("self_attn",   z=3)
+        sched.run_epoch(proc)        # calls proc("input_embed"), proc("self_attn") …
+    """
+
+    def __init__(self):
+        # List of (z, insertion_seq, cell_id) — kept unsorted until run_epoch.
+        self._tasks: List[Tuple[int, int, str]] = []
+        self._seq = 0
+        # z_layers channel path (relative to CHANNELS_DIR)
+        self._z_layers_path = "physics/z_layers.json"
+        _dbg("ASTRO-SCHED", "LoopScheduler constructed")
+
+    def register_cell(self, cell_id: str, z: Optional[int] = None):
+        """
+        RegisterCell — add a cell to the scheduler.
+
+        If z is None the scheduler reads physics/z_layers.json to resolve
+        the z value; falls back to z=3 (default node layer) if not found.
+        Mirrors Scheduler::CreateTask with priority auto-detection.
+        """
+        if z is None:
+            z = self._resolve_z(cell_id)
+        self._tasks.append((z, self._seq, cell_id))
+        self._seq += 1
+        _dbg("ASTRO-SCHED", f"register cell={cell_id} z={z} seq={self._seq - 1}")
+
+    def register_cells_from_z_layers(self):
+        """
+        Bulk-register all cells present in physics/z_layers.json.
+        Convenience wrapper — mirrors Scheduler::CreateTaskBatch.
+        """
+        full = os.path.join(CHANNELS_DIR, self._z_layers_path)
+        if not os.path.exists(full):
+            _dbg("ASTRO-SCHED", "register_cells_from_z_layers: z_layers.json missing, skip")
+            return
+        with open(full) as f:
+            z_data = json.load(f)
+        for cell_id, val in z_data.items():
+            if cell_id == "__schema__":
+                continue
+            z = val if isinstance(val, int) else val.get("z", 3)
+            self.register_cell(cell_id, z=z)
+
+    def run_epoch(self, proc_fn: Callable[[str], Any]) -> List[str]:
+        """
+        run_epoch — dispatch all registered cells in z-layer priority order.
+
+        Returns ordered list of dispatched cell_ids (useful for tests).
+        Mirrors Scheduler::NotifyProcessor → ProcBalance dispatch loop.
+        """
+        ordered = sorted(self._tasks, key=lambda t: (t[0], t[1]))
+        dispatched = []
+        for z, seq, cell_id in ordered:
+            _dbg("ASTRO-SCHED", f"dispatch cell={cell_id} z={z} seq={seq}")
+            proc_fn(cell_id)
+            dispatched.append(cell_id)
+        return dispatched
+
+    def sorted_cells(self) -> List[str]:
+        """Return cells in dispatch order without executing. Useful for dry-run."""
+        return [cell_id for _, _, cell_id in sorted(self._tasks, key=lambda t: (t[0], t[1]))]
+
+    def clear(self):
+        """Reset task list — mirrors Scheduler::Shutdown task drain."""
+        self._tasks.clear()
+        self._seq = 0
+
+    def _resolve_z(self, cell_id: str) -> int:
+        """Read z for cell_id from z_layers.json. Fallback = 3."""
+        full = os.path.join(CHANNELS_DIR, self._z_layers_path)
+        if not os.path.exists(full):
+            return 3
+        try:
+            with open(full) as f:
+                data = json.load(f)
+            val = data.get(cell_id, 3)
+            return val if isinstance(val, int) else val.get("z", 3)
+        except (json.JSONDecodeError, OSError):
+            return 3
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# broadcast_force — M004 addition
+#
+# Atomic force-field update with pub/sub notification.
+# Replaces direct write_channel("physics/force_field.json", …) calls in
+# loop_orchestrator.py with a single authoritative write path that also fires
+# DataNotifier callbacks so any registered DataVisitor sees the update.
+#
+# Design (mirrors Apollo Writer<T>::Write → Dispatch → Notify pipeline):
+#   1. Read current force_field from disk (atomic read — no partial state).
+#   2. Merge (dx, dy) for cell_id into the dict.
+#   3. Write back atomically via DataDispatcher.dispatch() which calls
+#      ChannelBuffer.fill() → json.dump → DataNotifier.notify().
+# ═══════════════════════════════════════════════════════════════════════════════
+
+FORCE_FIELD_CHANNEL = "physics/force_field.json"
+
+
+def broadcast_force(cell_id: str, dx: float, dy: float) -> bool:
+    """
+    broadcast_force(cell_id, dx, dy) — write a per-cell force vector into
+    physics/force_field.json and notify all subscribers.
+
+    Parameters
+    ----------
+    cell_id : str   Cell identifier (e.g. "self_attn").
+    dx      : float Force component in x (pixels).
+    dy      : float Force component in y (pixels).
+
+    Returns True on success, False if the write failed.
+
+    Replaces direct write_channel("physics/force_field.json", force_field)
+    in loop_orchestrator.physics_engine() so that every force update goes
+    through the DataDispatcher → DataNotifier pub/sub pipeline and any
+    DataVisitor subscribed to the force_field channel is woken up.
+
+    Mirrors Apollo Writer<ForceFieldMsg>::Write() which calls
+    DataDispatcher::Dispatch() internally before returning.
+    """
+    full = os.path.join(CHANNELS_DIR, FORCE_FIELD_CHANNEL)
+
+    # 1. Read current state (merge semantics — keep existing cell entries)
+    current: Dict[str, Any] = {}
+    if os.path.exists(full):
+        try:
+            with open(full) as f:
+                current = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass  # start fresh on corrupt file
+
+    # 2. Merge force for this cell
+    entry = current.get(cell_id, {"dx": 0.0, "dy": 0.0, "dz": 0.0,
+                                   "push_from": [], "push_mag": 0.0})
+    entry["dx"] = float(dx)
+    entry["dy"] = float(dy)
+    current[cell_id] = entry
+
+    # 3. Dispatch through pub/sub pipeline (write + notify)
+    ok = DataDispatcher.instance().dispatch(FORCE_FIELD_CHANNEL, current)
+    _dbg("ASTRO-FORCE", f"broadcast cell={cell_id} dx={dx:.3f} dy={dy:.3f} ok={int(ok)}")
+    return ok
+
+
+def broadcast_force_batch(force_field: Dict[str, Any]) -> bool:
+    """
+    broadcast_force_batch(force_field) — publish an entire force_field dict
+    atomically.  Used by physics_engine() to replace its direct write_channel
+    call at the end of each epoch.
+
+    Equivalent to calling broadcast_force() for every cell but with a single
+    file write and a single DataNotifier.notify() call (more efficient).
+    """
+    ok = DataDispatcher.instance().dispatch(FORCE_FIELD_CHANNEL, force_field)
+    _dbg("ASTRO-FORCE", f"broadcast_batch cells={len(force_field)} ok={int(ok)}")
+    return ok
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# watch_channel — M004 addition
+#
+# File-mtime watcher that triggers a callback whenever a JSON channel file
+# changes on disk.  Thin wrapper around DataNotifier.check_mtime() + callback
+# registration so callers get a single-function API.
+#
+# Design mirrors Apollo cyber::ReaderBase::HasReceived() polling pattern:
+#   Original: shared-memory flag checked per spin cycle.
+#   ASTRO change: os.path.getmtime() checked per poll_interval_s cycle.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def watch_channel(
+    path: str,
+    callback: Callable[[], None],
+    poll_interval_s: float = 0.05,
+    max_polls: int = 200,
+) -> None:
+    """
+    watch_channel(path, callback) — monitor a JSON channel file for mtime
+    changes and invoke callback when a change is detected.
+
+    Runs a blocking poll loop (up to max_polls × poll_interval_s seconds).
+    Designed for use in tests and single-shot wait scenarios; for persistent
+    subscription use on_message() instead.
+
+    Parameters
+    ----------
+    path            : str      Relative channel path (e.g. "physics/force_field.json").
+    callback        : callable Called once when the file changes.
+    poll_interval_s : float    Sleep between mtime checks (default 50 ms).
+    max_polls       : int      Safety cutoff to avoid infinite loops (default 200).
+
+    Mirrors the CyberRT Reader spin-wait pattern:
+        while (!reader->HasReceived()) { std::this_thread::sleep_for(…); }
+        callback(reader->GetLatestObserved());
+    """
+    notifier = DataNotifier.instance()
+    # Prime mtime cache so the *next* change (not the current file state) fires.
+    # NOTE: watch_channel uses polling only (no DataNotifier registration) to
+    # avoid double-firing when DataDispatcher.dispatch() also calls notify().
+    # For persistent subscription use on_message() instead.
+    full = os.path.join(CHANNELS_DIR, path)
+    if os.path.exists(full):
+        notifier._mtime_cache[path] = os.path.getmtime(full)
+
+    _dbg("ASTRO-WATCH", f"watching path={path} interval={poll_interval_s}s max_polls={max_polls}")
+
+    for poll in range(max_polls):
+        if notifier.check_mtime(path):
+            _dbg("ASTRO-WATCH", f"change detected path={path} poll={poll}")
+            # Fire callback directly here (mtime poll path).
+            # DataNotifier.notify() would fire it a second time via the
+            # registered Notifier; skip notify to avoid double-firing.
+            callback()
+            return
+        time.sleep(poll_interval_s)
+
+    _dbg("ASTRO-WATCH", f"watch_channel timeout path={path} max_polls={max_polls}")
