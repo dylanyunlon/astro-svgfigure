@@ -1,0 +1,297 @@
+---
+/**
+ * PixiPreview.astro — PixiJS cell graph preview panel
+ *
+ * 渲染 CellDescriptor[] 到 canvas，支持两种 render mode：
+ *   - PixiJS Graphics: bloom glow + bezier edges + GPU AA
+ *   - SDF Shader: 数学 SDF quad，分辨率无关
+ *
+ * Refresh 按钮调 /api/cell-loop 触发新 epoch，然后重新 fetch /api/cells 渲染。
+ */
+---
+
+<div class='flex flex-col gap-y-2' id='pixi-preview-section'>
+  {/* Toolbar */}
+  <div class='flex items-center justify-between'>
+    <div class='flex items-center gap-x-2'>
+      <span class='text-sm font-medium text-muted-foreground'>Cell Graph</span>
+      {/* Mode toggle: PixiJS Graphics / SDF Shader */}
+      <div class='flex items-center rounded-lg border bg-muted p-0.5'>
+        <button
+          id='mode-pixi'
+          class='pixi-mode-tab rounded-md px-2 py-0.5 text-xs font-medium bg-background text-foreground shadow-sm transition-all hover:text-foreground'
+          data-mode='pixi'
+        >PixiJS Graphics</button>
+        <button
+          id='mode-sdf'
+          class='pixi-mode-tab rounded-md px-2 py-0.5 text-xs font-medium text-muted-foreground transition-all hover:text-foreground'
+          data-mode='sdf'
+        >SDF Shader</button>
+      </div>
+    </div>
+
+    <div class='flex items-center gap-x-1'>
+      {/* Refresh — triggers /api/cell-loop then re-renders */}
+      <button
+        id='pixi-refresh'
+        class='inline-flex items-center justify-center gap-x-1 rounded-lg border bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground transition-all hover:bg-card hover:text-foreground'
+        title='Trigger new epoch then re-render'
+      >
+        <svg id='refresh-icon' xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+          <path d='M21 2v6h-6' /><path d='M3 12a9 9 0 0 1 15-6.7L21 8' />
+          <path d='M3 22v-6h6' /><path d='M21 12a9 9 0 0 1-15 6.7L3 16' />
+        </svg>
+        Refresh
+      </button>
+
+      {/* Zoom controls */}
+      <button id='pixi-zoom-out' class='inline-flex items-center justify-center size-7 rounded-lg border bg-muted text-muted-foreground transition-all hover:bg-card hover:text-foreground' title='Zoom out'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><line x1='5' y1='12' x2='19' y2='12' /></svg>
+      </button>
+      <span id='pixi-zoom-level' class='text-xs text-muted-foreground w-10 text-center'>100%</span>
+      <button id='pixi-zoom-in' class='inline-flex items-center justify-center size-7 rounded-lg border bg-muted text-muted-foreground transition-all hover:bg-card hover:text-foreground' title='Zoom in'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+          <line x1='12' y1='5' x2='12' y2='19' /><line x1='5' y1='12' x2='19' y2='12' />
+        </svg>
+      </button>
+      <button id='pixi-zoom-fit' class='inline-flex items-center justify-center size-7 rounded-lg border bg-muted text-muted-foreground transition-all hover:bg-card hover:text-foreground' title='Fit to view'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+          <path d='M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7' />
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  {/* Status bar */}
+  <div id='pixi-status' class='hidden flex items-center gap-x-2 text-xs text-muted-foreground'>
+    <svg class='size-3 animate-spin text-primary' xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24'>
+      <circle class='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' stroke-width='4' />
+      <path class='opacity-75' fill='currentColor' d='M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z' />
+    </svg>
+    <span id='pixi-status-text'>Loading…</span>
+  </div>
+
+  {/* Canvas container */}
+  <div
+    id='pixi-canvas-wrap'
+    class='relative flex items-center justify-center overflow-hidden rounded-xl border bg-[#1A1A2E]'
+    style='min-height: 420px; height: 65vh;'
+  >
+    {/* Empty state */}
+    <div id='pixi-empty' class='flex flex-col items-center gap-y-3 py-12 text-center'>
+      <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1' class='text-muted-foreground opacity-40'>
+        <circle cx='12' cy='5' r='2' /><circle cx='5' cy='19' r='2' /><circle cx='19' cy='19' r='2' />
+        <line x1='12' y1='7' x2='5' y2='17' /><line x1='12' y1='7' x2='19' y2='17' />
+      </svg>
+      <p class='text-sm text-muted-foreground'>Click Refresh to load cell graph</p>
+    </div>
+
+    {/* Error state */}
+    <div id='pixi-error' class='hidden flex flex-col items-center gap-y-3 py-12 text-center'>
+      <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1' class='text-destructive opacity-60'>
+        <circle cx='12' cy='12' r='10' /><line x1='12' y1='8' x2='12' y2='12' /><line x1='12' y1='16' x2='12.01' y2='16' />
+      </svg>
+      <p id='pixi-error-text' class='text-sm text-destructive'>Render error</p>
+    </div>
+
+    {/* Canvas — hidden until first render */}
+    <canvas
+      id='pixi-canvas'
+      class='absolute inset-0 hidden transition-transform duration-150 origin-center'
+      style='width: 100%; height: 100%;'
+    ></canvas>
+  </div>
+</div>
+
+<script>
+  import type { Application } from '../../upstream/pixijs-engine/src/app/Application';
+  import { renderCellGraph } from '@/lib/renderers/pixi-cell-renderer';
+  import { renderCellGraphSDF } from '@/lib/renderers/sdf-cell-renderer';
+  import type { CellDescriptor, EdgeDescriptor } from '@/lib/renderers/pixi-cell-renderer';
+
+  // ── DOM refs ───────────────────────────────────────────────────────────────
+  const wrap        = document.getElementById('pixi-canvas-wrap')!;
+  const canvas      = document.getElementById('pixi-canvas') as HTMLCanvasElement;
+  const emptyState  = document.getElementById('pixi-empty')!;
+  const errorState  = document.getElementById('pixi-error')!;
+  const errorText   = document.getElementById('pixi-error-text')!;
+  const statusBar   = document.getElementById('pixi-status')!;
+  const statusText  = document.getElementById('pixi-status-text')!;
+  const zoomLabel   = document.getElementById('pixi-zoom-level')!;
+  const refreshBtn  = document.getElementById('pixi-refresh')!;
+  const refreshIcon = document.getElementById('refresh-icon')!;
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let currentApp: Application | null = null;
+  let currentZoom  = 100;
+  let renderMode: 'pixi' | 'sdf' = 'pixi';
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function setStatus(msg: string) {
+    statusBar.classList.remove('hidden');
+    statusText.textContent = msg;
+  }
+  function clearStatus() {
+    statusBar.classList.add('hidden');
+  }
+  function showError(msg: string) {
+    clearStatus();
+    emptyState.classList.add('hidden');
+    canvas.classList.add('hidden');
+    errorText.textContent = msg;
+    errorState.classList.remove('hidden');
+  }
+  function setZoom(z: number) {
+    currentZoom = Math.max(25, Math.min(300, z));
+    canvas.style.transform = `scale(${currentZoom / 100})`;
+    zoomLabel.textContent = `${currentZoom}%`;
+  }
+
+  // ── Destroy previous PixiJS app ────────────────────────────────────────────
+  function destroyApp() {
+    if (currentApp) {
+      try { currentApp.destroy(false, { children: true, texture: true }); }
+      catch { /* ignore */ }
+      currentApp = null;
+    }
+  }
+
+  // ── Build edge list from cells topology ────────────────────────────────────
+  function buildEdges(cells: CellDescriptor[]): EdgeDescriptor[] {
+    const edges: EdgeDescriptor[] = [];
+    const seen = new Set<string>();
+    for (const cell of cells) {
+      for (const tgt of cell.topology.outgoing_edges) {
+        const key = `${cell.cell_id}->${tgt}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // Heuristic: if it skips >1 level treat as skip_connection
+        const srcIdx = cells.findIndex(c => c.cell_id === cell.cell_id);
+        const tgtIdx = cells.findIndex(c => c.cell_id === tgt);
+        edges.push({
+          id: key,
+          source: cell.cell_id,
+          target: tgt,
+          type: tgtIdx - srcIdx > 2 ? 'skip_connection' : 'normal',
+        });
+      }
+    }
+    return edges;
+  }
+
+  // ── Core render ────────────────────────────────────────────────────────────
+  async function renderGraph(cells: CellDescriptor[]) {
+    destroyApp();
+
+    // Fit canvas to container
+    const rect = wrap.getBoundingClientRect();
+    canvas.width  = Math.floor(rect.width);
+    canvas.height = Math.floor(rect.height);
+
+    const edges = buildEdges(cells);
+
+    try {
+      if (renderMode === 'pixi') {
+        currentApp = await renderCellGraph(canvas, cells, edges);
+      } else {
+        currentApp = await renderCellGraphSDF(canvas, cells, edges);
+      }
+    } catch (err) {
+      showError(`Render failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    // Show canvas
+    emptyState.classList.add('hidden');
+    errorState.classList.add('hidden');
+    canvas.classList.remove('hidden');
+    setZoom(100);
+    clearStatus();
+  }
+
+  // ── Refresh: POST /api/cell-loop → fetch /api/cells → render ──────────────
+  async function doRefresh() {
+    refreshBtn.setAttribute('disabled', 'true');
+    refreshIcon.classList.add('animate-spin');
+
+    try {
+      // 1. Trigger new epoch
+      setStatus('Triggering epoch…');
+      await fetch('/api/cell-loop', { method: 'POST' });
+
+      // 2. Fetch fresh cell descriptors
+      setStatus('Fetching cells…');
+      const res = await fetch('/api/cells');
+      if (!res.ok) throw new Error(`/api/cells returned ${res.status}`);
+      const cells: CellDescriptor[] = await res.json();
+
+      if (!cells.length) {
+        showError('No cells returned from /api/cells');
+        return;
+      }
+
+      // 3. Render
+      setStatus(`Rendering ${cells.length} cells (${renderMode})…`);
+      await renderGraph(cells);
+    } catch (err) {
+      showError(`Refresh error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      refreshBtn.removeAttribute('disabled');
+      refreshIcon.classList.remove('animate-spin');
+    }
+  }
+
+  // ── Mode toggle ────────────────────────────────────────────────────────────
+  document.querySelectorAll<HTMLButtonElement>('.pixi-mode-tab').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const mode = btn.dataset.mode as 'pixi' | 'sdf';
+      if (mode === renderMode) return;
+      renderMode = mode;
+
+      // Update tab styles
+      document.querySelectorAll<HTMLButtonElement>('.pixi-mode-tab').forEach(b => {
+        const active = b.dataset.mode === mode;
+        b.classList.toggle('bg-background', active);
+        b.classList.toggle('text-foreground', active);
+        b.classList.toggle('shadow-sm', active);
+        b.classList.toggle('text-muted-foreground', !active);
+      });
+
+      // Re-render with new mode if canvas is already showing
+      if (!canvas.classList.contains('hidden')) {
+        setStatus(`Switching to ${mode === 'sdf' ? 'SDF Shader' : 'PixiJS Graphics'}…`);
+        try {
+          const res = await fetch('/api/cells');
+          if (!res.ok) throw new Error(`/api/cells ${res.status}`);
+          const cells: CellDescriptor[] = await res.json();
+          if (cells.length) await renderGraph(cells);
+        } catch (err) {
+          showError(`Mode switch error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    });
+  });
+
+  // ── Zoom controls ──────────────────────────────────────────────────────────
+  document.getElementById('pixi-zoom-in')!.addEventListener('click', () => setZoom(currentZoom + 10));
+  document.getElementById('pixi-zoom-out')!.addEventListener('click', () => setZoom(currentZoom - 10));
+  document.getElementById('pixi-zoom-fit')!.addEventListener('click', () => setZoom(100));
+
+  // ── Refresh button ─────────────────────────────────────────────────────────
+  refreshBtn.addEventListener('click', doRefresh);
+
+  // ── Resize observer: re-fit canvas when container changes size ─────────────
+  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  new ResizeObserver(() => {
+    if (canvas.classList.contains('hidden')) return;
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/cells');
+        if (!res.ok) return;
+        const cells: CellDescriptor[] = await res.json();
+        if (cells.length) await renderGraph(cells);
+      } catch { /* silently ignore resize re-renders */ }
+    }, 300);
+  }).observe(wrap);
+</script>
