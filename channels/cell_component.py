@@ -1912,6 +1912,12 @@ def proc(cell_id: str):
     """
     Apollo Component::Proc() equivalent.
     Reads channels → generates SVG with species algorithm → publishes.
+
+    L3: If channels/cell/{cell_id}/agent_params.json exists (written by
+    dispatch_cell_agent before this call), the agent's bbox and opacity
+    override the default skeleton+force-field values.  This is the final
+    link in the L3 chain:
+        agent computes params → agent_params.json → proc() renders with them.
     """
     # ── Subscribe: read channels ──
     skeleton = read_channel(f"skeleton/cell/{cell_id}.json")
@@ -1928,6 +1934,37 @@ def proc(cell_id: str):
     bbox["x"] += force["dx"]
     bbox["y"] += force["dy"]
     bbox["z"] = z_layers.get(cell_id, 3) + force.get("dz", 0)
+
+    # ── L3: apply agent_params if present ────────────────────────────────────
+    # dispatch_cell_agent() writes agent_params.json before proc() is called
+    # by run_all_cells().  When the file exists, the agent's decisions win over
+    # the default force-field values for bbox and opacity.
+    _agent_opacity: float | None = None
+    _agent_params_path = os.path.join(CHANNELS, "cell", cell_id, "agent_params.json")
+    if os.path.isfile(_agent_params_path):
+        try:
+            with open(_agent_params_path) as _apf:
+                _agent_params = json.load(_apf)
+            # Override bbox if agent provided one
+            if "bbox" in _agent_params and isinstance(_agent_params["bbox"], dict):
+                _ab = _agent_params["bbox"]
+                for _k in ("x", "y", "w", "h", "z"):
+                    if _k in _ab:
+                        bbox[_k] = _ab[_k]
+            # Record agent opacity for use below (blended with crowding_opacity)
+            if "opacity" in _agent_params and isinstance(_agent_params["opacity"], (int, float)):
+                _agent_opacity = max(0.35, min(1.0, float(_agent_params["opacity"])))
+            import sys
+            print(
+                f"[proc] L3 agent_params applied: cell_id={cell_id} "
+                f"bbox=({bbox['x']},{bbox['y']},{bbox['w']},{bbox['h']}) "
+                f"z={bbox['z']} opacity={_agent_opacity}",
+                file=sys.stderr,
+            )
+        except Exception as _ap_exc:
+            import sys
+            print(f"[proc] WARNING: failed to read agent_params.json "
+                  f"for cell_id={cell_id}: {_ap_exc}", file=sys.stderr)
 
     # ── Proc: species algorithm generates SVG ──
     generator = SPECIES_GENERATORS.get(species, generate_svg_cil_arrow_right)
@@ -2043,6 +2080,14 @@ def proc(cell_id: str):
     # visual weight, preventing the SVG equivalent of SSAO black halos in
     # packed cell regions).
     crowding_opacity = compute_crowding_opacity(cell_id, bbox, all_bboxes)
+
+    # ── L3: agent opacity override ────────────────────────────────────────────
+    # If dispatch_cell_agent provided an opacity, blend it with the AO-derived
+    # crowding_opacity: agent 60% authority, PostProcessAO 40%.  This lets the
+    # agent express intent (e.g. highlight a focal cell) while still respecting
+    # neighbourhood density cues.
+    if _agent_opacity is not None:
+        crowding_opacity = 0.6 * _agent_opacity + 0.4 * crowding_opacity
 
     # SVG <filter> definition with feDropShadow
     # stdDeviation  ← blur radius (capsule radius analogue)

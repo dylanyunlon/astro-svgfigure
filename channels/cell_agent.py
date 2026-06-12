@@ -468,21 +468,109 @@ def dispatch_cell_agent(cell_id: str, dry_run: bool = False) -> dict:
           file=sys.stderr)
 
     if dry_run:
-        # ── Dry-run stub: compute deterministic params without API call ────────
+        # ── Dry-run stub: compute deterministic per-species params without API ─
+        # Uses a stable hash of cell_id for per-cell variation within valid ranges.
+        import hashlib
+        _seed = int(hashlib.md5(cell_id.encode()).hexdigest()[:8], 16)
+        def _jitter(lo: float, hi: float, bits: int = 0) -> float:
+            return round(lo + ((_seed >> bits) & 0xFF) / 255.0 * (hi - lo), 3)
+
         ib = skeleton["initial_bbox"]
         force = force_field.get(cell_id, {})
-        raw_output = {
-            "bbox": {
-                "x": round(ib["x"] + force.get("dx", 0.0), 2),
-                "y": round(ib["y"] + force.get("dy", 0.0), 2),
-                "w": ib["w"],
-                "h": ib["h"],
-                "z": ib.get("z", 3),
-            },
-            "opacity": 0.92,
-            "species_params": {"dry_run": True},
+        _bbox = {
+            "x": round(ib["x"] + force.get("dx", 0.0), 2),
+            "y": round(ib["y"] + force.get("dy", 0.0), 2),
+            "w": ib["w"],
+            "h": ib["h"],
+            "z": ib.get("z", 3),
         }
-        print(f"[cell_agent] dry_run=True, using stub output", file=sys.stderr)
+        _opacity = _jitter(0.72, 0.96, 0)
+
+        if species == "cil-eye":
+            _sp: dict = {
+                "num_rays":        4 + (_seed & 0xF) % 13,
+                "focal_intensity": _jitter(0.3, 1.0, 4),
+                "halo_radius":     _jitter(0.1, 0.5, 12),
+                "ray_opacity_min": _jitter(0.1, 0.4, 16),
+                "ray_opacity_max": _jitter(0.4, 0.9, 20),
+            }
+        elif species == "cil-bolt":
+            _sp = {
+                "zigzag_segments": 4 + (_seed & 0x7) % 7,
+                "arc_seed":        _seed & 0xFFFF,
+                "stroke_weight":   _jitter(1.5, 3.0, 8),
+                "activation_type": ["relu", "gelu", "swish"][_seed % 3],
+            }
+        elif species == "cil-vector":
+            _sp = {
+                "num_arrows":    3 + (_seed & 0x7) % 6,
+                "angle_spread":  _jitter(0.2, 1.2, 4),
+                "arrow_weight":  _jitter(1.0, 2.5, 8),
+                "arrow_opacity": _jitter(0.4, 0.85, 12),
+            }
+        elif species == "cil-plus":
+            _sp = {
+                "arm_ratio":      _jitter(0.2, 0.4, 4),
+                "stroke_weight":  _jitter(2.0, 4.0, 8),
+                "diag_dasharray": ["3,2", "4,3", "5,2"][_seed % 3],
+                "norm_strength":  _jitter(0.3, 1.0, 12),
+            }
+        elif species == "cil-arrow-right":
+            _sp = {
+                "arrow_width_ratio": _jitter(0.2, 0.45, 4),
+                "head_height":       _jitter(0.2, 0.4, 8),
+                "fill_opacity":      _jitter(0.4, 0.7, 12),
+                "direction":         ["right", "up", "down"][_seed % 3],
+            }
+        elif species == "cil-filter":
+            _gs = 2 + (_seed & 0x3) % 4
+            _sp = {
+                "grid_size":       _gs,
+                "highlight_cx":    _seed % _gs,
+                "highlight_cy":    (_seed >> 2) % _gs,
+                "highlight_alpha": _jitter(0.3, 0.7, 4),
+                "grid_opacity":    _jitter(0.4, 0.8, 8),
+            }
+        elif species == "cil-code":
+            _sp = {
+                "brace_arm_ratio": _jitter(0.2, 0.4, 4),
+                "nib_ratio":       _jitter(0.15, 0.3, 8),
+                "corner_radius":   _jitter(0.25, 0.45, 12),
+                "stroke_weight":   _jitter(1.5, 3.0, 16),
+            }
+        elif species == "cil-layers":
+            _sp = {
+                "num_layers":    2 + (_seed & 0x3) % 4,
+                "stagger_step":  _jitter(0.25, 0.45, 4),
+                "layer_opacity": [_jitter(0.4, 0.8, i * 4) for i in range(3)],
+                "layer_colours": ["#90CAF9", "#42A5F5", "#1E88E5"],
+            }
+        elif species == "cil-loop":
+            _sp = {
+                "arc_gap_degrees": _jitter(40, 90, 4),
+                "arc_radius":      _jitter(0.2, 0.35, 8),
+                "stroke_weight":   _jitter(1.8, 3.0, 12),
+                "arc_opacity":     _jitter(0.6, 0.9, 16),
+                "dot_radius":      _jitter(0.1, 0.2, 20),
+            }
+        elif species == "cil-graph":
+            _sp = {
+                "num_nodes":    3 + (_seed & 0x7) % 5,
+                "outer_radius": _jitter(0.25, 0.35, 4),
+                "node_radius":  _jitter(0.04, 0.07, 8),
+                "edge_opacity": _jitter(0.4, 0.7, 12),
+                "node_opacity": _jitter(0.6, 0.9, 16),
+            }
+        else:
+            _sp = {
+                "corner_radius": _jitter(6, 16, 4),
+                "stroke_weight": _jitter(1.0, 2.5, 8),
+                "fill_opacity":  _jitter(0.5, 0.9, 12),
+            }
+
+        raw_output = {"bbox": _bbox, "opacity": _opacity, "species_params": _sp}
+        print(f"[cell_agent] dry_run=True species={species} deterministic params computed",
+              file=sys.stderr)
     else:
         # ── Live dispatch: sub-Claude call ────────────────────────────────────
         raw_text = _call_claude(system_prompt, user_message)
