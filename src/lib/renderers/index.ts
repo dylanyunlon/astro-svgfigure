@@ -47,3 +47,18 @@ export type {
   Velocity,
   Vec2,
 } from '../tween-system';
+
+export { HierarchyAnimation } from '../hierarchy-animation';
+export type {
+  CellPos,
+  CellState,
+  PositionSetter,
+  HierarchyAnimationOptions,
+} from '../hierarchy-animation';
+
+export { MatrixWasm } from '../matrix-wasm';
+export type {
+  AABB,
+  Viewport,
+  AABBVisibilityResult,
+} from '../matrix-wasm';
