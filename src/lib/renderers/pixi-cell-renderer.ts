@@ -8,7 +8,11 @@
  * - 贝塞尔曲线连线 (Graphics.bezierCurveTo)
  * - Anti-aliasing（GPU 子像素平滑）
  *
- * 渲染质量完全由 PixiJS 管线决定，跟 LLM 代码生成能力无关。
+ * Live Poll 模式 (pollCellChannels):
+ * - 每 500ms fetch /api/cells 拉取最新 CellDescriptor[]
+ * - 位置变化 → lerp 平滑过渡 (alpha += (target - current) * 0.1)
+ * - 新 cell fade in (alpha 0→1)，消失 cell fade out (alpha 1→0) 后销毁
+ * - edge layer 每帧跟着 cell 当前位置实时重绘
  *
  * Upstream reference:
  *   upstream/pixijs-engine/src/scene/graphics/shared/Graphics.ts
@@ -24,8 +28,7 @@ import {
   Text,
   TextStyle,
   BlurFilter,
-  ColorMatrixFilter,
-  FederatedPointerEvent,
+  Ticker,
 } from 'pixi.js';
 
 // ── Cell descriptor — this is ALL the LLM needs to produce ──────────────────
@@ -69,26 +72,21 @@ function getColours(species: string) {
 }
 
 // ── Species pattern drawers ─────────────────────────────────────────────────
-// Each draws a procedural pattern INSIDE the cell's rounded rect.
-// GPU does all anti-aliasing — these are just Graphics draw calls.
 
 type PatternDrawer = (g: Graphics, w: number, h: number, col: number) => void;
 
 const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   'cil-eye': (g, w, h, col) => {
-    // Radial heatmap: concentric circles
     const cx = w / 2, cy = h / 2, r = Math.min(w, h) * 0.35;
     for (let i = 3; i >= 1; i--) {
       g.circle(cx, cy, r * (i / 3));
       g.fill({ color: col, alpha: 0.08 * i });
     }
-    // Pupil
     g.circle(cx, cy, r * 0.15);
     g.fill({ color: col, alpha: 0.5 });
   },
 
   'cil-vector': (g, w, h, col) => {
-    // Gradient arrow
     const pad = 8;
     g.moveTo(pad, h / 2);
     g.lineTo(w - pad * 3, h / 2);
@@ -100,7 +98,6 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   },
 
   'cil-bolt': (g, w, h, col) => {
-    // Zigzag activation
     const n = 5, dy = h / (n + 1), amp = w * 0.15;
     g.moveTo(w / 2, 6);
     for (let i = 1; i <= n; i++) {
@@ -112,7 +109,6 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   },
 
   'cil-plus': (g, w, h, col) => {
-    // Cross grid
     const cx = w / 2, cy = h / 2, arm = Math.min(w, h) * 0.3;
     g.moveTo(cx - arm, cy); g.lineTo(cx + arm, cy);
     g.moveTo(cx, cy - arm); g.lineTo(cx, cy + arm);
@@ -120,7 +116,6 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   },
 
   'cil-arrow-right': (g, w, h, col) => {
-    // Chevron
     const cx = w / 2, cy = h / 2, sz = Math.min(w, h) * 0.25;
     g.moveTo(cx - sz, cy - sz);
     g.lineTo(cx + sz * 0.5, cy);
@@ -129,7 +124,6 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   },
 
   'cil-filter': (g, w, h, col) => {
-    // 3x3 grid
     const pad = 10, gw = (w - pad * 2) / 3, gh = (h - pad * 2) / 3;
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 3; c++) {
@@ -140,7 +134,6 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   },
 
   'cil-code': (g, w, h, col) => {
-    // Curly braces { }
     const bx = 12, by = 8;
     g.moveTo(bx, by); g.lineTo(bx - 4, h / 2); g.lineTo(bx, h - by);
     g.moveTo(w - bx, by); g.lineTo(w - bx + 4, h / 2); g.lineTo(w - bx, h - by);
@@ -148,7 +141,6 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   },
 
   'cil-layers': (g, w, h, col) => {
-    // Stacked rects
     for (let i = 0; i < 3; i++) {
       const off = i * 4;
       g.roundRect(6 + off, 6 + off, w - 12 - off * 2, h - 12 - off * 2, 3);
@@ -157,11 +149,9 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   },
 
   'cil-loop': (g, w, h, col) => {
-    // Arc arrow
     const cx = w / 2, cy = h / 2, r = Math.min(w, h) * 0.3;
     g.arc(cx, cy, r, -Math.PI * 0.8, Math.PI * 0.5);
     g.stroke({ color: col, width: 1.5, alpha: 0.4 });
-    // Arrowhead at end of arc
     const ax = cx + r * Math.cos(Math.PI * 0.5);
     const ay = cy + r * Math.sin(Math.PI * 0.5);
     g.moveTo(ax - 4, ay - 4); g.lineTo(ax, ay); g.lineTo(ax + 4, ay - 4);
@@ -169,7 +159,6 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
   },
 
   'cil-graph': (g, w, h, col) => {
-    // Scatter dots + lines
     const pts = [[w*0.25, h*0.3], [w*0.6, h*0.25], [w*0.75, h*0.6], [w*0.35, h*0.7]];
     for (const [x, y] of pts) {
       g.circle(x, y, 3);
@@ -186,14 +175,11 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
 
 function createGlowSprite(w: number, h: number, glowColor: number): Graphics {
   const glow = new Graphics();
-  const pad = 20; // glow extends beyond cell bbox
+  const pad = 20;
   glow.roundRect(-pad, -pad, w + pad * 2, h + pad * 2, 12);
   glow.fill({ color: glowColor, alpha: 0.25 });
-
-  // BlurFilter for bloom — GPU handles all the convolution
   const blur = new BlurFilter({ strength: 12, quality: 4 });
   glow.filters = [blur];
-
   return glow;
 }
 
@@ -208,11 +194,9 @@ function buildCellContainer(desc: CellDescriptor): Container {
   container.position.set(bbox.x, bbox.y);
   container.zIndex = z;
 
-  // 1. Bloom glow (behind everything)
   const glow = createGlowSprite(w, h, cols.glow);
   container.addChild(glow);
 
-  // 2. Cell body — rounded rect with fill + stroke
   const body = new Graphics();
   body.roundRect(0, 0, w, h, 8);
   body.fill({ color: cols.fill, alpha: 0.9 });
@@ -220,13 +204,11 @@ function buildCellContainer(desc: CellDescriptor): Container {
   body.stroke({ color: cols.stroke, width: 1.5, alpha: 0.8 });
   container.addChild(body);
 
-  // 3. Species pattern overlay
   const pattern = new Graphics();
   const drawer = SPECIES_PATTERNS[species] ?? SPECIES_PATTERNS['cil-code'];
   drawer(pattern, w, h, cols.stroke);
   container.addChild(pattern);
 
-  // 4. Label text
   const style = new TextStyle({
     fontFamily: 'Inter, system-ui, sans-serif',
     fontSize: 11,
@@ -246,41 +228,31 @@ function buildCellContainer(desc: CellDescriptor): Container {
 function drawEdges(
   g: Graphics,
   edges: EdgeDescriptor[],
-  cellMap: Map<string, CellDescriptor>,
+  cellMap: Map<string, { x: number; y: number; w: number; h: number }>,
 ): void {
+  g.clear();
   for (const edge of edges) {
     const src = cellMap.get(edge.source);
     const tgt = cellMap.get(edge.target);
     if (!src || !tgt) continue;
 
-    const sx = src.bbox.x + src.bbox.w / 2;
-    const sy = src.bbox.y + src.bbox.h;       // bottom center
-    const tx = tgt.bbox.x + tgt.bbox.w / 2;
-    const ty = tgt.bbox.y;                     // top center
+    const sx = src.x + src.w / 2;
+    const sy = src.y + src.h;
+    const tx = tgt.x + tgt.w / 2;
+    const ty = tgt.y;
 
     if (edge.type === 'skip_connection') {
-      // Bezier curve — skip connection
       const cx = Math.max(sx, tx) + 80;
       g.moveTo(sx, sy);
       g.bezierCurveTo(cx, sy, cx, ty, tx, ty);
-      g.stroke({
-        color: 0x4CAF50,
-        width: 2,
-        alpha: 0.6,
-      });
+      g.stroke({ color: 0x4CAF50, width: 2, alpha: 0.6 });
     } else {
-      // Straight line with slight curve for aesthetics
       const mid_y = (sy + ty) / 2;
       g.moveTo(sx, sy);
       g.bezierCurveTo(sx, mid_y, tx, mid_y, tx, ty);
-      g.stroke({
-        color: 0x999999,
-        width: 1.5,
-        alpha: 0.5,
-      });
+      g.stroke({ color: 0x999999, width: 1.5, alpha: 0.5 });
     }
 
-    // Arrowhead at target
     const angle = Math.atan2(ty - sy, tx - sx);
     const arrLen = 8;
     g.moveTo(tx - arrLen * Math.cos(angle - 0.4), ty - arrLen * Math.sin(angle - 0.4));
@@ -290,7 +262,158 @@ function drawEdges(
   }
 }
 
-// ── Main renderer ───────────────────────────────────────────────────────────
+// ── Live cell state (used by poll loop) ────────────────────────────────────
+
+interface LiveCell {
+  desc: CellDescriptor;
+  /** current rendered position (lerp target) */
+  curX: number;
+  curY: number;
+  /** target position from latest poll */
+  tgtX: number;
+  tgtY: number;
+  container: Container;
+  /** fade direction: +1 = fading in, -1 = fading out, 0 = stable */
+  fadeDir: 0 | 1 | -1;
+}
+
+const LERP_FACTOR  = 0.1;   // position lerp per frame
+const FADE_SPEED   = 0.05;  // alpha change per frame
+
+// ── pollCellChannels ────────────────────────────────────────────────────────
+
+/**
+ * pollCellChannels — starts a 500ms polling loop against /api/cells.
+ *
+ * Behaviour:
+ *   1. Every 500ms fetch /api/cells → CellDescriptor[]
+ *   2. New cells: spawn container at alpha=0, fade in to 1
+ *   3. Removed cells: fade out to 0, then destroy
+ *   4. Existing cells: lerp position toward new bbox (alpha += (target-current)*0.1)
+ *   5. Edge layer redraws every frame based on current live positions
+ *
+ * @param app        Running PixiJS Application
+ * @param edges      EdgeDescriptor[] (static topology — edges don't change)
+ * @param edgeLayer  Graphics node dedicated to edge drawing
+ * @returns          stop() to cancel polling + animation
+ */
+export function pollCellChannels(
+  app: Application,
+  edges: EdgeDescriptor[],
+  edgeLayer: Graphics,
+): () => void {
+  // Map of live cells keyed by cell_id
+  const live = new Map<string, LiveCell>();
+
+  let pollHandle: ReturnType<typeof setInterval> | null = null;
+  let stopped = false;
+
+  // ── Per-frame tick: lerp positions + fade + redraw edges ───────────────
+  function tick(_ticker: Ticker): void {
+    if (stopped) return;
+
+    // Build bbox snapshot for edge drawing
+    const bboxSnap = new Map<string, { x: number; y: number; w: number; h: number }>();
+
+    for (const [id, lc] of live) {
+      // Lerp position
+      lc.curX += (lc.tgtX - lc.curX) * LERP_FACTOR;
+      lc.curY += (lc.tgtY - lc.curY) * LERP_FACTOR;
+      lc.container.position.set(lc.curX, lc.curY);
+
+      // Fade
+      if (lc.fadeDir === 1) {
+        lc.container.alpha = Math.min(1, lc.container.alpha + FADE_SPEED);
+        if (lc.container.alpha >= 1) lc.fadeDir = 0;
+      } else if (lc.fadeDir === -1) {
+        lc.container.alpha = Math.max(0, lc.container.alpha - FADE_SPEED);
+        if (lc.container.alpha <= 0) {
+          // Fully faded — destroy and remove
+          app.stage.removeChild(lc.container);
+          lc.container.destroy({ children: true });
+          live.delete(id);
+          continue;
+        }
+      }
+
+      // Record current rendered bbox for edge drawing
+      const { w, h } = lc.desc.bbox;
+      bboxSnap.set(id, { x: lc.curX, y: lc.curY, w, h });
+    }
+
+    // Redraw edges at current (lerped) positions
+    drawEdges(edgeLayer, edges, bboxSnap);
+  }
+
+  app.ticker.add(tick);
+
+  // ── Poll loop: fetch /api/cells every 500ms ────────────────────────────
+  async function fetchAndReconcile(): Promise<void> {
+    if (stopped) return;
+    try {
+      const res = await fetch('/api/cells');
+      if (!res.ok) return;
+      const incoming: CellDescriptor[] = await res.json();
+
+      const seen = new Set<string>();
+
+      for (const desc of incoming) {
+        seen.add(desc.cell_id);
+        const tgtX = desc.bbox.x;
+        const tgtY = desc.bbox.y;
+
+        if (live.has(desc.cell_id)) {
+          // Existing cell — update target position
+          const lc = live.get(desc.cell_id)!;
+          lc.tgtX = tgtX;
+          lc.tgtY = tgtY;
+          // Also update desc so edge dimensions stay correct
+          lc.desc = desc;
+          // Cancel any ongoing fade-out if cell reappears
+          if (lc.fadeDir === -1) lc.fadeDir = 1;
+        } else {
+          // New cell — spawn at target, alpha=0, fade in
+          const container = buildCellContainer(desc);
+          container.alpha = 0;
+          app.stage.addChild(container);
+
+          const lc: LiveCell = {
+            desc,
+            curX: tgtX,
+            curY: tgtY,
+            tgtX,
+            tgtY,
+            container,
+            fadeDir: 1,
+          };
+          live.set(desc.cell_id, lc);
+        }
+      }
+
+      // Cells in live but NOT in incoming → fade out
+      for (const [id, lc] of live) {
+        if (!seen.has(id) && lc.fadeDir !== -1) {
+          lc.fadeDir = -1;
+        }
+      }
+    } catch (err) {
+      console.warn('[pollCellChannels] fetch error:', err);
+    }
+  }
+
+  // Initial fetch, then schedule
+  fetchAndReconcile();
+  pollHandle = setInterval(fetchAndReconcile, 500);
+
+  // ── Return stop handle ─────────────────────────────────────────────────
+  return () => {
+    stopped = true;
+    if (pollHandle !== null) clearInterval(pollHandle);
+    app.ticker.remove(tick);
+  };
+}
+
+// ── Main renderer (static, one-shot) ───────────────────────────────────────
 
 export async function renderCellGraph(
   canvas: HTMLCanvasElement,
@@ -303,22 +426,24 @@ export async function renderCellGraph(
     width: canvas.width,
     height: canvas.height,
     backgroundColor: 0x1A1A2E,
-    antialias: true,            // GPU sub-pixel smoothing
+    antialias: true,
     resolution: window.devicePixelRatio || 1,
     autoDensity: true,
   });
 
-  // Enable z-index sorting
   app.stage.sortableChildren = true;
 
-  // Build cell map
   const cellMap = new Map<string, CellDescriptor>();
   for (const c of cells) cellMap.set(c.cell_id, c);
+
+  // Build bbox map for edge drawing
+  const bboxMap = new Map<string, { x: number; y: number; w: number; h: number }>();
+  for (const c of cells) bboxMap.set(c.cell_id, c.bbox);
 
   // Draw edges first (behind cells)
   const edgeLayer = new Graphics();
   edgeLayer.zIndex = 0;
-  drawEdges(edgeLayer, edges, cellMap);
+  drawEdges(edgeLayer, edges, bboxMap);
   app.stage.addChild(edgeLayer);
 
   // Draw cells
@@ -328,4 +453,38 @@ export async function renderCellGraph(
   }
 
   return app;
+}
+
+// ── Live poll renderer (uses pollCellChannels) ──────────────────────────────
+
+/**
+ * renderCellGraphLive — initialise a PixiJS canvas in live-poll mode.
+ *
+ * No initial cells are rendered; the poll loop populates the stage.
+ * Returns both the Application and a stop() handle.
+ */
+export async function renderCellGraphLive(
+  canvas: HTMLCanvasElement,
+  edges: EdgeDescriptor[],
+): Promise<{ app: Application; stop: () => void }> {
+  const app = new Application();
+  await app.init({
+    canvas,
+    width: canvas.width,
+    height: canvas.height,
+    backgroundColor: 0x1A1A2E,
+    antialias: true,
+    resolution: window.devicePixelRatio || 1,
+    autoDensity: true,
+  });
+
+  app.stage.sortableChildren = true;
+
+  const edgeLayer = new Graphics();
+  edgeLayer.zIndex = 0;
+  app.stage.addChild(edgeLayer);
+
+  const stop = pollCellChannels(app, edges, edgeLayer);
+
+  return { app, stop };
 }
