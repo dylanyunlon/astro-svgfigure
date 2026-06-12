@@ -1,0 +1,22 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+ 
+#include "Common.ush"
+
+Texture2D AtlasTexture;
+SamplerState AtlasSampler;
+float4 UVTransform;		// xy=scale, zw=bias ([0,1] tile-local UV --> atlas UV)
+float2 TileScreenMin;	
+float2 TileScreenMax;	
+
+void MainPS(float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
+{
+	// Remap absolute SvPosition to [0,1] within this tile
+	float2 TileUV = (SvPosition.xy - TileScreenMin) / (TileScreenMax - TileScreenMin);
+
+	// Map tile UV to the cascade's sub-rect within the atlas
+	float2 AtlasUV = TileUV * UVTransform.xy + UVTransform.zw;
+
+	float Depth = AtlasTexture.SampleLevel(AtlasSampler, AtlasUV, 0).r;
+
+	OutColor = float4(Depth, Depth, Depth, 1.0);
+}

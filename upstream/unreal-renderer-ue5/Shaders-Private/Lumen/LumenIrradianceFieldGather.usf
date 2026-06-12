@@ -1,0 +1,151 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "LumenMaterial.ush"
+
+#include "../DeferredShadingCommon.ush"
+#include "../BRDF.ush"
+#include "../SceneTextureParameters.ush"
+#include "LumenPosition.ush"
+#include "LumenRadianceCacheMarkCommon.ush"
+#include "LumenTracingCommon.ush"
+#include "LumenIrradianceFieldInterpolation.ush"
+#include "../ClearCoatCommon.ush"
+#include "../ReflectionEnvironmentShared.ush"
+#include "LumenReflectionsCombine.ush"
+#include "LumenUpsample.ush"
+
+#ifndef THREADGROUP_SIZE
+#define THREADGROUP_SIZE 1
+#endif
+
+#ifdef MarkProbesUsedByGBufferCS
+
+RWTexture2D<float> RWDownsampledSceneDepth;
+RWTexture2D<UNORM float3> RWDownsampledNormal;
+
+uint MarkProbesDownsampleFactor;
+
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
+void MarkProbesUsedByGBufferCS(
+	uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint2 InterpolateDispatchThreadId = DispatchThreadId;
+#if !DOWNSAMPLE_DEPTH_NORMAL
+	// We can downsample marking in a jittered pattern since probes are kept around for more than one frame
+	InterpolateDispatchThreadId = DispatchThreadId * MarkProbesDownsampleFactor + GetDownsampledCoordJitter(DispatchThreadId, MarkProbesDownsampleFactor);
+#endif
+
+	// Reconstruct the full res SvPosition that corresponds to this interpolation coord
+	uint2 SvPosition = InterpolateDispatchThreadId * INTERPOLATE_DOWNSAMPLE_FACTOR + View.ViewRectMinAndSize.xy + GetDownsampledCoordJitter(InterpolateDispatchThreadId, INTERPOLATE_DOWNSAMPLE_FACTOR);
+	float2 ScreenUV = (SvPosition + 0.5f) * View.BufferSizeAndInvSize.zw;
+	uint2 InterpolateCoord = InterpolateDispatchThreadId + IntegrateViewMin;
+
+	if (all(InterpolateCoord < IntegrateViewMin + IntegrateViewSize))
+	{
+		float SceneDepth;
+		float3 WorldNormal;
+
+		#if INTERPOLATE_DOWNSAMPLE_FACTOR == 1 || DOWNSAMPLE_DEPTH_NORMAL
+		{
+			FLumenMaterialData Material = ReadMaterialData(SvPosition, ScreenUV);
+			SceneDepth = Material.IsValid() ? Material.SceneDepth : -1.0;
+			WorldNormal = Material.WorldNormalForPositionBias;
+		}
+		#else
+		{
+			SceneDepth = DownsampledSceneDepth[InterpolateCoord];
+			WorldNormal = DecodeNormal(DownsampledSceneWorldNormal[InterpolateCoord]);
+		}
+		#endif
+
+		bool bMark = true;
+
+	#if DOWNSAMPLE_DEPTH_NORMAL
+		bMark = all(InterpolateDispatchThreadId % MarkProbesDownsampleFactor == GetDownsampledCoordJitter(InterpolateDispatchThreadId / MarkProbesDownsampleFactor, MarkProbesDownsampleFactor));
+		RWDownsampledSceneDepth[InterpolateCoord] = SceneDepth;
+		RWDownsampledNormal[InterpolateCoord] = EncodeNormal(WorldNormal);
+	#endif
+
+		if (bMark && SceneDepth >= 0.0f)
+		{
+			float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, SceneDepth);
+
+			uint ClipmapIndex = GetRadianceProbeClipmapForMark(TranslatedWorldPosition, InterleavedGradientNoise(SvPosition, View.StateFrameIndexMod8));
+
+			if (IsValidRadianceCacheClipmapForMark(ClipmapIndex))
+			{
+				float3 V = -GetCameraVectorFromTranslatedWorldPosition(TranslatedWorldPosition);
+				float CellSize = GetRadianceProbeClipmapCellSizeForMark(ClipmapIndex);
+				float3 BiasOffset = GetIrradianceFieldSamplingOffset(WorldNormal, V, CellSize);
+
+				TranslatedWorldPosition += BiasOffset;
+				MarkPositionUsedInIndirectionTexture(TranslatedWorldPosition, ClipmapIndex);
+			}
+		}
+	}
+}
+
+#endif
+
+#ifdef InterpolateIrradianceProbesToPixelsCS
+
+RWTexture2DArray<float3> RWDiffuseIndirect;
+RWTexture2DArray<float3> RWRoughSpecularIndirect;
+
+uint InterpolationFeedbackTileWrapMask;
+uint2 InterpolationFeedbackTileJitter;
+
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
+void InterpolateIrradianceProbesToPixelsCS(
+	uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint2 SvPosition = DispatchThreadId * INTERPOLATE_DOWNSAMPLE_FACTOR + View.ViewRectMinAndSize.xy + GetDownsampledCoordJitter(DispatchThreadId, INTERPOLATE_DOWNSAMPLE_FACTOR);
+	float2 ScreenUV = (SvPosition + 0.5f) * View.BufferSizeAndInvSize.zw;
+
+	uint2 InterpolateCoord = DispatchThreadId + IntegrateViewMin;
+
+	if (and(all(InterpolateCoord.xy >= IntegrateViewMin), all(InterpolateCoord.xy < IntegrateViewMin + IntegrateViewSize)))
+	{
+		FLumenMaterialData Material = ReadMaterialData(SvPosition, ScreenUV);
+
+		#if INTERPOLATE_DOWNSAMPLE_FACTOR == 2
+			Material.SceneDepth = DownsampledSceneDepth[InterpolateCoord];
+			Material.bIsValid = Material.SceneDepth >= 0;
+			Material.WorldNormal = normalize(DecodeNormal(DownsampledSceneWorldNormal[InterpolateCoord]));
+		#endif
+
+		const bool bPixelShouldProcessFeedback = all((InterpolateCoord & InterpolationFeedbackTileWrapMask) == InterpolationFeedbackTileJitter);
+
+		if (IsValid(Material))
+		{
+			const float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, Material.SceneDepth);
+			float3 DiffuseLighting = 0;
+			float3 SpecularLighting = 0;
+
+			GetIrradianceFieldInterpolatedLighting(
+				SvPosition,
+				TranslatedWorldPosition,
+				Material.WorldNormal,
+				Material.Roughness,
+				GetClearCoatBottomNormal(Material),
+				HasBackfaceDiffuse(Material),
+				bPixelShouldProcessFeedback,
+				DiffuseLighting, 
+				SpecularLighting);
+
+			// FDiffuseIndirectCompositePS applies DiffuseColor
+			RWDiffuseIndirect[uint3(InterpolateCoord, 0)] = DiffuseLighting * View.PreExposure;
+			RWRoughSpecularIndirect[uint3(InterpolateCoord, 0)] = SpecularLighting * View.PreExposure;
+		}
+		else
+		{
+			//@todo - remove these clears
+			// DiffuseIndirectComposite reads these when upsampling has no valid samples
+			RWDiffuseIndirect[uint3(InterpolateCoord, 0)] = float3(0, 0, 0) * View.PreExposure;
+			RWRoughSpecularIndirect[uint3(InterpolateCoord, 0)] = 0;
+		}
+	}
+}
+
+#endif

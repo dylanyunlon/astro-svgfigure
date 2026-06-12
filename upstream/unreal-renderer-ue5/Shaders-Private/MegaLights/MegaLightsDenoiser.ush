@@ -1,0 +1,32 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+#pragma once
+
+#include "../Common.ush"
+
+// smoothstep(), but using lerp
+half LinearStep(half Edge0, half Edge1, half X)
+{
+	return saturate((X - Edge0) / (Edge1 - Edge0));
+}
+
+half ShadingConfidenceToMaxFramesAccumulated(half ShadingConfidence, half TemporalMaxFramesAccumulated)
+{
+	half MaxConfidenceFrames = ShadingConfidence > 0.0 ? 1.0 / (ShadingConfidence * 0.5) : TemporalMaxFramesAccumulated;
+	return MaxConfidenceFrames;
+}
+
+// Packing into an R8_UInt
+uint PackNumFramesAccumulated(half X)
+{
+	return X * 8.0 + 0.5;
+}
+
+half UnpackNumFramesAccumulated(half X)
+{
+	return X / 8.0;
+}
+
+half UnpackNumFramesAccumulated(uint X)
+{
+	return UnpackNumFramesAccumulated(half(X));
+}

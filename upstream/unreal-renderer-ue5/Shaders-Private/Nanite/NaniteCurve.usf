@@ -1,0 +1,566 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "NaniteCurveCommon.ush"
+#include "../ComputeShaderUtils.ush"
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// kernels binning
+
+#ifdef CurveTileClear
+[numthreads(GROUP_SIZE, 1, 1)]
+void CurveTileClear(
+	uint3 GroupID	: SV_GroupID,			// group index within dispatch
+	uint3 WorldID	: SV_DispatchThreadID,	// thread index within dispatch
+	uint3 LocalID	: SV_GroupThreadID,		// thread index within group
+	uint LocalIndex	: SV_GroupIndex)		// thread index within group (flattened)
+{
+	uint TileIndex = WorldID.x;
+	if (TileIndex < NumTilesA)
+	{
+		RWTileCount[TileIndex] = 0;
+	}
+
+	if (WorldID.x == 0)
+	{
+		RWActiveTileCount[0] = 0u;
+		RWTileMinMaxZ[0] = asuint(1.f);
+		RWTileMinMaxZ[1] = asuint(0.f);
+	}
+}
+#endif
+
+#ifdef CurveTileCount
+#error this kernel is defined in NaniteRasterizer.usf
+#endif
+
+#ifdef CurveTileCountCap
+[numthreads(GROUP_SIZE, 1, 1)]
+void CurveTileCountCap(
+	uint3 GroupID	: SV_GroupID,			// group index within dispatch
+	uint3 WorldID	: SV_DispatchThreadID,	// thread index within dispatch
+	uint3 LocalID	: SV_GroupThreadID,		// thread index within group
+	uint LocalIndex	: SV_GroupIndex)		// thread index within group (flattened)
+{
+	uint TileIndex = WorldID.x;
+	if (TileIndex < NumTilesA)
+	{
+		uint2 TileCoord = GetTileCoord(TileIndex);
+
+		uint Count = RWTileCount[TileIndex];
+		uint CountCap = min(Count, TILE_CAPACITY);
+		
+		// initialize heat map
+		RWTileHeat[TileCoord] = (float)Count / TILE_CAPACITY;
+
+		// reset count, but store allocated capacity in upper 16 bits for bounding write index
+		RWTileCount[TileIndex] = (CountCap << 16);
+
+		// Write active data
+		const bool bActive = Count > 0;
+		uint ActiveCount = WaveActiveCountBits(bActive);
+		uint ActiveOffset = 0;
+		if (WaveIsFirstLane() && ActiveCount>0)
+		{
+			InterlockedAdd(RWActiveTileCount[0], ActiveCount, ActiveOffset);
+		}
+		uint WriteActiveOffset = WaveReadLaneFirst(ActiveOffset) + WavePrefixCountBits(bActive);
+
+		if (bActive)
+		{
+			RWActiveTile[WriteActiveOffset] = TileIndex;
+		}
+	}
+}
+#endif
+
+#ifdef CurveTileIndirectArgs
+[numthreads(1, 1, 1)]
+void CurveTileIndirectArgs(
+	uint3 GroupID	: SV_GroupID,			// group index within dispatch
+	uint3 WorldID	: SV_DispatchThreadID,	// thread index within dispatch
+	uint3 LocalID	: SV_GroupThreadID,		// thread index within group
+	uint LocalIndex	: SV_GroupIndex)		// thread index within group (flattened)
+{
+	WriteDispatchIndirectArgs(
+		RWActiveTileIndirectArgs, 
+		0/*Args index/offset*/, 
+		GetGroupCountWrapped(ActiveTileCount[0], MaxDispatchThreadGroupsPerDimension.xy)
+	);
+}
+#endif
+
+#ifdef CurveTileOffsetScan
+groupshared uint GroupWaveAdd[128];
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void CurveTileOffsetScan(
+	uint3 GroupID	: SV_GroupID,			// group index within dispatch
+	uint3 WorldID	: SV_DispatchThreadID,	// thread index within dispatch
+	uint3 LocalID	: SV_GroupThreadID,		// thread index within group
+	uint LocalIndex	: SV_GroupIndex)		// thread index within group (flattened)
+{
+	// load
+	uint TileIndex;
+	uint TileValue;
+	{
+		if (TileStride == 1)// first pass reads from prior adjacent cell in TileCount
+		{
+			TileIndex = (WorldID.x);
+			TileValue = (TileIndex > 0 && TileIndex < NumTilesA) ? TileCount[TileIndex - 1] : 0;
+			TileValue = TileValue >> 16;// capped count sits in upper 16 bits after CurveTileCountCap
+		}
+		else
+		{
+			TileIndex = (WorldID.x * TileStride) + (TileStride - 1);
+			TileValue = (TileIndex < NumTilesA) ? RWTileOffset[TileIndex] : 0;
+		}
+	}
+
+	// scan wave
+	uint PrefixSum = WavePrefixSum(TileValue) + TileValue;// inclusive scan
+	
+	// share wave sum
+	uint LaneCount = WaveGetLaneCount();
+	uint LaneIndex = WaveGetLaneIndex();
+	uint WaveIndex = LocalIndex / LaneCount;
+	
+	if (LaneIndex == LaneCount - 1)
+	{
+		GroupWaveAdd[WaveIndex] = PrefixSum;
+	}
+	
+	GroupMemoryBarrierWithGroupSync();
+
+	// scan wave sums => wave offsets
+	if (WaveIndex == 0)
+	{
+		uint WaveAdd = GroupWaveAdd[LaneIndex];
+	
+		GroupWaveAdd[LaneIndex] = WavePrefixSum(WaveAdd);
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+	
+	// apply wave offset
+	PrefixSum += GroupWaveAdd[WaveIndex];
+	
+	// store
+	if (TileIndex < NumTilesA)
+	{
+		RWTileOffset[TileIndex] = PrefixSum;
+	}
+}
+#endif
+
+#ifdef CurveTileOffsetMerge
+groupshared uint GroupAdd;
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void CurveTileOffsetMerge(
+	uint3 GroupID	: SV_GroupID,			// group index within dispatch
+	uint3 WorldID	: SV_DispatchThreadID,	// thread index within dispatch
+	uint3 LocalID	: SV_GroupThreadID,		// thread index within group
+	uint LocalIndex	: SV_GroupIndex)		// thread index within group (flattened)
+{
+	// load
+	uint TileIndex = (WorldID.x * TileStride) + (TileStride - 1);
+	uint TileValue = (TileIndex < NumTilesA) ? RWTileOffset[TileIndex] : 0;
+	
+	// share group offset
+	if (LocalIndex == 0)
+	{
+		GroupAdd = (TileIndex >= TileStride) ? RWTileOffset[TileIndex - TileStride] : 0;
+	}
+	
+	GroupMemoryBarrierWithGroupSync();
+
+	if (LocalIndex == GROUP_SIZE - 1)
+	{
+		return;
+	}
+
+	// apply group offset
+	TileValue += GroupAdd;
+	
+	// store
+	if (TileIndex < NumTilesA)
+	{
+		RWTileOffset[TileIndex] = TileValue;
+	}
+}
+#endif
+
+#ifdef CurveTileWrite
+#error this kernel is defined in NaniteRasterizer.usf
+#endif
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// kernels resolve
+
+#ifdef CurveTileResolve
+#define DEDUP_METHOD_OFF	0		// no deduplication (ignore duplicates)
+#define DEDUP_METHOD_BIN	1		// bin_w = max(bin_w, w), w = sum(bin_w) after all visited
+#define DEDUP_METHOD_BIN_SM	2		// same as DEDUP_METHOD_BIN, but use shared memory as this is faster on certain platforms
+//#define DEDUP_METHOD_SORT	3		// sort and check, w += on accept
+#define DEDUP_METHOD_BLOOM	4		// bloom filter, w += on accept
+#define DEDUP_METHOD		DEDUP_METHOD_BIN_SM
+
+#define DEDUP_BIN_COUNT		32			// num. bins
+#define DEDUP_BIN_TYPE		half	// data type
+#define DEDUP_BIN_PACK		1			// data type == uint only -> num bins packed in single uint
+
+#define DEDUP_BLOOM_M_BITS	512		// bloom filter storage size in bits
+#define DEDUP_BLOOM_K_ITER	3		// bloom filter test/set iterations
+
+//	bloom filter probabilities of false positives for different configurations of
+//	m (storage size), k (num. test-set iterations), and n (expected num. inserts)
+//	using p = pow(1 - exp(-k / (m / n)), k)
+//
+//	k	n=64 m=512		n=64 m=1024		n=128 m=512		n=128 m=1024
+//	----------------------------------------------------------------
+//	1	0.1175			0.0606			0.2211			0.1175
+//	2	0.0489			0.0138			0.1548			0.0489
+//	3	0.0306			0.00500			0.1469			0.0306
+//	4	0.0240			0.00239			0.1597			0.0240
+//	5	0.0217			0.00139			0.1849			0.0217
+//	6	0.0216			0.000935		0.2198			0.0216
+//	7	0.0229			0.000702		0.2628			0.0229
+
+#if DEDUP_METHOD == DEDUP_METHOD_BIN_SM
+	#define USUM_DECLARE(X)		groupshared DEDUP_BIN_TYPE X##_DedupBin[DEDUP_BIN_COUNT / DEDUP_BIN_PACK * GROUP_SIZE_X * GROUP_SIZE_Y]
+	#define USUM_INI(X)																	\
+								for (uint X##_i = 0; X##_i < DEDUP_BIN_COUNT; X##_i++)	\
+								{														\
+									X##_DedupBin[LocalIndex*DEDUP_BIN_COUNT + X##_i]=0;	\
+								}
+	#define USUM_ADD(X, Y, I)	{														\
+									uint X##_i = PCGHash(I) & (DEDUP_BIN_COUNT - 1);	\
+									X##_DedupBin[LocalIndex * DEDUP_BIN_COUNT + X##_i] =\
+									max(X##_DedupBin[LocalIndex*DEDUP_BIN_COUNT+ X##_i],\
+																(DEDUP_BIN_TYPE)Y);		\
+								}
+	#define USUM_OUT(X)			float X = 0.0;											\
+								for (uint X##_i = 0; X##_i < DEDUP_BIN_COUNT; X##_i++)	\
+								{														\
+									X += X##_DedupBin[LocalIndex*DEDUP_BIN_COUNT+X##_i];\
+								}
+#elif DEDUP_METHOD == DEDUP_METHOD_BIN
+	#define USUM_DECLARE(X)
+	#define USUM_INI(X)			static DEDUP_BIN_TYPE X##_DedupBin[DEDUP_BIN_COUNT / DEDUP_BIN_PACK]; // note: static array are 0-initialized
+	#define USUM_ADD(X, Y, I)	{														\
+									uint X##_i = PCGHash(I) & (DEDUP_BIN_COUNT - 1);	\
+									X##_DedupBin[X##_i] = max(X##_DedupBin[X##_i],		\
+																(DEDUP_BIN_TYPE)Y);		\
+								}
+	#define USUM_OUT(X)			float X = 0.0;											\
+								for (uint X##_i = 0; X##_i < DEDUP_BIN_COUNT; X##_i++)	\
+								{														\
+									X += X##_DedupBin[X##_i];							\
+								}
+#elif DEDUP_METHOD == DEDUP_METHOD_BLOOM
+	#define USUM_DECLARE(X)
+	#define USUM_INI(X)			const uint X##_M = DEDUP_BLOOM_M_BITS;	\
+								const uint X##_K = DEDUP_BLOOM_K_ITER;	\
+								static uint X##_Bloom[X##_M / 32];		\
+								static FPCGHashOp X##_HashOp;			\
+								float X = 0.0;
+	#define USUM_ADD(X, Y, I)	X = BloomFilter<X##_M, X##_K>(X##_Bloom, I, X##_HashOp)	\
+									? max(X, Y) : X + Y;
+	#define USUM_OUT(X)			;
+#else// == NONE (assumption)
+	#define USUM_DECLARE(X)
+	#define USUM_INI(X)			float X = 0.0;
+	#define USUM_ADD(X, Y, I)	X += Y;
+	#define USUM_OUT(X)			;
+#endif
+
+USUM_DECLARE(W);
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void CurveTileResolve(
+	uint3 GroupID	: SV_GroupID,			// group index within dispatch
+	uint3 WorldID	: SV_DispatchThreadID,	// thread index within dispatch
+	uint3 LocalID	: SV_GroupThreadID,		// thread index within group
+	uint LocalIndex	: SV_GroupIndex)		// thread index within group (flattened)
+{
+	// * Early out overflow tile
+	// * early out of empty tiles is handled by the indirect dispatch
+	const uint ActiveTileIndex = GetUnWrappedDispatchGroupId(GroupID);
+	if (ActiveTileIndex >= ActiveTileCount[0])
+	{
+		return;
+	}
+
+	uint TileIndex = WaveReadLaneFirst(ActiveTile[ActiveTileIndex]);
+	uint TileDataBegin = WaveReadLaneFirst(TileOffset[TileIndex]);
+	uint TileDataCount = WaveReadLaneFirst(TileCount[TileIndex] & 0xFFFFu);
+	uint2 TileCoord = GetTileCoord(TileIndex);
+	uint2 PixelPos = TileCoord * TILE_WIDTH + LocalID.xy;
+
+	// initialize packed sorted visibility
+#define Z16 1
+#if Z16
+	typedef FParallel4xU16::FLayout FSpec;
+	typedef uint64_t FUInt;
+#else
+	typedef FParallel4xU8::FLayout FSpec;
+	typedef uint FUInt;
+#endif
+	FUInt SortedZ = 0;
+	FUInt SortedI = 0;
+
+	// initialize unique contributions (for coverage)
+	USUM_INI(W);
+
+	// init pixel offset from tile center (F-Q)
+	float2 Q = float2(0.5, 0.5);
+	float2 F = LocalID.xy * (float2(1.0, 1.0) / TILE_WIDTH) + (float2(0.5, 0.5) / TILE_WIDTH - Q);
+
+	// 4 +---+---+---+---+
+	//   |   |   |   |   |
+	// 3 +---+---+---+---+
+	//   |   |   '   |   |
+	// 2 +---+-- Q --+---+
+	//   |   |   .   |   |
+	// 1 +---+---+---+---+
+	//   | F |   |   |   |
+	// 0 +---+---+---+---+
+	//   0   1   2   3   4
+
+	// enumerate segments in tile
+	for (uint i = 0; i != TileDataCount; i++)
+	{
+#if 1
+		float3 F_Pos;
+		float2 F_Ext;
+
+		FTilePrimitive Prim = TilePrimitiveUnpack(WaveReadLaneFirst(TileSegment[TileDataBegin + i]));
+		TilePrimitiveResolve(Prim, F, F_Pos, F_Ext);
+		
+		float F_D = SdSegment(F_Pos.xy, F_Ext.x, F_Ext.y + 1.0 / TILE_WIDTH);
+		float F_D_px = TILE_WIDTH * F_D;
+		float F_W_px = TILE_WIDTH * F_Ext.x * 2.0;
+#else
+		FTilePrimitive Prim = TilePrimitiveUnpack(TileSegment[TileDataRead++]);
+
+		float F_D_N	= Prim.D_N - dot(F, Prim.N);
+		float F_S_Ext = 0.5 * (Prim.S_Max - Prim.S_Min);
+		float F_S_Pos = Prim.S_Min + F_S_Ext + dot(F, Prim.N_Perp);
+		
+		float F_T = saturate((F_S_Ext - F_S_Pos) / (2.0 * F_S_Ext));
+		float F_Z = lerp(Prim.Z_Min, Prim.Z_Max, F_T);
+		float F_W = lerp(Prim.W_Min, Prim.W_Max, F_T);
+		float F_W_px = F_W * TILE_WIDTH;
+		
+		float F_D = SdSegment(float2(F_D_N, F_S_Pos), 0.5 * F_W, F_S_Ext + 1.0 / TILE_WIDTH);
+		float F_D_px = F_D * TILE_WIDTH;
+#endif
+
+		// calc pixel contribution
+		float W_contrib;
+		{
+			float H_px = 1.0 * (abs(Prim.N.x) + abs(Prim.N.y));
+			float E_px = 0.5 * H_px;
+#if 1
+			// pixel contribution <- active width (overlapping + exterior)
+			W_contrib = clamp(E_px - F_D_px, 0, F_W_px) / H_px;
+#elif 0
+			// pixel contribution <- active area (overlapping + exterior)
+			W_contrib = (clamp(E_px - F_D_px, 0, F_W_px) * SliceHeightUnitSquare(Prim.N, max(0, F_D_px))) / (H_px * H_px);
+#else
+			// pixel contribution <- overlapping width
+			W_contrib = -max(F_D_px, -E_px) / E_px;
+#endif
+		}
+		
+		// add unique contribution (unique per curve)
+		if (W_contrib > 0.0)
+		{
+			USUM_ADD(W, W_contrib, Prim.ID >> 8);
+		}
+		
+		// updated packed sorted visibility
+#if 1
+		float WZ_in = saturate(W_contrib) * F_Pos.z;
+#else
+		float WZ_in = 0.5 * (saturate(W_contrib) + F_Pos.z);
+#endif
+
+		uint WZ = UNORM_ENC(FSpec::LANE_BITS, WZ_in);
+		SortedZ = ParallelSortedInsertWithPayload<FSpec>(SortedZ, WZ, SortedI, i);
+	}
+
+	// sum unique contributions
+	USUM_OUT(W);
+	
+	// here we compute per pixel coverage via analytic approximation: 1-e^(-C n),
+	// where C is mean width of crossing lines and n is number of crossing lines.
+	// assuming C = W/n, where W is sum of widths, we can simplify to: 1-e^(-W),
+	// allowing us to ignore n and just accumulate W.
+	float W_coverage = 1.0 - exp(-W);
+
+	// output
+	if (all(PixelPos < RasterViewSize))
+	{
+		RWOutCoverage[PixelPos] = W_coverage;
+#if Z16
+		RWOutVisibility[PixelPos] = ParallelConvert<FSpec, FParallel4xU8::FLayout, uint>(SortedI);
+		RWOutVisibilityW[PixelPos] = ParallelConvert<FSpec, FParallel4xU8::FLayout, uint>(SortedZ);
+#else
+		RWOutVisibility[PixelPos] = SortedI;
+		RWOutVisibilityW[PixelPos] = SortedZ;
+#endif
+	}
+}
+#endif// CurveTileResolve
+
+#ifdef CurveTileTranslate
+#include "../BlueNoiseCommon.ush"
+#include "NaniteWritePixel.ush"
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void CurveTileTranslate(
+	uint3 GroupID	: SV_GroupID,			// group index within dispatch
+	uint3 WorldID	: SV_DispatchThreadID,	// thread index within dispatch
+	uint3 LocalID	: SV_GroupThreadID,		// thread index within group
+	uint LocalIndex	: SV_GroupIndex)		// thread index within group (flattened)
+{
+	// early out overflow tile
+	const uint ActiveTileIndex = GetUnWrappedDispatchGroupId(GroupID);
+	if (ActiveTileIndex >= ActiveTileCount[0])
+	{
+		return;
+	}
+
+	uint TileIndex = WaveReadLaneFirst(ActiveTile[ActiveTileIndex]);
+	uint TileDataBegin = WaveReadLaneFirst(TileOffset[TileIndex]);
+	uint TileDataCount = WaveReadLaneFirst(TileCount[TileIndex] & 0xFFFFu);
+	uint2 TileCoord = GetTileCoord(TileIndex);
+	uint2 PixelPos = TileCoord * TILE_WIDTH + LocalID.xy;
+
+	// process pixel
+	if (all(PixelPos < RasterViewSize))
+	{
+		// get coverage, segment list
+		const float PixelCoverage = OutCoverage[PixelPos];
+		const uint PixelSegments = OutVisibility[PixelPos];
+
+		// dither
+		#if VIRTUAL_TEXTURE_TARGET
+		const bool bDitheredWrite = true; // No dithering for shadow (at least for now)
+		#else
+		const bool bDitheredWrite = GetBlueNoiseDitheredCoverage(View.BlueNoiseScalarTexture, View.BlueNoiseDimensions, View.BlueNoiseModuloMasks, PixelPos, FrameIndex, PixelCoverage) > 0;
+		#endif
+		if (bDitheredWrite && PixelCoverage > 0.0)
+		{
+			// get tile-local index of highest weighted segment
+			uint TileDataIndex = PixelSegments & 0xFFu;
+
+			// get tile-local primitive
+			FTilePrimitive Prim = TilePrimitiveUnpack(TileSegment[TileDataBegin + TileDataIndex]);
+
+			// resolve segment id
+			uint SourcePixelValue = Prim.ID;
+
+			// resolve depth
+			float2 Q = float2(0.5, 0.5);
+			float2 F = LocalID.xy * (float2(1.0, 1.0) / TILE_WIDTH) + (float2(0.5, 0.5) / TILE_WIDTH - Q);
+			float3 F_Pos;
+			float2 F_Ext;
+			TilePrimitiveResolve(Prim, F, F_Pos, F_Ext);
+			float DeviceZ = F_Pos.z;//TODO better precision via layered tiles
+
+			// write pixel
+			uint2 vTranslation = 0;
+			FVisBufferPixel Pixel = CreateVisBufferPixel(PixelPos + vTranslation, SourcePixelValue, DeviceZ);
+			#if VIRTUAL_TEXTURE_TARGET
+			Pixel.PhysicalPosition.xy = PixelPos;
+			Pixel.PhysicalPosition.z = 0; // TODO_CURVE: add support for multi view/layered VSM page texures
+			#endif
+			#if VISUALIZE
+			Pixel.VisualizeValues = GetVisualizeValues();
+			#endif
+			Pixel.WriteOverdraw();
+			Pixel.Write();
+		}
+	}
+}
+#endif// CurveTileTranslate
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// kernels debug
+
+#ifdef CurveTileDebug
+#include "../ShaderPrint.ush"
+#include "../ColorMap.ush"
+#include "NaniteDataDecode.ush"
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void CurveTileDebug(
+	uint3 GroupID	: SV_GroupID,			// group index within dispatch
+	uint3 WorldID	: SV_DispatchThreadID,	// thread index within dispatch
+	uint3 LocalID	: SV_GroupThreadID,		// thread index within group
+	uint LocalIndex	: SV_GroupIndex)		// thread index within group (flattened)
+{
+	// Early out overflow tiles
+	const uint ActiveTileIndex = GetUnWrappedDispatchGroupId(GroupID);
+	if (ActiveTileIndex >= ActiveTileCount[0])
+	{
+		return;
+	}
+
+	const uint  TileIndex = ActiveTile[ActiveTileIndex];
+	const uint2 TileCoord = GetTileCoord(TileIndex);
+
+	if (TileIndex < NumTilesA && LocalIndex == 0)
+	{
+		// tile color by population
+		float TilePopulation = TileHeat.Load(uint3(TileCoord, 0));
+		if (TilePopulation > 0)
+		{
+			const float Scale = 1.f / View.ViewResolutionFraction;
+			FShaderPrintContext Ctx = InitShaderPrintContext(true, uint2(0, 0));
+			const float4 Color = float4(ColorMapTurbo(TilePopulation), 0.5f);
+			AddFilledQuadSS(Ctx, Scale * TileCoord * TILE_WIDTH, Scale * (TileCoord * TILE_WIDTH + TILE_WIDTH), Color);// interior
+			AddQuadSS(Ctx, Scale * TileCoord * TILE_WIDTH, Scale * (TileCoord * TILE_WIDTH + TILE_WIDTH), ColorEmerald);// outline
+		}
+
+		// tile info on mouse-over
+		const uint MaxSegmentCount = TILE_CAPACITY;
+		const uint MaxSegmentOffset = NumTilesA * TILE_CAPACITY;
+		uint SegmentOffset = TileOffset[TileIndex];
+		uint SegmentCount = TileCount[TileIndex] & 0xFFFFu;
+
+		const FMinMaxZ MinMaxZ = GetTileMinMaxZ();
+		const float MinZ = MinMaxZ.MinZ;
+		const float MaxZ = MinMaxZ.MaxZ;
+
+		{
+			const uint2 CursorPos = GetCursorPos() * View.ViewResolutionFraction;
+			FShaderPrintContext Ctx = InitShaderPrintContext(all(uint2(CursorPos / float(TILE_WIDTH)) == TileCoord), uint2(50, 50));
+			Print(Ctx, TEXT("Curve debug"), FontEmerald); Newline(Ctx);
+			PrintLineN(Ctx, TileCoord);
+			PrintLineN(Ctx, TilePopulation);
+			Print(Ctx, TEXT("SegmentCount : "), FontWhite); Print(Ctx, SegmentCount, Select(SegmentCount <= MaxSegmentCount, FontYellow, FontRed)); Newline(Ctx);
+			Print(Ctx, TEXT("SegmentOffset : "), FontWhite); Print(Ctx, SegmentOffset, Select(SegmentOffset + SegmentCount <= MaxSegmentOffset, FontYellow, FontRed)); Newline(Ctx);
+			PrintLineN(Ctx, MinZ);
+			PrintLineN(Ctx, MaxZ);
+
+			for (uint i = 0; i < SegmentCount; i++)
+			{
+				const uint SegmentID = TileSegment[SegmentOffset + i].w;
+
+				uint VisibleClusterIndex = 0;
+				uint CurveSegmentIndex = 0;
+				UnpackVisPixelX(SegmentID, VisibleClusterIndex, CurveSegmentIndex);
+
+				PrintLine(Ctx, i);
+				PrintLine(Ctx, CurveSegmentIndex);
+				PrintLine(Ctx, VisibleClusterIndex);
+				PrintLine(Ctx, SegmentID);
+				Newline(Ctx);
+			}
+		}
+	}
+}
+#endif// CurveTileDebug

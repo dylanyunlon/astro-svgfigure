@@ -1,0 +1,515 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Change this to force recompilation of all MegaLights shaders
+#pragma message("UESHADERMETADATA_VERSION 380843C1-9E17-4EDB-91FC-D247E0FD54FE")
+
+#include "/Engine/Shared/MegaLightsDefinitions.h"
+
+bool IsSimpleShadingTileType(uint TileType)
+{
+	return TileType == TILE_MODE_SIMPLE_SHADING
+		|| TileType == TILE_MODE_SIMPLE_SHADING_RECT
+		|| TileType == TILE_MODE_SIMPLE_SHADING_RECT_TEXTURED;
+}
+
+bool IsRectLightTileType(uint TileType)
+{
+	return TileType == TILE_MODE_SIMPLE_SHADING_RECT
+		|| TileType == TILE_MODE_COMPLEX_SHADING_RECT
+		|| TileType == TILE_MODE_SIMPLE_SHADING_RECT_TEXTURED
+		|| TileType == TILE_MODE_COMPLEX_SHADING_RECT_TEXTURED
+	#if SUBSTRATE_ENABLED
+		|| TileType == TILE_MODE_SINGLE_SHADING_RECT
+		|| TileType == TILE_MODE_SINGLE_SHADING_RECT_TEXTURED
+	#endif
+	#if SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT == 1
+		|| TileType == TILE_MODE_COMPLEX_SPECIAL_SHADING_RECT
+		|| TileType == TILE_MODE_COMPLEX_SPECIAL_SHADING_RECT_TEXTURED
+	#endif
+		;
+}
+
+bool IsTexturedLightTileType(uint TileType)
+{ 
+	return TileType == TILE_MODE_SIMPLE_SHADING_RECT_TEXTURED
+		|| TileType == TILE_MODE_COMPLEX_SHADING_RECT_TEXTURED
+	#if SUBSTRATE_ENABLED
+		|| TileType == TILE_MODE_SINGLE_SHADING_RECT_TEXTURED
+	#endif
+	#if SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT == 1
+		|| TileType == TILE_MODE_COMPLEX_SPECIAL_SHADING_RECT_TEXTURED
+	#endif
+		;
+}
+
+#if SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT == 1
+	#define MAX_USED_TILE_MODE TILE_MODE_MAX_SUBSTRATE_ADAPTIVE
+#elif SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT == 0
+	#define MAX_USED_TILE_MODE TILE_MODE_MAX_SUBSTRATE_BLENDABLE
+#else
+	#define MAX_USED_TILE_MODE TILE_MODE_MAX_LEGACY
+#endif
+
+#if TILE_TYPE == TILE_MODE_SIMPLE_SHADING_RECT_TEXTURED || TILE_TYPE == TILE_MODE_COMPLEX_SHADING_RECT_TEXTURED || TILE_TYPE == TILE_MODE_SINGLE_SHADING_RECT_TEXTURED || TILE_TYPE == TILE_MODE_COMPLEX_SPECIAL_SHADING_RECT_TEXTURED
+	#define USE_SOURCE_TEXTURE 1
+#else
+	#define USE_SOURCE_TEXTURE 0
+#endif
+
+#ifdef OVERRIDE_USE_SOURCE_TEXTURE
+	#undef USE_SOURCE_TEXTURE
+	#define USE_SOURCE_TEXTURE OVERRIDE_USE_SOURCE_TEXTURE
+#endif
+
+#include "../LightGridCommon.ush"
+#define SUPPORT_CONTACT_SHADOWS 0
+#define NON_DIRECTIONAL_DIRECT_LIGHTING 0
+#include "../DeferredLightingCommon.ush"
+#include "../SceneData.ush"
+#include "../Hash.ush"
+
+#if DEBUG_MODE
+	#include "../ShaderPrint.ush"
+	#define FontValue FontWhite
+	#define FontSelected FontRed
+	#define FontTitle FontEmerald
+	#define FontBackground float4(0, 0, 0, 0.25f)
+	typedef FShaderPrintContext FDebugContext;
+#else
+	struct FDebugContext
+	{
+	};
+#endif
+
+#include "../Lumen/LumenPosition.ush"
+#include "../StochasticLighting/StochasticLightingUpsample.ush"
+
+#define USE_CLOUD_TRANSMITTANCE 1
+#include "../VolumetricCloudCommon.ush"
+#include "../SkyAtmosphereCommon.ush"
+
+#if !PLATFORM_SUPPORTS_REAL_TYPES
+	#define half3x2 float3x2
+#endif
+
+#define DEBUG_VISUALIZE_TRACES_RAYS		1
+#define DEBUG_VISUALIZE_TRACES_SAMPLES	2
+
+#if DEBUG_MODE
+void PrintTileTypeString(inout FDebugContext Context, uint TileType, FFontColor InColor = FontWhite)
+{
+	switch (TileType)
+	{
+		case TILE_MODE_SIMPLE_SHADING:							Print(Context, TEXT("Simple               "), InColor); break;
+		case TILE_MODE_COMPLEX_SHADING:							Print(Context, TEXT("Complex              "), InColor); break;
+		case TILE_MODE_SIMPLE_SHADING_RECT:						Print(Context, TEXT("Simple Rect          "), InColor); break;
+		case TILE_MODE_COMPLEX_SHADING_RECT:					Print(Context, TEXT("Complex Rect         "), InColor); break;
+		case TILE_MODE_SIMPLE_SHADING_RECT_TEXTURED:			Print(Context, TEXT("Simple Textured Rect "), InColor); break;
+		case TILE_MODE_COMPLEX_SHADING_RECT_TEXTURED:			Print(Context, TEXT("Complex Textured Rect"), InColor); break;
+		case TILE_MODE_EMPTY:									Print(Context, TEXT("Empty                "), InColor); break;
+	#if SUBSTRATE_ENABLED
+		case TILE_MODE_SINGLE_SHADING:							Print(Context, TEXT("Single               "), InColor); break;
+		case TILE_MODE_SINGLE_SHADING_RECT:						Print(Context, TEXT("Single Rect          "), InColor); break;
+		case TILE_MODE_SINGLE_SHADING_RECT_TEXTURED:			Print(Context, TEXT("Single Textured Rect "), InColor); break;
+	#endif
+	#if SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT == 1
+		case TILE_MODE_COMPLEX_SPECIAL_SHADING:					Print(Context, TEXT("Complex Special      "), InColor); break;
+		case TILE_MODE_COMPLEX_SPECIAL_SHADING_RECT:			Print(Context, TEXT("Complex Special Rect "), InColor); break;
+		case TILE_MODE_COMPLEX_SPECIAL_SHADING_RECT_TEXTURED:	Print(Context, TEXT("Complex Sp.Text. Rect"), InColor); break;
+	#endif
+	}
+}
+#endif
+
+int2 DebugCursorPosition;
+
+int2 GetDebugScreenCoord()
+{
+	const int2 CursorPosition = all(DebugCursorPosition >= 0) ? DebugCursorPosition : View.CursorPosition * View.ViewResolutionFraction;
+	const int2 DebugScreenCoord = CursorPosition.x >= 0 ? View.ViewRectMin.xy + CursorPosition : -1;	
+	return DebugScreenCoord;
+}
+
+uint2 DownsampleFactor;
+
+// Utility to avoid int mult/div operations
+uint2 GetDownsampleFactor()
+{
+	return select(DownsampleFactor == 1, uint2(1, 1), uint2(2, 2));
+}
+
+FDebugContext InitDebugContext(uint2 ScreenCoord, bool bDownsampled, float2 StartPos, bool bDebugModeEnabled)
+{
+	FDebugContext DebugContext;
+
+#if DEBUG_MODE
+	int2 DebugScreenCoord = GetDebugScreenCoord();
+	if (bDownsampled)
+	{
+		DebugScreenCoord /= GetDownsampleFactor();
+	}
+	DebugContext = InitShaderPrintContext(bDebugModeEnabled && all(ScreenCoord == DebugScreenCoord), StartPos);
+
+	if (DebugContext.IsDrawLocked())
+	{
+		DebugContext.bIsActive = false;
+	}
+#endif
+
+	return DebugContext;
+}
+
+FDebugContext InitDebugContext(uint2 ScreenCoord, bool bDownsampled, float2 StartPos)
+{
+	return InitDebugContext(ScreenCoord, bDownsampled, StartPos, /*bDebugModeEnabled*/ true);
+}
+
+FDebugContext InitDebugContext(bool bActive, float2 StartPos)
+{
+	FDebugContext DebugContext;
+
+#if DEBUG_MODE
+	DebugContext = InitShaderPrintContext(bActive, StartPos);
+
+	if (DebugContext.IsDrawLocked())
+	{
+		DebugContext.bIsActive = false;
+	}
+#endif
+
+	return DebugContext;
+}
+
+uint PackTile(uint2 TileCoord)
+{
+	return TileCoord.x | (TileCoord.y << 16);
+}
+
+uint2 UnpackTile(uint PackedTile)
+{
+	return uint2(PackedTile & 0xFFFF, PackedTile >> 16);
+}
+
+void BitFieldSetU32(inout uint Packed, uint V, uint Size, uint Offset)
+{
+	Packed |= (V & BitFieldMaskU32(Size, 0)) << Offset;
+}
+
+struct FLightSample
+{
+	uint LocalLightIndex;
+	float Weight;
+	bool bVisible;
+	bool bGuidedAsVisible;
+	bool bCastVolumetricShadow;
+};
+
+FLightSample InitLightSample()
+{
+	FLightSample LightSample;
+	LightSample.LocalLightIndex = MAX_LOCAL_LIGHT_INDEX;
+	LightSample.Weight = 0.0f;
+	LightSample.bVisible = false;
+	LightSample.bGuidedAsVisible = false;
+	LightSample.bCastVolumetricShadow = true;
+	return LightSample;
+}
+
+uint PackLightSample(FLightSample LightSample)
+{
+	uint PackedLightSample = 0;
+
+	BitFieldSetU32(PackedLightSample, LightSample.LocalLightIndex, 15, 0);
+	BitFieldSetU32(PackedLightSample, LightSample.bCastVolumetricShadow ? 1u : 0u, 1, 15);
+
+	PackedLightSample |= (f32tof16(LightSample.Weight) & 0x7FFE) << 16;
+	BitFieldSetU32(PackedLightSample, LightSample.bGuidedAsVisible ? 1u : 0u, 1, 16);
+	BitFieldSetU32(PackedLightSample, LightSample.bVisible ? 1u : 0u, 1, 31);
+
+	return PackedLightSample;
+}
+
+FLightSample UnpackLightSample(uint PackedLightSample)
+{
+	FLightSample LightSample = InitLightSample();
+
+	LightSample.LocalLightIndex = BitFieldExtractU32(PackedLightSample, 15, 0);
+	LightSample.bCastVolumetricShadow = BitFieldExtractU32(PackedLightSample, 1, 15) ? true : false;
+
+	LightSample.Weight = f16tof32((PackedLightSample >> 16) & 0x7FFE);
+	LightSample.bGuidedAsVisible = BitFieldExtractU32(PackedLightSample, 1, 16) ? true : false;
+	LightSample.bVisible = BitFieldExtractU32(PackedLightSample, 1, 31) ? true : false;
+
+	return LightSample;
+}
+
+#define LIGHT_SAMPLE_RAY_MAX_DISTANCE		65504.0f
+
+#define LIGHT_SAMPLE_RAY_TYPE_DEFAULT		0
+#define LIGHT_SAMPLE_RAY_TYPE_HAIR			1
+#define LIGHT_SAMPLE_RAY_TYPE_TWO_SIDED		2
+#define LIGHT_SAMPLE_RAY_TYPE_TRANSMISSION	3
+
+struct FLightSampleRay
+{
+	float RayDistance;			// Distance traversed by ray
+	float2 UV;
+	uint RayType;
+	bool bIsFirstPerson;		// Whether this ray is traced from First Person geometry
+	bool bCompleted;			// Whether tracing was completed
+
+	bool IsHair()
+	{
+		 return RayType == LIGHT_SAMPLE_RAY_TYPE_HAIR;
+	}
+
+	bool IsTwoSided()
+	{
+		return RayType == LIGHT_SAMPLE_RAY_TYPE_TWO_SIDED;
+	}
+
+	bool IsTransmission()
+	{
+		return RayType == LIGHT_SAMPLE_RAY_TYPE_TRANSMISSION;
+	}
+};
+
+FLightSampleRay InitLightSampleRay()
+{
+	FLightSampleRay LightSampleRay;
+	LightSampleRay.UV = 0.5f;
+	LightSampleRay.RayDistance = 0.0f;
+	LightSampleRay.RayType = LIGHT_SAMPLE_RAY_TYPE_DEFAULT;
+	LightSampleRay.bIsFirstPerson = false;
+	LightSampleRay.bCompleted = true;
+	return LightSampleRay;
+}
+
+uint PackLightSampleRay(FLightSampleRay LightSampleRay)
+{
+	uint Packed = 0;
+
+	BitFieldSetU32(Packed, f32tof16(LightSampleRay.RayDistance), 15, 0);
+	BitFieldSetU32(Packed, LightSampleRay.bCompleted ? 1u : 0u, 1, 15);
+
+	BitFieldSetU32(Packed, uint(LightSampleRay.UV.x * 0x3F + 0.5f), 6, 16);
+	BitFieldSetU32(Packed, uint(LightSampleRay.UV.y * 0x3F + 0.5f), 6, 22);
+	BitFieldSetU32(Packed, LightSampleRay.bIsFirstPerson ? 1u : 0u, 1, 28);
+	// bit 29 is unused
+	BitFieldSetU32(Packed, LightSampleRay.RayType, 2, 30);
+
+	return Packed;
+}
+
+FLightSampleRay UnpackLightSampleRay(uint Packed)
+{
+	FLightSampleRay LightSampleRay = InitLightSampleRay();
+
+	LightSampleRay.RayDistance = f16tof32(BitFieldExtractU32(Packed, 15, 0));
+	LightSampleRay.bCompleted = BitFieldExtractU32(Packed, 1, 15) ? true : false;
+
+	LightSampleRay.UV.x = BitFieldExtractU32(Packed, 6, 16) / float(0x3F);
+	LightSampleRay.UV.y = BitFieldExtractU32(Packed, 6, 22) / float(0x3F);
+	LightSampleRay.bIsFirstPerson = BitFieldExtractU32(Packed, 1, 28) && HAS_FIRST_PERSON_GBUFFER_BIT ? true : false;
+	LightSampleRay.RayType = BitFieldExtractU32(Packed, 2, 30);
+
+	return LightSampleRay;
+}
+
+struct FVolumeLightSampleRay
+{
+	bool bCompleted;			// Whether tracing was completed
+};
+
+FVolumeLightSampleRay InitVolumeLightSampleRay()
+{
+	FVolumeLightSampleRay VolumeLightSampleRay;
+	VolumeLightSampleRay.bCompleted = true;
+	return VolumeLightSampleRay;
+}
+
+uint PackVolumeLightSampleRay(FVolumeLightSampleRay VolumeLightSampleRay)
+{
+	uint Packed = 0;
+
+	Packed |= VolumeLightSampleRay.bCompleted ? 0x1 : 0;
+
+	return Packed;
+}
+
+FVolumeLightSampleRay UnpackVolumeLightSampleRay(uint Packed)
+{
+	FVolumeLightSampleRay VolumeLightSampleRay = InitVolumeLightSampleRay();
+
+	VolumeLightSampleRay.bCompleted = Packed & 0x1 ? true : false;
+
+	return VolumeLightSampleRay;
+}
+
+uint MegaLightsStateFrameIndex;
+
+/** 
+ * Returns sample jitter offset in the range [0, DOWNSAMPLE_FACTOR_XY - 1]
+ */
+uint2 GetSampleScreenCoordJitter(uint2 DownsampledScreenCoord)
+{
+	uint2 Jitter = 0;
+
+	if (DownsampleFactor.x != 1)
+	{
+		if (DownsampleFactor.y != 1)
+		{
+			Jitter = GetDownsampleJitter2x2(DownsampledScreenCoord);
+		}
+		else
+		{
+			Jitter = GetDownsampleJitter2x1(DownsampledScreenCoord);
+		}
+	}
+
+	return Jitter;
+}
+
+uint2 DownsampledScreenCoordToScreenCoord(uint2 DownsampledScreenCoord)
+{
+	return DownsampledScreenCoord * GetDownsampleFactor() + GetSampleScreenCoordJitter(DownsampledScreenCoord);
+}
+
+float2 DownsampledScreenCoordToScreenUV(uint2 DownsampledScreenCoord)
+{
+	uint2 ScreenCoord = DownsampledScreenCoordToScreenCoord(DownsampledScreenCoord);
+	float2 ScreenUV = (ScreenCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+	return ScreenUV;
+}
+
+uint2 NumSamplesPerPixelDivideShift;
+
+uint2 SampleCoordToDownsampledScreenCoord(uint2 SampleCoord)
+{
+	// SampleCoord / NumSamplesPerPixel
+	return SampleCoord >> NumSamplesPerPixelDivideShift;
+}
+
+uint3 NumSamplesPerVoxelDivideShift;
+
+uint3 SampleCoordToDownsampledVolumeCoord(uint3 SampleCoord)
+{
+	// SampleCoord / NumSamplesPerVoxel
+	return SampleCoord >> NumSamplesPerVoxelDivideShift;
+}
+
+uint2 SampleCoordToScreenCoord(uint2 SampleCoord)
+{
+	uint2 DownsampledScreenCoord = SampleCoordToDownsampledScreenCoord(SampleCoord);
+	return DownsampledScreenCoord * GetDownsampleFactor() + GetSampleScreenCoordJitter(DownsampledScreenCoord);
+}
+
+// Smooth blend out of X values below Treshold to 0
+float SmoothFalloffMask(float X, float Treshold)
+{
+	float Mask = 1.0;
+
+	if (X > 0.0)
+	{
+		float NormalizedX = Pow4(Treshold / X);
+		Mask = Pow2(saturate(1.0 - NormalizedX));
+	}
+
+	return Mask;
+}
+
+int bDirectionalLightPerPixelTransmittanceEnabled;
+int bCloudShadowEnabled;
+int SelectedForwardDirectionalLightIndex;
+
+float GetVolumetricCloudShadowFactor(float3 TranslatedWorldPosition, int ForwardLightIndex, FDeferredLightData LightData)
+{
+#if USE_CLOUD_TRANSMITTANCE
+	if (bCloudShadowEnabled && SelectedForwardDirectionalLightIndex == ForwardLightIndex && !LightData.bRadialLight)
+	{
+		float UnusedOpticalDepth = 0.0f;
+		return lerp(1.0f, GetCloudVolumetricShadow(TranslatedWorldPosition, CloudShadowmapTranslatedWorldToLightClipMatrix, CloudShadowmapFarDepthKm, CloudShadowmapTexture, CloudShadowmapSampler, UnusedOpticalDepth), CloudShadowmapStrength);
+	}
+#endif
+	return 1.0f;
+}
+
+float3 GetDirectionalLightPerPixelTransmittance(float3 TranslatedWorldPosition, int ForwardLightIndex, FDeferredLightData LightData)
+{
+	if (bDirectionalLightPerPixelTransmittanceEnabled && SelectedForwardDirectionalLightIndex == ForwardLightIndex && !LightData.bRadialLight)
+	{
+		const float3 PlanetCenterToWorldPos = (TranslatedWorldPosition - View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz) * CM_TO_SKY_UNIT;
+
+		return GetAtmosphereTransmittance(
+			PlanetCenterToWorldPos, LightData.Direction, View.SkyAtmosphereBottomRadiusKm, View.SkyAtmosphereTopRadiusKm,
+			View.TransmittanceLutTexture, View.TransmittanceLutTextureSampler);
+	}
+	return 1.0f;
+}
+
+groupshared uint SharedGroupDword;
+
+// All threads must be active when calling this function
+bool GroupAllTrue(bool bAllTrue, const uint NumGroupThreads)
+{
+	bool bWaveFirstLane = true;
+
+#if FEATURE_LEVEL >= FEATURE_LEVEL_SM6 || PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS
+	bAllTrue = WaveActiveAllTrue(bAllTrue);
+
+	if (WaveGetLaneCount() >= NumGroupThreads)
+	{
+		return bAllTrue;
+	}
+
+	bWaveFirstLane = WaveIsFirstLane();
+#endif
+
+	SharedGroupDword = 1;
+	GroupMemoryBarrierWithGroupSync();
+
+	if (bWaveFirstLane)
+	{
+		InterlockedAnd(SharedGroupDword, bAllTrue ? 1 : 0);
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	bAllTrue = (SharedGroupDword & 0x1) != 0;
+	GroupMemoryBarrierWithGroupSync();
+
+	return bAllTrue;
+}
+
+// All threads must be active when calling this function
+void GroupAnyAllTrue(inout bool bAnyTrue, inout bool bAllTrue, const uint NumGroupThreads)
+{
+	bool bWaveFirstLane = true;
+
+#if FEATURE_LEVEL >= FEATURE_LEVEL_SM6 || PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS
+	bAnyTrue = WaveActiveAnyTrue(bAnyTrue);
+	bAllTrue = WaveActiveAllTrue(bAllTrue);
+
+	if (WaveGetLaneCount() >= NumGroupThreads)
+	{
+		return;
+	}
+
+	bWaveFirstLane = WaveIsFirstLane();
+#endif
+
+	SharedGroupDword = 1;
+	GroupMemoryBarrierWithGroupSync();
+
+	if (bWaveFirstLane)
+	{
+		InterlockedOr(SharedGroupDword, bAnyTrue ? 2 : 0);
+		InterlockedAnd(SharedGroupDword, bAllTrue ? 3 : 2);
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	bAnyTrue = (SharedGroupDword & 0x2) != 0;
+	bAllTrue = (SharedGroupDword & 0x1) != 0;
+	GroupMemoryBarrierWithGroupSync();
+}

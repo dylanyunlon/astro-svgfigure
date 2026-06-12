@@ -1,0 +1,258 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../MonteCarlo.ush"
+#include "/Engine/Shared/RayTracingTypes.h"
+#include "/Engine/Shared/MegaLightsDefinitions.h"
+#include "../RayTracing/RayTracingCommon.ush"
+#include "../Lumen/LumenHardwareRayTracingPayloadCommon.ush"
+#include "../Lumen/LumenHardwareRayTracingCommon.ush"
+#if HAIR_VOXEL_TRACES
+	#include "../PathTracing/Utilities/PathTracingRandomSequence.ush"
+	#include "../HairStrands/HairStrandsRaytracing.ush"
+#endif
+#define INPUT_TYPE 0
+#include "MegaLightsMaterial.ush"
+#include "../StochasticLighting/StochasticLightingVisualize.ush"
+#include "../Visualization.ush"
+
+#if LUMEN_HARDWARE_INLINE_RAYTRACING
+	StructuredBuffer<FHitGroupRootConstants> HitGroupData;
+	StructuredBuffer<FRayTracingSceneMetadataRecord> RayTracingSceneMetadata;
+	RWStructuredBuffer<uint> RWInstanceHitCountBuffer;
+#endif
+
+uint VisualizeMode;
+uint2 InputViewSize;
+uint2 InputViewOffset;
+uint2 OutputViewSize;
+uint2 OutputViewOffset;
+
+uint MegaLightsStateFrameIndex;
+float ShadowCasterQualityMissingProxyDistanceThreshold;
+float ShadowCasterQualityPoorQualityDistanceThreshold;
+
+float NearFieldSceneRadius;
+float NearFieldMaxTraceDistance;
+float NearFieldMaxTraceDistanceDitherScale;
+float FarFieldBias;
+float FarFieldMaxTraceDistance;
+
+uint UseFarField;
+uint UseHairVoxelTraces;
+uint ForceTwoSided;
+uint MaxTraversalIterations;
+uint MeshSectionVisibilityTest;
+RaytracingAccelerationStructure TLAS;
+RaytracingAccelerationStructure FarFieldTLAS;
+
+// Depth texture containing only opaque objects (no single layer water or depth-writing translucency)
+Texture2D OpaqueOnlyDepthTexture;
+
+RWTexture2D<float3> RWSceneColor;
+
+LUMEN_HARDWARE_RAY_TRACING_ENTRY(MegaLightsVisualizeHardwareRayTracing)
+{
+	uint GroupIndex = DispatchThreadIndex.x;
+	uint ThreadIndex = DispatchThreadIndex.y;
+
+	uint2 TraceTileCoord;
+	TraceTileCoord.x = GroupIndex % DivideAndRoundUp(OutputViewSize.x, 8);
+	TraceTileCoord.y = GroupIndex / DivideAndRoundUp(OutputViewSize.x, 8);
+
+	uint2 TraceCoord = TraceTileCoord * 8 + uint2(ThreadIndex % 8, ThreadIndex / 8);
+	uint2 OutputScreenCoord = TraceCoord + OutputViewOffset;
+
+	if (IsInsideVisualizeRect(TraceCoord, OutputViewSize, OutputViewOffset))
+	{
+		// Remove sub-pixel jitter as we are rendering after TSR
+		float2 ViewportUV = (TraceCoord + 0.5f) / OutputViewSize + float2(0.5, -0.5) * View.TemporalAAJitter.xy;
+		float2 ScreenPosition = float2(2.0f, -2.0f) * ViewportUV + float2(-1.0f, 1.0f);
+		float3 ScreenVector = ScreenVectorFromScreenRect(float4(ScreenPosition, 1, 0));
+		float3 CameraVector = normalize(ScreenVector);
+		float MaxTraceDistance = 1e16;
+
+		const float ClippedNearFieldMaxTraceDistance = ClipAndDitherNearFieldMaxTraceDistance(
+			PrimaryView.TranslatedWorldCameraOrigin,
+			CameraVector,
+			TraceCoord,
+			NearFieldSceneRadius,
+			NearFieldMaxTraceDistance,
+			NearFieldMaxTraceDistanceDitherScale);
+
+		FRayDesc Ray = (FRayDesc)0;
+		Ray.Origin = PrimaryView.TranslatedWorldCameraOrigin;
+		Ray.Direction = CameraVector;
+		Ray.TMin = 0.0;
+		Ray.TMax = max(Ray.TMin, min(MaxTraceDistance, ClippedNearFieldMaxTraceDistance));
+
+		FRayCone RayCone = (FRayCone)0;
+		FRayTracedLightingContext LightingContext = CreateRayTracedLightingContext(
+			RayCone,
+			0,
+			0, // dummy coordinate
+			/*CullingMode*/ ForceTwoSided != 0 ? RAY_FLAG_NONE : RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
+			MaxTraversalIterations,
+			MeshSectionVisibilityTest != 0);
+
+	#if LUMEN_HARDWARE_INLINE_RAYTRACING
+		LightingContext.HitGroupData = HitGroupData;
+		LightingContext.RayTracingSceneMetadata = RayTracingSceneMetadata;
+		LightingContext.RWInstanceHitCountBuffer = RWInstanceHitCountBuffer;
+	#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
+
+		LightingContext.InstanceMask = RAY_TRACING_MASK_OPAQUE_SHADOW;
+		LightingContext.bIsShadowRay = true;
+		LightingContext.bForceClosestHitShader = true;
+
+		FLumenMinimalRayResult TraceResult = (FLumenMinimalRayResult)0;
+
+		#if MEGA_LIGHTS_EVALUATE_MATERIALS
+		{
+			LightingContext.bForceClosestHitShader = true;
+
+			FPackedMaterialClosestHitPayload Payload = (FPackedMaterialClosestHitPayload)0;
+			Payload.SetLumenPayload();
+			Payload.SetIgnoreTranslucentMaterials();
+			Payload.SetRandom(0.5);
+
+			uint RayFlags = LightingContext.CullingMode;
+			TraceLumenShadingRay(TLAS, RayFlags, LightingContext.InstanceMask, RAY_TRACING_SHADER_SLOT_MATERIAL, RAY_TRACING_NUM_SHADER_SLOTS, 0, Ray.GetNativeDesc(), Payload);
+
+			TraceResult.bHit = Payload.IsHit();
+			if (TraceResult.bHit)
+			{
+				TraceResult.HitT = Payload.HitT;
+				TraceResult.HitNormal = Payload.GetGeometryNormal();
+				TraceResult.SceneInstanceIndex = Payload.GetSceneInstanceIndex();
+			}
+			
+			if (UseFarField != 0 && !TraceResult.bHit && Ray.TMax < MaxTraceDistance)
+			{
+				FRayDesc FarFieldRay = Ray;
+				FarFieldRay.TMin = max(Ray.TMax, FarFieldBias);
+				FarFieldRay.TMax = max(FarFieldRay.TMin, min(MaxTraceDistance, FarFieldMaxTraceDistance));
+				LightingContext.bIsFarFieldRay = true;
+
+				FPackedMaterialClosestHitPayload FarFieldPayload = (FPackedMaterialClosestHitPayload)0;
+				FarFieldPayload.SetLumenPayload();
+				FarFieldPayload.SetIgnoreTranslucentMaterials();
+				FarFieldPayload.SetRandom(0.5);
+
+				TraceLumenShadingRay(FarFieldTLAS, RayFlags, LightingContext.InstanceMask, RAY_TRACING_SHADER_SLOT_MATERIAL, RAY_TRACING_NUM_SHADER_SLOTS, 0, FarFieldRay.GetNativeDesc(), FarFieldPayload);
+
+				TraceResult.bHit = FarFieldPayload.IsHit();
+				if (TraceResult.bHit)
+				{
+					TraceResult.HitT = FarFieldPayload.HitT;
+					TraceResult.HitNormal = FarFieldPayload.GetGeometryNormal();
+					TraceResult.SceneInstanceIndex = FarFieldPayload.GetSceneInstanceIndex();
+				}
+			}
+		}
+		#else
+		{
+			TraceResult = TraceLumenMinimalRay(TLAS, Ray, LightingContext);
+
+			if (UseFarField != 0 && !TraceResult.bHit && Ray.TMax < MaxTraceDistance)
+			{
+				FRayDesc FarFieldRay = Ray;
+				FarFieldRay.TMin = max(Ray.TMax, FarFieldBias);
+				FarFieldRay.TMax = max(FarFieldRay.TMin, min(MaxTraceDistance, FarFieldMaxTraceDistance));
+				LightingContext.bIsFarFieldRay = true;
+
+				TraceResult = TraceLumenMinimalRay(FarFieldTLAS, FarFieldRay, LightingContext);
+			}
+		}
+		#endif
+
+		#if HAIR_VOXEL_TRACES
+		{
+			// #ml_todo: replace with spatiotemporal blue noise
+			// #ml_todo: also check if DownsampledScreenCoord should be used instead to benefit from error-diffusion 
+			FRandomSequence RandSequence = RandomSequenceCreate(uint3(TraceCoord, MegaLightsStateFrameIndex), 0, 1);
+			const float HitT = TraverseHair(TraceCoord, RandSequence, Ray.Origin, Ray.Direction, Ray.TMax, VirtualVoxel.Raytracing_ShadowOcclusionThreshold);
+			if (HitT > 0 && HitT < (TraceResult.bHit ? TraceResult.HitT : Ray.TMax))
+			{
+				TraceResult.HitT = HitT;
+				TraceResult.SceneInstanceIndex = 0xABCD; // Just some random number to differentiate hair
+				TraceResult.HitNormal = -CameraVector;
+				TraceResult.bHit = true;
+			}
+		}
+		#endif
+
+		float3 OutputColor = VisualizeTonemap(EvaluateSkyRadiance(Ray.Direction));
+
+		if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_SHADOW_CASTERS)
+		{
+			if (TraceResult.bHit)
+			{
+				float3 LightDirection = float3(0.707, 0.0, 0.707);
+				float Lighting = 0.5 * dot(LightDirection, TraceResult.HitNormal) + 0.5;
+				const float3 InstanceColor = IntToColor(TraceResult.SceneInstanceIndex + 1);
+				OutputColor = sqrt(InstanceColor * Lighting);
+			}
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_SHADOW_CASTER_QUALITY)
+		{
+			float2 GBufferCoord = clamp(ViewportUV * View.ViewRectMinAndSize.zw, 0, View.ViewRectMinAndSize.zw) + View.ViewRectMinAndSize.xy;
+			float2 GBufferUV = GBufferCoord * View.BufferSizeAndInvSize.zw;
+			FMegaLightsMaterial Material = LoadMaterial(GBufferUV, GBufferCoord);
+
+			const float DeviceZ = OpaqueOnlyDepthTexture[GBufferCoord].x;
+			const bool bIsSky = DeviceZ <= 1e-8;
+			Material.Depth = ConvertFromDeviceZ(DeviceZ);
+
+			if (!bIsSky)
+			{
+				float3 LightDirection = float3(0.707, 0.0, 0.707);
+				float Lighting = 0.5 * dot(LightDirection, Material.WorldNormalForPositionBias) + 0.5;
+
+				OutputColor = sqrt(Luminance(Material.DiffuseColor + 0.3 * Material.SpecularColor) * Lighting * 1.5);
+			}
+
+			const float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(GBufferUV, Material.Depth);
+
+			float DepthDelta = 0.0;
+			if (TraceResult.bHit || !bIsSky)
+			{
+				const float GBufferRayT = length(TranslatedWorldPosition);
+				DepthDelta = (TraceResult.bHit ? TraceResult.HitT : MaxTraceDistance) - GBufferRayT;
+			}
+
+			// Relax threshold at a grazing angle, where we get more mismatches
+			const float3 V = normalize(-TranslatedWorldPosition);
+			const float NoV = dot(Material.WorldNormalForPositionBias, V);
+			float QualityMissingProxyDistanceThreshold = ShadowCasterQualityMissingProxyDistanceThreshold / max(0.1, NoV);
+			float QualityPoorQualityDistanceThreshold = ShadowCasterQualityPoorQualityDistanceThreshold / max(0.1, NoV);
+
+			if (DepthDelta > QualityMissingProxyDistanceThreshold)
+			{
+				// If the Nanite mesh is closer than the Ray Tracing mesh by a sufficient threshold
+
+				float ErrorRampDistance = 50.0;
+				float ErrorFactor = saturate((DepthDelta - QualityMissingProxyDistanceThreshold) / ErrorRampDistance);
+
+				const float3 Orange = float3(1, 0.64, 0);
+				const float3 Red = float3(1, 0, 0);
+
+				float3 LightDirection = float3(0.707, 0.0, 0.707);
+				float Lighting = 0.4 * dot(LightDirection, Material.WorldNormal) + 0.6;
+
+				OutputColor = lerp(Orange, Red, ErrorFactor) * Lighting;
+			}
+			else if(DepthDelta < 0.0 && abs(DepthDelta) > QualityPoorQualityDistanceThreshold)
+			{
+				// If the Ray Tracing mesh is closer than the Nanite mesh by a sufficient threshold
+
+				float3 LightDirection = float3(0.707, 0.0, 0.707);
+				float Lighting = 0.4 * dot(LightDirection, TraceResult.HitNormal) + 0.6;
+
+				OutputColor = float3(0, 0, 1) * Lighting;
+			}
+		}
+
+		RWSceneColor[OutputScreenCoord] = OutputColor;
+	}
+}

@@ -1,0 +1,390 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	VirtualShadowMapFalseColor.ush
+
+	Shared false-color visualization logic used by both the projection pass
+	(VirtualShadowMapProjection.usf) and the DrawFalseColor postpass
+	(VirtualShadowMapDrawFalseColor.usf).
+=============================================================================*/
+
+#pragma once
+
+#include "../Common.ush"
+#include "../Visualization.ush"
+#include "/Engine/Shared/VirtualShadowMapDefinitions.h"
+#include "VirtualShadowMapPageAccessCommon.ush"
+
+float3 VSMGetVirtualPageColor(uint2 VirtualTexelAddress)
+{
+	uint2 vPage = VirtualTexelAddress.xy >> VSM_LOG2_PAGE_SIZE;
+	return IntToColor(vPage.x + (vPage.y << 10U));
+}
+
+float VSMGrayscale(float3 SourceClr)
+{
+	return 0.299 * SourceClr.r + 0.587 * SourceClr.g + 0.114 * SourceClr.b;
+}
+
+// Single shadow map sample data, used as input to GetVSMFalseColorForSample.
+struct FVSMVisualizationSampleData
+{
+	float ShadowFactor;
+	int ClipmapOrMipLevel;
+	uint RayCount;
+	uint MaxRays;					// GetSMRTRayCount() for this light
+	uint OverdrawCount;
+	uint2 VirtualTexelAddress;
+	uint PhysicalPageFlags;
+	bool bValidPageAddress;
+	bool bOneLightVisible;
+	float3 GeneralDebug;			// Freeform debug output (general-debug mode)
+
+	// Context
+	float OccluderDistance;
+	float NaniteOverdrawScale;
+	bool bVisualizeCachedPagesOnly;
+	FVSMPageOffset PageOffset;
+};
+
+// Accumulated visualization data across multiple shadow maps, used as input to GetVSMFalseColorForAggregate.
+// Packed into two uint4 textures for the postpass path.
+struct FVSMVisualizationAggregateData
+{
+	// Accumulated across lights
+	float SumShadowFactor;
+	float LightCount;
+	uint AccumRayCount;
+	uint AccumMaxRays;
+	uint OverdrawCount;
+	float4 CachedColor;			// Accumulated cached-page color
+
+	// Per-light (last light written)
+	int ClipmapOrMipLevel;
+	uint2 VirtualTexelAddress;
+	uint PhysicalPageFlags;
+	bool bValidPageAddress;
+	bool bOneLightVisible;
+
+	// Context, set by the caller, not packed into the intermediate textures.
+	float NaniteOverdrawScale;
+
+	// Pack into two uint4s for storage in VisualizationPackedDataA/B textures.
+	void Pack(out uint4 OutA, out uint4 OutB)
+	{
+		OutA.x = f32tof16(SumShadowFactor) | (f32tof16(LightCount) << 16);
+		OutA.y = uint(max(ClipmapOrMipLevel, 0)) | (min(AccumRayCount, 0xFFFFu) << 16);
+		OutA.z = (VirtualTexelAddress.x & 0xFFFF) | ((VirtualTexelAddress.y & 0xFFFF) << 16);
+		OutA.w = 0; // Reserved
+
+		OutB.x = PhysicalPageFlags;
+		uint4 QuantCached = min(uint4(saturate(CachedColor) * 255.0f + 0.5f), 0xFFu);
+		OutB.y = QuantCached.r | (QuantCached.g << 8) | (QuantCached.b << 16) | (QuantCached.a << 24);
+		OutB.z = OverdrawCount;
+		OutB.w = (bValidPageAddress ? 1u : 0u) | (bOneLightVisible ? 2u : 0u) | (min(AccumMaxRays, 0xFFFFFFu) << 8);
+	}
+
+	float GetAverageShadowFactor()
+	{
+		return LightCount > 0.0f ? saturate(SumShadowFactor / LightCount) : 1.0f;
+	}
+
+	// Convert aggregate to a sample-compatible view for modes that treat them identically.
+	FVSMVisualizationSampleData ToSampleData()
+	{
+		FVSMVisualizationSampleData Data;
+		Data.ShadowFactor = GetAverageShadowFactor();
+		Data.ClipmapOrMipLevel = ClipmapOrMipLevel;
+		Data.RayCount = AccumRayCount;
+		Data.MaxRays = AccumMaxRays;
+		Data.OverdrawCount = OverdrawCount;
+		Data.VirtualTexelAddress = VirtualTexelAddress;
+		Data.PhysicalPageFlags = PhysicalPageFlags;
+		Data.bValidPageAddress = bValidPageAddress;
+		Data.bOneLightVisible = bOneLightVisible;
+		Data.GeneralDebug = float3(0, 0, 0);
+		Data.OccluderDistance = 0.0f;
+		Data.NaniteOverdrawScale = NaniteOverdrawScale;
+		Data.bVisualizeCachedPagesOnly = false;
+		Data.PageOffset = (FVSMPageOffset)0;
+		return Data;
+	}
+};
+
+// Unpack two uint4s into aggregate visualization data.
+FVSMVisualizationAggregateData UnpackVSMVisualizationAggregateData(uint4 InA, uint4 InB)
+{
+	FVSMVisualizationAggregateData Data;
+	Data.SumShadowFactor = f16tof32(InA.x & 0xFFFFu);
+	Data.LightCount = f16tof32(InA.x >> 16);
+	Data.ClipmapOrMipLevel = int(InA.y & 0xFFFF);
+	Data.AccumRayCount = InA.y >> 16;
+	Data.VirtualTexelAddress = uint2(InA.z & 0xFFFF, InA.z >> 16);
+
+	Data.PhysicalPageFlags = InB.x;
+	Data.CachedColor = float4(
+		float(InB.y & 0xFFu),
+		float((InB.y >> 8) & 0xFFu),
+		float((InB.y >> 16) & 0xFFu),
+		float((InB.y >> 24) & 0xFFu)) / 255.0f;
+	Data.OverdrawCount = InB.z;
+	Data.bValidPageAddress = (InB.w & 1u) != 0;
+	Data.bOneLightVisible = (InB.w & 2u) != 0;
+	Data.AccumMaxRays = InB.w >> 8;
+
+	Data.NaniteOverdrawScale = 0.0f;
+
+	return Data;
+}
+
+// Check if both uint4s are zero (no shadow projection hit this pixel).
+bool IsVSMPackedVisualizationDataEmpty(uint4 InA, uint4 InB)
+{
+	return (InA.x == 0 && InA.y == 0 && InA.z == 0 && InA.w == 0
+		&& InB.x == 0 && InB.y == 0 && InB.z == 0 && InB.w == 0);
+}
+
+// Standalone helper for the 'cached' viewmode
+float4 GetVSMCachedPageColor(uint PhysicalPageFlags, bool bVisualizeCachedPagesOnly, bool bOneLightVisible)
+{
+	bool bUncachedDynamic = (PhysicalPageFlags & VSM_FLAG_DYNAMIC_UNCACHED) != 0;
+	bool bUncachedStatic = (PhysicalPageFlags & VSM_FLAG_STATIC_UNCACHED) != 0;
+	bool bForceCached = (PhysicalPageFlags & VSM_EXTENDED_FLAG_FORCE_CACHED) != 0;
+
+	float CacheAlpha = bOneLightVisible ? 0.9 : 0.25;
+	float4 CacheColor = float4(0, 0, 0, 0);
+
+	if (bUncachedDynamic)
+	{
+		if (!bVisualizeCachedPagesOnly)
+		{
+			CacheColor = bUncachedStatic ? float4(1, 0, 0, CacheAlpha) : float4(0, 0, 1, CacheAlpha);
+		}
+	}
+	else if (bForceCached)
+	{
+		if (!bVisualizeCachedPagesOnly)
+		{
+			CacheColor = float4(0.75, 1, 0, CacheAlpha);
+		}
+	}
+	else if (bOneLightVisible || bVisualizeCachedPagesOnly)
+	{
+		CacheColor = float4(0, 1, 0, CacheAlpha);
+	}
+
+	return CacheColor;
+}
+
+// Returns the color for a single VSM sample based on the current visualization mode.
+float4 GetVSMFalseColorForSample(uint VisualizeModeId, FVSMVisualizationSampleData In)
+{
+	// NOTE: Important to *not* write output if it isn't a recognized mode, as a different
+	// pass may write that output instead.
+
+	float4 Output = float4(0, 0, 0, 0);
+
+	if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_SHADOW_FACTOR)
+	{
+		float4 Lit = float4(1, 1, 0, 1);
+		float4 Shadow = float4(0, 0, 0.5, 1);
+		Output = lerp(Shadow, Lit, In.ShadowFactor);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_STATIC_MASK)
+	{
+		float4 Lit = float4(1, 1, 0, 1);
+		float4 Shadow = float4(0, 0, 0.5, 1);
+		Output = lerp(Shadow, Lit, In.ShadowFactor);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_CLIPMAP_OR_MIP)
+	{
+		float3 Color = IntToColor(In.ClipmapOrMipLevel);
+		Output = float4(0.8f * Color + 0.2f * In.ShadowFactor.xxx, 1.0);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_VIRTUAL_PAGE && In.bValidPageAddress)
+	{
+		float3 vPageColor = VSMGetVirtualPageColor(In.VirtualTexelAddress);
+		float3 MipColor = IntToColor(In.ClipmapOrMipLevel);
+		Output = float4(0.4f * vPageColor + 0.4f * MipColor + 0.2f * In.ShadowFactor.xxx, 1.0);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_RECEIVER_MASK && In.bValidPageAddress)
+	{
+		uint2 ReceiverMaskBaseAddress = In.PageOffset.GetResourceAddress() * 2u;
+		uint ReceiverBitCount = countbits(VirtualShadowMap.PageReceiverMasks[ReceiverMaskBaseAddress + uint2(0, 0)] & 0xFFFFu)
+		                      + countbits(VirtualShadowMap.PageReceiverMasks[ReceiverMaskBaseAddress + uint2(1, 0)] & 0xFFFFu)
+		                      + countbits(VirtualShadowMap.PageReceiverMasks[ReceiverMaskBaseAddress + uint2(0, 1)] & 0xFFFFu)
+		                      + countbits(VirtualShadowMap.PageReceiverMasks[ReceiverMaskBaseAddress + uint2(1, 1)] & 0xFFFFu);
+		float3 HeatColor = ColorMapInferno(ReceiverBitCount / 64.0f);
+		float PageIntensity = VSMGrayscale(VSMGetVirtualPageColor(In.VirtualTexelAddress));
+		Output = float4(HeatColor /*+ 0.15f * PageIntensity*/, 1.0);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_SMRT_RAY_COUNT)
+	{
+		// Turbo colormap for SMRT ray count visualization.
+		if (In.MaxRays > 0)
+		{
+			float TotalRayCount = float(In.RayCount);
+			float TotalMaxRayCount = float(In.MaxRays);
+			float IntensityMultiplier = In.bOneLightVisible ? 1.0 : smoothstep(0, 64, TotalMaxRayCount) + 0.5;
+			Output.rgb = GreenToRedTurbo(IntensityMultiplier * TotalRayCount / TotalMaxRayCount);
+			Output.a = 1.0;
+		}
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_CACHED_PAGE && In.bValidPageAddress)
+	{
+		float VPageAlpha = 0;
+		float ShadowAlpha = 0.1;
+
+		float4 CacheColor = GetVSMCachedPageColor(In.PhysicalPageFlags, In.bVisualizeCachedPagesOnly, In.bOneLightVisible);
+
+		// Cached-green branch gets a little page-color tint
+		if (CacheColor.a > 0 && (In.PhysicalPageFlags & (VSM_FLAG_DYNAMIC_UNCACHED | VSM_FLAG_STATIC_UNCACHED | VSM_EXTENDED_FLAG_FORCE_CACHED)) == 0
+			&& (In.bOneLightVisible || In.bVisualizeCachedPagesOnly))
+		{
+			VPageAlpha = 0.1;
+		}
+
+		if (CacheColor.a > 0)
+		{
+			float3 vPageColor = VSMGetVirtualPageColor(In.VirtualTexelAddress);
+			Output.rgb = CacheColor.a * CacheColor.rgb + VPageAlpha * vPageColor + ShadowAlpha * In.ShadowFactor.xxx;
+			Output.a = 0.9f;
+		}
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_DIRTY_PAGE)
+	{
+		float3 vPageColor = VSMGetVirtualPageColor(In.VirtualTexelAddress);
+		float3 PageColor = vPageColor * 0.4f;
+
+		if (!In.bOneLightVisible)
+		{
+			PageColor = VSMGrayscale(PageColor).xxx;
+		}
+
+		float3 DirtyColor = PageColor;
+		if (In.bValidPageAddress)
+		{
+			if ((In.PhysicalPageFlags & VSM_EXTENDED_FLAG_STATIC_DIRTY) != 0U) DirtyColor.x = 1.0f;
+			if ((In.PhysicalPageFlags & VSM_EXTENDED_FLAG_DYNAMIC_DIRTY) != 0U) DirtyColor.y = 1.0f;
+			PageColor = lerp(PageColor, DirtyColor, 0.8f);
+		}
+		Output = float4(PageColor, 1.0);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_GPU_INVALIDATED_PAGE)
+	{
+		float3 vPageColor = VSMGetVirtualPageColor(In.VirtualTexelAddress);
+		float3 PageContribution = In.bOneLightVisible ? vPageColor : VSMGrayscale(vPageColor).xxx;
+
+		float3 CacheColor = float3(0, 0, 0);
+		if (In.bValidPageAddress)
+		{
+			if ((In.PhysicalPageFlags & VSM_EXTENDED_FLAG_INVALIDATE_STATIC) != 0) CacheColor.x = 1.0f;
+			if ((In.PhysicalPageFlags & VSM_EXTENDED_FLAG_INVALIDATE_DYNAMIC) != 0) CacheColor.y = 1.0f;
+		}
+		Output = float4(0.55f * CacheColor + 0.25f * PageContribution + 0.2f * In.ShadowFactor.xxx, 1.0);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_MERGED_PAGE)
+	{
+		float3 vPageColor = VSMGetVirtualPageColor(In.VirtualTexelAddress);
+		float3 PageContribution = In.bOneLightVisible ? vPageColor : VSMGrayscale(vPageColor).xxx;
+
+		bool bMerged = ((In.PhysicalPageFlags & VSM_EXTENDED_FLAG_STATIC_DIRTY) != 0U);
+		float3 Color;
+		if (In.bOneLightVisible)
+		{
+			Color = bMerged ? float3(1, 0, 0) : float3(0, 1, 0);
+		}
+		else
+		{
+			Color = bMerged ? float3(1, 0, 0) : float3(0, 0, 0);
+		}
+		Output = float4(0.55f * Color + 0.25f * PageContribution + 0.2f * In.ShadowFactor.xxx, 1.0);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_GENERAL_DEBUG)
+	{
+		Output = float4(0.8f * In.GeneralDebug + 0.2f * In.ShadowFactor.xxx, 1.0);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_NANITE_OVERDRAW)
+	{
+		// Inferno colormap for Nanite overdraw visualization.
+		const float OverdrawScale = clamp(In.NaniteOverdrawScale / 100.0f, 0.0f, 1.0f);
+		const float OverdrawCount = float(In.OverdrawCount);
+		const float OverdrawColor = 1 - exp2(-OverdrawCount * OverdrawScale);
+		Output.rgb = ColorMapInferno(OverdrawColor);
+		Output.a = smoothstep(-0.1, 0.1, dot(Output.rgb, 1.0 / 3.0));
+	}
+
+	return Output;
+}
+
+// Blends a per-vsm contribution with the running accumulator.
+// Called once per vsm in the projection pass to composite multi-light visualization.
+// If only one light is visualized (In.bOneLightVisible), the color is returned unmodified.
+float4 AccumulateVSMFalseColor(uint VisualizeModeId, float4 Color, float4 Accumulator, bool bOneLightVisible)
+{
+	if (bOneLightVisible || Color.a <= 0)
+	{
+		return Color;
+	}
+
+	float4 Result = Color;
+
+	if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_SHADOW_FACTOR)
+	{
+		Result = Accumulator + Color * 0.25;
+		Result.b = min(Result.b, 0.12); // keep some blue contrast in shadowed areas
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_CACHED_PAGE)
+	{
+		// Cached-page mode sums RGB contributions directly.
+		Result.rgb = Color.rgb + Accumulator.rgb;
+		Result.a = max(Color.a, Accumulator.a);
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_SMRT_RAY_COUNT)
+	{
+		// Raw (RayCount, MaxRayCount) pair accumulation, tonemapped later.
+		Result.xy = Accumulator.xy + Color.xy;
+		Result.zw = Color.zw;
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_NANITE_OVERDRAW)
+	{
+		// Raw overdraw count accumulation, tonemapped later.
+		Result.r = Accumulator.r + Color.r;
+	}
+	else
+	{
+		// Default: additive blend at 25% intensity.
+		Result = Accumulator + Color * 0.25;
+		Result.a = 1.0;
+	}
+
+	return Result;
+}
+
+float4 GetVSMFalseColorForAggregate(uint VisualizeModeId, FVSMVisualizationAggregateData Data)
+{
+	float4 Output = GetVSMFalseColorForSample(VisualizeModeId, Data.ToSampleData());
+
+	// Scale by light count for modes whose accumulation is a simple sum.
+	float LightScale = Data.bOneLightVisible ? 1.0f : (Data.LightCount * 0.25f);
+
+	if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_SHADOW_FACTOR)
+	{
+		Output.rgb *= LightScale;
+	}
+	else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_CACHED_PAGE)
+	{
+		// Substitute the pre-accumulated cached color (already summed across lights).
+		if (Data.LightCount > 0)
+		{
+			Output.rgb = Data.CachedColor.rgb * LightScale;
+			Output.a = 0.9f;
+		}
+		else
+		{
+			Output = float4(0, 0, 0, 0);
+		}
+	}
+
+	return Output;
+}

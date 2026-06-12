@@ -1,0 +1,1476 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Generated/UniformBuffers/View.ush"
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// bindings
+
+StructuredBuffer<uint> TileCount;
+StructuredBuffer<uint> TileOffset;
+StructuredBuffer<uint> TileMinMaxZ;
+StructuredBuffer<uint4> TileSegment;
+
+RWStructuredBuffer<uint> RWTileCount;
+RWStructuredBuffer<uint> RWTileOffset;
+RWStructuredBuffer<uint> RWTileMinMaxZ;
+RWStructuredBuffer<uint4> RWTileSegment;
+
+Texture2D<float> TileHeat;
+Texture2D<float> OutCoverage;
+Texture2D<uint> OutVisibility;
+Texture2D<uint> OutVisibilityW;
+
+RWTexture2D<float> RWTileHeat;
+RWTexture2D<float> RWOutCoverage;
+RWTexture2D<uint> RWOutVisibility;
+RWTexture2D<uint> RWOutVisibilityW;
+
+StructuredBuffer<uint> ActiveTile;
+StructuredBuffer<uint> ActiveTileCount;
+RWStructuredBuffer<uint> RWActiveTile;
+RWStructuredBuffer<uint> RWActiveTileCount;
+
+Buffer<uint> ActiveTileIndirectArgs;
+RWBuffer<uint> RWActiveTileIndirectArgs;
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// uniforms
+
+uint FrameIndex;
+uint TileSegmentMaxCount;
+uint3 MaxDispatchThreadGroupsPerDimension;
+
+uint NumTilesX;
+uint NumTilesY;
+uint NumTilesA;
+
+int2 RasterViewSize;
+
+uint TileStride;
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// utils
+
+uint2 GetTileCoord(uint InTileIndex)
+{
+	return uint2(InTileIndex % NumTilesX, InTileIndex / NumTilesX);
+}
+
+struct FMinMaxZ
+{
+	float MinZ;
+	float MaxZ;
+	float RangeZ;
+};
+
+FMinMaxZ GetTileMinMaxZ()
+{
+	FMinMaxZ Out; 
+	Out.MinZ = asfloat(TileMinMaxZ[0]);
+	Out.MaxZ = asfloat(TileMinMaxZ[1]);
+	Out.RangeZ = max(Out.MaxZ - Out.MinZ, 1e-8f);
+	return Out;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// binning input
+
+struct FCurveSegment
+{
+	//TODO what mask is used to isolate curveID with nanite sourcepixelvalue being assigned?
+	uint ID;// 0xFFFFFF00 == CurveID << 8 | 0x000000FF == CurveSegmentID
+
+	float3 PosA;
+	float3 PosB;
+
+	float WidthA;
+	float WidthB;
+};
+
+#define CLIP_AUX_PERSPECTIVE 0
+
+bool SegmentClipHomogeneous(inout float4 ClipPosA, inout float4 ClipPosB, inout float4 ClipAuxA, inout float4 ClipAuxB)
+{
+	// homogeneous clip space
+	//
+	//      \       :       /
+	//     w+x=0    :    w-x=0
+	//        \     :     /
+	// w+x<0   \    :    /   w-x<0
+	//          \   :   /
+	//     - - - \=====/ - - - w=1
+	//            \ : /
+	//             \:/
+	//              '-----> x
+	
+	static const float4 ClipPlanes[6] =
+	{
+		 float4( 1.0,  0.0,  0.0, 1.0), // left		; inside if w+x >= 0
+		 float4(-1.0,  0.0,  0.0, 1.0), // right		; inside if w-x >= 0
+		 float4( 0.0,  1.0,  0.0, 1.0), // bottom	; inside if w+y >= 0
+		 float4( 0.0, -1.0,  0.0, 1.0), // top		; inside if w-y >= 0
+		 float4( 0.0,  0.0,  1.0, 1.0), // near		; inside if w+z >= 0
+		 float4( 0.0,  0.0, -1.0, 1.0) // far		; inside if w-z >= 0
+	};
+
+	// compute plane distances and outcodes (Cohen-Sutherland)
+	float DistA[6];
+	float DistB[6];
+
+	uint OutCodeA = 0;
+	uint OutCodeB = 0;
+
+	[unroll]
+	for (uint i = 0; i != 6; i++)
+	{
+		DistA[i] = dot(ClipPlanes[i], ClipPosA);
+		DistB[i] = dot(ClipPlanes[i], ClipPosB);
+		
+		OutCodeA |= ((DistA[i] < 0.0) << i);
+		OutCodeB |= ((DistB[i] < 0.0) << i);
+	}
+
+	// possible to trivially accept or reject?
+	bool bAccept = (OutCodeA | OutCodeB) == 0;// if both points inside all planes
+	bool bReject = (OutCodeA & OutCodeB) != 0;// if both points outside same plane
+
+	// non-divergent fast path
+	if (WaveActiveAllTrue(bAccept | bReject))
+	{
+		return bAccept;// trivially accept or reject
+	}
+
+	// regular masking path
+	if (bAccept | bReject)
+	{
+		return bAccept;// trivially accept or reject
+	}
+	else
+	{
+		// find interval within frustum
+		float T0 = 0.0;
+		float T1 = 1.0;
+		{
+			// iterate over crossing planes
+			uint OutCodeExclusive = (OutCodeA | OutCodeB) & 0x3Fu;
+			while (OutCodeExclusive)
+			{
+				// pop crossing plane
+				uint i = firstbitlow(OutCodeExclusive);
+				OutCodeExclusive &= (OutCodeExclusive - 1);
+			
+				// find intersection, i.e. (1-t)*DistA + t*DistB = 0
+				// solve for t:
+				//   0 = DistA - t*DistA + t*DistB
+				//   0 = DistA - t*(DistA - DistB)
+				//   t = DistA / (DistA - DistB)
+				float T = DistA[i] / (DistA[i] - DistB[i]);
+
+				// update interval
+				if (OutCodeA & (1u << i))
+				{
+					T0 = max(T0, T);// A outside => move T0
+				}
+				else
+				{
+					T1 = min(T1, T);// B outside => move T1
+				}
+			}
+		}
+		
+#if CLIP_AUX_PERSPECTIVE
+		float InvWA = 1.0 / ClipPosA.w;
+		float InvWB = 1.0 / ClipPosB.w;
+		float InvWDiff = InvWB - InvWA;
+		ClipAuxA *= InvWA;// *= 1/z(A)
+		ClipAuxB *= InvWB;// *= 1/z(B)
+#endif
+
+		// update auxiliary (interpolate attributes)
+		float4 V = ClipAuxB - ClipAuxA;
+		ClipAuxB = ClipAuxA + T1 * V;
+		ClipAuxA = ClipAuxA + T0 * V;
+
+#if CLIP_AUX_PERSPECTIVE
+		ClipAuxA /= (InvWA + T0 * InvWDiff);// *= z(T0)
+		ClipAuxB /= (InvWA + T1 * InvWDiff);// *= z(T1)
+#endif
+
+		// update positions
+		float4 R = ClipPosB - ClipPosA;
+		ClipPosB = ClipPosA + T1 * R;
+		ClipPosA = ClipPosA + T0 * R;
+		
+		// accept if valid
+		return (T0 < T1);
+	}
+}
+
+bool SegmentScreenToCell(inout FCurveSegment Seg, uint CellWidth)
+{
+	Seg.PosA /= float3(CellWidth, CellWidth, 1.0);
+	Seg.PosB /= float3(CellWidth, CellWidth, 1.0);
+	
+	Seg.WidthA /= CellWidth;
+	Seg.WidthB /= CellWidth;
+	
+	// success always
+	return true;
+}
+
+bool SegmentScreenToTile(inout FCurveSegment Seg, uint CompileTimeTileWidth)
+{
+	// success always
+	return SegmentScreenToCell(Seg, CompileTimeTileWidth);
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// binning output
+
+#define TILE_PRIM_PACK_16NDWS_0Z				1	// f16 n+d+w+s, no depth
+#define TILE_PRIM_PACK_16NDW_6S_10Z				2	// f16 n+d+w, u6 s, u10 z
+#define TILE_PRIM_PACK_16NW_8Wx_10Dx_7S_16Z		3	// f16 n+w(max), u8 w(min), u10 d, u7 s, f16 z
+#define TILE_PRIM_PACK							TILE_PRIM_PACK_16NW_8Wx_10Dx_7S_16Z
+#define TILE_PRIM_ENCODE_REL_DEPTH				0	// Use global min/max Z to encode depth
+
+struct FTilePrimitive
+{
+	// TODO illustration
+	float2 N;
+	float2 N_Perp;
+	float D_N;
+	float S_Min;
+	float S_Max;
+	float Z_Min;
+	float Z_Max;
+	float W_Min;
+	float W_Max;
+	uint ID;
+};
+
+//TODO remove floor in UNORM_ENC ?
+#define UNORM_MAX(Bits)				((1u << (Bits)) - 1u)
+#define UNORM_ENC(Bits, Expr)		(uint)floor(UNORM_MAX(Bits) * saturate(Expr))
+#define UNORM_DEC(Bits, Expr)		((Expr) & UNORM_MAX(Bits)) * (1.0 / UNORM_MAX(Bits))
+
+#define UNORM_ENC_RANGE(Bits, Expr, Min, Max)	UNORM_ENC(Bits, ((Expr) - (Min)) / ((Max) - (Min)))
+#define UNORM_DEC_RANGE(Bits, Expr, Min, Max)	(UNORM_DEC(Bits, (Expr)) * ((Max) - (Min)) + (Min))
+#define UNORM_ENC_SDIST(Bits, Expr, Len)		UNORM_ENC(Bits, ((Expr) * (0.5 / (Len))) + 0.5)
+#define UNORM_DEC_SDIST(Bits, Expr, Len)		(UNORM_DEC(Bits, (Expr)) * 2.0 * (Len) - (Len))
+#define UNORM_ENC_UDIST(Bits, Expr, Len)		UNORM_ENC(Bits, ((Expr) / (Len)))
+#define UNORM_DEC_UDIST(Bits, Expr, Len)		(UNORM_DEC(Bits, (Expr)) * (Len))
+
+#define PACK_BEGIN					{ uint PACK_POS = 0u;
+#define PACK_ENC_UNORM(Bits, Expr)	( PACK_POS += Bits, UNORM_ENC(Bits, (Expr)) << (PACK_POS - Bits) )
+#define PACK_DEC_UNORM(Bits, Expr)	( PACK_POS += Bits, UNORM_DEC(Bits, (Expr) >> (PACK_POS - Bits)) )
+#define PACK_ENC_FLAGS(Bits, Expr)	( PACK_POS += Bits, ((Expr) & UNORM_MAX(Bits)) << (PACK_POS - Bits) )
+#define PACK_DEC_FLAGS(Bits, Expr)	( PACK_POS += Bits, ((Expr) >> (PACK_POS - Bits)) & UNORM_MAX(Bits) )
+#define PACK_END					}
+
+#define PACK_ENC_RANGE(Bits, Expr, Min, Max)	( PACK_POS += Bits, UNORM_ENC_RANGE(Bits, (Expr), (Min), (Max)) << (PACK_POS - Bits) )
+#define PACK_DEC_RANGE(Bits, Expr, Min, Max)	( PACK_POS += Bits, UNORM_DEC_RANGE(Bits, (Expr) >> (PACK_POS - Bits), (Min), (Max)) )
+#define PACK_ENC_SDIST(Bits, Expr, Len)			( PACK_POS += Bits, UNORM_ENC_SDIST(Bits, (Expr), (Len)) << (PACK_POS - Bits) )
+#define PACK_DEC_SDIST(Bits, Expr, Len)			( PACK_POS += Bits, UNORM_DEC_SDIST(Bits, (Expr) >> (PACK_POS - Bits), (Len)) )
+#define PACK_ENC_UDIST(Bits, Expr, Len)			( PACK_POS += Bits, UNORM_ENC_UDIST(Bits, (Expr), (Len)) << (PACK_POS - Bits) )
+#define PACK_DEC_UDIST(Bits, Expr, Len)			( PACK_POS += Bits, UNORM_DEC_UDIST(Bits, (Expr) >> (PACK_POS - Bits), (Len)) )
+
+uint4 TilePrimitivePack(FTilePrimitive Prim)
+{
+	const float SQRT2 = sqrt(2.0);
+	const float REACH = 0.5 * SQRT2;		// diagonal extent
+	const float COVER = 5.0 / TILE_WIDTH;	// additional margin to support full coverage (distance at which 1-exp(-W) is sufficiently close to 1)
+
+	uint4 PackedPrim = uint4(0,0,0,0);
+	{
+		#if TILE_PRIM_ENCODE_REL_DEPTH
+		const FMinMaxZ MinMaxZ = GetTileMinMaxZ();
+		const float Prim_RelZMin = (Prim.Z_Min - MinMaxZ.MinZ) / MinMaxZ.RangeZ;
+		const float Prim_RelZMax = (Prim.Z_Max - MinMaxZ.MinZ) / MinMaxZ.RangeZ;
+		#else
+		const float Prim_RelZMin = Prim.Z_Min;
+		const float Prim_RelZMax = Prim.Z_Max;
+		#endif
+
+#if TILE_PRIM_PACK == TILE_PRIM_PACK_16NW_8Wx_10Dx_7S_16Z
+
+		// |---------------|---------------|
+		// +      W_hi            N.x
+		//
+		// -|------|---------|------|------|
+		// b  W_lo     D_N    S_min  S_max
+		//
+		// |---------------|---------------|
+		// +     Z_min           Z_max
+		//
+		// |-------------------------------|
+		//                ID
+
+		#define PACKBITS_W_SEL	1
+		#define PACKBITS_W_LO	7
+		#define PACKBITS_D_N	10
+		#define PACKBITS_S_MIN	7
+		#define PACKBITS_S_MAX	7
+
+		uint E_Sel = Prim.W_Max > Prim.W_Min;
+		float E_Hi = 0.5 * (E_Sel ? Prim.W_Max : Prim.W_Min);
+		float E_Lo = 0.5 * (E_Sel ? Prim.W_Min : Prim.W_Max);
+
+		PackedPrim = 0;
+		PackedPrim.x |= asuint(Prim.N.y) & 0x80000000u;// store sign(N.y)
+		PackedPrim.x |= f32tof16(E_Hi) << 16;
+		PackedPrim.x |= f32tof16(Prim.N.x);
+		PACK_BEGIN
+		PackedPrim.y = 0;
+		PackedPrim.y |= PACK_ENC_FLAGS(PACKBITS_W_SEL, E_Sel);
+		PackedPrim.y |= PACK_ENC_UNORM(PACKBITS_W_LO, E_Lo / E_Hi);
+		PackedPrim.y |= PACK_ENC_RANGE(PACKBITS_D_N, abs(Prim.D_N) - E_Hi, -E_Hi, REACH);
+		PackedPrim.y |= PACK_ENC_SDIST(PACKBITS_S_MIN, Prim.S_Min, REACH + COVER);
+		PackedPrim.y |= PACK_ENC_SDIST(PACKBITS_S_MAX, Prim.S_Max, REACH + COVER);
+		PACK_END
+		PackedPrim.z = 0;
+		PackedPrim.z |= asuint(Prim.D_N) & 0x80000000u;// store sign(D_N)
+		PackedPrim.z |= f32tof16(Prim_RelZMin) << 16;
+		PackedPrim.z |= f32tof16(Prim_RelZMax);
+		PackedPrim.w = Prim.ID;
+
+#elif TILE_PRIM_PACK == TILE_PRIM_PACK_16NDW_6S_10Z
+
+		// |---------------|---------------|
+		// +     W_min            N.x
+		//
+		// |---------------|---------------|
+		//       W_max            D_N
+		//
+		// |-----|-----|---------|---------|
+		//  S_min S_max   Z_min     Z_max
+		//
+		// |-------------------------------|
+		//                ID
+
+		#define PACKBITS_S_MIN 6
+		#define PACKBITS_S_MAX 6
+		#define PACKBITS_Z_MIN 10
+		#define PACKBITS_Z_MAX 10
+		
+		PackedPrim.x = 0;
+		PackedPrim.x |= asuint(Prim.N.y) & 0x80000000u;// store sign(N.y)
+		PackedPrim.x |= f32tof16(Prim.W_Min) << 16;
+		PackedPrim.x |= f32tof16(Prim.N.x);
+		PackedPrim.y = 0;
+		PackedPrim.y |= f32tof16(Prim.W_Max) << 16;
+		PackedPrim.y |= f32tof16(Prim.D_N);
+		PACK_BEGIN
+		PackedPrim.z = 0;
+		PackedPrim.z |= PACK_ENC_SDIST(PACKBITS_S_MIN, Prim.S_Min, REACH + COVER);
+		PackedPrim.z |= PACK_ENC_SDIST(PACKBITS_S_MAX, Prim.S_Max, REACH + COVER);
+		PackedPrim.z |= PACK_ENC_UNORM(PACKBITS_Z_MIN, Prim_RelZMin);
+		PackedPrim.z |= PACK_ENC_UNORM(PACKBITS_Z_MAX, Prim_RelZMax);
+		PACK_END
+		PackedPrim.w = Prim.ID;
+
+#elif TILE_PRIM_PACK == TILE_PRIM_PACK_16NDWS_0Z
+
+		// |---------------|---------------|
+		// +     W_min            N.x
+		//
+		// |---------------|---------------|
+		//       W_max            D_N
+		//
+		// |---------------|---------------|
+		//       S_min           S_max
+		//
+		// |-------------------------------|
+		//                ID
+
+		PackedPrim.x = 0;
+		PackedPrim.x |= asuint(Prim.N.y) & 0x80000000u;// store sign(N.y)
+		PackedPrim.x |= f32tof16(Prim.W_Min) << 16;
+		PackedPrim.x |= f32tof16(Prim.N.x);
+		PackedPrim.y = 0;
+		PackedPrim.y |= f32tof16(Prim.W_Max) << 16;
+		PackedPrim.y |= f32tof16(Prim.D_N);
+		PackedPrim.z = 0;
+		PackedPrim.z |= f32tof16(Prim.S_Min) << 16;
+		PackedPrim.z |= f32tof16(Prim.S_Max);
+		PackedPrim.w = Prim.ID;
+
+#else
+		#error TILE_PRIM_PACK missing
+#endif
+	}
+	return PackedPrim;
+}
+
+FTilePrimitive TilePrimitiveUnpack(uint4 PackedPrim)
+{
+	const float SQRT2 = sqrt(2.0);
+	const float REACH = 0.5 * SQRT2;// half square extent along diagonal
+	const float COVER = 5.0 / TILE_WIDTH;// distance at which 1-exp(-W) is still sufficiently close to 1
+
+	FTilePrimitive Prim;
+	{
+#if TILE_PRIM_PACK == TILE_PRIM_PACK_16NW_8Wx_10Dx_7S_16Z
+		
+		float N_x = f16tof32(PackedPrim.x);
+		float N_y = sqrt(1.0 - N_x * N_x); N_y = asfloat(asuint(N_y) | (PackedPrim.x & 0x80000000u));// apply sign(N.y)
+
+		float E_Hi = f16tof32((PackedPrim.x >> 16) & 0x7FFFu);// discard sign bit (stores sign(N.y))
+		float E_Lo;// initialized during pack
+		uint E_Sel;// initialized during pack
+
+		Prim.N		= float2(N_x, N_y);
+		Prim.N_Perp	= float2(-N_y, N_x);
+		PACK_BEGIN
+		E_Sel		= PACK_DEC_FLAGS(PACKBITS_W_SEL, PackedPrim.y);
+		E_Lo		= PACK_DEC_UNORM(PACKBITS_W_LO, PackedPrim.y) * E_Hi;
+		Prim.D_N	= PACK_DEC_RANGE(PACKBITS_D_N, PackedPrim.y, -E_Hi, REACH) + E_Hi; Prim.D_N = asfloat(asuint(Prim.D_N) | (PackedPrim.z & 0x80000000u));// apply sign(D_N)
+		Prim.S_Min	= PACK_DEC_SDIST(PACKBITS_S_MIN, PackedPrim.y, REACH + COVER);
+		Prim.S_Max	= PACK_DEC_SDIST(PACKBITS_S_MAX, PackedPrim.y, REACH + COVER);
+		PACK_END
+		Prim.Z_Min	= f16tof32((PackedPrim.z >> 16) & 0x7FFFu);// discard sign bit (stores sign(D_N))
+		Prim.Z_Max	= f16tof32(PackedPrim.z);
+		Prim.W_Min	= 2.0 * (E_Sel ? E_Lo : E_Hi);
+		Prim.W_Max	= 2.0 * (E_Sel ? E_Hi : E_Lo);
+		Prim.ID		= PackedPrim.w;
+
+#elif TILE_PRIM_PACK == TILE_PRIM_PACK_16NDW_6S_10Z
+
+		float N_x = f16tof32(PackedPrim.x);
+		float N_y = sqrt(1.0 - N_x * N_x); N_y = asfloat(asuint(N_y) | (PackedPrim.x & 0x80000000u));// apply sign(N.y)
+	
+		Prim.N		= float2(N_x, N_y);
+		Prim.N_Perp	= float2(-N_y, N_x);
+		Prim.D_N	= f16tof32(PackedPrim.y);
+		PACK_BEGIN
+		Prim.S_Min	= PACK_DEC_SDIST(PACKBITS_S_MIN, PackedPrim.z, REACH + COVER);
+		Prim.S_Max	= PACK_DEC_SDIST(PACKBITS_S_MAX, PackedPrim.z, REACH + COVER);
+		Prim.Z_Min	= PACK_DEC_UNORM(PACKBITS_Z_MIN, PackedPrim.z);
+		Prim.Z_Max	= PACK_DEC_UNORM(PACKBITS_Z_MAX, PackedPrim.z);
+		PACK_END
+		Prim.W_Min	= f16tof32((PackedPrim.x >> 16) & 0x7FFFu);// discard sign bit (stores sign(N.y))
+		Prim.W_Max	= f16tof32(PackedPrim.y >> 16);
+		Prim.ID		= PackedPrim.w;
+
+#elif TILE_PRIM_PACK == TILE_PRIM_PACK_16NDWS_0Z
+
+		float N_x = f16tof32(PackedPrim.x);
+		float N_y = sqrt(1.0 - N_x * N_x); N_y = asfloat(asuint(N_y) | (PackedPrim.x & 0x80000000u));// apply sign(N.y)
+		
+		Prim.N		= float2(N_x, N_y);
+		Prim.N_Perp	= float2(-N_y, N_x);
+		Prim.D_N	= f16tof32(PackedPrim.y);
+		Prim.S_Min	= f16tof32(PackedPrim.z >> 16);
+		Prim.S_Max	= f16tof32(PackedPrim.z);
+		Prim.Z_Min	= 1.0;
+		Prim.Z_Max	= 1.0;
+		Prim.W_Min	= f16tof32((PackedPrim.x >> 16) & 0x7FFFu);// discard sign bit (stores sign(N.y))
+		Prim.W_Max	= f16tof32(PackedPrim.y >> 16);
+		Prim.ID		= PackedPrim.w;
+
+#else
+		#error TILE_PRIM_PACK missing
+#endif
+
+		#if TILE_PRIM_ENCODE_REL_DEPTH
+		const FMinMaxZ MinMaxZ = GetTileMinMaxZ();
+		Prim.Z_Min = Prim.Z_Min * MinMaxZ.RangeZ + MinMaxZ.MinZ;
+		Prim.Z_Max = Prim.Z_Max * MinMaxZ.RangeZ + MinMaxZ.MinZ;
+		#endif
+	}
+	return Prim;
+}
+
+bool TilePrimitivePrepare(int i, int j, FCurveSegment Seg, inout FTilePrimitive Prim)
+{
+	float2 Q = float2(j, i) + float2(0.5, 0.5);
+	float2 R = Seg.PosB.xy - Seg.PosA.xy;
+	float2 V = Seg.PosA.xy - Q;
+	
+	// calc length
+	float L = length(R);
+	float L_Inv = 1.0 / max(1e-7, L);
+	
+	// calc frame
+	float2 N_Perp = R * L_Inv;
+	float2 N = float2(-N_Perp.y, N_Perp.x);
+	
+#if TILE_PRIM_PACK == TILE_PRIM_PACK_16NW_8Wx_10Dx_7S_16Z || \
+	TILE_PRIM_PACK == TILE_PRIM_PACK_16NDW_6S_10Z
+
+	// calc perp offset from tile center
+	float D_Perp = dot(V, N_Perp);
+	float D_Perp_Support = abs(N.x) + abs(N.y);// |n.x|+|n.y| => [1..sqrt(2)]
+
+	// calc perp distances from tile center (clipped to support region)
+	float S_Min = max(-D_Perp_Support, D_Perp);
+	float S_Max = min( D_Perp_Support, D_Perp + L);
+	
+	// if not inverted => segment inside support region
+	if (WaveActiveAnyTrue(S_Min < S_Max))
+	{
+		float T_Min = (S_Min - D_Perp) * L_Inv;
+		float T_Max = (S_Max - D_Perp) * L_Inv;
+
+		// calc w at clipped offsets
+		float W_Dif = Seg.WidthB - Seg.WidthA;
+		float W_Min = W_Dif * T_Min + Seg.WidthA;
+		float W_Max = W_Dif * T_Max + Seg.WidthA;
+
+		// calc z at clipped offsets
+		float Z_Dif = Seg.PosB.z - Seg.PosA.z;
+		float Z_Min = Z_Dif * T_Min + Seg.PosA.z;
+		float Z_Max = Z_Dif * T_Max + Seg.PosA.z;
+
+		// write primitive
+		Prim.N		= N;
+		Prim.N_Perp	= N_Perp;
+		Prim.D_N	= dot(V, N);
+		Prim.S_Min	= S_Min;
+		Prim.S_Max	= S_Max;
+		Prim.Z_Min	= Z_Min;
+		Prim.Z_Max	= Z_Max;
+		Prim.W_Min	= W_Min;
+		Prim.W_Max	= W_Max;
+		Prim.ID		= Seg.ID;
+	}
+	
+	// success if inside support region
+	return (S_Min < S_Max);
+
+#elif TILE_PRIM_PACK == TILE_PRIM_PACK_16NDWS_0Z
+
+	// calc perp offset from tile center
+	float D_Perp = dot(V, N_Perp);
+	
+	// write primitive
+	Prim.N		= N;
+	Prim.N_Perp	= N_Perp;
+	Prim.D_N	= dot(V, N);
+	Prim.S_Min	= D_Perp;
+	Prim.S_Max	= D_Perp + L;
+	Prim.Z_Min	= 0.0;
+	Prim.Z_Max	= 0.0;
+	Prim.W_Min	= Seg.WidthA;
+	Prim.W_Max	= Seg.WidthB;
+	Prim.ID		= Seg.ID;
+
+	// success always
+	return true;
+
+#else
+	#error TILE_PRIM_PACK missing
+#endif
+}
+
+void TilePrimitiveResolve(FTilePrimitive Prim, float2 V, out float3 V_Pos, out float2 V_Ext)
+{
+	float S_Len = Prim.S_Max - Prim.S_Min;
+	float S_Ext = 0.5 * S_Len;
+	
+	float V_S = Prim.S_Min + S_Ext + dot(V, Prim.N_Perp);
+	float V_T = saturate((S_Ext - V_S) / S_Len);
+	
+	V_Pos.x = Prim.D_N - dot(V, Prim.N);
+	V_Pos.y = V_S;
+	V_Pos.z = lerp(Prim.Z_Min, Prim.Z_Max, V_T);
+	
+	V_Ext.x = lerp(Prim.W_Min, Prim.W_Max, V_T) * 0.5;
+	V_Ext.y = S_Ext;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// binning rasterizer
+
+#define RASTER_CLAMP 1
+#define RASTER_DEBUG 0
+
+// rasterizes segment (P0, P1, w0, w1) to unit grid
+// invokes FRasterOp for each overlapping cell
+// assumes P0.y <= P1.y (TODO fix this)
+// TODO add capped rasteriation
+template <bool bConservative, typename FRasterOp>
+void RasterizeSegmentSorted(float2 P_0, float2 P_1, float w_0, float w_1, FRasterOp RasterOp)
+{
+	// primitive setup
+	float2 R = P_1 - P_0;
+	float2 N = normalize(R);
+	float2 N_abs = abs(N);
+
+	float d_tile = 0.5 * (N_abs.x + N_abs.y);
+	float d_cons = bConservative ? d_tile : 0.0;
+	
+	float E = 1e-6;
+	float E_x = E * abs(R.x + 2.0 * d_cons * N.x);
+	float N_y_rcp = (N.y == 0.0 ? rcp(E) : rcp(N.y));
+	
+	float b = N.x * N_y_rcp;
+	float w = 0.5 * max(w_0, w_1);
+	float s = (w + d_cons) * N_y_rcp * 2.0;
+	float h = (w + d_cons) * N.x;
+	float h_abs = abs(h);
+	
+	// raster setup
+	float Y_0 = P_0.y - h_abs - (d_cons * N.y) - 0.5;
+	float Y_1 = P_1.y + h_abs + (d_cons * N.y) - 0.5;
+
+	float S_inc = b;
+	float S_0 = P_0.x - S_inc * h_abs - (d_cons * N.x) - 0.5 * s;
+	//oat S_1 = P_0.x - S_inc * h_abs - (d_cons * N.x) - 0.5 * s;
+	float S_1 = S_0;
+
+	float K_inc = (h == 0.0 ? 0.0 : -1.0 / (2.0 * h));
+	float K_0 = 0.0 - K_inc * h * (2.0 - abs(K_inc) * (Y_1 - Y_0 + E_x));
+	//oat K_1 = 1.0 + K_inc * h * (2.0 - abs(K_inc) * (Y_1 - Y_0 + E_x));
+	float K_1 = 1.0 - K_0;
+
+#if RASTER_DEBUG
+	uint init_S_0 = asuint(S_0);
+	uint init_S_1 = asuint(S_1);
+	uint init_K_0 = asuint(K_0);
+	uint init_K_1 = asuint(K_1);
+#endif
+	
+	// raster loop
+#if RASTER_CLAMP
+	int I_0 = max(floor(P_0.y - (w * N_abs.x)), 0);
+	int I_1 = min(floor(P_1.y + (w * N_abs.x)), NumTilesY - 1);
+#else
+	int I_0 = floor(P_0.y - (w * N_abs.x));
+	int I_1 = floor(P_1.y + (w * N_abs.x));
+#endif
+
+	S_0 += (S_inc * I_0) - (S_inc * (Y_0)) + 0.5;
+	S_1 += (S_inc * I_0) - (S_inc * (Y_0)) - 0.5;
+	K_0 += (K_inc * I_0) - (K_inc * (Y_0 + Y_1 + E_x) / 2.0);
+	K_1 += (K_inc * I_0) - (K_inc * (Y_0 + Y_1 + E_x) / 2.0);
+	
+	for (int i = I_0; i <= I_1; i++)
+	{
+		// stateless op:
+		// sy(y) = Sinc * y - Sinc * (Y0)
+		// ky(y) = Kinc * y - Kinc * (Y0 + Y1 + Ex) / 2
+		// x0(y) = S0 + sy(y) + s * saturate(K0 + ky(y)) + 0.5
+		// x1(y) = S1 + sy(y) + s * saturate(K1 + ky(y)) - 0.5
+
+		float x_0 = S_0 + s * saturate(K_0);
+		float x_1 = S_1 + s * saturate(K_1);
+
+#if RASTER_CLAMP
+		int J_0 = max(floor(x_0), 0);
+		int J_1 = min(floor(x_1), NumTilesX - 1);
+#else
+		int J_0 = floor(x_0);
+		int J_1 = floor(x_1);
+#endif
+		
+#if RASTER_DEBUG
+		InterlockedAdd(RWTileCount[(i - I_0) * 8 + 0], I_0);
+		InterlockedAdd(RWTileCount[(i - I_0) * 8 + 1], I_1);
+		InterlockedAdd(RWTileCount[(i - I_0) * 8 + 2], J_0);
+		InterlockedAdd(RWTileCount[(i - I_0) * 8 + 3], J_1);
+		
+		InterlockedAdd(RWTileCount[(i - I_0) * 8 + 4], init_S_0);
+		InterlockedAdd(RWTileCount[(i - I_0) * 8 + 5], init_S_1);
+		InterlockedAdd(RWTileCount[(i - I_0) * 8 + 6], init_K_0);
+		InterlockedAdd(RWTileCount[(i - I_0) * 8 + 7], init_K_1);
+#else
+		for (int j = J_0; j <= J_1; j++)
+		{
+			RasterOp(i, j);
+		}
+#endif
+		
+		S_0 += S_inc;
+		S_1 += S_inc;
+		K_0 += K_inc;
+		K_1 += K_inc;
+	}
+}
+
+template <bool bConservative, typename FRasterOp>
+void RasterizeSegmentSorted(FCurveSegment Seg, FRasterOp RasterOp)
+{
+	RasterizeSegmentSorted<bConservative>(Seg.PosA.xy, Seg.PosB.xy, Seg.WidthA, Seg.WidthB, RasterOp);
+}
+
+// rasterizes segment (P0, P1, w0, w1) to unit grid
+// invokes FRasterOp for each overlapping cell
+template <bool bConservative, typename FRasterOp>
+void RasterizeSegment(float2 P_0, float2 P_1, float w_0, float w_1, FRasterOp RasterOp)
+{
+	// sort with outcome p0.y <= p1.y
+	if (P_0.y > P_1.y)
+	{
+		Swap(P_0, P_1);
+		Swap(w_0, w_1);
+	}
+	
+	// invoke on sorted input
+	RasterizeSegmentSorted<bConservative>(P_0, P_1, w_0, w_1, RasterOp);
+}
+
+template <bool bConservative, typename FRasterOp>
+void RasterizeSegment(FCurveSegment Seg, FRasterOp RasterOp)
+{
+	RasterizeSegment<bConservative>(Seg.PosA.xy, Seg.PosB.xy, Seg.WidthA, Seg.WidthB, RasterOp);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// binning rasterizer ops
+
+#define RASTER_BATCH_ALLOC (COMPILER_SUPPORTS_WAVE_MATCH_INTRINSICS) // enables use of WaveMatch to group tile allocations per wave
+
+#define INVALID_TILE_INDEX (~0u)
+
+uint ComputeTileIndex(FRaster InRaster, int i, int j)
+{
+	uint OutTileIndex = INVALID_TILE_INDEX;
+
+	#if defined(VIRTUAL_TEXTURE_TARGET) && VIRTUAL_TEXTURE_TARGET
+	const uint2 PixelPos = uint2(j, i) * TILE_WIDTH;
+	const float2 vTranslation = 0;
+	FVisBufferPixel Pixel = CreateVisBufferPixel(PixelPos + vTranslation, 1 /*SourcePixelValue*/, 1 /*DeviceZ*/);
+	Pixel.PhysicalPosition = uint3(Pixel.Position, InRaster.ArrayIndex);
+
+	bool bWrite = true;
+	if( !InRaster.bSinglePage )
+	{
+		FCachedPageTable PageTranslation;
+		if (!PageTranslation(Pixel))
+		{
+			bWrite = false;
+		}
+	}
+	const uint2 WritePixelPos = Pixel.PhysicalPosition.xy;
+	const uint2 WriteTilePos = WritePixelPos / TILE_WIDTH; 
+	const uint  WriteTileIndex = WriteTilePos.x + WriteTilePos.y * NumTilesX;
+	OutTileIndex = bWrite ? WriteTileIndex : INVALID_TILE_INDEX;
+	#else
+	OutTileIndex = i * NumTilesX + j;
+	#endif
+
+	return OutTileIndex;
+}
+
+struct FRasterOpTileCount
+{
+	FRaster Raster;
+	FCurveSegment Seg;
+	
+	void operator()(int i, int j)
+	{
+		const uint TileIndex = ComputeTileIndex(Raster, i, j);
+
+#if RASTER_BATCH_ALLOC
+		uint4 TileLaneMask = WaveMatch(TileIndex);
+		int4 TileLaneHi4 = firstbithigh(TileLaneMask) | uint4(0, 0x20, 0x40, 0x60);
+		uint TileLaneHi = (uint)max(max3(TileLaneHi4.x, TileLaneHi4.y, TileLaneHi4.z), TileLaneHi4.w);
+		uint TileLaneOffset = WaveMultiPrefixCountBits(true, TileLaneMask);
+
+		if (WaveGetLaneIndex() == TileLaneHi && TileIndex != INVALID_TILE_INDEX)
+		{
+			InterlockedAdd(RWTileCount[TileIndex], TileLaneOffset + 1);
+		}
+#else
+		if (TileIndex != INVALID_TILE_INDEX)
+		{
+			InterlockedAdd(RWTileCount[TileIndex], 1);
+		}
+#endif
+	}
+};
+
+struct FRasterOpTileWrite
+{
+	FRaster Raster;
+	FCurveSegment Seg;
+	
+	void operator()(int i, int j)
+	{
+		FTilePrimitive Prim = (FTilePrimitive)0;
+	
+		// prepare tile primitive from segment
+		if (TilePrimitivePrepare(i, j, Seg, Prim))
+		{
+			const uint TileIndex = ComputeTileIndex(Raster, i, j);
+			const bool bValid = TileIndex != INVALID_TILE_INDEX;
+
+			uint TileDataBegin = 0;// offset into large buffer with compacted tile data
+			uint TileDataWrite = 0;// packed capacity and count relative to TileDataBegin
+
+			#if RASTER_BATCH_ALLOC
+			uint TileLaneHi;
+			{
+				uint4 TileLaneMask = WaveMatch(TileIndex);
+				int4 TileLaneHi4 = firstbithigh(TileLaneMask) | uint4(0, 0x20, 0x40, 0x60);
+				TileLaneHi = (uint)max(max3(TileLaneHi4.x, TileLaneHi4.y, TileLaneHi4.z), TileLaneHi4.w);
+				uint TileLaneOffset = WaveMultiPrefixCountBits(true, TileLaneMask);
+
+				if (WaveGetLaneIndex() == TileLaneHi && bValid)
+				{
+					InterlockedAdd(RWTileCount[TileIndex], TileLaneOffset + 1, TileDataWrite);
+				}
+
+				uint TileOffsetValue = INVALID_TILE_INDEX;
+				if (bValid)
+				{
+					TileOffsetValue = TileOffset[TileIndex];
+				}
+				TileDataBegin = WaveReadLaneAt(TileOffsetValue, TileLaneHi);
+				TileDataWrite = WaveReadLaneAt(TileDataWrite, TileLaneHi);
+				TileDataWrite += TileLaneOffset;
+
+			}
+			#else
+			if (bValid)
+			{
+				TileDataBegin = TileOffset[TileIndex];
+				InterlockedAdd(RWTileCount[TileIndex], 1, TileDataWrite);
+			}
+			#endif
+
+			if (bValid)
+			{
+				// capacity in upper 16 bits, current written count in lower 16
+				uint WriteLimit = TileDataWrite >> 16;
+				uint WriteIndex = TileDataWrite & 0xFFFFu;
+
+				// write until capacity, else decrement
+				if (WriteIndex < WriteLimit)
+				{
+					RWTileSegment[TileDataBegin + WriteIndex] = TilePrimitivePack(Prim);
+				}
+				#if RASTER_BATCH_ALLOC
+				else if (WaveGetLaneIndex() == TileLaneHi)
+				{
+					InterlockedMin(RWTileCount[TileIndex], WriteLimit << 16 | WriteLimit);
+				}
+				#else
+				else
+				{
+					InterlockedMin(RWTileCount[TileIndex], WriteLimit << 16 | WriteLimit);
+				}
+				#endif
+			}
+		}
+	}
+};
+
+struct FRasterOpTileWriteConditional
+{
+	FCurveSegment Seg;
+	
+	void operator()(int i, int j)
+	{
+		float TileLODScale = 1.0 / TileHeat.Load(uint3(j, i, 0));
+		{
+			// ... TODO write (or cull) segment with per tile lod scale
+		}
+	}
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// utility geometry
+
+// Compute signed distance to vertical segment with radius r, and half-height h, at position p
+float SdSegment(float2 p, float r, float h)
+{
+#if 0
+	// L2 rounded
+	float2 q = float2(0.0, clamp(p.y, -h, h));
+	return length(p - q) - r;
+#elif 0
+	// L2 clipped
+	float2 d = abs(float2(p.x, p.y)) - float2(r, h);
+	return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
+#else
+	// L-inf clipped
+	float dx = abs(p.x) - r;
+	float dy = abs(p.y) - h;
+	return max(dx, dy);
+#endif
+}
+
+// Compute slice height of unit square at n*d where (n, d) is slicing plane normal, distance
+float SliceHeightUnitSquare(float2 n, float d)
+{
+	float a = abs(n.x);
+	float b = abs(n.y);
+	float p = max(a, b);
+	float q = min(a, b);
+	return max(0.0, min(1.0 / p, (0.5 * (p + q) - abs(d)) / max(p * q, 1e-7)));
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// utility hashing
+
+#include "../Hash.ush"
+
+struct FPCGHashOp
+{
+	uint operator()(uint Key)
+	{
+		return PCGHash(Key);
+	}
+};
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// utility deduplication
+
+// Insert key in (approximate) set; returns true if maybe duplicate, false if definitely not duplicate
+template <uint M, uint K, typename FHashOp>
+bool BloomFilter(inout uint State[M >> 5], uint Key, FHashOp HashOp)
+{
+	uint H1 = HashOp(Key);
+	uint H2 = HashOp(Key ^ 0x9e3779b9u) | 1;// decorrelate and ensure odd
+	
+	uint S = 0;
+	
+	[unroll]
+	for (uint i = 0; i != K; i++)
+	{
+		uint Idx = (H1 + i * H2) & (M - 1);
+		uint Bin = Idx >> 5;
+		uint Bit = 1u << (Idx & 31);
+		
+		S += ((State[Bin] & Bit) != 0);
+		
+		State[Bin] |= Bit;
+	}
+	
+	return (S == K);// maybe duplicate if all bits set prior
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// bitwise parallel ops
+
+#define PAR_DECL	template <typename FLayout, typename FUInt>
+#define PAR_DECL_TO	template <typename FLayout, typename FLayoutTo, typename FUIntTo, typename FUInt>
+#define PAR_ARGS	FLayout, FUInt
+#define PAR_ARGS_TO	FLayoutTo, FUIntTo
+#define PAR_SPEC	FLayout
+#define PAR_SPEC_TO	FLayoutTo
+#define PAR_UINT	FUInt
+#define PAR_UINT_TO	FUIntTo
+#define PAR_UINT2	vector<FUInt, 2>
+#define PAR_UINT3	vector<FUInt, 3>
+#define PAR_UINT4	vector<FUInt, 4>
+
+
+// These functions define parallel operations on N-bit wide lanes in a single scalar.
+// They depend on a layout definition and a matching storage type. No padding required.
+// 
+// Example layout definition for 4 lanes in a single uint:
+//
+//		struct FLayout
+//		{
+//			static const uint NUM_LANES = 4;
+//			static const uint LANE_BITS = 8;
+//			static const uint LANE_MASK = 0xFFu;
+//			static const uint MSB = 0x80808080u;
+//			static const uint LSB = 0x01010101u;
+//		};
+//
+// Example use:
+// 
+//		uint A = ParallelBroadcast<FLayout, uint>(2);
+//		=>   A = 00000010 00000010 00000010 00000010 (LSB)
+// 
+//		uint B = ParallelPack<FLayout, uint>({ 1, 2, 3, 4 });
+//		=>   B = 00000001 00000010 00000011 00000100 (LSB)
+// 
+//		uint C = ParallelMax<FLayout>(A, B);
+//		=>   C = 00000010 00000010 00000011 00000100 (LSB)
+
+#define NUM_LANES	PAR_SPEC::NUM_LANES
+#define LANE_BITS	PAR_SPEC::LANE_BITS
+#define LANE_MASK	PAR_SPEC::LANE_MASK
+#define MSB			PAR_SPEC::MSB
+#define LSB			PAR_SPEC::LSB
+
+// x x x x . . . .
+PAR_DECL
+PAR_UINT ParallelBroadcast(uint x)
+{
+	return ((PAR_UINT)(x & LANE_MASK)) * LSB;
+}
+
+// x x x x . . . .
+PAR_DECL
+PAR_UINT ParallelBroadcast(PAR_UINT, uint x)
+{
+	return ParallelBroadcast<PAR_ARGS>(x);
+}
+
+// x y z w . . . .
+PAR_DECL
+PAR_UINT ParallelPack(uint x[NUM_LANES])
+{
+	PAR_UINT a = 0u;
+	{
+		[unroll]
+		for (uint i = 0; i != NUM_LANES; i++)
+		{
+			a |= ((PAR_UINT)(x[i] & LANE_MASK)) << (LANE_BITS * (NUM_LANES - i - 1));
+		}
+	}
+	return a;
+}
+
+// x y z w . . . .
+PAR_DECL
+PAR_UINT ParallelPack(PAR_UINT, uint x[NUM_LANES])
+{
+	return ParallelPack<PAR_ARGS>(x);
+}
+
+// b b b b (from a a a a)
+PAR_DECL_TO
+PAR_UINT_TO ParallelConvert(PAR_UINT a)
+{
+	PAR_UINT_TO b = 0u;
+	{
+		const uint NUM_LANES_TO = PAR_SPEC_TO::NUM_LANES;
+		const uint LANE_BITS_TO = PAR_SPEC_TO::LANE_BITS;
+		const uint LANE_MASK_TO = PAR_SPEC_TO::LANE_MASK & LANE_MASK;
+
+		[unroll]
+		for (uint i = 0; i != NUM_LANES_TO; i++)
+		{
+			b |= ((PAR_UINT_TO)(a >> (i * LANE_BITS)) & LANE_MASK_TO) << (i * LANE_BITS_TO);
+		}
+	}
+	return b;
+}
+
+// a a a a != 0 0 0 0
+PAR_DECL
+PAR_UINT UnmaskedParallelNZ(PAR_UINT a)
+{
+#if 1
+	// adapted from solution published by Sebastiano Vigna in "Broadword Implementation of Rank/Select Queries", p.6
+	// https://vigna.di.unimi.it/ftp/papers/Broadword.pdf
+	PAR_UINT c = ((a | MSB) - LSB) | a;
+	return c;
+#else
+	// adapted from solution posted by Sean Eron Anderson on the "Bit Twiddling Hacks" web page
+	// https://graphics.stanford.edu/~seander/bithacks.html#ZeroInWord
+	PAR_UINT m = ~MSB;
+	PAR_UINT c = ((a & m) + m) | a | m;
+	return c;
+#endif
+}
+
+// a a a a < b b b b
+PAR_DECL
+PAR_UINT UnmaskedParallelLT(PAR_UINT a, PAR_UINT b)
+{
+#if 1
+	// adapted from solution posted by Norbert Juffa that uses bitwise average (~a, b)
+	// https://stackoverflow.com/a/68717720
+	PAR_UINT x = ~a;
+	PAR_UINT c = (x & b) + (((x ^ b) >> 1) & ~MSB);
+	return c;
+#else
+	// adapted from solution published by Sebastiano Vigna in "Broadword Implementation of Rank/Select Queries", p.6
+	// https://vigna.di.unimi.it/ftp/papers/Broadword.pdf
+	PAR_UINT c = (((a | MSB) - (b & ~MSB)) | (a ^ b)) ^ (a | ~b);
+	return c;
+	// ... and the unused variation for equal-or-less-than that doesn't require inversion at callsite (unused)
+	// PAR_UINT c = (((b | MSB) - (a & ~MSB)) | (a ^ b)) ^ (a & ~b);
+#endif
+}
+
+// a a a a != 0 0 0 0
+PAR_DECL
+PAR_UINT ParallelNZ(PAR_UINT a) { return UnmaskedParallelNZ<PAR_ARGS>(a) & MSB; }
+
+// a a a a == 0 0 0 0
+PAR_DECL
+PAR_UINT ParallelEZ(PAR_UINT a) { return ~UnmaskedParallelNZ<PAR_ARGS>(a) & MSB; }
+
+// a a a a != b b b b
+PAR_DECL
+PAR_UINT ParallelNE(PAR_UINT a, PAR_UINT b) { return UnmaskedParallelNZ<PAR_ARGS>(a ^ b) & MSB; }
+
+// a a a a == b b b b
+PAR_DECL
+PAR_UINT ParallelEQ(PAR_UINT a, PAR_UINT b) { return ~UnmaskedParallelNZ<PAR_ARGS>(a ^ b) & MSB; }
+
+// a a a a < b b b b
+PAR_DECL
+PAR_UINT ParallelLT(PAR_UINT a, PAR_UINT b) { return UnmaskedParallelLT<PAR_ARGS>(a, b) & MSB; }
+
+// a a a a <= b b b b
+PAR_DECL
+PAR_UINT ParallelLE(PAR_UINT a, PAR_UINT b) { return ~UnmaskedParallelLT<PAR_ARGS>(b, a) & MSB; }
+
+// a a a a > b b b b
+PAR_DECL
+PAR_UINT ParallelGT(PAR_UINT a, PAR_UINT b) { return UnmaskedParallelLT<PAR_ARGS>(b, a) & MSB; }
+
+// a a a a >= b b b b
+PAR_DECL
+PAR_UINT ParallelGE(PAR_UINT a, PAR_UINT b) { return ~UnmaskedParallelLT<PAR_ARGS>(a, b) & MSB; }
+
+// (a a a a > b b b b) ? a a a a : b b b b
+PAR_DECL
+PAR_UINT ParallelMax(PAR_UINT a, PAR_UINT b)
+{
+	PAR_UINT h = ParallelLT<PAR_ARGS>(a, b);
+	PAR_UINT m = (h >> (LANE_BITS - 1)) * LANE_MASK;
+	return (a & ~m) | (b & m);
+}
+
+// (a a a a < b b b b) ? a a a a : b b b b
+PAR_DECL
+PAR_UINT ParallelMin(PAR_UINT a, PAR_UINT b)
+{
+	PAR_UINT h = ParallelLT<PAR_ARGS>(a, b);
+	PAR_UINT m = (h >> (LANE_BITS - 1)) * LANE_MASK;
+	return (a & m) | (b & ~m);
+}
+
+// bb bb bb aa => bb bb xx aa (insert x where x < a)
+PAR_DECL
+PAR_UINT ParallelSortedInsert(PAR_UINT a, uint x)
+{
+#if 1
+	// masking w/ mul insert
+	// instr. 9;
+	// 	6 bitwise(1 shift, 2 and, 2 or, 1 not)
+	// 	2 mul
+	// 	1 add
+	//
+	// 00 00 00 80 80 80	hsb_ge
+	// 00 00 00 01 01 01	hsb_ge >> 7					// 1
+	// 00 00 00 FF FF FF	(hsb_ge >> 7) * 0xFF		// 2
+	// 00 00 01 00 00 00	((hsb_ge >> 7) * 0xFF) + 1	// 3
+	// FF FF FF 00 00 00	~((hsb_ge >> 7) * 0xFF)		// 4
+	// bb bb xx aa aa aa	((a & ~((hsb_ge >> 7) * 0xFF)) << 8) | (a & ((hsb_ge >> 7) * 0xFF)) | (x * (((hsb_ge >> 7) * 0xFF) + 1))
+	//                          5                                6    7                         8    9
+	// PASSES
+
+	PAR_UINT v = ParallelBroadcast<PAR_ARGS>(x);
+	PAR_UINT hsb_gt = ParallelGT<PAR_ARGS>(a, v);
+
+	PAR_UINT m_aa = (hsb_gt >> (LANE_BITS - 1)) * LANE_MASK;
+	PAR_UINT m_bb = ~m_aa;
+
+	PAR_UINT a_aa = (a & m_aa);
+	PAR_UINT a_bb = (a & m_bb) << LANE_BITS;
+	PAR_UINT a_xx = ((x & LANE_MASK) * (m_aa + 1));
+
+	return a_aa | a_bb | a_xx;
+#elif 0
+	// firstbithigh w/ back and forth insert
+	// instr. 10;
+	// 	1 firstbithigh
+	// 	7 bitwise(4 shift, 1 and, 2 or)
+	// 	1 add
+	// 	1 sub
+	// 
+	// 00 00 00 80 80 80	hsb_ge
+	// 00 00 00 00 00 18	firstbithigh(hsb_ge) + 1	// 2
+	//        ]---------	{ k=24 }
+	// 00 00 01 00 00 00	(1 << k)					// 3
+	// 00 00 00 FF FF FF	(1 << k) - 1				// 4
+	// bb bb xx aa aa aa	((((a >> k) << 8) | x) << k) | (a & ((1 << k) - 1))
+	//                             5     6    7     8    9   10
+	// FAILS
+
+	uint v = ParallelBroadcast(UINT8(x));
+	uint hsb_gt = ParallelGT(a, v);
+
+	uint k = firstbithigh(hsb_gt) + 1;
+	uint m_aa = ((1u << k) - 1);// NOTE: on some targets this fails to overflow when k=64
+
+	uint a_bb_xx = ((((a >> k) << 8) | UINT8(x)) << k);
+	uint a_aa = (a & m_aa);
+
+	return a_aa | a_bb_xx;
+#else
+	uint v = ParallelBroadcast(UINT8(x));
+	uint v_gt_hsb = ParallelGT(v, a);
+	uint v_gt_lsb = v_gt_hsb >> 7;
+
+	int i = firstbithigh(v_gt_lsb);
+
+	uint m_gt = v_gt_lsb * 0xFFu;
+
+	uint a_hi = a & ~m_gt;
+	uint a_xx = (UINT8(x) << i) & m_gt;
+	uint a_lo = (a & m_gt) >> 8;
+
+	return a_hi | a_xx | a_lo;
+#endif
+}
+
+// bb bb bb aa => bb bb xx/yy aa (insert x/y where x < a)
+PAR_DECL
+PAR_UINT ParallelSortedInsertWithPayload(PAR_UINT a, uint x, inout PAR_UINT b, uint y)
+{
+	PAR_UINT v = ParallelBroadcast<PAR_ARGS>(x);
+	PAR_UINT hsb_gt = ParallelGT<PAR_ARGS>(a, v);
+
+	PAR_UINT m_aa = (hsb_gt >> (LANE_BITS - 1)) * LANE_MASK;
+	PAR_UINT m_bb = ~m_aa;
+
+	PAR_UINT b_aa = (b & m_aa);
+	PAR_UINT b_bb = (b & m_bb) << LANE_BITS;
+	PAR_UINT b_xx = ((y & LANE_MASK) * (m_aa + 1));
+
+	b = b_aa | b_bb | b_xx;
+
+	PAR_UINT a_aa = (a & m_aa);
+	PAR_UINT a_bb = (a & m_bb) << LANE_BITS;
+	PAR_UINT a_xx = ((x & LANE_MASK) * (m_aa + 1));
+
+	return a_aa | a_bb | a_xx;
+}
+
+PAR_DECL
+PAR_UINT4 MultiParallelSortedInsert(PAR_UINT4 a, uint x)
+{
+	PAR_UINT4 c = PAR_UINT4(
+		ParallelSortedInsert<PAR_ARGS>(a.x, x),
+		ParallelSortedInsert<PAR_ARGS>(a.y, x),
+		ParallelSortedInsert<PAR_ARGS>(a.z, x),
+		ParallelSortedInsert<PAR_ARGS>(a.w, x)
+	);
+
+	// <<<
+	// WW ww ww ww ZZ zz zz zz YY yy yy yy XX xx xx xx		a
+	// ww ww ww QQ zz zz zz QQ yy yy yy QQ xx QQ xx xx		c
+	//
+	//                      ff          ff          ff		m_drop = (c.xyz > a.xyz) * 0xFFu
+	//                      ZZ          YY          XX		a_drop = (a.xyz >> 24) & m_drop
+	//
+	//             ww ww ww 00 zz zz zz 00 yy yy yy 00		(c.yzw & ~m_drop)
+	//             ww ww ww ZZ zz zz zz YY yy yy yy XX		(c.yzw & ~m_drop) | a_drop
+	//
+	// ww ww ww ZZ zz zz zz YY yy yy yy XX xx QQ xx xx		uint4(c.x, (c.yzw & ~m_drop) | a_drop)
+
+	static const uint POS_HI = firstbithigh(LSB);
+
+	PAR_UINT3 m_drop = (c.xyz > a.xyz) * LANE_MASK;
+	PAR_UINT3 a_drop = (a.xyz >> POS_HI) & m_drop;
+
+	a = PAR_UINT4(c.x, (c.yzw & ~m_drop) | a_drop);
+
+	return a;
+}
+
+PAR_DECL
+PAR_UINT4 MultiParallelSortedInsertWithPayload(PAR_UINT4 a, uint x, inout PAR_UINT4 b, uint y)
+{
+	PAR_UINT4 d = b;
+	PAR_UINT4 c = PAR_UINT4(
+		ParallelSortedInsertWithPayload<PAR_ARGS>(a.x, x, d.x, y),
+		ParallelSortedInsertWithPayload<PAR_ARGS>(a.y, x, d.y, y),
+		ParallelSortedInsertWithPayload<PAR_ARGS>(a.z, x, d.z, y),
+		ParallelSortedInsertWithPayload<PAR_ARGS>(a.w, x, d.w, y));
+
+	static const uint POS_HI = firstbithigh(LSB);
+
+	PAR_UINT3 m_drop = (c.xyz > a.xyz) * LANE_MASK;
+	PAR_UINT3 b_drop = (b.xyz >> POS_HI) & m_drop;
+	PAR_UINT3 a_drop = (a.xyz >> POS_HI) & m_drop;
+
+	b = PAR_UINT4(d.x, (d.yzw & ~m_drop) | b_drop);
+	a = PAR_UINT4(c.x, (c.yzw & ~m_drop) | a_drop);
+
+	return a;
+}
+
+#undef NUM_LANES	// PAR_SPEC::NUM_LANES
+#undef LANE_BITS	// PAR_SPEC::LANE_BITS
+#undef LANE_MASK	// PAR_SPEC::LANE_MASK
+#undef MSB			// PAR_SPEC::MSB
+#undef LSB			// PAR_SPEC::LSB
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// bitwise parallel ops typed
+
+#define PAR_DECL_TYPED			template <typename FParallel>
+#define PAR_FUNC_TYPED(F,A,V)	F(A) { FParallel L = { F<typename FParallel::FLayout>(V) }; return L; }
+#define PAR_PASS_TYPED(...)		__VA_ARGS__
+#define PAR_SPEC_TYPED			FParallel::FLayout
+#define PAR_UINT_TYPED			FParallel
+#define PAR_UINT_VAL(L)			L.Value
+
+// Typed overloads for operations on wrapped layouts that also define a member named 'Value'.
+// With wrapped layouts, the layout definition is passed implicitly to every operation, and the
+// layout always matches the storage type.
+//
+// Example wrapped layout definition for 4 lanes in a single uint:
+//
+//		struct FState
+//		{
+//			struct FLayout
+//			{
+//				static const uint NUM_LANES = 4;
+//				static const uint LANE_BITS = 8;
+//				static const uint LANE_MASK = 0xFFu;
+//				static const uint MSB = 0x80808080u;
+//				static const uint LSB = 0x01010101u;
+//			};
+// 
+//			uint Value;
+//		};
+// 
+// Example use (wrapped layout):
+// 
+//		FParallel A = ParallelBroadcast<FParallel>(2);
+//		=>  A.Value = 00000010 00000010 00000010 00000010 (LSB)
+// 
+//		FParallel B = ParallelPack<FParallel>({ 1, 2, 3, 4 });
+//		=>  B.Value = 00000001 00000010 00000011 00000100 (LSB)
+// 
+//		FParallel C = ParallelMax(A, B);
+//		=>  C.Value = 00000010 00000010 00000011 00000100 (LSB)
+
+//PAR_DECL_TYPED
+//PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelBroadcast, PAR_PASS_TYPED(uint x), PAR_PASS_TYPED(PAR_UINT_VAL(PAR_UINT_TYPED()), x))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelPack, PAR_PASS_TYPED(uint x[PAR_SPEC_TYPED::NUM_LANES]), PAR_PASS_TYPED(PAR_UINT_VAL(PAR_UINT_TYPED()), x))
+
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelNZ, PAR_PASS_TYPED(PAR_UINT_TYPED a), PAR_PASS_TYPED(PAR_UINT_VAL(a)))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelEZ, PAR_PASS_TYPED(PAR_UINT_TYPED a), PAR_PASS_TYPED(PAR_UINT_VAL(a)))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelNE, PAR_PASS_TYPED(PAR_UINT_TYPED a, PAR_UINT_TYPED b), PAR_PASS_TYPED(PAR_UINT_VAL(a), PAR_UINT_VAL(b)))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelEQ, PAR_PASS_TYPED(PAR_UINT_TYPED a, PAR_UINT_TYPED b), PAR_PASS_TYPED(PAR_UINT_VAL(a), PAR_UINT_VAL(b)))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelLT, PAR_PASS_TYPED(PAR_UINT_TYPED a, PAR_UINT_TYPED b), PAR_PASS_TYPED(PAR_UINT_VAL(a), PAR_UINT_VAL(b)))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelLE, PAR_PASS_TYPED(PAR_UINT_TYPED a, PAR_UINT_TYPED b), PAR_PASS_TYPED(PAR_UINT_VAL(a), PAR_UINT_VAL(b)))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelGT, PAR_PASS_TYPED(PAR_UINT_TYPED a, PAR_UINT_TYPED b), PAR_PASS_TYPED(PAR_UINT_VAL(a), PAR_UINT_VAL(b)))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelGE, PAR_PASS_TYPED(PAR_UINT_TYPED a, PAR_UINT_TYPED b), PAR_PASS_TYPED(PAR_UINT_VAL(a), PAR_UINT_VAL(b)))
+
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelMax, PAR_PASS_TYPED(PAR_UINT_TYPED a, PAR_UINT_TYPED b), PAR_PASS_TYPED(PAR_UINT_VAL(a), PAR_UINT_VAL(b)))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelMin, PAR_PASS_TYPED(PAR_UINT_TYPED a, PAR_UINT_TYPED b), PAR_PASS_TYPED(PAR_UINT_VAL(a), PAR_UINT_VAL(b)))
+
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelSortedInsert, PAR_PASS_TYPED(PAR_UINT_TYPED a, uint x), PAR_PASS_TYPED(PAR_UINT_VAL(a), x))
+PAR_DECL_TYPED
+PAR_UINT_TYPED PAR_FUNC_TYPED(ParallelSortedInsertWithPayload, PAR_PASS_TYPED(PAR_UINT_TYPED a, uint x, inout PAR_UINT_TYPED b, uint y), PAR_PASS_TYPED(PAR_UINT_VAL(a), x, PAR_UINT_VAL(b), y))
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// bitwise parallel layouts
+
+struct FParallel8xU4
+{
+	struct FLayout
+	{
+		static const uint NUM_LANES = 8;
+		static const uint LANE_BITS = 4;
+		static const uint LANE_MASK = 0xFu;
+		static const uint MSB = 0x88888888u;
+		static const uint LSB = 0x11111111u;
+	};
+
+#define ParallelPack8xU4(...) { FParallel8xU4::Pack(__VA_ARGS__) }
+	static uint Pack(uint x, uint y, uint z, uint w, uint a, uint b, uint c, uint d)
+	{
+		return
+			(x & FLayout::LANE_MASK) << 28 | (y & FLayout::LANE_MASK) << 24 |
+			(z & FLayout::LANE_MASK) << 20 | (w & FLayout::LANE_MASK) << 16 |
+			(a & FLayout::LANE_MASK) << 12 | (b & FLayout::LANE_MASK) << 8 |
+			(c & FLayout::LANE_MASK) << 4  | (d & FLayout::LANE_MASK);
+	}
+
+	uint Value;// for typed operations
+};
+
+struct FParallel4xU8
+{
+	struct FLayout
+	{
+		static const uint NUM_LANES = 4;
+		static const uint LANE_BITS = 8;
+		static const uint LANE_MASK = 0xFFu;
+		static const uint MSB = 0x80808080u;
+		static const uint LSB = 0x01010101u;
+	};
+
+#define ParallelPack4xU8(...) { FParallel4xU8::Pack(__VA_ARGS__) }
+	static uint Pack(uint x, uint y, uint z, uint w)
+	{
+		return
+			(x & FLayout::LANE_MASK) << 24 |
+			(y & FLayout::LANE_MASK) << 16 |
+			(z & FLayout::LANE_MASK) << 8  |
+			(w & FLayout::LANE_MASK);
+	}
+
+	uint Value;// for typed operations
+};
+
+struct FParallel8xU8
+{
+	struct FLayout
+	{
+		static const uint NUM_LANES = 8;
+		static const uint LANE_BITS = 8;
+		static const uint LANE_MASK = 0xFFu;
+		static const uint64_t MSB = 0x8080808080808080uL;
+		static const uint64_t LSB = 0x0101010101010101uL;
+	};
+
+#define ParallelPack8xU8(...) { FParallel8xU8::Pack(__VA_ARGS__) }
+	static uint64_t Pack(uint x, uint y, uint z, uint w, uint a, uint b, uint c, uint d)
+	{
+		uint64_t xyzw =
+			(x & FLayout::LANE_MASK) << 24 |
+			(y & FLayout::LANE_MASK) << 16 |
+			(z & FLayout::LANE_MASK) << 8  |
+			(w & FLayout::LANE_MASK);
+		uint64_t abcd =
+			(a & FLayout::LANE_MASK) << 24 |
+			(b & FLayout::LANE_MASK) << 16 |
+			(c & FLayout::LANE_MASK) << 8  |
+			(d & FLayout::LANE_MASK);
+
+		return xyzw << 32 | abcd;
+	}
+
+	uint64_t Value;// for typed operations
+};
+
+struct FParallel4xU16
+{
+	struct FLayout
+	{
+		static const uint NUM_LANES = 4;
+		static const uint LANE_BITS = 16;
+		static const uint LANE_MASK = 0xFFFFu;
+		static const uint64_t MSB = 0x8000800080008000uL;
+		static const uint64_t LSB = 0x0001000100010001uL;
+	};
+
+#define ParallelPack4xU16(...) { FParallel4xU16::Pack(__VA_ARGS__) }
+	static uint64_t Pack(uint x, uint y, uint z, uint w)
+	{
+		uint64_t xy =
+			(x & FLayout::LANE_MASK) << 16 |
+			(y & FLayout::LANE_MASK);
+		uint64_t zw =
+			(z & FLayout::LANE_MASK) << 16 |
+			(w & FLayout::LANE_MASK);
+
+		return xy << 32 | zw;
+	}
+
+	uint64_t Value;// for typed operations
+};

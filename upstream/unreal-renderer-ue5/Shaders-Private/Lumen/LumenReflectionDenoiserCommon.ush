@@ -1,0 +1,59 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once 
+
+#include "../StochasticLighting/StochasticLightingCommon.ush"
+
+float3 LumenRGBToYCoCgSafe(float3 RGB)
+{
+	return IsLightingValid(RGB) ? LumenRGBToYCoCg(RGB) : INVALID_LIGHTING;
+}
+
+float ReflectionsDenoiserOneOverTonemapRange;
+
+float3 RGBToDenoiserSpace(float3 V)
+{
+	if (IsLightingValid(V))
+	{
+		float Weight = 1.0f / (1.0f + Luminance(V) * ReflectionsDenoiserOneOverTonemapRange);
+		V = V * Weight;
+	}
+
+	return V;
+}
+
+float4 RGBAToDenoiserSpace(float4 V)
+{
+	V.xyz = RGBToDenoiserSpace(V.xyz);
+	return V;
+}
+
+float3 DenoiserSpaceToRGB(float3 V)
+{
+	if (IsLightingValid(V))
+	{
+		float InvWeight = 1.0f / (1.0f - Luminance(V) * ReflectionsDenoiserOneOverTonemapRange);
+		V = V * InvWeight;
+	}
+
+	return V;
+}
+
+uint GetMaxFramesAccumulated(uint MaxFrames, float Roughness)
+{
+	// Speedup accumulation for mirror reflections in order to reduce ghosting and other artifacts
+	// Mirror reflections don't need many samples to converge and can be mostly handled by TAA
+	MaxFrames = lerp(2, MaxFrames, saturate(Roughness / 0.05f));
+	return MaxFrames;
+}
+
+// Packing into an UNorm float
+half PackNumFramesAccumulated(half X)
+{
+	return X / 32.0;
+}
+
+half UnpackNumFramesAccumulated(half X)
+{
+	return X * 32.0;
+}

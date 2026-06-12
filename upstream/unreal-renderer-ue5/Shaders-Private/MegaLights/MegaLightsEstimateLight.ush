@@ -1,0 +1,58 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+/**
+ * Estimate local light weight based on the light mask (radius) and falloff
+ * Follows GetLocalLightAttenuation() in DeferredLightingCommon.ush
+ */
+float EstimateLocalLight(
+	float DistanceSquared,
+	float LightPower,
+	float LightInvRadius,
+	float LightFalloffExponent)
+{
+	// Prevent from division by zero
+	DistanceSquared = max(DistanceSquared, 0.01);
+
+	float NormalizeDistanceSquared = DistanceSquared * Pow2(LightInvRadius);
+
+	float LightFalloff = 1.0;
+	if (LightFalloffExponent > 0.0)
+	{
+		LightFalloff = pow(1.0 - saturate(NormalizeDistanceSquared), LightFalloffExponent);
+	}
+	else
+	{
+		LightFalloff = Pow2(saturate(1.0 - Pow2(NormalizeDistanceSquared))) / DistanceSquared;
+	}
+
+	return LightPower * LightFalloff * View.PreExposure / PI;
+}
+
+float ComputeLightPower(FDeferredLightData LightData)
+{
+	float LightPower = Luminance(LightData.Color);
+	if (LightData.bRectLight)
+	{
+		// Convert to light power by multiplying by SourceRadius and SourceLength
+		LightPower *= 2.0 * LightData.SourceRadius * 2.0 * LightData.SourceLength;
+	}
+
+	LightPower *= max(LightData.DiffuseScale, LightData.SpecularScale);
+	return LightPower;
+}
+
+float EstimateLocalLight(FDeferredLightData LightData, float3 TranslatedWorldPosition)
+{
+	float3 ToLight = LightData.TranslatedWorldPosition - TranslatedWorldPosition;
+	float DistanceSquared = dot(ToLight, ToLight);
+
+	float LightPower = ComputeLightPower(LightData);
+
+	return EstimateLocalLight(
+		DistanceSquared,
+		LightPower,
+		LightData.InvRadius,
+		LightData.FalloffExponent);
+}

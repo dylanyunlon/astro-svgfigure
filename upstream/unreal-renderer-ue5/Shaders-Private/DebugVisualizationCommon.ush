@@ -1,0 +1,18 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "SceneData.ush"
+
+// Shared classification color for the far-shadow-casters debug view.
+// Used by:
+//   - Engine/Shaders/Private/PostProcessVisualizeShadowCasters.usf (deferred + mobile post-pass)
+//   - Engine/Shaders/Private/Nanite/NaniteVisualize.usf
+float3 GetFarShadowCasterColor(in FPrimitiveSceneData PrimitiveData)
+{
+	if ((PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_CAST_FAR_SHADOW) != 0u)
+	{
+		return float3(0.0, 0.7, 0.0);
+	}
+	return float3(0.35, 0.35, 0.35);
+}

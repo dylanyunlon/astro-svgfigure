@@ -1,0 +1,568 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#pragma message("UESHADERMETADATA_VERSION 0D21601A-4F76-42D0-BCAB-32B7ECC7AB54")
+
+#define InViews TranslucentBasePass.NaniteTranslucency.InViews
+#define RasterGroupMeta TranslucentBasePass.NaniteTranslucency.RasterGroupMeta
+#define RasterBinMeta TranslucentBasePass.NaniteTranslucency.RasterBinMeta
+#define RasterBinData TranslucentBasePass.NaniteTranslucency.RasterBinData
+
+// Do not use shared samplers as it requires the View uniform buffer, which is not bound for this shader.
+#define USE_HZB_SHARED_SAMPLERS 0
+
+#include "../VertexFactoryCommon.ush"
+#include "../LightmapData.ush"
+#include "../SplineMeshCommon.ush"
+#include "../SGGX.ush"
+#include "../ComputeShaderUtils.ush"
+
+#define NANITE_VIEWS_DECLARATION 0
+#include "NaniteDataDecode.ush"
+#include "NaniteAttributeDecode.ush"
+#include "NaniteSceneCommon.ush"
+#include "NaniteVertexDeformation.ush"
+
+#define NANITE_MATERIAL_INCLUDES 0
+#include "NaniteRasterizationCommon.ush"
+
+#include "../VirtualShadowMaps/VirtualShadowMapPageAccessCommon.ush"
+#include "../VirtualShadowMaps/VirtualShadowMapPageOverlap.ush"
+
+#include "/Engine/Public/RootConstants.ush"
+
+// Make sure we decode enough texture coordinates to satisfy programmable features
+#if NUM_MATERIAL_TEXCOORDS_VERTEX > NUM_MATERIAL_TEXCOORDS
+	#define NANITE_NUM_TEXCOORDS_TO_DECODE NUM_MATERIAL_TEXCOORDS_VERTEX
+#else
+	#define NANITE_NUM_TEXCOORDS_TO_DECODE NUM_MATERIAL_TEXCOORDS
+#endif
+
+#if NANITE_PIXEL_PROGRAMMABLE && NANITE_NUM_TEXCOORDS_TO_DECODE < 2
+	// Ensure we decode at least 2 texture coordinates in the MS/VS to properly populate the interpolator with valid data.
+	#define NANITE_NUM_TEXCOORDS_TO_DECODE_HW_VS 2
+#else
+	#define NANITE_NUM_TEXCOORDS_TO_DECODE_HW_VS NANITE_NUM_TEXCOORDS_TO_DECODE
+#endif
+
+uint GetRasterGroup() { return GetRootConstant0(); }
+
+#if NANITE_BINDLESS
+void SetBindlessMaterial(uint Index)
+{
+#if USE_MATERIAL_VS_UB
+#if UB_HAS_DECL_MaterialVS
+	MaterialVS = GetMaterialVSConstants(Index);
+#endif
+#else
+#if UB_HAS_DECL_Material
+	Material = GetMaterialConstants(Index);
+#endif
+#endif
+}
+#endif
+
+struct FTriRange
+{
+	uint Start;
+	uint Num;
+};
+
+struct FClusterRef
+{
+	FTriRange TriRange;
+	uint VisibleIndex;
+	uint MaterialFlags;
+	uint RasterBin;
+};
+
+template<bool bHardware>
+FClusterRef FetchClusterRef(const uint ClusterIndex)
+{
+	const FNaniteRasterGroupMeta GroupMeta = RasterGroupMeta[GetRasterGroup()];
+	const uint RasterBinOffset = GroupMeta.ClusterOffset;
+	
+	uint Offset;
+	if(bHardware)
+	{
+		const uint RasterBinCapacity = GroupMeta.SWCount + GroupMeta.HWCount;
+		Offset = RasterBinOffset + ((RasterBinCapacity - 1) - ClusterIndex);
+	}
+	else
+	{
+		Offset = RasterBinOffset + ClusterIndex;
+	}
+
+	const uint2 PackedData		= RasterBinData[Offset].xy;
+	
+	FClusterRef ClusterRef;
+	ClusterRef.TriRange.Start	= BitFieldExtractU32(PackedData.y, 8, 8);
+	ClusterRef.TriRange.Num		= PackedData.y & 0xFFu;
+	ClusterRef.VisibleIndex		= PackedData.x;
+	ClusterRef.MaterialFlags	= GroupMeta.MaterialFlags_DepthBlock & 0xFFFFu;	// TODO: Could we potentially merge some bins with different material flags?
+	ClusterRef.RasterBin		= PackedData.y >> 16;
+	return ClusterRef;
+}
+
+// Default cull mode is CW. If this returns true, CCW culling is required
+bool ReverseWindingOrder(FNaniteView NaniteView, FPrimitiveSceneData PrimitiveData, FInstanceSceneData InstanceData)
+{
+	// Negative determinant sign for non uniform scale means that an odd number of components are negative, so
+	// we need to reverse the triangle winding order.
+	float DeterminantSign = InstanceData.DeterminantSign;
+	bool bReverseInstanceCull = (DeterminantSign < 0.0f);
+
+#if SUPPORT_REVERSE_CULLING_IN_NANITE
+	if (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_REVERSE_CULLING)
+	{
+		// reverse culling if the primitive has elected to do so
+		bReverseInstanceCull = !bReverseInstanceCull;
+	}
+#endif
+
+	bool bViewReverseCull = (NaniteView.Flags & NANITE_VIEW_FLAG_REVERSE_CULLING);
+	
+	// Logical XOR
+	return (bReverseInstanceCull != bViewReverseCull);
+}
+
+struct FVertexFactoryInterpolantsVSToPS
+{
+	TANGENTTOWORLD_INTERPOLATOR_BLOCK
+
+#if NUM_TEX_COORD_INTERPOLATORS
+	float4 TexCoords[(NUM_TEX_COORD_INTERPOLATORS+1)/2]	: TEXCOORD0;
+#endif
+#if STORE_CLIP_ZW_IN_INTERPOLATOR
+	float2 ClipZW										: CLIP_ZW;
+#endif
+	nointerpolation uint PrimitiveId					: PRIMITIVE_ID;
+	nointerpolation uint ViewIndex						: PACKED_VIEW_INDEX;
+};
+
+struct FVertexFactoryMeshShaderIntermediates
+{
+	bool bValidIndex;
+	bool bTriValid;
+	uint DrawClusterIndex;
+	FClusterRef ClusterRef;
+	FTriRange TriRange;
+	FCluster Cluster;
+	FVisibleCluster VisibleCluster;
+	FPrimitiveSceneData PrimitiveData;
+	FInstanceSceneData InstanceData;
+	FInstanceDynamicData InstanceDynamicData;
+	FNaniteVertTransforms Transforms;
+	FNaniteView NaniteView;
+	uint TriIndex;
+	uint NumUniqueVerts;
+	uint3 VertIndexes;
+};
+
+struct FVertexFactoryInput
+{
+#if MESHSHADER
+	FVertexFactoryMeshShaderIntermediates MSIntermediates;
+	uint VertexID;
+#else
+	uint VertexID		: SV_VertexID;
+	uint VisibleIndex	: SV_InstanceID;
+#endif
+};
+
+/** 
+* Caches intermediates that would otherwise have to be computed multiple times.  Avoids relying on the compiler to optimize out redundant operations.
+*/
+struct FVertexFactoryIntermediates
+{
+	FVisibleCluster VisibleCluster;
+	FPrimitiveSceneData PrimitiveData;
+	FInstanceSceneData InstanceData;
+	FInstanceDynamicData InstanceDynamicData;
+
+	float3x3 TangentToLocal;
+	float3x3 TangentToWorld;
+	float TangentToWorldSign;
+
+	float4 Position;
+
+	uint VertexID;
+
+	FNanitePostDeformVertex Vertex;
+
+	FNaniteVertTransforms Transforms;
+};
+
+#if NUM_TEX_COORD_INTERPOLATORS
+float2 GetUV(FVertexFactoryInterpolantsVSToPS Interpolants, int UVIndex)
+{
+	float4 UVVector = Interpolants.TexCoords[UVIndex / 2];
+	return UVIndex % 2 ? UVVector.zw : UVVector.xy;
+}
+
+void SetUV(inout FVertexFactoryInterpolantsVSToPS Interpolants, int UVIndex, float2 InValue)
+{
+	FLATTEN
+	if (UVIndex % 2)
+	{
+		Interpolants.TexCoords[UVIndex / 2].zw = InValue;
+	}
+	else
+	{
+		Interpolants.TexCoords[UVIndex / 2].xy = InValue;
+	}
+}
+#endif
+
+// Determines the tangent to local frame of the specified vertex
+half3x3 CalcVertexTangentToLocal(FPrimitiveSceneData PrimitiveData, FInstanceSceneData InstanceData, FNanitePostDeformVertex Vert)
+{
+	half3x3 TangentToLocal;
+
+	BRANCH
+	if(Vert.TangentBasis.TangentXAndSign.w != 0.0f)
+	{
+		TangentToLocal = NaniteTangentToLocal(Vert.TangentBasis.TangentXAndSign, Vert.TangentBasis.TangentZ);
+	}
+	else
+	{
+		TangentToLocal = GetTangentBasis(Vert.TangentBasis.TangentZ);
+	}
+
+	return TangentToLocal;
+}
+
+FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput Input)
+{
+	FVertexFactoryIntermediates Intermediates;
+	Intermediates = (FVertexFactoryIntermediates)0;
+
+#if MESHSHADER
+	const FClusterRef ClusterRef = Input.MSIntermediates.ClusterRef;
+	const FTriRange TriRange = Input.MSIntermediates.TriRange;
+#else
+	const FClusterRef ClusterRef = FetchClusterRef<true>(Input.VisibleIndex);
+	const FTriRange TriRange = ClusterRef.TriRange;
+#endif
+
+	// GW-TODO: RUNETODO: BINDLESS SUPPORT
+/*
+#if NANITE_BINDLESS
+	SetBindlessMaterial(USE_MATERIAL_VS_UB ? RasterBinMeta[ClusterRef.RasterBin].MaterialCBIndexVS_Compact :
+											 RasterBinMeta[ClusterRef.RasterBin].MaterialCBIndexVS);
+#endif
+
+#if NANITE_BINDLESS_EXPORT
+	const uint MaterialCBIndex = RasterBinMeta[ClusterRef.RasterBin].MaterialCBIndexPS;
+#else
+	const uint MaterialCBIndex = 0;
+#endif
+*/
+
+#if MESHSHADER
+	Intermediates.VertexID = Input.VertexID;
+
+	Intermediates.VisibleCluster = Input.MSIntermediates.VisibleCluster;
+	Intermediates.InstanceData = Input.MSIntermediates.InstanceData;
+	Intermediates.PrimitiveData = Input.MSIntermediates.PrimitiveData;
+	Intermediates.InstanceDynamicData = Input.MSIntermediates.InstanceDynamicData;
+	Intermediates.Transforms = Input.MSIntermediates.Transforms;
+
+	Intermediates.Vertex = FetchAndDeformLocalNaniteVertex(
+		Intermediates.PrimitiveData,
+		Intermediates.InstanceData,
+		GetInstanceViewData(Intermediates.InstanceData.InstanceId, Input.MSIntermediates.NaniteView.SceneRendererPrimaryViewId),
+		Input.MSIntermediates.Cluster,
+		Intermediates.VisibleCluster,
+		Intermediates.VertexID,
+		NANITE_NUM_TEXCOORDS_TO_DECODE
+	);
+
+	float3 PointTranslatedWorld = DFTransformLocalToTranslatedWorld(Intermediates.Vertex.Position, Intermediates.InstanceData.LocalToWorld, Input.MSIntermediates.NaniteView.PreViewTranslation).xyz;
+	Intermediates.Position = float4(PointTranslatedWorld, 1.0f);
+
+	Intermediates.TangentToLocal = CalcVertexTangentToLocal(Intermediates.PrimitiveData, Intermediates.InstanceData, Intermediates.Vertex);
+	Intermediates.TangentToWorld = mul(Intermediates.TangentToLocal, Intermediates.Transforms.LocalToWorldNoScale);
+		
+	float TangentSign = 1.0;
+	Intermediates.TangentToWorldSign = Intermediates.InstanceData.DeterminantSign;
+#else
+	const uint LocalTriIndex = Input.VertexID / 3;
+	Intermediates.VertexID = Input.VertexID - LocalTriIndex * 3;
+
+	Intermediates.VisibleCluster = GetVisibleCluster(ClusterRef.VisibleIndex, VIRTUAL_TEXTURE_TARGET);
+	Intermediates.InstanceData	= GetInstanceSceneDataUnchecked(Intermediates.VisibleCluster);
+	Intermediates.PrimitiveData	= GetPrimitiveData(Intermediates.InstanceData.PrimitiveId);
+
+	FNaniteView NaniteView = GetNaniteView(Intermediates.VisibleCluster.ViewId);
+
+	Intermediates.InstanceDynamicData = CalculateInstanceDynamicData(NaniteView, Intermediates.InstanceData);
+	Intermediates.Transforms = CalculateNaniteVertexTransforms(Intermediates.InstanceData, Intermediates.InstanceDynamicData, NaniteView);
+
+	const bool bReverseWindingOrder = ReverseWindingOrder(NaniteView, Intermediates.PrimitiveData, Intermediates.InstanceData);
+
+	ResolvedView = ResolveView();
+
+	FCluster Cluster = GetCluster(Intermediates.VisibleCluster.PageIndex, Intermediates.VisibleCluster.ClusterIndex, NANITE_CLUSTER_TYPE_TRIANGLES);
+
+	BRANCH
+	if (LocalTriIndex < TriRange.Num)
+	{
+		const uint TriIndex = TriRange.Start + LocalTriIndex;
+		uint3 VertIndexes = DecodeTriangleIndices(Cluster, TriIndex);
+		if (bReverseWindingOrder)
+			VertIndexes.yz = VertIndexes.zy;
+
+		Intermediates.Vertex = FetchAndDeformLocalNaniteVertex(
+			Intermediates.PrimitiveData,
+			Intermediates.InstanceData,
+			GetInstanceViewData(Intermediates.InstanceData.InstanceId, NaniteView.SceneRendererPrimaryViewId),
+			Cluster,
+			Intermediates.VisibleCluster,
+			VertIndexes[Intermediates.VertexID],
+			NANITE_NUM_TEXCOORDS_TO_DECODE
+		);
+
+		float3 PointTranslatedWorld = DFTransformLocalToTranslatedWorld(Intermediates.Vertex.Position, Intermediates.InstanceData.LocalToWorld, NaniteView.PreViewTranslation).xyz;
+		Intermediates.Position = float4(PointTranslatedWorld, 1.0f);
+
+		Intermediates.TangentToLocal = CalcVertexTangentToLocal(Intermediates.PrimitiveData, Intermediates.InstanceData, Intermediates.Vertex);
+		Intermediates.TangentToWorld = mul(Intermediates.TangentToLocal, Intermediates.Transforms.LocalToWorldNoScale);
+		
+		float TangentSign = 1.0;
+		Intermediates.TangentToWorldSign = Intermediates.InstanceData.DeterminantSign;
+	}
+#endif
+
+	return Intermediates;
+}
+
+float4 VertexFactoryGetWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
+{
+	return Intermediates.Position;
+}
+
+float4 VertexFactoryGetRasterizedWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, float4 InWorldPosition)
+{
+	return InWorldPosition;
+}
+
+half3x3 VertexFactoryGetTangentToLocal(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
+{
+	return Intermediates.TangentToLocal;
+}
+
+FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, float3 WorldPosition, half3x3 TangentToLocal, bool bIsPreviousFrame = false)
+{
+	FMaterialVertexParameters Result = MakeInitializedMaterialVertexParameters();
+
+	Result.PrimitiveId				= Intermediates.InstanceData.PrimitiveId;
+	Result.InstanceLocalToWorld		= Intermediates.InstanceData.LocalToWorld;
+	Result.InstanceWorldToLocal		= Intermediates.InstanceData.WorldToLocal;
+	Result.PrevFrameLocalToWorld	= Intermediates.InstanceData.PrevLocalToWorld;
+#if USES_PER_INSTANCE_CUSTOM_DATA
+	Result.CustomDataOffset			= Intermediates.InstanceData.CustomDataOffset;
+	Result.CustomDataCount			= Intermediates.InstanceData.CustomDataCount;
+#endif
+	Result.PerInstanceRandom		= Intermediates.InstanceData.RandomID;
+
+	Result.SceneData.PrimitiveId 	= Intermediates.InstanceData.PrimitiveId;
+	Result.SceneData.InstanceId 	= Intermediates.InstanceData.RelativeId;
+	Result.SceneData.InstanceData	= Intermediates.InstanceData;
+	Result.SceneData.Primitive		= Intermediates.PrimitiveData;
+
+	float4x4 TranslatedWorldToPrimitive = DFFastToTranslatedWorld(Result.SceneData.Primitive.WorldToLocal, ResolvedView.PreViewTranslation);
+
+	Result.PositionInstanceSpace	= bIsPreviousFrame ? Intermediates.Vertex.PrevPosition : Intermediates.Vertex.Position;
+	Result.WorldPosition			= mul(float4(Result.PositionInstanceSpace, 1), Intermediates.InstanceDynamicData.LocalToTranslatedWorld).xyz;
+	Result.PositionPrimitiveSpace	= mul(float4(Result.WorldPosition, 1), TranslatedWorldToPrimitive).xyz;
+	Result.TangentToWorld			= Intermediates.TangentToWorld;
+
+	Result.VertexColor				= Intermediates.Vertex.Color;
+	Result.PreSkinnedPosition		= Intermediates.Vertex.PointLocal;
+	Result.PreSkinnedNormal			= Intermediates.Vertex.PreSkinnedNormal;
+
+#if NUM_MATERIAL_TEXCOORDS_VERTEX
+	UNROLL
+	for (uint TexCoordIndex = 0; TexCoordIndex < NUM_MATERIAL_TEXCOORDS_VERTEX; ++TexCoordIndex)
+	{
+		// Protect against case where Nanite max UV count is lower than what the material may define.
+		Result.TexCoords[TexCoordIndex] = Intermediates.Vertex.TexCoords[min(TexCoordIndex, NANITE_MAX_UVS - 1)];
+	}
+#endif
+
+	Result.LWCData = MakeMaterialLWCData(Result);
+
+	return Result;
+}
+
+/** Converts from vertex factory specific interpolants to a FMaterialPixelParameters, which is used by material inputs. */
+FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVSToPS Interpolants, float4 SvPosition)
+{
+	// GetMaterialPixelParameters is responsible for fully initializing the result
+	FMaterialPixelParameters Result = MakeInitializedMaterialPixelParameters();
+
+#if NUM_TEX_COORD_INTERPOLATORS
+	UNROLL
+	for (int CoordinateIndex = 0; CoordinateIndex < NUM_TEX_COORD_INTERPOLATORS; CoordinateIndex++)
+	{
+		Result.TexCoords[CoordinateIndex] = GetUV(Interpolants, CoordinateIndex);
+	}
+#endif
+
+	half3 TangentToWorld0 = Interpolants.TangentToWorld0.xyz;
+	half4 TangentToWorld2 = Interpolants.TangentToWorld2;
+	Result.UnMirrored = TangentToWorld2.w;
+
+	Result.TangentToWorld = AssembleTangentToWorld(TangentToWorld0, TangentToWorld2);
+
+	// GW-TODO:
+	//Result.VertexColor = GetColor(Interpolants);
+
+	float4 ScreenPosition = SvPositionToScreenPosition(SvPosition);
+	float3 TranslatedWorldPosition = SvPositionToTranslatedWorld(SvPosition);
+
+	Result.WorldPosition_CamRelative = TranslatedWorldPosition.xyz;
+
+	// Remove the pre view translation
+	Result.WorldPosition_NoOffsets = DFFastSubtract(TranslatedWorldPosition.xyz, ResolvedView.PreViewTranslation);
+	Result.AbsoluteWorldPosition = Result.WorldPosition_NoOffsets;
+	
+	Result.SvPosition = SvPosition;
+	Result.ScreenPosition = ScreenPosition;
+
+	Result.CameraVector = normalize(-Result.WorldPosition_CamRelative.xyz);
+
+	return Result;
+}
+
+FVertexFactoryInterpolantsVSToPS VertexFactoryGetInterpolantsVSToPS(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, FMaterialVertexParameters VertexParameters)
+{
+	FVertexFactoryInterpolantsVSToPS Interpolants;
+
+	// Initialize the whole struct to 0
+	Interpolants = (FVertexFactoryInterpolantsVSToPS)0;
+
+	Interpolants.TangentToWorld0 = float4(Intermediates.TangentToWorld[0], 0);
+	Interpolants.TangentToWorld2 = float4(Intermediates.TangentToWorld[2], Intermediates.TangentToWorldSign);
+#if USE_WORLDVERTEXNORMAL_CENTER_INTERPOLATION
+	Interpolants.TangentToWorld2_Center = Interpolants.TangentToWorld2;
+#endif
+
+#if NUM_TEX_COORD_INTERPOLATORS
+	float2 CustomizedUVs[NUM_TEX_COORD_INTERPOLATORS];
+	GetMaterialCustomizedUVs(VertexParameters, CustomizedUVs);
+	GetCustomInterpolators(VertexParameters, CustomizedUVs);
+
+	UNROLL
+	for (int CoordinateIndex = 0; CoordinateIndex < NUM_TEX_COORD_INTERPOLATORS; CoordinateIndex++)
+	{
+		SetUV(Interpolants, CoordinateIndex, CustomizedUVs[CoordinateIndex]);
+	}
+#endif
+
+	Interpolants.PrimitiveId = VertexParameters.PrimitiveId;
+
+	return Interpolants;
+}
+
+float4 VertexFactoryGetInstanceHitProxyId(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
+{
+#if USE_EDITOR_SHADERS
+	return float4(Intermediates.InstanceData.EditorData.HitProxyId, 0.0f);
+#else
+	return float4(0.0f, 0.0f, 0.0f, 0.0f);
+#endif
+}
+
+FVertexFactoryMeshShaderIntermediates VertexFactoryMeshShaderGetIntermediates(uint GroupThreadID, uint3 GroupID)
+{
+	FVertexFactoryMeshShaderIntermediates Intermediates = (FVertexFactoryMeshShaderIntermediates)0;
+
+	Intermediates.bValidIndex = true;
+
+#if PLATFORM_REQUIRES_UNWRAPPED_MESH_SHADER_ARGS
+	Intermediates.DrawClusterIndex = GroupID.x;
+#else
+	// Avoid overflowing the 64k limit on single dimension of SV_GroupID
+	Intermediates.DrawClusterIndex = GetUnWrappedDispatchGroupId(GroupID);
+	BRANCH
+	if (GroupID.y > 0 || GroupID.z > 0)
+	{
+		// Due to wrapping, the visible index can be out of range
+		Intermediates.bValidIndex = (Intermediates.DrawClusterIndex < RasterGroupMeta[GetRasterGroup()].HWCount);
+	}
+#endif
+
+	Intermediates.ClusterRef = FetchClusterRef<true>(Intermediates.DrawClusterIndex);
+
+	BRANCH
+	if (Intermediates.bValidIndex)
+	{
+		Intermediates.TriRange = Intermediates.ClusterRef.TriRange;
+		Intermediates.VisibleCluster = GetVisibleCluster(Intermediates.ClusterRef.VisibleIndex, VIRTUAL_TEXTURE_TARGET);
+		Intermediates.TriIndex = Intermediates.TriRange.Start + GroupThreadID;
+
+		Intermediates.InstanceData	= GetInstanceSceneDataUnchecked(Intermediates.VisibleCluster);
+		Intermediates.PrimitiveData	= GetPrimitiveData(Intermediates.InstanceData.PrimitiveId);
+
+		Intermediates.NaniteView = GetNaniteView(Intermediates.VisibleCluster.ViewId);
+		const bool bReverseWindingOrder = ReverseWindingOrder(Intermediates.NaniteView, Intermediates.PrimitiveData, Intermediates.InstanceData);
+
+		Intermediates.InstanceDynamicData = CalculateInstanceDynamicData(Intermediates.NaniteView, Intermediates.InstanceData);
+		Intermediates.Transforms = CalculateNaniteVertexTransforms(Intermediates.InstanceData, Intermediates.InstanceDynamicData, Intermediates.NaniteView);
+
+		Intermediates.Cluster = GetCluster(Intermediates.VisibleCluster.PageIndex, Intermediates.VisibleCluster.ClusterIndex, NANITE_CLUSTER_TYPE_TRIANGLES);
+
+		Intermediates.bTriValid = GroupThreadID < Intermediates.TriRange.Num;
+
+		if (Intermediates.bTriValid)
+		{
+			Intermediates.VertIndexes = DecodeTriangleIndices(Intermediates.Cluster, Intermediates.TriIndex);
+		
+			if (bReverseWindingOrder)
+			{
+				Intermediates.VertIndexes.yz = Intermediates.VertIndexes.zy;
+			}
+		}
+
+		Intermediates.NumUniqueVerts = Intermediates.Cluster.NumVerts;
+	}
+
+	return Intermediates;
+}
+
+bool VertexFactoryMeshShaderIsValidIndex(FVertexFactoryMeshShaderIntermediates Intermediates)
+{
+	return Intermediates.bValidIndex;
+}
+
+bool VertexFactoryMeshShaderIsPrimitiveValid(FVertexFactoryMeshShaderIntermediates Intermediates, uint ExportIndex)
+{
+	return ExportIndex < Intermediates.TriRange.Num;
+}
+
+bool VertexFactoryMeshShaderIsVertexValid(FVertexFactoryMeshShaderIntermediates Intermediates, uint ExportIndex)
+{
+	return ExportIndex < Intermediates.Cluster.NumVerts;
+}
+
+void VertexFactoryGetMeshShaderOutputCount(FVertexFactoryMeshShaderIntermediates Intermediates, out uint UniqueVertexCount, out uint TriangleCount)
+{
+	UniqueVertexCount = Intermediates.NumUniqueVerts;
+	TriangleCount = Intermediates.TriRange.Num;
+}
+
+void VertexFactoryDedupMeshShaderVertIndexes(inout FVertexFactoryMeshShaderIntermediates Intermediates, uint GroupThreadIndex, out uint OutLaneVertIndex)
+{
+	DeduplicateVertIndexes(Intermediates.VertIndexes, GroupThreadIndex, Intermediates.bTriValid, Intermediates.NumUniqueVerts, OutLaneVertIndex, Intermediates.VertIndexes);
+}
+
+FVertexFactoryInput VertexFactoryMeshShaderGetInput(FVertexFactoryMeshShaderIntermediates Intermediates, uint VertExportIndex)
+{
+	FVertexFactoryInput Input = (FVertexFactoryInput)0;
+	Input.VertexID = VertExportIndex;
+	Input.MSIntermediates = Intermediates;
+	return Input;
+}

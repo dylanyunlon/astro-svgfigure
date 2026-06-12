@@ -1,0 +1,595 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// When loading Substrate material, needs to support all types of pixels (Simple/Single/Complex/Special) 
+// as the temporal pass does not have tile types
+#define SUBSTRATE_FASTPATH 0
+#define SUBSTRATE_SINGLEPATH 0
+#define SUBSTRATE_COMPLEXSPECIALPATH 1
+
+// Spatial denoise is the last pass writing to the SceneColor buffer. We allow SSS checkerboard pixel to adjust 
+// DiffuseColor/SpecularColor to write specular & diffuse lighting in checkerboard pattern
+#define ALLOW_SSS_MATERIAL_CHECKERBOARD_OVERRIDE 1
+
+#include "../Common.ush"
+#include "MegaLights.ush"
+#include "MegaLightsMaterial.ush"
+#include "MegaLightsTileClassification.ush"
+#include "MegaLightsDenoiser.ush"
+#include "../StochasticLighting/StochasticLightingCommon.ush"
+#include "../PostProcessSubsurfaceDiffuse.ush"
+
+Texture2D<uint> MegaLightsTileBitmask;
+Texture2D<float3> DiffuseLightingTexture;
+Texture2D<float3> SpecularLightingTexture;
+Texture2D<float4> LightingMomentsTexture;
+Texture2D<float4> NormalAndShadingInfoTexture;
+Texture2D<uint> NumFramesAccumulatedTexture;
+Texture2D<float2> HistoryConfidenceTexture;
+Texture2D<UNORM float> ShadingConfidenceTexture;
+
+RWTexture2D<float4> RWSceneColor;
+
+#if DEBUG_MODE
+	RWTexture2D<UNORM float4> RWVisualizeSpatialFilterTexture;
+	RWTexture2D<UNORM float4> RWVisualizeSpatialFilterTexture2;
+#endif
+
+float SpatialFilterMaxDisocclusionFrames;
+float SpatialFilterDisocclusionDiffuseSpatialVarianceScale;
+float SpatialFilterDisocclusionSpecularSpatialVarianceScale;
+float TemporalMaxFramesAccumulated;
+float SpatialFilterDepthWeightScale;
+float SpatialFilterKernelRadius;
+float HistorySpatialStdDevThreshold;
+uint SpatialFilterNumSamples;
+uint bSubPixelShading;
+
+// DEBUG_MODE permutation is shared between debug mode and visualization
+uint DebugModeEnabled;
+
+#define SHARED_TILE_BORDER 2
+#define SHARED_TILE_SIZE_X (THREADGROUP_SIZE_X + 2 * SHARED_TILE_BORDER)
+#define SHARED_TILE_SIZE_Y (THREADGROUP_SIZE_Y + 2 * SHARED_TILE_BORDER)
+groupshared float2 SharedHistoryConfidence[SHARED_TILE_SIZE_Y][SHARED_TILE_SIZE_X];
+
+float2 GetHistoryConfidenceSpatialStdDev(uint2 LocalCoord, inout FDebugContext DebugContext)
+{
+	float2 WeightSum = 0.0;
+	float2 SampleSum = 0.0;
+	float2 SampleSqSum = 0.0;
+
+	const int KernelSize = 2;
+	for (int NeighborOffsetY = -KernelSize; NeighborOffsetY <= KernelSize; ++NeighborOffsetY)
+	{
+		for (int NeighborOffsetX = -KernelSize; NeighborOffsetX <= KernelSize; ++NeighborOffsetX)
+		{
+			const bool bCenter = NeighborOffsetX == 0 && NeighborOffsetY == 0;
+			const bool bCorner = abs(NeighborOffsetX) == KernelSize && abs(NeighborOffsetY) == KernelSize;
+
+			// Skip center as it's already accounted for
+			// Also optimize it a bit by skipping corners as it doesn't affect visuals much
+			if (!bCenter && !bCorner)
+			{
+				uint2 SharedCoord = LocalCoord + SHARED_TILE_BORDER + int2(NeighborOffsetX, NeighborOffsetY);
+				float2 NeighborSample = SharedHistoryConfidence[SharedCoord.y][SharedCoord.x];
+
+				SampleSum += NeighborSample;
+				SampleSqSum += NeighborSample * NeighborSample;
+				WeightSum += float2(1.0, 1.0);
+			}
+		}
+	}
+
+	float2 M1 = SampleSum / WeightSum;
+	float2 M2 = SampleSqSum / WeightSum;
+	float2 Variance = max(M2 - M1 * M1, 0.0);
+	float2 StdDev = sqrt(Variance);
+
+	return StdDev;
+}
+
+float3 TonemapLighting(float3 Lighting, float DisocclusionFactor)
+{
+	return Lighting;
+	// return Lighting / (1.0f + DisocclusionFactor * Luminance(Lighting));
+}
+
+float3 InverseTonemapLighting(float3 TonemappedLighting, float DisocclusionFactor)
+{
+	return TonemappedLighting;
+	//return TonemappedLighting / (1.0f - DisocclusionFactor * Luminance(TonemappedLighting));
+}
+
+uint2 PackLightingMoments(float4 Moments)
+{
+	uint2 Packed;
+	Packed.x = f32tof16(Moments.x) | (f32tof16(Moments.y) << 16);
+	Packed.y = f32tof16(Moments.z) | (f32tof16(Moments.w) << 16);
+	return Packed;
+}
+
+float4 UnpackLightingMoments(uint2 Packed)
+{
+	float4 Moments;
+	Moments.xy = float2(f16tof32(Packed.x & 0xFFFF), f16tof32(Packed.x >> 16));
+	Moments.zw = float2(f16tof32(Packed.y & 0xFFFF), f16tof32(Packed.y >> 16));
+	return Moments;
+}
+
+#if (INPUT_TYPE == INPUT_TYPE_GBUFFER || INPUT_TYPE == INPUT_TYPE_FRONTLAYERTRANSLUCENCY) && SPATIAL_FILTER
+	groupshared uint2 SharedPackedLightingMoments[SHARED_TILE_SIZE_Y][SHARED_TILE_SIZE_X];
+#endif
+
+/**
+ * Run a spatial filter in order to filter out noise based on the temporal variance.
+ */
+[numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
+void DenoiserSpatialCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint2 ScreenCoord = DispatchThreadId.xy + View.ViewRectMinAndSize.xy;
+
+	#if FAST_CLEAR
+	{
+	#if THREADGROUP_SIZE_X == TILE_SIZE && THREADGROUP_SIZE_Y == TILE_SIZE
+		uint TileBitmask = MegaLightsTileBitmask[GroupId.xy + View.ViewRectMinAndSize.xy / TILE_SIZE];
+		bool bSkipGroup = IsFastClearTile(TileBitmask);
+	#else
+		uint TileBitmask = MegaLightsTileBitmask[ScreenCoord / TILE_SIZE];
+		bool bSkipGroup = IsFastClearTile(TileBitmask);
+		bSkipGroup = GroupAllTrue(bSkipGroup, THREADGROUP_SIZE_X * THREADGROUP_SIZE_Y);
+	#endif
+		if (bSkipGroup)
+		{
+			return;
+		}
+	}
+	#endif
+
+	FDebugContext DebugContext = InitDebugContext(ScreenCoord, /*bDownsampled*/ false, float2(0.65, 0.8), DebugModeEnabled != 0);
+
+	#if DEBUG_MODE
+	if (DebugContext.bIsActive)
+	{
+		Print(DebugContext, TEXT("Spatial pass"), FontTitle);
+	}
+	#endif
+
+	#if INPUT_TYPE == INPUT_TYPE_HAIRSTRANDS
+	if (all(ScreenCoord < View.ViewRectMinAndSize.xy + View.ViewRectMinAndSize.zw))
+	{
+		float2 ScreenUV = (ScreenCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+
+		float3 CenterDiffuseLighting = DiffuseLightingTexture[ScreenCoord];
+		if (IsLightingValid(CenterDiffuseLighting))
+		{
+			// For hair, we don't apply proper spatial filtering at the moment.
+			FMegaLightsMaterial Material = LoadMaterial(ScreenUV, ScreenCoord);
+			if (Material.IsValid())
+			{
+				// #MEGALIGHTS_TODO: implement spatial filter for hair strands
+				float3 DiffuseLighting = CenterDiffuseLighting;
+				float3 SpecularLighting = 0.0;
+
+				if (any(DiffuseLighting) > 0.0f || any(SpecularLighting) > 0.0f)
+				{
+					// Do not modulate/demodulate hair lighting as GetDenoisingModulateFactors() does not work with hair shading (demodulation is done in ShadeLightSamplesCS())
+					// FDenoisingModulateFactors Factors = GetDenoisingModulateFactors(Material, NoV);
+					// DiffuseLighting *= Factors.Diffuse;
+					// SpecularLighting *= Factors.Specular;
+
+					// Composite diffuse and specular into scene color
+					FLightAccumulator LightAccumulator = (FLightAccumulator)0;
+					LightAccumulator_AddSplit(LightAccumulator, DiffuseLighting, SpecularLighting, /*ScatterableLight*/ DiffuseLighting, /*CommonMultiplier*/ 1.0f, Material.bNeedsSeparateSubsurfaceLightAccumulation);
+					float4 AccumulatedSceneColor = LightAccumulator_GetResult(LightAccumulator);
+
+					const uint TotalNodeCount = HairStrands.HairSampleCount[0];
+					const uint2 Resolution = GetHairSampleResolution(TotalNodeCount);
+					const FNodeDesc NodeDesc = DecodeNodeDesc(HairStrands.HairSampleOffset.Load(uint3(ScreenCoord, 0)));
+
+					// If sub-pixel shading is:
+					// * Disabled, splat the first-sample's lighting onto all other samples
+					// * Enabled, lighting has already be written during the shading pass
+					if (bSubPixelShading == 0)
+					{
+						LOOP
+						for (uint SampleIt = 0; SampleIt < NodeDesc.Count; SampleIt++)
+						{
+							const uint LinearCoord = NodeDesc.Offset + SampleIt;
+							const uint2 OutCoord = GetHairSampleCoord(LinearCoord, Resolution);
+
+							const FHairSample Sample = UnpackHairSample(HairStrands.HairSampleData[LinearCoord]);
+							const float SampleCoverage = saturate(From8bitCoverage(Sample.Coverage8bit));
+							RWSceneColor[OutCoord] = RWSceneColor[OutCoord] + AccumulatedSceneColor * SampleCoverage;
+						}
+					}
+				}
+			}
+		}
+	}
+	#elif INPUT_TYPE == INPUT_TYPE_GBUFFER || INPUT_TYPE == INPUT_TYPE_FRONTLAYERTRANSLUCENCY
+
+	float3 CenterDiffuseLighting = INVALID_LIGHTING;
+	float3 CenterSpecularLighting = INVALID_LIGHTING;
+	float NumFramesAccumulated = 0.0;
+	float MaxConfidenceFrames = 0.0;
+	float DisocclusionFactor = 0.0;
+	bool bValidPixel = false;
+
+	if (all(ScreenCoord < View.ViewRectMinAndSize.xy + View.ViewRectMinAndSize.zw))
+	{
+	#if SPATIAL_FILTER
+		NumFramesAccumulated = UnpackNumFramesAccumulated(NumFramesAccumulatedTexture[ScreenCoord]);
+
+		if (NumFramesAccumulated > 0.0)
+		{
+			float ShadingConfidence = ShadingConfidenceTexture[ScreenCoord];
+			MaxConfidenceFrames = ShadingConfidenceToMaxFramesAccumulated(ShadingConfidence, TemporalMaxFramesAccumulated);
+
+			// Boost spatial filter until we accumulate enough frames to be able to rely on temporal variance.
+			// Quantize MaxConfidenceFrames to match NumFramesAccumulated packing
+			float QuantizedMaxConfidenceFrames = UnpackNumFramesAccumulated(PackNumFramesAccumulated(MaxConfidenceFrames));
+			float MaxDisocclusionFrames = min(SpatialFilterMaxDisocclusionFrames, QuantizedMaxConfidenceFrames - 1.0);
+
+			if (MaxDisocclusionFrames > 0.0)
+			{
+				DisocclusionFactor = 1.0 - saturate((NumFramesAccumulated - 1.0) / MaxDisocclusionFrames);
+			}
+
+			CenterDiffuseLighting = DiffuseLightingTexture[ScreenCoord];
+			CenterSpecularLighting = SpecularLightingTexture[ScreenCoord];
+			bValidPixel = true;
+		}
+	#else
+		CenterDiffuseLighting = DiffuseLightingTexture[ScreenCoord];
+		CenterSpecularLighting = SpecularLightingTexture[ScreenCoord];
+		bValidPixel = IsLightingValid(CenterDiffuseLighting);
+	#endif
+	}
+
+#if SPATIAL_FILTER 
+	bool bAnyDisocclusion = bValidPixel && DisocclusionFactor > 0.01;
+	bool bAllDisocclusion = !bValidPixel || DisocclusionFactor > 0.01;
+	GroupAnyAllTrue(bAnyDisocclusion, bAllDisocclusion, THREADGROUP_SIZE_X * THREADGROUP_SIZE_Y);
+
+	#if USE_HISTORY_SPATIAL_VARIANCE
+	if (!bAllDisocclusion)
+	{
+		// Load history confidence neighborhood into shared memory
+		for (uint SharedCoordY = GroupThreadId.y; SharedCoordY < SHARED_TILE_SIZE_Y / 2; SharedCoordY += THREADGROUP_SIZE_Y)
+		{
+			for (uint SharedCoordX = GroupThreadId.x; SharedCoordX < SHARED_TILE_SIZE_X / 2; SharedCoordX += THREADGROUP_SIZE_X)
+			{
+				uint2 GatherCoord = GroupId.xy * uint2(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y) + View.ViewRectMinAndSize.xy + int2(SharedCoordX, SharedCoordY) * 2 + 1 - SHARED_TILE_BORDER;
+				float2 GatherUV = GatherCoord * View.BufferSizeAndInvSize.zw;
+			
+				float4 DiffuseHistoryConfidence = 1.0;
+				float4 SpecularHistoryConfidence = 1.0;
+
+				if (all(GatherCoord.xy - View.ViewRectMinAndSize.xy <= View.ViewRectMinAndSize.zw))
+				{
+					DiffuseHistoryConfidence = HistoryConfidenceTexture.GatherRed(GlobalPointClampedSampler, GatherUV).wzxy;
+					SpecularHistoryConfidence = HistoryConfidenceTexture.GatherGreen(GlobalPointClampedSampler, GatherUV).wzxy;
+
+					bool2 bOnBorder = GatherCoord.xy - View.ViewRectMinAndSize.xy == View.ViewRectMinAndSize.zw;
+					bool4 bInView = bool4(false, !bOnBorder.x, !bOnBorder.y, !bOnBorder.x && !bOnBorder.y);
+					DiffuseHistoryConfidence = select(bInView, DiffuseHistoryConfidence, 1.0);
+					SpecularHistoryConfidence = select(bInView, SpecularHistoryConfidence, 1.0);
+				}
+
+				SharedHistoryConfidence[SharedCoordY * 2 + 0][SharedCoordX * 2 + 0] = float2(DiffuseHistoryConfidence.x, SpecularHistoryConfidence.x);
+				SharedHistoryConfidence[SharedCoordY * 2 + 0][SharedCoordX * 2 + 1] = float2(DiffuseHistoryConfidence.y, SpecularHistoryConfidence.y);
+				SharedHistoryConfidence[SharedCoordY * 2 + 1][SharedCoordX * 2 + 0] = float2(DiffuseHistoryConfidence.z, SpecularHistoryConfidence.z);
+				SharedHistoryConfidence[SharedCoordY * 2 + 1][SharedCoordX * 2 + 1] = float2(DiffuseHistoryConfidence.w, SpecularHistoryConfidence.w);
+			}
+		}
+	}
+	#endif
+
+	if (bAnyDisocclusion)
+	{
+		// Load lighting moments neighborhood into shared memory
+		for (uint SharedCoordY = GroupThreadId.y; SharedCoordY < SHARED_TILE_SIZE_Y; SharedCoordY += THREADGROUP_SIZE_Y)
+		{
+			for (uint SharedCoordX = GroupThreadId.x; SharedCoordX < SHARED_TILE_SIZE_X; SharedCoordX += THREADGROUP_SIZE_X)
+			{
+				int2 MomentScreenCoord = GroupId.xy * uint2(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y) + int2(SharedCoordX, SharedCoordY) - SHARED_TILE_BORDER;
+				MomentScreenCoord = clamp(MomentScreenCoord, 0, View.ViewRectMinAndSize.zw - 1.0) + View.ViewRectMinAndSize.xy;
+
+				float4 LightingMoments = LightingMomentsTexture[MomentScreenCoord];
+
+				SharedPackedLightingMoments[SharedCoordY][SharedCoordX] = PackLightingMoments(LightingMoments);
+			}
+		}
+	}
+	GroupMemoryBarrierWithGroupSync();
+#endif
+
+	if (all(ScreenCoord < View.ViewRectMinAndSize.xy + View.ViewRectMinAndSize.zw))
+	{
+		float2 ScreenUV = (ScreenCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+		float4 AccumulatedSceneColor = 0.0f;
+
+		if (bValidPixel)
+		{
+			FMegaLightsMaterial Material = LoadMaterial(ScreenUV, ScreenCoord);
+
+			// Load directly instead of recomputing. Save a texture read and a bunch of ALU instructions
+			Material.WorldNormalForPositionBias = UnpackNormalAndShadingInfo(NormalAndShadingInfoTexture[ScreenCoord]).Normal;
+
+			float3 DiffuseLighting = CenterDiffuseLighting;
+			float3 SpecularLighting = CenterSpecularLighting;
+
+			#if SPATIAL_FILTER
+			{
+				float4 CenterLightingMoments = 0.0;
+
+				if (DisocclusionFactor > 0.01)
+				{
+					float WeightSum = 0.0;
+
+					// We don't have enough temporal history for variance estimate so instead compute spatial variance
+					for (int OffsetY = -SHARED_TILE_BORDER; OffsetY <= SHARED_TILE_BORDER; ++OffsetY)
+					{
+						for (int OffsetX = -SHARED_TILE_BORDER; OffsetX <= SHARED_TILE_BORDER; ++OffsetX)
+						{
+							float Weight = exp2(-2.0 * float(OffsetX * OffsetX + OffsetY * OffsetY) / Pow2(SHARED_TILE_BORDER + 1.0));
+							CenterLightingMoments += UnpackLightingMoments(SharedPackedLightingMoments[GroupThreadId.y + SHARED_TILE_BORDER + OffsetY][GroupThreadId.x + SHARED_TILE_BORDER + OffsetX]) * Weight;
+							WeightSum += Weight;
+						}
+					}
+
+					CenterLightingMoments *= 1.0 / WeightSum;
+				}
+				else if (bAnyDisocclusion)
+				{
+					CenterLightingMoments = UnpackLightingMoments(SharedPackedLightingMoments[GroupThreadId.y + SHARED_TILE_BORDER][GroupThreadId.x + SHARED_TILE_BORDER]);
+				}
+				else
+				{
+					CenterLightingMoments = LightingMomentsTexture[ScreenCoord];
+				}
+
+				float CenterDiffuseStdDev = sqrt(max(CenterLightingMoments.y - Pow2(CenterLightingMoments.x), 0.0f));
+				float CenterSpecularStdDev = sqrt(max(CenterLightingMoments.w - Pow2(CenterLightingMoments.z), 0.0f));
+
+				float NormalizedDiffuseStdDev = 0.0;
+				float NormalizedSpecularStdDev = 0.0;
+				bool bFilterDiffuse = false;
+				bool bFilterSpecular = false;
+				bool bAllowSpatialFilter = true;
+
+				float2 HistoryConfidenceStdDev = 0.0;
+				bool2 bHistoryProbablyNoisy = false;
+
+				if (DisocclusionFactor > 0.01)
+				{
+					CenterDiffuseStdDev *= SpatialFilterDisocclusionDiffuseSpatialVarianceScale;
+					CenterSpecularStdDev *= SpatialFilterDisocclusionSpecularSpatialVarianceScale;
+
+					NormalizedDiffuseStdDev = CenterDiffuseStdDev / max(CenterLightingMoments.x, 0.1);
+					NormalizedSpecularStdDev = CenterSpecularStdDev / max(CenterLightingMoments.z, 0.1);
+
+					// Don't run any filtering if relative error isn't big enough. TSR can clean it up without adding extra blur
+					bFilterDiffuse = NormalizedDiffuseStdDev > 0.2;
+					bFilterSpecular = NormalizedSpecularStdDev > 0.2 && MaxConfidenceFrames >= 4.0;
+				}
+				else
+				{
+				#if USE_HISTORY_SPATIAL_VARIANCE
+					HistoryConfidenceStdDev = GetHistoryConfidenceSpatialStdDev(GroupThreadId.xy, DebugContext);
+					bHistoryProbablyNoisy = HistoryConfidenceStdDev > HistorySpatialStdDevThreshold;
+				#endif
+
+					bAllowSpatialFilter = (MaxConfidenceFrames >= 8.0 || any(bHistoryProbablyNoisy)) && TemporalMaxFramesAccumulated > 1.0;
+					if (bAllowSpatialFilter)
+					{
+						NormalizedDiffuseStdDev = CenterDiffuseStdDev / max(CenterLightingMoments.x, 0.1);
+						NormalizedSpecularStdDev = CenterSpecularStdDev / max(CenterLightingMoments.z, 0.1);
+
+						// Don't run any filtering if relative error isn't big enough. TSR can clean it up without adding extra blur
+						bFilterDiffuse = NormalizedDiffuseStdDev > 0.5 || bHistoryProbablyNoisy.x;
+						bFilterSpecular = NormalizedSpecularStdDev > 0.5 || bHistoryProbablyNoisy.y;
+					}
+				}
+
+				#if DEBUG_MODE
+				if (DebugContext.bIsActive)
+				{
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("CenterLightingMoments : "));
+					Print(DebugContext, CenterLightingMoments, FontValue, 8, 3);
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("CenterDiffuseStdDev   : "));
+					Print(DebugContext, CenterDiffuseStdDev, FontValue);
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("CenterSpecularStdDev  : "));
+					Print(DebugContext, CenterSpecularStdDev, FontValue);
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("NumFramesAccumulated  : "));
+					Print(DebugContext, NumFramesAccumulated, FontValue);
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("MaxConfidenceFrames   : "));
+					Print(DebugContext, MaxConfidenceFrames, FontValue);
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("DisocclusionFactor    : "));
+					Print(DebugContext, DisocclusionFactor, FontValue);
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("AllowSpatialFilter    : "));
+					Print(DebugContext, bAllowSpatialFilter ? 1u : 0u, Select(MaxConfidenceFrames > 8.0f, FontYellow, FontGrey));
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("Filter                : "));
+					Print(DebugContext, bFilterDiffuse ? 1u : 0u, FontValue);
+					Print(DebugContext, bFilterSpecular ? 1u : 0u, FontValue);
+				}
+				#endif
+
+				#if DEBUG_MODE
+				{
+					uint PackedW = bFilterDiffuse ? 0x01 : 0;
+					PackedW |= bFilterSpecular ? 0x02 : 0;
+
+					RWVisualizeSpatialFilterTexture[ScreenCoord] = float4(
+						NormalizedDiffuseStdDev,
+						NormalizedSpecularStdDev,
+						DisocclusionFactor,
+						(PackedW + 0.5) / 4.0);
+
+					RWVisualizeSpatialFilterTexture2[ScreenCoord] = float4(HistoryConfidenceStdDev, 0.0, 0.0);
+				}
+				#endif
+
+				float3 DiffuseLightingSum = TonemapLighting(CenterDiffuseLighting, DisocclusionFactor);
+				float3 SpecularLightingSum = TonemapLighting(CenterSpecularLighting, DisocclusionFactor);
+				float DiffuseLightingWeightSum = 1.0f;
+				float SpecularLightingWeightSum = 1.0f;
+
+				const uint NumSamples = lerp(SpatialFilterNumSamples, 2.0 * SpatialFilterNumSamples, DisocclusionFactor) + 0.5;
+
+				if (Material.bAllowSpatialFilter && SpatialFilterKernelRadius > 0.0f && (bFilterDiffuse || bFilterSpecular))
+				{
+					float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, Material.Depth);
+					float4 ScenePlane = float4(Material.WorldNormalForPositionBias, dot(TranslatedWorldPosition, Material.WorldNormalForPositionBias));
+
+					// Use 2x2 random seed to improve coherency which is important for performance when filtering entire screen
+					uint2 RandomSeed = Rand3DPCG16(int3(ScreenCoord % 2, MegaLightsStateFrameIndex)).xy;
+
+					float SpecularLobeHalfAngle = GetSpecularLobeHalfAngle(Material.Roughness) + 0.01;
+					SpecularLobeHalfAngle *= lerp(1.0, 2.0, DisocclusionFactor);
+					SpecularLobeHalfAngle = clamp(SpecularLobeHalfAngle, 0.01, DegreesToRadians(90.0));
+
+					for (uint NeighborIndex = 0; NeighborIndex < NumSamples; ++NeighborIndex)
+					{
+						float2 NeighborOffsetInRect = Hammersley16(NeighborIndex, NumSamples, RandomSeed);
+						float2 NeighborOffset = UniformSampleDiskConcentric(NeighborOffsetInRect) * SpatialFilterKernelRadius;
+						int2 NeighborCoord = (int2)(ScreenCoord + NeighborOffset + 0.5);
+
+						if (all(and(NeighborCoord >= View.ViewRectMinAndSize.xy, NeighborCoord < (View.ViewRectMinAndSize.xy + View.ViewRectMinAndSize.zw))))
+						{
+							// Depth weight
+							float2 NeighborScreenUV = (NeighborCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+
+							FMegaLightsMaterial NeighborMaterial = LoadMaterial(NeighborScreenUV, NeighborCoord);
+
+							// Load directly instead of recomputing. Save a texture read and a bunch of ALU instructions
+							NeighborMaterial.WorldNormalForPositionBias = UnpackNormalAndShadingInfo(NormalAndShadingInfoTexture[NeighborCoord]).Normal;
+
+							const float3 NeighborTranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(NeighborScreenUV, NeighborMaterial.Depth);
+							float PlaneDistance = abs(dot(float4(NeighborTranslatedWorldPosition, -1), ScenePlane));
+							float RelativeDepthDifference = PlaneDistance / Material.Depth;
+							float DepthWeight = exp2(-SpatialFilterDepthWeightScale * (RelativeDepthDifference * RelativeDepthDifference));
+
+							// Normal weight
+							float AngleBetweenNormals = acosFast(saturate(dot(ScenePlane.xyz, NeighborMaterial.WorldNormalForPositionBias)));
+
+							// Diffuse
+							if (bFilterDiffuse)
+							{
+								float3 NeighborDiffuseLighting = DiffuseLightingTexture[NeighborCoord];
+
+								if (IsLightingValid(NeighborDiffuseLighting))
+								{
+									float NormalWeight = 1.0 - saturate(AngleBetweenNormals);
+
+									float LuminanceDelta = abs(Luminance(CenterDiffuseLighting) - Luminance(NeighborDiffuseLighting));
+									float LuminanceWeight = exp2(-(LuminanceDelta / max(CenterDiffuseStdDev, 0.001)));
+
+									const float DiffuseNeighborWeight = DepthWeight * NormalWeight * LuminanceWeight;
+									DiffuseLightingSum += TonemapLighting(NeighborDiffuseLighting, DisocclusionFactor) * DiffuseNeighborWeight;
+									DiffuseLightingWeightSum += DiffuseNeighborWeight;
+								}
+							}
+
+							// Specular
+							if (bFilterSpecular)
+							{
+								float3 NeighborSpecularLighting = SpecularLightingTexture[NeighborCoord];
+
+								if (IsLightingValid(NeighborSpecularLighting))
+								{
+									float NormalWeight = 1.0 - saturate(AngleBetweenNormals / SpecularLobeHalfAngle);
+
+									float LuminanceDelta = abs(Luminance(CenterSpecularLighting) - Luminance(NeighborSpecularLighting));
+									float LuminanceWeight = exp2(-(LuminanceDelta / max(CenterSpecularStdDev, 0.001)));
+
+									const float SpecularNeighborWeight = DepthWeight * NormalWeight * LuminanceWeight;
+									SpecularLightingSum += TonemapLighting(NeighborSpecularLighting, DisocclusionFactor) * SpecularNeighborWeight;
+									SpecularLightingWeightSum += SpecularNeighborWeight;
+								}
+							}
+						}
+					}
+				}
+
+				DiffuseLighting = InverseTonemapLighting(DiffuseLightingSum / DiffuseLightingWeightSum, DisocclusionFactor);
+				SpecularLighting = InverseTonemapLighting(SpecularLightingSum / SpecularLightingWeightSum, DisocclusionFactor);
+			}
+			#endif
+
+			// Composite diffuse and specular lighting to SceneColor
+			if (any(DiffuseLighting) > 0.0f || any(SpecularLighting) > 0.0f)
+			{
+				float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, Material.Depth);
+
+				// Compute NoV from NormalAndShadingInfoTexture, which already encodes NormalForPositionBias
+				float3 V = normalize(View.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
+				float NoV = saturate(dot(Material.WorldNormalForPositionBias, V));
+				FDenoisingModulateFactors Factors = GetDenoisingModulateFactors(Material, NoV);
+
+				if (Material.bNeedsSeparateSubsurfaceLightAccumulation && View.bSubsurfacePostprocessEnabled)
+				{
+					// Subsurface Profile has internal BaseColor demodulation in AdjustBaseColorAndSpecularColorForSubsurfaceProfileLightingCopyHack, which has to be applied before we output final lighting
+					Factors.Diffuse = Material.DiffuseColor;
+				}
+				DiffuseLighting *= Factors.Diffuse;
+				SpecularLighting *= Factors.Specular;
+
+				// Composite diffuse and specular into scene color
+				FLightAccumulator LightAccumulator = (FLightAccumulator)0;
+				LightAccumulator_AddSplit(LightAccumulator, DiffuseLighting, SpecularLighting, /*ScatterableLight*/ DiffuseLighting, /*CommonMultiplier*/ 1.0f, Material.bNeedsSeparateSubsurfaceLightAccumulation);
+				AccumulatedSceneColor = LightAccumulator_GetResult(LightAccumulator);
+
+				#if DEBUG_MODE
+				if (DebugContext.bIsActive)
+				{
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("DemodulateDiffuse     : "));
+					Print(DebugContext, Factors.Diffuse, FontValue, 8, 3);
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("DemodulateSpecular    : "));
+					Print(DebugContext, Factors.Specular, FontValue, 8, 3);
+					Newline(DebugContext);
+					Print(DebugContext, TEXT("AccumulatedSceneColor : "));
+					Print(DebugContext, AccumulatedSceneColor, FontValue, 8, 3);
+				}
+				#endif
+
+#if INPUT_TYPE != INPUT_TYPE_FRONTLAYERTRANSLUCENCY
+				RWSceneColor[ScreenCoord] = RWSceneColor[ScreenCoord] + AccumulatedSceneColor;
+				AccumulateSeparatedSubsurfaceDiffuse(ScreenCoord, AccumulatedSceneColor);
+#endif // INPUT_TYPE != INPUT_TYPE_FRONTLAYERTRANSLUCENCY
+			}
+		}
+	#if DEBUG_MODE
+		else
+		{
+			RWVisualizeSpatialFilterTexture[ScreenCoord] = 0.0;
+			RWVisualizeSpatialFilterTexture2[ScreenCoord] = 0.0;
+		}
+	#endif
+
+#if INPUT_TYPE == INPUT_TYPE_FRONTLAYERTRANSLUCENCY
+		// SceneColor texture for front layer translucency is not cleared so always need to write output in this pass
+		RWSceneColor[ScreenCoord] = AccumulatedSceneColor;
+#endif // INPUT_TYPE == INPUT_TYPE_FRONTLAYERTRANSLUCENCY
+	}
+	#else
+		#error "Missing DenoiserSpatialCS definition for INPUT_TYPE."
+	#endif
+
+	#if DEBUG_MODE
+	AddTextBackground(DebugContext, FontBackground);
+	#endif
+}

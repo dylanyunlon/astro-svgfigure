@@ -1,0 +1,341 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+//=============================================================================
+// TextureSampleFunctions.ush
+//
+// Generates a family of texture sample / gather wrapper functions parameterized
+// by precision. The includer defines:
+//   TS_VECTOR4  - four-component return type (MaterialFloat4 or float4)
+//   TS_SCALAR   - scalar return type for single-channel samplers (MaterialFloat or float)
+//   TS_FN(Name) - function name (Name or Name##_Prec)
+//
+// Common.ush includes this file twice: first with the MaterialFloatN family and
+// no suffix to produce the default (half-when-enabled) wrappers, then with the
+// float / float4 family and a _Prec suffix to produce explicit full-precision
+// variants. The new material translator selects the _Prec variant at the call
+// site when the texture sample has been resolved to full precision.
+//
+// Texture resources are intentionally left untyped (Texture2D, etc). The shader
+// compiler infers the sample destination precision from the return type, which
+// is sufficient on most current backends; revisit if profiling shows redundant
+// float-to-half conversions surviving optimization on a target platform.
+//=============================================================================
+
+#ifndef TS_VECTOR4
+	#error "TS_VECTOR4 must be defined before including TextureSampleFunctions.ush"
+#endif
+#ifndef TS_SCALAR
+	#error "TS_SCALAR must be defined before including TextureSampleFunctions.ush"
+#endif
+#ifndef TS_FN
+	#error "TS_FN must be defined before including TextureSampleFunctions.ush"
+#endif
+
+// This would need to be a #define in GLSL to ignore the SamplerState, however, it is currently a function call in HLSL
+// for type checking of the parameters - ironically the type checking is really only needed in GLSL!
+TS_VECTOR4 TS_FN(Texture1DSample)(Texture1D Tex, SamplerState Sampler, float UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.Sample(Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture2DSample)(Texture2D Tex, SamplerState Sampler, float2 UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, ComputeRayConeLod(Tex) + GlobalTextureMipBias);
+#else
+	return Tex.Sample(Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture2DSample)(Texture2D Tex, SamplerState Sampler, FloatDeriv2 UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV.Value, ComputeRayConeLod(Tex) + GlobalTextureMipBias);
+#else
+	return Tex.SampleGrad(Sampler, UV.Value, UV.Ddx, UV.Ddy);
+#endif
+}
+TS_SCALAR TS_FN(Texture2DSample_A8)(Texture2D Tex, SamplerState Sampler, float2 UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, ComputeRayConeLod(Tex) + GlobalTextureMipBias) A8_SAMPLE_MASK;
+#else
+	return Tex.Sample(Sampler, UV) A8_SAMPLE_MASK;
+#endif
+}
+TS_VECTOR4 TS_FN(Texture3DSample)(Texture3D Tex, SamplerState Sampler, float3 UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.Sample(Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(TextureCubeSample)(TextureCube Tex, SamplerState Sampler, float3 UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.Sample(Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture2DArraySample)(Texture2DArray Tex, SamplerState Sampler, float3 UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.Sample(Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture1DSampleLevel)(Texture1D Tex, SamplerState Sampler, float UV, MaterialFloat Mip)
+{
+	return Tex.SampleLevel(Sampler, UV, Mip);
+}
+TS_VECTOR4 TS_FN(Texture2DSampleLevel)(Texture2D Tex, SamplerState Sampler, float2 UV, MaterialFloat Mip)
+{
+	return Tex.SampleLevel(Sampler, UV, Mip);
+}
+TS_VECTOR4 TS_FN(Texture2DSampleBias)(Texture2D Tex, SamplerState Sampler, float2 UV, MaterialFloat MipBias)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, ComputeRayConeLod(Tex) + MipBias + GlobalTextureMipBias);
+#else
+	return Tex.SampleBias(Sampler, UV, MipBias);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture2DSampleGrad)(Texture2D Tex, SamplerState Sampler, float2 UV, MaterialFloat2 DDX, MaterialFloat2 DDY)
+{
+	return Tex.SampleGrad(Sampler, UV, DDX, DDY);
+}
+TS_VECTOR4 TS_FN(Texture3DSampleLevel)(Texture3D Tex, SamplerState Sampler, float3 UV, MaterialFloat Mip)
+{
+	return Tex.SampleLevel(Sampler, UV, Mip);
+}
+TS_VECTOR4 TS_FN(Texture3DSampleBias)(Texture3D Tex, SamplerState Sampler, float3 UV, MaterialFloat MipBias)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.SampleBias(Sampler, UV, MipBias);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture3DSampleGrad)(Texture3D Tex, SamplerState Sampler, float3 UV, MaterialFloat3 DDX, MaterialFloat3 DDY)
+{
+	return Tex.SampleGrad(Sampler, UV, DDX, DDY);
+}
+TS_VECTOR4 TS_FN(Texture2DArraySampleLevel)(Texture2DArray Tex, SamplerState Sampler, float3 UV, MaterialFloat Mip)
+{
+	return Tex.SampleLevel(Sampler, UV, Mip);
+}
+TS_VECTOR4 TS_FN(TextureCubeSampleLevel)(TextureCube Tex, SamplerState Sampler, float3 UV, MaterialFloat Mip)
+{
+	return Tex.SampleLevel(Sampler, UV, Mip);
+}
+TS_SCALAR TS_FN(TextureCubeSampleDepthLevel)(TextureCube TexDepth, SamplerState Sampler, float3 UV, MaterialFloat Mip)
+{
+	return TexDepth.SampleLevel(Sampler, UV, Mip).x;
+}
+TS_VECTOR4 TS_FN(TextureCubeSampleBias)(TextureCube Tex, SamplerState Sampler, float3 UV, MaterialFloat MipBias)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.SampleBias(Sampler, UV, MipBias);
+#endif
+}
+TS_VECTOR4 TS_FN(TextureCubeSampleGrad)(TextureCube Tex, SamplerState Sampler, float3 UV, MaterialFloat3 DDX, MaterialFloat3 DDY)
+{
+	return Tex.SampleGrad(Sampler, UV, DDX, DDY);
+}
+TS_VECTOR4 TS_FN(TextureExternalSample)(TextureExternal Tex, SamplerState Sampler, float2 UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	#if SUPPORTS_TEXTURE_EXTERNAL
+		return Tex.SampleLevel(Sampler, UV, 0);
+	#else
+		return Tex.SampleLevel(Sampler, UV, ComputeRayConeLod(Tex) + GlobalTextureMipBias);
+	#endif
+#else
+	return Tex.Sample(Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(TextureExternalSampleGrad)(TextureExternal Tex, SamplerState Sampler, float2 UV, MaterialFloat2 DDX, MaterialFloat2 DDY)
+{
+	return Tex.SampleGrad(Sampler, UV, DDX, DDY);
+}
+TS_VECTOR4 TS_FN(TextureExternalSampleLevel)(TextureExternal Tex, SamplerState Sampler, float2 UV, MaterialFloat Mip)
+{
+	return Tex.SampleLevel(Sampler, UV, Mip);
+}
+TS_VECTOR4 TS_FN(Texture2DGatherRed)(Texture2D Tex, SamplerState Sampler, float2 UV)
+{
+	return Tex.GatherRed(Sampler, UV);
+}
+TS_VECTOR4 TS_FN(Texture2DGatherGreen)(Texture2D Tex, SamplerState Sampler, float2 UV)
+{
+	return Tex.GatherGreen(Sampler, UV);
+}
+TS_VECTOR4 TS_FN(Texture2DGatherBlue)(Texture2D Tex, SamplerState Sampler, float2 UV)
+{
+	return Tex.GatherBlue(Sampler, UV);
+}
+TS_VECTOR4 TS_FN(Texture2DGatherAlpha)(Texture2D Tex, SamplerState Sampler, float2 UV)
+{
+	return Tex.GatherAlpha(Sampler, UV);
+}
+TS_VECTOR4 TS_FN(TextureCubeGatherRed)(TextureCube Tex, SamplerState Sampler, float3 UV)
+{
+	uint StatusIgnored;
+	return Tex.GatherRed(Sampler, UV, StatusIgnored);
+}
+TS_VECTOR4 TS_FN(TextureCubeGatherGreen)(TextureCube Tex, SamplerState Sampler, float3 UV)
+{
+	uint StatusIgnored;
+	return Tex.GatherGreen(Sampler, UV, StatusIgnored);
+}
+TS_VECTOR4 TS_FN(TextureCubeGatherBlue)(TextureCube Tex, SamplerState Sampler, float3 UV)
+{
+	uint StatusIgnored;
+	return Tex.GatherBlue(Sampler, UV, StatusIgnored);
+}
+TS_VECTOR4 TS_FN(TextureCubeGatherAlpha)(TextureCube Tex, SamplerState Sampler, float3 UV)
+{
+	uint StatusIgnored;
+	return Tex.GatherAlpha(Sampler, UV, StatusIgnored);
+}
+TS_VECTOR4 TS_FN(Texture2DArrayGatherRed)(Texture2DArray Tex, SamplerState Sampler, float3 UV)
+{
+	return Tex.GatherRed(Sampler, UV);
+}
+TS_VECTOR4 TS_FN(Texture2DArrayGatherGreen)(Texture2DArray Tex, SamplerState Sampler, float3 UV)
+{
+	return Tex.GatherGreen(Sampler, UV);
+}
+TS_VECTOR4 TS_FN(Texture2DArrayGatherBlue)(Texture2DArray Tex, SamplerState Sampler, float3 UV)
+{
+	return Tex.GatherBlue(Sampler, UV);
+}
+TS_VECTOR4 TS_FN(Texture2DArrayGatherAlpha)(Texture2DArray Tex, SamplerState Sampler, float3 UV)
+{
+	return Tex.GatherAlpha(Sampler, UV);
+}
+
+// Re-routed texture sampling for decals
+// On iOS and Android MALI devices decal UVs has issues with deriavatives on polygon edges resulting in 'wireframe' rendering artifacts (UE-50971)
+// to workaround we always sample top mip level
+TS_VECTOR4 TS_FN(Texture1DSample_Decal)(Texture1D Tex, SamplerState Sampler, float UV)
+{
+#if METAL_ES3_1_PROFILE || COMPILER_GLSL_ES3_1
+	return TS_FN(Texture1DSampleLevel)(Tex, Sampler, UV, 0);
+#else
+	return TS_FN(Texture1DSample)(Tex, Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture2DSample_Decal)(Texture2D Tex, SamplerState Sampler, float2 UV)
+{
+#if METAL_ES3_1_PROFILE || COMPILER_GLSL_ES3_1
+	return TS_FN(Texture2DSampleLevel)(Tex, Sampler, UV, 0);
+#else
+	return TS_FN(Texture2DSample)(Tex, Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture3DSample_Decal)(Texture3D Tex, SamplerState Sampler, float3 UV)
+{
+#if METAL_ES3_1_PROFILE || COMPILER_GLSL_ES3_1
+	return TS_FN(Texture3DSampleLevel)(Tex, Sampler, UV, 0);
+#else
+	return TS_FN(Texture3DSample)(Tex, Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture2DArraySample_Decal)(Texture2DArray Tex, SamplerState Sampler, float3 UV)
+{
+#if METAL_ES3_1_PROFILE || COMPILER_GLSL_ES3_1
+	return TS_FN(Texture2DArraySampleLevel)(Tex, Sampler, UV, 0);
+#else
+	return TS_FN(Texture2DArraySample)(Tex, Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(TextureCubeSample_Decal)(TextureCube Tex, SamplerState Sampler, float3 UV)
+{
+#if METAL_ES3_1_PROFILE || COMPILER_GLSL_ES3_1
+	return TS_FN(TextureCubeSampleLevel)(Tex, Sampler, UV, 0);
+#else
+	return TS_FN(TextureCubeSample)(Tex, Sampler, UV);
+#endif
+}
+TS_VECTOR4 TS_FN(TextureExternalSample_Decal)(TextureExternal Tex, SamplerState Sampler, float2 UV)
+{
+#if METAL_ES3_1_PROFILE || COMPILER_GLSL_ES3_1
+	return TS_FN(TextureExternalSampleLevel)(Tex, Sampler, UV, 0);
+#else
+	return TS_FN(TextureExternalSample)(Tex, Sampler, UV);
+#endif
+}
+
+TS_VECTOR4 TS_FN(Texture2DArraySampleBias)(Texture2DArray Tex, SamplerState Sampler, float3 UV, MaterialFloat MipBias)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.SampleBias(Sampler, UV, MipBias);
+#endif
+}
+TS_VECTOR4 TS_FN(Texture2DArraySampleGrad)(Texture2DArray Tex, SamplerState Sampler, float3 UV, MaterialFloat2 DDX, MaterialFloat2 DDY)
+{
+	return Tex.SampleGrad(Sampler, UV, DDX, DDY);
+}
+
+#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5 // Cubemap arrays are not supported in SM4 feature level
+TS_VECTOR4 TS_FN(TextureCubeArraySample)(TextureCubeArray Tex, SamplerState Sampler, float4 UV)
+{
+	return Tex.Sample(Sampler, UV);
+}
+
+TS_VECTOR4 TS_FN(TextureCubeArraySampleLevel)(TextureCubeArray Tex, SamplerState Sampler, float4 UV, MaterialFloat Mip)
+{
+	return Tex.SampleLevel(Sampler, UV, Mip);
+}
+
+TS_VECTOR4 TS_FN(TextureCubeArraySampleBias)(TextureCubeArray Tex, SamplerState Sampler, float4 UV, MaterialFloat MipBias)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.SampleBias(Sampler, UV, MipBias);
+#endif
+}
+
+TS_VECTOR4 TS_FN(TextureCubeArraySampleGrad)(TextureCubeArray Tex, SamplerState Sampler, float4 UV, MaterialFloat3 DDX, MaterialFloat3 DDY)
+{
+	return Tex.SampleGrad(Sampler, UV, DDX, DDY);
+}
+
+// Overload with explicit array parameter, used by some non-material shader code
+TS_VECTOR4 TS_FN(TextureCubeArraySampleLevel)(TextureCubeArray Tex, SamplerState Sampler, float3 UV, float ArrayIndex, MaterialFloat Mip)
+{
+	return TS_FN(TextureCubeArraySampleLevel)(Tex, Sampler, float4(UV, ArrayIndex), Mip);
+}
+
+TS_VECTOR4 TS_FN(TextureCubeArrayGatherRed)(TextureCubeArray Tex, SamplerState Sampler, float4 UV)
+{
+	uint StatusIgnored;
+	return Tex.GatherRed(Sampler, UV, StatusIgnored);
+}
+TS_VECTOR4 TS_FN(TextureCubeArrayGatherGreen)(TextureCubeArray Tex, SamplerState Sampler, float4 UV)
+{
+	uint StatusIgnored;
+	return Tex.GatherGreen(Sampler, UV, StatusIgnored);
+}
+TS_VECTOR4 TS_FN(TextureCubeArrayGatherBlue)(TextureCubeArray Tex, SamplerState Sampler, float4 UV)
+{
+	uint StatusIgnored;
+	return Tex.GatherBlue(Sampler, UV, StatusIgnored);
+}
+TS_VECTOR4 TS_FN(TextureCubeArrayGatherAlpha)(TextureCubeArray Tex, SamplerState Sampler, float4 UV)
+{
+	uint StatusIgnored;
+	return Tex.GatherAlpha(Sampler, UV, StatusIgnored);
+}
+#endif // FEATURE_LEVEL >= FEATURE_LEVEL_SM5

@@ -1,0 +1,116 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "Common.ush"
+#include "SceneData.ush"
+#include "ScreenPass.ush"
+#include "DebugVisualizationCommon.ush"   // pulls in GetFarShadowCasterColor
+
+#if USE_NANITE_VISBUFFER
+#include "Nanite/NaniteDataDecode.ush"
+#endif
+
+#ifndef SHADOW_CASTERS_MODE
+#define SHADOW_CASTERS_MODE 0
+#endif
+
+#define SHADOW_CASTERS_MODE_FAR    0
+#define SHADOW_CASTERS_MODE_CACHED 1
+
+#if (SHADOW_CASTERS_MODE == SHADOW_CASTERS_MODE_CACHED) && USE_VSM_RICH_CLASSIFIER
+#include "VirtualShadowMaps/VirtualShadowMapVisualize.ush"   // pulls in GetShadowCasterDrawParameters
+#endif
+
+Texture2D<uint>     DebugAuxTexture;
+Texture2D<float4>   SceneColorTexture;
+SamplerState        SceneColorSampler;
+
+#if USE_NANITE_VISBUFFER
+Texture2D<UlongType> VisBuffer64;
+#endif
+
+#if SHADOW_CASTERS_MODE == SHADOW_CASTERS_MODE_CACHED
+
+// Simplified classifier for when there's no VSM data available (e.g. r.Shadow.Virtual.Enable 0) or on non-mobile platforms that do not support VSM
+float3 GetCachedShadowCasterColorSimplified(FPrimitiveSceneData PrimitiveData)
+{
+	const bool bCastShadow        = (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS) != 0;
+	const bool bCastContactShadow = (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW) != 0;
+	if (bCastShadow)
+	{
+		return float3(0.0, 1.0, 0.0); // green: casts shadows
+	}
+	if (bCastContactShadow)
+	{
+		return float3(1.0, 1.0, 0.0); // yellow: contact-shadow only
+	}
+	return float3(0.5, 0.5, 0.5); // gray: no shadow contribution
+}
+
+#endif // SHADOW_CASTERS_MODE_CACHED
+
+void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
+{
+#if (SHADOW_CASTERS_MODE == SHADOW_CASTERS_MODE_CACHED) && USE_VSM_RICH_CLASSIFIER
+	ResolvedView = ResolveView();
+#endif
+
+	const int2 PixelPos = int2(SvPosition.xy);
+	const float4 SceneColor = SceneColorTexture.SampleLevel(SceneColorSampler, UVAndScreenPos.xy, 0);
+
+	uint InstanceId = DebugAuxTexture.Load(int3(PixelPos, 0));
+	bool bClassified = (InstanceId != 0xFFFFFFFFu);
+	float Shading = SceneColor.r;
+
+#if USE_NANITE_VISBUFFER
+	if (!bClassified)
+	{
+		const UlongType VisPixel = VisBuffer64.Load(int3(PixelPos, 0));
+		uint DepthInt = 0;
+		uint VisibleClusterIndex = 0;
+		uint TriIndex = 0;
+		UnpackVisPixel(VisPixel, DepthInt, VisibleClusterIndex, TriIndex);
+
+		if (VisibleClusterIndex != 0xFFFFFFFFu && DepthInt != 0u)
+		{
+			FVisibleCluster VisibleCluster = GetVisibleCluster(VisibleClusterIndex);
+			InstanceId = VisibleCluster.InstanceId;
+			bClassified = true;
+			Shading = 1.0;
+		}
+	}
+#endif
+
+	if (!bClassified)
+	{
+		OutColor = SceneColor;
+		return;
+	}
+
+	FInstanceSceneData InstanceData = GetInstanceSceneData(InstanceId);
+
+#if (SHADOW_CASTERS_MODE == SHADOW_CASTERS_MODE_CACHED) && USE_VSM_RICH_CLASSIFIER
+	if (!InstanceData.ValidInstance)
+	{
+		OutColor = SceneColor;
+		return;
+	}
+
+	FNaniteView NaniteView                   = GetNaniteView(ResolvedView.GPUSceneViewId);
+	FInstanceViewData InstanceViewData       = GetInstanceViewData(InstanceId, NaniteView.SceneRendererPrimaryViewId);
+	FInstanceDynamicData InstanceDynamicData = CalculateInstanceDynamicData(NaniteView, InstanceData, true);
+	FPrimitiveSceneData PrimitiveData        = GetPrimitiveData(InstanceData.PrimitiveId);
+
+	FShadowCasterDrawParameters DrawParameters = GetShadowCasterDrawParameters(
+		NaniteView, InstanceData, InstanceViewData, InstanceDynamicData, PrimitiveData);
+	const float3 Color = DrawParameters.Color;
+#else
+	FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
+	#if SHADOW_CASTERS_MODE == SHADOW_CASTERS_MODE_CACHED
+		const float3 Color = GetCachedShadowCasterColorSimplified(PrimitiveData);
+	#else
+		const float3 Color = GetFarShadowCasterColor(PrimitiveData);
+	#endif
+#endif
+
+	OutColor = float4(Color * Shading, 1.0);
+}

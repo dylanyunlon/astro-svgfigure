@@ -1,0 +1,48 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	VirtualShadowMapDrawFalseColor.usf
+
+	Lightweight compute shader that reads packed intermediate visualization data
+	from the VSM projection pass and produces colorized output for a single
+	visualization mode. Used in the overview mode, and in modes that need
+    a second pass to convert data into color. Dispatched once per overview tile.
+=============================================================================*/
+
+#include "../Common.ush"
+#include "VirtualShadowMapFalseColor.ush"
+
+// Packed intermediate data written by the projection pass in overview mode
+Texture2D<uint4> VisualizationPackedDataA;
+Texture2D<uint4> VisualizationPackedDataB;
+
+// Output for this visualization mode
+RWTexture2D<float4> OutVisualize;
+
+int VisualizeModeId;
+int2 OutputDimensions;
+float VisualizeNaniteOverdrawScale;
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint2 PixelPos = DispatchThreadId.xy;
+	if (any(PixelPos >= uint2(OutputDimensions)))
+	{
+		return;
+	}
+
+	uint4 DataA = VisualizationPackedDataA[PixelPos];
+	uint4 DataB = VisualizationPackedDataB[PixelPos];
+
+	if (IsVSMPackedVisualizationDataEmpty(DataA, DataB))
+	{
+		OutVisualize[PixelPos] = float4(0, 0, 0, 0);
+		return;
+	}
+
+	FVSMVisualizationAggregateData Data = UnpackVSMVisualizationAggregateData(DataA, DataB);
+	Data.NaniteOverdrawScale = VisualizeNaniteOverdrawScale;
+
+	OutVisualize[PixelPos] = GetVSMFalseColorForAggregate(VisualizeModeId, Data);
+}

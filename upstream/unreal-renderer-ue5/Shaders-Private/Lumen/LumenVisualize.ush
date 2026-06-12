@@ -1,0 +1,76 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+#pragma once
+
+#include "../StochasticLighting/StochasticLightingVisualize.ush"
+#include "../ShaderPrint.ush"
+#include "LumenReflectionsCombine.ush"
+#include "LumenMaterial.ush"
+
+uint VisualizeHiResSurface;
+uint2 InputViewSize;
+uint2 InputViewOffset;
+uint2 OutputViewSize;
+uint2 OutputViewOffset;
+
+/**
+ * Common Lumen Visualization part, shared between SWRT and HWRT visualization shaders.
+ */
+ISOLATE
+void LumenVisualizationFinalize(
+	uint2 OutputScreenCoord,
+	float2 ViewportUV,
+	float3 CameraVector,
+	inout float3 FinalColor)
+{
+#if ENABLE_VISUALIZE_MODE
+	const int2 DebugScreenCoord = View.CursorPosition.x >= 0 ? View.CursorPosition : View.BufferSizeAndInvSize.xy / 2;
+	FShaderPrintContext DebugContext = InitShaderPrintContext(all(OutputScreenCoord == DebugScreenCoord), float2(0.6, 0.1));
+	if (DebugContext.bIsActive && VisualizeMode == VISUALIZE_MODE_ALBEDO)
+	{
+		Print(DebugContext, TEXT("LinearDiffuseColor: "));
+		Print(DebugContext, FinalColor);
+	}
+
+	if (VisualizeMode == VISUALIZE_MODE_ALBEDO)
+	{
+		FinalColor = LinearToSrgbBranchless(FinalColor);
+	}
+	else if (VisualizeMode == VISUALIZE_MODE_NORMALS
+			|| VisualizeMode == VISUALIZE_MODE_GEOMETRY_NORMALS)
+	{
+		// Don't apply SRGB or tonemapping to material attribute visualizations
+	}
+	else
+	{
+		// The overview outputs after the tonemapper to overwrite editor primitives and must apply its own tonemapping
+		FinalColor = VisualizeTonemap(FinalColor);
+	}
+
+	if (VisualizeMode == VISUALIZE_MODE_DEDICATED_REFLECTION_RAYS)
+	{
+		float2 GBufferCoord = clamp(ViewportUV * View.ViewRectMinAndSize.zw, 0, View.ViewRectMinAndSize.zw) + View.ViewRectMinAndSize.xy;
+		float2 GBufferUV = GBufferCoord * View.BufferSizeAndInvSize.zw;		
+		const FLumenMaterialData Material = ReadMaterialDataFromSceneTextures(GBufferCoord, GBufferUV);
+
+		float3 LightDirection = float3(0.707, 0.0, 0.707);
+		float Lighting = 0.5 * dot(LightDirection, Material.WorldNormal) + 0.5;
+		FinalColor.xyz = sqrt(Luminance(Material.DiffuseAlbedo) * Lighting * 1.5);
+			
+		// Mark pixels which require dedicated reflection rays
+		if (Material.IsValid())
+		{
+			if (LumenCombineReflectionsAlpha(Material.Roughness, Material.bHasBackfaceDiffuse) > 0.0f || IsClearCoat(Material))
+			{
+				FinalColor.rgb = Material.bHasBackfaceDiffuse ? float3(0, 1, 0) : float3(1, 0, 0);
+				FinalColor.rgb *= (1.0f - Material.Roughness) * 0.8f + 0.2f;
+			}
+		}
+		
+		// Add sky as a background
+		if (Material.DeviceZ == 0.0)
+		{
+			FinalColor.rgb = VisualizeTonemap(EvaluateSkyRadiance(CameraVector));
+		}
+	}
+#endif
+}

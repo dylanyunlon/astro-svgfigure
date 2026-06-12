@@ -1,0 +1,59 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Mobile UBO path: writes the per-primitive BatchedPrimitiveData UBO. One thread per unique primitive in the pass
+#ifndef VF_SUPPORTS_PRIMITIVE_SCENE_DATA
+	#define VF_SUPPORTS_PRIMITIVE_SCENE_DATA 1u
+#endif
+
+#undef ENABLE_PER_INSTANCE_CUSTOM_DATA
+#define ENABLE_PER_INSTANCE_CUSTOM_DATA 1
+
+#include "../Common.ush"
+#include "../SceneData.ush"
+#include "../LightmapData.ush"
+
+#ifndef NUM_THREADS_PER_GROUP
+	#define NUM_THREADS_PER_GROUP 64
+#endif
+
+#include "../SceneDataMobileWriter.ush"
+
+// Must mirror FInstanceCullingContext::FUniquePrimitiveInfo
+struct FUniquePrimitiveInfo
+{
+	uint InstanceDataOffset;          // first instance scene data offset for this primitive
+	uint MeshLODIndex_Flags;          // bits 0-3: LOD, bit 31: bDynamicInstanceDataOffset
+};
+
+#define UNIQUE_PRIM_DYNAMIC_BIT (1u << 31u)
+
+StructuredBuffer<FUniquePrimitiveInfo> UniquePrimitives;
+RWStructuredBuffer<float4> BatchedPrimitiveDataOut;
+
+uint NumUniquePrimitives;
+uint DynamicInstanceIdOffset;
+
+[numthreads(NUM_THREADS_PER_GROUP, 1, 1)]
+void BuildBatchedPrimitiveDataCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint PrimitiveSlot = DispatchThreadId.x;
+	if (PrimitiveSlot >= NumUniquePrimitives)
+	{
+		return;
+	}
+
+	const FUniquePrimitiveInfo Info = UniquePrimitives[PrimitiveSlot];
+
+	uint InstanceId = Info.InstanceDataOffset;
+	if ((Info.MeshLODIndex_Flags & UNIQUE_PRIM_DYNAMIC_BIT) != 0u)
+	{
+		InstanceId += DynamicInstanceIdOffset;
+	}
+
+	const FInstanceSceneData InstanceData = GetInstanceSceneData(InstanceId);
+	const FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
+	const uint MeshLODIndex = Info.MeshLODIndex_Flags & 0xFu;
+
+	const uint WriteOffset = PrimitiveSlot * BATCHED_PRIMITIVE_DATA_STRIDE_FLOAT4;
+	WritePrimitiveDataUBO(BatchedPrimitiveDataOut, WriteOffset, PrimitiveData, MeshLODIndex);
+}

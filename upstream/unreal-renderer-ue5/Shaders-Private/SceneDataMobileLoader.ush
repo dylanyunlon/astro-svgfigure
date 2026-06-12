@@ -1,0 +1,238 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+#pragma once
+
+#ifndef PLATFORM_USES_PRIMITIVE_UBO
+	#define PLATFORM_USES_PRIMITIVE_UBO 0
+#endif
+
+#ifndef PRIMITIVE_HAS_TILEOFFSET_DATA
+#error "Missing PRIMITIVE_HAS_TILEOFFSET_DATA"
+#endif
+
+float4 LoadPrimitiveDataElementUBO(uint PrimitiveSlotIndex, uint DataIdx)
+{
+#if PLATFORM_USES_PRIMITIVE_UBO
+	uint DataOffset = PrimitiveSlotIndex * BATCHED_PRIMITIVE_DATA_STRIDE_FLOAT4 + DataIdx;
+	return InstanceCulling.BatchedPrimitiveData[DataOffset];
+#else
+	return (float4)0;
+#endif
+}
+
+float4 LoadInstanceDataElementUBO(uint DrawInstanceId, uint DataIdx)
+{
+#if PLATFORM_USES_PRIMITIVE_UBO
+	uint DataOffset = DrawInstanceId * BATCHED_INSTANCE_DATA_STRIDE_FLOAT4 + DataIdx;
+	return InstanceCulling.BatchedInstanceData[DataOffset];
+#else
+	return (float4)0;
+#endif
+}
+
+FInstanceSceneData LoadInstanceDataUBO(uint DrawInstanceId)
+{
+	FInstanceSceneData InstanceData = (FInstanceSceneData)0;
+
+	uint DataIdx = 0;
+
+	// PositionHigh, Flags
+	float3 PositionHigh = 0;
+	{
+		float4 Data = LoadInstanceDataElementUBO(DrawInstanceId, DataIdx + 0);
+		PositionHigh = Data.xyz;
+		InstanceData.Flags = asuint(Data.w);
+		DataIdx += 1u;
+	}
+
+	// LocalToWorld
+	{
+		float4x4 LocalToRelativeWorld = transpose(float4x4(
+			LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+0),
+			LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+1),
+			LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+2),
+			float4(0, 0, 0, 1)
+		));
+		InstanceData.LocalToWorld = MakeDFMatrix4x3(PositionHigh, LocalToRelativeWorld);
+		DataIdx += 3u;
+	}
+
+	// InvNonUniformScale, RandomID
+	{
+		float4 Data = LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+0);
+		InstanceData.InvNonUniformScale = Data.xyz;
+		InstanceData.RandomID = Data.w;
+
+		InstanceData.NonUniformScale.xyz = rcp(InstanceData.InvNonUniformScale);
+		InstanceData.NonUniformScale.w	= max3(InstanceData.NonUniformScale.x, InstanceData.NonUniformScale.y, InstanceData.NonUniformScale.z);
+		DataIdx += 1u;
+	}
+
+	// PreviousLocalToWorld
+	{
+		float4x4 PreviousLocalToRelativeWorld = transpose(float4x4(
+			LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+0),
+			LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+1),
+			LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+2),
+			float4(0, 0, 0, 1)
+		));
+		InstanceData.PrevLocalToWorld = MakeDFMatrix4x3(PositionHigh, PreviousLocalToRelativeWorld);
+		DataIdx += 3u;
+	}
+
+#if ALLOW_STATIC_LIGHTING
+	InstanceData.LightMapAndShadowMapUVBias = LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+0);
+	DataIdx += 1u;
+#endif
+
+	// CustomDataCount + PrimitiveSlotIndex + PrimitiveData.Flags + SkinningData
+	{
+		float4 Data = LoadInstanceDataElementUBO(DrawInstanceId, DataIdx+0);
+#if ENABLE_PER_INSTANCE_CUSTOM_DATA
+		InstanceData.CustomDataCount = asuint(Data.x);
+#endif
+		InstanceData.BatchedPrimitiveSlotIndex = asuint(Data.y);
+		InstanceData.PrimitiveFlags = asuint(Data.z);
+		InstanceData.SkinningData = asuint(Data.w);
+	
+		DataIdx += 1u;
+	}
+
+	return InstanceData;
+}
+
+FPrimitiveSceneData LoadPrimitiveDataUBO(uint DrawInstanceId, FInstanceSceneData InstanceData)
+{
+	FPrimitiveSceneData PrimitiveData = (FPrimitiveSceneData)0;
+
+	const uint PrimitiveSlotIndex = InstanceData.BatchedPrimitiveSlotIndex;
+	uint DataIdx = 0;
+
+#if ALLOW_STATIC_LIGHTING
+	{
+		float4 Data = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + 2);
+		PrimitiveData.LightmapDataIndex = asuint(Data.x);
+		DataIdx += 3u;
+	}
+#endif
+
+	// ActorWorldPosition, Radius, ObjectBoundsX
+	{
+		float4 Data0 = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + 0);
+		float4 Data1 = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + 1);
+#if PRIMITIVE_HAS_TILEOFFSET_DATA
+		PrimitiveData.ActorWorldPositionTO = MakeLWCVector3(Data0.xyz, Data1.xyz);
+		PrimitiveData.ActorWorldPosition = DFFromTileOffset(PrimitiveData.ActorWorldPositionTO);
+#else
+		PrimitiveData.ActorWorldPosition = MakeDFVector3(Data0.xyz, Data1.xyz);
+#endif
+		
+		PrimitiveData.ObjectRadius = Data0.w;
+		PrimitiveData.ObjectBoundsX = Data1.w;
+		DataIdx += 2u;
+	}
+
+	// ObjectWorldPosition, ObjectBoundsY
+	{
+		// Assuming same tile as actor position
+		float4 Data = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + 0);
+#if PRIMITIVE_HAS_TILEOFFSET_DATA
+		PrimitiveData.ObjectWorldPositionTO = MakeLWCVector3(PrimitiveData.ActorWorldPositionTO.Tile, Data.xyz);
+		PrimitiveData.ObjectWorldPosition = DFFromTileOffset(PrimitiveData.ObjectWorldPositionTO);
+#else
+		PrimitiveData.ObjectWorldPosition = MakeDFVector3(PrimitiveData.ActorWorldPosition.High, Data.xyz);
+#endif
+		PrimitiveData.ObjectBoundsY = Data.w;
+		DataIdx += 1u;
+	}
+
+	// LocalObjectBoundsMin.xyz, ObjectBoundsZ
+	{
+		float4 Data = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + 0);
+		PrimitiveData.LocalObjectBoundsMin = Data.xyz;
+		PrimitiveData.ObjectBoundsZ = Data.w;
+		DataIdx += 1u;
+	}
+
+	// LocalObjectBoundsMax.xyz, ObjectOrientationX
+	{
+		float4 Data = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + 0);
+		PrimitiveData.LocalObjectBoundsMax = Data.xyz;
+		PrimitiveData.ObjectOrientation.x = Data.w;
+		DataIdx += 1u;
+	}
+
+	// PreSkinnedLocalBoundsMin/Max, ObjectOrientationYZ
+	{
+		float4 Data0 = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + 0);
+		float4 Data1 = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + 1);
+		PrimitiveData.PreSkinnedLocalBoundsMin = Data0.xyz;
+		PrimitiveData.PreSkinnedLocalBoundsMax = Data1.xyz;
+		PrimitiveData.ObjectOrientation.y = Data0.w;
+		PrimitiveData.ObjectOrientation.z = Data1.w;
+		DataIdx += 2u;
+	}
+
+	// Derive InstanceLocalBounds from primitive local bounds.
+	PrimitiveData.InstanceLocalBoundsCenter = (PrimitiveData.LocalObjectBoundsMin + PrimitiveData.LocalObjectBoundsMax) * 0.5f;
+	PrimitiveData.InstanceLocalBoundsExtent = PrimitiveData.LocalObjectBoundsMax - PrimitiveData.InstanceLocalBoundsCenter;
+
+	// CustomPrimitiveData (capped by remaining stride slots; effective mobile UBO max is BATCHED_PRIMITIVE_DATA_STRIDE_FLOAT4 - DataIdx).
+	{
+		uint NumCustomData = min(NUM_CUSTOM_PRIMITIVE_DATA, BATCHED_PRIMITIVE_DATA_STRIDE_FLOAT4 - DataIdx);
+		UNROLL
+		for (uint i = 0; i < NumCustomData; ++i)
+		{
+			PrimitiveData.CustomPrimitiveData[i] = LoadPrimitiveDataElementUBO(PrimitiveSlotIndex, DataIdx + i);
+		}
+	}
+
+	// Per-instance fields (transforms, scale, derived bounds) merged in from the instance record
+	PrimitiveData.Flags = InstanceData.PrimitiveFlags;
+	PrimitiveData.LocalToWorld = InstanceData.LocalToWorld;
+	PrimitiveData.PreviousLocalToWorld = InstanceData.PrevLocalToWorld;
+	PrimitiveData.PositionHigh = InstanceData.LocalToWorld.PostTranslation;
+	PrimitiveData.InvNonUniformScale = InstanceData.InvNonUniformScale;
+	PrimitiveData.NonUniformScale.xyz = InstanceData.NonUniformScale.xyz;
+	PrimitiveData.NonUniformScale.w = InstanceData.NonUniformScale.w;
+
+	// Derive WorldToLocal / PreviousWorldToLocal from the forwards (cheap inverse via MakeDFInverseMatrix).
+	{
+		float4x4 LocalToRelativeWorld = transpose(InstanceData.LocalToWorld.M);
+		PrimitiveData.WorldToLocal = MakeDFInverseMatrix(PrimitiveData.PositionHigh, LocalToRelativeWorld);
+	}
+	{
+		float4x4 PreviousLocalToRelativeWorld = transpose(InstanceData.PrevLocalToWorld.M);
+		PrimitiveData.PreviousWorldToLocal = MakeDFInverseMatrix(PrimitiveData.PositionHigh, PreviousLocalToRelativeWorld);
+	}
+	
+	// Should not be used with regular primitives
+	PrimitiveData.WorldToPreviousWorld = float4x4(1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1);
+
+	return PrimitiveData;
+}
+
+// Given a DrawInstanceId, internally loads the instance record (to discover the linked PrimitiveSlotIndex) and the primitive record,
+// and combines them into a full FPrimitiveSceneData.
+FPrimitiveSceneData LoadPrimitiveDataUBO(uint DrawInstanceId)
+{
+	FInstanceSceneData InstanceData = LoadInstanceDataUBO(DrawInstanceId);
+	return LoadPrimitiveDataUBO(DrawInstanceId, InstanceData);
+}
+
+float LoadInstanceCustomDataElementUBO(uint DrawInstanceId, uint CustomDataIdx, float DefaultValue)
+{
+	uint CustomDataFloat4Offset = 8u; // CustomDataCount slot
+	#if ALLOW_STATIC_LIGHTING
+		CustomDataFloat4Offset += 1u;
+	#endif
+	const uint CustomDataCount = asuint(LoadInstanceDataElementUBO(DrawInstanceId, CustomDataFloat4Offset).x);
+	const uint Float4Index = (CustomDataIdx >> 2u);
+	// base where instance custom data starts
+	CustomDataFloat4Offset += 1u;
+	if (Float4Index < CustomDataCount)
+	{
+		const float4 Float4Packed = LoadInstanceDataElementUBO(DrawInstanceId, Float4Index + CustomDataFloat4Offset);
+		return Float4Packed[CustomDataIdx & 0x3u];
+	}
+	return DefaultValue;
+}

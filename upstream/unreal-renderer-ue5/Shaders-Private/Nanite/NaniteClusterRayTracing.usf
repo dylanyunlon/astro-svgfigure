@@ -1,0 +1,1155 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Engine/Shared/NaniteDefinitions.h"
+#include "/Engine/Shared/NaniteRayTracingDefinitions.h"
+
+#ifndef NANITE_HIERARCHY_TRAVERSAL
+#	define NANITE_HIERARCHY_TRAVERSAL 0
+#endif
+
+#if NANITE_HIERARCHY_TRAVERSAL
+
+#	define NANITE_HIERARCHY_TRAVERSAL_TYPE (CULLING_TYPE)
+#	define GROUP_NODE_SIZE 3
+
+#	include "NaniteHierarchyTraversal.ush"
+
+#endif
+
+#include "../Common.ush"
+#include "../ShaderPrint.ush"
+#include "../ColorMap.ush"
+#include "../WaveOpUtil.ush"
+#include "../ComputeShaderUtils.ush"
+
+#include "NaniteDataDecode.ush"
+#include "NaniteAttributeDecode.ush"
+#include "NaniteCulling.ush"
+#include "NaniteCullingCommon.ush"
+#include "NaniteStreaming.ush"
+#include "NaniteClusterRayTracingStats.ush"
+
+// Steal a few high bits of the BuildIndex for AS flags
+#define NANITE_RAYTRACING_AS_UNUSED_INDEX    ((~0U))
+#define NANITE_RAYTRACING_AS_CACHE_HIT_INDEX ((~0U)-1U)
+
+StructuredBuffer<FClusterStreamOutRequest> StreamOutRequests;
+uint NumStreamOutRequests;
+
+StructuredBuffer<FGeometryClusterCutRequest> CutRequests;
+uint NumCutRequests;
+
+float MinCutError;
+
+struct FCandidateCluster
+{
+	uint PageIndex;
+	uint ClusterIndex;
+	uint RequestIndex;
+	uint AssemblyTransformIndex;
+};
+
+uint4 PackCandidateClusterRT(uint ClusterIdx, FCandidateCluster CandidateCluster)
+{
+	uint4 RawData = 0;
+	uint BitPos = 0;
+	WriteBits(RawData, BitPos, CandidateCluster.PageIndex, NANITE_MAX_GPU_PAGES_BITS);
+	WriteBits(RawData, BitPos, CandidateCluster.ClusterIndex, NANITE_MAX_CLUSTERS_PER_PAGE_BITS);
+	WriteBits(RawData, BitPos, CandidateCluster.RequestIndex, 20); // TODO: Enforce this limit this on CPU
+	WriteBits(RawData, BitPos, CandidateCluster.AssemblyTransformIndex, NANITE_ASSEMBLY_TRANSFORM_INDEX_BITS);
+	return RawData;
+}
+
+FCandidateCluster UnpackCandidateClusterRT(uint4 RawData)
+{
+	uint BitPos = 0;
+
+	FCandidateCluster CandidateCluster;
+	CandidateCluster.PageIndex = ReadBits(RawData, BitPos, NANITE_MAX_GPU_PAGES_BITS);
+	CandidateCluster.ClusterIndex = ReadBits(RawData, BitPos, NANITE_MAX_CLUSTERS_PER_PAGE_BITS);
+	CandidateCluster.RequestIndex = ReadBits(RawData, BitPos, 20); // TODO: Enforce this limit this on CPU
+	CandidateCluster.AssemblyTransformIndex = ReadBits(RawData, BitPos, NANITE_ASSEMBLY_TRANSFORM_INDEX_BITS);
+
+	return CandidateCluster;
+}
+
+struct FCandidateNodeRT
+{
+	uint NodeIndex;
+	uint RequestIndex;
+	uint AssemblyTransformIndex;
+};
+
+uint4 PackCandidateNodeRT(FCandidateNodeRT Node)
+{
+	// Leave at least one bit unused in each of the fields, so 0xFFFFFFFFu is never a valid value.
+
+	uint4 RawData = 0;
+	RawData.x = Node.NodeIndex;
+	RawData.y = Node.RequestIndex;
+	RawData.z = Node.AssemblyTransformIndex;
+	RawData.w = 0;
+
+	checkSlow(RawData.x != 0xFFFFFFFFu && RawData.y != 0xFFFFFFFFu && RawData.z != 0xFFFFFFFFu);
+
+	return RawData;
+}
+
+FCandidateNodeRT UnpackCandidateNodeRT(uint4 RawData)
+{
+	FCandidateNodeRT Node;
+	Node.NodeIndex = RawData.x;
+	Node.RequestIndex = RawData.y;
+	Node.AssemblyTransformIndex = RawData.z;
+
+	return Node;
+}
+
+uint GetCandidateNodeSizeRT() { return 12u; }
+uint GetCandidateClusterSizeRT() { return 12u; }
+
+FCandidateCluster LoadCandidateClusterRT(ByteAddressBuffer CandidateClusters, uint ClusterIndex)
+{
+	uint4 RawData = uint4(CandidateClusters.Load3(ClusterIndex * GetCandidateClusterSizeRT()), 0u);
+	return UnpackCandidateClusterRT(RawData);
+}
+
+void StorePackedCandidateClusterRT(RWByteAddressBuffer CandidateClusters, uint ClusterIndex, uint4 PackedCluster)
+{
+	CandidateClusters.Store3(ClusterIndex * GetCandidateClusterSizeRT(), PackedCluster.xyz);
+}
+
+void StoreCandidateClusterNoCheckRT(RWByteAddressBuffer CandidateClusters, uint ClusterIndex, FCandidateCluster CandidateCluster)
+{
+	uint4 RawData = PackCandidateClusterRT(ClusterIndex, CandidateCluster);
+	CandidateClusters.Store3(ClusterIndex * GetCandidateClusterSizeRT(), RawData.xyz);
+}
+
+void StoreCandidateClusterRT(RWByteAddressBuffer CandidateClusters, uint ClusterIndex, FCandidateCluster CandidateCluster)
+{
+	checkSlow(ClusterIndex < MaxCandidateClusters);
+	StoreCandidateClusterNoCheckRT(CandidateClusters, ClusterIndex, CandidateCluster);
+}
+
+uint4 LoadCandidateNodeDataRT(RWByteAddressBuffer InNodes, uint NodeIndex)
+{
+	checkSlow(NodeIndex < MaxNodes);
+	return uint4(InNodes.Load2(NodeIndex * GetCandidateNodeSizeRT()), 0, 0);
+}
+
+void StoreCandidateNodeDataRT(RWByteAddressBuffer InNodes, uint NodeIndex, uint4 RawData)
+{
+	checkSlow(NodeIndex < MaxNodes);
+	InNodes.Store2(NodeIndex * GetCandidateNodeSizeRT(), RawData.xy);
+}
+
+void StoreCandidateNodeRT(RWByteAddressBuffer InNodes, uint NodeIndex, FCandidateNodeRT Node)
+{
+	checkSlow(NodeIndex < MaxNodes);
+	StoreCandidateNodeDataRT(InNodes, NodeIndex, PackCandidateNodeRT(Node));
+}
+
+void ClearCandidateNodeRT(RWByteAddressBuffer InNodes, uint NodeIndex)
+{
+	checkSlow(NodeIndex < MaxNodes);
+	StoreCandidateNodeDataRT(InNodes, NodeIndex, 0xFFFFFFFFu);
+}
+
+#if NANITE_HIERARCHY_TRAVERSAL
+
+RWByteAddressBuffer Nodes;
+RWByteAddressBuffer CandidateClusters;
+
+RWStructuredBuffer<RAYTRACING_CLUSTER_OPS_BUILD_BLAS_DESC> RWBLASBuildDescs;
+RWStructuredBuffer<GPU_VIRTUAL_ADDRESS> RWCLASAddresses;
+
+ByteAddressBuffer PageDataBuffer;
+ByteAddressBuffer CLASDataBuffer;
+ByteAddressBuffer BLASDataBuffer;
+StructuredBuffer<uint> ReferenceErrors;
+uint UseReferenceErrors;
+
+struct FTraversalCallback
+{
+	FCandidateNodeRT CandidateNode;
+
+	FGeometryClusterCutRequest RequestData;
+
+	uint AssemblyTransformIndex;
+
+	void Init(uint InChildIndex, uint InLocalNodeIndex, uint GroupNodeFetchIndex)
+	{
+		const uint4 NodeData = GetGroupNodeData(GroupNodeFetchIndex);
+
+		CandidateNode = UnpackCandidateNodeRT(NodeData);
+
+		RequestData = CutRequests[CandidateNode.RequestIndex];
+
+		AssemblyTransformIndex = CandidateNode.AssemblyTransformIndex;
+	}
+
+	uint GetHierarchyNodeOffset()
+	{
+		return ::GetHierarchyNodeOffset(RequestData.HierarchyOffset, CandidateNode.NodeIndex);
+	}
+
+	bool ShouldVisitChild(FHierarchyNodeSlice HierarchyNodeSlice, bool bInVisible)
+	{
+		bool bShouldVisitChild = bInVisible;
+
+		BRANCH
+		if (bShouldVisitChild)
+		{
+			if (UseReferenceErrors)
+			{
+				const float ReferenceError = asfloat(ReferenceErrors[RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK]);
+				bShouldVisitChild = ReferenceError < HierarchyNodeSlice.MaxParentLODError;
+			}
+			else
+			{
+				bShouldVisitChild = MinCutError < HierarchyNodeSlice.MaxParentLODError;
+			}
+		}
+		
+		BRANCH
+		if (bShouldVisitChild)
+		{
+			BRANCH
+			if (IsValidHierarchyAssemblyTransformIndex(HierarchyNodeSlice.AssemblyTransformIndex))
+			{				
+				// TODO: Support Nanite Skinning
+				// TODO: Combine the matrices for recursive assemblies
+
+				AssemblyTransformIndex = HierarchyNodeSlice.AssemblyTransformIndex;
+			}
+		}
+
+		return bShouldVisitChild;
+	}
+
+	void OnPreProcessNodeBatch(uint GroupIndex)
+	{
+		// Nothing to do
+	}
+
+	void OnPostNodeVisit(FHierarchyNodeSlice HierarchyNodeSlice)
+	{
+		// Nothing to do
+	}
+
+	void StoreChildNode(uint StoreIndex, FHierarchyNodeSlice HierarchyNodeSlice)
+	{
+		FCandidateNodeRT Node;
+		Node.NodeIndex = HierarchyNodeSlice.ChildStartReference;
+		Node.RequestIndex = CandidateNode.RequestIndex;
+		Node.AssemblyTransformIndex = AssemblyTransformIndex;
+
+		StoreCandidateNodeRT(Nodes, StoreIndex, Node);
+	}
+
+	void StoreCluster(uint StoreIndex, FHierarchyNodeSlice HierarchyNodeSlice, uint ClusterIndex)
+	{
+		FCandidateCluster CandidateCluster;
+		CandidateCluster.RequestIndex = CandidateNode.RequestIndex;
+		CandidateCluster.PageIndex = HierarchyNodeSlice.ChildStartReference >> NANITE_MAX_CLUSTERS_PER_PAGE_BITS;
+		CandidateCluster.ClusterIndex = ClusterIndex;
+		CandidateCluster.AssemblyTransformIndex = AssemblyTransformIndex;
+
+		StoreCandidateClusterNoCheckRT(CandidateClusters, StoreIndex, CandidateCluster);	// TODO: NoCheck to fix issue compilation issue with FXC
+	}
+
+	uint4 LoadPackedCluster(uint CandidateIndex)
+	{
+		checkSlow(CandidateIndex < MaxCandidateClusters);
+		return uint4(CandidateClusters.Load3(CandidateIndex * GetCandidateClusterSizeRT()), 0u);
+	}
+
+	bool IsNodeDataReady(uint4 RawData)
+	{
+		return RawData.x != 0xFFFFFFFFu && RawData.y != 0xFFFFFFFFu && RawData.z != 0xFFFFFFFFu;
+	}
+
+	bool LoadCandidateNodeDataToGroup(uint NodeIndex, uint GroupIndex, bool bCheckIfReady = true)
+	{
+		uint4 NodeData = LoadCandidateNodeDataRT(Nodes, NodeIndex);
+
+		bool bNodeReady = IsNodeDataReady(NodeData);
+		if (!bCheckIfReady || bNodeReady)
+		{
+			SetGroupNodeData(GroupIndex, NodeData);
+		}
+
+		return bNodeReady;
+	}
+
+	void ClearCandidateNodeData(uint NodeIndex)
+	{
+		ClearCandidateNodeRT(Nodes, NodeIndex);
+	}
+
+	void AddToClusterBatch(uint BatchIndex, uint Num)
+	{
+		check(false);
+	}
+
+	void ClearClusterBatch(uint BatchIndex)
+	{
+		check(false);
+	}
+
+	uint LoadClusterBatch(uint BatchIndex)
+	{
+		check(false);
+		return 0;
+	}
+
+	void ProcessCluster(uint4 PackedCluster)
+	{
+		const FCandidateCluster CandidateCluster = UnpackCandidateClusterRT(PackedCluster);
+		const FCluster Cluster = GetCluster(CandidateCluster.PageIndex, CandidateCluster.ClusterIndex);
+		const FGeometryClusterCutRequest RequestData = CutRequests[CandidateCluster.RequestIndex];
+
+		bool bSmallEnoughToDraw;
+		if (UseReferenceErrors)
+		{
+			const float ReferenceError = asfloat(ReferenceErrors[RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK]);
+			bSmallEnoughToDraw = ReferenceError > Cluster.LODError;
+		}
+		else
+		{
+			bSmallEnoughToDraw = MinCutError > Cluster.LODError;
+		}
+
+		bool bVisible = bSmallEnoughToDraw || (Cluster.Flags & NANITE_CLUSTER_FLAG_STREAMING_LEAF);
+
+		BRANCH
+		if (bVisible)
+		{
+			const FNaniteRayTracingPageData PageData = PageDataBuffer.Load<FNaniteRayTracingPageData>(CandidateCluster.PageIndex * uint(sizeof(FNaniteRayTracingPageData)));
+			const uint CLASDataIndex = PageData.BaseCLASDataIndex + CandidateCluster.ClusterIndex;
+			FNaniteRayTracingASData CLASData = CLASDataBuffer.Load<FNaniteRayTracingASData>(CLASDataIndex * uint(sizeof(FNaniteRayTracingASData)));
+
+			if (CLASData.Address != 0)
+			{
+				FNaniteRayTracingASData BLASDataEntry = BLASDataBuffer.Load<FNaniteRayTracingASData>((RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK) * uint(sizeof(FNaniteRayTracingASData)));
+				uint BuildIndex = BLASDataEntry.AllocationIndex;
+
+				check(BuildIndex != NANITE_RAYTRACING_AS_UNUSED_INDEX);
+				check(BuildIndex != NANITE_RAYTRACING_AS_CACHE_HIT_INDEX);
+
+				uint OutputAddressIndex;
+				InterlockedAdd(RWBLASBuildDescs[BuildIndex].ClusterCount, 1, OutputAddressIndex);
+
+				RWCLASAddresses[RequestData.BaseAddressIndex + OutputAddressIndex] = CLASData.Address;
+			}
+		}
+	}
+};
+
+[numthreads(NANITE_PERSISTENT_CLUSTER_CULLING_GROUP_SIZE, 1, 1)]
+void HierarchyTraversalCS(uint GroupID : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+#if CULLING_TYPE == NANITE_CULLING_TYPE_NODES
+	NodeCull<FTraversalCallback>(GroupID, GroupIndex, 0);
+#elif CULLING_TYPE == NANITE_CULLING_TYPE_CLUSTERS
+	ClusterCull<FTraversalCallback>(GroupID, GroupIndex, 0);
+#endif
+}
+
+#endif
+
+#ifdef InitQueueCS
+
+RWStructuredBuffer<FQueueState> QueueState;
+RWByteAddressBuffer Nodes;
+
+StructuredBuffer<GPU_VIRTUAL_ADDRESS> ResourceAddressesBuffer;
+RWStructuredBuffer<RAYTRACING_CLUSTER_OPS_BUILD_BLAS_DESC> RWBLASBuildBuffer;
+
+StructuredBuffer<FNaniteRayTracingASCacheEntry> BLASCacheAllocationTable;
+RWStructuredBuffer<FNaniteRayTracingASCacheMetadata> RWBLASCacheMetadata;
+StructuredBuffer<uint> ReferenceErrors;
+uint BLASCacheEnabled;
+float CacheRelativeErrorTolerance;
+RWByteAddressBuffer RWBLASData;
+RWStructuredBuffer<uint> RWBLASCountBuffer;
+
+bool IsBLASCacheHit(
+	FNaniteRayTracingASCacheEntry CacheEntry,
+	FNaniteRayTracingASCacheMetadata Metadata,
+	float ReferenceError,
+	float RelativeErrorTolerance)
+{
+	if (CacheEntry.ByteSize == 0)
+		return false;
+
+	if (Metadata.UpdateSequenceId != CacheEntry.UpdateSequenceId)
+		return false;
+
+	float CachedError = asfloat(Metadata.Key);
+	float ErrorDiff = abs(ReferenceError - CachedError);
+	float MaxError = max(ReferenceError, CachedError);
+	
+	bool Result = (MaxError < 1e-6f) ? true : (ErrorDiff / MaxError <= RelativeErrorTolerance);
+	return Result;
+}
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void InitQueueCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	const uint Index = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (Index >= NumCutRequests)
+	{
+		return;
+	}
+
+	const FGeometryClusterCutRequest RequestData = CutRequests[Index];
+
+	FNaniteRayTracingASData BLASData = (FNaniteRayTracingASData)0;
+
+	const uint ReferenceErrorUint = ReferenceErrors[RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK];
+	if (ReferenceErrorUint == (~0U))
+	{
+		// Clear value - no instances need this BLAS this frame
+		// For now we'll deallocate any cached data. In the future we may want to lazily
+		// maintain it for a little while with some priority scheme.
+		BLASData.Address = 0;
+		BLASData.Size = 0;
+		BLASData.AllocationIndex = NANITE_RAYTRACING_AS_UNUSED_INDEX;
+	}
+	else
+	{
+		// We need this BLAS this frame. Compare reference error to any cached data
+		const float ReferenceError = asfloat(ReferenceErrorUint);
+	  
+		// NOTE: We do not explicitly store the RuntimeResourceID version bits in the key as
+		// those bits changing implies we are bringing in new root pages, which currently
+		// triggers invalidation of the cache entry on the CPU directly.
+		uint RootPageIndex = RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK;
+		FNaniteRayTracingASCacheEntry CacheEntry = BLASCacheAllocationTable[RootPageIndex];
+
+		bool bCacheHit = false;
+		if (BLASCacheEnabled)
+		{
+			FNaniteRayTracingASCacheMetadata Metadata = RWBLASCacheMetadata[RootPageIndex];
+			bCacheHit = IsBLASCacheHit(CacheEntry, Metadata, ReferenceError, CacheRelativeErrorTolerance);
+		}
+
+		if (bCacheHit)
+		{
+			// Fill in final address now; no traversal or build needed
+			GPU_VIRTUAL_ADDRESS CacheBufferBase = ResourceAddressesBuffer[2];
+			BLASData.Address = CacheBufferBase + CacheEntry.ByteOffset;
+			BLASData.Size = CacheEntry.ByteSize;
+			BLASData.AllocationIndex = NANITE_RAYTRACING_AS_CACHE_HIT_INDEX;
+		}
+		else
+		{
+			// Push to traversal queue
+			uint NodeOffset;
+			WaveInterlockedAddScalar_(QueueState[0].PassState[0].NodeWriteOffset, 1, NodeOffset);
+			WaveInterlockedAddScalar(QueueState[0].PassState[0].NodeCount, 1);
+
+			{
+				FCandidateNodeRT Node;
+				Node.NodeIndex = 0;
+				Node.RequestIndex = Index;
+				Node.AssemblyTransformIndex = NANITE_MAX_ASSEMBLY_TRANSFORMS;
+				StoreCandidateNodeRT(Nodes, NodeOffset, Node);
+			}
+
+			// Assign a compacted build slot
+			uint BuildIndex;
+			WaveInterlockedAddScalar_(RWBLASCountBuffer[0], 1, BuildIndex);
+			BLASData.AllocationIndex = BuildIndex;
+		
+			StatsBufferInterlockedInc(NANITERT_STAT_BLAS_BUILD_COUNT);
+
+			// Initialize BLAS build descriptor at the compacted slot
+			GPU_VIRTUAL_ADDRESS CLASAddressesBufferAddress = ResourceAddressesBuffer[1];
+			RAYTRACING_CLUSTER_OPS_BUILD_BLAS_DESC BuildBlasDesc = (RAYTRACING_CLUSTER_OPS_BUILD_BLAS_DESC)0;
+			BuildBlasDesc.ClusterVAs = CLASAddressesBufferAddress + RequestData.BaseAddressIndex * uint(sizeof(GPU_VIRTUAL_ADDRESS));
+			RWBLASBuildBuffer[BuildIndex] = BuildBlasDesc;
+
+			// Update cache key in persistent metadata for cache hit detection next frame
+			if (BLASCacheEnabled)
+			{
+				RWBLASCacheMetadata[RootPageIndex].Key = asuint(ReferenceError);
+			}
+		}
+	}
+
+	RWBLASData.Store<FNaniteRayTracingASData>((RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK) * uint(sizeof(BLASData)), BLASData);
+}
+
+#endif // InitQueueCS
+
+#ifdef StreamOutClusterCS
+
+StructuredBuffer<GPU_VIRTUAL_ADDRESS> ResourceAddresses;
+
+ByteAddressBuffer SegmentMappingBuffer;
+
+RWByteAddressBuffer RWVertexBuffer;
+RWByteAddressBuffer RWIndexBuffer;
+RWByteAddressBuffer RWGeometryIndexAndFlagsBuffer;
+
+RWStructuredBuffer<uint> RWClusterCount;
+RWStructuredBuffer<RAYTRACING_CLUSTER_OPS_BUILD_CLAS_DESC> RWCLASBuildDescs;
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void StreamOutClusterCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	const uint RequestIndex = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (RequestIndex == 0)
+	{
+		RWClusterCount[0] = NumStreamOutRequests;
+	}
+
+	if (RequestIndex >= NumStreamOutRequests)
+	{
+		return;
+	}
+
+	StatsBufferInterlockedInc(NANITERT_STAT_CLAS_BUILD_COUNT);
+
+	GPU_VIRTUAL_ADDRESS VertexBufferAddress = ResourceAddresses[0];
+	GPU_VIRTUAL_ADDRESS IndexBufferAddress = ResourceAddresses[1];
+	GPU_VIRTUAL_ADDRESS GeometryIndexAndFlagsBufferAddress = ResourceAddresses[2];
+
+	//while (true)
+	{
+		/*uint RequestIndex;
+		WaveInterlockedAddScalar_(RWClusterCount[1], 1, RequestIndex);
+
+		if (RequestIndex >= NumRequests)
+		{
+			break;
+		}*/
+
+		const FClusterStreamOutRequest RequestData = StreamOutRequests[RequestIndex];
+		const FCluster Cluster = GetCluster(RequestData.GPUPageIndex, RequestData.ClusterIndex);
+
+		for (uint VertexIndex = 0; VertexIndex < Cluster.NumVerts; ++VertexIndex)
+		{
+			float3 Pos = DecodePosition(VertexIndex, Cluster);
+
+			RWVertexBuffer.Store3(RequestData.VertexBufferOffset + VertexIndex * 12, asuint(Pos));
+		}
+
+		for (uint TriangleIndex = 0; TriangleIndex < Cluster.NumTris; ++TriangleIndex)
+		{
+			uint3 TriangleIndices = DecodeTriangleIndices(Cluster, TriangleIndex);
+
+			RWIndexBuffer.Store3(RequestData.IndexBufferOffset + TriangleIndex * 12, TriangleIndices);
+
+			const uint RelativeMaterialIndex = GetRelativeMaterialIndex(Cluster, TriangleIndex);
+			const uint SegmentIndex = SegmentMappingBuffer.Load<uint>((RequestData.SegmentMappingOffset + RelativeMaterialIndex) * uint(sizeof(uint)));
+			RWGeometryIndexAndFlagsBuffer.Store(RequestData.GeometryIndexAndFlagsBufferOffset + TriangleIndex * 4, SegmentIndex);
+		}
+
+		RAYTRACING_CLUSTER_OPS_BUILD_CLAS_DESC BuildDesc;
+		BuildDesc.ClusterId = 0;
+		BuildDesc.ClusterId |= RequestData.GPUPageIndex;
+		BuildDesc.ClusterId |= RequestData.ClusterIndex << NANITE_MAX_GPU_PAGES_BITS;
+		BuildDesc.ClusterFlags = 0;
+
+		BuildDesc.TriangleCount = Cluster.NumTris;
+		BuildDesc.VertexCount = Cluster.NumVerts;
+		BuildDesc.PositionTruncateBitCount = 0;
+		BuildDesc.IndexFormat = 4; // TODO
+
+		BuildDesc.IndexBuffer = IndexBufferAddress + RequestData.IndexBufferOffset;
+		BuildDesc.IndexBufferStride = 4; // TODO
+
+		BuildDesc.VertexBuffer = VertexBufferAddress + RequestData.VertexBufferOffset;
+		BuildDesc.VertexBufferStride = 12; // TODO
+
+		if (false)
+		{
+			// whole cluster uses the same material
+			BuildDesc.BaseGeometryIndexAndFlags = 0; // TODO
+
+			BuildDesc.GeometryIndexAndFlagsBuffer = 0; // nullptr
+			BuildDesc.GeometryIndexAndFlagsBufferStride = 0;
+		}
+		else
+		{
+			BuildDesc.BaseGeometryIndexAndFlags = 0;
+
+			BuildDesc.GeometryIndexAndFlagsBuffer = GeometryIndexAndFlagsBufferAddress + RequestData.GeometryIndexAndFlagsBufferOffset;
+			BuildDesc.GeometryIndexAndFlagsBufferStride = 4;
+		}
+
+		BuildDesc.OpacityMicromapIndexFormat = 4; // TODO
+		BuildDesc.OpacityMicromapArray = 0; // nullptr
+		BuildDesc.OpacityMicromapIndexBuffer = 0; // nullptr
+		BuildDesc.OpacityMicromapIndexBufferStride = 0;
+
+		RWCLASBuildDescs[RequestIndex] = BuildDesc;
+	}
+}
+
+#endif // NaniteStreamOutClusterCS
+
+#if defined(AllocateClusterCS) || defined(FreeClusterCS)
+
+StructuredBuffer<uint> CLASSizes;
+StructuredBuffer<GPU_VIRTUAL_ADDRESS> CLASAddresses;
+uint NumCLAS;
+
+RWStructuredBuffer<int> RWAllocator;
+uint AllocationSize;
+uint PoolSize;
+uint CLASBufferSize;
+
+uint CLASAlignment;
+
+StructuredBuffer<GPU_VIRTUAL_ADDRESS> ResourceAddresses;
+
+RWStructuredBuffer<uint> RWMoveCount;
+RWStructuredBuffer<GPU_VIRTUAL_ADDRESS> RWSrcAddresses;
+RWStructuredBuffer<GPU_VIRTUAL_ADDRESS> RWDstAddresses;
+
+RWByteAddressBuffer RWPageDataBuffer;
+RWByteAddressBuffer RWCLASData;
+
+StructuredBuffer<FAllocateClustersRequest> AllocateClustersRequests;
+uint NumAllocateClustersRequests;
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void AllocateClusterCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	const uint RequestIndex = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (RequestIndex >= NumAllocateClustersRequests)
+	{
+		return;
+	}
+
+	const GPU_VIRTUAL_ADDRESS BaseAddress = ResourceAddresses[3];
+
+	const FAllocateClustersRequest RequestData = AllocateClustersRequests[RequestIndex];
+
+	// count number of allocations required
+	uint NumRequiredBlocks = RequestData.NumClusters > 0 ? 1 : 0;
+	uint AllocationOffset = 0;
+
+	for (uint ClusterIndex = 0; ClusterIndex < RequestData.NumClusters; ++ClusterIndex)
+	{
+		const uint CLASIndex = RequestData.BaseCLASIndex + ClusterIndex;
+		check(CLASIndex < NumCLAS);
+
+		uint CLASSize = CLASSizes[CLASIndex];
+		check(CLASSize <= AllocationSize);
+
+		if (AllocationOffset + CLASSize > AllocationSize)
+		{
+			// need new allocation
+			++NumRequiredBlocks;
+			AllocationOffset = 0;
+		}
+
+		AllocationOffset += CLASSize;
+		AllocationOffset = ((AllocationOffset + CLASAlignment - 1) / CLASAlignment) * CLASAlignment;
+	}
+
+	FNaniteRayTracingPageData PageData = RWPageDataBuffer.Load<FNaniteRayTracingPageData>(RequestData.GPUPageIndex * uint(sizeof(FNaniteRayTracingPageData)));
+
+	// try to allocate enough blocks
+	int FreeAllocationIndex;
+	InterlockedAdd(RWAllocator[0], -NumRequiredBlocks, FreeAllocationIndex); // TODO: Use WaveInterlockedSubtract here?
+
+	if (FreeAllocationIndex < NumRequiredBlocks)
+	{
+		// unable to allocate enough free blocks
+		InterlockedAdd(RWAllocator[0], NumRequiredBlocks); // restore allocator state before early-out
+
+		// still need to clear RWCLASData entries because they might have uninitialized data when the buffer grows
+
+		for (uint ClusterIndex = 0; ClusterIndex < RequestData.NumClusters; ++ClusterIndex)
+		{
+			FNaniteRayTracingASData CLASData;
+			CLASData.Address = 0;
+			CLASData.Size = 0;
+			CLASData.AllocationIndex = uint(-1);
+
+			const uint CLASDataIndex = PageData.BaseCLASDataIndex + ClusterIndex;
+			RWCLASData.Store<FNaniteRayTracingASData>(CLASDataIndex * uint(sizeof(CLASData)), CLASData);
+		}
+
+		return;
+	}
+	
+	PageData.NumAllocatedBlocks = NumRequiredBlocks;
+
+	RWPageDataBuffer.Store<FNaniteRayTracingPageData>(RequestData.GPUPageIndex * uint(sizeof(FNaniteRayTracingPageData)), PageData);
+
+	// Calculate destination address of each cluster
+
+	uint AllocationIndex = uint(-1);
+
+	for (uint ClusterIndex = 0; ClusterIndex < RequestData.NumClusters; ++ClusterIndex)
+	{
+		const uint CLASIndex = RequestData.BaseCLASIndex + ClusterIndex;
+		check(CLASIndex < NumCLAS);
+
+		const uint CLASSize = CLASSizes[CLASIndex];
+		check(CLASSize <= AllocationSize);
+
+		if (AllocationIndex == uint(-1) || AllocationOffset + CLASSize > AllocationSize)
+		{
+			// need new allocation
+			AllocationIndex = FreeAllocationIndex > 0 ? RWAllocator[FreeAllocationIndex] : uint(-1);
+			AllocationOffset = 0;
+
+			--FreeAllocationIndex;
+		}
+
+		GPU_VIRTUAL_ADDRESS DstAddress = 0;
+		
+		if (AllocationIndex != uint(-1))
+		{
+			DstAddress = BaseAddress + AllocationIndex * AllocationSize + AllocationOffset;
+
+			uint MoveIndex;
+			WaveInterlockedAddScalar_(RWMoveCount[0], 1, MoveIndex);
+
+			RWSrcAddresses[MoveIndex] = CLASAddresses[CLASIndex];
+			RWDstAddresses[MoveIndex] = DstAddress;
+
+			AllocationOffset += CLASSize;
+			AllocationOffset = ((AllocationOffset + CLASAlignment - 1) / CLASAlignment) * CLASAlignment;
+		}
+
+		FNaniteRayTracingASData CLASData;
+		CLASData.Address = DstAddress;
+		CLASData.Size = CLASSize;
+		CLASData.AllocationIndex = AllocationIndex;
+
+		const uint CLASDataIndex = PageData.BaseCLASDataIndex + ClusterIndex;
+		RWCLASData.Store<FNaniteRayTracingASData>(CLASDataIndex * uint(sizeof(CLASData)), CLASData);
+	}
+}
+
+StructuredBuffer<FFreeClustersRequest> FreeClustersRequests;
+uint NumFreeClustersRequests;
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void FreeClusterCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	const uint RequestIndex = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (RequestIndex >= NumFreeClustersRequests)
+	{
+		return;
+	}
+
+	const FFreeClustersRequest RequestData = FreeClustersRequests[RequestIndex];
+
+	FNaniteRayTracingPageData PageData = RWPageDataBuffer.Load<FNaniteRayTracingPageData>(RequestData.GPUPageIndex * uint(sizeof(FNaniteRayTracingPageData)));
+	PageData.NumAllocatedBlocks = 0;
+
+	RWPageDataBuffer.Store<FNaniteRayTracingPageData>(RequestData.GPUPageIndex * uint(sizeof(FNaniteRayTracingPageData)), PageData);
+
+	uint PrevAllocationIndex = uint(-1);
+
+	for (uint ClusterIndex = 0; ClusterIndex < PageData.NumClusters; ++ClusterIndex)
+	{
+		const uint CLASDataIndex = PageData.BaseCLASDataIndex + ClusterIndex;
+
+		FNaniteRayTracingASData CLASData = RWCLASData.Load<FNaniteRayTracingASData>(CLASDataIndex * uint(sizeof(FNaniteRayTracingASData)));
+
+		if (CLASData.AllocationIndex != uint(-1) && CLASData.AllocationIndex != PrevAllocationIndex)
+		{
+			int FreeAllocationIndex;
+			WaveInterlockedAdd_(RWAllocator[0], 1, FreeAllocationIndex);
+			FreeAllocationIndex += 1;
+			check(FreeAllocationIndex > 0);
+			check(FreeAllocationIndex <= PoolSize);
+
+			RWAllocator[FreeAllocationIndex] = CLASData.AllocationIndex;
+		}
+
+		PrevAllocationIndex = CLASData.AllocationIndex;
+
+		CLASData.Address = 0;
+		CLASData.Size = 0;
+		CLASData.AllocationIndex = uint(-1);
+
+		RWCLASData.Store<FNaniteRayTracingASData>(CLASDataIndex * uint(sizeof(CLASData)), CLASData);
+	}
+}
+
+#endif // AllocateClusterCS || FreeClusterCS
+
+#ifdef AllocateBLASCS
+
+StructuredBuffer<uint> BLASSizes;
+StructuredBuffer<GPU_VIRTUAL_ADDRESS> BLASAddresses;
+uint NumBLAS;
+
+uint BLASAlignment;
+
+StructuredBuffer<GPU_VIRTUAL_ADDRESS> ResourceAddresses;
+
+RWStructuredBuffer<uint> RWMoveCount;
+RWStructuredBuffer<GPU_VIRTUAL_ADDRESS> RWSrcAddresses;
+RWStructuredBuffer<GPU_VIRTUAL_ADDRESS> RWDstAddresses;
+
+RWByteAddressBuffer RWBLASCacheRequest;
+RWByteAddressBuffer RWBLASData;
+
+StructuredBuffer<FNaniteRayTracingASCacheEntry> BLASCacheAllocationTable;
+RWStructuredBuffer<FNaniteRayTracingASCacheMetadata> RWBLASCacheMetadata;
+uint BLASCacheEnabled;
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void AllocateBLASCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	const uint BLASIndex = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (BLASIndex >= NumBLAS)
+	{
+		return;
+	}
+
+	const FGeometryClusterCutRequest RequestData = CutRequests[BLASIndex];
+
+	// Read the build state written by InitQueueCS
+	FNaniteRayTracingASData ExistingBLASData = RWBLASData.Load<FNaniteRayTracingASData>(
+		(RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK) * uint(sizeof(FNaniteRayTracingASData)));
+	uint BuildIndex = ExistingBLASData.AllocationIndex;
+
+	uint RootPageIndex = RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK;
+	FNaniteRayTracingASCacheEntry CacheEntry = BLASCacheAllocationTable[RootPageIndex];
+
+	if (BuildIndex == NANITE_RAYTRACING_AS_UNUSED_INDEX)
+	{
+		if (BLASCacheEnabled)
+		{
+			// BLAS should be unreferenced in this path, so just store an empty cache request
+			FNaniteRayTracingASCacheRequest CacheRequest = (FNaniteRayTracingASCacheRequest)0;
+			RWBLASCacheRequest.Store<FNaniteRayTracingASCacheRequest>(RootPageIndex * uint(sizeof(FNaniteRayTracingASCacheRequest)), CacheRequest);
+		}
+		StatsBufferInterlockedInc(NANITERT_STAT_BLAS_UNUSED_COUNT);
+		return;
+	}
+	else if (BuildIndex == NANITE_RAYTRACING_AS_CACHE_HIT_INDEX)
+	{
+		// BLAS cache must be enabled if we hit this path
+		FNaniteRayTracingASCacheRequest CacheRequest;
+		CacheRequest.Size = CacheEntry.ByteSize;
+		RWBLASCacheRequest.Store<FNaniteRayTracingASCacheRequest>(RootPageIndex * uint(sizeof(FNaniteRayTracingASCacheRequest)), CacheRequest);
+		StatsBufferInterlockedInc(NANITERT_STAT_BLAS_CACHED_COUNT);
+		StatsBufferInterlockedAdd(NANITERT_STAT_BLAS_CACHED_SIZE, CacheEntry.ByteSize);
+		return;
+	}
+
+	// Built BLAS: compute final address and add MoveOp
+	uint BLASSize = BLASSizes[BuildIndex];
+	BLASSize = ((BLASSize + BLASAlignment - 1) / BLASAlignment) * BLASAlignment;
+
+	// Since the cache hit check is on the GPU, we could accept any buffer
+	// that is *at least* large enough, and add some wiggle room in allocation but
+	// for now we'll only accept an exact match.
+	bool bNeedsMoveToCacheBuffer = (CacheEntry.ByteSize == BLASSize);
+
+	GPU_VIRTUAL_ADDRESS FinalAddress = BLASAddresses[BuildIndex];
+	if (bNeedsMoveToCacheBuffer)
+	{
+		// First frame of new cache slot: copy freshly-built staging BLAS into the cache buffer
+		GPU_VIRTUAL_ADDRESS CacheBufferBase = ResourceAddresses[2];
+		FinalAddress = CacheBufferBase + CacheEntry.ByteOffset;
+
+		uint MoveIndex;
+		WaveInterlockedAddScalar_(RWMoveCount[0], 1, MoveIndex);
+		RWSrcAddresses[MoveIndex] = BLASAddresses[BuildIndex];
+		RWDstAddresses[MoveIndex] = FinalAddress;
+
+		// Confirm this slot is now built in the cache buffer (Key is written by InitQueueCS each frame)
+		if (BLASCacheEnabled)
+		{
+			RWBLASCacheMetadata[RootPageIndex].UpdateSequenceId = CacheEntry.UpdateSequenceId;
+		}
+
+		StatsBufferInterlockedAdd(NANITERT_STAT_BLAS_CACHED_SIZE, BLASSize);
+	}
+	else
+	{
+		// Transient BLAS stays in staging buffer at its build address
+		StatsBufferInterlockedAdd(NANITERT_STAT_BLAS_STAGING_SIZE, BLASSize);
+	}
+
+	// Overwrite the partial FNaniteRayTracingASData written by InitQueueCS with final values
+	FNaniteRayTracingASData BLASData;
+	BLASData.Address = FinalAddress;
+	BLASData.Size = BLASSize;
+	BLASData.AllocationIndex = BuildIndex;  // preserve: built this frame
+
+	RWBLASData.Store<FNaniteRayTracingASData>((RequestData.RuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK) * uint(sizeof(BLASData)), BLASData);
+
+	// Store final cache request size
+	if (BLASCacheEnabled)
+	{
+		FNaniteRayTracingASCacheRequest CacheRequest;
+		CacheRequest.Size = BLASSize;
+		RWBLASCacheRequest.Store<FNaniteRayTracingASCacheRequest>(RootPageIndex * uint(sizeof(FNaniteRayTracingASCacheRequest)), CacheRequest);
+	}
+}
+
+#endif // AllocateBLASCS
+
+#ifdef ResetAllocatorCS
+
+RWStructuredBuffer<int> RWAllocator;
+uint PoolSize;
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void ResetAllocatorCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	const uint Index = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (Index == 0)
+	{
+		RWAllocator[0] = PoolSize;
+	}
+
+	if (Index < PoolSize)
+	{
+		RWAllocator[Index + 1] = Index;
+	}
+}
+
+#endif // ResetAllocatorCS
+
+#ifdef ClampAllocatorCS
+
+RWStructuredBuffer<int> RWAllocator;
+uint PoolSize;
+
+[numthreads(1, 1, 1)]
+void ClampAllocatorCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	check(RWAllocator[0] <= int(PoolSize + 1));
+	RWAllocator[0] = max(RWAllocator[0], 0);
+}
+
+#endif // ClampAllocatorCS
+
+#ifdef DebugHistogramCS
+
+ByteAddressBuffer ASDataBuffer;
+uint NumAS;
+
+RWStructuredBuffer<uint> RWHistogram;
+float2 HistogramScaleBias;
+uint HistogramSize;
+
+RWStructuredBuffer<uint> RWSizeSum;
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void DebugHistogramCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	const uint Index = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (Index >= NumAS)
+	{
+		return;
+	}
+
+	FNaniteRayTracingASData ASData = ASDataBuffer.Load<FNaniteRayTracingASData>(Index * uint(sizeof(FNaniteRayTracingASData)));
+
+	if (ASData.Size == 0)
+	{
+		return;
+	}
+
+	//uint PositionInHistogram = ASData.Size * HistogramScaleBias.x + HistogramScaleBias.y;
+	//uint PositionInHistogram = ASData.Size > 1 ? (1u << (firstbithigh(ASData.Size - 1) + 1)) : 1; // next power of two
+	uint PositionInHistogram = ASData.Size > 1 ? (firstbithigh(ASData.Size - 1) + 1) : 0; // next power of two bit
+
+	if (PositionInHistogram >= HistogramSize)
+	{
+		return;
+	}
+
+	InterlockedAdd(RWHistogram[PositionInHistogram], 1);
+
+	WaveInterlockedAdd(RWSizeSum[0], ASData.Size);
+}
+
+#endif // DebugHistogramCS
+
+
+#ifdef DebugCS
+
+uint CLASBufferSize;
+uint NumCLAS;
+
+uint CLASPoolAllocationSize;
+uint CLASPoolSize;
+
+StructuredBuffer<int> CLASAllocator;
+StructuredBuffer<uint> CLASHistogram;
+StructuredBuffer<uint> CLASSizeSum;
+
+uint BLASCacheBufferSize;
+uint BLASStagingBufferSize;
+uint NumBLAS;
+
+StructuredBuffer<uint> BLASHistogram;
+
+StructuredBuffer<uint> StatsBuffer;
+
+uint ShowHistograms;
+
+void PrintSizeMBAndPercent(inout FShaderPrintContext Context, float SizeBytes, float BufferSizeBytes)
+{
+	float Fraction = (BufferSizeBytes > 0.0f) ? saturate(SizeBytes / BufferSizeBytes) : 0.0f;
+	FFontColor Color = InitFontColor(ColorMapTurbo(Fraction) * 0.8 + 0.2);
+	Print(Context, SizeBytes / (1024.0f * 1024.0f), Color, 6, 2);
+	Print(Context, TEXT(" MB ("));
+	Print(Context, (int)(Fraction * 100.0f), Color, 3);
+	Print(Context, TEXT("%)"));
+}
+
+[numthreads(1, 1, 1)]
+void DebugCS(uint GroupIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	FShaderPrintContext Context = InitShaderPrintContext(true, float2(0.1, 0.1));
+
+	Print(Context, TEXT("Nanite Ray Tracing"));
+	Newline(Context);
+
+	Print(Context, TEXT("- CLAS: "));
+	Newline(Context);
+
+	const float CLASPoolAllocationSizeKB = CLASPoolAllocationSize / 1024.0f;
+	const float CLASBufferSizeKB = CLASBufferSize / 1024.0f;
+
+	const int CLASNumFreeAllocations = max(CLASAllocator[0] - 1, 0);
+	const float CLASAllocatedSizeKB = (CLASPoolSize - CLASNumFreeAllocations) * CLASPoolAllocationSizeKB;
+	const float CLASActualSizeKB = CLASSizeSum[0] / 1024.0f;
+	const float CLASWasteKB = CLASAllocatedSizeKB - CLASActualSizeKB;
+	const float CLASWasteFactor = (CLASAllocatedSizeKB > 0.0f) ? (CLASWasteKB / CLASAllocatedSizeKB) : 0.0f;
+
+	Print(Context, TEXT("    - Allocated: "));
+	PrintSizeMBAndPercent(Context, CLASAllocatedSizeKB * 1024.0f, CLASBufferSize);
+	Newline(Context);
+	Print(Context, TEXT("      Buffer:    "));
+	Print(Context, CLASBufferSize / (1024.0f * 1024.0f), FontWhite, 6, 2);
+	Print(Context, TEXT(" MB"));
+	Newline(Context);
+
+	/*
+	Print(Context, TEXT("    - Actual: "));
+	Print(Context, CLASActualSizeKB / 1024.0f, InitFontColor(ColorMapTurbo(CLASAllocatedSizeKB / CLASBufferSizeKB) * 0.5 + 0.5), 6, 2);
+	Print(Context, TEXT(" MB"));
+	Newline(Context);
+	*/
+
+	if (ShowHistograms)
+	{
+		Print(Context, TEXT("    - Waste:     "));
+		Print(Context, CLASWasteFactor * 100.0f, InitFontColor(ColorMapTurbo(CLASWasteFactor * 5.0f) * 0.8 + 0.2), 6, 2);
+		Print(Context, TEXT(" %"));
+		Newline(Context);
+	}
+
+	Print(Context, TEXT("    - #: "));
+	Print(Context, NumCLAS);
+	Newline(Context);
+
+	Print(Context, TEXT("    - # Built: "));
+	Print(Context, StatsBuffer[NANITERT_STAT_CLAS_BUILD_COUNT]);
+	Newline(Context);
+
+	if (ShowHistograms)
+	{
+		Print(Context, TEXT("    - Size Distribution: "));
+		Newline(Context);
+
+		for (uint Index = 0; Index < 32; ++Index)
+		{
+			uint BinValue = 1U << Index;
+			uint BinCount = CLASHistogram[Index];
+			if (BinCount > 0)
+			{
+				Print(Context, TEXT("        - "));
+				Print(Context, BinValue);
+				Print(Context, TEXT(": "));
+				Print(Context, BinCount);
+				Newline(Context);
+			}
+		}
+	}
+
+	// ---------------------------------------
+	Newline(Context);
+	// ---------------------------------------
+
+	const uint BLASCachedSize = StatsBuffer[NANITERT_STAT_BLAS_CACHED_SIZE];
+
+	Print(Context, TEXT("- BLAS: "));
+	Newline(Context);
+
+	Print(Context, TEXT("    - Cached:    "));
+	PrintSizeMBAndPercent(Context, float(BLASCachedSize), float(BLASCacheBufferSize));
+	Newline(Context);
+	Print(Context, TEXT("      Buffer:    "));
+	Print(Context, BLASCacheBufferSize / (1024.0f * 1024.0f), FontWhite, 6, 2);
+	Print(Context, TEXT(" MB"));
+	Newline(Context);
+	const uint BLASStagingSize = StatsBuffer[NANITERT_STAT_BLAS_STAGING_SIZE];
+
+	Print(Context, TEXT("    - Staging:   "));
+	PrintSizeMBAndPercent(Context, float(BLASStagingSize), float(BLASStagingBufferSize));
+	Newline(Context);
+	Print(Context, TEXT("      Buffer:    "));
+	Print(Context, BLASStagingBufferSize / (1024.0f * 1024.0f), FontWhite, 6, 2);
+	Print(Context, TEXT(" MB"));
+	Newline(Context);
+
+	Print(Context, TEXT("    - #: "));
+	Print(Context, NumBLAS);
+	Newline(Context);
+
+	Print(Context, TEXT("    - # Cached: "));
+	Print(Context, StatsBuffer[NANITERT_STAT_BLAS_CACHED_COUNT]);
+	Newline(Context);
+
+	Print(Context, TEXT("    - # Built: "));
+	Print(Context, StatsBuffer[NANITERT_STAT_BLAS_BUILD_COUNT]);
+	Newline(Context);
+
+	Print(Context, TEXT("    - # Unused: "));
+	Print(Context, StatsBuffer[NANITERT_STAT_BLAS_UNUSED_COUNT]);
+	Newline(Context);
+
+	if (ShowHistograms)
+	{
+		Print(Context, TEXT("    - Size Distribution: "));
+		Newline(Context);
+
+		for (uint Index = 0; Index < 32; ++Index)
+		{
+			uint BinValue = 1U << Index;
+			uint BinCount = BLASHistogram[Index];
+			if (BinCount > 0)
+			{
+				Print(Context, TEXT("        - "));
+				Print(Context, BinValue);
+				Print(Context, TEXT(": "));
+				Print(Context, BinCount);
+				Newline(Context);
+			}
+		}
+	}
+
+	AddTextBackground(Context, float4(0, 0, 0, 0.20f));
+}
+
+#endif // DebugCS

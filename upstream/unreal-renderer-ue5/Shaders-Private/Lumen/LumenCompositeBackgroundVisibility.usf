@@ -1,0 +1,36 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../SceneTextureParameters.ush"
+
+#ifdef LumenFinalizeBackgroundVisibilityCS
+
+RWTexture2D<UNORM float> RWFinalBackgroundVisibility;
+Texture2D<float2> ResolvedBackgroundVisibilityTexture;
+
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
+void LumenFinalizeBackgroundVisibilityCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+	if (all(DispatchThreadId < View.ViewRectMinAndSize.zw))
+	{
+		uint2 ScreenCoord = DispatchThreadId + View.ViewRectMinAndSize.xy;
+
+		float OpaqueContribution = SceneTexturesStruct.SceneColorTexture.Load(int3(ScreenCoord, 0)).a;
+		float2 TranslucentContribution = ResolvedBackgroundVisibilityTexture.Load(int3(ScreenCoord, 0));
+
+		RWFinalBackgroundVisibility[ScreenCoord] = TranslucentContribution.x + TranslucentContribution.y * OpaqueContribution;
+	}
+}
+
+#endif
+
+Texture2D<float> FinalBackgroundVisibilityTexture;
+
+void LumenCopyFinalizedBackgroundVisibilityPS(
+	float4 SvPosition : SV_POSITION,
+	out float4 OutColor : SV_Target0)
+{
+	float BackgroundVisibility = FinalBackgroundVisibilityTexture.Load(uint3(SvPosition.xy, 0));
+
+	OutColor = float4(0, 0, 0, BackgroundVisibility);
+}

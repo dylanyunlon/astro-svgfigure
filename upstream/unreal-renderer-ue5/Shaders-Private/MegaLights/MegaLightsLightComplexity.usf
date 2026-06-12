@@ -1,0 +1,1642 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "MegaLightsSamplingDefinitionsCommon.ush"
+
+#include "../Common.ush"
+
+#if SUBSTRATE_ENABLED 
+	#define SUBSTRATE_FASTPATH 0
+	#define SUBSTRATE_SINGLEPATH 0
+	#define SUBSTRATE_COMPLEXSPECIALPATH 1
+#endif
+#define USE_HAIR_COMPLEX_TRANSMITTANCE 1
+#define USE_LIGHT_SOFT_FADING 1
+#define DEBUG_MODE 1
+#define OVERRIDE_USE_SOURCE_TEXTURE 1
+
+#include "MegaLightsLightTargetPDF.ush"
+#include "MegaLightsVolume.ush"
+#include "MegaLightsVisibility.ush"
+#include "../StochasticLighting/StochasticLightingCommon.ush"
+
+#ifndef IS_VISUALIZING_VOLUME
+	#define IS_VISUALIZING_VOLUME 0
+#endif
+
+#define DEPTH_SCALE_SLIDER_NAME TEXT("Depth:")
+#define LATCH_DEPTH_CHKBOX_NAME TEXT("Latch depth")
+
+static const float GMinCursorDepth = 20.0f;
+
+#if !TRANSLUCENCY_LIGHTING_VOLUME
+uint TranslucencyVolumeCascadeIndex;
+#endif
+float VolumeInverseSquaredLightDistanceBiasScale;
+uint IsUnifiedVolume;
+
+FLightTargetPDF GetLightTargetPDF(
+	uint2 ScreenCoord,
+	float3 VolumeCoord,
+	float3 TranslatedWorldPosition,
+	const FMegaLightsMaterial Material,
+	int ForwardLightIndex,
+	FDeferredLightData LightData,
+	FForwardLightData ForwardLightData,
+	float AssumedTransmissionThickness,
+	inout FShaderPrintContext DebugContext)
+{
+#if IS_VISUALIZING_VOLUME
+#if TRANSLUCENCY_LIGHTING_VOLUME
+	if (!UnpackAffectsTranslucentLighting(ForwardLightData))
+	{
+		return (FLightTargetPDF)0;
+	}
+#endif
+
+	float VolumetricScatteringIntensity = UnpackVolumetricScatteringIntensity(ForwardLightData);
+	float3 CameraVector = GetCameraVectorFromTranslatedWorldPosition(TranslatedWorldPosition);
+
+	float DistanceBiasSqr;
+	float LightVolumetricSoftFadeDistance;
+	GetVolumeDistanceBiasSqrAndSoftFadeDistance(
+		TranslatedWorldPosition,
+		floor(VolumeCoord),
+		frac(VolumeCoord),
+		VolumeInverseSquaredLightDistanceBiasScale,
+		LightSoftFading,
+		DistanceBiasSqr,
+		LightVolumetricSoftFadeDistance);
+
+	float3 L;
+	float3 LightScattering = GetMegaLightsVolumeLighting(
+		TranslatedWorldPosition,
+		CameraVector,
+		DistanceBiasSqr,
+		LightVolumetricSoftFadeDistance,
+		ForwardLightIndex,
+		LightData,
+		VolumetricScatteringIntensity,
+		IsUnifiedVolume > 0,
+		L);
+	LightScattering *= View.PreExposure;
+
+	FLightTargetPDF Result = (FLightTargetPDF)0;
+	Result.Weight = Luminance(LightScattering);
+
+	return Result;
+#else
+	uint LightLightingChannelMask = UnpackLightingChannelMask(ForwardLightData);
+
+	if ((Material.LightingChannelMask & LightLightingChannelMask) == 0)
+	{
+		return (FLightTargetPDF)0;
+	}
+
+	float4 LightAttenuation = 1.0f;
+	if (Material.bHasTransmission)
+	{
+		LightAttenuation.w = UnpackUseTransmission(ForwardLightData) ? AssumedTransmissionThickness : 0.0f;
+	}
+
+	return GetLocalLightTargetPDF(ForwardLightIndex, LightData, LightAttenuation, TranslatedWorldPosition, Material, ScreenCoord);
+#endif
+}
+
+FLightTargetPDF GetDirectionalLightTargetPDF(
+	uint2 ScreenCoord,
+	float3 VolumeCoord,
+	float3 TranslatedWorldPosition,
+	const FMegaLightsMaterial Material,
+	int ForwardLightIndex,
+	FDeferredLightData LightData,
+	FForwardLightData ForwardLightData,
+	float AssumedTransmissionThickness,
+	inout FShaderPrintContext DebugContext)
+{
+	LightData.bRadialLight = false;
+	LightData.bInverseSquared = false;
+
+	return GetLightTargetPDF(ScreenCoord, VolumeCoord, TranslatedWorldPosition, Material, ForwardLightIndex, LightData, ForwardLightData, AssumedTransmissionThickness, DebugContext);
+}
+
+float GetMaxSceneDepthForInvalidPixels()
+{
+	FLightGridData LightGridData = GetLightGridData();
+	float LightGridMaxDepth = ComputeDepthFromZSlice(LightGridData.LightGridZParams, LightGridData.CulledGridSize.z);
+
+#if TRANSLUCENCY_LIGHTING_VOLUME
+	float3 VolumeMin = View.TranslucencyLightingVolumeMin[TranslucencyVolumeCascadeIndex].xyz;
+	float3 VolumeSize = rcp(View.TranslucencyLightingVolumeInvSize[TranslucencyVolumeCascadeIndex].xyz);
+	float MaxCornerSceneDepth = 0.0f;
+
+	for (uint Corner = 0; Corner < 8; ++Corner)
+	{
+		float3 Offset = float3((Corner & 0x1) != 0 ? 1.0 : 0.0, (Corner & 0x2) != 0 ? 1.0 : 0.0, Offset.z = (Corner & 0x4) != 0 ? 1.0 : 0.0);
+		float3 Pos = VolumeMin + Offset * VolumeSize;
+		float4 ClipPos = mul(float4(Pos, 1), UnjitteredTranslatedWorldToClip);
+
+		MaxCornerSceneDepth = max(MaxCornerSceneDepth, ClipPos.w);
+	}
+
+	float VolumeMaxDepth = MaxCornerSceneDepth;
+#else
+	float VolumeMaxDepth = ComputeMegaLightsDepthFromZSlice(VolumeViewSize.z);
+#endif
+	return min(LightGridMaxDepth, VolumeMaxDepth);
+}
+
+// Total: 1 dword
+// 0: bit0 - bIsWritten, bit1 - bInnerTLVSelected
+RWByteAddressBuffer RWGeneralPurposeFeedback;
+
+void WriteIsInnerTLVSelectedFeedback(bool bInnerTLVSelected)
+{
+	uint Bits = (bInnerTLVSelected ? 0x2 : 0) | 0x1;
+	RWGeneralPurposeFeedback.Store(0, Bits);
+}
+
+// Total: 1 dword
+// 0: Latched scene depth. Zero means nothing is latched
+RWByteAddressBuffer RWGeneralPurposeState;
+
+void WriteLatchedSceneDepth(float SceneDepth)
+{
+	RWGeneralPurposeState.Store(0, asuint(SceneDepth));
+}
+
+float ReadLatchedSceneDepth()
+{
+	return asfloat(RWGeneralPurposeState.Load(0));
+}
+
+// SortedLightInfo: 2 dwords + 2 dwords/light
+RWStructuredBuffer<uint> RWSortedLightInfo;
+StructuredBuffer<uint> SortedLightInfo;
+
+void StoreSortedLightInfoGlobalData(uint NumLights, float LightTargetPDFSum)
+{
+	RWSortedLightInfo[0] = NumLights;
+	RWSortedLightInfo[1] = asuint(LightTargetPDFSum);
+}
+
+void LoadSortedLightInfoGlobalData(out uint OutNumLights, out float OutLightTargetPDFSum)
+{
+	OutNumLights = SortedLightInfo[0];
+	OutLightTargetPDFSum = asfloat(SortedLightInfo[1]);
+}
+
+void StoreSortedLightInfo(uint SortedIndex, uint ForwardLightIndex, float LightVisibility, float LightTargetPDF)
+{
+	uint Packed0 = (uint(LightVisibility * 255.0f + 0.5f) << 16u) | ForwardLightIndex;
+	uint Packed1 = asuint(LightTargetPDF);
+
+	RWSortedLightInfo[2 + SortedIndex * 2 + 0] = Packed0;
+	RWSortedLightInfo[2 + SortedIndex * 2 + 1] = Packed1;
+}
+
+void LoadSortedLightInfo(uint SortedIndex, out uint OutForwardLightIndex, out float OutLightVisibility, out float OutLightTargetPDF)
+{
+	uint Packed0 = SortedLightInfo[2 + SortedIndex * 2 + 0];
+	uint Packed1 = SortedLightInfo[2 + SortedIndex * 2 + 1];
+
+	OutForwardLightIndex = BitFieldExtractU32(Packed0, 16, 0);
+	OutLightVisibility = BitFieldExtractU32(Packed0, 8, 16) / 255.0f;
+	OutLightTargetPDF = asfloat(Packed1);
+}
+
+#ifdef MegaLightsSortLightsForDisplayCS
+
+#pragma warning(disable:7203) // Allow register spilling
+
+Texture2D<uint> PackedPixelDataTexture;
+Texture2D<uint2> EncodedHistoryScreenCoordTexture;
+StructuredBuffer<uint> VisibleLightHashHistory;
+
+float4 HistorySubPixelGridSizeAndInvSize;
+uint2 HistoryScreenCoordDecodeShift;
+uint2 HistoryVisibleLightHashViewMinInTiles;
+uint2 HistoryVisibleLightHashViewSizeInTiles;
+float TransmissionSampleWeight;
+
+uint3 VolumeVisibleLightHashTileSize;
+uint3 HistoryVolumeVisibleLightHashViewSizeInTiles;
+
+groupshared uint SharedLightSortKeys[THREADGROUP_SIZE * 2];
+groupshared uint SharedLightIndices[THREADGROUP_SIZE * 2];
+
+void SortLights(uint GroupThreadIndex, uint NumLights)
+{
+	GroupMemoryBarrierWithGroupSync();
+
+	// Some compilers have a hard time figuring out that NumLights is a group uniform
+	NumLights = THREADGROUP_SIZE * 2;
+
+	uint NumLightsPow2 = NumLights > 1 ? (1u << (firstbithigh(NumLights - 1) + 1)) : NumLights;
+	uint NumLevels = NumLights > 0 ? countbits(NumLightsPow2 - 1) : 0;
+	uint NumActiveThreads = NumLightsPow2 / 2;
+
+	for (uint LevelIndex = 0; LevelIndex < NumLevels; ++LevelIndex)
+	{
+		for (uint StepIndex = 0; StepIndex <= LevelIndex; ++StepIndex)
+		{
+			if (GroupThreadIndex < NumActiveThreads)
+			{
+				uint DistanceToOther = 1u << (LevelIndex - StepIndex);
+				uint MyIndex = GroupThreadIndex / DistanceToOther * (DistanceToOther * 2) + GroupThreadIndex % DistanceToOther;
+				uint OtherIndex = MyIndex + DistanceToOther;
+				bool bAscending = (MyIndex & (1u << (LevelIndex + 1))) != 0;
+
+				uint MySortKey = SharedLightSortKeys[MyIndex];
+				uint MyLightIndex = SharedLightIndices[MyIndex];
+				uint OtherSortKey = SharedLightSortKeys[OtherIndex];
+				uint OtherLightIndex = SharedLightIndices[OtherIndex];
+
+				bool bSwap;
+				if (bAscending)
+				{
+					bSwap = MySortKey > OtherSortKey || (MySortKey == OtherSortKey && MyLightIndex < OtherLightIndex);
+				}
+				else
+				{
+					bSwap = MySortKey < OtherSortKey || (MySortKey == OtherSortKey && MyLightIndex > OtherLightIndex);
+				}
+
+				if (bSwap)
+				{
+					SharedLightSortKeys[MyIndex] = OtherSortKey;
+					SharedLightIndices[MyIndex] = OtherLightIndex;
+					SharedLightSortKeys[OtherIndex] = MySortKey;
+					SharedLightIndices[OtherIndex] = MyLightIndex;
+				}
+			}
+
+			GroupMemoryBarrierWithGroupSync();
+		}
+	}
+}
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void MegaLightsSortLightsForDisplayCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	FShaderPrintContext Context = InitShaderPrintContext(false, float2(0.6, 0.05));
+
+	uint2 ScreenCoord = WaveReadLaneFirst(GetDebugScreenCoord());
+	float2 ScreenUV = (ScreenCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+
+	FMegaLightsMaterial Material = (FMegaLightsMaterial)0;
+	if (all(ScreenCoord - View.ViewRectMinAndSize.xy < View.ViewRectMinAndSize.zw))
+	{
+		Material = LoadMaterial(ScreenUV, ScreenCoord);
+
+	#if IS_VISUALIZING_VOLUME
+		if (!Material.IsValid())
+		{
+			Material.Depth = min(Material.Depth, GetMaxSceneDepthForInvalidPixels());
+			Material.bIsValid = true;
+		}
+	#endif
+	}
+
+	#if IS_VISUALIZING_VOLUME
+	{
+		float2 TooltipStartViewUV = float2(1.0, 0.0) + Context.Config.FontSpacing * float2(-52.0, 2.0);
+		float2 SliderStartViewUV = float2(1.0, 0.0) + Context.Config.FontSpacing * float2(-26.0, 3.0);
+		float2 LatchDepthViewUV = float2(1.0, 0.0) + Context.Config.FontSpacing * float2(-16.0, 4.0);
+		bool bDoPrint = GroupThreadId.x == 0;
+
+		FShaderPrintContext WidgetContext = InitShaderPrintContext(bDoPrint, TooltipStartViewUV);
+		Print(WidgetContext, TEXT("Tip: \"r.FreezeMouseCursor 1\" before adjusting depth"));
+		
+		WidgetContext = InitShaderPrintContext(bDoPrint, LatchDepthViewUV);
+		bool bLatchDepth = AddCheckbox(WidgetContext, LATCH_DEPTH_CHKBOX_NAME, false /*bDefault*/, GetDefaultFontColor());
+
+		if (bLatchDepth)
+		{
+			float LatchedDepth = ReadLatchedSceneDepth();
+			if (LatchedDepth > 0.0f)
+			{
+				Material.Depth = LatchedDepth;
+			}
+			else if (GroupThreadId.x == 0)
+			{
+				WriteLatchedSceneDepth(Material.Depth);
+			}
+		}
+		else if (GroupThreadId.x == 0)
+		{
+			WriteLatchedSceneDepth(0.0f);
+		}
+
+		WidgetContext = InitShaderPrintContext(bDoPrint, SliderStartViewUV);
+		float CursorDepthScale = AddSlider(WidgetContext, DEPTH_SCALE_SLIDER_NAME, 1.0f /*bDefault*/, GetDefaultFontColor());
+
+		Material.Depth = lerp(GMinCursorDepth, Material.Depth, CursorDepthScale);
+
+		Print(WidgetContext, Material.Depth, GetDefaultFontColor(), 8 /*MaxDigit*/, 2 /*MaxDecimal*/);
+	}
+	#endif
+
+	float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, Material.Depth);
+	float3 VolumeCoord = 0.0f;
+	uint NumLights = 0;
+	float LightTargetPDFSum = 0.0f;
+
+	if (Material.IsValid())
+	{
+	#if IS_VISUALIZING_VOLUME
+		VolumeCoord = ComputeTranslatedWorldPointCellCoord(TranslatedWorldPosition);
+	#endif
+
+		uint CellIndex = ComputeLightGridCellIndex(ScreenCoord - View.ViewRectMinAndSize.xy, Material.Depth, 0 /*EyeIndex*/);
+		FCulledLightsGridHeader CellHeader = GetCulledLightsGridHeader(CellIndex);
+
+		uint NumDirectionalLights = ForwardLightStruct.NumDirectionalLights >= ForwardLightStruct.DirectionalMegaLightsSupportedStartIndex ?
+			ForwardLightStruct.NumDirectionalLights - ForwardLightStruct.DirectionalMegaLightsSupportedStartIndex : 0;
+		uint NumLocalLightsInCell = min(min(CellHeader.NumMegaLights, GetMaxLightsPerCell()), THREADGROUP_SIZE * 2 - NumDirectionalLights);
+		uint CellLightIndex = GroupThreadId.x;
+
+		NumLights = NumDirectionalLights + NumLocalLightsInCell;
+
+		if (CellLightIndex < NumDirectionalLights)
+		{
+			uint ForwardLightIndex = ForwardLightStruct.DirectionalLightIndices[ForwardLightStruct.DirectionalMegaLightsSupportedStartIndex + CellLightIndex];
+			FForwardLightData ForwardLightData = GetForwardLightData(ForwardLightIndex, 0 /*EyeIndex*/);
+			FDeferredLightData LightData = ConvertToDeferredLight(ForwardLightData);
+			
+			FLightTargetPDF LightTargetPDF = GetDirectionalLightTargetPDF(
+				ScreenCoord,
+				VolumeCoord,
+				TranslatedWorldPosition,
+				Material,
+				ForwardLightIndex,
+				LightData,
+				ForwardLightData,
+				TransmissionSampleWeight,
+				Context);
+
+			LightTargetPDFSum += LightTargetPDF.Weight;
+			SharedLightSortKeys[CellLightIndex] = asuint(LightTargetPDF.Weight);
+			SharedLightIndices[CellLightIndex] = ForwardLightIndex;
+		}
+
+		while (CellLightIndex < NumLocalLightsInCell)
+		{
+			uint LocalLightIndex = GetCulledLightDataGrid(CellHeader.MegaLightsDataStartIndex + CellLightIndex);
+			uint LightSortKey = 0;
+			uint LightIndex = 0xFFFFFFFF;
+
+			if (LocalLightIndex < MAX_LOCAL_LIGHT_INDEX)
+			{
+				FLocalLightData LocalLightData = GetLocalLightData(LocalLightIndex, 0 /*EyeIndex*/);
+				FDeferredLightData LightData = ConvertToDeferredLight(LocalLightData);
+				
+				FLightTargetPDF LightTargetPDF = GetLightTargetPDF(
+					ScreenCoord,
+					VolumeCoord,
+					TranslatedWorldPosition,
+					Material,
+					LocalLightIndex,
+					LightData,
+					LocalLightData.Internal,
+					TransmissionSampleWeight,
+					Context);
+
+				LightTargetPDFSum += LightTargetPDF.Weight;
+				LightSortKey = asuint(LightTargetPDF.Weight);
+				LightIndex = LocalLightIndex;
+			}
+
+			SharedLightSortKeys[NumDirectionalLights + CellLightIndex] = LightSortKey;
+			SharedLightIndices[NumDirectionalLights + CellLightIndex] = LightIndex;
+
+			CellLightIndex += THREADGROUP_SIZE;
+		}
+	}
+
+	uint SharedIndex = NumLights + GroupThreadId.x;
+	while (SharedIndex < THREADGROUP_SIZE * 2)
+	{
+		SharedLightSortKeys[SharedIndex] = 0;
+		SharedLightIndices[SharedIndex] = 0xFFFFFFFF;
+		SharedIndex += THREADGROUP_SIZE;
+	}
+
+	SortLights(GroupThreadId.x, NumLights);
+
+	uint VisibleLightHash00[VISIBLE_LIGHT_HASH_SIZE];
+	uint VisibleLightHash10[VISIBLE_LIGHT_HASH_SIZE];
+	uint VisibleLightHash01[VISIBLE_LIGHT_HASH_SIZE];
+	uint VisibleLightHash11[VISIBLE_LIGHT_HASH_SIZE];
+	float4 VisSampleWeights = float4(1.0, 0.0, 0.0, 0.0);
+
+#if HAS_LIGHT_VISIBILITY_HISTORY
+	if (Material.IsValid())
+	{
+	#if IS_VISUALIZING_VOLUME
+		uint3 PrevVolumeCoord = uint3(VolumeCoord);
+
+		#if !TRANSLUCENCY_LIGHTING_VOLUME
+		{
+			float4 NDCPosition = mul(float4(TranslatedWorldPosition, 1), UnjitteredPrevTranslatedWorldToClip);
+			NDCPosition.xy /= NDCPosition.w;
+
+			float3 HistoryUV = float3(NDCPosition.xy * float2(.5f, -.5f) + .5f, ComputeMegaLightsNormalizedZSliceFromDepth(NDCPosition.w));
+			PrevVolumeCoord = floor(saturate(HistoryUV) * VolumeViewSize);
+		}
+		#endif
+
+		uint3 PrevVisibilityTileCoord = clamp(PrevVolumeCoord / VolumeVisibleLightHashTileSize, 0u, HistoryVolumeVisibleLightHashViewSizeInTiles - 1);
+		uint BufferBase00 = VISIBLE_LIGHT_HASH_SIZE * ((PrevVisibilityTileCoord.z * HistoryVolumeVisibleLightHashViewSizeInTiles.y + PrevVisibilityTileCoord.y) * HistoryVolumeVisibleLightHashViewSizeInTiles.x + PrevVisibilityTileCoord.x);
+		uint BufferBase10 = BufferBase00;
+		uint BufferBase01 = BufferBase00;
+		uint BufferBase11 = BufferBase00;
+
+		VisSampleWeights = float4(1.0, 0.0, 0.0, 0.0);
+	#else
+		FMegaLightsPackedPixelData PackedPixelData = (FMegaLightsPackedPixelData)PackedPixelDataTexture[ScreenCoord];
+		uint2 EncodedHistoryScreenCoord = EncodedHistoryScreenCoordTexture[ScreenCoord];
+
+		bool bHasValidHistory = PackedPixelData.AnyHistoryValid();
+
+		uint2 VisTileCoord00;
+		float2 BilinearDistance;
+		{
+			float4 Decoded = DecodeHistoryScreenCoord(EncodedHistoryScreenCoord, HistoryScreenCoordDecodeShift, HistorySubPixelGridSizeAndInvSize.zw);
+			float2 HistoryScreenCoord = Decoded.xy + Decoded.zw + 0.5f;
+			VisTileCoord00 = floor(HistoryScreenCoord / VISIBLE_LIGHT_HASH_TILE_SIZE - 0.5f);
+			BilinearDistance = frac(HistoryScreenCoord / VISIBLE_LIGHT_HASH_TILE_SIZE - 0.5f);
+		}
+
+		VisSampleWeights.x = (1.0f - BilinearDistance.y) * (1.0f - BilinearDistance.x);
+		VisSampleWeights.y = (1.0f - BilinearDistance.y) * BilinearDistance.x;
+		VisSampleWeights.z = BilinearDistance.y * (1.0f - BilinearDistance.x);
+		VisSampleWeights.w = BilinearDistance.y * BilinearDistance.x;
+
+		const uint2 CoordMin = HistoryVisibleLightHashViewMinInTiles;
+		const uint2 CoordMax = HistoryVisibleLightHashViewMinInTiles + HistoryVisibleLightHashViewSizeInTiles - 1;
+		uint2 ClampedCoord00 = clamp(VisTileCoord00 + uint2(0, 0), CoordMin, CoordMax);
+		uint2 ClampedCoord10 = clamp(VisTileCoord00 + uint2(1, 0), CoordMin, CoordMax);
+		uint2 ClampedCoord01 = clamp(VisTileCoord00 + uint2(0, 1), CoordMin, CoordMax);
+		uint2 ClampedCoord11 = clamp(VisTileCoord00 + uint2(1, 1), CoordMin, CoordMax);
+
+		uint BufferBase00 = VISIBLE_LIGHT_HASH_SIZE * (ClampedCoord00.y * HistoryVisibleLightHashViewSizeInTiles.x + ClampedCoord00.x);
+		uint BufferBase10 = VISIBLE_LIGHT_HASH_SIZE * (ClampedCoord10.y * HistoryVisibleLightHashViewSizeInTiles.x + ClampedCoord10.x);
+		uint BufferBase01 = VISIBLE_LIGHT_HASH_SIZE * (ClampedCoord01.y * HistoryVisibleLightHashViewSizeInTiles.x + ClampedCoord01.x);
+		uint BufferBase11 = VISIBLE_LIGHT_HASH_SIZE * (ClampedCoord11.y * HistoryVisibleLightHashViewSizeInTiles.x + ClampedCoord11.x);
+	#endif
+
+		for (uint IndexInHash = 0; IndexInHash < VISIBLE_LIGHT_HASH_SIZE; ++IndexInHash)
+		{
+			VisibleLightHash00[IndexInHash] = VisibleLightHashHistory[BufferBase00 + IndexInHash];
+			VisibleLightHash10[IndexInHash] = VisibleLightHashHistory[BufferBase10 + IndexInHash];
+			VisibleLightHash01[IndexInHash] = VisibleLightHashHistory[BufferBase01 + IndexInHash];
+			VisibleLightHash11[IndexInHash] = VisibleLightHashHistory[BufferBase11 + IndexInHash];
+		}
+	}
+	else
+#endif
+	{
+		for (uint IndexInHash = 0; IndexInHash < VISIBLE_LIGHT_HASH_SIZE; ++IndexInHash)
+		{
+			VisibleLightHash00[IndexInHash] = 0xFFFFFFFF;
+			VisibleLightHash10[IndexInHash] = 0xFFFFFFFF;
+			VisibleLightHash01[IndexInHash] = 0xFFFFFFFF;
+			VisibleLightHash11[IndexInHash] = 0xFFFFFFFF;
+		}
+	}
+
+	uint CopyIndex = GroupThreadId.x;
+	while (CopyIndex < NumLights)
+	{
+		float LightTargetPDF = asfloat(SharedLightSortKeys[CopyIndex]);
+		uint ForwardLightIndex = min(SharedLightIndices[CopyIndex], MAX_LOCAL_LIGHT_INDEX);
+		int PrevForwardLightIndex = -1;
+
+		if (ForwardLightIndex < MAX_LOCAL_LIGHT_INDEX)
+		{
+			FForwardLightData ForwardLightData = GetForwardLightData(ForwardLightIndex, 0 /*EyeIndex*/);
+			PrevForwardLightIndex = ForwardLightData.PrevLocalLightIndex;
+		}
+
+		float LightVisibility = 1.0f;
+		if (PrevForwardLightIndex >= 0)
+		{
+			LightVisibility = 0.0f;
+			LightVisibility += (IsLightVisible(VisibleLightHash00, PrevForwardLightIndex) ? 1.0f : 0.0f) * VisSampleWeights.x;
+			LightVisibility += (IsLightVisible(VisibleLightHash10, PrevForwardLightIndex) ? 1.0f : 0.0f) * VisSampleWeights.y;
+			LightVisibility += (IsLightVisible(VisibleLightHash01, PrevForwardLightIndex) ? 1.0f : 0.0f) * VisSampleWeights.z;
+			LightVisibility += (IsLightVisible(VisibleLightHash11, PrevForwardLightIndex) ? 1.0f : 0.0f) * VisSampleWeights.w;
+		}
+
+		StoreSortedLightInfo(CopyIndex, ForwardLightIndex, LightVisibility, LightTargetPDF);
+		
+		CopyIndex += THREADGROUP_SIZE;
+	}
+
+	LightTargetPDFSum = WaveActiveSum(LightTargetPDFSum);
+	{
+		uint NumWaves = THREADGROUP_SIZE / WaveGetLaneCount();
+		uint WaveIndex = GroupThreadId.x / WaveGetLaneCount();
+
+		GroupMemoryBarrierWithGroupSync();
+
+		if (WaveIsFirstLane())
+		{
+			SharedLightSortKeys[WaveIndex] = asuint(LightTargetPDFSum);
+		}
+
+		GroupMemoryBarrierWithGroupSync();
+
+		for (uint LevelIndex = 0; (1u << LevelIndex) < NumWaves; ++LevelIndex)
+		{
+			uint Stride = 1u << (LevelIndex + 1);
+			uint MyIndex = GroupThreadId.x * Stride;
+			uint OtherIndex = MyIndex + Stride / 2;
+
+			if (MyIndex < NumWaves)
+			{
+				float Temp = asfloat(SharedLightSortKeys[MyIndex]) + asfloat(SharedLightSortKeys[OtherIndex]);
+				SharedLightSortKeys[MyIndex] = asuint(Temp);
+			}
+
+			if (NumWaves / Stride > WaveGetLaneCount())
+			{
+				GroupMemoryBarrierWithGroupSync();
+			}
+		}
+
+		GroupMemoryBarrierWithGroupSync();
+
+		LightTargetPDFSum = asfloat(SharedLightSortKeys[0]);
+	}
+
+	if (GroupThreadId.x == 0)
+	{
+		StoreSortedLightInfoGlobalData(NumLights, LightTargetPDFSum);
+	}
+}
+
+#endif
+
+RWByteAddressBuffer RWFrozenLightData;
+ByteAddressBuffer FrozenLightData;
+
+void StoreSingleFrozenData(uint GroupThreadIndex, inout uint Ptr, uint Value)
+{
+	if (GroupThreadIndex == 0)
+	{
+		RWFrozenLightData.Store(Ptr, Value);
+	}
+	Ptr += 4;
+}
+
+void StoreSingleFrozenData(uint GroupThreadIndex, inout uint Ptr, uint3 Value)
+{
+	if (GroupThreadIndex == 0)
+	{
+		RWFrozenLightData.Store3(Ptr, Value);
+	}
+	Ptr += 12;
+}
+
+uint LoadFrozenData(inout uint Ptr)
+{
+	uint Data = FrozenLightData.Load(Ptr);
+	Ptr += 4;
+	return Data;
+}
+
+uint3 LoadFrozenData3(inout uint Ptr)
+{
+	uint3 Data = FrozenLightData.Load3(Ptr);
+	Ptr += 12;
+	return Data;
+}
+
+struct FGlobalFrozenData
+{
+	uint NumLights;
+	float LightTargetPDFSum;
+	float3 TranslatedWorldPosition;
+	float3 FrozenTranslatedWorldDelta;
+	float3 VoxelVerts[8];
+	float3 VolumeVerts[8];
+};
+
+FGlobalFrozenData InitGlobalFrozenData()
+{
+	FGlobalFrozenData Out = (FGlobalFrozenData)0;
+	return Out;
+}
+
+// Serialized GloablFrozenData: 59 dwords
+void StoreGlobalFrozenData(
+	uint GroupThreadIndex,
+	inout uint Ptr,
+	FGlobalFrozenData In)
+{
+	StoreSingleFrozenData(GroupThreadIndex, Ptr, In.NumLights);
+	StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(In.LightTargetPDFSum));
+	StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(In.TranslatedWorldPosition));
+	StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(View.PreViewTranslationLow));
+	StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(View.PreViewTranslationHigh));
+	for (uint Corner = 0; Corner < 8; ++Corner)
+	{
+		StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(In.VoxelVerts[Corner]));
+	}
+	for (uint Corner = 0; Corner < 8; ++Corner)
+	{
+		StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(In.VolumeVerts[Corner]));
+	}
+}
+
+FGlobalFrozenData LoadGlobalFrozenData(inout uint Ptr)
+{
+	FGlobalFrozenData Out;
+	Out.NumLights = LoadFrozenData(Ptr);
+	Out.LightTargetPDFSum = asfloat(LoadFrozenData(Ptr));
+	Out.TranslatedWorldPosition = asfloat(LoadFrozenData3(Ptr));
+	float3 FrozenPreViewTranslationLow = asfloat(LoadFrozenData3(Ptr));
+	float3 FrozenPreViewTranslationHigh = asfloat(LoadFrozenData3(Ptr));
+
+	FDFVector3 FrozenPreVeiwTranslation = MakeDFVector3(FrozenPreViewTranslationHigh, FrozenPreViewTranslationLow);
+	FDFVector3 PreViewTranslation = MakeDFVector3(View.PreViewTranslationHigh, View.PreViewTranslationLow);
+	Out.FrozenTranslatedWorldDelta = DFFastSubtractDemote(PreViewTranslation, FrozenPreVeiwTranslation);
+	Out.TranslatedWorldPosition += Out.FrozenTranslatedWorldDelta;
+
+	for (uint Corner = 0; Corner < 8; ++Corner)
+	{
+		Out.VoxelVerts[Corner] = asfloat(LoadFrozenData3(Ptr));
+		Out.VoxelVerts[Corner] += Out.FrozenTranslatedWorldDelta;
+	}
+	for (uint Corner = 0; Corner < 8; ++Corner)
+	{
+		Out.VolumeVerts[Corner] = asfloat(LoadFrozenData3(Ptr));
+		Out.VolumeVerts[Corner] += Out.FrozenTranslatedWorldDelta;
+	}
+
+	return Out;
+}
+
+struct FLightFrozenDataExceptName
+{
+	float LightVisibility;
+	float LightTargetPDF;
+	float3 LightTWPositionOrDirection;
+	float3 LightColor;
+	uint LightType;
+};
+
+// Serialized LightFrozenData: 8 dwords + ForwardLightStruct.LightNameDwords
+uint GetLightFrozenDataSizeInBytes()
+{
+	return (8 + ForwardLightStruct.LightNameDwords) * 4;
+}
+
+FLightFrozenDataExceptName InitLightFrozenDataExceptName()
+{
+	FLightFrozenDataExceptName Out = (FLightFrozenDataExceptName)0;
+	return Out;
+}
+
+void StoreLightFrozenDataExceptName(
+	uint GroupThreadIndex,
+	inout uint Ptr,
+	FLightFrozenDataExceptName In,
+	bool bValid)
+{
+	if (bValid)
+	{
+		uint Packed0 = (In.LightType << 8) | uint(In.LightVisibility * 255.0f);
+
+		StoreSingleFrozenData(GroupThreadIndex, Ptr, Packed0);
+		StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(In.LightTargetPDF));
+		StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(In.LightTWPositionOrDirection));
+		StoreSingleFrozenData(GroupThreadIndex, Ptr, asuint(In.LightColor));
+	}
+	else
+	{
+		StoreSingleFrozenData(GroupThreadIndex, Ptr, 0x80000000);
+	}
+}
+
+bool LoadLightFrozenDataExceptName(
+	inout uint Ptr,
+	float3 FrozenTranslatedWorldDelta,
+	out FLightFrozenDataExceptName Out)
+{
+	uint Packed0 = LoadFrozenData(Ptr);
+	Out.LightTargetPDF = asfloat(LoadFrozenData(Ptr));
+	Out.LightTWPositionOrDirection = asfloat(LoadFrozenData3(Ptr));
+	Out.LightColor = asfloat(LoadFrozenData3(Ptr));
+
+	bool bValid = (Packed0 & 0x80000000) == 0;
+	Out.LightVisibility = BitFieldExtractU32(Packed0, 8, 0) / 255.0f;
+	Out.LightType = BitFieldExtractU32(Packed0, 2, 8);
+	if (Out.LightType != LIGHT_TYPE_DIRECTIONAL)
+	{
+		Out.LightTWPositionOrDirection += FrozenTranslatedWorldDelta;
+	}
+
+	return bValid;
+}
+
+static const float2 GLightListPrintStartPos = float2(0.05, 0.05);
+
+uint MaxNumLightsToDisplay;
+
+void PrintHeader(inout FShaderPrintContext Context, uint GroupThreadIndex, uint2 ScreenCoord, int3 VolumeCoord, uint NumLights, bool bIsVisualizingVolume, bool bUseFrozenLightData)
+{
+	if (!Context.bIsActive)
+	{
+		Context.Pos.x = Context.StartPos.x;
+		Context.Pos.y += Context.Config.FontSpacing.y * 3.0f;
+		return;
+	}
+
+	if (GroupThreadIndex == 0)
+	{
+		if (bUseFrozenLightData)
+		{
+			Print(Context, TEXT("Displaying frozen data..."));
+		}
+		else if (bIsVisualizingVolume)
+		{
+			Print(Context, TEXT("VolumeCoord: "));
+			Print(Context, VolumeCoord, GetDefaultFontColor(), 5 /*MaxDigit*/);	
+		}
+		else
+		{
+			Print(Context, TEXT("ScreenCoord: "));
+			Print(Context, ScreenCoord, GetDefaultFontColor(), 6 /*MaxDigit*/);
+		}
+		Newline(Context);
+		Print(Context, TEXT("NumLights: "));
+		Print(Context, NumLights);
+		Newline(Context);
+		Print(Context, TEXT("Ratio | Vis | Type | Name"), FontSilver);
+		Newline(Context);
+	}
+	else
+	{
+		Newline(Context);
+		Newline(Context);
+		Newline(Context);
+	}
+}
+
+uint GetLightType(FDeferredLightData LightData)
+{
+	uint LightType = LIGHT_TYPE_DIRECTIONAL;
+	if (LightData.bRadialLight)
+	{
+		LightType = LIGHT_TYPE_POINT;
+		if (LightData.bSpotLight)
+		{
+			LightType = LIGHT_TYPE_SPOT;
+		}
+		else if (LightData.bRectLight)
+		{
+			LightType = LIGHT_TYPE_RECT;
+		}
+	}
+	return LightType;
+}
+
+FShaderPrintText GetLightTypeText(uint LightType)
+{
+	if (LightType == LIGHT_TYPE_DIRECTIONAL)
+	{
+		return TEXT("Dir    ");
+	}
+	else if (LightType == LIGHT_TYPE_POINT)
+	{
+		return TEXT("Point  ");
+	}
+	else if (LightType == LIGHT_TYPE_SPOT)
+	{
+		return TEXT("Spot   ");
+	}
+	else if (LightType == LIGHT_TYPE_RECT)
+	{
+		return TEXT("Rect   ");
+	}
+	return TEXT("Error  ");
+}
+
+uint PrintLightInfoExceptName(inout FShaderPrintContext Context, uint GroupThreadIndex, float WeightRatio, float LightVisibility, uint LightType, FFontColor FontColor)
+{
+	const uint WeightRatioSpacing = 8;
+	const uint LightVisibilitySpacing = 6;
+	const uint LightTypeSpacing = 7;
+	const uint BeforeLightNameSpacing = WeightRatioSpacing + LightVisibilitySpacing + LightTypeSpacing;
+
+	if (Context.bIsActive && GroupThreadIndex == 0)
+	{
+		Print(Context, WeightRatio, FontColor, WeightRatioSpacing, 4);
+		Print(Context, LightVisibility, FontColor, LightVisibilitySpacing, 2);
+		Print(Context, GetLightTypeText(LightType), FontColor);
+	}
+	else
+	{
+		Context.Pos.x += Context.Config.FontSpacing.x * BeforeLightNameSpacing;
+	}
+
+	return BeforeLightNameSpacing;
+}
+
+int bUseFrozenLightData;
+
+#ifdef MegaLightsIntersectDisplayedLightsCS
+
+RWStructuredBuffer<uint> RWSelectedLightIndex;
+
+groupshared uint2 SharedScratchMemory[THREADGROUP_SIZE];
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void MegaLightsIntersectDisplayedLightsCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	FShaderPrintContext Context = InitShaderPrintContext(false, GLightListPrintStartPos);
+
+	// Use ShaderPrint cursor pos instead of GetDebugScreenCoord() so that light selection continues to work when View.CursorPosition is fixed
+	uint2 ScreenCoord = all(DebugCursorPosition >= 0) ? DebugCursorPosition : GetCursorPos(Context) * View.ViewResolutionFraction;
+	
+	float2 ScreenUV = (ScreenCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+	float2 ViewportUV = (ScreenCoord - View.ViewRectMinAndSize.xy + 0.5f) * View.ViewSizeAndInvSize.zw;
+
+	uint CloestHitLightIndex = 0xFFFFFFFF;
+	float ClosestHitT = FLOAT_MAX;
+
+	if (all(ScreenCoord - View.ViewRectMinAndSize.xy < View.ViewRectMinAndSize.zw))
+	{
+		float3 CameraTWPosition = GetTranslatedWorldCameraPosFromView(ScreenCoord + 0.5f);
+		float3 CameraRayDirection;
+		{
+			float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, 1.0f);
+			CameraRayDirection = GetCameraVectorFromTranslatedWorldPosition(TranslatedWorldPosition);
+		}
+
+		FGlobalFrozenData GlobalFrozenData = InitGlobalFrozenData();
+		uint GlobalFrozenDataBytes = 0;
+
+		if (bUseFrozenLightData != 0)
+		{
+			GlobalFrozenData = LoadGlobalFrozenData(GlobalFrozenDataBytes);
+		}
+		else
+		{
+			LoadSortedLightInfoGlobalData(GlobalFrozenData.NumLights, GlobalFrozenData.LightTargetPDFSum);
+		}
+
+		PrintHeader(Context, 0, 0, 0, 0, false, bUseFrozenLightData != 0);
+
+		const uint LightNameBytes = ForwardLightStruct.LightNameDwords * 4;
+		uint NumLightsToDisplay = min(GlobalFrozenData.NumLights, MaxNumLightsToDisplay);
+		uint LightIndex = GroupThreadId.x;
+
+		Context.Pos.y += LightIndex * Context.Config.FontSpacing.y;
+
+		while (WaveActiveAnyTrue(LightIndex < NumLightsToDisplay))
+		{
+			bool bValid = false;
+			if (LightIndex < NumLightsToDisplay)
+			{
+				uint ReadPtr = GlobalFrozenDataBytes + LightIndex * GetLightFrozenDataSizeInBytes();
+
+				FLightFrozenDataExceptName LightFrozenData = InitLightFrozenDataExceptName();
+				uint ForwardLightIndex;
+
+				if (bUseFrozenLightData != 0)
+				{
+					bValid = LoadLightFrozenDataExceptName(ReadPtr, GlobalFrozenData.FrozenTranslatedWorldDelta, LightFrozenData);
+					ForwardLightIndex = bValid ? LightIndex : MAX_LOCAL_LIGHT_INDEX;
+				}
+				else
+				{
+					LoadSortedLightInfo(LightIndex, ForwardLightIndex, LightFrozenData.LightVisibility, LightFrozenData.LightTargetPDF);
+					bValid = ForwardLightIndex < MAX_LOCAL_LIGHT_INDEX;
+
+					if (bValid)
+					{
+						FForwardLightData ForwardLightData = GetForwardLightData(ForwardLightIndex, 0 /*EyeIndex*/);
+						FDeferredLightData LightData = ConvertToDeferredLight(ForwardLightData);
+
+						LightFrozenData.LightType = GetLightType(LightData);
+						LightFrozenData.LightTWPositionOrDirection = LightFrozenData.LightType == LIGHT_TYPE_DIRECTIONAL ? LightData.Direction : LightData.TranslatedWorldPosition;
+						LightFrozenData.LightColor = LightData.Color;
+					}
+				}
+
+				if (bValid)
+				{
+					Context.Pos.x = Context.StartPos.x;
+					PrintLightInfoExceptName(Context, 0, 0.0f, 0.0f, 0, GetDefaultFontColor());
+				
+					const uint LightNameBegin = bUseFrozenLightData != 0 ? ReadPtr : ForwardLightIndex * LightNameBytes;
+					const uint LightNameEnd = LightNameBegin + ForwardLightStruct.LightNameDwords * 4;
+					uint NameLength = 0;
+
+					for (uint LightNamePtr = LightNameBegin; LightNamePtr < LightNameEnd; LightNamePtr += 4)
+					{
+						uint LightNameDword;
+						if (bUseFrozenLightData != 0)
+						{
+							LightNameDword = FrozenLightData.Load(LightNamePtr);
+						}
+						else
+						{
+							LightNameDword = ForwardLightStruct.LightNamesBuffer.Load(LightNamePtr);
+						}
+
+						uint NullCharPos = 0;
+						for (; NullCharPos < 4u; ++NullCharPos)
+						{
+							if ((LightNameDword & (0xFFu << NullCharPos * 8)) == 0)
+							{
+								break;
+							}
+						}
+
+						NameLength += NullCharPos;
+
+						if (NullCharPos < 4u)
+						{
+							break;
+						}
+					}
+
+					Context.Pos.x += NameLength * Context.Config.FontSpacing.x;
+
+					float2 RectMin = float2(Context.StartPos.x, Context.Pos.y) - Context.Config.FontSize;
+					float2 RectMax = float2(Context.Pos.x, Context.Pos.y + Context.Config.FontSpacing.y) - Context.Config.FontSize;
+					if (all(ViewportUV > RectMin) && all(ViewportUV < RectMax))
+					{
+						ClosestHitT = 0.0f;
+						CloestHitLightIndex = LightIndex;
+					}
+
+					if (LightFrozenData.LightType != LIGHT_TYPE_DIRECTIONAL && ClosestHitT > 0.0f)
+					{
+						float4 LightSphere = float4(LightFrozenData.LightTWPositionOrDirection, 10.0f);
+						float2 HitT = RayIntersectSphere(CameraTWPosition, CameraRayDirection, LightSphere);
+
+						if (HitT.x > 0.0f && HitT.y > 0.0f && HitT.x < ClosestHitT)
+						{
+							ClosestHitT = HitT.x;
+							CloestHitLightIndex = LightIndex;
+						}
+					}
+				}
+			}
+
+			uint NumValidLights = WaveActiveCountBits(bValid);
+			if (WaveGetLaneCount() < THREADGROUP_SIZE)
+			{
+				uint NumWaves = THREADGROUP_SIZE / WaveGetLaneCount();
+				uint WaveIndex = GroupThreadId.x / WaveGetLaneCount();
+
+				if (WaveIsFirstLane())
+				{
+					SharedScratchMemory[WaveIndex].x = NumValidLights;
+				}
+
+				GroupMemoryBarrierWithGroupSync();
+
+				if (GroupThreadId.x == 0)
+				{
+					NumValidLights = 0;
+					for (uint Index = 0; Index < NumWaves; ++Index)
+					{
+						NumValidLights += SharedScratchMemory[Index].x;
+					}
+					SharedScratchMemory[0] = NumValidLights;
+				}
+
+				GroupMemoryBarrierWithGroupSync();
+
+				NumValidLights = SharedScratchMemory[0].x;
+			}
+
+			LightIndex += THREADGROUP_SIZE;
+			Context.Pos.y += NumValidLights * Context.Config.FontSpacing.y;
+		}
+	}
+
+	SharedScratchMemory[GroupThreadId.x] = uint2(CloestHitLightIndex, asuint(ClosestHitT));
+
+	GroupMemoryBarrierWithGroupSync();
+
+	for (uint LeveLIndex = 0; (1u << LeveLIndex) < THREADGROUP_SIZE; ++LeveLIndex)
+	{
+		uint Stride = 1u << (LeveLIndex + 1);
+		uint MyIndex = GroupThreadId.x * Stride;
+		uint OtherIndex = MyIndex + Stride / 2;
+
+		if (MyIndex < THREADGROUP_SIZE)
+		{
+			uint2 MyEntry = SharedScratchMemory[MyIndex];
+			uint2 OtherEntry = SharedScratchMemory[OtherIndex];
+
+			if (asfloat(MyEntry.y) > asfloat(OtherEntry.y))
+			{
+				SharedScratchMemory[MyIndex] = OtherEntry;
+			}
+		}
+
+		if (THREADGROUP_SIZE / Stride > WaveGetLaneCount())
+		{
+			GroupMemoryBarrierWithGroupSync();
+		}
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	if (GroupThreadId.x == 0)
+	{
+		RWSelectedLightIndex[0] = SharedScratchMemory[0].x;
+	}
+}
+
+#endif
+
+#ifdef MegaLightsDisplayLightsCS
+
+StructuredBuffer<uint> SelectedLightIndexBuffer;
+
+int bOutputFrozenLightData;
+int bIsVisualizingVolume;
+
+groupshared uint SharedScratchMemory[THREADGROUP_SIZE];
+
+void AddRectLightSymbol(inout FShaderPrintContext Context, float3 LightTranslatedWorldPosition, float2 Extent, float4 Color)
+{
+	float3 OutterPos0 = LightTranslatedWorldPosition + View.ViewRight * Extent.x + View.ViewUp * Extent.y;
+	float3 OutterPos1 = LightTranslatedWorldPosition + View.ViewRight * Extent.x - View.ViewUp * Extent.y;
+	float3 OutterPos2 = LightTranslatedWorldPosition - View.ViewRight * Extent.x - View.ViewUp * Extent.y;
+	float3 OutterPos3 = LightTranslatedWorldPosition - View.ViewRight * Extent.x + View.ViewUp * Extent.y;
+	AddQuadTWS(Context, OutterPos0, OutterPos1, OutterPos2, OutterPos3, Color);
+
+	float2 InnerExtent = Extent * 0.6f;
+	float3 InnerPos0 = LightTranslatedWorldPosition + View.ViewRight * InnerExtent.x + View.ViewUp * InnerExtent.y;
+	float3 InnerPos1 = LightTranslatedWorldPosition + View.ViewRight * InnerExtent.x - View.ViewUp * InnerExtent.y;
+	float3 InnerPos2 = LightTranslatedWorldPosition - View.ViewRight * InnerExtent.x - View.ViewUp * InnerExtent.y;
+	float3 InnerPos3 = LightTranslatedWorldPosition - View.ViewRight * InnerExtent.x + View.ViewUp * InnerExtent.y;
+	AddQuadTWS(Context, InnerPos0, InnerPos1, InnerPos2, InnerPos3, Color);
+
+	AddLineTWS(Context, OutterPos0, InnerPos0, Color);
+	AddLineTWS(Context, OutterPos1, InnerPos1, Color);
+	AddLineTWS(Context, OutterPos2, InnerPos2, Color);
+	AddLineTWS(Context, OutterPos3, InnerPos3, Color);
+}
+
+void AddSpotLightSymbol(inout FShaderPrintContext Context, float3 LightTranslatedWorldPosition, float Radius, float4 Color)
+{
+	float3 Center = LightTranslatedWorldPosition;
+	float3 Up = View.ViewUp * Radius;
+	float3 Right = View.ViewRight * Radius;
+	float3 Top = Center + Up * 1.0f;
+
+	uint SegmentCount = 8;
+	float Angle = 2.0 / 3.0 * PI;
+	float CurAngle = PI + (PI - Angle) * 0.5;
+	float StepAngle = Angle / SegmentCount;
+	
+	float S, C;
+	sincos(CurAngle, S, C);
+	float3 P = Center + Right * C + Up * S;
+	
+	AddLineTWS(Context, P, Top, Color);
+	for (uint Segment = 0; Segment < SegmentCount; ++Segment)
+	{
+		CurAngle += StepAngle;
+		sincos(CurAngle, S, C);
+		float3 PrevP = P;
+		P = Center + Right * C + Up * S;
+
+		AddLineTWS(Context, PrevP, P, Color);
+	}
+	AddLineTWS(Context, P, Top, Color);
+}
+
+void AddCameraFacingStar(inout FShaderPrintContext Context, float3 TranslatedWorldPosition, float Size, float4 Color)
+{
+	uint NumCorners = 5;
+	float StepAngle = PI / NumCorners;
+	float CurAngle0 = PI * 0.5;
+	float CurAngle1 = CurAngle0 + StepAngle;
+	float OuterRadius = Size;
+	float InnerRadius = OuterRadius * 0.4;
+
+	for (uint Index = 0; Index < NumCorners * 2; ++Index)
+	{
+		float S0, C0, S1, C1;
+		sincos(CurAngle0, S0, C0);
+		sincos(CurAngle1, S1, C1);
+
+		float R0 = Index % 2 == 0 ? OuterRadius : InnerRadius;
+		float R1 = Index % 2 == 0 ? InnerRadius : OuterRadius;
+
+		float3 V0 = TranslatedWorldPosition + S0 * R0 * View.ViewUp + C0 * R0 * View.ViewRight;
+		float3 V1 = TranslatedWorldPosition + S1 * R1 * View.ViewUp + C1 * R1 * View.ViewRight;
+		float3 V2 = TranslatedWorldPosition;
+
+		AddFilledTriangleTWS(Context, V0, V1, V2, Color);
+
+		CurAngle0 += StepAngle;
+		CurAngle1 += StepAngle;
+	}
+}
+
+void GetVoxelVertices(int3 VolumeCoord, out float3 OutVerts[8])
+{
+	for (uint Corner = 0; Corner < 8; ++Corner)
+	{
+		int3 Offset = int3((Corner & 0x1) != 0 ? 1 : 0, (Corner & 0x2) != 0 ? 1 : 0, (Corner & 0x4) != 0 ? 1 : 0);
+		int3 CornerCoord = VolumeCoord + Offset;
+		float SceneDepth;
+		OutVerts[Corner] = ComputeCellTranslatedWorldPosition(CornerCoord, 0.0f, SceneDepth);
+	#if TRANSLUCENCY_LIGHTING_VOLUME
+		OutVerts[Corner] -= 0.5f * View.TranslucencyLightingVolumeInvSize[TranslucencyVolumeCascadeIndex].w;
+	#endif
+	}
+}
+
+void GetVolumeVertices(out float3 OutVerts[8])
+{
+	for (uint Corner = 0; Corner < 8; ++Corner)
+	{
+		int3 Offset = int3((Corner & 0x1) != 0 ? 1 : 0, (Corner & 0x2) != 0 ? 1 : 0, (Corner & 0x4) != 0 ? 1 : 0);
+		int3 CornerCoord = Offset * VolumeViewSize;
+		float SceneDepth;
+		OutVerts[Corner] = ComputeCellTranslatedWorldPosition(CornerCoord, 0.0f, SceneDepth);
+	#if TRANSLUCENCY_LIGHTING_VOLUME
+		OutVerts[Corner] -= 0.5f * View.TranslucencyLightingVolumeInvSize[TranslucencyVolumeCascadeIndex].w;
+	#endif
+	}
+}
+
+void AddBoxTWS(inout FShaderPrintContext Context, float3 Verts[8], float4 Color)
+{
+	for (uint Edge = 0; Edge < 4; ++Edge)
+	{
+		float3 V0 = Verts[Edge * 2 + 0];
+		float3 V1 = Verts[Edge * 2 + 1];
+		AddLineTWS(Context, V0, V1, Color);
+
+		V0 = Verts[((Edge & 0x2) << 1) + (Edge & 0x1) + 0];
+		V1 = Verts[((Edge & 0x2) << 1) + (Edge & 0x1) + 2];
+		AddLineTWS(Context, V0, V1, Color);
+
+		V0 = Verts[Edge + 0];
+		V1 = Verts[Edge + 4];
+		AddLineTWS(Context, V0, V1, Color);
+	}
+}
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void MegaLightsDisplayLightsCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	FShaderPrintContext Context = InitShaderPrintContext(true, GLightListPrintStartPos);
+
+	float CursorDepthScale = 1.0f;
+	if (bIsVisualizingVolume != 0)
+	{
+		FShaderPrintContext DummyContext = InitShaderPrintContext(false, float2(0, 0));
+		CursorDepthScale = AddSlider(DummyContext, DEPTH_SCALE_SLIDER_NAME, 1.0f, GetDefaultFontColor());
+	}
+
+	uint2 ScreenCoord = GetDebugScreenCoord();
+	float2 ScreenUV = (ScreenCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+
+	FMegaLightsMaterial Material = (FMegaLightsMaterial)0;
+	if (bUseFrozenLightData == 0 && all(ScreenCoord - View.ViewRectMinAndSize.xy < View.ViewRectMinAndSize.zw))
+	{
+		Material = LoadMaterial(ScreenUV, ScreenCoord);
+
+		if (bIsVisualizingVolume != 0 && !Material.IsValid())
+		{
+			Material.Depth = min(Material.Depth, GetMaxSceneDepthForInvalidPixels());
+			Material.bIsValid = true;
+		}
+	}
+
+	if (bIsVisualizingVolume != 0)
+	{
+		FShaderPrintContext DummyContext = InitShaderPrintContext(false, float2(0, 0));
+		bool bLatchDepth = AddCheckbox(DummyContext, LATCH_DEPTH_CHKBOX_NAME, false, GetDefaultFontColor());
+
+		if (bLatchDepth)
+		{
+			float LatchedDepth = ReadLatchedSceneDepth();
+			if (LatchedDepth > 0.0f)
+			{
+				Material.Depth = LatchedDepth;
+			}
+		}
+	}
+
+	Material.Depth = lerp(GMinCursorDepth, Material.Depth, CursorDepthScale);
+
+	FGlobalFrozenData GlobalFrozenData = InitGlobalFrozenData();
+	uint GlobalFrozenDataBytes = 0;
+	float3 VolumeCoord = 0.0f;
+
+	if (Material.IsValid())
+	{
+		GlobalFrozenData.TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, Material.Depth);
+		LoadSortedLightInfoGlobalData(GlobalFrozenData.NumLights, GlobalFrozenData.LightTargetPDFSum);
+
+		if (bIsVisualizingVolume != 0)
+		{
+			VolumeCoord = ComputeTranslatedWorldPointCellCoord(GlobalFrozenData.TranslatedWorldPosition);
+			GetVoxelVertices(int3(VolumeCoord), GlobalFrozenData.VoxelVerts);
+			GetVolumeVertices(GlobalFrozenData.VolumeVerts);
+		}
+	}
+
+	if (bUseFrozenLightData != 0)
+	{
+		GlobalFrozenData = LoadGlobalFrozenData(GlobalFrozenDataBytes);
+	}
+	else if (bOutputFrozenLightData != 0)
+	{
+		StoreGlobalFrozenData(GroupThreadId.x, GlobalFrozenDataBytes, GlobalFrozenData);
+	}
+
+	if (GroupThreadId.x == 0 && bIsVisualizingVolume != 0)
+	{
+		bool bShowBounds;
+		{
+			float2 ShowBoundsStartViewUV = float2(1.0, 0.0) + Context.Config.FontSpacing * float2(-16.0, 6.0);
+			float2 InnerTLVStartViewUV = float2(1.0, 0.0) + Context.Config.FontSpacing * float2(-16.0, 7.0);
+
+			FShaderPrintContext WidgetContext = InitShaderPrintContext(true, ShowBoundsStartViewUV);
+			bShowBounds = AddCheckbox(WidgetContext, TEXT("Show bounds"), true, GetDefaultFontColor());
+
+		#if TRANSLUCENCY_LIGHTING_VOLUME
+			if (!bUseFrozenLightData)
+			{
+				WidgetContext = InitShaderPrintContext(true, InnerTLVStartViewUV);
+				bool bInnerTLV = AddCheckbox(WidgetContext, TEXT("Inner TLV"), true, GetDefaultFontColor());
+				WriteIsInnerTLVSelectedFeedback(bInnerTLV);
+			}
+		#endif
+		}
+
+		if (bShowBounds)
+		{
+			AddBoxTWS(Context, GlobalFrozenData.VoxelVerts, ColorGreen);
+			AddBoxTWS(Context, GlobalFrozenData.VolumeVerts, ColorGreen);
+		}
+
+		if (!bUseFrozenLightData)
+		{
+			AddCameraFacingStar(Context, GlobalFrozenData.TranslatedWorldPosition, 5.0f, float4(ColorWhite.xyz, 0.7));
+		}
+	}
+
+	bool bShowLightColor;
+	{
+		float2 ShowLightColorViewUV = float2(1.0, 0.0) + Context.Config.FontSpacing * float2(-16.0, bIsVisualizingVolume ? 5.0 : 3.0);
+		FShaderPrintContext WidgetContext = InitShaderPrintContext(GroupThreadId.x == 0, ShowLightColorViewUV);
+		bShowLightColor = AddCheckbox(WidgetContext, TEXT("Light color"), true, GetDefaultFontColor());
+	}
+
+	PrintHeader(Context, GroupThreadId.x, ScreenCoord, int3(VolumeCoord), GlobalFrozenData.NumLights, bIsVisualizingVolume != 0, bUseFrozenLightData != 0);
+
+	const uint LightNameBytes = ForwardLightStruct.LightNameDwords * 4;
+	const uint LightFrozenDataBytes = GetLightFrozenDataSizeInBytes();
+	uint NumLightsToDispaly = min(GlobalFrozenData.NumLights, MaxNumLightsToDisplay);
+	uint NumLightsToProcess = bOutputFrozenLightData != 0 ? GlobalFrozenData.NumLights : NumLightsToDispaly;
+	uint SelectedLightIndex = SelectedLightIndexBuffer[0];
+
+	for (uint LightIndex = 0; LightIndex < NumLightsToProcess; ++LightIndex)
+	{
+		uint FrozenDataPtrBase = GlobalFrozenDataBytes + LightIndex * LightFrozenDataBytes;
+		
+		FLightFrozenDataExceptName LightFrozenData = InitLightFrozenDataExceptName();
+		uint ForwardLightIndex;
+		bool bValid;
+		
+		if (bUseFrozenLightData != 0)
+		{
+			bValid = LoadLightFrozenDataExceptName(FrozenDataPtrBase, GlobalFrozenData.FrozenTranslatedWorldDelta, LightFrozenData);
+			ForwardLightIndex = bValid ? LightIndex : MAX_LOCAL_LIGHT_INDEX;
+		}
+		else
+		{
+			LoadSortedLightInfo(LightIndex, ForwardLightIndex, LightFrozenData.LightVisibility, LightFrozenData.LightTargetPDF);
+			bValid = ForwardLightIndex < MAX_LOCAL_LIGHT_INDEX;
+
+			if (bValid)
+			{
+				FForwardLightData ForwardLightData = GetForwardLightData(ForwardLightIndex, 0 /*EyeIndex*/);
+				FDeferredLightData LightData = ConvertToDeferredLight(ForwardLightData);
+
+				LightFrozenData.LightType = GetLightType(LightData);
+				LightFrozenData.LightTWPositionOrDirection = LightFrozenData.LightType == LIGHT_TYPE_DIRECTIONAL ? LightData.Direction : LightData.TranslatedWorldPosition;
+				LightFrozenData.LightColor = LightData.Color;
+			}
+
+			if (bOutputFrozenLightData != 0)
+			{
+				StoreLightFrozenDataExceptName(GroupThreadId.x, FrozenDataPtrBase, LightFrozenData, bValid);
+			}
+		}
+
+		if (!bValid)
+		{
+			continue;
+		}
+
+		bool bLightSelected = LightIndex == SelectedLightIndex;
+		float4 LightDebugDrawColor = lerp(ColorDarkGreen, ColorGreen, LightFrozenData.LightVisibility);
+		if (bShowLightColor)
+		{
+			float3 LDRColor = LightFrozenData.LightColor;
+			LDRColor /= max3(LDRColor.x, LDRColor.y, LDRColor.z);
+			LightDebugDrawColor = float4(lerp(LDRColor * 0.5f, LDRColor, LightFrozenData.LightVisibility), 1.0f);
+		}
+		FFontColor LightFontColor = GetDefaultFontColor();
+		if (bLightSelected)
+		{
+			LightDebugDrawColor = ColorOrange;
+			LightFontColor = FontOrange;
+		}
+
+		uint BeforeLightNameSpacing = 0;
+		if (LightIndex < NumLightsToDispaly)
+		{
+			if (GroupThreadId.x == 0)
+			{
+				if (LightFrozenData.LightType == LIGHT_TYPE_DIRECTIONAL)
+				{
+					AddLineTWS(Context, GlobalFrozenData.TranslatedWorldPosition, GlobalFrozenData.TranslatedWorldPosition + LightFrozenData.LightTWPositionOrDirection * 100000.0f, LightDebugDrawColor);
+				}
+				else
+				{
+					AddLineTWS(Context, GlobalFrozenData.TranslatedWorldPosition, LightFrozenData.LightTWPositionOrDirection, LightDebugDrawColor);
+
+					const float LightSymbolSize = 10.0f;
+					if (LightFrozenData.LightType == LIGHT_TYPE_SPOT)
+					{
+						AddSpotLightSymbol(Context, LightFrozenData.LightTWPositionOrDirection, LightSymbolSize, LightDebugDrawColor);
+					}
+					else if (LightFrozenData.LightType == LIGHT_TYPE_RECT)
+					{
+						AddRectLightSymbol(Context, LightFrozenData.LightTWPositionOrDirection, LightSymbolSize, LightDebugDrawColor);
+					}
+					else
+					{
+						AddSphereTWS(Context, LightFrozenData.LightTWPositionOrDirection, LightSymbolSize, LightDebugDrawColor);
+					}
+				}
+			}
+
+			float WeightRatio = LightFrozenData.LightTargetPDF / max(GlobalFrozenData.LightTargetPDFSum, 1e-8f);
+
+			Context.Pos.x = Context.StartPos.x;
+			BeforeLightNameSpacing = PrintLightInfoExceptName(Context, GroupThreadId.x, WeightRatio, LightFrozenData.LightVisibility, LightFrozenData.LightType, LightFontColor);
+			Context.Pos.x += GroupThreadId.x * Context.Config.FontSpacing.x;
+		}
+
+		const uint LightNameBegin = bUseFrozenLightData != 0 ? FrozenDataPtrBase : ForwardLightIndex * LightNameBytes;
+		const uint LightNameEnd = LightNameBegin + LightNameBytes;
+		uint NameLength = 0;
+
+		for (uint ReadPtrBase = LightNameBegin; ReadPtrBase < LightNameEnd; ReadPtrBase += THREADGROUP_SIZE)
+		{
+			uint ReadPtr = ReadPtrBase + (GroupThreadId.x & ~0x3);
+			uint LightNameDword;
+			if (bUseFrozenLightData != 0)
+			{
+				LightNameDword = FrozenLightData.Load(ReadPtr);
+			}
+			else
+			{
+				LightNameDword = ForwardLightStruct.LightNamesBuffer.Load(ReadPtr);
+			}
+
+			uint CharOffset = GroupThreadId.x % 4;
+			uint Character = BitFieldExtractU32(LightNameDword, 8, CharOffset * 8);
+
+			uint2 NullCharMask = WaveActiveBallot(Character == 0).xy;
+			if (WaveGetLaneCount() < THREADGROUP_SIZE)
+			{
+				if (WaveIsFirstLane())
+				{
+					uint WaveIndex = GroupThreadId.x / WaveGetLaneCount();
+					SharedScratchMemory[WaveIndex] = NullCharMask.x;
+				}
+
+				GroupMemoryBarrierWithGroupSync();
+
+				NullCharMask.x = SharedScratchMemory[0];
+				NullCharMask.y = SharedScratchMemory[1];
+			}
+
+			uint NullCharPos = NullCharMask.x != 0 ? firstbitlow(NullCharMask.x) : (NullCharMask.y != 0 ? firstbitlow(NullCharMask.y) + 32 : 64);
+
+			if (LightIndex < NumLightsToDispaly && GroupThreadId.x < NullCharPos)
+			{
+				ShaderPrint_Internal(Context, Context.Pos, Character, LightFontColor, 0u /*Metadata*/, SHADER_PRINT_TYPE_SYMBOL);
+				Context.Pos.x += Context.Config.FontSpacing.x * THREADGROUP_SIZE;
+			}
+
+			if (bOutputFrozenLightData != 0 && GroupThreadId.x <= NullCharPos)
+			{
+				uint WritePtr = FrozenDataPtrBase + GroupThreadId.x;
+
+				if (WritePtr % 4 == 0)
+				{
+					RWFrozenLightData.Store(WritePtr, LightNameDword);
+				}
+			}
+
+			NameLength += NullCharPos;
+			FrozenDataPtrBase += THREADGROUP_SIZE;
+
+			if (NullCharPos < 64u)
+			{
+				break;
+			}
+		}
+
+		if (LightIndex < NumLightsToDispaly)
+		{
+			Context.Pos.y += Context.Config.FontSpacing.y;
+			Context.RectMax.x = max(Context.RectMax.x, Context.StartPos.x + Context.Config.FontSpacing.x * (BeforeLightNameSpacing + NameLength));
+			Context.RectMax.y += Context.Config.FontSpacing.y;
+		}
+	}
+
+	Context.RectMax.x = WaveActiveMax(Context.RectMax.x);
+	if (WaveGetLaneCount() < THREADGROUP_SIZE)
+	{
+		GroupMemoryBarrierWithGroupSync();
+
+		if (WaveIsFirstLane())
+		{
+			uint WaveIndex = GroupThreadId.x / WaveGetLaneCount();
+			SharedScratchMemory[WaveIndex] = asuint(Context.RectMax.x);
+		}
+
+		GroupMemoryBarrierWithGroupSync();
+
+		Context.RectMax.x = max(asfloat(SharedScratchMemory[0]), asfloat(SharedScratchMemory[1]));
+	}
+	Context.RectMax.y -= Context.Config.FontSpacing.y;
+
+	if (GroupThreadId.x == 0)
+	{
+		AddTextBackground(Context, FontBackground);
+	}
+}
+
+#endif
+
+#ifdef MegaLightsEstimateLightSamplingCostCS
+
+RWTexture2D<float> RWLightSamplingCostEstimate;
+
+int bUseHairComplexTransmittance;
+
+float GetLightSamplingCostEstimate(
+	float MaterialCostAdd,
+	uint LightingChannelMask,
+	FDeferredLightData LightData,
+	FForwardLightData ForwardLightData)
+{
+	uint LightLightingChannelMask = UnpackLightingChannelMask(ForwardLightData);
+
+	if ((LightingChannelMask & LightLightingChannelMask) == 0)
+	{
+		return 0.1f;
+	}
+
+	float CostEstimate = 1.0f;
+	CostEstimate += MaterialCostAdd;
+	CostEstimate += LightData.bRectLight ? 0.25f : 0.0f;
+	CostEstimate += LightData.RectLightData.AtlasData.AtlasMaxLevel < MAX_RECT_ATLAS_MIP ? 0.5f : 0.0f; // Textured rect light
+	CostEstimate += LightData.SourceRadius > 0.0f || LightData.SourceLength > 0.0f ? 0.25f : 0.0f; // Area light
+	CostEstimate += UseLightFunctionAtlas != 0 && LightData.LightFunctionAtlasLightIndex > 0 ? 0.5f : 0.0f;
+	CostEstimate += UseIESProfiles != 0 && LightData.IESAtlasIndex >= 0 ? 0.5f : 0.0f;
+
+	return CostEstimate;
+}
+
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
+void MegaLightsEstimateLightSamplingCostCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint2 ScreenCoord = View.ViewRectMinAndSize.xy + DispatchThreadId.xy;
+	float2 ScreenUV = (ScreenCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+
+	if (all(ScreenCoord - View.ViewRectMinAndSize.xy < View.ViewRectMinAndSize.zw))
+	{
+		FMegaLightsMaterial Material = LoadMaterial(ScreenUV, ScreenCoord);
+		float SamplingCostEstimate = 0.0f;
+
+		if (Material.IsValid())
+		{
+			float MaterialCostAdd;
+			if (Material.IsSimple())
+			{
+				MaterialCostAdd = 0.0f;
+			}
+			else if (Material.IsSingle())
+			{
+				MaterialCostAdd = 0.25f;
+			}
+			else if (Material.IsComplexSpecial())
+			{
+				MaterialCostAdd = 0.6f;
+			}
+			else // Complex
+			{
+				MaterialCostAdd = 0.5f;
+			}
+
+			MaterialCostAdd += bUseHairComplexTransmittance != 0 && Material.bNeedsComplexTransmittance ? 0.25f : 0.0f;
+
+			uint CellIndex = ComputeLightGridCellIndex(ScreenCoord - View.ViewRectMinAndSize.xy, Material.Depth, 0 /*EyeIndex*/);
+			FCulledLightsGridHeader CellHeader = GetCulledLightsGridHeader(CellIndex);
+
+			for (uint LightIndex = ForwardLightStruct.DirectionalMegaLightsSupportedStartIndex; LightIndex < ForwardLightStruct.NumDirectionalLights; ++LightIndex)
+			{
+				uint ForwardLightIndex = ForwardLightStruct.DirectionalLightIndices[LightIndex];
+				FForwardLightData ForwardLightData = GetForwardLightData(ForwardLightIndex, 0 /*EyeIndex*/);
+				FDeferredLightData LightData = ConvertToDeferredLight(ForwardLightData);
+
+				SamplingCostEstimate += GetLightSamplingCostEstimate(MaterialCostAdd, Material.LightingChannelMask, LightData, ForwardLightData);
+			}
+
+			uint NumLocalLights = min(CellHeader.NumMegaLights, GetMaxLightsPerCell());
+			for (uint LightIndex = 0; LightIndex < NumLocalLights; ++LightIndex)
+			{
+				uint LocalLightIndex = GetCulledLightDataGrid(CellHeader.MegaLightsDataStartIndex + LightIndex);
+				if (LocalLightIndex >= MAX_LOCAL_LIGHT_INDEX)
+				{
+					break;
+				}
+
+				FLocalLightData LocalLightData = GetLocalLightData(LocalLightIndex, 0);
+				FDeferredLightData LightData = ConvertToDeferredLight(LocalLightData);
+
+				SamplingCostEstimate += GetLightSamplingCostEstimate(MaterialCostAdd, Material.LightingChannelMask, LightData, LocalLightData.Internal);
+			}
+		}
+
+		RWLightSamplingCostEstimate[ScreenCoord] = SamplingCostEstimate;
+	}
+}
+
+#endif
+
+#ifdef	MegaLightsPostProcessVisualizePS
+
+#include "../ColorMap.ush"
+#include "../ScreenPass.ush"
+
+Texture2D InputSceneColor;
+Texture2D<float> LightSamplingCostEstimateTexture;
+
+FScreenTransform OutputToInputPixelPos;
+float MaxLightSamplingCost;
+
+void MegaLightsPostProcessVisualizePS(
+	in float4 SvPosition : SV_POSITION,
+	out float4 OutLuminanceTransmittance : SV_Target0)
+{
+	uint2 OutputPixelPos = SvPosition.xy;
+	uint2 InputPixelPos = ApplyScreenTransform(SvPosition.xy, OutputToInputPixelPos);
+
+	FShaderPrintConfig Config = InitShaderPrintContextConfig();
+	float2 StartViewUV = float2(1.0, 0.0) + Config.FontSpacing * float2(-16.0, 2.0);
+	uint2 StartCoord = uint2(StartViewUV * Config.Resolution);
+	FShaderPrintContext Context = InitShaderPrintContext(all(OutputPixelPos == StartCoord), StartCoord);
+
+	bool bShowHeatmap = AddCheckbox(Context, TEXT("Show Heatmap"), true, GetDefaultFontColor());
+
+	float3 InputColor = InputSceneColor[OutputPixelPos].xyz;
+	float3 GrayscaleSceneColor = dot(InputColor, 1.0f / 3.0f);
+
+	float SamplingCostEstimate = LightSamplingCostEstimateTexture[InputPixelPos];
+	float3 DebugColor = select(SamplingCostEstimate > 0.0f, GetHSVDebugColor(SamplingCostEstimate / MaxLightSamplingCost), 1.0f);
+
+	OutLuminanceTransmittance.xyz = select(bShowHeatmap, GrayscaleSceneColor * DebugColor, InputColor);
+	OutLuminanceTransmittance.w = 0.0f;
+}
+
+#endif

@@ -1,0 +1,197 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "/Engine/Shared/MegaLightsDefinitions.h"
+#define INPUT_TYPE 0
+#include "MegaLightsMaterial.ush"
+#include "MegaLightsDenoiser.ush"
+#include "../StochasticLighting/StochasticLightingVisualize.ush"
+#include "../Visualization.ush"
+#include "../Lumen/LumenTracingCommon.ush"
+#include "../ReflectionEnvironmentShared.ush"
+#include "../StochasticLighting/StochasticLightingCommon.ush"
+
+uint VisualizeMode;
+uint2 InputViewSize;
+uint2 InputViewOffset;
+uint2 OutputViewSize;
+uint2 OutputViewOffset;
+
+float TemporalMaxFramesAccumulated;
+float HistorySpatialStdDevThreshold;
+
+Texture2D<UNORM float4> VisualizeSpatialFilterTexture;
+Texture2D<UNORM float4> VisualizeSpatialFilterTexture2;
+Texture2D<UNORM float4> VisualizeTemporalFilterTexture;
+Texture2D<UNORM float> ShadingConfidenceTexture;
+Texture2D<uint> NumFramesAccumulatedTexture;
+
+RWTexture2D<float3> RWSceneColor;
+
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
+void MegaLightsVisualizeCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint2 TraceCoord = DispatchThreadId.xy;
+	uint2 OutputScreenCoord = TraceCoord + OutputViewOffset;
+
+	if (IsInsideVisualizeRect(TraceCoord, OutputViewSize, OutputViewOffset))
+	{
+		// Remove sub-pixel jitter as we are rendering after TSR
+		float2 ViewportUV = (TraceCoord + 0.5f) / OutputViewSize + float2(0.5, -0.5) * View.TemporalAAJitter.xy;
+		float2 ScreenPosition = float2(2.0f, -2.0f) * ViewportUV + float2(-1.0f, 1.0f);
+		float3 ScreenVector = ScreenVectorFromScreenRect(float4(ScreenPosition, 1, 0));
+		float3 CameraVector = normalize(ScreenVector);
+
+		float2 GBufferCoord = clamp(ViewportUV * View.ViewRectMinAndSize.zw, 0, View.ViewRectMinAndSize.zw) + View.ViewRectMinAndSize.xy;
+		float2 GBufferUV = GBufferCoord * View.BufferSizeAndInvSize.zw;
+		const FMegaLightsMaterial Material = LoadMaterial(GBufferUV, GBufferCoord);
+
+		float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(GBufferUV, Material.Depth);
+		float3 V = normalize(View.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
+		float NoV = saturate(dot(Material.WorldNormalForPositionBias, V));
+		FDenoisingModulateFactors Factors = GetDenoisingModulateFactors(Material, NoV);
+
+		// Clear color
+		float3 OutputColor = float3(0.5, 0, 0.5);
+		if (Material.DeviceZ == 0.0)
+		{
+			// Sky
+			OutputColor = VisualizeTonemap(EvaluateSkyRadiance(CameraVector));
+		}
+		else
+		{
+			float3 LightDirection = float3(0.707, 0.0, 0.707);
+			float Lighting = 0.5 * dot(LightDirection, Material.WorldNormalForPositionBias) + 0.5;
+			OutputColor = sqrt(Luminance(Material.DiffuseColor + 0.3 * Material.SpecularColor) * Lighting * 1.5);
+		}
+
+		float NumFramesAccumulated = UnpackNumFramesAccumulated(NumFramesAccumulatedTexture[GBufferCoord]);
+		float ShadingConfidence = ShadingConfidenceTexture[GBufferCoord];
+		float4 TemporalFilter = VisualizeTemporalFilterTexture[GBufferCoord];
+
+		float4 SpatialFilter = VisualizeSpatialFilterTexture[GBufferCoord];
+		float NormalizedDiffuseStdDev = SpatialFilter.x;
+		float NormalizedSpecularStdDev = SpatialFilter.y;
+		float DisocclusionFactor = SpatialFilter.z;
+
+		uint SpatialFilterPackedW = uint(clamp(SpatialFilter.w * 4.0, 0.0, 3.0));
+		bool bFilterDiffuse = SpatialFilterPackedW & 0x1;
+		bool bFilterSpecular = SpatialFilterPackedW & 0x2;
+
+		float4 SpatialFilter2 = VisualizeSpatialFilterTexture2[GBufferCoord];
+		float DiffuseHistorySpatialStdDev = SpatialFilter2.x;
+		float SpecularHistorySpatialStdDev = SpatialFilter2.y;
+
+		if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_SHADING_CONFIDENCE && Material.IsValid())
+		{
+			OutputColor = ShadingConfidence;
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_NUM_FRAMES_ACCUMULATED)
+		{
+			if (NumFramesAccumulated == 0.0)
+			{
+				OutputColor = float3(1, 0, 0);
+			}
+			else if (NumFramesAccumulated <= 1.0)
+			{
+				OutputColor = float3(1, 1, 0);
+			}
+			else
+			{
+				OutputColor = (NumFramesAccumulated - 1.0) / (TemporalMaxFramesAccumulated - 1.0);
+			}
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_UPSAMPLE_MASK)
+		{
+			OutputColor *= 0.5;
+
+			if (TemporalFilter.w < 0.5)
+			{
+				OutputColor = float3(1, 1, 0);
+			}
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_DIFFUSE_DEMODULATE)
+		{
+			OutputColor = pow(Factors.Diffuse, 1/2.2);
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_SPECULAR_DEMODULATE)
+		{
+			OutputColor = pow(Factors.Specular, 1/2.2);
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_DIFFUSE_STD_DEV && Material.IsValid())
+		{
+			OutputColor = NormalizedDiffuseStdDev;
+
+			if (DisocclusionFactor > 0.01 && bFilterDiffuse)
+			{
+				OutputColor = float3(0.6, 0, 1.0);
+			}
+			else if (bFilterDiffuse)
+			{
+				OutputColor = float3(0, 0, 1);
+			}
+			else if (DisocclusionFactor > 0.01)
+			{
+				OutputColor = float3(DisocclusionFactor, 0, 0);
+			}
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_SPECULAR_STD_DEV && Material.IsValid())
+		{
+			OutputColor = NormalizedSpecularStdDev;
+
+			if (DisocclusionFactor > 0.01 && bFilterSpecular)
+			{
+				OutputColor = float3(0.6, 0, 1.0);
+			}
+			else if (bFilterSpecular)
+			{
+				OutputColor = float3(0, 0, 1);
+			}
+			else if (DisocclusionFactor > 0.01)
+			{
+				OutputColor = float3(DisocclusionFactor, 0, 0);
+			}
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_DIFFUSE_HISTORY_SPATIAL_STD_DEV && Material.IsValid())
+		{
+			OutputColor = DiffuseHistorySpatialStdDev / (HistorySpatialStdDevThreshold * 2.0);
+
+			if (DiffuseHistorySpatialStdDev > HistorySpatialStdDevThreshold)
+			{
+				OutputColor *= float3(0, 0, 1);
+			}
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_SPECULAR_HISTORY_SPATIAL_STD_DEV && Material.IsValid())
+		{
+			OutputColor = SpecularHistorySpatialStdDev / (HistorySpatialStdDevThreshold * 2.0);
+
+			if (SpecularHistorySpatialStdDev > HistorySpatialStdDevThreshold)
+			{
+				OutputColor *= float3(0, 0, 1);
+			}
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_DIFFUSE_HISTORY_CLAMP)
+		{
+			OutputColor = lerp(OutputColor * 0.5, float3(1, 0, 0), TemporalFilter.x);
+
+			if (TemporalFilter.x >= 1.0)
+			{
+				OutputColor = float3(1, 1, 0);
+			}
+		}
+		else if (VisualizeMode == MEGA_LIGHTS_VISUALIZE_SPECULAR_HISTORY_CLAMP)
+		{
+			OutputColor = lerp(OutputColor * 0.5, float3(1, 0, 0), TemporalFilter.y);
+
+			if (TemporalFilter.y >= 1.0)
+			{
+				OutputColor = float3(1, 1, 0);
+			}
+		}
+
+		RWSceneColor[OutputScreenCoord] = OutputColor;
+	}
+}

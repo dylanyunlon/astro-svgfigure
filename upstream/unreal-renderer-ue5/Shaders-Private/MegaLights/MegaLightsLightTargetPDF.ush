@@ -1,0 +1,60 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "MegaLightsShading.ush"
+
+float MinSampleWeight;
+
+struct FLightTargetPDF
+{
+	float Weight;
+	float Luminance; // Linear, no falloff mask
+};
+
+FLightTargetPDF InitLightTargetPDF()
+{
+	FLightTargetPDF LightTargetPDF;
+	LightTargetPDF.Weight = 0.0f;
+	LightTargetPDF.Luminance = 0.0f;
+	return LightTargetPDF;
+}
+
+FLightTargetPDF GetLocalLightTargetPDF(int ForwardLightIndex, FDeferredLightData LightData, float4 LightAttenuation, float3 TranslatedWorldPosition, FMegaLightsMaterial Material, uint2 ScreenCoord)
+{
+	float3 CameraVector = normalize(TranslatedWorldPosition - View.TranslatedWorldCameraOrigin);
+
+	float Dither = 0.5f;
+	float SurfaceShadow = 1.0f;
+	float AmbientOcclusion = 1.0f;
+	LightData.ShadowedBits = 1;
+
+#if INPUT_TYPE == INPUT_TYPE_HAIRSTRANDS || USE_HAIR_COMPLEX_TRANSMITTANCE
+	if (Material.bNeedsComplexTransmittance)
+	{
+		LightData.HairTransmittance = EvaluateDualScattering(Material.DiffuseColor, Material.WorldNormal, Material.Roughness, CameraVector, -LightData.Direction);
+	}
+#endif
+
+	FDeferredLightingSplit SplitLighting = GetMegaLightsSplitLighting(
+		TranslatedWorldPosition, CameraVector, Material, AmbientOcclusion, 
+		ForwardLightIndex, LightData, LightAttenuation, Dither, ScreenCoord, 
+		SurfaceShadow);
+
+	//float Lum = Luminance(SplitLighting.DiffuseLighting.xyz + SplitLighting.SpecularLighting.xyz) * View.PreExposure;
+	float Lum = SplitLighting.LightingLuminance * View.PreExposure;
+
+	if (Lum > MinSampleWeight && LightData.IESAtlasIndex >= 0)
+	{
+		Lum *= ComputeLightProfileMultiplier(TranslatedWorldPosition, LightData.TranslatedWorldPosition, -LightData.Direction, LightData.Tangent, LightData.IESAtlasIndex);
+	}
+
+	FLightTargetPDF LightTargetPDF = InitLightTargetPDF();
+	LightTargetPDF.Luminance = Lum;
+
+	Lum *= SmoothFalloffMask(Lum, MinSampleWeight);
+
+	// Perceptual weighting reduces noise in areas with very strong hidden lights
+	LightTargetPDF.Weight = log2(Lum + 1.0f);
+	return LightTargetPDF;
+}

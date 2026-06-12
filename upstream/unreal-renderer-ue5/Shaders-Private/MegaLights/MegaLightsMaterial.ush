@@ -1,0 +1,480 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#if SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT==0 
+#define SUBSTRATE_LOAD_FROM_MATERIALCONTAINER 0
+#endif
+
+// Whether to use only unlit or default lit shading model
+#ifndef FORCE_SIMPLE_SHADING
+	#define FORCE_SIMPLE_SHADING 0
+#endif
+
+#include "../BRDF.ush"
+#include "/Engine/Private/HairShadingCommon.ush"
+#include "../DeferredShadingCommon.ush"
+#include "../GammaCorrectionCommon.ush"
+#include "../Lumen/LumenPosition.ush"
+
+#include "../HairStrands/HairStrandsVisibilityCommon.ush"
+#include "../HairStrands/HairStrandsVisibilityUtils.ush"
+#include "../HairStrands/HairStrandsCommon.ush"
+#include "../HairStrands/HairStrandsDeepTransmittanceCommon.ush"
+#include "../HairStrands/HairStrandsDeepTransmittanceDualScattering.ush"
+
+#include "../Substrate/Substrate.ush"
+#include "../Substrate/SubstrateEvaluation.ush"
+#include "../Substrate/SubstrateMaterialSampling.ush"
+#include "../Substrate/SubstrateTile.ush"
+#include "../Substrate/SubstrateRead.ush"
+
+// Types of FMegaLightsMaterial input
+#define INPUT_TYPE_GBUFFER 0
+#define INPUT_TYPE_HAIRSTRANDS 1
+#define INPUT_TYPE_FRONTLAYERTRANSLUCENCY 2
+
+#if INPUT_TYPE == INPUT_TYPE_FRONTLAYERTRANSLUCENCY
+Texture2D FrontLayerTranslucencySceneDepth;
+Texture2D FrontLayerTranslucencyGBufferA;
+Texture2D FrontLayerTranslucencyGBufferB;
+Texture2D FrontLayerTranslucencyGBufferC;
+
+uint FrontLayerTranslucencySpecularOnly;
+#endif
+
+struct FMegaLightsMaterial
+{
+	// DeviceZ isn't the same as ConvertToDeviceZ(Depth) due to a small fudge factor preventing divide by zero
+	float DeviceZ;
+	float Depth;
+
+	float3 WorldNormal;
+	float3 WorldNormalForPositionBias;
+	float  Roughness;
+	bool   bIsValid;
+	bool   bIsSimple;
+	bool   bIsSingle;
+	bool   bIsComplexSpecial;
+	bool   bIsHair;
+	bool   bIsTwoSided;
+	bool   bIsFirstPerson;
+	bool   bHasTransmission;
+	bool   bNeedsSeparateSubsurfaceLightAccumulation;
+	bool   bNeedsComplexTransmittance;
+	bool   bAllowSpatialFilter;
+	uint   LightingChannelMask; // Not loaded by default
+	float  Coverage;
+	uint   GlobalIndex1D;
+	uint2  GlobalIndex2D;
+
+	float3 DiffuseColor;
+	float3 SpecularColor;
+
+	bool IsValid()
+	{
+		return bIsValid;
+	}
+
+	bool IsSimple()
+	{
+		return bIsSimple;
+	}
+
+	bool IsSingle()
+	{
+		return bIsSingle;
+	}
+
+	bool IsComplexSpecial()
+	{
+		return bIsComplexSpecial;
+	}
+
+	#if INPUT_TYPE == INPUT_TYPE_HAIRSTRANDS
+	FGBufferData GBuffer;
+	uint MacroGroupId;
+	#elif INPUT_TYPE == INPUT_TYPE_FRONTLAYERTRANSLUCENCY
+	FGBufferData GBuffer;
+	float Opacity;
+	#elif SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT==1
+	uint ClosureIndex;
+	float PDF;
+	FSubstrateSubsurfaceHeader SSSHeader;
+	FSubstrateBSDF BSDF;
+	float3x3 BSDFTangentBasis;
+	float BSDFAO;
+	#elif SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT==0
+	FGBufferData GBuffer;
+	FSubstrateBSDF BSDF;
+	float3x3 BSDFTangentBasis;
+	float BSDFAO;
+	#else
+	FGBufferData GBuffer;
+	#endif
+};
+
+#ifdef INPUT_TYPE
+FMegaLightsMaterial LoadMaterial(float2 ScreenUV, uint2 ScreenCoord, uint SampleIt=0)
+#if INPUT_TYPE == INPUT_TYPE_HAIRSTRANDS
+{
+	const uint3 PixelCoord = uint3(ScreenCoord, 0);
+	const float HairDeviceZ = HairStrands.HairOnlyDepthTexture.Load(PixelCoord).x;
+	const FNodeDesc NodeDesc = DecodeNodeDesc(HairStrands.HairSampleOffset.Load(PixelCoord));
+	const float PixelCoverage = min(HairStrands.HairCoverageTexture.Load(PixelCoord), 1);
+
+	FMegaLightsMaterial Out = (FMegaLightsMaterial)0;
+	Out.DeviceZ = HairDeviceZ;
+	Out.Depth = ConvertFromDeviceZ(HairDeviceZ);
+	Out.bIsValid = HairDeviceZ > 0 && NodeDesc.Count > 0 && PixelCoverage > 0 && SampleIt < NodeDesc.Count;
+
+	const uint TotalNodeCount = HairStrands.HairSampleCount[0];
+	const uint2 Resolution = GetHairSampleResolution(TotalNodeCount);
+
+	if (Out.IsValid())
+	{
+		{
+			const FHairSample Sample = UnpackHairSample(HairStrands.HairSampleData[NodeDesc.Offset + SampleIt]);
+			FGBufferData GBuffer = HairSampleToGBufferData(Sample);
+			const bool bIsLit = GBuffer.ShadingModelID != SHADINGMODELID_UNLIT;
+			GBuffer.Roughness = max(GBuffer.Roughness, View.MinRoughness);
+
+			Out.bIsValid   			= bIsLit;
+			Out.bIsSimple  			= false; //GBuffer.ShadingModelID == SHADINGMODELID_DEFAULT_LIT;
+			Out.bIsSingle			= false;
+			Out.bIsComplexSpecial	= false;
+			Out.bIsHair 			= true;
+			Out.bIsTwoSided			= false;
+			Out.bIsFirstPerson		= false;
+			Out.bHasTransmission	= false;
+			Out.bNeedsSeparateSubsurfaceLightAccumulation = false;
+			Out.bNeedsComplexTransmittance = true;
+			Out.WorldNormal  	= GBuffer.WorldNormal;
+			Out.WorldNormalForPositionBias = GBuffer.WorldNormal;
+			Out.Depth        	= Sample.Depth;
+			Out.Depth        	= GBuffer.Depth;
+			Out.Roughness    	= GBuffer.Roughness;
+			Out.DiffuseColor 	= GBuffer.DiffuseColor;
+			Out.SpecularColor	= GBuffer.SpecularColor;
+			Out.GBuffer      	= GBuffer;
+			Out.bAllowSpatialFilter = true; // false ?
+			{
+				Out.WorldNormalForPositionBias = ComputeHairNormalForPositionBias(ScreenUV, Out.Depth, Out.WorldNormal);
+			}
+
+			Out.MacroGroupId  = Sample.MacroGroupId;
+			Out.LightingChannelMask = Sample.LightChannelMask;
+			Out.Coverage = saturate(From8bitCoverage(Sample.Coverage8bit));
+			Out.GlobalIndex1D = NodeDesc.Offset + SampleIt;
+			Out.GlobalIndex2D = GetHairSampleCoord(Out.GlobalIndex1D, Resolution);
+		}
+	}
+	return Out;
+}
+#elif INPUT_TYPE == INPUT_TYPE_FRONTLAYERTRANSLUCENCY
+{
+	float2 PixelPos = trunc(ScreenUV * View.BufferSizeAndInvSize.xy * View.BufferToSceneTextureScale.xy);
+	float DeviceZ = FrontLayerTranslucencySceneDepth[PixelPos].x;
+
+	float4 NormalRoughnessEncoded = FrontLayerTranslucencyGBufferA[PixelPos];
+	float4 BaseColorEncoded = FrontLayerTranslucencyGBufferB[PixelPos];
+	float3 BaseColor = DecodeBaseColor(BaseColorEncoded.rgb);
+
+	uint PackedA = (uint)floor(saturate(BaseColorEncoded.a) * 255.0 + 0.5);
+	float Opacity = (PackedA & 0x7Fu) / 127.0f;
+
+	uint2 GBufferC = (uint2)floor(saturate(FrontLayerTranslucencyGBufferC[PixelPos].rg) * 255.0 + 0.5);
+	float Specular = (GBufferC.r & 0x7Fu) / 127.0f;
+	float Metallic = (GBufferC.g & 0x7Fu) / 127.0f;
+
+	uint LightingChannelMask = 
+		(((PackedA    >> 7) & 0x1) << 0) |
+		(((GBufferC.r >> 7) & 0x1) << 1) |
+		(((GBufferC.g >> 7) & 0x1) << 2);
+
+	FGBufferData GBuffer = (FGBufferData) 0;
+	GBuffer.ShadingModelID = NormalRoughnessEncoded.w > 0.0f && BaseColorEncoded.a > 0.0f ? SHADINGMODELID_DEFAULT_LIT : SHADINGMODELID_UNLIT;
+	GBuffer.WorldNormal = DecodeNormal(NormalRoughnessEncoded.xyz);
+	GBuffer.BaseColor = BaseColor;
+	GBuffer.Roughness = saturate((NormalRoughnessEncoded.w * 65535.0f - 1.0f) / 65534.0f); // We remove the 1/65535 tag from encoded roughness
+	GBuffer.Specular = Specular;
+	GBuffer.Metallic = Metallic;
+	GBuffer.Depth = ConvertFromDeviceZ(DeviceZ);
+	GBuffer.GBufferAO = 1;
+	GBuffer.CustomData = 0;
+	GBuffer.IndirectIrradiance = 1.0f;
+	GBuffer.PrecomputedShadowFactors = 1;
+	GBuffer.PerObjectGBufferData = 0u;
+
+	// derived from BaseColor, Metalness, Specular
+	{
+		GBuffer.SpecularColor = ComputeF0(GBuffer.Specular, GBuffer.BaseColor, GBuffer.Metallic);
+
+		GBuffer.DiffuseColor = GBuffer.BaseColor - GBuffer.BaseColor * GBuffer.Metallic;
+		GBuffer.DiffuseColor *= Opacity; // Apply opacity to diffuse color for thin translucency
+		
+		#if USE_DEVELOPMENT_SHADERS
+		{
+			// this feature is only needed for development/editor - we can compile it out for a shipping build (see r.CompileShadersForDevelopment cvar help)
+			GBuffer.DiffuseColor = GBuffer.DiffuseColor * View.DiffuseOverrideParameter.www + View.DiffuseOverrideParameter.xyz;
+			GBuffer.SpecularColor = GBuffer.SpecularColor * View.SpecularOverrideParameter.w + View.SpecularOverrideParameter.xyz;
+		}
+		#endif //USE_DEVELOPMENT_SHADERS
+
+		if (FrontLayerTranslucencySpecularOnly)
+		{
+			GBuffer.DiffuseColor = 0.0f;
+		}
+	}
+
+	GBuffer.Roughness = max(GBuffer.Roughness, View.MinRoughness);
+	const bool bIsLit = GBuffer.ShadingModelID != SHADINGMODELID_UNLIT;
+
+	#if FORCE_SIMPLE_SHADING || SUBSTRATE_FASTPATH
+	{
+		checkSlow(GBuffer.ShadingModelID == SHADINGMODELID_DEFAULT_LIT || GBuffer.ShadingModelID == SHADINGMODELID_UNLIT);
+		GBuffer.ShadingModelID = SHADINGMODELID_DEFAULT_LIT;
+	}
+	#endif
+
+	FMegaLightsMaterial Out = (FMegaLightsMaterial)0;
+	Out.bIsValid = bIsLit;
+	Out.bIsSimple = GBuffer.ShadingModelID == SHADINGMODELID_DEFAULT_LIT;
+	Out.bIsSingle = false;
+	Out.bIsComplexSpecial = false;
+	Out.bIsHair = false;
+	Out.bIsTwoSided = false;
+	Out.bHasTransmission = false;
+	Out.bNeedsSeparateSubsurfaceLightAccumulation = false;
+	Out.bNeedsComplexTransmittance = false;
+	Out.WorldNormal = GBuffer.WorldNormal;
+	Out.WorldNormalForPositionBias = GBuffer.WorldNormal;
+	Out.DeviceZ = DeviceZ;
+	Out.Depth = ConvertFromDeviceZ(DeviceZ);
+	Out.Roughness = GBuffer.Roughness;
+	Out.DiffuseColor = GBuffer.DiffuseColor;
+	Out.SpecularColor = GBuffer.SpecularColor;
+	Out.GBuffer = GBuffer;
+	Out.Opacity = Opacity;
+	Out.bAllowSpatialFilter = true;
+	Out.Coverage = 1;
+	Out.LightingChannelMask = LightingChannelMask;
+
+	return Out;
+}
+#elif INPUT_TYPE == INPUT_TYPE_GBUFFER && SUBSTRATE_GBUFFER_FORMAT==1
+{
+	#if SUBSTRATE_STOCHASTIC_LIGHTING
+	if (Substrate.bStochasticLighting)
+	{
+		const FSubstrateSampledMaterial SampledMaterial = UnpackSampledMaterial(Substrate.SampledMaterialTexture[ScreenCoord]);
+		const float DeviceZ = LookupDeviceZ(ScreenCoord);
+
+		FMegaLightsMaterial Out = (FMegaLightsMaterial)0;
+		Out.WorldNormal = SampledMaterial.WorldNormal;
+		Out.WorldNormalForPositionBias = SampledMaterial.WorldNormal;
+		Out.DeviceZ = DeviceZ;
+		Out.Depth = ConvertFromDeviceZ(DeviceZ);
+		Out.Roughness = SampledMaterial.Roughness;
+		Out.bAllowSpatialFilter = SampledMaterial.bAllowSpatialFilter;
+		Out.LightingChannelMask = GetSceneLightingChannel(ScreenCoord);
+
+		Out.bIsValid = SampledMaterial.bIsValid;
+		Out.bIsSimple = SampledMaterial.bIsSimple;
+		Out.bIsSingle = SampledMaterial.bIsSingle;
+		Out.bIsComplexSpecial = false;
+		Out.bIsHair = SampledMaterial.bIsHair;
+
+		// SUBSTRATE_TODO: implement Out.bHasBackfaceDiffuse
+		Out.bHasBackfaceDiffuse	= false;
+		Out.bNeedsComplexTransmittance = false;
+
+		Out.bNeedsSeparateSubsurfaceLightAccumulation = SampledMaterial.bNeedsSeparateSubsurfaceLightAccumulation;
+		Out.DiffuseColor = SampledMaterial.DiffuseAlbedo;
+		Out.SpecularColor = SampledMaterial.SpecularAlbedo;
+		Out.ClosureIndex = SampledMaterial.ClosureIndex;
+		Out.PDF = SampledMaterial.PDF;
+		Out.Coverage = 1;
+		return Out;
+	}
+	else
+	#endif // SUBSTRATE_STOCHASTIC_LIGHTING
+	{
+		const FSubstrateTopLayerData TopLayerData = SubstrateUnpackTopLayerData(Substrate.TopLayerTexture.Load(uint3(ScreenCoord, 0)));
+		const float DeviceZ = LookupDeviceZ(ScreenCoord);
+
+		FMegaLightsMaterial Out = (FMegaLightsMaterial)0;
+		Out.WorldNormal = TopLayerData.WorldNormal;
+		Out.WorldNormalForPositionBias = TopLayerData.WorldNormal;
+		Out.DeviceZ = DeviceZ;
+		Out.Depth = ConvertFromDeviceZ(DeviceZ);
+		Out.Roughness = TopLayerData.Roughness;
+		Out.bAllowSpatialFilter = true;
+		Out.LightingChannelMask = GetSceneLightingChannel(ScreenCoord);
+		Out.ClosureIndex = 0;
+		Out.PDF = 1.f;
+		Out.Coverage = 1;
+#if SUBSTRATE_MATERIALCONTAINER_IS_VIEWRESOURCE
+
+		const float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, Out.Depth);
+		const float3 V = -GetCameraVectorFromTranslatedWorldPosition(TranslatedWorldPosition);
+
+		const FSubstrateIntegrationSettings Settings = InitSubstrateIntegrationSettings(false /*bForceFullyRough*/, Substrate.bRoughDiffuse, Substrate.PeelLayersAboveDepth, Substrate.bRoughnessTracking);
+		FSubstrateAddressing SubstrateAddressing = GetSubstratePixelDataByteOffset(ScreenCoord, uint2(View.BufferSizeAndInvSize.xy), Substrate.MaxBytesPerPixel);
+		FSubstratePixelHeader SubstratePixelHeader = UnpackSubstrateHeaderIn(Substrate.MaterialTextureArray, SubstrateAddressing, Substrate.TopLayerTexture);
+
+		Out.SSSHeader = SubstrateLoadSubsurfaceHeader(Substrate.MaterialTextureArray, Substrate.FirstSliceStoringSubstrateSSSData, ScreenCoord);
+		Out.bIsValid = SubstratePixelHeader.IsSubstrateMaterial();
+		Out.bIsSimple = SubstratePixelHeader.IsSimpleMaterial();
+		Out.bIsSingle = SubstratePixelHeader.IsSingleMaterial();
+		Out.bIsComplexSpecial = SubstratePixelHeader.IsComplexSpecialMaterial();
+		Out.bIsHair = SubstratePixelHeader.IsHair();
+		Out.bIsTwoSided = false;
+		Out.bIsFirstPerson = SubstratePixelHeader.IsFirstPerson();
+		Out.bHasTransmission = SubstratePixelHeader.SubstrateGetBSDFType() == SUBSTRATE_BSDF_TYPE_SLAB && SubstratePixelHeader.HasSubsurface();
+		Out.bNeedsComplexTransmittance = false;
+
+		#if SUBSTRATE_LOAD_FROM_MATERIALCONTAINER
+		Substrate_for(uint ClosureIndex = 0, ClosureIndex < SubstratePixelHeader.ClosureCount, ++ClosureIndex)
+		#else
+		if (SubstratePixelHeader.ClosureCount > 0)
+		#endif
+		{
+			FSubstrateBSDF BSDF = UnpackSubstrateBSDF(Substrate.MaterialTextureArray, SubstrateAddressing, SubstratePixelHeader);
+
+			// Create the BSDF context
+			FSubstrateBSDFContext SubstrateBSDFContext = SubstrateCreateBSDFContext(SubstratePixelHeader, BSDF, SubstrateAddressing, V);
+			const float3 BSDFThroughput = LuminanceWeight(SubstrateBSDFContext, BSDF);
+
+			// Evaluate environment lighting
+			FSubstrateEnvLightResult SubstrateEnvLight = SubstrateEvaluateForEnvLight(SubstrateBSDFContext, true /*bEnableSpecular*/, Settings);
+
+			Out.DiffuseColor += BSDFThroughput * SubstrateEnvLight.DiffuseColor;  //SubstrateEnvLight.DiffuseWeight;
+			Out.SpecularColor += BSDFThroughput * SubstrateEnvLight.SpecularColor; //SubstrateEnvLight.SpecularWeight;
+
+			#if SUBSTRATE_FASTPATH==0
+			if (any(SubstrateEnvLight.SpecularHazeWeight > 0.0f))
+			{
+				Out.SpecularColor += BSDFThroughput * SubstrateEnvLight.SpecularHazeWeight;
+			}
+			#endif 
+
+			if (SubstrateEnvLight.bPostProcessSubsurface)
+			{
+				Out.bNeedsSeparateSubsurfaceLightAccumulation = true;
+			}
+
+			#if SUBSTRATE_FASTPATH==0
+			if (SubstratePixelHeader.IsComplexSpecialMaterial() && BSDF_GETHASGLINT(BSDF))
+			{
+				Out.bAllowSpatialFilter = false;
+			}
+			#endif
+
+			#if SUBSTRATE_FASTPATH==0
+			Out.bIsTwoSided = SubstratePixelHeader.SubstrateGetBSDFType() == SUBSTRATE_BSDF_TYPE_SLAB && BSDF_GETSSSTYPE(BSDF) == SSS_TYPE_TWO_SIDED_WRAP;
+			#endif
+
+			#if SUBSTRATE_LOAD_FROM_MATERIALCONTAINER == 0
+			Out.BSDF = BSDF;
+			Out.BSDFTangentBasis = SubstrateBSDFContext.TangentBasis;
+			Out.BSDFAO = SubstrateGetAO(SubstratePixelHeader);
+			#endif
+		}
+		#endif //SUBSTRATE_MATERIALCONTAINER_IS_VIEWRESOURCE
+
+		return Out;
+	}
+}
+#elif INPUT_TYPE == INPUT_TYPE_GBUFFER
+{
+	float DeviceZ = LookupDeviceZ(ScreenUV);
+	FGBufferData GBuffer = GetGBufferData(ScreenUV);
+	GBuffer.Roughness = max(GBuffer.Roughness, View.MinRoughness);
+	const bool bIsLit = GBuffer.ShadingModelID != SHADINGMODELID_UNLIT;
+
+	#if FORCE_SIMPLE_SHADING || SUBSTRATE_FASTPATH
+	{
+		checkSlow(GBuffer.ShadingModelID == SHADINGMODELID_DEFAULT_LIT || GBuffer.ShadingModelID == SHADINGMODELID_UNLIT);
+		GBuffer.ShadingModelID = SHADINGMODELID_DEFAULT_LIT;
+	}
+	#endif
+
+	FMegaLightsMaterial Out = (FMegaLightsMaterial)0;
+	Out.bIsValid = bIsLit;
+	Out.bIsSimple = GBuffer.ShadingModelID == SHADINGMODELID_DEFAULT_LIT;
+	Out.bIsSingle = false;
+	Out.bIsComplexSpecial = false;
+	Out.bIsHair = GBuffer.ShadingModelID == SHADINGMODELID_HAIR;
+	Out.bIsTwoSided = GBuffer.ShadingModelID == SHADINGMODELID_TWOSIDED_FOLIAGE;
+	Out.bIsFirstPerson = IsFirstPerson(GBuffer);
+	Out.bHasTransmission = GBuffer.ShadingModelID == SHADINGMODELID_SUBSURFACE || GBuffer.ShadingModelID == SHADINGMODELID_SUBSURFACE_PROFILE;
+	Out.bNeedsSeparateSubsurfaceLightAccumulation = UseSubsurfaceProfile(GBuffer.ShadingModelID);
+	Out.bNeedsComplexTransmittance = GBuffer.ShadingModelID == SHADINGMODELID_HAIR && ShouldUseHairComplexTransmittance(GBuffer);
+	Out.WorldNormal = GBuffer.WorldNormal;
+	Out.WorldNormalForPositionBias = GBuffer.WorldNormal;
+	Out.DeviceZ = DeviceZ;
+	Out.Depth = ConvertFromDeviceZ(DeviceZ);
+	Out.Roughness = GBuffer.Roughness;
+	Out.DiffuseColor = GBuffer.DiffuseColor;
+	Out.SpecularColor = GBuffer.SpecularColor;
+	Out.GBuffer = GBuffer;
+	Out.bAllowSpatialFilter = true;
+	Out.LightingChannelMask = GetSceneLightingChannel(ScreenCoord);
+	Out.Coverage = 1;
+
+	if (GBuffer.ShadingModelID == SHADINGMODELID_HAIR)
+	{
+		Out.WorldNormalForPositionBias = ComputeHairNormalForPositionBias(ScreenUV, Out.Depth, Out.WorldNormal);
+	}
+
+	#if SUBSTRATE_ENABLED && SUBSTRATE_GBUFFER_FORMAT==0
+	const bool bIsComplex = SubstrateIsComplexMaterial(GBuffer.ShadingModelID, abs(GBuffer.Anisotropy) > 0);
+	Out.bIsSimple = Out.bIsSimple && abs(GBuffer.Anisotropy) == 0;
+	Out.bIsSingle = !Out.bIsSimple && !bIsComplex;
+
+	FScreenSpaceData ScreenSpaceData;
+	ScreenSpaceData.GBuffer = GBuffer;
+	ScreenSpaceData.AmbientOcclusion = 1.f;
+	FSubstrateGBufferBSDF GBufferBSDF = SubstrateReadGBufferBSDF(ScreenSpaceData);
+	Out.BSDF = GBufferBSDF.BSDF;
+	Out.BSDFTangentBasis = GBufferBSDF.BSDFTangentBasis;
+	Out.BSDFAO = GBufferBSDF.BSDFAO;
+	#endif
+
+	return Out;
+}
+#else
+	#error "Missing LoadMaterial definition for INPUT_TYPE."
+#endif
+#endif
+
+struct FDenoisingModulateFactors
+{
+	float3 Diffuse;
+	float3 Specular;
+};
+
+/**
+ * Factors used to remove non-stochastic material detail before denoising in order to preserve texture detail
+ * Divide before denoising and multiply after
+ */ 
+FDenoisingModulateFactors GetDenoisingModulateFactors(FMegaLightsMaterial Material, float NoV)
+{
+	float3 SpecularEnv = EnvBRDF(Material.SpecularColor, Material.Roughness, NoV);
+	
+	// Hair should technically use the follow function, but it is expensive and does not improve visuals/stability. 
+	#if 0
+	if (Material.bIsHair)
+	{
+		float3 L = 0;
+		SpecularEnv = EvaluateEnvHair(Material.GBuffer, V, Material.WorldNormal, L /*out*/);
+	}
+	#endif
+
+	FDenoisingModulateFactors Factors;
+	// Reduce contrast in oder to reduce artifacts when filtering across different materials
+	Factors.Diffuse = lerp(0.04f, 1.0f, Material.DiffuseColor);
+	Factors.Specular = lerp(0.02f, 1.0f, SpecularEnv);
+	return Factors;
+}

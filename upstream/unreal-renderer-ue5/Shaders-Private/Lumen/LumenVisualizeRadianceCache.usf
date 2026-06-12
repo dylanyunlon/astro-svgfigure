@@ -1,0 +1,272 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../SHCommon.ush"
+#include "LumenTracingCommon.ush"
+#include "LumenIrradianceFieldInterpolation.ush"
+
+uint ProbeClipmapIndex;
+
+RWBuffer<uint> RWProbeVisualizeBufferIndirectArguments;
+RWBuffer<uint4> RWProbeVisualizeBuffer;
+
+#ifdef ClearProbeVisualizeBufferCS
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void ClearProbeVisualizeBufferCS(
+	uint DispatchThreadId : SV_DispatchThreadID)
+{
+	if (DispatchThreadId == 0)
+	{
+		// IndexCount, NumInstances, StartIndex, BaseVertexIndex, FirstInstance
+		RWProbeVisualizeBufferIndirectArguments[0] = 12 * 3; // GCubeIndexBuffer
+		RWProbeVisualizeBufferIndirectArguments[1] = 0;
+		RWProbeVisualizeBufferIndirectArguments[2] = 0;
+		RWProbeVisualizeBufferIndirectArguments[3] = 0;
+		RWProbeVisualizeBufferIndirectArguments[4] = 0;
+		RWProbeVisualizeBufferIndirectArguments[5] = 0;
+	}
+}
+
+#endif
+
+#ifdef BuildProbeVisualizeBufferCS
+
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, THREADGROUP_SIZE)]
+void BuildProbeVisualizeBufferCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 DispatchThreadId : SV_DispatchThreadID,
+	uint3 GroupThreadId : SV_GroupThreadID)
+{
+	uint3 ProbeCoord = DispatchThreadId;
+
+	if (all(ProbeCoord < RadianceProbeClipmapResolution))
+	{
+		FProbeIndirectionDesc UniformProbeIndirection = GetProbeIndirection(ProbeCoord, ProbeClipmapIndex);
+
+		if (UniformProbeIndirection.bValid)
+		{
+			uint WriteIndex;
+			InterlockedAdd(RWProbeVisualizeBufferIndirectArguments[1], 1, WriteIndex);
+			RWProbeVisualizeBuffer[WriteIndex] = uint4(ProbeCoord, 0);
+
+			#if ADAPTIVE_PROBES
+			if (UniformProbeIndirection.NumAdaptiveProbes > 0)
+			{
+				uint AdaptiveProbesWriteIndex;
+				InterlockedAdd(RWProbeVisualizeBufferIndirectArguments[1], UniformProbeIndirection.NumAdaptiveProbes, AdaptiveProbesWriteIndex);
+
+				for (uint i = 0; i < UniformProbeIndirection.NumAdaptiveProbes; i++)
+				{
+					RWProbeVisualizeBuffer[AdaptiveProbesWriteIndex + i] = uint4(ProbeCoord, i + 1);
+				}
+			}
+			#endif
+		}
+	}
+}
+
+#endif
+
+#define VISUALIZE_MODE_RADIANCE			1
+#define VISUALIZE_MODE_SKY_VISIBILITY	2
+
+float4 ClipmapCornerTWSAndCellSizeForVisualization;
+float VisualizeProbeRadiusScale;
+
+Buffer<uint4> ProbeVisualizeBuffer;
+Buffer<uint> LastFrameProbeInterpolationMisses;
+
+struct FVisualizeRadianceCacheVSToPS
+{
+	nointerpolation float3 ProbeCoord : TEXCOORD0;
+	nointerpolation uint AdaptiveProbeArrayIndex : TEXCOORD1;
+	nointerpolation float4 CellSphere : TEXCOORD2;
+	float3 PositionTWS : TEXCOORD3;
+};
+
+float3 GetProbeTranslatedWorldPositionForVisualization(uint3 ProbeCoord, uint ProbeIndex)
+{
+	const float3 ClipmapCornerTWS = ClipmapCornerTWSAndCellSizeForVisualization.xyz;
+	const float CellSize = ClipmapCornerTWSAndCellSizeForVisualization.w;
+
+	const float3 CornerTranslatedWorldPosition = ClipmapCornerTWS;
+
+	const float3 CornerToProbe = ((ProbeCoord + 0.5f) * CellSize);
+	return CornerTranslatedWorldPosition + CornerToProbe + ProbeWorldOffset[ProbeIndex].xyz;
+}
+
+void VisualizeRadianceCacheVS(
+	uint VertexId : SV_VertexID,
+	uint InstanceId : SV_InstanceID,
+	out FVisualizeRadianceCacheVSToPS Output,
+	out float4 OutPosition : SV_POSITION
+)
+{
+	float VisualizeRadius = VisualizeProbeRadiusScale * GetRadianceProbeClipmapCellSize(ProbeClipmapIndex);
+
+	float3 LocalPosition;
+	LocalPosition.x = VertexId & 0x1 ? 1.0f : -1.0f;
+	LocalPosition.y = VertexId & 0x2 ? 1.0f : -1.0f;
+	LocalPosition.z = VertexId & 0x4 ? 1.0f : -1.0f;
+	LocalPosition *= VisualizeRadius;
+	
+	uint3 ProbeCoord = ProbeVisualizeBuffer[InstanceId].xyz;
+	uint AdaptiveProbeArrayIndex = ProbeVisualizeBuffer[InstanceId].w;
+
+	FProbeIndirectionDesc UniformProbeIndirection = GetProbeIndirection(ProbeCoord, ProbeClipmapIndex);
+
+	uint ProbeIndex = UniformProbeIndirection.ProbeIndex;
+	bool bValid = UniformProbeIndirection.bValid;
+	
+#if ADAPTIVE_PROBES
+	if (AdaptiveProbeArrayIndex > 0)
+	{
+		bValid = AdaptiveProbeArrayIndex - 1 < UniformProbeIndirection.NumAdaptiveProbes;
+		ProbeIndex = bValid ? GetAdaptiveProbeIndex(UniformProbeIndirection.ProbeIndex, AdaptiveProbeArrayIndex - 1) : 0;
+	}
+#endif
+
+	float3 ProbeTranslatedWorldCenter = GetProbeTranslatedWorldPositionForVisualization(ProbeCoord, ProbeIndex);
+
+
+#if ADAPTIVE_PROBES
+	if (AdaptiveProbeArrayIndex == 0)
+	{
+		#define VISUALIZE_IDEAL_PROBE_POSITION 0
+		#if VISUALIZE_IDEAL_PROBE_POSITION
+		uint NumProbeInterpolationMisses = LastFrameProbeInterpolationMisses[UniformProbeIndirection.ProbeIndex];
+
+		if (NumProbeInterpolationMisses > 0)
+		{
+			float CellPrecision = 128.0f;
+			float2 QuantizeScaleAndBias = CellPrecision * float2(.5f / GetRadianceProbeClipmapCellSize(ProbeClipmapIndex), .5f);
+			float3 AccumulatedIdealProbePosition = (float3(
+				LastFrameProbeInterpolationMisses[1 * MaxNumProbes + UniformProbeIndirection.ProbeIndex], 
+				LastFrameProbeInterpolationMisses[2 * MaxNumProbes + UniformProbeIndirection.ProbeIndex], 
+				LastFrameProbeInterpolationMisses[3 * MaxNumProbes + UniformProbeIndirection.ProbeIndex]) / (float)NumProbeInterpolationMisses - QuantizeScaleAndBias.y) / QuantizeScaleAndBias.x;
+
+			ProbeTranslatedWorldCenter += AccumulatedIdealProbePosition;
+		}
+		#endif
+	}
+#endif
+
+	Output.CellSphere.xyz = ProbeTranslatedWorldCenter;
+	Output.CellSphere.w = VisualizeRadius;
+	Output.PositionTWS = LocalPosition + ProbeTranslatedWorldCenter;
+	Output.ProbeCoord = ProbeCoord;
+	Output.AdaptiveProbeArrayIndex = AdaptiveProbeArrayIndex; 
+	OutPosition = mul(float4(Output.PositionTWS, 1.0f), PrimaryView.TranslatedWorldToClip);
+
+	if (!bValid)
+	{
+		OutPosition = 0;
+	}
+}
+
+void VisualizeRadianceCachePS(
+	FVisualizeRadianceCacheVSToPS Input,
+	out float4 OutColor : SV_Target0
+)
+{
+	float3 RayDirection = Input.PositionTWS;
+	float2 SphereIntersections = RayIntersectSphere(0, RayDirection, Input.CellSphere);
+	float3 IntersectionPosition = SphereIntersections.x * RayDirection;
+	clip(SphereIntersections.x);
+
+	float3 SphereNormal = normalize(IntersectionPosition - Input.CellSphere.xyz);
+
+	FProbeIndirectionDesc UniformProbeIndirection = GetProbeIndirection(Input.ProbeCoord, ProbeClipmapIndex);
+
+	uint ProbeIndex = UniformProbeIndirection.ProbeIndex;
+	bool bValid = UniformProbeIndirection.bValid;
+
+#if ADAPTIVE_PROBES
+	if (Input.AdaptiveProbeArrayIndex > 0)
+	{
+		bValid = Input.AdaptiveProbeArrayIndex - 1 < UniformProbeIndirection.NumAdaptiveProbes;
+		ProbeIndex = bValid ? GetAdaptiveProbeIndex(UniformProbeIndirection.ProbeIndex, Input.AdaptiveProbeArrayIndex - 1) : 0;
+	}
+#endif
+
+	float3 Lighting = 0.0f;
+
+	#if VISUALIZE_MODE == VISUALIZE_MODE_SKY_VISIBILITY
+	{
+		FRadianceCacheSample RadianceCacheSample = SampleRadianceCacheProbe(ProbeIndex, SphereNormal, 0);
+		Lighting = RadianceCacheSample.SkyVisibility;
+	}
+	#else // VISUALIZE_MODE == VISUALIZE_MODE_RADIANCE
+	{
+		#if RADIANCE_CACHE_IRRADIANCE
+		{
+			float Albedo = .3f;
+			float2 ProbeUV = InverseEquiAreaSphericalMapping(SphereNormal);
+			Lighting = SampleIrradianceCacheProbe(ProbeIndex, ProbeUV) * Albedo;
+
+			#define DEBUG_VISUALIZE_PROBE_OCCLUSION 0
+			#if DEBUG_VISUALIZE_PROBE_OCCLUSION
+				Lighting = float3(.001f * SampleProbeOcclusion(ProbeIndex, SphereNormal).xxx / GetRadianceProbeClipmapCellSize(ProbeClipmapIndex));
+			#endif
+
+			#define DEBUG_VISUALIZE_PROBES_WITH_OFFSETS 1
+			#if DEBUG_VISUALIZE_PROBES_WITH_OFFSETS
+				if (dot(ProbeWorldOffset[ProbeIndex].xyz, ProbeWorldOffset[ProbeIndex].xyz) > 0.0f)
+				{
+					Lighting.g += .1f;
+				}
+			#endif
+
+			#define DEBUG_VISUALIZE_BACKFACE_HITS 0
+			#if DEBUG_VISUALIZE_BACKFACE_HITS
+			if (SampleRadianceCacheProbe(ProbeIndex, SphereNormal, 0).bBackface)
+			{
+				Lighting = float3(1, 0, 0);
+			}
+			#endif
+			
+			#define DEBUG_VISUALIZE_UNIFORM_PROBES_WITH_ADAPTIVE_PROBES 0
+			#if ADAPTIVE_PROBES && DEBUG_VISUALIZE_UNIFORM_PROBES_WITH_ADAPTIVE_PROBES
+				if (Input.AdaptiveProbeArrayIndex == 0 && UniformProbeIndirection.NumAdaptiveProbes > 0)
+				{
+					Lighting = float3(1, 1, 0);
+				}
+			#endif
+
+			#define DEBUG_VISUALIZE_INVALID_PROBES 1
+			#if DEBUG_VISUALIZE_INVALID_PROBES
+			if (SampleProbeValid(ProbeIndex) < 1.0f)
+			{
+				Lighting = float3(1, 0, 0);
+			}
+			#endif
+
+			#define DEBUG_VISUALIZE_ADAPTIVE_PROBES 1
+			#if ADAPTIVE_PROBES && DEBUG_VISUALIZE_ADAPTIVE_PROBES
+				if (Input.AdaptiveProbeArrayIndex > 0)
+				{
+					Lighting = float3(0, 1, 1);
+				}
+			#endif
+		}
+		#else
+		{
+			FRadianceCacheSample RadianceCacheSample = SampleRadianceCacheProbe(ProbeIndex, SphereNormal, 0);
+			RadianceCacheSample = RadianceCacheResolveSky(RadianceCacheSample, SphereNormal);
+			Lighting = RadianceCacheSample.Radiance;
+		}
+		#endif
+	}
+	#endif
+
+	// Vertex shader should have culled
+	if (!bValid)
+	{
+		Lighting = float3(0, 1000.0f, 0);
+	}
+
+	Lighting *= View.PreExposure;
+
+	OutColor = float4(Lighting, 1.0f);
+}

@@ -1,0 +1,91 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+#pragma once
+
+#define USE_HAIR_COMPLEX_TRANSMITTANCE 1
+
+#include "../Common.ush"
+#include "LumenMaterial.ush"
+#include "LumenPosition.ush"
+#include "../DeferredShadingCommon.ush"
+#include "../StochasticLighting/StochasticLightingCommon.ush"
+#include "../StochasticLighting/StochasticLightingUpsample.ush"
+
+uint2 IntegrateViewMin;
+uint2 IntegrateViewSize;
+float2 DownsampledBufferInvSize;
+
+float2 DownsampledCoordToScreenUV(uint2 DownsampledCoord, uint DownsampleFactor)
+{
+	uint2 ScreenCoord = DownsampledCoord * DownsampleFactor + GetDownsampledCoordJitter(DownsampledCoord, DownsampleFactor);
+	float2 ScreenUV = (ScreenCoord + 0.5f) * View.BufferSizeAndInvSize.zw;
+	return ScreenUV;
+}
+
+Texture2D<float> DownsampledSceneDepth;
+Texture2D<UNORM float3> DownsampledSceneWorldNormal;
+
+float GetNormalWeight(float3 SceneWorldNormal, uint2 DownsampledScreenCoord)
+{
+	float3 SampleWorldNormal = normalize(DecodeNormal(DownsampledSceneWorldNormal[DownsampledScreenCoord]));
+
+	float AngleBetweenNormals = acosFast(saturate(dot(SampleWorldNormal, SceneWorldNormal)));
+	float NormalWeight = 1.0f - saturate(AngleBetweenNormals);
+
+	return Pow2(NormalWeight);
+}
+
+uint2 GetStochasticBilinearOffsetForUpsample(uint2 SvPosition, float2 ScreenUV, float3 TranslatedWorldPosition, float3 WorldNormal, float SceneDepth, float RandomScalar, uint DownsampleFactor)
+{
+	// Prepare weights for upsampling
+	float4 UpsampleWeights = 0.0f;
+	{
+		int2 DownsampledCoord00 = floor(ScreenUV * View.BufferSizeAndInvSize.xy / DownsampleFactor - 0.5f);
+		float2 DownsampledGatherUV = (DownsampledCoord00 + 1.0f) * DownsampledBufferInvSize;
+
+		float4 CornerDepths = DownsampledSceneDepth.GatherRed(GlobalPointClampedSampler, DownsampledGatherUV).wzxy;
+
+		int2 ScreenCoordOffset = SvPosition - DownsampledCoord00 * 2;
+		int2 SampleOffset00 = GetDownsampledCoordJitter(DownsampledCoord00 + uint2(0, 0), DownsampleFactor) + uint2(0, 0) * 2 - ScreenCoordOffset;
+		int2 SampleOffset10 = GetDownsampledCoordJitter(DownsampledCoord00 + uint2(1, 0), DownsampleFactor) + uint2(1, 0) * 2 - ScreenCoordOffset;
+		int2 SampleOffset01 = GetDownsampledCoordJitter(DownsampledCoord00 + uint2(0, 1), DownsampleFactor) + uint2(0, 1) * 2 - ScreenCoordOffset;
+		int2 SampleOffset11 = GetDownsampledCoordJitter(DownsampledCoord00 + uint2(1, 1), DownsampleFactor) + uint2(1, 1) * 2 - ScreenCoordOffset;
+
+		// Triangle filter weights between pixel and 4 samples
+		UpsampleWeights.x = (2.0f - abs(SampleOffset00.x)) * (2.0f - abs(SampleOffset00.y));
+		UpsampleWeights.y = (2.0f - abs(SampleOffset10.x)) * (2.0f - abs(SampleOffset10.y));
+		UpsampleWeights.z = (2.0f - abs(SampleOffset01.x)) * (2.0f - abs(SampleOffset01.y));
+		UpsampleWeights.w = (2.0f - abs(SampleOffset11.x)) * (2.0f - abs(SampleOffset11.y));
+
+		float4 DepthWeights = 0.0f;	
+		{
+			float4 ScenePlane = float4(WorldNormal, dot(TranslatedWorldPosition, WorldNormal));
+
+			float3 Position00 = GetTranslatedWorldPositionFromScreenUV(DownsampledCoordToScreenUV(DownsampledCoord00 + uint2(0, 0), DownsampleFactor), CornerDepths.x);
+			float3 Position10 = GetTranslatedWorldPositionFromScreenUV(DownsampledCoordToScreenUV(DownsampledCoord00 + uint2(1, 0), DownsampleFactor), CornerDepths.y);
+			float3 Position01 = GetTranslatedWorldPositionFromScreenUV(DownsampledCoordToScreenUV(DownsampledCoord00 + uint2(0, 1), DownsampleFactor), CornerDepths.z);
+			float3 Position11 = GetTranslatedWorldPositionFromScreenUV(DownsampledCoordToScreenUV(DownsampledCoord00 + uint2(1, 1), DownsampleFactor), CornerDepths.w);
+
+			float4 PlaneDistances;
+			PlaneDistances.x = abs(dot(float4(Position00, -1), ScenePlane));
+			PlaneDistances.y = abs(dot(float4(Position10, -1), ScenePlane));
+			PlaneDistances.z = abs(dot(float4(Position01, -1), ScenePlane));
+			PlaneDistances.w = abs(dot(float4(Position11, -1), ScenePlane));
+
+			float4 RelativeDepthDifference = PlaneDistances / SceneDepth;
+
+			DepthWeights = select(CornerDepths > 0.0f, exp2(-10000.0f * (RelativeDepthDifference * RelativeDepthDifference)), 0.0f);
+		}
+		UpsampleWeights *= DepthWeights;
+
+		float4 NormalWeights = 1.0f;
+		{
+			NormalWeights.x = GetNormalWeight(WorldNormal, DownsampledCoord00 + uint2(0, 0));
+			NormalWeights.y = GetNormalWeight(WorldNormal, DownsampledCoord00 + uint2(1, 0));
+			NormalWeights.z = GetNormalWeight(WorldNormal, DownsampledCoord00 + uint2(0, 1));
+			NormalWeights.w = GetNormalWeight(WorldNormal, DownsampledCoord00 + uint2(1, 1));
+		}
+		UpsampleWeights *= NormalWeights;
+	}
+
+	return GetStochasticBilinearOffset(RandomScalar, UpsampleWeights);
+}

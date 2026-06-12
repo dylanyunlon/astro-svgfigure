@@ -1,0 +1,91 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "../StochasticLighting/StochasticLightingCommon.ush"
+
+Texture2D<uint2> EncodedHistoryScreenCoordTexture;
+Texture2DArray<uint> PackedPixelDataTexture;
+
+float4 HistorySubPixelGridSizeAndInvSize;
+uint2 HistoryScreenCoordDecodeShift;
+float MaxFramesAccumulated;
+
+struct Bilinear
+{
+	float2 Origin;
+	float2 Weights;
+};
+
+Bilinear GetBilinearFilter(uint2 ScreenCoord)
+{
+	uint2 Encoded = EncodedHistoryScreenCoordTexture[ScreenCoord];
+	float4 Decoded = DecodeHistoryScreenCoord(Encoded, HistoryScreenCoordDecodeShift, HistorySubPixelGridSizeAndInvSize.zw);
+
+	Bilinear Result;
+	Result.Origin = Decoded.xy;
+	Result.Weights = Decoded.zw;
+	return Result;
+}
+
+float4 GetBilinearCustomWeights(Bilinear F, float4 CustomWeights)
+{
+	float4 Weights;
+	Weights.x = (1.0f - F.Weights.x) * (1.0f - F.Weights.y);
+	Weights.y = F.Weights.x * (1.0f - F.Weights.y);
+	Weights.z = (1.0f - F.Weights.x) * F.Weights.y;
+	Weights.w = F.Weights.x * F.Weights.y;
+	return Weights * CustomWeights;
+}
+
+float4 WeightedAverage(float4 V00, float4 V10,  float4 V01,  float4 V11, float4 Weights)
+{
+	float4 Result = V00 * Weights.x + V10 * Weights.y + V01 * Weights.z + V11 * Weights.w;
+	return Result / max(dot(Weights, 1), .00001f);
+}
+
+float3 WeightedAverage(float3 V00, float3 V10,  float3 V01,  float3 V11, float4 Weights)
+{
+	float3 Result = V00 * Weights.x + V10 * Weights.y + V01 * Weights.z + V11 * Weights.w;
+	return Result / max(dot(Weights, 1), .00001f);
+}
+
+float WeightedAverage(float4 V, float4 Weights)
+{	
+	return dot(V, Weights) / max(dot(Weights, 1), .00001f);
+}
+
+#if PLATFORM_SUPPORTS_REAL_TYPES
+half4 WeightedAverage(half4 V00, half4 V10,  half4 V01,  half4 V11, half4 Weights)
+{
+	half4 Result = V00 * Weights.x + V10 * Weights.y + V01 * Weights.z + V11 * Weights.w;
+	return Result / max(dot(Weights, half(1.0)), half(0.0001));
+}
+
+half WeightedAverage(half4 V, half4 Weights)
+{	
+	return dot(V, Weights) / max(dot(Weights, half(1.0)), half(0.0001));
+}
+#endif
+
+// Pack into 8 bits. NumFramesAccumulated in [3:0] and FastUpdateModeAmount in [7:4]
+float PackFastUpdateModeAmountAndNumFramesAccumulated(float FastUpdateModeAmount, float NumFramesAccumulated)
+{
+	// Use ceil so that only 0 is mapped to 0. That is, only not moving is encoded as not moving
+	float EncodedFastUpdateModeAmount = ceil(FastUpdateModeAmount * 15.0f);
+
+	// Clamp max to 15 because we only have 4 bits. This means that any value >= 15 will be mapped to MaxFramesAccumulated
+	float LocalMaxFramesAccumulated = min(MaxFramesAccumulated, 15.0f);
+	float EncodedNumFramesAccumulated = round(saturate(NumFramesAccumulated / LocalMaxFramesAccumulated) * 15.0f);
+	
+	return (EncodedFastUpdateModeAmount * 16.0f + EncodedNumFramesAccumulated) / 255.0f;
+}
+
+void UnpackFastUpdateModeAmountAndNumFramesAccumulated(float4 Packed, out float4 OutFastUpdateModeAmount, out float4 OutNumFramesAccumulated)
+{
+	Packed = round(Packed * 255.0f);
+	float4 EncodedFastUpdateModeAmount = floor(Packed / 16.0f);
+	float4 EncodedNumFramesAccumulated = Packed - EncodedFastUpdateModeAmount * 16.0f;
+	OutFastUpdateModeAmount = EncodedFastUpdateModeAmount / 15.0f;
+	OutNumFramesAccumulated = select(EncodedNumFramesAccumulated == 15.0f, MaxFramesAccumulated, EncodedNumFramesAccumulated / 15.0f * min(MaxFramesAccumulated, 15.0f));
+}

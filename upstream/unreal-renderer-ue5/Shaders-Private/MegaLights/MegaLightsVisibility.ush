@@ -1,0 +1,71 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Must match C++ and bit extraction below
+#define VISIBLE_LIGHT_HASH_SIZE			4 // 4 uints
+#define HIDDEN_LIGHT_HASH_SIZE			2 // 2 uints
+
+bool IsLightVisible(uint VisibleLightHash[VISIBLE_LIGHT_HASH_SIZE], uint LightIndex)
+{
+	const uint LightHash = XXHash32(LightIndex);
+
+	uint DWORDIndex0 = BitFieldExtractU32(LightHash, 2, 0);
+	uint DWORDIndex1 = BitFieldExtractU32(LightHash, 2, 2);
+	uint BitIndex0	 = BitFieldExtractU32(LightHash, 5, 4);
+	uint BitIndex1	 = BitFieldExtractU32(LightHash, 5, 9);
+
+	uint BitMask0 = 1u << BitIndex0;
+	uint BitMask1 = 1u << BitIndex1;
+
+	bool Test0 = (VisibleLightHash[DWORDIndex0] & BitMask0) != 0;
+	bool Test1 = (VisibleLightHash[DWORDIndex1] & BitMask1) != 0;
+
+	return and(Test0, Test1);
+}
+
+void MarkVisibleLight(inout uint VisibleLightHash[VISIBLE_LIGHT_HASH_SIZE], uint LightHash)
+{
+	uint DWORDIndex0 = BitFieldExtractU32(LightHash, 2, 0);
+	uint DWORDIndex1 = BitFieldExtractU32(LightHash, 2, 2);
+	uint BitIndex0	 = BitFieldExtractU32(LightHash, 5, 4);
+	uint BitIndex1	 = BitFieldExtractU32(LightHash, 5, 9);
+
+	uint BitMask0 = 1u << BitIndex0;
+	uint BitMask1 = 1u << BitIndex1;
+
+	VisibleLightHash[DWORDIndex0] |= BitMask0;
+	VisibleLightHash[DWORDIndex1] |= BitMask1;
+}
+
+bool IsLightHidden(StructuredBuffer<uint> HiddenLightHashBuffer, uint LinearTileCoord, uint LightIndex)
+{
+	const uint LightHash = XXHash32(LightIndex);
+
+	uint DWORDIndex0 = BitFieldExtractU32(LightHash, 1, 0);
+	uint DWORDIndex1 = BitFieldExtractU32(LightHash, 1, 1);
+	uint BitIndex0	 = BitFieldExtractU32(LightHash, 5, 2);
+	uint BitIndex1	 = BitFieldExtractU32(LightHash, 5, 7);
+
+	uint BitMask0 = 1u << BitIndex0;
+	uint BitMask1 = 1u << BitIndex1;
+
+	bool Test0 = (HiddenLightHashBuffer[LinearTileCoord * HIDDEN_LIGHT_HASH_SIZE + DWORDIndex0] & BitMask0) != 0;
+	bool Test1 = (HiddenLightHashBuffer[LinearTileCoord * HIDDEN_LIGHT_HASH_SIZE + DWORDIndex1] & BitMask1) != 0;
+
+	return and(Test0, Test1);
+}
+
+void MarkHiddenLight(inout uint HiddenLightHash[HIDDEN_LIGHT_HASH_SIZE], uint LightHash)
+{
+	uint DWORDIndex0 = BitFieldExtractU32(LightHash, 1, 0);
+	uint DWORDIndex1 = BitFieldExtractU32(LightHash, 1, 1);
+	uint BitIndex0	 = BitFieldExtractU32(LightHash, 5, 2);
+	uint BitIndex1	 = BitFieldExtractU32(LightHash, 5, 7);
+
+	uint BitMask0 = 1u << BitIndex0;
+	uint BitMask1 = 1u << BitIndex1;
+
+	HiddenLightHash[DWORDIndex0] |= BitMask0;
+	HiddenLightHash[DWORDIndex1] |= BitMask1;
+}

@@ -1,0 +1,155 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "Common.ush"
+#include "ScreenPass.ush"
+#include "ForwardShadowingCommon.ush"
+
+Texture2D SceneDepthTexture;
+SamplerState SceneDepthSampler;
+
+FScreenTransform PassSvPositionToViewportUV;
+FScreenTransform ViewportUVToDepthUV;
+float4 CascadeAlphaFractions;
+float4 FarCascadeAlphaFractions;
+float3 FrozenTranslatedViewOrigin; // 0 = if no frozen data
+float3 FrozenViewForward;          
+float4 FrozenSplitFarValues;       // xyzw per-CSM-cascade frozen split far in frozen camera space; 0 = cascade not frozen
+float4 FarFrozenSplitFarValues;    // xyzw per-far-cascade frozen split far in frozen camera space; 0 = far cascade not frozen
+float4x4 LiveToFrozenClipMatrices[4];    
+float4x4 LiveToFrozenFarClipMatrices[4]; 
+
+float DiagonalStripesPattern(float2 ScreenPos, float Thickness)
+{
+	float V = frac((ScreenPos.x + ScreenPos.y) / Thickness);
+	return step(0.5f, V);
+}
+
+void MainPS(float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
+{
+	float2 ViewportUV = ApplyScreenTransform(SvPosition.xy, PassSvPositionToViewportUV);
+	float2 DepthUV = ApplyScreenTransform(ViewportUV, ViewportUVToDepthUV);
+
+	float DeviceZ = SceneDepthTexture.SampleLevel(SceneDepthSampler, DepthUV, 0).r;
+	float SceneDepth = ConvertFromDeviceZ(DeviceZ);
+
+	const float4 CascadeColors[9] =
+	{
+		float4(1.0, 0.0, 0.0, 0.35), // CSM 0: red
+		float4(1.0, 1.0, 0.0, 0.35), // CSM 1: yellow
+		float4(0.0, 1.0, 0.0, 0.35), // CSM 2: green
+		float4(0.0, 0.0, 1.0, 0.35), // CSM 3: blue
+		float4(0.0, 1.0, 1.0, 0.35), // Far 0: cyan       
+		float4(1.0, 0.5, 0.0, 0.35), // Far 1: orange
+		float4(0.5, 0.0, 1.0, 0.35), // Far 2: violet
+		float4(1.0, 1.0, 1.0, 0.35), // Far 3: white
+		float4(1.0, 0.0, 1.0, 0.5),  // beyond all shadows: pink
+	};
+
+	float4 TranslatedWorldPos = mul(float4(SvPosition.xy, DeviceZ, 1.0), View.SVPositionToTranslatedWorld);
+	TranslatedWorldPos.xyz /= TranslatedWorldPos.w;
+	float FrozenDepth = dot(TranslatedWorldPos.xyz - FrozenTranslatedViewOrigin, FrozenViewForward);
+
+	uint CascadeIndex;
+	if (any(FrozenSplitFarValues > 0.0))
+	{
+		CascadeIndex = 4u;
+		if (FrozenSplitFarValues.x > 0.0 && FrozenDepth < FrozenSplitFarValues.x)
+		{
+			CascadeIndex = 0u;
+		}
+		else if (FrozenSplitFarValues.y > 0.0 && FrozenDepth < FrozenSplitFarValues.y)
+		{
+			CascadeIndex = 1u;
+		}
+		else if (FrozenSplitFarValues.z > 0.0 && FrozenDepth < FrozenSplitFarValues.z)
+		{
+			CascadeIndex = 2u;
+		}
+		else if (FrozenSplitFarValues.w > 0.0 && FrozenDepth < FrozenSplitFarValues.w)
+		{
+			CascadeIndex = 3u;
+		}
+
+		if (CascadeIndex < 4u && FrozenSplitFarValues[CascadeIndex] > 0.0)
+		{
+			float4 FrozenClip = mul(float4(TranslatedWorldPos.xyz, 1.0), LiveToFrozenClipMatrices[CascadeIndex]);
+			float3 NDC = FrozenClip.xyz / FrozenClip.w;
+			if (any(abs(NDC.xy) > 1.0) || NDC.z < 0.0 || NDC.z > 1.0)
+			{
+				CascadeIndex = 8u;
+			}
+		}
+	}
+	else
+	{
+		CascadeIndex = GetForwardLightingCascadeIndex(ForwardDirLightShadowStruct.CascadeEndDepths, SceneDepth);
+		if (CascadeIndex >= ForwardDirLightShadowStruct.NumDirectionalLightCascades)
+		{
+			CascadeIndex = 4u;
+		}
+	}
+
+	if (CascadeIndex == 4u)
+	{
+		if (any(FarFrozenSplitFarValues > 0.0))
+		{
+			uint FarIdx = 4u; // sentinel for "beyond all far cascades"
+			if (FarFrozenSplitFarValues.x > 0.0 && FrozenDepth < FarFrozenSplitFarValues.x)
+			{
+				FarIdx = 0u;
+			}
+			else if (FarFrozenSplitFarValues.y > 0.0 && FrozenDepth < FarFrozenSplitFarValues.y)
+			{
+				FarIdx = 1u;
+			}
+			else if (FarFrozenSplitFarValues.z > 0.0 && FrozenDepth < FarFrozenSplitFarValues.z)
+			{
+				FarIdx = 2u;
+			}
+			else if (FarFrozenSplitFarValues.w > 0.0 && FrozenDepth < FarFrozenSplitFarValues.w)
+			{
+				FarIdx = 3u;
+			}
+
+			if (FarIdx < 4u)
+			{
+				float4 FrozenClip = mul(float4(TranslatedWorldPos.xyz, 1.0), LiveToFrozenFarClipMatrices[FarIdx]);
+				float3 NDC = FrozenClip.xyz / FrozenClip.w;
+				if (any(abs(NDC.xy) > 1.0) || NDC.z < 0.0 || NDC.z > 1.0)
+				{
+					CascadeIndex = 8u;
+				}
+				else
+				{
+					CascadeIndex = 4u + FarIdx;
+				}
+			}
+			else
+			{
+				CascadeIndex = 8u;
+			}
+		}
+		else
+		{
+			uint FarIdx = GetForwardLightingCascadeIndex(ForwardDirLightShadowStruct.FarShadowEndDepths, SceneDepth);
+			if (FarIdx < ForwardDirLightShadowStruct.NumFarShadowCascades)
+			{
+				CascadeIndex = 4u + FarIdx; // 4..7
+			}
+			else
+			{
+				CascadeIndex = 8u;          // beyond
+			}
+		}
+	}
+
+	float AlphaFraction = (CascadeIndex < 4u) ? CascadeAlphaFractions[CascadeIndex]
+						: (CascadeIndex < 8u) ? FarCascadeAlphaFractions[CascadeIndex - 4u]
+						: 1.0;
+	OutColor = CascadeColors[CascadeIndex];
+	OutColor.a *= AlphaFraction;
+	if (CascadeIndex == 8u)
+	{
+		OutColor.a *= DiagonalStripesPattern(SvPosition.xy, 32.0f);
+	}
+}

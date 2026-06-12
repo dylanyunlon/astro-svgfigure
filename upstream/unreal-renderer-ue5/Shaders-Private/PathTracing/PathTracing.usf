@@ -1,0 +1,174 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================================
+PathTracing.usf: Reference path tracing
+===============================================================================================*/
+
+#define PATH_TRACING  1
+
+#define PATH_TRACING_SHADER_VERSION 0x51478b68 // Bump to force-compile this shader
+
+#ifndef PATH_TRACER_DENOISER_TYPE
+#define PATH_TRACER_DENOISER_TYPE PATH_TRACER_DENOISER_ALBEDO_NORMAL
+#endif
+
+#include "../HeterogeneousVolumes/HeterogeneousVolumesVoxelGridTypes.ush" // Must be included before Common.ush
+#include "../Common.ush"
+
+// Ensure specular profile and glints are supported
+#if SUBSTRATE_ENABLED && PATH_TRACER_USE_SUBSTRATE_SPECIAL_COMPLEX_MATERIAL
+#define SUBSTRATE_COMPLEXSPECIALPATH 1
+#endif
+
+// describe how we split up the image between tiles and amongst GPUs
+int2 TilePixelOffset;
+int2 TileTextureOffset;
+int ScanlineStride;
+int ScanlineWidth;
+
+// Which pixel on screen are we computing?
+// We want to spread out the scanlines evenly across the screen so that each GPU works on a similarly sized task
+int2 ComputePixelIndex(uint2 DispatchIdx)
+{
+	return DispatchIdx * int2(1, ScanlineStride) + TilePixelOffset;
+}
+
+// Where should we store the accumulated pixels of this dispatch?
+// We want all the scanlines computed by a given GPU to be contiguous in memory so we can copy them easily
+int2 ComputeTextureIndex(uint2 DispatchIdx)
+{
+	return DispatchIdx + TileTextureOffset;
+}
+
+uint2 UnpackTextureIndex(uint PackedTextureIndex)
+{
+    return ComputeTextureIndex(UnpackUInt2FromUInt(PackedTextureIndex));
+}
+
+#include "PathTracingCore.ush"
+
+#if PATH_TRACER_KERNEL_TYPE != PATH_TRACER_KERNEL_CAMERA
+int FirstBounce;
+#endif
+
+RWBuffer<uint> ActivePaths;
+RWBuffer<uint> NumPathStates;
+
+#if PATH_TRACER_KERNEL_TYPE != PATH_TRACER_KERNEL_TAIL
+RWBuffer<uint> NextActivePaths;
+#endif
+
+// Where should we load/store the PathState data from for the current dispatch?
+// We use a linear layout from the original DispatchIdx value
+uint ComputePathStateIndex(uint PathIndex)
+{
+	const uint2 DispatchIdx = UnpackUInt2FromUInt(PathIndex);
+	return DispatchIdx.x + ScanlineWidth * DispatchIdx.y;
+}
+
+RAY_TRACING_ENTRY_RAYGEN(PathTracingMainRG)
+{
+	uint2 DispatchIdx = DispatchRaysIndex().xy;
+	const uint2 DispatchDim = DispatchRaysDimensions().xy;
+
+	uint LinearPixelIndex = DispatchIdx.x + DispatchDim.x * DispatchIdx.y;
+
+#if PATH_TRACER_KERNEL_TYPE == PATH_TRACER_KERNEL_CAMERA
+	const int FirstBounce = 0;
+#endif
+
+#if PATH_TRACER_KERNEL_TYPE != PATH_TRACER_KERNEL_TAIL
+	if (LinearPixelIndex == 0)
+	{
+		// write other dimensions for indirect dispatch of the next bounce
+		NumPathStates[DISPATCH_INDIRECT_UINT_COUNT * (FirstBounce + 1) + 1] = 1;
+		NumPathStates[DISPATCH_INDIRECT_UINT_COUNT * (FirstBounce + 1) + 2] = 1;
+	}
+#endif
+
+#if PATH_TRACER_KERNEL_TYPE == PATH_TRACER_KERNEL_CAMERA
+	uint PathIndex = DispatchIdx.x + 65536 * DispatchIdx.y;
+    #if PATH_TRACER_USE_ADAPTIVE_SAMPLING
+	if (Iteration > 0)
+	{
+		if (LinearPixelIndex >= NumPathStates[0])
+		{
+			return; // nothing left to do on this thread
+		}
+		PathIndex = ActivePaths[LinearPixelIndex];
+        DispatchIdx = UnpackUInt2FromUInt(PathIndex);
+		LinearPixelIndex = DispatchIdx.x + ScanlineWidth * DispatchIdx.y;
+	}
+    #endif
+    {
+        // We are starting a new sample - prepare the pixel
+        const uint2 TextureIndex = ComputeTextureIndex(DispatchIdx);
+        if (Iteration == 0)
+        {
+            // reset pixels to 0 (to avoid problems if a pixel was previously Inf or NaN)
+            RWRadianceTexture[TextureIndex]   = 0;
+            RWAlbedoTexture[TextureIndex]     = 0;
+            RWNormalTexture[TextureIndex]     = 0;
+            RWSceneDepthTexture[TextureIndex] = 0;
+    #if PATH_TRACER_USE_ADAPTIVE_SAMPLING
+            VarianceTexture[TextureIndex] = 0;
+    #endif
+        }
+        else
+        {
+    #if PATH_TRACER_USE_ADAPTIVE_SAMPLING
+            float SampleBlendFactor = 1.0 / (VarianceTexture[TextureIndex].z + 1);
+    #endif
+            // >1spp: scale down by sample blend factor to prepare for new samples
+            // Buffer *= (1 - SampleBlendFactor) (1 sub, 1 mul)
+            // Buffer -= Buffer * SampleBlendFactor (1 FMA)
+            RWRadianceTexture[TextureIndex] = mad(-SampleBlendFactor, RWRadianceTexture[TextureIndex], RWRadianceTexture[TextureIndex]);
+            RWAlbedoTexture[TextureIndex]   = mad(-SampleBlendFactor, RWAlbedoTexture[TextureIndex]  , RWAlbedoTexture[TextureIndex]  );
+            RWNormalTexture[TextureIndex]   = mad(-SampleBlendFactor, RWNormalTexture[TextureIndex]  , RWNormalTexture[TextureIndex]  );
+        }
+
+    }
+	FPathState PathState = CreatePathState(ComputePixelIndex(DispatchIdx), ComputeTextureIndex(DispatchIdx));
+#else // PATH_TRACER_KERNEL_TYPE == PATH_TRACER_KERNEL_INNER
+	// compare to number of active paths from the previous bounce
+	if (LinearPixelIndex >= NumPathStates[DISPATCH_INDIRECT_UINT_COUNT * FirstBounce + 0])
+	{
+		return; // nothing left to do on this thread
+	}
+    uint PathIndex = ActivePaths[LinearPixelIndex];
+    FPathState PathState = LoadPathStateData(ComputePathStateIndex(PathIndex));
+#endif
+    PathState.PackedTextureIndex = PathIndex;
+
+#if PATH_TRACER_KERNEL_TYPE != PATH_TRACER_KERNEL_TAIL
+	const bool KeepGoing = PathTracingKernel(PathState, FirstBounce);
+    PathState.AccumulatePixelRadiance();
+	if (KeepGoing)
+	{
+	    // Add the path to the set of valid paths for the next bounce
+		uint PathStateIndex;
+		InterlockedAdd(NumPathStates[DISPATCH_INDIRECT_UINT_COUNT * (FirstBounce + 1)], 1, PathStateIndex);
+		NextActivePaths[PathStateIndex] = PathState.PackedTextureIndex;
+        StorePathStateData(PathState, ComputePathStateIndex(PathState.PackedTextureIndex));
+	}
+	else
+	{
+		// nothing left to do
+		// Make final adjustements to the pixel now that we know we have accumulated all the radiance for this pixel
+		PathState.FinalizePixel();
+	}
+#else // PATH_TRACER_KERNEL_TYPE == PATH_TRACER_KERNEL_TAIL
+	for (int Bounce = FirstBounce; Bounce <= MaxBounces; Bounce++)
+	{
+		if (!PathTracingKernel(PathState, Bounce))
+		{
+			// kernel had nothing more to do
+			break;
+		}
+	}
+
+	// Accumulate radiance and update pixel variance
+	PathState.AccumulatePixelRadiance();
+    PathState.FinalizePixel();
+#endif
+}

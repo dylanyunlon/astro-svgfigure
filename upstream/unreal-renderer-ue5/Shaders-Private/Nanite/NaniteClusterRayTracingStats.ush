@@ -1,0 +1,41 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Engine/Shared/NaniteRayTracingDefinitions.h"
+
+#include "../WaveOpUtil.ush"
+
+#ifndef NANITERT_GENERATE_STATS
+#define NANITERT_GENERATE_STATS 0
+#endif
+
+RWStructuredBuffer<uint> OutStatsBuffer;
+
+void StatsBufferWrite(uint Index, uint Value, bool bWriteEnabled = true)
+{
+	#if NANITERT_GENERATE_STATS
+	if (bWriteEnabled)
+	{
+		OutStatsBuffer[Index] = Value;
+	}
+	#endif
+}
+
+void StatsBufferInterlockedAdd(uint Index, uint Value, bool bWriteEnabled = true)
+{
+	#if NANITERT_GENERATE_STATS
+	if (bWriteEnabled)
+	{
+		InterlockedAdd(OutStatsBuffer[Index], Value);
+	}
+	#endif
+}
+
+void StatsBufferInterlockedInc(uint Index, bool bWriteEnabled = true)
+{
+	#if NANITERT_GENERATE_STATS
+	if (bWriteEnabled)
+	{
+		WaveInterlockedAddScalar(OutStatsBuffer[Index], 1U);
+	}
+	#endif
+}

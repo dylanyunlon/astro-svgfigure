@@ -1,0 +1,374 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "LumenRadianceCacheInterpolation.ush"
+#include "LumenReflectionsCombine.ush"
+
+Texture2D<float3> RadianceCacheFinalIrradianceAtlas;
+Texture2D<float2> RadianceCacheProbeOcclusionAtlas;
+RWBuffer<uint> RWProbeLastUsedFrame;
+Buffer<uint> ProbeAdaptiveIndices;
+Buffer<uint> ProbeValid;
+uint FinalIrradianceProbeResolution;
+float2 FinalIrradianceAtlasTexelSize;
+uint CalculateIrradiance;
+uint IrradianceProbeResolution; 
+// Resolution of Octahedral layout for sampling
+uint OcclusionProbeResolution;
+uint FinalOcclusionProbeResolution;
+float2 FinalOcclusionAtlasTexelSize;
+
+float3 SampleIrradianceCacheProbe(uint ProbeIndex, float2 ProbeUV)
+{
+	uint2 ProbeAtlasCoord = FinalIrradianceProbeResolution * uint2(ProbeIndex & ProbeAtlasResolutionModuloMask, ProbeIndex >> ProbeAtlasResolutionDivideShift);
+	float2 ProbeTexelCoord = ProbeUV * IrradianceProbeResolution + 1;
+	float2 ProbeAtlasUV = (ProbeAtlasCoord + ProbeTexelCoord) * FinalIrradianceAtlasTexelSize;
+	float3 UnmappedDebugColor = 0.0f;
+	// Show bright green when an unallocated probe is sampled
+	UnmappedDebugColor = float3(0.0f, 10.0f, 0.0f);
+	return ProbeIndex == INVALID_PROBE_INDEX ? UnmappedDebugColor : RadianceCacheFinalIrradianceAtlas.SampleLevel(GlobalBilinearClampedSampler, ProbeAtlasUV, 0.0f) * RadianceCacheOneOverCachedLightingPreExposure;
+}
+
+float2 SampleProbeOcclusion(uint ProbeIndex, float3 WorldSpaceDirection)
+{
+	float2 ProbeUV = InverseEquiAreaSphericalMapping(WorldSpaceDirection);
+
+	uint2 ProbeAtlasCoord = FinalOcclusionProbeResolution * uint2(ProbeIndex & ProbeAtlasResolutionModuloMask, ProbeIndex >> ProbeAtlasResolutionDivideShift);
+	float2 ProbeTexelCoord = ProbeUV * OcclusionProbeResolution + 1;
+	float2 ProbeAtlasUV = (ProbeAtlasCoord + ProbeTexelCoord) * FinalOcclusionAtlasTexelSize;
+
+	return RadianceCacheProbeOcclusionAtlas.SampleLevel(GlobalBilinearClampedSampler, ProbeAtlasUV, 0.0f);
+}
+
+float SampleProbeValid(uint ProbeIndex)
+{
+	return ProbeValid[ProbeIndex] != 0 ? 1.0f : 0.0f;
+}
+
+float3 SampleIrradianceCacheProbeCoord(uint3 ProbeCoord, uint ProbeClipmapIndex, float2 ProbeUV)
+{
+	FProbeIndirectionDesc ProbeIndirection = GetProbeIndirection(ProbeCoord, ProbeClipmapIndex);
+	return any(ProbeCoord >= RadianceProbeClipmapResolution) ? float3(1, 0, 0) : SampleIrradianceCacheProbe(ProbeIndirection.ProbeIndex, ProbeUV);
+}
+
+uint GetAdaptiveProbeIndex(uint UniformProbeIndex, uint ArrayIndex)
+{
+	return ProbeAdaptiveIndices[UniformProbeIndex * MAX_ADAPTIVE_PROBES + ArrayIndex];
+}
+
+void InterpolateIrradianceFromProbe(
+	float3 TranslatedPixelPosition, 
+	float3 TranslatedSamplePosition, 
+	float3 ProbeTranslatedWorldPosition,
+	float3 WorldSpaceNormal, 
+	float2 IrradianceProbeUV,
+	float3 ReflectionWorldSpaceDirection,
+	float ReflectionMipLevel,
+	bool bPixelShouldProcessFeedback, 
+	uint ProbeIndex,
+	float TrilinearWeight,
+	bool bAdaptiveProbe,
+	bool bSampleReflection,
+	float MinWeight,
+	inout float3 OutIrradiance,
+	inout float3 OutReflectionRadiance,
+	inout float OutTotalWeight)
+{
+	float3 SamplePositionToProbe = ProbeTranslatedWorldPosition - TranslatedSamplePosition;
+	float DistanceToProbe = length(SamplePositionToProbe);
+
+	float Weight = 1.0f;	
+
+	float WrapShading = (dot(normalize(ProbeTranslatedWorldPosition - TranslatedPixelPosition), WorldSpaceNormal) + 1.0f) * .5f;
+	Weight *= WrapShading * WrapShading + .2f;
+
+#define CHEBYSHEV_PROBE_OCCLUSION 1
+#if CHEBYSHEV_PROBE_OCCLUSION
+	float2 MeanAndMeanSq = SampleProbeOcclusion(ProbeIndex, -SamplePositionToProbe);
+	float ChebyshevWeight = 1.0f;
+
+	if (DistanceToProbe > MeanAndMeanSq.x)
+	{
+		float Variance = abs(Square(MeanAndMeanSq.x) - MeanAndMeanSq.y);
+		float VisibilityWeight = Variance / (Variance + Square(DistanceToProbe - MeanAndMeanSq.x));
+		ChebyshevWeight = max(VisibilityWeight * VisibilityWeight * VisibilityWeight, 0.0f);
+	}
+
+	Weight *= max(ChebyshevWeight, 0.05f);
+	Weight = max(Weight, MinWeight);
+
+	float WeightCrushThreshold = .2f;
+
+	if (Weight < WeightCrushThreshold)
+	{
+		Weight *= Square(Weight) / Square(WeightCrushThreshold);
+	}
+#elif 0
+	float ProbeDepth = SampleProbeOcclusion(ProbeIndex, -SamplePositionToProbe).x;
+	Weight *= DistanceToProbe < ProbeDepth ? 1 : 0;
+#endif
+
+#define DISCARD_INVALID_PROBES 1
+#if DISCARD_INVALID_PROBES
+	float ProbeValid = max(SampleProbeValid(ProbeIndex), .001f);
+	Weight = max(Weight * ProbeValid, MinWeight);
+#endif
+
+	Weight *= TrilinearWeight;
+
+#if ADAPTIVE_PROBES
+	if (Weight > MinWeight && bAdaptiveProbe && bPixelShouldProcessFeedback)
+	{
+		RWProbeLastUsedFrame[ProbeIndex] = View.StateFrameIndex;
+	}
+#endif
+
+	float3 SampleIrradiance = SampleIrradianceCacheProbe(ProbeIndex, IrradianceProbeUV);
+	float3 SampleReflectionRadiance = bSampleReflection ? SampleRadianceCacheProbe(ProbeIndex, ReflectionWorldSpaceDirection, ReflectionMipLevel).Radiance : 0;
+
+	OutIrradiance += sqrt(SampleIrradiance) * Weight;
+	OutReflectionRadiance += sqrt(SampleReflectionRadiance) * Weight;
+	OutTotalWeight += Weight;
+}
+
+struct FIrradianceCacheInterpolation
+{
+	bool bSuccess;
+	uint3 ProbeCoord;
+};
+
+float3 SampleIrradianceCacheInterpolated(
+	float3 TranslatedPixelPosition, 
+	float3 TranslatedSamplePosition, 
+	float3 WorldSpaceNormal, 
+	float3 ReflectionWorldSpaceDirection,
+	float ReflectionConeHalfAngle,
+	uint ClipmapIndex, 
+	bool bPixelShouldProcessFeedback, 
+	bool bSampleReflection,
+	out float3 OutReflectionRadiance,
+	out FIrradianceCacheInterpolation OutInterpolation)
+{
+	float2 IrradianceProbeUV = InverseEquiAreaSphericalMapping(WorldSpaceNormal);
+	float MinWeight = .0001f;
+
+	float3 Irradiance = 0;
+	OutReflectionRadiance = 0;
+	OutInterpolation = (FIrradianceCacheInterpolation)0;
+	OutInterpolation.bSuccess = true;
+
+#define PROBE_OCCLUSION_INTERPOLATION 1
+#if PROBE_OCCLUSION_INTERPOLATION
+
+	float3 ProbeCoordFloat = GetRadianceProbeCoordFloat(TranslatedSamplePosition, ClipmapIndex);
+	float3 CornerProbeCoordFloat = ProbeCoordFloat - .5f;
+	uint3 CornerProbeCoord = clamp((int3)floor(CornerProbeCoordFloat), (int3)0, (int3)(RadianceProbeClipmapResolution - 2));
+	float3 LerpAlphas = frac(CornerProbeCoordFloat);
+	float ReflectionConeNumTexels = sqrt(1.0f - cos(ReflectionConeHalfAngle)) * RadianceProbeResolution;
+	float ReflectionMipLevel = clamp(log2(ReflectionConeNumTexels), 0, (float)FinalRadianceAtlasMaxMip);
+	
+	float TotalWeight = 0;
+
+	for (uint NeighborIndex = 0; NeighborIndex < 8; NeighborIndex++)
+	{
+		uint3 ProbeOffset = uint3((NeighborIndex & 4) >> 2, (NeighborIndex & 2) >> 1, NeighborIndex & 1);
+
+		uint3 ProbeCoord = CornerProbeCoord + ProbeOffset;
+		FProbeIndirectionDesc ProbeIndirection = GetProbeIndirection(ProbeCoord, ClipmapIndex);
+
+		if (ProbeIndirection.bValid)
+		{
+			float3 ProbeTranslatedWorldPosition = GetProbeTranslatedWorldPosition(ProbeCoord, ClipmapIndex, ProbeIndirection.ProbeIndex);
+			float3 TrilinearWeights = max(select(ProbeOffset > 0, LerpAlphas, 1 - LerpAlphas), .001f);
+			float TrilinearWeight = TrilinearWeights.x * TrilinearWeights.y * TrilinearWeights.z;
+
+			InterpolateIrradianceFromProbe(
+				TranslatedPixelPosition, 
+				TranslatedSamplePosition, 
+				ProbeTranslatedWorldPosition,
+				WorldSpaceNormal, 
+				IrradianceProbeUV,
+				ReflectionWorldSpaceDirection, 
+				ReflectionMipLevel,
+				bPixelShouldProcessFeedback, 
+				ProbeIndirection.ProbeIndex,
+				TrilinearWeight,
+				false,
+				bSampleReflection,
+				MinWeight,
+				Irradiance,
+				OutReflectionRadiance,
+				TotalWeight);
+
+			#if ADAPTIVE_PROBES
+			for (uint i = 0; i < ProbeIndirection.NumAdaptiveProbes; i++)
+			{
+				uint AdaptiveProbeIndex = GetAdaptiveProbeIndex(ProbeIndirection.ProbeIndex, i);
+				
+				float3 AdaptiveProbeTranslatedWorldPosition = GetProbeTranslatedWorldPosition(ProbeCoord, ClipmapIndex, AdaptiveProbeIndex);
+
+				InterpolateIrradianceFromProbe(
+					TranslatedPixelPosition, 
+					TranslatedSamplePosition, 
+					AdaptiveProbeTranslatedWorldPosition,
+					WorldSpaceNormal,
+					IrradianceProbeUV, 
+					ReflectionWorldSpaceDirection, 
+					ReflectionMipLevel,
+					bPixelShouldProcessFeedback, 
+					AdaptiveProbeIndex,
+					TrilinearWeight,
+					true,
+					bSampleReflection,
+					MinWeight,
+					Irradiance,
+					OutReflectionRadiance,
+					TotalWeight);
+			}
+			#endif
+		}
+	}
+
+	float InvTotalWeight = 1.0f / max(TotalWeight, MinWeight);
+	Irradiance = Square(Irradiance * InvTotalWeight);
+	OutReflectionRadiance = Square(OutReflectionRadiance * InvTotalWeight);
+
+	if (TotalWeight < MinWeight * 8 * 1.5f)
+	{
+		OutInterpolation.bSuccess = false;
+		OutInterpolation.ProbeCoord = clamp((int3)floor(ProbeCoordFloat), (int3)0, (int3)(RadianceProbeClipmapResolution - 1));
+	}
+
+#else
+
+	float3 ProbeCoordFloat = GetRadianceProbeCoordFloat(TranslatedPixelPosition, ClipmapIndex);
+	float3 CornerProbeCoordFloat = ProbeCoordFloat - .5f;
+	uint3 CornerProbeCoord = clamp((int3)floor(CornerProbeCoordFloat), (int3)0, (int3)(RadianceProbeClipmapResolution - 2));
+	float3 LerpAlphas = frac(CornerProbeCoordFloat);
+
+	float3 Lighting000 = SampleIrradianceCacheProbeCoord(CornerProbeCoord + int3(0, 0, 0), ClipmapIndex, IrradianceProbeUV);
+	float3 Lighting001 = SampleIrradianceCacheProbeCoord(CornerProbeCoord + int3(0, 0, 1), ClipmapIndex, IrradianceProbeUV);
+	float3 Lighting010 = SampleIrradianceCacheProbeCoord(CornerProbeCoord + int3(0, 1, 0), ClipmapIndex, IrradianceProbeUV);
+	float3 Lighting011 = SampleIrradianceCacheProbeCoord(CornerProbeCoord + int3(0, 1, 1), ClipmapIndex, IrradianceProbeUV);
+	float3 Lighting100 = SampleIrradianceCacheProbeCoord(CornerProbeCoord + int3(1, 0, 0), ClipmapIndex, IrradianceProbeUV);
+	float3 Lighting101 = SampleIrradianceCacheProbeCoord(CornerProbeCoord + int3(1, 0, 1), ClipmapIndex, IrradianceProbeUV);
+	float3 Lighting110 = SampleIrradianceCacheProbeCoord(CornerProbeCoord + int3(1, 1, 0), ClipmapIndex, IrradianceProbeUV);
+	float3 Lighting111 = SampleIrradianceCacheProbeCoord(CornerProbeCoord + int3(1, 1, 1), ClipmapIndex, IrradianceProbeUV);
+
+	float3 ZLerp00 = lerp(Lighting000, Lighting001, LerpAlphas.z);
+	float3 ZLerp01 = lerp(Lighting010, Lighting011, LerpAlphas.z);
+	float3 ZLerp10 = lerp(Lighting100, Lighting101, LerpAlphas.z);
+	float3 ZLerp11 = lerp(Lighting110, Lighting111, LerpAlphas.z);
+
+	float3 YLerp0 = lerp(ZLerp00, ZLerp01, LerpAlphas.y);
+	float3 YLerp1 = lerp(ZLerp10, ZLerp11, LerpAlphas.y);
+
+	Irradiance = lerp(YLerp0, YLerp1, LerpAlphas.x);
+#endif
+
+	return Irradiance;
+}
+
+
+#if ADAPTIVE_PROBES
+RWBuffer<uint> RWProbeInterpolationMisses;
+uint MaxNumProbes;
+
+void HandleInterpolationMisses(FIrradianceCacheInterpolation Interpolation, uint ClipmapIndex, float3 TranslatedSamplePosition)
+{
+	if (!Interpolation.bSuccess)
+	{
+		uint ProbeIndex = GetProbeIndexFromIndirectionTexture(Interpolation.ProbeCoord, ClipmapIndex);
+		float3 ProbeTranslatedWorldPosition = GetProbeTranslatedWorldPositionNoOffset(Interpolation.ProbeCoord, ClipmapIndex);
+		float3 IdealProbeOffset = TranslatedSamplePosition - ProbeTranslatedWorldPosition;
+		InterlockedAdd(RWProbeInterpolationMisses[ProbeIndex], 1);
+		//@todo - handle overflow
+		float CellPrecision = 128.0f;
+		float2 QuantizeScaleAndBias = CellPrecision * float2(.5f / GetRadianceProbeClipmapCellSize(ClipmapIndex), .5f);
+		uint3 QuantizedIdealProbeOffset = clamp(round(IdealProbeOffset * QuantizeScaleAndBias.x + QuantizeScaleAndBias.y), 0.0f, CellPrecision);
+		InterlockedAdd(RWProbeInterpolationMisses[1 * MaxNumProbes + ProbeIndex], QuantizedIdealProbeOffset.x);
+		InterlockedAdd(RWProbeInterpolationMisses[2 * MaxNumProbes + ProbeIndex], QuantizedIdealProbeOffset.y);
+		InterlockedAdd(RWProbeInterpolationMisses[3 * MaxNumProbes + ProbeIndex], QuantizedIdealProbeOffset.z);
+	}
+}
+#endif
+
+float MaxRoughnessToEvaluateRoughSpecular;
+float ProbeOcclusionBias;
+
+float3 GetIrradianceFieldSamplingOffset(float3 MaterialWorldNormal, float3 V, float CellSize)
+{
+	float CameraDistance = GetDistanceToCameraFromViewVector(-V);
+	// Reduce the view dependent bias as the camera gets closer than the distance between probes
+	float ViewBias = lerp(0.0, 0.8, saturate(CameraDistance / CellSize));
+	// Single tweakable interpolation bias that combines normal offset with offset toward camera and is proportional to the distance between probes
+	float3 BiasOffset = (MaterialWorldNormal * 0.2 + V * ViewBias) * (0.75 * CellSize * ProbeOcclusionBias);
+	return BiasOffset;
+}
+
+void GetIrradianceFieldInterpolatedLighting(
+	float2 PixelPos,
+	float3 TranslatedWorldPosition,
+	float3 MaterialWorldNormal,
+	float  MaterialRoughness,
+	float3 WorldNormalForReflection,
+	bool bHasBackfaceDiffuse,
+	bool bPixelShouldProcessFeedback,
+	inout float3 OutDiffuseLighting, 
+	inout float3 OutSpecularLighting)
+{
+	float3 V = -GetCameraVectorFromTranslatedWorldPosition(TranslatedWorldPosition);
+	float ClipmapDither = InterleavedGradientNoise(PixelPos, View.StateFrameIndexMod8);
+	uint ClipmapIndex = GetRadianceProbeClipmap(TranslatedWorldPosition, ClipmapDither);
+	float3 ReflectionVector = reflect(-V, WorldNormalForReflection);
+	float ConeHalfAngle = saturate(MaterialRoughness * .8f);
+	float DiffuseLerp = RoughReflectionsDiffuseLerp(MaterialRoughness, bHasBackfaceDiffuse, 0.1f /*FadeLength*/, MaxRoughnessToEvaluateRoughSpecular, 0.0f /*MaxRoughnessToEvaluateRoughSpecularForFoliage*/);
+
+	OutDiffuseLighting = 0;
+	OutSpecularLighting = 0;
+
+	if (ClipmapIndex < NumRadianceProbeClipmaps)
+	{
+		float CellSize = GetRadianceProbeClipmapCellSize(ClipmapIndex);
+		float3 BiasOffset = GetIrradianceFieldSamplingOffset(MaterialWorldNormal, V, CellSize);
+		float3 TranslatedSamplePosition = TranslatedWorldPosition + BiasOffset;
+
+		bool bSampleReflection = DiffuseLerp < 1.0f;
+
+		FIrradianceCacheInterpolation Interpolation;
+		OutDiffuseLighting = SampleIrradianceCacheInterpolated(
+			TranslatedWorldPosition, 
+			TranslatedSamplePosition, 
+			MaterialWorldNormal, 
+			ReflectionVector, 
+			ConeHalfAngle, 
+			ClipmapIndex, 
+			bPixelShouldProcessFeedback, 
+			bSampleReflection, 
+			OutSpecularLighting, 
+			Interpolation);
+
+		#if ADAPTIVE_PROBES
+		if (bPixelShouldProcessFeedback)
+		{
+			HandleInterpolationMisses(Interpolation, ClipmapIndex, TranslatedSamplePosition);
+		}
+		#endif
+
+		#define DEBUG_VISUALIZE_INTERPOLATION_MISS 0
+		#if DEBUG_VISUALIZE_INTERPOLATION_MISS
+		if (!Interpolation.bSuccess)
+		{
+			OutDiffuseLighting = float3(1, 0, 0);
+		}
+		#endif
+	}
+	else
+	{
+		OutDiffuseLighting = GetSkySHDiffuse(MaterialWorldNormal) * View.SkyLightColor.rgb;
+		OutSpecularLighting = EvaluateSkyRadiance(ReflectionVector, RadianceProbeResolution);
+	}
+
+	OutSpecularLighting = lerp(OutSpecularLighting, OutDiffuseLighting, DiffuseLerp);
+}

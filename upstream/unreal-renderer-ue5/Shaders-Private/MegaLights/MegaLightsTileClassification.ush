@@ -1,0 +1,20 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#define MEGALIGHTS_TILE_BITMASK_SIMPLE				0x01
+#define MEGALIGHTS_TILE_BITMASK_SINGLE				0x02
+#define MEGALIGHTS_TILE_BITMASK_COMPLEX				0x04
+#define MEGALIGHTS_TILE_BITMASK_COMPLEX_SPECIAL		0x08
+#define MEGALIGHTS_TILE_BITMASK_RECT_LIGHT			0x10
+#define MEGALIGHTS_TILE_BITMASK_TEXTURED_RECT_LIGHT	0x20
+
+#define MEGALIGHTS_TILE_BITMASK_FAST_CLEAR_MASK (MEGALIGHTS_TILE_BITMASK_SIMPLE \
+                                                    | MEGALIGHTS_TILE_BITMASK_SINGLE \
+                                                    | MEGALIGHTS_TILE_BITMASK_COMPLEX \
+                                                    | MEGALIGHTS_TILE_BITMASK_COMPLEX_SPECIAL)
+
+bool IsFastClearTile(uint TileBitmask)
+{ 
+	return (TileBitmask & MEGALIGHTS_TILE_BITMASK_FAST_CLEAR_MASK) == 0;
+}

@@ -1,0 +1,49 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Shared/CurveSkinningDefinitions.h"
+
+// --------------------------------------------------------------------------
+// GlobalCurveSolverCS
+//
+// Dummy curve simulation doing wave motion
+// --------------------------------------------------------------------------
+
+ByteAddressBuffer    Headers;
+ByteAddressBuffer    RestPositionBuffer;
+RWByteAddressBuffer  OutDeformedPositionBuffer;
+
+uint  HeaderIndex;
+float CurrentTime;
+float WaveAmplitude;
+float WaveFrequency;
+
+[numthreads(POINTS_PER_GROUP, 1, 1)]
+void GlobalCurveSolverCS(uint GroupId : SV_GroupID, uint GroupThreadId : SV_GroupThreadID)
+{
+	const FCurveSkinningHeader Header = LoadCurveSkinningHeader(Headers, HeaderIndex);
+
+	const uint CurveIndex = GroupId.x;
+
+	if (CurveIndex >= Header.NumCurves)
+	{
+		return;
+	}
+
+	for (uint PointIndex = GroupThreadId; PointIndex < Header.NumPointsPerCurve; PointIndex += POINTS_PER_GROUP)
+	{
+		const float3 RestPos = LoadCurveSkinningRestPosition(RestPositionBuffer, Header, CurveIndex, PointIndex);
+
+		const float UCoord = (Header.NumPointsPerCurve > 1)
+			? (float(PointIndex) / float(Header.NumPointsPerCurve - 1))
+			: 0.0f;
+
+		// Wave displacement: amplitude scales from 0 at root to full at tip so the
+		// root remains fixed (kinematic boundary condition).
+		const float Phase = float(CurveIndex) * WaveFrequency + CurrentTime * 2.5f;
+		const float Disp  = UCoord * WaveAmplitude * sin(Phase);
+		const float3 DeformedPos = RestPos + float3(0.0f, Disp, 0.0f);
+
+		StoreCurveSkinningDeformedPosition(OutDeformedPositionBuffer, Header, CurveIndex, PointIndex, /*bPrevious=*/false, DeformedPos);
+	}
+}

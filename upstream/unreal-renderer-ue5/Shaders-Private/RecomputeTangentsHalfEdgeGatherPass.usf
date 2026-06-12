@@ -1,0 +1,239 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	RecomputeTangentsHalfEdgeGatherPass.usf: Single-pass per-vertex recompute
+	tangents using cooked half-edge connectivity (FSkeletalMeshHalfEdgeBuffer).
+
+	One thread per section vertex. Each thread:
+	  1. Walks the 1-ring of triangles around the vertex via the half-edge buffer,
+	     accumulating angle-weighted face TZ/TX/orientation in registers. Each visited
+	     triangle reads its corner-0 stored handedness (.w) from the static source tangent
+	     SRV to match RecomputeTangentsPerTrianglePass.usf's behaviour.
+	  2. Normalises and (optionally) orthogonalises the result.
+	  3. Optionally lerps with the originally-skinned tangent using a vertex-color mask.
+	  4. Writes the final tangent.
+
+	No atomics, no per-vertex accumulator buffer. The half-edge connectivity already
+	bridges UV-seam duplicates across position-identical vertices, so no separate
+	DuplicatedVertices fixup is needed.
+
+	The walk is clamped to the current section's triangle range so that section
+	seams behave identically to the scatter path (no cross-section contamination).
+=============================================================================*/
+
+#include "/Engine/Public/Platform.ush"
+#include "RecomputeTangentsCommon.ush"
+#include "FastMath.ush"
+
+// Orthogonalise TX against TZ after the gather (matches scatter vertex pass).
+#define ORTHOGONALIZE 1
+
+#ifndef BLEND_USING_VERTEX_COLOR
+	#define BLEND_USING_VERTEX_COLOR 0
+#endif
+
+// Half-edge connectivity, indexed by LOD-global vertex / edge indices.
+StructuredBuffer<int> VertexToEdgeBuffer;
+StructuredBuffer<int> EdgeToTwinEdgeBuffer;
+
+// Source (rest-pose) asset tangents. We only sample the orientation sign (w component), which is
+// invariant under linear skinning. Reading from this static SRV — rather than the post-skinning
+// tangent buffer — avoids binding TangentBuffer as both SRV and UAV in the no-blend case.
+Buffer<SNORM float4> SourceTangentBuffer;
+
+// Section-local cache start (== Section->BaseVertexIndex). Position/tangent reads use this
+// as the base; the scatter path inherits the same value from RecomputeTangentsCommon.ush's
+// SkinCacheStart but the gather kernel keeps its own name for clarity.
+uint OutputStreamStart;
+
+// Triangle-index clamp. The half-edge buffer is built over the full LOD, so naive twin-hops
+// would cross section boundaries; we restrict the walk to [Begin, End).
+uint SectionTriangleBegin;
+uint SectionTriangleEnd;
+
+// Declared unconditionally so the C++ FParameters binding always lines up; only read inside
+// the BLEND_USING_VERTEX_COLOR permutation block (matches RecomputeTangentsPerVertexPass.usf).
+uint           VertexColorChannel;
+Buffer<float4> ColorInputBuffer;
+
+// --- helpers ----------------------------------------------------------------
+
+// Returns a unit vector perpendicular to In (any choice; used for degenerate UV cases).
+float3 FindPerpendicularTo(float3 In)
+{
+	float3 Other = (abs(normalize(In).z) < 0.5f)
+		? float3(0.0f, 0.0f, 1.0f)
+		: float3(1.0f, 0.0f, 0.0f);
+	return cross(Other, In);
+}
+
+// Fetch position and UV0 for a section-local vertex index.
+void FetchVertex(uint LocalIdx, out float3 Pos, out float2 UV)
+{
+	const uint OutputOffset = LocalIdx + OutputStreamStart;
+	Pos.x = GPUPositionCacheBuffer[3u * OutputOffset + 0u];
+	Pos.y = GPUPositionCacheBuffer[3u * OutputOffset + 1u];
+	Pos.z = GPUPositionCacheBuffer[3u * OutputOffset + 2u];
+
+	const uint InputOffset = LocalIdx + InputStreamStart;
+	UV = UVsInputBuffer[InputOffset * NumTexCoords];
+}
+
+// Compute face TZ, TX, orientation sign, and the corner angle of triangle `Tri`
+// at corner `CornerOfV` (the corner that occupies the gathering vertex).
+//
+// To match RecomputeTangentsPerTrianglePass.usf exactly: orientation uses corner 0's stored .w
+// (NOT the gathering vertex's). At a mirror seam this matters; we want byte-for-byte parity
+// with scatter so visual artifacts (if any) are identical.
+void ProcessTriangle(uint Tri, uint CornerOfV,
+	out float3 TZ, out float3 TX, out float OrientSign, out float CornerAngle)
+{
+	float3 P[3];
+	float2 UV[3];
+	UNROLL for (uint k = 0; k < 3; ++k)
+	{
+		const uint GlobalIdx = IndexBuffer[Tri * 3u + k];
+		const uint LocalIdx  = GlobalIdx - InputStreamStart;
+		FetchVertex(LocalIdx, P[k], UV[k]);
+	}
+
+	const float3 EdgeA = P[1] - P[0];
+	const float3 EdgeB = P[2] - P[0];
+	const float3 TriN  = cross(EdgeB, EdgeA);
+	TZ = normalize(TriN);
+
+	// Solve for TX from the UV-space basis (matches RecomputeTangentsPerTrianglePass.usf).
+	const float2 UVA = UV[1] - UV[0];
+	const float2 UVB = UV[2] - UV[0];
+	const float  cp  = UVA.y * UVB.x - UVA.x * UVB.y;
+
+	float3 UnnormTX = (EdgeA * -UVB.y + EdgeB * UVA.y) / cp;
+	if (abs(cp) < 0.000001f)
+	{
+		UnnormTX = FindPerpendicularTo(TZ);
+	}
+
+	TX         = normalize(UnnormTX);
+
+	// Read corner 0's stored handedness — same as scatter's Corner[0].OriginalOrientation.
+	const uint GlobalCorner0 = IndexBuffer[Tri * 3u + 0u];
+	const float Corner0W = TangentBias_SkinCache(SourceTangentBuffer[2u * GlobalCorner0 + GPUSKIN_VB_OFFSET_TANGENT_Z]).w;
+	const float Corner0Orientation = (Corner0W <= 0.0f) ? -1.0f : 1.0f;
+
+	OrientSign = ((cp > 0.0f) ? 1.0f : -1.0f) * Corner0Orientation;
+
+	// Corner angle at the gathering vertex.
+	const float3 ECCW = P[(CornerOfV + 1u) % 3u] - P[CornerOfV];
+	const float3 ECW  = P[(CornerOfV + 2u) % 3u] - P[CornerOfV];
+	CornerAngle = AngleBetweenVectorsFast(ECCW, ECW);
+}
+
+// --- main -------------------------------------------------------------------
+
+[numthreads(THREADGROUP_SIZEX, 1, 1)]
+void MainCS(uint DispatchThreadId : SV_DispatchThreadID)
+{
+	if (DispatchThreadId >= NumVertices)
+	{
+		return;
+	}
+
+	const uint LocalV  = DispatchThreadId;
+	const uint Offset  = LocalV + OutputStreamStart;
+	const uint GlobalV = LocalV + InputStreamStart;
+
+	// Walk the fan. BuildHalfEdgeBuffers stores a "head" edge at border verts so a single
+	// forward sweep covers either an open fan (terminates at -1) or a closed loop
+	// (terminates when we revisit the start).
+	//
+	// Walk direction: twin → +1 corner. This matches the deformer-graph kernel
+	// (DG_LinearBlendSkin_Morph_Cloth_RecomputeNormals) and is the inverse of
+	// SkeletalMeshHalfEdgeBuffer's GetHeadEdgeForVertex (which walks backward to FIND the head),
+	// which is the correct forward iteration from the head.
+	int CurEdge   = VertexToEdgeBuffer[GlobalV];
+	int StartEdge = CurEdge;
+
+	float3 AccZ = float3(0.0f, 0.0f, 0.0f);
+	float3 AccX = float3(0.0f, 0.0f, 0.0f);
+	float  AccO = 0.0f;
+
+	// Defensive bound. The head-edge logic should make this unreachable on manifold input;
+	// bail safely on pathological / non-manifold data rather than hang the GPU.
+	const int MaxIterations = 64;
+
+	[loop] for (int Iter = 0; Iter < MaxIterations && CurEdge != -1; ++Iter)
+	{
+		const uint Tri    = (uint)CurEdge / 3u;
+		const uint Corner = (uint)CurEdge % 3u;
+
+		// Stay within this section. The buffer is built over the full LOD, so naive twin-hops
+		// would otherwise pollute a section's tangents with neighbours from a different section.
+		if (Tri < SectionTriangleBegin || Tri >= SectionTriangleEnd)
+		{
+			break;
+		}
+
+		// UV-seam guard. Because the half-edge twin map keys on POSITION, twin-hops bridge
+		// across UV seams: the triangle on the far side uses a DIFFERENT vertex index that
+		// happens to share position with GlobalV. TangentZ (normal) is consistent across the
+		// seam — accumulate from both sides. TangentX and orientation are UV-space quantities
+		// and only valid on this side. Matches the deformer-graph kernel.
+		const uint CornerVertex = IndexBuffer[Tri * 3u + Corner];
+		const bool bThisSide    = (CornerVertex == GlobalV);
+
+		// ProcessTriangle bakes in corner 0's stored handedness — matches scatter exactly.
+		float3 fTZ; float3 fTX; float fO; float Ang;
+		ProcessTriangle(Tri, Corner, fTZ, fTX, fO, Ang);
+
+		AccZ += fTZ * Ang;
+		if (bThisSide)
+		{
+			AccX += fTX * Ang;
+			AccO += fO  * Ang;
+		}
+
+		// Hop to the next triangle in the fan: twin of the current half-edge, then advance
+		// one corner. The current half-edge goes V -> V_next within Tri; its twin lies in
+		// the adjacent triangle pointing V_next -> V; (twin + 1) gives V -> V_other.
+		const int TwinEdge = EdgeToTwinEdgeBuffer[CurEdge];
+		if (TwinEdge == -1)
+		{
+			break;
+		}
+
+		const uint TwinTri = (uint)TwinEdge / 3u;
+		const uint TwinSub = (uint)TwinEdge % 3u;
+		CurEdge = (int)(TwinTri * 3u + (TwinSub + 1u) % 3u);
+
+		if (CurEdge == StartEdge)
+		{
+			break;
+		}
+	}
+
+	float3 TangentZ = normalize(AccZ);
+	float3 TangentX = normalize(AccX);
+#if ORTHOGONALIZE
+	TangentX = normalize(TangentX - dot(TangentX, TangentZ) * TangentZ);
+#endif
+	// Match scatter: write the raw accumulated weighted-sign sum to .w (not a signbitted ±1).
+	// Downstream tangent-frame reconstruction interprets the sign of .w.
+	float Orientation = AccO;
+
+#if BLEND_USING_VERTEX_COLOR
+	{
+		const float4 InTX = TangentBias_SkinCache(TangentInputBuffer[2u * Offset + GPUSKIN_RWBUFFER_OFFSET_TANGENT_X]);
+		const float4 InTZ = TangentBias_SkinCache(TangentInputBuffer[2u * Offset + GPUSKIN_RWBUFFER_OFFSET_TANGENT_Z]);
+
+		const float4 BF = ColorInputBuffer[LocalV + InputStreamStart] FMANUALFETCH_COLOR_COMPONENT_SWIZZLE;
+		const float Blend = (VertexColorChannel == 0u) ? BF.r : ((VertexColorChannel == 1u) ? BF.g : BF.b);
+
+		TangentX    = normalize(lerp(InTX.xyz, TangentX, Blend));
+		TangentZ    = normalize(lerp(InTZ.xyz, TangentZ, Blend));
+		Orientation = (Blend < 0.5f) ? InTZ.w : Orientation;
+	}
+#endif
+
+	TangentBufferUAV[2u * Offset + GPUSKIN_RWBUFFER_OFFSET_TANGENT_X] = TangentUnbias_SkinCache(float4(TangentX, 0.0f));
+	TangentBufferUAV[2u * Offset + GPUSKIN_RWBUFFER_OFFSET_TANGENT_Z] = TangentUnbias_SkinCache(float4(TangentZ, Orientation));
+}

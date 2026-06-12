@@ -1,0 +1,355 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "../Common.ush"
+#include "/Engine/Shared/PathTracingDefinitions.h"
+#include "/Engine/Shared/RayTracingTypes.h"
+
+
+// Common Shader Parameters
+uint EnabledDirectLightingContributions;
+uint EnabledIndirectLightingContributions;
+#if PATH_TRACER_USE_ADAPTIVE_SAMPLING == 0
+float SampleBlendFactor;
+#endif
+float MaxPathIntensity;
+float BaseExposure;
+
+
+RWTexture2D<float4> RWRadianceTexture;
+#if PATH_TRACER_DENOISER_TYPE == PATH_TRACER_DENOISER_ALBEDO_NORMAL
+RWTexture2D<float4> RWAlbedoTexture;
+RWTexture2D<float4> RWNormalTexture;
+RWTexture2D<float>  RWSceneDepthTexture;
+#endif
+#if PATH_TRACER_DENOISER_TYPE == PATH_TRACER_DENOISER_GUIDE_BUFFERS
+RWTexture2D<float4> RWDiffuseColorTexture;
+RWTexture2D<float4> RWSpecularColorTexture;
+RWTexture2D<float4> RWNormalTexture;
+RWTexture2D<float>  RWRoughnessTexture;
+RWTexture2D<float>  RWLinearDepthTexture;
+#endif
+#if PATH_TRACER_USE_ADAPTIVE_SAMPLING
+RWTexture2D<float4> VarianceTexture;
+#endif
+
+struct FPathState
+{                                   // packed size
+	FRandomSequence RandSequence;   //  8 bytes
+	FRayDesc Ray;                   // 12+12 = 24 bytes (TMin/TMax do not need to be stored)
+	float3 PathThroughput;          // 12 bytes
+	uint2 PackedRoughnessSigma;     // 2 bytes // half precision (PathRoughness)
+	                                // 6 bytes // half precision  (SigmaT)
+	                                // 3 bits - packed in sign bits of SigmaT (FirstScatterType)
+	uint2 PackedScatterPhase;       // 6 bytes // half precision (SigmaS)
+	                                // 2 bytes // phase g (could be quantized further)
+	                                // 60 bytes total (see FPathTracingPackedPathState)
+
+	// Temporary parameters, not stored in packed state
+#if PATH_TRACER_KERNEL_TYPE == PATH_TRACER_KERNEL_CAMERA
+	float DepthZ;                   // Camera ray depth (don't need it otherwise)
+	float Alpha;
+#endif
+	float3 Radiance;
+#if PATH_TRACER_DENOISER_TYPE == PATH_TRACER_DENOISER_ALBEDO_NORMAL
+    float3 DenoiserAlbedo;
+    float3 DenoiserNormal;
+#elif PATH_TRACER_DENOISER_TYPE == PATH_TRACER_DENOISER_GUIDE_BUFFERS
+    float3 DenoiserDiffuse;
+    float3 DenoiserSpecular;
+    float3 DenoiserNormal;
+    float DenoiserRoughness;
+#endif
+    uint PackedTextureIndex;
+
+	uint GetFirstScatterType()
+	{
+		// Extract SigmaT sign bits
+		uint a = (PackedRoughnessSigma.x >> 29) & 4u;
+		uint b = (PackedRoughnessSigma.y >> 30) & 2u;
+		uint c = (PackedRoughnessSigma.y >> 15) & 1u;
+		return a | b | c;
+	}
+
+	void SetFirstScatterType(uint ScatterType)
+	{
+		uint a = ScatterType & 4u;
+		uint b = ScatterType & 2u;
+		uint c = ScatterType & 1u;
+		// erase old value
+		PackedRoughnessSigma.x &= 0x7fffffffu;
+		PackedRoughnessSigma.y &= 0x7fff7fffu;
+		// set new value
+		PackedRoughnessSigma.x |= a << 29;
+		PackedRoughnessSigma.y |= b << 30;
+		PackedRoughnessSigma.y |= c << 15;
+	}
+
+	float GetPathRoughness()
+	{
+		return f16tof32(PackedRoughnessSigma.x);
+	}
+
+	void SetPathRoughness(float PathRoughness)
+	{
+		PackedRoughnessSigma.x &= 0xffff0000u;
+		PackedRoughnessSigma.x |= f32tof16(PathRoughness);
+	}
+	
+	float3 GetSigmaT()
+	{
+		return abs(float3(f16tof32(PackedRoughnessSigma.x >> 16),
+		                  f16tof32(PackedRoughnessSigma.y),
+		                  f16tof32(PackedRoughnessSigma.y >> 16)));
+	}
+
+	void SetSigmaT(float3 SigmaT)
+	{
+		// erase old value (keeping sign bits)
+		PackedRoughnessSigma.x &= 0x8000ffffu;
+		PackedRoughnessSigma.y &= 0x80008000u;
+		SigmaT = abs(SigmaT); // make sure there are no sign bits
+		// write new value
+		PackedRoughnessSigma.x |= f32tof16(SigmaT.x) << 16;
+		PackedRoughnessSigma.y |= f32tof16(SigmaT.y);
+		PackedRoughnessSigma.y |= f32tof16(SigmaT.z) << 16;
+	}
+
+    float4 GetSigmaSAndPhase()
+	{
+		return float4(UnpackFloat2FromUInt(PackedScatterPhase.x), UnpackFloat2FromUInt(PackedScatterPhase.y));
+	}
+
+	void SetSigmaSAndPhase(float3 SigmaS, float PhaseG)
+	{
+		PackedScatterPhase.x = PackFloat2ToUInt(SigmaS.xy);
+		PackedScatterPhase.y = PackFloat2ToUInt(float2(SigmaS.z, PhaseG));
+	}
+
+	bool HasMadeContributionScatter()
+	{
+		// The first scattering type that matters for the PATHTRACER_CONTRIBUTION_* flags is the first non-refractive one
+		// We choose to track camera and pure refracted paths together so that objects behind glass can be treated the same as directly visible objects.
+		uint FirstScatterType = GetFirstScatterType();
+		return !(FirstScatterType == PATHTRACER_SCATTER_CAMERA ||
+			     FirstScatterType == PATHTRACER_SCATTER_REFRACT);
+	}
+
+	bool HasMadeDiffuseOrSpecularScatter()
+	{
+		uint FirstScatterType = GetFirstScatterType();
+		return FirstScatterType == PATHTRACER_SCATTER_DIFFUSE || FirstScatterType == PATHTRACER_SCATTER_SPECULAR;
+	}
+
+    uint GetInstanceInclusionMaskOpaque()
+    {
+        uint FirstScatterType = GetFirstScatterType();
+        if (FirstScatterType == PATHTRACER_SCATTER_CAMERA ||
+            FirstScatterType == PATHTRACER_SCATTER_REFRACT)
+        {
+            return PATHTRACER_MASK_CAMERA_OPAQUE;
+        }
+        if (FirstScatterType == PATHTRACER_SCATTER_SPECULAR)
+        {
+            return PATHTRACER_MASK_REFLECTION_OPAQUE;
+        }
+        return PATHTRACER_MASK_INDIRECT_OPAQUE;
+    }
+
+    uint GetInstanceInclusionMaskTranslucent()
+    {
+        uint FirstScatterType = GetFirstScatterType();
+        if (FirstScatterType == PATHTRACER_SCATTER_CAMERA ||
+            FirstScatterType == PATHTRACER_SCATTER_REFRACT)
+        {
+            return PATHTRACER_MASK_CAMERA_TRANSLUCENT;
+        }
+        if (FirstScatterType == PATHTRACER_SCATTER_SPECULAR)
+        {
+            return PATHTRACER_MASK_REFLECTION_TRANSLUCENT;
+        }
+        return PATHTRACER_MASK_INDIRECT_TRANSLUCENT;
+    }
+
+	bool UpdateScatterType(uint ScatterType)
+	{
+		// Keep track of the first non-refractive scatter type, and leave it "locked" beyond this
+		// This ensures a particular pixel can only contribute to one lighting component.
+		// The reason to not split refractive events is that you typically want to treat refracted paths the same as camera paths.
+		// For example, when extracting just the diffuse component of a character wearing glasses, you would want the directly visible diffuse
+		// and refracted diffuse to be treated the same.
+		if (!HasMadeContributionScatter())
+		{
+			SetFirstScatterType(ScatterType);
+		}
+		switch (GetFirstScatterType())
+		{
+			// In these cases, only keep tracing if the corresponding lighting component is enabled
+			case PATHTRACER_SCATTER_DIFFUSE:  return (EnabledIndirectLightingContributions & PATHTRACER_CONTRIBUTION_DIFFUSE ) != 0;
+			case PATHTRACER_SCATTER_SPECULAR: return (EnabledIndirectLightingContributions & PATHTRACER_CONTRIBUTION_SPECULAR) != 0;
+			case PATHTRACER_SCATTER_VOLUME:   return (EnabledIndirectLightingContributions & PATHTRACER_CONTRIBUTION_VOLUME  ) != 0;
+		}
+		// In all other cases, keep tracing, we haven't made a final decision on what this path is yet
+		return true;
+	}
+
+	bool ShouldAccumulateEmissive()
+	{
+		uint EnabledLightingContributions = HasMadeContributionScatter() ? EnabledIndirectLightingContributions : EnabledDirectLightingContributions;
+		return (EnabledLightingContributions & PATHTRACER_CONTRIBUTION_EMISSIVE) != 0;
+	}
+
+	// The following functions allow us to scale down the contributions for lighting components before we have scattered
+	bool ShouldAccumulateDiffuse()
+	{
+		return (HasMadeContributionScatter() || (EnabledDirectLightingContributions & PATHTRACER_CONTRIBUTION_DIFFUSE) != 0);
+	}
+
+	bool ShouldAccumulateSpecular()
+	{
+		return (HasMadeContributionScatter() || (EnabledDirectLightingContributions & PATHTRACER_CONTRIBUTION_SPECULAR) != 0);
+	}
+
+	bool ShouldAccumulateVolume()
+	{
+		return (HasMadeContributionScatter() || (EnabledDirectLightingContributions & PATHTRACER_CONTRIBUTION_VOLUME) != 0);
+	}
+
+	float2 GetDiffuseSpecularScale(bool bIsVolumeSample)
+	{
+		float2 Result = 0.0;
+		if (bIsVolumeSample)
+		{
+			if (ShouldAccumulateVolume())
+			{
+				Result.x = 1.0;
+			}
+		}
+		else
+		{
+			if (ShouldAccumulateDiffuse())
+			{
+				Result.x = 1.0;
+			}
+			if (ShouldAccumulateSpecular())
+			{
+				Result.y = 1.0;
+			}
+		}
+		return Result;
+	}
+
+	void AccumulatePixel()
+	{
+        const uint2 TextureIndex = UnpackTextureIndex(PackedTextureIndex);
+#if PATH_TRACER_USE_ADAPTIVE_SAMPLING
+		const float SampleBlendFactor = 1.0 / (VarianceTexture[TextureIndex].z + 1);
+#endif
+
+        // Only camera rays contribute to the alpha channel
+#if PATH_TRACER_KERNEL_TYPE == PATH_TRACER_KERNEL_CAMERA
+		const float4 PixelValue = float4(Radiance, Alpha);
+#else
+        const float4 PixelValue = float4(Radiance, 0);
+#endif
+        RWRadianceTexture[TextureIndex]     += SampleBlendFactor * PixelValue;
+#if PATH_TRACER_KERNEL_TYPE == PATH_TRACER_KERNEL_CAMERA
+    #if PATH_TRACER_DENOISER_TYPE == PATH_TRACER_DENOISER_GUIDE_BUFFERS
+        RWDiffuseColorTexture[TextureIndex]  += SampleBlendFactor * float4(DenoiserDiffuse, 0);
+        RWSpecularColorTexture[TextureIndex] += SampleBlendFactor * float4(DenoiserSpecular, 0);
+        RWNormalTexture[TextureIndex]        += SampleBlendFactor * float4(DenoiserNormal, DenoiserRoughness);
+        RWRoughnessTexture[TextureIndex]     += SampleBlendFactor * DenoiserRoughness;
+		RWLinearDepthTexture[TextureIndex]   = min(RWLinearDepthTexture[TextureIndex], DepthZ);
+    #elif PATH_TRACER_DENOISER_TYPE == PATH_TRACER_DENOISER_ALBEDO_NORMAL
+        RWSceneDepthTexture[TextureIndex]    = max(RWSceneDepthTexture[TextureIndex], ConvertToDeviceZ(DepthZ));
+    #endif
+#endif
+#if PATH_TRACER_DENOISER_TYPE == PATH_TRACER_DENOISER_ALBEDO_NORMAL
+		RWAlbedoTexture[TextureIndex] += SampleBlendFactor * float4(DenoiserAlbedo, 0);
+		RWNormalTexture[TextureIndex] += SampleBlendFactor * float4(DenoiserNormal, 0);
+#endif
+	}
+
+    void AccumulatePixelRadiance()
+    {
+        const uint2 TextureIndex = UnpackTextureIndex(PackedTextureIndex);
+#if PATH_TRACER_USE_ADAPTIVE_SAMPLING
+		const float SampleBlendFactor = 1.0 / (VarianceTexture[TextureIndex].z + 1);
+#endif
+        RWRadianceTexture[TextureIndex].xyz += SampleBlendFactor * Radiance.xyz;
+    }
+
+    void AccumulateRadiance(float3 PathRadiance)
+    {
+        // fold in the PreExposure factor so that clamping can be performed relative to the current exposure level
+        PathRadiance *= BaseExposure;
+    #if PATH_TRACER_KERNEL_TYPE == PATH_TRACER_KERNEL_CAMERA
+        // camera rays, clamp at a fairly high level for half-float final storage into SceneColor buffer
+        float MaxIntensity = MaxHalfFloat;
+    #else
+        // User asked for path contributions to be clamped to reduce fireflies from indirect paths
+        // This puts an upper bound on variance within the pixel at the expense of bias
+        float MaxIntensity = MaxPathIntensity;
+    #endif
+        // compute factor that will clamp the intensity but preserve the color
+        float Adjust = MaxIntensity / max(max(MaxIntensity, PathRadiance.x), max(PathRadiance.y, PathRadiance.z));
+        // accumulate into the total
+        Radiance += PathRadiance * Adjust;
+    }
+
+    void FinalizePixel()
+    {
+#if PATH_TRACER_USE_ADAPTIVE_SAMPLING
+        const uint2 TextureIndex = UnpackTextureIndex(PackedTextureIndex);
+        float4 OldVariance = VarianceTexture[TextureIndex];
+		const float BlendFactor = 1.0 / (OldVariance.z + 1);
+        const float OldLum = OldVariance.x;
+        const float NewLum = Luminance(RWRadianceTexture[TextureIndex].xyz);
+
+        // figure out luminance^2 by working out how much was added between OldLum and NewLum
+        OldVariance.y *= (1 - BlendFactor); // Scale down old amount
+        // add Blend * Lum^2
+        OldVariance.y += Pow2(NewLum - (1 - BlendFactor) * OldLum) * (OldVariance.z + 1);
+		VarianceTexture[TextureIndex] = float4(NewLum, OldVariance.y, OldVariance.z + 1.0, 0.0);
+#endif
+    }
+};
+
+
+RWStructuredBuffer<FPathTracingPackedPathState> PathStateData;
+
+#if PATH_TRACER_KERNEL_TYPE != PATH_TRACER_KERNEL_CAMERA
+FPathState LoadPathStateData(uint Index)
+{
+    
+	FPathTracingPackedPathState Data = PathStateData[Index];
+	FPathState Output = (FPathState)0;
+	Output.RandSequence.SampleIndex = Data.RandSeqSampleIndex;
+	Output.RandSequence.SampleSeed  = Data.RandSeqSampleSeed;
+	Output.Ray.Origin = Data.RayOrigin;
+	Output.Ray.Direction = Data.RayDirection;
+	Output.Ray.TMin = 0;
+	Output.Ray.TMax = RAY_DEFAULT_T_MAX;
+	Output.PathThroughput = Data.PathThroughput;
+	Output.PackedRoughnessSigma = Data.PackedRoughnessSigma;
+	Output.PackedScatterPhase = Data.PackedScatterPhase;
+	return Output;
+}
+#endif
+
+#if PATH_TRACER_KERNEL_TYPE != PATH_TRACER_KERNEL_TAIL
+void StorePathStateData(FPathState PathState, uint Index)
+{
+	FPathTracingPackedPathState Data;
+	Data.RandSeqSampleIndex = PathState.RandSequence.SampleIndex;
+	Data.RandSeqSampleSeed  = PathState.RandSequence.SampleSeed;
+	Data.RayOrigin = PathState.Ray.Origin;
+	Data.RayDirection = PathState.Ray.Direction;
+	Data.PathThroughput = PathState.PathThroughput;
+	Data.PackedRoughnessSigma = PathState.PackedRoughnessSigma;
+	Data.PackedScatterPhase = PathState.PackedScatterPhase;
+	PathStateData[Index] = Data;
+}
+#endif
+

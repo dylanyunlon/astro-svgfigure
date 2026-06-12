@@ -1,0 +1,63 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../LightGridCommon.ush"
+#include "../MegaLights/MegaLightsEstimateLight.ush"
+#include "../LightFunctionAtlas/LightFunctionAtlasCommon.usf"
+
+#ifdef ComputeLightPowerDeltaCS
+
+RWBuffer<float> RWLightPowerHistoryRatio;
+RWBuffer<float> RWLightPower;
+Buffer<float> PrevLightPowerBuffer;
+
+int bUseLightFunctionAtlas;
+int bHasPrevLightPower;
+float HistoryPreExposureCorrection;
+
+FLightFunctionColor GetLightFunctionForPowerEstimate(FDeferredLightData LightData)
+{
+	float2 SampleUV = float2(0.5, 0.5);
+	float3 TranslatedWorldPosition = LightData.bRadialLight ? LightData.TranslatedWorldPosition : View.TranslatedWorldCameraOrigin;
+
+	FLightFunctionSlotData Slot = GetLightFunctionSlotData(LightData.LightFunctionAtlasLightIndex);
+	FLightFunctionColor LightFunctionColor = SampleLightFunctionSlot(Slot, SampleUV);
+	LightFunctionColor = ApplyLightFunctionFade(TranslatedWorldPosition, Slot, LightFunctionColor);
+
+	return LightFunctionColor;
+}
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void ComputeLightPowerDeltaCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint ForwardLightIndex = DispatchThreadId.x;
+
+	if (ForwardLightIndex < ForwardLightStruct.NumLocalLights + ForwardLightStruct.NumDirectionalLights)
+	{
+		FForwardLightData ForwardLightData = GetForwardLightData(ForwardLightIndex, 0);
+		FDeferredLightData LightData = ConvertToDeferredLight(ForwardLightData);
+
+		if (bUseLightFunctionAtlas && LightData.LightFunctionAtlasLightIndex > 0)
+		{
+			LightData.Color *= GetLightFunctionForPowerEstimate(LightData);
+		}
+
+		float LightPower = ComputeLightPower(LightData) * View.PreExposure;
+
+		float PrevLightPower = LightPower;
+		if (bHasPrevLightPower && ForwardLightData.PrevLocalLightIndex >= 0)
+		{
+			PrevLightPower = PrevLightPowerBuffer[ForwardLightData.PrevLocalLightIndex] * HistoryPreExposureCorrection;
+		}
+
+		float LightPowerHistoryRatio = PrevLightPower / max(LightPower, 0.01);
+
+		RWLightPowerHistoryRatio[ForwardLightIndex] = LightPowerHistoryRatio;
+		RWLightPower[ForwardLightIndex] = LightPower;
+	}
+}
+
+#endif

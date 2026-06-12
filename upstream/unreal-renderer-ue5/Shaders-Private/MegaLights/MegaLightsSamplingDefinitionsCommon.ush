@@ -1,0 +1,19 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// When loading SSS checkerboard pixel, do not adjust DiffuseColor/SpecularColor to preserve specular and diffuse lighting values for each pixel
+#define ALLOW_SSS_MATERIAL_CHECKERBOARD_OVERRIDE 0
+
+// Disable hair backlit during sample generation as Hair's TT term creates too much false positive: 
+// the TT terms is very strong, and is in most case occluded by underlying geometry (head/body/...)
+#define HAIR_BSDF_BACKLIT 0
+
+#define USE_IES_PROFILE 1
+#define USE_LIGHT_FUNCTION_ATLAS 1
+
+// #MEGALIGHTS_TODO: implement two-sided and transmission path for Substrate
+#if INPUT_TYPE == 0
+	#define USE_TRANSMISSION 1
+	#define SUBSTRATE_SSS_TRANSMISSION 1
+#endif

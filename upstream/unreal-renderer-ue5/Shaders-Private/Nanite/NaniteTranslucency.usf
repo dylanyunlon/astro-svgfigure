@@ -1,0 +1,61 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../SceneData.ush"
+#include "../ViewData.ush"
+#include "../WaveOpUtil.ush"
+#include "../ComputeShaderUtils.ush"
+
+#include "NaniteDataDecode.ush"
+
+Buffer<uint>   InRasterizerArgsSWHW;
+RWBuffer<uint> OutRasterizerArgsSWHW;
+
+uint RasterBinCount;
+
+uint InputFormat;
+uint OutputFormat;
+
+[numthreads(64, 1, 1)]
+void TranscodeRasterizerArgs(uint RasterBin : SV_DispatchThreadID)
+{
+	// Note: At the moment, this transcode only operates on Nanite translucent
+	//       clusters, which only support HW raster (currently). SW counts are ignored.
+
+	if (RasterBin >= RasterBinCount || InputFormat == OutputFormat)
+		return;
+
+	const uint HWClusterCounterIndex = GetHWClusterCounterIndex(InputFormat);
+
+	// 8 dwords per argument entry
+	const uint ArgsOffset = (8 * RasterBin);
+
+	// All clusters should be hardware at this point (software is currently unsupported for translucent bins)
+	const uint NumClustersHW = InRasterizerArgsSWHW[ArgsOffset + HWClusterCounterIndex];
+
+	if (OutputFormat == 0) // Vertex Shader
+	{
+		OutRasterizerArgsSWHW[ArgsOffset + 4u] = NANITE_MAX_CLUSTER_TRIANGLES * 3;	// HW: VertexCountPerInstance
+		OutRasterizerArgsSWHW[ArgsOffset + 5u] = NumClustersHW;						// HW: InstanceCount
+		OutRasterizerArgsSWHW[ArgsOffset + 6u] = 0;									// HW: StartVertexLocation
+		OutRasterizerArgsSWHW[ArgsOffset + 7u] = 0;									// HW: StartInstanceLocation
+	}
+	else if (InputFormat == NANITE_RENDER_FLAG_PRIMITIVE_SHADER && OutputFormat == NANITE_RENDER_FLAG_MESH_SHADER)
+	{
+	#if !PLATFORM_REQUIRES_UNWRAPPED_MESH_SHADER_ARGS
+		// Need to span the launch size across X,Y,Z so any single dimension does not exceed the 64k
+		// limit as per https://microsoft.github.io/DirectX-Specs/d3d/MeshShader.html#dispatchmesh-api
+		// The product of X*Y*Z can be 2^22, so we convert 1D->3D->1D to work around this limitation.
+		const uint DimensionLimit = (1u << 16u) - 1u;
+
+		const uint3 GroupCount = GetGroupCountWrapped(NumClustersHW, DimensionLimit.xx);
+
+		// HW: ThreadGroupCountXYZ
+		OutRasterizerArgsSWHW[ArgsOffset + 4u] = GroupCount.x;
+		OutRasterizerArgsSWHW[ArgsOffset + 5u] = GroupCount.y;
+		OutRasterizerArgsSWHW[ArgsOffset + 6u] = GroupCount.z;
+	#else
+		OutRasterizerArgsSWHW[ArgsOffset + 4u] = NumClustersHW;
+	#endif
+	}
+}

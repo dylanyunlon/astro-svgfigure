@@ -1,0 +1,157 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Dispatch: FIntVector(NumInstances, 1, 1), CURVES_PER_GROUP threads per group.
+//   GroupId.x  = instance index (one group per registered primitive)
+//   ThreadId.x = curve index within the instance
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ShaderPrint.ush"
+#include "/Engine/Private/SceneData.ush"
+#include "/Engine/Private/CurveSkinning/CurveSkinningSceneDataDecode.ush"
+#include "../ColorSpace.ush"
+
+// -------------------------------------------------------------------------
+// Parameters (bound by FGlobalCurveSolverDebugCS::FParameters)
+// -------------------------------------------------------------------------
+
+Buffer<uint4> InstanceList;
+Buffer<uint4> UniqueGroomList;
+uint NumInstances;
+uint NumUniqueGrooms;
+uint TotalNumCurves;
+uint TotalNumPoints;
+
+// -------------------------------------------------------------------------
+// Color helpers
+// -------------------------------------------------------------------------
+
+// Returns the base hue for an instance (evenly spread across 300 degrees to avoid
+// red wrapping back on red for large instance counts).
+float InstanceHue(uint InInstanceIndex)
+{
+	return (NumInstances > 1u) ? float(InInstanceIndex) / float(NumInstances - 1u) : 0.f;
+}
+
+// Returns a camaieu color for a specific curve within an instance.
+// Saturation and value both increase from root (dim) to tip (bright).
+float4 CurveColor(uint InInstanceIndex, uint InCurveIndex, uint InNumCurves)
+{
+	const float Hue = InstanceHue(InInstanceIndex);
+	const float T   = (InNumCurves > 1u) ? float(InCurveIndex) / float(InNumCurves - 1u) : 0.5f;
+	const float S   = lerp(0.55f, 1.00f, T);
+	const float V   = lerp(0.45f, 0.95f, T);
+	return float4(HSV_2_LinearRGB(float3(Hue, S, V)), 1.f);
+}
+
+// -------------------------------------------------------------------------
+// Main entry point
+// -------------------------------------------------------------------------
+float3 TransformLocalToWorld(float3 P, FInstanceSceneData InstanceData)
+{
+	return mul(float4(P, 1), DFDemote(InstanceData.LocalToWorld)).xyz;
+}
+
+[numthreads(CURVES_PER_GROUP, 1, 1)]
+void CurveSkinningDebugCS(uint GroupId : SV_GroupID, uint ThreadId : SV_GroupThreadID)
+{
+	const uint InstanceIndex = GroupId;
+
+	FShaderPrintContext StatsCtx = InitShaderPrintContext( (InstanceIndex == 0u && ThreadId == 0u), uint2(50, 50));
+	Print(StatsCtx, TEXT("Curve Skinning"), FontEmerald); Newline(StatsCtx);
+	const bool bShowDeformed = AddCheckbox(StatsCtx, TEXT("Show Deformed"), true,  FontWhite); Newline(StatsCtx);
+	const bool bShowRest	 = AddCheckbox(StatsCtx, TEXT("Show Rest"),	    false, FontWhite); Newline(StatsCtx);
+
+	if (StatsCtx.bIsActive)
+	{
+		Newline(StatsCtx);
+		Print(StatsCtx, TEXT("Total instances  : "), FontWhite); Print(StatsCtx, NumInstances, FontYellow); Newline(StatsCtx);
+		Print(StatsCtx, TEXT("Unique grooms	   : "), FontWhite); Print(StatsCtx, NumUniqueGrooms, FontYellow); Newline(StatsCtx);
+		Print(StatsCtx, TEXT("Total Curves     : "), FontWhite); Print(StatsCtx, TotalNumCurves, FontYellow); Newline(StatsCtx);
+		Print(StatsCtx, TEXT("Total Points     : "), FontWhite); Print(StatsCtx, TotalNumPoints, FontYellow); Newline(StatsCtx);
+		Newline(StatsCtx);
+
+		Print(StatsCtx, TEXT("     Inst Curves Pts/Curve"), FontSilver);  Newline(StatsCtx);
+		
+		// Per-groom instance counts
+		for (uint GroomIt = 0; GroomIt < NumUniqueGrooms; ++GroomIt)
+		{
+			const uint4 GroomDesc = UniqueGroomList[GroomIt];
+			const uint GroomNumInstances = GroomDesc.x;
+			const uint GroomNumCurves = GroomDesc.y;
+			const uint GroomPointPerCurve = GroomDesc.z;
+
+			const float Hue = (NumUniqueGrooms > 1u) ? float(GroomIt) / float(NumUniqueGrooms - 1u) : 0.f;
+			const FFontColor GroomColor = InitFontColor(HSV_2_LinearRGB(float3(Hue, 0.85f, 0.90f)));
+			Print(StatsCtx, GroomIt, FontWhite, 2, 0);
+			Print(StatsCtx, TEXT(" : "), FontSilver);
+			Print(StatsCtx, GroomNumInstances, FontRed, 5, 0);
+			Print(StatsCtx, GroomNumCurves, FontYellow, 5, 0);
+			Print(StatsCtx, TEXT("  "), FontWhite);
+			Print(StatsCtx, GroomPointPerCurve, FontYellow, 3, 0);
+			Newline(StatsCtx);
+		}
+
+		Newline(StatsCtx);
+	}
+
+	if (!bShowDeformed && !bShowRest)
+	{
+		return;
+	}
+
+	if (InstanceIndex >= NumInstances)
+	{
+		return;
+	}
+
+	// Fetch instance descriptor.
+	const uint4 InstanceDesc = InstanceList[InstanceIndex];
+	const uint  PrimIndex = InstanceDesc.x;
+	const uint  UniqueGroomIdx = InstanceDesc.y;
+	const uint  InstanceSceneDataOffset = InstanceDesc.z;
+
+	// Load the per-primitive curve skinning header (offsets, counts, double-buffer slot).
+	const FCurveSkinningHeader Header = LoadCurveSkinningHeader(PrimIndex);
+	const uint NumCurves		= Header.NumCurves;
+	const uint NumPointsPerCurve = Header.NumPointsPerCurve;
+
+	if (NumCurves == 0u || NumPointsPerCurve == 0u)
+	{
+		return;
+	}
+
+	// Fetch the instance scene data to get the LocalToWorld transform.
+	// This lets us convert local-space curve positions to translated world space.
+	FInstanceSceneData InstanceData = GetInstanceSceneData(InstanceSceneDataOffset/*equvalent to InstanceID*/);
+	FShaderPrintContext LineCtx = InitShaderPrintContext(true, float2(0.f, 0.f));
+
+	// Each thread handles one curve (may handle multiple if NumCurves > CURVES_PER_GROUP).
+	for (uint CurveIndex = ThreadId; CurveIndex < NumCurves; CurveIndex += CURVES_PER_GROUP)
+	{
+		const float4 Color = CurveColor(InstanceIndex, CurveIndex, NumCurves);
+
+		// Draw NumPointsPerCurve-1 line segments.
+		for (uint PointIndex = 0u; PointIndex + 1u < NumPointsPerCurve; ++PointIndex)
+		{
+			if (bShowDeformed)
+			{
+				const float3 P0 = TransformLocalToWorld(LoadCurveSkinningPosition(Header, CurveIndex, PointIndex,      false, false), InstanceData);
+				const float3 P1 = TransformLocalToWorld(LoadCurveSkinningPosition(Header, CurveIndex, PointIndex + 1u, false, false), InstanceData);
+
+				// Positions are world-space. AddLineWS adds TranslatedWorldOffset internally
+				// to convert to translated world space, which is what ShaderPrint expects.
+				AddLineWS(LineCtx, P0, P1, Color);
+			}
+
+			if (bShowRest)
+			{
+				const float3 R0 = TransformLocalToWorld(LoadCurveSkinningPosition(Header, CurveIndex, PointIndex,      true, false), InstanceData);
+				const float3 R1 = TransformLocalToWorld(LoadCurveSkinningPosition(Header, CurveIndex, PointIndex + 1u, true, false), InstanceData);
+
+				// Rest positions shown at half opacity in a desaturated hue.
+				const float4 RestColor = float4(Color.rgb * 0.5f, 1.f);
+				AddLineWS(LineCtx, R0, R1, RestColor);
+			}
+		}
+	}
+}

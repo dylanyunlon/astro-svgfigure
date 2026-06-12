@@ -1,0 +1,178 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+#pragma once
+
+#ifndef PLATFORM_USES_PRIMITIVE_UBO
+	#define PLATFORM_USES_PRIMITIVE_UBO 0
+#endif
+
+#ifndef PRIMITIVE_HAS_TILEOFFSET_DATA
+#error "Missing PRIMITIVE_HAS_TILEOFFSET_DATA"
+#endif
+
+void WriteDataElementUBO(RWStructuredBuffer<float4> Output, uint Offset, uint DataIdx, float4 Data)
+{
+#if	PLATFORM_USES_PRIMITIVE_UBO
+	uint DataOffset = Offset + DataIdx;
+	Output[DataOffset] = Data;
+#endif
+}
+
+//
+// Note: WritePrimitiveDataUBO layout must match FBatchedPrimitiveShaderData::Setup() in GPUScene.cpp
+// Note: WriteInstanceDataUBO layout must match FBatchedInstanceShaderData::Setup() in GPUScene.cpp
+//
+void WritePrimitiveDataUBO(RWStructuredBuffer<float4> Output, uint Offset, FPrimitiveSceneData PrimitiveData, uint MeshLODIndex)
+{
+	uint DataIdx = 0;
+
+#if ALLOW_STATIC_LIGHTING
+	// Pre-resolved lighting data (3 float4): LightMapUVScaleBias, ShadowMapUVScaleBias, LightmapDataIndex.
+	{
+		float4 LightMapUVScaleBias = float4(1, 1, 0, 0);
+		float4 ShadowMapUVScaleBias = float4(1, 1, 0, 0);
+
+		uint LightmapDataIndex = PrimitiveData.LightmapDataIndex + MeshLODIndex;
+		if (LightmapDataIndex < GetSceneData().NumLightmapDataItems)
+		{
+			FLightmapSceneData LightmapData = GetLightmapData(LightmapDataIndex);
+			LightMapUVScaleBias = LightmapData.LightMapCoordinateScaleBias;
+			ShadowMapUVScaleBias = LightmapData.ShadowMapCoordinateScaleBias;
+		}
+		WriteDataElementUBO(Output, Offset, DataIdx + 0, LightMapUVScaleBias);
+		WriteDataElementUBO(Output, Offset, DataIdx + 1, ShadowMapUVScaleBias);
+		WriteDataElementUBO(Output, Offset, DataIdx + 2, float4(asfloat(PrimitiveData.LightmapDataIndex), 0.f, 0.f, 0.f));
+		DataIdx += 3u;
+	}
+#endif
+
+	// ActorWorldPosition LWC pair (Tile, Offset) + ObjectRadius/ObjectBoundsX
+	float3 ActorTile;
+	{
+		#if PRIMITIVE_HAS_TILEOFFSET_DATA
+		ActorTile = PrimitiveData.ActorWorldPositionTO.Tile;
+		float3 ActorLo = PrimitiveData.ActorWorldPositionTO.Offset;
+		#else
+		ActorTile = PrimitiveData.ActorWorldPosition.High;
+		float3 ActorLo = PrimitiveData.ActorWorldPosition.Low;
+		#endif
+		WriteDataElementUBO(Output, Offset, DataIdx + 0, float4(ActorTile, PrimitiveData.ObjectRadius));
+		WriteDataElementUBO(Output, Offset, DataIdx + 1, float4(ActorLo,  PrimitiveData.ObjectBoundsX));
+		DataIdx += 2u;
+	}
+
+	// ObjectWorldPosition offset (assumed to share the actor's tile) + ObjectBoundsY
+	{
+		#if PRIMITIVE_HAS_TILEOFFSET_DATA
+		float3 ObjectTile = PrimitiveData.ObjectWorldPositionTO.Tile;
+		float3 ObjectLo = PrimitiveData.ObjectWorldPositionTO.Offset;
+		#else
+		float3 ObjectTile = PrimitiveData.ObjectWorldPosition.High;
+		float3 ObjectLo = PrimitiveData.ObjectWorldPosition.Low;
+		#endif
+		// Re-anchor to ActorTile so the loader can reconstruct without storing a second tile.
+		float3 ObjectOffsetInActorTile = ObjectLo + (ObjectTile - ActorTile) * UE_LWC_RENDER_TILE_SIZE;
+		WriteDataElementUBO(Output, Offset, DataIdx + 0, float4(ObjectOffsetInActorTile, PrimitiveData.ObjectBoundsY));
+		DataIdx += 1u;
+	}
+
+	// LocalObjectBoundsMin.xyz + ObjectBoundsZ
+	WriteDataElementUBO(Output, Offset, DataIdx + 0, float4(PrimitiveData.LocalObjectBoundsMin, PrimitiveData.ObjectBoundsZ));
+	DataIdx += 1u;
+
+	// LocalObjectBoundsMax.xyz + ObjectOrientationX
+	WriteDataElementUBO(Output, Offset, DataIdx + 0, float4(PrimitiveData.LocalObjectBoundsMax, PrimitiveData.ObjectOrientation.x));
+	DataIdx += 1u;
+
+	// PreSkinnedLocalBoundsMin.xyz + ObjectOrientationY
+	WriteDataElementUBO(Output, Offset, DataIdx + 0, float4(PrimitiveData.PreSkinnedLocalBoundsMin, PrimitiveData.ObjectOrientation.y));
+	// PreSkinnedLocalBoundsMax.xyz + ObjectOrientationZ
+	WriteDataElementUBO(Output, Offset, DataIdx + 1, float4(PrimitiveData.PreSkinnedLocalBoundsMax, PrimitiveData.ObjectOrientation.z));
+	DataIdx += 2u;
+
+	// CustomPrimitiveData (capped by remaining stride budget)
+	{
+		uint NumCustomData = min(NUM_CUSTOM_PRIMITIVE_DATA, BATCHED_PRIMITIVE_DATA_STRIDE_FLOAT4 - DataIdx);
+		UNROLL
+		for (uint i = 0; i < NumCustomData; ++i)
+		{
+			WriteDataElementUBO(Output, Offset, DataIdx + i, PrimitiveData.CustomPrimitiveData[i]);
+		}
+		DataIdx += NumCustomData;
+	}
+}
+
+void WriteInstanceDataUBO(RWStructuredBuffer<float4> Output, uint Offset, uint InstanceId, FInstanceSceneData InstanceData)
+{
+	uint DataIdx = 0;
+
+	// PositionHigh.xyz + Flags
+	WriteDataElementUBO(Output, Offset, DataIdx + 0, float4(InstanceData.LocalToWorld.PostTranslation, asfloat(InstanceData.Flags)));
+	DataIdx += 1u;
+
+	// LocalToWorld
+	{
+		float4x4 LocalToWorld = transpose(InstanceData.LocalToWorld.M);
+		WriteDataElementUBO(Output, Offset, DataIdx + 0, LocalToWorld[0]);
+		WriteDataElementUBO(Output, Offset, DataIdx + 1, LocalToWorld[1]);
+		WriteDataElementUBO(Output, Offset, DataIdx + 2, LocalToWorld[2]);
+		DataIdx += 3u;
+	}
+
+	// InvNonUniformScale.xyz + RandomID
+	WriteDataElementUBO(Output, Offset, DataIdx + 0, float4(InstanceData.InvNonUniformScale, InstanceData.RandomID));
+	DataIdx += 1u;
+
+	// PreviousLocalToWorld
+	{
+		float4x4 PrevLocalToWorld = transpose(InstanceData.PrevLocalToWorld.M);
+		WriteDataElementUBO(Output, Offset, DataIdx + 0, PrevLocalToWorld[0]);
+		WriteDataElementUBO(Output, Offset, DataIdx + 1, PrevLocalToWorld[1]);
+		WriteDataElementUBO(Output, Offset, DataIdx + 2, PrevLocalToWorld[2]);
+		DataIdx += 3u;
+	}
+
+	uint CustomDataCount = 0;
+	uint InstanceRelativeId = 0;
+	LoadInstanceRelativeIdAndCustomDataCount(InstanceId, InstanceRelativeId, CustomDataCount);
+	FInstancePayloadDataOffsets Offsets = GetInstancePayloadDataOffsets(InstanceData.PrimitiveId, InstanceData.Flags, InstanceRelativeId);
+
+#if ALLOW_STATIC_LIGHTING
+	// LightMapAndShadowMapUVBias
+	{
+		float4 LightMapAndShadowMapUVBias = float4(0.f, 0.f, 0.f, 0.f);
+		if (Offsets.LightShadowUVBias != INVALID_INSTANCE_PAYLOAD_OFFSET)
+		{
+			LightMapAndShadowMapUVBias = LoadInstancePayloadDataElement(Offsets.LightShadowUVBias);
+		}
+		WriteDataElementUBO(Output, Offset, DataIdx + 0, LightMapAndShadowMapUVBias);
+		DataIdx += 1u;
+	}
+#endif
+
+	// SkinningData
+	float SkinningDataValue = 0.0;
+	if (Offsets.SkinningData != INVALID_INSTANCE_PAYLOAD_OFFSET)
+	{
+		SkinningDataValue = LoadInstancePayloadDataElement(Offsets.SkinningData).y;
+	}
+
+	// CustomDataCount + PrimitiveSlotIndex + PrimitiveData.Flags + SkinningData
+	{
+		CustomDataCount = min(CustomDataCount, (BATCHED_INSTANCE_DATA_STRIDE_FLOAT4 - DataIdx - 1u) * 4u);
+		WriteDataElementUBO(Output, Offset, DataIdx + 0, float4(asfloat(CustomDataCount), asfloat(InstanceData.BatchedPrimitiveSlotIndex), asfloat(InstanceData.PrimitiveFlags), SkinningDataValue));
+		DataIdx += 1u;
+	}
+
+	// Per-instance custom data fills the rest of the stride.
+	{
+		InstanceData.CustomDataCount = CustomDataCount;
+		InstanceData.CustomDataOffset = Offsets.CustomData;
+		uint CustomDataElements = (CustomDataCount + 3u) >> 2u;
+		UNROLL
+		for (uint i = 0; i < CustomDataElements; ++i)
+		{
+			float4 CustomData = LoadInstanceCustomDataElement(InstanceData, i);
+			WriteDataElementUBO(Output, Offset, DataIdx + i, CustomData);
+		}
+	}
+}

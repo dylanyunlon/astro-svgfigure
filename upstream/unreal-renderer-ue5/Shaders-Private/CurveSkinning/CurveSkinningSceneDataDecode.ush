@@ -1,0 +1,38 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "/Engine/Shared/CurveSkinningDefinitions.h"
+
+FCurveSkinningHeader LoadCurveSkinningHeader(uint InPrimitiveIndex)
+{
+	return LoadCurveSkinningHeader(Scene.CurveSkinning.Headers, InPrimitiveIndex);
+}
+
+float3 LoadCurveSkinningPosition(FCurveSkinningHeader Header, uint CurveIndex, uint PointIndex, bool bRest, bool bPrevious)
+{
+	if (bRest)
+	{
+		return LoadCurveSkinningRestPosition(Scene.CurveSkinning.RestPositions, Header, CurveIndex, PointIndex);
+	}
+	else
+	{
+		return LoadCurveSkinningDeformedPosition(Scene.CurveSkinning.DeformedPositions, Header, CurveIndex, PointIndex, bPrevious);
+	}
+}
+
+float3 SkinCurvePoint(FCurveSkinningHeader Header, uint SkinCurveIndex, float3 PointPos, uint PointIndex, uint NumPointPerCurve, bool bPrevious)
+{
+	const float fSkinPoint = NumPointPerCurve > 1 && Header.NumPointsPerCurve > 1 ? PointIndex * (rcp(float(NumPointPerCurve-1)) * (Header.NumPointsPerCurve-1)) : 0.f;
+	const uint SkinPointIndex0 = min(floor(fSkinPoint), Header.NumPointsPerCurve - 1);
+	const uint SkinPointIndex1 = min(SkinPointIndex0+1, Header.NumPointsPerCurve - 1);
+
+	const float3 SkinPoint0_Rest = LoadCurveSkinningPosition(Header, SkinCurveIndex, SkinPointIndex0, true, bPrevious);
+	const float3 SkinPoint1_Rest = LoadCurveSkinningPosition(Header, SkinCurveIndex, SkinPointIndex1, true, bPrevious);
+
+	const float3 SkinPoint0_Deform = LoadCurveSkinningPosition(Header, SkinCurveIndex, SkinPointIndex0, false, bPrevious);
+	const float3 SkinPoint1_Deform = LoadCurveSkinningPosition(Header, SkinCurveIndex, SkinPointIndex1, false, bPrevious);
+
+	const float3 DeltaDeform = lerp(SkinPoint0_Deform - SkinPoint0_Rest, SkinPoint1_Deform - SkinPoint1_Rest, frac(fSkinPoint));
+	return PointPos + DeltaDeform;
+}

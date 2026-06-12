@@ -1,0 +1,407 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../SHCommon.ush"
+#include "../BlueNoise.ush"
+#include "../ComputeShaderUtils.ush"
+#include "MegaLights.ush"
+#include "MegaLightsVolume.ush"
+#include "../StochasticLighting/StochasticLightingUpsample.ush"
+
+float VolumeMinSampleWeight;
+float MaxShadingWeight;
+float MaxShadingWeightForHiddenLight;
+float3 VolumeFrameJitterOffset;
+float VolumeInverseSquaredLightDistanceBiasScale;
+uint3 VolumeSampleViewSize;
+uint3 DownsampledVolumeViewSize;
+uint3 NumSamplesPerVoxel;
+Texture3D<uint> VolumeLightSamples;
+
+#if TRANSLUCENCY_LIGHTING_VOLUME
+RWTexture3D<float4> RWTranslucencyVolumeResolvedLightingAmbient;
+RWTexture3D<float4> RWTranslucencyVolumeResolvedLightingDirectional;
+#else
+RWTexture3D<float3> RWVolumeResolvedLighting;
+#endif
+
+uint DebugLightId;
+uint ShadingPassIndex;
+
+#if INDIRECT_VOXEL_DISPATCH
+StructuredBuffer<uint> VoxelAllocator;
+StructuredBuffer<uint> VoxelData;
+#endif
+
+void LoadPackedLightSamples(inout uint PackedLightSamples[NUM_SAMPLES_PER_VOXEL_1D], int3 DownsampledVolumeCoord)
+{
+	DownsampledVolumeCoord = clamp(DownsampledVolumeCoord, int3(0, 0, 0), int3(DownsampledVolumeViewSize - 1));
+
+	for (uint SampleIndex = 0; SampleIndex < NUM_SAMPLES_PER_VOXEL_1D; ++SampleIndex)
+	{
+		uint3 LightSampleCoord = DownsampledVolumeCoord * uint3(NUM_SAMPLES_PER_VOXEL_3D_X, NUM_SAMPLES_PER_VOXEL_3D_Y, NUM_SAMPLES_PER_VOXEL_3D_Z) 
+			+ uint3(SampleIndex % NUM_SAMPLES_PER_VOXEL_3D_X, SampleIndex / NUM_SAMPLES_PER_VOXEL_3D_X, 0);
+
+		PackedLightSamples[SampleIndex] = VolumeLightSamples[LightSampleCoord];
+	}
+}
+
+void AccumulateLightSample(uint PackedLightSamples[NUM_SAMPLES_PER_VOXEL_1D], inout uint NextLocalLightIndex)
+{
+	for (uint SampleIndex = 0; SampleIndex < NUM_SAMPLES_PER_VOXEL_1D; ++SampleIndex)
+	{
+		FLightSample LightSample = UnpackLightSample(PackedLightSamples[SampleIndex]);
+
+	#if !TRANSLUCENCY_LIGHTING_VOLUME
+		// Unified volume reuses tracing between volumetric fog and translucency
+		if (!LightSample.bCastVolumetricShadow)
+		{
+			LightSample.bVisible = true;
+		}
+	#endif
+
+		if (LightSample.bVisible)
+		{
+			NextLocalLightIndex = min(NextLocalLightIndex, LightSample.LocalLightIndex);
+		}
+	}
+}
+
+void AccumulateLightSample(uint PackedLightSamples[NUM_SAMPLES_PER_VOXEL_1D], uint LocalLightIndex, float UpsampleWeight, inout uint NextLocalLightIndex, inout float SampleWeightSum)
+{
+	uint NumMergedSamples = 1;
+
+	for (uint SampleIndex = 0; SampleIndex < NUM_SAMPLES_PER_VOXEL_1D; ++SampleIndex)
+	{
+		FLightSample LightSample = UnpackLightSample(PackedLightSamples[SampleIndex]);
+
+	#if !TRANSLUCENCY_LIGHTING_VOLUME
+		// Unified volume reuses tracing between volumetric fog and translucency
+		if (!LightSample.bCastVolumetricShadow)
+		{
+			LightSample.bVisible = true;
+		}
+	#endif
+
+		if (LightSample.LocalLightIndex == LocalLightIndex)
+		{
+			// Identical rays were skipped by marking such samples as weight=0
+			if (LightSample.Weight == 0.0f)
+			{
+				++NumMergedSamples;
+			}
+			else
+			{
+				if (LightSample.bVisible)
+				{
+					float ShadingWeight = min(LightSample.Weight, LightSample.bGuidedAsVisible ? MaxShadingWeight : MaxShadingWeightForHiddenLight);
+					SampleWeightSum += ShadingWeight * UpsampleWeight * NumMergedSamples;
+
+					NumMergedSamples = 1;
+				}
+			}
+		}
+
+		if (LightSample.bVisible && LightSample.LocalLightIndex > LocalLightIndex)
+		{
+			NextLocalLightIndex = min(NextLocalLightIndex, LightSample.LocalLightIndex);
+		}
+	}
+}
+
+/**
+ * Upsample light samples and apply all lights per voxel
+ */
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, THREADGROUP_SIZE)]
+void VolumeShadeLightSamplesCS(
+	uint3 DispatchThreadId : SV_DispatchThreadID,
+	uint3 GroupId : SV_GroupID,
+	uint GroupIndex : SV_GroupIndex)
+{
+#if INDIRECT_VOXEL_DISPATCH
+	const uint VoxelIndex = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE * THREADGROUP_SIZE * THREADGROUP_SIZE);
+	if (VoxelIndex >= VoxelAllocator[0])
+	{
+		return;
+	}
+	const uint PackedVolumeCoord = VoxelData[VoxelIndex];
+	uint3 VolumeCoord = uint3(PackedVolumeCoord & 0x3FF, (PackedVolumeCoord >> 10) & 0x3FF, (PackedVolumeCoord >> 20) & 0x3FF);
+#else
+	uint3 VolumeCoord = DispatchThreadId.xyz;
+#endif
+	if (all(VolumeCoord < VolumeViewSize))
+	{
+		FDebugContext DebugContext = InitVolumeDebugContext(VolumeCoord, /*bDownsampled*/ false, float2(0.5, 0.05));
+
+		const uint3 OutputVolumeCoord = VolumeCoord;
+
+		float SceneDepth = 0.0f;
+		const float3 TranslatedWorldPosition = ComputeCellTranslatedWorldPosition(VolumeCoord, VolumeFrameJitterOffset, SceneDepth);
+		const float3 CameraVector = normalize(TranslatedWorldPosition - View.TranslatedWorldCameraOrigin);
+
+		#if DEBUG_MODE
+		if (DebugContext.bIsActive)
+		{
+			Print(DebugContext, TEXT("VolumeShadeLightSamples"), FontTitle);
+			Newline(DebugContext);
+			Print(DebugContext, TEXT("Coord    : "));
+			Print(DebugContext, VolumeCoord, FontValue);
+			Newline(DebugContext);
+			Print(DebugContext, TEXT("TileCoord: "));
+			Print(DebugContext, GroupId.xyz, FontValue);
+			Newline(DebugContext);
+			Print(DebugContext, TEXT("TWS      : "));
+			Print(DebugContext, TranslatedWorldPosition, FontValue);
+			AddCrossTWS(DebugContext, TranslatedWorldPosition, 5.0f, float4(0, 0, 1, 1));
+		}
+		#endif
+
+#if TRANSLUCENCY_LIGHTING_VOLUME
+		float DistanceBiasSqr = 0.0f;
+		float LightVolumetricSoftFadeDistance = 0.0f;
+#else
+		float SceneDepth2 = 0.0f;
+		float SceneDepth3 = 0.0f;
+		float CellRadius = length(TranslatedWorldPosition - ComputeCellTranslatedWorldPosition(VolumeCoord + uint3(1, 1, 1), VolumeFrameJitterOffset, SceneDepth2));
+		float Cell2DRadius = length(TranslatedWorldPosition - ComputeCellTranslatedWorldPosition(VolumeCoord + uint3(1, 1, 0), VolumeFrameJitterOffset, SceneDepth3));
+		float LightVolumetricSoftFadeDistance = LightSoftFading * Cell2DRadius;
+		// Bias the inverse squared light falloff based on voxel size to prevent aliasing near the light source
+		float DistanceBiasSqr = max(CellRadius * VolumeInverseSquaredLightDistanceBiasScale, 1);
+		DistanceBiasSqr *= DistanceBiasSqr;
+#endif
+
+		bool bShadeSamples = true;
+
+#if RESAMPLE_VOLUME
+		{
+			float4 NDCPosition = mul(float4(TranslatedWorldPosition, 1), UnjitteredTranslatedWorldToClip);
+			NDCPosition.xy /= NDCPosition.w;
+
+			float3 ResampleUV = float3(NDCPosition.xy * float2(.5f, -.5f) + .5f, ComputeNormalizedZSliceFromDepth(ResampleVolumeZParams, ResampleVolumeInvBufferSize.z, NDCPosition.w));
+			VolumeCoord = floor(saturate(ResampleUV) * ResampleVolumeViewSize);
+
+			bShadeSamples &= ResampleUV.z <= 1.0f;
+		}
+#endif
+
+#if VOLUME_DOWNSAMPLE_FACTOR == 2
+		int3 DownsampledVolumeCoord000 = int3(VolumeCoord - 1) / VOLUME_DOWNSAMPLE_FACTOR;
+		int3 VolumeCoordOffset = VolumeCoord - DownsampledVolumeCoord000 * 2;
+		int3 SampleOffset000 = GetSampleVoxelCoordJitter(DownsampledVolumeCoord000 + uint3(0, 0, 0)) + uint3(0, 0, 0) * 2 - VolumeCoordOffset;
+		int3 SampleOffset100 = GetSampleVoxelCoordJitter(DownsampledVolumeCoord000 + uint3(1, 0, 0)) + uint3(1, 0, 0) * 2 - VolumeCoordOffset;
+		int3 SampleOffset010 = GetSampleVoxelCoordJitter(DownsampledVolumeCoord000 + uint3(0, 1, 0)) + uint3(0, 1, 0) * 2 - VolumeCoordOffset;
+		int3 SampleOffset110 = GetSampleVoxelCoordJitter(DownsampledVolumeCoord000 + uint3(1, 1, 0)) + uint3(1, 1, 0) * 2 - VolumeCoordOffset;
+		int3 SampleOffset001 = GetSampleVoxelCoordJitter(DownsampledVolumeCoord000 + uint3(0, 0, 1)) + uint3(0, 0, 1) * 2 - VolumeCoordOffset;
+		int3 SampleOffset101 = GetSampleVoxelCoordJitter(DownsampledVolumeCoord000 + uint3(1, 0, 1)) + uint3(1, 0, 1) * 2 - VolumeCoordOffset;
+		int3 SampleOffset011 = GetSampleVoxelCoordJitter(DownsampledVolumeCoord000 + uint3(0, 1, 1)) + uint3(0, 1, 1) * 2 - VolumeCoordOffset;
+		int3 SampleOffset111 = GetSampleVoxelCoordJitter(DownsampledVolumeCoord000 + uint3(1, 1, 1)) + uint3(1, 1, 1) * 2 - VolumeCoordOffset;
+
+		// Triangle filter weight between the shaded voxel and 8 neighbors
+		float4 InterpolationWeights0;
+		InterpolationWeights0.x = (2.0f - abs(SampleOffset000.x)) * (2.0f - abs(SampleOffset000.y)) * (2.0f - abs(SampleOffset000.z));
+		InterpolationWeights0.y = (2.0f - abs(SampleOffset100.x)) * (2.0f - abs(SampleOffset100.y)) * (2.0f - abs(SampleOffset100.z));
+		InterpolationWeights0.z = (2.0f - abs(SampleOffset010.x)) * (2.0f - abs(SampleOffset010.y)) * (2.0f - abs(SampleOffset010.z));
+		InterpolationWeights0.w = (2.0f - abs(SampleOffset110.x)) * (2.0f - abs(SampleOffset110.y)) * (2.0f - abs(SampleOffset110.z));
+
+		float4 InterpolationWeights1;
+		InterpolationWeights1.x = (2.0f - abs(SampleOffset001.x)) * (2.0f - abs(SampleOffset001.y)) * (2.0f - abs(SampleOffset001.z));
+		InterpolationWeights1.y = (2.0f - abs(SampleOffset101.x)) * (2.0f - abs(SampleOffset101.y)) * (2.0f - abs(SampleOffset101.z));
+		InterpolationWeights1.z = (2.0f - abs(SampleOffset011.x)) * (2.0f - abs(SampleOffset011.y)) * (2.0f - abs(SampleOffset011.z));
+		InterpolationWeights1.w = (2.0f - abs(SampleOffset111.x)) * (2.0f - abs(SampleOffset111.y)) * (2.0f - abs(SampleOffset111.z));
+#endif
+
+		float3 LightScattering = 0.0f;
+
+		float4 LightAmbient = 0.0f;
+		float4 LightDirectional = 0.0f;
+
+#if !TRANSLUCENCY_LIGHTING_VOLUME
+		const float FroxelFootprintMargin = 0.5f; // trilinear interpolation
+		bShadeSamples &= IsFroxelVisible(OutputVolumeCoord, FroxelFootprintMargin);
+#endif
+
+		if (bShadeSamples)
+		{
+#if VOLUME_DOWNSAMPLE_FACTOR == 2
+			// Stochastic sample interpolation. Need to use at least samples 2 for good quality.
+			const float RandomScalar = BlueNoiseScalar(VolumeCoordToNoiseCoord(VolumeCoord), MegaLightsStateFrameIndex);
+			uint3 StochasticTrilinearOffset0 = GetStochasticTrilinearOffset((RandomScalar + 0.0f) / 2.0f, InterpolationWeights0, InterpolationWeights1);
+			uint3 StochasticTrilinearOffset1 = GetStochasticTrilinearOffset((RandomScalar + 1.0f) / 2.0f, InterpolationWeights0, InterpolationWeights1);
+
+			#if DEBUG_MODE
+			if (DebugContext.bIsActive)
+			{
+				Newline(DebugContext);
+				Print(DebugContext, TEXT("StOffset0: "));
+				Print(DebugContext, StochasticTrilinearOffset0, FontValue, 4, 1);
+				Newline(DebugContext);
+				Print(DebugContext, TEXT("StOffset1: "));
+				Print(DebugContext, StochasticTrilinearOffset1, FontValue, 4, 1);
+			}
+			#endif
+#endif
+
+			#if DEBUG_MODE
+			if (DebugContext.bIsActive)
+			{
+				Newline(DebugContext);
+				Print(DebugContext, TEXT("LightId   | Weight    | Lighting"), FontSilver);
+			}
+			#endif
+
+#if VOLUME_DOWNSAMPLE_FACTOR == 2
+			uint PackedLightSamples0[NUM_SAMPLES_PER_VOXEL_1D];
+			uint PackedLightSamples1[NUM_SAMPLES_PER_VOXEL_1D];
+			LoadPackedLightSamples(PackedLightSamples0, DownsampledVolumeCoord000 + StochasticTrilinearOffset0);
+			LoadPackedLightSamples(PackedLightSamples1, DownsampledVolumeCoord000 + StochasticTrilinearOffset1);
+#else
+			uint PackedLightSamples0[NUM_SAMPLES_PER_VOXEL_1D];
+			LoadPackedLightSamples(PackedLightSamples0, VolumeCoord);
+#endif
+
+			uint NextLocalLightIndex = MAX_LOCAL_LIGHT_INDEX;
+			AccumulateLightSample(PackedLightSamples0, NextLocalLightIndex);
+#if VOLUME_DOWNSAMPLE_FACTOR == 2
+			AccumulateLightSample(PackedLightSamples1, NextLocalLightIndex);
+#endif
+
+			while (NextLocalLightIndex < MAX_LOCAL_LIGHT_INDEX)
+			{
+				const uint LocalLightIndex = WaveActiveMin(NextLocalLightIndex);
+				if (LocalLightIndex == NextLocalLightIndex)
+				{
+					NextLocalLightIndex = MAX_LOCAL_LIGHT_INDEX;
+					float SampleWeight = 0.0f;
+
+#if VOLUME_DOWNSAMPLE_FACTOR == 2
+					AccumulateLightSample(PackedLightSamples0, LocalLightIndex, 0.5f, NextLocalLightIndex, SampleWeight);
+					AccumulateLightSample(PackedLightSamples1, LocalLightIndex, 0.5f, NextLocalLightIndex, SampleWeight);
+#else
+					AccumulateLightSample(PackedLightSamples0, LocalLightIndex, 1.0f, NextLocalLightIndex, SampleWeight);
+#endif
+
+					// Normalize weight by a number of samples taken
+					SampleWeight /= float(NUM_SAMPLES_PER_VOXEL_1D);
+
+					const FForwardLightData ForwardLightData = GetForwardLightData(LocalLightIndex, 0);
+					const FDeferredLightData LightData = ConvertToDeferredLight(ForwardLightData);
+
+#if TRANSLUCENCY_LIGHTING_VOLUME
+					if (UnpackAffectsTranslucentLighting(ForwardLightData) == 0)
+					{
+						SampleWeight = 0.0f;
+					}
+#endif // TRANSLUCENCY_LIGHTING_VOLUME
+
+					#if DEBUG_MODE
+					if (DebugContext.bIsActive)
+					{
+						Newline(DebugContext);
+						Print(DebugContext, ForwardLightData.LightSceneId, Select(ForwardLightData.LightSceneId == DebugLightId, FontSelected, FontValue));
+						Print(DebugContext, SampleWeight, FontValue);
+					}
+					#endif
+
+					if (SampleWeight > 0.0)
+					{
+						float3 L;
+						const float VolumetricScatteringIntensity = UnpackVolumetricScatteringIntensity(ForwardLightData);
+						const bool bUnifiedVolumeSampling = false;
+
+						float3 DiffuseLighting = GetMegaLightsVolumeLighting(TranslatedWorldPosition, CameraVector, DistanceBiasSqr, LightVolumetricSoftFadeDistance, LocalLightIndex, LightData, VolumetricScatteringIntensity, bUnifiedVolumeSampling, L);
+
+						const float Lum = Luminance(DiffuseLighting) * View.PreExposure;
+						SampleWeight *= SmoothFalloffMask(Lum, VolumeMinSampleWeight);
+
+						LightScattering += DiffuseLighting * SampleWeight;
+
+						const float DirectionalLightContribution = 0.0;
+						AccumulateSHLighting(L, DiffuseLighting * SampleWeight, DirectionalLightContribution, LightAmbient, LightDirectional);
+
+						#if DEBUG_MODE
+						if (DebugContext.bIsActive)
+						{
+							Print(DebugContext, DiffuseLighting, FontValue);
+						}
+						#endif
+					}
+				}
+			}
+		}
+
+		#if DEBUG_MODE
+		if (DebugContext.bIsActive)
+		{
+			Newline(DebugContext);
+			Print(DebugContext, TEXT("Lighting: "));
+			Print(DebugContext, LightScattering, FontValue);
+			AddTextBackground(DebugContext, FontBackground);
+		}
+		#endif
+
+		#if REFERENCE_MODE
+		//This is not the first shading pass, hence we try to accumulate from previous one
+		if (ShadingPassIndex > 0)
+		{
+			float BlendFactor = 1.0f / float(ShadingPassIndex + 1.0f); //True as all pass have the same number of samples
+
+			#if TRANSLUCENCY_LIGHTING_VOLUME
+				const float4 PrevLightingAmbient = RWTranslucencyVolumeResolvedLightingAmbient[OutputVolumeCoord];
+				const float4 PrevLightingDirectional = RWTranslucencyVolumeResolvedLightingDirectional[OutputVolumeCoord];
+				LightAmbient = PrevLightingAmbient * (1.0f - BlendFactor) + LightAmbient * BlendFactor;
+				LightDirectional = PrevLightingDirectional * (1.0f - BlendFactor) + LightDirectional * BlendFactor;
+			#else
+				const float3 PrevLightScattering = RWVolumeResolvedLighting[OutputVolumeCoord] / View.PreExposure;
+				LightScattering = PrevLightScattering * (1.0f - BlendFactor) + LightScattering * BlendFactor;
+			#endif
+		}
+		#endif
+
+#if TRANSLUCENCY_LIGHTING_VOLUME
+		if (TranslucencyVolumeCascadeIndex == 1)
+		{
+			float FinalLerpFactor = GetBorderLerpFactor(OutputVolumeCoord, TranslucencyVolumeCascadeIndex);
+
+			if (!bShadeSamples)
+			{
+				FinalLerpFactor = 0.0f;
+			}
+
+			if (FinalLerpFactor < 1)
+			{
+				float4 FallbackAmbient = 0;
+				float4 FallbackDirectional = 0;
+
+				for (uint DirectionalLightIndex = ForwardLightStruct.DirectionalMegaLightsSupportedStartIndex; DirectionalLightIndex < ForwardLightStruct.NumDirectionalLights; ++DirectionalLightIndex)
+				{
+					uint LightIndex = ForwardLightStruct.DirectionalLightIndices[DirectionalLightIndex];
+					FForwardLightData ForwardLightData = GetForwardLightData(LightIndex, 0);
+					checkSlow(UnpackIsHandledByMegaLights(ForwardLightData));
+	
+					if (!UnpackAffectsTranslucentLighting(ForwardLightData))
+					{
+						continue;
+					}
+
+					FDeferredLightData LightData = ConvertToDeferredLight(ForwardLightData);
+					LightData.bRadialLight = false;
+					LightData.bInverseSquared = false;
+
+					float3 Lighting = LightData.Color / PI;
+
+					const float DirectionalLightContribution = 1.0f;
+					AccumulateSHLighting(LightData.Direction, Lighting, DirectionalLightContribution, FallbackAmbient, FallbackDirectional);
+				}
+
+				LightAmbient = lerp(FallbackAmbient, LightAmbient, FinalLerpFactor);
+				LightDirectional = lerp(FallbackDirectional, LightDirectional, FinalLerpFactor);
+			}
+		}
+
+		RWTranslucencyVolumeResolvedLightingAmbient[OutputVolumeCoord] = LightAmbient;
+		RWTranslucencyVolumeResolvedLightingDirectional[OutputVolumeCoord] = LightDirectional;
+#else // !TRANSLUCENCY_LIGHTING_VOLUME
+		RWVolumeResolvedLighting[OutputVolumeCoord] = LightScattering * View.PreExposure;
+#endif // !TRANSLUCENCY_LIGHTING_VOLUME
+	}
+}

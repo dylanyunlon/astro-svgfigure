@@ -1,0 +1,310 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "LumenMaterial.ush"
+#include "../DeferredShadingCommon.ush"
+#include "../SHCommon.ush"
+#include "LumenScreenProbeCommon.ush"
+#include "LumenScreenProbeImportanceSamplingShared.ush"
+#include "LumenScreenProbeGatherTemporal.ush"
+
+RWTexture2D<UNORM float> RWScreenProbeDisocclusion;
+RWTexture2D<float> RWBRDFProbabilityDensityFunction;
+RWBuffer<float> RWBRDFProbabilityDensityFunctionSH;
+
+Texture2DArray HistoryFastUpdateMode_NumFramesAccumulated;
+
+float4 HistoryBufferSizeAndInvSize;
+float ScreenProbeInterpolationDepthWeight;
+uint ScreenProbeBRDFOctahedronResolution;
+float SpatialFilterDisocclusionMaxFrames;
+float SpatialFilterDisocclusionFraction;
+
+groupshared float4 PixelPlanes[PROBE_THREADGROUP_SIZE_2D][PROBE_THREADGROUP_SIZE_2D];
+
+// x2 larger groupshared for x4 reduction per iteration
+groupshared float SharedSphericalHarmonic[PROBE_THREADGROUP_SIZE_2D * PROBE_THREADGROUP_SIZE_2D][NUM_PDF_SH_COEFFICIENTS];
+#if SCREEN_PROBE_DISOCCLUSION
+	groupshared float SharedNumDisocclusionPixels[PROBE_THREADGROUP_SIZE_2D * PROBE_THREADGROUP_SIZE_2D];
+#endif
+
+groupshared uint SharedNumElements;
+
+FThreeBandSHVector GetGroupSharedSH(uint ThreadIndex)
+{
+	FThreeBandSHVector BRDF;
+	BRDF.V0.x = SharedSphericalHarmonic[ThreadIndex][0];
+	BRDF.V0.y = SharedSphericalHarmonic[ThreadIndex][1];
+	BRDF.V0.z = SharedSphericalHarmonic[ThreadIndex][2];
+	BRDF.V0.w = SharedSphericalHarmonic[ThreadIndex][3];
+	BRDF.V1.x = SharedSphericalHarmonic[ThreadIndex][4];
+	BRDF.V1.y = SharedSphericalHarmonic[ThreadIndex][5];
+	BRDF.V1.z = SharedSphericalHarmonic[ThreadIndex][6];
+	BRDF.V1.w = SharedSphericalHarmonic[ThreadIndex][7];
+	BRDF.V2.x = SharedSphericalHarmonic[ThreadIndex][8];
+	return BRDF;
+}
+
+float GetGroupSharedNumDisocclusionPixels(uint ThreadIndex)
+{
+#if SCREEN_PROBE_DISOCCLUSION
+	return SharedNumDisocclusionPixels[ThreadIndex];
+#else
+	return 0.0;
+#endif
+}
+
+void WriteGroupSharedSH(FThreeBandSHVector SH, uint ThreadIndex)
+{
+	SharedSphericalHarmonic[ThreadIndex][0] = SH.V0.x;
+	SharedSphericalHarmonic[ThreadIndex][1] = SH.V0.y;
+	SharedSphericalHarmonic[ThreadIndex][2] = SH.V0.z;
+	SharedSphericalHarmonic[ThreadIndex][3] = SH.V0.w;
+	SharedSphericalHarmonic[ThreadIndex][4] = SH.V1.x;
+	SharedSphericalHarmonic[ThreadIndex][5] = SH.V1.y;
+	SharedSphericalHarmonic[ThreadIndex][6] = SH.V1.z;
+	SharedSphericalHarmonic[ThreadIndex][7] = SH.V1.w;
+	SharedSphericalHarmonic[ThreadIndex][8] = SH.V2.x;
+}
+
+void WriteGroupSharedNumDisocclusionPixels(float NumDisocclusionPixels, uint ThreadIndex)
+{
+#if SCREEN_PROBE_DISOCCLUSION
+	SharedNumDisocclusionPixels[ThreadIndex] = NumDisocclusionPixels;
+#endif
+}
+
+[numthreads(PROBE_THREADGROUP_SIZE_2D, PROBE_THREADGROUP_SIZE_2D, 1)]
+void ScreenProbeGatherScreenDataCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 DispatchThreadId : SV_DispatchThreadID,
+	uint3 GroupThreadId : SV_GroupThreadID)
+{
+	uint2 ScreenProbeAtlasCoord = GroupId.xy;
+	uint ScreenProbeIndex = ScreenProbeAtlasCoord.y * ScreenProbeAtlasViewSize.x + ScreenProbeAtlasCoord.x;
+
+	uint2 ScreenProbeScreenPosition = GetScreenProbeScreenPosition(ScreenProbeIndex);
+
+	GroupMemoryBarrierWithGroupSync();
+
+	if (ScreenProbeIndex < GetNumScreenProbes() && ScreenProbeAtlasCoord.x < ScreenProbeAtlasViewSize.x)
+	{
+		float ProbeSceneDepth = GetScreenProbeDepth(ScreenProbeAtlasCoord);
+
+		if (ProbeSceneDepth > 0)
+		{
+#if BRDF_PDF_SPHERICAL_HARMONIC
+			uint ThreadIndex = GroupThreadId.y * PROBE_THREADGROUP_SIZE_2D + GroupThreadId.x;
+
+			if (ThreadIndex == 0)
+			{
+				SharedNumElements = 0;
+			}
+
+			GroupMemoryBarrierWithGroupSync();
+
+			float2 ScreenUV = GetScreenUVFromScreenProbePosition(ScreenProbeScreenPosition);
+			float2 SampleOffset = ((GroupThreadId.xy + 0.5) / PROBE_THREADGROUP_SIZE_2D * 2.0 - 1.0) * ScreenProbeDownsampleFactor;
+
+			const bool bCenterSample = all(GroupThreadId.xy == PROBE_THREADGROUP_SIZE_2D / 2);
+			if (bCenterSample)
+			{
+				// Make sure we have at least one pixel that won't be rejected by the depth weight
+				SampleOffset = 0;
+			}
+
+			float2 PixelScreenUV = ScreenUV + SampleOffset * View.BufferSizeAndInvSize.zw;
+			PixelScreenUV = clamp(PixelScreenUV, View.ViewRectMin.xy * View.BufferSizeAndInvSize.zw, (View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy - 1) * View.BufferSizeAndInvSize.zw);
+			const uint2 ScreenCoord = PixelScreenUV * View.BufferSizeAndInvSize.xy;
+
+			const FLumenMaterialData Material = ReadMaterialData(ScreenCoord, PixelScreenUV);
+
+			float3 PixelPosition = GetWorldPositionFromScreenUV(PixelScreenUV, Material.SceneDepth);
+			float4 PixelPlane = float4(Material.WorldNormal, dot(Material.WorldNormal, PixelPosition));
+			float3 ProbeWorldPosition = GetWorldPositionFromScreenUV(ScreenUV, ProbeSceneDepth);
+
+			float PlaneDistance = abs(dot(float4(ProbeWorldPosition, -1), PixelPlane));
+			float RelativeDepthDifference = Pow2(PlaneDistance / ProbeSceneDepth);
+			float DepthWeight = exp2(ScreenProbeInterpolationDepthWeight * RelativeDepthDifference);
+
+			if (Material.IsValid() && (DepthWeight > 0.01 || bCenterSample))
+			{
+				uint Index = 0;
+				InterlockedAdd(SharedNumElements, 1, Index);
+
+				FThreeBandSHVector BRDF;
+
+				if (HasSphericalVisibility(Material))
+				{
+					// Avoid culling directions that the shading models will sample
+					BRDF = (FThreeBandSHVector)0;
+					BRDF.V0.x = 1.0;
+				}
+				else
+				{
+					BRDF = CalcDiffuseTransferSH3(Material.WorldNormal, 1.0f);
+				}
+
+				WriteGroupSharedSH(BRDF, Index);
+
+				bool bDisocclusionPixel = true;
+
+				#if SCREEN_PROBE_DISOCCLUSION && VALID_HISTORY
+				{
+					FLumenPackedPixelData PackedPixelData = (FLumenPackedPixelData)PackedPixelDataTexture[int3(ScreenCoord, 0)];
+
+					bool bAnyHistoryValid = PackedPixelData.AnyHistoryValid();
+					if (bAnyHistoryValid)
+					{
+						const Bilinear BilinearFilterAtHistoryScreenUV = GetBilinearFilter(ScreenCoord);
+						float2 HistoryGatherUV = (BilinearFilterAtHistoryScreenUV.Origin + 1.0f) * HistoryBufferSizeAndInvSize.zw;
+
+						float4 Packed4 = HistoryFastUpdateMode_NumFramesAccumulated.GatherRed(GlobalPointClampedSampler, float3(HistoryGatherUV, 0.0)).wzxy;
+						float4 HistoryNumFramesAccumulated4;
+						float4 HistoryFastUpdateModeAmount4;
+						UnpackFastUpdateModeAmountAndNumFramesAccumulated(Packed4, HistoryFastUpdateModeAmount4, HistoryNumFramesAccumulated4);
+
+						float4 VisibilityWeights = select(PackedPixelData.GetHistorySampleValidity(), 1.0f, 0.0f);
+						float4 FinalWeights = GetBilinearCustomWeights(BilinearFilterAtHistoryScreenUV, VisibilityWeights);
+
+						float NumFramesAccumulated = min(WeightedAverage(HistoryNumFramesAccumulated4 + 1.0f, FinalWeights), MaxFramesAccumulated);
+
+						bDisocclusionPixel = NumFramesAccumulated < SpatialFilterDisocclusionMaxFrames;
+					}
+				}
+				#endif
+
+				WriteGroupSharedNumDisocclusionPixels(bDisocclusionPixel ? 1u : 0u, Index);
+			}
+
+			GroupMemoryBarrierWithGroupSync();
+
+			uint NumElementsToAccumulate = RoundUpToPowerOfTwo(SharedNumElements);
+			while (NumElementsToAccumulate > 1)
+			{
+				NumElementsToAccumulate = NumElementsToAccumulate / 2;
+
+				if (ThreadIndex + NumElementsToAccumulate < SharedNumElements)
+				{
+					FThreeBandSHVector PDF = GetGroupSharedSH(ThreadIndex);
+					float NumDisocclusionPixels = GetGroupSharedNumDisocclusionPixels(ThreadIndex);
+
+					PDF = AddSH3(PDF, GetGroupSharedSH(ThreadIndex + NumElementsToAccumulate));
+					NumDisocclusionPixels += GetGroupSharedNumDisocclusionPixels(ThreadIndex + NumElementsToAccumulate);
+
+					WriteGroupSharedSH(PDF, ThreadIndex);
+					WriteGroupSharedNumDisocclusionPixels(NumDisocclusionPixels, ThreadIndex);
+				}
+
+				GroupMemoryBarrierWithGroupSync();
+			}
+
+			if (ThreadIndex < NUM_PDF_SH_COEFFICIENTS)
+			{
+				uint WriteIndex = (ScreenProbeAtlasCoord.y * ScreenProbeAtlasViewSize.x + ScreenProbeAtlasCoord.x) * NUM_PDF_SH_COEFFICIENTS + ThreadIndex;
+
+				float NormalizeWeight = 1.0 / SharedNumElements;
+				RWBRDFProbabilityDensityFunctionSH[WriteIndex] = SharedSphericalHarmonic[0][ThreadIndex] * NormalizeWeight;
+			}
+
+#if SCREEN_PROBE_DISOCCLUSION
+			if (ThreadIndex == 0)
+			{
+				RWScreenProbeDisocclusion[ScreenProbeAtlasCoord] = SharedNumDisocclusionPixels[0] >= SharedNumElements * SpatialFilterDisocclusionFraction ? 1.0 : 0.0;
+			}
+#endif
+
+			// 'vis Lumen.ScreenProbeGather.BRDFProbabilityDensityFunction uv1'
+			#define VISUALIZE_BRDF_PDF_SPHERICAL_HARMONIC 0
+			#if VISUALIZE_BRDF_PDF_SPHERICAL_HARMONIC
+				uint2 TexelCoord = GroupThreadId.xy;
+
+				if (all(TexelCoord < ScreenProbeBRDFOctahedronResolution))
+				{
+					FThreeBandSHVector BRDF;
+					float NormalizeWeight = 1.0 / SharedNumElements;
+					BRDF.V0.x = SharedSphericalHarmonic[0][0] * NormalizeWeight;
+					BRDF.V0.y = SharedSphericalHarmonic[0][1] * NormalizeWeight;
+					BRDF.V0.z = SharedSphericalHarmonic[0][2] * NormalizeWeight;
+					BRDF.V0.w = SharedSphericalHarmonic[0][3] * NormalizeWeight;
+					BRDF.V1.x = SharedSphericalHarmonic[0][4] * NormalizeWeight;
+					BRDF.V1.y = SharedSphericalHarmonic[0][5] * NormalizeWeight;
+					BRDF.V1.z = SharedSphericalHarmonic[0][6] * NormalizeWeight;
+					BRDF.V1.w = SharedSphericalHarmonic[0][7] * NormalizeWeight;
+					BRDF.V2.x = SharedSphericalHarmonic[0][8] * NormalizeWeight;
+
+					float2 ProbeTexelCenter = float2(0.5, 0.5);
+					float2 ProbeUV = (TexelCoord + ProbeTexelCenter) / (float)ScreenProbeBRDFOctahedronResolution;
+					float3 WorldConeDirection = EquiAreaSphericalMapping(ProbeUV);
+
+					FThreeBandSHVector DirectionSH = SHBasisFunction3(WorldConeDirection);
+					float PDF = max(DotSH3(BRDF, DirectionSH), 0);
+	
+					RWBRDFProbabilityDensityFunction[ScreenProbeAtlasCoord * ScreenProbeBRDFOctahedronResolution + TexelCoord] = PDF;
+				}
+			#endif
+#else
+			float2 ScreenUV = GetScreenUVFromScreenProbePosition(ScreenProbeScreenPosition);
+
+			{
+				float2 ThreadOffset = ((GroupThreadId.xy + 0.5f) / (float)PROBE_THREADGROUP_SIZE_2D * 2.0f - 1.0f) * ScreenProbeDownsampleFactor;
+
+				if (all(GroupThreadId.xy == PROBE_THREADGROUP_SIZE_2D / 2))
+				{
+					// Make sure we have at least one pixel that won't be rejected by the depth weight
+					ThreadOffset = 0;
+				}
+
+				float2 PixelScreenUV = ScreenUV + ThreadOffset * View.BufferSizeAndInvSize.zw;
+				PixelScreenUV = clamp(PixelScreenUV, View.ViewRectMin.xy * View.BufferSizeAndInvSize.zw, (View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy - 1) * View.BufferSizeAndInvSize.zw);
+				const uint2 PixelPos = PixelScreenUV * View.BufferSizeAndInvSize.xy;
+
+				const FLumenMaterialData Material = ReadMaterialData(PixelPos, PixelScreenUV);
+
+				float3 PixelPosition = GetWorldPositionFromScreenUV(PixelScreenUV, Material.SceneDepth);
+				float4 PixelPlane = float4(Material.WorldNormal, dot(Material.WorldNormal, PixelPosition));
+				PixelPlanes[GroupThreadId.x][GroupThreadId.y] = PixelPlane;
+			}
+
+			GroupMemoryBarrierWithGroupSync();
+
+			float3 ProbeWorldPosition = GetWorldPositionFromScreenUV(ScreenUV, ProbeSceneDepth);
+
+			for (uint TexelCoordY = GroupThreadId.y; TexelCoordY < ScreenProbeBRDFOctahedronResolution; TexelCoordY += PROBE_THREADGROUP_SIZE_2D)
+			{
+				for (uint TexelCoordX = GroupThreadId.x; TexelCoordX < ScreenProbeBRDFOctahedronResolution; TexelCoordX += PROBE_THREADGROUP_SIZE_2D)
+				{
+					float2 PDFTexelCoord = float2(TexelCoordX, TexelCoordY);
+					float2 ProbeTexelCenter = float2(0.5, 0.5);
+					float2 ProbeUV = (PDFTexelCoord + ProbeTexelCenter) / (float)ScreenProbeBRDFOctahedronResolution;
+					float3 WorldConeDirection = EquiAreaSphericalMapping(ProbeUV);
+
+					float PDF = 0.0f;
+
+					for (uint Y = 0; Y < PROBE_THREADGROUP_SIZE_2D; Y++)
+					{
+						for (uint X = 0; X < PROBE_THREADGROUP_SIZE_2D; X++)
+						{
+							float4 PixelPlane = PixelPlanes[X][Y];
+						
+							float PlaneDistance = abs(dot(float4(ProbeWorldPosition, -1), PixelPlane));
+							float RelativeDepthDifference = Pow2(PlaneDistance / SceneDepth);
+							float DepthWeight = exp2(ScreenProbeInterpolationDepthWeight * RelativeDepthDifference);
+
+							if (DepthWeight > 0.01)
+							{
+								float Bias = 0.0f;
+								float NdotL = max((1.0f - Bias) * dot(WorldConeDirection, PixelPlane.xyz) + Bias, 0.0f);
+								//@todo - integrate over texel.  BRDF is evaluated at lower resolution than final integral.
+								PDF = max(PDF, NdotL);
+							}
+						}
+					}
+
+					RWBRDFProbabilityDensityFunction[ScreenProbeAtlasCoord * ScreenProbeBRDFOctahedronResolution + uint2(TexelCoordX, TexelCoordY)] = PDF;
+				}
+			}
+#endif
+		}
+	}
+}

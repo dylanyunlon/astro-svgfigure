@@ -1,0 +1,806 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../SceneData.ush"
+#include "../ViewData.ush"
+#include "../WaveOpUtil.ush"
+#include "../ComputeShaderUtils.ush"
+
+#define SPLIT_WORK_QUEUE (PATCHES) // TODO: Remove once shader rewriter has been fixed (UE-202409)
+
+#ifndef NANITE_TESSELLATION
+#define NANITE_TESSELLATION PATCHES
+#endif
+
+#include "NaniteAttributeDecode.ush"
+#include "NaniteTessellation.ush"
+
+#define RASTER_BIN_INIT						(RASTER_BIN_PASS == NANITE_RASTER_BIN_INIT)
+#define RASTER_BIN_COUNT					(RASTER_BIN_PASS == NANITE_RASTER_BIN_COUNT)
+#define RASTER_BIN_SCATTER					(RASTER_BIN_PASS == NANITE_RASTER_BIN_SCATTER)
+#define RASTER_BIN_RESERVE					(RASTER_BIN_PASS == NANITE_RASTER_BIN_RESERVE)
+#define RASTER_BIN_DEPTHBLOCK				(RASTER_BIN_PASS == NANITE_RASTER_BIN_DEPTHBLOCK)
+#define RASTER_BIN_FINALIZE					(RASTER_BIN_PASS == NANITE_RASTER_BIN_FINALIZE)
+
+#ifndef VIRTUAL_TEXTURE_TARGET
+#define VIRTUAL_TEXTURE_TARGET 0
+#endif
+
+#ifndef FORCE_BATCHING
+#define FORCE_BATCHING 0
+#endif
+
+#ifndef DEPTH_BUCKETING
+#define DEPTH_BUCKETING 1
+#endif
+
+uint MeshPassIndex;
+uint MinSupportedWaveSize;
+uint MaxVisiblePatches;
+uint MaxClusterIndirections;
+
+RWStructuredBuffer<FNaniteRasterBinMeta>	OutRasterBinMeta;
+RWStructuredBuffer<FNaniteRasterGroupMeta>	OutRasterGroupMeta;
+RWStructuredBuffer<uint>					OutDepthBuckets;
+
+FNaniteMaterialFlags GetRasterBinMaterialFlags(uint RasterBin)
+{
+	return GetRasterBinMaterialFlags(OutRasterBinMeta, RasterBin);
+}
+
+uint GetRasterBinGroup(uint RasterBinIndex)
+{
+	if (RasterBinIndex == NANITE_INVALID_RASTER_BIN)
+	{
+		return NANITE_INVALID_RASTER_GROUP;
+	}
+	return OutRasterBinMeta[RasterBinIndex].GroupIndex;
+}
+
+uint GetRasterBinDepthBlock(uint GroupIndex)
+{
+	return OutRasterGroupMeta[GroupIndex].MaterialFlags_DepthBlock >> 16;
+}
+
+void InitRasterGroup(uint GroupIndex)
+{
+	OutRasterGroupMeta[GroupIndex].ClusterOffset	= 0;
+	OutRasterGroupMeta[GroupIndex].SWCount			= 0;
+	OutRasterGroupMeta[GroupIndex].HWCount			= 0;
+}
+
+uint2 GetRasterGroupCount(uint GroupIndex)
+{
+	return uint2(OutRasterGroupMeta[GroupIndex].SWCount, OutRasterGroupMeta[GroupIndex].HWCount);
+}
+
+uint GetRasterGroupCapacity(uint GroupIndex)
+{
+	const uint2 GroupCount = GetRasterGroupCount(GroupIndex);
+	return (GroupCount.x + GroupCount.y);
+}
+
+void SetRasterGroupOffset(uint GroupIndex, uint Offset)
+{
+	OutRasterGroupMeta[GroupIndex].ClusterOffset = Offset;
+}
+
+uint GetRasterGroupOffset(uint GroupIndex)
+{
+	return OutRasterGroupMeta[GroupIndex].ClusterOffset;
+}
+
+uint GetRemappedRasterBinFromIndex(
+	FNaniteView NaniteView,
+	uint InRelativeMaterialIndex,
+	uint InPrimitiveIndex,
+	uint InRegularRasterBinCount,
+	uint InRenderFlags,
+	bool bFallbackRasterBin,
+	bool bVoxel,
+	bool bCurve,
+	bool bIsDeforming)
+{
+	FNaniteMaterialFlags MaterialFlags = (FNaniteMaterialFlags)0;
+	uint RasterBin = GetMaterialRasterBinAndFlagsFromIndex(
+		OutRasterBinMeta,
+		NaniteView,
+		InRelativeMaterialIndex,
+		InPrimitiveIndex,
+		MeshPassIndex,
+		InRegularRasterBinCount,
+		bFallbackRasterBin,
+		MaterialFlags
+	);
+
+	return RemapRasterBin(RasterBin, InRenderFlags, MaterialFlags, bVoxel, bCurve, bIsDeforming);
+}
+
+#if NANITE_TESSELLATION
+
+[numthreads(1, 1, 1)]
+void InitVisiblePatchesArgs() 
+{
+	const uint NumVisiblePatches = min( RWVisiblePatchesArgs[3], MaxVisiblePatches );
+
+	RWVisiblePatchesArgs[0] = ( NumVisiblePatches + 63u ) / 64u;
+	RWVisiblePatchesArgs[1] = 1;
+	RWVisiblePatchesArgs[2] = 1;
+}
+
+#endif
+
+#if RASTER_BIN_INIT
+
+uint RasterGroupCount;
+
+[numthreads(64, 1, 1)]
+void RasterGroupInit(uint RasterGroupIndex : SV_DispatchThreadID)
+{
+	if (RasterGroupIndex < RasterGroupCount)
+	{
+		InitRasterGroup(RasterGroupIndex);
+	}
+}
+
+#elif RASTER_BIN_RESERVE
+
+uint RasterGroupCount;
+
+RWStructuredBuffer<uint> OutRangeAllocator;
+RWBuffer<uint> OutRasterGroupArgsSWHW;
+
+uint AllocateRasterGroupRange(uint ClusterCount)
+{
+	uint RangeStart;
+	WaveInterlockedAdd_(OutRangeAllocator[0], ClusterCount, RangeStart);
+	return RangeStart;
+}
+
+[numthreads(64, 1, 1)]
+void RasterGroupReserve(uint RasterGroupIndex : SV_DispatchThreadID)
+{
+	if (RasterGroupIndex < RasterGroupCount)
+	{
+		const uint RasterGroupCapacity = GetRasterGroupCapacity(RasterGroupIndex);
+		const uint RasterGroupOffset = AllocateRasterGroupRange(RasterGroupCapacity);
+		SetRasterGroupOffset(RasterGroupIndex, RasterGroupOffset);
+
+		const uint ArgsOffset = (RasterGroupIndex * NANITE_RASTERIZER_ARG_COUNT);
+		WriteRasterizerArgsSWHW(OutRasterGroupArgsSWHW, ArgsOffset, 0u, 0u);
+	}
+}
+
+#elif RASTER_BIN_FINALIZE
+
+uint RasterGroupCount;
+uint FinalizeMode;
+
+RWBuffer<uint> OutRasterGroupArgsSWHW;
+
+[numthreads(64, 1, 1)]
+void RasterGroupFinalize(uint RasterGroupIndex : SV_DispatchThreadID)
+{
+	if (RasterGroupIndex < RasterGroupCount)
+	{
+		const uint Offset			= (RasterGroupIndex * NANITE_RASTERIZER_ARG_COUNT);
+		const uint HWCounterIndex	= GetHWClusterCounterIndex(RenderFlags);
+
+		const uint GroupOffset = GetRasterGroupOffset(RasterGroupIndex);
+
+		const uint SWClusterCount = OutRasterGroupArgsSWHW[Offset + 0u];
+		const uint HWClusterCount = OutRasterGroupArgsSWHW[Offset + HWCounterIndex];
+
+		const uint ClampedSWClusterCount = min(GroupOffset + SWClusterCount, MaxClusterIndirections) - min(GroupOffset, MaxClusterIndirections);
+		const uint ClampedHWClusterCount = min(GroupOffset + SWClusterCount + HWClusterCount, MaxClusterIndirections) - min(GroupOffset + SWClusterCount, MaxClusterIndirections);
+
+		OutRasterGroupMeta[RasterGroupIndex].SWCount = ClampedSWClusterCount;
+		OutRasterGroupMeta[RasterGroupIndex].HWCount = ClampedHWClusterCount;
+
+		OutRasterGroupArgsSWHW[Offset + 0u]			= ClampedSWClusterCount;
+		
+		const bool bMeshShader = (RenderFlags & NANITE_RENDER_FLAG_MESH_SHADER) != 0;
+
+		BRANCH
+		if (FinalizeMode == 0 && bMeshShader) // Wrapping
+		{
+#if !PLATFORM_REQUIRES_UNWRAPPED_MESH_SHADER_ARGS
+			// Need to span the launch size across X,Y,Z so any single dimension does not exceed the 64k
+			// limit as per https://microsoft.github.io/DirectX-Specs/d3d/MeshShader.html#dispatchmesh-api
+			// The product of X*Y*Z can be 2^22, so we convert 1D->3D->1D to work around this limitation.
+			const uint DimensionLimit = (1u << 16u) - 1u;
+
+			const uint3 GroupCount = GetGroupCountWrapped(ClampedHWClusterCount, DimensionLimit.xx);
+
+			// HW: ThreadGroupCountXYZ
+			OutRasterGroupArgsSWHW[Offset + 4u] = GroupCount.x;
+			OutRasterGroupArgsSWHW[Offset + 5u] = GroupCount.y;
+			OutRasterGroupArgsSWHW[Offset + 6u] = GroupCount.z;
+#else
+			OutRasterGroupArgsSWHW[Offset + 4u] = ClampedHWClusterCount;
+#endif
+		}
+		else if (FinalizeMode == 1 && bMeshShader) // VK_NV_mesh_shader
+		{
+			// VK_NV_mesh_shader draw indirect command (count, first, <unused>)
+			// https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkDrawMeshTasksIndirectCommandNV.html
+			OutRasterGroupArgsSWHW[Offset + 4u] = ClampedHWClusterCount;
+			OutRasterGroupArgsSWHW[Offset + 5u] = 0u;
+		}
+		else
+		{
+			OutRasterGroupArgsSWHW[Offset + HWCounterIndex] = ClampedHWClusterCount;
+		}
+	}
+}
+
+#elif RASTER_BIN_DEPTHBLOCK
+
+//TODO: Permute based on wave width for slightly better perf?
+[numthreads(64, 1, 1)]
+void RasterGroupDepthBlock(uint DepthBlockIndex : SV_GroupID, uint ThreadIndex : SV_GroupIndex)
+{
+	const uint LaneIndex = WaveGetLaneIndex();
+	const uint LaneCount = WaveGetLaneCount();
+
+	// Make sure this is just a single wave
+	if (ThreadIndex >= LaneCount)
+	{
+		return;
+	}
+
+	uint PrevSum = 0;
+	for (uint BaseIndex = 0; BaseIndex < NANITE_NUM_DEPTH_BUCKETS_PER_BLOCK; BaseIndex += LaneCount)
+	{
+		uint Index = DepthBlockIndex * NANITE_NUM_DEPTH_BUCKETS_PER_BLOCK + BaseIndex + LaneIndex;
+		const uint Count = OutDepthBuckets[Index];
+		
+		const uint PrefixSum = PrevSum + WavePrefixSum(Count);
+		PrevSum = WaveReadLaneLast(PrefixSum + Count);
+
+		OutDepthBuckets[Index] = PrefixSum;
+	}
+}
+
+#else
+
+Buffer<uint> InClusterOffsetSWHW;
+
+StructuredBuffer<uint2> InClusterCountSWHW;
+StructuredBuffer<uint2> InTotalPrevDrawClusters;
+
+uint bUsePrimOrMeshShader;
+
+uint RegularMaterialRasterBinCount;
+
+#if RASTER_BIN_SCATTER
+RWBuffer<uint> OutRasterGroupArgsSWHW;
+RWStructuredBuffer<uint2> OutRasterBinData;
+#endif
+
+uint ExtractVertReuseBatchInfo(uint2 PackedData, uint BitOffset)
+{
+	uint BitConsumed = min(5, 32 - BitOffset);
+	uint BatchTriCount = BitFieldExtractU32(PackedData.x, BitConsumed, BitOffset);
+	if (5 - BitConsumed > 0)
+	{
+		BatchTriCount |= (BitFieldExtractU32(PackedData.y, 5 - BitConsumed, 0) << BitConsumed);
+	}
+	return BatchTriCount + 1;
+}
+
+uint DecodeVertReuseBatchInfo(FCluster Cluster, uint BatchInfoOffset, uint BatchIndex, bool bInlined)
+{
+	uint BitOffset = CondMask(bInlined, 12u, Cluster.VertReuseBatchCountTableSize * 4u) + (BatchInfoOffset + BatchIndex) * 5;
+	uint DwordOffset = BitOffset >> 5;
+	BitOffset -= DwordOffset * 32;
+
+	uint2 PackedData;
+	if (bInlined)
+	{
+		PackedData = uint2(Cluster.VertReuseBatchInfo[DwordOffset], Cluster.VertReuseBatchInfo[DwordOffset + 1]);
+	}
+	else
+	{
+		PackedData = ClusterPageData.Load2(Cluster.PageBaseAddress + (Cluster.VertReuseBatchCountTableOffset + DwordOffset) * 4);
+	}
+	
+	return ExtractVertReuseBatchInfo(PackedData, BitOffset);
+}
+
+#if RASTER_BIN_COUNT
+void IncrementRasterGroupCount(uint GroupIndex, bool bSoftware, uint BatchCount, uint FlatDepthBucket)
+{
+	// One atomic per lane causes severe contention that ends up dominating execution time.
+
+	// This path uses wave ops to reduce it to one atomic per unique group in the wave.
+	// As clusters are allocated in ranges at group granularity (currently ~32 clusters),
+	// the expectation is that most waves will only have one or at most a few unique groups.
+	
+	bool bDone = false;
+	while (WaveActiveAnyTrue(!bDone))
+	{
+		if (!bDone)
+		{
+			const uint UniformGroupIndex = WaveReadLaneFirst(GroupIndex);
+			const bool bUniformSoftware = (bool)WaveReadLaneFirst((uint)bSoftware);
+			if (GroupIndex == UniformGroupIndex && bSoftware == bUniformSoftware)
+			{
+				if (bUniformSoftware)
+				{
+					WaveInterlockedAdd(OutRasterGroupMeta[UniformGroupIndex].SWCount, BatchCount);
+				}
+				else
+				{
+					WaveInterlockedAdd(OutRasterGroupMeta[UniformGroupIndex].HWCount, BatchCount);
+				}
+				
+				bDone = true;
+			}
+		}
+	}
+
+#if DEPTH_BUCKETING
+	BRANCH
+	if (FlatDepthBucket != 0xFFFFFFFFu)
+	{
+		// TODO: We could merge this with the raster counters above if all the counters were in the same buffer. Worthwhile?
+		// TODO: Does scalarization make sense here?
+		InterlockedAdd(OutDepthBuckets[FlatDepthBucket], BatchCount);
+	}
+#endif
+}
+#elif RASTER_BIN_SCATTER
+uint AllocateRasterGroupCluster(uint GroupIndex, bool bSoftware, uint BatchCount, uint FlatDepthBucket)
+{
+	uint ClusterOffset = 0u;
+	uint Offset = (GroupIndex * NANITE_RASTERIZER_ARG_COUNT);
+
+	if (!bSoftware)
+	{
+		Offset += CondMask((RenderFlags & NANITE_RENDER_FLAG_MESH_SHADER) || (RenderFlags & NANITE_RENDER_FLAG_PRIMITIVE_SHADER), 4u, 5u);
+	}
+
+	bool bDone = false;
+	while(WaveActiveAnyTrue(!bDone))
+	{
+		if(!bDone)
+		{
+			const uint UniformOffset = WaveReadLaneFirst(Offset);
+			if (Offset == UniformOffset)
+			{
+				WaveInterlockedAdd_(OutRasterGroupArgsSWHW[UniformOffset], BatchCount, ClusterOffset);
+				bDone = true;
+			}
+		}
+	}
+
+	const uint2 GroupCount = GetRasterGroupCount(GroupIndex);
+#if DEPTH_BUCKETING
+	BRANCH
+	if (FlatDepthBucket != 0xFFFFFFFFu)
+	{
+		// TODO: We could merge this with the raster counters above if all the counters were in the same buffer. Worthwhile?
+		// TODO: Does scalarization make sense here? Initial test says no.
+		// TODO: Consider still using the reverse order inside the buckets for slightly better order?
+		InterlockedAdd(OutDepthBuckets[FlatDepthBucket], BatchCount, ClusterOffset);
+		ClusterOffset = (!bSoftware ? GroupCount.x : 0u) + ClusterOffset;
+	}
+	else
+#endif
+	{
+		if (bSoftware)
+		{
+			ClusterOffset = GroupCount.x - ClusterOffset - BatchCount;	// Write clusters in reverse order for better z-test rejection for voxels and masked materials
+		}
+		else
+		{
+			ClusterOffset = GroupCount.x + ClusterOffset;					// HW cluster list already reversed, so write from beginning
+		}
+	}
+	
+	return GetRasterGroupOffset(GroupIndex) + ClusterOffset;
+}
+#endif
+
+void ExportRasterGroup(uint RasterGroup, uint RasterBin, FNaniteMaterialFlags MaterialFlags, uint ClusterIndex, uint RangeStart, uint RangeEnd, uint BatchCount, uint BatchInfoOffset, FCluster Cluster, bool bBatchInfoInlined, bool bSoftware, uint DepthBucket)
+{
+	if (RasterGroup == NANITE_INVALID_RASTER_GROUP)
+	{
+		return;
+	}
+
+	// TODO: Consider resolving RasterGroup in here
+
+	if (MinSupportedWaveSize < 32 && MaterialFlags.bPixelProgrammable)
+	{
+		// SW pixel programmable path requires wave size >= 32. Fall back to HW raster when that is not guaranteed.
+		bSoftware = false;
+	}
+
+	if (!MaterialFlags.bNoDerivativeOps)
+	{
+		// Materials requiring finite differences must run the HW path (SW lanes are processing random triangles)
+		bSoftware = false;
+	}
+	
+	if (MaterialFlags.bTranslucent)
+	{
+		// Translucency is currently only supported with hardware raster
+		bSoftware = false;
+	}
+
+#if FORCE_BATCHING
+	const bool bForceBatching = true;
+#else
+	const bool bForceBatching = false;
+#endif
+	bool bUseBatch = !bSoftware && bUsePrimOrMeshShader && (bForceBatching || MaterialFlags.bVertexProgrammable || MaterialFlags.bTranslucent);
+
+	if (MaterialFlags.bDisplacement)
+	{
+		// Displacement forces 100% software, and also the vert reuse batching
+		bSoftware = true;
+		bUseBatch = true;
+	}
+
+	if (Cluster.bVoxel)
+	{
+		bSoftware = true;
+		bUseBatch = false;
+	}
+
+	if (Cluster.bCurve)
+	{
+		bSoftware = true;
+		bUseBatch = false;
+	}
+
+	BatchCount = CondMask(bUseBatch, BatchCount, 1u);
+
+	uint FlatDepthBucket = 0xFFFFFFFFu;
+#if DEPTH_BUCKETING
+	uint DepthBlock = GetRasterBinDepthBlock(RasterBin);
+	if (DepthBlock != 0u)
+	{
+		DepthBlock += (bSoftware ? 0u : 1u) - 1u;
+		FlatDepthBucket = DepthBlock * NANITE_NUM_DEPTH_BUCKETS_PER_BLOCK + DepthBucket;
+	}
+#endif
+
+#if RASTER_BIN_COUNT
+	IncrementRasterGroupCount(RasterGroup, bSoftware, BatchCount, FlatDepthBucket);
+#elif RASTER_BIN_SCATTER
+	const uint GroupClusterMapping = AllocateRasterGroupCluster(RasterGroup, bSoftware, BatchCount, FlatDepthBucket);
+
+	// Trim any overflow exports
+	BatchCount = min(GroupClusterMapping + BatchCount, MaxClusterIndirections) - min(GroupClusterMapping, MaxClusterIndirections);
+
+	for (uint BatchIndex = 0; BatchIndex < BatchCount; ++BatchIndex)
+	{
+		if (bUseBatch)
+		{
+			uint BatchTriCount = DecodeVertReuseBatchInfo(Cluster, BatchInfoOffset, BatchIndex, bBatchInfoInlined);
+			RangeEnd = RangeStart + BatchTriCount;
+		}
+
+		const uint RangeNum = RangeEnd - RangeStart;
+
+		OutRasterBinData[GroupClusterMapping + BatchIndex].x = ClusterIndex;
+		OutRasterBinData[GroupClusterMapping + BatchIndex].y = (RasterBin << 16) | (RangeStart << 8) | RangeNum;
+		RangeStart = RangeEnd;
+	}
+#endif
+}
+
+template< typename T, typename FFunction >
+void ScalarizeForEachMatching( T Value, FFunction Function )
+{
+	bool bDone = false;
+	while( WaveActiveAnyTrue( !bDone ) )
+	{
+		if( !bDone )
+		{
+			T UniformValue = WaveReadLaneFirst( Value );
+			if( UniformValue == Value )
+			{
+				Function( UniformValue );
+				bDone = true;
+			}
+		}
+	}
+}
+
+bool IsNaniteMaterialMergingAllowed(uint BinIndex, FNaniteMaterialFlags MaterialFlags)
+{
+	return BinIndex != NANITE_INVALID_RASTER_BIN && !MaterialFlags.bDisplacement;	// Merging ranges is incompatible with tessellation. Cluster rasterizer assumes UVDensities is uniform.
+}
+
+[numthreads(64, 1, 1)]
+void RasterBinBuild(uint RelativeClusterIndex : SV_DispatchThreadID, uint GroupThreadIndex : SV_GroupIndex)
+{
+#if PATCHES
+	const uint VisibleIndex = RelativeClusterIndex;
+	const uint NumVisiblePatches = min( VisiblePatchesArgs[3], MaxVisiblePatches );
+	
+	if( VisibleIndex < NumVisiblePatches )
+	{
+	#if NANITE_TESSELLATION_PATCH_REFS
+		const uint PatchIndex = VisiblePatches.Load(VisibleIndex * 8);
+		const uint PatchEncoded = SplitWorkQueue.DataBuffer_Load(PatchIndex * 16);
+	#else
+		const uint PatchEncoded = VisiblePatches.Load(VisibleIndex * 16);
+	#endif
+		uint VisibleClusterIndex, TriIndex;
+		UnpackClusterIndexAndTriIndex(PatchEncoded, VisibleClusterIndex, TriIndex);
+
+		FVisibleCluster VisibleCluster = GetVisibleCluster( VisibleClusterIndex, VIRTUAL_TEXTURE_TARGET );
+		FInstanceSceneData InstanceData = GetInstanceSceneDataUnchecked( VisibleCluster.InstanceId );
+		FCluster Cluster = GetCluster( VisibleCluster.PageIndex, VisibleCluster.ClusterIndex );
+		FNaniteView NaniteView				= GetNaniteView(VisibleCluster.ViewId);
+		FInstanceViewData InstanceViewData	= GetInstanceViewData(VisibleCluster.InstanceId, NaniteView.SceneRendererPrimaryViewId);
+		const bool bIsDeforming				= !IsAssemblyPartCluster(VisibleCluster) && InstanceViewData.bIsDeforming;
+
+		const uint RasterBin = GetRemappedRasterBinFromIndex(
+			NaniteView,
+			GetRelativeMaterialIndex(Cluster, TriIndex),
+			InstanceData.PrimitiveId,
+			RegularMaterialRasterBinCount,
+			RenderFlags,
+			/* bFallbackRasterBin */ false,
+			Cluster.bVoxel,
+			Cluster.bCurve,
+			bIsDeforming
+		);
+
+		const uint RasterGroup = GetRasterBinGroup(RasterBin);
+
+		if (RasterGroup == NANITE_INVALID_RASTER_GROUP)
+		{
+			return;
+		}
+
+		uint IndexInBin = 0;
+
+		// Scalarize atomics
+		bool bDone = false;
+		while( WaveActiveAnyTrue( !bDone ) )
+		{
+			if( !bDone )
+			{
+				const uint UniformGroupIndex = WaveReadLaneFirst( RasterGroup );
+				if( UniformGroupIndex == RasterGroup )
+				{
+				#if RASTER_BIN_COUNT
+					WaveInterlockedAddScalar(OutRasterGroupMeta[UniformGroupIndex].SWCount, 1);
+				#elif RASTER_BIN_SCATTER
+					WaveInterlockedAddScalar_( OutRasterGroupArgsSWHW[ UniformGroupIndex * NANITE_RASTERIZER_ARG_COUNT + 3 ], 1, IndexInBin );
+					const uint Num = IndexInBin + WaveActiveCountBits(true);
+					if(WaveIsFirstLane())
+					{
+						const uint NumGroups = (Num + MaxPatchesPerGroup - 1) / MaxPatchesPerGroup;	// Slow integer divide. Fix me?
+						InterlockedMax(OutRasterGroupArgsSWHW[ UniformGroupIndex * NANITE_RASTERIZER_ARG_COUNT + 0 ], NumGroups);
+					}
+				#endif
+					bDone = true;
+				}
+			}
+		}
+
+	#if RASTER_BIN_SCATTER
+		const uint Offset = GetRasterGroupOffset( RasterGroup ) + IndexInBin;
+
+		const uint RangeStart = 0;
+		const uint RangeNum = Cluster.NumTris;
+
+		OutRasterBinData[ Offset ].x = VisibleIndex;
+		OutRasterBinData[ Offset ].y = (RasterBin << 16) | (RangeStart << 8) | RangeNum;
+	#endif
+	}
+#else
+	const uint SWClusterCount = InClusterCountSWHW[0].x;
+	const uint HWClusterCount = InClusterCountSWHW[0].y;
+
+	const bool bSoftware = RelativeClusterIndex < SWClusterCount;
+	const uint ClusterCount = SWClusterCount + HWClusterCount;
+
+	if (RelativeClusterIndex < ClusterCount)
+	{
+		RelativeClusterIndex = CondMask(bSoftware, RelativeClusterIndex, RelativeClusterIndex - SWClusterCount);
+
+		uint ClusterOffset = 0;
+
+		const bool bHasPrevDrawData = (RenderFlags & NANITE_RENDER_FLAG_HAS_PREV_DRAW_DATA) != 0u;
+		BRANCH
+		if (bHasPrevDrawData)
+		{
+			ClusterOffset += CondMask(bSoftware, InTotalPrevDrawClusters[0].x, InTotalPrevDrawClusters[0].y);
+		}
+
+	#if IS_POST_PASS
+		ClusterOffset += CondMask(bSoftware, InClusterOffsetSWHW[0], InClusterOffsetSWHW[GetHWClusterCounterIndex(RenderFlags)]);
+	#endif
+
+		uint VisibleClusterIndex = RelativeClusterIndex + ClusterOffset;
+
+		// HW clusters are written from the top
+		VisibleClusterIndex = CondMask(bSoftware, VisibleClusterIndex, (MaxVisibleClusters - 1) - VisibleClusterIndex);
+
+		FVisibleCluster VisibleCluster		= GetVisibleCluster(VisibleClusterIndex, VIRTUAL_TEXTURE_TARGET);
+		FInstanceSceneData InstanceData		= GetInstanceSceneDataUnchecked(VisibleCluster);
+		FNaniteView NaniteView				= GetNaniteView(VisibleCluster.ViewId);
+		FInstanceViewData InstanceViewData	= GetInstanceViewData(VisibleCluster.InstanceId, NaniteView.SceneRendererPrimaryViewId);
+		FCluster Cluster					= GetCluster(VisibleCluster.PageIndex, VisibleCluster.ClusterIndex);
+		const bool bFallbackBin				= (VisibleCluster.Flags & NANITE_CULLING_FLAG_FALLBACK_RASTER) != 0;
+		const uint DepthBucket				= VisibleCluster.DepthBucket;
+		const bool bIsDeforming				= !IsAssemblyPartCluster(VisibleCluster) && InstanceViewData.bIsDeforming;
+
+		BRANCH
+		if (IsMaterialFastPath(Cluster))
+		{
+			uint RasterBin0 = 0;
+			uint RasterBin1 = 0;
+			uint RasterBin2 = 0;
+
+			uint RasterLen0 = 0;
+			uint RasterLen1 = 0;
+			uint RasterLen2 = 0;
+
+			uint BatchCount0 = BitFieldExtractU32(Cluster.VertReuseBatchInfo.x, 4, 0);
+			uint BatchCount1 = BitFieldExtractU32(Cluster.VertReuseBatchInfo.x, 4, 4);
+			uint BatchCount2 = BitFieldExtractU32(Cluster.VertReuseBatchInfo.x, 4, 8);
+			uint BatchInfoOffset0 = 0;
+			uint BatchInfoOffset1 = BatchCount0;
+			uint BatchInfoOffset2 = BatchCount0 + BatchCount1;
+
+			FNaniteMaterialFlags BinMaterialFlags0 = (FNaniteMaterialFlags)0;
+			FNaniteMaterialFlags BinMaterialFlags1 = (FNaniteMaterialFlags)0;
+			FNaniteMaterialFlags BinMaterialFlags2 = (FNaniteMaterialFlags)0;
+
+			// Length is remaining triangles after Material0 and Material1
+			const uint Material2Length = Cluster.MaterialTotalLength - (Cluster.Material0Length + Cluster.Material1Length);
+
+			// The 0th material range is always non-zero length
+			{
+				RasterBin0 = GetRemappedRasterBinFromIndex(NaniteView, Cluster.Material0Index, InstanceData.PrimitiveId, RegularMaterialRasterBinCount, RenderFlags, bFallbackBin, Cluster.bVoxel, Cluster.bCurve, bIsDeforming);
+				BinMaterialFlags0 = GetRasterBinMaterialFlags(RasterBin0);
+			}
+
+			BRANCH
+			if (Cluster.Material1Length > 0u)
+			{
+				RasterBin1 = GetRemappedRasterBinFromIndex(NaniteView, Cluster.Material1Index, InstanceData.PrimitiveId, RegularMaterialRasterBinCount, RenderFlags, bFallbackBin, Cluster.bVoxel, Cluster.bCurve, bIsDeforming);
+				BinMaterialFlags1 = GetRasterBinMaterialFlags(RasterBin1);
+			}
+
+			BRANCH
+			if (Material2Length > 0)
+			{
+				RasterBin2 = GetRemappedRasterBinFromIndex(NaniteView, Cluster.Material2Index, InstanceData.PrimitiveId, RegularMaterialRasterBinCount, RenderFlags, bFallbackBin, Cluster.bVoxel, Cluster.bCurve, bIsDeforming);
+				BinMaterialFlags2 = GetRasterBinMaterialFlags(RasterBin2);
+			}
+
+			const bool bAllowMerging0 = IsNaniteMaterialMergingAllowed(RasterBin0, BinMaterialFlags0);
+			const bool bAllowMerging1 = IsNaniteMaterialMergingAllowed(RasterBin1, BinMaterialFlags1);
+			const bool bAllowMerging2 = IsNaniteMaterialMergingAllowed(RasterBin2, BinMaterialFlags2);
+
+			BRANCH
+			if (RasterBin0 == RasterBin1 && bAllowMerging0 && bAllowMerging1)
+			{
+				if (RasterBin0 == RasterBin2 && bAllowMerging2)
+				{
+					RasterLen0 = Cluster.MaterialTotalLength;
+					BatchCount0 += BatchCount1 + BatchCount2;
+				}
+				else
+				{
+					RasterLen0 = (Cluster.Material0Length + Cluster.Material1Length);
+					RasterLen2 = Material2Length;
+					BatchCount0 += BatchCount1;
+				}
+			}
+			else if (RasterBin1 == RasterBin2 && bAllowMerging1 && bAllowMerging2)
+			{
+				RasterLen0 = Cluster.Material0Length;
+				RasterLen1 = Cluster.MaterialTotalLength - Cluster.Material0Length;
+				BatchCount1 += BatchCount2;
+			}
+			else
+			{
+				RasterLen0 = Cluster.Material0Length;
+				RasterLen1 = Cluster.Material1Length;
+				RasterLen2 = Material2Length;
+			}
+
+			
+			
+			// The 0th material range is always non-zero length
+			{
+				const uint RasterGroup0 = GetRasterBinGroup(RasterBin0);
+				ExportRasterGroup(RasterGroup0, RasterBin0, BinMaterialFlags0, VisibleClusterIndex, 0u, RasterLen0, BatchCount0, BatchInfoOffset0, Cluster, true, bSoftware, DepthBucket);
+			}
+
+			BRANCH
+			if (RasterLen1 > 0)
+			{
+				const uint Range1Start = RasterLen0;
+				const uint Range1End   = Range1Start + RasterLen1;
+				const uint RasterGroup1 = GetRasterBinGroup(RasterBin1);
+				ExportRasterGroup(RasterGroup1, RasterBin1, BinMaterialFlags1, VisibleClusterIndex, Range1Start, Range1End, BatchCount1, BatchInfoOffset1, Cluster, true, bSoftware, DepthBucket);
+			}
+
+			BRANCH
+			if (RasterLen2 > 0)
+			{
+				const uint Range2Start = (RasterLen0 + RasterLen1);
+				const uint Range2End   = Range2Start + RasterLen2;
+				const uint RasterGroup2 = GetRasterBinGroup(RasterBin2);
+				ExportRasterGroup(RasterGroup2, RasterBin2, BinMaterialFlags2, VisibleClusterIndex, Range2Start, Range2End, BatchCount2, BatchInfoOffset2, Cluster, true, bSoftware, DepthBucket);
+			}
+		}
+		else
+		{
+			uint CurrentRangeBin = NANITE_INVALID_RASTER_BIN;
+			uint CurrentRangeStart = 0;
+			uint CurrentRangeEnd = 0;
+			uint CurrentBatchCount = 0;
+			uint CurrentBatchInfoOffset = 0;
+
+			FNaniteMaterialFlags CurrentBinMaterialFlags = (FNaniteMaterialFlags)0;
+			bool bCurrentAllowMerging = false;
+
+			FBitStreamReaderState BatchCountStreamState = BitStreamReader_Create_Aligned(Cluster.PageBaseAddress + Cluster.VertReuseBatchCountTableOffset * 4, 0, NANITE_MAX_CLUSTER_MATERIALS * 4);
+
+			uint TableOffset = Cluster.PageBaseAddress + Cluster.MaterialTableOffset * 4u;
+			LOOP for (uint TableEntry = 0; TableEntry < Cluster.MaterialTableLength; ++TableEntry)
+			{
+				const uint EncodedRange = ClusterPageData.Load(TableOffset);
+				TableOffset += 4;
+
+				uint TriStart;
+				uint TriLength;
+				uint MaterialIndex;
+				DecodeMaterialRange(EncodedRange, TriStart, TriLength, MaterialIndex);
+
+				const uint RasterBinN = GetRemappedRasterBinFromIndex(NaniteView, MaterialIndex, InstanceData.PrimitiveId, RegularMaterialRasterBinCount, RenderFlags, bFallbackBin, Cluster.bVoxel, Cluster.bCurve, bIsDeforming);
+				const FNaniteMaterialFlags BinMaterialFlags = GetRasterBinMaterialFlags(RasterBinN);
+				const bool bAllowMerging = IsNaniteMaterialMergingAllowed(RasterBinN, BinMaterialFlags);
+
+				const uint BatchCount = BitStreamReader_Read_RO(ClusterPageData, BatchCountStreamState, 4, 4);
+
+				// Check if raster slot matches the current run, and that the triangle range is contiguous.
+				if ((RasterBinN == CurrentRangeBin) && bAllowMerging && bCurrentAllowMerging)
+				{
+					// Update current range
+					CurrentRangeEnd = TriStart + TriLength;
+					CurrentBatchCount += BatchCount;
+				}
+				else
+				{
+					// Not merging previous range, and previous range has valid triangles that need to be flushed
+					BRANCH
+					if (CurrentRangeEnd > 0)
+					{
+						const uint CurrentRangeGroup = GetRasterBinGroup(CurrentRangeBin);
+						ExportRasterGroup(CurrentRangeGroup, CurrentRangeBin, CurrentBinMaterialFlags, VisibleClusterIndex, CurrentRangeStart, CurrentRangeEnd, CurrentBatchCount, CurrentBatchInfoOffset, Cluster, false, bSoftware, DepthBucket);
+					}
+
+					CurrentRangeBin   = RasterBinN;
+					CurrentRangeStart = TriStart;
+					CurrentRangeEnd   = CurrentRangeStart + TriLength;
+					CurrentBatchInfoOffset += CurrentBatchCount;
+					CurrentBatchCount = BatchCount;
+					CurrentBinMaterialFlags = BinMaterialFlags;
+					bCurrentAllowMerging = bAllowMerging;
+				}
+			}
+
+			// Need to flush current range
+			const uint CurrentRangeGroup = GetRasterBinGroup(CurrentRangeBin);
+			ExportRasterGroup(CurrentRangeGroup, CurrentRangeBin, CurrentBinMaterialFlags, VisibleClusterIndex, CurrentRangeStart, CurrentRangeEnd, CurrentBatchCount, CurrentBatchInfoOffset, Cluster, false, bSoftware, DepthBucket);
+		}
+	}
+#endif
+}
+
+#endif
