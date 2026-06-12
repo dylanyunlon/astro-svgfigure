@@ -25,6 +25,7 @@ import {
   Text,
   TextStyle,
 } from 'pixi.js';
+// Resolved to upstream/pixijs-engine via tsconfig paths — no npm install needed
 
 import type { CellDescriptor, EdgeDescriptor } from './pixi-cell-renderer';
 
