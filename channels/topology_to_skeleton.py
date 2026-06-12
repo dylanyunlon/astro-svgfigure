@@ -178,3 +178,64 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def from_structured_data(json_path: str) -> tuple:
+    """Parse structured_data JSON into flat cell list + edges."""
+    with open(json_path) as f:
+        data = json.load(f)
+    cells_gen = []
+    edges_col = []
+    def flatten(node, px=0, py=0):
+        for child in node.get("children", []):
+            cid = child["id"]
+            x = child.get("x", 0) + px
+            y = child.get("y", 0) + py
+            w = child.get("width", 140)
+            h = child.get("height", 100)
+            label = child.get("labels", [{}])[0].get("text", cid)
+            is_group = child.get("group", False)
+            if child.get("labelOnly", False): continue
+            low = label.lower()
+            if "model" in low or "encoder" in low or "decoder" in low: sp = "cil-eye"
+            elif "dataset" in low or "data" in low or "input" in low: sp = "cil-vector"
+            elif "output" in low or "html" in low or "css" in low or "render" in low: sp = "cil-arrow-right"
+            elif "agent" in low or "code" in low or "mllm" in low: sp = "cil-code"
+            elif "filter" in low or "prun" in low or "detection" in low: sp = "cil-filter"
+            elif "style" in low or "align" in low: sp = "cil-layers"
+            elif "loop" in low or "token" in low or "prediction" in low: sp = "cil-loop"
+            elif "loss" in low or "training" in low: sp = "cil-plus"
+            elif "tree" in low or "dom" in low or "link" in low: sp = "cil-graph"
+            elif "noise" in low or "error" in low or "hidden" in low: sp = "cil-bolt"
+            else: sp = infer_species(label)
+            cell = {"cell_id": cid, "label": label[:40], "species": sp,
+                    "gene_traits": SPECIES_GENE.get(sp, SPECIES_GENE["cil-code"]),
+                    "initial_bbox": {"x": x, "y": y, "w": w, "h": h, "z": 5 if is_group else 3},
+                    "topology": {"incoming_edges": [], "outgoing_edges": []}, "is_group": is_group}
+            os.makedirs(SKELETON_DIR, exist_ok=True)
+            with open(os.path.join(SKELETON_DIR, f"{cid}.json"), "w") as f: json.dump(cell, f, indent=2)
+            cells_gen.append(cid)
+            for edge in child.get("edges", []):
+                src = edge["sources"][0] if edge.get("sources") else ""
+                tgt = edge["targets"][0] if edge.get("targets") else ""
+                et = edge.get("advanced", {}).get("semanticType", "data_flow")
+                edges_col.append({"id": edge["id"], "source": src, "target": tgt,
+                    "type": "skip_connection" if et in ("skip_connection","feedback","gradient_flow") else "normal"})
+            if is_group: flatten(child, x, y)
+    flatten(data)
+    for edge in data.get("edges", []):
+        src = edge["sources"][0] if edge.get("sources") else ""
+        tgt = edge["targets"][0] if edge.get("targets") else ""
+        et = edge.get("advanced", {}).get("semanticType", "data_flow")
+        edges_col.append({"id": edge["id"], "source": src, "target": tgt,
+            "type": "skip_connection" if et in ("skip_connection","feedback","gradient_flow") else "normal"})
+    # Backfill topology
+    for e in edges_col:
+        for role, key in [("source", "outgoing_edges"), ("target", "incoming_edges")]:
+            p = os.path.join(SKELETON_DIR, f"{e[role]}.json")
+            if os.path.exists(p):
+                with open(p) as f: d = json.load(f)
+                if e["id"] not in d["topology"][key]: d["topology"][key].append(e["id"])
+                with open(p, "w") as f: json.dump(d, f, indent=2)
+    print(f"[from_structured_data] {len(cells_gen)} cells, {len(edges_col)} edges")
+    return cells_gen, edges_col

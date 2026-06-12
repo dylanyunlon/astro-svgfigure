@@ -3044,20 +3044,28 @@ def run_loop(max_epochs=5):
 if __name__ == "__main__":
     import sys as _sys
     os.chdir(CHANNELS)
-    topo = _sys.argv[1].upper() if len(_sys.argv) > 1 else "TRANSFORMER"
+    data_path = None
+    topo = "TRANSFORMER"
+    for i, arg in enumerate(_sys.argv[1:], 1):
+        if arg == "--data" and i + 1 < len(_sys.argv):
+            data_path = _sys.argv[i + 1]
+        elif not arg.startswith("-"):
+            topo = arg.upper()
     os.environ["ASTRO_TOPOLOGY"] = topo
-
-    # Auto-generate skeleton from ELK topology
-    from topology_to_skeleton import parse_examples_ts, generate_skeleton, EXAMPLES_TS, SKELETON_DIR
-    examples = parse_examples_ts(EXAMPLES_TS)
-    if topo in examples:
-        if os.path.exists(SKELETON_DIR):
-            for _f in os.listdir(SKELETON_DIR):
-                if _f.endswith(".json"):
-                    os.remove(os.path.join(SKELETON_DIR, _f))
-        cells = generate_skeleton(examples[topo], topo)
-        print(f"[topology] Generated {len(cells)} cells for {topo}")
+    from topology_to_skeleton import (
+        parse_examples_ts, generate_skeleton, from_structured_data,
+        EXAMPLES_TS, SKELETON_DIR)
+    if os.path.exists(SKELETON_DIR):
+        for _f in os.listdir(SKELETON_DIR):
+            if _f.endswith(".json"):
+                os.remove(os.path.join(SKELETON_DIR, _f))
+    if data_path:
+        cells, edges = from_structured_data(data_path)
     else:
-        print(f"[topology] Using existing skeleton (unknown: {topo})")
-
+        examples = parse_examples_ts(EXAMPLES_TS)
+        if topo in examples:
+            cells = generate_skeleton(examples[topo], topo)
+            print(f"[topology] Generated {len(cells)} cells for {topo}")
+        else:
+            print(f"[topology] Using existing skeleton (unknown: {topo})")
     run_loop()
