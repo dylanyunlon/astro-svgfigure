@@ -3,20 +3,20 @@
     "self_attn": {
       "bbox": {
         "min": [
-          220.0,
-          260.0,
-          5.0
+          343.2467777516112,
+          182.9833887115425,
+          3.0
         ],
         "max": [
-          380.0,
-          310.0,
-          5.0
+          503.2467777516112,
+          232.9833887115425,
+          3.0
         ]
       },
       "species": "cil-eye",
-      "z": 5,
+      "z": 3,
       "constraint_mask": 1,
-      "epoch": 1
+      "epoch": 0
     },
     "input_embed": {
       "bbox": {
@@ -39,19 +39,19 @@
     "pos_encode": {
       "bbox": {
         "min": [
-          220.0,
-          150.0,
+          96.7532222483888,
+          227.0166112884575,
           5.0
         ],
         "max": [
-          380.0,
-          200.0,
+          256.7532222483888,
+          277.0166112884575,
           5.0
         ]
       },
       "species": "cil-vector",
       "z": 5,
-      "constraint_mask": 0,
+      "constraint_mask": 1,
       "epoch": 0
     },
     "add_norm1": {
@@ -107,18 +107,37 @@
       "z": 5,
       "constraint_mask": 0,
       "epoch": 0
+    },
+    "output": {
+      "bbox": {
+        "min": [
+          220.0,
+          675.0,
+          3.0
+        ],
+        "max": [
+          380.0,
+          725.0,
+          3.0
+        ]
+      },
+      "species": "cil-arrow-right",
+      "z": 3,
+      "constraint_mask": 0,
+      "epoch": 0
     }
   },
   "z_layers": {
     "3": [
       "input_embed",
-      "ffn"
+      "ffn",
+      "self_attn",
+      "output"
     ],
     "5": [
       "pos_encode",
       "add_norm1",
-      "add_norm2",
-      "self_attn"
+      "add_norm2"
     ]
   }
 }

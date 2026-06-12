@@ -2098,6 +2098,139 @@ def proc(cell_id: str):
         "epoch": current_epoch,
     })
 
+    # ── [M008] params.json — PixiJS frontend parameter channel ───────────────
+    # Primary output path for PixiJS renderer: all drawing parameters are
+    # surfaced here so the frontend never needs to parse SVG.
+    # species_params encodes the species-specific visual constants that the
+    # PixiJS draw call needs (ring_count / pupil_radius for cil-eye, etc.).
+    # blended fill/stroke colours are extracted from the SVG colour pipeline
+    # above (post StyleProbe blend) so the frontend receives the final values.
+    _species_params: dict
+    if species == "cil-eye":
+        _num_rays = max(4, len(label) // 2)
+        _r_outer_eye = min(bbox["w"], bbox["h"]) / 2 - 4
+        _species_params = {
+            "ring_count":    _num_rays,
+            "pupil_radius":  round(_r_outer_eye * 0.2, 2),
+            "r_outer":       round(_r_outer_eye, 2),
+            "r_inner_ratio": 0.3,
+        }
+    elif species == "cil-bolt":
+        _zigzag_segments = 6
+        _seg_w = (bbox["w"] - 20) / _zigzag_segments
+        _species_params = {
+            "zigzag_count": _zigzag_segments,
+            "amplitude":    6.0,
+            "seg_width":    round(_seg_w, 2),
+        }
+    elif species == "cil-vector":
+        _num_arrows_v = 5
+        _arrow_len_v  = bbox["w"] * 0.3
+        _species_params = {
+            "arrow_count":   _num_arrows_v,
+            "arrow_length":  round(_arrow_len_v, 2),
+            "angle_spread":  0.8,
+        }
+    elif species == "cil-plus":
+        _arm_plus = min(bbox["w"], bbox["h"]) * 0.25
+        _species_params = {
+            "arm_length":    round(_arm_plus, 2),
+            "stroke_width":  2.5,
+            "dash_corners":  True,
+        }
+    elif species == "cil-arrow-right":
+        _aw = bbox["w"] * 0.3
+        _species_params = {
+            "arrow_width":   round(_aw, 2),
+            "arrow_height":  16.0,
+        }
+    elif species == "cil-filter":
+        _pad_f  = max(8, min(bbox["w"], bbox["h"]) * 0.12)
+        _cell_w = (bbox["w"] - 2 * _pad_f) / 3
+        _cell_h = ((bbox["h"] - 2 * _pad_f) * 0.72) / 3
+        _species_params = {
+            "grid_cols":   3,
+            "grid_rows":   3,
+            "cell_width":  round(_cell_w, 2),
+            "cell_height": round(_cell_h, 2),
+            "pad":         round(_pad_f, 2),
+        }
+    elif species == "cil-code":
+        _arm_c = min(bbox["w"], bbox["h"]) * 0.28
+        _species_params = {
+            "brace_arm":    round(_arm_c, 2),
+            "nib_ratio":    0.22,
+            "corner_radius_ratio": 0.35,
+        }
+    elif species == "cil-layers":
+        _pad_l = max(6, min(bbox["w"], bbox["h"]) * 0.10)
+        _rh_l  = (bbox["h"] - 2 * _pad_l) * 0.48
+        _step_l = _rh_l * 0.32
+        _species_params = {
+            "layer_count":  3,
+            "layer_height": round(_rh_l, 2),
+            "stagger_step": round(_step_l, 2),
+            "opacities":    [0.35, 0.50, 0.68],
+        }
+    elif species == "cil-loop":
+        _r_loop = min(bbox["w"], bbox["h"]) * 0.28
+        _species_params = {
+            "arc_radius":   round(_r_loop, 2),
+            "gap_degrees":  60,
+            "sweep_cw":     True,
+        }
+    elif species == "cil-graph":
+        _r_outer_g = min(bbox["w"], bbox["h"]) * 0.28
+        _r_inner_g = _r_outer_g * 0.38
+        _node_r    = max(3.0, min(bbox["w"], bbox["h"]) * 0.055)
+        _species_params = {
+            "node_count":   5,
+            "r_outer":      round(_r_outer_g, 2),
+            "r_inner":      round(_r_inner_g, 2),
+            "node_radius":  round(_node_r, 2),
+            "edge_list":    [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [3, 4]],
+        }
+    else:
+        _species_params = {}
+
+    # Derive final fill/stroke colours from blended hex (post-StyleProbe)
+    # _blended_hex is the post-blend primary fill; stroke uses species defaults.
+    _stroke_colour = _colour_to_hex(
+        _SPECIES_INDEX_TO_COLOUR.get(_own_species_idx, _SPECIES_INDEX_TO_COLOUR[0])
+    )
+
+    _params_payload: dict = {
+        "cell_id":        cell_id,
+        "species":        species,
+        "bbox":           {
+            "x": bbox["x"], "y": bbox["y"],
+            "w": bbox["w"], "h": bbox["h"],
+            "z": bbox["z"],
+        },
+        "z":              bbox["z"],
+        "opacity":        round(crowding_opacity, 4),
+        "fill_color":     _blended_hex,
+        "stroke_color":   _stroke_colour,
+        "label":          label,
+        "font_size":      10,
+        "species_params": _species_params,
+        "epoch":          current_epoch,
+        # Shadow params for PixiJS drop-shadow filter
+        "shadow": {
+            "dx":      shadow_dx,
+            "dy":      shadow_dy,
+            "blur":    shadow_blur,
+            "opacity": shadow_opacity,
+        },
+    }
+    write_channel(f"{cell_dir}/params.json", _params_payload)
+    print(
+        f"[M008] params.json written: cell_id={cell_id} "
+        f"species={species} fill={_blended_hex} "
+        f"species_params_keys={list(_species_params.keys())}",
+        file=sys.stderr,
+    )
+
     # -------------------------------------------------------------------------
     # [ASTRO-CELL] AddCell / UpdateCellConstraint — register the published bbox
     # in the global cell_registry channel (GAstroCellZLayerRegistry +

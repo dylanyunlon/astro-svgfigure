@@ -1,4 +1,11 @@
-<g id="cell-add_norm2" data-z="5" transform="translate(230,575)">
+<defs>
+  <filter id="shadow-add_norm2" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="8.0" dy="8.0" stdDeviation="4.6" flood-color="#000000" flood-opacity="0.55"/>
+  </filter>
+</defs>
+<!-- [ASTRO-CELL] StyleProbe species=cil-plus dominant_nbr=0 palette=0 blended_fill=#1E88E5 weight=0.20 (FAstroCellStyleProbe::BlendWithCubemap port, commit 5d07a0a) -->
+<!-- [ASTRO-CELL] PostProcessAO crowding_opacity=1.0000 (FAstroConstraintAO::ComputeConstraintWeight port) -->
+<g id="cell-add_norm2" data-z="5.0" opacity="1.0000" filter="url(#shadow-add_norm2)" transform="translate(230.0,575.0)">
 <rect x="0" y="0" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
 <line x1="60.0" y1="20.0" x2="80.0" y2="20.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
 <line x1="70.0" y1="10.0" x2="70.0" y2="30.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>
@@ -7,4 +14,14 @@
 <line x1="58.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
 <line x1="82.0" y1="32.0" x2="70.0" y2="20.0" stroke="#C62828" stroke-width="0.8" opacity="0.3" stroke-dasharray="3,2"/>
 <text x="70.0" y="34" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#B71C1C">Add and Norm</text>
+<!-- [ASTRO-CELL] PostProcessDeferredDecals species=1 ch=2 haloI=0.50 arcSeed=0 blend=1.00 -->
+<g class="decal-overlay" opacity="1.000">
+  <!-- decal: cil-plus cross-hatch shadow — R=0.50 ch2 -->
+  <line x1="61.20" y1="17.12" x2="78.80" y2="17.12" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3"/>
+  <line x1="61.20" y1="20.00" x2="78.80" y2="20.00" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3"/>
+  <line x1="61.20" y1="22.88" x2="78.80" y2="22.88" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3"/>
+  <line x1="67.12" y1="11.20" x2="67.12" y2="28.80" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3"/>
+  <line x1="70.00" y1="11.20" x2="70.00" y2="28.80" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3"/>
+  <line x1="72.88" y1="11.20" x2="72.88" y2="28.80" stroke="#C62828" stroke-width="0.7" opacity="0.200" stroke-dasharray="4,3"/>
+</g>
 </g>

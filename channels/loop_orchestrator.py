@@ -2966,10 +2966,67 @@ class EpochSnapshotManager:
         return len(self._history)
 
 
-def run_loop(max_epochs=5):
-    """Main pub/sub loop."""
+def _compute_delta_max(bboxes_before: dict, bboxes_after: dict) -> float:
+    """
+    M007 — compute max bbox position+size delta between two snapshots.
+    Mirrors FAstroConvergenceJudge::BBoxDelta() extended to include (x,y) shift.
+    Returns the largest single-cell change in px across all cells.
+    """
+    delta_max = 0.0
+    for cell_id, after in bboxes_after.items():
+        before = bboxes_before.get(cell_id)
+        if before is None:
+            continue
+        dx  = abs(float(after.get("x", 0)) - float(before.get("x", 0)))
+        dy  = abs(float(after.get("y", 0)) - float(before.get("y", 0)))
+        dw  = abs(float(after.get("w", 0)) - float(before.get("w", 0)))
+        dh  = abs(float(after.get("h", 0)) - float(before.get("h", 0)))
+        cell_delta = max(dx, dy, dw, dh)
+        if cell_delta > delta_max:
+            delta_max = cell_delta
+    return delta_max
+
+
+def run_loop(max_epochs=10):
+    """
+    M007 — Multi-epoch growth + motion loop with convergence tracking.
+
+    True multi-round lifecycle:
+      For each epoch:
+        1. grow_epoch()   — cells expand toward natural bbox; previous-epoch
+                            force_field is consumed to displace positions
+                            (FAstroCellPushConstraint::ApplyToCell).
+        2. run_all_cells() — each cell generates SVG using the grown bbox.
+        3. physics_engine() — detects collisions among grown bboxes and
+                              writes NEW force_field for next epoch to consume.
+        4. snapshot.capture() — ring-buffer snapshot + total_force read-back.
+        5. divergence guard — rollback if total_force increased.
+        6. convergence check — only exit when BOTH:
+             • total_force < FORCE_THRESHOLD  (physics settled)
+             • delta_max   < DELTA_THRESHOLD  (positions/sizes stable)
+           AND at least MIN_EPOCHS have run (prevents false-early exit on
+           epoch 0 where cells haven't grown yet).
+
+    Progress line each epoch:
+        epoch=N  total_force=X.XX  delta_max=Y.YY  collisions=K
+    """
+    # ── M007 convergence thresholds ──────────────────────────────────────────
+    # total_force: sum of |dx|+|dy| across all force_field entries after physics.
+    # A value < FORCE_THRESHOLD means no cell is being pushed meaningfully.
+    FORCE_THRESHOLD = 1.0      # px — total residual force across all cells
+
+    # delta_max: largest bbox change (position OR size) between successive epochs.
+    # < DELTA_THRESHOLD means the layout has stopped moving.
+    DELTA_THRESHOLD = 0.5      # px
+
+    # Minimum epochs to run before considering early convergence.
+    # Prevents exit on epoch 0/1 where cells are still in initial embryonic state.
+    MIN_EPOCHS = 5
+
     print("=" * 60)
-    print("astro-svgfigure Cell Pub/Sub Loop")
+    print("astro-svgfigure Cell Pub/Sub Loop  [M007 multi-epoch]")
+    print(f"  max_epochs={max_epochs}  force_threshold={FORCE_THRESHOLD}  "
+          f"delta_threshold={DELTA_THRESHOLD}  min_epochs={MIN_EPOCHS}")
     print("=" * 60)
 
     # [M002] Import grow_epoch from epoch_controller.
@@ -2982,36 +3039,99 @@ def run_loop(max_epochs=5):
     # module-level singleton in SceneCaptureRendering.cpp d31c85e).
     snapshot = EpochSnapshotManager(CHANNELS)
 
+    # Track previous-epoch bboxes to compute delta_max each round.
+    # Initialised from whatever bbox.json files exist before epoch 0.
+    _prev_bboxes: dict = {}
+    _bbox_glob = os.path.join(CHANNELS, "cell", "*", "bbox.json")
+    for _bf in glob.glob(_bbox_glob):
+        _cid = os.path.basename(os.path.dirname(_bf))
+        try:
+            with open(_bf) as _f:
+                _prev_bboxes[_cid] = json.load(_f)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Accumulated convergence metrics (filled each epoch for summary).
+    epoch_metrics: list = []   # list of {epoch, total_force, delta_max, collisions}
+
     for epoch in range(max_epochs):
-        print(f"\n--- Epoch {epoch} ---")
+        print(f"\n{'─' * 60}")
+        print(f"  EPOCH {epoch}  (min_epochs={MIN_EPOCHS})")
+        print(f"{'─' * 60}")
+
         write_channel("skeleton/epoch.json", {
             "current": epoch, "max": max_epochs, "status": "running"
         })
 
-        # 0. [M002] Cell growth epoch — natural bbox expansion + push signals.
-        #    FAstroCellGrowthEpoch::Run() port (epoch_controller.py grow_epoch).
-        #    Runs BEFORE cell SVG generation so each cell's proc() already
-        #    operates on the grown bbox for this epoch.
-        #    Returns True when all bbox deltas < CONVERGENCE_PX (2 px).
+        # ── Step 0: grow_epoch ────────────────────────────────────────────────
+        # FAstroCellGrowthEpoch::Run():
+        #   • Consumes force_field written by physics_engine() last epoch
+        #     and applies (dx, dy) displacement to each cell's (x, y).
+        #   • Grows each cell's bbox toward its natural size at GROW_RATE=10%/epoch.
+        #   • Detects same-z collisions AFTER growth; emits NEW force_field
+        #     (to be consumed by the *next* epoch's grow_epoch call).
+        #   • Returns True only when ALL bbox size deltas < CONVERGENCE_PX (2 px).
+        #
+        # M007 key insight: we do NOT break on growth_converged alone.
+        # Even after sizes stop changing, the physics_engine may still have
+        # pushed cells apart and those displacements need time to propagate.
         growth_converged = _grow_epoch(epoch)
-        print(
-            f"[GrowEpoch] epoch={epoch} "
-            f"{'growth converged' if growth_converged else 'cells still growing'}"
-        )
 
-        # 1. All cells develop (in production: parallel sub-Claude dispatch)
+        # ── Step 1: all cells generate SVG using grown bbox ───────────────────
         cells = run_all_cells()
 
-        # 2. Physics engine computes forces
+        # ── Step 2: physics engine — detects collisions among grown bboxes ────
+        # Writes updated force_field for grow_epoch(epoch+1) to consume.
         collisions = physics_engine()
+        n_collisions = len(collisions)
 
-        # 3. [ASTRO] Capture epoch snapshot — serialize all cell/*/bbox.json
-        #    into ring buffer. Mirrors CaptureEpochSnapshot() call site in
-        #    FScene::UpdateSceneCaptureContents() (d31c85e).
+        # ── Step 3: capture snapshot ──────────────────────────────────────────
+        # Reads cell/*/bbox.json + physics/force_field.json → ring buffer.
         snap = snapshot.capture()
+        total_force = snap["total_force"]
 
-        # Emit diff vs previous epoch when history is deep enough.
-        # Mirrors the DiffSnapshots block added in d31c85e.
+        # ── Step 4: compute delta_max vs previous epoch ───────────────────────
+        cur_bboxes: dict = {}
+        for _bf in glob.glob(_bbox_glob):
+            _cid = os.path.basename(os.path.dirname(_bf))
+            try:
+                with open(_bf) as _f:
+                    cur_bboxes[_cid] = json.load(_f)
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        delta_max = _compute_delta_max(_prev_bboxes, cur_bboxes)
+        _prev_bboxes = {k: dict(v) for k, v in cur_bboxes.items()}
+
+        # ── Step 5: progress report ───────────────────────────────────────────
+        # M007 mandated per-epoch progress line:
+        #   epoch=N  total_force=X.XX  delta_max=Y.YY  collisions=K
+        status_parts = []
+        if growth_converged:
+            status_parts.append("growth✓")
+        if total_force < FORCE_THRESHOLD:
+            status_parts.append("force✓")
+        if delta_max < DELTA_THRESHOLD:
+            status_parts.append("delta✓")
+        status_str = "  [" + " ".join(status_parts) + "]" if status_parts else ""
+
+        print(
+            f"\n[M007] epoch={epoch}  "
+            f"total_force={total_force:.2f}  "
+            f"delta_max={delta_max:.2f}  "
+            f"collisions={n_collisions}"
+            f"{status_str}"
+        )
+
+        epoch_metrics.append({
+            "epoch": epoch,
+            "total_force": total_force,
+            "delta_max": delta_max,
+            "collisions": n_collisions,
+            "growth_converged": growth_converged,
+        })
+
+        # ── Step 6: diff vs previous epoch ───────────────────────────────────
         if snapshot.history_count >= 2:
             diff_entries = snapshot.diff(snap["epoch"] - 1, snap["epoch"])
             if diff_entries:
@@ -3020,25 +3140,62 @@ def run_loop(max_epochs=5):
                     f"since epoch {snap['epoch'] - 1}"
                 )
 
-        # 4. [ASTRO] Divergence guard — if total_force grew, rollback and skip
-        #    convergence check this round (cell states already restored).
+        # ── Step 7: divergence guard ──────────────────────────────────────────
+        # If total_force increased epoch-over-epoch, rollback and retry.
+        # Cell states are already restored by check_divergence() → continue.
         if snapshot.check_divergence():
             print(f"[ASTRO-EPOCH] Epoch {epoch} rolled back; retrying next iteration.")
             continue
 
-        # 5. Convergence check — both growth AND collision physics must settle.
-        #    [M002] growth_converged is a necessary but not sufficient condition:
-        #    the physics collision judge must also report zero conflicts before
-        #    the loop terminates.  This matches FAstroConvergenceJudge::Evaluate()
-        #    which gates on both FAstroMorphSolver::AllSettled AND
-        #    FAstroCollisionSolver::ZeroConflicts.
-        if growth_converged and convergence_judge():
-            print(f"\n✓ Converged at epoch {epoch}!")
+        # ── Step 8: convergence gate ──────────────────────────────────────────
+        # M007: require ALL three conditions AND minimum epoch count.
+        #
+        # Rationale for MIN_EPOCHS guard:
+        #   • Epoch 0 starts with ELK-initialised bboxes that are intentionally
+        #     small (no growth yet).  Cells may not overlap at all → zero
+        #     collisions → convergence_judge() trivially True.
+        #   • We must let cells grow (GROW_RATE=10%/epoch) until they reach
+        #     natural bbox size and start pushing neighbours.
+        #   • After growth saturates (epoch ≈ 3-4), force and delta settle
+        #     together — that is the genuine convergence signal.
+        if epoch < MIN_EPOCHS:
+            print(
+                f"[M007] epoch={epoch} < min_epochs={MIN_EPOCHS} — "
+                f"continuing to grow regardless of metrics"
+            )
+            continue
+
+        physics_settled = convergence_judge()   # zero collisions?
+        if growth_converged and physics_settled and total_force < FORCE_THRESHOLD and delta_max < DELTA_THRESHOLD:
+            print(
+                f"\n✓ [M007] Converged at epoch {epoch}! "
+                f"total_force={total_force:.2f} delta_max={delta_max:.2f}"
+            )
             break
+        else:
+            print(
+                f"[M007] not yet converged: "
+                f"growth={'✓' if growth_converged else '✗'}  "
+                f"physics={'✓' if physics_settled else '✗'}  "
+                f"force={'✓' if total_force < FORCE_THRESHOLD else f'{total_force:.2f}'}  "
+                f"delta={'✓' if delta_max < DELTA_THRESHOLD else f'{delta_max:.2f}'}"
+            )
     else:
         print(f"\n⚠ Max epochs ({max_epochs}) reached without full convergence")
 
-    # 6. Assemble final SVG
+    # ── Final summary ─────────────────────────────────────────────────────────
+    print(f"\n{'=' * 60}")
+    print(f"[M007] Epoch summary:")
+    print(f"  {'epoch':>5}  {'total_force':>11}  {'delta_max':>9}  {'collisions':>10}")
+    for m in epoch_metrics:
+        print(
+            f"  {m['epoch']:>5}  "
+            f"{m['total_force']:>11.2f}  "
+            f"{m['delta_max']:>9.2f}  "
+            f"{m['collisions']:>10}"
+        )
+
+    # ── Assemble final SVG ────────────────────────────────────────────────────
     write_channel("skeleton/epoch.json", {
         "current": epoch, "max": max_epochs, "status": "converged"
     })

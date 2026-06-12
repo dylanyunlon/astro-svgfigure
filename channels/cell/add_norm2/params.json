@@ -1,0 +1,29 @@
+{
+  "cell_id": "add_norm2",
+  "species": "cil-plus",
+  "bbox": {
+    "x": 230.0,
+    "y": 575.0,
+    "w": 140,
+    "h": 40,
+    "z": 5.0
+  },
+  "z": 5.0,
+  "opacity": 1.0,
+  "fill_color": "#1E88E5",
+  "stroke_color": "#1E88E5",
+  "label": "Add and Norm",
+  "font_size": 10,
+  "species_params": {
+    "arm_length": 10.0,
+    "stroke_width": 2.5,
+    "dash_corners": true
+  },
+  "epoch": 0,
+  "shadow": {
+    "dx": 8.0,
+    "dy": 8.0,
+    "blur": 4.6,
+    "opacity": 0.55
+  }
+}
