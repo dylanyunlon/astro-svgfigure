@@ -3020,5 +3020,22 @@ def run_loop(max_epochs=5):
 
 
 if __name__ == "__main__":
+    import sys as _sys
     os.chdir(CHANNELS)
+    topo = _sys.argv[1].upper() if len(_sys.argv) > 1 else "TRANSFORMER"
+    os.environ["ASTRO_TOPOLOGY"] = topo
+
+    # Auto-generate skeleton from ELK topology
+    from topology_to_skeleton import parse_examples_ts, generate_skeleton, EXAMPLES_TS, SKELETON_DIR
+    examples = parse_examples_ts(EXAMPLES_TS)
+    if topo in examples:
+        if os.path.exists(SKELETON_DIR):
+            for _f in os.listdir(SKELETON_DIR):
+                if _f.endswith(".json"):
+                    os.remove(os.path.join(SKELETON_DIR, _f))
+        cells = generate_skeleton(examples[topo], topo)
+        print(f"[topology] Generated {len(cells)} cells for {topo}")
+    else:
+        print(f"[topology] Using existing skeleton (unknown: {topo})")
+
     run_loop()
