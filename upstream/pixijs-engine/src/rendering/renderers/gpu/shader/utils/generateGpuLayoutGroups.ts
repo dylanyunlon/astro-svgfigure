@@ -1,0 +1,89 @@
+import { ShaderStage } from '../../../shared/shader/const';
+
+import type { ProgramPipelineLayoutDescription } from '../GpuProgram';
+import type { StructsAndGroups } from './extractStructAndGroups';
+
+/**
+ * @param root0
+ * @param root0.groups
+ * @internal
+ */
+export function generateGpuLayoutGroups({ groups }: StructsAndGroups): ProgramPipelineLayoutDescription
+{
+    const layout: ProgramPipelineLayoutDescription = [];
+
+    for (let i = 0; i < groups.length; i++)
+    {
+        const group = groups[i];
+
+        if (!layout[group.group])
+        {
+            layout[group.group] = [];
+        }
+
+        if (group.isUniform)
+        {
+            layout[group.group].push({
+                binding: group.binding,
+                visibility: ShaderStage.VERTEX | ShaderStage.FRAGMENT,
+                buffer: {
+                    type: 'uniform'
+                }
+            });
+        }
+        else if (group.type === 'sampler')
+        {
+            layout[group.group].push({
+                binding: group.binding,
+                visibility: ShaderStage.FRAGMENT,
+                sampler: {
+                    type: 'filtering'
+                }
+            });
+        }
+        else if (group.type === 'texture_2d' || group.type.startsWith('texture_2d<'))
+        {
+            layout[group.group].push({
+                binding: group.binding,
+                visibility: ShaderStage.FRAGMENT,
+                texture: {
+                    sampleType: 'float',
+                    viewDimension: '2d',
+                    multisampled: false,
+                }
+            });
+        }
+        else if (group.type === 'texture_2d_array' || group.type.startsWith('texture_2d_array<'))
+        {
+            layout[group.group].push({
+                binding: group.binding,
+                visibility: ShaderStage.FRAGMENT,
+                texture: {
+                    sampleType: 'float',
+                    viewDimension: '2d-array',
+                    multisampled: false,
+                }
+            });
+        }
+        else if (group.type === 'texture_cube' || group.type.startsWith('texture_cube<'))
+        {
+            layout[group.group].push({
+                binding: group.binding,
+                visibility: ShaderStage.FRAGMENT,
+                texture: {
+                    sampleType: 'float',
+                    viewDimension: 'cube',
+                    multisampled: false,
+                }
+            });
+        }
+    }
+
+    // Ensure a dense array. WebGPU expects intermediate bind groups to exist even if empty.
+    for (let i = 0; i < layout.length; i++)
+    {
+        layout[i] ||= [];
+    }
+
+    return layout;
+}

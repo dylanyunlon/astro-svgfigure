@@ -1,0 +1,163 @@
+import { DOMAdapter } from '../../../environment/adapter';
+import { ExtensionType } from '../../../extensions/Extensions';
+
+import type { System } from '../shared/system/System';
+import type { GpuPowerPreference } from '../types';
+import type { GpuExtensions } from './GpuExtensions';
+import type { WebGPURenderer } from './WebGPURenderer';
+
+/**
+ * The GPU object.
+ * Contains the GPU adapter and device.
+ * @category rendering
+ * @advanced
+ */
+export interface GPU
+{
+    /** The GPU adapter */
+    adapter: GPUAdapter;
+    /** The GPU device */
+    device: GPUDevice;
+}
+
+/**
+ * Options for the WebGPU context.
+ * @property {GpuPowerPreference} [powerPreference=default] - An optional hint indicating what configuration of GPU
+ * is suitable for the WebGPU context, can be `'high-performance'` or `'low-power'`.
+ * Setting to `'high-performance'` will prioritize rendering performance over power consumption,
+ * while setting to `'low-power'` will prioritize power saving over rendering performance.
+ * @property {boolean} [forceFallbackAdapter=false] - Force the use of the fallback adapter
+ * @category rendering
+ * @advanced
+ */
+export interface GpuContextOptions
+{
+    /**
+     * An optional hint indicating what configuration of GPU is suitable for the WebGPU context,
+     * can be `'high-performance'` or `'low-power'`.
+     * Setting to `'high-performance'` will prioritize rendering performance over power consumption,
+     * while setting to `'low-power'` will prioritize power saving over rendering performance.
+     * @default undefined
+     */
+    powerPreference?: GpuPowerPreference;
+    /**
+     * Force the use of the fallback adapter
+     * @default false
+     */
+    forceFallbackAdapter: boolean;
+    /** Using shared device and adaptor from other engine */
+    gpu?: GPU;
+}
+
+/**
+ * System plugin to the renderer to manage the context.
+ * @class
+ * @category rendering
+ * @advanced
+ */
+export class GpuDeviceSystem implements System<GpuContextOptions>
+{
+    /** @ignore */
+    public static extension = {
+        type: [
+            ExtensionType.WebGPUSystem,
+        ],
+        name: 'device',
+    } as const;
+
+    /** The default options for the GpuDeviceSystem. */
+    public static defaultOptions: GpuContextOptions = {
+        /**
+         * {@link WebGPUOptions.powerPreference}
+         * @default default
+         */
+        powerPreference: undefined,
+        /**
+         * Force the use of the fallback adapter
+         * @default false
+         */
+        forceFallbackAdapter: false,
+    };
+
+    /** The GPU device */
+    public gpu: GPU;
+
+    /** Optional WebGPU capabilities probed at init. Mirrors `renderer.context.extensions` on the WebGL side. */
+    public extensions: GpuExtensions;
+
+    private _renderer: WebGPURenderer;
+    private _initPromise: Promise<void>;
+
+    /**
+     * @param {WebGPURenderer} renderer - The renderer this System works for.
+     */
+    constructor(renderer: WebGPURenderer)
+    {
+        this._renderer = renderer;
+    }
+
+    public async init(options: GpuContextOptions): Promise<void>
+    {
+        if (this._initPromise) return this._initPromise;
+
+        this._initPromise = (options.gpu ? Promise.resolve(options.gpu) : this._createDeviceAndAdaptor(options))
+            .then((gpu) =>
+            {
+                this.gpu = gpu;
+
+                this.extensions = {
+                    transientAttachment:
+                        typeof (GPUTextureUsage as { TRANSIENT_ATTACHMENT?: number }).TRANSIENT_ATTACHMENT === 'number',
+                };
+
+                this._renderer.runners.contextChange.emit(this.gpu);
+            });
+
+        return this._initPromise;
+    }
+
+    /**
+     * Handle the context change event
+     * @param gpu
+     */
+    protected contextChange(gpu: GPU): void
+    {
+        this._renderer.gpu = gpu;
+    }
+
+    /**
+     * Helper class to create a WebGL Context
+     * @param {object} options - An options object that gets passed in to the canvas element containing the
+     *    context attributes
+     * @see https://developer.mozilla.org/en/docs/Web/API/HTMLCanvasElement/getContext
+     * @returns {WebGLRenderingContext} the WebGL context
+     */
+    private async _createDeviceAndAdaptor(options: GpuContextOptions): Promise<GPU>
+    {
+        // TODO we only need one of these..
+        const adapter = await DOMAdapter.get().getNavigator().gpu.requestAdapter({
+            powerPreference: options.powerPreference,
+            forceFallbackAdapter: options.forceFallbackAdapter,
+        });
+
+        const requiredFeatures = [
+            'texture-compression-bc',
+            'texture-compression-astc',
+            'texture-compression-etc2',
+        ].filter((feature) => adapter.features.has(feature)) as GPUFeatureName[];
+
+        // TODO and one of these!
+        const device = await adapter.requestDevice({
+            requiredFeatures
+        });
+
+        return { adapter, device };
+    }
+
+    public destroy(): void
+    {
+        this.gpu = null;
+        this.extensions = null;
+        this._renderer = null;
+    }
+}
