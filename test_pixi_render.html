@@ -18,6 +18,7 @@
 <div id="controls">
   <button id="btn-pixi" class="active" onclick="switchMode('pixi')">Method 1: PixiJS Graphics</button>
   <button id="btn-sdf" onclick="switchMode('sdf')">Method 3: SDF Shader</button>
+  <button id="btn-animate" onclick="switchMode('animate')" style="background:#1a3a1a;border-color:#3fb950;">⚡ Animate</button>
 </div>
 <div id="info">Loading...</div>
 <canvas id="canvas"></canvas>
@@ -1265,15 +1266,221 @@ function renderSDF() {
 }
 
 // ── Mode switcher ───────────────────────────────────────────────────────────
+let _stopMotion = null; // handle to cancel in-progress animation
+
 window.switchMode = function(mode) {
+  // Stop any running animation
+  if (_stopMotion) { _stopMotion(); _stopMotion = null; }
   currentMode = mode;
   document.querySelectorAll('#controls button').forEach(b => b.classList.remove('active'));
   document.getElementById('btn-' + mode).classList.add('active');
   if (mode === 'pixi') { renderPixi(); }
-  else { renderSDF(); }
+  else if (mode === 'sdf') { renderSDF(); }
+  else if (mode === 'animate') { _stopMotion = renderAnimate(); }
+  const modeLabel = mode === 'pixi' ? 'PixiJS Graphics'
+                  : mode === 'sdf'  ? 'SDF Shader'
+                  : '⚡ Physics Animation';
   document.getElementById('info').textContent =
-    `${CELLS.length} cells, ${EDGES.length} edges — Mode: ${mode === 'pixi' ? 'PixiJS Graphics' : 'SDF Shader'}`;
+    `${CELLS.length} cells, ${EDGES.length} edges — Mode: ${modeLabel}`;
 };
+
+// ════════════════════════════════════════════════════════════════════════════
+// PHYSICS ANIMATION — spring-force + repulsion + damping convergence
+// Mirrors src/lib/renderers/pixi-cell-motion.ts (inline for HTML standalone)
+// ════════════════════════════════════════════════════════════════════════════
+
+const PHYS = {
+  DAMPING:         0.95,
+  K_SPRING:        0.01,
+  K_EDGE:          0.005,
+  REPULSION_R:     200,
+  REPULSION_K:     3000,
+  CONVERGE_EPS:    0.15,
+  CONVERGE_FRAMES: 30,
+};
+
+function renderAnimate() {
+  app.stage.removeChildren();
+  app.stage.sortableChildren = true;
+
+  const scale = Math.min(canvas.width / CANVAS_W, canvas.height / CANVAS_H, 0.85);
+  const root = new Container();
+  root.scale.set(scale);
+  root.position.set(50, 50);
+  app.stage.addChild(root);
+
+  // Edge graphics layer (drawn behind cells)
+  const edgeGfx = new Graphics();
+  edgeGfx.zIndex = 0;
+  root.addChild(edgeGfx);
+
+  // ── Build particles (leaf cells only) ──────────────────────────────────
+  const leafCells = CELLS.filter(c => !c.is_group);
+  const byId = {};
+
+  const particles = leafCells.map(desc => {
+    const col = gc(desc.species);
+
+    // Random spawn scattered across the full canvas logical space
+    const cx = Math.random() * CANVAS_W;
+    const cy = Math.random() * CANVAS_H;
+
+    // ELK target = bbox centre
+    const tx = desc.bbox.x + desc.bbox.w / 2;
+    const ty = desc.bbox.y + desc.bbox.h / 2;
+
+    // Cell shape (drawn relative to its own origin → we move via .position)
+    const gfx = new Graphics();
+    gfx.roundRect(-desc.bbox.w / 2, -desc.bbox.h / 2, desc.bbox.w, desc.bbox.h, 8);
+    gfx.fill({ color: col.fill, alpha: 0.85 });
+    gfx.stroke({ color: col.stroke, width: 1.5 });
+    gfx.zIndex = desc.z;
+    gfx.position.set(cx, cy);
+    root.addChild(gfx);
+
+    // Label
+    const lbl = new Text({
+      text: desc.label,
+      style: new TextStyle({
+        fontSize: 10,
+        fill: 0xFFFFFF,
+        fontWeight: '500',
+        fontFamily: 'system-ui',
+        wordWrap: true,
+        wordWrapWidth: Math.max(desc.bbox.w - 8, 20),
+        align: 'center',
+      }),
+    });
+    lbl.anchor.set(0.5);
+    lbl.zIndex = desc.z + 1;
+    lbl.position.set(cx, cy);
+    root.addChild(lbl);
+
+    const p = {
+      desc,
+      cx, cy,
+      vx: (Math.random() - 0.5) * 6,
+      vy: (Math.random() - 0.5) * 6,
+      tx, ty,
+      hw: desc.bbox.w / 2,
+      hh: desc.bbox.h / 2,
+      gfx, lbl,
+    };
+    byId[desc.cell_id] = p;
+    return p;
+  });
+
+  // ── Adjacency list for topology edge springs ────────────────────────────
+  const adj = {};
+  for (const p of particles) adj[p.desc.cell_id] = [];
+  for (const e of EDGES) {
+    if (adj[e.source] !== undefined) adj[e.source].push(e.target);
+    if (adj[e.target] !== undefined) adj[e.target].push(e.source);
+  }
+
+  // ── Ticker ─────────────────────────────────────────────────────────────
+  let quietFrames = 0;
+  let stopped = false;
+
+  function tick() {
+    if (stopped) return;
+
+    const n = particles.length;
+
+    // ── Compute forces ──────────────────────────────────────────────────
+    for (let i = 0; i < n; i++) {
+      const p = particles[i];
+      let fx = 0, fy = 0;
+
+      // 1. Restoring spring toward ELK target
+      fx += PHYS.K_SPRING * (p.tx - p.cx);
+      fy += PHYS.K_SPRING * (p.ty - p.cy);
+
+      // 2. Pairwise repulsion
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue;
+        const q = particles[j];
+        const rx = p.cx - q.cx;
+        const ry = p.cy - q.cy;
+        const d2 = rx * rx + ry * ry + 0.01;
+        const d  = Math.sqrt(d2);
+        if (d < PHYS.REPULSION_R) {
+          const mag = PHYS.REPULSION_K / d2;
+          fx += (rx / d) * mag;
+          fy += (ry / d) * mag;
+        }
+      }
+
+      // 3. Topology edge springs (pull toward neighbours)
+      const nbrs = adj[p.desc.cell_id] || [];
+      for (const nid of nbrs) {
+        const q = byId[nid];
+        if (!q) continue;
+        fx += PHYS.K_EDGE * (q.cx - p.cx);
+        fy += PHYS.K_EDGE * (q.cy - p.cy);
+      }
+
+      // 4. Damped integrate
+      p.vx = (p.vx + fx) * PHYS.DAMPING;
+      p.vy = (p.vy + fy) * PHYS.DAMPING;
+    }
+
+    // ── Apply velocities ───────────────────────────────────────────────
+    let maxV = 0;
+    for (const p of particles) {
+      p.cx += p.vx;
+      p.cy += p.vy;
+      p.gfx.position.set(p.cx, p.cy);
+      p.lbl.position.set(p.cx, p.cy);
+      const v = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+      if (v > maxV) maxV = v;
+    }
+
+    // ── Redraw topology edges ──────────────────────────────────────────
+    edgeGfx.clear();
+    for (const e of EDGES) {
+      const src = byId[e.source];
+      const tgt = byId[e.target];
+      if (!src || !tgt) continue;
+      const mx = (src.cx + tgt.cx) / 2;
+      edgeGfx.setStrokeStyle({ width: 1, color: 0x388BFD, alpha: 0.45 });
+      edgeGfx.moveTo(src.cx, src.cy);
+      edgeGfx.bezierCurveTo(mx, src.cy, mx, tgt.cy, tgt.cx, tgt.cy);
+      edgeGfx.stroke();
+    }
+
+    // ── Convergence check ──────────────────────────────────────────────
+    if (maxV < PHYS.CONVERGE_EPS) {
+      quietFrames++;
+      if (quietFrames >= PHYS.CONVERGE_FRAMES) {
+        stopped = true;
+        app.ticker.remove(tick);
+        // Hard-snap onto ELK targets
+        for (const p of particles) {
+          p.gfx.position.set(p.tx, p.ty);
+          p.lbl.position.set(p.tx, p.ty);
+        }
+        document.getElementById('info').textContent =
+          `${CELLS.length} cells, ${EDGES.length} edges — ✓ Converged to ELK layout`;
+        console.info('[pixi-cell-motion] converged');
+      }
+    } else {
+      quietFrames = 0;
+      document.getElementById('info').textContent =
+        `⚡ Animating… maxV=${maxV.toFixed(2)} — ${particles.length} cells`;
+    }
+  }
+
+  app.ticker.add(tick);
+
+  // Return stop handle
+  return function stopAnimate() {
+    if (!stopped) {
+      stopped = true;
+      app.ticker.remove(tick);
+    }
+  };
+}
 
 initApp();
 </script>
