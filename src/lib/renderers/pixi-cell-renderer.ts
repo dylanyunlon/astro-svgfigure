@@ -26,8 +26,8 @@ import { Container } from '../../upstream/pixijs-engine/src/scene/container/Cont
 import { Graphics } from '../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
 import { Text } from '../../upstream/pixijs-engine/src/scene/text/Text';
 import { TextStyle } from '../../upstream/pixijs-engine/src/scene/text/TextStyle';
-import { BlurFilter } from '../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilter';
 import { Ticker } from '../../upstream/pixijs-engine/src/ticker/Ticker';
+import { AdvancedBloomFilter } from '../../../upstream/pixijs-filters/src/advanced-bloom';
 
 // ── Cell descriptor — this is ALL the LLM needs to produce ──────────────────
 
@@ -171,13 +171,20 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
 
 // ── Bloom glow factory ──────────────────────────────────────────────────────
 
-function createGlowSprite(w: number, h: number, glowColor: number): Graphics {
+const SPECIES_BLOOM_SCALE: Record<string, number> = {
+  'cil-eye':  2.0,
+  'cil-bolt': 1.8,
+  'cil-code': 0.8,
+};
+
+function createGlowSprite(w: number, h: number, glowColor: number, species: string): Graphics {
   const glow = new Graphics();
   const pad = 20;
   glow.roundRect(-pad, -pad, w + pad * 2, h + pad * 2, 12);
   glow.fill({ color: glowColor, alpha: 0.25 });
-  const blur = new BlurFilter({ strength: 12, quality: 4 });
-  glow.filters = [blur];
+  const bloomScale = SPECIES_BLOOM_SCALE[species] ?? 1.5;
+  const bloom = new AdvancedBloomFilter({ bloomScale, threshold: 0.5, blur: 8, quality: 4 });
+  glow.filters = [bloom];
   return glow;
 }
 
@@ -192,7 +199,7 @@ function buildCellContainer(desc: CellDescriptor): Container {
   container.position.set(bbox.x, bbox.y);
   container.zIndex = z;
 
-  const glow = createGlowSprite(w, h, cols.glow);
+  const glow = createGlowSprite(w, h, cols.glow, species);
   container.addChild(glow);
 
   const body = new Graphics();
