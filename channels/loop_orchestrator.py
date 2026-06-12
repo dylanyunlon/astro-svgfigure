@@ -2605,6 +2605,64 @@ def assemble_final_svg():
             lines.append(f'    {svg_map[slot.cell_id]}')
         lines.append(f'  </g>')
 
+    # ── Edge routing — render topology connections ────────────────────────────
+    edge_lines = ['  <g id="edges-layer" style="pointer-events:none;">']
+    # Build cell center map for edge endpoints
+    cell_centers = {}
+    for sf in svg_files:
+        cid = os.path.basename(os.path.dirname(sf))
+        bp = os.path.join(os.path.dirname(sf), "bbox.json")
+        if os.path.exists(bp):
+            with open(bp) as f:
+                b = json.load(f)
+            cell_centers[cid] = {
+                "top": (b["x"] + b["w"]/2, b["y"]),
+                "bot": (b["x"] + b["w"]/2, b["y"] + b["h"]),
+                "left": (b["x"], b["y"] + b["h"]/2),
+                "right": (b["x"] + b["w"], b["y"] + b["h"]/2),
+            }
+    # Read edges from skeleton
+    for sf in svg_files:
+        cid = os.path.basename(os.path.dirname(sf))
+        skel = os.path.join(CHANNELS, "skeleton", "cell", f"{cid}.json")
+        if not os.path.exists(skel):
+            continue
+        with open(skel) as f:
+            topo = json.load(f).get("topology", {})
+        for eid in topo.get("outgoing_edges", []):
+            # Find target by scanning all cells' incoming
+            for sf2 in svg_files:
+                cid2 = os.path.basename(os.path.dirname(sf2))
+                if cid2 == cid:
+                    continue
+                skel2 = os.path.join(CHANNELS, "skeleton", "cell", f"{cid2}.json")
+                if not os.path.exists(skel2):
+                    continue
+                with open(skel2) as f2:
+                    topo2 = json.load(f2).get("topology", {})
+                if eid in topo2.get("incoming_edges", []):
+                    if cid in cell_centers and cid2 in cell_centers:
+                        sx, sy = cell_centers[cid]["bot"]
+                        tx, ty = cell_centers[cid2]["top"]
+                        is_skip = "skip" in eid
+                        if is_skip:
+                            # Bezier curve for skip connections
+                            cx = sx + 80
+                            edge_lines.append(
+                                f'    <path d="M{sx:.1f},{sy:.1f} C{cx:.1f},{sy:.1f} {cx:.1f},{ty:.1f} {tx:.1f},{ty:.1f}" '
+                                f'stroke="#4CAF50" stroke-width="2" fill="none" stroke-dasharray="4" '
+                                f'marker-end="url(#arrow-green)"/>'
+                            )
+                        else:
+                            edge_lines.append(
+                                f'    <path d="M{sx:.1f},{sy:.1f} L{tx:.1f},{ty:.1f}" '
+                                f'stroke="#999" stroke-width="1.5" fill="none" '
+                                f'marker-end="url(#arrow-green)"/>'
+                            )
+                    break
+    edge_lines.append('  </g>')
+    lines.extend(edge_lines)
+
     lines.append('</svg>')
 
     raw_svg    = "\n".join(lines)
