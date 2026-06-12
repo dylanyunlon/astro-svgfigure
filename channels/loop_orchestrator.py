@@ -1466,7 +1466,7 @@ class AstroConstraintCollector:
             cell_id_bits = hash(slot.cell_id) & 0xFFFF
             packed = (
                 (cell_id_bits          << 16) |
-                ((slot.z_layer & 0xFF) <<  8) |
+                ((int(slot.z_layer) & 0xFF) <<  8) |
                 (slot.constraint_mask  &  0xFF)
             )
             self._constraint_buffer.append(packed)
