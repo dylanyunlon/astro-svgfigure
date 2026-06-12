@@ -1,0 +1,1281 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>astro-svgfigure — Method 1 PixiJS + Method 3 SDF</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0D1117; overflow: auto; font-family: system-ui; }
+  #controls { position: fixed; top: 10px; left: 10px; z-index: 100; display: flex; gap: 8px; }
+  #controls button { padding: 6px 14px; border-radius: 6px; border: 1px solid #30363D;
+    background: #21262D; color: #C9D1D9; cursor: pointer; font-size: 13px; }
+  #controls button.active { background: #388BFD; border-color: #388BFD; color: #fff; }
+  #info { position: fixed; bottom: 10px; left: 10px; color: #8B949E; font-size: 12px; z-index: 100; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="controls">
+  <button id="btn-pixi" class="active" onclick="switchMode('pixi')">Method 1: PixiJS Graphics</button>
+  <button id="btn-sdf" onclick="switchMode('sdf')">Method 3: SDF Shader</button>
+</div>
+<div id="info">Loading...</div>
+<canvas id="canvas"></canvas>
+
+<script type="importmap">
+{
+  "imports": {
+    "pixi.js": "https://cdn.jsdelivr.net/npm/pixi.js@8.6.6/+esm"
+  }
+}
+</script>
+<script type="module">
+import { Application, Graphics, Text, TextStyle, Container, BlurFilter, Mesh, MeshGeometry, Shader, GlProgram, UniformGroup } from 'pixi.js';
+
+// ── Load cell data ──────────────────────────────────────────────────────────
+const DATA = {
+  "cells": [
+    {
+      "cell_id": "input_image",
+      "label": "High-Resolution Design Image",
+      "species": "cil-code",
+      "bbox": {
+        "x": 12,
+        "y": 18,
+        "w": 160,
+        "h": 112
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "stage1_group",
+      "label": "Stage 1: Coarse DOM Layout Gen",
+      "species": "cil-graph",
+      "bbox": {
+        "x": 335,
+        "y": 235,
+        "w": 829.3333333333333,
+        "h": 1587
+      },
+      "z": 5,
+      "is_group": true
+    },
+    {
+      "cell_id": "structure_model",
+      "label": "Structure Model (Pix2Struct)",
+      "species": "cil-eye",
+      "bbox": {
+        "x": 592.6666666666666,
+        "y": 1067,
+        "w": 556.6666666666666,
+        "h": 735
+      },
+      "z": 5,
+      "is_group": true
+    },
+    {
+      "cell_id": "patch_division",
+      "label": "Fixed-Size Patch Division",
+      "species": "cil-code",
+      "bbox": {
+        "x": 907.6666666666665,
+        "y": 1107,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "vit_encoder",
+      "label": "ViT Encoder (Enc\u03b8)",
+      "species": "cil-eye",
+      "bbox": {
+        "x": 936.0,
+        "y": 1245,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "hidden_states",
+      "label": "Hidden State Vectors",
+      "species": "cil-bolt",
+      "bbox": {
+        "x": 936.0,
+        "y": 1383,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "transformer_decoder",
+      "label": "Transformer Decoder (Dec\u03c6)",
+      "species": "cil-eye",
+      "bbox": {
+        "x": 964.3333333333333,
+        "y": 1521,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "next_token_prediction",
+      "label": "Next-Token Prediction",
+      "species": "cil-loop",
+      "bbox": {
+        "x": 913.5,
+        "y": 1669,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "softmax_layer",
+      "label": "Softmax (W \u00b7 ht)",
+      "species": "cil-code",
+      "bbox": {
+        "x": 771.0,
+        "y": 1530.75,
+        "w": 150,
+        "h": 105
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "weight_matrix",
+      "label": "Weight Matrix W",
+      "species": "cil-code",
+      "bbox": {
+        "x": 776.0,
+        "y": 1401,
+        "w": 140,
+        "h": 100
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "json_output",
+      "label": "JSON DOM Tree Output",
+      "species": "cil-arrow-right",
+      "bbox": {
+        "x": 723.5,
+        "y": 1669,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "bbox_pruning_group",
+      "label": "BBox-Based Data Pruning",
+      "species": "cil-vector",
+      "bbox": {
+        "x": 350,
+        "y": 275,
+        "w": 520,
+        "h": 752
+      },
+      "z": 5,
+      "is_group": true
+    },
+    {
+      "cell_id": "vision2ui_dataset",
+      "label": "Vision2UI Dataset",
+      "species": "cil-vector",
+      "bbox": {
+        "x": 525,
+        "y": 315,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "noise_detection",
+      "label": "Noise Detection",
+      "species": "cil-filter",
+      "bbox": {
+        "x": 525,
+        "y": 453,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "noise_types",
+      "label": "Real-World Noise Types",
+      "species": "cil-bolt",
+      "bbox": {
+        "x": 360,
+        "y": 591,
+        "w": 500,
+        "h": 150
+      },
+      "z": 5,
+      "is_group": true
+    },
+    {
+      "cell_id": "empty_elements",
+      "label": "Empty/Small Elements",
+      "species": "cil-bolt",
+      "bbox": {
+        "x": 540,
+        "y": 628.5,
+        "w": 140,
+        "h": 100
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "hidden_elements",
+      "label": "Visually Hidden Parts",
+      "species": "cil-bolt",
+      "bbox": {
+        "x": 700,
+        "y": 626,
+        "w": 150,
+        "h": 105
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "display_errors",
+      "label": "Display Errors",
+      "species": "cil-bolt",
+      "bbox": {
+        "x": 370,
+        "y": 626,
+        "w": 150,
+        "h": 105
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "heuristic_rules",
+      "label": "Heuristic Pruning Rules",
+      "species": "cil-filter",
+      "bbox": {
+        "x": 525,
+        "y": 761,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "pruned_dataset",
+      "label": "Pruned Clean Dataset",
+      "species": "cil-vector",
+      "bbox": {
+        "x": 525,
+        "y": 899,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "coarse_dom_tree",
+      "label": "Coarse DOM Tree + BBoxes",
+      "species": "cil-graph",
+      "bbox": {
+        "x": 718,
+        "y": 1927,
+        "w": 180,
+        "h": 125
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "stage2_group",
+      "label": "Stage 2: Fine-Grained Code Syn",
+      "species": "cil-code",
+      "bbox": {
+        "x": 655,
+        "y": 2157,
+        "w": 233.33333333333331,
+        "h": 1160
+      },
+      "z": 5,
+      "is_group": true
+    },
+    {
+      "cell_id": "leaf_extraction",
+      "label": "Leaf Node Extraction",
+      "species": "cil-code",
+      "bbox": {
+        "x": 703.3333333333334,
+        "y": 2197,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "local_images",
+      "label": "Local Leaf Images",
+      "species": "cil-code",
+      "bbox": {
+        "x": 675,
+        "y": 2335,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "mllm_code_agent",
+      "label": "MLLM Code Agent",
+      "species": "cil-code",
+      "bbox": {
+        "x": 670,
+        "y": 2473,
+        "w": 180,
+        "h": 125
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "local_code_gen",
+      "label": "Local Code Generation",
+      "species": "cil-code",
+      "bbox": {
+        "x": 675,
+        "y": 2618,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "code_linking",
+      "label": "Link Code to Tree",
+      "species": "cil-code",
+      "bbox": {
+        "x": 675,
+        "y": 2756,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "integrated_code",
+      "label": "Integrated Code",
+      "species": "cil-code",
+      "bbox": {
+        "x": 675,
+        "y": 2894,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "nonleaf_styling",
+      "label": "Non-Leaf Style Supplement",
+      "species": "cil-layers",
+      "bbox": {
+        "x": 670,
+        "y": 3177,
+        "w": 180,
+        "h": 125
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "mllm_style_agent",
+      "label": "MLLM Style Agent",
+      "species": "cil-code",
+      "bbox": {
+        "x": 670,
+        "y": 3032,
+        "w": 180,
+        "h": 125
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "output_group",
+      "label": "Final Output",
+      "species": "cil-arrow-right",
+      "bbox": {
+        "x": 645,
+        "y": 3427,
+        "w": 340,
+        "h": 288
+      },
+      "z": 5,
+      "is_group": true
+    },
+    {
+      "cell_id": "final_html",
+      "label": "HTML Code",
+      "species": "cil-arrow-right",
+      "bbox": {
+        "x": 655,
+        "y": 3462,
+        "w": 150,
+        "h": 105
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "final_css",
+      "label": "CSS Styles",
+      "species": "cil-arrow-right",
+      "bbox": {
+        "x": 825,
+        "y": 3462,
+        "w": 150,
+        "h": 105
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "rendered_webpage",
+      "label": "Rendered Webpage",
+      "species": "cil-arrow-right",
+      "bbox": {
+        "x": 673.3333333333334,
+        "y": 3587,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "alignment_group",
+      "label": "Alignment Criteria",
+      "species": "cil-layers",
+      "bbox": {
+        "x": 533,
+        "y": 3820,
+        "w": 450,
+        "h": 145
+      },
+      "z": 5,
+      "is_group": true
+    },
+    {
+      "cell_id": "structure_align",
+      "label": "Structure",
+      "species": "cil-layers",
+      "bbox": {
+        "x": 693,
+        "y": 3855,
+        "w": 130,
+        "h": 100
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "style_align",
+      "label": "Style",
+      "species": "cil-layers",
+      "bbox": {
+        "x": 843,
+        "y": 3855,
+        "w": 130,
+        "h": 100
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "content_align",
+      "label": "Content",
+      "species": "cil-layers",
+      "bbox": {
+        "x": 543,
+        "y": 3855,
+        "w": 130,
+        "h": 100
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "resolution_handling",
+      "label": "On-the-Fly Resolution",
+      "species": "cil-code",
+      "bbox": {
+        "x": 852,
+        "y": 12,
+        "w": 170,
+        "h": 118
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "loss_training",
+      "label": "Training Loss",
+      "species": "cil-plus",
+      "bbox": {
+        "x": 1082,
+        "y": 25,
+        "w": 150,
+        "h": 105
+      },
+      "z": 3,
+      "is_group": false
+    },
+    {
+      "cell_id": "ram_resource",
+      "label": "GPU/RAM Resources",
+      "species": "cil-code",
+      "bbox": {
+        "x": 1912,
+        "y": 30,
+        "w": 140,
+        "h": 100
+      },
+      "z": 3,
+      "is_group": false
+    }
+  ],
+  "edges": [
+    {
+      "id": "sm_e1",
+      "source": "patch_division",
+      "target": "vit_encoder",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "edgeLabels": [
+          {
+            "text": "patches",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "sm_e2",
+      "source": "vit_encoder",
+      "target": "hidden_states",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "sm_e3",
+      "source": "hidden_states",
+      "target": "transformer_decoder",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "edgeLabels": [
+          {
+            "text": "cross-attention",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "sm_e4",
+      "source": "transformer_decoder",
+      "target": "next_token_prediction",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "sm_e5",
+      "source": "next_token_prediction",
+      "target": "softmax_layer",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "sm_e6",
+      "source": "weight_matrix",
+      "target": "softmax_layer",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "lineStyle": "dashed"
+      }
+    },
+    {
+      "id": "sm_e7",
+      "source": "softmax_layer",
+      "target": "json_output",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "edgeLabels": [
+          {
+            "text": "P(yt|y<t)",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "sm_e8",
+      "source": "softmax_layer",
+      "target": "next_token_prediction",
+      "type": "skip_connection",
+      "advanced": {
+        "semanticType": "feedback",
+        "lineStyle": "dashed",
+        "routing": "SPLINES",
+        "curvature": 0.6,
+        "strokeColor": "#9C27B0",
+        "edgeLabels": [
+          {
+            "text": "autoregressive",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "bp_e1",
+      "source": "vision2ui_dataset",
+      "target": "noise_detection",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "bp_e2",
+      "source": "noise_detection",
+      "target": "noise_types",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "bp_e3",
+      "source": "noise_types",
+      "target": "heuristic_rules",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "bp_e4",
+      "source": "heuristic_rules",
+      "target": "pruned_dataset",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "edgeLabels": [
+          {
+            "text": "filter",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "s1_e1",
+      "source": "pruned_dataset",
+      "target": "structure_model",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "lineStyle": "dashed",
+        "edgeLabels": [
+          {
+            "text": "training data",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "s2_e1",
+      "source": "leaf_extraction",
+      "target": "local_images",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "s2_e2",
+      "source": "local_images",
+      "target": "mllm_code_agent",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "s2_e3",
+      "source": "mllm_code_agent",
+      "target": "local_code_gen",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "s2_e4",
+      "source": "local_code_gen",
+      "target": "code_linking",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "s2_e5",
+      "source": "code_linking",
+      "target": "integrated_code",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "s2_e6",
+      "source": "integrated_code",
+      "target": "mllm_style_agent",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "edgeLabels": [
+          {
+            "text": "feedback",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "s2_e7",
+      "source": "mllm_style_agent",
+      "target": "nonleaf_styling",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "out_e1",
+      "source": "final_html",
+      "target": "rendered_webpage",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "out_e2",
+      "source": "final_css",
+      "target": "rendered_webpage",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow"
+      }
+    },
+    {
+      "id": "e1",
+      "source": "input_image",
+      "target": "stage1_group",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "strokeWidth": 2,
+        "edgeLabels": [
+          {
+            "text": "screenshot",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "e2",
+      "source": "input_image",
+      "target": "patch_division",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "crossesGroupBoundary": true,
+        "routing": "ORTHOGONAL"
+      }
+    },
+    {
+      "id": "e3",
+      "source": "json_output",
+      "target": "coarse_dom_tree",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "crossesGroupBoundary": true,
+        "strokeWidth": 2
+      }
+    },
+    {
+      "id": "e4",
+      "source": "coarse_dom_tree",
+      "target": "stage2_group",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "strokeWidth": 2,
+        "edgeLabels": [
+          {
+            "text": "DOM + BBoxes",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "e5",
+      "source": "coarse_dom_tree",
+      "target": "leaf_extraction",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "crossesGroupBoundary": true
+      }
+    },
+    {
+      "id": "e6",
+      "source": "nonleaf_styling",
+      "target": "final_html",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "crossesGroupBoundary": true,
+        "strokeWidth": 2
+      }
+    },
+    {
+      "id": "e7",
+      "source": "nonleaf_styling",
+      "target": "final_css",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "crossesGroupBoundary": true,
+        "strokeWidth": 2
+      }
+    },
+    {
+      "id": "e8",
+      "source": "rendered_webpage",
+      "target": "alignment_group",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "lineStyle": "dashed",
+        "edgeLabels": [
+          {
+            "text": "evaluate",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "e9",
+      "source": "resolution_handling",
+      "target": "patch_division",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "lineStyle": "dashed",
+        "crossesGroupBoundary": true,
+        "strokeColor": "#FF9800"
+      }
+    },
+    {
+      "id": "e10",
+      "source": "pruned_dataset",
+      "target": "loss_training",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "data_flow",
+        "crossesGroupBoundary": true
+      }
+    },
+    {
+      "id": "e11",
+      "source": "loss_training",
+      "target": "vit_encoder",
+      "type": "skip_connection",
+      "advanced": {
+        "semanticType": "gradient_flow",
+        "lineStyle": "dashed",
+        "strokeColor": "#E57373",
+        "crossesGroupBoundary": true,
+        "edgeLabels": [
+          {
+            "text": "backprop",
+            "position": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "id": "e12",
+      "source": "loss_training",
+      "target": "transformer_decoder",
+      "type": "skip_connection",
+      "advanced": {
+        "semanticType": "gradient_flow",
+        "lineStyle": "dashed",
+        "strokeColor": "#E57373",
+        "crossesGroupBoundary": true
+      }
+    },
+    {
+      "id": "e13",
+      "source": "ram_resource",
+      "target": "stage1_group",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "optional_path",
+        "lineStyle": "dotted",
+        "strokeColor": "#9E9E9E"
+      }
+    },
+    {
+      "id": "e14",
+      "source": "ram_resource",
+      "target": "stage2_group",
+      "type": "normal",
+      "advanced": {
+        "semanticType": "optional_path",
+        "lineStyle": "dotted",
+        "strokeColor": "#9E9E9E"
+      }
+    },
+    {
+      "id": "e15",
+      "source": "input_image",
+      "target": "local_images",
+      "type": "skip_connection",
+      "advanced": {
+        "semanticType": "skip_connection",
+        "routing": "SPLINES",
+        "curvature": 0.8,
+        "strokeColor": "#4CAF50",
+        "crossesGroupBoundary": true,
+        "edgeLabels": [
+          {
+            "text": "crop regions",
+            "position": 0.5
+          }
+        ]
+      }
+    }
+  ],
+  "canvas": {
+    "w": 2064,
+    "h": 3977
+  }
+};
+const CELLS = DATA.cells;
+const EDGES = DATA.edges;
+const CANVAS_W = DATA.canvas.w + 200;
+const CANVAS_H = DATA.canvas.h + 200;
+
+// ── Species colours ─────────────────────────────────────────────────────────
+const COLS = {
+  'cil-eye':         { fill: 0x5C6BC0, stroke: 0x3949AB, glow: 0x7986CB },
+  'cil-vector':      { fill: 0x66BB6A, stroke: 0x388E3C, glow: 0x81C784 },
+  'cil-bolt':        { fill: 0xFFA726, stroke: 0xF57C00, glow: 0xFFCC80 },
+  'cil-plus':        { fill: 0xEC407A, stroke: 0xC62828, glow: 0xF48FB1 },
+  'cil-arrow-right': { fill: 0x78909C, stroke: 0x455A64, glow: 0xB0BEC5 },
+  'cil-filter':      { fill: 0xAB47BC, stroke: 0x7B1FA2, glow: 0xCE93D8 },
+  'cil-code':        { fill: 0x26A69A, stroke: 0x00796B, glow: 0x80CBC4 },
+  'cil-layers':      { fill: 0x42A5F5, stroke: 0x1565C0, glow: 0x90CAF9 },
+  'cil-loop':        { fill: 0xFFCA28, stroke: 0xF9A825, glow: 0xFFE082 },
+  'cil-graph':       { fill: 0x78909C, stroke: 0x37474F, glow: 0xB0BEC5 },
+};
+function gc(s) { return COLS[s] || COLS['cil-code']; }
+
+// ── Build cell map ──────────────────────────────────────────────────────────
+const cellMap = {};
+CELLS.forEach(c => cellMap[c.cell_id] = c);
+
+// ── App init ────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+canvas.width = Math.min(CANVAS_W, 2200);
+canvas.height = Math.min(CANVAS_H, 4200);
+const app = new Application();
+
+let currentMode = 'pixi';
+
+async function initApp() {
+  await app.init({
+    canvas,
+    width: canvas.width, height: canvas.height,
+    backgroundColor: 0x0D1117,
+    antialias: true,
+    resolution: Math.min(window.devicePixelRatio || 1, 2),
+    autoDensity: true,
+  });
+  app.stage.sortableChildren = true;
+  renderPixi();
+  document.getElementById('info').textContent =
+    `${CELLS.length} cells, ${EDGES.length} edges, ${canvas.width}×${canvas.height}px — Mode: PixiJS Graphics`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// METHOD 1: PixiJS Graphics
+// ══════════════════════════════════════════════════════════════════════════════
+function renderPixi() {
+  app.stage.removeChildren();
+  app.stage.sortableChildren = true;
+
+  // Scale to fit
+  const scale = Math.min(canvas.width / CANVAS_W, canvas.height / CANVAS_H, 0.85);
+  const root = new Container();
+  root.scale.set(scale);
+  root.position.set(50, 50);
+  app.stage.addChild(root);
+
+  // Edges layer (z=1)
+  const edgeG = new Graphics();
+  edgeG.zIndex = 1;
+  for (const e of EDGES) {
+    const src = cellMap[e.source], tgt = cellMap[e.target];
+    if (!src || !tgt) continue;
+    const sx = src.bbox.x + src.bbox.w/2, sy = src.bbox.y + src.bbox.h;
+    const tx = tgt.bbox.x + tgt.bbox.w/2, ty = tgt.bbox.y;
+    const adv = e.advanced || {};
+    const col = adv.strokeColor ? parseInt(adv.strokeColor.replace('#',''), 16) : 0x555555;
+    const dash = adv.lineStyle === 'dashed' || adv.lineStyle === 'dotted';
+
+    const my = (sy + ty) / 2;
+    edgeG.moveTo(sx, sy);
+    if (e.type === 'skip_connection') {
+      const cx = Math.max(sx, tx) + 60;
+      edgeG.bezierCurveTo(cx, sy, cx, ty, tx, ty);
+    } else {
+      edgeG.bezierCurveTo(sx, my, tx, my, tx, ty);
+    }
+    edgeG.stroke({ color: col, width: dash ? 1 : 1.5, alpha: 0.5 });
+
+    // Arrowhead
+    const a = Math.atan2(ty - my, tx - tx) || -Math.PI/2;
+    edgeG.moveTo(tx - 5, ty - 8); edgeG.lineTo(tx, ty); edgeG.lineTo(tx + 5, ty - 8);
+    edgeG.stroke({ color: col, width: 1.5, alpha: 0.5 });
+  }
+  root.addChild(edgeG);
+
+  // Cells
+  for (const c of CELLS) {
+    const col = gc(c.species);
+    const cont = new Container();
+    cont.position.set(c.bbox.x, c.bbox.y);
+    cont.zIndex = c.z;
+
+    if (c.is_group) {
+      // Group: dashed border, semi-transparent fill
+      const bg = new Graphics();
+      bg.roundRect(0, 0, c.bbox.w, c.bbox.h, 10);
+      bg.fill({ color: col.fill, alpha: 0.06 });
+      bg.roundRect(0, 0, c.bbox.w, c.bbox.h, 10);
+      bg.stroke({ color: col.stroke, width: 1, alpha: 0.25 });
+      cont.addChild(bg);
+      // Group label
+      const t = new Text({ text: c.label, style: new TextStyle({
+        fontSize: 11, fill: col.stroke, fontWeight: '600', fontFamily: 'system-ui' }) });
+      t.position.set(12, 8);
+      cont.addChild(t);
+    } else {
+      // Glow
+      const glow = new Graphics();
+      glow.roundRect(-12, -12, c.bbox.w+24, c.bbox.h+24, 14);
+      glow.fill({ color: col.glow, alpha: 0.15 });
+      glow.filters = [new BlurFilter({ strength: 8, quality: 3 })];
+      cont.addChild(glow);
+
+      // Body
+      const body = new Graphics();
+      body.roundRect(0, 0, c.bbox.w, c.bbox.h, 8);
+      body.fill({ color: col.fill, alpha: 0.85 });
+      body.roundRect(0, 0, c.bbox.w, c.bbox.h, 8);
+      body.stroke({ color: col.stroke, width: 1.5, alpha: 0.7 });
+      cont.addChild(body);
+
+      // Label
+      const t = new Text({ text: c.label, style: new TextStyle({
+        fontSize: 11, fill: 0xFFFFFF, fontWeight: '500', fontFamily: 'system-ui',
+        wordWrap: true, wordWrapWidth: c.bbox.w - 16 }) });
+      t.anchor.set(0.5);
+      t.position.set(c.bbox.w/2, c.bbox.h/2);
+      cont.addChild(t);
+    }
+    root.addChild(cont);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// METHOD 3: SDF Shader
+// ══════════════════════════════════════════════════════════════════════════════
+const SDF_VERT = `
+attribute vec2 aPosition;
+attribute vec2 aUV;
+varying vec2 vUV;
+void main() { vUV = aUV; gl_Position = vec4(aPosition, 0.0, 1.0); }
+`;
+
+const SDF_FRAG = `
+precision highp float;
+varying vec2 vUV;
+uniform vec2 uSize;
+uniform vec3 uFill;
+uniform vec3 uGlow;
+uniform float uRadius;
+uniform int uSpecies;
+
+float sdRoundBox(vec2 p, vec2 b, float r) {
+  vec2 q = abs(p) - b + r;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+void main() {
+  vec2 uv = (vUV - 0.5) * (uSize + 40.0);
+  float d = sdRoundBox(uv, uSize * 0.5 - 1.0, uRadius);
+  float fill = smoothstep(1.0, -1.0, d);
+  float stroke = smoothstep(2.0, 0.5, abs(d)) * 0.7;
+  float glow = exp(-d * d * 0.005) * 0.25;
+  vec3 col = uGlow * glow;
+  col = mix(col, uFill, fill);
+  col = mix(col, uFill * 0.6, stroke);
+  float a = max(glow, max(fill, stroke));
+  gl_FragColor = vec4(col, a);
+}
+`;
+
+function renderSDF() {
+  app.stage.removeChildren();
+  app.stage.sortableChildren = true;
+
+  const scale = Math.min(canvas.width / CANVAS_W, canvas.height / CANVAS_H, 0.85);
+  const root = new Container();
+  root.scale.set(scale);
+  root.position.set(50, 50);
+  app.stage.addChild(root);
+
+  for (const c of CELLS) {
+    if (c.is_group) continue; // Skip groups in SDF mode for clarity
+    const col = gc(c.species);
+    const pad = 20;
+
+    // Normalize coords to clip space
+    const x0 = -1 + 2*(c.bbox.x - pad) / CANVAS_W;
+    const y0 = 1 - 2*(c.bbox.y - pad) / CANVAS_H;
+    const x1 = -1 + 2*(c.bbox.x + c.bbox.w + pad) / CANVAS_W;
+    const y1 = 1 - 2*(c.bbox.y + c.bbox.h + pad) / CANVAS_H;
+
+    try {
+      const geo = new MeshGeometry({
+        positions: new Float32Array([x0,y0, x1,y0, x1,y1, x0,y1]),
+        uvs: new Float32Array([0,0, 1,0, 1,1, 0,1]),
+        indices: new Uint32Array([0,1,2, 0,2,3]),
+      });
+
+      const fillR = ((col.fill >> 16) & 0xFF) / 255;
+      const fillG = ((col.fill >> 8) & 0xFF) / 255;
+      const fillB = (col.fill & 0xFF) / 255;
+      const glowR = ((col.glow >> 16) & 0xFF) / 255;
+      const glowG = ((col.glow >> 8) & 0xFF) / 255;
+      const glowB = (col.glow & 0xFF) / 255;
+
+      const shader = Shader.from({
+        gl: { vertex: SDF_VERT, fragment: SDF_FRAG },
+        resources: {
+          uniforms: new UniformGroup({
+            uSize: { value: new Float32Array([c.bbox.w, c.bbox.h]), type: 'vec2<f32>' },
+            uFill: { value: new Float32Array([fillR, fillG, fillB]), type: 'vec3<f32>' },
+            uGlow: { value: new Float32Array([glowR, glowG, glowB]), type: 'vec3<f32>' },
+            uRadius: { value: 8.0, type: 'f32' },
+            uSpecies: { value: 0, type: 'i32' },
+          })
+        }
+      });
+
+      const mesh = new Mesh({ geometry: geo, shader });
+      mesh.zIndex = c.z;
+      root.addChild(mesh);
+    } catch(e) {
+      // Fallback to Graphics if SDF fails
+      const g = new Graphics();
+      g.roundRect(c.bbox.x, c.bbox.y, c.bbox.w, c.bbox.h, 8);
+      g.fill({ color: col.fill, alpha: 0.85 });
+      g.stroke({ color: col.stroke, width: 1.5 });
+      g.zIndex = c.z;
+      root.addChild(g);
+    }
+
+    // Label
+    const t = new Text({ text: c.label, style: new TextStyle({
+      fontSize: 10, fill: 0xFFFFFF, fontWeight: '500', fontFamily: 'system-ui' }) });
+    t.anchor.set(0.5);
+    t.position.set(c.bbox.x + c.bbox.w/2, c.bbox.y + c.bbox.h/2);
+    t.zIndex = c.z + 1;
+    root.addChild(t);
+  }
+}
+
+// ── Mode switcher ───────────────────────────────────────────────────────────
+window.switchMode = function(mode) {
+  currentMode = mode;
+  document.querySelectorAll('#controls button').forEach(b => b.classList.remove('active'));
+  document.getElementById('btn-' + mode).classList.add('active');
+  if (mode === 'pixi') { renderPixi(); }
+  else { renderSDF(); }
+  document.getElementById('info').textContent =
+    `${CELLS.length} cells, ${EDGES.length} edges — Mode: ${mode === 'pixi' ? 'PixiJS Graphics' : 'SDF Shader'}`;
+};
+
+initApp();
+</script>
+</body>
+</html>
