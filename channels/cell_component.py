@@ -1158,17 +1158,29 @@ _SPECIES_NAME_TO_INDEX: dict = {
     "cil-vector":      3,
     "cil-plus":        4,
     "cil-arrow-right": 5,
+    # ── New species ──────────────────────────────────────────────────────────
+    "cil-filter":      6,
+    "cil-code":        7,
+    "cil-layers":      8,
+    "cil-loop":        9,
+    "cil-graph":       10,
 }
 
 # Species index → primary SVG fill colour (RGB 0-255 tuple).
 # Mirrors RepresentativeColour in FAstroCellRegistry::FCellEntry; values
 # derived from the fill colours used in the generate_svg_* functions below.
 _SPECIES_INDEX_TO_COLOUR: dict = {
-    1: (63,  81, 181),   # cil-eye    → #3F51B5 Indigo
-    2: (255, 111,   0),  # cil-bolt   → #FF6F00 Amber
-    3: (46,  125,  50),  # cil-vector → #2E7D32 Green
-    4: (30,  136, 229),  # cil-plus   → #1E88E5 Blue
+    1: (63,  81, 181),   # cil-eye         → #3F51B5 Indigo
+    2: (255, 111,   0),  # cil-bolt        → #FF6F00 Amber
+    3: (46,  125,  50),  # cil-vector      → #2E7D32 Green
+    4: (30,  136, 229),  # cil-plus        → #1E88E5 Blue
     5: (69,   90, 100),  # cil-arrow-right → #455A64 Blue-Grey
+    # ── New species ──────────────────────────────────────────────────────────
+    6: (123,  31, 162),  # cil-filter  → #7B1FA2 Purple
+    7: (46,  125,  50),  # cil-code    → #2E7D32 Green (monospace feel)
+    8: (21,  101, 192),  # cil-layers  → #1565C0 Blue (depth stack)
+    9: (245, 127,  23),  # cil-loop    → #F57F17 Amber-Orange (cycle)
+   10: (55,   71,  79),  # cil-graph   → #37474F Blue-Grey (graph nodes)
     0: (144, 164, 174),  # unassigned  → #90A4AE neutral
 }
 
@@ -1628,6 +1640,253 @@ def generate_svg_cil_arrow_right(cell_id, label, bbox, gene_traits):
     return "\n".join(parts), bbox
 
 
+def generate_svg_filter(w, h, label):
+    """
+    filter species: 3×3 grid wireframe + label.
+    Represents a convolution / attention mask — gridded sampling pattern.
+    """
+    cx = w / 2
+    cy = h / 2
+
+    parts = []
+    # Background
+    parts.append(f'<rect x="0" y="0" width="{w}" height="{h}" '
+                 f'rx="8" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="1.5"/>')
+
+    # 3×3 grid wireframe centred in the cell
+    pad   = max(8, min(w, h) * 0.12)
+    gw    = w - 2 * pad
+    gh    = (h - 2 * pad) * 0.72    # leave room for label at bottom
+    cell_w = gw / 3
+    cell_h = gh / 3
+    gx0   = pad
+    gy0   = pad
+
+    for row in range(4):
+        y = gy0 + row * cell_h
+        parts.append(f'<line x1="{gx0:.1f}" y1="{y:.1f}" '
+                     f'x2="{gx0 + gw:.1f}" y2="{y:.1f}" '
+                     f'stroke="#7B1FA2" stroke-width="1" opacity="0.55"/>')
+    for col in range(4):
+        x = gx0 + col * cell_w
+        parts.append(f'<line x1="{x:.1f}" y1="{gy0:.1f}" '
+                     f'x2="{x:.1f}" y2="{gy0 + gh:.1f}" '
+                     f'stroke="#7B1FA2" stroke-width="1" opacity="0.55"/>')
+
+    # Highlight centre cell of the 3×3 grid
+    hx = gx0 + cell_w
+    hy = gy0 + cell_h
+    parts.append(f'<rect x="{hx:.1f}" y="{hy:.1f}" '
+                 f'width="{cell_w:.1f}" height="{cell_h:.1f}" '
+                 f'fill="#CE93D8" opacity="0.45" rx="2"/>')
+
+    # Label
+    parts.append(f'<text x="{cx}" y="{h - 6}" text-anchor="middle" '
+                 f'font-family="system-ui,sans-serif" font-size="10" '
+                 f'fill="#4A148C">{label}</text>')
+
+    return "\n".join(parts)
+
+
+def generate_svg_code(w, h, label):
+    """
+    code species: curly-brace icon + monospace label.
+    Represents a programmatic / function block in the architecture diagram.
+    """
+    cx   = w / 2
+    cy   = h / 2
+    arm  = min(w, h) * 0.28    # half-height of the brace
+
+    parts = []
+    # Background
+    parts.append(f'<rect x="0" y="0" width="{w}" height="{h}" '
+                 f'rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>')
+
+    # Left curly brace  {  (two quarter-arcs + a nib)
+    bx   = cx - arm * 1.1
+    top  = cy - arm
+    bot  = cy + arm
+    nib  = arm * 0.22    # half-nib width
+    r    = arm * 0.35    # corner radius of the brace arcs
+
+    # Left brace path: M top → arc down → nib left → arc down → bottom
+    parts.append(
+        f'<path d="M {bx + r:.1f},{top:.1f} '
+        f'Q {bx:.1f},{top:.1f} {bx:.1f},{top + r:.1f} '
+        f'L {bx:.1f},{cy - nib:.1f} '
+        f'Q {bx - nib * 1.4:.1f},{cy:.1f} {bx:.1f},{cy + nib:.1f} '
+        f'L {bx:.1f},{bot - r:.1f} '
+        f'Q {bx:.1f},{bot:.1f} {bx + r:.1f},{bot:.1f}" '
+        f'fill="none" stroke="#2E7D32" stroke-width="2" stroke-linejoin="round"/>'
+    )
+
+    # Right curly brace  }  (mirrored)
+    bx2 = cx + arm * 1.1
+    parts.append(
+        f'<path d="M {bx2 - r:.1f},{top:.1f} '
+        f'Q {bx2:.1f},{top:.1f} {bx2:.1f},{top + r:.1f} '
+        f'L {bx2:.1f},{cy - nib:.1f} '
+        f'Q {bx2 + nib * 1.4:.1f},{cy:.1f} {bx2:.1f},{cy + nib:.1f} '
+        f'L {bx2:.1f},{bot - r:.1f} '
+        f'Q {bx2:.1f},{bot:.1f} {bx2 - r:.1f},{bot:.1f}" '
+        f'fill="none" stroke="#2E7D32" stroke-width="2" stroke-linejoin="round"/>'
+    )
+
+    # Label in monospace font, centred
+    parts.append(f'<text x="{cx}" y="{h - 6}" text-anchor="middle" '
+                 f'font-family="\'Courier New\',Courier,monospace" font-size="10" '
+                 f'fill="#1B5E20">{label}</text>')
+
+    return "\n".join(parts)
+
+
+def generate_svg_layers(w, h, label):
+    """
+    layers species: 3 staggered semi-transparent rectangles.
+    Represents depth / multi-layer representations (e.g. transformer stack).
+    """
+    cx = w / 2
+    cy = h / 2
+
+    parts = []
+    # Background
+    parts.append(f'<rect x="0" y="0" width="{w}" height="{h}" '
+                 f'rx="8" fill="#E3F2FD" stroke="#1565C0" stroke-width="1.5"/>')
+
+    pad   = max(6, min(w, h) * 0.10)
+    rw    = w - 2 * pad
+    rh    = (h - 2 * pad) * 0.48
+    step  = rh * 0.32    # vertical / horizontal stagger between layers
+
+    colours   = ["#90CAF9", "#42A5F5", "#1E88E5"]
+    opacities = [0.35, 0.50, 0.68]
+    rx_vals   = [6, 5, 4]
+
+    for i, (col, op, rx) in enumerate(zip(colours, opacities, rx_vals)):
+        # Stagger: bottom layers offset right + down
+        offset = step * (2 - i)
+        rx_pos = pad + offset * 0.8
+        ry_pos = pad + offset + (h - 2 * pad - rh) * 0.15
+        parts.append(
+            f'<rect x="{rx_pos:.1f}" y="{ry_pos:.1f}" '
+            f'width="{rw:.1f}" height="{rh:.1f}" '
+            f'rx="{rx}" fill="{col}" opacity="{op}" '
+            f'stroke="#1565C0" stroke-width="0.8"/>'
+        )
+
+    # Label
+    parts.append(f'<text x="{cx}" y="{h - 6}" text-anchor="middle" '
+                 f'font-family="system-ui,sans-serif" font-size="10" '
+                 f'fill="#0D47A1">{label}</text>')
+
+    return "\n".join(parts)
+
+
+def generate_svg_loop(w, h, label):
+    """
+    loop species: circular arc with an arrowhead.
+    Represents a recurrent / cyclic flow (RNN, loop, feedback connection).
+    """
+    cx  = w / 2
+    cy  = h / 2
+    r   = min(w, h) * 0.28
+
+    parts = []
+    # Background
+    parts.append(f'<rect x="0" y="0" width="{w}" height="{h}" '
+                 f'rx="8" fill="#FFF8E1" stroke="#F57F17" stroke-width="1.5"/>')
+
+    # Circular arc: ~300° clockwise, leaving a gap at the top for the arrowhead
+    # SVG arc: start at top-right (30°), sweep 300° (large-arc), end at top-left (90°)
+    gap_half = math.radians(30)    # gap = 60° at top
+    start_angle = -math.pi / 2 + gap_half   # just past 12 o'clock CW
+    end_angle   = -math.pi / 2 - gap_half   # just before 12 o'clock CW
+
+    sx = cx + r * math.cos(start_angle)
+    sy = cy + r * math.sin(start_angle)
+    ex = cx + r * math.cos(end_angle)
+    ey = cy + r * math.sin(end_angle)
+
+    # large-arc-flag=1, sweep-flag=1 (clockwise)
+    arc_id = abs(hash(label)) % 9000 + 1000
+    parts.append(
+        f'<defs>'
+        f'<marker id="loop-arrow-{arc_id}" markerWidth="7" markerHeight="7" '
+        f'refX="3.5" refY="3.5" orient="auto">'
+        f'<path d="M0,0 L7,3.5 L0,7 Z" fill="#F57F17"/>'
+        f'</marker>'
+        f'</defs>'
+    )
+    parts.append(
+        f'<path d="M {sx:.2f},{sy:.2f} A {r:.2f},{r:.2f} 0 1,1 {ex:.2f},{ey:.2f}" '
+        f'fill="none" stroke="#F57F17" stroke-width="2.2" opacity="0.75" '
+        f'marker-end="url(#loop-arrow-{arc_id})"/>'
+    )
+
+    # Small centre dot
+    parts.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r * 0.14:.1f}" '
+                 f'fill="#F57F17" opacity="0.55"/>')
+
+    # Label
+    parts.append(f'<text x="{cx}" y="{h - 6}" text-anchor="middle" '
+                 f'font-family="system-ui,sans-serif" font-size="10" '
+                 f'fill="#E65100">{label}</text>')
+
+    return "\n".join(parts)
+
+
+def generate_svg_graph(w, h, label):
+    """
+    graph species: small circles (nodes) connected by lines (edges).
+    Represents a graph-structured computation or attention pattern.
+    """
+    cx  = w / 2
+    cy  = h / 2
+
+    parts = []
+    # Background
+    parts.append(f'<rect x="0" y="0" width="{w}" height="{h}" '
+                 f'rx="8" fill="#FAFAFA" stroke="#37474F" stroke-width="1.5"/>')
+
+    # Node positions — a small 5-node graph (star + outer ring feel)
+    r_outer = min(w, h) * 0.28
+    r_inner = r_outer * 0.38
+    # Centre node + 4 outer nodes at 0°, 90°, 180°, 270°
+    node_angles = [0, math.pi / 2, math.pi, 3 * math.pi / 2]
+    nodes = [(cx, cy - r_inner)]   # slightly offset centre
+    for ang in node_angles:
+        nodes.append((cx + r_outer * math.cos(ang),
+                      cy + r_outer * math.sin(ang)))
+
+    # Edges: centre → each outer node + one cross edge
+    edges = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (3, 4)]
+    for (a, b) in edges:
+        x1, y1 = nodes[a]
+        x2, y2 = nodes[b]
+        parts.append(
+            f'<line x1="{x1:.1f}" y1="{y1:.1f}" '
+            f'x2="{x2:.1f}" y2="{y2:.1f}" '
+            f'stroke="#546E7A" stroke-width="1.1" opacity="0.50"/>'
+        )
+
+    # Draw nodes on top of edges
+    node_r  = max(3.0, min(w, h) * 0.055)
+    colours = ["#37474F", "#78909C", "#78909C", "#78909C", "#78909C"]
+    for i, (nx, ny) in enumerate(nodes):
+        col = colours[min(i, len(colours) - 1)]
+        parts.append(
+            f'<circle cx="{nx:.1f}" cy="{ny:.1f}" r="{node_r:.1f}" '
+            f'fill="{col}" opacity="0.75"/>'
+        )
+
+    # Label
+    parts.append(f'<text x="{cx}" y="{h - 6}" text-anchor="middle" '
+                 f'font-family="system-ui,sans-serif" font-size="10" '
+                 f'fill="#263238">{label}</text>')
+
+    return "\n".join(parts)
+
+
 # Species → generator mapping
 SPECIES_GENERATORS = {
     "cil-eye": generate_svg_cil_eye,
@@ -1635,6 +1894,17 @@ SPECIES_GENERATORS = {
     "cil-bolt": generate_svg_cil_bolt,
     "cil-plus": generate_svg_cil_plus,
     "cil-arrow-right": generate_svg_cil_arrow_right,
+    # ── New species (feat: add 5 new species SVG generators) ──────────────────
+    "cil-filter": lambda cell_id, label, bbox, gt: (
+        generate_svg_filter(bbox["w"], bbox["h"], label), bbox),
+    "cil-code": lambda cell_id, label, bbox, gt: (
+        generate_svg_code(bbox["w"], bbox["h"], label), bbox),
+    "cil-layers": lambda cell_id, label, bbox, gt: (
+        generate_svg_layers(bbox["w"], bbox["h"], label), bbox),
+    "cil-loop": lambda cell_id, label, bbox, gt: (
+        generate_svg_loop(bbox["w"], bbox["h"], label), bbox),
+    "cil-graph": lambda cell_id, label, bbox, gt: (
+        generate_svg_graph(bbox["w"], bbox["h"], label), bbox),
 }
 
 
@@ -1681,6 +1951,12 @@ def proc(cell_id: str):
         "cil-plus":        0.3,   # structured cross — moderate
         "cil-vector":      0.5,   # multi-arrow — moderate resistance
         "cil-arrow-right": 0.7,   # directional terminal — mostly independent
+        # ── New species ──────────────────────────────────────────────────────
+        "cil-filter":      0.3,   # grid wireframe — structured, moderate
+        "cil-code":        0.4,   # brace icon — moderate
+        "cil-layers":      0.2,   # stacked rects — smooth depth signal
+        "cil-loop":        0.5,   # arc arrow — moderate self-expression
+        "cil-graph":       0.6,   # node-edge graph — relatively independent
     }
     _probe_roughness = _SPECIES_ROUGHNESS.get(species, 0.5)
 
