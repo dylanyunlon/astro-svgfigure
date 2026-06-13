@@ -3050,3 +3050,395 @@ class AstroTopologyManager:
             "participants": participants,
             "snapshot_ts": _time.monotonic(),
         }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroScheduler + AstroProcessor — ported from
+#   upstream/apollo-cyber/scheduler/scheduler.h + scheduler.cc
+#   upstream/apollo-cyber/scheduler/processor.h + processor.cc
+#   upstream/apollo-cyber/scheduler/policy/scheduler_classic.h
+#   upstream/apollo-cyber/scheduler/policy/classic_context.h
+#
+# Upstream originals (Apollo CyberRT classic policy):
+#   Scheduler:
+#     CreateTask(factory/func, name, visitor) — register CRoutine in dispatch table;
+#       visitor != nullptr → RegisterNotifyCallback → NotifyProcessor on data arrive.
+#     NotifyProcessor(crid) — wake the processor owning the coroutine.
+#     DispatchTask(cr) — assign CRoutine to a ClassicContext MULTI_PRIO_QUEUE slot
+#       keyed by (group_name, priority).
+#     CheckSchedStatus() — per-processor utilisation snapshot.
+#     Shutdown() — drain epoch slots; stop processor threads.
+#   Processor:
+#     Run() — spin loop: NextRoutine() → Resume() → Release(); Wait() on idle.
+#     Stop() — set running_=false; join thread.
+#     BindContext(ctx) — attach ProcessorContext; start thread via std::call_once.
+#
+# ASTRO changes (20% algorithm delta):
+#   1. CRoutine (stackful coroutine)  → plain Python callable (func: () → None).
+#   2. AtomicHashMap<uint64_t, …>     → dict[str, …] (task_name → entry).
+#   3. MULTI_PRIO_QUEUE (array[20])   → heapq (z_layer as priority key).
+#   4. ClassicContext.NextRoutine()   → AstroScheduler._dequeue_task() under lock.
+#   5. Processor thread (std::thread) → ThreadPoolExecutor future.
+#   6. crid (uint64_t hash)           → task_name (str), matching channel path style.
+#   7. DataVisitorBase.RegisterNotifyCallback → on_message callback on channel_path.
+#   8. epoch_index_ advance           → AstroScheduler.advance_epoch() (M126 port).
+#   9. Snapshot struct                → AstroSnapshot dataclass (preserved fields).
+#  10. CheckSchedStatus fprintf       → [ASTRO-SCHED] debug prefix (matches C++ tag).
+#
+# Debug prefix: [ASTRO-SCHED] / [ASTRO-PROC] — grep-compatible with C++ log tags.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import heapq
+import concurrent.futures
+import dataclasses
+
+
+@dataclasses.dataclass
+class AstroSnapshot:
+    """Per-processor execution snapshot — mirrors Snapshot struct."""
+    processor_id: str = ""
+    routine_name: str = ""
+    execute_start_mono: float = 0.0   # 0.0 → idle (mirrors execute_start_time=0)
+
+
+class AstroProcessor:
+    """
+    Executor thread for the classic-policy scheduler.
+
+    Ports apollo::cyber::scheduler::Processor (processor.h / processor.cc).
+
+    ASTRO deltas:
+      • std::thread → ThreadPoolExecutor future (no explicit thread management).
+      • CRoutine::Resume() → plain callable task().
+      • context_->Wait() (condition_variable) → threading.Event.wait(timeout=0.01).
+      • Snapshot fields preserved; execute_start_mono replaces execute_start_time.
+    """
+
+    def __init__(self, processor_id: str, scheduler: "AstroScheduler"):
+        self._id: str = processor_id
+        self._scheduler: "AstroScheduler" = scheduler
+        self._running: bool = False
+        self._future: Optional[concurrent.futures.Future] = None
+        self._snap = AstroSnapshot(processor_id=processor_id)
+        self._wake = threading.Event()
+        _dbg("ASTRO-PROC", f"AstroProcessor ctor id={processor_id}")
+
+    def bind_and_start(self, executor: concurrent.futures.ThreadPoolExecutor) -> None:
+        """
+        BindContext + thread start — mirrors Processor::BindContext(ctx) which
+        calls std::call_once(thread_flag_, [this]{ thread_ = std::thread(Run, this) }).
+        Submits _run() to the provided ThreadPoolExecutor.
+        """
+        if self._running:
+            return
+        self._running = True
+        _dbg("ASTRO-PROC", f"AstroProcessor bind_and_start id={self._id} ONLINE")
+        self._future = executor.submit(self._run)
+
+    def stop(self) -> None:
+        """Stop() — mirrors Processor::Stop(). Clears flag, wakes loop, joins."""
+        if not self._running:
+            return
+        self._running = False
+        self._wake.set()
+        if self._future is not None:
+            try:
+                self._future.result(timeout=2.0)
+            except (concurrent.futures.TimeoutError, Exception):
+                pass
+        _dbg("ASTRO-PROC", f"AstroProcessor stop id={self._id}")
+
+    @property
+    def snapshot(self) -> AstroSnapshot:
+        """ProcSnapshot() — return live snapshot reference."""
+        return self._snap
+
+    def _run(self) -> None:
+        """
+        Processor::Run() spin loop — ported to Python.
+
+        Each iteration:
+            1. Dequeue the highest-priority ready task from the scheduler.
+            2. If found: stamp snapshot, execute task(), clear snapshot.
+            3. If none:  wait on threading.Event (mirrors context_->Wait()).
+        """
+        _dbg("ASTRO-PROC",
+             f"[ASTRO-PROCESSOR] Processor::Run epoch executor id={self._id} ONLINE")
+        while self._running:
+            task_name, task_func = self._scheduler._dequeue_task()
+            if task_func is not None:
+                self._snap.execute_start_mono = time.monotonic()
+                self._snap.routine_name = task_name
+                _dbg("ASTRO-PROC",
+                     f"[ASTRO-PROCESSOR] epoch tick: cell='{task_name}' proc={self._id}")
+                try:
+                    task_func()
+                except Exception as exc:
+                    _dbg("ASTRO-PROC",
+                         f"task exc cell={task_name} proc={self._id} exc={exc}")
+                finally:
+                    self._snap.execute_start_mono = 0.0
+                    self._snap.routine_name = ""
+            else:
+                self._wake.clear()
+                self._wake.wait(timeout=0.01)
+
+    def notify(self) -> None:
+        """Wake the spin loop — mirrors ClassicContext::Notify → cv_wq_.notify_one()."""
+        self._wake.set()
+
+
+class AstroScheduler:
+    """
+    Classic-policy task scheduler with ThreadPoolExecutor processor pool.
+
+    Ports apollo::cyber::scheduler::Scheduler + SchedulerClassic (scheduler.h,
+    scheduler.cc, policy/scheduler_classic.h, policy/classic_context.h).
+
+    Key design decisions:
+      • task registry  : dict[task_name, callable]  (mirrors id_cr_ map)
+      • dispatch queue : heapq[(z, seq, task_name)] (mirrors MULTI_PRIO_QUEUE)
+      • processors     : list[AstroProcessor]       (mirrors processors_ vector)
+      • executor       : ThreadPoolExecutor          (backs AstroProcessor threads)
+      • epoch_index    : int                        (mirrors atomic<uint64_t> M126)
+
+    Usage::
+
+        sched = AstroScheduler(num_processors=2)
+        sched.create_task(lambda: render("self_attn"), "self_attn", z=3)
+        sched.create_task(lambda: render("input_embed"), "input_embed", z=1)
+        sched.run_until_done()
+        sched.shutdown()
+    """
+
+    def __init__(self, num_processors: int = 2):
+        self._stop: bool = False
+        self._epoch_index: int = 0
+
+        self._tasks: Dict[str, Any] = {}
+        self._task_lock = threading.Lock()
+
+        self._queue: List[tuple] = []
+        self._queue_lock = threading.Lock()
+        self._queue_seq: int = 0
+
+        self._num_processors: int = max(1, num_processors)
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._num_processors,
+            thread_name_prefix="astro_proc",
+        )
+        self._processors: List[AstroProcessor] = []
+        self._pending: int = 0
+        self._pending_lock = threading.Lock()
+        self._all_done = threading.Event()
+        self._all_done.set()
+
+        for i in range(self._num_processors):
+            proc = AstroProcessor(processor_id=f"proc_{i}", scheduler=self)
+            proc.bind_and_start(self._executor)
+            self._processors.append(proc)
+
+        _dbg("ASTRO-SCHED",
+             f"AstroScheduler constructed num_processors={self._num_processors}")
+
+    # ── epoch control (M126 port) ──────────────────────────────────────────────
+
+    def advance_epoch(self) -> int:
+        """
+        AdvanceEpoch() — mirrors Scheduler::AdvanceEpoch() (M126).
+        Increments epoch_index_; returns the new epoch value.
+        Called by the cell-pubsub loop at each SVG layout iteration.
+        """
+        self._epoch_index += 1
+        _dbg("ASTRO-SCHED",
+             f"[ASTRO-SCHED] epoch_advance epoch={self._epoch_index}")
+        return self._epoch_index
+
+    @property
+    def current_epoch(self) -> int:
+        """CurrentEpoch() — read-only snapshot of epoch_index_."""
+        return self._epoch_index
+
+    # ── CreateTask ────────────────────────────────────────────────────────────
+
+    def create_task(
+        self,
+        func: Callable[[], None],
+        task_name: str,
+        z: int = 3,
+        channel_path: Optional[str] = None,
+    ) -> bool:
+        """
+        CreateTask(func, name, z, channel_path) — mirrors Scheduler::CreateTask.
+
+        Registers the callable under task_name in the task registry, then
+        calls _dispatch_task() to enqueue it into the priority heap.
+
+        If channel_path is provided, registers a DataNotifier callback so that
+        when data arrives on the channel the task is re-enqueued — mirroring
+        visitor->RegisterNotifyCallback([this, task_id]{ NotifyProcessor(task_id) }).
+        """
+        if self._stop:
+            _dbg("ASTRO-SCHED",
+                 f"CreateTask: scheduler stopped, cannot create task name={task_name}")
+            return False
+
+        with self._task_lock:
+            self._tasks[task_name] = func
+
+        _dbg("ASTRO-SCHED",
+             f"[ASTRO-SCHEDULER] CreateTask name={task_name} z={z} "
+             f"hasChannel={channel_path is not None}")
+
+        self._dispatch_task(task_name, z)
+
+        if channel_path is not None:
+            def _notify_cb():
+                if not self._stop:
+                    self.notify_processor(task_name, z)
+            DataNotifier.instance().add_notifier(
+                channel_path, Notifier(_notify_cb)
+            )
+
+        return True
+
+    # ── NotifyProcessor ───────────────────────────────────────────────────────
+
+    def notify_processor(self, task_name: str, z: int = 3) -> bool:
+        """
+        NotifyProcessor(task_name) — mirrors SchedulerClassic::NotifyProcessor.
+
+        Re-enqueues the named task into the dispatch heap and wakes a processor.
+        Called on incoming data notifications (channel callbacks).
+        Returns False if the scheduler is stopped or task unknown.
+        """
+        if self._stop:
+            return False
+
+        with self._task_lock:
+            if task_name not in self._tasks:
+                _dbg("ASTRO-SCHED",
+                     f"[ASTRO-SCHEDULER] NotifyProcessor: unknown task={task_name}")
+                return False
+
+        _dbg("ASTRO-SCHED",
+             f"[ASTRO-SCHEDULER] NotifyProcessor task={task_name} z={z}")
+        self._dispatch_task(task_name, z)
+        return True
+
+    # ── internal dispatch + dequeue ───────────────────────────────────────────
+
+    def _dispatch_task(self, task_name: str, z: int) -> None:
+        """
+        _dispatch_task — DispatchTask analogue.
+
+        Pushes (z, seq, task_name) onto the heapq so the lowest-z task is
+        served first, mirroring ClassicContext's MULTI_PRIO_QUEUE ordering.
+        Then wakes one processor (ClassicContext::Notify → cv_wq_.notify_one()).
+        """
+        with self._pending_lock:
+            self._pending += 1
+            self._all_done.clear()
+
+        with self._queue_lock:
+            heapq.heappush(self._queue, (z, self._queue_seq, task_name))
+            self._queue_seq += 1
+
+        for proc in self._processors:
+            proc.notify()
+            break
+
+    def _dequeue_task(self) -> tuple:
+        """
+        _dequeue_task — ClassicContext::NextRoutine analogue.
+
+        Pops the highest-priority (lowest z) entry from the heap and returns
+        (task_name, callable).  Returns ("", None) when the queue is empty.
+        Called exclusively by AstroProcessor._run() — no external callers.
+        """
+        with self._queue_lock:
+            if not self._queue:
+                return ("", None)
+            z, seq, task_name = heapq.heappop(self._queue)
+
+        with self._task_lock:
+            func = self._tasks.get(task_name)
+
+        if func is None:
+            return ("", None)
+
+        def _wrapped():
+            try:
+                func()
+            finally:
+                with self._pending_lock:
+                    self._pending -= 1
+                    if self._pending <= 0:
+                        self._pending = 0
+                        self._all_done.set()
+
+        return (task_name, _wrapped)
+
+    # ── run_until_done ────────────────────────────────────────────────────────
+
+    def run_until_done(self, timeout: float = 10.0) -> bool:
+        """
+        Block until all currently queued tasks have completed.
+        Mirrors the epoch-completion wait in the CyberRT node spin loop.
+        Returns True when all tasks finished within timeout, False on timeout.
+        """
+        return self._all_done.wait(timeout=timeout)
+
+    # ── CheckSchedStatus ──────────────────────────────────────────────────────
+
+    def check_sched_status(self) -> str:
+        """
+        CheckSchedStatus() — mirrors Scheduler::CheckSchedStatus().
+
+        Builds a snapshot string identical in format to the C++ version:
+            proc_id:routine_name:elapsed_ms, …, timestamp: <ns>
+        Returns the snapshot string (also emits [ASTRO-SCHED] debug log).
+        """
+        now_mono = time.monotonic()
+        now_ns = int(now_mono * 1e9)
+        parts = []
+        for proc in self._processors:
+            snap = proc.snapshot
+            if snap.execute_start_mono > 0.0:
+                elapsed_ms = int((now_mono - snap.execute_start_mono) * 1000)
+                parts.append(f"{snap.processor_id}:{snap.routine_name}:{elapsed_ms}")
+            else:
+                parts.append(f"{snap.processor_id}:idle")
+        snap_info = ", ".join(parts) + f", timestamp: {now_ns}"
+        _dbg("ASTRO-SCHED",
+             f"[ASTRO-SCHEDULER] CheckSchedStatus epoch={self._epoch_index} "
+             f"procs={len(self._processors)} snap={snap_info}")
+        return snap_info
+
+    # ── Shutdown ──────────────────────────────────────────────────────────────
+
+    def shutdown(self) -> None:
+        """
+        Shutdown() — mirrors Scheduler::Shutdown().
+
+        Sets stop flag, stops all processors, drains the task registry,
+        shuts down the ThreadPoolExecutor.
+        """
+        if self._stop:
+            return
+        self._stop = True
+
+        _dbg("ASTRO-SCHED",
+             f"[ASTRO-SCHEDULER] Shutdown draining {len(self._processors)} processors")
+
+        for proc in self._processors:
+            proc.stop()
+
+        with self._task_lock:
+            self._tasks.clear()
+
+        with self._queue_lock:
+            self._queue.clear()
+
+        self._executor.shutdown(wait=False)
+        _dbg("ASTRO-SCHED", "AstroScheduler shutdown complete")
