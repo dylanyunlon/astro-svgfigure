@@ -1,23 +1,64 @@
 /**
  * GET /api/cells — Cell descriptor list
  *
- * Proxies to Python FastAPI backend (localhost:8000/api/cells)
- * which returns a CellDescriptor[] JSON array of live cell status.
+ * 策略 (双模式):
+ *   1. 尝试代理到 Python FastAPI 后端 (BACKEND_URL/api/cells)
+ *   2. 后端离线时回退: 读取 channels/cell/*/params.json → 组装 CellDescriptor[]
+ *      拓扑 (topology.outgoing_edges) 由固定 Transformer 顺序推断
  *
- * Used by pixi-cell-renderer.ts pollCellChannels() every 500ms.
- *
- * GitHub 背书: withastro/astro (API Routes), ResearAI/AutoFigure
+ * GitHub 背书: withastro/astro (API Routes), ResearAI/AutoFigure, xiaodi #17
  */
 import type { APIRoute } from 'astro'
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 export const prerender = false
 
 const BACKEND_URL =
   import.meta.env.PYTHON_BACKEND_URL || import.meta.env.BACKEND_URL || 'http://127.0.0.1:8000'
 
+// Default Transformer topology: linear chain with one skip connection
+const TOPOLOGY_MAP: Record<string, string[]> = {
+  input_embed:  ['pos_encode'],
+  pos_encode:   ['self_attn'],
+  self_attn:    ['add_norm1'],
+  add_norm1:    ['ffn'],
+  ffn:          ['add_norm2'],
+  add_norm2:    ['output'],
+  output:       [],
+}
+
+/** Read channels/cell/*/params.json and build CellDescriptor[] */
+function readCellsFromFs(): unknown[] {
+  const channelsDir = join(process.cwd(), 'channels', 'cell')
+  if (!existsSync(channelsDir)) return []
+
+  const cells: unknown[] = []
+  for (const cellId of readdirSync(channelsDir)) {
+    const paramsPath = join(channelsDir, cellId, 'params.json')
+    if (!existsSync(paramsPath)) continue
+    try {
+      const raw = JSON.parse(readFileSync(paramsPath, 'utf-8'))
+      // Inject topology if missing
+      if (!raw.topology) {
+        raw.topology = {
+          incoming_edges: Object.entries(TOPOLOGY_MAP)
+            .filter(([, outs]) => outs.includes(cellId))
+            .map(([src]) => src),
+          outgoing_edges: TOPOLOGY_MAP[cellId] ?? [],
+        }
+      }
+      cells.push(raw)
+    } catch { /* skip malformed */ }
+  }
+  // Sort by bbox.y (top→bottom visual order)
+  cells.sort((a: any, b: any) => (a.bbox?.y ?? 0) - (b.bbox?.y ?? 0))
+  return cells
+}
+
 export const GET: APIRoute = async () => {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 10000) // 10s timeout
+  const timeout = setTimeout(() => controller.abort(), 8000)
 
   try {
     const backendRes = await fetch(`${BACKEND_URL}/api/cells`, {
@@ -38,10 +79,7 @@ export const GET: APIRoute = async () => {
         errorDetail = errorText
       }
       return new Response(
-        JSON.stringify({
-          error: `Backend error: ${backendRes.status}`,
-          details: errorDetail,
-        }),
+        JSON.stringify({ error: `Backend error: ${backendRes.status}`, details: errorDetail }),
         { status: backendRes.status, headers: { 'Content-Type': 'application/json' } }
       )
     }
@@ -49,30 +87,34 @@ export const GET: APIRoute = async () => {
     const data = await backendRes.json()
     return new Response(JSON.stringify(data), {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      },
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     })
   } catch (fetchErr: any) {
     clearTimeout(timeout)
-    if (fetchErr.name === 'AbortError') {
-      return new Response(
-        JSON.stringify({ error: 'Request timed out (10s)' }),
-        { status: 504, headers: { 'Content-Type': 'application/json' } }
-      )
+
+    // ── Fallback: read from filesystem ──────────────────────────────────────
+    const fsCells = readCellsFromFs()
+    if (fsCells.length > 0) {
+      return new Response(JSON.stringify(fsCells), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'X-Source': 'filesystem-fallback',
+        },
+      })
     }
+
+    // Backend offline and no FS data
+    const isTimeout = fetchErr.name === 'AbortError'
     return new Response(
       JSON.stringify({
-        error: 'Failed to connect to backend',
+        error: isTimeout ? 'Request timed out (8s)' : 'Failed to connect to backend',
         details: fetchErr.message,
-        hint: 'Make sure Python backend is running: python server.py',
-        debug: {
-          backend_url: BACKEND_URL,
-          target: `${BACKEND_URL}/api/cells`,
-        },
+        hint: 'Start backend: python server.py',
+        debug: { backend_url: BACKEND_URL, target: `${BACKEND_URL}/api/cells` },
       }),
-      { status: 502, headers: { 'Content-Type': 'application/json' } }
+      { status: isTimeout ? 504 : 502, headers: { 'Content-Type': 'application/json' } }
     )
   }
 }

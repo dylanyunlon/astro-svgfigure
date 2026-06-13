@@ -1,0 +1,523 @@
+---
+/**
+ * /pipeline — Astro 集成页面 (xiaodi #17)
+ *
+ * 三栏布局:
+ *   左栏  — Cell 列表 (从 /api/cells 加载 params.json)
+ *   中栏  — PixiJS 全屏渲染画布 (渲染 CellDescriptor[])
+ *   右栏  — Epoch 时间线 (从 /api/epochs 轮询)
+ *
+ * 数据流:
+ *   1. fetch('/api/cells')       → CellDescriptor[] → PixiJS render + 左栏
+ *   2. POST('/api/cell-loop')    → 触发下一个 epoch
+ *   3. fetch('/api/epochs')      → EpochRecord[]   → 右栏时间线
+ *
+ * GitHub 背书: withastro/astro, pixijs/pixijs, cworld1/astro-theme-pure
+ */
+export const prerender = false
+
+import GenerateLayout from '@/layouts/GenerateLayout.astro'
+---
+
+<GenerateLayout meta={{ title: 'Pipeline — Cell PubSub Viewer' }} highlightColor='#6D28D9'>
+  <main class='flex w-full flex-col gap-y-4 py-4' style='min-height: calc(100vh - 120px);'>
+
+    {/* ── Header ─────────────────────────────────────────────────────────── */}
+    <div class='flex items-center justify-between'>
+      <div class='flex flex-col gap-y-0.5'>
+        <h1 class='text-xl font-semibold tracking-tight'>Cell PubSub Pipeline</h1>
+        <p class='text-xs text-muted-foreground'>
+          Live cell graph · PixiJS GPU renderer · epoch timeline
+        </p>
+      </div>
+
+      <div class='flex items-center gap-x-2'>
+        {/* Connection status badge */}
+        <div id='conn-badge'
+          class='flex items-center gap-x-1.5 rounded-full border px-3 py-1 text-xs font-medium text-muted-foreground bg-muted'>
+          <span id='conn-dot' class='size-2 rounded-full bg-zinc-400'></span>
+          <span id='conn-text'>Connecting…</span>
+        </div>
+
+        {/* Auto-loop toggle */}
+        <label class='flex cursor-pointer items-center gap-x-2 rounded-xl border px-3 py-1.5 text-xs font-medium transition-all hover:bg-muted select-none'>
+          <input id='auto-loop-chk' type='checkbox' class='accent-violet-600' />
+          Auto-loop
+        </label>
+
+        {/* Manual epoch trigger */}
+        <button id='trigger-epoch-btn'
+          class='inline-flex items-center gap-x-1.5 rounded-xl border bg-violet-600 px-3 py-1.5 text-xs font-medium text-white transition-all hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed'>
+          <svg id='trigger-icon' xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+            <polygon points='5 3 19 12 5 21 5 3' />
+          </svg>
+          Next Epoch
+        </button>
+      </div>
+    </div>
+
+    {/* ── Three-column grid ───────────────────────────────────────────────── */}
+    <div class='grid flex-1 grid-cols-[220px_1fr_200px] gap-x-3' style='height: calc(100vh - 190px); min-height: 480px;'>
+
+      {/* ── LEFT: Cell List ─────────────────────────────────────────────── */}
+      <aside class='flex flex-col gap-y-2 overflow-hidden rounded-xl border bg-card'>
+        <div class='flex items-center justify-between border-b px-3 py-2'>
+          <span class='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>Cells</span>
+          <span id='cell-count' class='rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground'>0</span>
+        </div>
+        <div id='cell-list' class='flex flex-col gap-y-1 overflow-y-auto px-2 pb-2'>
+          {/* Skeleton placeholders */}
+          {[...Array(5)].map(() => (
+            <div class='cell-skeleton h-[52px] animate-pulse rounded-lg bg-muted'></div>
+          ))}
+        </div>
+      </aside>
+
+      {/* ── CENTER: PixiJS Canvas ────────────────────────────────────────── */}
+      <div class='relative flex flex-col overflow-hidden rounded-xl border bg-[#0F0F1A]'>
+
+        {/* Canvas toolbar */}
+        <div class='absolute left-0 top-0 z-20 flex w-full items-center justify-between gap-x-2 px-3 py-2'
+          style='background: linear-gradient(to bottom, rgba(15,15,26,0.95) 0%, transparent 100%);'>
+
+          <div class='flex items-center gap-x-1 rounded-lg border border-white/10 bg-black/30 p-0.5 backdrop-blur-sm'>
+            <button id='mode-pixi' data-mode='pixi'
+              class='pipeline-mode-tab rounded-md bg-white/10 px-2 py-0.5 text-[11px] font-medium text-white shadow-sm transition-all'>
+              PixiJS
+            </button>
+            <button id='mode-sdf' data-mode='sdf'
+              class='pipeline-mode-tab rounded-md px-2 py-0.5 text-[11px] font-medium text-white/50 transition-all hover:text-white'>
+              SDF
+            </button>
+          </div>
+
+          <div class='flex items-center gap-x-1'>
+            <button id='pl-zoom-out' title='Zoom out'
+              class='inline-flex size-6 items-center justify-center rounded-lg border border-white/10 bg-black/30 text-white/60 backdrop-blur-sm transition-all hover:text-white'>
+              <svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'><line x1='5' y1='12' x2='19' y2='12'/></svg>
+            </button>
+            <span id='pl-zoom-label' class='w-9 text-center text-[11px] font-medium text-white/70'>100%</span>
+            <button id='pl-zoom-in' title='Zoom in'
+              class='inline-flex size-6 items-center justify-center rounded-lg border border-white/10 bg-black/30 text-white/60 backdrop-blur-sm transition-all hover:text-white'>
+              <svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'><line x1='12' y1='5' x2='12' y2='19'/><line x1='5' y1='12' x2='19' y2='12'/></svg>
+            </button>
+            <button id='pl-zoom-fit' title='Fit view'
+              class='inline-flex size-6 items-center justify-center rounded-lg border border-white/10 bg-black/30 text-white/60 backdrop-blur-sm transition-all hover:text-white'>
+              <svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7'/></svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Status overlay */}
+        <div id='pl-status'
+          class='absolute left-3 bottom-3 z-20 hidden items-center gap-x-1.5 rounded-lg border border-white/10 bg-black/60 px-2.5 py-1.5 text-[11px] text-white/80 backdrop-blur-sm'>
+          <svg class='size-3 animate-spin text-violet-400' xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24'>
+            <circle class='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' stroke-width='4' />
+            <path class='opacity-75' fill='currentColor' d='M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z' />
+          </svg>
+          <span id='pl-status-text'>Loading…</span>
+        </div>
+
+        {/* Empty state */}
+        <div id='pl-empty' class='absolute inset-0 z-10 flex flex-col items-center justify-center gap-y-3 text-center'>
+          <svg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1' class='text-violet-400 opacity-40'>
+            <circle cx='12' cy='5' r='2'/><circle cx='5' cy='19' r='2'/><circle cx='19' cy='19' r='2'/>
+            <line x1='12' y1='7' x2='5' y2='17'/><line x1='12' y1='7' x2='19' y2='17'/>
+          </svg>
+          <p class='text-sm text-white/40'>Click <strong class='text-violet-400'>Next Epoch</strong> to load cell graph</p>
+        </div>
+
+        {/* Error state */}
+        <div id='pl-error' class='absolute inset-0 z-10 hidden flex-col items-center justify-center gap-y-3 text-center'>
+          <svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='#ef4444' stroke-width='1.5' class='opacity-60'>
+            <circle cx='12' cy='12' r='10'/><line x1='12' y1='8' x2='12' y2='12'/><line x1='12' y1='16' x2='12.01' y2='16'/>
+          </svg>
+          <p id='pl-error-text' class='text-sm text-red-400'></p>
+          <p class='text-xs text-white/30'>Start backend: <code class='font-mono'>python server.py</code></p>
+        </div>
+
+        {/* Canvas element — full-bleed */}
+        <canvas id='pl-canvas'
+          class='absolute inset-0 hidden'
+          style='width: 100%; height: 100%;'>
+        </canvas>
+      </div>
+
+      {/* ── RIGHT: Epoch Timeline ────────────────────────────────────────── */}
+      <aside class='flex flex-col overflow-hidden rounded-xl border bg-card'>
+        <div class='flex items-center justify-between border-b px-3 py-2'>
+          <span class='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>Epochs</span>
+          <span id='epoch-count' class='rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground'>—</span>
+        </div>
+        <div id='epoch-list' class='flex flex-col gap-y-1.5 overflow-y-auto px-2 pb-2 pt-1'>
+          <p id='epoch-empty' class='px-1 pt-3 text-center text-xs text-muted-foreground'>No epochs yet</p>
+        </div>
+      </aside>
+    </div>
+  </main>
+</GenerateLayout>
+
+<script>
+  import type { Application } from '../../upstream/pixijs-engine/src/app/Application'
+  import { renderCellGraph } from '@/lib/renderers/pixi-cell-renderer'
+  import { renderCellGraphSDF } from '@/lib/renderers/sdf-cell-renderer'
+  import type { CellDescriptor, EdgeDescriptor } from '@/lib/renderers/pixi-cell-renderer'
+
+  // ── DOM refs ──────────────────────────────────────────────────────────────
+  const canvas       = document.getElementById('pl-canvas') as HTMLCanvasElement
+  const wrap         = canvas.parentElement!
+  const emptyEl      = document.getElementById('pl-empty')!
+  const errorEl      = document.getElementById('pl-error')!
+  const errorText    = document.getElementById('pl-error-text')!
+  const statusBar    = document.getElementById('pl-status')!
+  const statusText   = document.getElementById('pl-status-text')!
+  const zoomLabel    = document.getElementById('pl-zoom-label')!
+  const cellList     = document.getElementById('cell-list')!
+  const cellCount    = document.getElementById('cell-count')!
+  const epochList    = document.getElementById('epoch-list')!
+  const epochCount   = document.getElementById('epoch-count')!
+  const epochEmpty   = document.getElementById('epoch-empty')!
+  const connDot      = document.getElementById('conn-dot')!
+  const connText     = document.getElementById('conn-text')!
+  const triggerBtn   = document.getElementById('trigger-epoch-btn') as HTMLButtonElement
+  const triggerIcon  = document.getElementById('trigger-icon')!
+  const autoLoopChk  = document.getElementById('auto-loop-chk') as HTMLInputElement
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let pixiApp: Application | null = null
+  let currentZoom = 100
+  let renderMode: 'pixi' | 'sdf' = 'pixi'
+  let running = false
+  let autoLoopTimer: ReturnType<typeof setTimeout> | null = null
+  let lastCells: CellDescriptor[] = []
+
+  // ── Connection badge ──────────────────────────────────────────────────────
+  function setConnected(ok: boolean) {
+    connDot.className = `size-2 rounded-full ${ok ? 'bg-emerald-400' : 'bg-red-400'}`
+    connText.textContent = ok ? 'Connected' : 'Backend offline'
+  }
+
+  // ── Status bar ────────────────────────────────────────────────────────────
+  function showStatus(msg: string) {
+    statusBar.classList.remove('hidden')
+    statusBar.classList.add('flex')
+    statusText.textContent = msg
+  }
+  function hideStatus() {
+    statusBar.classList.add('hidden')
+    statusBar.classList.remove('flex')
+  }
+
+  // ── Error overlay ─────────────────────────────────────────────────────────
+  function showError(msg: string) {
+    hideStatus()
+    emptyEl.classList.add('hidden')
+    canvas.classList.add('hidden')
+    errorText.textContent = msg
+    errorEl.classList.remove('hidden')
+    errorEl.classList.add('flex')
+    setConnected(false)
+  }
+  function hideError() {
+    errorEl.classList.add('hidden')
+    errorEl.classList.remove('flex')
+  }
+
+  // ── Zoom ──────────────────────────────────────────────────────────────────
+  function setZoom(z: number) {
+    currentZoom = Math.max(25, Math.min(400, z))
+    canvas.style.transform = `scale(${currentZoom / 100})`
+    canvas.style.transformOrigin = 'center center'
+    zoomLabel.textContent = `${currentZoom}%`
+  }
+
+  document.getElementById('pl-zoom-in')!.addEventListener('click', () => setZoom(currentZoom + 15))
+  document.getElementById('pl-zoom-out')!.addEventListener('click', () => setZoom(currentZoom - 15))
+  document.getElementById('pl-zoom-fit')!.addEventListener('click', () => setZoom(100))
+
+  // ── Build edge list from cell topology ────────────────────────────────────
+  function buildEdges(cells: CellDescriptor[]): EdgeDescriptor[] {
+    const edges: EdgeDescriptor[] = []
+    const seen = new Set<string>()
+    for (const cell of cells) {
+      for (const tgt of (cell.topology?.outgoing_edges ?? [])) {
+        const key = `${cell.cell_id}->${tgt}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        const srcIdx = cells.findIndex(c => c.cell_id === cell.cell_id)
+        const tgtIdx = cells.findIndex(c => c.cell_id === tgt)
+        edges.push({
+          id: key,
+          source: cell.cell_id,
+          target: tgt,
+          type: tgtIdx - srcIdx > 2 ? 'skip_connection' : 'normal',
+        })
+      }
+    }
+    return edges
+  }
+
+  // ── Species → color dot ───────────────────────────────────────────────────
+  const SPECIES_HEX: Record<string, string> = {
+    'cil-eye':         '#7986CB',
+    'cil-vector':      '#81C784',
+    'cil-bolt':        '#FFCC80',
+    'cil-plus':        '#F48FB1',
+    'cil-arrow-right': '#B0BEC5',
+  }
+  function speciesColor(sp: string) { return SPECIES_HEX[sp] ?? '#9CA3AF' }
+  function speciesIcon(sp: string) {
+    const icons: Record<string, string> = {
+      'cil-eye': '👁',
+      'cil-vector': '↗',
+      'cil-bolt': '⚡',
+      'cil-plus': '＋',
+      'cil-arrow-right': '→',
+    }
+    return icons[sp] ?? '◉'
+  }
+
+  // ── Left panel: render cell list ──────────────────────────────────────────
+  function renderCellList(cells: CellDescriptor[]) {
+    // Remove skeletons
+    document.querySelectorAll('.cell-skeleton').forEach(el => el.remove())
+    cellCount.textContent = String(cells.length)
+
+    // Clear then repopulate
+    cellList.innerHTML = ''
+    for (const cell of cells) {
+      const color = (cell as any).fill_color ?? speciesColor(cell.species)
+      const label = cell.label ?? cell.cell_id
+      const epoch = (cell as any).epoch ?? '?'
+      const opacity = (cell as any).opacity ?? 1
+
+      const item = document.createElement('div')
+      item.className = [
+        'flex cursor-pointer flex-col gap-y-0.5 rounded-lg border px-2.5 py-2 transition-all',
+        'hover:bg-muted hover:border-violet-400/30',
+        'cell-list-item',
+      ].join(' ')
+      item.dataset.cellId = cell.cell_id
+
+      item.innerHTML = `
+        <div class="flex items-center justify-between gap-x-1">
+          <div class="flex items-center gap-x-1.5 min-w-0">
+            <span class="shrink-0 text-xs" title="${cell.species}">${speciesIcon(cell.species)}</span>
+            <span class="truncate text-xs font-medium text-foreground">${label}</span>
+          </div>
+          <span class="shrink-0 rounded-full px-1.5 py-0 text-[9px] font-semibold text-white"
+            style="background-color: ${color};"
+          >e${epoch}</span>
+        </div>
+        <div class="flex items-center gap-x-2 text-[10px] text-muted-foreground">
+          <span class="font-mono">${cell.cell_id}</span>
+          <span class="ml-auto opacity-60">α${opacity.toFixed ? opacity.toFixed(2) : opacity}</span>
+        </div>
+        <div class="h-1 w-full overflow-hidden rounded-full bg-muted">
+          <div class="h-full rounded-full transition-all" style="width: ${Math.round(opacity * 100)}%; background-color: ${color};"></div>
+        </div>
+      `
+
+      // Click → highlight on canvas (future: pan to node)
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.cell-list-item').forEach(el =>
+          el.classList.remove('border-violet-400', 'bg-violet-50/5'))
+        item.classList.add('border-violet-400', 'bg-violet-50/5')
+      })
+
+      cellList.appendChild(item)
+    }
+  }
+
+  // ── Right panel: render epoch timeline ───────────────────────────────────
+  interface EpochRecord {
+    epoch: number
+    timestamp?: string
+    status?: string
+    cell_count?: number
+    loss?: number
+  }
+
+  function renderEpochTimeline(epochs: EpochRecord[]) {
+    epochCount.textContent = String(epochs.length)
+    if (!epochs.length) {
+      epochEmpty.classList.remove('hidden')
+      return
+    }
+    epochEmpty.classList.add('hidden')
+    epochList.innerHTML = ''
+
+    const sorted = [...epochs].sort((a, b) => b.epoch - a.epoch)
+    for (const ep of sorted) {
+      const isLatest = sorted[0].epoch === ep.epoch
+      const item = document.createElement('div')
+      item.className = [
+        'flex flex-col gap-y-0.5 rounded-lg border px-2.5 py-2 text-[11px]',
+        isLatest ? 'border-violet-500/60 bg-violet-500/5' : 'border-transparent',
+      ].join(' ')
+
+      const ts = ep.timestamp
+        ? new Date(ep.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        : '—'
+
+      const statusColor = ep.status === 'converged' ? 'text-emerald-400'
+        : ep.status === 'running' ? 'text-amber-400'
+        : 'text-muted-foreground'
+
+      item.innerHTML = `
+        <div class="flex items-center justify-between">
+          <span class="font-semibold ${isLatest ? 'text-violet-400' : 'text-foreground'}">Epoch ${ep.epoch}</span>
+          <span class="${statusColor} capitalize">${ep.status ?? 'done'}</span>
+        </div>
+        <div class="text-muted-foreground">${ts}</div>
+        ${ep.loss != null ? `<div class="font-mono text-[10px] text-muted-foreground">loss ${ep.loss.toFixed(4)}</div>` : ''}
+        ${ep.cell_count != null ? `<div class="text-muted-foreground">${ep.cell_count} cells</div>` : ''}
+      `
+      epochList.appendChild(item)
+    }
+  }
+
+  // ── Fetch epochs ──────────────────────────────────────────────────────────
+  async function fetchEpochs() {
+    try {
+      const res = await fetch('/api/epochs')
+      if (!res.ok) return
+      const data: EpochRecord[] | { epochs?: EpochRecord[] } = await res.json()
+      const epochs = Array.isArray(data) ? data : (data as any).epochs ?? []
+      renderEpochTimeline(epochs)
+    } catch { /* silent — epochs are optional */ }
+  }
+
+  // ── Fetch + render cells ──────────────────────────────────────────────────
+  async function fetchAndRender() {
+    showStatus('Fetching cells…')
+    const res = await fetch('/api/cells')
+    if (!res.ok) throw new Error(`/api/cells → ${res.status}`)
+
+    const raw = await res.json()
+    // The API may return array directly OR { cells: [...] }
+    const cells: CellDescriptor[] = Array.isArray(raw) ? raw : (raw as any).cells ?? []
+    if (!cells.length) throw new Error('No cells returned — is server running?')
+
+    lastCells = cells
+    renderCellList(cells)
+    setConnected(true)
+    hideError()
+
+    // Fit canvas to container
+    const rect = wrap.getBoundingClientRect()
+    canvas.width  = Math.floor(rect.width)
+    canvas.height = Math.floor(rect.height)
+
+    showStatus(`Rendering ${cells.length} cells (${renderMode})…`)
+
+    const edges = buildEdges(cells)
+
+    if (pixiApp) {
+      try { pixiApp.destroy(false, { children: true, texture: true }) } catch { /* ok */ }
+      pixiApp = null
+    }
+
+    if (renderMode === 'pixi') {
+      pixiApp = await renderCellGraph(canvas, cells, edges)
+    } else {
+      pixiApp = await renderCellGraphSDF(canvas, cells, edges)
+    }
+
+    emptyEl.classList.add('hidden')
+    canvas.classList.remove('hidden')
+    setZoom(100)
+    hideStatus()
+  }
+
+  // ── Trigger epoch + re-render ─────────────────────────────────────────────
+  async function triggerEpoch() {
+    if (running) return
+    running = true
+    triggerBtn.disabled = true
+    triggerIcon.classList.add('animate-spin')
+
+    try {
+      showStatus('Triggering epoch…')
+      await fetch('/api/cell-loop', { method: 'POST' })
+      await fetchAndRender()
+      await fetchEpochs()
+    } catch (err: any) {
+      showError(err.message ?? 'Unknown error')
+    } finally {
+      running = false
+      triggerBtn.disabled = false
+      triggerIcon.classList.remove('animate-spin')
+    }
+  }
+
+  // ── Auto-loop ─────────────────────────────────────────────────────────────
+  function scheduleAutoLoop() {
+    if (autoLoopTimer) clearTimeout(autoLoopTimer)
+    if (!autoLoopChk.checked) return
+    autoLoopTimer = setTimeout(async () => {
+      await triggerEpoch()
+      scheduleAutoLoop()
+    }, 3000)
+  }
+
+  autoLoopChk.addEventListener('change', () => {
+    if (autoLoopChk.checked) {
+      triggerEpoch().then(() => scheduleAutoLoop())
+    } else {
+      if (autoLoopTimer) { clearTimeout(autoLoopTimer); autoLoopTimer = null }
+    }
+  })
+
+  triggerBtn.addEventListener('click', triggerEpoch)
+
+  // ── Mode toggle ───────────────────────────────────────────────────────────
+  document.querySelectorAll<HTMLButtonElement>('.pipeline-mode-tab').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const mode = btn.dataset.mode as 'pixi' | 'sdf'
+      if (mode === renderMode) return
+      renderMode = mode
+
+      document.querySelectorAll<HTMLButtonElement>('.pipeline-mode-tab').forEach(b => {
+        const active = b.dataset.mode === mode
+        b.classList.toggle('bg-white/10', active)
+        b.classList.toggle('text-white', active)
+        b.classList.toggle('shadow-sm', active)
+        b.classList.toggle('text-white/50', !active)
+      })
+
+      if (!canvas.classList.contains('hidden') && lastCells.length) {
+        try {
+          showStatus(`Switching to ${mode === 'sdf' ? 'SDF' : 'PixiJS'}…`)
+          await fetchAndRender()
+        } catch (err: any) {
+          showError(err.message)
+        }
+      }
+    })
+  })
+
+  // ── Resize observer ───────────────────────────────────────────────────────
+  let resizeTimer: ReturnType<typeof setTimeout> | null = null
+  new ResizeObserver(() => {
+    if (canvas.classList.contains('hidden')) return
+    if (resizeTimer) clearTimeout(resizeTimer)
+    resizeTimer = setTimeout(() => {
+      if (lastCells.length) fetchAndRender().catch(() => { /* silent */ })
+    }, 350)
+  }).observe(wrap)
+
+  // ── Bootstrap: load initial state ─────────────────────────────────────────
+  ;(async () => {
+    // Try to load existing cells without triggering a new epoch
+    try {
+      showStatus('Loading current state…')
+      await fetchAndRender()
+      await fetchEpochs()
+    } catch {
+      // Backend might be offline; show empty state
+      hideStatus()
+      setConnected(false)
+    }
+  })()
+</script>
