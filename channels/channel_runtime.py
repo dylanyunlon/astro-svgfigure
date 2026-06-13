@@ -3442,3 +3442,1195 @@ class AstroScheduler:
 
         self._executor.shutdown(wait=False)
         _dbg("ASTRO-SCHED", "AstroScheduler shutdown complete")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Apollo Cyber Transport — Python Port
+# Ported from upstream/apollo-cyber/transport/  (cell-pubsub-loop branch)
+# Classes: AstroIdentity · AstroEndpoint · AstroMessageInfo
+#          AstroHistory · AstroShmDispatcher · AstroRtpsDispatcher
+#          AstroShmTransmitter · AstroHybridTransmitter
+#          AstroShmReceiver  · AstroHybridReceiver
+#
+# 鲁迅曰：有谁从小康人家而坠入困顿的么，我以为在这途路中，大约可以看见世人
+# 的真面目。——同理，一条消息从进程内直走到跨主机，沿途层层剥落的，正是那些
+# 平日里藏得最深的锁、序号与身份。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import os
+import struct
+import threading
+import time
+import hashlib
+import queue
+import uuid
+from collections import deque
+from typing import (
+    Any, Callable, Dict, Generic, List, Optional, Set, Tuple, TypeVar
+)
+
+_MT = TypeVar("_MT")
+
+# ── 内部调试 ──────────────────────────────────────────────────────────────────
+_TRANSPORT_DEBUG = os.environ.get("ASTRO_TRANSPORT_DEBUG", "0") == "1"
+
+def _tdbg(tag: str, msg: str) -> None:
+    if _TRANSPORT_DEBUG:
+        print(f"[{tag}] {msg}", flush=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroIdentity
+# Port of: upstream/apollo-cyber/transport/common/identity.h
+#
+# 鲁迅曰：所谓身份，不过是八个字节的自欺欺人。哈希一算，人与人之间的区别
+# 也不过如此。
+# ══════════════════════════════════════════════════════════════════════════════
+
+_ID_SIZE = 8  # constexpr uint8_t ID_SIZE = 8
+
+
+class AstroIdentity:
+    """
+    Mirrors ``apollo::cyber::transport::Identity``.
+
+    Stores an 8-byte raw ID and a precomputed uint64 hash.  When
+    *need_generate* is True (default) a random UUID-derived payload is
+    generated on construction, matching the C++ auto-generate path.
+    """
+
+    __slots__ = ("_data", "_hash_value")
+
+    def __init__(self, need_generate: bool = True,
+                 data: Optional[bytes] = None) -> None:
+        if data is not None:
+            if len(data) != _ID_SIZE:
+                raise ValueError(f"Identity data must be {_ID_SIZE} bytes")
+            self._data: bytes = bytes(data)
+        elif need_generate:
+            self._data = uuid.uuid4().bytes[:_ID_SIZE]
+        else:
+            self._data = b"\x00" * _ID_SIZE
+        self._update()
+
+    # ── private ──────────────────────────────────────────────────────────────
+
+    def _update(self) -> None:
+        """Recompute hash — mirrors Identity::Update()."""
+        val: int = 0
+        for b in self._data:
+            val = (val * 31 + b) & 0xFFFF_FFFF_FFFF_FFFF
+        self._hash_value: int = val
+
+    # ── public API ───────────────────────────────────────────────────────────
+
+    @property
+    def data(self) -> bytes:
+        return self._data
+
+    def set_data(self, data: bytes) -> None:
+        if len(data) != _ID_SIZE:
+            raise ValueError(f"Identity data must be {_ID_SIZE} bytes")
+        self._data = bytes(data[:_ID_SIZE])
+        self._update()
+
+    def hash_value(self) -> int:
+        return self._hash_value
+
+    def length(self) -> int:
+        return _ID_SIZE
+
+    def to_string(self) -> str:
+        return self._data.hex()
+
+    # ── dunder ────────────────────────────────────────────────────────────────
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, AstroIdentity) and self._data == other._data
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return self._hash_value
+
+    def __repr__(self) -> str:
+        return f"AstroIdentity({self.to_string()})"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroEndpoint
+# Port of: upstream/apollo-cyber/transport/common/endpoint.h
+#
+# 鲁迅曰：端点就是端点，无论叫做发送者还是接收者，骨子里不过是一个有名有姓
+# 的 enabled 开关罢了。
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AstroRoleAttributes:
+    """
+    Lightweight stand-in for ``proto::RoleAttributes``.
+
+    Carries only the fields actually referenced by the transport layer.
+    """
+
+    __slots__ = (
+        "channel_name", "channel_id", "host_ip", "process_id",
+        "id", "message_type", "qos_durability", "qos_history", "qos_depth",
+    )
+
+    DURABILITY_VOLATILE        = 0
+    DURABILITY_TRANSIENT_LOCAL = 1
+
+    HISTORY_KEEP_LAST = 0
+    HISTORY_KEEP_ALL  = 1
+
+    def __init__(
+        self,
+        channel_name:  str  = "",
+        channel_id:    int  = 0,
+        host_ip:       str  = "127.0.0.1",
+        process_id:    int  = 0,
+        id:            int  = 0,                  # noqa: A002
+        message_type:  str  = "",
+        qos_durability: int = 0,
+        qos_history:   int  = 0,
+        qos_depth:     int  = 1,
+    ) -> None:
+        self.channel_name   = channel_name
+        self.channel_id     = channel_id
+        self.host_ip        = host_ip
+        self.process_id     = process_id
+        self.id             = id
+        self.message_type   = message_type
+        self.qos_durability = qos_durability
+        self.qos_history    = qos_history
+        self.qos_depth      = qos_depth
+
+    def copy_from(self, src: "AstroRoleAttributes") -> None:
+        for s in self.__slots__:
+            setattr(self, s, getattr(src, s))
+
+    def __repr__(self) -> str:
+        return (f"AstroRoleAttributes(ch={self.channel_name!r}, "
+                f"id={self.id}, host={self.host_ip})")
+
+
+class AstroEndpoint:
+    """
+    Mirrors ``apollo::cyber::transport::Endpoint``.
+
+    Base class for transmitters and receivers; holds the role attributes
+    and a random Identity generated at construction time.
+    """
+
+    def __init__(self, attr: AstroRoleAttributes) -> None:
+        self.enabled_: bool              = False
+        self.id_:      AstroIdentity     = AstroIdentity()
+        self.attr_:    AstroRoleAttributes = attr
+
+    # read-only accessors matching C++ getters
+    @property
+    def id(self) -> AstroIdentity:
+        return self.id_
+
+    @property
+    def attributes(self) -> AstroRoleAttributes:
+        return self.attr_
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(id={self.id_.to_string()!r})"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroMessageInfo
+# Port of: upstream/apollo-cyber/transport/message/message_info.h
+#
+# 鲁迅曰：消息的信封里装着发件人、序号和时间，正如旧社会的契约——写得清清楚楚，
+# 却未必有人当真查对。
+# ══════════════════════════════════════════════════════════════════════════════
+
+# kSize = sender_id(8) + channel_id(8) + seq_num(8) + spare_id(8) +
+#         msg_seq_num(4) + send_time(8)  → 44 bytes
+_MSG_INFO_FMT    = "<8s Q Q 8s i Q"
+_MSG_INFO_SIZE   = struct.calcsize(_MSG_INFO_FMT)   # == 44
+
+
+class AstroMessageInfo:
+    """
+    Mirrors ``apollo::cyber::transport::MessageInfo``.
+
+    Serialises/deserialises to/from a fixed 44-byte binary payload so that
+    the layout is compatible with the C++ ``kSize`` constant.
+    """
+
+    kSize: int = _MSG_INFO_SIZE
+
+    def __init__(
+        self,
+        sender_id:   Optional[AstroIdentity] = None,
+        seq_num:     int = 0,
+        spare_id:    Optional[AstroIdentity] = None,
+        channel_id:  int = 0,
+        msg_seq_num: int = 0,
+        send_time:   int = 0,
+    ) -> None:
+        self.sender_id_:   AstroIdentity = sender_id  or AstroIdentity(need_generate=False)
+        self.channel_id_:  int           = channel_id
+        self.seq_num_:     int           = seq_num
+        self.spare_id_:    AstroIdentity = spare_id   or AstroIdentity(need_generate=False)
+        self.msg_seq_num_: int           = msg_seq_num
+        self.send_time_:   int           = send_time
+
+    # ── getters/setters ──────────────────────────────────────────────────────
+
+    @property
+    def sender_id(self) -> AstroIdentity:
+        return self.sender_id_
+
+    def set_sender_id(self, v: AstroIdentity) -> None:
+        self.sender_id_ = v
+
+    @property
+    def channel_id(self) -> int:
+        return self.channel_id_
+
+    def set_channel_id(self, v: int) -> None:
+        self.channel_id_ = v
+
+    @property
+    def seq_num(self) -> int:
+        return self.seq_num_
+
+    def set_seq_num(self, v: int) -> None:
+        self.seq_num_ = v
+
+    @property
+    def spare_id(self) -> AstroIdentity:
+        return self.spare_id_
+
+    def set_spare_id(self, v: AstroIdentity) -> None:
+        self.spare_id_ = v
+
+    @property
+    def msg_seq_num(self) -> int:
+        return self.msg_seq_num_
+
+    def set_msg_seq_num(self, v: int) -> None:
+        self.msg_seq_num_ = v
+
+    @property
+    def send_time(self) -> int:
+        return self.send_time_
+
+    def set_send_time(self, v: int) -> None:
+        self.send_time_ = v
+
+    # ── serialization ────────────────────────────────────────────────────────
+
+    def serialize_to(self) -> bytes:
+        """``bool SerializeTo(char* dst, size_t len)``"""
+        return struct.pack(
+            _MSG_INFO_FMT,
+            self.sender_id_.data,
+            self.channel_id_ & 0xFFFF_FFFF_FFFF_FFFF,
+            self.seq_num_    & 0xFFFF_FFFF_FFFF_FFFF,
+            self.spare_id_.data,
+            self.msg_seq_num_ & 0xFFFF_FFFF,
+            self.send_time_   & 0xFFFF_FFFF_FFFF_FFFF,
+        )
+
+    @classmethod
+    def deserialize_from(cls, raw: bytes) -> "AstroMessageInfo":
+        """``bool DeserializeFrom(const char* src, size_t len)``"""
+        if len(raw) < _MSG_INFO_SIZE:
+            raise ValueError(
+                f"AstroMessageInfo.deserialize_from: need {_MSG_INFO_SIZE} bytes"
+            )
+        sid_b, ch_id, seq, spa_b, msg_seq, send_t = struct.unpack_from(
+            _MSG_INFO_FMT, raw
+        )
+        return cls(
+            sender_id   = AstroIdentity(need_generate=False, data=sid_b),
+            channel_id  = ch_id,
+            seq_num     = seq,
+            spare_id    = AstroIdentity(need_generate=False, data=spa_b),
+            msg_seq_num = msg_seq,
+            send_time   = send_t,
+        )
+
+    # ── dunder ────────────────────────────────────────────────────────────────
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AstroMessageInfo):
+            return NotImplemented
+        return (
+            self.sender_id_  == other.sender_id_  and
+            self.channel_id_ == other.channel_id_ and
+            self.seq_num_    == other.seq_num_    and
+            self.spare_id_   == other.spare_id_
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __repr__(self) -> str:
+        return (f"AstroMessageInfo(sender={self.sender_id_.to_string()}, "
+                f"seq={self.seq_num_}, send_time={self.send_time_})")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroHistory
+# Port of: upstream/apollo-cyber/transport/message/history.h
+#
+# 鲁迅曰：历史是会重演的，消息也是——所以 TRANSIENT_LOCAL 才要把它们一条条
+# 存起来，等着晚来的订阅者去翻旧账。
+# ══════════════════════════════════════════════════════════════════════════════
+
+_MAX_HISTORY_DEPTH_DEFAULT = 1000
+
+
+class AstroHistory(Generic[_MT]):
+    """
+    Mirrors ``apollo::cyber::transport::History<MessageT>``.
+
+    Thread-safe bounded deque of (msg, msg_info) pairs.  When
+    *history_policy* is HISTORY_KEEP_ALL the depth is capped at
+    *max_depth*.
+    """
+
+    HISTORY_KEEP_LAST = 0
+    HISTORY_KEEP_ALL  = 1
+
+    class CachedMessage(Generic[_MT]):
+        __slots__ = ("msg", "msg_info")
+
+        def __init__(self, msg: _MT, msg_info: AstroMessageInfo) -> None:
+            self.msg:      _MT             = msg
+            self.msg_info: AstroMessageInfo = msg_info
+
+    def __init__(
+        self,
+        history_policy: int = 0,
+        depth:          int = 1,
+        max_depth:      int = _MAX_HISTORY_DEPTH_DEFAULT,
+    ) -> None:
+        self._enabled:   bool  = False
+        self._max_depth: int   = max_depth
+        if history_policy == self.HISTORY_KEEP_ALL:
+            self._depth: int = max_depth
+        else:
+            self._depth = min(depth, max_depth)
+        self._msgs: deque = deque(maxlen=self._depth)
+        self._lock: threading.Lock = threading.Lock()
+
+    # ── enable/disable ────────────────────────────────────────────────────────
+
+    def enable(self)  -> None: self._enabled = True
+    def disable(self) -> None: self._enabled = False
+
+    # ── public API ───────────────────────────────────────────────────────────
+
+    def add(self, msg: _MT, msg_info: AstroMessageInfo) -> None:
+        """``void Add(const MessagePtr&, const MessageInfo&)``"""
+        if not self._enabled:
+            return
+        with self._lock:
+            self._msgs.append(self.CachedMessage(msg, msg_info))
+
+    def clear(self) -> None:
+        """``void Clear()``"""
+        with self._lock:
+            self._msgs.clear()
+
+    def get_cached_message(self) -> List["AstroHistory.CachedMessage"]:
+        """``void GetCachedMessage(vector<CachedMessage>*)``"""
+        with self._lock:
+            return list(self._msgs)
+
+    def get_size(self) -> int:
+        """``size_t GetSize()``"""
+        with self._lock:
+            return len(self._msgs)
+
+    @property
+    def depth(self) -> int:
+        return self._depth
+
+    @property
+    def max_depth(self) -> int:
+        return self._max_depth
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _AstroDispatcherBase  (internal)
+# Thin common base for ShmDispatcher / RtpsDispatcher
+# ══════════════════════════════════════════════════════════════════════════════
+
+_ListenerFn = Callable[[Any, AstroMessageInfo], None]
+
+
+class _AstroDispatcherBase:
+    """
+    Shared skeleton for Apollo's intra-process listener registry.
+
+    Corresponds roughly to ``apollo::cyber::transport::Dispatcher``.
+    Each channel_id maps to a list of (identity_hash, listener_fn) pairs.
+    """
+
+    def __init__(self) -> None:
+        self._is_shutdown: bool = False
+        self._listeners:   Dict[int, List[Tuple[int, _ListenerFn]]] = {}
+        self._lock:        threading.RLock = threading.RLock()
+
+    # ── listener management ──────────────────────────────────────────────────
+
+    def add_listener(
+        self,
+        self_attr:    AstroRoleAttributes,
+        listener:     _ListenerFn,
+        opposite_attr: Optional[AstroRoleAttributes] = None,
+    ) -> None:
+        if self._is_shutdown:
+            return
+        ch = self_attr.channel_id
+        role_hash = self_attr.id
+        with self._lock:
+            bucket = self._listeners.setdefault(ch, [])
+            # avoid duplicate registration
+            if not any(h == role_hash for h, _ in bucket):
+                bucket.append((role_hash, listener))
+        _tdbg("DISPATCHER", f"add_listener ch={ch} role={role_hash}")
+
+    def remove_listener(
+        self,
+        self_attr:    AstroRoleAttributes,
+        opposite_attr: Optional[AstroRoleAttributes] = None,
+    ) -> None:
+        ch        = self_attr.channel_id
+        role_hash = self_attr.id
+        with self._lock:
+            if ch in self._listeners:
+                self._listeners[ch] = [
+                    (h, fn) for h, fn in self._listeners[ch]
+                    if h != role_hash
+                ]
+
+    def _dispatch(
+        self,
+        channel_id: int,
+        msg:        Any,
+        msg_info:   AstroMessageInfo,
+    ) -> None:
+        """Deliver *msg* to every registered listener on *channel_id*."""
+        with self._lock:
+            bucket = list(self._listeners.get(channel_id, []))
+        for _, fn in bucket:
+            try:
+                fn(msg, msg_info)
+            except Exception as exc:  # pylint: disable=broad-except
+                _tdbg("DISPATCHER", f"listener raised: {exc}")
+
+    def shutdown(self) -> None:
+        self._is_shutdown = True
+        with self._lock:
+            self._listeners.clear()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroShmDispatcher
+# Port of: upstream/apollo-cyber/transport/dispatcher/shm_dispatcher.h
+#
+# 鲁迅曰：共享内存就像公共食堂——人人皆可取用，锁却挂在别处，吃完了谁也不
+# 承认曾经来过。
+# ══════════════════════════════════════════════════════════════════════════════
+
+_SHM_BLOCK_SIZE = 4096  # bytes per simulated SHM slot
+
+
+class _AstroShmSegment:
+    """
+    Minimal shared-memory segment simulation.
+
+    In the real Apollo implementation this is backed by POSIX shm_open +
+    mmap.  Here we use an in-process bytearray protected by a lock so that
+    the ShmDispatcher / ShmTransmitter / ShmReceiver round-trip can be
+    exercised without OS-level shared memory.
+    """
+
+    def __init__(self, channel_id: int, num_blocks: int = 16) -> None:
+        self.channel_id:  int              = channel_id
+        self.num_blocks:  int              = num_blocks
+        self._data:       List[bytearray]  = [
+            bytearray(_SHM_BLOCK_SIZE) for _ in range(num_blocks)
+        ]
+        self._msg_sizes:  List[int]        = [0] * num_blocks
+        self._write_lock: threading.Lock   = threading.Lock()
+        self._read_cnts:  List[int]        = [0] * num_blocks
+        self._write_idx:  int              = 0
+
+    def acquire_block_to_write(self, msg_size: int) -> Optional[int]:
+        with self._write_lock:
+            idx = self._write_idx % self.num_blocks
+            self._write_idx += 1
+            return idx
+
+    def release_written_block(self, idx: int, payload: bytes, msg_info_bytes: bytes) -> None:
+        total = len(payload) + len(msg_info_bytes)
+        if total > _SHM_BLOCK_SIZE:
+            _tdbg("SHM_SEG", f"payload too large ({total} > {_SHM_BLOCK_SIZE}), truncating")
+            total = _SHM_BLOCK_SIZE
+        self._data[idx][:len(payload)] = payload[:_SHM_BLOCK_SIZE]
+        end = min(len(payload) + len(msg_info_bytes), _SHM_BLOCK_SIZE)
+        self._data[idx][len(payload):end] = msg_info_bytes[:end - len(payload)]
+        self._msg_sizes[idx] = len(payload)
+
+    def read_block(self, idx: int) -> Tuple[bytes, bytes]:
+        msg_size = self._msg_sizes[idx]
+        payload  = bytes(self._data[idx][:msg_size])
+        info_raw = bytes(self._data[idx][msg_size:msg_size + AstroMessageInfo.kSize])
+        return payload, info_raw
+
+
+class AstroShmDispatcher(_AstroDispatcherBase):
+    """
+    Mirrors ``apollo::cyber::transport::ShmDispatcher`` (singleton).
+
+    Maintains a map of channel_id → _AstroShmSegment and a polling thread
+    that mimics the notifier wake-up path in the C++ implementation.
+    """
+
+    _instance: Optional["AstroShmDispatcher"] = None
+    _inst_lock: threading.Lock = threading.Lock()
+
+    @classmethod
+    def instance(cls) -> "AstroShmDispatcher":
+        with cls._inst_lock:
+            if cls._instance is None:
+                cls._instance = cls()
+        return cls._instance
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._segments:    Dict[int, _AstroShmSegment] = {}
+        self._seg_lock:    threading.RLock              = threading.RLock()
+        self._notify_q:    queue.Queue                  = queue.Queue()
+        self._thread:      threading.Thread             = threading.Thread(
+            target=self._thread_func, daemon=True, name="AstroShmDispatcher"
+        )
+        self._thread.start()
+        _tdbg("SHM_DISP", "AstroShmDispatcher started")
+
+    # ── segment management ────────────────────────────────────────────────────
+
+    def add_segment(self, attr: AstroRoleAttributes) -> None:
+        ch = attr.channel_id
+        with self._seg_lock:
+            if ch not in self._segments:
+                self._segments[ch] = _AstroShmSegment(ch)
+                _tdbg("SHM_DISP", f"new segment for channel {ch}")
+
+    def get_segment(self, channel_id: int) -> Optional[_AstroShmSegment]:
+        with self._seg_lock:
+            return self._segments.get(channel_id)
+
+    # ── notifier ─────────────────────────────────────────────────────────────
+
+    def notify(self, channel_id: int, block_index: int) -> None:
+        """Called by ShmTransmitter after writing a block."""
+        self._notify_q.put((channel_id, block_index))
+
+    def _thread_func(self) -> None:
+        """
+        Poll loop — mirrors ``ShmDispatcher::ThreadFunc()``.
+
+        Drains the notification queue and dispatches each readable block.
+        """
+        while not self._is_shutdown:
+            try:
+                ch_id, blk_idx = self._notify_q.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            self._read_message(ch_id, blk_idx)
+
+    def _read_message(self, channel_id: int, block_index: int) -> None:
+        seg = self.get_segment(channel_id)
+        if seg is None:
+            return
+        payload, info_raw = seg.read_block(block_index)
+        if not info_raw or len(info_raw) < AstroMessageInfo.kSize:
+            return
+        try:
+            msg_info = AstroMessageInfo.deserialize_from(info_raw)
+        except Exception:
+            return
+        _tdbg("SHM_DISP",
+              f"dispatch ch={channel_id} blk={block_index} "
+              f"seq={msg_info.seq_num}")
+        self._dispatch(channel_id, payload, msg_info)
+
+    # ── override shutdown ─────────────────────────────────────────────────────
+
+    def shutdown(self) -> None:
+        super().shutdown()
+        self._thread.join(timeout=1.0)
+        _tdbg("SHM_DISP", "AstroShmDispatcher shutdown")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroRtpsDispatcher
+# Port of: upstream/apollo-cyber/transport/dispatcher/rtps_dispatcher.h
+#
+# 鲁迅曰：RTPS 这条路走得远，跨进程，跨主机；然而消息序列化成字符串之后，
+# 凡人皆可偷看——这便是"开放"的代价。
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AstroRtpsDispatcher(_AstroDispatcherBase):
+    """
+    Mirrors ``apollo::cyber::transport::RtpsDispatcher`` (singleton).
+
+    In a real deployment this drives FastRTPS subscribers.  Here we expose
+    ``inject_message()`` so that RtpsTransmitters (or tests) can push
+    serialised payloads in-process.
+    """
+
+    _instance:  Optional["AstroRtpsDispatcher"] = None
+    _inst_lock: threading.Lock = threading.Lock()
+
+    @classmethod
+    def instance(cls) -> "AstroRtpsDispatcher":
+        with cls._inst_lock:
+            if cls._instance is None:
+                cls._instance = cls()
+        return cls._instance
+
+    def __init__(self) -> None:
+        super().__init__()
+        # subscriber registry: channel_id → bool (subscribed)
+        self._subs:      Dict[int, bool]       = {}
+        self._subs_lock: threading.Lock        = threading.Lock()
+        _tdbg("RTPS_DISP", "AstroRtpsDispatcher initialised")
+
+    # ── subscriber lifecycle ─────────────────────────────────────────────────
+
+    def add_subscriber(self, attr: AstroRoleAttributes) -> None:
+        ch = attr.channel_id
+        with self._subs_lock:
+            if ch not in self._subs:
+                self._subs[ch] = True
+                _tdbg("RTPS_DISP", f"subscriber added for channel {ch}")
+
+    # ── external injection (replaces FastRTPS on_data callback) ──────────────
+
+    def inject_message(
+        self,
+        channel_id: int,
+        msg_str:    bytes,
+        msg_info:   AstroMessageInfo,
+    ) -> None:
+        """
+        Simulate an inbound RTPS data indication.
+
+        Mirrors ``RtpsDispatcher::OnMessage(channel_id, msg_str, msg_info)``.
+        """
+        recv_time_us = int(time.monotonic_ns() // 1_000)
+        send_time_us = msg_info.send_time
+        if send_time_us > recv_time_us:
+            _tdbg("RTPS_DISP", "WARNING: recv earlier than send")
+        _tdbg("RTPS_DISP",
+              f"inject ch={channel_id} len={len(msg_str)} "
+              f"latency_us={recv_time_us - send_time_us}")
+        self._dispatch(channel_id, msg_str, msg_info)
+
+    # ── add_listener (with subscriber auto-create) ────────────────────────────
+
+    def add_listener(
+        self,
+        self_attr:    AstroRoleAttributes,
+        listener:     _ListenerFn,
+        opposite_attr: Optional[AstroRoleAttributes] = None,
+    ) -> None:
+        super().add_listener(self_attr, listener, opposite_attr)
+        self.add_subscriber(self_attr)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroShmTransmitter
+# Port of: upstream/apollo-cyber/transport/transmitter/shm_transmitter.h
+#
+# 鲁迅曰：写进共享内存的消息，是寄给同一屋檐下的人的信——投递迅速，字迹清晰，
+# 却只能在这堵墙里流通。
+# ══════════════════════════════════════════════════════════════════════════════
+
+_SerializeFn   = Callable[[Any], bytes]
+_DeserializeFn = Callable[[bytes], Any]
+
+
+class AstroShmTransmitter(AstroEndpoint):
+    """
+    Mirrors ``apollo::cyber::transport::ShmTransmitter<M>``.
+
+    *serialize_fn* converts a message object to bytes; if None, the message
+    is expected to already be bytes (raw mode).
+    """
+
+    def __init__(
+        self,
+        attr:         AstroRoleAttributes,
+        serialize_fn: Optional[_SerializeFn] = None,
+    ) -> None:
+        super().__init__(attr)
+        self._dispatcher:    AstroShmDispatcher   = AstroShmDispatcher.instance()
+        self._serialize_fn:  Optional[_SerializeFn] = serialize_fn
+        self._seq_num:       int                    = 0
+        self._seq_lock:      threading.Lock         = threading.Lock()
+
+    # ── enable / disable ──────────────────────────────────────────────────────
+
+    def enable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        if self.enabled_:
+            return
+        self._dispatcher.add_segment(self.attr_)
+        self.enabled_ = True
+        _tdbg("SHM_TX", f"enabled ch={self.attr_.channel_id}")
+
+    def disable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        self.enabled_ = False
+        _tdbg("SHM_TX", f"disabled ch={self.attr_.channel_id}")
+
+    # ── transmit ──────────────────────────────────────────────────────────────
+
+    def transmit(
+        self,
+        msg:      Any,
+        msg_info: Optional[AstroMessageInfo] = None,
+    ) -> bool:
+        """
+        ``bool Transmit(const MessagePtr&, const MessageInfo&)``
+
+        Serialises *msg*, writes it into the SHM segment, then calls
+        ``AstroShmDispatcher.notify()`` with the block index.
+        """
+        if not self.enabled_:
+            _tdbg("SHM_TX", "not enabled — drop")
+            return False
+
+        payload: bytes = (
+            self._serialize_fn(msg)
+            if self._serialize_fn is not None
+            else (msg if isinstance(msg, (bytes, bytearray)) else str(msg).encode())
+        )
+
+        seg = self._dispatcher.get_segment(self.attr_.channel_id)
+        if seg is None:
+            return False
+
+        blk_idx = seg.acquire_block_to_write(len(payload))
+        if blk_idx is None:
+            return False
+
+        if msg_info is None:
+            with self._seq_lock:
+                self._seq_num += 1
+                seq = self._seq_num
+            msg_info = AstroMessageInfo(
+                sender_id   = self.id_,
+                seq_num     = seq,
+                channel_id  = self.attr_.channel_id,
+                msg_seq_num = seq,
+                send_time   = int(time.monotonic_ns() // 1_000),
+            )
+
+        info_bytes = msg_info.serialize_to()
+        seg.release_written_block(blk_idx, payload, info_bytes)
+        self._dispatcher.notify(self.attr_.channel_id, blk_idx)
+        _tdbg("SHM_TX",
+              f"transmit ch={self.attr_.channel_id} blk={blk_idx} "
+              f"seq={msg_info.seq_num}")
+        return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroHybridTransmitter
+# Port of: upstream/apollo-cyber/transport/transmitter/hybrid_transmitter.h
+#
+# 鲁迅曰：Hybrid 是骑墙的艺术——进程内用 SHM，跨进程用 RTPS，两不相欠，
+# 却又暗中都要经历 History 这道关卡。
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Relation constants (mirrors cyber/common/types.h)
+SAME_PROC   = "SAME_PROC"
+DIFF_PROC   = "DIFF_PROC"
+DIFF_HOST   = "DIFF_HOST"
+NO_RELATION = "NO_RELATION"
+
+# OptionalMode constants
+MODE_INTRA = "INTRA"
+MODE_SHM   = "SHM"
+MODE_RTPS  = "RTPS"
+
+
+class AstroHybridTransmitter(AstroEndpoint):
+    """
+    Mirrors ``apollo::cyber::transport::HybridTransmitter<M>``.
+
+    Selects INTRA / SHM / RTPS based on the spatial relationship between
+    sender and each registered receiver.  Also maintains a History for
+    TRANSIENT_LOCAL durability.
+    """
+
+    def __init__(
+        self,
+        attr:         AstroRoleAttributes,
+        serialize_fn: Optional[_SerializeFn]   = None,
+        same_proc_mode: str = MODE_SHM,
+        diff_proc_mode: str = MODE_SHM,
+        diff_host_mode: str = MODE_RTPS,
+    ) -> None:
+        super().__init__(attr)
+        self._serialize_fn = serialize_fn
+
+        # mapping_table_[relation] → mode
+        self._mapping: Dict[str, str] = {
+            SAME_PROC: same_proc_mode,
+            DIFF_PROC: diff_proc_mode,
+            DIFF_HOST: diff_host_mode,
+        }
+
+        # sub-transmitters keyed by mode
+        self._transmitters: Dict[str, AstroShmTransmitter] = {}
+        self._init_transmitters()
+
+        # receivers_[mode] = set of receiver IDs
+        self._receivers: Dict[str, Set[int]] = {
+            m: set() for m in set(self._mapping.values())
+        }
+
+        # history for TRANSIENT_LOCAL
+        depth = attr.qos_depth if attr.qos_depth > 0 else 1
+        self._history: AstroHistory = AstroHistory(
+            history_policy = attr.qos_history,
+            depth          = depth,
+        )
+        if attr.qos_durability == AstroRoleAttributes.DURABILITY_TRANSIENT_LOCAL:
+            self._history.enable()
+
+        self._mutex: threading.Lock = threading.Lock()
+        self._seq:   int            = 0
+
+    # ── init helpers ─────────────────────────────────────────────────────────
+
+    def _init_transmitters(self) -> None:
+        modes = set(self._mapping.values())
+        for mode in modes:
+            # For this Python port we use ShmTransmitter for all modes
+            # (RTPS would need network; use SHM as stand-in for DIFF_HOST too)
+            self._transmitters[mode] = AstroShmTransmitter(
+                self.attr_, self._serialize_fn
+            )
+
+    # ── enable / disable ──────────────────────────────────────────────────────
+
+    def enable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        if opposite_attr is None:
+            with self._mutex:
+                for tx in self._transmitters.values():
+                    tx.enable()
+            self.enabled_ = True
+            return
+        relation = self._get_relation(opposite_attr)
+        if relation == NO_RELATION:
+            return
+        mode = self._mapping[relation]
+        with self._mutex:
+            self._receivers[mode].add(opposite_attr.id)
+            self._transmitters[mode].enable(opposite_attr)
+            self._transmit_history(opposite_attr, mode)
+        self.enabled_ = True
+
+    def disable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        if opposite_attr is None:
+            with self._mutex:
+                for tx in self._transmitters.values():
+                    tx.disable()
+            self.enabled_ = False
+            return
+        relation = self._get_relation(opposite_attr)
+        if relation == NO_RELATION:
+            return
+        mode = self._mapping[relation]
+        with self._mutex:
+            self._receivers[mode].discard(opposite_attr.id)
+            self._transmitters[mode].disable(opposite_attr)
+
+    # ── transmit ──────────────────────────────────────────────────────────────
+
+    def transmit(
+        self,
+        msg:      Any,
+        msg_info: Optional[AstroMessageInfo] = None,
+    ) -> bool:
+        """
+        ``bool Transmit(const MessagePtr&, const MessageInfo&)``
+
+        Adds to history, then fans out to all sub-transmitters.
+        """
+        with self._mutex:
+            if msg_info is None:
+                self._seq += 1
+                msg_info = AstroMessageInfo(
+                    sender_id   = self.id_,
+                    seq_num     = self._seq,
+                    channel_id  = self.attr_.channel_id,
+                    msg_seq_num = self._seq,
+                    send_time   = int(time.monotonic_ns() // 1_000),
+                )
+            self._history.add(msg, msg_info)
+            for tx in self._transmitters.values():
+                tx.transmit(msg, msg_info)
+        return True
+
+    # ── history replay ────────────────────────────────────────────────────────
+
+    def _transmit_history(
+        self, opposite_attr: AstroRoleAttributes, mode: str
+    ) -> None:
+        if self.attr_.qos_durability != AstroRoleAttributes.DURABILITY_TRANSIENT_LOCAL:
+            return
+        cached = self._history.get_cached_message()
+        if not cached:
+            return
+        tx = self._transmitters[mode]
+
+        def _replay() -> None:
+            for item in cached:
+                tx.transmit(item.msg, item.msg_info)
+                time.sleep(0.001)
+
+        t = threading.Thread(target=_replay, daemon=True, name="HybridTx-replay")
+        t.start()
+
+    # ── relation helper ───────────────────────────────────────────────────────
+
+    def _get_relation(self, opposite_attr: AstroRoleAttributes) -> str:
+        if opposite_attr.channel_name != self.attr_.channel_name:
+            return NO_RELATION
+        if opposite_attr.host_ip != self.attr_.host_ip:
+            return DIFF_HOST
+        if opposite_attr.process_id != self.attr_.process_id:
+            return DIFF_PROC
+        return SAME_PROC
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroShmReceiver
+# Port of: upstream/apollo-cyber/transport/receiver/shm_receiver.h
+#
+# 鲁迅曰：接收者是沉默的，只管等待那一声通知——仿佛旧时深宅里等信的人，
+# 门缝里塞进来什么，便接什么。
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AstroShmReceiver(AstroEndpoint):
+    """
+    Mirrors ``apollo::cyber::transport::ShmReceiver<M>``.
+
+    Registers a typed listener with the singleton AstroShmDispatcher.
+    The raw-bytes payload received from the dispatcher is passed through
+    *deserialize_fn* before reaching *msg_listener*.
+    """
+
+    def __init__(
+        self,
+        attr:           AstroRoleAttributes,
+        msg_listener:   _ListenerFn,
+        deserialize_fn: Optional[_DeserializeFn] = None,
+    ) -> None:
+        super().__init__(attr)
+        self._msg_listener:   _ListenerFn                  = msg_listener
+        self._deserialize_fn: Optional[_DeserializeFn]     = deserialize_fn
+        self._dispatcher:     AstroShmDispatcher            = AstroShmDispatcher.instance()
+
+    # ── enable / disable ──────────────────────────────────────────────────────
+
+    def enable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        if self.enabled_:
+            return
+        if opposite_attr is None:
+            self._dispatcher.add_segment(self.attr_)
+            self._dispatcher.add_listener(self.attr_, self._on_raw_message)
+        else:
+            self._dispatcher.add_segment(self.attr_)
+            self._dispatcher.add_listener(
+                self.attr_, self._on_raw_message, opposite_attr
+            )
+        self.enabled_ = True
+        _tdbg("SHM_RX", f"enabled ch={self.attr_.channel_id}")
+
+    def disable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        if not self.enabled_:
+            return
+        self._dispatcher.remove_listener(self.attr_, opposite_attr)
+        self.enabled_ = False
+        _tdbg("SHM_RX", f"disabled ch={self.attr_.channel_id}")
+
+    # ── internal callback ─────────────────────────────────────────────────────
+
+    def _on_raw_message(self, raw: Any, msg_info: AstroMessageInfo) -> None:
+        """Deserialise raw bytes then forward to the user listener."""
+        if self._deserialize_fn is not None and isinstance(raw, (bytes, bytearray)):
+            try:
+                msg = self._deserialize_fn(raw)
+            except Exception as exc:
+                _tdbg("SHM_RX", f"deserialize failed: {exc}")
+                return
+        else:
+            msg = raw
+        self._msg_listener(msg, msg_info)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AstroHybridReceiver
+# Port of: upstream/apollo-cyber/transport/receiver/hybrid_receiver.h
+#
+# 鲁迅曰：Hybrid 接收者身兼数职，同屋、隔壁、远端，皆有办法应付；然而真正
+# 到了需要回溯历史的时候，它才显出那份难得的耐心——开一条线，等到消息不再来
+# 为止。
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AstroHybridReceiver(AstroEndpoint):
+    """
+    Mirrors ``apollo::cyber::transport::HybridReceiver<M>``.
+
+    Wraps one AstroShmReceiver per communication mode and routes
+    Enable(opposite) calls to the correct sub-receiver based on the spatial
+    relationship between self and the opposite role.
+    """
+
+    def __init__(
+        self,
+        attr:           AstroRoleAttributes,
+        msg_listener:   _ListenerFn,
+        deserialize_fn: Optional[_DeserializeFn] = None,
+        same_proc_mode: str = MODE_SHM,
+        diff_proc_mode: str = MODE_SHM,
+        diff_host_mode: str = MODE_RTPS,
+    ) -> None:
+        super().__init__(attr)
+        self._msg_listener   = msg_listener
+        self._deserialize_fn = deserialize_fn
+
+        self._mapping: Dict[str, str] = {
+            SAME_PROC: same_proc_mode,
+            DIFF_PROC: diff_proc_mode,
+            DIFF_HOST: diff_host_mode,
+        }
+
+        # one sub-receiver per distinct mode
+        modes = set(self._mapping.values())
+        self._receivers: Dict[str, AstroShmReceiver] = {
+            mode: AstroShmReceiver(attr, msg_listener, deserialize_fn)
+            for mode in modes
+        }
+
+        # transmitter tracking: mode → {id → RoleAttributes}
+        self._transmitters: Dict[str, Dict[int, AstroRoleAttributes]] = {
+            mode: {} for mode in modes
+        }
+
+        # history for TRANSIENT_LOCAL
+        depth = attr.qos_depth if attr.qos_depth > 0 else 1
+        self._history: AstroHistory = AstroHistory(
+            history_policy = attr.qos_history,
+            depth          = depth,
+        )
+        if attr.qos_durability == AstroRoleAttributes.DURABILITY_TRANSIENT_LOCAL:
+            self._history.enable()
+
+        self._mutex: threading.Lock = threading.Lock()
+
+    # ── enable / disable ──────────────────────────────────────────────────────
+
+    def enable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        if opposite_attr is None:
+            with self._mutex:
+                for rx in self._receivers.values():
+                    rx.enable()
+            self.enabled_ = True
+            return
+
+        relation = self._get_relation(opposite_attr)
+        if relation == NO_RELATION:
+            return
+        mode = self._mapping[relation]
+        oid  = opposite_attr.id
+
+        with self._mutex:
+            if oid not in self._transmitters[mode]:
+                self._transmitters[mode][oid] = opposite_attr
+                self._receivers[mode].enable(opposite_attr)
+                self._receive_history(opposite_attr, mode)
+        self.enabled_ = True
+        _tdbg("HYBRID_RX", f"enable opposite={oid} relation={relation}")
+
+    def disable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        if opposite_attr is None:
+            with self._mutex:
+                for rx in self._receivers.values():
+                    rx.disable()
+            self.enabled_ = False
+            return
+
+        relation = self._get_relation(opposite_attr)
+        if relation == NO_RELATION:
+            return
+        mode = self._mapping[relation]
+        oid  = opposite_attr.id
+
+        with self._mutex:
+            if oid in self._transmitters[mode]:
+                del self._transmitters[mode][oid]
+                self._receivers[mode].disable(opposite_attr)
+        _tdbg("HYBRID_RX", f"disable opposite={oid}")
+
+    # ── history receive ───────────────────────────────────────────────────────
+
+    def _receive_history(
+        self, opposite_attr: AstroRoleAttributes, mode: str
+    ) -> None:
+        """
+        Mirrors ``HybridReceiver::ReceiveHistoryMsg`` + ``ThreadFunc``.
+
+        Spins a thread that waits for cached messages to arrive then exits.
+        In this simulation we merely log the intent; real RTPS re-subscription
+        would happen here.
+        """
+        if opposite_attr.qos_durability != AstroRoleAttributes.DURABILITY_TRANSIENT_LOCAL:
+            return
+
+        def _wait_thread() -> None:
+            _tdbg("HYBRID_RX",
+                  f"history thread started for opposite={opposite_attr.id}")
+            deadline = time.monotonic() + 1.0
+            last_size = self._history.get_size()
+            while time.monotonic() < deadline:
+                time.sleep(0.05)
+                cur = self._history.get_size()
+                if cur != last_size:
+                    last_size = cur
+                    deadline  = time.monotonic() + 1.0
+            _tdbg("HYBRID_RX", "history thread exit")
+
+        t = threading.Thread(
+            target=_wait_thread, daemon=True, name="HybridRx-hist"
+        )
+        t.start()
+
+    # ── relation helper ───────────────────────────────────────────────────────
+
+    def _get_relation(self, opposite_attr: AstroRoleAttributes) -> str:
+        if opposite_attr.channel_name != self.attr_.channel_name:
+            return NO_RELATION
+        if opposite_attr.host_ip != self.attr_.host_ip:
+            return DIFF_HOST
+        if opposite_attr.process_id != self.attr_.process_id:
+            return DIFF_PROC
+        return SAME_PROC
