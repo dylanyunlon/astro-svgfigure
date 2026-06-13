@@ -355,15 +355,21 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
         "Cookie": cookie,
     }
 
-    git_token = os.environ.get("GIT_TOKEN", "")
-    if not git_token:
-        # Try reading from .claude-hk-config if env var not set
-        git_token_path = os.path.join(config_dir, "git_token.txt")
-        if os.path.exists(git_token_path):
-            with open(git_token_path) as f:
-                git_token = f.read().strip()
-        if not git_token:
-            git_token = "TOKEN_NOT_SET"
+    # Server URL — sub-Claudes POST params here instead of git push
+    # The server writes to channels/ and fires DataNotifier
+    server_url = os.environ.get("ASTRO_SERVER_URL", "")
+    if not server_url:
+        # Try to detect from server.py's running port
+        for port in [8000, 8001]:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2)
+                server_url = f"http://127.0.0.1:{port}"
+                break
+            except Exception:
+                pass
+    if not server_url:
+        server_url = "http://127.0.0.1:8000"  # fallback
+
     label = skeleton.get("label", cell_id)
     species = skeleton.get("species", "unknown")
 
@@ -378,11 +384,10 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
     conv_id = json.loads(resp.read()).get("uuid", "")
 
     # ── Step 2: Build prompt ───────────────────────────────────────────────
-    # The sub-Claude gets:
-    #   - repl (Linux VM with git, python, web access)
-    #   - web_search (search the web for academic info)
-    #   - The cell's identity and physical context
-    #   - Instructions to search, reason, and push results
+    # The sub-Claude:
+    #   1. Web searches for academic visual characteristics
+    #   2. Computes params in repl
+    #   3. POSTs to /api/cell/publish (triggers DataNotifier, no git needed)
 
     ib = skeleton.get("initial_bbox", {})
     prompt = f"""你是 astro-svgfigure 项目的细胞 {cell_id}。你的任务是为自己决定视觉参数。
@@ -403,39 +408,44 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
 
 1. **搜索** — 用 web search 搜索 "{label}" 在学术论文/技术图中通常怎么画。
    搜索: "{label} diagram visualization academic"
-   搜索: "{label} architecture figure paper"
 
-2. **分析** — 根据搜索结果，决定:
-   - 这个概念通常用什么形状表示？(宽扁 vs 瘦高 vs 方形 vs 圆形)
-   - 常见的颜色关联是什么？
-   - 内部结构有几个子组件？
-   - 跟周围节点的大小比例关系？
+2. **分析** — 根据搜索结果决定视觉参数:
+   - 形状比例 (宽扁 vs 瘦高 vs 方形)
+   - 颜色关联
+   - 内部结构/子组件数量
 
-3. **执行** — 在 repl 里写一个 Python 脚本，把你的决定写成 JSON:
+3. **发布** — 在 repl 里执行这段代码，把你的参数 POST 到服务器:
 ```python
-import json
+import json, urllib.request
+
 agent_params = {{
-    "bbox": {{"x": ..., "y": ..., "w": ..., "h": ..., "z": ...}},
-    "opacity": ...,  # 0.35-1.0
+    "bbox": {{"x": {ib.get('x',0)}, "y": {ib.get('y',0)}, "w": ..., "h": ..., "z": ...}},
+    "opacity": ...,  # 0.35-1.0, 根据搜索结果决定
     "species_params": {{
-        # 根据你的 species 类型和搜索结果填写
+        # 根据你的 species 类型和搜索结果填写具体参数
     }}
 }}
-print("AGENT_PARAMS_JSON:" + json.dumps(agent_params))
+
+# POST 到服务器 — 服务器会写文件并触发 DataNotifier (Apollo pub/sub)
+payload = json.dumps({{
+    "cell_id": "{cell_id}",
+    "agent_params": agent_params
+}}).encode()
+
+req = urllib.request.Request(
+    "{server_url}/api/cell/publish",
+    data=payload,
+    headers={{"Content-Type": "application/json"}},
+    method="POST"
+)
+resp = urllib.request.urlopen(req, timeout=10)
+print(resp.read().decode())
 ```
 
-4. **Push** — 在 repl 里执行:
-```bash
-git clone https://github.com/dylanyunlon/astro-svgfigure.git /tmp/astro
-cd /tmp/astro && git checkout cell-pubsub-loop
-git remote set-url origin https://x-access-token:{git_token}@github.com/dylanyunlon/astro-svgfigure.git
-git config user.name "dylanyunlon" && git config user.email "dogechat@163.com"
-mkdir -p channels/cell/{cell_id}
-echo '$AGENT_PARAMS_JSON' > channels/cell/{cell_id}/agent_params.json
-git add -A && git commit -m "cell-agent: {cell_id} research-informed params" && git push origin cell-pubsub-loop
-```
-
-重要: 先搜索再决定参数。不要猜。搜到什么就用什么。"""
+重要:
+- 先搜索再决定参数，不要猜
+- 必须执行上面的 Python 代码把参数 POST 回服务器
+- POST 到 {server_url}/api/cell/publish，不要用 git push"""
 
     # ── Step 3: Fire the request (fire and forget) ─────────────────────────
     payload = json.dumps({

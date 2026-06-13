@@ -130,6 +130,83 @@ def _get_ai_engine() -> AIEngine:
 
 
 # ============================================================================
+# Cell Pub/Sub Endpoint — Apollo CyberRT DataNotifier bridge
+# Sub-Claudes POST params here instead of git push.
+# Server writes to channels/ and fires DataNotifier callbacks.
+# ============================================================================
+
+@app.post("/api/cell/publish")
+async def api_cell_publish(request_data: dict) -> JSONResponse:
+    """
+    POST /api/cell/publish — Sub-Claude publishes agent_params to a cell channel.
+
+    This replaces git push for the pub/sub loop. The sub-Claude in its
+    claude.hk.cn VM POSTs here instead of pushing to git. The server:
+      1. Writes channels/cell/{cell_id}/agent_params.json
+      2. Fires DataNotifier.notify("cell/{cell_id}/agent_params.json")
+      3. Any subscriber (other cells, physics engine) gets the callback
+
+    This is the bridge between the sub-Claude's isolated VM and the
+    Apollo CyberRT DataNotifier running in this Python process.
+
+    Request body:
+      {
+        "cell_id": "self_attn",
+        "agent_params": { "bbox": {...}, "opacity": 0.85, "species_params": {...} },
+        "auth": "<token>"  // optional, for verification
+      }
+    """
+    try:
+        cell_id = request_data.get("cell_id", "").strip()
+        if not cell_id:
+            return JSONResponse({"error": "cell_id required"}, status_code=400)
+
+        agent_params = request_data.get("agent_params", {})
+        if not agent_params:
+            return JSONResponse({"error": "agent_params required"}, status_code=400)
+
+        # ── Write to channel filesystem ──────────────────────────────────────
+        channels_dir = os.path.join(os.path.dirname(__file__), "channels")
+        cell_dir = os.path.join(channels_dir, "cell", cell_id)
+        os.makedirs(cell_dir, exist_ok=True)
+
+        params_path = os.path.join(cell_dir, "agent_params.json")
+        with open(params_path, "w") as f:
+            json.dump(agent_params, f, indent=2)
+
+        # ── Fire DataNotifier ────────────────────────────────────────────────
+        # Import here to avoid circular imports at module level
+        try:
+            import sys
+            sys.path.insert(0, channels_dir)
+            from channel_runtime import DataNotifier
+            notifier = DataNotifier.instance()
+            channel_path = f"cell/{cell_id}/agent_params.json"
+            notifier.notify(channel_path)
+            notified = True
+        except Exception as notify_exc:
+            notified = False
+            logger.warning(f"DataNotifier.notify failed: {notify_exc}")
+
+        logger.info(
+            f"[cell/publish] cell_id={cell_id} "
+            f"params_keys={list(agent_params.keys())} "
+            f"notified={notified}"
+        )
+
+        return JSONResponse({
+            "success": True,
+            "cell_id": cell_id,
+            "channel": f"cell/{cell_id}/agent_params.json",
+            "notified": notified,
+        })
+
+    except Exception as e:
+        logger.exception("api_cell_publish error")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ============================================================================
 # Pipeline API Endpoints (fixing 502 error)
 # These endpoints are called by Astro frontend at :4321 → proxy → :8000
 # ============================================================================
