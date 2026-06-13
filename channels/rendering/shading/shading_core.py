@@ -1,6 +1,7 @@
 import os, sys, json, math
 import math as _math
 from typing import Any, Optional
+from channels.rendering.species.species_port import _species_f0
 
 from channels.rendering.species.species_port import _species_f0
 
@@ -28,6 +29,25 @@ def _saturate(v: float) -> float:
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":
         print(f"[{tag}] {msg}", file=sys.stderr)
+
+# Secondary energy-conservation constants — mirrors FAstroShadingConstants
+_SEC_COS_VIEW      = 0.7071   # cos(45°) — default viewing angle
+_SEC_OPACITY_FLOOR = 0.05     # minimum opacity to prevent invisible elements
+_SEC_WEIGHT_FILL   = 0.5      # energy weight of fill channel
+_SEC_WEIGHT_STROKE = 0.3      # energy weight of stroke channel
+_SEC_WEIGHT_SHADOW = 0.2      # energy weight of shadow channel
+
+import math as _math
+
+def _saturate(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+class _Vec3:
+    __slots__ = ('x', 'y', 'z')
+    def __init__(self, x=0.0, y=0.0, z=0.0):
+        self.x, self.y, self.z = float(x), float(y), float(z)
+    def dot(self, o):
+        return self.x*o.x + self.y*o.y + self.z*o.z
 
 
 

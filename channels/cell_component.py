@@ -4,6 +4,21 @@ import os
 import struct as _struct
 import sys
 from dataclasses import dataclass, field
+
+CHANNELS = os.path.dirname(os.path.abspath(__file__))
+
+from channels.rendering.species.species_port import (
+    SPECIES_GENERATORS, generate_svg_cil_arrow_right, _species_to_index
+)
+from channels.rendering.decoration.decoration_extra import _SPECIES_INDEX_TO_COLOUR
+from channels.rendering.color.color_extra import _colour_to_hex
+from channels.rendering.styleprobe.style_probe_impl import AstroCellStyleProbe
+from channels.rendering.shadow.shadow_port import compute_capsule_shadow_params
+from channels.rendering.occlusion.occlusion_core import compute_crowding_opacity
+from channels.rendering.shading.shading_core import compute_cell_energy_balance
+from channels.rendering.registry.registry_core import (
+    _load_cell_registry, register_cell_in_z_layer, update_cell_constraint
+)
 # from channels.rendering.shadow import * — lazy loaded
 # from channels.rendering.nanite import * — lazy loaded
 # from channels.rendering.passes import * — lazy loaded

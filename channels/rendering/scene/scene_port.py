@@ -1,5 +1,7 @@
 import os, sys, json, math
 from typing import Any, Optional
+from channels.rendering.species.species_port import _species_to_index
+from channels.rendering.decoration.decoration_extra import _SPECIES_INDEX_TO_COLOUR
 
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":

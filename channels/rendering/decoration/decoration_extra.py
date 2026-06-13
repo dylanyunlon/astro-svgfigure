@@ -1,5 +1,6 @@
 import os, sys, json, math
 from typing import Any, Optional
+from channels.rendering.shading.shading_core import _SPECIES_CIL_EYE, _SPECIES_CIL_BOLT, _SPECIES_HYBRID
 
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":
@@ -11,6 +12,8 @@ def _dbg(tag, msg):
 # ---------------------------------------------------------------------------
 # Internal geometry primitive
 # ---------------------------------------------------------------------------
+
+_SPECIES_NONE = 0xFFFF
 
 
 

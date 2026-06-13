@@ -1,5 +1,6 @@
 import os, sys, json, math
 from typing import Any, Optional
+from channels.rendering.decoration.decoration_extra import _build_cell_decoration, _apply_cell_decoration_overlay, _SPECIES_NAME_TO_INDEX
 
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":

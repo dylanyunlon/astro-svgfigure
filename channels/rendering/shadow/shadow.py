@@ -4,6 +4,9 @@ import math
 import os
 import sys
 from dataclasses import dataclass, field
+from channels.rendering.species.species_port import _species_to_index
+from channels.rendering.color.color_extra import _colour_to_hex
+from channels.rendering.decoration.decoration_extra import _SPECIES_INDEX_TO_COLOUR
 from typing import List, Optional, Dict
 
 

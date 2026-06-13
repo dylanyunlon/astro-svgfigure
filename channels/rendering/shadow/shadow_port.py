@@ -2,6 +2,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os, sys, json, math
 from typing import Any, Optional
+from channels.rendering.constants import (
+    _DF_SHADOW_QUALITY, _DF_FULL_RESOLUTION, _DF_TWO_SIDED_BIAS, _DF_QUALITY_STEPS,
+    _CSM_DEPTH_BIAS, _CSM_SLOPE_BIAS, _CSM_RECEIVER_BIAS,
+    _PCSS_MAX_KERNEL_RADIUS, _SHADOW_FILTER_METHOD, _SHADOW_TRANSITION_SCALE,
+    _STENCIL_OPTIMIZATION, _CAPSULE_MAX_DIST, _ASTRO_CELL_MAX_Z_LAYERS,
+)
+from channels.rendering.occlusion.occlusion_core import AstroCellOcclusionVolume
 
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":

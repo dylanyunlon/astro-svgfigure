@@ -1,5 +1,9 @@
 import os, sys, json, math
 from typing import Any, Optional
+from channels.rendering.constants import (
+    _ASTRO_BBOX_TOLERANCE, _ASTRO_CELL_MAX_Z_LAYERS,
+    _ASTRO_CELL_Z_LAYER_HEIGHT, _CELL_REGISTRY_PATH,
+)
 
 # ---------------------------------------------------------------------------
 # Module-level constants (mirrors AstroCellZLayerHeight, AstroCellMaxZLayers,

@@ -2,6 +2,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os, sys, json, math
 from typing import Any, Optional
+from channels.rendering.constants import (
+    _CAPSULE_MAX_DIST, _CROWDING_THRESHOLD, _CROWDING_OPACITY_FLOOR,
+    _REFERENCE_AREA, _ATTENUATION_CURVE,
+)
 
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":
