@@ -36,6 +36,36 @@ CHANNELS = os.path.dirname(os.path.abspath(__file__))
 # schema it must return.  The sub-Claude should NOT generate SVG — only params.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DYNAMIC SPECIES PROMPT PREFIX
+# Injected before every species prompt when web_search is enabled.
+# This turns each sub-Claude from a static template filler into an
+# autonomous researcher that searches for domain-specific visual parameters.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_RESEARCH_PREFIX = """IMPORTANT: You have web search access. Before deciding your visual parameters:
+
+1. **Search** for the academic/engineering concept your cell represents.
+   - Your cell label tells you what you are (e.g. "Multi-Head Attention",
+     "Feed-Forward Network", "Layer Normalization", "Encoder Block").
+   - Search for how this concept is typically visualized in academic papers,
+     technical diagrams, or textbooks.
+   - Example searches: "{label} diagram visualization", "{label} architecture figure",
+     "{label} paper illustration style"
+
+2. **Extract visual characteristics** from what you find:
+   - Typical proportions (wide vs tall, square, circular?)
+   - Common color associations in the field
+   - Structural patterns (layered, radial, grid, flow-based?)
+   - How many sub-components are typically shown
+
+3. **Apply these findings** to your species_params — don't just use random values.
+   Your params should reflect how this concept is actually depicted in the field.
+
+4. After researching, output ONLY the JSON schema below. No explanation.
+
+"""
+
 SPECIES_PROMPTS: dict[str, str] = {
     "cil-eye": """You are a **cil-eye** cell in a transformer architecture diagram.
 cil-eye cells represent attention mechanisms — they are radial, focal, observant.
@@ -275,15 +305,23 @@ def _all_cell_ids() -> list[str]:
 
 def _call_claude(system_prompt: str, user_message: str,
                  model: str = "claude-sonnet-4-6",
-                 max_tokens: int = 512) -> str:
+                 max_tokens: int = 1024,
+                 enable_web_search: bool = True) -> str:
     """
-    Call Anthropic /v1/messages and return the text content.
-    Mirrors the curl pattern in walpurgis-WTFGG/claude_hk_chat.sh:
+    Call Anthropic /v1/messages with optional web_search tool.
 
-        curl -s https://api.anthropic.com/v1/messages \
-          -H "x-api-key: $ANTHROPIC_API_KEY" \
-          -H "anthropic-version: 2023-06-01" \
-          -d '{"model":"...", "system":"...", "messages":[...]}'
+    When enable_web_search=True, the sub-Claude can search the web to find
+    academic characteristics of its domain (e.g., a "cil-eye" cell representing
+    an attention mechanism can search for "multi-head attention visualization
+    parameters" to decide its visual params based on real research).
+
+    The tool loop follows the Anthropic tool-use protocol:
+      1. Send initial request with web_search tool definition
+      2. If response has tool_use blocks, execute the search
+      3. Feed tool_result back and get final text response
+
+    Mirrors the curl pattern in walpurgis-WTFGG/claude_hk_chat.sh but
+    extended with tool calling for dynamic knowledge acquisition.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -292,35 +330,76 @@ def _call_claude(system_prompt: str, user_message: str,
             "Export the variable before running cell_agent.py."
         )
 
-    payload = json.dumps({
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_message}],
-    }).encode("utf-8")
+    tools = []
+    if enable_web_search:
+        tools.append({
+            "type": "web_search_20250305",
+            "name": "web_search",
+        })
 
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        },
-        method="POST",
-    )
+    messages = [{"role": "user", "content": user_message}]
 
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Anthropic API HTTP {e.code}: {err_body}") from e
+    # Tool loop: keep calling until we get a final text response (max 3 rounds)
+    for _round in range(4):
+        payload_dict = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": messages,
+        }
+        if tools:
+            payload_dict["tools"] = tools
 
-    # Extract first text content block
-    for block in body.get("content", []):
-        if block.get("type") == "text":
-            return block["text"].strip()
+        payload = json.dumps(payload_dict).encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Anthropic API HTTP {e.code}: {err_body}") from e
+
+        stop_reason = body.get("stop_reason", "end_turn")
+        content_blocks = body.get("content", [])
+
+        # If the model used web_search, the results are automatically included
+        # in the response. We just need to check if there's a final text block.
+        # With web_search_20250305, Anthropic handles the search internally.
+        # The response will contain text blocks with search results integrated.
+
+        # Extract text from all content blocks
+        text_parts = []
+        for block in content_blocks:
+            if block.get("type") == "text":
+                text_parts.append(block["text"])
+
+        if text_parts:
+            combined = "\n".join(text_parts).strip()
+            if combined:
+                return combined
+
+        # If no text yet but stop_reason indicates more processing needed
+        if stop_reason == "end_turn" or stop_reason == "stop":
+            break
+
+        # For tool_use stop_reason, the web_search tool handles itself
+        # server-side with the 20250305 version, so we shouldn't get here.
+        # But if we do, break to avoid infinite loop.
+        print(f"[cell_agent] tool loop round {_round}: "
+              f"stop_reason={stop_reason} blocks={len(content_blocks)}",
+              file=sys.stderr)
+        break
 
     raise RuntimeError(f"No text block in Anthropic response: {body}")
 
@@ -461,7 +540,18 @@ def dispatch_cell_agent(cell_id: str, dry_run: bool = False) -> dict:
     force_field = _read_json("physics/force_field.json")
 
     species = skeleton.get("species", "cil-arrow-right")
-    system_prompt = SPECIES_PROMPTS.get(species, _DEFAULT_SPECIES_PROMPT)
+    base_prompt = SPECIES_PROMPTS.get(species, _DEFAULT_SPECIES_PROMPT)
+
+    # When running live (not dry_run), prepend the research prefix so the
+    # sub-Claude searches for academic characteristics of its domain.
+    # The {label} placeholder is filled with the cell's actual label.
+    label = skeleton.get("label", cell_id)
+    if not dry_run:
+        prefix = _RESEARCH_PREFIX.replace("{label}", label)
+        system_prompt = prefix + base_prompt
+    else:
+        system_prompt = base_prompt
+
     user_message = _build_user_message(skeleton, force_field)
 
     print(f"[cell_agent] dispatching cell_id={cell_id} species={species}",

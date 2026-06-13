@@ -62,14 +62,24 @@ def run_all_cells():
     Groups cells by species for batch I/O, then executes per-species.
     20% change: C++ FAstroCellPassConfig enum → Python species dict grouping.
 
-    L3 wiring: dispatch_cell_agent(cell_id, dry_run=True) is called before
+    L3 wiring: dispatch_cell_agent(cell_id, dry_run) is called before
     proc(cell_id) for each cell.  The agent computes bbox/opacity/species_params
-    from skeleton + force_field (no API call in dry_run mode) and writes
-    channels/cell/{id}/agent_params.json.  proc() then reads agent_params.json
-    and applies the agent's decisions to the SVG rendering pipeline.
+    from skeleton + force_field.
+
+    When ASTRO_LIVE_AGENTS=1 (or dry_run=False passed from server.py):
+      - dry_run=False → sub-Claude calls Anthropic API with web_search tool
+      - Each cell agent searches for academic characteristics of its domain
+      - Parameters are research-informed, not hash-deterministic
+
+    When ASTRO_LIVE_AGENTS is unset or 0:
+      - dry_run=True → local deterministic hash, no API call (default for dev)
     """
     from cell_component import proc
     from cell_agent import dispatch_cell_agent
+
+    # Respect environment variable for live agent mode
+    live_agents = os.environ.get("ASTRO_LIVE_AGENTS", "0") == "1"
+    use_dry_run = not live_agents
 
     cells = [f.replace(".json", "") for f in os.listdir(os.path.join(CHANNELS, "skeleton", "cell"))]
 
@@ -85,12 +95,11 @@ def run_all_cells():
     for species, batch_ids in sorted(species_batches.items()):
         batch_ids.sort(key=lambda cid: z_layers.get("layers", {}).get(cid, {}).get("z", 3))
         for cell_id in batch_ids:
-            # ── L3: agent dispatch (dry_run=True → local algorithm, no API) ──
-            # dispatch_cell_agent computes bbox/opacity/species_params from
-            # skeleton + force_field, then writes the result to
-            # channels/cell/{id}/agent_params.json so proc() can consume it.
+            # ── L3: agent dispatch ──────────────────────────────────────────
+            # dry_run=True  → deterministic hash params (fast, no API)
+            # dry_run=False → sub-Claude with web_search (slow, research-based)
             try:
-                agent_output = dispatch_cell_agent(cell_id, dry_run=True)
+                agent_output = dispatch_cell_agent(cell_id, dry_run=use_dry_run)
                 # Persist agent params for proc() to read
                 agent_params_path = os.path.join(CHANNELS, "cell", cell_id, "agent_params.json")
                 os.makedirs(os.path.dirname(agent_params_path), exist_ok=True)
