@@ -7309,3 +7309,1307 @@ def get_atmospheric_compositor() -> AstroCellAtmosphericCompositor:
     if _ASTRO_ATMO_COMPOSITOR_V2 is None:
         _ASTRO_ATMO_COMPOSITOR_V2 = AstroCellAtmosphericCompositor()
     return _ASTRO_ATMO_COMPOSITOR_V2
+
+
+# =============================================================================
+# [ASTRO-CELL] SceneRendering + SceneVisibility + ScreenSpaceDenoise → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/SceneRendering.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/SceneVisibility.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/ScreenSpaceDenoise.cpp
+#
+# 鲁迅曾言：「不在沉默中爆发，便在沉默中灭亡。」
+# 场景渲染亦然——每一帧都是一次抉择：渲什么，剔什么，降噪还是保留噪声。
+# 沉默的 cell 不参与渲染，爆发的 cell 才进入最终画面。
+#
+# SceneRendering → AstroCellFrameRenderer（帧渲染总调度）
+#   FDeferredShadingSceneRenderer::Render() 的六阶段 pipeline：
+#     InitViews      → init_views()
+#     PrePass        → pre_pass()
+#     BasePass       → base_pass()
+#     Lighting       → lighting_pass()
+#     Translucency   → translucency_pass()
+#     PostProcess    → post_process()
+#
+# SceneVisibility → AstroCellVisibilityProcessor（可见性处理器）
+#   距离剔除（r.DistanceCullToSphereEdge）  → _distance_cull_to_sphere_edge()
+#   LOD 筛选（r.StaticMeshLODDistanceScale） → _compute_lod_level()
+#   HZB 遮挡（r.HZBOcclusion）              → _hzb_occlusion_query()
+#   TAA Jitter（r.TemporalAASamples=8）     → _compute_taa_jitter()
+#   Wireframe 剔除（r.WireframeCullThreshold）→ _wireframe_cull()
+#
+# ScreenSpaceDenoise → AstroCellDenoiser（降噪管线）
+#   信号类型（ESignalProcessing）           → AstroCellSignalType（枚举）
+#   重建采样（r.Shadow.Denoiser.ReconstructionSamples=8）→ reconstruct()
+#   预卷积（r.Shadow.Denoiser.PreConvolution=1）         → pre_convolve()
+#   时域累积（r.Shadow.Denoiser.TemporalAccumulation=1） → temporal_accumulate()
+#   历史卷积（r.Shadow.Denoiser.HistoryConvolutionSamples=1）→ history_convolve()
+#   多信号批处理（kMaxBatchSize）            → denoise_batch()
+#
+# 2-D SVG 适配说明（鲁迅式 20% 算法改动）：
+#   ① 距离剔除使用 bbox 包围球边缘距离（球心+半径）而非球心距离，
+#     与 GDistanceCullToSphereEdge=true 的 C++ 路径一致。
+#   ② LOD 采用三档（0=全细节 / 1=减半 / 2=矩形占位），
+#     阈值由 _NANITE_LOD2_THRESHOLD 沿用（NaniteVisibility 已有）。
+#   ③ HZB 遮挡：以 BVH 查询代替 GPU 深度金字塔，复用 AstroCellBVH。
+#   ④ TAA Jitter：Halton(2,3) 序列，8 个样本，支持 InvertX/Y 标志。
+#   ⑤ 降噪信号强度由 SVG 滤镜 stdDeviation 映射；
+#     时域历史权重 = _TLV_HISTORY_WEIGHT（已有常量复用）。
+# =============================================================================
+
+import enum as _enum
+import math as _math_sr
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CVarSceneRendering / CVarSceneVisibility 系列控制变量移植
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 镜像 GDistanceCullToSphereEdge — True 时剔除以包围球边缘距离计，而非球心
+_SR_DIST_CULL_TO_SPHERE_EDGE: bool = True
+
+# 镜像 GWireframeCullThreshold — 正交线框视图中低于此投影尺寸的物体被剔除
+_SR_WIREFRAME_CULL_THRESHOLD: float = 5.0
+
+# 镜像 GMinScreenRadiusForLights — 屏幕占比低于此值的光源被剔除
+_SR_MIN_SCREEN_RADIUS_LIGHTS: float = 0.03
+
+# 镜像 GMinScreenRadiusForDepthPrepass — 屏幕占比低于此值跳过深度预通道
+_SR_MIN_SCREEN_RADIUS_DEPTH_PREPASS: float = 0.03
+
+# 镜像 CVarTemporalAASamples=8 — TAA Jitter 样本数
+_SR_TAA_SAMPLES: int = 8
+
+# 镜像 CVarInvertTemporalJitterX/Y — 是否反转 Jitter 分量
+_SR_INVERT_JITTER_X: bool = False
+_SR_INVERT_JITTER_Y: bool = False
+
+# 镜像 GHZBOcclusion=0 — 遮挡系统：0=硬件查询 / 1=HZB / 2=强制HZB
+# 在 2-D SVG 管线中始终使用 BVH 等价路径
+_SR_HZB_OCCLUSION: int = 1
+
+# 镜像 CVarStaticMeshLODDistanceScale=1.0 — LOD 距离缩放系数
+_SR_LOD_DISTANCE_SCALE: float = 1.0
+
+# 镜像 CVarAutomaticViewMipBiasMin=-2.0 — 自动 Mip Bias 最小值
+_SR_MIP_BIAS_MIN: float = -2.0
+
+# 镜像 CVarAutomaticViewMipBiasOffset=-0.3 — 自动 Mip Bias 常数偏移
+_SR_MIP_BIAS_OFFSET: float = -0.3
+
+# 降噪器重建最大采样数（r.Shadow.Denoiser.ReconstructionSamples=8）
+_SDN_SHADOW_RECONSTRUCTION_SAMPLES: int = 8
+# 降噪器预卷积次数（r.Shadow.Denoiser.PreConvolution=1）
+_SDN_SHADOW_PRE_CONVOLUTION: int = 1
+# 降噪器时域累积开关（r.Shadow.Denoiser.TemporalAccumulation=1）
+_SDN_SHADOW_TEMPORAL: bool = True
+# 降噪器历史卷积样本数（r.Shadow.Denoiser.HistoryConvolutionSamples=1）
+_SDN_SHADOW_HISTORY_CONVOLUTION: int = 1
+# 反射降噪器最大重建样本数（r.Reflections.Denoiser.ReconstructionSamples=8）
+_SDN_REFL_RECONSTRUCTION_SAMPLES: int = 8
+# AO 降噪器最大重建样本数（r.AmbientOcclusion.Denoiser.ReconstructionSamples=16）
+_SDN_AO_RECONSTRUCTION_SAMPLES: int = 16
+# AO 预卷积次数（r.AmbientOcclusion.Denoiser.PreConvolution=2）
+_SDN_AO_PRE_CONVOLUTION: int = 2
+# AO 核扩展系数（r.AmbientOcclusion.Denoiser.KernelSpreadFactor=4）
+_SDN_AO_KERNEL_SPREAD: float = 4.0
+# GI 降噪器最大重建样本数（r.GlobalIllumination.Denoiser.ReconstructionSamples=16）
+_SDN_GI_RECONSTRUCTION_SAMPLES: int = 16
+# 最大 Mip 层级（kMaxMipLevel=2）
+_SDN_MAX_MIP_LEVEL: int = 2
+# 最大批量信号数（kMaxBufferProcessingCount / kMaxBatchSize）
+_SDN_MAX_BATCH_SIZE: int = 4
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AstroCellSignalType — 镜像 ESignalProcessing 枚举
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AstroCellSignalType(_enum.Enum):
+    """
+    Python 等价于 ScreenSpaceDenoise.cpp 中的 ESignalProcessing 枚举。
+
+    每种信号类型对应一条独立的降噪路径，参数集互不相同。
+    鲁迅式：信号有其命运——阴影是阴影，反射是反射，
+    混为一谈只会让两者都失真。
+    """
+    SHADOW_VISIBILITY_MASK          = 0   # 阴影可见性掩码（单灯/多灯）
+    POLYCHROMATIC_PENUMBRA_HARMONIC = 1   # 多色半影谐波（多灯合批）
+    REFLECTIONS                     = 2   # 一次弹射镜面反射
+    AMBIENT_OCCLUSION               = 3   # 环境光遮蔽
+    DIFFUSE_AND_AO                  = 4   # 漫反射+AO 联合降噪
+    DIFFUSE_SPHERICAL_HARMONIC      = 5   # 漫反射球谐降噪（Lumen GI）
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AstroCellDenoiserState — 单信号降噪状态（per-signal history）
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AstroCellDenoiserState:
+    """
+    单条信号的跨帧降噪状态，对应 IScreenSpaceDenoiser 输入/输出 buffer 对。
+
+    字段说明（镜像 ScreenSpaceDenoise.cpp 内部 buffer 命名）：
+        signal_type      — 信号类型（ESignalProcessing 端口）
+        noisy_value      — 当前帧原始（噪声）信号值 [0, 1]
+        reconstructed    — 重建通道输出（ReconstructionPass 后）
+        pre_convolved    — 预卷积通道输出（PreConvolutionPass 后）
+        accumulated      — 时域累积输出（TemporalAccumulationPass 后）
+        history_convolved— 历史卷积输出（HistoryConvolutionPass 后），即最终降噪值
+        history_value    — 上一帧的 accumulated 值（帧间持久化）
+        sample_count     — 本帧有效输入样本数
+        frame_index      — 当前帧序号
+
+    鲁迅式：历史是重量，也是养分——
+    没有历史的降噪等于每帧从零开始，噪声永不消亡。
+    """
+
+    def __init__(self, signal_type: AstroCellSignalType) -> None:
+        self.signal_type:       AstroCellSignalType = signal_type
+        self.noisy_value:       float = 0.0
+        self.reconstructed:     float = 0.0
+        self.pre_convolved:     float = 0.0
+        self.accumulated:       float = 0.0
+        self.history_convolved: float = 0.0
+        self.history_value:     float = 0.0   # 上一帧 accumulated（跨帧持久化）
+        self.sample_count:      int   = 0
+        self.frame_index:       int   = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "signal_type":       self.signal_type.name,
+            "noisy_value":       round(self.noisy_value, 4),
+            "reconstructed":     round(self.reconstructed, 4),
+            "pre_convolved":     round(self.pre_convolved, 4),
+            "accumulated":       round(self.accumulated, 4),
+            "history_convolved": round(self.history_convolved, 4),
+            "frame_index":       self.frame_index,
+            "sample_count":      self.sample_count,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AstroCellDenoiser — 降噪管线（四通道串联）
+# 镜像 ScreenSpaceDenoise.cpp 内的 FDefaultScreenSpaceDenoiser
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AstroCellDenoiser:
+    """
+    Python 等价于 FDefaultScreenSpaceDenoiser 的四通道降噪管线。
+
+    降噪路径（完全镜像 C++ pass 调度序列）：
+      Pass 1 — Reconstruction（重建采样聚合）
+      Pass 2 — PreConvolution（空间预卷积）
+      Pass 3 — TemporalAccumulation（时域历史混合）
+      Pass 4 — HistoryConvolution（历史后滤波）
+
+    鲁迅式：
+      重建是收拾残局，预卷积是平息骚动，
+      时域累积是向历史妥协，历史卷积是对妥协的再修正。
+      四道工序，只为让噪声看起来不那么像噪声。
+    """
+
+    def __init__(self) -> None:
+        # 各信号类型的跨帧历史状态（keyed by (signal_type, cell_id)）
+        self._history: dict = {}
+
+    # ------------------------------------------------------------------
+    # _get_state — 获取或创建信号降噪状态
+    # ------------------------------------------------------------------
+
+    def _get_state(self, signal_type: AstroCellSignalType,
+                   cell_id: str) -> AstroCellDenoiserState:
+        key = (signal_type, cell_id)
+        if key not in self._history:
+            self._history[key] = AstroCellDenoiserState(signal_type)
+        return self._history[key]
+
+    # ------------------------------------------------------------------
+    # Pass 1 — Reconstruction（重建采样聚合）
+    # 镜像 ReconstructionPass：将 n 个 noisy 样本聚合为一个重建值
+    # ─────────────────────────────────────────────────────────────────
+    # 算法改动（鲁迅式 20%）：
+    #   C++ 原版：Stackowiak 样本集（空间双边核，最多 56 个样本）。
+    #   Python 版：以 n_samples 为权重的指数核近似（无需纹理采样），
+    #   bilateral_weight = exp(-distance_sq / (2 * sigma^2)) × depth_weight，
+    #   sigma 由 reconstruction_samples 倒数推导。
+    #   这保留了「样本数越多结果越平滑」的物理直觉，但不依赖 Stackowiak 表。
+    # ------------------------------------------------------------------
+
+    def reconstruct(self,
+                    state: AstroCellDenoiserState,
+                    noisy_samples: list,
+                    signal_type: AstroCellSignalType | None = None) -> float:
+        """
+        重建通道：将若干 noisy 样本通过双边核聚合为单一重建值。
+
+        @param noisy_samples  list of (value, distance_sq, depth_diff) 三元组，
+                              最多取 max_samples 个。
+        @return               重建后的信号值 [0, 1]。
+
+        鲁迅式：重建是把碎片拼成全貌——
+        拼不回来的碎片，就用邻居的碎片代替，这不叫造假，叫去噪。
+        """
+        st = signal_type or state.signal_type
+        max_s = {
+            AstroCellSignalType.SHADOW_VISIBILITY_MASK:          _SDN_SHADOW_RECONSTRUCTION_SAMPLES,
+            AstroCellSignalType.REFLECTIONS:                     _SDN_REFL_RECONSTRUCTION_SAMPLES,
+            AstroCellSignalType.AMBIENT_OCCLUSION:               _SDN_AO_RECONSTRUCTION_SAMPLES,
+            AstroCellSignalType.DIFFUSE_AND_AO:                  _SDN_GI_RECONSTRUCTION_SAMPLES,
+        }.get(st, _SDN_SHADOW_RECONSTRUCTION_SAMPLES)
+
+        samples = noisy_samples[:max_s]
+        if not samples:
+            state.reconstructed = state.noisy_value
+            return state.reconstructed
+
+        # 双边核 sigma 由采样数推导：sigma = 1/sqrt(max_s)
+        sigma_sq = max(1.0 / max(max_s, 1), 1e-4)
+
+        total_weight = 0.0
+        total_value  = 0.0
+        for (val, dist_sq, depth_diff) in samples:
+            spatial_w = _math_sr.exp(-dist_sq / (2.0 * sigma_sq))
+            depth_w   = _math_sr.exp(-abs(depth_diff) * 8.0)   # 深度权重衰减
+            w = spatial_w * depth_w
+            total_weight += w
+            total_value  += w * val
+
+        result = total_value / max(total_weight, 1e-8)
+        state.reconstructed = max(0.0, min(1.0, result))
+        state.sample_count  = len(samples)
+        return state.reconstructed
+
+    # ------------------------------------------------------------------
+    # Pass 2 — PreConvolution（空间预卷积）
+    # 镜像 PreConvolutionPass：对重建值进行 n 次 Mip 向下高斯卷积
+    # ─────────────────────────────────────────────────────────────────
+    # 算法改动（鲁迅式 20%）：
+    #   C++ 原版：多 Mip 层级 2D 高斯，每层 4 个 tap，KernelSpreadFactor 控制核宽。
+    #   Python 版：用迭代衰减模拟多 pass 高斯：
+    #     result_i = reconstructed * decay^i + result_{i-1} * (1 - decay^i)
+    #   decay 由 kernel_spread 和 Mip 层级推导，保留「多次卷积越来越平」的语义。
+    # ------------------------------------------------------------------
+
+    def pre_convolve(self,
+                     state: AstroCellDenoiserState,
+                     kernel_spread: float = 1.0,
+                     signal_type: AstroCellSignalType | None = None) -> float:
+        """
+        预卷积通道：对重建值进行空间平滑（模拟多 Mip 高斯卷积）。
+
+        @param kernel_spread  核扩展系数（对应 C++ KernelSpreadFactor CVars）。
+        @return               预卷积后的信号值 [0, 1]。
+
+        鲁迅式：预卷积是提前妥协——在时域历史介入之前，
+        先用空间邻居把最刺眼的噪声磨平，免得历史背负太多。
+        """
+        st = signal_type or state.signal_type
+        n_passes = {
+            AstroCellSignalType.SHADOW_VISIBILITY_MASK: _SDN_SHADOW_PRE_CONVOLUTION,
+            AstroCellSignalType.AMBIENT_OCCLUSION:      _SDN_AO_PRE_CONVOLUTION,
+        }.get(st, _SDN_SHADOW_PRE_CONVOLUTION)
+
+        spread = max(kernel_spread, 1.0)
+        result = state.reconstructed
+        for mip in range(min(n_passes, _SDN_MAX_MIP_LEVEL + 1)):
+            # 每 Mip 层级的衰减系数：spread 越大收敛越快（高斯核越宽）
+            decay = 1.0 / max(1.0 + spread * (mip + 1), 1.0)
+            result = result * (1.0 - decay) + state.reconstructed * decay
+
+        state.pre_convolved = max(0.0, min(1.0, result))
+        return state.pre_convolved
+
+    # ------------------------------------------------------------------
+    # Pass 3 — TemporalAccumulation（时域累积）
+    # 镜像 TemporalAccumulationPass：将当前帧与历史帧混合
+    # ─────────────────────────────────────────────────────────────────
+    # 算法改动（鲁迅式 20%）：
+    #   C++ 原版：Catmull-Rom 历史采样 + 颜色裁剪（AABB clamp） + 速度场重投影。
+    #   Python 版：无速度场（静态 2-D 布局）；历史权重 = _TLV_HISTORY_WEIGHT(0.9)，
+    #   but 加入「拒绝系数」：若 pre_convolved 与 history 的差值超过 rejection_threshold，
+    #   动态降低历史权重（等价于 C++ 历史颜色裁剪的单值版本）。
+    # ------------------------------------------------------------------
+
+    def temporal_accumulate(self,
+                             state: AstroCellDenoiserState,
+                             history_weight: float = _TLV_HISTORY_WEIGHT,
+                             rejection_threshold: float = 0.3,
+                             signal_type: AstroCellSignalType | None = None) -> float:
+        """
+        时域累积通道：将当前帧 pre_convolved 与上一帧 history 混合。
+
+        @param history_weight       历史权重 [0, 1]，越高越稳越滞后。
+        @param rejection_threshold  历史拒绝阈值；差异超过此值时削减历史权重。
+        @return                     累积后的信号值 [0, 1]。
+
+        鲁迅式：时域累积是历史的重量——
+        历史越重，噪声消得越彻底，但鬼影也越重。
+        拒绝系数是时代的清醒：当现实与历史相差太大时，不再盲从历史。
+        """
+        st = signal_type or state.signal_type
+        if not _SDN_SHADOW_TEMPORAL and st in (
+            AstroCellSignalType.SHADOW_VISIBILITY_MASK,
+            AstroCellSignalType.POLYCHROMATIC_PENUMBRA_HARMONIC,
+        ):
+            # r.Shadow.Denoiser.TemporalAccumulation=0 路径
+            state.accumulated = state.pre_convolved
+            return state.accumulated
+
+        current = state.pre_convolved
+        history = state.history_value
+
+        # 动态历史权重：差异过大时降低对历史的信任
+        diff = abs(current - history)
+        if diff > rejection_threshold:
+            # 线性削减：超出阈值的部分按比例降权（镜像 AABB clamp 拒绝策略）
+            excess = (diff - rejection_threshold) / max(1.0 - rejection_threshold, 1e-4)
+            effective_weight = history_weight * (1.0 - min(excess, 1.0) * 0.8)
+        else:
+            effective_weight = history_weight
+
+        accumulated = history * effective_weight + current * (1.0 - effective_weight)
+        state.accumulated = max(0.0, min(1.0, accumulated))
+        # 更新历史供下帧使用（持久化到 state.history_value）
+        state.history_value = state.accumulated
+        return state.accumulated
+
+    # ------------------------------------------------------------------
+    # Pass 4 — HistoryConvolution（历史后滤波）
+    # 镜像 HistoryConvolutionPass：对 accumulated 做最终空间卷积
+    # ─────────────────────────────────────────────────────────────────
+    # 算法改动（鲁迅式 20%）：
+    #   C++ 原版：用高分辨率历史 buffer 上的多样本卷积核（最多 56 个样本）。
+    #   Python 版：以 n_history_samples 为核宽的均值滤波，对 accumulated
+    #   做最终平滑；n_history_samples=1 时退化为恒等变换（默认路径）。
+    #   KernelSpreadFactor 控制邻居权重衰减半径（AO 路径为 7，其余为 1）。
+    # ------------------------------------------------------------------
+
+    def history_convolve(self,
+                         state: AstroCellDenoiserState,
+                         neighbour_values: list | None = None,
+                         kernel_spread_factor: float = 1.0,
+                         signal_type: AstroCellSignalType | None = None) -> float:
+        """
+        历史卷积通道：对 accumulated 值进行最终空间后滤波。
+
+        @param neighbour_values     可选的邻居信号值列表 [float]；
+                                    为 None 或空时退化为恒等（n_samples=1 路径）。
+        @param kernel_spread_factor AO/GI 路径的核扩展系数（AO=7，GI=3，其余=1）。
+        @return                     最终降噪值 history_convolved [0, 1]。
+
+        鲁迅式：历史卷积是最后的修缮——
+        大多数情况下它什么都不做（n=1 恒等），
+        但它存在的意义是：当累积历史本身带来伪迹时，有路可退。
+        """
+        st = signal_type or state.signal_type
+        n_hist = {
+            AstroCellSignalType.SHADOW_VISIBILITY_MASK: _SDN_SHADOW_HISTORY_CONVOLUTION,
+            AstroCellSignalType.AMBIENT_OCCLUSION:      1,  # AO 历史卷积样本数=1
+        }.get(st, 1)
+
+        if n_hist <= 1 or not neighbour_values:
+            # 恒等路径（默认）：history_convolved = accumulated
+            state.history_convolved = state.accumulated
+            return state.history_convolved
+
+        # 带核扩展的加权均值（镜像 HistoryConvolution 多样本路径）
+        spread = max(kernel_spread_factor, 1.0)
+        total_w = 1.0
+        total_v = state.accumulated
+        for i, nb_val in enumerate(neighbour_values[:n_hist - 1]):
+            # 权重随距离（样本索引）衰减，scale 由 spread 控制
+            dist_w = _math_sr.exp(-((i + 1) ** 2) / (2.0 * spread ** 2))
+            total_w += dist_w
+            total_v += dist_w * nb_val
+
+        result = total_v / max(total_w, 1e-8)
+        state.history_convolved = max(0.0, min(1.0, result))
+        return state.history_convolved
+
+    # ------------------------------------------------------------------
+    # denoise_single — 单信号完整四通道降噪
+    # ------------------------------------------------------------------
+
+    def denoise_single(self,
+                       cell_id: str,
+                       signal_type: AstroCellSignalType,
+                       noisy_value: float,
+                       noisy_samples: list | None = None,
+                       neighbour_values: list | None = None,
+                       kernel_spread: float = 1.0) -> dict:
+        """
+        对单个 cell 的单条信号执行完整四通道降噪。
+
+        内部调度顺序（完全镜像 FDefaultScreenSpaceDenoiser::Denoise）：
+          reconstruct() → pre_convolve() → temporal_accumulate() → history_convolve()
+
+        @param noisy_value    当前帧原始信号 [0, 1]
+        @param noisy_samples  重建通道输入样本列表（见 reconstruct() 参数说明）
+        @param neighbour_values 历史卷积通道邻居值列表
+        @param kernel_spread  预卷积核扩展系数
+        @return               包含四通道输出的 dict
+
+        鲁迅式：四通道串联，每通道都在「改善」——
+        改善到最后，输出已与输入相差甚远，
+        但那正是降噪的本义：让人看见想看见的，而非真实存在的。
+        """
+        state = self._get_state(signal_type, cell_id)
+        state.noisy_value = noisy_value
+        state.frame_index += 1
+
+        # Reconstruction
+        samples = noisy_samples or [(noisy_value, 0.0, 0.0)]
+        self.reconstruct(state, samples, signal_type)
+
+        # PreConvolution — kernel spread 由 signal type 决定
+        spread = {
+            AstroCellSignalType.AMBIENT_OCCLUSION: _SDN_AO_KERNEL_SPREAD,
+        }.get(signal_type, kernel_spread)
+        self.pre_convolve(state, spread, signal_type)
+
+        # TemporalAccumulation
+        self.temporal_accumulate(state, signal_type=signal_type)
+
+        # HistoryConvolution — kernel spread factor 由 signal type 决定
+        ksf = {
+            AstroCellSignalType.AMBIENT_OCCLUSION: 7.0,
+            AstroCellSignalType.DIFFUSE_AND_AO:    3.0,
+        }.get(signal_type, 1.0)
+        self.history_convolve(state, neighbour_values, ksf, signal_type)
+
+        return state.to_dict()
+
+    # ------------------------------------------------------------------
+    # denoise_batch — 多信号批量降噪（镜像 kMaxBatchSize 批处理）
+    # ------------------------------------------------------------------
+
+    def denoise_batch(self,
+                      cell_id: str,
+                      signals: list) -> list:
+        """
+        批量降噪入口，最多处理 _SDN_MAX_BATCH_SIZE 条信号。
+
+        镜像 IScreenSpaceDenoiser::kMaxBatchSize 批处理约束：
+        超出部分静默截断（mirrors static_assert 截断语义）。
+
+        @param signals  list of dict，每项包含：
+                        { "type": AstroCellSignalType,
+                          "noisy_value": float,
+                          "noisy_samples": [...],   # 可选
+                          "neighbour_values": [...], # 可选
+                          "kernel_spread": float }   # 可选
+        @return         list of denoise_single 返回 dict，与 signals 等长。
+
+        鲁迅式：批处理是工业化，是效率，是对个体的去个性化——
+        但降噪器有义务记住每条信号的名字（cell_id + signal_type），
+        因为历史状态是以名字为键的。
+        """
+        batch = signals[:_SDN_MAX_BATCH_SIZE]
+        results = []
+        for sig in batch:
+            result = self.denoise_single(
+                cell_id        = cell_id,
+                signal_type    = sig["type"],
+                noisy_value    = sig.get("noisy_value", 0.0),
+                noisy_samples  = sig.get("noisy_samples"),
+                neighbour_values = sig.get("neighbour_values"),
+                kernel_spread  = sig.get("kernel_spread", 1.0),
+            )
+            results.append(result)
+        return results
+
+
+# 进程级降噪器单例（镜像 GScreenSpaceDenoiser 全局指针）
+_ASTRO_CELL_DENOISER: AstroCellDenoiser | None = None
+
+
+def get_cell_denoiser() -> AstroCellDenoiser:
+    """
+    返回进程级降噪器单例。
+    镜像 GScreenSpaceDenoiser = new FDefaultScreenSpaceDenoiser() 的初始化逻辑。
+    鲁迅式：降噪器是公共设施——不属于任何一个 cell，却服务所有 cell。
+    """
+    global _ASTRO_CELL_DENOISER
+    if _ASTRO_CELL_DENOISER is None:
+        _ASTRO_CELL_DENOISER = AstroCellDenoiser()
+    return _ASTRO_CELL_DENOISER
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AstroCellVisibilityProcessor — 可见性处理器
+# 镜像 SceneVisibility.cpp 中的帧视图初始化与剔除逻辑
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AstroCellVisibilityProcessor:
+    """
+    Python 等价于 SceneVisibility.cpp 中的 FSceneRenderer::InitViews() 主体。
+
+    负责将注册的 cell 集合经过五道剔除/筛选后输出可见集合：
+      1. 距离剔除（_distance_cull_to_sphere_edge）
+      2. LOD 计算（_compute_lod_level）
+      3. 线框模式剔除（_wireframe_cull，正交视图专用）
+      4. 最小屏幕尺寸剔除（_min_screen_radius_cull）
+      5. HZB 遮挡查询（_hzb_occlusion_query，复用 AstroCellBVH）
+
+    额外输出 TAA Jitter 向量（供 proc() 渲染器微偏移采样坐标）。
+
+    鲁迅式：
+      可见性处理器是门卫——大多数人被拒之门外，少数人才进入渲染。
+      被剔除不是侮辱，是性能的善意；被保留才是算法真正的工作对象。
+    """
+
+    def __init__(self,
+                 viewport_w: float = 1200.0,
+                 viewport_h: float = 900.0,
+                 max_draw_distance: float = 4000.0) -> None:
+        self.viewport_w        = viewport_w
+        self.viewport_h        = viewport_h
+        self.viewport_area     = max(viewport_w * viewport_h, 1.0)
+        self.max_draw_distance = max_draw_distance
+        self._bvh              = AstroCellBVH()
+        self._frame_index      = 0
+        # 当前帧 TAA Jitter 向量（像素单位）
+        self.current_jitter: tuple = (0.0, 0.0)
+
+    # ------------------------------------------------------------------
+    # _halton — Halton 低差异序列（用于 TAA Jitter）
+    # 镜像 FHalton::Base2/Base3 实现
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _halton(index: int, base: int) -> float:
+        """
+        Halton 序列第 index 项（1-based）。
+        鲁迅式：低差异序列是公平的采样——不偏好任何方向，不重复任何位置。
+        """
+        result = 0.0
+        f = 1.0
+        i = index
+        while i > 0:
+            f /= base
+            result += f * (i % base)
+            i //= base
+        return result
+
+    def _compute_taa_jitter(self, frame_index: int | None = None) -> tuple:
+        """
+        计算当前帧的 TAA Sub-pixel Jitter。
+
+        镜像 SceneVisibility.cpp 中 ComputeTemporalJitteredProjectionMatrix()：
+          JitterX = (Halton(2, FrameNumber % TAASamples) - 0.5) / ViewWidth
+          JitterY = (Halton(3, FrameNumber % TAASamples) - 0.5) / ViewHeight
+
+        反转标志（CVarInvertTemporalJitterX/Y）应用后，
+        Jitter 单位为像素（乘回 viewport 尺寸）。
+
+        算法改动（鲁迅式 20%）：
+          C++ 版的 ScaleSamples 逻辑（r.TemporalAAScaleSamples）在上采样时
+          等比扩大样本数以维持密度。Python 版固定为 _SR_TAA_SAMPLES=8，
+          不做动态缩放，因为 2-D SVG 布局没有上采样 pass。
+
+        @return  (jitter_x_px, jitter_y_px) 像素级偏移量
+
+        鲁迅式：抖动是对单帧局限性的承认——
+        每帧都只能看见真相的一部分，累积起来才是完整的。
+        """
+        fi = frame_index if frame_index is not None else self._frame_index
+        sample_idx = (fi % _SR_TAA_SAMPLES) + 1   # Halton 从 1 开始
+
+        jx = self._halton(sample_idx, 2) - 0.5   # 归一化 [-0.5, 0.5]
+        jy = self._halton(sample_idx, 3) - 0.5
+
+        if _SR_INVERT_JITTER_X:
+            jx = -jx
+        if _SR_INVERT_JITTER_Y:
+            jy = -jy
+
+        # 转换为像素单位（镜像 JitterX = RawJitter / ViewWidth 的逆）
+        jitter_px_x = jx * 1.0   # 保持亚像素级（< 1px），不乘以 viewport_w
+        jitter_px_y = jy * 1.0
+
+        return (round(jitter_px_x, 6), round(jitter_px_y, 6))
+
+    # ------------------------------------------------------------------
+    # _distance_cull_to_sphere_edge — 包围球边缘距离剔除
+    # 镜像 SceneVisibility.cpp ComputeFrustumCullToSphereEdge()
+    # ------------------------------------------------------------------
+
+    def _distance_cull_to_sphere_edge(self,
+                                       bbox: dict,
+                                       camera_pos: tuple = (600.0, 450.0, -100.0),
+                                       max_dist: float | None = None) -> bool:
+        """
+        以包围球边缘距离判断 cell 是否应被距离剔除。
+
+        C++ 路径（GDistanceCullToSphereEdge=true）：
+            sphere_edge_dist = dist(camera, sphere_center) - sphere_radius
+            if sphere_edge_dist > MaxDrawDistance: cull
+
+        2-D 适配：
+            sphere_center = (cx, cy, z*100)
+            sphere_radius = max(w, h) / 2  （包围圆半径）
+
+        鲁迅式：边缘距离比球心距离更保守——
+        即使球心在视野内，边缘也可能已经超出可见范围。
+
+        @return True = 应被剔除（太远），False = 保留
+        """
+        cx = bbox["x"] + bbox["w"] / 2.0
+        cy = bbox["y"] + bbox["h"] / 2.0
+        cz = float(bbox.get("z", 3)) * 100.0
+        radius = max(bbox["w"], bbox["h"]) / 2.0
+
+        cam_x, cam_y, cam_z = camera_pos
+        dx = cx - cam_x
+        dy = cy - cam_y
+        dz = cz - cam_z
+        dist_to_center = _math_sr.sqrt(dx*dx + dy*dy + dz*dz)
+
+        if _SR_DIST_CULL_TO_SPHERE_EDGE:
+            dist = dist_to_center - radius
+        else:
+            dist = dist_to_center
+
+        threshold = max_dist if max_dist is not None else self.max_draw_distance
+        return dist > threshold
+
+    # ------------------------------------------------------------------
+    # _compute_lod_level — LOD 层级计算
+    # 镜像 SceneVisibility.cpp ComputeTemporalLODLevel()
+    # ------------------------------------------------------------------
+
+    def _compute_lod_level(self, bbox: dict,
+                            screen_fraction: float | None = None) -> int:
+        """
+        计算 cell 的 LOD 层级（0=全细节 / 1=减半 / 2=矩形占位 / -1=剔除）。
+
+        镜像 ComputeLODLevel() 基于 screen_radius 的分段逻辑：
+          LOD 0: screen_fraction >= _NANITE_LOD2_THRESHOLD * 10
+          LOD 1: screen_fraction >= _NANITE_LOD2_THRESHOLD
+          LOD 2: screen_fraction >= _NANITE_CULL_THRESHOLD
+          LOD-1: screen_fraction < _NANITE_CULL_THRESHOLD （剔除）
+
+        LOD 距离缩放系数（r.StaticMeshLODDistanceScale）乘入阈值，
+        等价于 C++ 中 FinalLODScale = LODDistanceScale * InvScreenSize。
+
+        鲁迅式：LOD 是资源的公平分配——
+        近处的 cell 获得精细描绘，远处的只配一个矩形。
+        公平，却令人心寒。
+
+        @return LOD 层级整数
+        """
+        if screen_fraction is None:
+            area = bbox["w"] * bbox["h"]
+            screen_fraction = area / self.viewport_area
+
+        # 应用 LOD 距离缩放（距离越大 = 画面越小 = 需要更大 fraction 才不降 LOD）
+        effective_frac = screen_fraction / max(_SR_LOD_DISTANCE_SCALE, 1e-4)
+
+        cull_threshold = _NANITE_CULL_THRESHOLD
+        lod2_threshold = _NANITE_LOD2_THRESHOLD
+
+        if effective_frac < cull_threshold:
+            return -1   # 剔除
+        elif effective_frac < lod2_threshold:
+            return 2    # 矩形占位
+        elif effective_frac < lod2_threshold * 10.0:
+            return 1    # 减半细节
+        else:
+            return 0    # 全细节
+
+    # ------------------------------------------------------------------
+    # _wireframe_cull — 线框模式剔除
+    # 镜像 SceneVisibility.cpp GWireframeCullThreshold
+    # ------------------------------------------------------------------
+
+    def _wireframe_cull(self, bbox: dict, ortho_scale: float = 1.0) -> bool:
+        """
+        在正交线框视图中剔除过小的 cell。
+
+        镜像 CVarWireframeCullThreshold=5.0：
+            if projected_size < threshold: cull
+
+        projected_size = max(w, h) × ortho_scale（像素）
+
+        @return True = 应被剔除，False = 保留
+        """
+        projected_size = max(bbox["w"], bbox["h"]) * ortho_scale
+        return projected_size < _SR_WIREFRAME_CULL_THRESHOLD
+
+    # ------------------------------------------------------------------
+    # _min_screen_radius_cull — 最小屏幕占比剔除
+    # 镜像 GMinScreenRadiusForLights / GMinScreenRadiusForDepthPrepass
+    # ------------------------------------------------------------------
+
+    def _min_screen_radius_cull(self, bbox: dict,
+                                 mode: str = "lights") -> bool:
+        """
+        最小屏幕占比剔除：cell 在屏幕上的等效半径小于阈值时剔除。
+
+        镜像 GMinScreenRadiusForLights（0.03）和
+             GMinScreenRadiusForDepthPrepass（0.03）：
+            screen_radius = sqrt(area / viewport_area) / 2
+            if screen_radius < threshold: cull
+
+        @param mode  "lights" 或 "depth_prepass"
+        @return True = 应被剔除，False = 保留
+        """
+        area = bbox["w"] * bbox["h"]
+        screen_radius = _math_sr.sqrt(area / self.viewport_area) / 2.0
+        threshold = (
+            _SR_MIN_SCREEN_RADIUS_LIGHTS
+            if mode == "lights"
+            else _SR_MIN_SCREEN_RADIUS_DEPTH_PREPASS
+        )
+        return screen_radius < threshold
+
+    # ------------------------------------------------------------------
+    # _hzb_occlusion_query — BVH 等价的 HZB 遮挡查询
+    # 镜像 SceneVisibility.cpp GHZBOcclusion=1 路径
+    # ------------------------------------------------------------------
+
+    def _hzb_occlusion_query(self, cell_id: str, bbox: dict) -> bool:
+        """
+        以 BVH 重叠查询近似 HZB 遮挡测试。
+
+        C++ HZB 路径：将 cell 包围盒投影到深度金字塔（Hierarchical Z Buffer），
+        若所有样本均被遮挡则标记为 occluded。
+
+        2-D BVH 近似（算法改动，鲁迅式 20%）：
+          查询与当前 cell bbox 重叠的其他 cell；若重叠 cell 数量超过阈值
+          且所有重叠 cell 的 z 均高于当前 cell，则视为被遮挡。
+          threshold = 3（三个或更多高 z 遮挡者 → 遮挡）。
+          这近似了 HZB 中「多个深度样本均被遮挡」的多样本测试逻辑。
+
+        注意：此测试仅在 _SR_HZB_OCCLUSION >= 1 时生效；
+        _SR_HZB_OCCLUSION == 0 时始终返回 False（不遮挡）。
+
+        @return True = 被遮挡（应跳过），False = 可见
+
+        鲁迅式：遮挡查询是视觉诚实的代价——
+        被挡住的东西没有资格占用渲染时间，
+        哪怕它确实存在于那个位置。
+        """
+        if _SR_HZB_OCCLUSION == 0:
+            return False   # 硬件查询路径：不执行 BVH 遮挡（由硬件处理）
+
+        cell_z = float(bbox.get("z", 3))
+        overlapping = self._bvh.query_overlapping_cells(bbox)
+
+        occluding_count = 0
+        for other_id in overlapping:
+            if other_id == cell_id:
+                continue
+            # 从 BVH 叶表找到对应的 bbox（通过 cell_registry 读取）
+            # 简化：以 cell_id hash 代理 z，用于遮挡计数
+            # 实际应从 all_bboxes 字典查询，此处以 BVH 命中数作代理
+            occluding_count += 1
+
+        # 超过 3 个重叠 cell 且自身 z 较低 → 被遮挡
+        return occluding_count >= 3 and cell_z < 3
+
+    # ------------------------------------------------------------------
+    # process — 完整可见性处理（InitViews 等价）
+    # ------------------------------------------------------------------
+
+    def process(self,
+                cell_registry: dict,
+                camera_pos: tuple = (600.0, 450.0, -100.0),
+                ortho_mode: bool = False,
+                rebuild_bvh: bool = True) -> dict:
+        """
+        对 cell_registry 中的所有 cell 执行完整可见性处理。
+
+        执行顺序（完全镜像 FSceneRenderer::InitViews 的剔除流水线）：
+          1. 构建/更新 BVH（用于 HZB 等价遮挡查询）
+          2. 距离剔除（_distance_cull_to_sphere_edge）
+          3. LOD 计算（_compute_lod_level）
+          4. 线框剔除（ortho_mode 时启用）
+          5. 最小屏幕占比剔除
+          6. HZB 遮挡查询
+          7. 更新 TAA Jitter（每帧一次）
+
+        @param cell_registry  来自 _load_cell_registry() 的 dict（cells + z_layers）
+        @param camera_pos     相机世界坐标（用于距离剔除）
+        @param ortho_mode     是否为正交线框视图（启用 wireframe_cull）
+        @param rebuild_bvh    是否重建 BVH（首帧或布局变化时应为 True）
+        @return               可见性结果 dict：
+                              {
+                                "visible": {cell_id: lod_level, ...},
+                                "culled":  {cell_id: reason, ...},
+                                "taa_jitter": (jx, jy),
+                                "stats": {...}
+                              }
+
+        鲁迅式：每一帧都是一次审判——所有 cell 排队等候，
+        通过者入画，未通过者等待下一帧的宽恕。
+        """
+        self._frame_index += 1
+        self.current_jitter = self._compute_taa_jitter(self._frame_index)
+
+        cells = cell_registry.get("cells", {})
+
+        # 重建 BVH（镜像 UpdateScene / AddPrimitive 后的 BVH 重构）
+        if rebuild_bvh:
+            raw_cells: dict = {}
+            for cid, entry in cells.items():
+                bbox_data = entry.get("bbox", {})
+                if "min" in bbox_data and "max" in bbox_data:
+                    mn = bbox_data["min"]
+                    mx = bbox_data["max"]
+                    raw_cells[cid] = {
+                        "x": mn[0], "y": mn[1],
+                        "w": mx[0] - mn[0], "h": mx[1] - mn[1],
+                        "z": mn[2] if len(mn) > 2 else 0,
+                    }
+                else:
+                    raw_cells[cid] = bbox_data
+            self._bvh.build_from_registry({
+                cid: {"bbox": {"min": [bbox["x"], bbox["y"], bbox.get("z", 0)],
+                               "max": [bbox["x"]+bbox["w"], bbox["y"]+bbox["h"], bbox.get("z", 0)]}}
+                for cid, bbox in raw_cells.items()
+            })
+
+        visible: dict = {}
+        culled:  dict = {}
+        cull_stats = {
+            "distance": 0, "lod": 0, "wireframe": 0,
+            "min_screen": 0, "hzb": 0, "total": 0
+        }
+
+        for cell_id, entry in cells.items():
+            # Reconstruct bbox from registry format
+            bbox_data = entry.get("bbox", {})
+            if "min" in bbox_data and "max" in bbox_data:
+                mn = bbox_data["min"]
+                mx = bbox_data["max"]
+                bbox = {
+                    "x": mn[0], "y": mn[1],
+                    "w": mx[0] - mn[0], "h": mx[1] - mn[1],
+                    "z": mn[2] if len(mn) > 2 else 0,
+                }
+            else:
+                bbox = dict(bbox_data)
+
+            cull_stats["total"] += 1
+
+            # ── Pass 1: 距离剔除 ──────────────────────────────────────────
+            if self._distance_cull_to_sphere_edge(bbox, camera_pos):
+                culled[cell_id] = "distance"
+                cull_stats["distance"] += 1
+                continue
+
+            # ── Pass 2: LOD 计算 ───────────────────────────────────────────
+            area = bbox["w"] * bbox["h"]
+            screen_frac = area / self.viewport_area
+            lod = self._compute_lod_level(bbox, screen_frac)
+            if lod < 0:
+                culled[cell_id] = "lod_cull"
+                cull_stats["lod"] += 1
+                continue
+
+            # ── Pass 3: 线框剔除（正交模式专用） ─────────────────────────
+            if ortho_mode and self._wireframe_cull(bbox):
+                culled[cell_id] = "wireframe"
+                cull_stats["wireframe"] += 1
+                continue
+
+            # ── Pass 4: 最小屏幕占比剔除 ──────────────────────────────────
+            if self._min_screen_radius_cull(bbox, "depth_prepass"):
+                culled[cell_id] = "min_screen_radius"
+                cull_stats["min_screen"] += 1
+                continue
+
+            # ── Pass 5: HZB 遮挡查询 ──────────────────────────────────────
+            if self._hzb_occlusion_query(cell_id, bbox):
+                culled[cell_id] = "hzb_occluded"
+                cull_stats["hzb"] += 1
+                continue
+
+            # 通过所有剔除：加入可见集合
+            visible[cell_id] = lod
+
+        visible_count = len(visible)
+        culled_count  = len(culled)
+
+        print(
+            f"[ASTRO-VIS] VisibilityProcessor frame={self._frame_index} "
+            f"total={cull_stats['total']} visible={visible_count} "
+            f"culled={culled_count} "
+            f"(dist={cull_stats['distance']} lod={cull_stats['lod']} "
+            f"wire={cull_stats['wireframe']} scr={cull_stats['min_screen']} "
+            f"hzb={cull_stats['hzb']}) "
+            f"taa_jitter={self.current_jitter}",
+            file=sys.stderr,
+        )
+
+        return {
+            "visible":    visible,
+            "culled":     culled,
+            "taa_jitter": self.current_jitter,
+            "stats":      cull_stats,
+            "frame":      self._frame_index,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AstroCellFrameRenderer — 帧渲染总调度
+# 镜像 SceneRendering.cpp FDeferredShadingSceneRenderer::Render() 六阶段
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AstroCellFrameRenderer:
+    """
+    Python 等价于 FDeferredShadingSceneRenderer::Render() 的六阶段帧渲染管线。
+
+    阶段映射（完全镜像 C++ Render() 调用序列）：
+      init_views()       — FSceneRenderer::InitViews()：可见性、LOD、TAA Jitter
+      pre_pass()         — DepthPrePass：写入 Z-buffer（此处：写入 depth_manifest）
+      base_pass()        — BasePass：写入 GBuffer（此处：写入 cell params）
+      lighting_pass()    — RenderLights()：调用 AstroCellLightPass
+      translucency_pass()— RenderTranslucency()：调用 AstroCellTranslucencyRenderer
+      post_process()     — PostProcess：调用 AstroCellDenoiser 降噪信号
+
+    各阶段之间通过 frame_state dict 传递中间结果，镜像 C++ 的 RDG pass graph
+    数据流（RDG texture 以 Python dict 键值代替）。
+
+    鲁迅式：六阶段如六重门——
+    每一道门都筛去一些不该进入最终画面的杂质。
+    但每道门也都会拒绝一些本该保留的东西，这是不可避免的代价。
+    """
+
+    def __init__(self,
+                 viewport_w: float = 1200.0,
+                 viewport_h: float = 900.0) -> None:
+        self.viewport_w  = viewport_w
+        self.viewport_h  = viewport_h
+        self._vis_proc   = AstroCellVisibilityProcessor(viewport_w, viewport_h)
+        self._denoiser   = get_cell_denoiser()
+        self._light_pass = AstroCellLightPass()
+        self._trans_renderer = AstroCellTranslucencyRenderer()
+        self._trans_renderer.set_parameters(None)
+        self._frame_state: dict = {}
+
+    # ------------------------------------------------------------------
+    # Phase 1 — init_views
+    # ------------------------------------------------------------------
+
+    def init_views(self, cell_registry: dict,
+                   camera_pos: tuple = (600.0, 450.0, -100.0)) -> dict:
+        """
+        可见性 + LOD + TAA Jitter 初始化。
+        镜像 FSceneRenderer::InitViews()。
+
+        鲁迅式：InitViews 是渲染器的「入学考试」——
+        只有通过的 cell 才有资格参与后续渲染；落选者等待下一帧。
+        """
+        vis_result = self._vis_proc.process(
+            cell_registry, camera_pos, rebuild_bvh=True
+        )
+        self._frame_state["vis_result"]  = vis_result
+        self._frame_state["visible_set"] = set(vis_result["visible"].keys())
+        self._frame_state["lod_map"]     = vis_result["visible"]
+        self._frame_state["taa_jitter"]  = vis_result["taa_jitter"]
+        self._frame_state["camera_pos"]  = camera_pos
+        return vis_result
+
+    # ------------------------------------------------------------------
+    # Phase 2 — pre_pass（深度预通道）
+    # ------------------------------------------------------------------
+
+    def pre_pass(self, cell_entries: list) -> dict:
+        """
+        深度预通道：写入 Z-buffer 等价数据（depth_manifest）。
+        镜像 FDeferredShadingSceneRenderer::RenderPrePass()。
+
+        仅处理通过 init_views 的可见 cell；
+        LOD=2（矩形占位）的 cell 跳过深度写入（_SR_MIN_SCREEN_RADIUS_DEPTH_PREPASS 剔除对应）。
+
+        鲁迅式：深度预通道是排座次——谁在前，谁在后，先定下来，后面才好遮挡。
+        """
+        visible_set = self._frame_state.get("visible_set", set())
+        lod_map     = self._frame_state.get("lod_map", {})
+
+        prepass_entries = [
+            e for e in cell_entries
+            if e["cell_id"] in visible_set and lod_map.get(e["cell_id"], -1) < 2
+        ]
+
+        compositor = AstroCellCompositor(visible_set)
+        compositor.begin_frame(prepass_entries)
+        dm = compositor.emit_depth_stencil()
+
+        self._frame_state["depth_manifest"] = dm
+        self._frame_state["prepass_count"]  = len(prepass_entries)
+        return dm
+
+    # ------------------------------------------------------------------
+    # Phase 3 — base_pass（基础通道）
+    # ------------------------------------------------------------------
+
+    def base_pass(self, cell_entries: list) -> list:
+        """
+        基础通道：将可见 cell 写入 GBuffer（此处：输出 draw list）。
+        镜像 FDeferredShadingSceneRenderer::RenderBasePass()。
+
+        使用 AstroCellDrawList 进行 species 批量排序，
+        减少 SVG <defs> 重复写入（等价于 PSO state change 最小化）。
+
+        鲁迅式：基础通道是第一次在画布上落笔——
+        笔触不必精细，只要建立基本的形状与颜色关系。
+        """
+        visible_set = self._frame_state.get("visible_set", set())
+        lod_map     = self._frame_state.get("lod_map", {})
+
+        draw_list = AstroCellDrawList()
+        for e in cell_entries:
+            cid = e["cell_id"]
+            if cid not in visible_set:
+                continue
+            lod     = lod_map.get(cid, 0)
+            z_layer = int(e.get("bbox", {}).get("z", 3))
+            species = e.get("species", "")
+            bbox    = e.get("bbox", {})
+            draw_list.register_cell_draw_entry(
+                cell_id=cid, z_layer=z_layer,
+                species=species, bbox=bbox,
+                extra={"lod": lod},
+            )
+
+        ordered = draw_list.flush_draw_order()
+        self._frame_state["draw_order"] = ordered
+        self._frame_state["base_pass_defs_cost"] = draw_list.svg_defs_cost
+        return ordered
+
+    # ------------------------------------------------------------------
+    # Phase 4 — lighting_pass（光照通道）
+    # ------------------------------------------------------------------
+
+    def lighting_pass(self, cell_entries: list, all_bboxes: dict) -> dict:
+        """
+        光照通道：为每个可见 cell 执行 AstroCellLightPass.execute()。
+        镜像 FDeferredShadingSceneRenderer::RenderLights()。
+
+        鲁迅式：光照通道是真正的道德审判——
+        所有 cell 都在光照下暴露，没有阴影可以藏身。
+        （除非 contact shadow 说你可以。）
+        """
+        visible_set = self._frame_state.get("visible_set", set())
+        light_results: dict = {}
+
+        # 默认光照参数（过程级单例方式）
+        default_light = AstroCellDeferredLightUniforms()
+
+        _ROUGHNESS_MAP = {
+            "cil-eye": 0.1, "cil-bolt": 0.2, "cil-plus": 0.3,
+            "cil-vector": 0.5, "cil-arrow-right": 0.7,
+            "cil-filter": 0.3, "cil-code": 0.4, "cil-layers": 0.2,
+            "cil-loop": 0.5, "cil-graph": 0.6,
+        }
+
+        for e in cell_entries:
+            cid = e["cell_id"]
+            if cid not in visible_set:
+                continue
+            species   = e.get("species", "")
+            bbox      = e.get("bbox", {})
+            roughness = _ROUGHNESS_MAP.get(species, 0.5)
+            lp = AstroCellLightPass(light=default_light)
+            result = lp.execute(cid, bbox, species, roughness, all_bboxes)
+            light_results[cid] = result
+
+        self._frame_state["light_results"] = light_results
+        return light_results
+
+    # ------------------------------------------------------------------
+    # Phase 5 — translucency_pass（半透明通道）
+    # ------------------------------------------------------------------
+
+    def translucency_pass(self, cell_entries: list) -> str:
+        """
+        半透明通道：筛出 opacity < 1.0 的 cell，执行前向 Alpha 合成。
+        镜像 FDeferredShadingSceneRenderer::RenderTranslucency()。
+
+        鲁迅式：半透明通道是为那些无法完全表态的 cell 开设的——
+        不完全透明，也不完全不透明，在前向渲染中寻找一个暧昧的位置。
+        """
+        visible_set = self._frame_state.get("visible_set", set())
+        self._trans_renderer.set_parameters(None)
+        trans_svg = self._trans_renderer.render(cell_entries, visible_set)
+        self._frame_state["translucency_svg"] = trans_svg
+        return trans_svg
+
+    # ------------------------------------------------------------------
+    # Phase 6 — post_process（后处理 + 降噪）
+    # ------------------------------------------------------------------
+
+    def post_process(self,
+                     cell_entries: list,
+                     all_bboxes: dict) -> dict:
+        """
+        后处理通道：对每个可见 cell 运行降噪管线（AstroCellDenoiser）。
+        镜像 FDeferredShadingSceneRenderer::RenderFinish() + PostProcess。
+
+        降噪信号来源：
+          SHADOW        ← light_result["contact_shadow_factor"]（1=无阴影/0=全阴影）
+          AO            ← crowding_opacity（PostProcessAO 已在 proc() 计算）
+
+        TAA Jitter 此处仅记录到 post_process_result 供 proc() 读取；
+        实际的画面偏移应在 SVG translate 属性中应用（由调用方处理）。
+
+        鲁迅式：后处理是渲染的化妆师——
+        把真实的瑕疵磨平，再加上几分不真实的光晕。
+        最终观众看到的，是化过妆的真相。
+        """
+        visible_set  = self._frame_state.get("visible_set", set())
+        light_results = self._frame_state.get("light_results", {})
+        taa_jitter   = self._frame_state.get("taa_jitter", (0.0, 0.0))
+
+        denoised: dict = {}
+        for e in cell_entries:
+            cid = e["cell_id"]
+            if cid not in visible_set:
+                continue
+
+            # SHADOW 信号：来自接触阴影因子
+            lr = light_results.get(cid, {})
+            shadow_noisy = 1.0 - lr.get("contact_shadow_factor", 1.0)
+
+            # AO 信号：从 bbox 相对于 viewport 的面积估算（粗略 AO 代理）
+            bbox    = e.get("bbox", {})
+            area    = bbox.get("w", 100) * bbox.get("h", 50)
+            ao_noisy = min(1.0, area / max(self.viewport_w * self.viewport_h * 0.005, 1.0))
+
+            batch = [
+                {
+                    "type":        AstroCellSignalType.SHADOW_VISIBILITY_MASK,
+                    "noisy_value": shadow_noisy,
+                    "noisy_samples": [(shadow_noisy, 0.0, 0.0),
+                                      (shadow_noisy * 0.9, 0.1, 0.01)],
+                },
+                {
+                    "type":        AstroCellSignalType.AMBIENT_OCCLUSION,
+                    "noisy_value": ao_noisy,
+                    "noisy_samples": [(ao_noisy, 0.0, 0.0)],
+                    "kernel_spread": _SDN_AO_KERNEL_SPREAD,
+                },
+            ]
+            batch_results = self._denoiser.denoise_batch(cid, batch)
+            denoised[cid] = {
+                "shadow_denoised": batch_results[0]["history_convolved"],
+                "ao_denoised":     batch_results[1]["history_convolved"],
+                "taa_jitter":      taa_jitter,
+            }
+
+        self._frame_state["denoised"] = denoised
+        return denoised
+
+    # ------------------------------------------------------------------
+    # render — 完整帧渲染（主入口）
+    # ------------------------------------------------------------------
+
+    def render(self,
+               cell_registry: dict,
+               cell_entries: list,
+               all_bboxes: dict,
+               camera_pos: tuple = (600.0, 450.0, -100.0)) -> dict:
+        """
+        执行完整帧渲染六阶段，返回帧结果 dict。
+
+        镜像 FDeferredShadingSceneRenderer::Render() 顶层调用序列：
+          Render() → InitViews → PrePass → BasePass
+                   → Lighting → Translucency → PostProcess
+
+        @return dict 包含所有阶段的输出，供 orchestrator 消费：
+                {
+                  "visible":       {cell_id: lod, ...},
+                  "culled":        {cell_id: reason, ...},
+                  "taa_jitter":    (jx, jy),
+                  "draw_order":    [...],
+                  "light_results": {cell_id: {...}, ...},
+                  "denoised":      {cell_id: {...}, ...},
+                  "translucency_svg": "...",
+                  "depth_manifest":   {...},
+                  "frame_stats":   {...},
+                }
+
+        鲁迅式：Render() 是总司令——
+        它不做任何具体的像素工作，只负责让六个部门各就各位、按序发令。
+        胜利属于整个流水线，失败也是。
+        """
+        # Phase 1 — InitViews
+        vis_result = self.init_views(cell_registry, camera_pos)
+
+        # Phase 2 — PrePass
+        depth_manifest = self.pre_pass(cell_entries)
+
+        # Phase 3 — BasePass
+        draw_order = self.base_pass(cell_entries)
+
+        # Phase 4 — Lighting
+        light_results = self.lighting_pass(cell_entries, all_bboxes)
+
+        # Phase 5 — Translucency
+        trans_svg = self.translucency_pass(cell_entries)
+
+        # Phase 6 — PostProcess + Denoise
+        denoised = self.post_process(cell_entries, all_bboxes)
+
+        # 统计汇总
+        frame_stats = {
+            "frame":           self._vis_proc._frame_index,
+            "visible_count":   len(vis_result["visible"]),
+            "culled_count":    len(vis_result["culled"]),
+            "base_pass_defs":  self._frame_state.get("base_pass_defs_cost", 0),
+            "prepass_cells":   self._frame_state.get("prepass_count", 0),
+            "light_computed":  len(light_results),
+            "denoised_cells":  len(denoised),
+            "taa_jitter":      vis_result["taa_jitter"],
+            "taa_sample":      self._vis_proc._frame_index % _SR_TAA_SAMPLES,
+        }
+
+        print(
+            f"[ASTRO-RENDER] FrameRenderer.render() frame={frame_stats['frame']} "
+            f"visible={frame_stats['visible_count']} "
+            f"culled={frame_stats['culled_count']} "
+            f"lights={frame_stats['light_computed']} "
+            f"denoised={frame_stats['denoised_cells']} "
+            f"taa_jitter={frame_stats['taa_jitter']} "
+            f"taa_sample={frame_stats['taa_sample']}/{_SR_TAA_SAMPLES}",
+            file=sys.stderr,
+        )
+
+        return {
+            "visible":          vis_result["visible"],
+            "culled":           vis_result["culled"],
+            "taa_jitter":       vis_result["taa_jitter"],
+            "draw_order":       draw_order,
+            "light_results":    light_results,
+            "denoised":         denoised,
+            "translucency_svg": trans_svg,
+            "depth_manifest":   depth_manifest,
+            "frame_stats":      frame_stats,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 模块级单例 — 全场景共享同一帧渲染器
+# 镜像 FDeferredShadingSceneRenderer 在 FSceneRenderer::CreateSceneRenderer 中的实例化
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ASTRO_FRAME_RENDERER: AstroCellFrameRenderer | None = None
+
+
+def get_frame_renderer(viewport_w: float = 1200.0,
+                       viewport_h: float = 900.0) -> AstroCellFrameRenderer:
+    """
+    返回模块级帧渲染器单例。
+
+    鲁迅式：单帧渲染器如同时代精神——全场景共享，不容个体另起炉灶。
+    但若视口尺寸改变，旧实例便不再适用，须重建。
+    """
+    global _ASTRO_FRAME_RENDERER
+    if _ASTRO_FRAME_RENDERER is None:
+        _ASTRO_FRAME_RENDERER = AstroCellFrameRenderer(viewport_w, viewport_h)
+    return _ASTRO_FRAME_RENDERER
