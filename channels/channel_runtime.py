@@ -7396,3 +7396,241 @@ class AstroProtobufArenaManager:
     @property
     def active_slots(self) -> int:
         return len(self._buffers)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-FINAL] Remaining 21 Apollo .h ports — batch completion
+#
+# These are small utility/config/interface files (40-87 lines each).
+# Ported as lightweight Python equivalents.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# --- scheduler/scheduler_factory.h (40 lines) ---
+class AstroSchedulerFactory:
+    """Port of SchedulerFactory — creates Classic or Choreography scheduler."""
+    @staticmethod
+    def create(policy: str = "classic", **kwargs):
+        if policy == "choreography":
+            return AstroChoreographyScheduler(**kwargs)
+        return AstroScheduler(**kwargs)
+
+# --- scheduler/policy/choreography_context.h (63 lines) ---
+class AstroChoreographyContext:
+    """Port of ChoreographyContext — DAG execution context."""
+    def __init__(self):
+        self._tasks: list = []
+        self._running = False
+    def add_task(self, name: str, func, priority: int = 0):
+        self._tasks.append({"name": name, "func": func, "priority": priority})
+        self._tasks.sort(key=lambda t: -t["priority"])
+    def execute(self):
+        self._running = True
+        for t in self._tasks:
+            if not self._running: break
+            t["func"]()
+    def stop(self): self._running = False
+
+# --- scheduler/common/cv_wrapper.h (40 lines) ---
+import threading as _cv_threading
+class AstroCvWrapper:
+    """Port of CvWrapper — condition variable wrapper."""
+    def __init__(self):
+        self._cv = _cv_threading.Condition()
+    def notify_one(self):
+        with self._cv: self._cv.notify()
+    def notify_all(self):
+        with self._cv: self._cv.notify_all()
+    def wait(self, timeout=None):
+        with self._cv: self._cv.wait(timeout)
+
+# --- scheduler/common/mutex_wrapper.h (40 lines) ---
+class AstroMutexWrapper:
+    """Port of MutexWrapper — read-write lock."""
+    def __init__(self):
+        self._lock = _cv_threading.RLock()
+    def lock(self): self._lock.acquire()
+    def unlock(self): self._lock.release()
+    def __enter__(self): self._lock.acquire(); return self
+    def __exit__(self, *a): self._lock.release()
+
+# --- scheduler/common/pin_thread.h (43 lines) ---
+class AstroPinThread:
+    """Port of PinThread — CPU affinity (no-op in Python, for interface compat)."""
+    @staticmethod
+    def pin_to_cpu(cpu_id: int): pass  # os.sched_setaffinity not portable
+    @staticmethod
+    def set_name(name: str):
+        try: _cv_threading.current_thread().name = name
+        except: pass
+
+# --- scheduler/processor_context.h (48 lines) ---
+class AstroProcessorContext:
+    """Port of ProcessorContext — base class for processor execution contexts."""
+    def __init__(self):
+        self._shutdown = False
+        self._notified = _cv_threading.Event()
+    def shutdown(self): self._shutdown = True; self._notified.set()
+    def wait(self, timeout=1.0): self._notified.wait(timeout); self._notified.clear()
+    def notify(self): self._notified.set()
+
+# --- component/timer_component.h (68 lines) ---
+class AstroTimerComponent(AstroComponentBase):
+    """Port of TimerComponent — fires Proc() at fixed interval."""
+    def __init__(self, interval_ms: int = 100, **kwargs):
+        super().__init__(**kwargs)
+        self._interval = interval_ms / 1000.0
+        self._timer = None
+        self._running = False
+    def initialize(self) -> bool:
+        self._running = True
+        self._schedule()
+        return True
+    def _schedule(self):
+        if self._running:
+            self._timer = _cv_threading.Timer(self._interval, self._tick)
+            self._timer.daemon = True
+            self._timer.start()
+    def _tick(self):
+        if self._running:
+            self.process()
+            self._schedule()
+    def clear(self):
+        self._running = False
+        if self._timer: self._timer.cancel()
+
+# --- data/data_visitor_base.h (55 lines) ---
+import abc as _dvb_abc
+class AstroDataVisitorBase(_dvb_abc.ABC):
+    """Port of DataVisitorBase — abstract base for data visitors."""
+    def __init__(self):
+        self._notified = False
+        self._notify_callback = None
+    def register_notify_callback(self, cb):
+        self._notify_callback = cb
+    @_dvb_abc.abstractmethod
+    def try_fetch(self) -> bool: ...
+    def _notify(self):
+        self._notified = True
+        if self._notify_callback: self._notify_callback()
+
+# --- service_discovery/communication/subscriber_listener.h (54 lines) ---
+class AstroSubscriberListener:
+    """Port of SubscriberListener — callback on subscription match."""
+    def __init__(self):
+        self._on_match_callbacks: list = []
+    def on_subscription_matched(self, channel_id: str, matched: bool):
+        for cb in self._on_match_callbacks: cb(channel_id, matched)
+    def add_callback(self, cb): self._on_match_callbacks.append(cb)
+
+# --- service_discovery/communication/participant_listener.h (53 lines) ---
+class AstroParticipantListener:
+    """Port of ParticipantListener — callback on participant discovery."""
+    def __init__(self):
+        self._on_discovery: list = []
+    def on_participant_discovery(self, participant_id: str, joined: bool):
+        for cb in self._on_discovery: cb(participant_id, joined)
+    def add_callback(self, cb): self._on_discovery.append(cb)
+
+# --- transport/shm/multicast_notifier.h (58 lines) ---
+class AstroMulticastNotifier:
+    """Port of MulticastNotifier — multicast-based notification (simplified to callback)."""
+    def __init__(self):
+        self._listeners: list = []
+    def notify(self, info):
+        for listener in self._listeners: listener(info)
+    def add_listener(self, cb): self._listeners.append(cb)
+    def shutdown(self): self._listeners.clear()
+
+# --- transport/shm/notifier_base.h (45 lines) ---
+class AstroNotifierBase:
+    """Port of NotifierBase — abstract notifier interface."""
+    def notify(self, info) -> bool: raise NotImplementedError
+    def listen(self, timeout: float = 1.0): raise NotImplementedError
+    def shutdown(self): pass
+
+# --- transport/shm/notifier_factory.h (42 lines) ---
+class AstroNotifierFactory:
+    """Port of NotifierFactory — creates ConditionNotifier or MulticastNotifier."""
+    @staticmethod
+    def create(mode: str = "condition"):
+        if mode == "multicast": return AstroMulticastNotifier()
+        return AstroConditionNotifier()
+
+# --- transport/shm/posix_segment.h (49 lines) ---
+class AstroPosixSegment:
+    """Port of PosixSegment — POSIX shared memory (simulated with bytearray)."""
+    def __init__(self, name: str, size: int):
+        self._name = name
+        self._size = size
+        self._data = bytearray(size)
+    def write(self, offset: int, data: bytes): self._data[offset:offset+len(data)] = data
+    def read(self, offset: int, length: int) -> bytes: return bytes(self._data[offset:offset+length])
+    @property
+    def size(self): return self._size
+
+# --- transport/shm/xsi_segment.h (47 lines) ---
+class AstroXsiSegment:
+    """Port of XsiSegment — XSI shared memory (same simulation as PosixSegment)."""
+    def __init__(self, key: int, size: int):
+        self._key = key
+        self._size = size
+        self._data = bytearray(size)
+    def write(self, offset: int, data: bytes): self._data[offset:offset+len(data)] = data
+    def read(self, offset: int, length: int) -> bytes: return bytes(self._data[offset:offset+length])
+
+# --- transport/shm/segment_factory.h (36 lines) ---
+class AstroSegmentFactory:
+    """Port of SegmentFactory — creates PosixSegment or XsiSegment."""
+    @staticmethod
+    def create(mode: str = "posix", **kwargs):
+        if mode == "xsi": return AstroXsiSegment(**kwargs)
+        return AstroPosixSegment(**kwargs)
+
+# --- transport/rtps/underlay_message_type.h (53 lines) ---
+class AstroUnderlayMessageType:
+    """Port of UnderlayMessageType — RTPS message type registration."""
+    _registry: dict = {}
+    @classmethod
+    def register(cls, type_name: str, serializer=None, deserializer=None):
+        cls._registry[type_name] = {"ser": serializer, "deser": deserializer}
+    @classmethod
+    def get(cls, type_name: str): return cls._registry.get(type_name)
+
+# --- transport/rtps/sub_listener.h (65 lines) ---
+class AstroSubListener:
+    """Port of SubListener — RTPS subscription data listener."""
+    def __init__(self, callback=None):
+        self._callback = callback
+    def on_data_available(self, data: dict, info: dict = None):
+        if self._callback: self._callback(data, info or {})
+
+# --- transport/rtps/attributes_filler.h (54 lines) ---
+class AstroAttributesFiller:
+    """Port of AttributesFiller — fills RTPS publisher/subscriber attributes."""
+    @staticmethod
+    def fill_publisher_attrs(channel_name: str, qos=None) -> dict:
+        return {"channel": channel_name, "reliability": "RELIABLE", "history_depth": 10, **(qos or {})}
+    @staticmethod
+    def fill_subscriber_attrs(channel_name: str, qos=None) -> dict:
+        return {"channel": channel_name, "reliability": "RELIABLE", "history_depth": 10, **(qos or {})}
+
+# --- transport/message/history_attributes.h (45 lines) ---
+class AstroHistoryAttributes:
+    """Port of HistoryAttributes — history depth/policy config."""
+    def __init__(self, depth: int = 10, policy: str = "KEEP_LAST"):
+        self.depth = depth
+        self.policy = policy  # KEEP_LAST or KEEP_ALL
+
+# --- transport/qos/qos_profile_conf.h (61 lines) ---
+class AstroQoSProfileConf:
+    """Port of QoSProfileConf — Quality of Service configuration."""
+    def __init__(self):
+        self.history_depth = 10
+        self.reliability = "RELIABLE"  # or "BEST_EFFORT"
+        self.durability = "VOLATILE"   # or "TRANSIENT_LOCAL"
+        self.mps = 0  # messages per second limit (0 = unlimited)
+    @classmethod
+    def default(cls): return cls()
+    def to_dict(self) -> dict:
+        return {"history_depth": self.history_depth, "reliability": self.reliability,
+                "durability": self.durability, "mps": self.mps}
