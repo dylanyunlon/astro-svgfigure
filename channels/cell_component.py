@@ -11184,1340 +11184,1936 @@ def capture_scene_to_scratch_cubemap(
 
 
 # =============================================================================
-# [ASTRO-CELL] MobileShadingRenderer → Python port
+# [ASTRO-CELL] PathTracing → Python port
 #
 # Ported from:
-#   upstream/unreal-renderer-ue5/Renderer-Private/MobileShadingRenderer.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/PathTracing.cpp
 #
-# UE5 constructs → Astro equivalents
+# 鲁迅曾言：「真正的勇士，敢于直面惨淡的蒙特卡洛噪声，
+# 敢于正视如雪花飞舞的萤火虫——然后用足够多的样本将其消灭。」
+# 每一帧都是一次投票，样本越多，民主越纯粹。
+#
+# Key UE5 constructs → Astro equivalents
 # ─────────────────────────────────────────────────────────────────────────────
-#   CVarMobileForceDepthResolve     → ASTRO_MOBILE_FORCE_DEPTH_RESOLVE
-#   CVarMobileAdrenoOcclusionMode   → ASTRO_MOBILE_ADRENO_OCCLUSION_MODE
-#   CVarMobileCustomDepthForTranslucency → ASTRO_MOBILE_CUSTOM_DEPTH_TRANSLUCENCY
-#   FMobileCustomDepthStencilUsage  → AstroMobileCustomDepthStencilUsage
-#   RenderMobileForward()           → AstroMobileShadingRenderer.render_forward()
-#   RenderMobileDeferred()          → AstroMobileShadingRenderer.render_deferred()
-#   Occlusion query flush           → _flush_occlusion_queries()
+#   FPathTracingConfig    → AstroCellPathTracingConfig
+#     IsDifferent()       → is_different()  — scene change detection → invalidate
+#   FPathTracingState     → AstroCellPathTracingState
+#     SampleIndex         → sample_index    — accumulated samples counter
+#     FrameIndex          → frame_index     — monotone counter (no reset on invalidate)
+#     RadianceRT          → radiance_buffer — accumulated per-cell radiance
+#     VarianceRT          → variance_buffer — per-cell variance estimate
+#     AlbedoRT/NormalRT   → albedo_buf/normal_buf — denoiser AOV buffers
+#   GetPathTracingStateFromView → get_or_create_cell_path_tracing_state()
+#   PathTracingInvalidate()     → invalidate()
+#   RenderPathTracing()         → render_path_tracing()  — MIS sample accumulation
+#   PreparePathTracing()        → prepare_path_tracing() — shader / state setup
 #
-# 2-D channel adaptation:
-#   HW depth buffer    → cell z-layer integer
-#   Translucency pass  → opacity < 1.0 cells sorted by z descending
-#   Adreno flush path  → _ADRENO_FLUSH_AFTER_TRANSLUCENCY flag
-#
-# 鲁迅式20%差异:
-#   UE5 用 RHI Command List 串行提交；此处改为按 z-layer 分桶并行化——
-#   每个 z-layer 桶独立计算阴影遮挡，再合并成统一 SVG 分层字符串。
-#   CVarMobileAdrenoOcclusionMode=1 路径：在半透明之后插入「强制刷新」
-#   等价于将半透明 cell 全部重新排列到本批的末尾，代替原始的 RHI Flush。
+# Algorithm changes from UE5 original (鲁迅式 20%):
+#   1. Ray-traced BVH traversal → analytic bbox-intersection light sampling
+#      (same MIS weight formula; BVH replaced by AstroCellBVH built from
+#       the live cell_registry for O(log N) neighbour queries)
+#   2. GPU texture accumulation → in-memory float arrays per cell_id
+#   3. Separate SampleIndex / FrameIndex semantics preserved verbatim:
+#      invalidation resets SampleIndex to 0 but never decrements FrameIndex
+#      — critical for the temporal "screen door" suppression described in
+#      the C++ comment (「不要让画面因重置而出现纱门效应」)
+#   4. MIS mode 2 (balanced material + light sampling) always active;
+#      CVarPathTracingMISMode exposed as a module constant
+#   5. Adaptive sampling threshold gate preserved: cells already converged
+#      (variance below threshold) are skipped to save compute
 # =============================================================================
 
-# CVarMobileForceDepthResolve (0 = off, 1 = on)
-ASTRO_MOBILE_FORCE_DEPTH_RESOLVE: int = 0
+from dataclasses import dataclass as _ptdc, field as _ptfield
+from typing import Dict as _PTDict, Optional as _PTOpt, List as _PTList
 
-# CVarMobileAdrenoOcclusionMode (0 = before basepass, 1 = after translucency)
-ASTRO_MOBILE_ADRENO_OCCLUSION_MODE: int = 0
+# ── CVarPathTracing equivalents ───────────────────────────────────────────────
+_PT_MAX_BOUNCES:          int   = 8    # r.PathTracing.MaxBounces
+_PT_MAX_SAMPLES:          int   = 256  # r.PathTracing.SamplesPerPixel
+_PT_FILTER_SIGMA:         float = 0.5  # r.PathTracing.FilterWidth (σ = width/2π)
+_PT_MIS_MODE:             int   = 2    # 0=material, 1=light, 2=balanced MIS
+_PT_MAX_PATH_INTENSITY:   float = 10.0 # r.PathTracing.MaxPathIntensity (firefly clamp)
+_PT_APPROXIMATE_CAUSTICS: bool  = True # r.PathTracing.ApproximateCaustics
+_PT_ADAPTIVE_THRESHOLD:   float = 0.005# r.PathTracing.AdaptiveSampling.VarianceThreshold
+_PT_ENABLED:              bool  = True # r.PathTracing (master switch)
+_PT_COMPACTION_DEPTH:     int   = 6    # r.PathTracing.CompactionDepth
+_PT_DISPATCH_SIZE:        int   = 2048 # r.PathTracing.DispatchSize (tile pixels)
+_PT_LOCKED_SAMPLING:      bool  = False# r.PathTracing.LockSamplingPattern
 
-# CVarMobileCustomDepthForTranslucency (0 = off, 1 = on)
-ASTRO_MOBILE_CUSTOM_DEPTH_TRANSLUCENCY: int = 1
 
-
-from dataclasses import dataclass as _msr_dc, field as _msr_field
-from typing import List as _msr_List, Dict as _msr_Dict, Optional as _msr_Opt
-
-
-@_msr_dc
-class AstroMobileCustomDepthStencilUsage:
+@_ptdc
+class AstroCellPathTracingConfig:
     """
-    Python equivalent of FMobileCustomDepthStencilUsage.
+    Python equivalent of FPathTracingConfig.
 
-    bUsesCustomDepthStencil → True when any cell has species_params["highlight"]
-    bSamplesCustomStencil   → True when any translucent cell references custom stencil
+    Holds all scene-level parameters that, if changed, require restarting the
+    sample accumulation (SampleIndex reset).  The is_different() method mirrors
+    FPathTracingConfig::IsDifferent() which guards the invalidation call in the
+    C++ render loop.
 
-    鲁迅式：自定义深度是给「特殊待遇」准备的通道——
-    绝大多数 cell 用不到，少数需要高亮的 cell 才会触发。
+    鲁迅式：参数是约定，约定一旦改变，积累的历史便成无效的遗产。
     """
-    bUsesCustomDepthStencil: bool = False
-    bSamplesCustomStencil:   bool = False
+    max_samples:           int   = _PT_MAX_SAMPLES
+    max_bounces:           int   = _PT_MAX_BOUNCES
+    filter_sigma:          float = _PT_FILTER_SIGMA
+    mis_mode:              int   = _PT_MIS_MODE
+    max_path_intensity:    float = _PT_MAX_PATH_INTENSITY
+    approximate_caustics:  bool  = _PT_APPROXIMATE_CAUSTICS
+    adaptive_threshold:    float = _PT_ADAPTIVE_THRESHOLD
+    locked_sampling:       bool  = _PT_LOCKED_SAMPLING
+    # Viewport rect (mirrors FIntRect ViewRect in FPathTracingConfig)
+    viewport_w:            int   = 1200
+    viewport_h:            int   = 900
+    # Light grid (mirrors LightGridResolution / LightGridMaxCount)
+    light_grid_resolution: int   = 8
+    light_grid_max_count:  int   = 64
+    # Background / atmosphere flags
+    enable_emissive:       bool  = True
+    background_alpha:      float = 1.0
 
-
-def _query_mobile_custom_depth_stencil_usage(
-    cell_entries: list,
-) -> AstroMobileCustomDepthStencilUsage:
-    """
-    Mirrors the C++ loop that walks scene proxies to detect custom depth/stencil usage.
-
-    鲁迅式：检测不是目的，目的是决定是否开启代价高昂的自定义深度通道。
-    如无必要，勿增实体——这是移动端渲染的基本信条。
-    """
-    usage = AstroMobileCustomDepthStencilUsage()
-    for entry in cell_entries:
-        sp = entry.get("species_params", {})
-        if sp.get("highlight"):
-            usage.bUsesCustomDepthStencil = True
-        opacity = entry.get("opacity", 1.0)
-        if opacity < 1.0 and sp.get("highlight"):
-            usage.bSamplesCustomStencil = True
-    return usage
-
-
-def _flush_occlusion_queries(z_layer_bins: dict, mode: int = 0) -> dict:
-    """
-    Occlusion query flush — mirrors the AdrenoOcclusionMode dispatch logic.
-
-    mode=0 (standard): queries fired before basepass; returns all bins unchanged.
-    mode=1 (Adreno):   queries fired after translucency; cells in translucent
-                       bins are moved to the end of their z-layer bucket to
-                       simulate the RHI Flush barrier.
-
-    鲁迅式20%差异:
-      C++ 用真实 GPU occlusion query 对象；这里改用 z-layer 桶的后排重排序
-      作为「刷新」的语义等价——半透明 cell 被推到桶尾，与 Adreno 的 RHI
-      flush 对深度缓冲的排序影响等价（先渲染不透明，后渲染半透明）。
-    """
-    if mode == 0:
-        return z_layer_bins  # standard path — no reorder needed
-
-    # Adreno mode: reorder each bucket so translucent cells (opacity<1) are last
-    reordered = {}
-    for layer_key, entries in z_layer_bins.items():
-        opaque      = [e for e in entries if e.get("opacity", 1.0) >= 1.0]
-        translucent = [e for e in entries if e.get("opacity", 1.0) <  1.0]
-        reordered[layer_key] = opaque + translucent
-    return reordered
-
-
-class AstroMobileShadingRenderer:
-    """
-    Python equivalent of FMobileSceneRenderer.
-
-    Orchestrates the full mobile shading pipeline for all cell entries
-    in a single epoch.  Two render paths mirror the C++ split:
-
-      render_forward()  → FMobileSceneRenderer::Render (forward path)
-      render_deferred() → FMobileSceneRenderer::RenderDeferred
-
-    Both paths output a dict:
-        z_layer_svgs:   dict[str, str]   — per-z-layer composited SVG
-        depth_resolve:  bool             — whether depth was force-resolved
-        custom_depth:   AstroMobileCustomDepthStencilUsage
-        occlusion_mode: int              — which occlusion mode was used
-
-    鲁迅式：渲染器是导演，cell 是演员。
-    演员多了，导演必须知道先叫谁出场、后叫谁谢幕。
-    z-layer 就是这个出场顺序的剧本。
-    """
-
-    def __init__(self,
-                 force_depth_resolve: int = ASTRO_MOBILE_FORCE_DEPTH_RESOLVE,
-                 adreno_occlusion:    int = ASTRO_MOBILE_ADRENO_OCCLUSION_MODE,
-                 custom_depth_for_translucency: int = ASTRO_MOBILE_CUSTOM_DEPTH_TRANSLUCENCY,
-                 ) -> None:
-        self._force_depth_resolve            = force_depth_resolve
-        self._adreno_occlusion_mode          = adreno_occlusion
-        self._custom_depth_for_translucency  = custom_depth_for_translucency
-
-    # ------------------------------------------------------------------
-    # _bucket_by_z_layer
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _bucket_by_z_layer(cell_entries: list) -> dict:
+    def is_different(self, other: "AstroCellPathTracingConfig") -> bool:
         """
-        Group cell entries by z-layer integer.
+        Returns True if any accumulation-invalidating parameter changed.
+        Mirrors FPathTracingConfig::IsDifferent() — guards SampleIndex reset.
 
-        Mirrors the z-layer sorting done before the mobile basepass draw loop:
-            for (FViewInfo& View : Views) → sort by Z → bucket.
-
-        鲁迅式：分桶是分治的起点，分治是大规模问题的唯一出路。
+        鲁迅式：只有真正不同的，才值得重新开始。
         """
-        buckets: dict = {}
-        for entry in cell_entries:
-            z = int(entry.get("bbox", {}).get("z", 3))
-            buckets.setdefault(str(z), []).append(entry)
-        return buckets
-
-    # ------------------------------------------------------------------
-    # render_forward — mobile forward shading path
-    # ------------------------------------------------------------------
-
-    def render_forward(self, cell_entries: list) -> dict:
-        """
-        Mobile forward rendering pass.
-
-        Pipeline (mirrors FMobileSceneRenderer::Render):
-          1. Query custom depth/stencil usage.
-          2. Bucket cells by z-layer.
-          3. Apply occlusion query flush (AdrenoOcclusionMode).
-          4. Per-layer SVG composition (painter's algorithm: back-to-front).
-          5. Depth resolve if requested.
-
-        Returns result dict (see class docstring).
-
-        鲁迅式：前向渲染是最朴素的路——所有灯光和物件一起算，
-        用的是「我看到了再画」的精神，代价是算了很多不必要的像素。
-        但在移动端，简单就是美德。
-        """
-        custom_depth = _query_mobile_custom_depth_stencil_usage(cell_entries)
-
-        # Check custom depth for translucency (mirrors CVarMobileCustomDepthForTranslucency)
-        if self._custom_depth_for_translucency:
-            for entry in cell_entries:
-                if entry.get("opacity", 1.0) < 1.0 and entry.get("species_params", {}).get("highlight"):
-                    custom_depth.bSamplesCustomStencil = True
-
-        buckets = self._bucket_by_z_layer(cell_entries)
-        buckets = _flush_occlusion_queries(buckets, self._adreno_occlusion_mode)
-
-        # Compose per-layer SVG (painter's algorithm: ascending z = back-to-front)
-        z_layer_svgs: dict = {}
-        for layer_key in sorted(buckets.keys(), key=lambda k: int(k)):
-            entries = buckets[layer_key]
-            frags = []
-            for entry in entries:
-                cid  = entry.get("cell_id", "?")
-                frag = entry.get("svg_fragment", "")
-                op   = entry.get("opacity", 1.0)
-                frags.append(
-                    f'<g data-cell-id="{cid}" opacity="{op:.4f}"'
-                    + (' data-custom-depth="1"'
-                       if entry.get("species_params", {}).get("highlight") else '')
-                    + f'>{frag}</g>'
-                )
-            z_layer_svgs[layer_key] = "\n".join(frags)
-
-        depth_resolve = bool(self._force_depth_resolve)
-
-        print(
-            f"[AstroMobileShadingRenderer] render_forward: "
-            f"cells={len(cell_entries)} z_layers={len(z_layer_svgs)} "
-            f"custom_depth={custom_depth.bUsesCustomDepthStencil} "
-            f"depth_resolve={depth_resolve} "
-            f"adreno_mode={self._adreno_occlusion_mode}",
-            file=sys.stderr,
-        )
-
-        return {
-            "z_layer_svgs":   z_layer_svgs,
-            "depth_resolve":  depth_resolve,
-            "custom_depth":   custom_depth,
-            "occlusion_mode": self._adreno_occlusion_mode,
-        }
-
-    # ------------------------------------------------------------------
-    # render_deferred — mobile deferred shading path
-    # ------------------------------------------------------------------
-
-    def render_deferred(self, cell_entries: list) -> dict:
-        """
-        Mobile deferred rendering pass.
-
-        Extends render_forward() with a second pass that re-composites
-        only the cells with stencil=1 (visible in the shading mask),
-        matching the MobileDeferred render path that re-reads GBuffer
-        data for the deferred light accumulation pass.
-
-        鲁迅式：延迟渲染是「先记账，后算钱」——GBuffer 是账本，
-        延迟光照 pass 是年终结算。账本越细，结算越精准，但代价也越高。
-        移动端的延迟渲染是对精准的一种妥协：能用则用，不能用就退回前向。
-        """
-        forward_result = self.render_forward(cell_entries)
-
-        # Deferred shading second pass: re-composite cells with stencil visibility
-        vis_set = {e["cell_id"] for e in cell_entries if e.get("stencil", 0)}
-        deferred_svgs: dict = {}
-        for layer_key, svg_str in forward_result["z_layer_svgs"].items():
-            # In the deferred path, non-visible cells (stencil=0) are culled
-            # from the second pass — mirrors the GBuffer mask read in MobileDeferred
-            entries = self._bucket_by_z_layer(cell_entries).get(layer_key, [])
-            vis_frags = []
-            for entry in entries:
-                cid = entry.get("cell_id", "?")
-                if cid in vis_set or not vis_set:  # if vis_set empty, pass all
-                    vis_frags.append(entry.get("svg_fragment", ""))
-            deferred_svgs[layer_key] = svg_str  # forward pass result preserved
-
-        forward_result["deferred_svgs"] = deferred_svgs
-        forward_result["deferred_vis_count"] = len(vis_set)
-
-        print(
-            f"[AstroMobileShadingRenderer] render_deferred: "
-            f"vis_cells={len(vis_set)} z_layers={len(deferred_svgs)}",
-            file=sys.stderr,
-        )
-
-        return forward_result
-
-
-# Module-level singleton renderer
-_ASTRO_MOBILE_SHADING_RENDERER: AstroMobileShadingRenderer | None = None
-
-
-def get_mobile_shading_renderer() -> AstroMobileShadingRenderer:
-    """
-    Return the module-level AstroMobileShadingRenderer singleton.
-
-    鲁迅式：渲染器是独裁者——全场景只此一份，
-    但独裁者的权威来自于它对每一帧负责，而非来自于它的孤独。
-    """
-    global _ASTRO_MOBILE_SHADING_RENDERER
-    if _ASTRO_MOBILE_SHADING_RENDERER is None:
-        _ASTRO_MOBILE_SHADING_RENDERER = AstroMobileShadingRenderer()
-    return _ASTRO_MOBILE_SHADING_RENDERER
-
-
-# =============================================================================
-# [ASTRO-CELL] MobileDeferredShadingPass → Python port
-#
-# Ported from:
-#   upstream/unreal-renderer-ue5/Renderer-Private/MobileDeferredShadingPass.cpp
-#
-# UE5 constructs → Astro equivalents
-# ─────────────────────────────────────────────────────────────────────────────
-#   CVarMobileUseLightStencilCulling  → ASTRO_MOBILE_LIGHT_STENCIL_CULLING
-#   CVarMobileUseClusteredDeferredShading → ASTRO_MOBILE_CLUSTERED_DEFERRED
-#   CVarMobileAllowCapsuleLights      → ASTRO_MOBILE_ALLOW_CAPSULE_LIGHTS
-#   FMobileDirectionalLightFunctionPS → AstroMobileDirLightShader
-#   UseClusteredDeferredShading()     → use_clustered_deferred_shading()
-#   MobileDeferredEnableAmbientOcclusion() → mobile_deferred_enable_ao()
-#   RenderMobileDeferredShadingPass() → AstroMobileDeferredShadingPass.execute()
-#
-# 鲁迅式20%差异:
-#   UE5 的 stencil culling 是逐像素的 GPU stencil test；这里改为
-#   逐 cell 的 z-layer 包围盒测试——光源包围盒与 cell bbox 做 2-D AABB 交叉，
-#   不相交的 cell 被 stencil-culled（跳过着色）。
-#   Clustered deferred 路径：将同一 z-layer 内共享光源的 cell 批量合并到
-#   同一 SVG <g cluster-id="…"> 分组，代替 C++ 的 light grid tile。
-#
-# 鲁迅曾言：「不在沉默中爆发，便在沉默中灭亡。」
-# 延迟着色的每一条光路都是一次「爆发」——被 stencil 拦截的光路则归于沉默。
-# =============================================================================
-
-ASTRO_MOBILE_LIGHT_STENCIL_CULLING: int = 0   # 0 = off (default), 1 = on
-ASTRO_MOBILE_CLUSTERED_DEFERRED:    int = 0   # 0 = off (default), 1 = on
-ASTRO_MOBILE_ALLOW_CAPSULE_LIGHTS:  int = 1   # 1 = allow (default)
-
-
-def use_clustered_deferred_shading() -> bool:
-    """
-    Mirrors UseClusteredDeferredShading() from MobileDeferredShadingPass.cpp.
-
-    Returns True only when both clustered deferred AND the light grid
-    (MobileForwardEnableLocalLights) are enabled.  In the Python channel,
-    the light grid equivalent is always available (all cells know their z-layer),
-    so the gate reduces to the single CVar flag.
-
-    鲁迅式：聚类延迟着色是为了「合并同类项」——把击中同一 tile 的光合并，
-    减少着色通道数。此处通过 z-layer 实现类似的「同层合并」效果。
-    """
-    return bool(ASTRO_MOBILE_CLUSTERED_DEFERRED)
-
-
-def mobile_deferred_enable_ao() -> bool:
-    """
-    Mirrors MobileDeferredEnableAmbientOcclusion().
-
-    AO in mobile deferred requires a full depth prepass (or no framebuffer
-    fetch).  In the 2-D channel context, AO is always available because the
-    PostProcessAO subsystem operates independently of the depth prepass.
-
-    鲁迅式：移动端 AO 不是奢侈品，是对「没有全屏深度」的补偿——
-    有深度的地方用深度，没有的地方用遮挡体积代替。
-    """
-    return True  # always on in 2-D channel (full AO pipeline available)
-
-
-@_msr_dc
-class AstroMobileLightSource:
-    """
-    Simplified mobile deferred light descriptor.
-    Mirrors the per-light data accessed in FMobileDirectionalLightFunctionPS.
-    """
-    light_id:         str   = "sun"
-    position:         tuple = (600.0, -800.0, 2000.0)
-    color:            tuple = (1.0, 0.97, 0.90)
-    intensity:        float = 3.14159
-    inv_radius:       float = 1.0 / 10000.0
-    is_directional:   bool  = True
-    cast_csm:         bool  = True         # Cascaded Shadow Map
-    shadow_quality:   int   = 2            # MOBILE_SHADOW_QUALITY range [1,3]
-    csm_distance:     float = 4000.0       # max CSM shadow distance
-
-    def bbox_2d(self) -> dict:
-        """Light influence bounding box in screen space (for stencil culling)."""
-        if self.is_directional:
-            return {"x": -1e9, "y": -1e9, "w": 2e9, "h": 2e9}  # infinite
-        r = 1.0 / max(self.inv_radius, 1e-9)
-        lx, ly = self.position[0], self.position[1]
-        return {"x": lx - r, "y": ly - r, "w": r * 2, "h": r * 2}
-
-
-def _stencil_cull_cells(
-    cell_entries: list,
-    light: AstroMobileLightSource,
-) -> list:
-    """
-    Stencil culling — mirrors GMobileUseLightStencilCulling path.
-
-    Performs a 2-D AABB intersection test between each cell bbox and the
-    light's influence bbox (computed from inv_radius).  Cells outside the
-    light volume are stencil-culled and removed from the shading list.
-
-    鲁迅式20%差异:
-      C++ 写入 HW stencil buffer, draw call 用 stencil test mask 自动跳过；
-      此处改为显式过滤列表，语义等价但实现路径完全不同——
-      纯 CPU 端的 AABB overlap test 取代了 GPU stencil test。
-    """
-    if not ASTRO_MOBILE_LIGHT_STENCIL_CULLING:
-        return cell_entries  # culling disabled — pass all cells through
-
-    light_bbox = light.bbox_2d()
-    lx0 = light_bbox["x"]
-    ly0 = light_bbox["y"]
-    lx1 = lx0 + light_bbox["w"]
-    ly1 = ly0 + light_bbox["h"]
-
-    culled = []
-    for entry in cell_entries:
-        bbox = entry.get("bbox", {})
-        cx0 = bbox.get("x", 0.0)
-        cy0 = bbox.get("y", 0.0)
-        cx1 = cx0 + bbox.get("w", 0.0)
-        cy1 = cy0 + bbox.get("h", 0.0)
-        # AABB overlap test
-        if cx1 > lx0 and cx0 < lx1 and cy1 > ly0 and cy0 < ly1:
-            culled.append(entry)
-
-    return culled
-
-
-class AstroMobileDeferredShadingPass:
-    """
-    Python equivalent of the mobile deferred shading pass orchestration
-    from MobileDeferredShadingPass.cpp.
-
-    Applies directional light shading (with optional CSM) to all cell entries
-    that pass the stencil test, then optionally applies clustered local lights.
-
-    Output:
-        shading_result list — one dict per shaded cell with fields:
-            cell_id, diffuse_color, ao_factor, csm_shadow, highlight_opacity
-        cluster_groups dict — cell_id → cluster_id (if clustered deferred)
-
-    鲁迅式：延迟着色通道是审判日——GBuffer 中的每一个 cell，
-    逐一接受光照的审判。stencil 是律法，光源是审判者，
-    AO 是为弱者争取的减刑。
-    """
-
-    def __init__(self,
-                 light: AstroMobileLightSource | None = None,
-                 local_lights: list | None = None) -> None:
-        self._dir_light   = light or AstroMobileLightSource()
-        self._local_lights = local_lights or []
-
-    def _apply_csm_shadow(self, cell_id: str, bbox: dict,
-                          csm_distance: float) -> float:
-        """
-        Compute CSM shadow factor for a cell.
-
-        Mirrors the ENABLE_MOBILE_CSM / FShadowQuality permutation:
-          - Cells closer than csm_distance may be in shadow.
-          - Shadow strength modulated by z-depth (deeper = less shadow).
-          - Returns shadow_factor ∈ [0, 1] where 0 = fully shadowed.
-
-        鲁迅式：阴影是距离的函数——越近越真实，越远越虚假，
-        直到 csm_distance 之外，阴影彻底消失，如同被历史遗忘。
-        """
-        cell_z   = float(bbox.get("z", 3))
-        cell_pos = math.sqrt(bbox.get("x", 0)**2 + bbox.get("y", 0)**2)
-
-        # Cells far from origin don't receive CSM shadows
-        if cell_pos > csm_distance:
-            return 1.0  # no shadow
-
-        # Shadow strength decays with depth (higher z = less occluded from above)
-        depth_fade = min(1.0, cell_z / 7.0)  # normalize to 0-1 across 7 z-layers
-        shadow_strength = 0.6 * (1.0 - depth_fade * 0.5)
-
-        # Distance fade: linear from 80%→100% of csm_distance
-        dist_fade = max(0.0, min(1.0,
-            (csm_distance - cell_pos) / max(csm_distance * 0.2, 1.0)
-        ))
-
-        return 1.0 - shadow_strength * dist_fade
-
-    def execute(self, cell_entries: list) -> dict:
-        """
-        Execute the full mobile deferred shading pass.
-
-        Steps:
-          1. Stencil cull against directional light (if LIGHT_STENCIL_CULLING).
-          2. Apply CSM shadow (if dir_light.cast_csm).
-          3. Apply AO (mobile_deferred_enable_ao).
-          4. Compute diffuse colour from directional light contribution.
-          5. If clustered deferred: group cells by z-layer as cluster proxy.
-
-        鲁迅式：五步走，缺一不可——这是为数不多的时候，
-        步骤的完整性比任何一步的速度都重要。
-        """
-        # Step 1: stencil culling
-        shading_cells = _stencil_cull_cells(cell_entries, self._dir_light)
-
-        shading_result = []
-        cluster_groups: dict = {}
-        cluster_counter = 0
-
-        for entry in shading_cells:
-            cid   = entry.get("cell_id", "?")
-            bbox  = entry.get("bbox", {})
-            sp    = entry.get("species", "")
-
-            # Step 2: CSM shadow
-            csm_shadow = 1.0
-            if self._dir_light.cast_csm:
-                csm_shadow = self._apply_csm_shadow(
-                    cid, bbox, self._dir_light.csm_distance
-                )
-
-            # Step 3: AO factor
-            ao_factor = 1.0
-            if mobile_deferred_enable_ao():
-                ao_factor = entry.get("ao_factor",
-                    entry.get("opacity", 1.0))  # fallback: use existing opacity
-
-            # Step 4: directional diffuse colour
-            # Simplified: light colour × (shadow × ao)
-            scale = csm_shadow * ao_factor
-            lr, lg, lb = self._dir_light.color
-            diff_r = min(1.0, lr * scale * self._dir_light.intensity / math.pi)
-            diff_g = min(1.0, lg * scale * self._dir_light.intensity / math.pi)
-            diff_b = min(1.0, lb * scale * self._dir_light.intensity / math.pi)
-
-            def _i(v): return max(0, min(255, int(v * 255)))
-            diffuse_hex = "#{:02X}{:02X}{:02X}".format(_i(diff_r), _i(diff_g), _i(diff_b))
-
-            # Step 5: clustered deferred grouping
-            if use_clustered_deferred_shading():
-                layer_key = str(int(bbox.get("z", 3)))
-                if layer_key not in cluster_groups:
-                    cluster_groups[layer_key] = f"cluster_{cluster_counter}"
-                    cluster_counter += 1
-                cluster_id = cluster_groups[layer_key]
-            else:
-                cluster_id = None
-
-            shading_result.append({
-                "cell_id":           cid,
-                "diffuse_color":     diffuse_hex,
-                "ao_factor":         round(ao_factor, 4),
-                "csm_shadow":        round(csm_shadow, 4),
-                "highlight_opacity": entry.get("opacity", 1.0),
-                "cluster_id":        cluster_id,
-            })
-
-        culled_count = len(cell_entries) - len(shading_cells)
-        print(
-            f"[AstroMobileDeferredShadingPass] execute: "
-            f"total={len(cell_entries)} stencil_culled={culled_count} "
-            f"shaded={len(shading_result)} clusters={len(cluster_groups)} "
-            f"csm={self._dir_light.cast_csm} ao={mobile_deferred_enable_ao()} "
-            f"clustered={use_clustered_deferred_shading()}",
-            file=sys.stderr,
-        )
-
-        return {
-            "shading_result": shading_result,
-            "cluster_groups": cluster_groups,
-            "stencil_culled_count": culled_count,
-        }
-
-
-# =============================================================================
-# [ASTRO-CELL] DistanceFieldStreaming → Python port
-#
-# Ported from:
-#   upstream/unreal-renderer-ue5/Renderer-Private/DistanceFieldStreaming.cpp
-#
-# UE5 constructs → Astro equivalents
-# ─────────────────────────────────────────────────────────────────────────────
-#   CVarBrickAtlasSizeXYInBricks   → ASTRO_DF_BRICK_ATLAS_SIZE_XY
-#   CVarMaxAtlasDepthInBricks      → ASTRO_DF_ATLAS_MAX_DEPTH_BRICKS
-#   CVarTextureUploadLimitKBytes   → ASTRO_DF_UPLOAD_LIMIT_KB
-#   CVarDebugForceNumMips          → ASTRO_DF_DEBUG_FORCE_NUM_MIPS
-#   FCopyDistanceFieldAtlasCS      → AstroDFAtlasCopier
-#   FScatterUploadDistanceFieldAtlasCS → AstroDFAtlasScatterUploader
-#   AstroDF brick                  → 8×8 pixel tile of the distance field atlas
-#
-# 2-D channel adaptation:
-#   3-D brick atlas texture (Texture3D<UNORM float>)
-#     → 2-D dict atlas keyed by (brick_x, brick_y, mip) → float distance
-#   Streaming mip levels (1..3) → 3 levels of cell-bbox resolution:
-#     mip 0 = full cell bbox; mip 1 = 50% downsampled; mip 2 = 25%
-#   IndirectionAtlas → per-cell dict mapping cell_id → atlas_key
-#
-# 鲁迅式20%差异:
-#   C++ 用 GPU compute shader 做 brick-level scatter upload；
-#   此处改用 Morton-code 排序的 Python dict 批量写入，
-#   并引入 defragmentation 路径（CVarDefragmentIndirectionAtlas=1 等价）：
-#   当 atlas 负载超过 75% 时自动清理孤立 brick，不同于 C++ 的 resize-on-demand。
-# =============================================================================
-
-# CVarBrickAtlasSizeXYInBricks: atlas XY 尺寸（单位：brick）
-ASTRO_DF_BRICK_ATLAS_SIZE_XY: int = 128
-
-# CVarMaxAtlasDepthInBricks: atlas Z 最大深度（单位：brick）
-ASTRO_DF_ATLAS_MAX_DEPTH_BRICKS: int = 32
-
-# CVarTextureUploadLimitKBytes: 每帧最大上传 KB
-ASTRO_DF_UPLOAD_LIMIT_KB: int = 8192
-
-# CVarDebugForceNumMips: 0 = auto, 1..3 = forced
-ASTRO_DF_DEBUG_FORCE_NUM_MIPS: int = 0
-
-# Atlas load factor above which defragmentation is triggered
-_DF_DEFRAG_LOAD_THRESHOLD: float = 0.75
-
-# Bytes per brick (8×8×8 voxels × 1 byte UNORM float approximation)
-_DF_BYTES_PER_BRICK: int = 512
-
-
-def _compute_df_mip_levels(cell_bbox: dict) -> int:
-    """
-    Determine the number of streaming mip levels for a cell.
-
-    Mirrors the C++ NumMips decision logic in FDistanceFieldStreamingManager:
-        if (CVar > 0) use CVar;
-        else compute from object screen size.
-
-    2-D adaptation: use cell screen area fraction to decide mip count.
-        area_fraction = (w * h) / (1200 * 900)  (assuming 1200×900 viewport)
-        if area_fraction > 0.05  → 3 mips (full detail)
-        if area_fraction > 0.01  → 2 mips
-        else                     → 1 mip
-
-    鲁迅式：越大的 cell 值得越精细的距离场——这是对重要性的数学定义。
-    """
-    if ASTRO_DF_DEBUG_FORCE_NUM_MIPS > 0:
-        return max(1, min(3, ASTRO_DF_DEBUG_FORCE_NUM_MIPS))
-
-    w = float(cell_bbox.get("w", 100))
-    h = float(cell_bbox.get("h", 50))
-    area_frac = (w * h) / (1200.0 * 900.0)
-
-    if area_frac > 0.05:
-        return 3
-    elif area_frac > 0.01:
-        return 2
-    return 1
-
-
-def _df_sample_at_mip(distance_field: dict, nx: float, ny: float,
-                       mip: int) -> float:
-    """
-    Sample the distance field dict at normalised (nx, ny) coordinates and mip.
-
-    Normalised coords ∈ [0, 1]; bilinear interpolation across the 2 nearest
-    brick entries.  Missing entries return 1.0 (infinity / outside).
-
-    鲁迅式：距离场的采样是一种回忆——如果那个位置从未被写入，
-    就返回「距离无穷远」（1.0），如同回忆一个从未发生过的事。
-    """
-    scale = 1.0 / max(2 ** mip, 1)
-    bx = int(nx / scale * ASTRO_DF_BRICK_ATLAS_SIZE_XY) % ASTRO_DF_BRICK_ATLAS_SIZE_XY
-    by = int(ny / scale * ASTRO_DF_BRICK_ATLAS_SIZE_XY) % ASTRO_DF_BRICK_ATLAS_SIZE_XY
-    return distance_field.get((bx, by, mip), 1.0)
-
-
-@_msr_dc
-class AstroDFBrickEntry:
-    """
-    A single brick in the 2-D distance field atlas.
-    Mirrors the C++ per-brick data stored in the Texture3D atlas.
-    """
-    brick_x:   int   = 0
-    brick_y:   int   = 0
-    mip:       int   = 0
-    cell_id:   str   = ""
-    distance:  float = 1.0   # SDF value ∈ [-1, 1]; 1.0 = outside
-
-
-class AstroDFAtlas:
-    """
-    2-D distance field atlas.
-
-    Mirrors the FDistanceFieldAtlas GPU-side resource:
-      Brick atlas dict  → self._bricks   (keyed by (bx, by, mip))
-      Indirection atlas → self._indirection (keyed by cell_id → list of keys)
-      Load tracking     → self._brick_count / max_bricks
-
-    鲁迅式：距离场地图集是场景的隐形档案——每一个 cell 在这里留有
-    一份「轮廓的数字化复印件」，用于阴影、AO 和碰撞计算。
-    档案不更新，效果就会过时；但档案太频繁更新，带宽就会告急。
-    """
-
-    def __init__(self) -> None:
-        max_bricks = ASTRO_DF_BRICK_ATLAS_SIZE_XY ** 2 * ASTRO_DF_ATLAS_MAX_DEPTH_BRICKS
-        self._bricks:      _msr_Dict[tuple, float] = {}
-        self._indirection: _msr_Dict[str, list]    = {}
-        self._max_bricks:  int = max_bricks
-        self._frame_bytes: int = 0   # bytes uploaded this frame
-
-    @property
-    def load_factor(self) -> float:
-        return len(self._bricks) / max(self._max_bricks, 1)
-
-    def defragment(self) -> int:
-        """
-        Remove bricks whose cell has been evicted from the indirection atlas.
-
-        Mirrors CVarDefragmentIndirectionAtlas = 1 path:
-          Iterate brick keys; any brick whose cell_id is no longer in
-          _indirection is a «hole» — delete it to reclaim capacity.
-
-        鲁迅式20%差异:
-          C++ 在 atlas resize 时触发 defragment（resize-on-demand）；
-          此处改为 load-factor 触发（75% threshold），更积极，代价是
-          每次 defrag 多一次全量遍历——用 CPU 时间换显存碎片减少。
-
-        Returns number of bricks freed.
-        """
-        active_cells = set(self._indirection.keys())
-        to_delete = [
-            key for key, _v in self._bricks.items()
-            if key[2] == 0  # only defrag mip-0 stale entries for speed
-            # In a full implementation we'd track per-key cell_id; here we
-            # approximate by pruning all bricks for evicted cells.
-        ]
-        # Simpler approximation: prune indirection entries older than current frame
-        # (equivalent to LRU eviction, not just resize-triggered)
-        freed = 0
-        if self.load_factor > _DF_DEFRAG_LOAD_THRESHOLD:
-            # Remove bottom 25% of bricks (oldest Morton order)
-            sorted_keys = sorted(self._bricks.keys())
-            evict_count = len(sorted_keys) // 4
-            for k in sorted_keys[:evict_count]:
-                del self._bricks[k]
-                freed += 1
-        return freed
-
-    def scatter_upload(self, cell_id: str, cell_bbox: dict,
-                       num_mips: int | None = None) -> int:
-        """
-        Upload distance field bricks for one cell.
-
-        Mirrors FScatterUploadDistanceFieldAtlasCS:
-          - For each mip level, compute brick coordinates from cell bbox.
-          - Write SDF values (simplified: approximated from cell shape).
-          - Record indirection entries.
-          - Respect per-frame upload budget (ASTRO_DF_UPLOAD_LIMIT_KB).
-
-        Returns number of bricks uploaded.
-
-        鲁迅式：上传是对 GPU 的馈赠——但馈赠有额度，超过额度便是溺爱，
-        会让带宽来不及消化，在下一帧制造卡顿。
-        """
-        if num_mips is None:
-            num_mips = _compute_df_mip_levels(cell_bbox)
-
-        uploaded = 0
-        keys_for_cell: list = []
-
-        for mip in range(num_mips):
-            # Budget check
-            if self._frame_bytes + _DF_BYTES_PER_BRICK > ASTRO_DF_UPLOAD_LIMIT_KB * 1024:
-                print(
-                    f"[AstroDFAtlas] scatter_upload: frame upload budget exhausted "
-                    f"({self._frame_bytes} bytes, limit {ASTRO_DF_UPLOAD_LIMIT_KB} KB). "
-                    f"cell={cell_id} mip={mip} deferred to next frame.",
-                    file=sys.stderr,
-                )
-                break  # mirrors C++ upload limit — stop and defer remainder
-
-            scale = 1.0 / max(2 ** mip, 1)
-            w = float(cell_bbox.get("w", 100))
-            h = float(cell_bbox.get("h", 50))
-            cx = float(cell_bbox.get("x", 0)) + w / 2.0
-            cy = float(cell_bbox.get("y", 0)) + h / 2.0
-
-            # Compute SDF brick coordinates (Morton-ordered for cache efficiency)
-            bx_c = int(cx * scale / (w + 1) * ASTRO_DF_BRICK_ATLAS_SIZE_XY)
-            by_c = int(cy * scale / (h + 1) * ASTRO_DF_BRICK_ATLAS_SIZE_XY)
-            bx_c = max(0, min(bx_c, ASTRO_DF_BRICK_ATLAS_SIZE_XY - 1))
-            by_c = max(0, min(by_c, ASTRO_DF_BRICK_ATLAS_SIZE_XY - 1))
-
-            # SDF value: 0 at cell centre, 1 at boundary (normalised)
-            sdf_centre = 0.0
-            key = (bx_c, by_c, mip)
-
-            # Defrag before writing if atlas is overloaded
-            if self.load_factor > _DF_DEFRAG_LOAD_THRESHOLD:
-                freed = self.defragment()
-                print(
-                    f"[AstroDFAtlas] auto-defrag triggered (load={self.load_factor:.2f}), "
-                    f"freed {freed} bricks.",
-                    file=sys.stderr,
-                )
-
-            self._bricks[key] = sdf_centre
-            keys_for_cell.append(key)
-            self._frame_bytes += _DF_BYTES_PER_BRICK
-            uploaded += 1
-
-        # Update indirection atlas
-        self._indirection[cell_id] = keys_for_cell
-
-        return uploaded
-
-    def copy_atlas(self, dest: "AstroDFAtlas") -> int:
-        """
-        Copy entire atlas to a destination (mirrors FCopyDistanceFieldAtlasCS).
-
-        鲁迅式：完整拷贝是奢侈的操作——只在 atlas 重建时做一次，
-        平时的增量更新靠 scatter_upload。
-        就像历史：完整重写只发生在革命之后，平时是修修补补。
-        """
-        dest._bricks      = dict(self._bricks)
-        dest._indirection = dict(self._indirection)
-        dest._frame_bytes = 0
-        return len(self._bricks)
-
-    def reset_frame_budget(self) -> None:
-        """Reset per-frame upload byte counter (called at frame start)."""
-        self._frame_bytes = 0
-
-    def stats(self) -> dict:
-        return {
-            "bricks":       len(self._bricks),
-            "max_bricks":   self._max_bricks,
-            "load_factor":  round(self.load_factor, 4),
-            "cells":        len(self._indirection),
-            "frame_bytes":  self._frame_bytes,
-        }
-
-
-class AstroDFStreamingManager:
-    """
-    Python equivalent of FDistanceFieldStreamingManager.
-
-    Manages per-frame streaming requests for cell distance fields:
-      1. tick() is called once per frame to reset budget and process requests.
-      2. request_cell() enqueues a cell for upload.
-      3. process_requests() uploads up to the frame budget.
-      4. query() returns the SDF value at a given position for a cell.
-
-    鲁迅式：流式管理器是一个有良心的官僚——它知道资源有限，
-    所以它排队、它限速、它拒绝超量，但它从不拒绝入队本身。
-    """
-
-    _MAX_STREAMING_REQUESTS = 4095  # mirrors MaxStreamingRequests in C++
-
-    def __init__(self) -> None:
-        self._atlas      = AstroDFAtlas()
-        self._queue:     list = []   # (priority, cell_id, bbox, num_mips)
-        self._frame:     int  = 0
-
-    def tick(self) -> dict:
-        """Advance frame, reset budget, process queued requests."""
-        self._atlas.reset_frame_budget()
-        self._frame += 1
-        uploaded_cells = self._process_requests()
-        return {
-            "frame":          self._frame,
-            "uploaded_cells": uploaded_cells,
-            "atlas_stats":    self._atlas.stats(),
-        }
-
-    def request_cell(self, cell_id: str, cell_bbox: dict,
-                     priority: float = 1.0) -> bool:
-        """
-        Enqueue a streaming request for cell_id.
-
-        priority is screen-space projected area (larger = higher priority).
-        Mirrors the C++ streaming priority based on screen size.
-
-        Returns False if queue is full.
-        """
-        if len(self._queue) >= self._MAX_STREAMING_REQUESTS:
-            return False
-        self._queue.append((priority, cell_id, cell_bbox))
-        return True
-
-    def _process_requests(self) -> int:
-        """
-        Process queued requests in priority order, respecting frame budget.
-
-        Mirrors the C++ streaming loop that calls ScatterUpload per request.
-        """
-        # Sort descending by priority (screen area → largest cells first)
-        self._queue.sort(key=lambda t: -t[0])
-        processed = 0
-        remaining = []
-        for (prio, cid, bbox) in self._queue:
-            if self._atlas._frame_bytes >= ASTRO_DF_UPLOAD_LIMIT_KB * 1024:
-                remaining.append((prio, cid, bbox))  # defer to next frame
-                continue
-            n = _compute_df_mip_levels(bbox)
-            self._atlas.scatter_upload(cid, bbox, n)
-            processed += 1
-        self._queue = remaining
-        return processed
-
-    def query_sdf(self, cell_id: str, nx: float, ny: float,
-                  mip: int = 0) -> float:
-        """
-        Query the signed distance field value for a cell at normalised coords.
-
-        Returns 1.0 (outside) if the cell has no atlas entry.
-        """
-        if cell_id not in self._atlas._indirection:
-            return 1.0
-        return _df_sample_at_mip(self._atlas._bricks, nx, ny, mip)
-
-    def get_atlas(self) -> AstroDFAtlas:
-        return self._atlas
-
-
-# Module-level singleton
-_ASTRO_DF_STREAMING_MANAGER: AstroDFStreamingManager | None = None
-
-
-def get_df_streaming_manager() -> AstroDFStreamingManager:
-    """
-    Return the module-level AstroDFStreamingManager singleton.
-
-    鲁迅式：流式管理器是场景与显存之间的翻译官——
-    单例确保所有 cell 共享同一个上传预算，而不是各自为政地撑爆带宽。
-    """
-    global _ASTRO_DF_STREAMING_MANAGER
-    if _ASTRO_DF_STREAMING_MANAGER is None:
-        _ASTRO_DF_STREAMING_MANAGER = AstroDFStreamingManager()
-    return _ASTRO_DF_STREAMING_MANAGER
-
-
-# =============================================================================
-# [ASTRO-CELL] RectLightTextureManager → Python port
-#
-# Ported from:
-#   upstream/unreal-renderer-ue5/Renderer-Private/RectLightTextureManager.cpp
-#
-# UE5 constructs → Astro equivalents
-# ─────────────────────────────────────────────────────────────────────────────
-#   CVarRectLightTextureResolution  → ASTRO_RECT_LIGHT_MAX_RESOLUTION
-#   CVarRectLighFilterQuality       → ASTRO_RECT_LIGHT_FILTER_QUALITY
-#   CVarRectLighForceUpdate         → ASTRO_RECT_LIGHT_FORCE_UPDATE
-#   CVarRectLighMaxTextureRatio     → ASTRO_RECT_LIGHT_MAX_RATIO
-#   CVarRectLighAtlasFormat         → ASTRO_RECT_LIGHT_ATLAS_FORMAT
-#   FAtlasSlot                      → AstroRectLightSlot
-#   FAtlasLayout (Skyline packing)  → AstroRectLightAtlasPacker (skyline algo)
-#   PlatformSupportsRectLightAtlas()→ astro_platform_supports_rect_light_atlas()
-#   RectLightAtlas namespace        → module-level functions / classes below
-#
-# 2-D channel adaptation:
-#   RHI Texture2D atlas → 2-D dict atlas keyed by slot_id → pixel data
-#   BoxFilter / GaussFilter → 1-pass SVG feGaussianBlur (quality 0/1 map)
-#   Skyline packing algo → AstroRectLightAtlasPacker with USE_PACKING_MODE=1
-#   RefCount + ForceRefresh → AstroRectLightSlot.ref_count + force_refresh
-#
-# 鲁迅式20%差异:
-#   UE5 skyline packer tracks a per-column horizon array; this port replaces
-#   that with a 「sorted free-rect pool」（MAXRECTS-inspired）that reuses
-#   deallocated rectangles before expanding the atlas — different from the
-#   C++ USE_WASTE_RECT macro which only appends freed rects as a secondary
-#   list.  Here the free-rect pool is the *primary* allocation path, falling
-#   back to skyline expansion only when no free rect fits.
-# =============================================================================
-
-ASTRO_RECT_LIGHT_MAX_RESOLUTION: int   = 4096
-ASTRO_RECT_LIGHT_FILTER_QUALITY:  int   = 0     # 0=box, 1=gaussian
-ASTRO_RECT_LIGHT_FORCE_UPDATE:    int   = 0
-ASTRO_RECT_LIGHT_MAX_RATIO:       int   = 2
-ASTRO_RECT_LIGHT_ATLAS_FORMAT:    int   = 0     # 0=R11G11B10, 1=RGBA16F
-
-# Invalid sentinel values (mirrors C++ InvalidSlotIndex / InvalidOrigin)
-_RL_INVALID_SLOT: int = ~0 & 0xFFFFFFFF
-_RL_INVALID_ORIGIN = (-1, -1)
-
-
-def astro_platform_supports_rect_light_atlas() -> bool:
-    """
-    Mirrors PlatformSupportsRectLightAtlas() — mobile platforms excluded.
-
-    In the 2-D SVG context there is no «mobile» distinction; return True
-    (always supported) so the atlas can be exercised in unit tests.
-
-    鲁迅式：移动端的限制是现实的妥协；在 SVG 沙盒中，我们假设全部支持，
-    因为这里没有真正的 GPU 内存压力。
-    """
-    return True
-
-
-@_msr_dc
-class AstroRectLightSlot:
-    """
-    Python equivalent of FAtlasSlot (RectLightTextureManager.cpp).
-
-    Stores the placement of one rect-light texture within the 2-D atlas.
-
-    Fields mirror the C++ struct fields:
-        id           → uint32 slot index
-        origin       → (x, y) top-left in atlas pixels
-        resolution   → (w, h) in atlas pixels
-        source_scale_offset → (scale_x, scale_y, offset_x, offset_y)
-        ref_count    → uint32 reference counter
-        force_refresh → bool (triggers re-filter next frame)
-        cached_source_resolution → (w, h) of the source texture at last update
-
-    鲁迅式：每个槽位都是一份租约——引用计数为零时，槽位被归还，
-    但归还不等于立即清空，而是加入自由矩形池等待复用。
-    """
-    id:                         int   = _RL_INVALID_SLOT
-    origin:                     tuple = _RL_INVALID_ORIGIN
-    resolution:                 tuple = (0, 0)
-    source_scale_offset:        tuple = (1.0, 1.0, 0.0, 0.0)
-    ref_count:                  int   = 0
-    force_refresh:              bool  = False
-    cached_source_resolution:   tuple = (0, 0)
-
-    def is_valid(self) -> bool:
-        return self.id != _RL_INVALID_SLOT and self.origin != _RL_INVALID_ORIGIN
-
-
-@_msr_dc
-class _RLFreeRect:
-    """A free rectangle in the atlas (MAXRECTS free-rect pool)."""
-    x: int = 0;  y: int = 0;  w: int = 0;  h: int = 0
-
-
-class AstroRectLightAtlasPacker:
-    """
-    2-D atlas packer for rect-light textures.
-
-    Implements a «free-rect pool first, skyline expansion fallback» strategy:
-      1. Try to allocate from the free-rect pool (best-fit by area).
-      2. If no free rect fits, extend the skyline horizon.
-      3. Track a column-horizon array for the skyline path.
-
-    鲁迅式20%差异:
-      C++ skyline packer只用 USE_WASTE_RECT 作为辅助回收；
-      此处将 free-rect pool 升级为主分配路径——优先复用碎片，
-      让 atlas 更紧凑，等价于以 CPU 时间换 atlas 碎片率。
-
-    鲁迅曾言：「自由固不是钱所能买到的，但能够为钱而卖掉。」
-    Atlas 的自由矩形亦然——被释放时是自由的，被复用时卖给了下一个租户。
-    """
-
-    def __init__(self, max_res: int = ASTRO_RECT_LIGHT_MAX_RESOLUTION) -> None:
-        self._max_res   = max_res
-        self._horizon:  _msr_List[int] = [0]  # column-horizon (skyline)
-        self._cur_width:  int = 0
-        self._cur_height: int = 0
-        self._free_rects: _msr_List[_RLFreeRect] = []  # MAXRECTS-style free pool
-        self._next_id:    int = 0
-        self._slots:      _msr_Dict[int, AstroRectLightSlot] = {}
-
-    def _best_fit_free_rect(self, w: int, h: int) -> _msr_Opt[int]:
-        """
-        Find the best-fit free rectangle for (w, h).
-        Returns index into self._free_rects, or None.
-
-        Best-fit criterion: smallest area that fits — mirrors BSSF heuristic.
-        """
-        best_idx  = None
-        best_area = float("inf")
-        for i, fr in enumerate(self._free_rects):
-            if fr.w >= w and fr.h >= h:
-                area = fr.w * fr.h
-                if area < best_area:
-                    best_area = area
-                    best_idx  = i
-        return best_idx
-
-    def _skyline_extend(self, w: int, h: int) -> _msr_Opt[tuple]:
-        """
-        Extend the skyline to allocate (w, h).
-
-        Returns (x, y) origin on success, or None if atlas is full.
-
-        鲁迅式：天际线扩展是地图集的「开疆拓土」——
-        每次成功都让 atlas 变大一点，直到触及 max_res 的铁顶。
-        """
-        x = self._cur_width
-        y = self._cur_height
-
-        if x + w > self._max_res:
-            # Try a new row
-            x = 0
-            y = max(self._horizon) if self._horizon else 0
-            if y + h > self._max_res:
-                return None  # atlas full
-
-        # Update horizon: track the new column top
-        new_top = y + h
-        self._horizon.append(new_top)
-        self._cur_width  = x + w
-        self._cur_height = max(self._cur_height, new_top)
-        return (x, y)
-
-    def allocate(self, w: int, h: int,
-                 source_scale_offset: tuple = (1.0, 1.0, 0.0, 0.0)) -> AstroRectLightSlot:
-        """
-        Allocate an atlas slot for a texture of size (w, h).
-
-        Returns a valid AstroRectLightSlot on success;
-        id==_RL_INVALID_SLOT on failure (atlas full).
-
-        鲁迅式：分配是承诺——承诺之前先看自由矩形池，
-        池中有合适的就复用，没有才开疆拓土。
-        """
-        slot = AstroRectLightSlot()
-
-        # Try free-rect pool first (鲁迅式差异：主路径)
-        fr_idx = self._best_fit_free_rect(w, h)
-        if fr_idx is not None:
-            fr = self._free_rects.pop(fr_idx)
-            origin = (fr.x, fr.y)
-            # Split remaining space back into free-rect pool (guillotine split)
-            if fr.w - w > 0:
-                self._free_rects.append(_RLFreeRect(fr.x + w, fr.y, fr.w - w, h))
-            if fr.h - h > 0:
-                self._free_rects.append(_RLFreeRect(fr.x, fr.y + h, fr.w, fr.h - h))
-        else:
-            # Fall back to skyline extension
-            origin = self._skyline_extend(w, h)
-            if origin is None:
-                return slot  # atlas full — return invalid slot
-
-        slot.id                       = self._next_id
-        slot.origin                   = origin
-        slot.resolution               = (w, h)
-        slot.source_scale_offset      = source_scale_offset
-        slot.ref_count                = 1
-        slot.cached_source_resolution = (w, h)
-        self._next_id += 1
-        self._slots[slot.id] = slot
-        return slot
-
-    def release(self, slot_id: int) -> None:
-        """
-        Release a slot back to the free-rect pool.
-
-        Mirrors FAtlasSlot::RefCount decrement + eviction in C++.
-        The released rect is added to the free-rect pool for reuse.
-
-        鲁迅式：释放不等于忘记——矩形进入自由池，等待下一个租客。
-        这比 C++ 的「仅在 atlas resize 时清理」更积极，碎片更少。
-        """
-        slot = self._slots.pop(slot_id, None)
-        if slot is None or not slot.is_valid():
-            return
-        x, y = slot.origin
-        w, h = slot.resolution
-        self._free_rects.append(_RLFreeRect(x, y, w, h))
-
-    def get_slot(self, slot_id: int) -> _msr_Opt[AstroRectLightSlot]:
-        return self._slots.get(slot_id)
-
-    def stats(self) -> dict:
-        return {
-            "allocated_slots": len(self._slots),
-            "free_rects":      len(self._free_rects),
-            "cur_width":       self._cur_width,
-            "cur_height":      self._cur_height,
-            "max_res":         self._max_res,
-            "load_factor":     round(
-                self._cur_width * self._cur_height / max(self._max_res ** 2, 1),
-                4
-            ),
-        }
-
-
-def _apply_rect_light_filter(slot: AstroRectLightSlot,
-                              filter_quality: int = ASTRO_RECT_LIGHT_FILTER_QUALITY,
-                              ) -> str:
-    """
-    Generate an SVG filter string for a rect-light atlas slot.
-
-    Mirrors the FilterRectLightTexture CS dispatch:
-        quality=0 → box filter → feBoxBlur (stdDeviation=1)
-        quality=1 → gaussian filter → feGaussianBlur (stdDeviation=2)
-
-    The blur radius is scaled by the slot's source_scale_offset.x (mip bias).
-
-    鲁迅式：滤波是对真实的平滑——盒式滤波快而粗，高斯滤波慢而细，
-    移动端当然首选前者，桌面端才值得多花那几个 cycle。
-    """
-    if not slot.is_valid():
-        return ""
-
-    scale_x = slot.source_scale_offset[0]
-    blur    = max(0.5, scale_x * (1.0 if filter_quality == 0 else 2.0))
-    fid     = f"rl-filter-{slot.id}"
-
-    if filter_quality == 0:
-        # Box filter approximation via feGaussianBlur with small σ
         return (
-            f'<filter id="{fid}" x="-5%" y="-5%" width="110%" height="110%">'
-            f'<feGaussianBlur stdDeviation="{blur:.2f}" result="blur"/>'
-            f'<feComposite in="blur" in2="SourceGraphic" operator="in"/>'
-            f'</filter>'
+            self.max_samples           != other.max_samples          or
+            self.max_bounces           != other.max_bounces          or
+            abs(self.filter_sigma      -  other.filter_sigma)        > 1e-5 or
+            self.mis_mode              != other.mis_mode             or
+            abs(self.max_path_intensity - other.max_path_intensity)  > 1e-5 or
+            self.approximate_caustics  != other.approximate_caustics or
+            abs(self.adaptive_threshold - other.adaptive_threshold)  > 1e-7 or
+            self.locked_sampling       != other.locked_sampling      or
+            self.viewport_w            != other.viewport_w           or
+            self.viewport_h            != other.viewport_h           or
+            self.light_grid_resolution != other.light_grid_resolution or
+            self.light_grid_max_count  != other.light_grid_max_count or
+            self.enable_emissive       != other.enable_emissive      or
+            abs(self.background_alpha  -  other.background_alpha)    > 1e-5
+        )
+
+
+@_ptdc
+class AstroCellPathTracingState:
+    """
+    Python equivalent of FPathTracingState.
+
+    Stores per-view accumulated path tracing data between frames.
+    Key invariant (from C++ comment):
+        FrameIndex is NEVER reset on invalidation to avoid the temporal
+        "screen door" effect caused by the quasi-random sampler re-using
+        the same low-discrepancy sequence from frame 0.
+        SampleIndex IS reset on invalidation so accumulation restarts cleanly.
+
+    Buffers are dicts keyed by cell_id; values are float tuples (R, G, B).
+    This mirrors the per-pixel texture arrays in the C++ implementation.
+
+    鲁迅式：样本指数归零是承认失败，但帧指数不能归零——
+    否则时间便失去了意义，历史便成了永恒的循环。
+    """
+    last_config:    AstroCellPathTracingConfig = _ptfield(
+        default_factory=AstroCellPathTracingConfig)
+    # Accumulated radiance buffer (mirrors RadianceRT)
+    radiance_buffer:    _PTDict[str, tuple] = _ptfield(default_factory=dict)
+    # Per-cell variance estimate (mirrors VarianceRT / VarianceBuffer)
+    variance_buffer:    _PTDict[str, float] = _ptfield(default_factory=dict)
+    # Denoiser AOV buffers (mirrors AlbedoRT, NormalRT, DepthRT)
+    albedo_buffer:      _PTDict[str, tuple] = _ptfield(default_factory=dict)
+    normal_buffer:      _PTDict[str, tuple] = _ptfield(default_factory=dict)
+    depth_buffer:       _PTDict[str, float] = _ptfield(default_factory=dict)
+    # Last denoised frame cache (mirrors LastDenoisedRadianceRT — animation stability)
+    last_denoised:      _PTDict[str, tuple] = _ptfield(default_factory=dict)
+    # Sample counter: reset to 0 on invalidation (mirrors SampleIndex)
+    sample_index:       int = 0
+    # Frame counter: NEVER reset (mirrors FrameIndex — uint32_t, monotone)
+    frame_index:        int = 0
+
+    def invalidate(self) -> None:
+        """
+        Reset accumulated data and sample counter.
+        Mirrors FSceneViewState::PathTracingInvalidate(bInvalidateAnimationStates=false).
+
+        FrameIndex is intentionally NOT touched — see struct docstring.
+
+        鲁迅式：将一切清零，唯独不清零时间——这是纪律，不是遗忘。
+        """
+        self.radiance_buffer.clear()
+        self.variance_buffer.clear()
+        self.albedo_buffer.clear()
+        self.normal_buffer.clear()
+        self.depth_buffer.clear()
+        # last_denoised intentionally kept (mirrors C++ which keeps LastDenoisedRadianceRT)
+        self.sample_index = 0
+        print(
+            f"[ASTRO-PT] PathTracingInvalidate — sample_index reset to 0, "
+            f"frame_index preserved at {self.frame_index}",
+            file=sys.stderr,
+        )
+
+    def is_converged(self, cell_id: str,
+                     threshold: float = _PT_ADAPTIVE_THRESHOLD) -> bool:
+        """
+        Per-cell convergence check — mirrors the adaptive sampling variance gate
+        in the C++ path tracer that skips already-converged pixels.
+        Returns True when variance is below threshold and enough samples accumulated.
+        """
+        if self.sample_index < 4:
+            return False
+        return self.variance_buffer.get(cell_id, 1.0) < threshold
+
+
+# ── Module-level per-view state registry ─────────────────────────────────────
+# Mirrors the FViewState::PathTracingState TPimplPtr<FPathTracingState> member.
+# Keyed by view_id string (for single-view usage, use key "default").
+_CELL_PATH_TRACING_STATES: _PTDict[str, AstroCellPathTracingState] = {}
+
+
+def get_or_create_cell_path_tracing_state(
+        view_id: str = "default") -> AstroCellPathTracingState:
+    """
+    Return the AstroCellPathTracingState for *view_id*, creating it on first call.
+    Mirrors GetPathTracingStateFromView() from PathTracing.cpp.
+
+    鲁迅式：第一次访问时才创建——懒汉式，节省内存，亦是对「不必要存在」的抵抗。
+    """
+    global _CELL_PATH_TRACING_STATES
+    if view_id not in _CELL_PATH_TRACING_STATES:
+        _CELL_PATH_TRACING_STATES[view_id] = AstroCellPathTracingState()
+    return _CELL_PATH_TRACING_STATES[view_id]
+
+
+def _pt_halton(index: int, base: int) -> float:
+    """
+    Halton low-discrepancy sequence element.
+    Mirrors the path tracer's SamplerType=1 (Halton) used when
+    CVarPathTracingLockedSamplingPattern is False.  The sequence provides
+    better stratification than uniform random for MIS.
+
+    鲁迅式：准随机数是伪装成随机的秩序——比真随机更公平，却不招摇。
+    """
+    result = 0.0
+    f      = 1.0 / base
+    i      = index
+    while i > 0:
+        result += f * (i % base)
+        i       = i // base
+        f      /= base
+    return result
+
+
+def _pt_mis_weight(pdf_a: float, pdf_b: float) -> float:
+    """
+    Power heuristic MIS weight (β=2) — mirrors the balanced MIS combiner
+    used in PathTracing.usf when CVarPathTracingMISMode=2.
+
+        w(a) = pdf_a² / (pdf_a² + pdf_b²)
+
+    鲁迅式：权衡是政治，也是物理——两种采样策略各占一半，谁也不独裁。
+    """
+    a2 = pdf_a * pdf_a
+    b2 = pdf_b * pdf_b
+    denom = a2 + b2
+    return a2 / denom if denom > 1e-12 else 0.5
+
+
+def _pt_firefly_clamp(radiance: tuple, max_intensity: float = _PT_MAX_PATH_INTENSITY) -> tuple:
+    """
+    Per-path intensity clamp — mirrors CVarPathTracingMaxPathIntensity gate.
+    Clamps each colour channel independently (not luminance) to keep hue.
+
+    鲁迅式：萤火虫之所以刺眼，是因为它孤立地太亮——统一的上限是公平，不是压制。
+    """
+    return (
+        min(radiance[0], max_intensity),
+        min(radiance[1], max_intensity),
+        min(radiance[2], max_intensity),
+    )
+
+
+def _pt_gaussian_filter(radiance: tuple, sigma: float = _PT_FILTER_SIGMA) -> tuple:
+    """
+    Gaussian reconstruction filter weight for the current sample.
+    Mirrors CVarPathTracingFilterWidth (σ = filter_width / (2π)).
+    Applied as a scalar weight ∈ (0, 1] on the sample contribution.
+
+    w = exp(-0.5 * r² / σ²), r ≈ 0 for a centred sample → weight ≈ 1.
+    For accumulation we treat all samples as centred (no sub-pixel offset
+    in the 2-D analogue), so this reduces to a constant σ-dependent scale
+    that models the temporal blend decay used in the C++ accumulation buffer.
+
+    鲁迅式：高斯滤波是温柔的遗忘——它让过去的样本随时间淡去，
+    而不是被突然的 invalidate 彻底抹除。
+    """
+    weight = math.exp(-0.5 / max(sigma * sigma, 1e-8))
+    return (radiance[0] * weight, radiance[1] * weight, radiance[2] * weight)
+
+
+def _pt_sample_cell_radiance(
+    cell_id: str,
+    bbox: dict,
+    species: str,
+    sample_idx: int,
+    frame_idx: int,
+    bvh: "AstroCellBVH | None" = None,
+    all_bboxes: dict | None = None,
+    mis_mode: int = _PT_MIS_MODE,
+    max_bounces: int = _PT_MAX_BOUNCES,
+) -> tuple:
+    """
+    Per-cell path sample — the inner loop of RenderPathTracing().
+
+    Replaces the full GPU ray-traced path with an analytic 2-D equivalent:
+      - Primary ray hits the cell's own bbox (always; we shade the cell itself)
+      - Each bounce samples a neighbour cell's emissive contribution via BVH
+        overlap query (analogue of BVH traversal + BSDF evaluation)
+      - MIS combines material PDF (uniform hemisphere) and light PDF (area / dist²)
+      - Firefly clamp applied per bounce
+
+    The function uses per-sample Halton sequences indexed by
+    (sample_idx * max_bounces + bounce, prime) to maintain low-discrepancy
+    stratification across samples and bounces — same as the C++ path tracer's
+    per-path quasi-random state.
+
+    Returns (R, G, B) radiance contribution from one path sample.
+
+    鲁迅式：每一条路径都是一次反问——光从哪里来？
+    到哪里去？会不会在中途被遮挡、被散射、被彻底消灭？
+    答案藏在概率密度函数里，与宿命无关。
+    """
+    import math as _ptm
+
+    # ── Species emissive base (「primary ray hit self」) ────────────────────
+    # Mirrors the path tracer's direct-hit emissive contribution (bounce 0).
+    # We derive a per-species base colour as the emissive seed — same as
+    # treating the cell face as an emissive surface in the material graph.
+    _EMISSIVE_TABLE = {
+        "cil-eye":         (0.55, 0.60, 0.90),  # indigo glow
+        "cil-bolt":        (0.95, 0.55, 0.10),  # amber spark
+        "cil-vector":      (0.30, 0.70, 0.35),  # green signal
+        "cil-plus":        (0.25, 0.55, 0.90),  # blue merge
+        "cil-arrow-right": (0.50, 0.60, 0.65),  # grey-blue arrow
+        "cil-filter":      (0.60, 0.25, 0.75),  # purple kernel
+        "cil-code":        (0.30, 0.70, 0.35),  # green brace
+        "cil-layers":      (0.20, 0.55, 0.85),  # blue stack
+        "cil-loop":        (0.90, 0.60, 0.15),  # amber cycle
+        "cil-graph":       (0.40, 0.50, 0.55),  # grey node
+    }
+    base_r, base_g, base_b = _EMISSIVE_TABLE.get(species, (0.5, 0.5, 0.5))
+
+    # ── Halton quasi-random state for this path ────────────────────────────
+    # Path seed combines sample_index × bounce_depth for decorrelation.
+    # Mirrors PathTracer.usf RandomSequence_Initialize(Seed = SampleIndex * MaxBounces).
+    seed_base = sample_idx * max_bounces
+
+    path_r, path_g, path_b = base_r, base_g, base_b
+    throughput = 1.0
+
+    cx = bbox["x"] + bbox["w"] / 2.0
+    cy = bbox["y"] + bbox["h"] / 2.0
+    cz = float(bbox.get("z", 3))
+
+    for bounce in range(max_bounces):
+        if throughput < 1e-4:
+            break   # Russian roulette termination (implicit, energy threshold)
+
+        seed = seed_base + bounce
+        u1   = _pt_halton(seed * 2 + frame_idx % 97, 2)   # azimuth
+        u2   = _pt_halton(seed * 2 + 1 + frame_idx % 97, 3)   # elevation
+
+        # ── Material sampling: cosine-weighted hemisphere direction ────────
+        # Mirrors the Lambertian BSDF material sampling in PathTracing.usf.
+        theta_mat = math.acos(math.sqrt(max(0.0, u2)))
+        phi_mat   = 2.0 * math.pi * u1
+        pdf_mat   = math.cos(theta_mat) / math.pi  # Lambertian PDF
+
+        # ── Light sampling: pick a neighbour cell as area light ────────────
+        # Mirrors the light sampling step in the path tracer's MIS loop.
+        # We use the BVH (if available) for a spatial query; else fall back
+        # to the all_bboxes dict.
+        light_cell_id: str | None = None
+        light_r, light_g, light_b = 0.0, 0.0, 0.0
+        pdf_light = 0.0
+
+        if bvh is not None:
+            candidates = bvh.query_overlapping_cells({
+                "x": cx - bbox["w"],  "y": cy - bbox["h"],
+                "w": bbox["w"] * 2,   "h": bbox["h"] * 2,
+            })
+        elif all_bboxes:
+            candidates = list(all_bboxes.keys())
+        else:
+            candidates = []
+
+        # Filter out self; pick one candidate by quasi-random index
+        candidates = [c for c in candidates if c != cell_id]
+        if candidates:
+            pick_idx   = int(u1 * len(candidates)) % len(candidates)
+            light_cell_id = candidates[pick_idx]
+            lb = all_bboxes.get(light_cell_id, {}) if all_bboxes else {}
+            if lb:
+                lx = lb.get("x", cx) + lb.get("w", 80) / 2.0
+                ly = lb.get("y", cy) + lb.get("h", 50) / 2.0
+                lz = float(lb.get("z", cz))
+                dist_sq = max((cx-lx)**2 + (cy-ly)**2 + (cz-lz)**2 * 10000, 1.0)
+                area    = lb.get("w", 80) * lb.get("h", 50)
+                pdf_light = 1.0 / (len(candidates) * area / dist_sq)  # area light PDF
+
+                # Light colour from emissive table
+                lsp = lb.get("species", "cil-arrow-right")
+                light_r, light_g, light_b = _EMISSIVE_TABLE.get(lsp, (0.5, 0.5, 0.5))
+
+        # ── MIS weight (balanced power heuristic, β=2) ────────────────────
+        if mis_mode == 2 and pdf_light > 0.0:
+            # MIS mode 2: combine material + light sampling
+            w_mat   = _pt_mis_weight(pdf_mat,   pdf_light)
+            w_light = _pt_mis_weight(pdf_light, pdf_mat)
+            # Throughput contribution from MIS combination
+            contrib_r = (path_r * w_mat + light_r * w_light) * throughput
+            contrib_g = (path_g * w_mat + light_g * w_light) * throughput
+            contrib_b = (path_b * w_mat + light_b * w_light) * throughput
+        elif mis_mode == 1 and pdf_light > 0.0:
+            # MIS mode 1: light sampling only
+            contrib_r = light_r * throughput
+            contrib_g = light_g * throughput
+            contrib_b = light_b * throughput
+        else:
+            # MIS mode 0 or no light: material sampling only
+            contrib_r = path_r * throughput
+            contrib_g = path_g * throughput
+            contrib_b = path_b * throughput
+
+        # ── Firefly clamp per bounce ───────────────────────────────────────
+        contrib_r, contrib_g, contrib_b = _pt_firefly_clamp(
+            (contrib_r, contrib_g, contrib_b), _PT_MAX_PATH_INTENSITY)
+
+        # ── Caustic approximation gate ─────────────────────────────────────
+        # When ApproximateCaustics=True, clamp specular contribution on diffuse
+        # surfaces to reduce noise from low-roughness indirect paths.
+        # Mirrors the C++ caustic approximation that clamps glossy→diffuse paths.
+        if _PT_APPROXIMATE_CAUSTICS and bounce > 0:
+            contrib_r *= 0.25
+            contrib_g *= 0.25
+            contrib_b *= 0.25
+
+        path_r = contrib_r
+        path_g = contrib_g
+        path_b = contrib_b
+
+        # ── Throughput update (Russian roulette) ──────────────────────────
+        # Mirrors the path tracer's per-bounce throughput × albedo update.
+        albedo_avg = (base_r + base_g + base_b) / 3.0
+        throughput *= max(0.0, min(1.0, albedo_avg * math.cos(theta_mat)))
+
+    return (max(0.0, path_r), max(0.0, path_g), max(0.0, path_b))
+
+
+def prepare_path_tracing(
+    config: AstroCellPathTracingConfig | None = None,
+    view_id: str = "default",
+) -> AstroCellPathTracingState:
+    """
+    Check for configuration changes and invalidate if needed.
+    Mirrors PreparePathTracing() + the IsDifferent/Invalidate block in
+    FDeferredShadingSceneRenderer::RenderPathTracing().
+
+    Called once per epoch before render_path_tracing() dispatches.
+
+    鲁迅式：准备是清醒，清醒是有时候比勇气更难做到的事情。
+    """
+    state  = get_or_create_cell_path_tracing_state(view_id)
+    cfg    = config or AstroCellPathTracingConfig()
+
+    if cfg.is_different(state.last_config):
+        print(
+            f"[ASTRO-PT] PreparePathTracing — config changed, invalidating state "
+            f"(sample_index was {state.sample_index})",
+            file=sys.stderr,
+        )
+        state.last_config = cfg
+        state.invalidate()
+    else:
+        # No change — bump frame_index only (mirrors FrameIndex++ in C++ each frame)
+        state.frame_index += 1
+
+    return state
+
+
+def render_path_tracing(
+    cell_id: str,
+    bbox: dict,
+    species: str,
+    all_bboxes: dict | None = None,
+    bvh: "AstroCellBVH | None" = None,
+    config: AstroCellPathTracingConfig | None = None,
+    view_id: str = "default",
+) -> dict:
+    """
+    Accumulate one path tracing sample for *cell_id*.
+
+    Entry point mirroring the per-view dispatch in RenderPathTracing() →
+    the per-pixel sample loop inside PathTracing.usf.
+
+    Algorithm:
+      1. prepare_path_tracing() — guard invalidation on config changes
+      2. Adaptive sampling gate — skip converged cells (VarianceBuffer check)
+      3. Sample one path via _pt_sample_cell_radiance()
+      4. Gaussian-filter the sample weight
+      5. Running-average accumulate into radiance_buffer
+      6. Update variance_buffer (Welford online variance)
+      7. Update denoiser AOV buffers (albedo, normal proxy, depth)
+      8. Increment sample_index when all cells sampled
+
+    Returns dict with per-cell accumulated radiance + denoiser AOV data.
+
+    鲁迅式：渲染是积累，积累是耐心，耐心是这个时代最稀缺的品质。
+    每一帧调用一次，样本慢慢增多，噪声慢慢消退——
+    如同鲁迅一篇篇写下去，终究成了一部真实的中国。
+    """
+    if not _PT_ENABLED:
+        return {"cell_id": cell_id, "pt_enabled": False}
+
+    cfg   = config or AstroCellPathTracingConfig()
+    state = prepare_path_tracing(cfg, view_id)
+
+    # ── Adaptive sampling convergence gate ────────────────────────────────
+    if state.is_converged(cell_id, cfg.adaptive_threshold):
+        return {
+            "cell_id":      cell_id,
+            "sample_index": state.sample_index,
+            "converged":    True,
+            "radiance":     state.radiance_buffer.get(cell_id, (0.0, 0.0, 0.0)),
+            "variance":     state.variance_buffer.get(cell_id, 0.0),
+        }
+
+    # ── Sample one path ────────────────────────────────────────────────────
+    raw = _pt_sample_cell_radiance(
+        cell_id     = cell_id,
+        bbox        = bbox,
+        species     = species,
+        sample_idx  = state.sample_index,
+        frame_idx   = state.frame_index,
+        bvh         = bvh,
+        all_bboxes  = all_bboxes,
+        mis_mode    = cfg.mis_mode,
+        max_bounces = cfg.max_bounces,
+    )
+
+    # ── Gaussian reconstruction filter ────────────────────────────────────
+    filtered = _pt_gaussian_filter(raw, cfg.filter_sigma)
+
+    # ── Running-average accumulation (mirrors RadianceRT += sample / N) ───
+    n   = state.sample_index + 1
+    old = state.radiance_buffer.get(cell_id, (0.0, 0.0, 0.0))
+    new_r = old[0] + (filtered[0] - old[0]) / n
+    new_g = old[1] + (filtered[1] - old[1]) / n
+    new_b = old[2] + (filtered[2] - old[2]) / n
+    state.radiance_buffer[cell_id] = (new_r, new_g, new_b)
+
+    # ── Welford online variance (mirrors VarianceBuffer update) ───────────
+    # δ = sample − old_mean;  δ2 = sample − new_mean
+    # M2 += δ × δ2;  variance = M2 / (n-1) for n≥2
+    old_var = state.variance_buffer.get(cell_id, 0.0)
+    lum_old = (old[0] + old[1] + old[2]) / 3.0
+    lum_new = (new_r + new_g + new_b) / 3.0
+    lum_sample = (filtered[0] + filtered[1] + filtered[2]) / 3.0
+    delta   = lum_sample - lum_old
+    delta2  = lum_sample - lum_new
+    # Running M2 stored as variance × (n-1) scaled back
+    m2_prev = old_var * max(n - 2, 1)
+    m2_new  = m2_prev + delta * delta2
+    state.variance_buffer[cell_id] = m2_new / max(n - 1, 1)
+
+    # ── Denoiser AOV update ────────────────────────────────────────────────
+    # AlbedoRT: species base colour (mirrors material albedo AOV)
+    _ALBEDO_MAP = {
+        "cil-eye": (0.49, 0.51, 0.71), "cil-bolt": (1.0, 0.44, 0.0),
+        "cil-vector": (0.18, 0.49, 0.20), "cil-plus": (0.12, 0.53, 0.90),
+        "cil-arrow-right": (0.27, 0.35, 0.39), "cil-filter": (0.48, 0.12, 0.64),
+        "cil-code": (0.18, 0.49, 0.20), "cil-layers": (0.08, 0.40, 0.75),
+        "cil-loop": (0.96, 0.50, 0.09), "cil-graph": (0.21, 0.28, 0.31),
+    }
+    state.albedo_buffer[cell_id] = _ALBEDO_MAP.get(species, (0.5, 0.5, 0.5))
+    # NormalRT: upward-facing normal (all cells face viewer → (0, 0, 1))
+    state.normal_buffer[cell_id] = (0.0, 0.0, 1.0)
+    # DepthRT: normalised depth from z-layer (mirrors DepthRT = z / z_far)
+    z_far = 8.0
+    state.depth_buffer[cell_id]  = max(0.0, min(1.0,
+        float(bbox.get("z", 3)) / z_far))
+
+    # ── Increment sample counter after all cells complete one sample ───────
+    # In the C++ renderer SampleIndex is incremented once per frame after the
+    # full tile dispatch.  Here we increment per-cell call (single-threaded).
+    state.sample_index = n
+
+    result = {
+        "cell_id":      cell_id,
+        "sample_index": state.sample_index,
+        "frame_index":  state.frame_index,
+        "converged":    state.is_converged(cell_id, cfg.adaptive_threshold),
+        "radiance":     state.radiance_buffer[cell_id],
+        "variance":     state.variance_buffer.get(cell_id, 0.0),
+        "albedo":       state.albedo_buffer[cell_id],
+        "normal":       state.normal_buffer[cell_id],
+        "depth":        state.depth_buffer[cell_id],
+        "pt_enabled":   True,
+    }
+
+    dbg = os.environ.get("ASTRO_PT_VERBOSE", "0") == "1"
+    if dbg:
+        print(
+            f"[ASTRO-PT] render_path_tracing cell={cell_id} "
+            f"spp={state.sample_index}/{cfg.max_samples} "
+            f"radiance=({new_r:.3f},{new_g:.3f},{new_b:.3f}) "
+            f"var={result['variance']:.5f} "
+            f"converged={result['converged']}",
+            file=sys.stderr,
+        )
+
+    return result
+
+
+# =============================================================================
+# [ASTRO-CELL] PathTracingSpatialTemporalDenoising → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/PathTracingSpatialTemporalDenoising.cpp
+#
+# 鲁迅曾言：「不读书的人，思想就会停止。」
+# 不去噪的渲染器，噪声就会永远停止不了。
+# 降噪是文明的努力——用空间和时间的信息，重建真实的光照。
+#
+# FDenoiserManager → AstroCellDenoiserManager
+#   RegisterSpatialDenoiser          → register_spatial_denoiser()
+#   RegisterSpatialTemporalDenoiser  → register_spatial_temporal_denoiser()
+#   UnregisterDenoiser               → unregister_denoiser()
+#   HasSpatialDenoiser               → has_spatial_denoiser()
+#   HasSpatialTemporalDenoiser       → has_spatial_temporal_denoiser()
+#   GetSpatialDenoiser               → get_spatial_denoiser()
+#   GetSpatialTemporalDenoiser       → get_spatial_temporal_denoiser()
+#   bNeedTextureCreateExtraFlags     → need_extra_flags (bool)
+#
+# Key denoising passes (ported as pure-Python analytic approximations):
+#   FTemporalReprojectionAlignCS    → temporal_reprojection_align()
+#   FTemporalReprojectionBlurCS     → temporal_reprojection_blur()
+#   FTemporalReprojectionMergeCS    → temporal_reprojection_merge()
+#   FTemporalHighFrequencyRejectMapCS → high_frequency_reject_map()
+#   FTemporalFeatureFusionCS        → temporal_feature_fusion()
+#
+# Algorithm changes (鲁迅式 20%):
+#   1. GPU compute shaders → analytic Python per-cell operations
+#   2. MotionVector texture → per-cell z-layer delta (2-D displacement)
+#   3. Variance-weighted temporal blend: history_weight adapted per-cell
+#      from the variance buffer of AstroCellPathTracingState
+#   4. Spatial NLM kernel (3×3 BVH neighbour query) replaces the full
+#      NxN screen-space bilateral filter pass
+# =============================================================================
+
+# CVarPathTracingDenoiser equivalents
+_PTD_ENABLED:              int   = 1     # r.PathTracing.Denoiser (-1/0/1)
+_PTD_SPATIAL_ENABLED:      int   = 1     # r.PathTracing.SpatialDenoiser
+_PTD_NORMAL_SPACE:         int   = 0     # 0=world, 1=camera
+_PTD_VARIANCE_TYPE:        int   = 1     # 1=combined single-channel
+_PTD_RANKED_LUM_VAR:       int   = 0     # 0=default luminance variance
+_PTD_TEMPORAL_WEIGHT:      float = 0.9   # history blend weight (temporal stability)
+_PTD_SPATIAL_TYPE:         int   = 0     # 0=spatial-only plugin, 1=spatio-temporal
+_PTD_DENOISER_NAME:        str   = "NNEDenoiser"
+_PTD_TEMPORAL_NAME:        str   = "NFOR"
+
+
+class AstroCellDenoiserManager:
+    """
+    Python equivalent of FDenoiserManager.
+
+    Registry for spatial and spatio-temporal denoiser plugins.
+    Thread-safe in C++; single-threaded singleton here (epoch loop).
+
+    鲁迅式：管理者的职责是注册、查询、注销——
+    如同一个公正的仲裁者，自己不参与战斗，只确保战斗有规则。
+    """
+
+    def __init__(self) -> None:
+        # Spatial denoisers: name → callable(radiance_buf, albedo_buf, normal_buf)
+        self._spatial:           _PTDict[str, object] = {}
+        # Spatio-temporal denoisers: name → callable(radiance_buf, history_buf, var_buf)
+        self._spatial_temporal:  _PTDict[str, object] = {}
+        # Whether any registered denoiser needs extra texture creation flags
+        self.need_extra_flags: bool = False
+
+    def register_spatial_denoiser(self, name: str, denoiser_fn,
+                                   needs_extra_flags: bool = False) -> None:
+        """
+        Register a spatial denoiser plugin.
+        Mirrors RegisterSpatialDenoiser(TUniquePtr<IPathTracingDenoiser>, FString).
+        """
+        assert name not in self._spatial, f"Denoiser '{name}' already registered"
+        self._spatial[name] = denoiser_fn
+        self.need_extra_flags |= needs_extra_flags
+        print(
+            f"[ASTRO-PTD] RegisterSpatialDenoiser name={name} "
+            f"need_extra_flags={needs_extra_flags}",
+            file=sys.stderr,
+        )
+
+    def register_spatial_temporal_denoiser(self, name: str, denoiser_fn,
+                                            needs_extra_flags: bool = False) -> None:
+        """
+        Register a spatio-temporal denoiser plugin.
+        Mirrors RegisterSpatialTemporalDenoiser(TUniquePtr<IPathTracingSpatialTemporalDenoiser>…).
+        """
+        assert name not in self._spatial_temporal, (
+            f"S-T Denoiser '{name}' already registered")
+        self._spatial_temporal[name] = denoiser_fn
+        self.need_extra_flags |= needs_extra_flags
+
+    def unregister_denoiser(self, name: str) -> None:
+        """Remove a denoiser by name from both registries."""
+        self._spatial.pop(name, None)
+        self._spatial_temporal.pop(name, None)
+
+    def has_spatial_denoiser(self) -> bool:
+        return bool(self._spatial)
+
+    def has_spatial_temporal_denoiser(self) -> bool:
+        return bool(self._spatial_temporal)
+
+    def has_denoiser(self) -> bool:
+        return self.has_spatial_denoiser() or self.has_spatial_temporal_denoiser()
+
+    def get_spatial_denoiser(self, name: str, exact_match: bool = False):
+        """
+        Return denoiser plugin by name; falls back to first registered if not exact.
+        Mirrors FDenoiserManager::GetSpatialDenoiser(FString Name, bool bMatch).
+        """
+        if name in self._spatial:
+            return self._spatial[name]
+        if not exact_match and self._spatial:
+            return next(iter(self._spatial.values()))
+        return None
+
+    def get_spatial_temporal_denoiser(self, name: str, exact_match: bool = False):
+        if name in self._spatial_temporal:
+            return self._spatial_temporal[name]
+        if not exact_match and self._spatial_temporal:
+            return next(iter(self._spatial_temporal.values()))
+        return None
+
+
+# Module-level singleton — mirrors the static FDenoiserManager instance
+_ASTRO_DENOISER_MANAGER: AstroCellDenoiserManager = AstroCellDenoiserManager()
+
+
+def get_denoiser_manager() -> AstroCellDenoiserManager:
+    """Return the global AstroCellDenoiserManager singleton."""
+    return _ASTRO_DENOISER_MANAGER
+
+
+# ── Temporal reprojection passes (FTemporalReprojection* CS ports) ────────────
+
+def temporal_reprojection_align(
+    radiance_buf:   _PTDict[str, tuple],
+    history_buf:    _PTDict[str, tuple],
+    motion_vectors: _PTDict[str, tuple],  # cell_id → (dz,) displacement
+) -> _PTDict[str, tuple]:
+    """
+    Temporal reprojection alignment pass.
+    Mirrors FTemporalReprojectionAlignCS: warps history to current frame using
+    per-cell motion vectors.
+
+    In 2-D, motion is only in the Z axis (z-layer transitions); X/Y do not change
+    between frames in the pub/sub epoch model.  The warp is a z-layer index
+    lookup: if cell moved from z_prev to z_curr, copy its history entry
+    (no blending needed for integer z-layer steps).
+
+    Returns a dict of aligned history radiance (same structure as radiance_buf).
+
+    鲁迅式：时间的对齐是第一步——如果你无法找到上一帧的位置，
+    历史便是别人的历史，与你无关。
+    """
+    aligned: _PTDict[str, tuple] = {}
+    for cell_id, rad in radiance_buf.items():
+        mv = motion_vectors.get(cell_id, (0.0,))
+        dz = mv[0] if mv else 0.0
+        if abs(dz) < 0.5:
+            # No significant motion — use history directly (fast path)
+            aligned[cell_id] = history_buf.get(cell_id, rad)
+        else:
+            # Cell moved to a new z-layer: history is stale; restart from current
+            # (mirrors the C++ path where large motion vectors cause history rejection)
+            aligned[cell_id] = rad
+    return aligned
+
+
+def temporal_reprojection_blur(
+    aligned_history: _PTDict[str, tuple],
+    bvh:             "AstroCellBVH | None",
+    all_bboxes:      dict,
+    blur_radius:     float = 1.0,
+) -> _PTDict[str, tuple]:
+    """
+    Temporal reprojection blur pass.
+    Mirrors FTemporalReprojectionBlurCS: applies a small spatial blur to the
+    aligned history to reduce temporal ghosting from mis-aligned history.
+
+    2-D adaptation: BVH spatial query fetches immediate neighbours; their
+    history values are averaged as a 3-tap bilateral kernel weighted by
+    distance (analogue of the C++ screen-space 3×1 separable blur kernel).
+
+    鲁迅式：模糊是宽容，是允许错误存在的制度——
+    但宽容过度便是纵容，故 blur_radius 不宜过大。
+    """
+    blurred: _PTDict[str, tuple] = {}
+    for cell_id, hist in aligned_history.items():
+        bbox = all_bboxes.get(cell_id, {})
+        if not bbox or bvh is None:
+            blurred[cell_id] = hist
+            continue
+
+        # Spatial neighbourhood from BVH
+        nbrs = bvh.query_overlapping_cells({
+            "x": bbox.get("x", 0) - blur_radius * bbox.get("w", 80),
+            "y": bbox.get("y", 0) - blur_radius * bbox.get("h", 50),
+            "w": bbox.get("w", 80) * (1 + 2 * blur_radius),
+            "h": bbox.get("h", 50) * (1 + 2 * blur_radius),
+        })
+        nbr_hists = [aligned_history[n] for n in nbrs
+                     if n != cell_id and n in aligned_history]
+
+        if nbr_hists:
+            # Simple average (bilateral weights omitted — analytic context)
+            avg_r = (hist[0] + sum(h[0] for h in nbr_hists)) / (len(nbr_hists) + 1)
+            avg_g = (hist[1] + sum(h[1] for h in nbr_hists)) / (len(nbr_hists) + 1)
+            avg_b = (hist[2] + sum(h[2] for h in nbr_hists)) / (len(nbr_hists) + 1)
+            blurred[cell_id] = (avg_r, avg_g, avg_b)
+        else:
+            blurred[cell_id] = hist
+
+    return blurred
+
+
+def temporal_reprojection_merge(
+    current_radiance: _PTDict[str, tuple],
+    blurred_history:  _PTDict[str, tuple],
+    variance_buf:     _PTDict[str, float],
+    base_weight:      float = _PTD_TEMPORAL_WEIGHT,
+) -> _PTDict[str, tuple]:
+    """
+    Temporal accumulation merge pass.
+    Mirrors FTemporalReprojectionMergeCS: blends current frame with history.
+
+    The history weight is modulated by per-cell variance:
+        w_hist = base_weight × clamp(1 − variance / variance_max, 0, 1)
+    Low-variance (converged) cells keep more history; high-variance cells
+    (still noisy) accept more current-frame data — same as the C++
+    TotalVariation permutation of the merge shader.
+
+    鲁迅式：过去与现在的混合比例，取决于现在有多嘈杂——
+    越嘈杂，越需要历史来压制；越平静，历史越可以安全保留。
+    """
+    merged: _PTDict[str, tuple] = {}
+    variance_max = max(variance_buf.values()) if variance_buf else 1.0
+    variance_max = max(variance_max, 1e-6)
+
+    for cell_id, curr in current_radiance.items():
+        hist  = blurred_history.get(cell_id, curr)
+        var   = variance_buf.get(cell_id, 1.0)
+        # Variance-adaptive weight
+        w_hist = base_weight * max(0.0, min(1.0, 1.0 - var / variance_max))
+        w_curr = 1.0 - w_hist
+        merged[cell_id] = (
+            curr[0] * w_curr + hist[0] * w_hist,
+            curr[1] * w_curr + hist[1] * w_hist,
+            curr[2] * w_curr + hist[2] * w_hist,
+        )
+    return merged
+
+
+def high_frequency_reject_map(
+    radiance_buf:     _PTDict[str, tuple],
+    last_denoised:    _PTDict[str, tuple],
+    variance_buf:     _PTDict[str, float],
+    reject_threshold: float = 0.15,
+) -> _PTDict[str, float]:
+    """
+    High-frequency reject map pass.
+    Mirrors FTemporalHighFrequencyRejectMapCS: generates a per-cell mask
+    [0, 1] where 1 = accept current (high-frequency / newly appeared feature)
+    and 0 = reject current (temporal ghost / noise spike).
+
+    Implemented as luminance-delta comparison against last denoised frame:
+        delta_lum = |lum_current − lum_last_denoised| / max(lum_last_denoised, 1e-4)
+        accept    = 1 if delta_lum < reject_threshold and variance < threshold
+                    0 otherwise (clamp to [0, 1])
+
+    鲁迅式：高频拒绝图是防伪标记——真实的光照变化缓慢，突变是噪声的证据。
+    但拒绝必须谨慎，过于激进的拒绝会抹平真实的变化，造成「滞后」的幽灵。
+    """
+    accept_map: _PTDict[str, float] = {}
+    for cell_id, curr in radiance_buf.items():
+        lum_curr = (curr[0] + curr[1] + curr[2]) / 3.0
+        last = last_denoised.get(cell_id)
+        if last is None:
+            accept_map[cell_id] = 1.0
+            continue
+        lum_last = (last[0] + last[1] + last[2]) / 3.0
+        delta    = abs(lum_curr - lum_last) / max(lum_last, 1e-4)
+        var      = variance_buf.get(cell_id, 1.0)
+        if delta < reject_threshold and var < _PT_ADAPTIVE_THRESHOLD * 10:
+            accept_map[cell_id] = 0.0   # accept history (reject current spike)
+        else:
+            accept_map[cell_id] = 1.0   # accept current (genuine change)
+    return accept_map
+
+
+def temporal_feature_fusion(
+    merged_radiance: _PTDict[str, tuple],
+    accept_map:      _PTDict[str, float],
+    last_denoised:   _PTDict[str, tuple],
+) -> _PTDict[str, tuple]:
+    """
+    Temporal feature fusion pass.
+    Mirrors FTemporalFeatureFusionCS: final per-cell combination of merged
+    radiance with last-denoised history, gated by the accept_map.
+
+    accept_map[cell_id] == 1.0 → use merged_radiance (fresh data)
+    accept_map[cell_id] == 0.0 → blend toward last_denoised (temporal stability)
+
+    鲁迅式：融合是最后的抉择——在新与旧之间，在清晰与稳定之间，
+    accept_map 是那唯一的判官，不偏不倚（除非偶尔被数学愚弄）。
+    """
+    fused: _PTDict[str, tuple] = {}
+    for cell_id, merged in merged_radiance.items():
+        a     = accept_map.get(cell_id, 1.0)
+        last  = last_denoised.get(cell_id, merged)
+        fused[cell_id] = (
+            merged[0] * a + last[0] * (1.0 - a),
+            merged[1] * a + last[1] * (1.0 - a),
+            merged[2] * a + last[2] * (1.0 - a),
+        )
+    return fused
+
+
+def run_spatial_temporal_denoising(
+    state:       AstroCellPathTracingState,
+    all_bboxes:  dict,
+    bvh:         "AstroCellBVH | None" = None,
+    motion_vectors: _PTDict[str, tuple] | None = None,
+) -> _PTDict[str, tuple]:
+    """
+    Full spatio-temporal denoising pipeline for all cells.
+
+    Orchestrates the five passes in order, matching the compute-pass dispatch
+    sequence in PathTracingSpatialTemporalDenoising.cpp:
+      1. temporal_reprojection_align
+      2. temporal_reprojection_blur
+      3. temporal_reprojection_merge
+      4. high_frequency_reject_map
+      5. temporal_feature_fusion
+
+    After fusion, the result is stored in state.last_denoised for the next
+    frame's history (mirrors LastDenoisedRadianceRT update).
+
+    Returns the final denoised radiance dict.
+
+    鲁迅式：五道工序，缺一不可——就如同一篇文章，
+    初稿之后还需修改、再修改、校对、排版，才能印出来给人看。
+    """
+    if not state.radiance_buffer:
+        return {}
+
+    mv = motion_vectors or {}
+
+    # Pass 1: Temporal alignment
+    aligned = temporal_reprojection_align(
+        state.radiance_buffer, state.last_denoised, mv)
+
+    # Pass 2: History blur
+    blurred = temporal_reprojection_blur(aligned, bvh, all_bboxes)
+
+    # Pass 3: Temporal merge with variance adaptation
+    merged = temporal_reprojection_merge(
+        state.radiance_buffer, blurred, state.variance_buffer)
+
+    # Pass 4: High-frequency reject map
+    accept = high_frequency_reject_map(
+        state.radiance_buffer, state.last_denoised, state.variance_buffer)
+
+    # Pass 5: Feature fusion
+    denoised = temporal_feature_fusion(merged, accept, state.last_denoised)
+
+    # Update last-denoised cache for next frame
+    state.last_denoised.update(denoised)
+
+    total    = len(denoised)
+    accepted = sum(1 for v in accept.values() if v > 0.5)
+    print(
+        f"[ASTRO-PTD] run_spatial_temporal_denoising: "
+        f"total_cells={total} accepted_fresh={accepted} "
+        f"temporal_blended={total - accepted} "
+        f"spp={state.sample_index}",
+        file=sys.stderr,
+    )
+
+    return denoised
+
+
+# =============================================================================
+# [ASTRO-CELL] ReflectionEnvironmentCapture → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/ReflectionEnvironmentCapture.cpp
+#
+# 鲁迅曾言：「希望本是无所谓有，无所谓无的。这正如地上的路；
+# 其实地上本没有路，走的人多了，也便成了路。」
+# 反射探针亦然——世界本无镜，捕获得多了，也便成了反射。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   GSupersampleCaptureFactor       → ASTRO_CAPTURE_SUPERSAMPLE_FACTOR
+#   GReflectionCaptureNearPlane     → ASTRO_CAPTURE_NEAR_PLANE
+#   CVarReflectionCaptureRuntimeTimeslice → ASTRO_CAPTURE_TIMESLICE_FACES
+#   CaptureSceneToScratchCubemap    → capture_scene_to_scratch_cubemap()
+#   ConvolveCubeMap                 → convolve_cube_map()
+#   FindOrAllocateCubemapIndex      → find_or_allocate_cubemap_index()
+#   ComputeRuntimeBudgetSignedDistance → compute_capture_priority()
+#   FCaptureComponentSceneState     → AstroCellCaptureState
+#   FReflectionSceneData            → AstroCellReflectionSceneData
+#   BeginReflectionCaptureSlowTask  → begin_capture_task() (log-only)
+#   UpdateReflectionCaptureSlowTask → update_capture_task()
+#   EndReflectionCaptureSlowTask    → end_capture_task()
+#
+# 2-D SVG adaptation:
+#   CubemapArray[face][mip]  → per-cell specular probe dict  (6 faces × N mips)
+#   Radiance SH L2 (9 coeff) → 3-component SH L1 (3 floats per channel = 9)
+#   Downsample mip pass      → gaussian_downsample_face_mip()
+#   Convolve specular face   → convolve_specular_face()
+#   Diffuse irradiance SH    → compute_diffuse_irradiance_sh()
+# =============================================================================
+
+# CVarReflectionCapture equivalents
+ASTRO_CAPTURE_NEAR_PLANE:       float = 5.0     # GReflectionCaptureNearPlane
+ASTRO_CAPTURE_SUPERSAMPLE_MIN:  int   = 1       # MinSupersampleCaptureFactor
+ASTRO_CAPTURE_SUPERSAMPLE_MAX:  int   = 8       # MaxSupersampleCaptureFactor
+ASTRO_CAPTURE_SUPERSAMPLE:      int   = 1       # GSupersampleCaptureFactor
+ASTRO_CAPTURE_TIMESLICE_FACES:  int   = 2       # CVarReflectionCaptureRuntimeTimeslice
+ASTRO_CAPTURE_TIMESLICE_EDITOR: int   = 3       # CVarReflectionCaptureRuntimeTimesliceEditor
+ASTRO_CAPTURE_TIMESLICE_SLOW:   bool  = False   # CVarReflectionCaptureRuntimeTimesliceSlow
+ASTRO_CAPTURE_FADE_TIME:        float = 0.5     # CVarReflectionCaptureRuntimeFadeInTime
+ASTRO_CAPTURE_BUDGET:           int   = 0       # CVarReflectionCaptureRuntimeBudget (0=unlimited)
+ASTRO_CAPTURE_FOLIAGE:          bool  = False   # CVarReflectionCaptureRuntimeFoliage
+ASTRO_CAPTURE_TRANSLUCENCY:     bool  = False   # CVarReflectionCaptureRuntimeTranslucency
+ASTRO_CAPTURE_MODE:             int   = 1       # 0=continuous, 1=once
+ASTRO_CAPTURE_FAST_ON_LOAD:     int   = 3       # CVarReflectionCaptureRuntimeFastRenderOnLoad
+# Cube faces: +X,-X,+Y,-Y,+Z,-Z (indices 0..5)
+_CAPTURE_NUM_FACES:             int   = 6
+_CAPTURE_NUM_MIPS:              int   = 7       # mip 0..6 for 128×128 cube (log2(128)+1)
+
+
+@_ptdc
+class AstroCellCaptureState:
+    """
+    Python equivalent of FCaptureComponentSceneState.
+
+    Tracks the lifecycle of one reflection capture probe:
+        cubemap_index: int     — slot in the global cubemap array
+        fade_alpha:    float   — fade-in progress [0, 1]
+        rendered_once: bool    — True once all 6 faces captured at least once
+        is_dirty:      bool    — True when the capture needs a refresh
+        cell_id:       str     — owning cell (Astro-specific field)
+
+    鲁迅式：一个探针的一生——诞生于 FindOrAllocateCubemapIndex，
+    成熟于所有面被捕获完毕，淡入于 fade_alpha 趋近 1.0，
+    死亡于探针被 evict 或场景被清除。
+    """
+    cubemap_index: int   = -1
+    fade_alpha:    float = 0.0
+    rendered_once: bool  = False
+    is_dirty:      bool  = True
+    cell_id:       str   = ""
+    # Per-face capture data: list of 6 face dicts, each with mip levels
+    # Face dict: { "mip_0": (R,G,B), "mip_1": (R,G,B), ... }
+    face_data: _PTList[_PTDict[str, tuple]] = _ptfield(
+        default_factory=lambda: [{} for _ in range(_CAPTURE_NUM_FACES)])
+    # Prefiltered specular: mip_level → average_colour (convolved)
+    specular_prefilter: _PTDict[int, tuple] = _ptfield(default_factory=dict)
+    # Diffuse SH irradiance (9 coefficients, 3 channels × 3 = 9 floats)
+    diffuse_sh: _PTList[float] = _ptfield(default_factory=lambda: [0.0] * 9)
+
+
+@_ptdc
+class AstroCellReflectionSceneData:
+    """
+    Python equivalent of FReflectionSceneData.
+
+    Holds the global cubemap array and the per-probe state registry.
+    Mirrors the scene-level structure that the C++ renderer consults
+    when resolving cubemap slots and building the Uniform Buffer.
+
+    鲁迅式：场景数据是公共档案馆——每个探针在这里登记户籍，
+    离开时注销，场景清除时关门大吉。
+    """
+    # Allocated captures: cell_id → AstroCellCaptureState
+    allocated_captures: _PTDict[str, AstroCellCaptureState] = _ptfield(
+        default_factory=dict)
+    # Next available cubemap slot index (mirrors NextAvailableReflectionCaptureSortedIndex)
+    next_cubemap_slot: int = 0
+    # Maximum supported captures per scene (mirrors MaxCubemaps)
+    max_cubemaps: int = 64
+
+
+# Module-level scene data singleton
+_ASTRO_REFLECTION_SCENE: AstroCellReflectionSceneData = AstroCellReflectionSceneData()
+
+
+def get_reflection_scene_data() -> AstroCellReflectionSceneData:
+    """Return the module-level AstroCellReflectionSceneData singleton."""
+    return _ASTRO_REFLECTION_SCENE
+
+
+def begin_capture_task(num_captures: int, reason: str = "UpdateCaptures") -> None:
+    """
+    Log the start of a reflection capture batch.
+    Mirrors BeginReflectionCaptureSlowTask() — only logging in Astro (no UE slow task UI).
+    """
+    print(
+        f"[ASTRO-CAPTURE] BeginReflectionCaptureSlowTask: "
+        f"num={num_captures} reason={reason}",
+        file=sys.stderr,
+    )
+
+
+def update_capture_task(capture_index: int, num_captures: int) -> None:
+    """Mirrors UpdateReflectionCaptureSlowTask — progress logging."""
+    if capture_index % max(1, num_captures // 5) == 0:
+        pct = int(100.0 * capture_index / max(num_captures, 1))
+        print(
+            f"[ASTRO-CAPTURE] UpdateReflectionCaptureSlowTask: "
+            f"{capture_index}/{num_captures} ({pct}%)",
+            file=sys.stderr,
+        )
+
+
+def end_capture_task(num_captures: int) -> None:
+    """Mirrors EndReflectionCaptureSlowTask."""
+    print(
+        f"[ASTRO-CAPTURE] EndReflectionCaptureSlowTask: "
+        f"num={num_captures} complete",
+        file=sys.stderr,
+    )
+
+
+def find_or_allocate_cubemap_index(cell_id: str) -> int:
+    """
+    Allocate or return the existing cubemap slot for *cell_id*.
+
+    Mirrors FindOrAllocateCubemapIndex() from ReflectionEnvironmentCapture.cpp:
+        CaptureSceneStatePtr = Scene.ReflectionSceneData.AllocatedReflectionCaptureState
+                                .AddReference(Component)
+        if (!CaptureSceneStatePtr): allocate new slot
+
+    Returns cubemap_index ∈ [0, max_cubemaps) or -1 on overflow.
+
+    鲁迅式：分配是有限的资源与无限的需求之间的妥协——
+    64 个探针槽，比大多数场景需要的多；
+    但若场景足够野心勃勃，终有耗尽的一天。
+    """
+    scene = get_reflection_scene_data()
+    if cell_id in scene.allocated_captures:
+        return scene.allocated_captures[cell_id].cubemap_index
+
+    if scene.next_cubemap_slot >= scene.max_cubemaps:
+        print(
+            f"[ASTRO-CAPTURE] WARNING: cubemap array full "
+            f"({scene.max_cubemaps} slots) — cannot allocate for cell={cell_id}",
+            file=sys.stderr,
+        )
+        return -1
+
+    idx = scene.next_cubemap_slot
+    scene.next_cubemap_slot += 1
+    state = AstroCellCaptureState(cubemap_index=idx, cell_id=cell_id)
+    scene.allocated_captures[cell_id] = state
+
+    print(
+        f"[ASTRO-CAPTURE] FindOrAllocateCubemapIndex: "
+        f"cell_id={cell_id} slot={idx} "
+        f"total_allocated={len(scene.allocated_captures)}",
+        file=sys.stderr,
+    )
+    return idx
+
+
+def compute_capture_priority(
+    cell_id:    str,
+    bbox:       dict,
+    camera_pos: tuple = (600.0, 450.0, 3.0),
+) -> float:
+    """
+    Compute signed distance priority for runtime capture budget sorting.
+
+    Mirrors ComputeRuntimeBudgetSignedDistance() from ReflectionEnvironmentCapture.cpp:
+        For sphere probes: dist − InfluenceRadius
+        For box probes:    Chebyshev distance to box surface
+
+    2-D adaptation: uses 2-D bbox proximity to camera position.
+    Lower = higher priority (closest captures rendered first).
+
+    鲁迅式：优先级是稀缺资源分配的哲学——离得近的先照，离得远的等着。
+    这不是歧视，是现实主义。
+    """
+    cx = bbox.get("x", 0) + bbox.get("w", 80) / 2.0
+    cy = bbox.get("y", 0) + bbox.get("h", 50) / 2.0
+    cz = float(bbox.get("z", 3))
+
+    cam_x, cam_y, cam_z = camera_pos
+    dx = cx - cam_x
+    dy = cy - cam_y
+    dz = (cz - cam_z) * 100.0   # scale z to world units
+
+    influence_r = max(bbox.get("w", 80), bbox.get("h", 50)) / 2.0
+    dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+    return dist - influence_r   # negative = camera inside the probe influence
+
+
+def gaussian_downsample_face_mip(
+    face_colour: tuple,
+    mip_level:   int,
+    sigma_scale: float = 0.8,
+) -> tuple:
+    """
+    Per-mip Gaussian downsample of a cubemap face colour.
+    Mirrors FDownsampleCubeFaceCS (DownsampleCS in ReflectionEnvironmentShaders.usf):
+        Each mip halves the resolution and blurs with a 3×3 Gaussian kernel.
+        Energy is conserved (sum of Gaussian weights = 1).
+
+    2-D adaptation: operates on a single (R, G, B) float tuple representing
+    the average colour of a face at the given mip level.  The Gaussian kernel
+    is replaced by an exponential decay on luminance (mirrors the energy loss
+    at higher mip levels where the specular lobe widens).
+
+    Returns the downsampled face colour at *mip_level*.
+
+    鲁迅式：Mip 层是宽容的代价——越高的 mip，细节越少，也越不刺眼。
+    这是视觉的让步，也是性能的胜利。
+    """
+    # Gaussian decay factor per mip: each level loses sigma_scale of sharpness
+    decay = math.exp(-0.5 * (mip_level * sigma_scale) ** 2)
+    # Blend toward mid-grey (0.5, 0.5, 0.5) at higher mips — mirrors the
+    # BRDF integration limit where fully rough surfaces → uniform hemisphere
+    mid = 0.5
+    return (
+        face_colour[0] * decay + mid * (1.0 - decay),
+        face_colour[1] * decay + mid * (1.0 - decay),
+        face_colour[2] * decay + mid * (1.0 - decay),
+    )
+
+
+def convolve_specular_face(
+    face_colour:   tuple,
+    mip_level:     int,
+    roughness:     float = 0.5,
+    num_mips:      int   = _CAPTURE_NUM_MIPS,
+) -> tuple:
+    """
+    Per-face specular convolution (pre-filtered environment map).
+    Mirrors FConvolveSpecularFaceCS (FilterCS in ReflectionEnvironmentShaders.usf):
+        Integrates the GGX BSDF lobe over the cubemap face weighted by
+        the mip-level roughness mapping:
+            perceptual_roughness = mip / (num_mips - 1)
+            alpha = perceptual_roughness²   (GGX alpha = roughness²)
+
+    2-D adaptation: approximates the convolution result as a roughness-weighted
+    blend between the specular (sharp) face colour and a diffuse (isotropic) grey.
+    The GGX NDF width increases with roughness — the highest mip approximates
+    a Lambertian hemisphere integral (uniform over all directions → grey).
+
+    Returns pre-filtered specular colour for this face + mip combination.
+
+    鲁迅式：预滤波是先见之明——把所有可能的粗糙度预先计算好，
+    运行时只需查表，不必每次重新积分。这是懒惰，也是智慧。
+    """
+    perceptual_roughness = mip_level / max(num_mips - 1, 1)
+    alpha = perceptual_roughness * perceptual_roughness
+
+    # GGX lobe weight: sharper lobe at low roughness → more face colour;
+    # wider lobe at high roughness → blend toward isotropic grey
+    lobe_w = max(0.0, 1.0 - alpha)
+    iso_w  = alpha
+
+    lum   = (face_colour[0] + face_colour[1] + face_colour[2]) / 3.0
+    grey  = (lum, lum, lum)
+
+    prefiltered = (
+        face_colour[0] * lobe_w + grey[0] * iso_w,
+        face_colour[1] * lobe_w + grey[1] * iso_w,
+        face_colour[2] * lobe_w + grey[2] * iso_w,
+    )
+    return prefiltered
+
+
+def compute_diffuse_irradiance_sh(
+    face_colours: _PTList[tuple],
+) -> _PTList[float]:
+    """
+    Compute diffuse irradiance SH L1 coefficients from 6 face averages.
+    Mirrors FComputeSkyEnvMapDiffuseIrradianceCS (ComputeSkyEnvMapDiffuseIrradianceCS.usf):
+        Integrates the cubemap × Lambertian kernel into SH L2 coefficients.
+        For 6 axis-aligned faces, the SH projection simplifies to per-axis terms.
+
+    Returns 9 floats: [Y_00_R, Y_00_G, Y_00_B, Y_1-1_R, …, Y_11_B]
+    (SH L0 + L1 for each colour channel, interleaved per-channel for
+    compatibility with the C++ IrradianceEnvMapSH layout).
+
+    鲁迅式：球谐函数是数学对光照的压缩——把无限方向的辐照度
+    压缩成九个系数，失去了细节，保留了大意。
+    一如散文诗：意境犹在，字句已省。
+    """
+    # Face order: +X, -X, +Y, -Y, +Z, -Z
+    # Each face contributes to SH L0 (Y_00) and L1 (Y_1-1, Y_10, Y_11)
+    # via the face normal dotted with the SH basis functions.
+    # SH normalization constants: Y_00 = 1/√(4π), Y_1m = √(3/(4π))
+    c0 = 0.282095   # Y_00
+    c1 = 0.488603   # Y_1x normalisation
+
+    # Face normals (+X,-X,+Y,-Y,+Z,-Z)
+    normals = [
+        ( 1, 0, 0), (-1, 0, 0),
+        ( 0, 1, 0), ( 0,-1, 0),
+        ( 0, 0, 1), ( 0, 0,-1),
+    ]
+
+    sh = [0.0] * 9  # [L0_R, L0_G, L0_B, L1y_R, L1y_G, L1y_B, L1z_R, L1z_G, L1z_B]
+    solid_angle = 4.0 * math.pi / _CAPTURE_NUM_FACES  # uniform solid angle per face
+
+    for i, (nx, ny, nz) in enumerate(normals):
+        fc = face_colours[i] if i < len(face_colours) else (0.0, 0.0, 0.0)
+        fr, fg, fb = fc
+
+        # L0 accumulation (isotropic, same for all channels)
+        sh[0] += c0 * fr * solid_angle
+        sh[1] += c0 * fg * solid_angle
+        sh[2] += c0 * fb * solid_angle
+
+        # L1 Y band (Y_1-1 ∝ y, Y_10 ∝ z): skip Y_11 (∝ x) for brevity
+        sh[3] += c1 * ny * fr * solid_angle
+        sh[4] += c1 * ny * fg * solid_angle
+        sh[5] += c1 * ny * fb * solid_angle
+        sh[6] += c1 * nz * fr * solid_angle
+        sh[7] += c1 * nz * fg * solid_angle
+        sh[8] += c1 * nz * fb * solid_angle
+
+    return sh
+
+
+def capture_scene_to_scratch_cubemap(
+    cell_id:     str,
+    bbox:        dict,
+    species:     str,
+    all_bboxes:  dict,
+    face_index:  int  = -1,   # -1 = all 6 faces; 0..5 = specific face (timeslice)
+    supersample: int  = ASTRO_CAPTURE_SUPERSAMPLE,
+) -> AstroCellCaptureState:
+    """
+    Capture scene radiance into the cell's cubemap scratch buffer.
+
+    Mirrors CaptureSceneToScratchCubemap() which renders 6 cube faces into
+    a temporary render target, including sky atmosphere, sky light, and
+    foliage (if enabled).
+
+    2-D adaptation:
+        Each face is assigned a canonical direction in the 2-D SVG plane:
+            Face 0 (+X): right-side neighbours
+            Face 1 (-X): left-side neighbours
+            Face 2 (+Y): bottom neighbours
+            Face 3 (-Y): top neighbours
+            Face 4 (+Z): higher-z-layer neighbours  (「上」)
+            Face 5 (-Z): lower-z-layer neighbours   (「下」)
+        For each face, we query the BVH (or all_bboxes) for neighbours in
+        that half-plane, average their emissive colours weighted by solid
+        angle, and write the result into the face data.
+
+    The supersample factor is clamped to [MIN, MAX] as in C++ and applied
+    as a weight boost for the Gaussian downsample kernel.
+
+    Returns the updated AstroCellCaptureState for *cell_id*.
+
+    鲁迅式：捕获是对现实的凝视——六个方向，不遗漏任何角落。
+    但凝视需要勇气：某些方向可能什么都没有，而这本身也是信息。
+    """
+    supersample = max(ASTRO_CAPTURE_SUPERSAMPLE_MIN,
+                      min(ASTRO_CAPTURE_SUPERSAMPLE_MAX, supersample))
+
+    scene  = get_reflection_scene_data()
+    slot   = find_or_allocate_cubemap_index(cell_id)
+    if slot < 0:
+        return AstroCellCaptureState(cell_id=cell_id, cubemap_index=-1)
+
+    capture = scene.allocated_captures[cell_id]
+
+    cx   = bbox.get("x", 0) + bbox.get("w", 80) / 2.0
+    cy   = bbox.get("y", 0) + bbox.get("h", 50) / 2.0
+    cz   = float(bbox.get("z", 3))
+    hw   = bbox.get("w", 80) / 2.0
+    hh   = bbox.get("h", 50) / 2.0
+
+    # Face query planes: half-planes in (X, Y, Z) centred on cell
+    face_filters = [
+        lambda b, _cx=cx: b.get("x", 0) > _cx,           # +X: right
+        lambda b, _cx=cx: b.get("x", 0) + b.get("w", 80) < _cx,  # -X: left
+        lambda b, _cy=cy: b.get("y", 0) > _cy,           # +Y: below (SVG y grows down)
+        lambda b, _cy=cy: b.get("y", 0) + b.get("h", 50) < _cy,  # -Y: above
+        lambda b, _cz=cz: float(b.get("z", 3)) > _cz,   # +Z: higher layer
+        lambda b, _cz=cz: float(b.get("z", 3)) < _cz,   # -Z: lower layer
+    ]
+
+    faces_to_capture = range(_CAPTURE_NUM_FACES) if face_index < 0 else [face_index]
+
+    _EMISSIVE_CAPTURE_TABLE = {
+        "cil-eye":         (0.55, 0.60, 0.90),
+        "cil-bolt":        (0.95, 0.55, 0.10),
+        "cil-vector":      (0.30, 0.70, 0.35),
+        "cil-plus":        (0.25, 0.55, 0.90),
+        "cil-arrow-right": (0.50, 0.60, 0.65),
+        "cil-filter":      (0.60, 0.25, 0.75),
+        "cil-code":        (0.30, 0.70, 0.35),
+        "cil-layers":      (0.20, 0.55, 0.85),
+        "cil-loop":        (0.90, 0.60, 0.15),
+        "cil-graph":       (0.40, 0.50, 0.55),
+    }
+
+    for fi in faces_to_capture:
+        face_filter_fn = face_filters[fi]
+        # Collect neighbours in this face's half-plane
+        contributors = []
+        for other_id, obbox in all_bboxes.items():
+            if other_id == cell_id:
+                continue
+            if face_filter_fn(obbox):
+                sp = obbox.get("species", "cil-arrow-right")
+                contrib_col = _EMISSIVE_CAPTURE_TABLE.get(sp, (0.5, 0.5, 0.5))
+                # Solid angle weight: larger / closer cells contribute more
+                ox   = obbox.get("x", 0) + obbox.get("w", 80) / 2.0
+                oy   = obbox.get("y", 0) + obbox.get("h", 50) / 2.0
+                oz   = float(obbox.get("z", 3))
+                dist = max(1.0, math.sqrt((cx-ox)**2 + (cy-oy)**2 + (cz-oz)**2*1e4))
+                area = obbox.get("w", 80) * obbox.get("h", 50)
+                w    = area / (dist * dist) * supersample
+                contributors.append((contrib_col, w))
+
+        if contributors:
+            total_w = sum(w for _, w in contributors)
+            avg_r   = sum(c[0]*w for c, w in contributors) / total_w
+            avg_g   = sum(c[1]*w for c, w in contributors) / total_w
+            avg_b   = sum(c[2]*w for c, w in contributors) / total_w
+        else:
+            # No contributors: sky colour from near-plane (ASTRO_CAPTURE_NEAR_PLANE)
+            # Mirrors the CaptureSceneToScratchCubemap sky fallback
+            avg_r, avg_g, avg_b = 0.55, 0.68, 0.82   # sky blue default
+
+        face_base = (avg_r, avg_g, avg_b)
+
+        # Build mip chain for this face
+        face_dict: _PTDict[str, tuple] = {}
+        for mip in range(_CAPTURE_NUM_MIPS):
+            face_dict[f"mip_{mip}"] = gaussian_downsample_face_mip(
+                face_base, mip, sigma_scale=0.7)
+        capture.face_data[fi] = face_dict
+
+    print(
+        f"[ASTRO-CAPTURE] CaptureSceneToScratchCubemap: "
+        f"cell_id={cell_id} slot={slot} "
+        f"faces_captured={list(faces_to_capture)} "
+        f"supersample={supersample}",
+        file=sys.stderr,
+    )
+    return capture
+
+
+def convolve_capture_cubemap(cell_id: str) -> AstroCellCaptureState:
+    """
+    Convolve the captured cubemap to produce a pre-filtered specular environment.
+    Mirrors the ConvolveCubeMap() pass called after CaptureSceneToScratchCubemap().
+
+    For each mip level: average face_data across all 6 faces → convolve_specular_face
+    → store result in capture.specular_prefilter[mip].
+
+    Also computes diffuse irradiance SH from the mip-0 face data.
+
+    鲁迅式：卷积是提炼——把六个方向的原始捕获数据，
+    提炼成一份可以被任何粗糙度查询的预滤波环境贴图。
+    这是从现象到本质的压缩，是科学的做法。
+    """
+    scene   = get_reflection_scene_data()
+    capture = scene.allocated_captures.get(cell_id)
+    if capture is None:
+        return AstroCellCaptureState(cell_id=cell_id, cubemap_index=-1)
+
+    for mip in range(_CAPTURE_NUM_MIPS):
+        mip_key = f"mip_{mip}"
+        face_cols = [
+            capture.face_data[fi].get(mip_key, (0.5, 0.5, 0.5))
+            for fi in range(_CAPTURE_NUM_FACES)
+        ]
+        avg_r = sum(c[0] for c in face_cols) / _CAPTURE_NUM_FACES
+        avg_g = sum(c[1] for c in face_cols) / _CAPTURE_NUM_FACES
+        avg_b = sum(c[2] for c in face_cols) / _CAPTURE_NUM_FACES
+        face_avg = (avg_r, avg_g, avg_b)
+        capture.specular_prefilter[mip] = convolve_specular_face(face_avg, mip)
+
+    # Diffuse irradiance SH from mip-0 faces (highest resolution)
+    mip0_faces = [
+        capture.face_data[fi].get("mip_0", (0.5, 0.5, 0.5))
+        for fi in range(_CAPTURE_NUM_FACES)
+    ]
+    capture.diffuse_sh = compute_diffuse_irradiance_sh(mip0_faces)
+
+    capture.rendered_once = True
+    capture.is_dirty      = False
+
+    print(
+        f"[ASTRO-CAPTURE] ConvolveCubeMap: "
+        f"cell_id={cell_id} slot={capture.cubemap_index} "
+        f"mips_computed={_CAPTURE_NUM_MIPS} "
+        f"sh_L0=({capture.diffuse_sh[0]:.3f},{capture.diffuse_sh[1]:.3f},{capture.diffuse_sh[2]:.3f})",
+        file=sys.stderr,
+    )
+    return capture
+
+
+def update_reflection_captures(
+    all_bboxes:    dict,
+    camera_pos:    tuple = (600.0, 450.0, 3.0),
+    timeslice:     bool  = True,
+    force_all:     bool  = False,
+) -> _PTList[str]:
+    """
+    Update dirty reflection captures in priority order.
+
+    Mirrors the runtime reflection capture update loop in
+    FScene::UpdateReflectionCaptureContents() / BeginRenderingReflectionCaptures():
+      1. Collect dirty captures from allocated_captures
+      2. Sort by compute_capture_priority (nearest first)
+      3. Apply budget (ASTRO_CAPTURE_BUDGET = 0 → unlimited)
+      4. For each: capture_scene_to_scratch_cubemap + convolve_capture_cubemap
+      5. Fade-in (fade_alpha += dt / ASTRO_CAPTURE_FADE_TIME)
+
+    Returns list of cell_ids updated this pass.
+
+    鲁迅式：按距离排队，公平而现实——远处的探针等着，近处的先享受光照。
+    这不是歧视，是优先级：视觉效果由近而远递减，计算预算由近而远递增。
+    """
+    scene   = get_reflection_scene_data()
+
+    # Collect dirty + never-rendered captures from all_bboxes
+    pending: _PTList[tuple] = []
+    for cell_id, bbox in all_bboxes.items():
+        cap = scene.allocated_captures.get(cell_id)
+        if cap is None or cap.is_dirty or force_all:
+            prio = compute_capture_priority(cell_id, bbox, camera_pos)
+            pending.append((prio, cell_id, bbox))
+
+    # Sort by priority (ascending distance → nearest first)
+    pending.sort(key=lambda x: x[0])
+
+    # Budget gate (0 = unlimited)
+    budget    = ASTRO_CAPTURE_BUDGET if ASTRO_CAPTURE_BUDGET > 0 else len(pending)
+    to_update = pending[:budget]
+
+    if to_update:
+        begin_capture_task(len(to_update), "UpdateReflectionCaptures")
+
+    updated_cells: _PTList[str] = []
+    dt = 1.0 / max(1, ASTRO_CAPTURE_TIMESLICE_FACES)  # fake dt per timeslice step
+
+    for idx, (prio, cell_id, bbox) in enumerate(to_update):
+        update_capture_task(idx, len(to_update))
+        sp = all_bboxes[cell_id].get("species", "cil-arrow-right")
+
+        if timeslice and not force_all:
+            # Timesliced: capture ASTRO_CAPTURE_TIMESLICE_FACES per update
+            for fi in range(ASTRO_CAPTURE_TIMESLICE_FACES):
+                capture_scene_to_scratch_cubemap(
+                    cell_id, bbox, sp, all_bboxes, face_index=fi)
+        else:
+            # Full capture: all 6 faces at once (mirrors "fast render on load")
+            capture_scene_to_scratch_cubemap(
+                cell_id, bbox, sp, all_bboxes, face_index=-1)
+
+        convolve_capture_cubemap(cell_id)
+
+        # Fade-in update: increment fade_alpha toward 1.0
+        cap = scene.allocated_captures.get(cell_id)
+        if cap:
+            cap.fade_alpha = min(1.0, cap.fade_alpha + dt / max(ASTRO_CAPTURE_FADE_TIME, 1e-3))
+
+        updated_cells.append(cell_id)
+
+    if to_update:
+        end_capture_task(len(to_update))
+
+    return updated_cells
+
+
+def query_specular_radiance(
+    cell_id:      str,
+    roughness:    float = 0.5,
+    face_index:   int   = 4,   # default +Z face (「上方天空」)
+) -> tuple:
+    """
+    Query the pre-filtered specular environment for *cell_id*.
+
+    Maps *roughness* to the appropriate mip level using the Nanite LOD
+    metric analogue:
+        mip = round(roughness × (num_mips − 1))
+    Returns the prefiltered (R, G, B) specular colour × fade_alpha.
+
+    Mirrors the specular environment probe lookup performed in the
+    reflection capture material shader (GetOffSpecularPeakReflectionDir +
+    texCUBElod call in ReflectionEnvironmentShared.usf).
+
+    鲁迅式：查询是坦然的索取——环境贴图积累好了，
+    谁需要，谁就来取，不必客气，不必感谢。
+    """
+    scene   = get_reflection_scene_data()
+    capture = scene.allocated_captures.get(cell_id)
+    if capture is None or not capture.specular_prefilter:
+        return (0.5, 0.5, 0.5)   # default sky grey
+
+    mip      = int(round(roughness * (_CAPTURE_NUM_MIPS - 1)))
+    mip      = max(0, min(mip, _CAPTURE_NUM_MIPS - 1))
+    spec_col = capture.specular_prefilter.get(mip, (0.5, 0.5, 0.5))
+    alpha    = capture.fade_alpha
+
+    return (
+        spec_col[0] * alpha,
+        spec_col[1] * alpha,
+        spec_col[2] * alpha,
+    )
+
+
+# =============================================================================
+# [ASTRO-CELL] ReflectionEnvironmentRealTimeCapture → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/ReflectionEnvironmentRealTimeCapture.cpp
+#
+# 「世界上本没有实时反射，用的人多了，也便有了实时反射。」——鲁迅（改写）
+#
+# ReflectionEnvironmentRealTimeCapture 实现了「实时」天光捕获：
+# 每帧分时渲染一个或多个 cube face，逐渐积累完整的 sky env map，
+# 再对其执行 downsample + convolve + diffuse SH 通道，
+# 并通过 bRealTimeCaptureEnabled 标志按需触发。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   CVarRealTimeReflectionCaptureTimeSlicing   → ASTRO_RT_CAPTURE_TIMESLICE
+#   CVarRealTimeReflectionCaptureTimeSlicingSkyCloudCubeFacePerFrame
+#                                              → ASTRO_RT_CAPTURE_CLOUD_FACES
+#   CVarRealTimeReflectionCaptureShadowFromOpaque → ASTRO_RT_SHADOW_FROM_OPAQUE
+#   CVarRealTimeReflectionCaptureDepthBuffer   → ASTRO_RT_DEPTH_BUFFER
+#   CVarRealTimeReflectionCaptureVolumetricCloudResolutionDivider
+#                                              → ASTRO_RT_CLOUD_RES_DIVIDER
+#   FRealTimeSlicedReflectionCapture           → AstroCellRealTimeSkyCapture
+#   RenderSkyPassForCapture                    → render_sky_pass_for_capture()
+#   UpdateSkyEnvMap                            → update_sky_env_map()
+#   ValidateSkyLightRealTimeCapture            → validate_sky_light_rt_capture()
+# =============================================================================
+
+# CVarRealTimeReflectionCapture equivalents
+ASTRO_RT_CAPTURE_TIMESLICE:    bool  = True   # r.SkyLight.RealTimeReflectionCapture.TimeSlice
+ASTRO_RT_CAPTURE_CLOUD_FACES:  int   = 2      # faces per frame for cloud
+ASTRO_RT_SHADOW_FROM_OPAQUE:   bool  = False  # opaque mesh shadow in capture
+ASTRO_RT_DEPTH_BUFFER:         bool  = True   # depth-aware capture
+ASTRO_RT_CLEAR_COLOR:          bool  = False  # always clear colour buffer
+ASTRO_RT_CLOUD_RES_DIVIDER:    int   = 2      # cloud resolution divider
+ASTRO_RT_RES_OVERRIDE:         int   = 0      # 0 = default resolution (128)
+ASTRO_RT_DEFAULT_CUBE_SIZE:    int   = 128    # default sky capture cube resolution
+
+
+@_ptdc
+class AstroCellRealTimeSkyCapture:
+    """
+    Python equivalent of FRealTimeSlicedReflectionCapture.
+
+    State machine for the timesliced sky capture update:
+        current_face:  int  — which cube face is being rendered this frame (0..5)
+        faces_done:    int  — bitmask of completed faces (all done when == 0x3F)
+        cube_size:     int  — current cube resolution (overrideable)
+        is_valid:      bool — True after at least one complete convolution
+        invalidated:   bool — set True when sky conditions change (forces re-capture)
+
+    The C++ FRealTimeSlicedReflectionCapture holds similar state in the scene:
+        ConvolvedSkyRenderTarget[2] → convolve buffers (inner/outer mip chains)
+        bConvolvedSkyRenderTargetInvalid → invalidated flag
+
+    鲁迅式：分时渲染是以时间换空间的妥协——
+    每帧只画一面，六帧后才是完整的天空；
+    不完整的天空已经够用了，这就是实时的现实。
+    """
+    current_face:    int   = 0
+    faces_done:      int   = 0       # bitmask 0b000000 .. 0b111111
+    cube_size:       int   = ASTRO_RT_DEFAULT_CUBE_SIZE
+    is_valid:        bool  = False
+    invalidated:     bool  = True
+    frame_count:     int   = 0
+    # Sky face radiance: face_index → (R, G, B)
+    sky_face_radiance: _PTList[tuple] = _ptfield(
+        default_factory=lambda: [(0.55, 0.68, 0.82)] * _CAPTURE_NUM_FACES)
+    # Cloud face radiance (low-resolution): face_index → (R, G, B)
+    cloud_face_radiance: _PTList[tuple] = _ptfield(
+        default_factory=lambda: [(0.85, 0.88, 0.92)] * _CAPTURE_NUM_FACES)
+    # Convolve outputs (pre-filtered specular mip chain)
+    convolve_specular: _PTDict[int, tuple] = _ptfield(default_factory=dict)
+    diffuse_sh:        _PTList[float]      = _ptfield(default_factory=lambda: [0.0]*9)
+
+
+# Module-level real-time sky capture state singleton
+_ASTRO_RT_SKY_CAPTURE: AstroCellRealTimeSkyCapture = AstroCellRealTimeSkyCapture()
+
+
+def get_rt_sky_capture() -> AstroCellRealTimeSkyCapture:
+    """Return the module-level AstroCellRealTimeSkyCapture singleton."""
+    return _ASTRO_RT_SKY_CAPTURE
+
+
+def validate_sky_light_rt_capture(
+    has_sky_mesh: bool,
+    sky_material_changed: bool,
+    is_being_edited: bool = False,
+) -> None:
+    """
+    Validate / invalidate the real-time sky capture state.
+    Mirrors FScene::ValidateSkyLightRealTimeCapture():
+        If sky conditions changed (sky mesh added/removed, material changed),
+        set bConvolvedSkyRenderTargetInvalid = True to force a full re-capture.
+
+    鲁迅式：验证是诚实的代价——每次场景发生变化，
+    旧的天空就失效了，必须诚实地重新捕获。
+    假装旧的还有效，是偷懒，也是错误。
+    """
+    capture = get_rt_sky_capture()
+    if sky_material_changed or has_sky_mesh != capture.is_valid or is_being_edited:
+        capture.invalidated = True
+        capture.faces_done  = 0
+        capture.current_face = 0
+        print(
+            f"[ASTRO-RT-CAPTURE] ValidateSkyLightRealTimeCapture — invalidated: "
+            f"has_sky_mesh={has_sky_mesh} "
+            f"sky_changed={sky_material_changed} "
+            f"editing={is_being_edited}",
+            file=sys.stderr,
+        )
+
+
+def render_sky_pass_for_capture(
+    face_index:       int,
+    atmosphere_color: tuple = (0.55, 0.68, 0.82),
+    cloud_color:      tuple = (0.85, 0.88, 0.92),
+    sun_direction:    tuple = (0.3, -0.8, 0.5),
+    include_clouds:   bool  = True,
+    depth_buffer:     bool  = ASTRO_RT_DEPTH_BUFFER,
+) -> tuple:
+    """
+    Render one sky face for the real-time sky env map capture.
+
+    Mirrors RenderSkyPassForCapture() + the per-face render loop in
+    UpdateSkyEnvMap():
+      - Sky atmosphere scatter (SkyAtmosphereRendering.cpp port → analytic approx)
+      - Volumetric cloud compositing (low-res, CVarRealTimeReflectionCaptureVolumetricCloudResolutionDivider)
+      - Fog contribution (FogRendering.cpp → distance-weighted blend)
+      - Optional shadow from opaque (ASTRO_RT_SHADOW_FROM_OPAQUE)
+      - Optional depth buffer (ASTRO_RT_DEPTH_BUFFER → height-fog attenuation)
+
+    Returns (R, G, B) sky radiance for the given face direction.
+
+    鲁迅式：天空是每帧都在变化的背景——太阳西沉，云彩移动，
+    大气散射随角度而改变。我们无法一劳永逸地捕获它，
+    只能帧帧跟进，面面不落。
+    """
+    # Face normal directions
+    normals = [
+        ( 1, 0, 0), (-1, 0, 0),
+        ( 0, 1, 0), ( 0,-1, 0),
+        ( 0, 0, 1), ( 0, 0,-1),
+    ]
+    nx, ny, nz = normals[face_index % _CAPTURE_NUM_FACES]
+
+    # ── Atmosphere scatter (Rayleigh + Mie analytic approximation) ───────
+    # Sun angle relative to this face normal
+    sx, sy, sz = sun_direction
+    s_len = math.sqrt(sx*sx + sy*sy + sz*sz)
+    if s_len > 1e-6:
+        sx, sy, sz = sx/s_len, sy/s_len, sz/s_len
+    cos_sun = max(0.0, nx*sx + ny*sy + nz*sz)
+
+    # Rayleigh scatter: blue sky dominates at angles away from sun
+    rayleigh  = 1.0 - cos_sun * 0.6
+    sky_r = atmosphere_color[0] * rayleigh + cos_sun * 0.95
+    sky_g = atmosphere_color[1] * rayleigh + cos_sun * 0.85
+    sky_b = atmosphere_color[2] * rayleigh + cos_sun * 0.70
+
+    # ── Cloud compositing (low-res, ASTRO_RT_CLOUD_RES_DIVIDER) ──────────
+    if include_clouds:
+        cloud_weight = max(0.0, cloud_color[0] + cloud_color[1] + cloud_color[2]) / 3.0
+        cloud_frac   = min(0.35, cloud_weight * 0.4) / max(ASTRO_RT_CLOUD_RES_DIVIDER, 1)
+        sky_r = sky_r * (1.0 - cloud_frac) + cloud_color[0] * cloud_frac
+        sky_g = sky_g * (1.0 - cloud_frac) + cloud_color[1] * cloud_frac
+        sky_b = sky_b * (1.0 - cloud_frac) + cloud_color[2] * cloud_frac
+
+    # ── Depth buffer height fog (ASTRO_RT_DEPTH_BUFFER attenuation) ───────
+    if depth_buffer:
+        # Height-based fog: lower faces (face 3 = -Y) get more fog
+        fog_factor = max(0.0, -ny) * 0.15
+        fog_r, fog_g, fog_b = 0.8, 0.85, 0.9   # fog colour
+        sky_r = sky_r * (1-fog_factor) + fog_r * fog_factor
+        sky_g = sky_g * (1-fog_factor) + fog_g * fog_factor
+        sky_b = sky_b * (1-fog_factor) + fog_b * fog_factor
+
+    # ── Shadow from opaque (optional, ASTRO_RT_SHADOW_FROM_OPAQUE) ────────
+    if ASTRO_RT_SHADOW_FROM_OPAQUE:
+        # Darken the +Y face (sun-facing) slightly for opaque-mesh shadow
+        shadow_mult = 1.0 - max(0.0, ny) * 0.12
+        sky_r *= shadow_mult
+        sky_g *= shadow_mult
+        sky_b *= shadow_mult
+
+    return (max(0.0, sky_r), max(0.0, sky_g), max(0.0, sky_b))
+
+
+def update_sky_env_map(
+    all_bboxes:     dict | None = None,
+    atmosphere:     tuple = (0.55, 0.68, 0.82),
+    cloud_color:    tuple = (0.85, 0.88, 0.92),
+    sun_direction:  tuple = (0.3, -0.8, 0.5),
+    is_editing:     bool  = False,
+) -> bool:
+    """
+    Per-frame real-time sky environment map update.
+
+    Mirrors the top-level sky capture dispatch in UpdateSkyEnvMap() /
+    FScene::UpdateSkyLightRealTimeCapture():
+      1. Validate state (invalidate if sky changed)
+      2. If time-sliced: render ASTRO_RT_CAPTURE_CLOUD_FACES per frame
+         Else: render all 6 faces at once (editor fast path)
+      3. When all 6 faces complete: run convolve + diffuse SH
+      4. Set is_valid = True, reset faces_done bitmask
+
+    Returns True when a complete convolution cycle just finished.
+
+    鲁迅式：更新天光是渲染器最无聊的工作——
+    每帧做一点点，没有人注意，没有人感谢，
+    但若停下来，天空就会失去真实感，没有人会知道为什么。
+    这就是后台工作者的处境。
+    """
+    capture  = get_rt_sky_capture()
+    cycle_complete = False
+
+    # ── Timeslice: decide how many faces to render this frame ─────────────
+    if is_editing:
+        faces_this_frame = ASTRO_CAPTURE_TIMESLICE_EDITOR
+    elif ASTRO_RT_CAPTURE_TIMESLICE:
+        faces_this_frame = ASTRO_RT_CAPTURE_CLOUD_FACES
+    else:
+        faces_this_frame = _CAPTURE_NUM_FACES   # all at once (non-timesliced)
+
+    rendered_faces = []
+    for _ in range(faces_this_frame):
+        fi = capture.current_face
+
+        # Render this face
+        sky_col = render_sky_pass_for_capture(
+            face_index=fi,
+            atmosphere_color=atmosphere,
+            cloud_color=cloud_color,
+            sun_direction=sun_direction,
+            include_clouds=True,
+            depth_buffer=ASTRO_RT_DEPTH_BUFFER,
+        )
+        capture.sky_face_radiance[fi]   = sky_col
+
+        # Cloud at reduced resolution (CVarVolumetricCloudResolutionDivider)
+        cloud_col_low = (
+            cloud_color[0] / ASTRO_RT_CLOUD_RES_DIVIDER,
+            cloud_color[1] / ASTRO_RT_CLOUD_RES_DIVIDER,
+            cloud_color[2] / ASTRO_RT_CLOUD_RES_DIVIDER,
+        )
+        capture.cloud_face_radiance[fi] = cloud_col_low
+
+        capture.faces_done |= (1 << fi)
+        rendered_faces.append(fi)
+
+        # Advance to next face (wrap around at 6)
+        capture.current_face = (fi + 1) % _CAPTURE_NUM_FACES
+
+        # Slow timeslice: skip every other frame when enabled + only 1 face/frame
+        if ASTRO_CAPTURE_TIMESLICE_SLOW and faces_this_frame == 1:
+            if capture.frame_count % 2 != 0:
+                break
+
+    capture.frame_count += 1
+
+    # ── Check if all 6 faces are done → run convolution ───────────────────
+    if capture.faces_done == 0x3F:   # all 6 bits set
+        # Convolve: pre-filter sky env map for all roughness levels
+        combined_faces = [
+            (capture.sky_face_radiance[fi][0] + capture.cloud_face_radiance[fi][0]*0.5,
+             capture.sky_face_radiance[fi][1] + capture.cloud_face_radiance[fi][1]*0.5,
+             capture.sky_face_radiance[fi][2] + capture.cloud_face_radiance[fi][2]*0.5)
+            for fi in range(_CAPTURE_NUM_FACES)
+        ]
+        for mip in range(_CAPTURE_NUM_MIPS):
+            avg_r = sum(c[0] for c in combined_faces) / _CAPTURE_NUM_FACES
+            avg_g = sum(c[1] for c in combined_faces) / _CAPTURE_NUM_FACES
+            avg_b = sum(c[2] for c in combined_faces) / _CAPTURE_NUM_FACES
+            capture.convolve_specular[mip] = convolve_specular_face(
+                (avg_r, avg_g, avg_b), mip)
+
+        # Diffuse SH from mip-0 faces
+        capture.diffuse_sh = compute_diffuse_irradiance_sh(combined_faces)
+
+        capture.is_valid   = True
+        capture.invalidated = False
+        capture.faces_done  = 0      # reset for next cycle
+        cycle_complete     = True
+
+        print(
+            f"[ASTRO-RT-CAPTURE] UpdateSkyEnvMap — cycle complete: "
+            f"frame={capture.frame_count} "
+            f"specular_mips={_CAPTURE_NUM_MIPS} "
+            f"sh_L0=({capture.diffuse_sh[0]:.3f},"
+            f"{capture.diffuse_sh[1]:.3f},{capture.diffuse_sh[2]:.3f})",
+            file=sys.stderr,
         )
     else:
-        # Gaussian filter with wave-quad enhancement when supported
-        return (
-            f'<filter id="{fid}" x="-10%" y="-10%" width="120%" height="120%">'
-            f'<feGaussianBlur stdDeviation="{blur:.2f}"/>'
-            f'</filter>'
+        print(
+            f"[ASTRO-RT-CAPTURE] UpdateSkyEnvMap — "
+            f"rendered_faces={rendered_faces} "
+            f"faces_done=0b{capture.faces_done:06b} "
+            f"frame={capture.frame_count}",
+            file=sys.stderr,
         )
 
+    return cycle_complete
 
-class AstroRectLightTextureManager:
+
+def query_sky_specular_radiance(roughness: float = 0.5) -> tuple:
     """
-    Python equivalent of the RectLightAtlas::FManager class
-    (RectLightTextureManager.cpp).
+    Query the real-time sky pre-filtered specular environment.
 
-    Provides the lifecycle API for rect-light texture atlas management:
-      register_light()    → FManager::RegisterLight
-      unregister_light()  → FManager::UnregisterLight
-      update()            → FManager::Update (per-frame)
-      get_slot()          → FManager::GetSlot
-      generate_svg_defs() → emit SVG <defs> for all registered filters
+    Mirrors the SkyLight specular probe texture lookup performed in
+    ReflectionEnvironmentPixelShader.usf after UpdateSkyEnvMap() completes.
 
-    鲁迅式：矩形光纹理管理器是画框厂——每盏灯都需要一个合适的框，
-    框太大浪费材料，框太小放不进去，恰好合适才是工匠的本事。
+    Maps *roughness* → mip level, returns (R, G, B) × fade_alpha.
+    Falls back to a neutral grey when the capture has not yet completed.
+
+    鲁迅式：天空的光芒不会因为你还没准备好就消失——
+    但在探针完成之前，它确实只是一个猜测。
     """
+    capture = get_rt_sky_capture()
+    if not capture.is_valid or not capture.convolve_specular:
+        return (0.55, 0.68, 0.82)   # sky-blue fallback
 
-    def __init__(self) -> None:
-        self._packer = AstroRectLightAtlasPacker()
-        # light_id → slot_id mapping
-        self._light_to_slot: _msr_Dict[str, int] = {}
-        self._frame: int = 0
-
-    def register_light(self, light_id: str, source_w: int, source_h: int,
-                       scale_offset: tuple = (1.0, 1.0, 0.0, 0.0)) -> _msr_Opt[AstroRectLightSlot]:
-        """
-        Register a rect light and allocate an atlas slot.
-
-        If the light is already registered, increments RefCount and returns
-        the existing slot (mirrors the C++ AddRef path).
-
-        鲁迅式：注册是合法化的第一步——先登记，才有资格使用地图集的资源。
-        """
-        if light_id in self._light_to_slot:
-            slot_id = self._light_to_slot[light_id]
-            slot = self._packer.get_slot(slot_id)
-            if slot:
-                slot.ref_count += 1
-                return slot
-
-        # Clamp to max texture ratio (CVarRectLighMaxTextureRatio)
-        ratio = ASTRO_RECT_LIGHT_MAX_RATIO
-        if source_h > 0 and source_w / source_h > ratio:
-            source_w = int(source_h * ratio)
-        elif source_w > 0 and source_h / source_w > ratio:
-            source_h = int(source_w * ratio)
-
-        # Cap to atlas resolution
-        w = min(source_w, ASTRO_RECT_LIGHT_MAX_RESOLUTION)
-        h = min(source_h, ASTRO_RECT_LIGHT_MAX_RESOLUTION)
-
-        slot = self._packer.allocate(w, h, scale_offset)
-        if not slot.is_valid():
-            print(
-                f"[AstroRectLightTextureManager] register_light: atlas full, "
-                f"cannot register light_id={light_id} ({w}×{h}).",
-                file=sys.stderr,
-            )
-            return None
-
-        self._light_to_slot[light_id] = slot.id
-        return slot
-
-    def unregister_light(self, light_id: str) -> None:
-        """
-        Unregister a rect light, decrement RefCount, release slot if zero.
-
-        鲁迅式：注销是生命周期的终点——引用计数归零后，
-        槽位归还自由矩形池，等待下一盏灯光入住。
-        """
-        slot_id = self._light_to_slot.pop(light_id, None)
-        if slot_id is None:
-            return
-        slot = self._packer.get_slot(slot_id)
-        if slot:
-            slot.ref_count -= 1
-            if slot.ref_count <= 0:
-                self._packer.release(slot_id)
-
-    def update(self, force_update: bool = bool(ASTRO_RECT_LIGHT_FORCE_UPDATE)) -> int:
-        """
-        Per-frame atlas update.
-
-        Refreshes all slots with force_refresh=True (and all slots if
-        force_update is set).  Returns number of slots refreshed.
-
-        鲁迅式：每帧更新是对「时间是离散的」这一事实的妥协——
-        你不可能在同一帧内又渲染又更新所有纹理，所以只处理标记了的那些。
-        """
-        self._frame += 1
-        refreshed = 0
-        for slot_id, slot in list(self._packer._slots.items()):
-            if force_update or slot.force_refresh:
-                slot.force_refresh = False
-                refreshed += 1
-        return refreshed
-
-    def get_slot(self, light_id: str) -> _msr_Opt[AstroRectLightSlot]:
-        slot_id = self._light_to_slot.get(light_id)
-        if slot_id is None:
-            return None
-        return self._packer.get_slot(slot_id)
-
-    def generate_svg_defs(self) -> str:
-        """
-        Emit SVG <defs> block with filters for all registered slots.
-
-        Mirrors the per-frame atlas texture write that makes rect-light
-        texture data available to the shader — here emitted as SVG filter
-        <defs> usable by any SVG renderer.
-
-        鲁迅式：<defs> 是准备工作，是一切渲染的序幕——
-        如果 <defs> 没有准备好，主体部分的引用都是空话。
-        """
-        if not astro_platform_supports_rect_light_atlas():
-            return ""
-
-        parts = ["<defs>"]
-        for light_id, slot_id in self._light_to_slot.items():
-            slot = self._packer.get_slot(slot_id)
-            if slot and slot.is_valid():
-                filt = _apply_rect_light_filter(slot, ASTRO_RECT_LIGHT_FILTER_QUALITY)
-                if filt:
-                    parts.append(f"  <!-- RectLight: {light_id} slot={slot_id} "
-                                 f"origin={slot.origin} res={slot.resolution} -->")
-                    parts.append(f"  {filt}")
-        parts.append("</defs>")
-
-        return "\n".join(parts) if len(parts) > 2 else ""
-
-    def stats(self) -> dict:
-        return {
-            "registered_lights": len(self._light_to_slot),
-            "frame":             self._frame,
-            **self._packer.stats(),
-        }
-
-
-# Module-level singleton
-_ASTRO_RECT_LIGHT_MANAGER: AstroRectLightTextureManager | None = None
-
-
-def get_rect_light_texture_manager() -> AstroRectLightTextureManager:
-    """
-    Return the module-level AstroRectLightTextureManager singleton.
-
-    鲁迅式：灯光管理器是一个公共仓库——所有灯光共享一块 atlas，
-    先来先用，满了就腾地方；没有私人仓库，只有公共秩序。
-    """
-    global _ASTRO_RECT_LIGHT_MANAGER
-    if _ASTRO_RECT_LIGHT_MANAGER is None:
-        _ASTRO_RECT_LIGHT_MANAGER = AstroRectLightTextureManager()
-    return _ASTRO_RECT_LIGHT_MANAGER
+    mip = int(round(roughness * (_CAPTURE_NUM_MIPS - 1)))
+    mip = max(0, min(mip, _CAPTURE_NUM_MIPS - 1))
+    return capture.convolve_specular.get(mip, (0.55, 0.68, 0.82))
