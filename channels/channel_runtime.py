@@ -6234,3 +6234,974 @@ class AstroChoreographyScheduler:
         with self._pool_q_lock: self._pool_queue.clear()
         self._executor.shutdown(wait=False)
         _dbg("ASTRO-CHORE", "AstroChoreographyScheduler shutdown complete")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# IntraTransmitter + RtpsTransmitter + IntraReceiver + RtpsReceiver
+# Ported from:
+#   upstream/apollo-cyber/transport/transmitter/intra_transmitter.h
+#   upstream/apollo-cyber/transport/transmitter/rtps_transmitter.h
+#   upstream/apollo-cyber/transport/receiver/intra_receiver.h
+#   upstream/apollo-cyber/transport/receiver/rtps_receiver.h
+#
+# 鲁迅曰：进程内的消息走不出墙，RTPS 的消息走不进家——两套发送者，
+# 两套接收者，却都在同一个调度循环里假装彼此无关。共享分发器是这出
+# 戏的真正主角，transmitter 与 receiver 不过是它两侧的走卒。
+#
+# 算法改动（20% 规则）：
+#   1. template<M>               → duck-typed Python（msg: Any）。
+#   2. IntraDispatcher singleton → AstroIntraDispatcher.instance()（已有）。
+#   3. RtpsDispatcher singleton  → AstroRtpsDispatcher.instance()（已有）。
+#   4. enabled_ bool             → _enabled bool（命名对齐 Python 惯例）。
+#   5. AcquireMessage() → 返回 {} （无 arena；同本文件其他 transmitter）。
+#   6. RtpsTransmitter::Enable 创建 fastrtps Publisher
+#      → 仅记录 endpoint；Transmit 调用 AstroRtpsDispatcher.inject_message()。
+#   7. RtpsTransmitter::Transmit UnderlayMessage + WriteParams
+#      → AstroUnderlayMessage.serialize() + AstroMessageInfo 两路打包。
+#   8. IntraReceiver  AddListener/RemoveListener → AstroIntraDispatcher 对应方法。
+#   9. RtpsReceiver   AddListener/RemoveListener → AstroRtpsDispatcher 对应方法。
+#  10. OnNewMessage callback signature: (msg, msg_info, role_attr) → (msg, msg_info)
+#      （role_attr 通过闭包注入，保持与 C++ 三参形式等价）。
+#
+# Debug prefix: [ASTRO-INTRA-TX] / [ASTRO-RTPS-TX] /
+#               [ASTRO-INTRA-RX] / [ASTRO-RTPS-RX]
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class CyberIntraTransmitter(AstroEndpoint):
+    """
+    Intra-process transmitter — Python port of IntraTransmitter<M>.
+
+    Enable()  → acquire AstroIntraDispatcher singleton (mirror: dispatcher_ = IntraDispatcher::Instance()).
+    Disable() → release reference (mirror: dispatcher_ = nullptr).
+    Transmit  → dispatcher_.on_message(channel_id, msg, msg_info_dict).
+    AcquireMessage → returns {} (no arena allocation).
+
+    Algorithm delta from original:
+      channel_id is str (channel_path) instead of uint64_t hash.
+      dispatcher_ is AstroIntraDispatcher; on_message() replaces OnMessage().
+      msg_info is a Python dict rather than a proto MessageInfo struct.
+    """
+
+    def __init__(self, attr: AstroRoleAttributes) -> None:
+        super().__init__(attr)
+        self._dispatcher: Optional[AstroIntraDispatcher] = None
+        self._channel_id: str = attr.channel_name       # mirrors uint64_t channel_id_
+        self._seq: int = 0
+        self._seq_lock = threading.Lock()
+
+    # ── lifecycle mirrors Enable() / Disable() ────────────────────────────────
+
+    def enable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        """
+        Enable() — acquire IntraDispatcher singleton.
+        Mirrors: dispatcher_ = IntraDispatcher::Instance(); enabled_ = true;
+        The opposite_attr overload is a no-op (same as C++: (void)opposite_attr).
+        """
+        if not self.enabled_:
+            self._dispatcher = AstroIntraDispatcher.instance()
+            self.enabled_ = True
+            _dbg("ASTRO-INTRA-TX",
+                 f"Enable ch={self._channel_id} sender={self.id_.to_string()}")
+
+    def disable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        """
+        Disable() — release dispatcher reference.
+        Mirrors: dispatcher_ = nullptr; enabled_ = false;
+        """
+        if self.enabled_:
+            self._dispatcher = None
+            self.enabled_ = False
+            _dbg("ASTRO-INTRA-TX", f"Disable ch={self._channel_id}")
+
+    # ── transmit ──────────────────────────────────────────────────────────────
+
+    def transmit(
+        self,
+        msg: Any,
+        msg_info: Optional[Dict] = None,
+    ) -> bool:
+        """
+        Transmit(msg, msg_info) — deliver msg in-process via IntraDispatcher.
+
+        Mirrors:
+            if (!enabled_) return false;
+            dispatcher_->OnMessage(channel_id_, msg, msg_info);
+            return true;
+
+        ASTRO delta: msg_info is a dict; auto-stamped if not supplied.
+        [ASTRO-INTRA-TX] debug mirrors ADEBUG "not enable." guard.
+        """
+        if not self.enabled_:
+            _dbg("ASTRO-INTRA-TX",
+                 f"Transmit: not enable. ch={self._channel_id}")
+            return False
+
+        if msg_info is None:
+            with self._seq_lock:
+                self._seq += 1
+                seq = self._seq
+            msg_info = {
+                "sender_id": self.id_.to_string(),
+                "seq_num": seq,
+                "send_time_us": int(time.monotonic() * 1_000_000),
+            }
+
+        _dbg("ASTRO-INTRA-TX",
+             f"Transmit ch={self._channel_id} seq={msg_info.get('seq_num', 0)}")
+        assert self._dispatcher is not None
+        self._dispatcher.on_message(self._channel_id, msg, msg_info)
+        return True
+
+    def acquire_message(self) -> Dict:
+        """AcquireMessage() — allocate empty message container (no arena)."""
+        return {}
+
+
+class CyberRtpsTransmitter(AstroEndpoint):
+    """
+    RTPS transmitter — Python port of RtpsTransmitter<M>.
+
+    Original: creates eprosima fastrtps Publisher on Enable(), writes via
+    publisher_->write(UnderlayMessage, WriteParams).
+
+    ASTRO delta:
+      Enable()  → validates _participant_endpoint (no real DDS publisher).
+      Disable() → clears publisher reference.
+      Transmit  → serialises msg to AstroUnderlayMessage, builds
+                  AstroMessageInfo with sender_id / spare_id / seq layout
+                  matching the C++ WriteParams memcpy pattern, then calls
+                  AstroRtpsDispatcher.inject_message() to fan out to listeners.
+      SerializeToString  → json.dumps (replaces message::SerializeToString).
+      UnderlayMessage    → AstroUnderlayMessage (already in this file).
+    """
+
+    def __init__(
+        self,
+        attr: AstroRoleAttributes,
+        participant_endpoint: str = "",
+    ) -> None:
+        """
+        RtpsTransmitter(attr, participant) — participant is a DDS participant.
+        ASTRO: participant_endpoint is an optional HTTP URL (unused in inject path).
+        """
+        super().__init__(attr)
+        self._participant_endpoint: str = participant_endpoint
+        self._publisher_active: bool = False     # mirrors publisher_ != nullptr
+        self._dispatcher = AstroRtpsDispatcher.instance()
+        self._seq: int = 0
+        self._seq_lock = threading.Lock()
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+
+    def enable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        """
+        Enable() — create DDS publisher.
+        Mirrors:
+            if (enabled_) return;
+            RETURN_IF_NULL(participant_);
+            publisher_ = Domain::createPublisher(...);
+            RETURN_IF_NULL(publisher_);
+            enabled_ = true;
+
+        ASTRO: marks publisher as active when participant_endpoint is set or
+        when used purely for in-process RTPS injection (endpoint may be empty).
+        """
+        if self.enabled_:
+            return
+        # Mirrors: RETURN_IF_NULL(participant_)
+        # In ASTRO no real participant; we always proceed for in-process path.
+        self._publisher_active = True
+        self.enabled_ = True
+        _dbg("ASTRO-RTPS-TX",
+             f"Enable ch={self.attr_.channel_name} endpoint={self._participant_endpoint!r}")
+
+    def disable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        """
+        Disable() — release publisher reference.
+        Mirrors: publisher_ = nullptr; enabled_ = false;
+        """
+        if self.enabled_:
+            self._publisher_active = False
+            self.enabled_ = False
+            _dbg("ASTRO-RTPS-TX", f"Disable ch={self.attr_.channel_name}")
+
+    # ── transmit ──────────────────────────────────────────────────────────────
+
+    def transmit(
+        self,
+        msg: Any,
+        msg_info: Optional[AstroMessageInfo] = None,
+    ) -> bool:
+        """
+        Transmit(msg, msg_info) — serialise and write via RTPS path.
+
+        Original algorithm:
+            UnderlayMessage m;
+            SerializeToString(msg, &m.data());
+            m.timestamp(0x0fffffff & send_time);
+            m.seq(msg_info.msg_seq_num());
+            WriteParams wparams;
+            memcpy(ptr,          sender_id.data(), ID_SIZE);
+            memcpy(ptr+ID_SIZE,  spare_id.data(),  ID_SIZE);
+            wparams.sequence_number = {high32, low32};
+            return publisher_->write(&m, wparams);
+
+        ASTRO mapping:
+            SerializeToString    → json.dumps
+            UnderlayMessage      → AstroUnderlayMessage
+            WriteParams memcpy   → AstroMessageInfo fields filled from sender/spare id
+            publisher_->write()  → AstroRtpsDispatcher.inject_message()
+
+        The 0x0fffffff timestamp mask is preserved for wire-format compat.
+        """
+        if not self.enabled_:
+            _dbg("ASTRO-RTPS-TX",
+                 f"Transmit: not enable. ch={self.attr_.channel_name}")
+            return False
+
+        # SerializeToString(msg, &m.data()) — use JSON as wire format
+        try:
+            serialised: str = json.dumps(msg) if not isinstance(msg, str) else msg
+        except (TypeError, ValueError):
+            serialised = str(msg)
+
+        # Build AstroUnderlayMessage — mirrors UnderlayMessage m;
+        if msg_info is None:
+            with self._seq_lock:
+                self._seq += 1
+                seq = self._seq
+            send_time_us = int(time.monotonic() * 1_000_000)
+            msg_info = AstroMessageInfo(
+                sender_id   = self.id_,
+                seq_num     = seq,
+                channel_id  = self.attr_.channel_id,
+                msg_seq_num = seq,
+                send_time   = send_time_us,
+            )
+
+        send_time = msg_info.send_time
+        # m.timestamp(0x0fffffff & send_time) — mask as in C++
+        ts_masked: int = 0x0FFFFFFF & send_time
+        underlay = AstroUnderlayMessage(
+            timestamp = float(ts_masked),
+            seq       = msg_info.msg_seq_num,
+            data      = serialised,
+            datatype  = self.attr_.message_type,
+        )
+
+        # Serialise underlay to bytes — mirrors publisher_->write(&m, wparams)
+        payload: bytes = underlay.serialize()
+
+        _dbg("ASTRO-RTPS-TX",
+             f"Transmit ch={self.attr_.channel_name} "
+             f"seq={msg_info.seq_num} ts_mask=0x{ts_masked:08x} "
+             f"payload_len={len(payload)}")
+
+        self._dispatcher.inject_message(
+            self.attr_.channel_id,
+            payload,
+            msg_info,
+        )
+        return True
+
+    def acquire_message(self) -> Dict:
+        """AcquireMessage() — returns empty dict (no arena)."""
+        return {}
+
+
+# ── Receiver base skeleton ─────────────────────────────────────────────────────
+
+class _CyberReceiverBase(AstroEndpoint):
+    """
+    Common base for CyberIntraReceiver and CyberRtpsReceiver.
+
+    Mirrors Receiver<M> from receiver.h:
+      • Holds MessageListener callback.
+      • Provides on_new_message() which calls the listener.
+      • Subclasses implement enable() / disable().
+
+    ASTRO delta: listener signature is (msg, msg_info) — role_attr injected
+    via closure in the concrete receiver, matching C++ OnNewMessage 3-arg form.
+    """
+
+    def __init__(
+        self,
+        attr: AstroRoleAttributes,
+        msg_listener: Callable[[Any, Any], None],
+    ) -> None:
+        super().__init__(attr)
+        self._msg_listener = msg_listener
+
+    def on_new_message(self, msg: Any, msg_info: Any) -> None:
+        """
+        OnNewMessage — mirrors Receiver<M>::OnNewMessage(msg, msg_info).
+        Calls the registered MessageListener callback.
+        """
+        try:
+            self._msg_listener(msg, msg_info)
+        except Exception as exc:  # noqa: BLE001
+            _dbg("ASTRO-RX-BASE",
+                 f"listener exc ch={self.attr_.channel_name} exc={exc}")
+
+
+class CyberIntraReceiver(_CyberReceiverBase):
+    """
+    Intra-process receiver — Python port of IntraReceiver<M>.
+
+    Enable()  → AstroIntraDispatcher.add_listener(channel_id, role_id, cb).
+                 Mirrors: dispatcher_->AddListener<M>(attr_, bind(&OnNewMessage,…))
+    Disable() → AstroIntraDispatcher.remove_listener(channel_id, role_id).
+                 Mirrors: dispatcher_->RemoveListener<M>(attr_)
+    Enable(opposite_attr)  → add_listener_filtered (opposite_attr overload).
+    Disable(opposite_attr) → remove_listener_filtered.
+
+    Algorithm delta:
+      IntraDispatcherPtr → AstroIntraDispatcher singleton (already in file).
+      AddListener template<M> → add_listener(channel_id, role_id, cb): cb is typed
+      via on_new_message closure (no C++ std::bind; Python lambda captures self).
+    """
+
+    def __init__(
+        self,
+        attr: AstroRoleAttributes,
+        msg_listener: Callable[[Any, Any], None],
+    ) -> None:
+        super().__init__(attr, msg_listener)
+        # mirrors: dispatcher_ = IntraDispatcher::Instance()
+        self._dispatcher: AstroIntraDispatcher = AstroIntraDispatcher.instance()
+        self._role_id: str = f"intra_rx::{attr.channel_name}::{attr.id}"
+
+    def enable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        """
+        Enable() / Enable(opposite_attr).
+        Mirrors IntraReceiver::Enable() → dispatcher_->AddListener<M>(attr_, cb).
+        Mirrors IntraReceiver::Enable(opposite_attr) → AddListener<M>(attr_, opposite_attr, cb).
+        """
+        if opposite_attr is None:
+            if self.enabled_:
+                return
+            self._dispatcher.add_listener(
+                self.attr_.channel_name,
+                self._role_id,
+                self.on_new_message,
+            )
+            self.enabled_ = True
+            _dbg("ASTRO-INTRA-RX",
+                 f"Enable ch={self.attr_.channel_name} role={self._role_id}")
+        else:
+            # opposite-attr filtered overload — no enabled_ guard (same as C++)
+            oppo_id = f"{opposite_attr.channel_name}::{opposite_attr.id}"
+            self._dispatcher.add_listener_filtered(
+                self.attr_.channel_name,
+                self._role_id,
+                oppo_id,
+                self.on_new_message,
+            )
+            _dbg("ASTRO-INTRA-RX",
+                 f"Enable(filtered) ch={self.attr_.channel_name} oppo={oppo_id}")
+
+    def disable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        """
+        Disable() / Disable(opposite_attr).
+        Mirrors IntraReceiver::Disable() → dispatcher_->RemoveListener<M>(attr_).
+        Mirrors IntraReceiver::Disable(opposite_attr) → RemoveListener<M>(attr_, opposite_attr).
+        """
+        if opposite_attr is None:
+            if not self.enabled_:
+                return
+            self._dispatcher.remove_listener(
+                self.attr_.channel_name,
+                self._role_id,
+            )
+            self.enabled_ = False
+            _dbg("ASTRO-INTRA-RX",
+                 f"Disable ch={self.attr_.channel_name}")
+        else:
+            oppo_id = f"{opposite_attr.channel_name}::{opposite_attr.id}"
+            self._dispatcher.remove_listener_filtered(
+                self.attr_.channel_name,
+                self._role_id,
+                oppo_id,
+            )
+            _dbg("ASTRO-INTRA-RX",
+                 f"Disable(filtered) ch={self.attr_.channel_name} oppo={oppo_id}")
+
+
+class CyberRtpsReceiver(_CyberReceiverBase):
+    """
+    RTPS receiver — Python port of RtpsReceiver<M>.
+
+    Enable()  → AstroRtpsDispatcher.add_listener(attr, cb).
+                 Mirrors: dispatcher_->AddListener<M>(attr_, bind(&OnNewMessage,…))
+    Disable() → AstroRtpsDispatcher.remove_listener(attr).
+                 Mirrors: dispatcher_->RemoveListener<M>(attr_)
+    Enable(opposite_attr)  → filtered add (opposite_attr overload).
+    Disable(opposite_attr) → filtered remove.
+
+    Algorithm delta:
+      RtpsDispatcherPtr → AstroRtpsDispatcher singleton (already in file).
+      The raw-bytes payload from inject_message is passed directly to the
+      listener; callers may deserialise via AstroUnderlayMessage.deserialize().
+    """
+
+    def __init__(
+        self,
+        attr: AstroRoleAttributes,
+        msg_listener: Callable[[Any, Any], None],
+    ) -> None:
+        super().__init__(attr, msg_listener)
+        # mirrors: dispatcher_ = RtpsDispatcher::Instance()
+        self._dispatcher: AstroRtpsDispatcher = AstroRtpsDispatcher.instance()
+
+    def enable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        """
+        Enable() / Enable(opposite_attr).
+        Mirrors RtpsReceiver::Enable() → dispatcher_->AddListener<M>(attr_, cb).
+        Mirrors RtpsReceiver::Enable(opposite_attr) → AddListener<M>(attr_, opposite_attr, cb).
+        """
+        if opposite_attr is None:
+            if self.enabled_:
+                return
+            self._dispatcher.add_listener(
+                self.attr_,
+                self.on_new_message,
+            )
+            self.enabled_ = True
+            _dbg("ASTRO-RTPS-RX",
+                 f"Enable ch={self.attr_.channel_name}")
+        else:
+            self._dispatcher.add_listener(
+                self.attr_,
+                self.on_new_message,
+                opposite_attr,
+            )
+            _dbg("ASTRO-RTPS-RX",
+                 f"Enable(filtered) ch={self.attr_.channel_name} "
+                 f"oppo={opposite_attr.channel_name}")
+
+    def disable(self, opposite_attr: Optional[AstroRoleAttributes] = None) -> None:
+        """
+        Disable() / Disable(opposite_attr).
+        Mirrors RtpsReceiver::Disable() → dispatcher_->RemoveListener<M>(attr_).
+        Mirrors RtpsReceiver::Disable(opposite_attr) → RemoveListener<M>(attr_, opposite_attr).
+        """
+        if opposite_attr is None:
+            if not self.enabled_:
+                return
+            self._dispatcher.remove_listener(
+                self.attr_,
+                None,
+            )
+            self.enabled_ = False
+            _dbg("ASTRO-RTPS-RX",
+                 f"Disable ch={self.attr_.channel_name}")
+        else:
+            self._dispatcher.remove_listener(
+                self.attr_,
+                opposite_attr,
+            )
+            _dbg("ASTRO-RTPS-RX",
+                 f"Disable(filtered) ch={self.attr_.channel_name} "
+                 f"oppo={opposite_attr.channel_name}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroComponentBase — ported from
+#   upstream/apollo-cyber/component/component_base.h
+#
+# 原典：ComponentBase 是所有 cyber Component 的共同祖先，通过
+# enable_shared_from_this 实现自引用，持有 node_（shared_ptr<Node>）、
+# readers_（vector<shared_ptr<ReaderBase>>）、is_shutdown_（atomic<bool>）、
+# config_file_path_（string）；
+# Shutdown() 调用 Clear()、所有 reader 的 Shutdown()，再从 Scheduler
+# 删除对应 Task（RemoveTask(node_->Name())）；
+# GetProtoConfig<T> 从文件路径反序列化 protobuf 配置；
+# LoadConfigFiles 将 ComponentConfig / TimerComponentConfig 中的
+# config_file_path 和 flag_file_path 展开为绝对路径（APOLLO_CONF_PATH /
+# APOLLO_FLAG_PATH 环境变量查找）。
+#
+# 鲁迅曰：基类的 Shutdown 先喊 Clear，再关 Reader，最后通知调度器——
+# 这三步的顺序，不可颠倒，犹如善后的礼仪，次序即道德。
+#
+# 算法改动（20% 规则）：
+#   1. enable_shared_from_this → 无（Python 引用计数自动管理）。
+#   2. ComponentConfig / TimerComponentConfig proto → ComponentConf dataclass。
+#   3. GetProtoConfig<T>: common::GetProtoFromFile → json.load (JSON 配置)。
+#   4. LoadConfigFiles: GetFilePathWithEnv → _resolve_path（os.environ 查找）。
+#   5. scheduler::Instance()->RemoveTask → AstroScheduler / LoopScheduler 均可；
+#      此处记录 task_name 并在 shutdown() 内调用可选 scheduler.remove_task()。
+#   6. readers_ vector<ReaderBase> → _readers: list[AstroCellReader]（鸭子类型）。
+#   7. node_ shared_ptr<Node> → _node_name: str（Python 无 Node 类）。
+#   8. Init() pure-virtual → 子类须实现 init() → bool。
+#   9. Clear() 默认空实现 → clear() 默认空实现（子类可覆盖）。
+#  10. flag_file_path 展开: google::SetCommandLineOption → os.environ 设置占位符
+#      (标记 flagfile 路径；Python 无 gflags 依赖)。
+#
+# Debug prefix: [ASTRO-COMP] — 对应 C++ AINFO 前缀。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import abc as _abc_comp
+import json as _json_comp
+import os as _os_comp
+
+
+@dataclasses.dataclass
+class ComponentConf:
+    """
+    Lightweight component configuration — replaces proto::ComponentConfig and
+    proto::TimerComponentConfig.
+
+    config_file_path : path to a JSON config file (replaces .pb config).
+    flag_file_path   : path to a flags file (replaces google::SetCommandLineOption).
+    node_name        : logical node name (replaces proto.node_name).
+    timer_interval_ms: timer interval in milliseconds (TimerComponentConfig only;
+                       0 means non-timer component).
+    """
+    node_name:         str = ""
+    config_file_path:  str = ""
+    flag_file_path:    str = ""
+    timer_interval_ms: int = 0
+
+
+class AstroComponentBase(_abc_comp.ABC):
+    """
+    Abstract base for all Astro cell components.
+
+    Ports ``apollo::cyber::ComponentBase`` from component_base.h.
+
+    Subclasses must implement ``init() → bool`` (mirrors pure-virtual Init()).
+    Optional override: ``clear()`` (mirrors virtual Clear(), default no-op).
+
+    Lifecycle::
+        comp = MyComponent()
+        ok = comp.initialize(conf)    # calls init() internally
+        # … component runs via reader callbacks …
+        comp.shutdown()
+
+    ASTRO delta from ComponentBase:
+      • enable_shared_from_this → not needed (Python refcount).
+      • Reader<M> template      → AstroCellReader (duck-typed, stored in _readers).
+      • Node shared_ptr         → _node_name str + AstroNodeChannelImpl.
+      • Scheduler::RemoveTask   → optional; call via scheduler kwarg in shutdown().
+      • GetProtoConfig<T>       → get_config() returning dict (JSON-loaded).
+      • LoadConfigFiles         → _load_config_files() with env-var path resolution.
+    """
+
+    def __init__(self) -> None:
+        # mirrors std::atomic<bool> is_shutdown_ = {false}
+        self._is_shutdown: bool = False
+        self._shutdown_lock = threading.Lock()
+
+        # mirrors std::shared_ptr<Node> node_ = nullptr
+        self._node_name: str = ""
+        self._node_impl: Optional[AstroNodeChannelImpl] = None
+
+        # mirrors std::string config_file_path_ = ""
+        self._config_file_path: str = ""
+
+        # mirrors std::vector<std::shared_ptr<ReaderBase>> readers_
+        self._readers: List[AstroCellReader] = []
+
+        # loaded config dict (from JSON file) — replaces proto message
+        self._config: Dict[str, Any] = {}
+
+    # ── abstract interface ────────────────────────────────────────────────────
+
+    @_abc_comp.abstractmethod
+    def init(self) -> bool:
+        """
+        Init() — pure-virtual component initialisation.
+
+        Called by initialize() after LoadConfigFiles.  Subclasses must:
+          1. Create readers via self._node_impl.create_reader_by_name(…).
+          2. Set up any periodic logic.
+          3. Return True on success.
+        """
+
+    def clear(self) -> None:
+        """
+        Clear() — default empty implementation (mirrors virtual Clear()).
+        Subclasses may override to release per-component resources.
+        """
+
+    # ── initialize (non-virtual entry point) ─────────────────────────────────
+
+    def initialize(
+        self,
+        conf: ComponentConf,
+        scheduler: Optional[Any] = None,
+    ) -> bool:
+        """
+        Initialize(ComponentConfig) — non-virtual entry point.
+
+        Mirrors ComponentBase::Initialize(const ComponentConfig& config):
+            1. LoadConfigFiles(config)
+            2. Init()            ← pure-virtual, implemented by subclass
+            3. Register with scheduler (if provided)
+
+        ASTRO: conf is ComponentConf; scheduler is AstroScheduler or None.
+        Returns True iff init() succeeds.
+        """
+        self._node_name = conf.node_name or "astro_component"
+        self._node_impl = AstroNodeChannelImpl(self._node_name)
+
+        self._load_config_files(conf)
+
+        _dbg("ASTRO-COMP",
+             f"[ASTRO-COMPONENT] Initialize node={self._node_name} "
+             f"config_file={self._config_file_path!r}")
+
+        ok = self.init()
+        if not ok:
+            _dbg("ASTRO-COMP",
+                 f"[ASTRO-COMPONENT] Init() returned false node={self._node_name}")
+            return False
+
+        _dbg("ASTRO-COMP",
+             f"[ASTRO-COMPONENT] Init() ok node={self._node_name}")
+        return True
+
+    # ── shutdown ──────────────────────────────────────────────────────────────
+
+    def shutdown(self, scheduler: Optional[Any] = None) -> None:
+        """
+        Shutdown() — mirrors ComponentBase::Shutdown().
+
+        Algorithm:
+            if (is_shutdown_.exchange(true)) return;
+            Clear();
+            for (auto& reader : readers_) reader->Shutdown();
+            scheduler::Instance()->RemoveTask(node_->Name());
+
+        ASTRO:
+            Clear()              → self.clear()
+            reader->Shutdown()   → reader.shutdown()
+            RemoveTask(name)     → scheduler.remove_task(node_name) if provided.
+        """
+        with self._shutdown_lock:
+            if self._is_shutdown:
+                return
+            self._is_shutdown = True
+
+        _dbg("ASTRO-COMP",
+             f"[ASTRO-COMPONENT] Shutdown node={self._node_name} "
+             f"readers={len(self._readers)}")
+
+        self.clear()
+
+        for reader in self._readers:
+            try:
+                reader.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                _dbg("ASTRO-COMP",
+                     f"reader.shutdown exc node={self._node_name} exc={exc}")
+        self._readers.clear()
+
+        if scheduler is not None and hasattr(scheduler, "remove_task"):
+            scheduler.remove_task(self._node_name)
+            _dbg("ASTRO-COMP",
+                 f"[ASTRO-COMPONENT] RemoveTask node={self._node_name}")
+
+        if self._node_impl is not None:
+            self._node_impl.shutdown()
+            self._node_impl = None
+
+    # ── GetProtoConfig<T> → get_config() ─────────────────────────────────────
+
+    def get_config(self) -> Dict[str, Any]:
+        """
+        GetProtoConfig<T>(config) — return loaded config dict.
+
+        Apollo: reads a protobuf from config_file_path_ using GetProtoFromFile.
+        ASTRO:  returns _config (JSON-loaded dict); loads lazily if not yet read.
+        """
+        if not self._config and self._config_file_path:
+            self._config = self._load_json_config(self._config_file_path)
+        return self._config
+
+    # ── ConfigFilePath accessor ───────────────────────────────────────────────
+
+    @property
+    def config_file_path(self) -> str:
+        """ConfigFilePath() const — mirrors ComponentBase::ConfigFilePath()."""
+        return self._config_file_path
+
+    # ── is_shutdown property ──────────────────────────────────────────────────
+
+    @property
+    def is_shutdown(self) -> bool:
+        with self._shutdown_lock:
+            return self._is_shutdown
+
+    # ── internal helpers ──────────────────────────────────────────────────────
+
+    def _load_config_files(self, conf: ComponentConf) -> None:
+        """
+        LoadConfigFiles — mirrors ComponentBase::LoadConfigFiles(ComponentConfig).
+
+        Resolves config_file_path via APOLLO_CONF_PATH env var.
+        Resolves flag_file_path via APOLLO_FLAG_PATH env var.
+        Stores resolved config path; loads JSON eagerly.
+
+        ASTRO delta: google::SetCommandLineOption("flagfile", …) is replaced by
+        setting os.environ["ASTRO_FLAGFILE"] so downstream code can read it.
+        """
+        if conf.config_file_path:
+            resolved = self._resolve_path(conf.config_file_path, "APOLLO_CONF_PATH")
+            if resolved:
+                self._config_file_path = resolved
+                _dbg("ASTRO-COMP",
+                     f"[ASTRO-COMPONENT] use config file: {resolved}")
+                self._config = self._load_json_config(resolved)
+            else:
+                _dbg("ASTRO-COMP",
+                     f"[ASTRO-COMPONENT] conf file [{conf.config_file_path}] not found!")
+                self._config_file_path = conf.config_file_path
+
+        if conf.flag_file_path:
+            flag_path = self._resolve_path(conf.flag_file_path, "APOLLO_FLAG_PATH")
+            if flag_path:
+                _dbg("ASTRO-COMP",
+                     f"[ASTRO-COMPONENT] use flag file: {flag_path}")
+                # Mirrors: google::SetCommandLineOption("flagfile", flag_file_path.c_str())
+                _os_comp.environ["ASTRO_FLAGFILE"] = flag_path
+            else:
+                _dbg("ASTRO-COMP",
+                     f"[ASTRO-COMPONENT] flag file [{conf.flag_file_path}] not found!")
+
+    @staticmethod
+    def _resolve_path(relative: str, env_var: str) -> str:
+        """
+        GetFilePathWithEnv — search for *relative* in the directory given by
+        *env_var*, then fall back to the current working directory.
+        Returns the absolute path if found, or "" if not.
+        """
+        search_dirs: List[str] = []
+        env_val = _os_comp.environ.get(env_var, "")
+        if env_val:
+            search_dirs.extend(env_val.split(_os_comp.pathsep))
+        search_dirs.append(_os_comp.getcwd())
+
+        for base in search_dirs:
+            candidate = _os_comp.path.join(base, relative)
+            if _os_comp.path.exists(candidate):
+                return _os_comp.path.abspath(candidate)
+
+        # Also accept absolute path
+        if _os_comp.path.isabs(relative) and _os_comp.path.exists(relative):
+            return relative
+
+        return ""
+
+    @staticmethod
+    def _load_json_config(path: str) -> Dict[str, Any]:
+        """Load JSON config file → dict.  Returns {} on error."""
+        try:
+            with open(path) as fh:
+                return _json_comp.load(fh)
+        except (OSError, _json_comp.JSONDecodeError) as exc:
+            _dbg("ASTRO-COMP", f"_load_json_config failed path={path!r} exc={exc}")
+            return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroDataFusion — ported from
+#   upstream/apollo-cyber/data/fusion/data_fusion.h
+#
+# 原典：DataFusion<M0,M1,M2,M3> 是纯抽象模板，提供三个偏特化版本：
+#   4-channel: Fusion(index*, m0&, m1&, m2&, m3&) → bool
+#   3-channel: Fusion(index*, m0&, m1&, m2&)       → bool
+#   2-channel: Fusion(index*, m0&, m1&)             → bool
+# 子类（如 AllLatest）重写 Fusion() 方法，从各自的 ChannelBuffer 中取最新值
+# 组合成 N 元组后写入 fusion_buf_；调用方通过 index 追踪已读位置。
+#
+# 鲁迅曰：Fusion 是个忠实的账房——四个格子，每格一票，缺一不可；
+# 等齐了才盖章，盖了章才算一次成功的融合。其实说来，世间诸事皆如此。
+#
+# 算法改动（20% 规则）：
+#   1. template<M0,M1,M2,M3> 三偏特化 → 单 Python 类，arity 由构造时 channel_ids 长度决定。
+#   2. NullType 占位符              → 省略（Python list 天然变长）。
+#   3. bool* index out-param        → (new_index, tuple|None) 返回对（同 AstroAllLatest 惯例）。
+#   4. shared_ptr<Mx>& NOLINT out-param → tuple 元素（caller destructures）。
+#   5. 纯虚 Fusion() → Python @abc.abstractmethod fusion(index)。
+#   6. AstroAllLatest 已在本文件实现；AstroDataFusion 作为更通用的接口层，
+#      可由子类扩展为 barrier_fusion（等所有通道都有新数据才融合）等策略。
+#   7. 新增 FusionPolicy enum: ALL_LATEST（已有 AstroAllLatest）/ BARRIER（新增）。
+#   8. AstroBarrierFusion: 每个通道必须都有一个新值（epoch ≥ index+1）才触发。
+#
+# Debug prefix: [ASTRO-FUSION] — 与 AstroAllLatest 日志前缀一致。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import enum as _enum
+
+
+class FusionPolicy(_enum.Enum):
+    """
+    Fusion strategy selector — no direct C++ equivalent.
+
+    ALL_LATEST: snapshot Latest() from each secondary on every primary Fill().
+                Maps to DataFusion + AllLatest<M0,M1,...> template in Apollo.
+    BARRIER:    wait until every channel has advanced to or past the current index.
+                Maps to a barrier-style DataFusion not shipped in Apollo upstream
+                but commonly needed for tight multi-sensor synchronisation.
+    """
+    ALL_LATEST = "all_latest"
+    BARRIER    = "barrier"
+
+
+class AstroDataFusion(_abc_comp.ABC):
+    """
+    Abstract multi-channel data fusion interface.
+
+    Python port of ``apollo::cyber::data::fusion::DataFusion<M0[,M1[,M2[,M3]]]>``.
+
+    Supports 2-, 3-, and 4-channel fusion (arity in {2, 3, 4}), matching the
+    three partial-template specialisations in data_fusion.h.
+
+    Subclasses implement ``fusion(index)`` returning (new_index, tuple|None).
+
+    ASTRO delta from Apollo DataFusion:
+      • Template specialisations merged into one class (arity arg).
+      • Fusion() bool + out-params → (new_index, tuple|None) pair.
+      • NullType placeholder channels → simply absent (Python list).
+      • channel_ids list carries names for debug logging.
+    """
+
+    def __init__(self, channel_ids: List[str]) -> None:
+        if not (2 <= len(channel_ids) <= 4):
+            raise ValueError(
+                f"AstroDataFusion requires 2-4 channel ids, got {len(channel_ids)}"
+            )
+        self._channel_ids: List[str] = list(channel_ids)
+        self._arity: int = len(channel_ids)
+
+    @_abc_comp.abstractmethod
+    def fusion(self, index: int) -> Tuple[int, Optional[tuple]]:
+        """
+        Fusion(index*, m0, m1[, m2[, m3]]) — read next fused tuple.
+
+        index: current read cursor (0 = cold start).
+        Returns (new_index, (m0, m1, …)) on success,
+                (index, None) when no new data is available.
+
+        Mirrors DataFusion::Fusion() pure-virtual.
+        """
+
+    @property
+    def arity(self) -> int:
+        """Number of fused channels (2, 3, or 4)."""
+        return self._arity
+
+    @property
+    def channel_ids(self) -> List[str]:
+        return list(self._channel_ids)
+
+
+class AstroAllLatestFusion(AstroDataFusion):
+    """
+    AllLatest fusion — wraps AstroAllLatest behind the AstroDataFusion interface.
+
+    Maps channel_ids to AstroChannelBuffer instances, constructs an
+    AstroAllLatest, and delegates fusion(index) to it.
+
+    Usage::
+        bufs = [
+            AstroChannelBuffer("skeleton/cell/attn.json",  AstroCacheBuffer(4)),
+            AstroChannelBuffer("physics/force_field.json", AstroCacheBuffer(4)),
+            AstroChannelBuffer("physics/palette.json",     AstroCacheBuffer(4)),
+        ]
+        fuser = AstroAllLatestFusion(bufs)
+        idx = 0
+        while True:
+            idx, tup = fuser.fusion(idx)
+            if tup: process(*tup)
+    """
+
+    def __init__(self, channel_buffers: List[AstroChannelBuffer]) -> None:
+        channel_ids = [b.channel_id for b in channel_buffers]
+        super().__init__(channel_ids)
+        self._all_latest = AstroAllLatest(channel_buffers)
+
+    def fusion(self, index: int) -> Tuple[int, Optional[tuple]]:
+        """
+        Fusion() — delegate to AstroAllLatest.fusion(index).
+        Mirrors DataFusion<M0,...>::Fusion(index*, m0&, …) → AllLatest::Fusion().
+        """
+        new_idx, result = self._all_latest.fusion(index)
+        if result is not None:
+            _dbg("ASTRO-FUSION",
+                 f"AllLatestFusion ch={self._channel_ids[0]} "
+                 f"idx={index}→{new_idx} arity={self._arity}")
+        return new_idx, result
+
+
+class AstroBarrierFusion(AstroDataFusion):
+    """
+    Barrier fusion — requires every channel to have advanced past *index*.
+
+    Unlike AllLatest (which snapshots secondaries on primary fill), Barrier
+    holds until all AstroChannelBuffer.fetch(index+1) succeed simultaneously.
+    Callers typically poll fusion() in a spin loop with a sleep.
+
+    This policy is not present in Apollo upstream data_fusion.h but matches
+    the tight multi-sensor synchronisation pattern described in cyber docs.
+
+    ASTRO implementation: each call attempts fetch(index+1) on all buffers;
+    if any returns None the whole call returns (index, None) without advancing.
+    When all succeed returns (index+1, (v0, v1, …)).
+    """
+
+    def __init__(self, channel_buffers: List[AstroChannelBuffer]) -> None:
+        channel_ids = [b.channel_id for b in channel_buffers]
+        super().__init__(channel_ids)
+        self._buffers: List[AstroChannelBuffer] = channel_buffers
+
+    def fusion(self, index: int) -> Tuple[int, Optional[tuple]]:
+        """
+        Barrier Fusion(index) — all channels must advance before returning data.
+
+        Returns (index+1, (v0, …, vN)) when every buffer has data at index+1.
+        Returns (index, None) if any buffer is behind.
+        """
+        next_idx = index + 1
+        values: List[Any] = []
+        for buf in self._buffers:
+            new_i, val = buf.fetch(next_idx)
+            if val is None:
+                _dbg("ASTRO-FUSION",
+                     f"BarrierFusion: ch={buf.channel_id} not ready idx={next_idx}")
+                return index, None
+            values.append(val)
+
+        _dbg("ASTRO-FUSION",
+             f"BarrierFusion: all channels ready idx={index}→{next_idx} "
+             f"arity={self._arity}")
+        return next_idx, tuple(values)
+
+
+def make_fusion(
+    channel_buffers: List[AstroChannelBuffer],
+    policy: FusionPolicy = FusionPolicy.ALL_LATEST,
+) -> AstroDataFusion:
+    """
+    Factory helper — mirrors DataFusion template instantiation.
+
+    Parameters
+    ----------
+    channel_buffers : list of AstroChannelBuffer, len in {2, 3, 4}.
+    policy          : FusionPolicy.ALL_LATEST (default) or FusionPolicy.BARRIER.
+
+    Returns an AstroDataFusion subclass instance.
+
+    Usage::
+        bufs = [ AstroChannelBuffer(id, AstroCacheBuffer(8)) for id in ids ]
+        fuser = make_fusion(bufs, FusionPolicy.BARRIER)
+        idx = 0
+        while running:
+            idx, tup = fuser.fusion(idx)
+            if tup: handle(*tup)
+            time.sleep(0.005)
+    """
+    if policy == FusionPolicy.BARRIER:
+        return AstroBarrierFusion(channel_buffers)
+    return AstroAllLatestFusion(channel_buffers)
