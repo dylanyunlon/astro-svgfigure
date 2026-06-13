@@ -14,10 +14,10 @@
 <line x1="56.5" y1="22.2" x2="103.5" y2="31.8" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
 <line x1="57.9" y1="17.7" x2="102.1" y2="36.3" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
 <text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Positional Encoding</text>
-<!-- [ASTRO-CELL] PostProcessDeferredDecals species=3 ch=2 haloI=0.50 arcSeed=950289553 blend=1.00 -->
+<!-- [ASTRO-CELL] PostProcessDeferredDecals species=3 ch=2 haloI=0.50 arcSeed=2243151165 blend=1.00 -->
 <g class="decal-overlay" opacity="1.000">
-  <!-- decal: cil-vector arrow marker — R=0.50 G=0.268 ch2 -->
-  <defs><marker id="decal-arrow-4591" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350"/></marker></defs>
-  <line x1="74.28" y1="25.80" x2="85.72" y2="24.20" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-4591)"/>
+  <!-- decal: cil-vector arrow marker — R=0.50 G=0.770 ch2 -->
+  <defs><marker id="decal-arrow-5502" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350"/></marker></defs>
+  <line x1="74.30" y1="24.07" x2="85.70" y2="25.93" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-5502)"/>
 </g>
 </g>

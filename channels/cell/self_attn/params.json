@@ -20,7 +20,7 @@
     "r_outer": 21.0,
     "r_inner_ratio": 0.3
   },
-  "epoch": 4,
+  "epoch": 2,
   "shadow": {
     "dx": 2.0,
     "dy": 2.0,

@@ -45,6 +45,15 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
           Auto-loop
         </label>
 
+        {/* Run full Python pipeline */}
+        <button id='run-pipeline-btn'
+          class='inline-flex items-center gap-x-1.5 rounded-xl border border-emerald-500 bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-all hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed'>
+          <svg id='run-pipeline-icon' xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+            <path d='M13 2L3 14h9l-1 8 10-12h-9l1-8z'/>
+          </svg>
+          Run Pipeline
+        </button>
+
         {/* Manual epoch trigger */}
         <button id='trigger-epoch-btn'
           class='inline-flex items-center gap-x-1.5 rounded-xl border bg-violet-600 px-3 py-1.5 text-xs font-medium text-white transition-all hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed'>
@@ -179,9 +188,11 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   const epochEmpty   = document.getElementById('epoch-empty')!
   const connDot      = document.getElementById('conn-dot')!
   const connText     = document.getElementById('conn-text')!
-  const triggerBtn   = document.getElementById('trigger-epoch-btn') as HTMLButtonElement
-  const triggerIcon  = document.getElementById('trigger-icon')!
-  const autoLoopChk  = document.getElementById('auto-loop-chk') as HTMLInputElement
+  const triggerBtn      = document.getElementById('trigger-epoch-btn') as HTMLButtonElement
+  const triggerIcon     = document.getElementById('trigger-icon')!
+  const runPipelineBtn  = document.getElementById('run-pipeline-btn') as HTMLButtonElement
+  const runPipelineIcon = document.getElementById('run-pipeline-icon')!
+  const autoLoopChk     = document.getElementById('auto-loop-chk') as HTMLInputElement
 
   // ── State ─────────────────────────────────────────────────────────────────
   let pixiApp: Application | null = null
@@ -429,6 +440,73 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
     setZoom(100)
     hideStatus()
   }
+
+  // ── Run full Python pipeline → fetch fresh cell params ───────────────────
+  async function runPipeline() {
+    if (running) return
+    running = true
+    runPipelineBtn.disabled = true
+    triggerBtn.disabled = true
+    runPipelineIcon.classList.add('animate-spin')
+
+    try {
+      showStatus('Running Python pipeline (5 epochs)…')
+      const res = await fetch('/api/pipeline-run', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_epochs: 5 }),
+      })
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+        throw new Error((err as any).error ?? `Pipeline failed: ${res.status}`)
+      }
+
+      const data = await res.json() as { cells: CellDescriptor[]; svg_bytes: number; epochs_run: number }
+      if (!data.cells?.length) throw new Error('Pipeline returned no cells')
+
+      lastCells = data.cells
+      renderCellList(data.cells)
+      setConnected(true)
+      hideError()
+
+      // Fit canvas to container and render
+      const rect = wrap.getBoundingClientRect()
+      canvas.width  = Math.floor(rect.width)
+      canvas.height = Math.floor(rect.height)
+
+      showStatus(`Rendering ${data.cells.length} cells (${renderMode}) — ${data.svg_bytes} SVG bytes…`)
+
+      const edges = buildEdges(data.cells)
+
+      if (pixiApp) {
+        try { pixiApp.destroy(false, { children: true, texture: true }) } catch { /* ok */ }
+        pixiApp = null
+      }
+
+      if (renderMode === 'pixi') {
+        pixiApp = await renderCellGraph(canvas, data.cells, edges)
+      } else {
+        pixiApp = await renderCellGraphSDF(canvas, data.cells, edges)
+      }
+
+      emptyEl.classList.add('hidden')
+      canvas.classList.remove('hidden')
+      setZoom(100)
+      hideStatus()
+
+      // Refresh epoch timeline
+      await fetchEpochs()
+    } catch (err: any) {
+      showError(err.message ?? 'Pipeline run failed')
+    } finally {
+      running = false
+      runPipelineBtn.disabled = false
+      triggerBtn.disabled = false
+      runPipelineIcon.classList.remove('animate-spin')
+    }
+  }
+
+  runPipelineBtn.addEventListener('click', runPipeline)
 
   // ── Trigger epoch + re-render ─────────────────────────────────────────────
   async function triggerEpoch() {
