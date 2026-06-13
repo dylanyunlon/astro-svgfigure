@@ -1912,3 +1912,250 @@ class AstroTransport:
         _trans_dbg(channel_id, mode, "rx", "enable")
         self._receivers.append(rx)
         return rx
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroCacheBuffer — ported from upstream/apollo-cyber/data/cache_buffer.h
+#
+# Original C++: CacheBuffer<T> circular ring (head_/tail_ uint64_t, mutex,
+#   optional FusionCallback on Fill()).
+# ASTRO changes (20%): capacity sentinel → _slot(pos) helper; uint64_t counters
+#   → Python int; std::function → Optional[Callable]; std::mutex → threading.Lock;
+#   typed template T → Any.  All structural invariants (Head/Tail/Size/Empty/Full)
+#   unchanged from Apollo original.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import threading
+
+
+class AstroCacheBuffer:
+    """Epoch-indexed ring buffer — port of apollo::cyber::data::CacheBuffer."""
+
+    def __init__(self, size: int):
+        self._capacity: int = size + 1          # C++: capacity_ = size + 1
+        self._buffer: List[Any] = [None] * self._capacity
+        self._head: int = 0
+        self._tail: int = 0
+        self._lock = threading.Lock()
+        self._fusion_cb: Optional[Callable[[Any], None]] = None
+
+    @property
+    def lock(self) -> threading.Lock:
+        return self._lock
+
+    def capacity(self) -> int:
+        return self._capacity
+
+    def head(self) -> int:
+        return self._head + 1
+
+    def tail(self) -> int:
+        return self._tail
+
+    def size(self) -> int:
+        return self._tail - self._head
+
+    def empty(self) -> bool:
+        return self._tail == 0
+
+    def full(self) -> bool:
+        return self._capacity - 1 == self._tail - self._head
+
+    def _slot(self, pos: int) -> int:
+        """GetIndex — modular slot (pos % capacity)."""
+        return pos % self._capacity
+
+    def at(self, pos: int) -> Any:
+        return self._buffer[self._slot(pos)]
+
+    def front(self) -> Any:
+        return self._buffer[self._slot(self._head + 1)]
+
+    def back(self) -> Any:
+        return self._buffer[self._slot(self._tail)]
+
+    def set_fusion_callback(self, cb: Callable[[Any], None]):
+        """SetFusionCallback — hook used by AstroAllLatest to intercept Fill()."""
+        self._fusion_cb = cb
+
+    def fill(self, value: Any):
+        """
+        Fill — write to ring or delegate to FusionCallback.
+
+        When full, evicts head (overwrites oldest slot), advancing both
+        head_ and tail_.  Mirrors C++ Fill() exactly.
+        """
+        if self._fusion_cb is not None:
+            self._fusion_cb(value)
+            return
+        if self.full():
+            self._buffer[self._slot(self._head)] = value
+            self._head += 1
+            self._tail += 1
+        else:
+            self._buffer[self._slot(self._tail + 1)] = value
+            self._tail += 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroChannelBuffer — ported from upstream/apollo-cyber/data/channel_buffer.h
+#
+# Original C++: ChannelBuffer<T> epoch-aware wrapper (Fetch/Latest/FetchMulti).
+# ASTRO changes (20%): channel_id uint64_t → str; shared_ptr → direct ref;
+#   *index out-param → (new_index, value) return pair; vector* → List return;
+#   lock scope preserved per-method.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroChannelBuffer:
+    """
+    Epoch-constrained reader over AstroCacheBuffer.
+
+    fetch(index)    -> (new_index, value) | (index, None)
+    latest()        -> value | None
+    fetch_multi(n)  -> List[value], oldest-first
+    """
+
+    def __init__(self, channel_id: str, buf: AstroCacheBuffer):
+        self._channel_id = channel_id
+        self._buf = buf
+        _dbg("ASTRO-BUFFER",
+             f"AstroChannelBuffer ctor: channel={channel_id} capacity={buf.capacity()}")
+
+    @property
+    def channel_id(self) -> str:
+        return self._channel_id
+
+    @property
+    def buffer(self) -> AstroCacheBuffer:
+        return self._buf
+
+    def fetch(self, index: int) -> Tuple[int, Optional[Any]]:
+        """Epoch-indexed sequential read.  Overflow detection → WARN + snap."""
+        with self._buf.lock:
+            if self._buf.empty():
+                _dbg("ASTRO-BUFFER", f"Fetch: empty ch={self._channel_id}")
+                return index, None
+            if index == 0:
+                new_idx = self._buf.tail()
+                _dbg("ASTRO-BUFFER", f"Fetch: cold-start snap Tail={new_idx} ch={self._channel_id}")
+                return new_idx, self._buf.at(new_idx)
+            if index == self._buf.tail() + 1:
+                _dbg("ASTRO-BUFFER", f"Fetch: epoch current no new data idx={index} ch={self._channel_id}")
+                return index, None
+            if index < self._buf.head():
+                drop = self._buf.tail() - index
+                print(
+                    f"[ASTRO-BUFFER] Fetch: epoch overflow on channel[{self._channel_id}] "
+                    f"drop_messages=[{drop}] stale_epoch_index=[{index}] "
+                    f"current_epoch_tail=[{self._buf.tail()}] — "
+                    f"snapping cursor to current epoch boundary"
+                )
+                new_idx = self._buf.tail()
+                return new_idx, self._buf.at(new_idx)
+            _dbg("ASTRO-BUFFER", f"Fetch: reading idx={index} ch={self._channel_id}")
+            return index, self._buf.at(index)
+
+    def latest(self) -> Optional[Any]:
+        """Non-destructive tail peek.  Mirrors ChannelBuffer<T>::Latest()."""
+        with self._buf.lock:
+            if self._buf.empty():
+                _dbg("ASTRO-BUFFER", f"Latest: empty ch={self._channel_id}")
+                return None
+            _dbg("ASTRO-BUFFER", f"Latest: tail={self._buf.tail()} ch={self._channel_id}")
+            return self._buf.back()
+
+    def fetch_multi(self, fetch_size: int) -> List[Any]:
+        """Bulk read up to fetch_size entries, oldest-first.  Mirrors FetchMulti()."""
+        with self._buf.lock:
+            if self._buf.empty():
+                _dbg("ASTRO-BUFFER", f"FetchMulti: empty ch={self._channel_id}")
+                return []
+            num = min(self._buf.size(), fetch_size)
+            start = self._buf.tail() - num + 1
+            result = [self._buf.at(i) for i in range(start, self._buf.tail() + 1)]
+            _dbg("ASTRO-BUFFER", f"FetchMulti: count={len(result)} ch={self._channel_id}")
+            return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroAllLatest — ported from upstream/apollo-cyber/data/fusion/all_latest.h
+#
+# Original C++: AllLatest<M0[,M1[,M2[,M3]]]> partial-specialisation template.
+#   FusionCallback on primary (M0) snapshots Latest from secondaries and pushes
+#   the N-tuple into a separate fusion CacheBuffer.
+# ASTRO changes (20%): three C++ specialisations → single Python class with
+#   List[AstroChannelBuffer]; std::tuple<shared_ptr<Mx>,...> → Python tuple;
+#   fusion ring sized to primary.capacity()-1 (unchanged); fprintf→print;
+#   bool+out-params → Optional[tuple].
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroAllLatest:
+    """
+    Multi-channel AllLatest fusion — port of apollo::cyber::data::fusion::AllLatest.
+
+    Supports 2-, 3-, and 4-channel fusion (len(buffers) in {2,3,4}).
+    buffers[0] is the primary; buffers[1:] are secondaries.
+
+    When primary.buffer.fill(m0) is called the FusionCallback fires:
+      - Latest() is called on each secondary.
+      - If any secondary is None the tuple is dropped.
+      - Otherwise (m0, *secondaries) is pushed to the internal fusion ring.
+
+    fusion(index) reads epoch-indexed fused tuples from the fusion ring.
+    """
+
+    def __init__(self, buffers: List[AstroChannelBuffer]):
+        if not (2 <= len(buffers) <= 4):
+            raise ValueError("AstroAllLatest requires 2-4 channel buffers (M0-M3)")
+        self._primary: AstroChannelBuffer = buffers[0]
+        self._secondaries: List[AstroChannelBuffer] = buffers[1:]
+        self._arity: int = len(buffers)
+        # Fusion ring — capacity mirrors C++: primary.capacity()-1
+        fusion_cap = self._primary.buffer.capacity() - 1
+        self._fusion_buf = AstroChannelBuffer(
+            self._primary.channel_id,
+            AstroCacheBuffer(fusion_cap),
+        )
+        self._primary.buffer.set_fusion_callback(self._fusion_callback)
+        _dbg("ASTRO-FUSION",
+             f"AstroAllLatest ctor: primary={self._primary.channel_id} "
+             f"arity={self._arity} fusion_cap={fusion_cap}")
+
+    def _fusion_callback(self, m0: Any):
+        """FusionCallback — mirrors AllLatest C++ lambda: Latest() all secondaries, push tuple."""
+        vals: List[Any] = []
+        for sec in self._secondaries:
+            v = sec.latest()
+            if v is None:
+                _dbg("ASTRO-FUSION", f"fusion_callback: secondary={sec.channel_id} not ready — drop")
+                return
+            vals.append(v)
+        print(
+            f"[ASTRO-FUSION] AllLatest fusion triggered | "
+            f"primary_channel='{self._primary.channel_id}' | "
+            f"secondary_channels={len(self._secondaries)} | "
+            f"fused_cells={len(vals)}"
+        )
+        with self._fusion_buf.buffer.lock:
+            self._fusion_buf.buffer.fill(tuple([m0] + vals))
+
+    def fusion(self, index: int) -> Tuple[int, Optional[tuple]]:
+        """
+        fusion(index) -> (new_index, (m0, m1[, m2[, m3]])) | (index, None)
+
+        Mirrors AllLatest::Fusion() -> buffer_fusion_.Fetch(index, data).
+        Caller advances index by 1 after each successful read.
+        """
+        return self._fusion_buf.fetch(index)
+
+    @property
+    def arity(self) -> int:
+        return self._arity
+
+    @property
+    def primary_channel_id(self) -> str:
+        return self._primary.channel_id
+
+    @property
+    def secondary_channel_ids(self) -> List[str]:
+        return [s.channel_id for s in self._secondaries]
