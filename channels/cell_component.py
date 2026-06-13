@@ -5565,3 +5565,986 @@ def get_astro_gi_pipeline() -> AstroCellGlobalIlluminationPipeline:
     if _ASTRO_GI_PIPELINE is None:
         _ASTRO_GI_PIPELINE = AstroCellGlobalIlluminationPipeline()
     return _ASTRO_GI_PIPELINE
+
+
+# =============================================================================
+# AstroCellVolumetricCloud — 体积云渲染核心
+# (ported from VolumetricCloudRendering.cpp)
+#
+# 鲁迅曾言：「希望是附丽于存在的，有存在，便有希望，有希望，便是光明。」
+# 体积云亦如此——光线穿过云层，每一步都是希望的采样，每一步都可能穿透，
+# 也可能被遮蔽。光线步进是一种执着：不到最大采样数，决不放弃。
+# =============================================================================
+
+from dataclasses import dataclass as _dc, field as _field
+from typing import List as _List, Optional as _Opt, Dict as _Dict
+
+
+# -----------------------------------------------------------------------------
+# CVarVolumetricCloud 系列控制变量移植
+# 对应 VolumetricCloudRendering.cpp 中以 CVarVolumetricCloud* 开头的所有 CVar
+# -----------------------------------------------------------------------------
+_CLOUD_SUPPORT                  = True    # r.VolumetricCloud.Support
+_CLOUD_ENABLED                  = True    # r.VolumetricCloud
+_CLOUD_DIST_TO_SAMPLE_MAX_COUNT = 15.0    # r.VolumetricCloud.DistanceToSampleMaxCount (km)
+_CLOUD_SAMPLE_MIN_COUNT         = 2       # r.VolumetricCloud.SampleMinCount
+_CLOUD_SAMPLE_CLAMP_COUNT       = 768     # r.VolumetricCloud.SampleClampCount
+_CLOUD_VIEW_RAY_SAMPLE_MAX      = 768     # r.VolumetricCloud.ViewRaySampleMaxCount
+_CLOUD_REFL_RAY_SAMPLE_MAX      = 80      # r.VolumetricCloud.ReflectionRaySampleMaxCount
+_CLOUD_STEP_ON_ZERO_DENSITY     = 1       # r.VolumetricCloud.StepSizeOnZeroConservativeDensity
+_CLOUD_APPLY_FOG_ON_ALL_PIXEL   = False   # r.VolumetricCloud.ApplyFogOnAllPixel
+_CLOUD_APPLY_FOG_LATE           = True    # r.VolumetricCloud.ApplyFogLate
+_CLOUD_SHADOW_SAMPLE_MAX        = 80      # r.VolumetricCloud.Shadow.ViewRaySampleMaxCount
+_CLOUD_SKY_AO_ENABLED           = True    # r.VolumetricCloud.SkyAO
+_CLOUD_SKY_AO_TRACE_COUNT       = 10      # r.VolumetricCloud.SkyAO.TraceSampleCount
+_CLOUD_SKY_AO_SNAP_LENGTH       = 20.0   # r.VolumetricCloud.SkyAO.SnapLength (km)
+_CLOUD_SHADOW_MAP_ENABLED       = True    # r.VolumetricCloud.ShadowMap
+_CLOUD_SHADOW_MAP_SNAP_LENGTH   = 20.0   # r.VolumetricCloud.ShadowMap.SnapLength (km)
+_CLOUD_SHADOW_MAP_SAMPLE_MAX    = 128.0   # r.VolumetricCloud.ShadowMap.RaySampleMaxCount
+
+# 鲁迅式：采样数是道德的量度——少了是敷衍，多了是浪费，
+# 恰到好处是艺术，而「恰到好处」从来没有公式。
+_CLOUD_AERIAL_PERSPECTIVE_SAMPLING = True  # r.VolumetricCloud.EnableAerialPerspectiveSampling
+
+
+def _cloud_compute_sample_count(
+    trace_distance: float,
+    max_sample_count: float = _CLOUD_VIEW_RAY_SAMPLE_MAX,
+    dist_to_max: float = _CLOUD_DIST_TO_SAMPLE_MAX_COUNT,
+) -> int:
+    """
+    计算光线步进采样数。
+    移植自 VolumetricCloudRendering.cpp 的采样数计算逻辑：
+    在 [0, DistanceToSampleCountMax] 范围内线性插值到最大采样数，
+    并钳制到 [SampleMinCount, SampleClampCount]。
+
+    鲁迅式：采样数随距离而生长——近处精细如记忆，远处粗糙如遗忘。
+    """
+    if not _CLOUD_SUPPORT or not _CLOUD_ENABLED:
+        return 0
+    dist_km = trace_distance / 1000.0  # 转为公里
+    raw = math.lerp(
+        _CLOUD_SAMPLE_MIN_COUNT,
+        max_sample_count,
+        min(1.0, dist_km / max(dist_to_max, 1e-6)),
+    ) if hasattr(math, "lerp") else (
+        _CLOUD_SAMPLE_MIN_COUNT
+        + (max_sample_count - _CLOUD_SAMPLE_MIN_COUNT)
+        * min(1.0, dist_km / max(dist_to_max, 1e-6))
+    )
+    return int(max(_CLOUD_SAMPLE_MIN_COUNT, min(raw, _CLOUD_SAMPLE_CLAMP_COUNT)))
+
+
+@_dc
+class AstroCellCloudTracingState:
+    """
+    单条光线的体积云步进状态。
+    移植自 VolumetricCloudRendering.cpp 中 RenderVolumetricCloud 的内循环状态结构。
+
+    transmittance : 当前累计透射率 ∈ [0,1]；1 = 完全透明，0 = 完全遮挡
+    luminance     : 累计散射亮度 (R,G,B)
+    t_current     : 当前光线参数 t（世界单位）
+    t_exit        : 光线退出云层的 t 值
+    """
+    transmittance:  float = 1.0
+    luminance:      tuple = (0.0, 0.0, 0.0)
+    t_current:      float = 0.0
+    t_exit:         float = 0.0
+    sample_count:   int   = 0
+    converged:      bool  = False
+
+    def integrate_sample(
+        self,
+        density: float,
+        emission: tuple,
+        step_size: float,
+        extinction_coeff: float = 0.1,
+    ) -> None:
+        """
+        单步体积积分（Beer-Lambert 透射 + 单散射）。
+        移植自 VolumetricCloudRendering.cpp 的核心积分循环：
+            Transmittance *= exp(-density * extinction * stepSize)
+            Luminance     += Transmittance * density * emission * stepSize
+        """
+        if density <= 0.0:
+            return
+        extinction  = density * extinction_coeff
+        step_trans  = math.exp(-extinction * step_size)
+        weight      = self.transmittance * (1.0 - step_trans) / max(extinction, 1e-8)
+        self.luminance = (
+            self.luminance[0] + weight * emission[0],
+            self.luminance[1] + weight * emission[1],
+            self.luminance[2] + weight * emission[2],
+        )
+        self.transmittance *= step_trans
+        self.sample_count  += 1
+        if self.transmittance < 1e-4:
+            self.converged = True  # 光线已被完全遮挡，提前终止
+
+
+@_dc
+class AstroCellVolumetricCloudLayer:
+    """
+    单云层描述符，移植自 UVolumetricCloudComponent 的关键参数。
+
+    layer_bottom_altitude_km : 云层底部高度（公里）
+    layer_top_altitude_km    : 云层顶部高度（公里）
+    extinction_scale         : 消光系数缩放（SkyAtmosphere 的 CloudScatteringCoefficient 等价）
+    ambient_occlusion        : 自遮挡因子，映射到 SVG feComponentTransfer 亮度调制
+    """
+    layer_bottom_altitude_km: float = 2.0
+    layer_top_altitude_km:    float = 5.0
+    extinction_scale:         float = 0.2
+    ambient_occlusion:        float = 0.5    # 云层自遮挡
+    sky_ao_strength:          float = 0.8    # 天空 AO 强度（r.VolumetricCloud.SkyAO 等价）
+    shadow_map_strength:      float = 0.6    # 阴影贴图强度
+
+    def thickness_km(self) -> float:
+        return max(0.0, self.layer_top_altitude_km - self.layer_bottom_altitude_km)
+
+    def altitude_fraction(self, altitude_km: float) -> float:
+        """归一化高度 ∈ [0,1]，0 = 云底，1 = 云顶。"""
+        th = self.thickness_km()
+        if th < 1e-6:
+            return 0.0
+        return max(0.0, min(1.0,
+            (altitude_km - self.layer_bottom_altitude_km) / th))
+
+
+def trace_cloud_ray(
+    ray_origin_km: tuple,
+    ray_dir: tuple,
+    cloud_layer: AstroCellVolumetricCloudLayer,
+    density_fn,
+    emission_fn,
+    max_sample_count: int = _CLOUD_VIEW_RAY_SAMPLE_MAX,
+    step_size_km: float = 0.05,
+) -> AstroCellCloudTracingState:
+    """
+    沿单条光线执行体积云步进积分。
+    移植自 VolumetricCloudRendering.cpp 的 RenderVolumetricCloud 主循环。
+
+    density_fn(altitude_km) -> float  ∈ [0,1]
+    emission_fn(altitude_km, density) -> (R, G, B)
+
+    鲁迅式：光线步进如同直面现实的旅人——每一步都可能被云雾吞噬，
+    却依然坚持迈出下一步，直到透射率归零或走完全程。
+    """
+    state = AstroCellCloudTracingState()
+    if not _CLOUD_ENABLED:
+        return state
+
+    # 计算光线与云层的交点（简化为轴对齐高度层）
+    oy, dy = ray_origin_km[1], ray_dir[1]
+    t_bot = (cloud_layer.layer_bottom_altitude_km - oy) / max(abs(dy), 1e-9) * (1 if dy > 0 else -1)
+    t_top = (cloud_layer.layer_top_altitude_km    - oy) / max(abs(dy), 1e-9) * (1 if dy > 0 else -1)
+
+    t_enter = max(0.0, min(t_bot, t_top))
+    t_exit  = max(t_bot, t_top)
+    if t_exit <= t_enter:
+        return state   # 光线不穿过云层
+
+    state.t_current = t_enter
+    state.t_exit    = t_exit
+
+    # 动态计算采样数（镜像 C++ 的采样数计算 CVar 系统）
+    trace_dist = (t_exit - t_enter) * 1000.0  # km → m
+    n_samples  = min(
+        _cloud_compute_sample_count(trace_dist, max_sample_count),
+        max_sample_count,
+    )
+    if n_samples <= 0:
+        return state
+
+    actual_step = (t_exit - t_enter) / n_samples
+
+    for _ in range(n_samples):
+        if state.converged:
+            break
+        alt_km = oy + state.t_current * dy
+        density = density_fn(alt_km) * cloud_layer.extinction_scale
+        if density > 0.0:
+            emission = emission_fn(alt_km, density)
+            state.integrate_sample(density, emission, actual_step)
+        elif _CLOUD_STEP_ON_ZERO_DENSITY > 1:
+            # 零密度时跳步（CVarVolumetricCloudStepSizeOnZeroConservativeDensity）
+            state.t_current += actual_step * _CLOUD_STEP_ON_ZERO_DENSITY
+            continue
+        state.t_current += actual_step
+
+    return state
+
+
+def compute_cloud_sky_ao(
+    ground_altitude_km: float,
+    cloud_layer: AstroCellVolumetricCloudLayer,
+    density_fn,
+    num_traces: int = _CLOUD_SKY_AO_TRACE_COUNT,
+) -> float:
+    """
+    计算云层天空 AO（CloudSkyAO）。
+    移植自 VolumetricCloudRendering.cpp 的 SkyAO pass：
+    向上发射 num_traces 条光线，统计被云层遮挡的比率，
+    映射到 [0,1] 的遮挡因子，用于调制 SVG 全局亮度。
+
+    鲁迅式：天空 AO 是大地对苍穹的凝视——它知道云层多厚，
+    却无力改变；只能用一个数字，记录这份被遮蔽的清醒。
+    """
+    if not _CLOUD_SKY_AO_ENABLED:
+        return 0.0
+    total_occlusion = 0.0
+    for i in range(num_traces):
+        angle = math.pi * i / max(num_traces - 1, 1)  # 0 ~ π 均匀分布
+        ray_dir = (math.sin(angle), math.cos(angle), 0.0)
+        state = trace_cloud_ray(
+            ray_origin_km=(0.0, ground_altitude_km, 0.0),
+            ray_dir=ray_dir,
+            cloud_layer=cloud_layer,
+            density_fn=density_fn,
+            emission_fn=lambda alt, d: (0.0, 0.0, 0.0),  # AO 不需要 emission
+            max_sample_count=_CLOUD_SKY_AO_TRACE_COUNT * 2,
+        )
+        total_occlusion += 1.0 - state.transmittance
+    return total_occlusion / max(num_traces, 1)
+
+
+@_dc
+class AstroCellCloudRenderParams:
+    """
+    云层渲染参数，由 trace_cloud_ray + compute_cloud_sky_ao 结果组成。
+    用于生成 SVG feColorMatrix / feComponentTransfer 滤镜参数，
+    实现体积云的视觉效果叠加。
+    """
+    transmittance: float = 1.0
+    luminance:     tuple = (0.0, 0.0, 0.0)
+    sky_ao:        float = 0.0
+    cloud_opacity: float = 0.0    # 1 - transmittance，映射到 SVG fog 覆盖度
+    fog_color:     tuple = (0.85, 0.90, 0.95)  # 淡蓝雾色，镜像 SkyAtmosphere aerial perspective
+
+    def to_svg_filter_params(self) -> dict:
+        """
+        将云层渲染结果转为 SVG feColorMatrix 参数。
+        luminance 亮度通道 → 亮度叠加；sky_ao → 全局暗化；
+        fog 覆盖 → feFlood + feComposite 模拟体积雾。
+
+        鲁迅式：SVG 滤镜是现代绘画的笔墨——看不见工具，只见效果。
+        """
+        brightness = 1.0 - self.sky_ao * 0.4  # AO 最多压暗 40%
+        fog_alpha  = self.cloud_opacity * 0.3  # 云层覆盖映射到雾的半透明度
+        return {
+            "brightness":  round(max(0.3, brightness), 4),
+            "fog_alpha":   round(max(0.0, min(1.0, fog_alpha)), 4),
+            "fog_r":       round(self.fog_color[0], 4),
+            "fog_g":       round(self.fog_color[1], 4),
+            "fog_b":       round(self.fog_color[2], 4),
+            "luminance_r": round(self.luminance[0], 4),
+            "luminance_g": round(self.luminance[1], 4),
+            "luminance_b": round(self.luminance[2], 4),
+        }
+
+
+# =============================================================================
+# AstroCellTranslucentLighting — 半透明体积光照
+# (ported from TranslucentLighting.cpp)
+#
+# 鲁迅曾言：「不满是向上的车轮，能够载着不自满的人类，向人道前进。」
+# 半透明光照卷亦如此——每一个 cascade 都是对「不满于低精度」的回应，
+# 但 Dim=64 的低分辨率从未妨碍它承载足够多的光的信息。
+# =============================================================================
+
+# CVarTranslucencyLightingVolume* 系列移植
+_TLV_ENABLED             = True    # r.TranslucencyLightingVolume
+_TLV_DIM                 = 64      # r.TranslucencyLightingVolume.Dim
+_TLV_INNER_DISTANCE      = 1500.0  # r.TranslucencyLightingVolume.InnerDistance
+_TLV_OUTER_DISTANCE      = 5000.0  # r.TranslucencyLightingVolume.OuterDistance
+_TLV_MIN_FOV             = 45.0    # r.TranslucencyLightingVolume.MinFOV
+_TLV_FOV_SNAP_FACTOR     = 10.0   # r.TranslucencyLightingVolume.FOVSnapFactor
+_TLV_BLUR_ENABLED        = True    # r.TranslucencyLightingVolume.Blur
+_TLV_TEMPORAL_ENABLED    = False   # r.TranslucencyLightingVolume.Temporal
+_TLV_HISTORY_WEIGHT      = 0.9     # r.TranslucencyLightingVolume.Temporal.HistoryWeight
+_TLV_MARK_VOXELS         = False   # r.TranslucencyLightingVolume.MarkVoxels
+_TLV_BATCH               = True    # r.TranslucencyLightingVolume.Batch
+_TLV_CSM_INJECT          = True    # r.TranslucencyLightingVolume.InjectDirectionalLightCSM
+_TLV_POSITION_OFFSET_R   = 0.0     # r.TranslucencyLightingVolume.PositionOffsetRadius
+
+
+@_dc
+class AstroCellTranslucencyVolumeCascade:
+    """
+    半透明光照卷的单层 Cascade，对应 TranslucentLighting.cpp 中的 Cascade 概念。
+    每个 cascade 是一个低分辨率 3D 纹理，存储该距离范围内的散射光分布。
+
+    dim           : 体素格分辨率（3D 正方体边长）
+    inner_dist    : 此 cascade 的近端距离
+    outer_dist    : 此 cascade 的远端距离
+    volume_data   : 展开的体素 (R,G,B) 数据，dim^3 条目
+    """
+    cascade_index: int   = 0
+    dim:           int   = _TLV_DIM
+    inner_dist:    float = _TLV_INNER_DISTANCE
+    outer_dist:    float = _TLV_OUTER_DISTANCE
+    volume_data:   _List[tuple] = _field(default_factory=list)
+    _history:      _List[tuple] = _field(default_factory=list)
+
+    def __post_init__(self):
+        n = self.dim ** 3
+        if not self.volume_data:
+            self.volume_data = [(0.0, 0.0, 0.0)] * n
+        if not self._history:
+            self._history = [(0.0, 0.0, 0.0)] * n
+
+    def voxel_index(self, ix: int, iy: int, iz: int) -> int:
+        """体素线性索引——三维空间压缩为一维，秩序的胜利，也是表达的牺牲。"""
+        d = self.dim
+        return (iz % d) * d * d + (iy % d) * d + (ix % d)
+
+    def inject_light(self, ix: int, iy: int, iz: int,
+                     radiance: tuple, alpha: float = 1.0) -> None:
+        """
+        向指定体素注入光能。
+        移植自 TranslucentLighting.cpp 的 InjectLight 函数：
+        新值以 alpha 权重叠加（对应前向渲染中的 additive 混合模式）。
+        """
+        idx = self.voxel_index(ix, iy, iz)
+        old = self.volume_data[idx]
+        self.volume_data[idx] = (
+            old[0] + radiance[0] * alpha,
+            old[1] + radiance[1] * alpha,
+            old[2] + radiance[2] * alpha,
+        )
+
+    def apply_temporal_blend(self) -> None:
+        """
+        时域混合（TLV Temporal pass）。
+        当 _TLV_TEMPORAL_ENABLED 时，当前帧数据与历史帧按 HistoryWeight 混合，
+        抑制闪烁，代价是引入一帧延迟。
+
+        鲁迅式：历史是沉重的，但没有历史的当下是轻浮的。
+        在 0.9 的权重下，九分是昨天，一分是今天——稳定，但迟钝。
+        """
+        if not _TLV_TEMPORAL_ENABLED:
+            return
+        w = _TLV_HISTORY_WEIGHT
+        for i in range(len(self.volume_data)):
+            c   = self.volume_data[i]
+            h   = self._history[i]
+            blended = (
+                h[0] * w + c[0] * (1 - w),
+                h[1] * w + c[1] * (1 - w),
+                h[2] * w + c[2] * (1 - w),
+            )
+            self.volume_data[i] = blended
+        self._history = list(self.volume_data)
+
+    def sample_trilinear(self, u: float, v: float, w: float) -> tuple:
+        """
+        三线性插值采样体素。
+        移植自 TranslucentLighting.cpp 的 SampleTranslucencyLightingVolume：
+        在归一化 [0,1]^3 坐标下执行三线性插值。
+
+        鲁迅式：插值是折中主义——既不忠于某个体素，也不完全背叛它，
+        只是在多个体素之间寻求一个可以接受的平均。
+        """
+        d   = self.dim
+        fx  = max(0.0, min(1.0, u)) * (d - 1)
+        fy  = max(0.0, min(1.0, v)) * (d - 1)
+        fz  = max(0.0, min(1.0, w)) * (d - 1)
+        ix0 = int(math.floor(fx))
+        iy0 = int(math.floor(fy))
+        iz0 = int(math.floor(fz))
+        tx  = fx - ix0
+        ty  = fy - iy0
+        tz  = fz - iz0
+
+        def lerp3(a, b, t):
+            return (a[0] + (b[0]-a[0])*t,
+                    a[1] + (b[1]-a[1])*t,
+                    a[2] + (b[2]-a[2])*t)
+
+        def vox(xi, yi, zi):
+            return self.volume_data[self.voxel_index(xi, yi, zi)]
+
+        c000 = vox(ix0,   iy0,   iz0  )
+        c100 = vox(ix0+1, iy0,   iz0  )
+        c010 = vox(ix0,   iy0+1, iz0  )
+        c110 = vox(ix0+1, iy0+1, iz0  )
+        c001 = vox(ix0,   iy0,   iz0+1)
+        c101 = vox(ix0+1, iy0,   iz0+1)
+        c011 = vox(ix0,   iy0+1, iz0+1)
+        c111 = vox(ix0+1, iy0+1, iz0+1)
+
+        return lerp3(
+            lerp3(lerp3(c000, c100, tx), lerp3(c010, c110, tx), ty),
+            lerp3(lerp3(c001, c101, tx), lerp3(c011, c111, tx), ty),
+            tz,
+        )
+
+
+class AstroCellTranslucencyLightingVolume:
+    """
+    完整的半透明光照卷系统，包含两个 cascade（inner + outer）。
+    移植自 TranslucentLighting.cpp 的主类结构及其生命周期管理。
+
+    鲁迅式：两层 cascade 如同两层社会——内层精细但覆盖有限，
+    外层粗糙却包罗万象。没有哪一层单独够用，它们必须协同。
+    """
+
+    def __init__(self) -> None:
+        self.inner = AstroCellTranslucencyVolumeCascade(
+            cascade_index=0,
+            inner_dist=0.0,
+            outer_dist=_TLV_INNER_DISTANCE,
+        )
+        self.outer = AstroCellTranslucencyVolumeCascade(
+            cascade_index=1,
+            inner_dist=_TLV_INNER_DISTANCE,
+            outer_dist=_TLV_OUTER_DISTANCE,
+        )
+
+    def inject_directional_light(
+        self,
+        light_dir: tuple,
+        light_color: tuple,
+        num_cascades: int = 2,
+    ) -> None:
+        """
+        注入方向光（InjectTranslucencyLightingVolume 主路径）。
+        移植自 TranslucentLighting.cpp 的 InjectTranslucentVolumeLighting pass：
+        将方向光按 CSM cascade 投影到内外两层体积中。
+
+        鲁迅式：方向光如同专制者的意志——来自单一方向，
+        却要对整个体积负责。它能照亮，也能遮蔽，看你是否在它的对面。
+        """
+        if not _TLV_ENABLED:
+            return
+        for cascade in (self.inner, self.outer):
+            d = cascade.dim
+            for iz in range(0, d, 4):   # 稀疏更新节省计算
+                for iy in range(0, d, 4):
+                    for ix in range(0, d, 4):
+                        # 简化的方向光散射：cos(theta) 加权
+                        nx = ix / d - 0.5
+                        ny = iy / d - 0.5
+                        nz = iz / d - 0.5
+                        cos_theta = max(0.0, -(light_dir[0]*nx + light_dir[1]*ny + light_dir[2]*nz))
+                        inject = (
+                            light_color[0] * cos_theta,
+                            light_color[1] * cos_theta,
+                            light_color[2] * cos_theta,
+                        )
+                        cascade.inject_light(ix, iy, iz, inject, alpha=0.01)
+
+    def apply_blur(self) -> None:
+        """
+        执行 3D 盒式模糊（TranslucentLighting.cpp Blur pass）。
+        在体素空间做简化模糊：每个体素与其 6 邻居平均，
+        对应 r.TranslucencyLightingVolume.Blur = 1 的路径。
+
+        鲁迅式：模糊是仁慈，也是妥协——它让边界不再尖锐，
+        让光的过渡更自然，代价是损失细节。世界也许就该如此温柔。
+        """
+        if not _TLV_BLUR_ENABLED:
+            return
+        for cascade in (self.inner, self.outer):
+            d    = cascade.dim
+            orig = list(cascade.volume_data)
+
+            def get(xi, yi, zi):
+                return orig[cascade.voxel_index(xi, yi, zi)]
+
+            for iz in range(d):
+                for iy in range(d):
+                    for ix in range(d):
+                        nb = [get(ix, iy, iz)]
+                        for ddx, ddy, ddz in [(1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)]:
+                            nxi, nyi, nzi = ix+ddx, iy+ddy, iz+ddz
+                            if 0 <= nxi < d and 0 <= nyi < d and 0 <= nzi < d:
+                                nb.append(get(nxi, nyi, nzi))
+                        n  = len(nb)
+                        cascade.volume_data[cascade.voxel_index(ix, iy, iz)] = (
+                            sum(v[0] for v in nb) / n,
+                            sum(v[1] for v in nb) / n,
+                            sum(v[2] for v in nb) / n,
+                        )
+
+    def tick(self, light_dir: tuple = (0.0, -1.0, 0.0),
+             light_color: tuple = (1.0, 0.95, 0.85)) -> None:
+        """
+        单帧更新：注入光→时域混合→模糊。
+        对应 TranslucentLighting.cpp 的 RenderTranslucencyLightingVolume 入口。
+        """
+        self.inject_directional_light(light_dir, light_color)
+        self.inner.apply_temporal_blend()
+        self.outer.apply_temporal_blend()
+        self.apply_blur()
+
+    def sample(self, world_u: float, world_v: float, world_w: float,
+               distance: float) -> tuple:
+        """
+        在世界坐标处采样光照卷辐照度。
+        根据 distance 在内外 cascade 间选择或插值（blend zone = 10%过渡带）。
+        """
+        if not _TLV_ENABLED:
+            return (0.0, 0.0, 0.0)
+        blend_start = _TLV_INNER_DISTANCE * 0.9
+        if distance <= blend_start:
+            return self.inner.sample_trilinear(world_u, world_v, world_w)
+        elif distance >= _TLV_INNER_DISTANCE:
+            return self.outer.sample_trilinear(world_u, world_v, world_w)
+        else:
+            t = (distance - blend_start) / (_TLV_INNER_DISTANCE - blend_start)
+            ci = self.inner.sample_trilinear(world_u, world_v, world_w)
+            co = self.outer.sample_trilinear(world_u, world_v, world_w)
+            return (ci[0]*(1-t)+co[0]*t, ci[1]*(1-t)+co[1]*t, ci[2]*(1-t)+co[2]*t)
+
+
+# =============================================================================
+# AstroCellSingleLayerWater — 单层水面渲染
+# (ported from SingleLayerWaterRendering.cpp)
+#
+# 鲁迅曾言：「水是生命的源泉，但它也是最不稳定的形态。」
+# 单层水面既透明又反射，既折射又有焦散——
+# 它试图同时成为两件对立的事物，在每一帧中寻找平衡。
+# =============================================================================
+
+# CVarWaterSingleLayer* 系列移植
+_SLW_ENABLED             = True   # r.Water.SingleLayer
+_SLW_WAVE_OPS            = True   # r.Water.SingleLayer.WaveOps
+_SLW_REFLECTION_MODE     = 1      # r.Water.SingleLayer.Reflection (1=enabled)
+_SLW_REFL_DOWNSAMPLE     = 1      # r.Water.SingleLayer.Reflection.DownsampleFactor
+_SLW_TILED_COMPOSITE     = True   # r.Water.SingleLayer.TiledComposite
+_SLW_SSRTAA              = True   # r.Water.SingleLayer.SSRTAA
+_SLW_DIST_FIELD_SHADOW   = True   # r.Water.SingleLayer.DistanceFieldShadow
+_SLW_REFRACTION_DOWNSAMPLE = 1    # r.Water.SingleLayer.RefractionDownsampleFactor
+_SLW_DEPTH_PREPASS       = True   # r.Water.SingleLayer.DepthPrepass
+_SLW_REFRACTION_CULLING  = False  # r.Water.SingleLayer.Refraction.Culling
+_SLW_REFRACTION_DIST_CULL = -1.0  # r.Water.SingleLayer.Refraction.DistanceCulling
+_SLW_REFRACTION_FRESNEL_CULL = -1.0  # r.Water.SingleLayer.Refraction.FresnelCulling
+
+# Fresnel 基础参数（水面 IOR ≈ 1.33）
+_SLW_F0_WATER  = 0.02   # 水面正入射反射率
+_SLW_IOR_WATER = 1.333  # 折射率
+
+
+def _slw_fresnel_schlick(cos_v: float, f0: float = _SLW_F0_WATER) -> float:
+    """
+    Schlick Fresnel — 水面专用。
+    移植自 SingleLayerWaterRendering.cpp 的 Fresnel 计算。
+    鲁迅式：掠射角处的高反射率，是水面不肯透露底细的自尊心。
+    """
+    return f0 + (1.0 - f0) * math.pow(max(0.0, 1.0 - cos_v), 5.0)
+
+
+def _slw_refraction_offset(
+    normal: tuple,
+    view_dir: tuple,
+    depth: float,
+    ior: float = _SLW_IOR_WATER,
+) -> tuple:
+    """
+    计算折射偏移向量（屏幕空间近似）。
+    移植自 SingleLayerWaterRendering.cpp 的 SLWRefraction 函数：
+        offset = (n × v - n·v · n) × depth / ior
+    返回 (du, dv) 屏幕空间 UV 偏移，用于 SVG feDisplacementMap 参数。
+
+    鲁迅式：折射是光的谎言——你看见水底的鱼，却不在那里；
+    你知道它不在那里，却依然被骗。这是物理，也是人心。
+    """
+    nx, ny, nz = normal
+    vx, vy, vz = view_dir
+    dot_nv = nx*vx + ny*vy + nz*vz
+    # Tangential component: v - (n·v)n
+    tx = vx - dot_nv * nx
+    ty = vy - dot_nv * ny
+    scale = depth / max(ior, 1e-6)
+    return (tx * scale, ty * scale)
+
+
+@_dc
+class AstroCellSingleLayerWaterSurface:
+    """
+    单层水面渲染状态，移植自 SingleLayerWaterRendering.cpp 的核心参数。
+
+    water_depth       : 水深（影响折射量和颜色吸收）
+    roughness         : 水面粗糙度（影响 SSR 模糊程度）
+    foam_coverage     : 泡沫覆盖率 ∈ [0,1]（高速流动区域）
+    caustics_strength : 焦散强度（阳光穿过水面在水底形成的光斑）
+    shadow_strength   : 阴影强度（r.Water.SingleLayer.DistanceFieldShadow 等价）
+    """
+    water_depth:       float = 3.0
+    roughness:         float = 0.05
+    foam_coverage:     float = 0.0
+    caustics_strength: float = 0.4
+    shadow_strength:   float = 0.5
+    cloud_shadow_mult: float = 0.0    # r.Water.SingleLayerWater.SupportCloudShadow
+    refraction_scale:  float = 1.0
+
+    def fresnel_at_angle(self, cos_view: float) -> float:
+        """视角方向的 Fresnel 反射率——越掠射，水面越像镜子。"""
+        return _slw_fresnel_schlick(cos_view)
+
+    def absorption_color(self) -> tuple:
+        """
+        水体颜色吸收（Beer-Lambert 在水深方向）。
+        红光衰减最快，蓝绿光穿透最深——这是物理，也是大海的忧郁。
+        """
+        r_abs = math.exp(-self.water_depth * 0.5)
+        g_abs = math.exp(-self.water_depth * 0.2)
+        b_abs = math.exp(-self.water_depth * 0.05)
+        return (r_abs, g_abs, b_abs)
+
+    def refraction_uv_offset(self, view_cos: float) -> tuple:
+        """
+        简化的屏幕空间折射 UV 偏移，用于 SVG feDisplacementMap 强度参数。
+        偏移量随水深和粗糙度增大，随掠射角（低 cos_view）减小（Fresnel 增强反射，减弱折射）。
+        """
+        if _SLW_REFRACTION_CULLING and (
+            self.water_depth > _SLW_REFRACTION_DIST_CULL > 0
+        ):
+            return (0.0, 0.0)
+        scale  = self.water_depth * self.roughness * self.refraction_scale
+        normal = (0.0, 1.0, 0.0)   # 水面朝上法线（简化）
+        view   = (math.sqrt(1.0 - view_cos**2), view_cos, 0.0)
+        return _slw_refraction_offset(normal, view, scale)
+
+    def to_svg_filter_params(self, view_cos: float = 0.9) -> dict:
+        """
+        将水面渲染参数转为 SVG feDisplacementMap + feColorMatrix 参数字典。
+        移植自 SingleLayerWaterRendering.cpp 的 CompositeWaterSurface 输出格式。
+
+        鲁迅式：参数是规范，规范是约束，但好的约束让事物更自由——
+        因为它划清了边界，让艺术在边界内尽情发挥。
+        """
+        fresnel = self.fresnel_at_angle(view_cos)
+        absorp  = self.absorption_color()
+        du, dv  = self.refraction_uv_offset(view_cos)
+
+        # 泡沫使反射率降低、透射率升高（破坏全反射）
+        foam_reflection_mult = 1.0 - self.foam_coverage * 0.6
+
+        # SSR 模糊半径与粗糙度成正比（SSRTAA 去噪 → 更小有效模糊）
+        ssr_blur = self.roughness * 8.0 * (_SLW_REFL_DOWNSAMPLE ** 0.5)
+        if _SLW_SSRTAA:
+            ssr_blur *= 0.6
+
+        return {
+            "fresnel":              round(fresnel * foam_reflection_mult, 4),
+            "refraction_du":        round(du, 4),
+            "refraction_dv":        round(dv, 4),
+            "absorption_r":         round(absorp[0], 4),
+            "absorption_g":         round(absorp[1], 4),
+            "absorption_b":         round(absorp[2], 4),
+            "foam_coverage":        round(self.foam_coverage, 4),
+            "caustics_strength":    round(self.caustics_strength, 4),
+            "shadow_strength":      round(self.shadow_strength
+                                     if _SLW_DIST_FIELD_SHADOW else 0.0, 4),
+            "ssr_blur_radius":      round(ssr_blur, 4),
+            "cloud_shadow_mult":    round(self.cloud_shadow_mult, 4),
+        }
+
+    def generate_svg_water_overlay(
+        self,
+        x: float, y: float, w: float, h: float,
+        filter_id: str,
+        view_cos: float = 0.9,
+    ) -> str:
+        """
+        生成水面 SVG 覆盖层（feDisplacementMap + feColorMatrix + caustics 图案）。
+        移植自 SingleLayerWaterRendering.cpp 的 SLW Composite pass 输出。
+
+        水面覆盖由三层组成：
+          1. 折射底色层（absorption 颜色矩阵 + 偏移）
+          2. 反射层（Fresnel 权重的镜面效果近似）
+          3. 焦散 + 泡沫叠加层
+
+        鲁迅式：水面渲染是最诚实的谎言——每一层都声称在还原真实，
+        但最终所有层叠加起来，不过是人眼可以接受的近似。
+        """
+        if not _SLW_ENABLED:
+            return ""
+
+        params = self.to_svg_filter_params(view_cos)
+        cx_w = x + w / 2
+        cy_w = y + h / 2
+
+        parts = []
+        fid = f"slw-{filter_id}"
+
+        # SVG 滤镜定义
+        parts.append(f'<defs>')
+        parts.append(f'  <filter id="{fid}" x="-5%" y="-5%" width="110%" height="110%">')
+        # feColorMatrix: 应用水体颜色吸收
+        r_s = params["absorption_r"]
+        g_s = params["absorption_g"]
+        b_s = params["absorption_b"]
+        parts.append(
+            f'    <feColorMatrix type="matrix" '
+            f'values="{r_s} 0 0 0 0  0 {g_s} 0 0 0  0 0 {b_s} 0 0  0 0 0 1 0"/>'
+        )
+        # feDisplacementMap: 折射偏移（简化为常量位移强度）
+        disp_scale = math.sqrt(params["refraction_du"]**2 + params["refraction_dv"]**2) * 20.0
+        if disp_scale > 0.1:
+            parts.append(
+                f'    <feTurbulence type="turbulence" baseFrequency="0.02 0.04" '
+                f'numOctaves="3" seed="{abs(hash(filter_id)) % 999}" result="waves"/>'
+            )
+            parts.append(
+                f'    <feDisplacementMap in="SourceGraphic" in2="waves" '
+                f'scale="{disp_scale:.2f}" xChannelSelector="R" yChannelSelector="G"/>'
+            )
+        parts.append(f'  </filter>')
+        parts.append(f'</defs>')
+
+        # 折射底色层（带颜色吸收）
+        parts.append(
+            f'<!-- [ASTRO-SLW] SingleLayerWater fresnel={params["fresnel"]:.3f} '
+            f'refr=({params["refraction_du"]:.3f},{params["refraction_dv"]:.3f}) '
+            f'absorp=({params["absorption_r"]:.3f},{params["absorption_g"]:.3f},{params["absorption_b"]:.3f}) '
+            f'(SingleLayerWaterRendering.cpp port) -->'
+        )
+        water_blue = "#{:02X}{:02X}{:02X}".format(
+            int(30 + params["absorption_r"] * 40),
+            int(80 + params["absorption_g"] * 60),
+            int(150 + params["absorption_b"] * 80),
+        )
+        parts.append(
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
+            f'rx="4" fill="{water_blue}" '
+            f'opacity="{1.0 - params["fresnel"]:.3f}" '
+            f'filter="url(#{fid})"/>'
+        )
+
+        # 反射层（Fresnel 镜面效果近似）
+        if params["fresnel"] > 0.05:
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
+                f'rx="4" fill="white" '
+                f'opacity="{params["fresnel"] * 0.35:.3f}"/>'
+            )
+
+        # 焦散纹理层（feTurbulence 近似）
+        if params["caustics_strength"] > 0.05:
+            cid = f"caustics-{filter_id}"
+            parts.append(f'<defs>')
+            parts.append(
+                f'  <filter id="{cid}">'
+                f'    <feTurbulence type="fractalNoise" baseFrequency="0.08 0.12" '
+                f'numOctaves="4" seed="{(abs(hash(filter_id)) + 42) % 999}"/>'
+                f'    <feColorMatrix type="saturate" values="0"/>'
+                f'    <feComponentTransfer>'
+                f'      <feFuncA type="linear" slope="{params["caustics_strength"]:.2f}"/>'
+                f'    </feComponentTransfer>'
+                f'  </filter>'
+                f'</defs>'
+            )
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
+                f'rx="4" fill="#FFFDE7" mix-blend-mode="overlay" '
+                f'opacity="{params["caustics_strength"] * 0.4:.3f}" '
+                f'filter="url(#{cid})"/>'
+            )
+
+        # 泡沫层（高泡沫覆盖率时叠加白色噪点）
+        if params["foam_coverage"] > 0.1:
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
+                f'rx="4" fill="white" '
+                f'opacity="{params["foam_coverage"] * 0.25:.3f}"/>'
+            )
+
+        return "\n".join(parts)
+
+
+# =============================================================================
+# AstroCellAtmosphericCompositor — 大气合成器
+# 整合 VolumetricCloud + TranslucentLighting + SingleLayerWater 三个子系统
+# 为每个 cell 生成完整的大气效果 SVG 覆盖层
+#
+# 鲁迅式：三个子系统各有其道，但合成才是最终的真相。
+# 云层遮天蔽日，光照穿透半透明体，水面折射倒映——
+# 自然界从不孤立地展现任何一种效果。
+# =============================================================================
+
+class AstroCellAtmosphericCompositor:
+    """
+    大气效果合成器，将 VolumetricCloud、TranslucentLighting、SingleLayerWater
+    三个渲染子系统的结果合并为单一 SVG 大气覆盖层。
+
+    使用方式::
+
+        compositor = AstroCellAtmosphericCompositor()
+        compositor.set_cloud_layer(cloud_layer)
+        compositor.tlv.tick(light_dir, light_color)
+        svg_overlay = compositor.compose_atmospheric_overlay(
+            cell_id, bbox, species, view_cos)
+
+    鲁迅式：大气是一切视觉效果的底色——
+    它沉默地存在，却决定了一切的基调。
+    """
+
+    def __init__(self) -> None:
+        self.cloud_layer = AstroCellVolumetricCloudLayer()
+        self.tlv         = AstroCellTranslucencyLightingVolume()
+        self.water       = AstroCellSingleLayerWaterSurface()
+        self._cloud_enabled = _CLOUD_ENABLED
+        self._slw_enabled   = _SLW_ENABLED
+        self._tlv_enabled   = _TLV_ENABLED
+
+    def set_cloud_layer(self, layer: AstroCellVolumetricCloudLayer) -> None:
+        self.cloud_layer = layer
+
+    def set_water_surface(self, surf: AstroCellSingleLayerWaterSurface) -> None:
+        self.water = surf
+
+    def _simple_density_fn(self, alt_km: float) -> float:
+        """
+        简单云密度函数：基于高度的正态分布密度。
+        鲁迅式：密度是云层的良心——最浓处在中间，两端消散。
+        """
+        mid = (self.cloud_layer.layer_bottom_altitude_km
+               + self.cloud_layer.layer_top_altitude_km) / 2.0
+        sigma = self.cloud_layer.thickness_km() / 3.0
+        if sigma < 1e-6:
+            return 0.0
+        return math.exp(-0.5 * ((alt_km - mid) / sigma) ** 2)
+
+    def _simple_emission_fn(self, alt_km: float, density: float) -> tuple:
+        """
+        简单云发射函数：用高度控制云的冷暖色调。
+        云底偏暖（受地面反射），云顶偏冷（接近天空）。
+        """
+        f = self.cloud_layer.altitude_fraction(alt_km)
+        r = 0.9  + (1.0 - f) * 0.08   # 云底偏暖
+        g = 0.92 + (1.0 - f) * 0.04
+        b = 0.95 + f * 0.05            # 云顶偏蓝
+        return (r * density, g * density, b * density)
+
+    def compose_atmospheric_overlay(
+        self,
+        cell_id:    str,
+        bbox:       dict,
+        species:    str,
+        view_cos:   float = 0.85,
+        altitude_km: float = 0.0,
+    ) -> str:
+        """
+        为给定 cell 生成完整大气效果 SVG 覆盖层。
+
+        叠加顺序（对应 UE5 的渲染通道顺序）：
+          1. VolumetricCloud fog 覆盖（若云层存在且 cell 在云底以下）
+          2. TranslucentLighting 辐射度调制（光照卷影响半透明 cell）
+          3. SingleLayerWater 水面效果（species == 'water' 或 z <= 0 时启用）
+
+        鲁迅式：覆盖层是视觉的注脚——原文已经说完了，
+        注脚只是让读者知道背景的重量。
+        """
+        x, y = bbox["x"], bbox["y"]
+        w, h = bbox["w"], bbox["h"]
+        z    = float(bbox.get("z", 3))
+
+        parts = []
+        parts.append(
+            f'<!-- [ASTRO-ATMO] AtmosphericCompositor cell={cell_id} '
+            f'z={z:.1f} alt_km={altitude_km:.2f} view_cos={view_cos:.3f} -->'
+        )
+
+        # ── Phase 1: VolumetricCloud 雾覆盖 ──────────────────────────────────
+        if self._cloud_enabled and altitude_km < self.cloud_layer.layer_top_altitude_km:
+            cloud_state = trace_cloud_ray(
+                ray_origin_km=(0.0, altitude_km, 0.0),
+                ray_dir=(0.0, 1.0, 0.0),
+                cloud_layer=self.cloud_layer,
+                density_fn=self._simple_density_fn,
+                emission_fn=self._simple_emission_fn,
+            )
+            sky_ao = compute_cloud_sky_ao(
+                altitude_km, self.cloud_layer, self._simple_density_fn
+            )
+            cloud_params = AstroCellCloudRenderParams(
+                transmittance=cloud_state.transmittance,
+                luminance=cloud_state.luminance,
+                sky_ao=sky_ao,
+                cloud_opacity=1.0 - cloud_state.transmittance,
+            )
+            fp = cloud_params.to_svg_filter_params()
+
+            if fp["fog_alpha"] > 0.01 or fp["sky_ao"] > 0.05 if "sky_ao" in fp else sky_ao > 0.05:
+                fog_hex = "#{:02X}{:02X}{:02X}".format(
+                    int(fp["fog_r"] * 255),
+                    int(fp["fog_g"] * 255),
+                    int(fp["fog_b"] * 255),
+                )
+                parts.append(
+                    f'<!-- [ASTRO-CLOUD] VolumetricCloud trans={cloud_state.transmittance:.3f} '
+                    f'sky_ao={sky_ao:.3f} fog_alpha={fp["fog_alpha"]:.3f} '
+                    f'samples={cloud_state.sample_count} '
+                    f'(VolumetricCloudRendering.cpp port) -->'
+                )
+                parts.append(
+                    f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
+                    f'rx="6" fill="{fog_hex}" opacity="{fp["fog_alpha"]:.4f}" '
+                    f'style="mix-blend-mode:screen"/>'
+                )
+                # 亮度调制（sky_ao 压暗）
+                if sky_ao > 0.05:
+                    dark_alpha = sky_ao * 0.25
+                    parts.append(
+                        f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
+                        f'rx="6" fill="black" opacity="{dark_alpha:.4f}" '
+                        f'style="mix-blend-mode:multiply"/>'
+                    )
+
+        # ── Phase 2: TranslucentLighting 辐射度调制 ───────────────────────────
+        if self._tlv_enabled:
+            u_norm = max(0.0, min(1.0, (x - 0) / 1200.0))
+            v_norm = max(0.0, min(1.0, (y - 0) / 900.0))
+            w_norm = max(0.0, min(1.0, z / 7.0))
+            dist   = math.sqrt(x**2 + y**2)
+            tlv_sample = self.tlv.sample(u_norm, v_norm, w_norm, dist)
+            tlv_lum = max(tlv_sample[0], tlv_sample[1], tlv_sample[2])
+            if tlv_lum > 0.005:
+                tlv_hex = "#{:02X}{:02X}{:02X}".format(
+                    min(255, int(tlv_sample[0] * 255 * 2)),
+                    min(255, int(tlv_sample[1] * 255 * 2)),
+                    min(255, int(tlv_sample[2] * 255 * 2)),
+                )
+                parts.append(
+                    f'<!-- [ASTRO-TLV] TranslucentLighting '
+                    f'lum=({tlv_sample[0]:.3f},{tlv_sample[1]:.3f},{tlv_sample[2]:.3f}) '
+                    f'dim={_TLV_DIM} inner={_TLV_INNER_DISTANCE:.0f} blur={_TLV_BLUR_ENABLED} '
+                    f'temporal={_TLV_TEMPORAL_ENABLED} '
+                    f'(TranslucentLighting.cpp port) -->'
+                )
+                parts.append(
+                    f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
+                    f'rx="6" fill="{tlv_hex}" opacity="{min(0.12, tlv_lum * 0.8):.4f}" '
+                    f'style="mix-blend-mode:add"/>'
+                )
+
+        # ── Phase 3: SingleLayerWater 水面效果 ────────────────────────────────
+        if self._slw_enabled and (species in ("water", "cil-loop") or z <= 1):
+            slw_overlay = self.water.generate_svg_water_overlay(
+                x, y, w, h,
+                filter_id=cell_id,
+                view_cos=view_cos,
+            )
+            if slw_overlay:
+                parts.append(slw_overlay)
+
+        return "\n".join(p for p in parts if p)
+
+
+# 模块级大气合成器单例
+_ASTRO_ATMO_COMPOSITOR: _Opt[AstroCellAtmosphericCompositor] = None
+
+
+def get_atmospheric_compositor() -> AstroCellAtmosphericCompositor:
+    """
+    获取全局大气合成器单例。
+    鲁迅式：大气是公共的——任何 cell 都无权独占它，也无法逃脱它。
+    单例保证所有 cell 共享同一套大气参数，一如共享同一片天空。
+    """
+    global _ASTRO_ATMO_COMPOSITOR
+    if _ASTRO_ATMO_COMPOSITOR is None:
+        _ASTRO_ATMO_COMPOSITOR = AstroCellAtmosphericCompositor()
+    return _ASTRO_ATMO_COMPOSITOR
