@@ -1,5 +1,29 @@
 import os, sys, json, math
+import math as _math
 from typing import Any, Optional
+
+from channels.rendering.species.species_port import _species_f0
+
+# ShadingEnergyConservation constants (mirrors acceleration_core)
+_SEC_COS_VIEW:      float = 0.7071067811865476   # cos(pi/4)
+_SEC_OPACITY_FLOOR: float = 0.05
+_SEC_WEIGHT_FILL:   float = 0.60
+_SEC_WEIGHT_STROKE: float = 0.28
+_SEC_WEIGHT_SHADOW: float = 0.12
+
+# Minimal _Vec3 and _saturate (mirrors misc_extra)
+class _Vec3:
+    __slots__ = ("x", "y", "z")
+    def __init__(self, x=0.0, y=0.0, z=0.0): self.x=x; self.y=y; self.z=z
+    def dot(self, o): return self.x*o.x + self.y*o.y + self.z*o.z
+    def __add__(self, o): return _Vec3(self.x+o.x, self.y+o.y, self.z+o.z)
+    def __mul__(self, s): return _Vec3(self.x*s, self.y*s, self.z*s)
+    def normalize(self):
+        d = _math.sqrt(self.dot(self))
+        return _Vec3(self.x/d, self.y/d, self.z/d) if d > 1e-9 else _Vec3(0, 0, 1)
+
+def _saturate(v: float) -> float:
+    return max(0.0, min(1.0, v))
 
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":
