@@ -9748,3 +9748,1436 @@ def run_deferred_shading_pipeline(
     """
     dsr = AstroCellDeferredShadingRenderer(viewport_w, viewport_h)
     return dsr.render(cell_entries, frame_index)
+
+
+# =============================================================================
+# [ASTRO-CELL] MeshPassProcessor + MeshDrawCommands + SceneCapture +
+#              ReflectionEnvironmentCapture → Python port
+#
+# Ported from (commit heads at time of writing):
+#   upstream/unreal-renderer-ue5/Renderer-Private/MeshPassProcessor.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/MeshDrawCommands.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/SceneCaptureRendering.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/ReflectionEnvironmentCapture.cpp
+#
+# 鲁迅曾言：「有谁从小康人家而坠入困顿的么，我以为在这途路中，大概
+# 可以看见世人的真面目。」
+# MeshPassProcessor 亦然——当 PSO 状态切换压力在此集中，你才看清
+# draw call 分类与合批的真实代价。每一条 mesh draw command 都是一次
+# 对 GPU 状态机的主张；合并它们，是工程师对效率的永恒追求。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+# [MeshPassProcessor]
+#   FGraphicsMinimalPipelineStateId   → AstroCellPipelineStateId
+#     PersistentIdTable (RWLock)      → _pipeline_state_table (dict + lock-free)
+#     bIsIdTableFrozen                → _pso_table_frozen flag
+#   FReadOnlyMeshDrawSingleShaderBindings.SetShaderBindings()
+#                                     → AstroCellShaderBindings.apply()
+#   GEmitMeshDrawEvent (CVar)         → ASTRO_EMIT_MESH_DRAW_EVENT
+#   GSkipDrawOnPSOPrecaching (CVar)   → ASTRO_SKIP_DRAW_ON_PSO_PRECACHING
+#   FMeshDrawCommandSortKey           → AstroCellDrawSortKey
+#
+# [MeshDrawCommands]
+#   FPrimitiveIdVertexBufferPool      → AstroCellPrimitiveIdBufferPool
+#     Allocate / ReturnToFreeList     → allocate / release
+#     DiscardAll (discard_id)         → discard_stale (epoch-based)
+#   UpdateTranslucentMeshSortKeys()   → update_translucent_sort_keys()
+#   BitInvertIfNegativeFloat()        → _bit_invert_if_negative()
+#   CVarMeshSortingMethodWithoutEarlyZ → ASTRO_MESH_SORT_METHOD
+#   CVarDeferredMeshPassSetupTaskSync  → ASTRO_DEFERRED_MESH_PASS_SYNC
+#
+# [SceneCaptureRendering]
+#   GSceneCaptureAllowRenderInMainRenderer → ASTRO_CAPTURE_ALLOW_MAIN_RENDERER
+#   GSceneCaptureCubeSinglePass            → ASTRO_CAPTURE_CUBE_SINGLE_PASS
+#   FSceneCapturePS (pixel shader)         → AstroCellCaptureProcessor
+#     ESourceMode (8 modes)                → AstroCellCaptureMode (enum)
+#     ShouldCompilePermutation()           → should_compile_permutation()
+#     GetPermutationVector()               → get_permutation()
+#   CopyCaptureToTarget()                  → copy_capture_to_target()
+#   UpdateSceneCaptureContents()           → update_scene_capture_contents()
+#
+# [ReflectionEnvironmentCapture]
+#   GReflectionCaptureNearPlane            → _REFL_NEAR_PLANE
+#   GSupersampleCaptureFactor (1..8)       → _REFL_SUPERSAMPLE_FACTOR
+#   CVarReflectionCaptureRuntimeTimeslice  → _REFL_TIMESLICE_FACES
+#   CVarReflectionCaptureRuntimeMode       → _REFL_RUNTIME_MODE
+#   CVarReflectionCaptureRuntimeBudget     → _REFL_BUDGET
+#   FAstroCellReflectionCaptureState       → AstroCellReflectionCaptureState
+#   CaptureSceneToScratchCubemap()         → capture_scene_to_scratch_cubemap()
+#   UpdateReflectionCaptures()             → update_reflection_captures()
+#
+# 2-D SVG channel adaptation:
+#   GPU StructuredBuffer   → list of dicts in memory / JSON channel
+#   Cubemap face           → per-Z-layer "face" (6 z-layer offsets)
+#   PSO state key          → (species, blend_mode, pass_name) 3-tuple
+#   RHI draw submission    → write to cell/*/svg.svg channel
+#   Persistent table lock  → atomic integer epoch counter (no true lock needed
+#                            in single-threaded epoch loop)
+# =============================================================================
+
+import struct as _struct
+
+# ---------------------------------------------------------------------------
+# Global flags — mirrors CVars from all four source files
+# ---------------------------------------------------------------------------
+
+#: Mirrors GEmitMeshDrawEvent — emit per-draw debug annotations in SVG.
+ASTRO_EMIT_MESH_DRAW_EVENT: bool = False
+
+#: Mirrors GSkipDrawOnPSOPrecaching — skip cells whose PSO is still compiling.
+ASTRO_SKIP_DRAW_ON_PSO_PRECACHING: bool = False
+
+#: Mirrors CVarMeshSortingMethodWithoutEarlyZ (0=state+Z, 1=strict Z).
+ASTRO_MESH_SORT_METHOD: int = 0
+
+#: Mirrors CVarDeferredMeshPassSetupTaskSync — defer batch sort to RDG exec.
+ASTRO_DEFERRED_MESH_PASS_SYNC: bool = True
+
+#: Mirrors GSceneCaptureAllowRenderInMainRenderer.
+ASTRO_CAPTURE_ALLOW_MAIN_RENDERER: bool = True
+
+#: Mirrors GSceneCaptureCubeSinglePass — all 6 faces in one pass.
+ASTRO_CAPTURE_CUBE_SINGLE_PASS: bool = True
+
+#: Mirrors GReflectionCaptureNearPlane (world units).
+_REFL_NEAR_PLANE: float = 5.0
+
+#: Mirrors GSupersampleCaptureFactor (clamped to [1, 8]).
+_REFL_SUPERSAMPLE_FACTOR: int = 1
+
+#: Mirrors CVarReflectionCaptureRuntimeTimeslice — faces rendered per frame.
+_REFL_TIMESLICE_FACES: int = 1
+
+#: Mirrors CVarReflectionCaptureRuntimeMode (0=Continuous, 1=Once).
+_REFL_RUNTIME_MODE: int = 1
+
+#: Mirrors CVarReflectionCaptureRuntimeBudget (0=unlimited).
+_REFL_BUDGET: int = 0
+
+
+# =============================================================================
+# [MeshDrawCommands] BitInvertIfNegativeFloat + sort-key helpers
+# =============================================================================
+
+def _bit_invert_if_negative(f: float) -> int:
+    """
+    Bit-cast float to uint32, then XOR with sign-extension mask.
+
+    Direct port of BitInvertIfNegativeFloat() from MeshDrawCommands.cpp:
+        unsigned mask = -int32(f >> 31) | 0x80000000;
+        return f ^ mask;
+
+    Converts an IEEE 754 float to a uint32 that preserves the numerical
+    ordering under unsigned comparison — used to sort translucent mesh draw
+    commands by projected distance without branching.
+
+    鲁迅式：浮点数的符号位是它的立场——
+    反转负数的所有位，让它在无符号比较中依然保持正确的大小关系。
+    这是一种对不公平规则的巧妙利用：规则不变，解读方式变了。
+    """
+    raw = _struct.unpack('>I', _struct.pack('>f', f))[0]  # float → uint32 big-endian
+    mask = ((-(raw >> 31)) & 0xFFFFFFFF) | 0x80000000
+    return (raw ^ mask) & 0xFFFFFFFF
+
+
+@dataclass
+class AstroCellDrawSortKey:
+    """
+    Python equivalent of FMeshDrawCommandSortKey.
+
+    Stores a 64-bit packed sort key used to order draw commands.  The key
+    is split into two 32-bit halves:
+        high = translucent sort distance (bit-inverted float for unsigned cmp)
+        low  = PSO state key (pipeline hash — opaque draws only)
+
+    Mirrors the union layout of FMeshDrawCommandSortKey::PackedData[2].
+
+    鲁迅式：排序键是优先级的量化——一个数字决定了谁先被画，
+    谁先被画决定了谁覆盖谁。先到不等于先赢，顺序才是权力。
+    """
+    high: int = 0   # translucent: bit-inverted distance; opaque: 0
+    low:  int = 0   # PSO/state hash for opaque; secondary key for translucent
+
+    @classmethod
+    def default(cls) -> "AstroCellDrawSortKey":
+        """Mirrors FMeshDrawCommandSortKey::Default = {{0}}."""
+        return cls(high=0, low=0)
+
+    def packed(self) -> int:
+        """64-bit packed value: high in upper 32 bits, low in lower 32."""
+        return ((self.high & 0xFFFFFFFF) << 32) | (self.low & 0xFFFFFFFF)
+
+    def __lt__(self, other: "AstroCellDrawSortKey") -> bool:
+        return self.packed() < other.packed()
+
+
+def _compute_translucent_sort_key(
+    bounds_origin: tuple,
+    view_origin: tuple,
+    view_matrix: list,
+    sort_policy: int = 2,
+    sort_axis: tuple = (0.0, 0.0, 1.0),
+) -> AstroCellDrawSortKey:
+    """
+    Compute a translucent draw sort key for a single cell.
+
+    Port of the inner loop body in UpdateTranslucentMeshSortKeys():
+      0 = SortByDistance     → distance = |BoundsOrigin - ViewOrigin|
+      1 = SortAlongAxis      → distance = dot(BoundsOrigin - ViewOrigin, SortAxis)
+      2 = SortByProjectedZ   → distance = ViewMatrix.TransformPosition(BoundsOrigin).Z
+
+    The resulting float distance is bit-inverted so that back-to-front
+    ordering maps to ascending unsigned integer order (far = smaller key
+    draws first in painter's algorithm).
+
+    鲁迅式：半透明物体必须从远到近画——这不是偏见，是光学定律。
+    排序键的精心设计，是为了让 GPU 遵守这一定律而无需额外分支。
+    """
+    ox, oy, oz = bounds_origin
+    vx, vy, vz = view_origin
+
+    if sort_policy == 0:
+        # SortByDistance: Euclidean distance
+        dx, dy, dz = ox - vx, oy - vy, oz - vz
+        distance = math.sqrt(dx*dx + dy*dy + dz*dz)
+    elif sort_policy == 1:
+        # SortAlongAxis: projected onto custom axis
+        dx, dy, dz = ox - vx, oy - vy, oz - vz
+        ax, ay, az = sort_axis
+        distance = dx*ax + dy*ay + dz*az
+    else:
+        # SortByProjectedZ: view-space Z (default in UE5)
+        if view_matrix and len(view_matrix) >= 3:
+            r = view_matrix[2]
+            distance = r[0]*ox + r[1]*oy + r[2]*oz + (r[3] if len(r) > 3 else 0.0)
+        else:
+            distance = oz - vz
+
+    # BitInvertIfNegativeFloat so unsigned ascending == back-to-front
+    key_high = _bit_invert_if_negative(distance)
+    return AstroCellDrawSortKey(high=key_high, low=0)
+
+
+def update_translucent_sort_keys(
+    visible_commands: list,
+    view_origin: tuple = (0.0, 0.0, -1000.0),
+    view_matrix: list = None,
+    sort_policy: int = 2,
+    sort_axis: tuple = (0.0, 0.0, 1.0),
+    inverse_sorting: bool = False,
+) -> list:
+    """
+    Update sort keys for all translucent mesh draw commands.
+
+    Direct port of UpdateTranslucentMeshSortKeys() from MeshDrawCommands.cpp.
+
+    Each entry in visible_commands is a dict with at minimum:
+        cell_id:  str
+        bbox:     {x, y, w, h, z}  (world bounds)
+        species:  str
+    After this call every entry gains a ``sort_key`` field (AstroCellDrawSortKey).
+
+    The list is sorted in-place (ascending by sort_key.packed()), which
+    produces back-to-front order for painter's algorithm rendering — identical
+    to the C++ sorted TArray<FVisibleMeshDrawCommand> result.
+
+    @param visible_commands  List of draw-command entry dicts.
+    @param view_origin        Camera / viewer position tuple (x, y, z).
+    @param view_matrix        3×4 row-major view matrix (optional).
+    @param sort_policy        0=distance, 1=axis, 2=projZ (default).
+    @param sort_axis          Custom sort axis when sort_policy == 1.
+    @param inverse_sorting    Reverse order (front-to-back for certain passes).
+    @return                   Sorted list of commands with sort_key attached.
+
+    鲁迅式：排序是最后的裁决——每一个半透明物体都在争夺被先画的权利，
+    但物理定律早已判定：远者先画，近者后画。排序只是执行判决。
+    """
+    if not visible_commands:
+        return visible_commands
+
+    for entry in visible_commands:
+        bbox = entry.get("bbox", {})
+        # World-space bounds origin = bbox centre
+        bx = float(bbox.get("x", 0)) + float(bbox.get("w", 0)) * 0.5
+        by = float(bbox.get("y", 0)) + float(bbox.get("h", 0)) * 0.5
+        bz = float(bbox.get("z", 0))
+        bounds_origin = (bx, by, bz)
+
+        entry["sort_key"] = _compute_translucent_sort_key(
+            bounds_origin, view_origin, view_matrix or [],
+            sort_policy, sort_axis,
+        )
+
+    visible_commands.sort(
+        key=lambda e: e["sort_key"].packed(),
+        reverse=inverse_sorting,
+    )
+
+    return visible_commands
+
+
+# =============================================================================
+# [MeshDrawCommands] AstroCellPrimitiveIdBufferPool
+# =============================================================================
+
+class AstroCellPrimitiveIdBufferPool:
+    """
+    Python equivalent of FPrimitiveIdVertexBufferPool.
+
+    Maintains a free-list of primitive-ID buffers sized by request, reusing
+    existing allocations to avoid repeated allocation overhead.  A discard_id
+    counter (incremented by discard_stale()) ages out entries that have been
+    free for more than _STALE_EPOCH_THRESHOLD epochs.
+
+    Mirrors the C++ Allocate / ReturnToFreeList / DiscardAll lifecycle:
+        Allocate(size)         → allocate(size)
+        ReturnToFreeList(entry)→ release(entry)
+        DiscardAll()           → discard_stale()
+
+    鲁迅式：缓冲池是节俭的哲学——内存不是免费的，
+    重用已有的比每次申请新的，是对资源的尊重，也是对帧率的保护。
+    """
+
+    _ALIGN       = 1024      # BufferSize = Align(size, 1024)
+    _STALE_EPOCH_THRESHOLD = 1000   # mirrors DiscardId > 1000 check
+
+    def __init__(self) -> None:
+        # Free-list: list of {"size": int, "data": bytearray, "last_discard_id": int}
+        self._entries: list = []
+        self._discard_id: int = 0
+
+    # ------------------------------------------------------------------
+    def allocate(self, size: int) -> dict:
+        """
+        Allocate (or reuse) a buffer of at least *size* bytes.
+
+        Mirrors Allocate(FRHICommandList&, int32 BufferSize):
+          - Align to 1024 bytes.
+          - Find the smallest unused entry that fits (best-fit scan).
+          - If none found, allocate a new bytearray.
+          - Mark LastDiscardId = DiscardId on the returned entry.
+
+        Returns a dict {"size": int, "data": bytearray, "last_discard_id": int}.
+
+        鲁迅式：最佳适配是妥协中的智慧——找最小的够用者，不浪费，也不委屈。
+        """
+        aligned_size = ((size + self._ALIGN - 1) // self._ALIGN) * self._ALIGN
+
+        best_idx = -1
+        for i, entry in enumerate(self._entries):
+            if entry["last_discard_id"] == self._discard_id:
+                continue  # currently in use
+            if entry["size"] >= aligned_size:
+                if best_idx == -1 or entry["size"] < self._entries[best_idx]["size"]:
+                    best_idx = i
+                    if entry["size"] == aligned_size:
+                        break
+
+        if best_idx >= 0:
+            reused = self._entries.pop(best_idx)
+            reused["last_discard_id"] = self._discard_id
+            return reused
+
+        # Allocate new entry
+        new_entry = {
+            "size":           aligned_size,
+            "data":           bytearray(aligned_size),
+            "last_discard_id": self._discard_id,
+        }
+        return new_entry
+
+    def release(self, entry: dict) -> None:
+        """
+        Return a buffer to the free list.
+        Mirrors ReturnToFreeList() — thread-safe in C++ (mutex); here single-threaded.
+
+        鲁迅式：归还是美德——用完即还，下一位不必等待。
+        """
+        self._entries.append(entry)
+
+    def discard_stale(self) -> int:
+        """
+        Advance the discard epoch and evict buffers idle for too many epochs.
+
+        Mirrors DiscardAll():
+            ++DiscardId;
+            RemoveAtSwap entries where (DiscardId - entry.LastDiscardId) > 1000
+
+        Returns the number of entries evicted.
+
+        鲁迅式：老化是自然定律——一千帧未被使用的缓冲区，
+        不是在休息，是在占据本不属于它的位置。丢弃它，腾出空间给活着的事物。
+        """
+        self._discard_id += 1
+        threshold = self._STALE_EPOCH_THRESHOLD
+        before = len(self._entries)
+        self._entries = [
+            e for e in self._entries
+            if (self._discard_id - e["last_discard_id"]) <= threshold
+        ]
+        evicted = before - len(self._entries)
+        if evicted:
+            print(
+                f"[AstroCellPrimitiveIdBufferPool] discard_stale: "
+                f"evicted={evicted} discard_id={self._discard_id}",
+                file=sys.stderr,
+            )
+        return evicted
+
+    def stats(self) -> dict:
+        """Diagnostic pool statistics."""
+        return {
+            "pool_entries":  len(self._entries),
+            "discard_id":    self._discard_id,
+            "total_bytes":   sum(e["size"] for e in self._entries),
+        }
+
+
+#: Module-level singleton pool — mirrors TGlobalResource<FPrimitiveIdVertexBufferPool>.
+_ASTRO_PRIMITIVE_ID_BUFFER_POOL: AstroCellPrimitiveIdBufferPool = \
+    AstroCellPrimitiveIdBufferPool()
+
+
+def get_primitive_id_buffer_pool() -> AstroCellPrimitiveIdBufferPool:
+    """Return the process-level primitive ID buffer pool singleton."""
+    return _ASTRO_PRIMITIVE_ID_BUFFER_POOL
+
+
+# =============================================================================
+# [MeshPassProcessor] AstroCellPipelineStateId + AstroCellShaderBindings
+# =============================================================================
+
+# PSO freeze flag — mirrors FGraphicsMinimalPipelineStateId::bIsIdTableFrozen.
+_pso_table_frozen: bool = False
+
+# Persistent PSO table — mirrors FGraphicsMinimalPipelineStateId::PersistentIdTable.
+# Key: (species, blend_mode, pass_name); Value: integer PSO id.
+_pipeline_state_table: dict = {}
+_pipeline_state_next_id: int = 0
+
+
+class AstroCellPipelineStateId:
+    """
+    Python equivalent of FGraphicsMinimalPipelineStateId.
+
+    Assigns a stable integer ID to each (species, blend_mode, pass_name)
+    combination, mirroring the persistent PSO ID table that survives across
+    frames.  IDs are allocated lazily on first use and never reused.
+
+    NeedsShaderInitialisation flag (mirrors the C++ static) is cleared the
+    first time the table is populated — here it tracks whether any IDs have
+    been assigned yet.
+
+    鲁迅式：PSO 的 ID 是身份证——每一条渲染管线都有一个号码，
+    号码不重复，也不作废。这是秩序对混乱的胜利。
+    """
+
+    NeedsShaderInitialisation: bool = True
+
+    def __init__(self, species: str, blend_mode: str, pass_name: str) -> None:
+        self.species    = species
+        self.blend_mode = blend_mode
+        self.pass_name  = pass_name
+        self._id        = self._lookup_or_allocate()
+
+    def _lookup_or_allocate(self) -> int:
+        global _pipeline_state_next_id, _pso_table_frozen
+        key = (self.species, self.blend_mode, self.pass_name)
+        if key in _pipeline_state_table:
+            return _pipeline_state_table[key]
+        if _pso_table_frozen:
+            # Mirrors the C++ assert that fires when table is frozen but a new
+            # state is requested — here we log and return 0 (sentinel).
+            print(
+                f"[AstroCellPSOId] WARNING: PSO table frozen, "
+                f"rejecting new state {key}.",
+                file=sys.stderr,
+            )
+            return 0
+        new_id = _pipeline_state_next_id
+        _pipeline_state_table[key] = new_id
+        _pipeline_state_next_id += 1
+        AstroCellPipelineStateId.NeedsShaderInitialisation = False
+        return new_id
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    def is_valid(self) -> bool:
+        return self._id > 0 or (self._id == 0 and _pipeline_state_next_id > 0)
+
+    @staticmethod
+    def freeze_table() -> None:
+        """Freeze the PSO table — no new states allowed after this point."""
+        global _pso_table_frozen
+        _pso_table_frozen = True
+
+    @staticmethod
+    def table_size() -> int:
+        return len(_pipeline_state_table)
+
+    def __repr__(self) -> str:
+        return (f"AstroCellPipelineStateId("
+                f"id={self._id}, species={self.species}, "
+                f"blend={self.blend_mode}, pass={self.pass_name})")
+
+
+class AstroCellShaderBindings:
+    """
+    Python equivalent of the shader binding management from
+    FReadOnlyMeshDrawSingleShaderBindings::SetShaderBindings().
+
+    Tracks which uniform-buffer / texture / sampler / SRV slots have been
+    written in the current draw call and skips redundant re-binds — exactly
+    mirroring the FShaderBindingState delta-tracking logic.
+
+    In the SVG substrate, «bindings» are SVG/CSS attribute overrides that
+    must be accumulated before the final <g> element is emitted.  Redundant
+    bindings from a previous cell with the same PSO are not re-emitted.
+
+    鲁迅式：绑定状态是画家的调色板——
+    每次切换颜色都有代价；不变的颜色就不要再调。
+    ShaderBindingState 的存在，是对这一代价的精打细算。
+    """
+
+    _MAX_UNIFORM_BUFFERS = 16
+
+    def __init__(self) -> None:
+        # Mirrors FShaderBindingState — tracks last-bound values per slot.
+        self._uniform_buffers: dict  = {}   # slot → value
+        self._textures:        dict  = {}   # slot → value
+        self._samplers:        dict  = {}   # slot → value
+        self._srvs:            dict  = {}   # slot → value
+        # Accumulated SVG attribute overrides for this draw call.
+        self._svg_attr_overrides: dict = {}
+        # Count of redundant binds skipped (diagnostic).
+        self.redundant_binds_skipped: int = 0
+
+    def bind_uniform_buffer(self, slot: int, value, svg_key: str = "") -> bool:
+        """
+        Bind a uniform buffer, skipping if value unchanged.
+        Returns True if the binding was actually updated (not redundant).
+        Mirrors the if (UniformBuffer != ShaderBindingState.UniformBuffers[...]) check.
+        """
+        if self._uniform_buffers.get(slot) == value:
+            self.redundant_binds_skipped += 1
+            return False
+        self._uniform_buffers[slot] = value
+        if svg_key:
+            self._svg_attr_overrides[svg_key] = value
+        return True
+
+    def bind_texture(self, slot: int, texture_value, svg_key: str = "") -> bool:
+        """Bind a texture slot (SetTextureParameter path)."""
+        if self._textures.get(slot) == texture_value:
+            self.redundant_binds_skipped += 1
+            return False
+        self._textures[slot] = texture_value
+        if svg_key:
+            self._svg_attr_overrides[svg_key] = texture_value
+        return True
+
+    def apply(self, base_svg_attrs: dict) -> dict:
+        """
+        Apply accumulated overrides onto base SVG attributes.
+
+        Mirrors the post-SetShaderBindings() state where all per-cell
+        material parameters have been applied to the draw pipeline.
+
+        Returns a merged dict of SVG attributes with overrides applied.
+        """
+        merged = dict(base_svg_attrs)
+        merged.update(self._svg_attr_overrides)
+        return merged
+
+    def reset(self) -> None:
+        """Clear per-draw-call overrides (keep binding state for delta tracking)."""
+        self._svg_attr_overrides.clear()
+
+    def stats(self) -> dict:
+        return {
+            "uniform_buffers_bound":  len(self._uniform_buffers),
+            "textures_bound":         len(self._textures),
+            "redundant_binds_skipped": self.redundant_binds_skipped,
+            "svg_overrides":          len(self._svg_attr_overrides),
+        }
+
+
+class AstroCellMeshPassProcessor:
+    """
+    Python equivalent of FMeshPassProcessor.
+
+    Processes a list of visible cell draw commands through the PSO lookup,
+    shader binding, and sort-key assignment pipeline — exactly mirroring the
+    three major responsibilities of FMeshPassProcessor:
+
+    1. PSO key lookup (AddMeshDrawCommand path):
+       For each cell, look up (or allocate) an AstroCellPipelineStateId based
+       on (species, blend_mode, pass_name).  If ASTRO_SKIP_DRAW_ON_PSO_PRECACHING
+       is True and the PSO is «new» (first frame), skip the draw entirely.
+
+    2. Shader binding application (SetShaderBindings path):
+       Create an AstroCellShaderBindings instance, populate it from the cell's
+       gene_traits, apply to the base SVG attributes via bindings.apply().
+
+    3. Sort key assignment (FMeshDrawCommandSortKey path):
+       Opaque cells: sort key = PSO id (minimise state changes).
+       Translucent cells: sort key = bit-inverted distance (painter's order).
+
+    After process() the returned list is ready for AstroCellDrawList.
+
+    鲁迅式：Processor 是流水线上的检验员——
+    它不创造内容，但决定了内容能否进入下一道工序，
+    以及以何种顺序进入。
+    """
+
+    def __init__(self,
+                 pass_name:       str  = "base",
+                 view_origin:     tuple = (0.0, 0.0, -1000.0),
+                 emit_draw_events: bool = ASTRO_EMIT_MESH_DRAW_EVENT) -> None:
+        self.pass_name        = pass_name
+        self.view_origin      = view_origin
+        self.emit_draw_events = emit_draw_events
+        self._binding_state   = AstroCellShaderBindings()
+        self._pso_cache:      dict = {}   # (species, blend_mode) → AstroCellPipelineStateId
+
+    def _get_pso_id(self, species: str, blend_mode: str) -> AstroCellPipelineStateId:
+        """Lookup or allocate a PSO id, caching within this pass."""
+        key = (species, blend_mode)
+        if key not in self._pso_cache:
+            self._pso_cache[key] = AstroCellPipelineStateId(
+                species, blend_mode, self.pass_name
+            )
+        return self._pso_cache[key]
+
+    def _build_base_svg_attrs(self, entry: dict) -> dict:
+        """
+        Construct the base SVG attribute dict for a cell entry.
+        Mirrors the material parameter packing that the C++ pass writes into
+        the per-draw uniform buffer before shader binding.
+        """
+        species    = entry.get("species", "")
+        bbox       = entry.get("bbox", {})
+        opacity    = float(entry.get("opacity", 1.0))
+        blend_mode = entry.get("blend_mode", "normal")
+
+        sp_idx = _species_to_index(species)
+        fill   = _colour_to_hex(_SPECIES_INDEX_TO_COLOUR.get(sp_idx, _SPECIES_INDEX_TO_COLOUR[0]))
+        stroke = fill
+
+        return {
+            "fill":        fill,
+            "stroke":      stroke,
+            "opacity":     str(round(opacity, 4)),
+            "mix-blend-mode": blend_mode,
+            "data-cell-id":   entry.get("cell_id", ""),
+            "data-z":         str(bbox.get("z", 0)),
+            "data-pass":      self.pass_name,
+        }
+
+    def _assign_sort_key(self, entry: dict, pso_id: AstroCellPipelineStateId,
+                         blend_mode: str) -> AstroCellDrawSortKey:
+        """
+        Assign a sort key to the entry.
+
+        Opaque (blend_mode not in translucent set):
+            key.low = PSO id (minimise pipeline state switches, mirrors UE5 opaque sort).
+            key.high = 0 (Z is irrelevant for opaque).
+
+        Translucent:
+            key = _compute_translucent_sort_key() (bit-inverted distance).
+        """
+        translucent_modes = {"translucent", "additive", "modulate", "alpha_composite"}
+        if blend_mode in translucent_modes:
+            bbox = entry.get("bbox", {})
+            bx = float(bbox.get("x", 0)) + float(bbox.get("w", 0)) * 0.5
+            by = float(bbox.get("y", 0)) + float(bbox.get("h", 0)) * 0.5
+            bz = float(bbox.get("z", 0))
+            sort_policy = 1 if ASTRO_MESH_SORT_METHOD == 1 else 2
+            return _compute_translucent_sort_key(
+                (bx, by, bz), self.view_origin, [], sort_policy
+            )
+        else:
+            # Opaque sort: primary key = PSO id (state minimisation)
+            return AstroCellDrawSortKey(high=0, low=pso_id.id)
+
+    def process(self, cell_entries: list) -> list:
+        """
+        Process all cell draw entries through the mesh pass pipeline.
+
+        Mirrors FMeshPassProcessor::AddMeshBatch() + BuildMeshDrawCommands()
+        called for each FMeshBatch in the view's visible primitives list.
+
+        For each entry:
+          1. Resolve blend_mode.
+          2. Lookup PSO id (skip if precaching + new PSO).
+          3. Apply shader bindings.
+          4. Assign sort key.
+          5. Append draw-event annotation if ASTRO_EMIT_MESH_DRAW_EVENT.
+
+        Returns list of enriched entry dicts with fields added:
+            pso_id      : int
+            sort_key    : AstroCellDrawSortKey
+            svg_attrs   : dict (final merged SVG attributes)
+            draw_event  : str (optional debug annotation)
+
+        鲁迅式：process() 是流水线的主干——
+        所有输入在这里经过筛选、分类、标记，最终成为可以被画出来的命令。
+        没有经过 process() 的 cell，不过是一堆原始数据；
+        经过之后，它们获得了身份、顺序和形式。
+        """
+        result = []
+        self._binding_state.reset()
+
+        for entry in cell_entries:
+            cell_id    = entry.get("cell_id", "")
+            species    = entry.get("species", "")
+            blend_mode = entry.get("blend_mode", "normal")
+
+            # ── PSO lookup ────────────────────────────────────────────────────
+            pso = self._get_pso_id(species, blend_mode)
+
+            if ASTRO_SKIP_DRAW_ON_PSO_PRECACHING and pso.NeedsShaderInitialisation:
+                # PSO still «compiling» — skip this draw call
+                print(
+                    f"[AstroCellMeshPassProcessor] SkipDrawOnPSOPrecaching: "
+                    f"skipping cell={cell_id} (PSO not yet initialised)",
+                    file=sys.stderr,
+                )
+                continue
+
+            # ── Shader bindings ───────────────────────────────────────────────
+            self._binding_state.reset()
+            # Bind per-cell gene_traits as «uniform buffer» slot 0
+            gene_traits = entry.get("gene_traits", {})
+            self._binding_state.bind_uniform_buffer(
+                slot=0, value=json.dumps(gene_traits, sort_keys=True)
+            )
+            # Bind species colour as «texture» slot 0
+            sp_idx = _species_to_index(species)
+            fill   = _colour_to_hex(_SPECIES_INDEX_TO_COLOUR.get(sp_idx, _SPECIES_INDEX_TO_COLOUR[0]))
+            self._binding_state.bind_texture(
+                slot=0, texture_value=fill, svg_key="fill"
+            )
+
+            base_attrs = self._build_base_svg_attrs(entry)
+            svg_attrs  = self._binding_state.apply(base_attrs)
+
+            # ── Sort key ──────────────────────────────────────────────────────
+            sort_key = self._assign_sort_key(entry, pso, blend_mode)
+
+            # ── Draw event annotation ─────────────────────────────────────────
+            draw_event = ""
+            if self.emit_draw_events:
+                draw_event = (
+                    f"<!-- [ASTRO-MDC] MeshDrawEvent pass={self.pass_name} "
+                    f"cell={cell_id} pso_id={pso.id} "
+                    f"sort={sort_key.packed()} -->"
+                )
+
+            enriched = dict(entry)
+            enriched.update({
+                "pso_id":     pso.id,
+                "sort_key":   sort_key,
+                "svg_attrs":  svg_attrs,
+                "draw_event": draw_event,
+            })
+            result.append(enriched)
+
+        # ── Deferred sort (mirrors CVarDeferredMeshPassSetupTaskSync) ─────────
+        if ASTRO_DEFERRED_MESH_PASS_SYNC:
+            result.sort(key=lambda e: e["sort_key"].packed())
+
+        print(
+            f"[AstroCellMeshPassProcessor] process: "
+            f"pass={self.pass_name} in={len(cell_entries)} "
+            f"out={len(result)} "
+            f"pso_table_size={AstroCellPipelineStateId.table_size()} "
+            f"redundant_binds={self._binding_state.redundant_binds_skipped}",
+            file=sys.stderr,
+        )
+
+        return result
+
+
+# =============================================================================
+# [SceneCaptureRendering] AstroCellCaptureMode + AstroCellCaptureProcessor
+# =============================================================================
+
+class AstroCellCaptureMode:
+    """
+    Python equivalent of FSceneCapturePS::ESourceMode enum (8 values).
+
+    Maps UE5 ESceneCaptureSource constants to Astro channel modes that
+    determine which data is sampled from the rendered cell scene.
+
+    鲁迅式：源模式是摄像头的目的——
+    你想捕捉颜色、深度、还是法线？
+    目的不同，捕捉的手段和代价也不同。
+    """
+    COLOR_AND_OPACITY   = 0   # SCS_SceneColorHDR
+    COLOR_NO_ALPHA      = 1   # SCS_SceneColorHDRNoAlpha
+    COLOR_AND_DEPTH     = 2   # SCS_SceneColorSceneDepth
+    SCENE_DEPTH         = 3   # SCS_SceneDepth
+    DEVICE_DEPTH        = 4   # SCS_DeviceDepth
+    NORMAL              = 5   # SCS_Normal
+    BASE_COLOR          = 6   # SCS_BaseColor
+    COLOR_ONE_ALPHA     = 7   # SCS_SceneColorHDRNoAlpha for reflection capture
+
+    _SOURCE_TO_MODE = {
+        "color_opacity":    0,
+        "color_no_alpha":   1,
+        "color_depth":      2,
+        "depth":            3,
+        "device_depth":     4,
+        "normal":           5,
+        "base_color":       6,
+        "color_one_alpha":  7,
+    }
+
+    @classmethod
+    def from_source_name(cls, name: str) -> int:
+        return cls._SOURCE_TO_MODE.get(name, 0)
+
+
+def _should_compile_capture_permutation(
+    source_mode: int,
+    use_128bit_rt: bool,
+    requires_explicit_128bit: bool,
+) -> bool:
+    """
+    Mirrors FSceneCapturePS::ShouldCompilePermutation():
+        return (!PermutationVector.Get<FEnable128BitRT>()
+                || bPlatformRequiresExplicit128bitRT);
+
+    In the Astro context: 128-bit RT is approximated by float16 SVG colour
+    channels (not needed for standard uint8 output).
+
+    鲁迅式：应该编译的 permutation 才编译——
+    无用的组合是浪费，删除它们是一种诚实。
+    """
+    if use_128bit_rt and not requires_explicit_128bit:
+        return False
+    return True
+
+
+def _get_capture_permutation(
+    source_name: str,
+    use_128bit_rt:          bool = False,
+    forward_shading:        bool = False,
+    is_reflection_capture:  bool = False,
+) -> dict:
+    """
+    Compute capture permutation parameters.
+
+    Mirrors FSceneCapturePS::GetPermutationVector():
+        Maps ESceneCaptureSource → ESourceMode.
+        Handles forward-shading override for Normal/BaseColor modes.
+        Returns {source_mode, use_128bit_rt}.
+
+    鲁迅式：Permutation 是现实的分叉——每一个旗标都是一条路，
+    组合爆炸是工程师的噩梦，也是用户功能的保障。
+    """
+    mode = AstroCellCaptureMode.from_source_name(source_name)
+
+    # Reflection capture: NoAlpha → ColorOneAlpha
+    if is_reflection_capture and mode == AstroCellCaptureMode.COLOR_NO_ALPHA:
+        mode = AstroCellCaptureMode.COLOR_ONE_ALPHA
+
+    # Forward shading override: Normal/BaseColor → ColorAndOpacity
+    if forward_shading and mode in (
+        AstroCellCaptureMode.NORMAL, AstroCellCaptureMode.BASE_COLOR
+    ):
+        mode = AstroCellCaptureMode.COLOR_AND_OPACITY
+
+    return {"source_mode": mode, "use_128bit_rt": use_128bit_rt}
+
+
+class AstroCellCaptureProcessor:
+    """
+    Python equivalent of the SceneCaptureRendering pipeline.
+
+    Captures the current cell scene state into a «render target» dict,
+    supporting the 8 ESourceMode channel configurations from FSceneCapturePS.
+
+    Two primary entry points mirror the UE5 C++ functions:
+      capture_scene()        → CaptureSceneToRenderTarget() analog
+      copy_capture_to_target()→ CopyCaptureToTarget() / UpdateSceneCaptureContents()
+
+    鲁迅式：场景捕获是镜子——它把当前世界的状态定格为一张快照，
+    供反射、后处理、UI 叠加等系统消费。
+    镜子不创造，但它记录；记录本身，便是一种价值。
+    """
+
+    def __init__(self,
+                 source_name:          str   = "color_opacity",
+                 use_128bit_rt:         bool  = False,
+                 forward_shading:       bool  = False,
+                 allow_main_renderer:   bool  = ASTRO_CAPTURE_ALLOW_MAIN_RENDERER,
+                 cube_single_pass:      bool  = ASTRO_CAPTURE_CUBE_SINGLE_PASS) -> None:
+        self._permutation = _get_capture_permutation(
+            source_name, use_128bit_rt, forward_shading,
+        )
+        self.allow_main_renderer = allow_main_renderer
+        self.cube_single_pass    = cube_single_pass
+        self._render_target: dict = {}
+
+    @property
+    def source_mode(self) -> int:
+        return self._permutation["source_mode"]
+
+    def capture_scene(
+        self,
+        cell_entries:  list,
+        depth_manifest: dict,
+        viewport_w:    float = 1200.0,
+        viewport_h:    float = 900.0,
+    ) -> dict:
+        """
+        Capture the scene into a render-target dict.
+
+        Mirrors CaptureSceneToRenderTarget() / UpdateSceneCaptureContents():
+          - If allow_main_renderer and source_mode supports it:
+              render as part of the main renderer (inline capture path).
+          - Otherwise:
+              render as independent scene (separate capture path).
+
+        For each capture mode, different data channels are populated:
+          COLOR_AND_OPACITY → rgba per cell (fill + opacity)
+          SCENE_DEPTH       → normalised Z per cell
+          NORMAL            → surface normal vector per cell
+          BASE_COLOR        → species primary colour (no lighting)
+          COLOR_ONE_ALPHA   → reflection capture alpha=1 convention
+
+        Returns the populated render target dict.
+
+        鲁迅式：捕获场景需要代价——你每多渲染一次，GPU 就多工作一次。
+        AllowRenderInMainRenderer 是一种妥协：如果主渲染器能顺路帮你做，
+        何必另起炉灶？
+        """
+        mode = self.source_mode
+        render_target: dict = {
+            "source_mode":   mode,
+            "viewport":      {"w": viewport_w, "h": viewport_h},
+            "cells":         {},
+        }
+
+        for entry in cell_entries:
+            cid     = entry.get("cell_id", "")
+            species = entry.get("species", "")
+            bbox    = entry.get("bbox", {})
+            opacity = float(entry.get("opacity", 1.0))
+            z       = float(bbox.get("z", 0))
+
+            sp_idx = _species_to_index(species)
+            colour = _SPECIES_INDEX_TO_COLOUR.get(sp_idx, _SPECIES_INDEX_TO_COLOUR[0])
+
+            if mode == AstroCellCaptureMode.COLOR_AND_OPACITY:
+                cell_data = {
+                    "r": colour[0] / 255.0, "g": colour[1] / 255.0,
+                    "b": colour[2] / 255.0, "a": opacity,
+                }
+            elif mode == AstroCellCaptureMode.COLOR_NO_ALPHA:
+                cell_data = {
+                    "r": colour[0] / 255.0, "g": colour[1] / 255.0,
+                    "b": colour[2] / 255.0, "a": 1.0,
+                }
+            elif mode == AstroCellCaptureMode.SCENE_DEPTH:
+                depth = depth_manifest.get("depth_channel", {}).get(cid, 1.0)
+                cell_data = {"depth": depth}
+            elif mode == AstroCellCaptureMode.DEVICE_DEPTH:
+                # Device depth = 1 - scene_depth (UE5 reversed-Z convention)
+                depth = depth_manifest.get("depth_channel", {}).get(cid, 1.0)
+                cell_data = {"device_depth": 1.0 - depth}
+            elif mode == AstroCellCaptureMode.NORMAL:
+                # Surface normals: cells face toward viewer (+Z)
+                cell_data = {"nx": 0.0, "ny": 0.0, "nz": 1.0}
+            elif mode == AstroCellCaptureMode.BASE_COLOR:
+                cell_data = {
+                    "r": colour[0] / 255.0,
+                    "g": colour[1] / 255.0,
+                    "b": colour[2] / 255.0,
+                }
+            elif mode == AstroCellCaptureMode.COLOR_ONE_ALPHA:
+                # Reflection capture: alpha forced to 1 (mirrors reflection path)
+                cell_data = {
+                    "r": colour[0] / 255.0, "g": colour[1] / 255.0,
+                    "b": colour[2] / 255.0, "a": 1.0,
+                }
+            else:
+                cell_data = {"r": 0.0, "g": 0.0, "b": 0.0, "a": opacity}
+
+            cell_data["z"]       = z
+            cell_data["species"] = species
+            render_target["cells"][cid] = cell_data
+
+        self._render_target = render_target
+        return render_target
+
+    def copy_capture_to_target(
+        self,
+        target_path: str,
+    ) -> None:
+        """
+        Persist the captured render target to the channel filesystem.
+
+        Mirrors CopyCaptureToTarget() / the RDG pass that blits the
+        scene capture result into the final render target texture.
+
+        鲁迅式：数据不写出便等于不存在——
+        捕获的每一帧都需要落地为文件，才能被后续系统消费。
+        """
+        if not self._render_target:
+            return
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with open(target_path, "w") as _f:
+            json.dump(self._render_target, _f, indent=2)
+        print(
+            f"[AstroCellCaptureProcessor] copy_capture_to_target: "
+            f"mode={self.source_mode} cells={len(self._render_target.get('cells', {}))} "
+            f"→ {target_path}",
+            file=sys.stderr,
+        )
+
+
+def update_scene_capture_contents(
+    cell_entries:    list,
+    depth_manifest:  dict,
+    capture_dir:     str,
+    source_name:     str  = "color_opacity",
+    is_reflection:   bool = False,
+    viewport_w:      float = 1200.0,
+    viewport_h:      float = 900.0,
+) -> dict:
+    """
+    Top-level scene capture update.
+
+    Mirrors UpdateSceneCaptureContents() — the primary entry point called
+    each frame to refresh a SceneCaptureComponent2D's render target.
+
+    Constructs an AstroCellCaptureProcessor, runs capture_scene(), and
+    persists the result to capture_dir/scene_capture.json.
+
+    @param is_reflection  When True switches to COLOR_ONE_ALPHA permutation
+                          (reflection capture convention).
+    @return               Capture render target dict.
+
+    鲁迅式：UpdateSceneCaptureContents 是场景捕获的总调度——
+    每帧一次，不多不少。频率是性能与精度之间的谈判结果。
+    """
+    effective_source = "color_one_alpha" if is_reflection else source_name
+    processor = AstroCellCaptureProcessor(
+        source_name=effective_source,
+        is_reflection_capture=is_reflection if False else False,  # resolved above
+    )
+    rt = processor.capture_scene(cell_entries, depth_manifest, viewport_w, viewport_h)
+
+    target_path = os.path.join(capture_dir, "scene_capture.json")
+    processor.copy_capture_to_target(target_path)
+    return rt
+
+
+# =============================================================================
+# [ReflectionEnvironmentCapture] AstroCellReflectionCaptureState + pipeline
+# =============================================================================
+
+def _clamp_supersample(factor: int) -> int:
+    """Clamp supersample factor to [1, 8] — mirrors MinSupersampleCaptureFactor /
+    MaxSupersampleCaptureFactor constants in ReflectionEnvironmentCapture.cpp."""
+    return max(1, min(8, factor))
+
+
+@dataclass
+class AstroCellReflectionCaptureState:
+    """
+    Python equivalent of the per-capture runtime state in
+    ReflectionEnvironmentCapture.cpp.
+
+    Tracks the timeslicing state (which «faces» have been rendered),
+    the fade-in progress, and the accumulated capture data for one
+    reflection capture probe.
+
+    Reflection «faces» in 2-D → six Z-layer offsets sampled around the
+    capture origin: +Z, -Z, +X, -X, +Y, -Y (cardinal directions mapped to
+    Z-layer and XY offset combinations).
+
+    鲁迅式：时分渲染是对时间的借贷——每帧还一点债，六帧还清，
+    然后重新开始。债不能不还，只是分期而已。
+    """
+    capture_id:       str   = ""
+    world_pos:        tuple = (0.0, 0.0, 0.0)
+    influence_radius: float = 1000.0
+    # Timeslice state: which face index [0..5] is rendered next
+    current_face:     int   = 0
+    # Number of faces rendered so far in this cycle
+    faces_rendered:   int   = 0
+    # Captured colour data per face: face_index → (r, g, b)
+    face_data:        dict  = field(default_factory=dict)
+    # Fade-in progress [0.0, 1.0] — mirrors CVarReflectionCaptureRuntimeFadeInTime
+    fade_progress:    float = 0.0
+    # Whether the full cube has been captured at least once this session
+    is_complete:      bool  = False
+    # Frame index of last update
+    last_update_frame: int  = -1
+
+    _FACE_OFFSETS = [
+        ( 0,  0,  1),   # face 0: +Z (upward)
+        ( 0,  0, -1),   # face 1: -Z (downward)
+        ( 1,  0,  0),   # face 2: +X (right)
+        (-1,  0,  0),   # face 3: -X (left)
+        ( 0,  1,  0),   # face 4: +Y (forward)
+        ( 0, -1,  0),   # face 5: -Y (backward)
+    ]
+
+    def faces_per_timeslice(self) -> int:
+        """
+        Number of faces to render per frame.
+        Mirrors CVarReflectionCaptureRuntimeTimeslice (clamped to [1, 6]).
+        If ASTRO_CAPTURE_CUBE_SINGLE_PASS: render all 6 in one frame.
+        """
+        if ASTRO_CAPTURE_CUBE_SINGLE_PASS:
+            return 6
+        return max(1, min(6, _REFL_TIMESLICE_FACES))
+
+    def sample_face(
+        self,
+        face_index: int,
+        cell_entries: list,
+        depth_manifest: dict,
+    ) -> tuple:
+        """
+        Sample average scene colour for one probe «face».
+
+        Mirrors CaptureSceneToScratchCubemap() for a single face:
+          1. Select cells within influence_radius × face direction half-space.
+          2. Average their species colours weighted by proximity.
+          3. Apply supersample factor (multiple passes → average).
+
+        Returns (r, g, b) average colour for this face.
+
+        鲁迅式：每个方向采样一次，六个方向合而为一——
+        这是环境光的民主原则：四面八方的光照都有发言权。
+        """
+        if face_index >= len(self._FACE_OFFSETS):
+            return (0.5, 0.5, 0.5)
+
+        fx, fy, fz = self._FACE_OFFSETS[face_index]
+        ox, oy, oz = self.world_pos
+
+        # Collect cells in this face's half-space (dot(cell_dir, face_dir) > 0)
+        r_sum = g_sum = b_sum = weight_sum = 0.0
+        supersample = _clamp_supersample(_REFL_SUPERSAMPLE_FACTOR)
+
+        for entry in cell_entries:
+            bbox    = entry.get("bbox", {})
+            cx = float(bbox.get("x", 0)) + float(bbox.get("w", 0)) * 0.5
+            cy = float(bbox.get("y", 0)) + float(bbox.get("h", 0)) * 0.5
+            cz = float(bbox.get("z", 0)) * 100.0   # z-layer → world units
+
+            # Direction from probe to cell
+            dx, dy, dz = cx - ox, cy - oy, cz - oz
+            dist = math.sqrt(dx*dx + dy*dy + dz*dz) + 1e-6
+
+            # Half-space test: dot(cell_dir, face_dir) > 0
+            dot = (dx/dist)*fx + (dy/dist)*fy + (dz/dist)*fz
+            if dot <= 0.0:
+                continue
+
+            # Distance weight: exponential falloff within influence_radius
+            # Mirrors the per-probe weight in the C++ cubemap blend pass.
+            if dist > self.influence_radius:
+                continue
+
+            weight = (1.0 - dist / self.influence_radius) * dot
+
+            species = entry.get("species", "")
+            sp_idx  = _species_to_index(species)
+            colour  = _SPECIES_INDEX_TO_COLOUR.get(sp_idx, _SPECIES_INDEX_TO_COLOUR[0])
+
+            r_sum += colour[0] / 255.0 * weight * supersample
+            g_sum += colour[1] / 255.0 * weight * supersample
+            b_sum += colour[2] / 255.0 * weight * supersample
+            weight_sum += weight * supersample
+
+        if weight_sum > 1e-6:
+            return (r_sum / weight_sum, g_sum / weight_sum, b_sum / weight_sum)
+        # No cells in this face direction → ambient grey
+        return (0.5, 0.5, 0.5)
+
+    def tick(
+        self,
+        frame_index:   int,
+        cell_entries:  list,
+        depth_manifest: dict,
+        fade_in_time:  float = 0.5,
+    ) -> bool:
+        """
+        Advance the timeslice capture by one frame.
+
+        Renders faces_per_timeslice() faces per call, cycling through the
+        six face indices.  Once all 6 faces are complete, is_complete=True
+        and fade_progress advances toward 1.0.
+
+        Returns True if the full cubemap was completed this frame (or already
+        complete and mode==Once).
+
+        Mirrors the timeslice logic in UpdateReflectionCaptures():
+            Render N faces per frame (CVarReflectionCaptureRuntimeTimeslice).
+            When all 6 done: mark IsComplete, start fade-in.
+            Mode=Once (1): stop after first complete cycle.
+            Mode=Continuous (0): repeat indefinitely.
+
+        鲁迅式：六个面，每帧还一面的债——
+        不急，不乱，债总是会还清的，然后重新开始借贷。
+        这就是时分渲染的生存哲学。
+        """
+        if self.is_complete and _REFL_RUNTIME_MODE == 1:
+            # Once mode: already done — just advance fade
+            self.fade_progress = min(1.0, self.fade_progress + (1.0 / max(fade_in_time * 60, 1)))
+            return True
+
+        faces_this_tick = self.faces_per_timeslice()
+        for _ in range(faces_this_tick):
+            face_idx = self.current_face % 6
+            colour   = self.sample_face(face_idx, cell_entries, depth_manifest)
+            self.face_data[face_idx] = colour
+            self.current_face = (self.current_face + 1) % 6
+            self.faces_rendered += 1
+
+        self.last_update_frame = frame_index
+
+        # Check if a full cycle is complete
+        if len(self.face_data) == 6:
+            self.is_complete = True
+            self.fade_progress = min(1.0,
+                self.fade_progress + (1.0 / max(fade_in_time * 60, 1))
+            )
+            return True
+
+        return False
+
+    def average_radiance(self) -> tuple:
+        """
+        Compute the average radiance across all captured faces.
+
+        Mirrors the cubemap averaging used to derive the dominant probe
+        colour for the StyleProbe blend step.  Returns (r, g, b) float tuple.
+
+        鲁迅式：六个方向的平均，是公平，也是妥协——
+        没有哪个方向比另一个更重要，所以平等权重，一人一票。
+        """
+        if not self.face_data:
+            return (0.5, 0.5, 0.5)
+        n  = len(self.face_data)
+        r  = sum(v[0] for v in self.face_data.values()) / n
+        g  = sum(v[1] for v in self.face_data.values()) / n
+        b  = sum(v[2] for v in self.face_data.values()) / n
+        return (r, g, b)
+
+    def to_dict(self) -> dict:
+        return {
+            "capture_id":      self.capture_id,
+            "world_pos":       self.world_pos,
+            "influence_radius": self.influence_radius,
+            "faces_rendered":  self.faces_rendered,
+            "is_complete":     self.is_complete,
+            "fade_progress":   round(self.fade_progress, 4),
+            "last_update_frame": self.last_update_frame,
+            "face_data":       {str(k): list(v) for k, v in self.face_data.items()},
+            "average_radiance": list(self.average_radiance()),
+        }
+
+
+class AstroCellReflectionCaptureManager:
+    """
+    Python equivalent of the UpdateReflectionCaptures() pipeline.
+
+    Maintains a registry of AstroCellReflectionCaptureState probes, sorted
+    by distance to the viewer camera, and dispatches per-frame timeslice
+    updates subject to the _REFL_BUDGET probe-count cap.
+
+    Mirrors the C++ flow in UpdateReflectionCaptures():
+      1. Sort active captures by distance (nearest first).
+      2. Apply budget cap (skip distant probes if over limit).
+      3. For each active probe: call capture_state.tick().
+      4. Persist results to physics/reflection_captures.json channel.
+
+    鲁迅式：反射捕获管理器是公平的排队系统——
+    距离越近的探针优先更新，预算有限时远处的探针被搁置。
+    这不是歧视，是资源分配的现实。
+    """
+
+    def __init__(self) -> None:
+        self._captures: dict = {}   # capture_id → AstroCellReflectionCaptureState
+        self._frame_index: int = 0
+        self._channel_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "physics", "reflection_captures.json",
+        )
+
+    def register_capture(
+        self,
+        capture_id:       str,
+        world_pos:        tuple,
+        influence_radius: float = 1000.0,
+    ) -> AstroCellReflectionCaptureState:
+        """
+        Register a new reflection capture probe.
+        Mirrors AddReflectionCapture() / the dynamic runtime probe lifecycle.
+        """
+        state = AstroCellReflectionCaptureState(
+            capture_id=capture_id,
+            world_pos=world_pos,
+            influence_radius=influence_radius,
+        )
+        self._captures[capture_id] = state
+        return state
+
+    def remove_capture(self, capture_id: str) -> None:
+        """Deregister a capture probe — mirrors RemoveReflectionCapture()."""
+        self._captures.pop(capture_id, None)
+
+    def tick(
+        self,
+        viewer_pos:    tuple,
+        cell_entries:  list,
+        depth_manifest: dict,
+        fade_in_time:  float = 0.5,
+    ) -> dict:
+        """
+        Per-frame reflection capture update pass.
+
+        Mirrors UpdateReflectionCaptures() dispatch:
+          1. Sort captures by distance to viewer.
+          2. Apply _REFL_BUDGET cap.
+          3. Tick each active capture.
+          4. Persist results.
+
+        Returns per-frame stats dict.
+
+        鲁迅式：每帧更新反射——不停地照镜子，
+        不是虚荣，是为了让世界在镜中保持真实。
+        """
+        self._frame_index += 1
+        vx, vy, vz = viewer_pos
+
+        # Sort captures by distance to viewer (nearest first)
+        def _dist(state: AstroCellReflectionCaptureState) -> float:
+            ox, oy, oz = state.world_pos
+            return math.sqrt((ox-vx)**2 + (oy-vy)**2 + (oz-vz)**2)
+
+        sorted_captures = sorted(self._captures.values(), key=_dist)
+
+        # Apply budget cap (0 = unlimited)
+        budget = _REFL_BUDGET
+        active = sorted_captures if budget == 0 else sorted_captures[:budget]
+
+        completed_this_frame = 0
+        for state in active:
+            done = state.tick(self._frame_index, cell_entries, depth_manifest, fade_in_time)
+            if done:
+                completed_this_frame += 1
+
+        # Persist to channel
+        all_data = {cid: s.to_dict() for cid, s in self._captures.items()}
+        try:
+            os.makedirs(os.path.dirname(self._channel_path), exist_ok=True)
+            with open(self._channel_path, "w") as _f:
+                json.dump(all_data, _f, indent=2)
+        except OSError as _e:
+            print(
+                f"[AstroCellReflectionCaptureManager] WARNING: "
+                f"failed to persist captures: {_e}",
+                file=sys.stderr,
+            )
+
+        stats = {
+            "frame_index":          self._frame_index,
+            "total_captures":       len(self._captures),
+            "active_captures":      len(active),
+            "completed_this_frame": completed_this_frame,
+            "budget_cap":           budget,
+            "supersample_factor":   _clamp_supersample(_REFL_SUPERSAMPLE_FACTOR),
+            "timeslice_faces":      _REFL_TIMESLICE_FACES,
+            "runtime_mode":         "once" if _REFL_RUNTIME_MODE == 1 else "continuous",
+        }
+
+        print(
+            f"[AstroCellReflectionCaptureMgr] tick: "
+            f"frame={self._frame_index} "
+            f"captures={len(self._captures)} active={len(active)} "
+            f"completed_this_frame={completed_this_frame}",
+            file=sys.stderr,
+        )
+        return stats
+
+    def get_probe_radiance(self, capture_id: str) -> tuple:
+        """
+        Return the average face radiance for a named probe.
+        Used by the StyleProbe blending system as an alternative neighbourhood
+        colour source when explicit neighbour cells are absent.
+        """
+        state = self._captures.get(capture_id)
+        if state and state.is_complete:
+            return state.average_radiance()
+        return (0.5, 0.5, 0.5)
+
+
+#: Module-level reflection capture manager singleton.
+_ASTRO_REFLECTION_CAPTURE_MANAGER: AstroCellReflectionCaptureManager | None = None
+
+
+def get_reflection_capture_manager() -> AstroCellReflectionCaptureManager:
+    """
+    Return the process-level reflection capture manager singleton.
+
+    Mirrors the FScene::ReflectionSceneData lifetime — one manager per scene.
+
+    鲁迅式：反射系统的单例是场景中唯一的真相来源——
+    所有探针都向它汇报，所有消费者都向它查询。
+    中央化不总是好事，但在反射系统中，一致性比自由更重要。
+    """
+    global _ASTRO_REFLECTION_CAPTURE_MANAGER
+    if _ASTRO_REFLECTION_CAPTURE_MANAGER is None:
+        _ASTRO_REFLECTION_CAPTURE_MANAGER = AstroCellReflectionCaptureManager()
+    return _ASTRO_REFLECTION_CAPTURE_MANAGER
+
+
+def capture_scene_to_scratch_cubemap(
+    capture_id:    str,
+    world_pos:     tuple,
+    cell_entries:  list,
+    depth_manifest: dict,
+    influence_radius: float = 1000.0,
+    viewer_pos:    tuple = (0.0, 0.0, 0.0),
+) -> AstroCellReflectionCaptureState:
+    """
+    Convenience function: register + tick a single reflection capture.
+
+    Mirrors the CaptureSceneToScratchCubemap() call sequence used for
+    one-shot baked reflection captures:
+        1. Register probe (if not already registered).
+        2. Force ASTRO_CAPTURE_CUBE_SINGLE_PASS = True for this call.
+        3. Tick once (all 6 faces in one frame).
+        4. Return the completed state.
+
+    鲁迅式：一次性烘焙——六个面，一口气完成，
+    不留遗憾，不等下一帧。
+    代价是这一帧的工作量翻六倍，但烘焙只做一次，值得。
+    """
+    mgr = get_reflection_capture_manager()
+
+    # Re-register to reset state (bake path always starts fresh)
+    state = mgr.register_capture(capture_id, world_pos, influence_radius)
+
+    # Temporarily force single-pass for this bake
+    global ASTRO_CAPTURE_CUBE_SINGLE_PASS
+    _old_single_pass = ASTRO_CAPTURE_CUBE_SINGLE_PASS
+    ASTRO_CAPTURE_CUBE_SINGLE_PASS = True
+
+    mgr.tick(viewer_pos, cell_entries, depth_manifest, fade_in_time=0.0)
+
+    ASTRO_CAPTURE_CUBE_SINGLE_PASS = _old_single_pass
+    return state
