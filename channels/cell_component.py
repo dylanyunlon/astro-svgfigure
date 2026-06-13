@@ -10920,3 +10920,629 @@ class AstroCellRenderPipeline:
             out[cid] = (lit_colours.get(cid, _Vec3(0, 0, 0)), gbuf, cd_entry)
 
         return out
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# §  LUMEN SCENE MANAGEMENT  ── port of LumenScene.cpp / LumenSceneLighting.cpp
+#    LumenSurfaceCache.cpp / LumenScreenSpaceBentNormal.cpp
+#    LumenScreenProbeFiltering.cpp / LumenScreenProbeImportanceSampling.cpp
+#
+#    鲁迅式：旧中国有一句话——"万里长城今犹在，不见当年秦始皇"。
+#    Lumen 的 Scene 管理亦然：距离场飘散，细胞仍在，光照已非昨日。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import math
+import random
+import sys
+from dataclasses import dataclass, field
+from typing import Optional
+from enum import Enum, auto
+
+_LUMEN_GLOBAL_DF_RESOLUTION: int = 252
+_LUMEN_GLOBAL_DF_CLIPMAP_EXTENT: float = 2500.0
+_LUMEN_FAR_FIELD_MAX_TRACE_DISTANCE: float = 1.0e6
+_LUMEN_FAR_FIELD_DITHER_SCALE: float = 200.0
+_LUMEN_SURFACE_CACHE_ATLAS_SIZE: int = 4096
+_LUMEN_PHYSICAL_PAGE_SIZE: int = 128
+_LUMEN_CARD_TILE_SIZE: int = 8
+
+
+@dataclass
+class LumenSceneConfig:
+    """
+    Mirrors the per-scene Lumen configuration negotiated at renderer
+    initialisation time.
+
+    鲁迅式：这些参数就是旧时的"祖宗成法"——动一个，整个渲染管线都要重来。
+    """
+    global_df_resolution:     int   = _LUMEN_GLOBAL_DF_RESOLUTION
+    clipmap_extent:           float = _LUMEN_GLOBAL_DF_CLIPMAP_EXTENT
+    use_far_field:            bool  = False
+    far_field_occlusion_only: bool  = False
+    far_field_max_trace_dist: float = _LUMEN_FAR_FIELD_MAX_TRACE_DISTANCE
+    far_field_dither_scale:   float = _LUMEN_FAR_FIELD_DITHER_SCALE
+    surface_cache_atlas_size: int   = _LUMEN_SURFACE_CACHE_ATLAS_SIZE
+
+    def near_field_max_trace_distance_dither_scale(self) -> float:
+        return self.far_field_dither_scale if self.use_far_field else 0.0
+
+    def near_field_scene_radius(self, culling_radius: float = float("inf")) -> float:
+        if self.use_far_field and math.isfinite(culling_radius):
+            return culling_radius
+        return float("inf")
+
+
+@dataclass
+class LumenMeshCard:
+    """
+    Lightweight representation of a single Lumen mesh card.
+
+    鲁迅式：一个细胞有六个面，每面都是一张名片，叫做"Card"。
+    名片印满了，光才算打在实处。
+    """
+    card_id:    int
+    center:     tuple = (0.0, 0.0, 0.0)
+    extent:     tuple = (50.0, 50.0, 1.0)
+    is_visible: bool  = True
+    lod_level:  int   = 0
+
+    def world_bounds(self):
+        mn = tuple(c - e for c, e in zip(self.center, self.extent))
+        mx = tuple(c + e for c, e in zip(self.center, self.extent))
+        return mn, mx
+
+
+class LumenScene:
+    """
+    Cell-level analogue of FLumenSceneData.
+
+    鲁迅式：有灯才有影，有卡才有光。Scene 不过是一本花名册，
+    记着谁来过、谁还没走，以及谁的面孔已经模糊。
+    """
+
+    def __init__(self, config=None):
+        self.config        = config or LumenSceneConfig()
+        self._cards        = {}
+        self._next_id      = 0
+        self.view_origin   = (0.0, 0.0, 0.0)
+
+    def add_card(self, center, extent=(50.0, 50.0, 1.0), lod_level=0):
+        cid = self._next_id; self._next_id += 1
+        self._cards[cid] = LumenMeshCard(cid, center, extent, lod_level=lod_level)
+        return cid
+
+    def remove_card(self, card_id):
+        self._cards.pop(card_id, None)
+
+    def visible_cards(self):
+        return [c for c in self._cards.values() if c.is_visible]
+
+    def update_view_origin(self, new_origin):
+        self.view_origin = new_origin
+
+    def global_df_voxel_size(self):
+        return (2.0 * self.config.clipmap_extent) / self.config.global_df_resolution
+
+    def __repr__(self):
+        return (
+            f"LumenScene(cards={len(self._cards)}, "
+            f"origin={self.view_origin}, "
+            f"voxel_size={self.global_df_voxel_size():.2f})"
+        )
+
+
+_DIRECT_LIGHTING_UPDATE_FACTOR  = 32
+_RADIOSITY_UPDATE_FACTOR        = 64
+
+
+@dataclass
+class LumenCardUpdateContext:
+    """
+    Python port of FLumenCardUpdateContext.
+
+    鲁迅式：帝国的税吏每天只收三十二分之一，却称之为"全部"。
+    UpdateFactor 亦如此——分期偿还，从不告诉你总债。
+    """
+    update_atlas_width:  int = 0
+    update_atlas_height: int = 0
+    max_update_tiles:    int = 0
+    update_factor:       int = _DIRECT_LIGHTING_UPDATE_FACTOR
+
+    @classmethod
+    def build(cls, physical_atlas_size, update_factor, force_full_update=False):
+        ctx = cls()
+        ctx.update_factor = max(1, min(update_factor, 1024))
+        if force_full_update:
+            ctx.update_factor = 1
+        mult = 1.0 / math.sqrt(float(ctx.update_factor))
+        pw, ph = physical_atlas_size
+
+        def _rt(v):
+            return math.ceil((v + 0.5) / _LUMEN_CARD_TILE_SIZE) * _LUMEN_CARD_TILE_SIZE
+
+        uw = max(_rt(pw * mult), _LUMEN_PHYSICAL_PAGE_SIZE)
+        uh = max(_rt(ph * mult), _LUMEN_PHYSICAL_PAGE_SIZE)
+        ctx.update_atlas_width  = uw
+        ctx.update_atlas_height = uh
+        ctx.max_update_tiles = (uw // _LUMEN_CARD_TILE_SIZE) * (uh // _LUMEN_CARD_TILE_SIZE)
+        return ctx
+
+    def update_atlas_size(self):
+        return self.update_atlas_width, self.update_atlas_height
+
+
+@dataclass
+class LumenCombineLightingParams:
+    """
+    FLumenCardCombineLightingCS::FParameters — surface-cache combine pass.
+
+    鲁迅式：漫反射、直接光、间接光，最后合成一张贴图——
+    这和旧社会的"总账"没什么区别，每一笔都是别人欠的。
+    """
+    diffuse_color_boost:         float = 1.0
+    albedo_atlas_valid:          bool  = False
+    emissive_atlas_valid:        bool  = False
+    direct_lighting_valid:       bool  = False
+    indirect_lighting_valid:     bool  = False
+    indirect_atlas_half_texel_x: float = 0.5 / 1024
+    indirect_atlas_half_texel_y: float = 0.5 / 1024
+
+    def pack(self):
+        return {
+            "DiffuseColorBoost": self.diffuse_color_boost,
+            "IndirectLightingAtlasHalfTexelSize": (
+                self.indirect_atlas_half_texel_x,
+                self.indirect_atlas_half_texel_y,
+            ),
+        }
+
+
+class LumenSceneLighting:
+    """
+    Drives the per-frame lighting update of a LumenScene.
+
+    鲁迅式：照明从不是一次性的事——每帧都要重算，
+    就像每天都要重新证明自己还活着。
+    """
+
+    def __init__(self, scene, direct_factor=_DIRECT_LIGHTING_UPDATE_FACTOR,
+                 radiosity_factor=_RADIOSITY_UPDATE_FACTOR):
+        self.scene             = scene
+        self.direct_factor     = direct_factor
+        self.radiosity_factor  = radiosity_factor
+        self._frame_index      = 0
+
+    def _atlas(self):
+        s = self.scene.config.surface_cache_atlas_size
+        return (s, s)
+
+    def compute_direct_update_ctx(self, force_full=False):
+        return LumenCardUpdateContext.build(self._atlas(), self.direct_factor, force_full)
+
+    def compute_radiosity_update_ctx(self, force_full=False):
+        return LumenCardUpdateContext.build(self._atlas(), self.radiosity_factor, force_full)
+
+    def tick(self, force_full_update=False):
+        self._frame_index += 1
+        d = self.compute_direct_update_ctx(force_full_update)
+        r = self.compute_radiosity_update_ctx(force_full_update)
+        print(
+            f"[LUMEN-LIGHTING] frame={self._frame_index} "
+            f"direct_tiles={d.max_update_tiles} radiosity_tiles={r.max_update_tiles}",
+            file=sys.stderr,
+        )
+        return d, r
+
+
+class SurfaceCacheCompression(Enum):
+    """
+    ESurfaceCacheCompression.
+
+    鲁迅式：能压缩的都压缩了，剩下的才叫"真实"。
+    Disabled 是诚实，UAVAliasing 是取巧，CopyTextureRegion 是代价最贵的虚伪。
+    """
+    DISABLED            = auto()
+    UAV_ALIASING        = auto()
+    FRAMEBUFFER         = auto()
+    COPY_TEXTURE_REGION = auto()
+
+
+class SurfaceCacheLayer(Enum):
+    DEPTH    = 0
+    ALBEDO   = 1
+    NORMAL   = 2
+    EMISSIVE = 3
+
+
+@dataclass
+class SurfaceLayerConfig:
+    name:             str
+    uncompressed_fmt: str
+    compressed_fmt:   str
+    clear_value:      tuple = (0.0, 0.0, 0.0)
+
+
+_SURFACE_LAYER_CONFIGS = {
+    SurfaceCacheLayer.DEPTH:    SurfaceLayerConfig("Depth",   "PF_G16",            "PF_Unknown", (1.0, 0.0, 0.0)),
+    SurfaceCacheLayer.ALBEDO:   SurfaceLayerConfig("Albedo",  "PF_R8G8B8A8",       "PF_BC7",     (0.0, 0.0, 0.0)),
+    SurfaceCacheLayer.NORMAL:   SurfaceLayerConfig("Normal",  "PF_R8G8",           "PF_BC5",     (0.0, 0.0, 0.0)),
+    SurfaceCacheLayer.EMISSIVE: SurfaceLayerConfig("Emissive","PF_FloatR11G11B10", "PF_BC6H",    (0.0, 0.0, 0.0)),
+}
+
+
+class SurfaceCacheDilationMode(Enum):
+    """
+    r.LumenScene.SurfaceCache.DilationMode.
+
+    鲁迅式：蔓延一个像素，就是"宽容"；蔓延整张图，就是"谎言"。
+    """
+    DISABLED  = 0
+    TWO_SIDED = 1
+    ALL       = 2
+
+
+@dataclass
+class LumenSurfaceCache:
+    """
+    Card atlas allocation and per-frame copy scheduling.
+
+    鲁迅式：表面缓存不是记忆，是遗忘的方式——
+    只记住上一帧照亮过的那几个格子，其余的，下帧再说。
+    """
+    atlas_size:    int                       = _LUMEN_SURFACE_CACHE_ATLAS_SIZE
+    compression:   SurfaceCacheCompression   = SurfaceCacheCompression.DISABLED
+    dilation_mode: SurfaceCacheDilationMode  = SurfaceCacheDilationMode.DISABLED
+    cull_underground: bool                   = False
+    _atlas:        dict                      = field(default_factory=dict)
+
+    def allocate_page(self, page_id):
+        for layer in SurfaceCacheLayer:
+            self._atlas[(layer, page_id)] = list(_SURFACE_LAYER_CONFIGS[layer].clear_value)
+
+    def free_page(self, page_id):
+        for layer in SurfaceCacheLayer:
+            self._atlas.pop((layer, page_id), None)
+
+    def copy_capture_to_atlas(self, page_id, layer, texels):
+        if (layer, page_id) not in self._atlas:
+            self.allocate_page(page_id)
+        data = list(texels)
+        if self.dilation_mode != SurfaceCacheDilationMode.DISABLED and data:
+            data = [data[0]] + data + [data[-1]]
+        self._atlas[(layer, page_id)] = data
+
+    def is_compressed(self):
+        return self.compression != SurfaceCacheCompression.DISABLED
+
+
+_SSBN_DOWNSAMPLE_FACTOR        = 2
+_SSBN_SLICE_COUNT              = 2
+_SSBN_STEPS_PER_SLICE          = 3
+_SSBN_FOLIAGE_OCC_STRENGTH     = 0.7
+_SSBN_MAX_MULTIBOUNCE_ALBEDO   = 0.5
+_SSBN_SLOPE_TOLERANCE          = 0.5
+_SSBN_FOREGROUND_REJECT_FRACTION = 0.3
+
+
+@dataclass
+class ShortRangeAOConfig:
+    """
+    Runtime configuration for the Screen-Space Bent Normal pass.
+
+    鲁迅式：法线弯曲了，光就遮住了；光遮住了，就叫做"环境遮蔽"。
+    名字越高雅，背后的道理越朴素。
+    """
+    use_bent_normal:          bool  = True
+    use_temporal:             bool  = True
+    use_horizon_search:       bool  = True
+    use_hzb:                  bool  = True
+    downsample_factor:        int   = _SSBN_DOWNSAMPLE_FACTOR
+    slice_count:              int   = _SSBN_SLICE_COUNT
+    steps_per_slice:          int   = _SSBN_STEPS_PER_SLICE
+    foliage_occ_strength:     float = _SSBN_FOLIAGE_OCC_STRENGTH
+    max_multibounce_albedo:   float = _SSBN_MAX_MULTIBOUNCE_ALBEDO
+    slope_tolerance:          float = _SSBN_SLOPE_TOLERANCE
+    foreground_reject_frac:   float = _SSBN_FOREGROUND_REJECT_FRACTION
+    apply_during_integration: bool  = False
+    allow_async_compute:      bool  = True
+
+    def texture_format(self):
+        return "PF_R32_UINT" if self.use_bent_normal else "PF_R8"
+
+
+def _horizon_angle(depth_samples, view_z, slice_dir, pixel_pitch,
+                   slope_tolerance=_SSBN_SLOPE_TOLERANCE):
+    max_horizon = -math.pi / 2.0
+    for i, d in enumerate(depth_samples):
+        if d <= 0.0:
+            continue
+        dist = (i + 1) * pixel_pitch
+        angle = math.atan2(view_z - d, dist)
+        if (view_z - d) > view_z * _SSBN_FOREGROUND_REJECT_FRACTION:
+            continue
+        if angle > max_horizon + slope_tolerance * 0.01:
+            max_horizon = angle
+    return max_horizon
+
+
+def compute_bent_normal_ao(depth_buffer, normal_buffer, config=None, pixel_pitch=1.0):
+    """
+    Software reference for the Screen-Space Bent Normal pass.
+
+    鲁迅式：把每个像素的天空扫描一遍，记录哪些方向被堵死——
+    这就是所谓的"弯曲法线"，是对遮蔽的精确统计，而非诗意描述。
+    """
+    if config is None:
+        config = ShortRangeAOConfig()
+    height = len(depth_buffer)
+    width  = len(depth_buffer[0]) if height > 0 else 0
+    result = []
+    for y in range(height):
+        row = []
+        for x in range(width):
+            view_z = depth_buffer[y][x]
+            normal = normal_buffer[y][x]
+            total_occ = 0.0
+            bent = [0.0, 0.0, 0.0]
+            for s in range(config.slice_count):
+                a = math.pi * s / config.slice_count
+                sd = (math.cos(a), math.sin(a))
+                samples = []
+                for step in range(config.steps_per_slice):
+                    sx = x + int(round((step + 1) * sd[0]))
+                    sy = y + int(round((step + 1) * sd[1]))
+                    samples.append(
+                        depth_buffer[sy][sx] if 0 <= sx < width and 0 <= sy < height else 0.0
+                    )
+                h = _horizon_angle(samples, view_z, sd, pixel_pitch, config.slope_tolerance)
+                occ = max(0.0, 1.0 - math.sin(max(h, 0.0)))
+                total_occ += occ
+                u = math.cos(h)
+                bent[0] += sd[0] * u
+                bent[1] += sd[1] * u
+            ao = min(total_occ / max(config.slice_count, 1), config.foliage_occ_strength)
+            alb = min(max(sum(normal) / 3.0, 0.0), config.max_multibounce_albedo)
+            ao  = ao / (1.0 - alb * (1.0 - ao) + 1e-6)
+            ln = math.sqrt(bent[0]**2 + bent[1]**2 + bent[2]**2) + 1e-8
+            row.append((bent[0]/ln, bent[1]/ln, bent[2]/ln, ao))
+        result.append(row)
+    return result
+
+
+_SPF_SPATIAL_PASSES          = 3
+_SPF_DISOCCLUSION_FRAMES     = 4
+_SPF_DISOCCLUSION_FRAC       = 0.4
+_SPF_POSITION_WEIGHT_SCALE   = 1000.0
+_SPF_MAX_RADIANCE_HIT_ANGLE  = 10.0
+_SPF_HISTORY_WEIGHT          = 0.5
+_SPF_HISTORY_DIST_THRESHOLD  = 30.0
+_SPF_MAX_RAY_INTENSITY       = 10.0
+
+
+@dataclass
+class LumenScreenProbe:
+    """
+    A single screen-space probe: world position + radiance octahedron.
+
+    鲁迅式：探针不探人，只探光。
+    探到的光存进历史，历史再决定下一帧要不要信任它。
+    """
+    probe_id:           int
+    screen_pos:         tuple = (0, 0)
+    world_pos:          tuple = (0.0, 0.0, 0.0)
+    scene_depth:        float = 0.0
+    radiance:           list  = field(default_factory=list)
+    history_radiance:   list  = field(default_factory=list)
+    frames_accumulated: int   = 0
+    is_moving:          bool  = False
+
+
+def _spatial_weight(pa, pb, scale=_SPF_POSITION_WEIGHT_SCALE):
+    dx = pa.world_pos[0] - pb.world_pos[0]
+    dy = pa.world_pos[1] - pb.world_pos[1]
+    dz = pa.world_pos[2] - pb.world_pos[2]
+    return math.exp(-(dx*dx + dy*dy + dz*dz) * scale * 1e-6)
+
+
+def composite_traces_with_scatter(probes, max_ray_intensity=_SPF_MAX_RAY_INTENSITY):
+    """
+    FScreenProbeCompositeTracesWithScatterCS — clamp firefly radiance.
+
+    鲁迅式：每条光线都有最大亮度。亮过头的，削掉。
+    现实主义从不允许辉光超标。
+    """
+    for p in probes:
+        if p.radiance:
+            p.radiance = [min(r, max_ray_intensity) for r in p.radiance]
+    return probes
+
+
+def temporally_accumulate_probe_radiance(
+    probes, history_probes,
+    history_weight=_SPF_HISTORY_WEIGHT,
+    dist_threshold=_SPF_HISTORY_DIST_THRESHOLD,
+):
+    """
+    FScreenProbeTemporallyAccumulateTraceRadianceCS.
+
+    鲁迅式：历史是有重量的——但只在距离够近的时候。
+    太远了，就当没发生过，重新开始。
+    """
+    hmap = {p.probe_id: p for p in history_probes}
+    for probe in probes:
+        hist = hmap.get(probe.probe_id)
+        if hist is None or not hist.radiance:
+            probe.frames_accumulated = 1
+            continue
+        dx = probe.world_pos[0] - hist.world_pos[0]
+        dy = probe.world_pos[1] - hist.world_pos[1]
+        dz = probe.world_pos[2] - hist.world_pos[2]
+        if math.sqrt(dx*dx + dy*dy + dz*dz) > dist_threshold:
+            probe.frames_accumulated = 1
+            continue
+        n = min(len(probe.radiance), len(hist.radiance))
+        blended = [
+            probe.radiance[i] * (1.0 - history_weight) + hist.radiance[i] * history_weight
+            for i in range(n)
+        ] + probe.radiance[n:]
+        probe.radiance = probe.history_radiance = blended
+        probe.frames_accumulated = hist.frames_accumulated + 1
+    return probes
+
+
+def spatial_filter_probes(
+    probes,
+    num_passes=_SPF_SPATIAL_PASSES,
+    disocclusion_max_frames=_SPF_DISOCCLUSION_FRAMES,
+    disocclusion_frac=_SPF_DISOCCLUSION_FRAC,
+    position_weight_scale=_SPF_POSITION_WEIGHT_SCALE,
+):
+    """
+    Multi-pass bilateral spatial filter over the probe grid.
+
+    鲁迅式：遮蔽区域的噪声用邻居来弥补，这是所谓"空间滤波"。
+    没有历史的地方，就靠周围的人说话。
+    """
+    for _pass in range(num_passes):
+        updated = []
+        for i, probe in enumerate(probes):
+            if _pass > 0 and probe.frames_accumulated >= disocclusion_max_frames:
+                updated.append(probe)
+                continue
+            w_sum = 1.0
+            accum = list(probe.radiance)
+            for j, other in enumerate(probes):
+                if i == j:
+                    continue
+                w = _spatial_weight(probe, other, position_weight_scale)
+                if w < 1e-4:
+                    continue
+                n = min(len(accum), len(other.radiance))
+                for k in range(n):
+                    accum[k] += other.radiance[k] * w
+                w_sum += w
+            probe.radiance = [v / w_sum for v in accum]
+            updated.append(probe)
+        probes = updated
+    return probes
+
+
+_IS_ENABLED               = True
+_IS_INCOMING_LIGHTING     = True
+_IS_PROBE_RADIANCE_HIST   = True
+_IS_BRDF_OCTAHEDRON_RES   = 8
+_IS_MIN_PDF_TO_TRACE       = 0.1
+_IS_HISTORY_DIST_THRESHOLD = 30.0
+
+
+def _octahedron_dir(u, v):
+    fx = u * 2.0 - 1.0
+    fy = v * 2.0 - 1.0
+    fz = 1.0 - abs(fx) - abs(fy)
+    if fz < 0.0:
+        ox = (1.0 - abs(fy)) * (1.0 if fx >= 0 else -1.0)
+        oy = (1.0 - abs(fx)) * (1.0 if fy >= 0 else -1.0)
+        fx, fy = ox, oy
+    ln = math.sqrt(fx*fx + fy*fy + fz*fz) + 1e-8
+    return (fx/ln, fy/ln, fz/ln)
+
+
+def compute_lighting_pdf(probe, resolution=_IS_BRDF_OCTAHEDRON_RES,
+                          use_history=_IS_PROBE_RADIANCE_HIST, history_weight=0.9):
+    """
+    FScreenProbeComputeLightingProbabilityDensityFunctionCS.
+
+    鲁迅式：上一帧亮的方向，这一帧优先去看。
+    这叫做"重要性采样"，也叫做"走捷径的学问"。
+    """
+    n   = resolution * resolution
+    pdf = [0.0] * n
+    for i in range(n):
+        _, _, fz = _octahedron_dir((i % resolution + 0.5) / resolution,
+                                    (i // resolution + 0.5) / resolution)
+        pdf[i] = max(fz, 0.0)
+    if use_history and probe.history_radiance:
+        hn = min(n, len(probe.history_radiance))
+        for i in range(hn):
+            pdf[i] = pdf[i] * (1.0 - history_weight) + probe.history_radiance[i] * history_weight
+    total = sum(pdf) + 1e-8
+    return [p / total for p in pdf]
+
+
+def generate_importance_sampled_rays(
+    probe,
+    tracing_resolution=_IS_BRDF_OCTAHEDRON_RES,
+    min_pdf=_IS_MIN_PDF_TO_TRACE,
+    use_importance_sampling=_IS_ENABLED,
+):
+    """
+    FScreenProbeGenerateRaysCS — select trace directions via PDF.
+
+    鲁迅式：方向太暗的就不看了，把光阴省下来照有价值的地方。
+    这是渲染的经济学，也是人生的经济学。
+    """
+    if not use_importance_sampling:
+        n = tracing_resolution * tracing_resolution
+        return [
+            _octahedron_dir((i % tracing_resolution + 0.5) / tracing_resolution,
+                             (i // tracing_resolution + 0.5) / tracing_resolution)
+            for i in range(n)
+        ]
+    pdf  = compute_lighting_pdf(probe, tracing_resolution)
+    rays = []
+    for i, p in enumerate(pdf):
+        if p < min_pdf:
+            continue
+        rays.append(_octahedron_dir(
+            (i % tracing_resolution + 0.5) / tracing_resolution,
+            (i // tracing_resolution + 0.5) / tracing_resolution,
+        ))
+    return rays
+
+
+@dataclass
+class LumenFrameOutputs:
+    """Per-frame products of the Lumen pipeline tick."""
+    direct_update_ctx:    LumenCardUpdateContext
+    radiosity_update_ctx: LumenCardUpdateContext
+    combine_params:       LumenCombineLightingParams
+    ao_map:               list
+    filtered_probes:      list
+    probe_rays:           dict
+
+
+def lumen_frame_tick(
+    scene, lighting, surface_cache,
+    depth_buffer, normal_buffer,
+    probes, history_probes,
+    ao_config=None,
+    force_full_update=False,
+    epoch=0,
+):
+    """
+    One full Lumen frame for a cell sub-scene.
+
+    鲁迅式：七个步骤，七道工序。每道都不能省，省了就有瑕疵。
+    但没有人会数清楚，他们只看最终画面是否好看。
+    """
+    scene.update_view_origin((float(epoch), 0.0, 0.0))
+    d_ctx, r_ctx = lighting.tick(force_full_update)
+    combine = LumenCombineLightingParams(
+        diffuse_color_boost     = 1.0,
+        albedo_atlas_valid      = True,
+        emissive_atlas_valid    = True,
+        direct_lighting_valid   = d_ctx.max_update_tiles > 0,
+        indirect_lighting_valid = r_ctx.max_update_tiles > 0,
+    )
+    ao_map  = compute_bent_normal_ao(depth_buffer, normal_buffer, ao_config)
+    probes  = composite_traces_with_scatter(probes)
+    probes  = temporally_accumulate_probe_radiance(probes, history_probes)
+    probes  = spatial_filter_probes(probes)
+    probe_rays = {p.probe_id: generate_importance_sampled_rays(p) for p in probes}
+    return LumenFrameOutputs(
+        direct_update_ctx    = d_ctx,
+        radiosity_update_ctx = r_ctx,
+        combine_params       = combine,
+        ao_map               = ao_map,
+        filtered_probes      = probes,
+        probe_rays           = probe_rays,
+    )
