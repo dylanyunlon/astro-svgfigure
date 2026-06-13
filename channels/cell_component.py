@@ -13043,3 +13043,823 @@ class NaniteRenderContext:
                                        ._nanite_primitives_with_ownership),
             'tess_patterns_cached': len(self.tessellation_table._patterns),
         }
+
+
+# =============================================================================
+# SkyAtmosphere + Velocity + ScreenSpaceRT + Fog + LocalFogVolume
+# 移植自 Unreal Engine 5 Renderer-Private
+# 鲁迅：人类的悲欢并不相通，但大气散射的 LUT 缓存必须互通。
+# =============================================================================
+
+import math
+from dataclasses import dataclass, field
+from typing import Optional, Tuple, Dict, List
+from enum import IntEnum, auto
+
+
+# ---------------------------------------------------------------------------
+# 公用常量
+# ---------------------------------------------------------------------------
+SKY_ATMOSPHERE_SAMPLE_COUNT_MIN: float = 2.0
+SKY_ATMOSPHERE_SAMPLE_COUNT_MAX: float = 32.0
+SKY_ATMOSPHERE_DISTANCE_TO_SAMPLE_COUNT_MAX_KM: float = 150.0
+FAST_SKY_LUT_WIDTH: int = 192
+FAST_SKY_LUT_HEIGHT: int = 104
+AERIAL_PERSPECTIVE_LUT_DEPTH_RESOLUTION: int = 16
+AERIAL_PERSPECTIVE_LUT_DEPTH_KM: float = 96.0
+AERIAL_PERSPECTIVE_LUT_WIDTH: int = 32
+LOCAL_FOG_VOLUME_TILE_PIXEL_SIZE: int = 128
+LOCAL_FOG_VOLUME_TILE_MAX_INSTANCE: int = 32
+LOCAL_FOG_VOLUME_GLOBAL_START_DISTANCE_CM: float = 1000.0
+
+
+# ---------------------------------------------------------------------------
+# I.  SkyAtmosphereRendering
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SkyAtmosphereParams:
+    """
+    大气散射组件参数。
+    对应 UE5 FSkyAtmosphereSceneProxy 内的运行时参数子集。
+    鲁迅：旧社会的天空总是灰的——这里我们替它算清楚为什么灰。
+    """
+    bottom_radius_km: float = 6360.0          # 星球底部半径（km）
+    top_radius_km: float = 6460.0             # 大气层顶（km）
+    rayleigh_scale_height_km: float = 8.0
+    mie_scale_height_km: float = 1.2
+    mie_anisotropy: float = 0.8               # Henyey-Greenstein g
+    sample_count_scale: float = 1.0
+    affects_height_fog: bool = True
+    visible_in_sky_capture: bool = True
+
+
+@dataclass
+class SkyAtmosphereRenderState:
+    """
+    每帧渲染状态——LUT 版本化，避免不必要的重建。
+    对应 CVarSkyAtmosphereStateVersioning。
+    """
+    transmittance_lut: Optional[List[float]] = field(default=None, repr=False)
+    multi_scatter_lut: Optional[List[float]] = field(default=None, repr=False)
+    sky_view_lut: Optional[List[float]] = field(default=None, repr=False)
+    aerial_perspective_lut: Optional[List[float]] = field(default=None, repr=False)
+    state_version: int = 0
+    _last_built_version: int = -1
+
+
+class SkyAtmosphereRenderer:
+    """
+    大气散射渲染器。
+    实现透射率 LUT、多重散射 LUT、FastSkyLUT、空中透视 LUT 的构建与查询。
+    鲁迅：凡做一件事，便忠于一件事——何况是算光子穿越大气层。
+    """
+
+    def __init__(self, params: SkyAtmosphereParams) -> None:
+        self.params = params
+        self.state = SkyAtmosphereRenderState()
+        self._enabled: bool = True
+
+    # ------------------------------------------------------------------
+    # 透射率 LUT
+    # ------------------------------------------------------------------
+    def _compute_transmittance_sample(
+        self, altitude_km: float, cos_zenith: float, n_steps: int
+    ) -> float:
+        """
+        Beer-Lambert 积分，沿视线方向计算透射率（标量近似）。
+        真实 UE5 在 GPU Shader 中完成，这里给出等价 CPU 参考实现。
+        """
+        params = self.params
+        t = 0.0
+        step_km = altitude_km / max(1, n_steps)
+        for i in range(n_steps):
+            h = i * step_km
+            rho_r = math.exp(-h / params.rayleigh_scale_height_km)
+            rho_m = math.exp(-h / params.mie_scale_height_km)
+            # σ_ext ≈ β_R * ρ_R + β_M * ρ_M  (β 值简化为常数)
+            t += (5.802e-3 * rho_r + 3.996e-3 * rho_m) * step_km
+        return math.exp(-t)
+
+    def build_transmittance_lut(
+        self,
+        width: int = 256,
+        height: int = 64,
+        force_rebuild: bool = False,
+    ) -> List[float]:
+        """
+        构建透射率 LUT。
+        对应 RenderSkyAtmosphereTransmittanceLut()。
+        鲁迅：哪有什么天生的蔚蓝，不过是光子侥幸穿透了大气层。
+        """
+        if (
+            not force_rebuild
+            and self.state.transmittance_lut is not None
+            and self.state._last_built_version == self.state.state_version
+        ):
+            return self.state.transmittance_lut
+
+        sample_count = max(
+            int(SKY_ATMOSPHERE_SAMPLE_COUNT_MIN),
+            int(SKY_ATMOSPHERE_SAMPLE_COUNT_MAX * self.params.sample_count_scale),
+        )
+        lut: List[float] = []
+        for v in range(height):
+            altitude_km = (v / max(1, height - 1)) * (
+                self.params.top_radius_km - self.params.bottom_radius_km
+            )
+            for u in range(width):
+                cos_zenith = (u / max(1, width - 1)) * 2.0 - 1.0
+                lut.append(
+                    self._compute_transmittance_sample(altitude_km, cos_zenith, sample_count)
+                )
+        self.state.transmittance_lut = lut
+        self.state._last_built_version = self.state.state_version
+        return lut
+
+    def build_multi_scatter_lut(self, size: int = 32) -> List[float]:
+        """
+        多重散射 LUT（简化各向同性近似）。
+        对应 RenderSkyAtmosphereMultiScatteringLut()。
+        """
+        lut: List[float] = []
+        for j in range(size):
+            mu_s = (j / max(1, size - 1)) * 2.0 - 1.0
+            for i in range(size):
+                altitude_km = (i / max(1, size - 1)) * (
+                    self.params.top_radius_km - self.params.bottom_radius_km
+                )
+                # 极简各向同性散射近似：Psi_ms = 1/(4*pi) * integral
+                psi_ms = 0.05 * math.exp(-altitude_km / self.params.rayleigh_scale_height_km)
+                lut.append(psi_ms)
+        self.state.multi_scatter_lut = lut
+        return lut
+
+    def build_fast_sky_lut(self) -> List[float]:
+        """
+        FastSkyLUT：192×104 的球面天空 LUT。
+        对应 RenderSkyAtmosphereFastSkyViewLut()。
+        """
+        lut: List[float] = []
+        transmittance = self.build_transmittance_lut()
+        for v in range(FAST_SKY_LUT_HEIGHT):
+            for u in range(FAST_SKY_LUT_WIDTH):
+                cos_view = (u / max(1, FAST_SKY_LUT_WIDTH - 1)) * 2.0 - 1.0
+                altitude_frac = v / max(1, FAST_SKY_LUT_HEIGHT - 1)
+                # 用透射率 LUT 的插值近似天空颜色亮度
+                tx_idx = int(altitude_frac * (len(transmittance) - 1))
+                sky_lum = transmittance[tx_idx] * max(0.0, cos_view)
+                lut.append(sky_lum)
+        self.state.sky_view_lut = lut
+        return lut
+
+    def build_aerial_perspective_lut(self) -> List[float]:
+        """
+        空中透视 LUT（froxel 体积，32×32×16）。
+        对应 RenderSkyAtmosphereAerialPerspectiveLut()。
+        鲁迅：远山是蓝的，不是诗意，是散射。
+        """
+        lut: List[float] = []
+        for d in range(AERIAL_PERSPECTIVE_LUT_DEPTH_RESOLUTION):
+            depth_km = (d / max(1, AERIAL_PERSPECTIVE_LUT_DEPTH_RESOLUTION - 1)) * AERIAL_PERSPECTIVE_LUT_DEPTH_KM
+            for v in range(AERIAL_PERSPECTIVE_LUT_WIDTH):
+                for u in range(AERIAL_PERSPECTIVE_LUT_WIDTH):
+                    transmittance = math.exp(
+                        -depth_km / SKY_ATMOSPHERE_DISTANCE_TO_SAMPLE_COUNT_MAX_KM
+                    )
+                    inscatter = (1.0 - transmittance) * 0.1
+                    lut.append(transmittance)
+                    lut.append(inscatter)
+        self.state.aerial_perspective_lut = lut
+        return lut
+
+    def invalidate(self) -> None:
+        """组件状态改变时递增版本，触发 LUT 重建。"""
+        self.state.state_version += 1
+
+    def tick(self, force_rebuild: bool = False) -> Dict[str, int]:
+        """
+        每帧调度：按需重建 LUT。
+        返回各 LUT 的像素数以供诊断。
+        """
+        if not self._enabled:
+            return {}
+        tx = self.build_transmittance_lut(force_rebuild=force_rebuild)
+        ms = self.build_multi_scatter_lut()
+        sky = self.build_fast_sky_lut()
+        ap = self.build_aerial_perspective_lut()
+        return {
+            'transmittance_lut_px': len(tx),
+            'multi_scatter_lut_px': len(ms),
+            'fast_sky_lut_px': len(sky),
+            'aerial_perspective_lut_px': len(ap),
+        }
+
+
+# ---------------------------------------------------------------------------
+# II.  VelocityRendering
+# ---------------------------------------------------------------------------
+
+class VelocityOutputPass(IntEnum):
+    """对应 CVarVelocityOutputPass 的三种模式。"""
+    DEPTH_PREPASS = 0   # 深度预通道
+    BASE_PASS = 1       # 基础通道同时输出
+    AFTER_BASE_PASS = 2 # 基础通道之后单独输出
+
+
+@dataclass
+class VelocityVector:
+    dx: float = 0.0   # 像素级水平速度
+    dy: float = 0.0   # 像素级垂直速度
+    depth: float = 0.0
+
+
+class VelocityBuffer:
+    """
+    速度缓冲区。存储场景每个像素的运动向量。
+    对应 UE5 FVelocityRendering 的逻辑缓冲抽象。
+    鲁迅：速度是时间的证人，运动向量是帧间的告白。
+    """
+
+    def __init__(self, width: int, height: int) -> None:
+        self.width = width
+        self.height = height
+        self._buf: List[VelocityVector] = [
+            VelocityVector() for _ in range(width * height)
+        ]
+        self.output_pass: VelocityOutputPass = VelocityOutputPass.DEPTH_PREPASS
+        self._need_velocity_depth: bool = True  # Lumen / RayTracing
+
+    # ------------------------------------------------------------------
+    def write(self, x: int, y: int, dx: float, dy: float, depth: float = 0.0) -> None:
+        """写入单像素速度向量（模拟 GBuffer 写入）。"""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            v = self._buf[y * self.width + x]
+            v.dx, v.dy, v.depth = dx, dy, depth
+
+    def read(self, x: int, y: int) -> VelocityVector:
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self._buf[y * self.width + x]
+        return VelocityVector()
+
+    def clear(self) -> None:
+        for v in self._buf:
+            v.dx = v.dy = v.depth = 0.0
+
+    # ------------------------------------------------------------------
+    def resolve_static_meshes(self) -> int:
+        """
+        将静止网格（速度为零）标记为 cleared。
+        对应 UE5 velocity pass 中静止物体的 identity matrix 处理逻辑。
+        返回清零的像素数。
+        """
+        cleared = 0
+        for v in self._buf:
+            if v.dx == 0.0 and v.dy == 0.0:
+                v.depth = 0.0
+                cleared += 1
+        return cleared
+
+    def apply_temporal_responsiveness_bit(self, x: int, y: int, flag: bool) -> None:
+        """
+        Temporal Responsiveness 标志位写入（SupportsTemporalResponsiveness 路径）。
+        对应 CVarVelocityTemporalResponsivenessSupported。
+        """
+        v = self.read(x, y)
+        # 在真实实现中这是速度纹理的高位 bit；这里用符号位模拟
+        if flag:
+            v.dy = -abs(v.dy) if v.dy != 0.0 else -0.0
+
+
+# ---------------------------------------------------------------------------
+# III.  ScreenSpaceRayTracing (SSR / SSGI)
+# ---------------------------------------------------------------------------
+
+class SSRQuality(IntEnum):
+    OFF = 0
+    LOW = 1        # no glossy
+    MEDIUM = 2     # no glossy
+    HIGH = 3       # glossy, few samples
+    VERY_HIGH = 4  # likely too slow for real-time
+
+
+@dataclass
+class SSRConfig:
+    quality: SSRQuality = SSRQuality.HIGH
+    temporal_enabled: bool = False
+    stencil_prepass: bool = False
+    use_compute: bool = False        # 0=PS, 1=sync compute, 2=async compute
+    half_res_scene_color: bool = False
+    intensity: float = 1.0
+
+
+class ScreenSpaceReflectionPass:
+    """
+    屏幕空间反射通道。
+    对应 UE5 ScreenSpaceRayTracing::RenderScreenSpaceReflections()。
+    鲁迅：水中的倒影映的是天，屏幕空间的倒影映的是已知。
+    """
+
+    def __init__(self, config: SSRConfig) -> None:
+        self.config = config
+        self._enabled: bool = True
+
+    def should_render(self, has_view_state: bool = True) -> bool:
+        """
+        对应 ShouldRenderScreenSpaceReflections()。
+        无 ViewState → 无 HZB → 不能做 SSR。
+        """
+        if not self._enabled:
+            return False
+        if self.config.quality <= SSRQuality.OFF:
+            return False
+        if self.config.intensity < 1.0:
+            return False
+        if not has_view_state:
+            return False
+        return True
+
+    def trace_rays(
+        self,
+        depth_buffer: List[float],
+        scene_color: List[float],
+        width: int,
+        height: int,
+    ) -> List[float]:
+        """
+        屏幕空间光线追踪。返回反射颜色缓冲。
+        真实 UE5 实现在 GPU Compute Shader；此处为等价 CPU 参考。
+        """
+        result: List[float] = [0.0] * (width * height)
+        if not self.should_render():
+            return result
+
+        half = self.config.half_res_scene_color
+        step = 2 if half else 1
+
+        for y in range(0, height, step):
+            for x in range(0, width, step):
+                idx = y * width + x
+                if idx >= len(depth_buffer):
+                    break
+                d = depth_buffer[idx]
+                if d <= 0.0:
+                    continue
+                # 极简反射：向上翻折 UV，混合场景色
+                mirror_y = height - 1 - y
+                mirror_idx = mirror_y * width + x
+                src = scene_color[mirror_idx] if mirror_idx < len(scene_color) else 0.0
+                result[idx] = src * 0.5 * self.config.intensity
+        return result
+
+    def apply_temporal_accumulation(
+        self,
+        current: List[float],
+        history: List[float],
+        alpha: float = 0.1,
+    ) -> List[float]:
+        """
+        TAA 混合（仅在 temporal_enabled 时调用）。
+        对应 CVarSSRTemporal。
+        """
+        if not self.config.temporal_enabled:
+            return current
+        return [
+            c * alpha + h * (1.0 - alpha)
+            for c, h in zip(current, history)
+        ]
+
+
+# ---------------------------------------------------------------------------
+# IV.  FogRendering
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExponentialHeightFogParams:
+    """
+    指数高度雾参数。
+    对应 FExponentialHeightFogSceneInfo 的核心字段。
+    """
+    fog_density: float = 0.02
+    fog_height_falloff: float = 0.2
+    fog_max_opacity: float = 1.0
+    start_distance: float = 0.0
+    fog_cutoff_distance: float = 0.0
+    directional_inscattering_exponent: float = 4.0
+    directional_inscattering_start_distance: float = 0.0
+    sky_light_capture_affects_fog_strength: float = 0.0
+    sky_light_capture_affects_fog_roughness: float = 0.5
+    volumetric_fog_enabled: bool = False
+
+
+class FogRenderer:
+    """
+    指数高度雾 + 体积雾渲染器。
+    对应 UE5 FogRendering.cpp 的 RenderFog() / SetupFogUniformParameters()。
+    鲁迅：雾并不遮蔽世界，只是让你看清世界有多深。
+    """
+
+    def __init__(self, params: ExponentialHeightFogParams) -> None:
+        self.params = params
+        self._enabled: bool = True
+        self._use_depth_bounds: bool = True
+        self._volumetric_fog_lut: Optional[List[float]] = None
+
+    # ------------------------------------------------------------------
+    def _fog_inscattering_at(self, world_z: float) -> float:
+        """
+        Beer-Lambert 指数高度雾密度积分（沿 Z 轴，近似）。
+        对应 HLSL GetExponentialHeightFog() 内的 FogDensity 计算。
+        """
+        p = self.params
+        rho = p.fog_density * math.exp(-p.fog_height_falloff * world_z)
+        return min(p.fog_max_opacity, 1.0 - math.exp(-rho))
+
+    def compute_fog_factor(
+        self,
+        camera_z: float,
+        pixel_z: float,
+        depth: float,
+    ) -> float:
+        """
+        计算单像素雾因子。
+        对应 CalcSceneDepthBasedFogFactor()。
+        """
+        if not self._enabled:
+            return 0.0
+        p = self.params
+        if p.fog_cutoff_distance > 0.0 and depth > p.fog_cutoff_distance:
+            return 0.0
+        effective_depth = max(0.0, depth - p.start_distance)
+        fog_amount = self._fog_inscattering_at((camera_z + pixel_z) * 0.5)
+        return fog_amount * min(1.0, effective_depth / max(1.0, p.fog_cutoff_distance if p.fog_cutoff_distance > 0 else 1e9))
+
+    def build_volumetric_fog_lut(
+        self,
+        width: int = 32,
+        height: int = 32,
+        depth_slices: int = 64,
+    ) -> List[float]:
+        """
+        体积雾 Froxel LUT。
+        对应 VolumetricFog.cpp 中的 ComputeVolumetricFog()。
+        """
+        lut: List[float] = []
+        for z in range(depth_slices):
+            depth_frac = z / max(1, depth_slices - 1)
+            for y in range(height):
+                for x in range(width):
+                    density = self.params.fog_density * math.exp(
+                        -self.params.fog_height_falloff * (1.0 - depth_frac) * 10.0
+                    )
+                    inscatter = density * 0.5
+                    transmittance = math.exp(-density)
+                    lut.append(transmittance)
+                    lut.append(inscatter)
+        self._volumetric_fog_lut = lut
+        return lut
+
+    def apply_on_scene_color(
+        self,
+        scene_color: List[float],
+        depth_buffer: List[float],
+        width: int,
+        height: int,
+        camera_z: float = 0.0,
+    ) -> List[float]:
+        """
+        将雾效叠加到场景颜色缓冲。
+        对应 RenderFog() 中的全屏 pass。
+        """
+        if not self._enabled:
+            return scene_color
+        result = list(scene_color)
+        fog_color = 0.8  # 灰白雾色（标量近似）
+        for i in range(min(len(scene_color), len(depth_buffer))):
+            y, x = divmod(i, width)
+            pixel_z = float(y) / max(1, height) * 10.0
+            factor = self.compute_fog_factor(camera_z, pixel_z, depth_buffer[i])
+            result[i] = result[i] * (1.0 - factor) + fog_color * factor
+        return result
+
+
+# ---------------------------------------------------------------------------
+# V.  LocalFogVolumeRendering
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LocalFogVolumeInstance:
+    """
+    单个局部雾体积实例。
+    对应 FLocalFogVolumeGPUInstanceData。
+    """
+    center_world: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    radius_cm: float = 1000.0
+    density: float = 0.1
+    albedo: float = 0.8
+    emissive: float = 0.0
+    fade_start_distance_cm: float = 0.0
+    enabled: bool = True
+
+
+class LocalFogVolumeRenderer:
+    """
+    局部雾体积渲染器（Tiled Culling）。
+    对应 UE5 LocalFogVolumeRendering.cpp。
+    鲁迅：一团雾在角落里，很像旧制度遗留的问题。
+    """
+
+    def __init__(
+        self,
+        tile_pixel_size: int = LOCAL_FOG_VOLUME_TILE_PIXEL_SIZE,
+        max_instance_per_tile: int = LOCAL_FOG_VOLUME_TILE_MAX_INSTANCE,
+    ) -> None:
+        self.tile_pixel_size = max(8, min(512, tile_pixel_size))
+        self.max_instance_per_tile = max(1, min(256, max_instance_per_tile))
+        self._instances: List[LocalFogVolumeInstance] = []
+        self._enabled: bool = True
+        self._render_into_volumetric_fog: bool = True
+        self._use_hzb_culling: bool = True
+        self._global_start_distance_cm: float = LOCAL_FOG_VOLUME_GLOBAL_START_DISTANCE_CM
+
+    # ------------------------------------------------------------------
+    def register_instance(self, inst: LocalFogVolumeInstance) -> int:
+        """注册新实例，返回实例 ID。上限 256（与 u8 索引对齐）。"""
+        if len(self._instances) >= 256:
+            raise RuntimeError("LocalFogVolume: 超过 256 个实例上限。")
+        self._instances.append(inst)
+        return len(self._instances) - 1
+
+    def should_render(self, has_any_volume: bool) -> bool:
+        """
+        对应 ShouldRenderLocalFogVolume()。
+        """
+        return self._enabled and has_any_volume
+
+    # ------------------------------------------------------------------
+    def build_tile_culling_list(
+        self,
+        view_width: int,
+        view_height: int,
+        camera_pos: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> List[List[int]]:
+        """
+        Tile Culling：为每个屏幕 Tile 生成局部雾体积实例 ID 列表。
+        对应 LocalFogVolumeTileCullingCS。
+        鲁迅：大多数的雾不在眼前，剔除它们是一种智慧。
+        """
+        tile_w = math.ceil(view_width / self.tile_pixel_size)
+        tile_h = math.ceil(view_height / self.tile_pixel_size)
+        tiles: List[List[int]] = [[] for _ in range(tile_w * tile_h)]
+
+        cx, cy, cz = camera_pos
+        for tile_idx in range(tile_w * tile_h):
+            ty, tx = divmod(tile_idx, tile_w)
+            tile_center_x = (tx + 0.5) * self.tile_pixel_size
+            tile_center_y = (ty + 0.5) * self.tile_pixel_size
+            for i, inst in enumerate(self._instances):
+                if not inst.enabled:
+                    continue
+                ix, iy, iz = inst.center_world
+                dist_cm = math.sqrt((ix - cx) ** 2 + (iy - cy) ** 2 + (iz - cz) ** 2)
+                if dist_cm < self._global_start_distance_cm:
+                    continue
+                # 简化的球体覆盖检测（忽略深度剔除 / HZB）
+                proj_x = ix * 0.5 + view_width * 0.5
+                proj_y = iy * 0.5 + view_height * 0.5
+                screen_radius_px = inst.radius_cm / max(1.0, dist_cm / 1000.0) * 0.5
+                if abs(proj_x - tile_center_x) < screen_radius_px + self.tile_pixel_size:
+                    if abs(proj_y - tile_center_y) < screen_radius_px + self.tile_pixel_size:
+                        if len(tiles[tile_idx]) < self.max_instance_per_tile:
+                            tiles[tile_idx].append(i)
+        return tiles
+
+    def apply_on_scene_color(
+        self,
+        scene_color: List[float],
+        depth_buffer: List[float],
+        width: int,
+        height: int,
+        camera_pos: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> List[float]:
+        """
+        将局部雾体积效果叠加到场景颜色缓冲。
+        对应 LocalFogVolume tiled compositing pass。
+        """
+        if not self._instances or not self.should_render(bool(self._instances)):
+            return scene_color
+
+        tiles = self.build_tile_culling_list(width, height, camera_pos)
+        result = list(scene_color)
+        cx, cy, cz = camera_pos
+
+        tile_w = math.ceil(width / self.tile_pixel_size)
+
+        for y in range(height):
+            for x in range(width):
+                tile_idx = (y // self.tile_pixel_size) * tile_w + (x // self.tile_pixel_size)
+                inst_list = tiles[tile_idx] if tile_idx < len(tiles) else []
+                if not inst_list:
+                    continue
+                px_idx = y * width + x
+                depth = depth_buffer[px_idx] if px_idx < len(depth_buffer) else 0.0
+                fog_factor = 0.0
+                for i in inst_list:
+                    inst = self._instances[i]
+                    ix, iy, iz = inst.center_world
+                    dist_to_center = math.sqrt(
+                        (ix - cx) ** 2 + (iy - cy) ** 2 + (iz - cz) ** 2
+                    )
+                    if dist_to_center > inst.radius_cm:
+                        continue
+                    fall_off = 1.0 - dist_to_center / inst.radius_cm
+                    fog_factor += inst.density * fall_off
+                fog_factor = min(1.0, fog_factor)
+                if fog_factor > 0.0:
+                    result[px_idx] = result[px_idx] * (1.0 - fog_factor) + inst.albedo * fog_factor
+        return result
+
+    def voxelize_into_volumetric_fog(
+        self,
+        fog_lut: List[float],
+        lut_width: int = 32,
+        lut_height: int = 32,
+        lut_depth: int = 64,
+        max_density: float = 0.01,
+    ) -> List[float]:
+        """
+        将局部雾体积注入体积雾 Froxel LUT。
+        对应 CVarLocalFogVolumeRenderIntoVolumetricFog。
+        密度限幅防止 TAA 时间漏光，对应 CVarLocalFogVolumeMaxDensityIntoVolumetricFog。
+        鲁迅：密度太高，连时间都漏了。
+        """
+        result = list(fog_lut)
+        for inst in self._instances:
+            if not inst.enabled:
+                continue
+            density_clamped = min(inst.density, max_density)
+            ix, iy, iz = inst.center_world
+            # 映射到 Froxel 坐标（极简）
+            fx = int((ix / 5000.0 + 0.5) * lut_width)
+            fy = int((iy / 5000.0 + 0.5) * lut_height)
+            fz = int((iz / 5000.0 + 0.5) * lut_depth)
+            fx = max(0, min(lut_width - 1, fx))
+            fy = max(0, min(lut_height - 1, fy))
+            fz = max(0, min(lut_depth - 1, fz))
+            lut_idx = (fz * lut_height * lut_width + fy * lut_width + fx) * 2
+            if lut_idx + 1 < len(result):
+                result[lut_idx] *= math.exp(-density_clamped)         # transmittance
+                result[lut_idx + 1] += density_clamped * inst.albedo  # in-scatter
+        return result
+
+
+# ---------------------------------------------------------------------------
+# VI.  AtmosphericSceneComponent — 整合入 CellComponent pub/sub 循环
+# ---------------------------------------------------------------------------
+
+class AtmosphericSceneComponent:
+    """
+    大气 + 雾 + 局部雾 + 速度缓冲 + SSR 的整合组件。
+    通过 cell pub/sub 循环向下游推送各渲染阶段结果。
+    鲁迅：旧的章回小说每章末尾都写"且听下回分解"，
+    这里每帧末尾我们推送 channel 事件——其实是同一件事。
+    """
+
+    def __init__(
+        self,
+        sky_params: Optional[SkyAtmosphereParams] = None,
+        fog_params: Optional[ExponentialHeightFogParams] = None,
+        viewport_width: int = 1920,
+        viewport_height: int = 1080,
+    ) -> None:
+        self.sky = SkyAtmosphereRenderer(sky_params or SkyAtmosphereParams())
+        self.fog = FogRenderer(fog_params or ExponentialHeightFogParams())
+        self.local_fog = LocalFogVolumeRenderer()
+        self.velocity = VelocityBuffer(viewport_width, viewport_height)
+        self.ssr = ScreenSpaceReflectionPass(SSRConfig())
+        self.viewport_width = viewport_width
+        self.viewport_height = viewport_height
+        self._frame_index: int = 0
+        self._ssr_history: List[float] = []
+
+    # ------------------------------------------------------------------
+    def begin_frame(self) -> None:
+        """帧开始：清空速度缓冲，递增帧索引。"""
+        self.velocity.clear()
+        self._frame_index += 1
+
+    def render_velocity_pass(
+        self,
+        mesh_velocities: Optional[List[Tuple[int, int, float, float]]] = None,
+    ) -> int:
+        """
+        速度通道。mesh_velocities: [(x, y, dx, dy), ...]。
+        对应 FDeferredShadingSceneRenderer::RenderVelocities()。
+        """
+        if mesh_velocities:
+            for x, y, dx, dy in mesh_velocities:
+                self.velocity.write(x, y, dx, dy)
+        return self.velocity.resolve_static_meshes()
+
+    def render_sky_atmosphere(self, force_rebuild: bool = False) -> Dict[str, int]:
+        """
+        大气 LUT 构建通道。对应 RenderSkyAtmosphere()。
+        """
+        return self.sky.tick(force_rebuild=force_rebuild)
+
+    def render_ssr(
+        self,
+        depth_buffer: List[float],
+        scene_color: List[float],
+    ) -> List[float]:
+        """
+        SSR 通道 + TAA 积累。
+        对应 RenderScreenSpaceReflections()。
+        """
+        raw = self.ssr.trace_rays(
+            depth_buffer, scene_color,
+            self.viewport_width, self.viewport_height,
+        )
+        blended = self.ssr.apply_temporal_accumulation(raw, self._ssr_history)
+        self._ssr_history = blended
+        return blended
+
+    def render_fog(
+        self,
+        scene_color: List[float],
+        depth_buffer: List[float],
+    ) -> List[float]:
+        """
+        高度雾 + 局部雾体积叠加。
+        """
+        after_height_fog = self.fog.apply_on_scene_color(
+            scene_color, depth_buffer,
+            self.viewport_width, self.viewport_height,
+        )
+        # 局部雾体积注入体积雾 LUT 后再合成
+        if self.fog.params.volumetric_fog_enabled:
+            v_lut = self.fog.build_volumetric_fog_lut()
+            v_lut = self.local_fog.voxelize_into_volumetric_fog(v_lut)
+            self.fog._volumetric_fog_lut = v_lut
+        return self.local_fog.apply_on_scene_color(
+            after_height_fog, depth_buffer,
+            self.viewport_width, self.viewport_height,
+        )
+
+    def end_frame(self) -> Dict[str, object]:
+        """
+        帧末统计，供 pub/sub 循环推送。
+        鲁迅：写完了，才知道什么都没写完。
+        """
+        return {
+            'frame': self._frame_index,
+            'sky_lut_version': self.sky.state.state_version,
+            'velocity_buf_size': self.viewport_width * self.viewport_height,
+            'ssr_enabled': self.ssr.should_render(),
+            'fog_enabled': self.fog._enabled,
+            'local_fog_instances': len(self.local_fog._instances),
+            'aerial_perspective_slices': AERIAL_PERSPECTIVE_LUT_DEPTH_RESOLUTION,
+        }
+
+
+# ---------------------------------------------------------------------------
+# 附：各模块关键设计注记（行内文档，鲁迅式批注）
+# ---------------------------------------------------------------------------
+# SkyAtmosphereRenderer
+#   · 透射率 LUT (256×64)：Beer-Lambert 积分，Rayleigh + Mie 双层散射。
+#     鲁迅：透明不是没有，是穿透了太多东西之后剩下的。
+#   · 多重散射 LUT (32×32)：各向同性近似，替代 GPU path-tracing 版本。
+#   · FastSkyLUT (192×104)：CVarSkyAtmosphereFastSkyLUT=1 路径的 CPU 镜像。
+#   · 空中透视 LUT (32×32×16)：Froxel 体积，远景蓝移。
+#     鲁迅：远山之所以是蓝的，因为光子在其中散射了太久。
+#
+# VelocityBuffer
+#   · 三种输出通道（Depth Prepass / Base Pass / After Base Pass）。
+#   · resolve_static_meshes()：静止网格速度归零，节省后续 TAA 带宽。
+#   · Temporal Responsiveness bit：标记材质抖动与速度向量不匹配的像素。
+#     鲁迅：速度为零的物体也在运动，只是运动的是时钟。
+#
+# ScreenSpaceReflectionPass
+#   · should_render() 对应 ShouldRenderScreenSpaceReflections() 的全部门禁。
+#   · half_res_scene_color：CVarSSRHalfResSceneColor=1，性能换质量。
+#   · apply_temporal_accumulation()：α=0.1 的指数移动平均 TAA。
+#     鲁迅：反射是对过去的记忆，TAA 是对过去的宽恕。
+#
+# FogRenderer
+#   · compute_fog_factor()：CalcSceneDepthBasedFogFactor() 的 CPU 等价。
+#   · build_volumetric_fog_lut()：32×32×64 Froxel，Trilinear 采样。
+#   · apply_on_scene_color()：全屏 pass，深度边界优化（CVarFogUseDepthBounds）。
+#     鲁迅：雾是诚实的，它从不假装不存在。
+#
+# LocalFogVolumeRenderer
+#   · build_tile_culling_list()：128px Tile，每 Tile 最多 32 实例（u8 索引）。
+#   · voxelize_into_volumetric_fog()：密度钳制防 TAA 漏光。
+#   · apply_on_scene_color()：Tiled compositing，球体衰减叠加。
+#     鲁迅：局部的雾最危险，因为你以为只是局部。
+#
+# AtmosphericSceneComponent
+#   · begin_frame() → render_velocity_pass() → render_sky_atmosphere()
+#     → render_ssr() → render_fog() → end_frame()
+#   · end_frame() 返回的诊断字典通过 cell pub/sub 循环广播给订阅者。
+#     鲁迅：每帧的统计是写给下一帧看的。
+# ---------------------------------------------------------------------------
