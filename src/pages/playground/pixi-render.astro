@@ -1,0 +1,364 @@
+---
+/**
+ * /playground/pixi-render — PixiJS WebGL Cell Renderer
+ *
+ * Reads all 7 cell params.json files at build time, inlines them as JSON,
+ * then mounts CellRenderer.tsx client-side to draw each cell with WebGL.
+ *
+ * No SVG. GPU renders everything via PixiJS Graphics + local upstream.
+ * Species-specific shapes driven entirely by species_params.
+ *
+ * Active Theory Hydra engine approach:
+ *   - cil-eye        → radial spokes + concentric rings + pupil
+ *   - cil-bolt       → zigzag lightning (zigzag_count, amplitude, seg_width)
+ *   - cil-vector     → fanned parallel arrows (arrow_count, arrow_length, angle_spread)
+ *   - cil-plus       → dashed cross arms (arm_length, stroke_width, dash_corners)
+ *   - cil-arrow-right → filled chevron (arrow_width, arrow_height)
+ *
+ * 小弟 #12 作品 — xiaodi
+ */
+export const prerender = false
+
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import GenerateLayout from '@/layouts/GenerateLayout.astro'
+
+// ── Load all params.json at server render time ────────────────────────────────
+const cellIds = ['add_norm1', 'add_norm2', 'ffn', 'input_embed', 'output', 'pos_encode', 'self_attn']
+const cells = cellIds.map(id => {
+  const raw = readFileSync(join(process.cwd(), 'channels/cell', id, 'params.json'), 'utf8')
+  return JSON.parse(raw)
+})
+
+// Sorted by z for display in the sidebar legend
+const cellsJson = JSON.stringify(cells)
+
+// Species colour accent for legend badges
+const SPECIES_ACCENT: Record<string, string> = {
+  'cil-eye':         '#7986CB',
+  'cil-bolt':        '#FFB74D',
+  'cil-vector':      '#81C784',
+  'cil-plus':        '#64B5F6',
+  'cil-arrow-right': '#90A4AE',
+}
+---
+
+<GenerateLayout
+  meta={{ title: 'PixiJS Cell Renderer · Playground', description: 'WebGL rendering of transformer cell params.json — xiaodi #12' }}
+  highlightColor='#3F51B5'
+>
+  <div class='pixi-render-page'>
+
+    {/* ── Header ── */}
+    <header class='pr-header'>
+      <div class='pr-header-inner'>
+        <div class='pr-title-group'>
+          <span class='pr-badge'>WebGL</span>
+          <h1 class='pr-title'>PixiJS Cell Renderer</h1>
+          <span class='pr-sub'>params.json → GPU draw calls — epoch {cells[0]?.epoch ?? '?'}</span>
+        </div>
+        <div class='pr-actions'>
+          <button id='pr-btn-fit'   class='pr-btn' title='Fit to canvas'>Fit</button>
+          <button id='pr-btn-reset' class='pr-btn pr-btn-outline' title='Re-mount renderer'>Re-render</button>
+        </div>
+      </div>
+    </header>
+
+    {/* ── Main: canvas + sidebar ── */}
+    <main class='pr-main'>
+
+      {/* Canvas */}
+      <section class='pr-canvas-wrap' id='pr-canvas-wrap'>
+        <canvas id='pr-canvas'></canvas>
+        <div id='pr-overlay' class='pr-overlay pr-overlay-loading'>
+          <span class='pr-spinner'></span>
+          <span class='pr-overlay-text'>Initialising PixiJS…</span>
+        </div>
+        <div id='pr-error' class='pr-overlay pr-overlay-error hidden'>
+          <span class='pr-error-icon'>⚠</span>
+          <span id='pr-error-text' class='pr-overlay-text'></span>
+        </div>
+      </section>
+
+      {/* Sidebar: cell legend */}
+      <aside class='pr-sidebar'>
+        <p class='pr-sidebar-label'>7 Cells — <code>channels/cell/*/params.json</code></p>
+        <ul class='pr-cell-list'>
+          {cells.sort((a: any, b: any) => a.bbox.y - b.bbox.y).map((c: any) => (
+            <li class='pr-cell-item' data-cell-id={c.cell_id}>
+              <span
+                class='pr-cell-dot'
+                style={`background:${SPECIES_ACCENT[c.species] ?? '#888'}`}
+              ></span>
+              <div class='pr-cell-info'>
+                <span class='pr-cell-label'>{c.label}</span>
+                <code class='pr-cell-species'>{c.species}</code>
+                <div class='pr-cell-meta'>
+                  <span title='opacity'>α {c.opacity}</span>
+                  <span title='z-index'>z{c.z}</span>
+                  <span title='bbox size'>{c.bbox.w}×{c.bbox.h}</span>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+
+        <div class='pr-species-key'>
+          <p class='pr-sidebar-label'>Species</p>
+          {Object.entries(SPECIES_ACCENT).map(([k, v]) => (
+            <div class='pr-species-row'>
+              <span class='pr-species-dot' style={`background:${v}`}></span>
+              <code class='pr-species-name'>{k}</code>
+            </div>
+          ))}
+        </div>
+      </aside>
+    </main>
+
+    {/* Status bar */}
+    <footer class='pr-footer'>
+      <span id='pr-status'>—</span>
+      <span class='pr-footer-right'>小弟 #12 · xiaodi · cell-pubsub-loop</span>
+    </footer>
+  </div>
+</GenerateLayout>
+
+{/* ── Inline cell data ── */}
+<script type='application/json' id='pr-cell-data' set:text={cellsJson}></script>
+
+{/* ── PixiJS mount script ── */}
+<script>
+  import { mountCellRenderer } from '@/components/pipeline/CellRenderer'
+  import type { CellParams } from '@/components/pipeline/CellRenderer'
+
+  const canvas    = document.getElementById('pr-canvas')    as HTMLCanvasElement
+  const overlay   = document.getElementById('pr-overlay')   as HTMLDivElement
+  const errDiv    = document.getElementById('pr-error')     as HTMLDivElement
+  const errText   = document.getElementById('pr-error-text')as HTMLSpanElement
+  const statusEl  = document.getElementById('pr-status')    as HTMLSpanElement
+  const btnFit    = document.getElementById('pr-btn-fit')   as HTMLButtonElement
+  const btnReset  = document.getElementById('pr-btn-reset') as HTMLButtonElement
+  const dataEl    = document.getElementById('pr-cell-data') as HTMLScriptElement
+
+  const cells: CellParams[] = JSON.parse(dataEl.textContent ?? '[]')
+
+  let stopFn: (() => void) | null = null
+  let scale = 1
+  let offsetX = 0
+
+  function setStatus(msg: string) { statusEl.textContent = msg }
+
+  function showOverlay(msg: string) {
+    overlay.classList.remove('hidden')
+    const txt = overlay.querySelector('.pr-overlay-text') as HTMLElement
+    if (txt) txt.textContent = msg
+  }
+  function hideOverlay() { overlay.classList.add('hidden') }
+
+  function showError(msg: string) {
+    errText.textContent = msg
+    errDiv.classList.remove('hidden')
+    overlay.classList.add('hidden')
+  }
+
+  async function mount() {
+    if (stopFn) { stopFn(); stopFn = null }
+    showOverlay('Initialising PixiJS WebGL…')
+    errDiv.classList.add('hidden')
+    setStatus(`Loading ${cells.length} cells…`)
+
+    try {
+      stopFn = await mountCellRenderer(canvas, cells)
+      hideOverlay()
+      setStatus(`✓ ${cells.length} cells rendered — WebGL active`)
+    } catch (err) {
+      showError(`Render failed: ${err instanceof Error ? err.message : String(err)}`)
+      setStatus('✗ render error')
+    }
+  }
+
+  btnReset.addEventListener('click', mount)
+  btnFit.addEventListener('click', () => {
+    canvas.style.transform = ''
+    setStatus('Fit applied')
+  })
+
+  // Highlight sidebar row on hover of cell label
+  document.querySelectorAll<HTMLLIElement>('.pr-cell-item').forEach(li => {
+    li.addEventListener('mouseenter', () => li.classList.add('pr-cell-item--active'))
+    li.addEventListener('mouseleave', () => li.classList.remove('pr-cell-item--active'))
+  })
+
+  mount()
+</script>
+
+{/* ── Styles ── */}
+<style>
+  /* Page shell */
+  .pixi-render-page {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - 4rem);
+    min-height: 0;
+    font-family: 'monospace', ui-monospace, 'Fira Code', monospace;
+  }
+
+  /* Header */
+  .pr-header {
+    border-bottom: 1px solid hsl(var(--border));
+    padding: 0.6rem 1.25rem;
+    flex-shrink: 0;
+    background: hsl(var(--card) / 0.7);
+    backdrop-filter: blur(6px);
+  }
+  .pr-header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+  .pr-title-group { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
+  .pr-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    background: #3F51B5;
+    color: #fff;
+    text-transform: uppercase;
+  }
+  .pr-title { font-size: 1.05rem; font-weight: 600; color: hsl(var(--foreground)); margin: 0; }
+  .pr-sub { font-size: 0.72rem; color: hsl(var(--muted-foreground)); }
+  .pr-actions { display: flex; gap: 0.4rem; }
+  .pr-btn {
+    font-size: 0.72rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--muted));
+    color: hsl(var(--foreground));
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .pr-btn:hover { background: hsl(var(--card)); }
+  .pr-btn-outline { background: transparent; }
+
+  /* Main layout */
+  .pr-main {
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    flex: 1;
+    min-height: 0;
+    gap: 0;
+  }
+  @media (max-width: 680px) {
+    .pr-main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  }
+
+  /* Canvas area */
+  .pr-canvas-wrap {
+    position: relative;
+    background: #0d1117;
+    overflow: hidden;
+  }
+  #pr-canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* Overlay */
+  .pr-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    background: rgba(13, 17, 23, 0.82);
+    color: #e2e8f0;
+    font-size: 0.85rem;
+  }
+  .pr-overlay.hidden { display: none; }
+  .pr-overlay-error { background: rgba(30, 10, 10, 0.9); }
+  .pr-error-icon { font-size: 2rem; }
+  .pr-overlay-text { opacity: 0.85; }
+  .pr-spinner {
+    width: 28px; height: 28px;
+    border: 3px solid rgba(99,120,255,0.25);
+    border-top-color: #6378ff;
+    border-radius: 50%;
+    animation: pr-spin 0.7s linear infinite;
+  }
+  @keyframes pr-spin { to { transform: rotate(360deg); } }
+
+  /* Sidebar */
+  .pr-sidebar {
+    border-left: 1px solid hsl(var(--border));
+    padding: 0.75rem 0.85rem;
+    overflow-y: auto;
+    background: hsl(var(--card) / 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .pr-sidebar-label {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: hsl(var(--muted-foreground));
+    margin: 0 0 0.4rem;
+  }
+  .pr-sidebar-label code { font-size: 0.58rem; }
+
+  .pr-cell-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+  .pr-cell-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    transition: border-color 0.15s, background 0.15s;
+    cursor: default;
+  }
+  .pr-cell-item--active,
+  .pr-cell-item:hover {
+    border-color: hsl(var(--border));
+    background: hsl(var(--muted) / 0.5);
+  }
+  .pr-cell-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-top: 4px;
+    flex-shrink: 0;
+  }
+  .pr-cell-info { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+  .pr-cell-label { font-size: 0.72rem; font-weight: 600; color: hsl(var(--foreground)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pr-cell-species { font-size: 0.6rem; color: hsl(var(--muted-foreground)); }
+  .pr-cell-meta { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+  .pr-cell-meta span { font-size: 0.58rem; color: hsl(var(--muted-foreground)); opacity: 0.7; }
+
+  .pr-species-key { display: flex; flex-direction: column; gap: 0.3rem; }
+  .pr-species-row { display: flex; align-items: center; gap: 0.45rem; }
+  .pr-species-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .pr-species-name { font-size: 0.6rem; color: hsl(var(--muted-foreground)); }
+
+  /* Footer status bar */
+  .pr-footer {
+    border-top: 1px solid hsl(var(--border));
+    padding: 0.3rem 1.25rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.65rem;
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--card) / 0.5);
+    flex-shrink: 0;
+  }
+  .pr-footer-right { opacity: 0.5; }
+</style>
