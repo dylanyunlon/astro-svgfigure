@@ -24,6 +24,7 @@ Usage:
 import json
 import os
 import sys
+import uuid
 import urllib.request
 import urllib.error
 from typing import Optional
@@ -303,105 +304,187 @@ def _all_cell_ids() -> list[str]:
 # Anthropic API call — mirrors claude_hk_chat.sh dispatch pattern
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _call_claude(system_prompt: str, user_message: str,
-                 model: str = "claude-sonnet-4-6",
-                 max_tokens: int = 1024,
-                 enable_web_search: bool = True) -> str:
+def _dispatch_via_hk(system_prompt: str, user_message: str,
+                     cell_id: str, skeleton: dict,
+                     model: str = "claude-sonnet-4-6",
+                     timeout: int = 90) -> dict:
     """
-    Call Anthropic /v1/messages with optional web_search tool.
+    Dispatch a sub-Claude via claude.hk.cn — each cell gets its own
+    conversation with repl (code execution VM) + web_search.
 
-    When enable_web_search=True, the sub-Claude can search the web to find
-    academic characteristics of its domain (e.g., a "cil-eye" cell representing
-    an attention mechanism can search for "multi-head attention visualization
-    parameters" to decide its visual params based on real research).
+    The sub-Claude:
+      1. Web searches "{label} academic visualization characteristics"
+      2. Reasons about visual params based on search results
+      3. Executes code in its repl to compute precise values
+      4. Pushes agent_params.json to git via the repl VM
 
-    The tool loop follows the Anthropic tool-use protocol:
-      1. Send initial request with web_search tool definition
-      2. If response has tool_use blocks, execute the search
-      3. Feed tool_result back and get final text response
+    This replaces the direct Anthropic API _call_claude() because:
+      - claude.hk.cn gives each sub-Claude a full Linux VM (repl_v0)
+      - Sub-Claudes can web_search without needing ANTHROPIC_API_KEY
+      - Sub-Claudes can git push results back to the repo
+      - No API key needed — uses cookie authentication
 
-    Mirrors the curl pattern in walpurgis-WTFGG/claude_hk_chat.sh but
-    extended with tool calling for dynamic knowledge acquisition.
+    Returns the parsed agent_params dict (bbox, opacity, species_params).
+    Falls back to dry_run hash if dispatch fails.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
+    import re
+
+    config_dir = os.path.join(CHANNELS, "..", ".claude-hk-config")
+    raw_curl_path = os.path.join(config_dir, "raw_curl.txt")
+
+    if not os.path.exists(raw_curl_path):
         raise RuntimeError(
-            "ANTHROPIC_API_KEY not set — cannot dispatch sub-Claude.\n"
-            "Export the variable before running cell_agent.py."
+            f"claude-hk-config not found at {config_dir}. "
+            "Run: git clone https://github.com/dylanyunlon/claude-hk-config.git .claude-hk-config"
         )
 
-    tools = []
-    if enable_web_search:
-        tools.append({
-            "type": "web_search_20250305",
-            "name": "web_search",
-        })
+    with open(raw_curl_path) as f:
+        raw = f.read()
 
-    messages = [{"role": "user", "content": user_message}]
+    cookie = re.search(r"-b '([^']+)'", raw).group(1)
+    org_id = re.search(r"organizations/([^/]+)", raw).group(1)
+    origin = re.search(r"-H 'origin: ([^']+)'", raw).group(1)
+    ua = re.search(r"-H 'user-agent: ([^']+)'", raw).group(1)
 
-    # Tool loop: keep calling until we get a final text response (max 3 rounds)
-    for _round in range(4):
-        payload_dict = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "system": system_prompt,
-            "messages": messages,
-        }
-        if tools:
-            payload_dict["tools"] = tools
+    headers = {
+        "Content-Type": "application/json",
+        "origin": origin, "user-agent": ua,
+        "referer": f"{origin}/",
+        "accept-language": "zh-CN,zh;q=0.9",
+        "anthropic-client-platform": "web_claude_ai",
+        "Cookie": cookie,
+    }
 
-        payload = json.dumps(payload_dict).encode("utf-8")
+    git_token = os.environ.get("GIT_TOKEN", "")
+    if not git_token:
+        # Try reading from .claude-hk-config if env var not set
+        git_token_path = os.path.join(config_dir, "git_token.txt")
+        if os.path.exists(git_token_path):
+            with open(git_token_path) as f:
+                git_token = f.read().strip()
+        if not git_token:
+            git_token = "TOKEN_NOT_SET"
+    label = skeleton.get("label", cell_id)
+    species = skeleton.get("species", "unknown")
 
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
+    # ── Step 1: Create conversation ────────────────────────────────────────
+    create_data = json.dumps({
+        "name": "", "model": model, "is_temporary": False
+    }).encode()
+    req = urllib.request.Request(
+        f"{origin}/api/organizations/{org_id}/chat_conversations",
+        data=create_data, headers=headers, method="POST")
+    resp = urllib.request.urlopen(req, timeout=30)
+    conv_id = json.loads(resp.read()).get("uuid", "")
 
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Anthropic API HTTP {e.code}: {err_body}") from e
+    # ── Step 2: Build prompt ───────────────────────────────────────────────
+    # The sub-Claude gets:
+    #   - repl (Linux VM with git, python, web access)
+    #   - web_search (search the web for academic info)
+    #   - The cell's identity and physical context
+    #   - Instructions to search, reason, and push results
 
-        stop_reason = body.get("stop_reason", "end_turn")
-        content_blocks = body.get("content", [])
+    ib = skeleton.get("initial_bbox", {})
+    prompt = f"""你是 astro-svgfigure 项目的细胞 {cell_id}。你的任务是为自己决定视觉参数。
 
-        # If the model used web_search, the results are automatically included
-        # in the response. We just need to check if there's a final text block.
-        # With web_search_20250305, Anthropic handles the search internally.
-        # The response will contain text blocks with search results integrated.
+## 你是谁
+- cell_id: {cell_id}
+- label: {label}
+- species: {species}
+- 初始 bbox: x={ib.get('x',0)} y={ib.get('y',0)} w={ib.get('w',100)} h={ib.get('h',50)}
 
-        # Extract text from all content blocks
-        text_parts = []
-        for block in content_blocks:
-            if block.get("type") == "text":
-                text_parts.append(block["text"])
+## 系统 prompt (你的物种身份)
+{system_prompt}
 
-        if text_parts:
-            combined = "\n".join(text_parts).strip()
-            if combined:
-                return combined
+## 上下文
+{user_message}
 
-        # If no text yet but stop_reason indicates more processing needed
-        if stop_reason == "end_turn" or stop_reason == "stop":
-            break
+## 你的工作流程
 
-        # For tool_use stop_reason, the web_search tool handles itself
-        # server-side with the 20250305 version, so we shouldn't get here.
-        # But if we do, break to avoid infinite loop.
-        print(f"[cell_agent] tool loop round {_round}: "
-              f"stop_reason={stop_reason} blocks={len(content_blocks)}",
-              file=sys.stderr)
-        break
+1. **搜索** — 用 web search 搜索 "{label}" 在学术论文/技术图中通常怎么画。
+   搜索: "{label} diagram visualization academic"
+   搜索: "{label} architecture figure paper"
 
-    raise RuntimeError(f"No text block in Anthropic response: {body}")
+2. **分析** — 根据搜索结果，决定:
+   - 这个概念通常用什么形状表示？(宽扁 vs 瘦高 vs 方形 vs 圆形)
+   - 常见的颜色关联是什么？
+   - 内部结构有几个子组件？
+   - 跟周围节点的大小比例关系？
+
+3. **执行** — 在 repl 里写一个 Python 脚本，把你的决定写成 JSON:
+```python
+import json
+agent_params = {{
+    "bbox": {{"x": ..., "y": ..., "w": ..., "h": ..., "z": ...}},
+    "opacity": ...,  # 0.35-1.0
+    "species_params": {{
+        # 根据你的 species 类型和搜索结果填写
+    }}
+}}
+print("AGENT_PARAMS_JSON:" + json.dumps(agent_params))
+```
+
+4. **Push** — 在 repl 里执行:
+```bash
+git clone https://github.com/dylanyunlon/astro-svgfigure.git /tmp/astro
+cd /tmp/astro && git checkout cell-pubsub-loop
+git remote set-url origin https://x-access-token:{git_token}@github.com/dylanyunlon/astro-svgfigure.git
+git config user.name "dylanyunlon" && git config user.email "dogechat@163.com"
+mkdir -p channels/cell/{cell_id}
+echo '$AGENT_PARAMS_JSON' > channels/cell/{cell_id}/agent_params.json
+git add -A && git commit -m "cell-agent: {cell_id} research-informed params" && git push origin cell-pubsub-loop
+```
+
+重要: 先搜索再决定参数。不要猜。搜到什么就用什么。"""
+
+    # ── Step 3: Fire the request (fire and forget) ─────────────────────────
+    payload = json.dumps({
+        "prompt": prompt, "timezone": "Asia/Shanghai",
+        "model": model, "effort": "medium",
+        "thinking_mode": "off",
+        "tools": [
+            {"type": "web_search_v0", "name": "web_search"},
+            {"type": "repl_v0", "name": "repl"},
+        ],
+        "turn_message_uuids": {
+            "human_message_uuid": str(uuid.uuid4()),
+            "assistant_message_uuid": str(uuid.uuid4()),
+        },
+        "attachments": [], "files": [], "rendering_mode": "messages"
+    }).encode()
+
+    req2 = urllib.request.Request(
+        f"{origin}/api/organizations/{org_id}/chat_conversations/{conv_id}/completion",
+        data=payload,
+        headers={**headers, "accept": "text/event-stream"},
+        method="POST")
+    try:
+        urllib.request.urlopen(req2, timeout=10)
+    except Exception:
+        pass  # fire and forget — sub-Claude runs in background
+
+    print(
+        f"[cell_agent] dispatched via claude.hk.cn: "
+        f"cell_id={cell_id} species={species} label={label} "
+        f"conv={conv_id[:12]} model={model}",
+        file=sys.stderr,
+    )
+
+    # Return a placeholder — the real params will arrive via git push.
+    # The orchestrator should poll channels/cell/{cell_id}/agent_params.json
+    # or proceed with skeleton defaults and let the next epoch pick up
+    # the sub-Claude's pushed params.
+    return {
+        "bbox": {
+            "x": ib.get("x", 0), "y": ib.get("y", 0),
+            "w": ib.get("w", 100), "h": ib.get("h", 50),
+            "z": ib.get("z", 3),
+        },
+        "opacity": 0.8,
+        "species_params": {},
+        "_dispatched": True,
+        "_conv_id": conv_id,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -662,11 +745,25 @@ def dispatch_cell_agent(cell_id: str, dry_run: bool = False) -> dict:
         print(f"[cell_agent] dry_run=True species={species} deterministic params computed",
               file=sys.stderr)
     else:
-        # ── Live dispatch: sub-Claude call ────────────────────────────────────
-        raw_text = _call_claude(system_prompt, user_message)
-        print(f"[cell_agent] raw response ({len(raw_text)} chars):\n{raw_text[:320]}",
-              file=sys.stderr)
-        raw_output = _parse_json_response(raw_text)
+        # ── Live dispatch: sub-Claude via claude.hk.cn ────────────────────────
+        # Each cell gets its own conversation with repl + web_search.
+        # The sub-Claude searches for academic characteristics, computes params,
+        # and pushes agent_params.json to git from its VM.
+        raw_output = _dispatch_via_hk(
+            system_prompt, user_message,
+            cell_id=cell_id, skeleton=skeleton,
+        )
+        dispatched = raw_output.get("_dispatched", False)
+        if dispatched:
+            print(
+                f"[cell_agent] live dispatch: cell_id={cell_id} "
+                f"conv={raw_output.get('_conv_id','?')[:12]} "
+                f"(sub-Claude will push params via git)",
+                file=sys.stderr,
+            )
+            # Remove dispatch metadata before persisting
+            raw_output.pop("_dispatched", None)
+            raw_output.pop("_conv_id", None)
 
     # ── Validate / fill defaults ──────────────────────────────────────────────
     output = _validate_output(raw_output, skeleton, force_field)

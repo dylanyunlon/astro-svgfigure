@@ -66,10 +66,11 @@ def run_all_cells():
     proc(cell_id) for each cell.  The agent computes bbox/opacity/species_params
     from skeleton + force_field.
 
-    When ASTRO_LIVE_AGENTS=1 (or dry_run=False passed from server.py):
-      - dry_run=False → sub-Claude calls Anthropic API with web_search tool
-      - Each cell agent searches for academic characteristics of its domain
-      - Parameters are research-informed, not hash-deterministic
+    When ASTRO_LIVE_AGENTS=1:
+      - dry_run=False → sub-Claude dispatched via claude.hk.cn
+      - Each cell gets own conversation with repl VM + web_search
+      - Sub-Claude searches academic characteristics, pushes params via git
+      - No API key needed — uses .claude-hk-config cookie auth
 
     When ASTRO_LIVE_AGENTS is unset or 0:
       - dry_run=True → local deterministic hash, no API call (default for dev)
