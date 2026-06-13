@@ -9544,3 +9544,649 @@ def run_temporal_aa_pass(
     """
     taa = AstroCellTAAPass(quality=quality, filter_size=filter_size)
     return taa.run(cell_registry, epoch)
+
+
+# =============================================================================
+# § DecalRenderingCommon — 贴花混合描述符与渲染阶段推导
+#   移植自 Renderer-Private/DecalRenderingCommon.cpp
+#   鲁迅式：贴花不是装饰，而是承认世界本身已不够干净。
+# =============================================================================
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+from enum import IntEnum, IntFlag, auto
+from typing import Optional
+
+
+class EBlendMode(IntEnum):
+    Opaque      = 0
+    Masked      = 1
+    Translucent = 2
+    Additive    = 3
+    Modulate    = 4
+    AlphaComposite = 5
+    AlphaHoldout   = 6
+
+
+class EDecalRenderStage(IntEnum):
+    """渲染阶段枚举，对应 UE5 EDecalRenderStage。"""
+    None_      = 0   # 鲁迅式：无阶段，即虚无——渲染管线最诚实的答案。
+    BeforeBasePass     = 1
+    BeforeLighting     = 2
+    Mobile             = 3
+    MobileBeforeLighting = 4
+    Emissive           = 5
+    AmbientOcclusion   = 6
+
+
+@dataclass
+class FDecalBlendDesc:
+    """
+    贴花混合描述符。
+    鲁迅式：写下每一个 bWrite 字段，便是承认画面还缺少什么。
+    """
+    blend_mode: EBlendMode = EBlendMode.Translucent
+
+    b_write_base_color:               bool = False
+    b_write_normal:                   bool = False
+    b_write_roughness_specular_metallic: bool = False
+    b_write_emissive:                 bool = False
+    b_write_ambient_occlusion:        bool = False
+    b_write_dbuffer_mask:             bool = False
+
+    # bitmask over EDecalRenderStage values
+    render_stage_mask: int = 0
+
+
+def _is_translucent_only(desc: FDecalBlendDesc) -> bool:
+    return desc.blend_mode == EBlendMode.Translucent
+
+def _is_alpha_composite(desc: FDecalBlendDesc) -> bool:
+    return desc.blend_mode == EBlendMode.AlphaComposite
+
+def _is_modulate(desc: FDecalBlendDesc) -> bool:
+    return desc.blend_mode == EBlendMode.Modulate
+
+
+def finalize_decal_blend_desc(
+    desc: FDecalBlendDesc,
+    *,
+    is_mobile: bool = False,
+    is_mobile_deferred: bool = False,
+    is_dbuffer_platform: bool = False,
+    is_dbuffer_mask_platform: bool = False,
+    mobile_normal_blendable: bool = False,
+) -> FDecalBlendDesc:
+    """
+    推导贴花混合描述符的最终状态，对应 FinalizeBlendDesc()。
+    鲁迅式：平台限制就是现实，我们只能在允许的范围内做梦。
+    """
+    desc.b_write_dbuffer_mask = is_dbuffer_mask_platform
+
+    # 强制平台混合模式约束
+    if not (_is_translucent_only(desc) or _is_alpha_composite(desc) or _is_modulate(desc)):
+        desc.blend_mode = EBlendMode.Translucent
+    if is_dbuffer_platform and _is_modulate(desc):
+        desc.blend_mode = EBlendMode.Translucent
+
+    # 移动平台输出约束
+    if is_mobile and not is_mobile_deferred and not is_dbuffer_platform:
+        desc.b_write_roughness_specular_metallic = False
+    if is_mobile and not mobile_normal_blendable:
+        desc.b_write_normal = False
+    if is_mobile:
+        desc.b_write_ambient_occlusion = False
+
+    # AlphaComposite 不写法线
+    if _is_alpha_composite(desc):
+        desc.b_write_normal = False
+
+    # 推导主渲染阶段（互斥）
+    has_gbuffer_writes = (
+        desc.b_write_emissive or desc.b_write_base_color
+        or desc.b_write_normal or desc.b_write_roughness_specular_metallic
+    )
+    if is_mobile_deferred and not is_dbuffer_platform and has_gbuffer_writes:
+        desc.render_stage_mask |= 1 << EDecalRenderStage.MobileBeforeLighting
+    elif is_mobile and not is_dbuffer_platform and (desc.b_write_emissive or desc.b_write_base_color):
+        desc.render_stage_mask |= 1 << EDecalRenderStage.Mobile
+    elif is_dbuffer_platform and (
+        desc.b_write_base_color or desc.b_write_normal or desc.b_write_roughness_specular_metallic
+    ):
+        desc.render_stage_mask |= 1 << EDecalRenderStage.BeforeBasePass
+    elif has_gbuffer_writes:
+        desc.render_stage_mask |= 1 << EDecalRenderStage.BeforeLighting
+
+    # 附加渲染阶段
+    if desc.b_write_emissive and is_dbuffer_platform:
+        desc.render_stage_mask |= 1 << EDecalRenderStage.Emissive
+    if desc.b_write_ambient_occlusion:
+        desc.render_stage_mask |= 1 << EDecalRenderStage.AmbientOcclusion
+
+    return desc
+
+
+def compute_decal_blend_desc(
+    material_props: dict,
+    *,
+    is_mobile: bool = False,
+    is_mobile_deferred: bool = False,
+    is_dbuffer_platform: bool = False,
+    is_dbuffer_mask_platform: bool = False,
+) -> FDecalBlendDesc:
+    """
+    根据材质属性字典构造 FDecalBlendDesc，对应 ComputeDecalBlendDesc()。
+    material_props 键：blend_mode, base_color, normal, roughness, specular, metallic,
+                       emissive, ambient_occlusion, is_substrate, diffuse_albedo, f0
+    鲁迅式：材质连接了什么，就说明创作者在意什么；不连接的，便是刻意的遗忘。
+    """
+    desc = FDecalBlendDesc()
+    is_substrate = material_props.get("is_substrate", False)
+    use_diffuse_f0 = material_props.get("diffuse_albedo", False) or material_props.get("f0", False)
+
+    desc.blend_mode = EBlendMode(material_props.get("blend_mode", EBlendMode.Translucent))
+
+    if is_substrate:
+        desc.b_write_base_color               = material_props.get("base_color", False) or use_diffuse_f0
+        desc.b_write_normal                   = material_props.get("normal", False)
+        desc.b_write_roughness_specular_metallic = (
+            use_diffuse_f0
+            or material_props.get("roughness", False)
+            or material_props.get("specular", False)
+            or material_props.get("metallic", False)
+        )
+        desc.b_write_emissive             = material_props.get("emissive", False)
+        desc.b_write_ambient_occlusion    = material_props.get("ambient_occlusion", False)
+    else:
+        desc.b_write_base_color               = material_props.get("base_color", False)
+        desc.b_write_normal                   = material_props.get("normal", False)
+        desc.b_write_roughness_specular_metallic = (
+            material_props.get("roughness", False)
+            or material_props.get("specular", False)
+            or material_props.get("metallic", False)
+        )
+        desc.b_write_emissive             = material_props.get("emissive", False)
+        desc.b_write_ambient_occlusion    = material_props.get("ambient_occlusion", False)
+
+    mobile_normal_blendable = is_dbuffer_platform or is_mobile_deferred
+    return finalize_decal_blend_desc(
+        desc,
+        is_mobile=is_mobile,
+        is_mobile_deferred=is_mobile_deferred,
+        is_dbuffer_platform=is_dbuffer_platform,
+        is_dbuffer_mask_platform=is_dbuffer_mask_platform,
+        mobile_normal_blendable=mobile_normal_blendable,
+    )
+
+
+def is_compatible_with_render_stage(desc: FDecalBlendDesc, stage: EDecalRenderStage) -> bool:
+    return bool(desc.render_stage_mask & (1 << stage))
+
+
+def get_base_render_stage(desc: FDecalBlendDesc) -> EDecalRenderStage:
+    """
+    返回贴花的主渲染阶段，对应 GetBaseRenderStage()。
+    鲁迅式：阶段的优先顺序，是工程师对渲染时序的一次沉默表态。
+    """
+    for stage in (
+        EDecalRenderStage.BeforeBasePass,
+        EDecalRenderStage.BeforeLighting,
+        EDecalRenderStage.Mobile,
+        EDecalRenderStage.MobileBeforeLighting,
+    ):
+        if desc.render_stage_mask & (1 << stage):
+            return stage
+    return EDecalRenderStage.None_
+
+
+# =============================================================================
+# § DecalRenderingShared — 可见贴花列表构建与视图分发
+#   移植自 Renderer-Private/DecalRenderingShared.cpp
+# =============================================================================
+
+import math
+from typing import Callable, Iterable
+
+
+@dataclass
+class FVisibleDecal:
+    """
+    可见贴花实体，携带混合描述符与淡入淡出参数。
+    鲁迅式：贴花的淡出，不是消亡，而是体面地退场。
+    """
+    material_props:   dict
+    sort_order:       int   = 0
+    conservative_radius: float = 1.0
+    fade_alpha:       float = 1.0
+    inv_fade_duration:  float = 0.0
+    inv_fade_in_duration: float = 0.0
+    fade_start_delay: float = 0.0
+    fade_in_start_delay: float = 0.0
+    blend_desc: FDecalBlendDesc = field(default_factory=FDecalBlendDesc)
+
+    def __post_init__(self):
+        self.blend_desc = compute_decal_blend_desc(self.material_props)
+
+
+def build_visible_decal_list(
+    all_decals: list[dict],
+    view_frustum_test: Callable[[dict], tuple[bool, float, float]] | None = None,
+) -> list[FVisibleDecal]:
+    """
+    从场景贴花列表中筛选视锥体内的可见贴花，对应 BuildVisibleDecalList()。
+    view_frustum_test(decal) -> (is_visible, conservative_radius, fade_alpha)
+    鲁迅式：视锥体剔除是一种慈悲——让看不见的东西不必假装存在。
+    """
+    result: list[FVisibleDecal] = []
+    for decal in all_decals:
+        if view_frustum_test is not None:
+            visible, radius, alpha = view_frustum_test(decal)
+        else:
+            visible, radius, alpha = True, decal.get("radius", 1.0), 1.0
+        if not visible:
+            continue
+        vd = FVisibleDecal(
+            material_props=decal.get("material_props", {}),
+            sort_order=decal.get("sort_order", 0),
+            conservative_radius=radius,
+            fade_alpha=alpha,
+            inv_fade_duration=decal.get("inv_fade_duration", 0.0),
+            inv_fade_in_duration=decal.get("inv_fade_in_duration", 0.0),
+            fade_start_delay=decal.get("fade_start_delay", 0.0),
+            fade_in_start_delay=decal.get("fade_in_start_delay", 0.0),
+        )
+        result.append(vd)
+    # 按 sort_order 升序，再按 conservative_radius 降序（大贴花先渲染）
+    result.sort(key=lambda d: (d.sort_order, -d.conservative_radius))
+    return result
+
+
+def build_relevant_decal_list(
+    visible_decals: list[FVisibleDecal],
+    stage: EDecalRenderStage,
+) -> list[FVisibleDecal]:
+    """
+    从可见列表中过滤出与指定渲染阶段兼容的贴花，对应 BuildRelevantDecalList()。
+    鲁迅式：每个阶段只看自己的份，这叫专注，也叫局限。
+    """
+    return [d for d in visible_decals if is_compatible_with_render_stage(d.blend_desc, stage)]
+
+
+@dataclass
+class DecalVisibilityViewPacket:
+    """
+    单视图的贴花可见性数据包，对应 FDecalVisibilityViewPacket。
+    懒惰求值：relevant_decals 按需构建。
+    鲁迅式：按需构建是现代工程师的美德，也是他们唯一剩下的节制。
+    """
+    visible_decals: list[FVisibleDecal] = field(default_factory=list)
+    _relevant_cache: dict[EDecalRenderStage, list[FVisibleDecal]] = field(
+        default_factory=dict, repr=False
+    )
+
+    @classmethod
+    def build(
+        cls,
+        all_decals: list[dict],
+        stages: Iterable[EDecalRenderStage] = (),
+        view_frustum_test: Callable | None = None,
+    ) -> "DecalVisibilityViewPacket":
+        pkt = cls()
+        pkt.visible_decals = build_visible_decal_list(all_decals, view_frustum_test)
+        for stage in stages:
+            pkt._relevant_cache[stage] = build_relevant_decal_list(pkt.visible_decals, stage)
+        return pkt
+
+    def get_relevant_decals(self, stage: EDecalRenderStage) -> list[FVisibleDecal]:
+        if stage not in self._relevant_cache:
+            self._relevant_cache[stage] = build_relevant_decal_list(self.visible_decals, stage)
+        return self._relevant_cache[stage]
+
+
+# =============================================================================
+# § BlueNoise — 蓝噪声参数管理
+#   移植自 Renderer-Private/BlueNoise.cpp
+#   鲁迅式：蓝噪声的均匀，是对随机性的最后一点人道主义改造。
+# =============================================================================
+
+import numpy as np
+from typing import Optional
+
+
+@dataclass
+class FBlueNoiseParameters:
+    """
+    蓝噪声纹理参数，对应 FBlueNoiseParameters。
+    dimensions: (width, height, slices)
+    modulo_masks: 用于快速取模的位掩码三元组，要求各维度为 2 的幂。
+    """
+    dimensions:   tuple[int, int, int] = (1, 1, 1)
+    modulo_masks: tuple[int, int, int] = (0, 0, 0)
+    # 实际纹理数据存为 numpy 数组（float32）
+    scalar_texture: Optional[np.ndarray] = None
+    vec2_texture:   Optional[np.ndarray] = None
+
+
+def _floor_log2(n: int) -> int:
+    return int(math.floor(math.log2(max(n, 1))))
+
+
+def _fill_blue_noise_from_texture(out: FBlueNoiseParameters) -> None:
+    """
+    从 scalar_texture 形状推导 dimensions 与 modulo_masks，
+    对应 FillUpBlueNoiseParametersFromTexture()。
+    鲁迅式：从尺寸推导掩码，是数学对现实的一次简洁起诉。
+    """
+    assert out.scalar_texture is not None, "scalar_texture must be set before fill"
+    h, w = out.scalar_texture.shape[:2]
+    slices = h // max(1, w)
+    out.dimensions = (w, w, slices)
+    out.modulo_masks = (
+        (1 << _floor_log2(out.dimensions[0])) - 1,
+        (1 << _floor_log2(out.dimensions[1])) - 1,
+        (1 << _floor_log2(out.dimensions[2])) - 1,
+    )
+    assert (out.modulo_masks[0] + 1) == out.dimensions[0], "dimension X must be power-of-two"
+    assert (out.modulo_masks[1] + 1) == out.dimensions[1], "dimension Y must be power-of-two"
+    assert (out.modulo_masks[2] + 1) == out.dimensions[2], "dimension Z must be power-of-two"
+
+
+_BLACK_DUMMY = np.zeros((1, 1), dtype=np.float32)
+
+
+def get_blue_noise_dummy_parameters() -> FBlueNoiseParameters:
+    """
+    返回全黑占位蓝噪声参数，对应 GetBlueNoiseDummyParameters()。
+    鲁迅式：占位符是工程师的礼貌，也是他承认自己尚未准备好的方式。
+    """
+    return FBlueNoiseParameters(
+        dimensions=(1, 1, 1),
+        modulo_masks=(0, 0, 0),
+        scalar_texture=_BLACK_DUMMY,
+        vec2_texture=_BLACK_DUMMY,
+    )
+
+
+def get_blue_noise_parameters(
+    scalar_texture: np.ndarray,
+    vec2_texture: Optional[np.ndarray] = None,
+) -> FBlueNoiseParameters:
+    """
+    从真实纹理数据构造蓝噪声参数，对应 GetBlueNoiseParameters()。
+    scalar_texture: H×W float32 array（H = W * slices）
+    vec2_texture:   可选，H×W×2 float32 array
+    鲁迅式：真实纹理与占位纹理，差别只在于有没有认真对待随机这件事。
+    """
+    out = FBlueNoiseParameters(
+        scalar_texture=scalar_texture,
+        vec2_texture=vec2_texture if vec2_texture is not None else _BLACK_DUMMY,
+    )
+    _fill_blue_noise_from_texture(out)
+    return out
+
+
+def get_blue_noise_global_parameters(
+    scalar_texture: Optional[np.ndarray] = None,
+    vec2_texture: Optional[np.ndarray] = None,
+) -> FBlueNoiseParameters:
+    """
+    获取全局蓝噪声参数，无纹理时回退到占位符，对应 GetBlueNoiseGlobalParameters()。
+    鲁迅式：全局参数的回退路径，是系统对不完整世界的默默容忍。
+    """
+    if scalar_texture is not None:
+        return get_blue_noise_parameters(scalar_texture, vec2_texture)
+    return get_blue_noise_dummy_parameters()
+
+
+def sample_blue_noise_scalar(params: FBlueNoiseParameters, x: int, y: int, z: int = 0) -> float:
+    """
+    从蓝噪声参数中采样标量值，使用 modulo_masks 进行快速环绕寻址。
+    鲁迅式：环绕寻址像极了历史——越界之后，总会回到某个熟悉的起点。
+    """
+    if params.scalar_texture is None or params.scalar_texture is _BLACK_DUMMY:
+        return 0.0
+    mx, my, mz = params.modulo_masks
+    xi = x & mx
+    yi = y & my
+    zi = z & mz
+    h, w = params.scalar_texture.shape[:2]
+    slices = params.dimensions[2]
+    row = zi * (h // max(1, slices)) + yi
+    row = min(row, h - 1)
+    col = min(xi, w - 1)
+    return float(params.scalar_texture[row, col])
+
+
+# =============================================================================
+# § ComputeSystemInterface — 计算系统注册与 Worker 生命周期
+#   移植自 Renderer-Private/ComputeSystemInterface.cpp
+#   鲁迅式：注册表是官僚体系的技术化身——你必须登记，才有资格被调用。
+# =============================================================================
+
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class IComputeTaskWorker(Protocol):
+    """计算任务工人接口，对应 IComputeTaskWorker。"""
+    def execute(self) -> None: ...
+
+
+@runtime_checkable
+class IComputeSystem(Protocol):
+    """
+    计算系统接口，对应 IComputeSystem。
+    鲁迅式：接口是契约，也是无声的命令。
+    """
+    def create_workers(
+        self, scene: object, out_workers: list[IComputeTaskWorker]
+    ) -> None: ...
+
+    def destroy_workers(
+        self, scene: object, in_out_workers: list[IComputeTaskWorker]
+    ) -> None: ...
+
+
+class ComputeSystemRegistry:
+    """
+    全局计算系统注册表，对应 ComputeSystemInterface 命名空间。
+    鲁迅式：全局注册表的存在，说明没有人敢承担依赖注入的责任。
+    """
+
+    def __init__(self):
+        self._systems: list[IComputeSystem] = []
+
+    def register_system(self, system: IComputeSystem) -> None:
+        if system not in self._systems:
+            self._systems.append(system)
+
+    def unregister_system(self, system: IComputeSystem) -> None:
+        for i, s in enumerate(self._systems):
+            if s is system:
+                # swap-remove，与 UE5 RemoveAtSwap 保持一致
+                self._systems[i] = self._systems[-1]
+                self._systems.pop()
+                return
+
+    def create_workers(
+        self, scene: object, out_workers: list[IComputeTaskWorker]
+    ) -> None:
+        for system in self._systems:
+            system.create_workers(scene, out_workers)
+
+    def destroy_workers(
+        self, scene: object, in_out_workers: list[IComputeTaskWorker]
+    ) -> None:
+        for system in self._systems:
+            system.destroy_workers(scene, in_out_workers)
+        # 销毁后列表必须为空，对应 ensure(InOutWorkders.Num() == 0)
+        if in_out_workers:
+            raise RuntimeError(
+                f"ComputeSystemRegistry.destroy_workers: "
+                f"{len(in_out_workers)} worker(s) not cleaned up"
+            )
+
+
+# 模块级单例，对应 GRegisteredSystems
+_global_compute_registry = ComputeSystemRegistry()
+
+
+def register_compute_system(system: IComputeSystem) -> None:
+    _global_compute_registry.register_system(system)
+
+def unregister_compute_system(system: IComputeSystem) -> None:
+    _global_compute_registry.unregister_system(system)
+
+def create_compute_workers(scene: object, out_workers: list) -> None:
+    _global_compute_registry.create_workers(scene, out_workers)
+
+def destroy_compute_workers(scene: object, in_out_workers: list) -> None:
+    _global_compute_registry.destroy_workers(scene, in_out_workers)
+
+
+# =============================================================================
+# § DebugViewModeRendering — 调试视图模式渲染参数与着色器复杂度基线
+#   移植自 Renderer-Private/DebugViewModeRendering.cpp
+#   鲁迅式：调试视图的存在，说明我们对自己写出的东西始终存有疑虑。
+# =============================================================================
+
+
+class EShadingPath(IntEnum):
+    Forward  = 0
+    Deferred = 1
+    Mobile   = 2
+
+
+@dataclass
+class ShaderComplexityBaseline:
+    """
+    着色器复杂度基线，对应各 GShaderComplexityBaseline* 全局变量。
+    鲁迅式：基线是期望，超出基线是现实，差值是我们不愿承认的懒惰。
+    """
+    # Forward
+    forward_vs:        int   = 134
+    forward_ps:        int   = 635
+    forward_unlit_ps:  int   = 47
+    # Deferred
+    deferred_vs:       int   = 41
+    deferred_ps:       int   = 111
+    deferred_unlit_ps: int   = 33
+    # Mobile Forward
+    mobile_forward_vs:        int   = 134
+    mobile_forward_ps:        int   = 143
+    mobile_forward_unlit_ps:  int   = 6
+    # Mobile Deferred
+    mobile_deferred_vs:        int   = 134
+    mobile_deferred_ps:        int   = 50
+    mobile_deferred_unlit_ps:  int   = 9
+    # Masked cost multiplier (mobile)
+    mobile_masked_cost_multiplier: float = 1.5
+
+
+# 模块级默认基线，对应各 CVarShaderComplexityBaseline* 的默认值
+_default_shader_complexity_baseline = ShaderComplexityBaseline()
+
+
+def get_quad_overdraw_uav_index(
+    is_forward_shading: bool,
+    base_pass_can_output_velocity: bool,
+) -> int:
+    """
+    返回 Quad Overdraw UAV 的寄存器槽位，对应 GetQuadOverdrawUAVIndex()。
+    鲁迅式：槽位编号背后是整套 GBuffer 布局——
+    改动任何一处，牵一发而动全身，这就是耦合的代价。
+    """
+    if is_forward_shading:
+        return 2 if base_pass_can_output_velocity else 1
+    else:
+        return 7 if base_pass_can_output_velocity else 6
+
+
+_NUM_STREAMING_ACCURACY_COLORS = 5
+
+_DEFAULT_ACCURACY_COLORS: list[tuple[float, float, float, float]] = [
+    (0.0,  0.0,  1.0,  1.0),   # 蓝：过度流送
+    (0.0,  1.0,  0.0,  1.0),   # 绿：刚好
+    (1.0,  1.0,  0.0,  1.0),   # 黄：轻微不足
+    (1.0,  0.5,  0.0,  1.0),   # 橙：中度不足
+    (1.0,  0.0,  0.0,  1.0),   # 红：严重不足
+]
+
+
+@dataclass
+class FDebugViewModeUniformParameters:
+    """
+    调试视图模式 Uniform 参数，对应 FDebugViewModeUniformParameters。
+    鲁迅式：颜色精度图谱是渲染引擎对自身的一次公开体检。
+    """
+    accuracy_colors: list[tuple[float, float, float, float]] = field(
+        default_factory=lambda: list(_DEFAULT_ACCURACY_COLORS)
+    )
+    # 纹理坐标密度诊断（UV 通道分析用）
+    uv_density_sampling: float = 1.0
+
+
+def setup_debug_view_mode_pass_uniform_buffer_constants(
+    accuracy_colors_override: list[tuple[float, float, float, float]] | None = None,
+    uv_density_sampling: float = 1.0,
+) -> FDebugViewModeUniformParameters:
+    """
+    构造调试视图模式 Uniform 缓冲区常量，对应
+    SetupDebugViewModePassUniformBufferConstants()。
+    鲁迅式：把颜色填进参数结构，是把主观判断包装成客观数据的例行仪式。
+    """
+    colors = list(_DEFAULT_ACCURACY_COLORS)
+    if accuracy_colors_override:
+        # 截取到 _NUM_STREAMING_ACCURACY_COLORS，其余补黑
+        n = min(len(accuracy_colors_override), _NUM_STREAMING_ACCURACY_COLORS)
+        for i in range(n):
+            colors[i] = accuracy_colors_override[i]
+        for i in range(n, _NUM_STREAMING_ACCURACY_COLORS):
+            colors[i] = (0.0, 0.0, 0.0, 1.0)
+    return FDebugViewModeUniformParameters(
+        accuracy_colors=colors,
+        uv_density_sampling=uv_density_sampling,
+    )
+
+
+def get_shader_instruction_count_for_baseline(
+    shading_path: EShadingPath,
+    is_vertex_shader: bool,
+    is_unlit: bool,
+    baseline: ShaderComplexityBaseline | None = None,
+) -> int:
+    """
+    返回给定着色器类型的指令数基线，供复杂度对比使用。
+    鲁迅式：基线指令数是工程师对"正常"的定义——超出则问责，不足则怀疑。
+    """
+    b = baseline or _default_shader_complexity_baseline
+    if shading_path == EShadingPath.Forward:
+        if is_vertex_shader: return b.forward_vs
+        return b.forward_unlit_ps if is_unlit else b.forward_ps
+    elif shading_path == EShadingPath.Mobile:
+        if is_vertex_shader: return b.mobile_forward_vs
+        return b.mobile_forward_unlit_ps if is_unlit else b.mobile_forward_ps
+    else:  # Deferred
+        if is_vertex_shader: return b.deferred_vs
+        return b.deferred_unlit_ps if is_unlit else b.deferred_ps
+
+
+def compute_shader_complexity_ratio(
+    instruction_count: int,
+    shading_path: EShadingPath,
+    is_vertex_shader: bool,
+    is_unlit: bool,
+    baseline: ShaderComplexityBaseline | None = None,
+) -> float:
+    """
+    计算着色器复杂度比值（实际指令数 / 基线指令数）。
+    返回值 > 1.0 表示超出基线，供贴花与调试视图模式颜色映射使用。
+    鲁迅式：比值大于一，说明代码已经比标准更费力气——
+    或者标准定得太低，这两种可能同样令人不安。
+    """
+    baseline_count = get_shader_instruction_count_for_baseline(
+        shading_path, is_vertex_shader, is_unlit, baseline
+    )
+    if baseline_count <= 0:
+        return 0.0
+    return instruction_count / baseline_count
