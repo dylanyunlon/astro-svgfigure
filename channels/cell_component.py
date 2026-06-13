@@ -10190,3 +10190,733 @@ def compute_shader_complexity_ratio(
     if baseline_count <= 0:
         return 0.0
     return instruction_count / baseline_count
+
+
+# =============================================================================
+# UE5 Renderer Port — BasePass · ClusteredDeferred · Anisotropy · Depth · CustomDepth
+#
+# 鲁迅式：世上本没有渲染管线，走的人多了，便成了 G-Buffer。
+# =============================================================================
+
+import math as _math
+from dataclasses import dataclass as _dataclass, field as _field
+from typing import Dict as _Dict, List as _List, Optional as _Optional, Tuple as _Tuple
+
+
+# ---------------------------------------------------------------------------
+# Shared math primitives
+# ---------------------------------------------------------------------------
+
+class _Vec3:
+    """Minimal float3 — cheaper than numpy for single-cell ops."""
+    __slots__ = ("x", "y", "z")
+
+    def __init__(self, x: float = 0.0, y: float = 0.0, z: float = 0.0):
+        self.x, self.y, self.z = float(x), float(y), float(z)
+
+    def __add__(self, o):  return _Vec3(self.x+o.x, self.y+o.y, self.z+o.z)
+    def __mul__(self, s):  return _Vec3(self.x*s, self.y*s, self.z*s)
+    def __rmul__(self, s): return self.__mul__(s)
+
+    def dot(self, o) -> float:
+        return self.x*o.x + self.y*o.y + self.z*o.z
+
+    def length(self) -> float:
+        return _math.sqrt(self.dot(self))
+
+    def normalize(self):
+        d = self.length()
+        return _Vec3(self.x/d, self.y/d, self.z/d) if d > 1e-9 else _Vec3(0, 0, 1)
+
+    def clamp01(self):
+        return _Vec3(max(0.0, min(1.0, self.x)),
+                     max(0.0, min(1.0, self.y)),
+                     max(0.0, min(1.0, self.z)))
+
+    def as_tuple(self) -> _Tuple[float, float, float]:
+        return (self.x, self.y, self.z)
+
+
+def _saturate(v: float) -> float:
+    return max(0.0, min(1.0, v))
+
+
+def _pow_safe(base: float, exp: float) -> float:
+    return _math.pow(max(base, 1e-9), exp)
+
+
+# ---------------------------------------------------------------------------
+# GBuffer — mirrors TBasePassPS output layout (BasePassRendering.cpp)
+# ---------------------------------------------------------------------------
+# 鲁迅式：G-Buffer 是现代延迟渲染的脸面——铺开来给人看的，
+# 只是材质的皮囊，真正的光照还在后面等着。
+
+@_dataclass
+class AstroCellGBuffer:
+    """
+    Reduced GBuffer written by the BasePass.
+
+    Mirrors the fields consumed by ClusteredDeferredShadingPixelShader:
+      SceneColor   — HDR scene-colour pre-lighting (emissive + baked)
+      WorldNormal  — world-space shading normal  [−1, 1]³
+      BaseColor    — albedo / diffuse colour      [0, 1]³
+      Roughness    — GGX roughness               [0, 1]
+      Metallic     — metallic mask               [0, 1]
+      Anisotropy   — tangent-space anisotropy    [−1, 1]  (AnisotropyRendering.cpp)
+      Depth        — linear eye depth            ≥ 0
+      CustomDepth  — custom depth value or −1 if not written
+      Stencil      — custom stencil byte
+    """
+    scene_color:   _Vec3  = _field(default_factory=lambda: _Vec3(0, 0, 0))
+    world_normal:  _Vec3  = _field(default_factory=lambda: _Vec3(0, 0, 1))
+    base_color:    _Vec3  = _field(default_factory=lambda: _Vec3(0.5, 0.5, 0.5))
+    roughness:     float  = 0.5
+    metallic:      float  = 0.0
+    anisotropy:    float  = 0.0      # written by FAnisotropyPS (AnisotropyRendering.cpp)
+    depth:         float  = 1.0      # TDepthOnlyVS / FDepthOnlyPS (DepthRendering.cpp)
+    custom_depth:  float  = -1.0     # FCustomDepthPassParameters (CustomDepthRendering.cpp)
+    stencil:       int    = 0
+
+
+# ---------------------------------------------------------------------------
+# BasePass — AstroCellBasePass
+# Mirrors the BasePassRendering.cpp "RenderBasePass" pipeline stage.
+# ---------------------------------------------------------------------------
+# 鲁迅式：BasePass 写满了 G-Buffer，却不点一盏灯；
+# 和许多人的一生一样——把自己交代清楚了，却等不到光。
+
+@_dataclass
+class AstroCellMaterial:
+    """
+    Subset of UMaterial properties consumed during the BasePass.
+    Corresponds to the FMaterial / FMaterialRenderProxy interface.
+    """
+    base_color:       _Vec3  = _field(default_factory=lambda: _Vec3(0.8, 0.8, 0.8))
+    emissive:         _Vec3  = _field(default_factory=lambda: _Vec3(0, 0, 0))
+    roughness:        float  = 0.5
+    metallic:         float  = 0.0
+    anisotropy:       float  = 0.0   # bHasAnisotropyConnected
+    opacity_mask:     float  = 1.0   # clip() threshold in masked materials
+    writes_velocity:  bool   = False
+    is_translucent:   bool   = False
+
+
+class AstroCellBasePass:
+    """
+    Encodes one cell's material into a GBuffer entry.
+
+    Mimics the per-draw-call work done by TBasePassPS::MainPS():
+      1. Material evaluation  → base-colour, roughness, metallic, emissive
+      2. Normal encoding      → world-space normal written to GBufferA
+      3. Emissive accumulation into SceneColor
+      4. Anisotropy output    → forwarded to AnisotropyRendering pass
+
+    SelectiveBasePassOutputs (r.SelectiveBasePassOutputs) is always
+    treated as enabled here: we only populate gbuffer slots we use.
+    """
+
+    # r.SelectiveBasePassOutputs = 1  (compile-time const in UE5)
+    SELECTIVE_OUTPUTS: bool = True
+
+    def __init__(self, enable_anisotropy: bool = True):
+        # r.AnisotropicMaterials equivalent
+        self._anisotropy_enabled = enable_anisotropy
+
+    def encode(
+        self,
+        material:     AstroCellMaterial,
+        vertex_world_normal: _Vec3,
+        eye_depth:    float,
+    ) -> AstroCellGBuffer:
+        """
+        Execute the BasePass pixel-shader logic for a single cell.
+
+        Parameters
+        ----------
+        material            : evaluated material parameters
+        vertex_world_normal : interpolated vertex normal (world space)
+        eye_depth           : linear depth from camera
+        """
+        gbuf = AstroCellGBuffer()
+
+        # --- opacity / masked discard (clip() equivalent) -----------------
+        if material.opacity_mask < 0.333:
+            # Masked material fully discarded → leave gbuf at defaults.
+            # Matches `clip(OpacityMask - GetMaskClipValue())` in HLSL.
+            return gbuf
+
+        # --- normal encoding ----------------------------------------------
+        # GBufferA.xyz = WorldNormal (octahedral encode omitted for clarity)
+        gbuf.world_normal = vertex_world_normal.normalize()
+
+        # --- material properties ------------------------------------------
+        gbuf.base_color = material.base_color.clamp01()
+        gbuf.roughness  = _saturate(material.roughness)
+        gbuf.metallic   = _saturate(material.metallic)
+
+        # --- anisotropy (written only when r.AnisotropicMaterials is on) --
+        # Mirrors FAnisotropyPS writing into the anisotropy GBuffer channel.
+        if self._anisotropy_enabled:
+            gbuf.anisotropy = max(-1.0, min(1.0, material.anisotropy))
+
+        # --- emissive → SceneColor ----------------------------------------
+        # UE5 BasePass: SceneColor.rgb += Emissive * View.PreExposure
+        pre_exposure = 1.0
+        gbuf.scene_color = (material.emissive * pre_exposure).clamp01()
+
+        # --- depth prepass value (DepthRendering.cpp) ----------------------
+        # TDepthOnlyVS outputs SV_Depth; we store linear eye depth.
+        gbuf.depth = max(0.0, eye_depth)
+
+        return gbuf
+
+
+# ---------------------------------------------------------------------------
+# Anisotropy pass — mirrors FAnisotropyMeshProcessor (AnisotropyRendering.cpp)
+# ---------------------------------------------------------------------------
+# 鲁迅式：各向异性不过是承认了世界并非各向同性——
+# 光在不同方向上走得快慢不同，人的命运亦如此。
+
+def astro_anisotropy_brdf(
+    n: _Vec3,
+    v: _Vec3,
+    l: _Vec3,
+    t: _Vec3,
+    roughness_u: float,
+    roughness_v: float,
+) -> float:
+    """
+    Ward-Dür anisotropic BRDF lobe (simplified).
+
+    Used to weight the specular contribution of a cell whose material
+    has anisotropy > 0.  Mirrors the HLSL in AnisotropyPassShader.usf,
+    which is invoked by FAnisotropyMeshProcessor::Process().
+
+    Parameters
+    ----------
+    n           : surface normal     (world space, unit)
+    v           : view direction     (unit, toward camera)
+    l           : light direction    (unit, toward light)
+    t           : tangent direction  (unit)
+    roughness_u : GGX roughness along tangent    [0, 1]
+    roughness_v : GGX roughness along bitangent  [0, 1]
+    """
+    # Clamp roughness to avoid division by zero (same guard as UE5 HLSL)
+    au = max(roughness_u * roughness_u, 1e-4)
+    av = max(roughness_v * roughness_v, 1e-4)
+
+    # Half-vector
+    hx, hy, hz = v.x+l.x, v.y+l.y, v.z+l.z
+    h_len = _math.sqrt(hx*hx + hy*hy + hz*hz)
+    if h_len < 1e-9:
+        return 0.0
+    h = _Vec3(hx/h_len, hy/h_len, hz/h_len)
+
+    # Bitangent
+    b = _Vec3(
+        n.y*t.z - n.z*t.y,
+        n.z*t.x - n.x*t.z,
+        n.x*t.y - n.y*t.x,
+    ).normalize()
+
+    ndotl = _saturate(n.dot(l))
+    ndotv = _saturate(n.dot(v))
+    ndoth = _saturate(n.dot(h))
+    hdott = h.dot(t)
+    hdotb = h.dot(b)
+
+    if ndotl < 1e-6 or ndotv < 1e-6:
+        return 0.0
+
+    # GGX anisotropic NDF  (Burley 2012 / UE5 BRDF.ush)
+    denom = (hdott/au)**2 + (hdotb/av)**2 + ndoth**2
+    d = 1.0 / (_math.pi * au * av * denom**2 + 1e-9)
+
+    # Smith visibility (approximate — same as UE5 optimised form)
+    lv = ndotl * _math.sqrt(ndotv**2 * (1.0 - av**2) + av**2)
+    ll = ndotv * _math.sqrt(ndotl**2 * (1.0 - au**2) + au**2)
+    g  = 0.5 / (lv + ll + 1e-9)
+
+    return d * g * ndotl
+
+
+# ---------------------------------------------------------------------------
+# Depth prepass — mirrors DepthRendering.cpp EarlyZ / DDM_AllOpaque logic
+# ---------------------------------------------------------------------------
+# 鲁迅式：深度测试是渲染管线的第一道门槛，
+# 凡不能通过的，便永远消失在黑暗里——无声无息。
+
+class AstroCellDepthPass:
+    """
+    EarlyZ prepass for a collection of cells.
+
+    Mimics FDepthPassMeshProcessor::AddMeshBatch() + TDepthOnlyVS.
+    Produces a per-cell depth buffer that later passes (BasePass,
+    ClusteredDeferred) use for depth-equal or depth-less-equal tests.
+
+    EarlyZPassMode is hardcoded to DDM_AllOpaque (the most common
+    production setting and the one that matches our cell-centric use).
+    """
+
+    # r.EarlyZSortMasked = 1: masked draws go last (better early-z util)
+    SORT_MASKED_LAST: bool = True
+
+    def run(
+        self,
+        cells: _List[_Dict],
+    ) -> _Dict[str, float]:
+        """
+        Execute the depth prepass.
+
+        Parameters
+        ----------
+        cells : list of dicts with keys
+                  'id'      : str
+                  'depth'   : float  (linear eye depth)
+                  'masked'  : bool   (True → has opacity_mask < 1)
+
+        Returns
+        -------
+        depth_buffer : {cell_id: depth}
+        """
+        # r.EarlyZSortMasked — opaque draws before masked draws
+        if self.SORT_MASKED_LAST:
+            cells = sorted(cells, key=lambda c: (1 if c.get("masked") else 0, c["depth"]))
+
+        depth_buffer: _Dict[str, float] = {}
+        for cell in cells:
+            cid   = cell["id"]
+            depth = float(cell["depth"])
+            # Depth-less test: keep closest (front-to-back render)
+            if cid not in depth_buffer or depth < depth_buffer[cid]:
+                depth_buffer[cid] = depth
+
+        return depth_buffer
+
+
+# ---------------------------------------------------------------------------
+# CustomDepth pass — mirrors CustomDepthRendering.cpp
+# ---------------------------------------------------------------------------
+# 鲁迅式：CustomDepth 是给异类留的通道——
+# 普通物体写普通深度，而那些需要特别对待的，
+# 另有一本账，另有一道门。
+
+@_dataclass
+class AstroCellCustomDepthRequest:
+    """Mirrors the per-primitive CustomDepth render request."""
+    cell_id:       str
+    depth:         float   # eye-space depth of the custom-depth surface
+    stencil_value: int = 0  # r.CustomDepth = 3 → EnabledWithStencil
+
+
+class AstroCellCustomDepthPass:
+    """
+    Renders custom-depth and custom-stencil for flagged cells.
+
+    Corresponds to FCustomDepthPassParameters + the RDG pass in
+    CustomDepthRendering.cpp::RenderCustomDepthPass().
+
+    Ordering (r.CustomDepth.Order):
+      0 → BeforeBasePass  (default when DBuffer is enabled)
+      1 → AfterBasePass
+    We store the result and let the caller decide when to apply it.
+    """
+
+    def __init__(self, order: int = 0, writes_stencil: bool = True):
+        # r.CustomDepth.Order
+        self.before_base_pass: bool = (order == 0)
+        # r.CustomDepth = 3 (EnabledWithStencil)
+        self.writes_stencil: bool = writes_stencil
+
+    def run(
+        self,
+        requests: _List[AstroCellCustomDepthRequest],
+        scene_depth_buffer: _Optional[_Dict[str, float]] = None,
+    ) -> _Dict[str, _Tuple[float, int]]:
+        """
+        Execute the custom-depth pass.
+
+        Parameters
+        ----------
+        requests          : list of custom-depth draw requests
+        scene_depth_buffer: optional scene depth buffer for occlusion test
+                            (None → no occlusion; all writes pass)
+
+        Returns
+        -------
+        {cell_id: (custom_depth, stencil_value)}
+        """
+        # FCustomDepthTextures::Create clears to depth_far=1e9
+        DEPTH_FAR = 1e9
+        out: _Dict[str, _Tuple[float, int]] = {}
+
+        for req in requests:
+            # Depth test against scene geometry (CF_LessEqual in UE5 default)
+            if scene_depth_buffer is not None:
+                scene_d = scene_depth_buffer.get(req.cell_id, DEPTH_FAR)
+                if req.depth > scene_d:
+                    continue  # occluded → discard
+
+            stencil = req.stencil_value if self.writes_stencil else 0
+            # Keep the nearest custom-depth value per cell
+            if req.cell_id not in out or req.depth < out[req.cell_id][0]:
+                out[req.cell_id] = (req.depth, stencil)
+
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Clustered Deferred Shading — mirrors ClusteredDeferredShadingPass.cpp
+# ---------------------------------------------------------------------------
+# 鲁迅式：延迟渲染的集群分格，和旧社会的里弄一样——
+# 把灯光框进一个个格子里，各管各的，互不打扰，
+# 偏偏照亮的还是同一张脸。
+
+@_dataclass
+class AstroCellLight:
+    """
+    Minimal punctual-light descriptor used by the light grid.
+    Mirrors FLocalLightData in the forward light SSBO.
+    """
+    position:   _Vec3
+    color:      _Vec3  = _field(default_factory=lambda: _Vec3(1, 1, 1))
+    intensity:  float  = 1.0
+    radius:     float  = 10.0
+    # Anisotropic materials need the light's tangent influence weight
+    aniso_weight: float = 1.0
+
+
+def _ggx_specular(n: _Vec3, v: _Vec3, l: _Vec3, roughness: float) -> float:
+    """Isotropic GGX BRDF (D*G term only; F=1 for brevity)."""
+    a  = max(roughness * roughness, 1e-4)
+    hx = v.x+l.x; hy = v.y+l.y; hz = v.z+l.z
+    hl = _math.sqrt(hx*hx + hy*hy + hz*hz)
+    if hl < 1e-9:
+        return 0.0
+    h = _Vec3(hx/hl, hy/hl, hz/hl)
+    ndoth = _saturate(n.dot(h))
+    ndotl = _saturate(n.dot(l))
+    ndotv = _saturate(n.dot(v))
+    denom = ndoth*ndoth*(a*a-1.0)+1.0
+    d = a*a / (_math.pi * denom*denom + 1e-9)
+    # Smith G1 (Schlick approximation)
+    k = a / 2.0
+    gv = ndotv / (ndotv*(1-k)+k+1e-9)
+    gl = ndotl / (ndotl*(1-k)+k+1e-9)
+    return d * gv * gl * ndotl
+
+
+class AstroCellClusteredDeferredShadingPass:
+    """
+    Per-cell clustered deferred shading.
+
+    Corresponds to FClusteredShadingPS::ClusteredShadingPixelShader().
+
+    Algorithm
+    ---------
+    1. For each cell, look up its GBuffer entry.
+    2. Iterate over lights assigned to the cell's cluster (here: all
+       lights within radius — the grid-based culling is elided).
+    3. Accumulate diffuse + specular from each light using the same
+       BRDF model that FClusteredShadingPS calls into.
+    4. Support anisotropic materials (FAnistropicMaterials permutation):
+       swap isotropic GGX for the Ward-Dür lobe when anisotropy ≠ 0.
+    5. Add emissive contribution from SceneColor (written by BasePass).
+
+    r.UseClusteredDeferredShading_ToBeRemoved must be non-zero — we
+    assume it is enabled (the caller is responsible for the guard).
+    """
+
+    # SM6 feature-level guard (ShouldUseClusteredDeferredShading)
+    REQUIRES_SM6: bool = True
+
+    def __init__(
+        self,
+        supports_anisotropy: bool = True,
+        ambient: _Vec3 = None,
+    ):
+        # SUPPORTS_ANISOTROPIC_MATERIALS permutation
+        self._aniso_enabled = supports_anisotropy
+        # Simple sky / ambient term (replaces full IBL for cell use)
+        self._ambient = ambient or _Vec3(0.05, 0.05, 0.07)
+
+    def _cluster_lights_for_cell(
+        self,
+        cell_world_pos: _Vec3,
+        lights: _List[AstroCellLight],
+    ) -> _List[AstroCellLight]:
+        """
+        Returns lights whose range encompasses the cell world position.
+        Mimics the light-grid lookup in ClusteredDeferredShadingPixelShader.
+        """
+        result = []
+        for light in lights:
+            dx = cell_world_pos.x - light.position.x
+            dy = cell_world_pos.y - light.position.y
+            dz = cell_world_pos.z - light.position.z
+            dist2 = dx*dx + dy*dy + dz*dz
+            if dist2 <= light.radius * light.radius:
+                result.append(light)
+        return result
+
+    def shade(
+        self,
+        cell_id:        str,
+        gbuffer:        AstroCellGBuffer,
+        world_position: _Vec3,
+        view_dir:       _Vec3,
+        lights:         _List[AstroCellLight],
+        tangent:        _Optional[_Vec3] = None,
+    ) -> _Vec3:
+        """
+        Compute final lit colour for one cell.
+
+        Parameters
+        ----------
+        cell_id        : identifier (for debug only)
+        gbuffer        : GBuffer data written by AstroCellBasePass
+        world_position : world-space surface position of the cell
+        view_dir       : unit vector toward the camera
+        lights         : all scene lights (will be cluster-culled internally)
+        tangent        : world-space surface tangent (needed for aniso BRDF)
+
+        Returns
+        -------
+        lit colour as _Vec3 (linear, pre-tonemapped)
+        """
+        n = gbuffer.world_normal
+        v = view_dir.normalize()
+        t = (tangent or _Vec3(1, 0, 0)).normalize()
+
+        base   = gbuffer.base_color
+        rough  = gbuffer.roughness
+        metal  = gbuffer.metallic
+        aniso  = gbuffer.anisotropy if self._aniso_enabled else 0.0
+
+        # Derive specular colour (UE4/5 metallic workflow)
+        f0 = _Vec3(0.04, 0.04, 0.04)
+        spec_color = _Vec3(
+            f0.x + (base.x - f0.x) * metal,
+            f0.y + (base.y - f0.y) * metal,
+            f0.z + (base.z - f0.z) * metal,
+        )
+        diff_color = _Vec3(
+            base.x * (1.0 - metal),
+            base.y * (1.0 - metal),
+            base.z * (1.0 - metal),
+        )
+
+        # Ambient / indirect
+        acc = _Vec3(
+            diff_color.x * self._ambient.x,
+            diff_color.y * self._ambient.y,
+            diff_color.z * self._ambient.z,
+        )
+
+        # Cluster-cull lights  (r.UseClusteredDeferredShading path)
+        active_lights = self._cluster_lights_for_cell(world_position, lights)
+
+        for light in active_lights:
+            # Light vector + attenuation  (matches GetLocalLightAttenuation)
+            dx = light.position.x - world_position.x
+            dy = light.position.y - world_position.y
+            dz = light.position.z - world_position.z
+            dist = _math.sqrt(dx*dx + dy*dy + dz*dz)
+            if dist < 1e-9:
+                continue
+
+            l = _Vec3(dx/dist, dy/dist, dz/dist)
+
+            # Inverse-square falloff with radius clamp (UE5 PointLight)
+            falloff = _pow_safe(max(0.0, 1.0 - (dist/light.radius)**4), 2.0)
+            falloff /= (dist*dist + 1.0)
+            irradiance = light.intensity * falloff
+
+            lc = light.color
+            ndotl = _saturate(n.dot(l))
+
+            # --- diffuse (Lambertian) -------------------------------------
+            acc = _Vec3(
+                acc.x + diff_color.x * lc.x * ndotl * irradiance,
+                acc.y + diff_color.y * lc.y * ndotl * irradiance,
+                acc.z + diff_color.z * lc.z * ndotl * irradiance,
+            )
+
+            # --- specular ------------------------------------------------
+            if abs(aniso) > 0.01 and self._aniso_enabled:
+                # SUPPORTS_ANISOTROPIC_MATERIALS permutation
+                # Remap scalar anisotropy → (roughness_u, roughness_v)
+                # following UE5 GetAnisotropicRoughness()
+                ru = _saturate(rough * (1.0 + aniso))
+                rv = _saturate(rough * (1.0 - aniso))
+                # Use light's aniso_weight as a per-light tangent scale
+                spec_val = astro_anisotropy_brdf(n, v, l, t, ru, rv)
+                spec_val *= light.aniso_weight
+            else:
+                spec_val = _ggx_specular(n, v, l, rough)
+
+            acc = _Vec3(
+                acc.x + spec_color.x * lc.x * spec_val * irradiance,
+                acc.y + spec_color.y * lc.y * spec_val * irradiance,
+                acc.z + spec_color.z * lc.z * spec_val * irradiance,
+            )
+
+        # Add BasePass emissive contribution from SceneColor
+        sc = gbuffer.scene_color
+        acc = _Vec3(acc.x + sc.x, acc.y + sc.y, acc.z + sc.z)
+
+        return acc.clamp01()
+
+    def run(
+        self,
+        gbuffer_map:    _Dict[str, AstroCellGBuffer],
+        world_positions: _Dict[str, _Vec3],
+        view_dir:       _Vec3,
+        lights:         _List[AstroCellLight],
+        tangents:       _Optional[_Dict[str, _Vec3]] = None,
+    ) -> _Dict[str, _Vec3]:
+        """
+        Shade all cells.
+
+        Returns
+        -------
+        {cell_id: lit_colour_vec3}
+        """
+        tangents = tangents or {}
+        return {
+            cid: self.shade(
+                cid,
+                gbuf,
+                world_positions.get(cid, _Vec3(0, 0, 0)),
+                view_dir,
+                lights,
+                tangents.get(cid),
+            )
+            for cid, gbuf in gbuffer_map.items()
+        }
+
+
+# ---------------------------------------------------------------------------
+# Top-level pipeline — AstroCellRenderPipeline
+# Composes all five passes in UE5 order.
+# ---------------------------------------------------------------------------
+# 鲁迅式：渲染管线的顺序，和历史的顺序一样，
+# 不能随便颠倒——颠倒了，不是错误，便是革命。
+
+class AstroCellRenderPipeline:
+    """
+    Full deferred pipeline for the cell layer, porting:
+
+      1. DepthPass          (DepthRendering.cpp)
+      2. CustomDepthPass    (CustomDepthRendering.cpp)
+      3. BasePass → GBuffer (BasePassRendering.cpp + AnisotropyRendering.cpp)
+      4. ClusteredDeferred  (ClusteredDeferredShadingPass.cpp)
+
+    Mirrors the high-level FDeferredShadingSceneRenderer::Render() sequence
+    as applied to a dict of SVG/astro cells rather than mesh draw commands.
+    """
+
+    def __init__(
+        self,
+        enable_anisotropy:    bool  = True,
+        enable_clustered:     bool  = True,
+        custom_depth_order:   int   = 0,
+        custom_depth_stencil: bool  = True,
+        ambient:              _Optional[_Vec3] = None,
+    ):
+        self._depth_pass    = AstroCellDepthPass()
+        self._custom_depth  = AstroCellCustomDepthPass(
+            order=custom_depth_order,
+            writes_stencil=custom_depth_stencil,
+        )
+        self._base_pass     = AstroCellBasePass(enable_anisotropy=enable_anisotropy)
+        self._clustered     = AstroCellClusteredDeferredShadingPass(
+            supports_anisotropy=enable_anisotropy,
+            ambient=ambient,
+        )
+        self._enable_clustered = enable_clustered
+
+    def render(
+        self,
+        cells:              _List[_Dict],
+        materials:          _Dict[str, AstroCellMaterial],
+        world_normals:      _Dict[str, _Vec3],
+        world_positions:    _Dict[str, _Vec3],
+        eye_depths:         _Dict[str, float],
+        view_dir:           _Vec3,
+        lights:             _List[AstroCellLight],
+        custom_depth_reqs:  _Optional[_List[AstroCellCustomDepthRequest]] = None,
+        tangents:           _Optional[_Dict[str, _Vec3]] = None,
+    ) -> _Dict[str, _Tuple[_Vec3, AstroCellGBuffer, _Optional[_Tuple[float, int]]]]:
+        """
+        Run the full pipeline.
+
+        Parameters
+        ----------
+        cells             : list of {'id', 'depth', 'masked'}
+        materials         : {cell_id: AstroCellMaterial}
+        world_normals     : {cell_id: Vec3}
+        world_positions   : {cell_id: Vec3}
+        eye_depths        : {cell_id: float}
+        view_dir          : camera forward vector (unit)
+        lights            : scene lights for clustered pass
+        custom_depth_reqs : optional custom-depth draw requests
+        tangents          : optional per-cell tangent vectors (aniso)
+
+        Returns
+        -------
+        {cell_id: (lit_colour, gbuffer, (custom_depth, stencil) | None)}
+        """
+        # --- 1. Depth prepass -------------------------------------------
+        depth_buf = self._depth_pass.run(cells)
+
+        # --- 2. Custom depth (BeforeBasePass order) ----------------------
+        custom_depth_buf: _Dict[str, _Tuple[float, int]] = {}
+        if custom_depth_reqs and self._custom_depth.before_base_pass:
+            custom_depth_buf = self._custom_depth.run(
+                custom_depth_reqs, depth_buf
+            )
+
+        # --- 3. BasePass → GBuffer --------------------------------------
+        gbuffer_map: _Dict[str, AstroCellGBuffer] = {}
+        for cell in cells:
+            cid   = cell["id"]
+            mat   = materials.get(cid, AstroCellMaterial())
+            norm  = world_normals.get(cid, _Vec3(0, 0, 1))
+            depth = eye_depths.get(cid, depth_buf.get(cid, 1.0))
+
+            gbuf = self._base_pass.encode(mat, norm, depth)
+
+            # Stamp custom-depth into GBuffer if available
+            if cid in custom_depth_buf:
+                gbuf.custom_depth, gbuf.stencil = custom_depth_buf[cid]
+
+            gbuffer_map[cid] = gbuf
+
+        # --- 4. Custom depth (AfterBasePass order) ----------------------
+        if custom_depth_reqs and not self._custom_depth.before_base_pass:
+            extra = self._custom_depth.run(custom_depth_reqs, depth_buf)
+            custom_depth_buf.update(extra)
+            for cid, (cd, st) in extra.items():
+                if cid in gbuffer_map:
+                    gbuffer_map[cid].custom_depth = cd
+                    gbuffer_map[cid].stencil      = st
+
+        # --- 5. Clustered deferred shading ------------------------------
+        if self._enable_clustered:
+            lit_colours = self._clustered.run(
+                gbuffer_map, world_positions, view_dir, lights, tangents
+            )
+        else:
+            # Fall back to unlit (emissive only)
+            lit_colours = {
+                cid: gbuf.scene_color for cid, gbuf in gbuffer_map.items()
+            }
+
+        # --- Assemble output --------------------------------------------
+        out: _Dict[str, _Tuple[_Vec3, AstroCellGBuffer, _Optional[_Tuple[float, int]]]] = {}
+        for cid, gbuf in gbuffer_map.items():
+            cd_entry = custom_depth_buf.get(cid)
+            out[cid] = (lit_colours.get(cid, _Vec3(0, 0, 0)), gbuf, cd_entry)
+
+        return out
