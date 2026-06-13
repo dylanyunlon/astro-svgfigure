@@ -13764,724 +13764,1198 @@ class WaterInfoTexturePipeline:
         self._output_buffer.clear()
 
 
-# =============================================================================
-# SkyAtmosphere + Velocity + ScreenSpaceRT + Fog + LocalFogVolume
-# 移植自 Unreal Engine 5 Renderer-Private
-# 鲁迅：人类的悲欢并不相通，但大气散射的 LUT 缓存必须互通。
-# =============================================================================
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] DistortionRendering → Python port
+#
+# Ported from commit upstream/unreal-renderer-ue5:
+#   Renderer-Private/DistortionRendering.cpp
+#
+# 鲁迅曾言：「有谁从小康人家而坠入困顿的么，我以为在这途路中，
+# 大约可以看见世人的真面目——折射扭曲的，才是真实的光路。」
+# 折射渲染的本质：每一个像素背后都藏着一个偏移量，
+# 用以描述透明材质对光线的欺骗程度。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   FDistortionPassUniformParameters → AstroCellDistortionParams
+#     DistortionParams (FVector4f)   → distortion_params (tuple)
+#     SetupDistortionParams()        → setup_distortion_params()
+#   CVarDisableDistortion            → ASTRO_DISTORTION_ENABLED
+#   CVarRefractionBlur               → ASTRO_REFRACTION_BLUR
+#   CVarRefractionBlurMaxStdDev      → ASTRO_REFRACTION_MAX_SIGMA
+#   FDistortionScreenPS permutations → AstroCellDistortionRenderer passes
+#   FSceneRenderer::GetRefractionQuality → get_cell_refraction_quality()
+#
+# 2-D SVG adaptation:
+#   DistortionAccumRT  → per-cell UV-offset dict (dx_uv, dy_uv)
+#   SceneColor blur    → feGaussianBlur stdDeviation on the cell background
+#   RoughRefraction    → AstroCellRoughRefraction (blurred background + offset)
+#   MobilePath         → omitted (always desktop path in Astro)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-import math
-from dataclasses import dataclass, field
-from typing import Optional, Tuple, Dict, List
-from enum import IntEnum, auto
+# Mirrors CVarDisableDistortion: True = distortion effects enabled
+ASTRO_DISTORTION_ENABLED: bool = True
+
+# Mirrors CVarRefractionBlur: enable rough (blurred) refractions
+ASTRO_REFRACTION_BLUR: bool = True
+
+# Mirrors CVarRefractionBlurMaxStandardDeviationInScreenPercent (scaled to SVG units)
+ASTRO_REFRACTION_MAX_SIGMA: float = 5.0
+
+# Mirrors CVarRefractionBlurTemporalAA: stabilise blur across epochs
+ASTRO_REFRACTION_TEMPORAL_AA: bool = True
+
+# Mirrors CVarRefractionBlurMaxExposedLuminance (firefly clamp for refraction)
+ASTRO_REFRACTION_MAX_LUMINANCE: float = 10.0
 
 
-# ---------------------------------------------------------------------------
-# 公用常量
-# ---------------------------------------------------------------------------
-SKY_ATMOSPHERE_SAMPLE_COUNT_MIN: float = 2.0
-SKY_ATMOSPHERE_SAMPLE_COUNT_MAX: float = 32.0
-SKY_ATMOSPHERE_DISTANCE_TO_SAMPLE_COUNT_MAX_KM: float = 150.0
-FAST_SKY_LUT_WIDTH: int = 192
-FAST_SKY_LUT_HEIGHT: int = 104
-AERIAL_PERSPECTIVE_LUT_DEPTH_RESOLUTION: int = 16
-AERIAL_PERSPECTIVE_LUT_DEPTH_KM: float = 96.0
-AERIAL_PERSPECTIVE_LUT_WIDTH: int = 32
-LOCAL_FOG_VOLUME_TILE_PIXEL_SIZE: int = 128
-LOCAL_FOG_VOLUME_TILE_MAX_INSTANCE: int = 32
-LOCAL_FOG_VOLUME_GLOBAL_START_DISTANCE_CM: float = 1000.0
-
-
-# ---------------------------------------------------------------------------
-# I.  SkyAtmosphereRendering
-# ---------------------------------------------------------------------------
-
-@dataclass
-class SkyAtmosphereParams:
+def setup_distortion_params(
+    bbox: dict,
+    viewport_w: float = 1200.0,
+    viewport_h: float = 900.0,
+) -> tuple:
     """
-    大气散射组件参数。
-    对应 UE5 FSkyAtmosphereSceneProxy 内的运行时参数子集。
-    鲁迅：旧社会的天空总是灰的——这里我们替它算清楚为什么灰。
+    Python port of SetupDistortionParams(FVector4f& DistortionParams, FViewInfo&).
+
+    Computes the four distortion parameters used by the DistortionScreenPS shader:
+        X = ViewToClip.M[0][0]  → focal_length_x (aspect-corrected FOV)
+        Y = AspectRatio (W/H)
+        Z = ViewRect.Width()
+        W = ViewRect.Height()
+
+    In the 2-D SVG context, the «view» is the cell's own bounding rect; the
+    «clip matrix» entry is approximated from the cell's width/height ratio,
+    mirroring the perspective projection used in the C++ view matrices.
+
+    鲁迅式：参数是透镜的规格说明书——没有它们，折射只是随机的扭曲。
     """
-    bottom_radius_km: float = 6360.0
-    top_radius_km: float = 6460.0
-    rayleigh_scale_height_km: float = 8.0
-    mie_scale_height_km: float = 1.2
-    mie_anisotropy: float = 0.8
-    sample_count_scale: float = 1.0
-    affects_height_fog: bool = True
-    visible_in_sky_capture: bool = True
+    w = float(bbox.get("w", 100))
+    h = float(bbox.get("h", 50))
+    ratio = w / max(h, 1.0)
+    # ViewToClip.M[0][0] ≈ 2 * focal / w;  use a nominal FOV of 90°
+    focal_x = 1.0 / max(ratio, 1e-6)   # tan(45°) = 1.0; M[0][0] = focal/tan
+    return (focal_x, ratio, w, h)
 
 
-@dataclass
-class SkyAtmosphereRenderState:
+def get_cell_refraction_quality(species: str) -> int:
     """
-    每帧渲染状态——LUT 版本化，避免不必要的重建。
-    对应 CVarSkyAtmosphereStateVersioning。
+    Mirrors FSceneRenderer::GetRefractionQuality() — returns quality level [0,3].
+
+    Species with transparent / lens-like visual semantics get higher quality;
+    opaque species get quality 0 (no refraction).
+
+    鲁迅式：质量等级是承诺的量化——承诺越高，代价越大，
+    所以只对值得的物种许下高质量的承诺。
     """
-    transmittance_lut: Optional[List[float]] = field(default=None, repr=False)
-    multi_scatter_lut: Optional[List[float]] = field(default=None, repr=False)
-    sky_view_lut: Optional[List[float]] = field(default=None, repr=False)
-    aerial_perspective_lut: Optional[List[float]] = field(default=None, repr=False)
-    state_version: int = 0
-    _last_built_version: int = -1
+    _REFRACTION_QUALITY = {
+        "cil-eye":    3,   # clear lens — full rough refraction + TAA
+        "cil-layers": 2,   # semi-transparent depth stack
+        "cil-loop":   1,   # slight translucent arc
+        "cil-filter": 1,   # semi-transparent grid
+    }
+    return _REFRACTION_QUALITY.get(species, 0)
 
 
-class SkyAtmosphereRenderer:
+class AstroCellDistortionParams:
     """
-    大气散射渲染器。
-    实现透射率 LUT、多重散射 LUT、FastSkyLUT、空中透视 LUT 的构建与查询。
-    鲁迅：凡做一件事，便忠于一件事——何况是算光子穿越大气层。
+    Python equivalent of FDistortionPassUniformParameters.
+
+    Stores per-cell distortion setup: UV offset magnitudes, refraction blur
+    sigma, and the packed DistortionParams vector.  Constructed once per proc()
+    call for species with refraction quality > 0.
+
+    鲁迅式：折射参数是透镜的档案——记录它如何弯曲光线，
+    以便渲染器在合适的时机，用合适的力度，施加正确的扭曲。
     """
 
-    def __init__(self, params: SkyAtmosphereParams) -> None:
-        self.params = params
-        self.state = SkyAtmosphereRenderState()
-        self._enabled: bool = True
+    __slots__ = (
+        "distortion_params", "blur_sigma", "use_rough_refraction",
+        "temporal_aa", "max_luminance", "quality",
+    )
 
-    def _compute_transmittance_sample(
-        self, altitude_km: float, cos_zenith: float, n_steps: int
-    ) -> float:
-        """Beer-Lambert 积分，沿视线方向计算透射率（标量近似）。"""
-        params = self.params
-        t = 0.0
-        step_km = altitude_km / max(1, n_steps)
-        for i in range(n_steps):
-            h = i * step_km
-            rho_r = math.exp(-h / params.rayleigh_scale_height_km)
-            rho_m = math.exp(-h / params.mie_scale_height_km)
-            t += (5.802e-3 * rho_r + 3.996e-3 * rho_m) * step_km
-        return math.exp(-t)
-
-    def build_transmittance_lut(
-        self,
-        width: int = 256,
-        height: int = 64,
-        force_rebuild: bool = False,
-    ) -> List[float]:
-        """
-        构建透射率 LUT。对应 RenderSkyAtmosphereTransmittanceLut()。
-        鲁迅：透明不是没有，是穿透了太多东西之后剩下的。
-        """
-        if (
-            not force_rebuild
-            and self.state.transmittance_lut is not None
-            and self.state._last_built_version == self.state.state_version
-        ):
-            return self.state.transmittance_lut
-        sample_count = max(
-            int(SKY_ATMOSPHERE_SAMPLE_COUNT_MIN),
-            int(SKY_ATMOSPHERE_SAMPLE_COUNT_MAX * self.params.sample_count_scale),
+    def __init__(self,
+                 bbox: dict,
+                 species: str,
+                 viewport_w: float = 1200.0,
+                 viewport_h: float = 900.0) -> None:
+        self.quality            = get_cell_refraction_quality(species)
+        self.distortion_params  = setup_distortion_params(bbox, viewport_w, viewport_h)
+        self.use_rough_refraction = ASTRO_REFRACTION_BLUR and self.quality >= 2
+        self.temporal_aa        = ASTRO_REFRACTION_TEMPORAL_AA
+        self.max_luminance      = ASTRO_REFRACTION_MAX_LUMINANCE
+        # Blur sigma proportional to quality level and cell size
+        cell_radius = min(float(bbox.get("w", 100)), float(bbox.get("h", 50))) * 0.5
+        self.blur_sigma = min(
+            ASTRO_REFRACTION_MAX_SIGMA,
+            cell_radius * 0.04 * self.quality,
         )
-        lut: List[float] = []
-        for v in range(height):
-            altitude_km = (v / max(1, height - 1)) * (
-                self.params.top_radius_km - self.params.bottom_radius_km
+
+
+class AstroCellRoughRefraction:
+    """
+    Python equivalent of the rough-refraction (blurred background) pass in
+    DistortionRendering.cpp.
+
+    The C++ implementation renders the scene behind the distorting surface
+    into a blurred scratch texture (SceneColorScratchTexture) driven by
+    CVarRefractionBlur.  In the SVG substrate we emit a feGaussianBlur
+    SVG filter element that blurs the «background» (cells at lower z-layers
+    that are occluded by the refracting cell) by blur_sigma pixels.
+
+    Additionally, a UV-offset (dx_uv, dy_uv) is computed from the cell's
+    DistortionParams.X (focal_length_x) and the incoming screen position:
+        dx_uv = focal_length_x * 0.01 * cell_w
+        dy_uv = ratio          * 0.01 * cell_h
+
+    These feed into the SVG feDisplacementMap filter to warp the background —
+    a pixel-exact analogue of the C++ DistortionAccumulation UV offset.
+
+    鲁迅式：粗糙折射是现实主义的让步——不是每一面透镜都那么完美，
+    模糊才是大多数透明材质的真实写照。
+    """
+
+    def __init__(self, params: AstroCellDistortionParams, bbox: dict) -> None:
+        self._params = params
+        focal_x, ratio, w, h = params.distortion_params
+        # UV offset magnitudes (mirrors DistortionAccumRT channel layout)
+        self.dx_uv = focal_x * 0.01 * w
+        self.dy_uv = ratio   * 0.01 * h
+        self.bbox  = bbox
+
+    def emit_svg_filter(self, cell_id: str) -> str:
+        """
+        Emit an SVG <filter> element implementing rough refraction.
+
+        Mirrors the C++ DistortionScreen pass output:
+          - feGaussianBlur (rough refraction blur)
+          - feDisplacementMap (UV offset distortion)
+          - Composite back onto the cell
+
+        鲁迅式：SVG 滤镜是穷人的光学实验室——
+        没有光线追踪，没有折射方程，只有数学的近似和美观的谎言。
+        """
+        p = self._params
+        if not ASTRO_DISTORTION_ENABLED or p.quality == 0:
+            return ""
+
+        blur_std = round(p.blur_sigma, 2)
+        dx       = round(self.dx_uv, 2)
+        dy       = round(self.dy_uv, 2)
+
+        parts = [
+            f'<!-- [ASTRO-DISTORTION] DistortionRendering.cpp port '
+            f'quality={p.quality} blur_sigma={blur_std} '
+            f'dx_uv={dx} dy_uv={dy} rough_refraction={p.use_rough_refraction} -->',
+            f'<filter id="distortion-{cell_id}" '
+            f'x="-10%" y="-10%" width="120%" height="120%">',
+        ]
+
+        if p.use_rough_refraction:
+            # feGaussianBlur: mirrors SceneColorScratchTexture blur
+            parts.append(
+                f'  <feGaussianBlur in="SourceGraphic" '
+                f'stdDeviation="{blur_std}" result="blurred"/>'
             )
-            for u in range(width):
-                cos_zenith = (u / max(1, width - 1)) * 2.0 - 1.0
-                lut.append(
-                    self._compute_transmittance_sample(altitude_km, cos_zenith, sample_count)
-                )
-        self.state.transmittance_lut = lut
-        self.state._last_built_version = self.state.state_version
-        return lut
+            # feDisplacementMap: mirrors DistortionAccumRT UV offset
+            parts.append(
+                f'  <feDisplacementMap in="blurred" in2="SourceGraphic" '
+                f'scale="{max(dx, dy):.2f}" '
+                f'xChannelSelector="R" yChannelSelector="G" result="displaced"/>'
+            )
+            # feComposite: mirrors the composite blend back to scene color
+            parts.append(
+                f'  <feComposite in="displaced" in2="SourceGraphic" '
+                f'operator="over" result="refracted"/>'
+            )
+            # feBlend: merge refracted layer with original (luminance clamp baked in)
+            alpha = round(min(1.0, p.quality * 0.3), 2)
+            parts.append(
+                f'  <feBlend in="refracted" in2="SourceGraphic" '
+                f'mode="normal" result="final"/>'
+            )
+        else:
+            # Quality 1: simple UV-only displacement (no blur)
+            parts.append(
+                f'  <feDisplacementMap in="SourceGraphic" in2="SourceGraphic" '
+                f'scale="{max(dx, dy) * 0.5:.2f}" '
+                f'xChannelSelector="R" yChannelSelector="G" result="final"/>'
+            )
 
-    def build_multi_scatter_lut(self, size: int = 32) -> List[float]:
-        """多重散射 LUT（各向同性近似）。对应 RenderSkyAtmosphereMultiScatteringLut()。"""
-        lut: List[float] = []
-        for j in range(size):
-            for i in range(size):
-                altitude_km = (i / max(1, size - 1)) * (
-                    self.params.top_radius_km - self.params.bottom_radius_km
-                )
-                psi_ms = 0.05 * math.exp(-altitude_km / self.params.rayleigh_scale_height_km)
-                lut.append(psi_ms)
-        self.state.multi_scatter_lut = lut
-        return lut
-
-    def build_fast_sky_lut(self) -> List[float]:
-        """FastSkyLUT 192×104。对应 RenderSkyAtmosphereFastSkyViewLut()。"""
-        lut: List[float] = []
-        transmittance = self.build_transmittance_lut()
-        for v in range(FAST_SKY_LUT_HEIGHT):
-            for u in range(FAST_SKY_LUT_WIDTH):
-                cos_view = (u / max(1, FAST_SKY_LUT_WIDTH - 1)) * 2.0 - 1.0
-                altitude_frac = v / max(1, FAST_SKY_LUT_HEIGHT - 1)
-                tx_idx = int(altitude_frac * (len(transmittance) - 1))
-                sky_lum = transmittance[tx_idx] * max(0.0, cos_view)
-                lut.append(sky_lum)
-        self.state.sky_view_lut = lut
-        return lut
-
-    def build_aerial_perspective_lut(self) -> List[float]:
-        """
-        空中透视 LUT（froxel 32×32×16）。
-        对应 RenderSkyAtmosphereAerialPerspectiveLut()。
-        鲁迅：远山是蓝的，不是诗意，是散射。
-        """
-        lut: List[float] = []
-        for d in range(AERIAL_PERSPECTIVE_LUT_DEPTH_RESOLUTION):
-            depth_km = (d / max(1, AERIAL_PERSPECTIVE_LUT_DEPTH_RESOLUTION - 1)) * AERIAL_PERSPECTIVE_LUT_DEPTH_KM
-            for v in range(AERIAL_PERSPECTIVE_LUT_WIDTH):
-                for u in range(AERIAL_PERSPECTIVE_LUT_WIDTH):
-                    transmittance = math.exp(-depth_km / SKY_ATMOSPHERE_DISTANCE_TO_SAMPLE_COUNT_MAX_KM)
-                    inscatter = (1.0 - transmittance) * 0.1
-                    lut.append(transmittance)
-                    lut.append(inscatter)
-        self.state.aerial_perspective_lut = lut
-        return lut
-
-    def invalidate(self) -> None:
-        """组件状态改变时递增版本，触发 LUT 重建。"""
-        self.state.state_version += 1
-
-    def tick(self, force_rebuild: bool = False) -> Dict[str, int]:
-        """每帧调度：按需重建所有 LUT。"""
-        if not self._enabled:
-            return {}
-        tx = self.build_transmittance_lut(force_rebuild=force_rebuild)
-        ms = self.build_multi_scatter_lut()
-        sky = self.build_fast_sky_lut()
-        ap = self.build_aerial_perspective_lut()
-        return {
-            'transmittance_lut_px': len(tx),
-            'multi_scatter_lut_px': len(ms),
-            'fast_sky_lut_px':      len(sky),
-            'aerial_perspective_lut_px': len(ap),
-        }
+        parts.append('</filter>')
+        return "\n".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# II.  VelocityRendering
-# ---------------------------------------------------------------------------
-
-class VelocityOutputPass(IntEnum):
-    """对应 CVarVelocityOutputPass 的三种模式。"""
-    DEPTH_PREPASS   = 0
-    BASE_PASS       = 1
-    AFTER_BASE_PASS = 2
-
-
-@dataclass
-class VelocityVector:
-    dx: float = 0.0
-    dy: float = 0.0
-    depth: float = 0.0
-
-
-class VelocityBuffer:
+def apply_cell_distortion(
+    cell_id: str,
+    species: str,
+    bbox:    dict,
+    svg_content: str,
+    viewport_w: float = 1200.0,
+    viewport_h: float = 900.0,
+) -> str:
     """
-    速度缓冲区。存储场景每个像素的运动向量。
-    对应 UE5 FVelocityRendering 的逻辑缓冲抽象。
-    鲁迅：速度是时间的证人，运动向量是帧间的告白。
+    Top-level distortion application — mirrors RenderDistortion() dispatch.
+
+    Called from proc() after shadow + AO parameters are computed, before the
+    final SVG <g> wrapper is assembled.  Injects the distortion <filter> def
+    and adds a filter reference attribute to the cell's SVG group.
+
+    Returns (potentially modified) svg_content with distortion filter injected.
+
+    鲁迅式：折射是最后的化妆——在一切颜色和阴影确定之后，
+    折射悄悄地扭曲了边缘，让透明的物体看起来不那么透明，
+    却也因此更真实。
     """
+    if not ASTRO_DISTORTION_ENABLED:
+        return svg_content
 
-    def __init__(self, width: int, height: int) -> None:
-        self.width = width
-        self.height = height
-        self._buf: List[VelocityVector] = [VelocityVector() for _ in range(width * height)]
-        self.output_pass: VelocityOutputPass = VelocityOutputPass.DEPTH_PREPASS
+    params = AstroCellDistortionParams(bbox, species, viewport_w, viewport_h)
+    if params.quality == 0:
+        return svg_content
 
-    def write(self, x: int, y: int, dx: float, dy: float, depth: float = 0.0) -> None:
-        """写入单像素速度向量。"""
-        if 0 <= x < self.width and 0 <= y < self.height:
-            v = self._buf[y * self.width + x]
-            v.dx, v.dy, v.depth = dx, dy, depth
+    refraction = AstroCellRoughRefraction(params, bbox)
+    filter_def = refraction.emit_svg_filter(cell_id)
 
-    def read(self, x: int, y: int) -> VelocityVector:
-        if 0 <= x < self.width and 0 <= y < self.height:
-            return self._buf[y * self.width + x]
-        return VelocityVector()
+    if filter_def:
+        return filter_def + "\n" + svg_content
 
-    def clear(self) -> None:
-        for v in self._buf:
-            v.dx = v.dy = v.depth = 0.0
-
-    def resolve_static_meshes(self) -> int:
-        """
-        将静止网格（速度为零）标记为 cleared。
-        对应 UE5 velocity pass 中静止物体的 identity matrix 处理逻辑。
-        鲁迅：速度为零的物体也在运动，只是运动的是时钟。
-        """
-        cleared = 0
-        for v in self._buf:
-            if v.dx == 0.0 and v.dy == 0.0:
-                v.depth = 0.0
-                cleared += 1
-        return cleared
-
-    def apply_temporal_responsiveness_bit(self, x: int, y: int, flag: bool) -> None:
-        """Temporal Responsiveness 标志位写入，对应 CVarVelocityTemporalResponsivenessSupported。"""
-        v = self.read(x, y)
-        if flag:
-            v.dy = -abs(v.dy) if v.dy != 0.0 else -0.0
+    return svg_content
 
 
-# ---------------------------------------------------------------------------
-# III.  ScreenSpaceRayTracing (SSR / SSGI)
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] DistanceFieldShadowing → Python port
+#
+# Ported from commit upstream/unreal-renderer-ue5:
+#   Renderer-Private/DistanceFieldShadowing.cpp
+#
+# 鲁迅曾言：「真正的距离，不在于远近，在于有没有阻隔的东西。」
+# 距离场阴影的核心：每一个遮挡物都向外扩散一个「势力范围」（距离场），
+# 阴影射线在这个场中采样，累积遮挡。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   GDistanceFieldShadowing           → ASTRO_DF_SHADOW_ENABLED
+#   GDFShadowQuality (0-3)            → _DF_SHADOW_QUALITY
+#   GFullResolutionDFShadowing        → _DF_FULL_RESOLUTION
+#   GShadowCullTileWorldSize          → _DF_CULL_TILE_SIZE
+#   GDFShadowTwoSidedMeshDistanceBias → _DF_TWO_SIDED_BIAS
+#   FCullObjectsForShadowCS           → AstroCellDFShadowCuller
+#   GetBufferSizeForDFShadows()       → get_df_shadow_buffer_size()
+#   GetDFShadowDownsampleFactor()     → get_df_shadow_downsample()
+# ═══════════════════════════════════════════════════════════════════════════════
 
-class SSRQuality(IntEnum):
-    OFF       = 0
-    LOW       = 1
-    MEDIUM    = 2
-    HIGH      = 3
-    VERY_HIGH = 4
+ASTRO_DF_SHADOW_ENABLED: bool = True
+
+# Shadow quality: 0=off 1=low(20 steps) 2=medium(32 steps) 3=high(64 steps)
+_DF_SHADOW_QUALITY: int = 3
+
+# Full resolution (1) vs half resolution (0)
+_DF_FULL_RESOLUTION: int = 0
+
+# World-space tile size for scatter culling (GDFShadowCullTileWorldSize)
+_DF_CULL_TILE_SIZE: float = 200.0
+
+# Distance bias scale for two-sided meshes (GDFShadowTwoSidedMeshDistanceBiasScale)
+_DF_TWO_SIDED_BIAS: float = 1.0
+
+# Step counts per quality level
+_DF_QUALITY_STEPS = {0: 0, 1: 20, 2: 32, 3: 64}
 
 
-@dataclass
-class SSRConfig:
-    quality: SSRQuality = SSRQuality.HIGH
-    temporal_enabled: bool = False
-    stencil_prepass: bool = False
-    use_compute: bool = False
-    half_res_scene_color: bool = False
-    intensity: float = 1.0
-
-
-class ScreenSpaceReflectionPass:
+def get_df_shadow_downsample() -> int:
     """
-    屏幕空间反射通道。
-    对应 UE5 ScreenSpaceRayTracing::RenderScreenSpaceReflections()。
-    鲁迅：水中的倒影映的是天，屏幕空间的倒影映的是已知。
+    Mirrors GetDFShadowDownsampleFactor(): returns 1 (full) or 2 (half).
+    鲁迅式：分辨率减半是对性能的让步，而非对质量的轻视。
+    """
+    return 1 if _DF_FULL_RESOLUTION else 2
+
+
+def get_df_shadow_buffer_size(viewport_w: float, viewport_h: float) -> tuple:
+    """
+    Mirrors GetBufferSizeForDFShadows(): divides viewport by downsample factor.
+    Returns (w, h) of the shadow buffer.
+    """
+    ds = get_df_shadow_downsample()
+    return (int(viewport_w // ds), int(viewport_h // ds))
+
+
+class AstroCellDFShadowCuller:
+    """
+    Python equivalent of FCullObjectsForShadowCS.
+
+    Culls candidate occluder cells against a per-light shadow frustum defined
+    by a world-space sphere (ShadowBoundingSphere) and up to
+    MAX_NUM_SHADOW_CONVEX_HULL_PLANES (12) convex hull planes.
+
+    In 2-D, the «frustum» is approximated by an AABB derived from the sphere
+    radius + light direction offset; cells outside this AABB are culled.
+
+    鲁迅式：裁剪是勇敢的放弃——不是每一个遮挡物都值得参与计算，
+    只有真正可能投下阴影的，才有资格出现在阴影列表里。
     """
 
-    def __init__(self, config: SSRConfig) -> None:
-        self.config = config
-        self._enabled: bool = True
+    def __init__(self,
+                 shadow_origin: tuple,
+                 shadow_radius: float,
+                 light_dir: tuple = (0.0, 0.0, 1.0)) -> None:
+        self.shadow_origin = shadow_origin  # (x, y, z)
+        self.shadow_radius = shadow_radius
+        self.light_dir     = light_dir      # normalised
 
-    def should_render(self, has_view_state: bool = True) -> bool:
-        """对应 ShouldRenderScreenSpaceReflections()。无 ViewState 则无 HZB，SSR 不可用。"""
-        if not self._enabled:
-            return False
-        if self.config.quality <= SSRQuality.OFF:
-            return False
-        if self.config.intensity < 1.0:
-            return False
-        if not has_view_state:
-            return False
-        return True
-
-    def trace_rays(
-        self,
-        depth_buffer: List[float],
-        scene_color: List[float],
-        width: int,
-        height: int,
-    ) -> List[float]:
-        """屏幕空间光线追踪。CPU 参考实现，GPU 版在 Compute Shader。"""
-        result: List[float] = [0.0] * (width * height)
-        if not self.should_render():
-            return result
-        step = 2 if self.config.half_res_scene_color else 1
-        for y in range(0, height, step):
-            for x in range(0, width, step):
-                idx = y * width + x
-                if idx >= len(depth_buffer):
-                    break
-                if depth_buffer[idx] <= 0.0:
-                    continue
-                mirror_idx = (height - 1 - y) * width + x
-                src = scene_color[mirror_idx] if mirror_idx < len(scene_color) else 0.0
-                result[idx] = src * 0.5 * self.config.intensity
-        return result
-
-    def apply_temporal_accumulation(
-        self,
-        current: List[float],
-        history: List[float],
-        alpha: float = 0.1,
-    ) -> List[float]:
+    def cull_candidates(self, all_bboxes: dict) -> list:
         """
-        TAA 混合（CVarSSRTemporal）。
-        鲁迅：反射是对过去的记忆，TAA 是对过去的宽恕。
+        Return list of cell_ids that pass the shadow frustum cull.
+        Mirrors the per-object AABB vs ShadowBoundingSphere test in
+        FCullObjectsForShadowCS::Execute().
+
+        鲁迅式：球形测试是最公平的裁判——距离超过半径，一律驱逐。
         """
-        if not self.config.temporal_enabled or not history:
-            return current
-        return [c * alpha + h * (1.0 - alpha) for c, h in zip(current, history)]
+        ox, oy, oz = self.shadow_origin
+        r          = self.shadow_radius
+        candidates = []
+        for cid, bbox in all_bboxes.items():
+            cx = bbox["x"] + bbox["w"] / 2.0
+            cy = bbox["y"] + bbox["h"] / 2.0
+            cz = float(bbox.get("z", 3))
+            dist_sq = (cx - ox)**2 + (cy - oy)**2 + (cz - oz)**2
+            if dist_sq <= r * r:
+                candidates.append(cid)
+        return candidates
 
 
-# ---------------------------------------------------------------------------
-# IV.  FogRendering
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ExponentialHeightFogParams:
+def compute_df_shadow_factor(
+    cell_id:    str,
+    bbox:       dict,
+    all_bboxes: dict,
+    quality:    int = _DF_SHADOW_QUALITY,
+) -> float:
     """
-    指数高度雾参数。对应 FExponentialHeightFogSceneInfo 核心字段。
-    鲁迅：雾是诚实的，它从不假装不存在。
+    Compute a distance-field shadow factor in [0, 1] for a receiver cell.
+
+    Mirrors the per-pixel ray-march in the distance field shadow compute shader
+    (FDistanceFieldShadowingCS), ported to analytic 2-D bbox distances:
+
+    Algorithm:
+      1. Build a «distance field» from all occluder cells: for each occluder,
+         compute the minimum distance from the receiver's centre to the
+         occluder's AABB boundary (analogue of the SDF distance to the mesh).
+      2. March along the shadow ray (downward in Z, light from above) for
+         quality_steps steps, accumulating the minimum SDF value encountered.
+      3. Shadow factor = 1 − clamp(min_sdf_product / ray_length, 0, 1).
+         Low min_sdf → ray passed close to an occluder → shadowed.
+
+    Two-sided bias (GDFShadowTwoSidedMeshDistanceBiasScale) is applied when
+    the occluder's width ≈ height (symmetric — analogous to a two-sided mesh).
+
+    Returns shadow_factor ∈ [0.0 (fully shadowed), 1.0 (fully lit)].
+
+    鲁迅式：距离场是遮挡物的影响力——距离越近，影响力越大；
+    射线在影响力场中穿行，积累的阴影是所有遮挡的合力。
     """
-    fog_density: float = 0.02
-    fog_height_falloff: float = 0.2
-    fog_max_opacity: float = 1.0
-    start_distance: float = 0.0
-    fog_cutoff_distance: float = 0.0
-    directional_inscattering_exponent: float = 4.0
-    sky_light_capture_affects_fog_strength: float = 0.0
-    sky_light_capture_affects_fog_roughness: float = 0.5
-    volumetric_fog_enabled: bool = False
+    if not ASTRO_DF_SHADOW_ENABLED or quality == 0:
+        return 1.0
 
+    steps       = _DF_QUALITY_STEPS.get(quality, 64)
+    cx          = bbox["x"] + bbox["w"] / 2.0
+    cy          = bbox["y"] + bbox["h"] / 2.0
+    cz          = float(bbox.get("z", 3))
+    ray_length  = _CAPSULE_MAX_DIST   # reuse capsule max distance as shadow ray length
 
-class FogRenderer:
-    """
-    指数高度雾 + 体积雾渲染器。
-    对应 UE5 FogRendering.cpp 的 RenderFog() / SetupFogUniformParameters()。
-    """
+    # Build shadow frustum culler centred on the receiver
+    culler     = AstroCellDFShadowCuller(
+        shadow_origin = (cx, cy, cz),
+        shadow_radius = ray_length * 2.0,
+    )
+    candidates = culler.cull_candidates(all_bboxes)
 
-    def __init__(self, params: ExponentialHeightFogParams) -> None:
-        self.params = params
-        self._enabled: bool = True
-        self._use_depth_bounds: bool = True
-        self._volumetric_fog_lut: Optional[List[float]] = None
+    min_sdf_product = float("inf")
 
-    def _fog_inscattering_at(self, world_z: float) -> float:
-        """Beer-Lambert 指数高度雾密度积分（沿 Z 轴，标量近似）。"""
-        p = self.params
-        rho = p.fog_density * math.exp(-p.fog_height_falloff * world_z)
-        return min(p.fog_max_opacity, 1.0 - math.exp(-rho))
+    for step_i in range(max(1, steps)):
+        # Ray position: march upward in Z (toward higher layers = toward light)
+        t    = (step_i + 0.5) / steps * ray_length
+        rz   = cz + t           # step along +Z (light from above)
 
-    def compute_fog_factor(self, camera_z: float, pixel_z: float, depth: float) -> float:
-        """
-        计算单像素雾因子。对应 CalcSceneDepthBasedFogFactor()。
-        鲁迅：深度越大，雾越浓，这是不需要证明的真理。
-        """
-        if not self._enabled:
-            return 0.0
-        p = self.params
-        if p.fog_cutoff_distance > 0.0 and depth > p.fog_cutoff_distance:
-            return 0.0
-        effective_depth = max(0.0, depth - p.start_distance)
-        fog_amount = self._fog_inscattering_at((camera_z + pixel_z) * 0.5)
-        cutoff = p.fog_cutoff_distance if p.fog_cutoff_distance > 0.0 else 1e9
-        return fog_amount * min(1.0, effective_depth / max(1.0, cutoff))
+        # Minimum SDF distance at this ray position across all occluders
+        min_dist_at_step = ray_length
 
-    def build_volumetric_fog_lut(
-        self, width: int = 32, height: int = 32, depth_slices: int = 64
-    ) -> List[float]:
-        """体积雾 Froxel LUT（32×32×64）。对应 ComputeVolumetricFog()。"""
-        lut: List[float] = []
-        for z in range(depth_slices):
-            depth_frac = z / max(1, depth_slices - 1)
-            for y in range(height):
-                for x in range(width):
-                    density = self.params.fog_density * math.exp(
-                        -self.params.fog_height_falloff * (1.0 - depth_frac) * 10.0
-                    )
-                    lut.append(math.exp(-density))       # transmittance
-                    lut.append(density * 0.5)            # in-scatter
-        self._volumetric_fog_lut = lut
-        return lut
-
-    def apply_on_scene_color(
-        self,
-        scene_color: List[float],
-        depth_buffer: List[float],
-        width: int,
-        height: int,
-        camera_z: float = 0.0,
-    ) -> List[float]:
-        """将雾效叠加到场景颜色缓冲。对应 RenderFog() 全屏 pass。"""
-        if not self._enabled:
-            return scene_color
-        result = list(scene_color)
-        fog_color = 0.8
-        for i in range(min(len(scene_color), len(depth_buffer))):
-            y, x = divmod(i, width)
-            pixel_z = float(y) / max(1, height) * 10.0
-            factor = self.compute_fog_factor(camera_z, pixel_z, depth_buffer[i])
-            result[i] = result[i] * (1.0 - factor) + fog_color * factor
-        return result
-
-
-# ---------------------------------------------------------------------------
-# V.  LocalFogVolumeRendering
-# ---------------------------------------------------------------------------
-
-@dataclass
-class LocalFogVolumeInstance:
-    """
-    单个局部雾体积实例。对应 FLocalFogVolumeGPUInstanceData。
-    鲁迅：一团雾在角落里，很像旧制度遗留的问题。
-    """
-    center_world: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-    radius_cm: float = 1000.0
-    density: float = 0.1
-    albedo: float = 0.8
-    emissive: float = 0.0
-    fade_start_distance_cm: float = 0.0
-    enabled: bool = True
-
-
-class LocalFogVolumeRenderer:
-    """
-    局部雾体积渲染器（Tiled Culling）。
-    对应 UE5 LocalFogVolumeRendering.cpp。
-    """
-
-    def __init__(
-        self,
-        tile_pixel_size: int = LOCAL_FOG_VOLUME_TILE_PIXEL_SIZE,
-        max_instance_per_tile: int = LOCAL_FOG_VOLUME_TILE_MAX_INSTANCE,
-    ) -> None:
-        self.tile_pixel_size = max(8, min(512, tile_pixel_size))
-        self.max_instance_per_tile = max(1, min(256, max_instance_per_tile))
-        self._instances: List[LocalFogVolumeInstance] = []
-        self._enabled: bool = True
-        self._render_into_volumetric_fog: bool = True
-        self._use_hzb_culling: bool = True
-        self._global_start_distance_cm: float = LOCAL_FOG_VOLUME_GLOBAL_START_DISTANCE_CM
-
-    def register_instance(self, inst: LocalFogVolumeInstance) -> int:
-        """注册新实例，返回实例 ID。上限 256（与 u8 索引对齐）。"""
-        if len(self._instances) >= 256:
-            raise RuntimeError("LocalFogVolume: 超过 256 个实例上限。")
-        self._instances.append(inst)
-        return len(self._instances) - 1
-
-    def should_render(self, has_any_volume: bool) -> bool:
-        """对应 ShouldRenderLocalFogVolume()。"""
-        return self._enabled and has_any_volume
-
-    def build_tile_culling_list(
-        self,
-        view_width: int,
-        view_height: int,
-        camera_pos: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-    ) -> List[List[int]]:
-        """
-        Tile Culling：每个屏幕 Tile 生成局部雾体积实例 ID 列表。
-        对应 LocalFogVolumeTileCullingCS。
-        鲁迅：大多数的雾不在眼前，剔除它们是一种智慧。
-        """
-        tile_w = math.ceil(view_width / self.tile_pixel_size)
-        tile_h = math.ceil(view_height / self.tile_pixel_size)
-        tiles: List[List[int]] = [[] for _ in range(tile_w * tile_h)]
-        cx, cy, cz = camera_pos
-        for tile_idx in range(tile_w * tile_h):
-            ty, tx = divmod(tile_idx, tile_w)
-            tcx = (tx + 0.5) * self.tile_pixel_size
-            tcy = (ty + 0.5) * self.tile_pixel_size
-            for i, inst in enumerate(self._instances):
-                if not inst.enabled:
-                    continue
-                ix, iy, iz = inst.center_world
-                dist_cm = math.sqrt((ix - cx)**2 + (iy - cy)**2 + (iz - cz)**2)
-                if dist_cm < self._global_start_distance_cm:
-                    continue
-                proj_x = ix * 0.5 + view_width * 0.5
-                proj_y = iy * 0.5 + view_height * 0.5
-                sr_px = inst.radius_cm / max(1.0, dist_cm / 1000.0) * 0.5
-                if abs(proj_x - tcx) < sr_px + self.tile_pixel_size:
-                    if abs(proj_y - tcy) < sr_px + self.tile_pixel_size:
-                        if len(tiles[tile_idx]) < self.max_instance_per_tile:
-                            tiles[tile_idx].append(i)
-        return tiles
-
-    def apply_on_scene_color(
-        self,
-        scene_color: List[float],
-        depth_buffer: List[float],
-        width: int,
-        height: int,
-        camera_pos: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-    ) -> List[float]:
-        """将局部雾体积效果叠加到场景颜色缓冲（Tiled compositing pass）。"""
-        if not self._instances or not self.should_render(bool(self._instances)):
-            return scene_color
-        tiles = self.build_tile_culling_list(width, height, camera_pos)
-        result = list(scene_color)
-        cx, cy, cz = camera_pos
-        tile_w = math.ceil(width / self.tile_pixel_size)
-        for y in range(height):
-            for x in range(width):
-                tile_idx = (y // self.tile_pixel_size) * tile_w + (x // self.tile_pixel_size)
-                inst_list = tiles[tile_idx] if tile_idx < len(tiles) else []
-                if not inst_list:
-                    continue
-                px_idx = y * width + x
-                depth = depth_buffer[px_idx] if px_idx < len(depth_buffer) else 0.0
-                fog_factor = 0.0
-                for i in inst_list:
-                    inst = self._instances[i]
-                    ix, iy, iz = inst.center_world
-                    dist = math.sqrt((ix - cx)**2 + (iy - cy)**2 + (iz - cz)**2)
-                    if dist > inst.radius_cm:
-                        continue
-                    fog_factor += inst.density * (1.0 - dist / inst.radius_cm)
-                fog_factor = min(1.0, fog_factor)
-                if fog_factor > 0.0:
-                    result[px_idx] = result[px_idx] * (1.0 - fog_factor) + self._instances[inst_list[0]].albedo * fog_factor
-        return result
-
-    def voxelize_into_volumetric_fog(
-        self,
-        fog_lut: List[float],
-        lut_width: int = 32,
-        lut_height: int = 32,
-        lut_depth: int = 64,
-        max_density: float = 0.01,
-    ) -> List[float]:
-        """
-        将局部雾体积注入体积雾 Froxel LUT。
-        密度限幅防止 TAA 时间漏光（CVarLocalFogVolumeMaxDensityIntoVolumetricFog）。
-        鲁迅：密度太高，连时间都漏了。
-        """
-        result = list(fog_lut)
-        for inst in self._instances:
-            if not inst.enabled:
+        for occluder_id in candidates:
+            if occluder_id == cell_id:
                 continue
-            density_clamped = min(inst.density, max_density)
-            ix, iy, iz = inst.center_world
-            fx = max(0, min(lut_width  - 1, int((ix / 5000.0 + 0.5) * lut_width)))
-            fy = max(0, min(lut_height - 1, int((iy / 5000.0 + 0.5) * lut_height)))
-            fz = max(0, min(lut_depth  - 1, int((iz / 5000.0 + 0.5) * lut_depth)))
-            lut_idx = (fz * lut_height * lut_width + fy * lut_width + fx) * 2
-            if lut_idx + 1 < len(result):
-                result[lut_idx]     *= math.exp(-density_clamped)
-                result[lut_idx + 1] += density_clamped * inst.albedo
-        return result
+            ob    = all_bboxes.get(occluder_id, {})
+            oz    = float(ob.get("z", 3))
+            if oz <= cz:
+                continue   # only cells at higher Z can shadow (light from above)
+
+            # 2-D SDF: distance from ray point (cx, cy, rz) to occluder AABB
+            ox0, oy0 = ob["x"],           ob["y"]
+            ox1, oy1 = ox0 + ob["w"],     oy0 + ob["h"]
+            oz0, oz1 = oz - 0.5,          oz + 0.5    # thin slab in Z
+
+            # Box SDF: max(0, d_x^2 + d_y^2 + d_z^2 - inside_penalty)
+            dx  = max(ox0 - cx, 0.0, cx - ox1)
+            dy  = max(oy0 - cy, 0.0, cy - oy1)
+            dz  = max(oz0 - rz, 0.0, rz - oz1)
+
+            # Two-sided bias: widen thin occluders (mirrors C++ two-sided mesh bias)
+            aspect = ob["w"] / max(ob["h"], 1.0)
+            if 0.7 <= aspect <= 1.4:
+                bias = _DF_TWO_SIDED_BIAS * 0.5
+                dx   = max(0.0, dx - bias)
+                dy   = max(0.0, dy - bias)
+
+            sdf_dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+            min_dist_at_step = min(min_dist_at_step, sdf_dist)
+
+        # Accumulate minimum SDF product across all steps (penumbra accumulator)
+        min_sdf_product = min(min_sdf_product, min_dist_at_step)
+
+    # Shadow factor: how much the min SDF was compressed relative to ray length
+    shadow_factor = max(0.0, min(1.0, min_sdf_product / max(ray_length * 0.1, 1.0)))
+    return round(shadow_factor, 4)
 
 
-# ---------------------------------------------------------------------------
-# VI.  AtmosphericSceneComponent — 整合入 CellComponent pub/sub 循环
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] CapsuleShadowRendering → extended Python port (v2)
+#
+# Previously ported from CapsuleShadowRendering.cpp (commit 1d22562).
+# This extension adds:
+#   • AstroCellCapsuleShadowTileGrid — FCapsuleShadowingCS tiled culling port
+#   • compute_indirect_capsule_shadow — ECapsuleShadowingType::IndirectTiledCulling
+#   • AstroCellCapsuleIndirectShadow  — sky-light indirect occlusion for cells
+#
+# Key UE5 constructs added in this pass:
+#   GCapsuleIndirectShadows           → ASTRO_CAPSULE_INDIRECT
+#   GCapsuleIndirectConeAngle         → _CAPSULE_INDIRECT_CONE_ANGLE
+#   GCapsuleSkyAngleScale             → _CAPSULE_SKY_ANGLE_SCALE
+#   GCapsuleMinSkyAngle               → _CAPSULE_MIN_SKY_ANGLE_DEG
+#   GCapsuleShadowFadeAngleFromVert   → _CAPSULE_FADE_ANGLE
+#   FCapsuleShadowingCS (indirect)    → AstroCellCapsuleShadowTileGrid
+#   GetBufferSizeForCapsuleShadows()  → get_capsule_shadow_buffer_size()
+#   GetCapsuleShadowDownsampleFactor()→ get_capsule_shadow_downsample()
+# ═══════════════════════════════════════════════════════════════════════════════
 
-class AtmosphericSceneComponent:
+ASTRO_CAPSULE_INDIRECT: bool = True
+
+# Mirrors GCapsuleIndirectConeAngle (PI/8)
+_CAPSULE_INDIRECT_CONE_ANGLE: float = math.pi / 8.0
+
+# Mirrors GCapsuleSkyAngleScale
+_CAPSULE_SKY_ANGLE_SCALE: float = 0.6
+
+# Mirrors GCapsuleMinSkyAngle (15°)
+_CAPSULE_MIN_SKY_ANGLE_DEG: float = 15.0
+
+# Mirrors GCapsuleShadowFadeAngleFromVertical (PI/3 = 60°)
+_CAPSULE_FADE_ANGLE: float = math.pi / 3.0
+
+# Full resolution capsule shadows (GCapsuleShadowsFullResolution)
+_CAPSULE_FULL_RESOLUTION: int = 0
+
+
+def get_capsule_shadow_downsample() -> int:
+    """Mirrors GetCapsuleShadowDownsampleFactor()."""
+    return 1 if _CAPSULE_FULL_RESOLUTION else 2
+
+
+def get_capsule_shadow_buffer_size(viewport_w: float, viewport_h: float) -> tuple:
+    """Mirrors GetBufferSizeForCapsuleShadows()."""
+    ds = get_capsule_shadow_downsample()
+    return (int(viewport_w // ds), int(viewport_h // ds))
+
+
+class AstroCellCapsuleShadowTileGrid:
     """
-    大气 + 雾 + 局部雾 + 速度缓冲 + SSR 的整合组件。
-    通过 cell pub/sub 循环向下游推送各渲染阶段结果。
-    鲁迅：旧的章回小说每章末尾写"且听下回分解"，
-    这里每帧末尾我们推送 channel 事件——其实是同一件事。
+    Python equivalent of the tiled culling pass in FCapsuleShadowingCS
+    (ECapsuleShadowingType::IndirectTiledCulling).
+
+    Subdivides the viewport into a regular grid of tiles and, for each tile,
+    accumulates the indirect occlusion from capsule-shaped cell occluders
+    whose projected AABB overlaps the tile.
+
+    In 2-D SVG terms, tiles are virtual «shadow receiver groups»; a cell
+    belongs to a tile if its centre falls within the tile boundary.  The
+    indirect occlusion for each tile is the sum of soft-cone contributions
+    from all occluder cells in the scene.
+
+    鲁迅式：分块是一种公平的分配——每一小格都有自己的阴影份额，
+    不会因为邻居太高大而被遗忘，也不会因为自己太小而逃脱计算。
     """
 
-    def __init__(
-        self,
-        sky_params: Optional[SkyAtmosphereParams] = None,
-        fog_params: Optional[ExponentialHeightFogParams] = None,
-        viewport_width: int = 1920,
-        viewport_height: int = 1080,
-    ) -> None:
-        self.sky = SkyAtmosphereRenderer(sky_params or SkyAtmosphereParams())
-        self.fog = FogRenderer(fog_params or ExponentialHeightFogParams())
-        self.local_fog = LocalFogVolumeRenderer()
-        self.velocity = VelocityBuffer(viewport_width, viewport_height)
-        self.ssr = ScreenSpaceReflectionPass(SSRConfig())
-        self.viewport_width = viewport_width
-        self.viewport_height = viewport_height
-        self._frame_index: int = 0
-        self._ssr_history: List[float] = []
+    def __init__(self,
+                 viewport_w: float = 1200.0,
+                 viewport_h: float = 900.0,
+                 tile_size:  int   = 8) -> None:
+        self.viewport_w = viewport_w
+        self.viewport_h = viewport_h
+        self.tile_size  = tile_size
+        self.cols = max(1, int(math.ceil(viewport_w / tile_size)))
+        self.rows = max(1, int(math.ceil(viewport_h / tile_size)))
+        # Per-tile indirect occlusion accumulator
+        self._tile_occlusion: list = [
+            [0.0] * self.cols for _ in range(self.rows)
+        ]
 
-    def begin_frame(self) -> None:
-        """帧开始：清空速度缓冲，递增帧索引。"""
-        self.velocity.clear()
-        self._frame_index += 1
+    def _tile_coords(self, x: float, y: float) -> tuple:
+        """Map world (x, y) to (row, col) tile index."""
+        col = max(0, min(self.cols - 1, int(x // self.tile_size)))
+        row = max(0, min(self.rows - 1, int(y // self.tile_size)))
+        return (row, col)
 
-    def render_velocity_pass(
+    def accumulate(
         self,
-        mesh_velocities: Optional[List[Tuple[int, int, float, float]]] = None,
-    ) -> int:
+        receiver_id:  str,
+        receiver_bbox: dict,
+        occluder_bboxes: dict,
+    ) -> float:
         """
-        速度通道。mesh_velocities: [(x, y, dx, dy), ...]。
-        对应 FDeferredShadingSceneRenderer::RenderVelocities()。
+        Accumulate indirect capsule occlusion for one receiver cell.
+
+        Mirrors the tiled culling inner loop in FCapsuleShadowingCS
+        (IndirectTiledCulling permutation): for each occluder that is above
+        the receiver (higher Z-layer), compute the soft-cone occlusion using
+        the indirect cone angle, fade angle, and sky-angle scale.
+
+        The indirect occlusion is the sky-light equivalent: occluder cells
+        above the receiver block a cone of sky light centred on the vertical.
+
+        Returns the accumulated indirect occlusion factor ∈ [0, 1].
+
+        鲁迅式：间接遮挡是环境的冷漠——天光不关心谁在下面，
+        但高大的遮挡物会不由自主地减少天光的份额，这是物理，不是歧视。
         """
-        if mesh_velocities:
-            for x, y, dx, dy in mesh_velocities:
-                self.velocity.write(x, y, dx, dy)
-        return self.velocity.resolve_static_meshes()
+        if not ASTRO_CAPSULE_INDIRECT:
+            return 0.0
 
-    def render_sky_atmosphere(self, force_rebuild: bool = False) -> Dict[str, int]:
-        """大气 LUT 构建通道。对应 RenderSkyAtmosphere()。"""
-        return self.sky.tick(force_rebuild=force_rebuild)
+        rx = receiver_bbox["x"] + receiver_bbox["w"] / 2.0
+        ry = receiver_bbox["y"] + receiver_bbox["h"] / 2.0
+        rz = float(receiver_bbox.get("z", 3))
 
-    def render_ssr(
-        self,
-        depth_buffer: List[float],
-        scene_color: List[float],
-    ) -> List[float]:
-        """SSR 通道 + TAA 积累。对应 RenderScreenSpaceReflections()。"""
-        raw = self.ssr.trace_rays(
-            depth_buffer, scene_color,
-            self.viewport_width, self.viewport_height,
+        row, col = self._tile_coords(rx, ry)
+
+        total_indirect = 0.0
+
+        for occ_id, ob in occluder_bboxes.items():
+            if occ_id == receiver_id:
+                continue
+            oz = float(ob.get("z", 3))
+            if oz <= rz:
+                continue  # only cells above cast indirect shadow
+
+            ox = ob["x"] + ob["w"] / 2.0
+            oy = ob["y"] + ob["h"] / 2.0
+
+            dz     = oz - rz
+            dx, dy = ox - rx, oy - ry
+
+            # Compute angle from vertical (sky direction = +Z)
+            horiz_dist = math.sqrt(dx*dx + dy*dy) + 1e-6
+            angle_from_vert = math.atan2(horiz_dist, max(dz, 0.1))
+
+            # Fade weight: beyond FADE_ANGLE the occluder stops contributing
+            # (avoids self-shadowing artefacts near-vertical neighbours)
+            if angle_from_vert >= _CAPSULE_FADE_ANGLE:
+                continue
+
+            fade = max(0.0, 1.0 - angle_from_vert / _CAPSULE_FADE_ANGLE)
+
+            # Cone solid angle: occluder fills INDIRECT_CONE_ANGLE from the receiver
+            cone_half  = _CAPSULE_INDIRECT_CONE_ANGLE * _CAPSULE_SKY_ANGLE_SCALE
+            cone_half  = max(math.radians(_CAPSULE_MIN_SKY_ANGLE_DEG), cone_half)
+
+            # Occluder angular size from receiver
+            occ_radius  = min(ob["w"], ob["h"]) / 2.0
+            occ_dist    = math.sqrt(dx*dx + dy*dy + dz*dz)
+            angular_size = math.atan2(occ_radius, max(occ_dist, 1.0))
+
+            # Normalised cone occupancy
+            cone_frac = min(1.0, angular_size / max(cone_half, 1e-6))
+            indirect  = cone_frac * fade
+
+            total_indirect = min(1.0, total_indirect + indirect)
+
+        # Accumulate into tile grid
+        self._tile_occlusion[row][col] = min(1.0,
+            self._tile_occlusion[row][col] + total_indirect)
+
+        return total_indirect
+
+    def get_tile_occlusion(self, x: float, y: float) -> float:
+        """Return the accumulated indirect occlusion for the tile at (x, y)."""
+        row, col = self._tile_coords(x, y)
+        return self._tile_occlusion[row][col]
+
+
+def compute_indirect_capsule_shadow(
+    cell_id:    str,
+    bbox:       dict,
+    all_bboxes: dict,
+) -> float:
+    """
+    Compute indirect capsule shadow (sky-light occlusion) for a receiver cell.
+
+    Top-level entry for the IndirectTiledCulling permutation of FCapsuleShadowingCS.
+    Constructs a single-tile grid centred on the receiver and accumulates
+    occlusion from all cells above it.
+
+    Returns indirect_occlusion ∈ [0, 1]; 0 = fully sky-lit, 1 = fully occluded.
+
+    鲁迅式：间接阴影是世界对个体的压制——头顶的遮挡物越多，
+    能到达你的天光就越少。但这不是命运，只是几何。
+    """
+    w = float(bbox.get("w", 100))
+    h = float(bbox.get("h", 50))
+    grid = AstroCellCapsuleShadowTileGrid(
+        viewport_w = w * 4,
+        viewport_h = h * 4,
+        tile_size  = max(8, int(min(w, h) * 0.25)),
+    )
+    return grid.accumulate(cell_id, bbox, all_bboxes)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] PlanarReflectionRendering → Python port
+#
+# Ported from commit upstream/unreal-renderer-ue5:
+#   Renderer-Private/PlanarReflectionRendering.cpp
+#
+# 鲁迅曾言：「镜子里的世界，是真实世界的倒影——
+# 不是真实，却包含着真实的信息，值得被认真对待。」
+# 平面反射的本质：将场景以反射平面为轴翻转，然后用这个虚拟视图渲染，
+# 将结果贴回到反射平面的像素上。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   SetupPlanarReflectionUniformParameters → setup_cell_planar_reflection()
+#   FPlanarReflectionUniformParameters    → AstroCellPlanarReflectionParams
+#   TPrefilterPlanarReflectionPS          → AstroCellPlanarReflectionPrefilter
+#   AddProcessPlanarReflectionPass        → apply_cell_planar_reflection()
+#   GMaxPlanarReflectionViews (= 2)       → _MAX_PLANAR_REFLECTION_VIEWS
+#   PlanarReflectionParameters (normal clamp distance / fade) → embedded
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Mirrors GMaxPlanarReflectionViews = 2 (stereo support)
+_MAX_PLANAR_REFLECTION_VIEWS: int = 2
+
+# Whether planar reflections are enabled in the Astro pipeline
+ASTRO_PLANAR_REFLECTION_ENABLED: bool = True
+
+# Prefilter roughness distance (mirrors CVarPlanarReflectionPrefilterRoughnessDistance)
+_PLANAR_REFL_ROUGHNESS_DIST: float = 0.3
+
+
+class AstroCellPlanarReflectionParams:
+    """
+    Python equivalent of FPlanarReflectionUniformParameters.
+
+    Stores the parameters needed to render a planar reflection for a cell.
+    In 2-D SVG, the «reflection plane» is a horizontal axis at a given Y
+    position; the reflection is implemented as a vertically flipped,
+    blended copy of the cell's SVG content placed below the reflection line.
+
+    Fields mirror the C++ struct layout (FVector4f ReflectionPlane,
+    FVector3f PlanarReflectionOrigin, etc.), adapted to 2-D:
+        reflection_y     → Y coordinate of the reflection plane
+        blend_alpha      → reflection strength (PlanarReflectionParameters.Z)
+        prefilter_sigma  → Gaussian blur on the reflected image (roughness proxy)
+        is_stereo        → bIsStereo (unused in 2-D, kept for API parity)
+
+    鲁迅式：反射参数是镜子的规格——知道镜子在哪里，知道它有多清晰，
+    才能计算出倒影的位置和强度。
+    """
+
+    __slots__ = (
+        "reflection_y", "blend_alpha",
+        "prefilter_sigma", "is_stereo",
+    )
+
+    def __init__(self,
+                 bbox:         dict,
+                 roughness:    float = 0.2,
+                 blend_alpha:  float = 0.35,
+                 is_stereo:    bool  = False) -> None:
+        # Reflection plane at the bottom edge of the cell
+        self.reflection_y    = float(bbox.get("y", 0)) + float(bbox.get("h", 50))
+        self.blend_alpha     = max(0.0, min(1.0, blend_alpha))
+        # Prefilter sigma proportional to roughness (mirrors kernel_radius_y in C++)
+        cell_h = float(bbox.get("h", 50))
+        self.prefilter_sigma = roughness * cell_h * _PLANAR_REFL_ROUGHNESS_DIST
+        self.is_stereo       = is_stereo
+
+
+def setup_cell_planar_reflection(
+    cell_id:   str,
+    bbox:      dict,
+    species:   str,
+    roughness: float = 0.2,
+) -> AstroCellPlanarReflectionParams | None:
+    """
+    Mirrors SetupPlanarReflectionUniformParameters().
+
+    Returns an AstroCellPlanarReflectionParams if the species should cast a
+    planar reflection, or None if the reflection plane is degenerate (C++
+    early-out: ReflectionPlane.Set(0,0,0,0)).
+
+    Species that logically rest on surfaces (eye, layers, filter) get
+    a reflection; airborne species (bolt, arrow) do not.
+
+    鲁迅式：并非所有物体都值得被镜子记录——只有「坐」在平面上的，
+    才会在平面上留下倒影，飞在空中的不留印记。
+    """
+    if not ASTRO_PLANAR_REFLECTION_ENABLED:
+        return None
+
+    _REFLECTIVE_SPECIES = {"cil-eye", "cil-layers", "cil-filter", "cil-graph"}
+    if species not in _REFLECTIVE_SPECIES:
+        return None
+
+    return AstroCellPlanarReflectionParams(bbox, roughness=roughness)
+
+
+class AstroCellPlanarReflectionPrefilter:
+    """
+    Python equivalent of TPrefilterPlanarReflectionPS.
+
+    Generates the prefiltered (blurred) planar reflection SVG overlay for a
+    cell that supports planar reflections.  The prefilter matches UE5's
+    PrefilterPlanarReflectionPS kernel: a Gaussian blur applied to the
+    reflected image in the Y direction (vertical reflection axis), with
+    kernel width proportional to PlanarReflectionParameters.Y (roughness dist).
+
+    In SVG, the reflection is:
+      1. A <use> element that references the original cell SVG group, scaled
+         vertically by -1 and translated below the reflection plane.
+      2. Wrapped in a <g> with a feGaussianBlur filter (prefilter pass).
+      3. The entire reflected group has opacity = blend_alpha.
+
+    鲁迅式：倒影是原物的谦逊注脚——存在于原物之下，
+    比原物模糊，比原物暗淡，却依然忠实地记录着原物的形状。
+    """
+
+    def __init__(self, params: AstroCellPlanarReflectionParams) -> None:
+        self._params = params
+
+    def emit_svg(self, cell_id: str, bbox: dict) -> str:
+        """
+        Emit the planar reflection SVG fragment for this cell.
+
+        Returns an SVG string containing the blurred, flipped reflection group,
+        or an empty string if blend_alpha is negligible.
+
+        鲁迅式：倒影的 SVG 代码是诚实的镜子逻辑——
+        翻转、模糊、降低透明度，然后放到正确的位置。
+        步骤不多，但每一步都不能省略。
+        """
+        p = self._params
+        if p.blend_alpha < 0.01:
+            return ""
+
+        w        = float(bbox.get("w", 100))
+        h        = float(bbox.get("h", 50))
+        refl_y   = p.reflection_y
+        sigma    = round(max(0.5, p.prefilter_sigma), 2)
+        alpha    = round(p.blend_alpha, 3)
+        filter_id = f"planar-refl-blur-{cell_id}"
+
+        # Scale reflects around the bottom edge: translate down by h, flip Y
+        transform = (
+            f"translate(0,{refl_y + h:.2f}) scale(1,-1) "
+            f"translate(0,{-refl_y:.2f})"
         )
-        blended = self.ssr.apply_temporal_accumulation(raw, self._ssr_history)
-        self._ssr_history = blended
-        return blended
 
-    def render_fog(
-        self,
-        scene_color: List[float],
-        depth_buffer: List[float],
-    ) -> List[float]:
-        """高度雾 + 局部雾体积叠加。"""
-        after_height_fog = self.fog.apply_on_scene_color(
-            scene_color, depth_buffer,
-            self.viewport_width, self.viewport_height,
-        )
-        if self.fog.params.volumetric_fog_enabled:
-            v_lut = self.fog.build_volumetric_fog_lut()
-            v_lut = self.local_fog.voxelize_into_volumetric_fog(v_lut)
-            self.fog._volumetric_fog_lut = v_lut
-        return self.local_fog.apply_on_scene_color(
-            after_height_fog, depth_buffer,
-            self.viewport_width, self.viewport_height,
-        )
+        parts = [
+            f'<!-- [ASTRO-PLANAR-REFL] PlanarReflectionRendering.cpp port '
+            f'sigma={sigma} blend={alpha} refl_y={refl_y:.1f} -->',
+            f'<defs>',
+            f'  <filter id="{filter_id}" x="0" y="0" width="100%" height="100%">',
+            f'    <feGaussianBlur in="SourceGraphic" stdDeviation="0 {sigma}" '
+            f'result="blurred"/>',
+            f'    <feColorMatrix in="blurred" type="saturate" values="0.6"/>',
+            f'  </filter>',
+            f'</defs>',
+            f'<g class="planar-reflection" opacity="{alpha}" '
+            f'transform="{transform}" filter="url(#{filter_id})">',
+            f'  <use href="#cell-{cell_id}"/>',
+            f'</g>',
+        ]
+        return "\n".join(parts)
 
-    def end_frame(self) -> Dict[str, object]:
+
+def apply_cell_planar_reflection(
+    cell_id:   str,
+    species:   str,
+    bbox:      dict,
+    roughness: float = 0.2,
+) -> str:
+    """
+    Top-level planar reflection application — mirrors AddProcessPlanarReflectionPass().
+
+    Returns an SVG fragment string with the prefiltered reflection overlay,
+    or an empty string if the species does not support planar reflections.
+
+    Called from proc() after the main SVG content is generated, before final
+    assembly — matching the C++ timing where the reflection pass runs after
+    BasePass but before Translucency.
+
+    鲁迅式：反射是最后的装饰，也是最诚实的自我审视——
+    照见自己在世界中的位置，无论倒影多么模糊。
+    """
+    params = setup_cell_planar_reflection(cell_id, bbox, species, roughness)
+    if params is None:
+        return ""
+
+    prefilter = AstroCellPlanarReflectionPrefilter(params)
+    return prefilter.emit_svg(cell_id, bbox)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] LightShaftRendering → Python port
+#
+# Ported from commit upstream/unreal-renderer-ue5:
+#   Renderer-Private/LightShaftRendering.cpp
+#
+# 鲁迅曰：「光柱是上天对少数幸运者的眷顾——定向而明亮，
+# 穿透尘埃，照亮尘埃本身。光柱渲染，是对光的戏剧化处理：
+# 把大气散射的模糊结果，拖成一条条从光源射出的线。」
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   GLightShafts / GLightShaftQuality  → ASTRO_LIGHT_SHAFTS_ENABLED
+#   GLightShaftDownsampleFactor        → _LS_DOWNSAMPLE
+#   GLightShaftBlurPasses              → _LS_BLUR_PASSES
+#   GLightShaftFirstPassDistance       → _LS_FIRST_PASS_DIST
+#   GLightShaftBlurNumSamples          → _LS_NUM_SAMPLES
+#   GLightShaftAllowTAA                → ASTRO_LS_ALLOW_TAA
+#   ShouldRenderLightShafts()          → should_render_light_shafts()
+#   ShouldRenderLightShaftsForLight()  → should_render_light_shafts_for_cell()
+#   GetLightShaftParameters()          → get_cell_light_shaft_params()
+#   ELightShaftTechnique::Bloom        → AstroCellLightShaftBloom
+#   ELightShaftTechnique::Occlusion    → AstroCellLightShaftOcclusion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ASTRO_LIGHT_SHAFTS_ENABLED: bool = True
+ASTRO_LS_ALLOW_TAA:         bool = True
+
+_LS_DOWNSAMPLE:       int   = 2      # GLightShaftDownsampleFactor (clamped to [1,8])
+_LS_BLUR_PASSES:      int   = 3      # GLightShaftBlurPasses
+_LS_FIRST_PASS_DIST:  float = 0.1    # GLightShaftFirstPassDistance (fraction)
+_LS_NUM_SAMPLES:      int   = 12     # GLightShaftBlurNumSamples
+_LS_OCCLUSION_DARK:   float = 0.05   # OcclusionMaskDarkness (default from GetLightShaftOcclusionParameters)
+_LS_OCCLUSION_RANGE:  float = 6.0    # OcclusionDepthRange
+
+
+def should_render_light_shafts(species: str) -> bool:
+    """
+    Mirrors ShouldRenderLightShafts(FSceneViewFamily&).
+
+    Returns True when light shafts are globally enabled and the species has
+    «light shaft emissive» semantics (bright focal point or energy spike).
+
+    鲁迅式：不是所有光都值得拖成光柱——只有足够明亮的，才有资格散射。
+    """
+    if not ASTRO_LIGHT_SHAFTS_ENABLED:
+        return False
+    _LIGHT_SHAFT_SPECIES = {"cil-eye", "cil-bolt", "cil-loop"}
+    return species in _LIGHT_SHAFT_SPECIES
+
+
+def should_render_light_shafts_for_cell(
+    cell_id: str,
+    bbox:    dict,
+    viewport_w: float = 1200.0,
+    viewport_h: float = 900.0,
+) -> bool:
+    """
+    Mirrors ShouldRenderLightShaftsForLight() — returns False if the light
+    source (cell) is behind the viewer (screen-space W ≤ 0).
+
+    In 2-D, «behind the viewer» means the cell centre is outside the viewport
+    with a very large negative Z-offset (no such cells in practice).
+
+    鲁迅式：只有在观众视野之内的光源，才有资格投下光柱。
+    """
+    cx = bbox.get("x", 0) + bbox.get("w", 100) / 2.0
+    cy = bbox.get("y", 0) + bbox.get("h", 50)  / 2.0
+    # Treat the viewport bounds as the «W > 0» constraint
+    return (0 <= cx <= viewport_w) and (0 <= cy <= viewport_h)
+
+
+def get_cell_light_shaft_params(
+    cell_id:    str,
+    bbox:       dict,
+    viewport_w: float = 1200.0,
+    viewport_h: float = 900.0,
+) -> dict:
+    """
+    Mirrors GetLightShaftParameters() — computes the FLightShaftPixelShaderParameters
+    equivalent for a single cell acting as a directional light shaft emitter.
+
+    Returns a dict with:
+        blur_origin_x, blur_origin_y  — light source screen position (TextureSpaceBlurOrigin)
+        bloom_tint                    — (R, G, B) bloom colour (BloomTint)
+        bloom_threshold               — minimum luminance for bloom (BloomThreshold)
+        bloom_scale                   — overall bloom intensity (BloomScale)
+        bloom_max_brightness          — firefly clamp for the bloom (BloomMaxBrightness)
+        occlusion_depth_range         — depth range for occlusion mask
+        occlusion_mask_darkness       — floor opacity for the occlusion mask
+        aspect_ratio_x, aspect_ratio_y— viewport aspect ratio pair
+
+    鲁迅式：光柱参数是光的名片——屏幕坐标、颜色、强度、景深范围，
+    缺少任何一项，光柱便失去了身份。
+    """
+    cx = bbox.get("x", 0) + bbox.get("w", 100) / 2.0
+    cy = bbox.get("y", 0) + bbox.get("h", 50)  / 2.0
+
+    # TextureSpaceBlurOrigin: normalised screen position
+    blur_origin_x = cx / max(viewport_w, 1.0)
+    blur_origin_y = cy / max(viewport_h, 1.0)
+
+    # Aspect ratio pair (mirrors AspectRatioAndInvAspectRatio.XY / ZW)
+    ar = viewport_w / max(viewport_h, 1.0)
+
+    # Species-driven bloom colour
+    _BLOOM_TINTS = {
+        "cil-eye":  (0.85, 0.90, 1.00),   # cool indigo glow
+        "cil-bolt": (1.00, 0.70, 0.20),   # warm amber burst
+        "cil-loop": (1.00, 0.80, 0.30),   # golden cycle
+    }
+    bloom_tint = _BLOOM_TINTS.get("default", (0.9, 0.9, 0.9))
+    for sp_key, tint in _BLOOM_TINTS.items():
+        if sp_key in cell_id:
+            bloom_tint = tint
+            break
+
+    return {
+        "blur_origin_x":        round(blur_origin_x, 4),
+        "blur_origin_y":        round(blur_origin_y, 4),
+        "bloom_tint":           bloom_tint,
+        "bloom_threshold":      0.0,   # BloomThreshold (0 = all pixels contribute)
+        "bloom_scale":          0.25,  # BloomScale
+        "bloom_max_brightness": 10.0,  # BloomMaxBrightness (firefly clamp)
+        "occlusion_depth_range": _LS_OCCLUSION_RANGE,
+        "occlusion_mask_darkness": _LS_OCCLUSION_DARK,
+        "aspect_ratio_x":       round(ar, 4),
+        "aspect_ratio_y":       round(1.0 / max(ar, 1e-6), 4),
+    }
+
+
+class AstroCellLightShaftBloom:
+    """
+    Python equivalent of the bloom light shaft technique (ELightShaftTechnique::Bloom).
+
+    Implements the radial blur bloom pass from LightShaftRendering.cpp:
+      1. Downsample the «scene» (cell SVG) to _LS_DOWNSAMPLE factor
+      2. Apply _LS_BLUR_PASSES successive radial blurs toward the light source
+      3. Composite the bloom result back onto the cell
+
+    In SVG, passes 1-2 are approximated by:
+      - feGaussianBlur with increasing stdDeviation per pass
+      - feComposite with «screen» blend mode (additive bloom)
+      - The final blur is driven by the first-pass distance and num_samples
+
+    鲁迅式：光晕是光源炫耀自身的方式——一层一层地散开，
+    每一遍模糊都在宣告：「我在这里，我很亮，我值得被注意。」
+    """
+
+    def __init__(self,
+                 params:    dict,
+                 cell_id:   str,
+                 bbox:      dict,
+                 species:   str) -> None:
+        self._p       = params
+        self._cell_id = cell_id
+        self._bbox    = bbox
+        self._species = species
+
+    def emit_svg(self) -> str:
         """
-        帧末统计，供 pub/sub 循环推送。
-        鲁迅：写完了，才知道什么都没写完。
+        Emit a multi-pass radial bloom filter + compositor as an SVG <filter>.
+
+        The number of feGaussianBlur primitives equals min(_LS_BLUR_PASSES, 3)
+        to keep the SVG compact; each pass uses an increasing stdDeviation to
+        simulate the distance-proportional blur growth from the C++ shader.
+
+        Returns SVG string with filter definition and application hint comment.
+
+        鲁迅式：多次模糊是耐心的象征——每一遍模糊都比上一遍更弥散，
+        直到光柱从细线变成光晕，从光晕变成弥漫的辉光。
         """
-        return {
-            'frame':                    self._frame_index,
-            'sky_lut_version':          self.sky.state.state_version,
-            'velocity_buf_size':        self.viewport_width * self.viewport_height,
-            'ssr_enabled':              self.ssr.should_render(),
-            'fog_enabled':              self.fog._enabled,
-            'local_fog_instances':      len(self.local_fog._instances),
-            'aerial_perspective_slices': AERIAL_PERSPECTIVE_LUT_DEPTH_RESOLUTION,
-        }
+        if not should_render_light_shafts(self._species):
+            return ""
+
+        p         = self._p
+        cell_id   = self._cell_id
+        bbox      = self._bbox
+        cell_w    = float(bbox.get("w", 100))
+        cell_h    = float(bbox.get("h", 50))
+
+        # Bloom filter identifier
+        filter_id = f"ls-bloom-{cell_id}"
+        bloom_r, bloom_g, bloom_b = p["bloom_tint"]
+
+        # Per-pass stdDeviation: distance doubles each pass (GLightShaftFirstPassDistance growth)
+        # Mirrors: BlurOrigin distance × FirstPassDistance × 2^pass
+        base_sigma = max(1.0, min(cell_w, cell_h) * _LS_FIRST_PASS_DIST * 0.15)
+        sigmas     = [base_sigma * (2 ** i) for i in range(min(_LS_BLUR_PASSES, 3))]
+
+        parts = [
+            f'<!-- [ASTRO-LS] LightShaftRendering.cpp Bloom port '
+            f'blur_origin=({p["blur_origin_x"]:.3f},{p["blur_origin_y"]:.3f}) '
+            f'bloom_scale={p["bloom_scale"]:.2f} passes={_LS_BLUR_PASSES} -->',
+            f'<defs>',
+            f'  <filter id="{filter_id}" '
+            f'x="-30%" y="-30%" width="160%" height="160%">',
+        ]
+
+        prev_result = "SourceGraphic"
+        for i, sigma in enumerate(sigmas):
+            result_name = f"blur{i}"
+            parts.append(
+                f'    <!-- Pass {i+1}: radial blur σ={sigma:.2f} -->'
+            )
+            parts.append(
+                f'    <feGaussianBlur in="{prev_result}" '
+                f'stdDeviation="{sigma:.2f}" result="{result_name}"/>'
+            )
+            prev_result = result_name
+
+        # Tint the final bloom layer with BloomTint colour
+        parts.append(
+            f'    <feColorMatrix in="{prev_result}" type="matrix" '
+            f'values="{bloom_r:.2f} 0 0 0 0  '
+            f'0 {bloom_g:.2f} 0 0 0  '
+            f'0 0 {bloom_b:.2f} 0 0  '
+            f'0 0 0 {p["bloom_scale"]:.2f} 0" result="tinted"/>'
+        )
+
+        # Composite: screen blend (additive bloom over original)
+        parts.append(
+            f'    <feBlend in="SourceGraphic" in2="tinted" '
+            f'mode="screen" result="bloomed"/>'
+        )
+
+        parts.append(f'  </filter>')
+        parts.append(f'</defs>')
+        parts.append(
+            f'<!-- [ASTRO-LS] bloom filter attached to cell-{cell_id}: '
+            f'apply filter="url(#{filter_id})" to the cell group -->'
+        )
+
+        return "\n".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# 附：各模块关键设计注记（行内批注）
-# ---------------------------------------------------------------------------
-# SkyAtmosphereRenderer
-#   · 透射率 LUT (256×64)：Beer-Lambert 积分，Rayleigh + Mie 双层散射。
-#     鲁迅：透明不是没有，是穿透了太多东西之后剩下的。
-#   · 多重散射 LUT (32×32)：各向同性近似，替代 GPU path-tracing 版本。
-#   · FastSkyLUT (192×104)：CVarSkyAtmosphereFastSkyLUT=1 路径的 CPU 镜像。
-#   · 空中透视 LUT (32×32×16)：Froxel 体积，远景蓝移。
-#
-# VelocityBuffer
-#   · 三种输出通道（Depth Prepass / Base Pass / After Base Pass）。
-#   · resolve_static_meshes()：静止网格速度归零，节省后续 TAA 带宽。
-#   · Temporal Responsiveness bit：标记材质抖动与速度向量不匹配的像素。
-#     鲁迅：速度为零的物体也在运动，只是运动的是时钟。
-#
-# ScreenSpaceReflectionPass
-#   · should_render() 对应 ShouldRenderScreenSpaceReflections() 的全部门禁。
-#   · half_res_scene_color：CVarSSRHalfResSceneColor=1，性能换质量。
-#   · apply_temporal_accumulation()：α=0.1 的指数移动平均 TAA。
-#     鲁迅：反射是对过去的记忆，TAA 是对过去的宽恕。
-#
-# FogRenderer
-#   · compute_fog_factor()：CalcSceneDepthBasedFogFactor() 的 CPU 等价。
-#   · build_volumetric_fog_lut()：32×32×64 Froxel，Trilinear 采样。
-#   · apply_on_scene_color()：全屏 pass，深度边界优化（CVarFogUseDepthBounds）。
-#
-# LocalFogVolumeRenderer
-#   · build_tile_culling_list()：128px Tile，每 Tile 最多 32 实例（u8 索引）。
-#   · voxelize_into_volumetric_fog()：密度钳制防 TAA 漏光。
-#   · apply_on_scene_color()：Tiled compositing，球体衰减叠加。
-#     鲁迅：局部的雾最危险，因为你以为只是局部。
-#
-# AtmosphericSceneComponent
-#   · begin_frame() → render_velocity_pass() → render_sky_atmosphere()
-#     → render_ssr() → render_fog() → end_frame()
-#   · end_frame() 返回的诊断字典通过 cell pub/sub 循环广播给订阅者。
-#     鲁迅：每帧的统计是写给下一帧看的。
-# ---------------------------------------------------------------------------
+class AstroCellLightShaftOcclusion:
+    """
+    Python equivalent of the occlusion light shaft technique (ELightShaftTechnique::Occlusion).
+
+    The occlusion technique renders a soft mask that darkens regions of the
+    scene that are «behind» the light source from the camera's perspective —
+    the «god-ray» darkening that appears where the shaft is blocked.
+
+    In SVG, the occlusion is implemented as a feFlood + feComposite alpha mask
+    that applies a gradient darkening centred on the cell's screen position,
+    with darkness = OcclusionMaskDarkness and radial falloff.
+
+    鲁迅式：遮挡光柱是光的反面——不是看到光，而是看到光的缺席，
+    那些被光柱扫过却依然黑暗的地方，比光柱本身更令人深思。
+    """
+
+    def __init__(self,
+                 params:  dict,
+                 cell_id: str,
+                 bbox:    dict) -> None:
+        self._p       = params
+        self._cell_id = cell_id
+        self._bbox    = bbox
+
+    def emit_svg(self) -> str:
+        """
+        Emit the occlusion mask SVG fragment.
+
+        Creates a radial gradient mask centred on the light shaft origin,
+        with opacity = 1 − OcclusionMaskDarkness at the centre and fading
+        to 1.0 at the edges (full brightness away from the shaft).
+
+        Returns SVG string.
+
+        鲁迅式：遮挡蒙版是光柱的负像——用梯度来记录光的路径，
+        用暗处来证明光曾经经过这里。
+        """
+        p         = self._p
+        cell_id   = self._cell_id
+        bbox      = self._bbox
+        w         = float(bbox.get("w", 100))
+        h         = float(bbox.get("h", 50))
+        cx        = bbox.get("x", 0) + w / 2.0
+        cy        = bbox.get("y", 0) + h / 2.0
+
+        darkness  = round(p["occlusion_mask_darkness"], 3)
+        grad_id   = f"ls-occ-grad-{cell_id}"
+        mask_id   = f"ls-occ-mask-{cell_id}"
+
+        # Radial gradient: dark at centre (light source), bright at edges
+        r_grad = max(w, h) * 0.7
+        parts = [
+            f'<!-- [ASTRO-LS] LightShaftRendering.cpp Occlusion port '
+            f'darkness={darkness} depth_range={p["occlusion_depth_range"]:.1f} -->',
+            f'<defs>',
+            f'  <radialGradient id="{grad_id}" '
+            f'cx="{cx:.1f}" cy="{cy:.1f}" r="{r_grad:.1f}" '
+            f'gradientUnits="userSpaceOnUse">',
+            f'    <stop offset="0" stop-color="black" '
+            f'stop-opacity="{darkness:.3f}"/>',
+            f'    <stop offset="1" stop-color="black" stop-opacity="0"/>',
+            f'  </radialGradient>',
+            f'  <mask id="{mask_id}">',
+            f'    <rect x="{bbox.get("x",0):.1f}" y="{bbox.get("y",0):.1f}" '
+            f'width="{w:.1f}" height="{h:.1f}" '
+            f'fill="url(#{grad_id})" opacity="0.6"/>',
+            f'  </mask>',
+            f'</defs>',
+            f'<!-- [ASTRO-LS] Occlusion mask: apply mask="url(#{mask_id})" '
+            f'to a rect over the cell to dim the light shaft region -->',
+        ]
+        return "\n".join(parts)
+
+
+def render_cell_light_shafts(
+    cell_id:    str,
+    species:    str,
+    bbox:       dict,
+    viewport_w: float = 1200.0,
+    viewport_h: float = 900.0,
+) -> str:
+    """
+    Top-level light shaft renderer — mirrors the dispatch in
+    FDeferredShadingSceneRenderer::RenderLightShaftBloom() /
+    RenderLightShaftOcclusion().
+
+    Checks whether light shafts should render for this cell/species; if so,
+    emits both the bloom filter and the occlusion mask SVG fragments.
+
+    Returns a concatenated SVG string, or empty string if not applicable.
+
+    鲁迅式：光柱渲染是条件艺术——条件不成立，一个字也不写；
+    条件成立，则两种技术都要上，缺一不可。
+    """
+    if not should_render_light_shafts(species):
+        return ""
+    if not should_render_light_shafts_for_cell(cell_id, bbox, viewport_w, viewport_h):
+        return ""
+
+    params   = get_cell_light_shaft_params(cell_id, bbox, viewport_w, viewport_h)
+    bloom    = AstroCellLightShaftBloom(params, cell_id, bbox, species)
+    occ      = AstroCellLightShaftOcclusion(params, cell_id, bbox)
+
+    bloom_svg = bloom.emit_svg()
+    occ_svg   = occ.emit_svg()
+
+    parts = []
+    if bloom_svg:
+        parts.append(bloom_svg)
+    if occ_svg:
+        parts.append(occ_svg)
+
+    return "\n".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -14497,45 +14971,17 @@ class AtmosphericSceneComponent:
 # Key UE5 constructs → Astro equivalents
 # ─────────────────────────────────────────────────────────────────────────────
 #   CVarCSMShadowDepthBias / CVarCSMShadowSlopeScaleDepthBias
-#       → _CSM_DEPTH_BIAS / _CSM_SLOPE_BIAS   (module constants, not CVar)
-#   CVarPerObjectDirectionalShadowDepthBias
-#       → _PER_OBJECT_DIR_DEPTH_BIAS
-#   CVarShadowTransitionScale
-#       → _SHADOW_TRANSITION_SCALE
-#   CVarCSMShadowReceiverBias
-#       → _CSM_RECEIVER_BIAS
-#   CVarPointLightShadowDepthBias / CVarRectLightShadowDepthBias
-#       → _POINT_LIGHT_DEPTH_BIAS / _RECT_LIGHT_DEPTH_BIAS
-#   CVarSpotLightShadowDepthBias / CVarSpotLightShadowReceiverBias
-#       → _SPOT_LIGHT_DEPTH_BIAS / _SPOT_LIGHT_RECEIVER_BIAS
-#   CVarFilterMethod (0=PCF, 1=PCSS)
-#       → _SHADOW_FILTER_METHOD
+#       → _CSM_DEPTH_BIAS / _CSM_SLOPE_BIAS
+#   CVarShadowTransitionScale → _SHADOW_TRANSITION_SCALE
+#   CVarCSMShadowReceiverBias → _CSM_RECEIVER_BIAS
+#   CVarFilterMethod (0=PCF, 1=PCSS) → _SHADOW_FILTER_METHOD
 #   GStencilOptimization / GShadowStencilCulling
 #       → _STENCIL_OPTIMIZATION / _STENCIL_CULLING
 #
-# AstroCellShadowProjection:
-#   Per-cell shadow projection that computes a CSM-like depth-bias-corrected
-#   shadow factor in [0,1] for a given receiver cell from a set of caster cells.
-#   Mirrors the CSM projection pass in ShadowRendering.cpp — the depth bias
-#   prevents self-shadowing (peter panning trade-off), transition scale smooths
-#   the penumbra edge, receiver bias adjusts the shadow-receiver surface offset.
-#
-# AstroCellShadowRenderer:
-#   Orchestrates per-epoch shadow rendering:
-#     build_shadow_depth_map()  — collects casters, sorts by z-layer (depth)
-#     project_shadows()         — projects each caster onto each receiver
-#     get_shadow_factor()       — returns the final [0,1] shadow attenuation
-#   Mirrors the top-level shadow pass dispatch in DeferredShadingRenderer.cpp.
-#
-# 2-D channel adaptation:
-#   Directional shadow map  → z-layer depth ordering (highest z = deepest shadow)
-#   Depth bias (CSM/perObj) → per-cell SVG shadow offset correction
-#   Transition scale        → penumbra fade region around each shadow caster
-#   Stencil optimisation    → skip receiver test when all_bboxes unchanged
-#   PCSS                    → soft-shadow radius proportional to caster bbox area
+# AstroCellShadowProjection → per-cell depth-bias CSM projection
+# AstroCellShadowRenderer   → epoch-level shadow dispatch
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Depth bias values (mirrors CVar defaults in ShadowRendering.cpp head -200)
 _CSM_DEPTH_BIAS:            float = 10.0
 _CSM_SLOPE_BIAS:            float = 3.0
 _PER_OBJECT_DIR_DEPTH_BIAS: float = 10.0
@@ -14549,55 +14995,33 @@ _RECT_LIGHT_RECEIVER_BIAS:  float = 0.3
 _SPOT_LIGHT_DEPTH_BIAS:     float = 3.0
 _SPOT_LIGHT_SLOPE_BIAS:     float = 3.0
 _SPOT_LIGHT_RECEIVER_BIAS:  float = 0.5
-
-# Shadow transition (penumbra fade) scale — mirrors CVarShadowTransitionScale
 _SHADOW_TRANSITION_SCALE:   float = 60.0
 _SPOT_TRANSITION_SCALE:     float = 60.0
-
-# Filter method: 0 = PCF (uniform), 1 = PCSS (experimental)
 _SHADOW_FILTER_METHOD:      int   = 0
-
-# Stencil optimisation flags — mirrors GStencilOptimization / GShadowStencilCulling
 _STENCIL_OPTIMIZATION:      bool  = True
 _STENCIL_CULLING:           bool  = True
-
-# Maximum soft-kernel size for PCSS — mirrors CVarMaxSoftKernelSize = 40
 _PCSS_MAX_KERNEL_RADIUS:    float = 40.0
-
-# Modulated self-shadow (mobile only) — off by default
 _ENABLE_MODULATED_SELF_SHADOW: bool = False
 
 
 def _shadow_depth_bias_corrected(
-    caster_z:      float,
-    receiver_z:    float,
-    depth_bias:    float = _CSM_DEPTH_BIAS,
-    slope_bias:    float = _CSM_SLOPE_BIAS,
+    caster_z: float, receiver_z: float,
+    depth_bias: float = _CSM_DEPTH_BIAS,
+    slope_bias: float = _CSM_SLOPE_BIAS,
     receiver_bias: float = _CSM_RECEIVER_BIAS,
 ) -> float:
     """
-    Compute depth-bias-corrected shadow depth for CSM comparison.
+    Depth-bias-corrected shadow depth for CSM comparison.
+    Port of the depth bias formula in ShadowRendering.cpp CSM depth pass.
 
-    Port of the depth bias formula applied in the CSM depth pass shader
-    (ShadowRendering.cpp, per-primitive depth-bias term):
-
-        biased_depth = caster_z + depth_bias + slope_bias × |dZ/dXY|
-
-    In 2-D, slope (dZ/dXY) is approximated as the normalised z-layer
-    gradient between caster and receiver (|caster_z - receiver_z| / max_z).
-    Receiver bias shifts the receiver surface away from the shadow map.
-
-    Returns the biased caster depth for comparison with the receiver depth.
-
-    鲁迅式：偏置是对规则的微调，是「在法律允许的范围内作弊」——
-    不是欺诈，而是工程上的智慧：让影子落在正确的位置。
+    鲁迅式：偏置是对规则的微调——在法律允许的范围内作弊，
+    让影子落在正确的位置，避免 peter panning 或 self-shadowing。
     """
-    z_range    = max(_ASTRO_CELL_MAX_Z_LAYERS, 1)
-    slope      = abs(caster_z - receiver_z) / z_range   # normalised slope proxy
-    biased     = caster_z + depth_bias + slope_bias * slope
-    # Receiver bias: push receiver surface slightly away (CSMReceiverBias in C++)
-    biased_recv = receiver_z * receiver_bias
-    return biased - biased_recv
+    z_range  = max(_ASTRO_CELL_MAX_Z_LAYERS, 1)
+    slope    = abs(caster_z - receiver_z) / z_range
+    biased   = caster_z + depth_bias + slope_bias * slope
+    biased  -= receiver_z * receiver_bias
+    return biased
 
 
 def _shadow_pcf_weight(
@@ -14605,39 +15029,20 @@ def _shadow_pcf_weight(
     transition_scale: float = _SHADOW_TRANSITION_SCALE,
 ) -> float:
     """
-    PCF soft-edge weight — mirrors the transition-scale fade in the C++ CSM.
+    PCF soft-edge weight — mirrors the transition-scale fade in CSM.
 
-    At shadow_delta = 0: receiver is exactly on the shadow boundary → 0.5 weight.
-    At shadow_delta > transition_scale: fully lit → 1.0 weight.
-    At shadow_delta < 0: fully in shadow → 0.0 weight.
-
-    ShadowTransitionScale controls the width of the penumbra edge:
-        larger scale → sharper edge (less fade region).
-
-    鲁迅式：PCF 是影子边缘的民主投票——
-    每个采样点一票，平均值决定光影比。没有独裁，只有平均。
+    鲁迅式：PCF 是影子边缘的民主投票——每个采样点一票，平均值决定光影比。
     """
     return max(0.0, min(1.0, 0.5 + shadow_delta / max(transition_scale, 1.0)))
 
 
 def _shadow_pcss_kernel_radius(
-    caster_w: float,
-    caster_h: float,
-    z_dist: float,
+    caster_w: float, caster_h: float, z_dist: float,
 ) -> float:
     """
-    PCSS soft-shadow kernel radius.
+    PCSS soft-shadow kernel radius — area-proportional penumbra.
 
-    Port of the PCSS kernel computation from CVarFilterMethod = 1 path:
-        kernel_radius = sqrt(projected_area) × (z_dist / max_dist)
-        clamped to [1, PCSS_MAX_KERNEL_RADIUS]
-
-    Larger casters cast softer shadows at greater depth distances —
-    matching the angular-size-based penumbra of a real area light source.
-
-    鲁迅式：柔和的阴影是对真实的妥协——
-    面积越大，距离越远，影子越模糊，真相越难辨认。
-    PCSS 诚实地模拟了这一过程。
+    鲁迅式：柔和的阴影是对真实的妥协——面积越大，距离越远，影子越模糊。
     """
     projected_area = caster_w * caster_h
     soft_radius    = math.sqrt(max(projected_area, 1.0)) * (
@@ -14647,34 +15052,22 @@ def _shadow_pcss_kernel_radius(
 
 class AstroCellShadowProjection:
     """
-    Python equivalent of the per-shadow-volume CSM projection pass.
+    Per-cell CSM shadow projection — Python equivalent of the CSM projection
+    pass in ShadowRendering.cpp.
 
-    Holds the depth-bias configuration for a single shadow type
-    (directional/point/rect/spot) and projects caster depth values
-    onto receivers via _shadow_pcf_weight or PCSS kernel.
+    Holds depth-bias configuration for one light type (directional/point/
+    rect/spot) and projects caster depth values onto receivers via PCF or PCSS.
 
-    Parameters
-    ----------
-    depth_bias, slope_bias, receiver_bias:
-        Bias parameters selected per light type (mirrors the CVar set
-        in ShadowRendering.cpp head -200).
-    transition_scale:
-        Penumbra fade width (CVarShadowTransitionScale).
-    filter_method:
-        0 = PCF (uniform), 1 = PCSS (soft, area-proportional).
-
-    鲁迅式：投影器是光与影之间的翻译官——
-    把三维的深度关系翻译成二维的明暗因子，一切都在这个翻译中失真，
-    但失真的方向是可控的，这便是工程的意义。
+    鲁迅式：投影器是光与影之间的翻译官——把三维深度关系翻译成二维明暗因子。
     """
 
     def __init__(
         self,
-        depth_bias:     float = _CSM_DEPTH_BIAS,
-        slope_bias:     float = _CSM_SLOPE_BIAS,
-        receiver_bias:  float = _CSM_RECEIVER_BIAS,
+        depth_bias:       float = _CSM_DEPTH_BIAS,
+        slope_bias:       float = _CSM_SLOPE_BIAS,
+        receiver_bias:    float = _CSM_RECEIVER_BIAS,
         transition_scale: float = _SHADOW_TRANSITION_SCALE,
-        filter_method:  int   = _SHADOW_FILTER_METHOD,
+        filter_method:    int   = _SHADOW_FILTER_METHOD,
     ) -> None:
         self.depth_bias       = depth_bias
         self.slope_bias       = slope_bias
@@ -14690,76 +15083,49 @@ class AstroCellShadowProjection:
         caster_h:   float = 50.0,
     ) -> float:
         """
-        Project a single caster onto a receiver and return shadow factor [0,1].
+        Project a caster onto a receiver; return shadow factor ∈ [0,1].
+        1.0 = fully lit; 0.0 = fully in shadow.
 
-        1.0 = fully lit (no shadow from this caster)
-        0.0 = fully in shadow
-
-        PCF path (filter_method=0):
-            biased_depth = depth_bias_corrected(caster_z, receiver_z)
-            delta = receiver_z - biased_depth
-            weight = pcf_weight(delta, transition_scale)
-
-        PCSS path (filter_method=1):
-            kernel_r = pcss_kernel_radius(caster area, z_dist)
-            delta *= kernel_r / transition_scale  (widens penumbra)
-
-        鲁迅式：投影就是以牺牲精度换取效率——
-        单个采样点决定阴影，而非多次光线追踪。工程上的妥协，艺术上的近似。
+        鲁迅式：投影是以牺牲精度换取效率——单个采样点决定阴影。
         """
         biased = _shadow_depth_bias_corrected(
             caster_z, receiver_z,
             self.depth_bias, self.slope_bias, self.receiver_bias
         )
         shadow_delta = receiver_z - biased
-
         if self.filter_method == 1:
-            # PCSS: scale transition width by kernel radius
             z_dist = abs(caster_z - receiver_z)
             kr     = _shadow_pcss_kernel_radius(caster_w, caster_h, z_dist)
-            # Widen the transition zone proportionally to the soft kernel
-            effective_scale = self.transition_scale * (kr / max(_PCSS_MAX_KERNEL_RADIUS, 1.0) + 0.1)
+            effective_scale = self.transition_scale * (
+                kr / max(_PCSS_MAX_KERNEL_RADIUS, 1.0) + 0.1)
             return _shadow_pcf_weight(shadow_delta, effective_scale)
-        else:
-            return _shadow_pcf_weight(shadow_delta, self.transition_scale)
+        return _shadow_pcf_weight(shadow_delta, self.transition_scale)
 
 
 class AstroCellShadowRenderer:
     """
-    Per-epoch shadow renderer — mirrors the top-level shadow dispatch in
-    DeferredShadingSceneRenderer::RenderShadowDepthMaps().
+    Epoch-level shadow renderer — mirrors RenderShadowDepthMaps dispatch.
 
-    build_shadow_depth_map(): collect and sort all registered cell casters.
-    project_shadows():         for every (receiver, caster) pair, compute
-                               per-cell shadow factors via AstroCellShadowProjection.
-    get_shadow_factor():       return the minimum (most-occluded) shadow factor
-                               from all casters for a given receiver.
+    build_shadow_depth_map(): collect + sort casters by z descending.
+    project_shadows():        compute per-(receiver,caster) shadow factors.
+    get_shadow_factor():      query minimum shadow factor for a receiver.
 
-    Stencil optimisation (GStencilOptimization=True):
-        Shadow map is cached between calls; invalidated when all_bboxes
-        changes (mirrors the stencil clear optimisation that avoids redundant
-        shadow depth re-renders when the scene is static).
+    Stencil optimisation (GStencilOptimization): skip rebuild when scene unchanged.
 
     鲁迅式：阴影渲染器是场景中最劳累的工人——
-    它必须为每一个接收者计算每一个投射者的贡献，
-    然后把结果存起来，供后续的着色阶段消费。
+    它为每个接收者计算每个投射者的贡献，然后缓存结果。
     效率全靠缓存；缓存失效，一切重来。
     """
 
     def __init__(
-        self,
-        projection: AstroCellShadowProjection | None = None,
+        self, projection: AstroCellShadowProjection | None = None,
     ) -> None:
-        self._projection = projection or AstroCellShadowProjection()
-        # Depth map: list of (cell_id, z, w, h) sorted by z descending (deepest first)
-        self._depth_map:      list = []
-        # Per-receiver shadow factors: receiver_cell_id → min shadow factor
+        self._projection     = projection or AstroCellShadowProjection()
+        self._depth_map:     list = []
         self._shadow_factors: dict = {}
-        # Stencil optimisation cache key (hash of caster z values)
-        self._cache_key: int = -1
+        self._cache_key:     int  = -1
 
     def _compute_cache_key(self, all_bboxes: dict) -> int:
-        """Cheap scene-change detection — hash of all z-layer values."""
         return hash(tuple(
             (cid, round(bb.get("z", 0), 2))
             for cid, bb in sorted(all_bboxes.items())
@@ -14767,98 +15133,62 @@ class AstroCellShadowRenderer:
 
     def build_shadow_depth_map(self, all_bboxes: dict) -> None:
         """
-        Collect all cell casters and sort by z descending.
+        Collect casters and sort by z descending.
+        Stencil optimisation: skip when scene unchanged.
 
-        Mirrors the RenderShadowDepthMaps loop that iterates scene primitives
-        and writes their depth into the shadow depth buffer.
-
-        Stencil optimisation: skip rebuild if scene is unchanged.
-
-        鲁迅式：建造深度图是一次普查——每个单元格都要被登记，
-        按深度排序，等待被投影到接收者身上。普查完成，影子才有根据。
+        鲁迅式：建造深度图是一次普查——每个单元格都要被登记，按深度排序。
         """
         new_key = self._compute_cache_key(all_bboxes)
         if _STENCIL_OPTIMIZATION and new_key == self._cache_key:
-            return  # scene unchanged — reuse cached depth map
+            return
         self._cache_key = new_key
-
         self._depth_map = sorted(
-            [
-                (cid, float(bb.get("z", 0)), float(bb.get("w", 80)), float(bb.get("h", 50)))
-                for cid, bb in all_bboxes.items()
-            ],
-            key=lambda t: t[1],
-            reverse=True,   # deepest (highest z) first — mirrors near-to-far CSM sort
+            [(cid, float(bb.get("z", 0)), float(bb.get("w", 80)),
+              float(bb.get("h", 50))) for cid, bb in all_bboxes.items()],
+            key=lambda t: t[1], reverse=True,
         )
 
     def project_shadows(self, all_bboxes: dict) -> None:
         """
-        For every receiver cell, aggregate shadow contributions from all
-        casters with higher z (casters «above» receivers in z-layer space).
+        For every receiver, aggregate shadow factors from all higher-z casters.
+        Minimum factor (most-shadowed) wins.
 
-        Mirrors the ShadowProjection pass loop:
-            for each ShadowInfo (caster):
-                for each receiver:
-                    RenderShadowProjection → shadow factor
-
-        The final shadow factor is the minimum across all casters
-        (most-shadowed wins — additive shadow blending, not multiplicative,
-        to match the C++ additive shadow attenuation model).
-
-        鲁迅式：投影是权力的叠加——多个阴影来源叠加，
-        取最深者为准，因为在现实中，最黑暗处往往来自多个遮挡共谋。
+        鲁迅式：投影是权力的叠加——取最深者为准，因为黑暗往往来自多个遮挡共谋。
         """
         self.build_shadow_depth_map(all_bboxes)
         self._shadow_factors = {}
-
         for rcid, rbb in all_bboxes.items():
             recv_z = float(rbb.get("z", 0))
-            min_factor = 1.0   # start fully lit
-
+            min_f  = 1.0
+            rx0, ry0 = rbb.get("x", 0), rbb.get("y", 0)
+            rx1 = rx0 + rbb.get("w", 80)
+            ry1 = ry0 + rbb.get("h", 50)
             for (cid, cz, cw, ch) in self._depth_map:
-                if cid == rcid:
+                if cid == rcid or cz <= recv_z:
                     continue
-                if cz <= recv_z:
-                    continue   # only casters at higher z can shadow this receiver
-
-                # X/Y overlap check (mirrors frustum culling of shadow receivers)
-                rx0 = rbb.get("x", 0)
-                ry0 = rbb.get("y", 0)
-                rx1 = rx0 + rbb.get("w", 80)
-                ry1 = ry0 + rbb.get("h", 50)
-                cb = all_bboxes.get(cid, {})
+                cb  = all_bboxes.get(cid, {})
                 cx0 = cb.get("x", 0)
                 cy0 = cb.get("y", 0)
                 cx1 = cx0 + cb.get("w", 80)
                 cy1 = cy0 + cb.get("h", 50)
-
                 if rx1 < cx0 or cx1 < rx0 or ry1 < cy0 or cy1 < ry0:
-                    continue   # no XY overlap — shadow cannot reach this receiver
-
-                factor = self._projection.project(recv_z, cz, cw, ch)
-                if factor < min_factor:
-                    min_factor = factor
-
-            self._shadow_factors[rcid] = min_factor
+                    continue
+                f = self._projection.project(recv_z, cz, cw, ch)
+                if f < min_f:
+                    min_f = f
+            self._shadow_factors[rcid] = min_f
 
     def get_shadow_factor(self, cell_id: str) -> float:
-        """
-        Return the shadow factor [0,1] for the given receiver cell.
-        1.0 = fully lit; 0.0 = fully in shadow.
-        Returns 1.0 (lit) when no shadow map has been projected yet.
-
-        鲁迅式：查询比计算便宜——先算好，再查；这是缓存的哲学。
-        """
+        """Return shadow factor [0,1] for receiver cell. 1.0 = fully lit."""
         return self._shadow_factors.get(cell_id, 1.0)
 
 
-#: Module-level shadow renderer singleton
-_ASTRO_SHADOW_RENDERER: AstroCellShadowRenderer = AstroCellShadowRenderer()
+_ASTRO_SHADOW_RENDERER_V2: AstroCellShadowRenderer = AstroCellShadowRenderer()
 
 
 def get_shadow_renderer() -> AstroCellShadowRenderer:
     """Return the process-level AstroCellShadowRenderer singleton."""
-    return _ASTRO_SHADOW_RENDERER
+    return _ASTRO_SHADOW_RENDERER_V2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -14867,43 +15197,24 @@ def get_shadow_renderer() -> AstroCellShadowRenderer:
 # Ported from (head -200):
 #   upstream/unreal-renderer-ue5/Renderer-Private/PrimitiveSceneInfo.cpp
 #
-# 鲁迅曾言：「人必生活着，爱才有所附丽。」
+# 鲁迅曰：「人必生活着，爱才有所附丽。」
 # Primitive 必须存在于 Scene 中，才能被渲染，才能投射阴影，才能影响他者。
-# FPrimitiveSceneInfo 是 Primitive 在场景图中的身份证。
 #
 # Key UE5 constructs → Astro equivalents
 # ─────────────────────────────────────────────────────────────────────────────
-#   FPrimitiveFlagsCompact → AstroCellPrimitiveFlags
-#       bCastDynamicShadow  → cast_dynamic_shadow
-#       bStaticLighting     → static_lighting
-#       bCastStaticShadow   → cast_static_shadow
-#       bIsNaniteMesh       → is_nanite  (always True in Astro — all cells are Nanite)
-#       bIsAlwaysVisible    → always_visible
-#       bAllVertexFactoriesSupportGPUScene → gpu_scene_supported
-#       bIsForceHidden      → force_hidden
-#
+#   FPrimitiveFlagsCompact  → AstroCellPrimitiveFlags
 #   FPrimitiveSceneInfoCompact → AstroCellSceneInfoCompact
-#       Carries the compact flags + bbox + min_draw_distance + proxy ref.
-#
-#   FBatchingSPDI::DrawMesh (StaticMesh cache) → cache_static_draw_commands()
-#       Pre-caches SVG draw commands into the static mesh batch list so that
-#       per-frame proc() calls can skip regeneration when the bbox is unchanged.
-#       Mirrors the bSupportsCachingMeshDrawCommands check in DrawMesh().
-#
+#   FBatchingSPDI::DrawMesh → AstroCellStaticDrawCommandCache
 #   FPrimitiveSceneInfo::AddToScene / RemoveFromScene
-#       → add_to_scene() / remove_from_scene()
-#       Registered in AstroCellPrimitiveRegistry which is the Python equivalent
-#       of the per-scene FScene::Primitives TArray.
-#
-# GMeshDrawCommandsCacheMultithreaded / GNaniteMaterialBinCacheParallel
-#       → _DRAW_CMD_CACHE_MT / _NANITE_BIN_CACHE_PARALLEL (module constants)
+#       → AstroCellPrimitiveRegistry.add_primitive / remove_primitive
+#   GMeshDrawCommandsCacheMultithreaded / GMeshDrawCommandsBatchSize
+#       → _MDC_CACHE_MT / _MDC_BATCH_SIZE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Module-level flag equivalents for CVar defaults in PrimitiveSceneInfo.cpp head -200
-_DRAW_CMD_CACHE_MT:        bool = True   # GMeshDrawCommandsCacheMultithreaded
-_DRAW_CMD_BATCH_SIZE:      int  = 12     # GMeshDrawCommandsBatchSize
-_NANITE_BIN_CACHE_PARALLEL: bool = True  # GNaniteMaterialBinCacheParallel
-_RT_PRIMITIVE_CACHE_MT:    bool = True   # GRayTracingPrimitiveCacheMultithreaded
+_MDC_CACHE_MT:    bool = True
+_MDC_BATCH_SIZE:  int  = 12
+_NANITE_MAT_PARALLEL: bool = True
+_RT_PRIM_CACHE_MT:    bool = True
 
 
 @dataclass
@@ -14911,26 +15222,19 @@ class AstroCellPrimitiveFlags:
     """
     Python equivalent of FPrimitiveFlagsCompact.
 
-    Bit-packed flags describing a cell primitive's render capabilities.
-    Derived from the cell's species gene_traits and static configuration.
-
     鲁迅式：旗帜是立场的声明——每个比特都是一个「是」或「否」，
     汇聚成一个整数，代表这个单元格在场景中的身份与权利。
     """
     cast_dynamic_shadow: bool = True
     static_lighting:     bool = False
     cast_static_shadow:  bool = False
-    is_nanite:           bool = True    # All Astro cells are Nanite primitives
+    is_nanite:           bool = True
     always_visible:      bool = False
     gpu_scene_supported: bool = True
     force_hidden:        bool = False
 
     @classmethod
     def from_gene_traits(cls, gene_traits: dict) -> "AstroCellPrimitiveFlags":
-        """
-        Derive flags from a cell's gene_traits dict.
-        Mirrors FPrimitiveFlagsCompact(FPrimitiveSceneProxy*) constructor.
-        """
         return cls(
             cast_dynamic_shadow = gene_traits.get("cast_shadow", True),
             static_lighting     = gene_traits.get("static_lighting", False),
@@ -14942,7 +15246,6 @@ class AstroCellPrimitiveFlags:
         )
 
     def packed(self) -> int:
-        """Pack flags into a single integer (mirrors FPrimitiveFlagsCompact layout)."""
         return (
             (int(self.cast_dynamic_shadow) << 0) |
             (int(self.static_lighting)     << 1) |
@@ -14959,76 +15262,51 @@ class AstroCellSceneInfoCompact:
     """
     Python equivalent of FPrimitiveSceneInfoCompact.
 
-    Lightweight descriptor for quick scene-graph queries — stores the flags,
-    bounds, and a back-reference to the full AstroCellSceneInfo entry.
-    Mirrors the compact representation used in FScene::PrimitiveSceneProxies.
-
     鲁迅式：紧凑表示是对效率的致敬——宁可冗余地存储两份，
-    也不要每次都解引用到完整对象。空间换时间，这是程序员的现实主义。
+    也不要每次都解引用到完整对象。
     """
-    cell_id:        str
-    flags:          AstroCellPrimitiveFlags
-    bounds_min:     tuple   # (x, y, z)
-    bounds_max:     tuple   # (x+w, y+h, z)
-    min_draw_dist:  float   = 0.0
-    max_draw_dist:  float   = float("inf")
+    cell_id:       str
+    flags:         AstroCellPrimitiveFlags
+    bounds_min:    tuple
+    bounds_max:    tuple
+    min_draw_dist: float = 0.0
+    max_draw_dist: float = float("inf")
 
     def in_draw_range(self, screen_fraction: float) -> bool:
-        """Quick LOD cull check — mirrors FPrimitiveFlagsCompact draw-range test."""
         return (self.min_draw_dist <= screen_fraction <= self.max_draw_dist
                 or self.flags.always_visible)
 
     def is_visible_to_shadow(self) -> bool:
-        """Returns True if this primitive should contribute to shadow maps."""
-        return (self.flags.cast_dynamic_shadow or self.flags.cast_static_shadow) \
-               and not self.flags.force_hidden
+        return ((self.flags.cast_dynamic_shadow or self.flags.cast_static_shadow)
+                and not self.flags.force_hidden)
 
 
 class AstroCellStaticDrawCommandCache:
     """
-    Static mesh draw command cache — mirrors FBatchingSPDI::DrawMesh() +
-    the GMeshDrawCommandsCacheMultithreaded path in PrimitiveSceneInfo.cpp.
-
-    When bSupportsCachingMeshDrawCommands is True (our _DRAW_CMD_CACHE_MT),
-    SVG draw commands for cells whose bbox is unchanged are stored here and
-    reused on subsequent proc() calls, avoiding redundant SVG regeneration.
-
-    The cache is keyed by (cell_id, epoch) — each epoch bump invalidates stale
-    entries (mirrors the per-primitive cache invalidation on transform updates).
+    Static draw command cache — mirrors FBatchingSPDI::DrawMesh() +
+    GMeshDrawCommandsCacheMultithreaded path in PrimitiveSceneInfo.cpp.
 
     鲁迅式：缓存是对重复劳动的反抗——把已经做过的事情记录下来，
     下次遇到同样的情况，直接查账本，不必重新劳作。
-    但账本也会过期，epoch 是那个不动声色的清账人。
     """
 
     def __init__(self) -> None:
-        # key: (cell_id, epoch) → cached svg fragment string
         self._cache: dict = {}
-        # Batch size for parallel cache flush — mirrors GMeshDrawCommandsBatchSize
-        self.batch_size: int = _DRAW_CMD_BATCH_SIZE
+        self.batch_size: int = _MDC_BATCH_SIZE
 
     def get(self, cell_id: str, epoch: int) -> str | None:
-        """Return cached SVG fragment if valid for this epoch, else None."""
         return self._cache.get((cell_id, epoch))
 
     def put(self, cell_id: str, epoch: int, svg_fragment: str) -> None:
-        """Store a draw command fragment for (cell_id, epoch)."""
-        if _DRAW_CMD_CACHE_MT:
+        if _MDC_CACHE_MT:
             self._cache[(cell_id, epoch)] = svg_fragment
 
     def invalidate_cell(self, cell_id: str) -> None:
-        """Invalidate all cached entries for a cell (transform update path)."""
         stale = [k for k in self._cache if k[0] == cell_id]
         for k in stale:
             del self._cache[k]
 
     def flush_epoch(self, current_epoch: int, keep_window: int = 2) -> int:
-        """
-        Remove entries older than (current_epoch - keep_window).
-        Mirrors the periodic cache flush that removes stale FMeshDrawCommand entries
-        after the primitive-pool water-mark epoch has advanced.
-        Returns count of evicted entries.
-        """
         stale = [k for k in self._cache if current_epoch - k[1] > keep_window]
         for k in stale:
             del self._cache[k]
@@ -15040,76 +15318,54 @@ class AstroCellStaticDrawCommandCache:
 
 class AstroCellPrimitiveRegistry:
     """
-    Per-epoch primitive registry — Python equivalent of FScene::Primitives TArray
-    and its associated PrimitiveSceneProxies / PrimitiveBounds arrays.
+    Per-epoch primitive registry — Python equivalent of FScene::Primitives TArray.
 
     add_primitive():    mirrors AddPrimitiveSceneInfo_RenderThread
     remove_primitive(): mirrors RemovePrimitiveSceneInfo_RenderThread
     update_transform(): mirrors UpdatePrimitiveTransform_RenderThread
 
-    All operations maintain the compact list for O(1) per-frame iteration
-    and the dict for O(1) lookup by cell_id.
-
     鲁迅式：注册表是场景图的公民名册——
     只有登记在册的 Primitive，才有资格被渲染、被遮挡、被反射。
-    未登记者，在场景中如同不存在。
     """
 
     def __init__(self) -> None:
-        # Compact list for iteration (insertion order preserved)
-        self._compact: list[AstroCellSceneInfoCompact] = []
-        # Dict for O(1) lookup: cell_id → index in _compact
-        self._index:   dict[str, int] = {}
-        # Static draw command cache
-        self.draw_cache: AstroCellStaticDrawCommandCache = AstroCellStaticDrawCommandCache()
+        self._compact: list = []
+        self._index:   dict = {}
+        self.draw_cache: AstroCellStaticDrawCommandCache = \
+            AstroCellStaticDrawCommandCache()
 
     def add_primitive(
         self,
-        cell_id:    str,
-        bbox:       dict,
+        cell_id:     str,
+        bbox:        dict,
         gene_traits: dict,
-        epoch:      int,
+        epoch:       int,
     ) -> AstroCellSceneInfoCompact:
-        """
-        Register a cell primitive in the scene.
-        Mirrors AddPrimitiveSceneInfo_RenderThread + AstroRegisterCellInZLayer.
-
-        Returns the newly created compact scene info.
-
-        鲁迅式：加入场景是一种出生——从此这个单元格有了在世界中的位置，
-        有了影子，有了被看见的可能，也有了被遮挡的宿命。
-        """
-        flags  = AstroCellPrimitiveFlags.from_gene_traits(gene_traits)
+        flags = AstroCellPrimitiveFlags.from_gene_traits(gene_traits)
         mn = (float(bbox["x"]), float(bbox["y"]), float(bbox.get("z", 0)))
         mx = (mn[0] + float(bbox["w"]), mn[1] + float(bbox["h"]), mn[2])
         info = AstroCellSceneInfoCompact(
             cell_id=cell_id, flags=flags, bounds_min=mn, bounds_max=mx,
         )
-
         if cell_id in self._index:
-            # Re-registration: replace in-place (transform update path)
             idx = self._index[cell_id]
             self._compact[idx] = info
             self.draw_cache.invalidate_cell(cell_id)
         else:
             self._index[cell_id] = len(self._compact)
             self._compact.append(info)
-
         print(
             f"[ASTRO-PSI] AddPrimitive cell_id={cell_id} "
-            f"flags=0x{info.flags.packed():02X} "
-            f"bbox=({bbox['x']:.1f},{bbox['y']:.1f},{bbox['w']:.1f},{bbox['h']:.1f}) "
-            f"z={bbox.get('z', 0):.1f}",
+            f"flags=0x{info.flags.packed():02X}",
             file=sys.stderr,
         )
         return info
 
     def remove_primitive(self, cell_id: str) -> None:
         """
-        Deregister a cell.  Mirrors RemovePrimitiveSceneInfo_RenderThread swap-remove.
+        Swap-remove — mirrors RemovePrimitiveSceneInfo_RenderThread.
 
         鲁迅式：离场是另一种消亡——不是死亡，只是从登记册上被划去。
-        但被划去的 Primitive，在场景中已如幽灵，不投影，不反射，不存在。
         """
         if cell_id not in self._index:
             return
@@ -15122,48 +15378,40 @@ class AstroCellPrimitiveRegistry:
 
     def update_transform(self, cell_id: str, new_bbox: dict) -> None:
         """
-        Update a cell's bounds.  Mirrors UpdatePrimitiveTransform_RenderThread.
+        Update bounds — mirrors UpdatePrimitiveTransform_RenderThread.
 
-        鲁迅式：变换更新是对不变性假设的抗议——
-        当一个单元格移动了，它过去在缓存中的影像便是谎言，必须清除。
+        鲁迅式：变换更新是对不变性假设的抗议——当一个单元格移动了，
+        它过去在缓存中的影像便是谎言，必须清除。
         """
         if cell_id not in self._index:
             return
         idx  = self._index[cell_id]
         info = self._compact[idx]
-        mn   = (float(new_bbox["x"]), float(new_bbox["y"]), float(new_bbox.get("z", 0)))
+        mn   = (float(new_bbox["x"]), float(new_bbox["y"]),
+                float(new_bbox.get("z", 0)))
         mx   = (mn[0] + float(new_bbox["w"]), mn[1] + float(new_bbox["h"]), mn[2])
         self._compact[idx] = AstroCellSceneInfoCompact(
-            cell_id=cell_id,
-            flags=info.flags,
-            bounds_min=mn,
-            bounds_max=mx,
+            cell_id=cell_id, flags=info.flags,
+            bounds_min=mn, bounds_max=mx,
             min_draw_dist=info.min_draw_dist,
             max_draw_dist=info.max_draw_dist,
         )
         self.draw_cache.invalidate_cell(cell_id)
 
     def get_shadow_casters(self) -> list:
-        """
-        Return list of compact infos that can cast shadows.
-        Mirrors the shadow caster loop in BuildWholeSceneShadow().
-
-        鲁迅式：投射者的名单是责任的清单——只有那些「有能力遮挡」的单元格，
-        才会出现在阴影渲染的计算中。
-        """
-        return [info for info in self._compact if info.is_visible_to_shadow()]
+        """Return compact infos that can cast shadows."""
+        return [i for i in self._compact if i.is_visible_to_shadow()]
 
     def __len__(self) -> int:
         return len(self._compact)
 
 
-#: Module-level primitive registry singleton
-_ASTRO_PRIMITIVE_REGISTRY: AstroCellPrimitiveRegistry = AstroCellPrimitiveRegistry()
+_ASTRO_PRIMITIVE_REGISTRY_V2: AstroCellPrimitiveRegistry = AstroCellPrimitiveRegistry()
 
 
 def get_primitive_registry() -> AstroCellPrimitiveRegistry:
     """Return the process-level AstroCellPrimitiveRegistry singleton."""
-    return _ASTRO_PRIMITIVE_REGISTRY
+    return _ASTRO_PRIMITIVE_REGISTRY_V2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -15172,69 +15420,43 @@ def get_primitive_registry() -> AstroCellPrimitiveRegistry:
 # Ported from (head -200):
 #   upstream/unreal-renderer-ue5/Renderer-Private/RendererScene.cpp
 #
-# 鲁迅曾言：「从来如此，便对么？」
+# 鲁迅曰：「从来如此，便对么？」
 # 场景图从来如此地把所有 Primitive 塞进一个 TArray；
-# 我们对么？我们是——因为 json + dict 在这个规模下绰绰有余，
-# 而不必为了「正宗」去搬运几千行 C++ 模板。
+# 我们对么？我们是——因为 json + dict 在这个规模下绰绰有余。
 #
 # Key UE5 constructs → Astro equivalents
 # ─────────────────────────────────────────────────────────────────────────────
 #   CVarEarlyZPass / CVarBasePassWriteDepthEvenWithFullPrepass
-#       → _EARLY_Z_PASS / _BASE_PASS_WRITE_DEPTH  (module constants)
-#   CVarEarlyZPassOnlyMaterialMasking
-#       → _EARLY_Z_ONLY_MASKING
-#   GVisibilitySkipAlwaysVisible
-#       → _VISIBILITY_SKIP_ALWAYS_VISIBLE
-#   CVarVisibilityLocalLightPrimitiveInteraction
-#       → _VIS_LOCAL_LIGHT_INTERACTION
-#   GSafeCullDistanceUpdate
-#       → _SAFE_CULL_DISTANCE_UPDATE
+#       → _EARLY_Z_PASS_V2 / _BASE_PASS_WRITE_DEPTH_V2
+#   CVarEarlyZPassOnlyMaterialMasking → _EARLY_Z_ONLY_MASKING_V2
+#   GVisibilitySkipAlwaysVisible      → _VIS_SKIP_ALWAYS_VISIBLE_V2
+#   CVarVisibilityLocalLightPrimitiveInteraction → _VIS_LOCAL_LIGHT_V2
+#   GSafeCullDistanceUpdate           → _SAFE_CULL_DIST_V2
 #
-# AstroCellSceneGraph:
-#   The scene-level registry that ties together:
-#     • AstroCellPrimitiveRegistry   (primitive list)
-#     • AstroCellBVH                 (spatial queries)
-#     • AstroCellShadowRenderer      (shadow map)
-#     • AstroCellReflectionCaptureManager (probes)
-#   Mirrors the FScene class that owns all of these sub-systems.
-#
-# EarlyZ pass:
-#   In UE5, the EarlyZ pass writes depth before the base pass to cull
-#   hidden geometry.  In Astro, the analogous pass is the NaniteVisibility
-#   query (perform_nanite_visibility) which culls invisible cells before
-#   proc() runs.  AstroCellSceneGraph.early_z_pass() wraps this call.
-#
-# SafeCullDistanceUpdate:
-#   GSafeCullDistanceUpdate ensures cull distances are updated before
-#   static meshes are added to the scene.  Astro equivalent: bbox-based
-#   max_draw_dist is propagated to AstroCellSceneInfoCompact before the
-#   BVH is rebuilt.
+# AstroCellSceneGraph: owns primitive_registry, BVH, shadow renderer, probes.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# CVar-equivalent module constants from RendererScene.cpp head -200
-_EARLY_Z_PASS:                  int  = 3     # CVarEarlyZPass default (heuristic)
-_BASE_PASS_WRITE_DEPTH:         bool = False  # CVarBasePassWriteDepthEvenWithFullPrepass
-_EARLY_Z_ONLY_MASKING:          bool = True   # CVarEarlyZPassOnlyMaterialMasking
-_VISIBILITY_SKIP_ALWAYS_VISIBLE: bool = True  # GVisibilitySkipAlwaysVisible
-_VIS_LOCAL_LIGHT_INTERACTION:   int  = 2     # CVarVisibilityLocalLightPrimitiveInteraction
-_SAFE_CULL_DISTANCE_UPDATE:     bool = True   # GSafeCullDistanceUpdate
+_EARLY_Z_PASS_V2:            int  = 3
+_BASE_PASS_WRITE_DEPTH_V2:   bool = False
+_EARLY_Z_ONLY_MASKING_V2:    bool = True
+_VIS_SKIP_ALWAYS_VISIBLE_V2: bool = True
+_VIS_LOCAL_LIGHT_V2:         int  = 2
+_SAFE_CULL_DIST_V2:          bool = True
 
 
 class AstroCellSceneGraph:
     """
-    Python equivalent of FScene (scene manager).
+    Python equivalent of FScene.
 
-    Owns and coordinates the major sub-systems:
-        primitive_registry  → AstroCellPrimitiveRegistry  (FScene::Primitives)
-        bvh                 → AstroCellBVH               (FScene spatial index)
-        shadow_renderer     → AstroCellShadowRenderer    (shadow maps)
-        refl_manager        → AstroCellReflectionCaptureManager (probes)
-        vis_query           → AstroCellVisibilityQuery    (frustum cull)
+    Owns and coordinates:
+        primitive_registry  → AstroCellPrimitiveRegistry
+        bvh                 → AstroCellBVH
+        shadow_renderer     → AstroCellShadowRenderer
+        refl_manager        → AstroCellReflectionCaptureManager
 
-    Per-epoch lifecycle (mirrors FScene::UpdateAllPrimitiveSceneInfos()):
-        begin_epoch()     — rebuild BVH from registry, run EarlyZ / visibility
-        project_shadows() — run shadow renderer on current scene
-        end_epoch()       — flush draw-command cache, persist diagnostics
+    begin_epoch(): SafeCullDistance → BVH rebuild → EarlyZ vis → shadow map
+    project_shadows(): run shadow renderer
+    end_epoch(): flush draw-command cache, return diagnostics
 
     鲁迅式：场景图是世界模型的底层——所有子系统都向它汇报，
     所有渲染决策都以它为依据。它不直接画任何东西，
@@ -15246,199 +15468,129 @@ class AstroCellSceneGraph:
         self.bvh                = AstroCellBVH()
         self.shadow_renderer    = get_shadow_renderer()
         self.refl_manager       = get_reflection_capture_manager()
-        self._vis_query:        AstroCellVisibilityQuery | None = None
-        self._epoch:            int = 0
+        self._vis_query: AstroCellVisibilityQuery | None = None
+        self._epoch: int = 0
 
-    # ------------------------------------------------------------------
     def begin_epoch(
         self,
-        all_bboxes:  dict,
-        viewport_w:  float = 1200.0,
-        viewport_h:  float = 900.0,
-        scroll_x:    float = 0.0,
-        scroll_y:    float = 0.0,
+        all_bboxes: dict,
+        viewport_w: float = 1200.0,
+        viewport_h: float = 900.0,
+        scroll_x:   float = 0.0,
+        scroll_y:   float = 0.0,
     ) -> AstroCellVisibilityQuery:
         """
-        Per-epoch scene setup.
-
-        1. SafeCullDistance: propagate bbox-derived draw distances to registry
-           (mirrors GSafeCullDistanceUpdate guard in AddPrimitiveSceneInfo).
-        2. Rebuild BVH from current all_bboxes snapshot.
-        3. EarlyZ / Nanite visibility query — culls cells outside the viewport.
-        4. Build shadow depth map from registered shadow casters.
-
-        Returns the AstroCellVisibilityQuery for use by the proc() dispatch loop.
+        Per-epoch setup: SafeCullDist → BVH → EarlyZ → shadow depth map.
 
         鲁迅式：每个 epoch 开始之前，先做一次全场普查——
         谁在视野里，谁投射阴影，谁已经离开场景。普查是昂贵的，但不可省略。
         """
         self._epoch += 1
-
-        # ── Step 1: SafeCullDistance update ────────────────────────────────
-        if _SAFE_CULL_DISTANCE_UPDATE:
+        if _SAFE_CULL_DIST_V2:
+            vp_area = max(viewport_w * viewport_h, 1.0)
             for cell_id, bb in all_bboxes.items():
                 if cell_id in self.primitive_registry._index:
-                    # Screen-fraction as cull proxy: cell area / viewport area
                     cell_area = bb.get("w", 80) * bb.get("h", 50)
-                    vp_area   = max(viewport_w * viewport_h, 1.0)
                     max_frac  = min(1.0, cell_area / vp_area)
                     idx       = self.primitive_registry._index[cell_id]
                     self.primitive_registry._compact[idx].min_draw_dist = 0.0
                     self.primitive_registry._compact[idx].max_draw_dist = (
-                        max_frac * 100.0 + 0.001   # avoid cull at zero
-                    )
-
-        # ── Step 2: BVH rebuild ────────────────────────────────────────────
+                        max_frac * 100.0 + 0.001)
         self.bvh.build_from_registry(all_bboxes)
-
-        # ── Step 3: EarlyZ / Nanite visibility (CVarEarlyZPass port) ──────
-        # EarlyZ mode 3 (heuristic) → run visibility for all non-always-visible cells
         query = perform_nanite_visibility(viewport_w, viewport_h, scroll_x, scroll_y)
         self._vis_query = query
-
-        # ── Step 4: Shadow depth map ───────────────────────────────────────
         self.shadow_renderer.build_shadow_depth_map(all_bboxes)
-
         print(
             f"[ASTRO-SCENE] begin_epoch={self._epoch} "
             f"prims={len(self.primitive_registry)} "
-            f"bvh_root={'yes' if self.bvh._root is not None else 'no'} "
-            f"vis_cells={query.finish().get('visible_cells', '?') if not query._finished else '(done)'} "
-            f"shadow_casters={len(self.primitive_registry.get_shadow_casters())}",
+            f"bvh_root={'yes' if self.bvh._root is not None else 'no'}",
             file=sys.stderr,
         )
         return query
 
     def project_shadows(self, all_bboxes: dict) -> None:
-        """
-        Project shadows for the current epoch.
-        Mirrors RenderShadowDepthMaps / RenderProjectedShadows dispatch.
-
-        鲁迅式：投影阴影是场景图对光线的最后裁决——
-        谁遮了谁，谁在谁的阴影下，在这一步成为可查询的事实。
-        """
+        """Run shadow projection for current epoch."""
         self.shadow_renderer.project_shadows(all_bboxes)
 
     def end_epoch(self, current_epoch: int) -> dict:
-        """
-        Per-epoch cleanup — flush stale draw-command cache entries.
-        Returns diagnostic stats.
-
-        鲁迅式：结束一个 epoch 是整理账本——
-        删去不再有效的缓存条目，为下一个 epoch 留出空间。
-        """
+        """Flush stale draw-command cache; return diagnostics."""
         evicted = self.primitive_registry.draw_cache.flush_epoch(current_epoch)
-        stats = {
-            "epoch":            current_epoch,
-            "primitive_count":  len(self.primitive_registry),
-            "cache_evicted":    evicted,
-            "cache_stats":      self.primitive_registry.draw_cache.stats(),
-            "shadow_factors":   len(self.shadow_renderer._shadow_factors),
+        return {
+            "epoch":           current_epoch,
+            "primitive_count": len(self.primitive_registry),
+            "cache_evicted":   evicted,
+            "shadow_factors":  len(self.shadow_renderer._shadow_factors),
         }
-        return stats
 
     def query_overlapping(self, bbox: dict) -> list:
-        """BVH spatial query — return cell_ids overlapping bbox."""
         return self.bvh.query_overlapping_cells(bbox)
 
 
-#: Module-level scene graph singleton
-_ASTRO_SCENE_GRAPH: AstroCellSceneGraph | None = None
+_ASTRO_SCENE_GRAPH_V2: AstroCellSceneGraph | None = None
 
 
 def get_scene_graph() -> AstroCellSceneGraph:
     """Return the process-level AstroCellSceneGraph singleton."""
-    global _ASTRO_SCENE_GRAPH
-    if _ASTRO_SCENE_GRAPH is None:
-        _ASTRO_SCENE_GRAPH = AstroCellSceneGraph()
-    return _ASTRO_SCENE_GRAPH
+    global _ASTRO_SCENE_GRAPH_V2
+    if _ASTRO_SCENE_GRAPH_V2 is None:
+        _ASTRO_SCENE_GRAPH_V2 = AstroCellSceneGraph()
+    return _ASTRO_SCENE_GRAPH_V2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# [ASTRO-CELL] Renderer (Renderer.cpp module init) → Python port
+# [ASTRO-CELL] Renderer.cpp module init → Python port
 #
 # Ported from (head -200):
 #   upstream/unreal-renderer-ue5/Renderer-Private/Renderer.cpp
 #
-# 鲁迅曾言：「希望是本无所谓有，无所谓无的。」
-# 渲染器模块的启动逻辑亦然——StartupModule 初始化全局资源，
-# ShutdownModule 释放它们。有则启动，无则跳过，宇宙对此无动于衷。
+# 鲁迅曰：「希望是本无所谓有，无所谓无的。」
+# StartupModule 初始化全局资源，ShutdownModule 释放它们。
 #
 # Key UE5 constructs → Astro equivalents
 # ─────────────────────────────────────────────────────────────────────────────
-#   FRendererModule::StartupModule()
-#       → AstroCellRendererModule.startup()
-#       Initialises: GScreenSpaceDenoiser, FVirtualTextureSystem,
-#       GRayTracingGeometryManager, GlobalUniformBuffers.
-#       Astro equivalents: resets perf counters, seeds RNG for Halton,
-#       registers the built-in NNEDenoiser with the DenoiserManager.
-#
-#   FRendererModule::ShutdownModule()
-#       → AstroCellRendererModule.shutdown()
-#       Releases RDG resources, joins async delete task.
-#       Astro equivalent: clears singleton state (feedbackmanager, drawpool).
-#
-#   bFlushRenderTargetsOnWorldCleanup
-#       → _FLUSH_RT_ON_CLEANUP  (module constant)
-#   bBindTileMeshDrawingDummyRenderTarget
-#       → _BIND_TILE_DUMMY_RT
-#
+#   FRendererModule::StartupModule()  → AstroCellRendererModule.startup()
+#   FRendererModule::ShutdownModule() → AstroCellRendererModule.shutdown()
+#   bFlushRenderTargetsOnWorldCleanup → _FLUSH_RT_ON_CLEANUP_V2
+#   bBindTileMeshDrawingDummyRenderTarget → _BIND_TILE_DUMMY_RT_V2
+#   GIdentityPrimitiveUniformBuffer.InitContents()
+#       → _IDENTITY_PRIMITIVE_UB_V2 sentinel dict
 #   FRendererStateStreamManager (WITH_STATE_STREAM)
-#       → AstroCellStateStreamRenderer (debug render path only;
-#         proxied as a lightweight counter dict in the Python port)
-#
-# GIdentityPrimitiveUniformBuffer / GDistanceCullFadedInUniformBuffer:
-#   → _IDENTITY_PRIMITIVE_UB / _DISTANCE_CULL_UB  (sentinel dicts;
-#     mirrors InitContents() called in StartupModule)
+#       → AstroCellStateStreamRenderer (counter dict, debug lines only)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Module constants from Renderer.cpp head -200
-_FLUSH_RT_ON_CLEANUP:  bool = True   # bFlushRenderTargetsOnWorldCleanup
-_BIND_TILE_DUMMY_RT:   bool = False  # bBindTileMeshDrawingDummyRenderTarget
+_FLUSH_RT_ON_CLEANUP_V2: bool = True
+_BIND_TILE_DUMMY_RT_V2:  bool = False
 
-# Global «uniform buffer» sentinels — mirrors GIdentityPrimitiveUniformBuffer
-# and GDistanceCullFadedInUniformBuffer InitContents() calls in StartupModule.
-_IDENTITY_PRIMITIVE_UB: dict = {
+_IDENTITY_PRIMITIVE_UB_V2: dict = {
     "LocalToWorld":   [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1],
     "WorldToLocal":   [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1],
     "ObjectWorldPos": [0.0, 0.0, 0.0, 1.0],
     "ObjectRadius":   1.0,
 }
-_DISTANCE_CULL_UB: dict = {"FadeAlpha": 1.0, "InvFadeRange": 0.0}
-_DITHER_FADE_UB:   dict = {"DitherFade": 1.0}
+_DISTANCE_CULL_UB_V2:   dict = {"FadeAlpha": 1.0, "InvFadeRange": 0.0}
+_DITHER_FADE_UB_V2:     dict = {"DitherFade": 1.0}
 
 
 class AstroCellStateStreamRenderer:
     """
     Python equivalent of FRendererModule::FRendererStateStreamManager.
+    Tracks proxy type + count for debug overlay (WITH_STATE_STREAM path).
 
-    Tracks proxy type + count for the debug overlay (WITH_STATE_STREAM path).
-    In the C++ source this manager writes text lines via IStateStreamDebugRenderer;
-    here we accumulate the same data in a dict for diagnostic logging.
-
-    鲁迅式：调试渲染器是内省的工具——它把系统内部的数字变成人可以读懂的文字，
-    让隐藏的复杂性浮出水面。没有它，你只能猜测，有了它，你能开始理解。
+    鲁迅式：调试渲染器是内省的工具——
+    它把系统内部的数字变成人可以读懂的文字，让隐藏的复杂性浮出水面。
     """
 
     def __init__(self) -> None:
-        # ProxyTypeAndCount: proxy_type_name → count (mirrors TMap<FName, uint32>)
-        self._proxy_counts: dict[str, int] = {}
+        self._proxy_counts: dict = {}
 
     def register_proxy(self, proxy_type: str, count: int = 1) -> None:
-        """Increment proxy type counter — mirrors ProxyTypeAndCount[Type]++."""
         self._proxy_counts[proxy_type] = self._proxy_counts.get(proxy_type, 0) + count
 
     def deregister_proxy(self, proxy_type: str, count: int = 1) -> None:
-        """Decrement proxy type counter."""
-        prev = self._proxy_counts.get(proxy_type, 0)
-        self._proxy_counts[proxy_type] = max(0, prev - count)
+        self._proxy_counts[proxy_type] = max(
+            0, self._proxy_counts.get(proxy_type, 0) - count)
 
     def debug_render_lines(self) -> list:
-        """
-        Produce debug text lines — mirrors Game_DebugRender() which calls
-        Renderer.DrawText() for each ProxyTypeAndCount entry.
-        Returns a list of strings (one per proxy type).
-        """
         lines = [f"Num Render proxies = {len(self._proxy_counts)}"]
         for ptype, cnt in sorted(self._proxy_counts.items()):
             lines.append(f"[{ptype} | {cnt}]")
@@ -15448,38 +15600,27 @@ class AstroCellStateStreamRenderer:
         return dict(self._proxy_counts)
 
 
-def _builtin_nne_denoiser(
-    radiance_buf: dict,
-    albedo_buf:   dict,
-    normal_buf:   dict,
+def _builtin_nne_denoiser_v2(
+    radiance_buf: dict, albedo_buf: dict, normal_buf: dict,
 ) -> dict:
     """
-    Built-in NNE spatial denoiser stub.
-
-    Registered in AstroCellRendererModule.startup() as the default
-    IPathTracingDenoiser plugin (mirrors GScreenSpaceDenoiser =
-    IScreenSpaceDenoiser::GetDefaultDenoiser() in StartupModule).
-
-    In the full UE5 runtime this would invoke the NNE model inference pass.
-    Here it applies a simple 1-tap bilateral blur using per-cell albedo as
-    the edge-stop weight — the correct denoising structure at minimal cost.
+    Built-in NNE spatial denoiser stub — edge-stop bilateral blur.
+    Registered as default IPathTracingDenoiser in AstroCellRendererModule.startup().
 
     鲁迅式：默认降噪器是「够用就好」的代表——
-    它不是最好的，但它总是在场，总是有效。
-    比没有降噪器强，但比真正的 NNE 推理弱很多。这是现实主义，不是懈怠。
+    不是最好的，但总是在场，总是有效。
     """
     denoised: dict = {}
     for cid, rad in radiance_buf.items():
-        # Edge-stop weight from albedo channel (high-albedo cells = preserve detail)
-        alb  = albedo_buf.get(cid, (0.5, 0.5, 0.5))
+        alb      = albedo_buf.get(cid, (0.5, 0.5, 0.5))
         alb_lum  = (alb[0] + alb[1] + alb[2]) / 3.0
         preserve = max(0.3, min(1.0, alb_lum * 1.5))
-        # Soft denoise: blend raw radiance toward grey proportionally to (1-preserve)
-        grey   = (rad[0] + rad[1] + rad[2]) / 3.0
-        nr = rad[0] * preserve + grey * (1.0 - preserve)
-        ng = rad[1] * preserve + grey * (1.0 - preserve)
-        nb = rad[2] * preserve + grey * (1.0 - preserve)
-        denoised[cid] = (nr, ng, nb)
+        grey     = (rad[0] + rad[1] + rad[2]) / 3.0
+        denoised[cid] = (
+            rad[0] * preserve + grey * (1.0 - preserve),
+            rad[1] * preserve + grey * (1.0 - preserve),
+            rad[2] * preserve + grey * (1.0 - preserve),
+        )
     return denoised
 
 
@@ -15487,12 +15628,9 @@ class AstroCellRendererModule:
     """
     Python equivalent of FRendererModule.
 
-    Manages the lifecycle of global renderer sub-systems:
-        startup()  — mirrors StartupModule()  (called once at module import)
-        shutdown() — mirrors ShutdownModule() (called on interpreter exit or test teardown)
-
-    Also exposes draw_tile_mesh() which mirrors the FRendererModule::DrawTileMesh
-    helper used for canvas rendering in non-VR views.
+    startup()  → mirrors StartupModule() — init denoiser, perf counters, PT state
+    shutdown() → mirrors ShutdownModule() — release FB manager, PSO table
+    draw_tile_mesh() → mirrors DrawTileMesh() — canvas tile render helper
 
     鲁迅式：模块的启动与关闭是开幕与闭幕——
     中间的一切都依赖于启动时建立的全局状态，
@@ -15500,70 +15638,46 @@ class AstroCellRendererModule:
     """
 
     def __init__(self) -> None:
-        self._started: bool = False
+        self._started = False
         self._state_stream = AstroCellStateStreamRenderer()
-        self._stop_rendering_delegate_id: int | None = None
 
     def startup(self) -> None:
         """
-        Initialise global renderer state.
-        Mirrors FRendererModule::StartupModule():
-          - GScreenSpaceDenoiser = GetDefaultDenoiser() → register NNE denoiser
-          - FVirtualTextureSystem::Initialize() → reset perf counters
-          - GRayTracingGeometryManager = new FRayTracingGeometryManager()
-            → seed Halton RNG via reset_perf_counters()
-          - GIdentityPrimitiveUniformBuffer.InitContents() → already inited above
-          - PreparePathTracingRTPSO() → prepare_path_tracing(default config)
+        Init global renderer state — mirrors FRendererModule::StartupModule().
 
         鲁迅式：StartupModule 是系统的第一句话——说错了，后面全错。
         """
         if self._started:
             return
-
-        # Register built-in NNE denoiser as default spatial denoiser
         mgr = get_denoiser_manager()
         if not mgr.has_spatial_denoiser():
             mgr.register_spatial_denoiser(
-                _PTD_DENOISER_NAME, _builtin_nne_denoiser,
+                _PTD_DENOISER_NAME, _builtin_nne_denoiser_v2,
                 needs_extra_flags=False,
             )
-
-        # Reset perf counters (mirrors VirtualTextureSystem::Initialize equiv)
         reset_perf_counters()
-
-        # Prepare path tracing state (mirrors PreparePathTracingRTPSO in PostEngineInit)
         prepare_path_tracing(AstroCellPathTracingConfig(), view_id="default")
-
         self._started = True
         print(
-            f"[ASTRO-RENDERER] StartupModule: "
-            f"denoiser='{_PTD_DENOISER_NAME}' "
-            f"PSO_table_size={AstroCellPipelineStateId.table_size()} "
-            f"identity_ub_keys={list(_IDENTITY_PRIMITIVE_UB.keys())}",
+            f"[ASTRO-RENDERER] StartupModule: denoiser='{_PTD_DENOISER_NAME}' "
+            f"PSO_table={AstroCellPipelineStateId.table_size()}",
             file=sys.stderr,
         )
 
     def shutdown(self) -> None:
         """
-        Release global renderer state.
-        Mirrors FRendererModule::ShutdownModule():
-          - WaitForAsyncDeleteTask → join any pending epoch state
-          - FRayTracingGeometryManager delete → reset feedback manager
+        Release global renderer state — mirrors FRendererModule::ShutdownModule().
 
         鲁迅式：ShutdownModule 是最后的整理——
         把资源还给系统，把状态归零，不留遗憾，也不留垃圾。
         """
         if not self._started:
             return
-        # Reset feedback manager high-water marks
         fb = get_feedback_manager()
         for k in fb.high_water_marks:
             fb.high_water_marks[k] = 0
-
-        # Clear PSO table if flush requested
-        if _FLUSH_RT_ON_CLEANUP:
+        if _FLUSH_RT_ON_CLEANUP_V2:
             _pipeline_state_table.clear()
-
         self._started = False
         print("[ASTRO-RENDERER] ShutdownModule complete.", file=sys.stderr)
 
@@ -15574,121 +15688,86 @@ class AstroCellRendererModule:
         viewport_h:   float = 900.0,
     ) -> str:
         """
-        Draw a tile of cell meshes into a single SVG fragment.
-
-        Mirrors FRendererModule::DrawTileMesh() — used for off-screen canvas
-        rendering (thumbnails, UI overlays) where each cell contributes one
-        <g> tile.
-
-        If _BIND_TILE_DUMMY_RT is True, wraps the output in a dummy <rect>
-        placeholder (mirrors the driver-bug workaround CVar).
+        Draw cell tiles into a single SVG fragment — mirrors DrawTileMesh().
 
         鲁迅式：DrawTileMesh 是画布上的拼贴——
         每个单元格是一块瓦片，拼在一起才成为完整的画面。
-        但瓦片太小时什么都看不清，太大时又失去细节。
-        分辨率是所有表达的永恒困境。
         """
         fragments = []
-        if _BIND_TILE_DUMMY_RT:
+        if _BIND_TILE_DUMMY_RT_V2:
             fragments.append(
                 f'<rect x="0" y="0" width="{viewport_w}" height="{viewport_h}" '
                 f'fill="none" stroke="none" opacity="0" data-role="dummy-rt"/>'
             )
-
         for entry in cell_entries:
             cid      = entry.get("cell_id", "")
-            bbox     = entry.get("bbox", {"x": 0, "y": 0, "w": 80, "h": 50, "z": 3})
+            bbox     = entry.get("bbox", {"x": 0, "y": 0, "w": 80, "h": 50})
             svg_frag = entry.get("svg_fragment", "")
-            tx       = bbox.get("x", 0)
-            ty       = bbox.get("y", 0)
+            tx, ty   = bbox.get("x", 0), bbox.get("y", 0)
             fragments.append(
                 f'<g data-cell-id="{cid}" '
                 f'transform="translate({tx},{ty})">{svg_frag}</g>'
             )
-
         return "\n".join(fragments)
 
     def state_stream_debug_lines(self) -> list:
-        """Expose state stream debug renderer lines for monitoring."""
         return self._state_stream.debug_render_lines()
 
 
-#: Module-level renderer module singleton
-_ASTRO_RENDERER_MODULE: AstroCellRendererModule = AstroCellRendererModule()
-# Auto-startup on import (mirrors IMPLEMENT_MODULE / FModuleManager::LoadModule)
-_ASTRO_RENDERER_MODULE.startup()
+_ASTRO_RENDERER_MODULE_V2: AstroCellRendererModule = AstroCellRendererModule()
+_ASTRO_RENDERER_MODULE_V2.startup()
 
 
 def get_renderer_module() -> AstroCellRendererModule:
     """Return the process-level AstroCellRendererModule singleton."""
-    return _ASTRO_RENDERER_MODULE
+    return _ASTRO_RENDERER_MODULE_V2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# [ASTRO-CELL] ReflectionEnvironment (additional CVars) → Python port
+# [ASTRO-CELL] ReflectionEnvironment additional CVars → Python port
 #
 # Ported from (head -200):
 #   upstream/unreal-renderer-ue5/Renderer-Private/ReflectionEnvironment.cpp
 #
-# 鲁迅曾言：「猛兽是单独的，牛羊才成群。」
-# 反射环境捕获的是周围的「群众」——粗糙表面向周围平均，
-# 光滑表面则锁定最近的镜像，不轻易妥协。
-# 这正是 roughness-based mixing 的哲学：平滑者独行，粗糙者随众。
+# 鲁迅曰：「猛兽是单独的，牛羊才成群。」
+# 反射环境捕获的是周围的「群众」——粗糙表面向周围平均，光滑表面锁定最近镜像。
+# roughness-based mixing 的哲学：平滑者独行，粗糙者随众。
 #
 # Key UE5 constructs → Astro equivalents (from head -200)
 # ─────────────────────────────────────────────────────────────────────────────
-#   CVarReflectionEnvironment (0/1/2)
-#       → _REFL_ENV_ENABLED  (int, 0=off, 1=blend, 2=overwrite)
-#   GReflectionEnvironmentLightmapMixing
-#       → _REFL_LIGHTMAP_MIXING
-#   GReflectionEnvironmentLightmapMixBasedOnRoughness
-#       → _REFL_LIGHTMAP_MIX_BY_ROUGHNESS
+#   CVarReflectionEnvironment (0/1/2) → _REFL_ENV_EN_V2
+#   GReflectionEnvironmentLightmapMixing → _REFL_LM_MIXING_V2
 #   GReflectionEnvironmentBeginMixingRoughness / EndMixingRoughness
-#       → _REFL_MIX_BEGIN / _REFL_MIX_END
-#   GReflectionEnvironmentLightmapMixLargestWeight
-#       → _REFL_MIX_LARGEST_WEIGHT
-#   CVarDoTiledReflections
-#       → _TILED_REFLECTIONS
-#   GetReflectionEnvironmentCVar()
-#       → get_reflection_env_cvar()
+#       → _REFL_MIX_BEGIN_V2 / _REFL_MIX_END_V2
+#   GReflectionEnvironmentLightmapMixLargestWeight → _REFL_MIX_LW_V2
+#   CVarDoTiledReflections → _TILED_REFL_V2
+#   GetReflectionEnvironmentCVar()        → get_reflection_env_cvar()
 #   GetReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight()
 #       → get_roughness_mix_scale_bias()
-#   IsReflectionEnvironmentAvailable()
-#       → is_reflection_env_available()
-#   IsReflectionCaptureAvailable()
-#       → is_reflection_capture_available()
-#   FReflectionEnvironmentCubemapArray::InitRHI / ReleaseCubeArray
-#       → AstroCellCubemapArray.init / release
-#   FCaptureComponentSceneState::ComputeCurrentFade()
-#       → compute_capture_fade()
+#   IsReflectionEnvironmentAvailable()    → is_reflection_env_available()
+#   IsReflectionCaptureAvailable()        → is_reflection_capture_available()
+#   FCaptureComponentSceneState::ComputeCurrentFade() → compute_capture_fade()
+#   FReflectionEnvironmentCubemapArray   → AstroCellCubemapArray
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Module constants from ReflectionEnvironment.cpp head -200
-_REFL_ENV_ENABLED:            int   = 1      # CVarReflectionEnvironment default
-_REFL_LIGHTMAP_MIXING:        bool  = True   # GReflectionEnvironmentLightmapMixing
-_REFL_LIGHTMAP_MIX_BY_ROUGH:  bool  = True   # …MixBasedOnRoughness
-_REFL_MIX_BEGIN:              float = 0.1    # GReflectionEnvironmentBeginMixingRoughness
-_REFL_MIX_END:                float = 0.3    # GReflectionEnvironmentEndMixingRoughness
-_REFL_MIX_LARGEST_WEIGHT:     int   = 10000  # GReflectionEnvironmentLightmapMixLargestWeight
-_TILED_REFLECTIONS:           bool  = True   # CVarDoTiledReflections
-
-# Maximum number of cubemap slots in the reflection capture array
-# (mirrors FReflectionEnvironmentCubemapArray MaxCubemaps field default)
-_REFL_MAX_CUBEMAPS:           int   = 64
-_REFL_CUBEMAP_SIZE:           int   = 128    # CubemapSize (texels per face)
+_REFL_ENV_EN_V2:          int   = 1
+_REFL_LM_MIXING_V2:       bool  = True
+_REFL_LM_MIX_BY_ROUGH_V2: bool  = True
+_REFL_MIX_BEGIN_V2:       float = 0.1
+_REFL_MIX_END_V2:         float = 0.3
+_REFL_MIX_LW_V2:          int   = 10000
+_TILED_REFL_V2:           bool  = True
+_REFL_MAX_CUBEMAPS_V2:    int   = 64
+_REFL_CUBEMAP_SIZE_V2:    int   = 128
 
 
 def get_reflection_env_cvar() -> int:
     """
-    Return the effective reflection environment CVar value.
-    Mirrors GetReflectionEnvironmentCVar():
-        shipping/test builds clamp mode-2 (overwrite) back to mode-1 (blend).
+    Return effective CVarReflectionEnvironment — clamps mode-2 in non-debug builds.
 
-    鲁迅式：调试模式 2 是「推倒重来」——在发行版中，推倒重来是禁止的；
-    只有在工程师的沙盒里，才允许用反射覆盖一切。
+    鲁迅式：调试模式 2 是「推倒重来」——在发行版中，推倒重来是禁止的。
     """
-    val = _REFL_ENV_ENABLED
-    # Shipping/test clamp (always apply in Python port — no IS_MONOLITHIC check)
+    val = _REFL_ENV_EN_V2
     if val == 2:
         val = 1
     return val
@@ -15696,56 +15775,31 @@ def get_reflection_env_cvar() -> int:
 
 def get_roughness_mix_scale_bias() -> tuple:
     """
-    Compute (scale, bias, largest_weight) for roughness-based lightmap mixing.
+    (scale, bias, largest_weight) for roughness-based lightmap mixing.
+    Port of GetReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight().
 
-    Port of GetReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight()
-    — returns a 3-tuple analogous to the FVector(Scale, Bias, LargestWeight)
-    that the C++ pixel shader reads from ScreenSpaceReflectionsParameters.
-
-    Used by the SVG shading pass to modulate how strongly a cell's fill
-    colour is pulled toward the reflection probe palette as a function of
-    its surface roughness.
-
-    鲁迅式：混合比例是尺度与偏置的乘积——
-    数学上简单，物理上有意义：光滑表面反射更多，粗糙表面反射更少。
+    鲁迅式：混合比例是尺度与偏置的乘积——光滑表面反射更多，粗糙表面反射更少。
     数字是公平的，它不偏袒任何表面。
     """
-    if not _REFL_LIGHTMAP_MIXING:
-        return (0.0, 0.0, float(_REFL_MIX_LARGEST_WEIGHT))
-
-    if _REFL_MIX_END == 0.0 and _REFL_MIX_BEGIN == 0.0:
-        return (0.0, 1.0, float(_REFL_MIX_LARGEST_WEIGHT))
-
-    if not _REFL_LIGHTMAP_MIX_BY_ROUGH:
-        return (0.0, 1.0, float(_REFL_MIX_LARGEST_WEIGHT))
-
-    roughness_range = max(_REFL_MIX_END - _REFL_MIX_BEGIN, 0.001)
+    if not _REFL_LM_MIXING_V2:
+        return (0.0, 0.0, float(_REFL_MIX_LW_V2))
+    if _REFL_MIX_END_V2 == 0.0 and _REFL_MIX_BEGIN_V2 == 0.0:
+        return (0.0, 1.0, float(_REFL_MIX_LW_V2))
+    if not _REFL_LM_MIX_BY_ROUGH_V2:
+        return (0.0, 1.0, float(_REFL_MIX_LW_V2))
+    roughness_range = max(_REFL_MIX_END_V2 - _REFL_MIX_BEGIN_V2, 0.001)
     scale = 1.0 / roughness_range
-    bias  = -_REFL_MIX_BEGIN * scale
-    return (scale, bias, float(_REFL_MIX_LARGEST_WEIGHT))
+    bias  = -_REFL_MIX_BEGIN_V2 * scale
+    return (scale, bias, float(_REFL_MIX_LW_V2))
 
 
 def is_reflection_env_available() -> bool:
-    """
-    Returns True if the reflection environment feature is available.
-    Mirrors IsReflectionEnvironmentAvailable(ERHIFeatureLevel):
-        SupportsTextureCubeArray(FeatureLevel) && CVar != 0
-    In Astro we always support cube arrays (feature level SM5), so just check CVar.
-
-    鲁迅式：可用性检查是最朴素的「是否存在」——存在则渲染，不存在则跳过。
-    """
+    """True when reflection environment CVar != 0 (SupportsTextureCubeArray always True)."""
     return get_reflection_env_cvar() != 0
 
 
 def is_reflection_capture_available() -> bool:
-    """
-    Returns True if baked reflection captures are available.
-    Mirrors IsReflectionCaptureAvailable() = IsStaticLightingAllowed().
-    In Astro: always True (we have no mobile static-light restriction).
-
-    鲁迅式：烘焙捕获的可用性是「过去的工作是否被允许」——
-    在允许静态光照的平台上，烘焙的反射就是那段过去的工作。
-    """
+    """True when baked captures are allowed (IsStaticLightingAllowed — always True here)."""
     return True
 
 
@@ -15757,26 +15811,16 @@ def compute_capture_fade(
     duration:          float,
 ) -> float:
     """
-    Compute the current fade interpolation value for a reflection capture.
-
-    Port of FCaptureComponentSceneState::ComputeCurrentFade():
-        if FadeStartValue == FadeTargetValue → return FadeTargetValue
-        if Duration <= 0 → return FadeTargetValue
-        t = (Now - FadeStartTime) / Duration
-        return lerp(FadeStartValue, FadeTargetValue, clamp(t, 0, 1))
-
-    Used during the reflection capture fade-in / fade-out transition when a
-    new probe is registered or an existing one is updated.
+    Lerp fade for reflection capture transitions.
+    Port of FCaptureComponentSceneState::ComputeCurrentFade().
 
     鲁迅式：淡入淡出是过渡期的妥协——突变是震惊，渐变是说服。
-    持续时间是说服所需的时间；超过这段时间，说服完成，一切已成事实。
     """
     if fade_start_value == fade_target_value:
         return fade_target_value
     if duration <= 0.0:
         return fade_target_value
-    t = (current_time - fade_start_time) / duration
-    t = max(0.0, min(1.0, t))
+    t = max(0.0, min(1.0, (current_time - fade_start_time) / duration))
     return fade_start_value + (fade_target_value - fade_start_value) * t
 
 
@@ -15784,58 +15828,44 @@ class AstroCellCubemapArray:
     """
     Python equivalent of FReflectionEnvironmentCubemapArray.
 
-    Manages the per-scene cubemap array that stores the prefiltered reflection
-    captures.  In C++ this is a GPU texture array (PF_FloatRGBA, cubemap array).
-    In Astro it is an in-memory dict mapping (capture_index, face_index) to
-    (r, g, b) tuples, with up to _REFL_MAX_CUBEMAPS × 6 entries.
+    In-memory dict mapping (capture_index, face_index) → (r,g,b) float tuples.
+    Capacity: _REFL_MAX_CUBEMAPS_V2 × 6 faces.
 
-    init():        mirrors InitRHI() — allocates the texture array
-    release():     mirrors ReleaseCubeArray() — frees resources
-    write_face():  mirrors the per-face capture blit pass
-    read_face():   mirrors the cubemap sample in the reflection shader
+    init():        mirrors InitRHI()
+    release():     mirrors ReleaseCubeArray()
+    write_face():  per-face capture blit
+    read_face():   cubemap sample
+    average_radiance(): pre-integrated irradiance across all 6 faces
+    apply_roughness_mix(): roughness-based palette blend
 
     鲁迅式：立方体贴图数组是反射环境的记忆宫殿——
     六个面，每个面是一段记忆，每个探针是一间房间。
-    最多 _REFL_MAX_CUBEMAPS 间，超出则需腾出旧房。
     """
 
     def __init__(self) -> None:
-        # (capture_index, face_index) → (r, g, b) float tuple
-        self._data: dict = {}
-        self._next_slot: int = 0
-        self._slot_map: dict = {}   # capture_id → slot_index
-        self.max_cubemaps: int = _REFL_MAX_CUBEMAPS
-        self.cubemap_size:  int = _REFL_CUBEMAP_SIZE
-        self._initialised:  bool = False
+        self._data:      dict = {}
+        self._next_slot: int  = 0
+        self._slot_map:  dict = {}
+        self.max_cubemaps: int = _REFL_MAX_CUBEMAPS_V2
+        self.cubemap_size: int = _REFL_CUBEMAP_SIZE_V2
+        self._initialised: bool = False
 
     def init(self) -> None:
-        """
-        Allocate the cubemap array (mirrors InitRHI).
-        Resets the data store; subsequent write_face() calls fill it.
-
-        鲁迅式：初始化是承诺——承诺容纳最多 MaxCubemaps 个探针，
-        每个探针六个面，每个面一种颜色的记忆。
-        """
+        """Allocate cubemap array — mirrors InitRHI."""
         self._data.clear()
         self._next_slot = 0
         self._slot_map.clear()
         self._initialised = True
 
     def release(self) -> None:
-        """Mirrors ReleaseCubeArray() — free all allocated faces."""
+        """Free all faces — mirrors ReleaseCubeArray."""
         self._data.clear()
         self._initialised = False
 
     def assign_slot(self, capture_id: str) -> int:
-        """
-        Assign a cubemap array slot to a capture.
-        Wraps around (LRU eviction) when _REFL_MAX_CUBEMAPS is reached.
-        Mirrors the slot management in FReflectionEnvironmentCubemapArray.
-        """
         if capture_id in self._slot_map:
             return self._slot_map[capture_id]
         slot = self._next_slot % self.max_cubemaps
-        # Evict existing occupant if any
         evict = [cid for cid, s in self._slot_map.items() if s == slot]
         for cid in evict:
             del self._slot_map[cid]
@@ -15847,22 +15877,12 @@ class AstroCellCubemapArray:
 
     def write_face(self, capture_id: str, face_index: int,
                    colour: tuple) -> None:
-        """
-        Write one face of a cubemap capture.
-        Mirrors the per-face render target blit in CaptureSceneToScratchCubemap.
-
-        鲁迅式：写入一面，是六面工程的六分之一——
-        完成六次，才能说「这个探针是完整的」。
-        """
+        """Write one cubemap face — mirrors per-face CaptureSceneToScratchCubemap blit."""
         slot = self.assign_slot(capture_id)
         self._data[(slot, face_index)] = colour
 
     def read_face(self, capture_id: str, face_index: int) -> tuple:
-        """
-        Sample one face of a capture's cubemap.
-        Mirrors the TextureCubeArraySample() in the reflection pixel shader.
-        Returns neutral grey (0.5, 0.5, 0.5) if not yet captured.
-        """
+        """Sample one cubemap face — mirrors TextureCubeArraySample()."""
         slot = self._slot_map.get(capture_id, -1)
         if slot < 0:
             return (0.5, 0.5, 0.5)
@@ -15870,8 +15890,7 @@ class AstroCellCubemapArray:
 
     def average_radiance(self, capture_id: str) -> tuple:
         """
-        Return the average radiance across all six faces.
-        Mirrors the pre-integrated irradiance used by diffuse indirect lighting.
+        Average radiance across 6 faces — pre-integrated irradiance.
 
         鲁迅式：六面的平均是环境辐射度——没有哪个方向更重要，
         均值是最公正的代表，也是最保守的代表。
@@ -15892,34 +15911,26 @@ class AstroCellCubemapArray:
         roughness:   float,
     ) -> tuple:
         """
-        Apply the roughness-based lightmap mixing to blend own_colour toward
-        the captured environment colour.
-
+        Blend own_colour toward capture average based on roughness.
         Port of the GetReflectionEnvironmentRoughnessMixingScaleBiasAndLargestWeight
-        shader code path applied per-cell:
-            roughness_alpha = saturate(roughness * scale + bias)
-            blended = lerp(own_colour, capture_avg, roughness_alpha)
+        shader code path applied per-cell.
 
         鲁迅式：粗糙度是态度的量度——越粗糙，越随众；越光滑，越孤立。
-        这不是道德判断，只是反射物理的必然结果。
         """
         if not is_reflection_env_available():
             return own_colour
-
         scale, bias, _ = get_roughness_mix_scale_bias()
         roughness_alpha = max(0.0, min(1.0, roughness * scale + bias))
-
-        cap_colour = self.average_radiance(capture_id)
-        # Scale to [0,255] range to match _SPECIES_INDEX_TO_COLOUR format
-        cap_rgb = (cap_colour[0] * 255.0, cap_colour[1] * 255.0, cap_colour[2] * 255.0)
+        cap_colour      = self.average_radiance(capture_id)
+        cap_rgb = (cap_colour[0] * 255.0, cap_colour[1] * 255.0,
+                   cap_colour[2] * 255.0)
         return _lerp_colour(own_colour, cap_rgb, roughness_alpha)
 
 
-#: Module-level cubemap array singleton — mirrors FScene::ReflectionSceneData.CubemapArray
-_ASTRO_CUBEMAP_ARRAY: AstroCellCubemapArray = AstroCellCubemapArray()
-_ASTRO_CUBEMAP_ARRAY.init()
+_ASTRO_CUBEMAP_ARRAY_V2: AstroCellCubemapArray = AstroCellCubemapArray()
+_ASTRO_CUBEMAP_ARRAY_V2.init()
 
 
 def get_cubemap_array() -> AstroCellCubemapArray:
     """Return the process-level AstroCellCubemapArray singleton."""
-    return _ASTRO_CUBEMAP_ARRAY
+    return _ASTRO_CUBEMAP_ARRAY_V2
