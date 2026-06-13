@@ -8180,3 +8180,1144 @@ def query_sky_specular_radiance(roughness: float = 0.5) -> tuple:
     mip = int(round(roughness * (_CAPTURE_NUM_MIPS - 1)))
     mip = max(0, min(mip, _CAPTURE_NUM_MIPS - 1))
     return capture.convolve_specular.get(mip, (0.55, 0.68, 0.82))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] LumenFrontLayerTranslucency → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/FrontLayerTranslucency.cpp
+#
+# 鲁迅曾言：「人类的悲欢并不相通，我只觉得他们吵闹。」
+# 半透明的前景层亦然——前景与背景的光照并不互通，必须单独剥离一层来处理。
+# 这一层是最表面的、最先被眼睛接触到的，也因此获得了最精确的反射待遇。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   GLumenFrontLayerTranslucencyReflectionsEnabled
+#       → _LUMEN_FRONT_LAYER_ENABLED (模块级布尔开关)
+#   ShouldRenderFrontLayerTranslucency()
+#       → should_render_front_layer_translucency()
+#   FFrontLayerTranslucencyGBufferPS (GBuffer A/B/C 三通道)
+#       → AstroCellFrontLayerGBuffer: normal_depth, base_color, roughness_metallic
+#   FFrontLayerTranslucencyClearGBufferPS
+#       → AstroCellFrontLayerGBuffer.clear()
+#   RenderFrontLayerTranslucency()
+#       → render_front_layer_translucency()
+#
+# Algorithm changes (鲁迅式 20%):
+#   1. FrontLayer tile mask (8×8 tiled dispatch) → per-cell boolean visibility flag
+#      由 AstroCellVisibilityQuery 提供，跳过不可见 cell（等价于 tile 全空的 early-out）
+#   2. GBuffer A (PF_A16B16G16R16, normals+depth) → normal_vec(x,y,z) + depth float
+#   3. GBuffer B (PF_B8G8R8A8, base colour) → per-species base_color RGB tuple
+#   4. GBuffer C (PF_R8G8, roughness/metallic) → roughness float (metallic = F0-derived)
+#   5. IndirectTileClassificationDispatch (compact tile list) → list comprehension filter
+# ═══════════════════════════════════════════════════════════════════════════════
+
+#: 镜像 GLumenFrontLayerTranslucencyReflectionsEnabled CVar (default off)
+_LUMEN_FRONT_LAYER_ENABLED: bool = True
+
+#: 深度匹配容差 (r.FrontLayerTranslucency.DepthThreshold = 1024 ULP 单位 → 归一化)
+_FRONT_LAYER_DEPTH_THRESHOLD: float = 1024.0 / 65535.0
+
+
+def should_render_front_layer_translucency(species: str, opacity: float) -> bool:
+    """
+    判断某 cell 是否进入前景层半透明通道。
+
+    镜像 ShouldRenderFrontLayerTranslucency() + ShouldRenderInFrontLayerTranslucencyGBufferPass()：
+    条件为：(1) 全局开关启用；(2) 材质为半透明（opacity < 1）；
+    (3) 非 AfterMotionBlur 模式（此处 species 不含 cil-loop 的 after-blur 标记）。
+
+    鲁迅式：不是每一片透明都值得单独对待——只有最表面的那一片，
+    才配得上精确反射的计算代价。
+    """
+    if not _LUMEN_FRONT_LAYER_ENABLED:
+        return False
+    if opacity >= 1.0:
+        return False
+    # Exclude loop species in after-motion-blur pass (镜像 bIsTranslucencyAfterMotionBlurEnabled)
+    if species == "cil-loop":
+        return False
+    return True
+
+
+class AstroCellFrontLayerGBuffer:
+    """
+    前景层半透明 GBuffer — 镜像 FrontLayerTranslucency GBuffer A/B/C 三张 RT。
+
+    GBuffer A (PF_A16B16G16R16) → normal_depth: (nx, ny, nz, depth_norm)
+    GBuffer B (PF_B8G8R8A8)     → base_color:   (r, g, b) in [0,1]
+    GBuffer C (PF_R8G8)         → roughness_metallic: (roughness, metallic)
+
+    鲁迅式：GBuffer 是一种延迟——先存下来，后处理。
+    这是效率的胜利，也是「不急于一时」的哲学体现。
+    """
+
+    __slots__ = ("cell_id", "normal_depth", "base_color", "roughness_metallic",
+                 "is_valid", "depth_norm")
+
+    def __init__(self, cell_id: str) -> None:
+        self.cell_id            = cell_id
+        # GBuffer A: world-space normal (upward) + normalised depth
+        self.normal_depth:   tuple = (0.0, 0.0, 1.0, 1.0)
+        # GBuffer B: species base colour
+        self.base_color:     tuple = (0.5, 0.5, 0.5)
+        # GBuffer C: roughness, metallic
+        self.roughness_metallic: tuple = (0.5, 0.0)
+        self.is_valid: bool = False
+        self.depth_norm: float = 1.0
+
+    def clear(self) -> None:
+        """FFrontLayerTranslucencyClearGBufferPS 等价 — 重置所有通道为默认值。"""
+        self.normal_depth        = (0.0, 0.0, 1.0, 1.0)
+        self.base_color          = (0.5, 0.5, 0.5)
+        self.roughness_metallic  = (0.5, 0.0)
+        self.is_valid            = False
+        self.depth_norm          = 1.0
+
+    def write(self, species: str, depth_norm: float, roughness: float) -> None:
+        """
+        GBuffer 写入 — 镜像 FFrontLayerTranslucencyGBufferPS 的 PS 输出：
+            GBufferA = PackNormalAndDepth(N, Depth)
+            GBufferB = BaseColor
+            GBufferC = (Roughness, Metallic)
+        """
+        sp_idx = _species_to_index(species)
+        col    = _SPECIES_INDEX_TO_COLOUR.get(sp_idx, _SPECIES_INDEX_TO_COLOUR[0])
+        f0     = _species_f0(species)
+        metallic = min(1.0, f0 * 1.25)   # F0 → 金属度代理（镜像 substrate 金属参数推导）
+        self.normal_depth       = (0.0, 0.0, 1.0, max(0.0, min(1.0, depth_norm)))
+        self.base_color         = (col[0] / 255.0, col[1] / 255.0, col[2] / 255.0)
+        self.roughness_metallic = (max(0.0, min(1.0, roughness)), metallic)
+        self.depth_norm         = depth_norm
+        self.is_valid           = True
+
+    def depth_matches(self, query_depth: float) -> bool:
+        """
+        深度阈值测试 — 镜像 FRONT_LAYER_TILE_SIZE tile 分类 shader 的深度判定。
+        GBuffer 深度与查询深度之差超过阈值则为不同层，不参与当前 pass。
+        """
+        return abs(self.depth_norm - query_depth) <= _FRONT_LAYER_DEPTH_THRESHOLD
+
+
+def render_front_layer_translucency(
+    cell_entries: list,
+    depth_manifest: dict,
+    vis_query: "AstroCellVisibilityQuery | None" = None,
+) -> dict:
+    """
+    前景层半透明渲染通道 — 镜像 RenderFrontLayerTranslucency()。
+
+    对每个可见的半透明 cell 写入 FrontLayerGBuffer，再输出一个
+    cell_id → AstroCellFrontLayerGBuffer 映射，供 Lumen 反射采样使用。
+
+    IndirectTileClassificationDispatch 模拟：先过滤出所有满足条件的 cell
+    （镜像 compact tile list），再批量写 GBuffer（镜像 CS dispatch over valid tiles）。
+
+    鲁迅式：前景层渲染是特权——不是每一个透明物都能被选中，
+    只有站在最前面的那个，才有机会得到精确的光照。
+    """
+    depth_ch = depth_manifest.get("depth_channel", {})
+    gbuffers: dict = {}
+
+    # Compact tile list: 过滤出符合条件的 cell（镜像 IndirectTileClassificationDispatch）
+    candidates = []
+    for entry in cell_entries:
+        cid     = entry.get("cell_id", "")
+        species = entry.get("species", "")
+        opacity = float(entry.get("opacity", 1.0))
+        if not should_render_front_layer_translucency(species, opacity):
+            continue
+        if vis_query is not None:
+            vis_result = vis_query.cell_results.get(cid, {})
+            if not vis_result.get("visible", True):
+                continue
+        candidates.append(entry)
+
+    # GBuffer pass (镜像 RDG pass over compact tile list)
+    for entry in candidates:
+        cid       = entry.get("cell_id", "")
+        species   = entry.get("species", "")
+        roughness = float(entry.get("roughness", 0.5))
+        depth_n   = float(depth_ch.get(cid, 1.0))
+
+        gbuf = AstroCellFrontLayerGBuffer(cid)
+        gbuf.write(species, depth_n, roughness)
+        gbuffers[cid] = gbuf
+
+    print(
+        f"[ASTRO-FRONT-LAYER] render_front_layer_translucency: "
+        f"candidates={len(candidates)} gbuffers_written={len(gbuffers)}",
+        file=sys.stderr,
+    )
+    return gbuffers
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] LumenSceneDirectLighting → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenSceneDirectLighting.cpp
+#
+# 鲁迅曾言：「不在沉默中爆发，就在沉默中灭亡。」
+# 直接光照亦然——没有直接光的 surface cache，全是沉默的黑暗。
+# LumenSceneDirectLighting 是 Lumen 的爆发点：它让场景中的每一张 card
+# 知道有多少直接光打在上面，从而让全局光照有了可信的初始条件。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   CVarLumenLumenSceneDirectLighting (r.LumenScene.DirectLighting)
+#       → _DIRECT_LIGHTING_ENABLED
+#   MaxLightsPerTile (8 default)
+#       → _DIRECT_LIGHTING_MAX_LIGHTS_PER_CELL
+#   LumenSceneDirectLighting::GetMeshSDFShadowRayBias()
+#       → _SDF_SHADOW_RAY_BIAS
+#   BuildLightTiles / CullLightsToTiles
+#       → build_direct_light_tiles()  — O(lights×cells) cull
+#   LumenSceneDirectLighting main pass
+#       → compute_lumen_direct_lighting()
+#   OffscreenShadowing TraceMeshSDFs
+#       → _trace_sdf_shadow_ray()  — analytic SDF shadow march
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DIRECT_LIGHTING_ENABLED:         bool  = True
+_DIRECT_LIGHTING_MAX_LIGHTS_PER_CELL: int = 8
+_SDF_SHADOW_RAY_BIAS: float = 2.0   # r.LumenScene.DirectLighting.MeshSDF.ShadowRayBias
+
+
+class AstroCellDirectLight:
+    """
+    单个直接光源描述符 — 镜像 FLumenDirectLight / FLightSceneInfo 轻量代理。
+
+    Astro 场景中的光源类型统一为「点光」（positional emitter）：
+    每个 cil-bolt / cil-eye 类 cell 可以作为场景光源向其邻居投射直接光照。
+
+    鲁迅式：光源是权力的象征——它决定了谁被照亮，谁处于阴影之中。
+    LumenSceneDirectLighting 的核心工作，就是公正地分配这份权力。
+    """
+    __slots__ = ("light_id", "position", "color", "intensity",
+                 "attenuation_radius", "species")
+
+    def __init__(self, light_id: str, position: tuple,
+                 color: tuple, intensity: float,
+                 attenuation_radius: float, species: str) -> None:
+        self.light_id           = light_id
+        self.position           = position          # (x, y, z)
+        self.color              = color             # (r, g, b) normalised
+        self.intensity          = max(0.0, intensity)
+        self.attenuation_radius = max(1.0, attenuation_radius)
+        self.species            = species
+
+
+def _derive_cell_lights(cell_entries: list) -> list:
+    """
+    从 cell 条目列表推导出场景直接光源集合。
+
+    cil-bolt  → 强点光（高强度 amber 光）
+    cil-eye   → 柔和泛光（低强度 indigo 光）
+    其余 cell 不发光（镜像 UE5 中非发光图元不进入 FLightSceneInfo）
+
+    鲁迅式：不是每个存在都有资格发光——
+    只有足够「点燃」的存在，才能成为别人的光源。
+    """
+    EMISSIVE_SPECIES = {
+        "cil-bolt":  ((1.0, 0.55, 0.10), 3.5),    # amber, high intensity
+        "cil-eye":   ((0.50, 0.55, 0.95), 1.2),   # indigo, soft
+        "cil-loop":  ((0.95, 0.60, 0.15), 1.8),   # amber-orange, cycle pulse
+    }
+    lights = []
+    for entry in cell_entries:
+        species = entry.get("species", "")
+        if species not in EMISSIVE_SPECIES:
+            continue
+        color, intensity = EMISSIVE_SPECIES[species]
+        bbox = entry.get("bbox", {})
+        cx = float(bbox.get("x", 0)) + float(bbox.get("w", 80)) / 2.0
+        cy = float(bbox.get("y", 0)) + float(bbox.get("h", 50)) / 2.0
+        cz = float(bbox.get("z", 3)) * 100.0   # z-layer → 世界单位
+        radius = max(bbox.get("w", 80), bbox.get("h", 50)) * 3.0   # 影响半径
+        lights.append(AstroCellDirectLight(
+            light_id         = entry.get("cell_id", ""),
+            position         = (cx, cy, cz),
+            color            = color,
+            intensity        = intensity,
+            attenuation_radius = radius,
+            species          = species,
+        ))
+    return lights
+
+
+def _trace_sdf_shadow_ray(
+    receiver_pos: tuple,
+    light_pos:    tuple,
+    all_bboxes:   dict,
+    bias:         float = _SDF_SHADOW_RAY_BIAS,
+) -> float:
+    """
+    解析式 SDF 阴影光线追踪 — 镜像 LumenSceneDirectLighting OffscreenShadowing TraceMeshSDFs。
+
+    将 cell bbox 视为轴对齐「SDF 球」；光线从 receiver_pos 出发打向 light_pos，
+    检测路径上是否有 bbox 的投影遮挡（2-D slab 测试）。
+
+    返回阴影因子 ∈ [0, 1]：0 = 完全遮挡，1 = 完全可见。
+
+    鲁迅式：阴影是权力的副产品——光越强，影越深。
+    SDF 追踪是问：「从光到你的路上，有没有别人挡着？」
+    """
+    rx, ry, rz = receiver_pos
+    lx, ly, lz = light_pos
+
+    # 光线方向
+    dx, dy, dz = lx - rx, ly - ry, lz - rz
+    dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+    if dist < 1e-3:
+        return 1.0
+
+    inv_d = 1.0 / dist
+    ndx, ndy, ndz = dx * inv_d, dy * inv_d, dz * inv_d
+
+    shadow = 1.0
+    for cid, bbox in all_bboxes.items():
+        bx = float(bbox.get("x", 0))
+        by = float(bbox.get("y", 0))
+        bz = float(bbox.get("z", 3)) * 100.0
+        bw = float(bbox.get("w", 80))
+        bh = float(bbox.get("h", 50))
+
+        # bbox centre / half-extent
+        ocx = bx + bw / 2.0
+        ocy = by + bh / 2.0
+        ocz = bz
+        hex_ = bw / 2.0 + bias
+        hey  = bh / 2.0 + bias
+        hez  = bh / 2.0 + bias   # Z 方向用 h 代理（2-D 场景）
+
+        # Ray-AABB slab intersection
+        def _slab(ro, rd, mn, mx):
+            if abs(rd) < 1e-9:
+                return (-1e9, 1e9) if mn <= ro <= mx else (1e9, -1e9)
+            t1 = (mn - ro) / rd
+            t2 = (mx - ro) / rd
+            return (min(t1, t2), max(t1, t2))
+
+        tx = _slab(rx, ndx, ocx - hex_, ocx + hex_)
+        ty = _slab(ry, ndy, ocy - hey, ocy + hey)
+        tz = _slab(rz, ndz, ocz - hez, ocz + hez)
+
+        t_enter = max(tx[0], ty[0], tz[0], bias)
+        t_exit  = min(tx[1], ty[1], tz[1])
+
+        if t_enter < t_exit and t_exit > 0.0 and t_enter < dist:
+            # 遮挡：按投影面积衰减（镜像 SDF soft shadow penumbra）
+            occlude_frac = max(0.0, min(1.0, (t_exit - t_enter) / max(bw, bh)))
+            shadow *= (1.0 - occlude_frac * 0.75)
+
+    return max(0.0, shadow)
+
+
+def build_direct_light_tiles(
+    cell_entries: list,
+    all_bboxes:   dict,
+) -> dict:
+    """
+    灯光分 tile 裁剪 — 镜像 BuildLightTiles / CullLightsToTiles。
+
+    为每个 cell 找出最多 _DIRECT_LIGHTING_MAX_LIGHTS_PER_CELL 个影响它的光源，
+    按强度 × 距离衰减排序后截断（镜像 MaxLightsPerTile 保护上限）。
+
+    返回 cell_id → [AstroCellDirectLight, ...] 映射。
+
+    鲁迅式：资源分配的公平，取决于裁剪的准则——
+    离得最近、最亮的光，才有资格进入 tile 的有限名单。
+    """
+    lights = _derive_cell_lights(cell_entries)
+    if not lights:
+        return {}
+
+    tile_map: dict = {}
+
+    for entry in cell_entries:
+        cid  = entry.get("cell_id", "")
+        bbox = entry.get("bbox", {})
+        cx   = float(bbox.get("x", 0)) + float(bbox.get("w", 80)) / 2.0
+        cy   = float(bbox.get("y", 0)) + float(bbox.get("h", 50)) / 2.0
+        cz   = float(bbox.get("z", 3)) * 100.0
+
+        scored = []
+        for light in lights:
+            if light.light_id == cid:
+                continue   # 不照亮自己
+            lx, ly, lz = light.position
+            dist_sq = max((cx-lx)**2 + (cy-ly)**2 + (cz-lz)**2, 1.0)
+            dist    = math.sqrt(dist_sq)
+            if dist > light.attenuation_radius:
+                continue
+            atten = max(0.0, 1.0 - dist / light.attenuation_radius) ** 2
+            score = light.intensity * atten
+            scored.append((score, light))
+
+        scored.sort(key=lambda t: t[0], reverse=True)
+        tile_map[cid] = [l for _, l in scored[:_DIRECT_LIGHTING_MAX_LIGHTS_PER_CELL]]
+
+    return tile_map
+
+
+def compute_lumen_direct_lighting(
+    cell_id:      str,
+    bbox:         dict,
+    tile_lights:  list,
+    all_bboxes:   dict,
+) -> tuple:
+    """
+    Lumen surface cache 直接光照主 pass — 镜像 LumenSceneDirectLighting main compute pass。
+
+    对 tile_lights 中每个光源：
+      1. 计算距离衰减（平方反比）
+      2. 追踪 SDF 阴影光线
+      3. 累加 (R, G, B) 光照贡献
+
+    返回 (R, G, B) 直接辐亮度，已通过阴影衰减。
+
+    鲁迅式：直接光照是最诚实的光——它不需要多次反弹，
+    一条直线就能决定受光还是遮挡。这种简单，是物理的恩赐。
+    """
+    if not _DIRECT_LIGHTING_ENABLED or not tile_lights:
+        return (0.0, 0.0, 0.0)
+
+    cx = float(bbox.get("x", 0)) + float(bbox.get("w", 80)) / 2.0
+    cy = float(bbox.get("y", 0)) + float(bbox.get("h", 50)) / 2.0
+    cz = float(bbox.get("z", 3)) * 100.0
+    receiver_pos = (cx, cy, cz)
+
+    accum_r = accum_g = accum_b = 0.0
+
+    for light in tile_lights:
+        lx, ly, lz = light.position
+        dist_sq    = max((cx-lx)**2 + (cy-ly)**2 + (cz-lz)**2, 1.0)
+        dist       = math.sqrt(dist_sq)
+        if dist > light.attenuation_radius:
+            continue
+
+        # 平方反比衰减 + 阴影
+        atten  = max(0.0, 1.0 - dist / light.attenuation_radius) ** 2
+        shadow = _trace_sdf_shadow_ray(receiver_pos, light.position, all_bboxes)
+
+        contrib = light.intensity * atten * shadow
+        accum_r += light.color[0] * contrib
+        accum_g += light.color[1] * contrib
+        accum_b += light.color[2] * contrib
+
+    # 萤火虫保护
+    max_val = _PT_MAX_PATH_INTENSITY
+    return (min(accum_r, max_val), min(accum_g, max_val), min(accum_b, max_val))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] LumenReflections → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenReflections.cpp
+#
+# 鲁迅曾言：「面具戴久了，就会长到脸上，再想取下来，除非伤筋动骨，大动干戈。」
+# 反射亦然——粗糙度越低，反射越清晰，越难以从中「取下」真实的底色。
+# LumenReflections 是对这层「面具」的物理学解读。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   CVarLumenAllowReflections (r.Lumen.Reflections.Allow)
+#       → _LUMEN_REFLECTIONS_ENABLED
+#   CVarLumenReflectionsRadianceCache / MinRoughness / MaxRoughness
+#       → _REFL_RADIANCE_CACHE_ENABLED / _REFL_MIN_ROUGHNESS / _REFL_MAX_ROUGHNESS
+#   GGXSamplingBias / RoughnessFadeLength
+#       → _REFL_GGX_BIAS / _REFL_ROUGHNESS_FADE
+#   TemporalFilter / MaxFramesAccumulated
+#       → AstroCellReflectionTemporalFilter
+#   FLumenReflectionTracingParameters
+#       → AstroCellReflectionTraceParams
+#   GetReflectionsViewData() / RenderLumenReflections()
+#       → render_lumen_reflections()
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_LUMEN_REFLECTIONS_ENABLED:   bool  = True
+_REFL_RADIANCE_CACHE_ENABLED: bool  = True   # r.Lumen.Reflections.RadianceCache
+_REFL_MIN_ROUGHNESS:          float = 0.2    # r.Lumen.Reflections.RadianceCache.MinRoughness
+_REFL_MAX_ROUGHNESS:          float = 0.35   # r.Lumen.Reflections.RadianceCache.MaxRoughness
+_REFL_GGX_BIAS:               float = 0.1   # r.Lumen.Reflections.GGXSamplingBias
+_REFL_ROUGHNESS_FADE:         float = 0.1   # r.Lumen.Reflections.RoughnessFadeLength
+_REFL_MAX_FRAMES_ACCUM:       float = 12.0  # r.Lumen.Reflections.Temporal.MaxFramesAccumulated
+_REFL_MAX_RAY_INTENSITY:      float = 40.0  # r.Lumen.Reflections.MaxRayIntensity
+
+
+def _lumen_refl_roughness_fade(roughness: float) -> float:
+    """
+    粗糙度衰减权重 — 镜像 LumenReflections.cpp RoughnessFadeLength 渐变计算。
+
+    roughness > MaxRoughnessToTrace → weight = 0（不追踪反射）
+    roughness < MaxRoughnessToTrace - FadeLength → weight = 1（全强度反射）
+    中间段：线性淡出。
+
+    鲁迅式：越粗糙越不值得精确追踪——这是物理上的「差别对待」，
+    却比任何社会差别对待都更为公正，因为它遵从的是能量守恒。
+    """
+    max_r = _REFL_MAX_ROUGHNESS + _REFL_ROUGHNESS_FADE
+    if roughness >= max_r:
+        return 0.0
+    if roughness <= _REFL_MAX_ROUGHNESS:
+        return 1.0
+    return max(0.0, (max_r - roughness) / max(_REFL_ROUGHNESS_FADE, 1e-6))
+
+
+def _sample_radiance_cache_for_reflection(
+    cell_id:  str,
+    bbox:     dict,
+    species:  str,
+    roughness: float,
+    bvh:      "AstroCellBVH | None",
+    all_bboxes: dict,
+) -> tuple:
+    """
+    Radiance Cache 反射采样 — 镜像 RadianceCache.StochasticInterpolation 路径。
+
+    当 roughness ∈ [MinRoughness, MaxRoughness] 时，Lumen 反射使用 Radiance Cache
+    而非完整的反射光线追踪，通过插值探针辐射度来近似粗糙面反射。
+
+    2-D 等价：BVH 查询邻近 cell 的反射贡献，按 GGX 粗糙度权重混合。
+
+    鲁迅式：缓存是记忆，记忆是经验的沉淀——
+    粗糙的表面不需要精确的镜像，用记忆里的「大概」就够了。
+    """
+    cx = float(bbox.get("x", 0)) + float(bbox.get("w", 80)) / 2.0
+    cy = float(bbox.get("y", 0)) + float(bbox.get("h", 50)) / 2.0
+    cz = float(bbox.get("z", 3))
+
+    if bvh is not None:
+        probe_margin = max(bbox.get("w", 80), bbox.get("h", 50)) * 1.5
+        candidates   = bvh.query_overlapping_cells({
+            "x": cx - probe_margin, "y": cy - probe_margin,
+            "w": probe_margin * 2,  "h": probe_margin * 2,
+        })
+    else:
+        candidates = list(all_bboxes.keys())
+
+    r_sum = g_sum = b_sum = w_sum = 0.0
+    alpha = roughness * roughness   # GGX alpha
+
+    for cand_id in candidates:
+        if cand_id == cell_id:
+            continue
+        cb  = all_bboxes.get(cand_id, {})
+        ncx = float(cb.get("x", 0)) + float(cb.get("w", 80)) / 2.0
+        ncy = float(cb.get("y", 0)) + float(cb.get("h", 50)) / 2.0
+        ncz = float(cb.get("z", 3))
+
+        dist = math.sqrt((cx-ncx)**2 + (cy-ncy)**2 + (cz-ncz)**2 * 10000) + 1e-6
+        # GGX weight: 粗糙度越高，探针贡献的权重越分散（镜像 StochasticInterpolation PDF）
+        w = math.exp(-0.5 * dist * dist / max(alpha * 500.0, 1.0))
+
+        nsp  = cb.get("species", "cil-arrow-right")
+        nidx = _species_to_index(nsp)
+        nc   = _SPECIES_INDEX_TO_COLOUR.get(nidx, _SPECIES_INDEX_TO_COLOUR[0])
+        r_sum += nc[0] / 255.0 * w
+        g_sum += nc[1] / 255.0 * w
+        b_sum += nc[2] / 255.0 * w
+        w_sum += w
+
+    if w_sum < 1e-6:
+        return (0.5, 0.5, 0.5)
+    return (
+        min(r_sum / w_sum, 1.0),
+        min(g_sum / w_sum, 1.0),
+        min(b_sum / w_sum, 1.0),
+    )
+
+
+def render_lumen_reflections(
+    cell_id:     str,
+    bbox:        dict,
+    species:     str,
+    roughness:   float,
+    gbuffers:    dict,
+    all_bboxes:  dict,
+    bvh:         "AstroCellBVH | None" = None,
+    pt_state:    "AstroCellPathTracingState | None" = None,
+) -> dict:
+    """
+    Lumen 反射主通道 — 镜像 RenderLumenReflections()。
+
+    Strategy（按 roughness 分级，镜像 Lumen 的 adaptive reflection pipeline）：
+
+    roughness < MinRoughness：
+        PathTracing radiance buffer lookup（镜像 ScreenSpaceReconstruction 路径）
+        → 精确反射，来自 path tracing 积累结果
+
+    MinRoughness ≤ roughness ≤ MaxRoughness：
+        Radiance Cache 插值（镜像 RadianceCache 路径）
+        → 粗糙面反射，用探针插值近似
+
+    roughness > MaxRoughness + FadeLength：
+        无反射追踪（weight = 0），退化为环境光
+
+    返回包含 reflection_color、fade_weight、method 的 dict。
+
+    鲁迅式：反射是照见自己的机会——越平滑的表面，看得越清楚；
+    越粗糙的表面，只剩下模糊的猜测。这并非缺陷，而是物理的诗意。
+    """
+    if not _LUMEN_REFLECTIONS_ENABLED:
+        return {"cell_id": cell_id, "reflection_color": (0.5, 0.5, 0.5),
+                "fade_weight": 0.0, "method": "disabled"}
+
+    roughness_biased = max(0.0, roughness - _REFL_GGX_BIAS)
+    fade_w = _lumen_refl_roughness_fade(roughness_biased)
+
+    if fade_w <= 0.0:
+        return {"cell_id": cell_id, "reflection_color": (0.5, 0.5, 0.5),
+                "fade_weight": 0.0, "method": "none"}
+
+    method = "path_tracing"
+    if _REFL_RADIANCE_CACHE_ENABLED and roughness_biased >= _REFL_MIN_ROUGHNESS:
+        method = "radiance_cache"
+
+    if method == "radiance_cache":
+        refl_color = _sample_radiance_cache_for_reflection(
+            cell_id, bbox, species, roughness_biased, bvh, all_bboxes)
+    else:
+        # Path tracing radiance lookup
+        if pt_state and cell_id in pt_state.radiance_buffer:
+            raw = pt_state.radiance_buffer[cell_id]
+            refl_color = (
+                min(raw[0], _REFL_MAX_RAY_INTENSITY),
+                min(raw[1], _REFL_MAX_RAY_INTENSITY),
+                min(raw[2], _REFL_MAX_RAY_INTENSITY),
+            )
+        else:
+            # FrontLayerGBuffer fallback: use neighbour base colours
+            refl_color = _sample_radiance_cache_for_reflection(
+                cell_id, bbox, species, 0.05, bvh, all_bboxes)
+
+    # Temporal accumulation: blend with GBuffer base colour
+    gbuf = gbuffers.get(cell_id)
+    if gbuf and gbuf.is_valid:
+        bc = gbuf.base_color
+        t  = min(1.0, fade_w)
+        # Temporal weight: 1/MaxFramesAccumulated blend per frame
+        tweight = 1.0 / max(_REFL_MAX_FRAMES_ACCUM, 1.0)
+        refl_color = (
+            bc[0] * (1.0 - tweight) + refl_color[0] * tweight * t,
+            bc[1] * (1.0 - tweight) + refl_color[1] * tweight * t,
+            bc[2] * (1.0 - tweight) + refl_color[2] * tweight * t,
+        )
+
+    return {
+        "cell_id":         cell_id,
+        "reflection_color": refl_color,
+        "fade_weight":     round(fade_w, 4),
+        "method":          method,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] LumenScreenProbeHierarchy → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenScreenProbeGather.cpp
+#   (ProbeHierarchy 相关逻辑，commit 对应 LumenScreenProbeGather.h 的 FScreenProbeGatherParameters)
+#
+# 鲁迅曾言：「世上本没有层级，做的人多了，也便有了层级。」
+# Probe Hierarchy 正是如此——屏幕空间探针的分层结构，从粗到精，逐级细化，
+# 是一种对「先大致对，再精确」的工程实用主义的体现。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   ScreenProbeDownsampleFactor / ScreenTileSize
+#       → _PROBE_TILE_SIZE (default 16 pixels/tile → cell grid)
+#   FScreenProbeGatherParameters (ScreenProbeAtlas, ProbeOcclusionAtlas)
+#       → AstroCellScreenProbeGatherParams
+#   SetupUniformGridScreenProbes() + PlaceAdaptiveScreenProbes()
+#       → AstroCellProbeHierarchy.setup_probes()
+#   InterpolateAndIntegrate()
+#       → AstroCellProbeHierarchy.interpolate()
+#   CVarLumenScreenProbeGatherScreenSpaceOcclusionMode
+#       → _PROBE_OCCLUSION_MODE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_PROBE_TILE_SIZE:      int   = 16    # ScreenTileSize (pixels per tile, mirrored as cells)
+_PROBE_OCCLUSION_MODE: int   = 1     # 1 = ScreenSpace occlusion enabled
+_PROBE_MAX_RECURSION:  int   = 4     # MaxRayReflectionBounces analogue
+
+
+class AstroCellScreenProbeGatherParams:
+    """
+    屏幕探针 GatherParameters — 镜像 FScreenProbeGatherParameters。
+
+    在 2-D cell 网格中，每个「probe」覆盖 _PROBE_TILE_SIZE × _PROBE_TILE_SIZE
+    像素的屏幕区域，对应若干个 cell。探针存储该区域的平均辐亮度，
+    供 InterpolateAndIntegrate 步骤插值到每个 cell。
+
+    鲁迅式：探针是采样，采样是妥协——
+    我们无法对每个像素都追踪，所以先对每个区域追踪，再插值到每个像素。
+    这是效率与精度之间的谈判结果。
+    """
+
+    def __init__(self, viewport_w: float, viewport_h: float) -> None:
+        self.viewport_w  = viewport_w
+        self.viewport_h  = viewport_h
+        # 探针网格尺寸
+        self.probe_grid_w = max(1, int(math.ceil(viewport_w / _PROBE_TILE_SIZE)))
+        self.probe_grid_h = max(1, int(math.ceil(viewport_h / _PROBE_TILE_SIZE)))
+        # 探针辐亮度 atlas: (grid_x, grid_y) → (r, g, b)
+        self.probe_atlas:   dict = {}
+        # 探针遮挡掩码 (ScreenSpaceOcclusion): (grid_x, grid_y) → occlusion_weight [0,1]
+        self.occlusion_atlas: dict = {}
+
+    def probe_index(self, world_x: float, world_y: float) -> tuple:
+        """
+        将世界坐标映射到探针网格索引。
+        镜像 ScreenProbeAtlasCoord = PixelPos / ScreenTileSize。
+        """
+        gx = max(0, min(self.probe_grid_w - 1,
+                        int(world_x / max(self.viewport_w, 1.0) * self.probe_grid_w)))
+        gy = max(0, min(self.probe_grid_h - 1,
+                        int(world_y / max(self.viewport_h, 1.0) * self.probe_grid_h)))
+        return (gx, gy)
+
+
+class AstroCellProbeHierarchy:
+    """
+    屏幕探针层级 — 镜像 Lumen ScreenProbeGather 的 ProbeHierarchy pipeline。
+
+    两阶段：
+    1. setup_probes()   → SetupUniformGridScreenProbes + PlaceAdaptiveScreenProbes
+       为每个探针格子计算代表性辐亮度（均匀网格探针 + 自适应补充探针）。
+    2. interpolate()    → InterpolateAndIntegrate
+       将探针辐亮度双线性插值到每个 cell，输出 cell_id → (r, g, b) 间接光照。
+
+    鲁迅式：层级是复杂性的组织工具——没有层级，复杂性就是混乱；
+    有了层级，复杂性就是秩序。但层级本身也是一种权力结构，
+    高层探针的错误会传递到所有子 cell，这是不可忽视的代价。
+    """
+
+    def __init__(self, params: AstroCellScreenProbeGatherParams) -> None:
+        self.params = params
+        self._is_setup = False
+
+    def setup_probes(
+        self,
+        cell_entries: list,
+        direct_lighting: dict,    # cell_id → (r, g, b) 来自 compute_lumen_direct_lighting
+        all_bboxes: dict,
+    ) -> None:
+        """
+        阶段 1：建立均匀 + 自适应探针网格。
+
+        均匀网格 (SetupUniformGridScreenProbes)：
+          每个格子取其中所有 cell 的直接光照均值 → 探针辐亮度。
+          空格子使用全局平均值填充（镜像 fallback SkyLight probe）。
+
+        自适应补充 (PlaceAdaptiveScreenProbes)：
+          方差超过阈值的格子插入额外探针（此处仅记录高方差格子标志）。
+
+        鲁迅式：均匀采样是民主，自适应加密是精英政策——
+        在变化大的地方投入更多资源，在平滑的地方节省资源。
+        效率与公平，永远是一对矛盾。
+        """
+        p = self.params
+
+        # 将 cell 分配到探针格子
+        grid_cells: dict = {}   # (gx, gy) → list of (r, g, b)
+        for entry in cell_entries:
+            cid  = entry.get("cell_id", "")
+            bbox = entry.get("bbox", {})
+            cx   = float(bbox.get("x", 0)) + float(bbox.get("w", 80)) / 2.0
+            cy   = float(bbox.get("y", 0)) + float(bbox.get("h", 50)) / 2.0
+            gi   = p.probe_index(cx, cy)
+
+            dl = direct_lighting.get(cid, (0.0, 0.0, 0.0))
+            grid_cells.setdefault(gi, []).append(dl)
+
+        # 全局平均（用于空格子 fallback）
+        all_vals = [v for vals in grid_cells.values() for v in vals]
+        if all_vals:
+            gavg = (
+                sum(v[0] for v in all_vals) / len(all_vals),
+                sum(v[1] for v in all_vals) / len(all_vals),
+                sum(v[2] for v in all_vals) / len(all_vals),
+            )
+        else:
+            gavg = (0.15, 0.15, 0.20)   # sky-ambient fallback
+
+        # 填充均匀探针 atlas
+        for gx in range(p.probe_grid_w):
+            for gy in range(p.probe_grid_h):
+                vals = grid_cells.get((gx, gy), [])
+                if vals:
+                    probe_color = (
+                        sum(v[0] for v in vals) / len(vals),
+                        sum(v[1] for v in vals) / len(vals),
+                        sum(v[2] for v in vals) / len(vals),
+                    )
+                    # 自适应：方差检测（镜像 PlaceAdaptiveScreenProbes variance gate）
+                    if len(vals) > 1:
+                        lum_vals = [(v[0]+v[1]+v[2])/3.0 for v in vals]
+                        mean_l   = sum(lum_vals) / len(lum_vals)
+                        var_l    = sum((l - mean_l)**2 for l in lum_vals) / len(lum_vals)
+                        occ_w    = max(0.0, min(1.0, 1.0 - var_l * 10.0))
+                    else:
+                        occ_w = 1.0
+                else:
+                    probe_color = gavg
+                    occ_w       = 0.5
+
+                p.probe_atlas[(gx, gy)]    = probe_color
+                p.occlusion_atlas[(gx, gy)] = occ_w
+
+        self._is_setup = True
+        print(
+            f"[ASTRO-PROBE-HIER] setup_probes: "
+            f"grid={p.probe_grid_w}×{p.probe_grid_h} "
+            f"cells={len(cell_entries)} "
+            f"probes_filled={len(p.probe_atlas)}",
+            file=sys.stderr,
+        )
+
+    def interpolate(
+        self,
+        cell_entries: list,
+    ) -> dict:
+        """
+        阶段 2：双线性探针插值 → 每个 cell 的间接光照。
+
+        镜像 InterpolateAndIntegrate：
+          对每个 cell，找到其所在探针格子的四邻格进行双线性权重混合。
+          ScreenSpaceOcclusion 遮挡权重进一步衰减插值结果。
+
+        返回 cell_id → (r, g, b) 间接辐亮度映射。
+
+        鲁迅式：插值是桥梁——它连接了探针格子与像素，
+        让高层次的粗略估计在低层次的细节中得以落地。
+        没有插值，层级就只是一个孤立的空架子。
+        """
+        if not self._is_setup:
+            return {}
+
+        p      = self.params
+        result = {}
+
+        for entry in cell_entries:
+            cid  = entry.get("cell_id", "")
+            bbox = entry.get("bbox", {})
+            cx   = float(bbox.get("x", 0)) + float(bbox.get("w", 80)) / 2.0
+            cy   = float(bbox.get("y", 0)) + float(bbox.get("h", 50)) / 2.0
+
+            # 亚格子位置 [0,1] within the containing cell
+            fgx = cx / max(p.viewport_w, 1.0) * p.probe_grid_w
+            fgy = cy / max(p.viewport_h, 1.0) * p.probe_grid_h
+            gx0 = max(0, min(p.probe_grid_w - 1, int(fgx)))
+            gy0 = max(0, min(p.probe_grid_h - 1, int(fgy)))
+            gx1 = min(p.probe_grid_w - 1, gx0 + 1)
+            gy1 = min(p.probe_grid_h - 1, gy0 + 1)
+
+            tx = fgx - int(fgx)
+            ty = fgy - int(fgy)
+
+            def _probe(gx, gy):
+                return p.probe_atlas.get((gx, gy), (0.15, 0.15, 0.20))
+
+            # 双线性插值 (镜像 BilinearSampleProbeAtlas)
+            p00 = _probe(gx0, gy0); p10 = _probe(gx1, gy0)
+            p01 = _probe(gx0, gy1); p11 = _probe(gx1, gy1)
+            ir = (p00[0]*(1-tx)*(1-ty) + p10[0]*tx*(1-ty) +
+                  p01[0]*(1-tx)*ty     + p11[0]*tx*ty)
+            ig = (p00[1]*(1-tx)*(1-ty) + p10[1]*tx*(1-ty) +
+                  p01[1]*(1-tx)*ty     + p11[1]*tx*ty)
+            ib = (p00[2]*(1-tx)*(1-ty) + p10[2]*tx*(1-ty) +
+                  p01[2]*(1-tx)*ty     + p11[2]*tx*ty)
+
+            # ScreenSpaceOcclusion 衰减
+            occ_w = p.occlusion_atlas.get((gx0, gy0), 1.0)
+            result[cid] = (ir * occ_w, ig * occ_w, ib * occ_w)
+
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] LumenSurfaceCache → Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenSurfaceCache.cpp
+#
+# 鲁迅曾言：「自欺欺人的速朽的作品，是不算数的。」
+# Surface Cache 亦然——不更新、不压缩的缓存，只是速朽的垃圾。
+# LumenSurfaceCache 管理着 Lumen 的核心 texel 数据，确保每一张 card
+# 都有最新的、压缩过的 albedo/normal/emissive 数据可供全局光照采样。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+#   ESurfaceCacheCompression (UAVAliasing / CopyTextureRegion / Disabled)
+#       → _SURFACE_CACHE_COMPRESSION_MODE
+#   ELumenSurfaceCacheLayer (Depth, Albedo, Normal, Emissive)
+#       → AstroCellSurfaceCacheEntry.layers dict
+#   FLumenCardCopyPS  (card page → atlas copy)
+#       → AstroCellSurfaceCache.update_card()
+#   FClearLumenRectsParameters
+#       → AstroCellSurfaceCache.clear_card()
+#   CullUndergroundTexels
+#       → AstroCellSurfaceCache.cull_underground_texels()
+#   GetSurfaceCacheCompression()
+#       → get_surface_cache_compression()
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SURFACE_CACHE_COMPRESSION_MODE: int = 1   # 0=disabled, 1=UAVAliasing, 2=CopyTexture
+
+
+def get_surface_cache_compression() -> int:
+    """
+    返回当前平台支持的压缩模式。
+    镜像 GetSurfaceCacheCompression()：检测 BC5/BC6H/BC7 支持，选择最优路径。
+
+    2-D 等价：始终返回 _SURFACE_CACHE_COMPRESSION_MODE（无实际 GPU 压缩），
+    保留语义以便未来扩展（例如 zlib 压缩 JSON texel 数据）。
+
+    鲁迅式：压缩是一种谦逊——承认自己存不起全部的精确，
+    所以用更小的空间换取「足够好的」精确。
+    """
+    return _SURFACE_CACHE_COMPRESSION_MODE
+
+
+class AstroCellSurfaceCacheEntry:
+    """
+    单张 card (cell) 的 surface cache 条目 — 镜像 FLumenCardData + FLumenSurfaceLayerConfig。
+
+    四个 layer 对应 GBuffer 输出，与 LumenSurfaceCache.cpp 中的 ELumenSurfaceCacheLayer 一一对应：
+        Depth    → depth_norm     float ∈ [0,1]      (GBuffer PF_G16 analogue)
+        Albedo   → albedo         (r,g,b) ∈ [0,1]    (PF_R8G8B8A8 → BC7 analogue)
+        Normal   → normal_xy      (nx,ny) encoded     (PF_R8G8 → BC5 analogue)
+        Emissive → emissive       (r,g,b) HDR float   (PF_FloatR11G11B10 → BC6H analogue)
+
+    压缩：mode=1（UAVAliasing）→ python 侧不实际压缩，但记录压缩标志。
+    Dilate：mode=0（disabled by default，可通过 cul_underground_texels 开启）。
+
+    鲁迅式：每一层都是世界的一个侧面——深度是距离，反照率是颜色，
+    法线是朝向，自发光是内在的能量。失去任何一层，世界就不完整。
+    """
+
+    __slots__ = ("cell_id", "layers", "compressed", "dirty",
+                 "epoch", "species")
+
+    def __init__(self, cell_id: str, species: str) -> None:
+        self.cell_id    = cell_id
+        self.species    = species
+        self.compressed = (get_surface_cache_compression() != 0)
+        self.dirty      = True
+        self.epoch      = 0
+        self.layers: dict = {
+            "depth":    1.0,               # far plane default
+            "albedo":   (0.5, 0.5, 0.5),   # neutral grey
+            "normal_xy": (0.0, 0.0),        # upward normal packed XY
+            "emissive": (0.0, 0.0, 0.0),   # dark by default
+        }
+
+    def write_albedo(self, color: tuple) -> None:
+        """LumenCardCopyPS Albedo layer write (PF_R8G8B8A8 → clamp → store)."""
+        self.layers["albedo"] = (
+            max(0.0, min(1.0, color[0])),
+            max(0.0, min(1.0, color[1])),
+            max(0.0, min(1.0, color[2])),
+        )
+        self.dirty = True
+
+    def write_normal(self, nx: float, ny: float) -> None:
+        """Normal layer write: pack XY octahedral (PF_R8G8 → BC5 analogue)."""
+        # 归一化后仅存 X/Y（Z 可从 sqrt(1-x²-y²) 恢复）
+        nlen = math.sqrt(nx*nx + ny*ny + 1.0)  # assume nz=1 for screen-facing
+        self.layers["normal_xy"] = (nx / nlen, ny / nlen)
+        self.dirty = True
+
+    def write_depth(self, depth_norm: float) -> None:
+        """Depth layer write (PF_G16 analogue, normalised)."""
+        self.layers["depth"] = max(0.0, min(1.0, depth_norm))
+        self.dirty = True
+
+    def write_emissive(self, emissive: tuple) -> None:
+        """Emissive layer write (PF_FloatR11G11B10 HDR → BC6H analogue)."""
+        self.layers["emissive"] = (
+            max(0.0, emissive[0]),
+            max(0.0, emissive[1]),
+            max(0.0, emissive[2]),
+        )
+        self.dirty = True
+
+    def clear(self) -> None:
+        """FClearLumenRectsParameters 等价 — 将所有 layer 重置为 clear value。"""
+        self.layers = {
+            "depth":    1.0,
+            "albedo":   (0.0, 0.0, 0.0),
+            "normal_xy": (0.0, 0.0),
+            "emissive": (0.0, 0.0, 0.0),
+        }
+        self.dirty = True
+
+    def to_dict(self) -> dict:
+        return {
+            "cell_id":    self.cell_id,
+            "species":    self.species,
+            "compressed": self.compressed,
+            "epoch":      self.epoch,
+            "layers":     dict(self.layers),
+        }
+
+
+class AstroCellSurfaceCache:
+    """
+    Lumen Surface Cache 管理器 — 镜像 FLumenSceneData 中的 surface cache 子系统。
+
+    管理所有 cell 的 AstroCellSurfaceCacheEntry，提供：
+    - update_card()        → FLumenCardCopyPS dispatch（从 cell_registry 更新 card data）
+    - clear_card()         → FClearLumenRectsParameters dispatch
+    - cull_underground_texels() → CVarLumenSurfaceCacheCullUndergroundTexels pass
+    - flush_to_channel()   → 将 surface cache 序列化到 physics/surface_cache.json
+    - lookup()             → 查询指定 cell 的 surface cache entry（供 GI 采样）
+
+    鲁迅式：Surface Cache 是 Lumen 的记忆——它记住了每张 card 的物质性，
+    让全局光照不必每一帧都重新学习世界的基本属性。
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict = {}   # cell_id → AstroCellSurfaceCacheEntry
+        self._channel_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "physics", "surface_cache.json",
+        )
+
+    def _get_or_create(self, cell_id: str, species: str) -> AstroCellSurfaceCacheEntry:
+        if cell_id not in self._entries:
+            self._entries[cell_id] = AstroCellSurfaceCacheEntry(cell_id, species)
+        return self._entries[cell_id]
+
+    def update_card(
+        self,
+        cell_id:    str,
+        bbox:       dict,
+        species:    str,
+        direct_lit: tuple,    # (r,g,b) from compute_lumen_direct_lighting
+        depth_norm: float,
+        epoch:      int,
+    ) -> AstroCellSurfaceCacheEntry:
+        """
+        更新单张 card 的 surface cache — 镜像 FLumenCardCopyPS dispatch。
+
+        1. 从 species 推导 albedo（基础反照率）
+        2. 写入 depth（来自 depth_manifest）
+        3. 写入 normal（screen-facing 假设 nz=1）
+        4. 写入 emissive（直接光照的自发光贡献）
+
+        鲁迅式：更新是新陈代谢——旧数据被新数据覆盖，
+        这是缓存的生命周期，也是所有记忆的必然命运。
+        """
+        entry = self._get_or_create(cell_id, species)
+
+        sp_idx  = _species_to_index(species)
+        col     = _SPECIES_INDEX_TO_COLOUR.get(sp_idx, _SPECIES_INDEX_TO_COLOUR[0])
+        albedo  = (col[0] / 255.0, col[1] / 255.0, col[2] / 255.0)
+
+        entry.write_albedo(albedo)
+        entry.write_depth(depth_norm)
+        entry.write_normal(0.0, 0.0)   # screen-facing → nxy = (0,0), nz = 1
+
+        # Emissive: 直接光照中超过 1.0 的部分视为自发光（HDR 溢出）
+        emissive = (
+            max(0.0, direct_lit[0] - 1.0),
+            max(0.0, direct_lit[1] - 1.0),
+            max(0.0, direct_lit[2] - 1.0),
+        )
+        entry.write_emissive(emissive)
+        entry.epoch = epoch
+        entry.dirty = False   # 已刷新
+
+        return entry
+
+    def clear_card(self, cell_id: str, species: str) -> None:
+        """FClearLumenRectsParameters 等价 — 清空指定 cell 的 surface cache。"""
+        entry = self._get_or_create(cell_id, species)
+        entry.clear()
+
+    def cull_underground_texels(
+        self,
+        cell_entries: list,
+        landscape_height: float = 0.0,
+        height_bias: float = 30.0,
+    ) -> list:
+        """
+        地下 texel 裁剪 — 镜像 CVarLumenSurfaceCacheCullUndergroundTexels pass。
+
+        将 bbox 中心高度 < landscape_height - height_bias 的 cell 标记为「地下」，
+        从 surface cache 更新列表中排除（不写入，保留上一帧数据）。
+
+        返回剩余待更新的 cell_entries 列表（已过滤地下 cell）。
+
+        鲁迅式：地下的事物不需要 surface cache——它们无法被 Lumen 看见，
+        也不会对全局光照产生贡献。忽略它们，是对计算资源的尊重。
+        """
+        if not LumenScene_CullUnderground():
+            return cell_entries
+
+        culled = []
+        for entry in cell_entries:
+            bbox = entry.get("bbox", {})
+            cy   = float(bbox.get("y", 0)) + float(bbox.get("h", 50)) / 2.0
+            # 以 Y 轴作为竖向高度（2-D 场景中 Y 向下，故此处取反）
+            # 镜像 CullUndergroundTexels: texel_world_height > landscape_height - bias
+            if -(cy) < landscape_height - height_bias:
+                continue   # underground — cull
+            culled.append(entry)
+        return culled
+
+    def flush_to_channel(self) -> None:
+        """
+        将所有 dirty entries 序列化到 physics/surface_cache.json。
+        镜像 Lumen surface cache atlas GPU→CPU readback / persistent storage。
+
+        鲁迅式：写入磁盘是数据的「发表」——不发表，研究只是研究者自己的事；
+        发表之后，才成为公共知识，才能被其他系统引用。
+        """
+        if not any(e.dirty for e in self._entries.values()):
+            return
+
+        data = {cid: e.to_dict() for cid, e in self._entries.items()}
+        os.makedirs(os.path.dirname(self._channel_path), exist_ok=True)
+        with open(self._channel_path, "w") as _f:
+            json.dump(data, _f, indent=2)
+
+        dirty_count = sum(1 for e in self._entries.values() if e.dirty)
+        print(
+            f"[ASTRO-SURFACE-CACHE] flush_to_channel: "
+            f"total={len(self._entries)} dirty_flushed={dirty_count} "
+            f"compression_mode={get_surface_cache_compression()}",
+            file=sys.stderr,
+        )
+
+        # 清除 dirty 标志
+        for e in self._entries.values():
+            e.dirty = False
+
+    def lookup(self, cell_id: str) -> "AstroCellSurfaceCacheEntry | None":
+        """查询指定 cell 的 surface cache entry — 供 GI 采样调用。"""
+        return self._entries.get(cell_id)
+
+
+def LumenScene_CullUnderground() -> bool:
+    """
+    CullUndergroundTexels 全局开关检查。
+    镜像 LumenScene::CullUndergroundTexels() — 读取 CVar。
+    此处简化为常量 False（默认禁用，与 CVar 默认值一致）。
+    """
+    return False   # CVarLumenSurfaceCacheCullUndergroundTexels default = 0
+
+
+#: 进程级 Surface Cache 单例 — 镜像 FLumenSceneData 内嵌的 surface cache 子系统。
+_ASTRO_SURFACE_CACHE: AstroCellSurfaceCache = AstroCellSurfaceCache()
+
+
+def get_lumen_surface_cache() -> AstroCellSurfaceCache:
+    """返回进程级 Lumen Surface Cache 单例。"""
+    return _ASTRO_SURFACE_CACHE
