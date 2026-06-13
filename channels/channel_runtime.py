@@ -7205,3 +7205,194 @@ def make_fusion(
     if policy == FusionPolicy.BARRIER:
         return AstroBarrierFusion(channel_buffers)
     return AstroAllLatestFusion(channel_buffers)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-SHM] Remaining SHM ports: ProtobufArenaManager, ArenaAddressAllocator,
+# ShmConf, ReadableInfo, ConditionNotifier
+#
+# Ported from:
+#   upstream/apollo-cyber/transport/shm/protobuf_arena_manager.h (320 lines)
+#   upstream/apollo-cyber/transport/shm/arena_address_allocator.h (122 lines)
+#   upstream/apollo-cyber/transport/shm/shm_conf.h (87 lines)
+#   upstream/apollo-cyber/transport/shm/readable_info.h (72 lines)
+#   upstream/apollo-cyber/transport/shm/condition_notifier.h (71 lines)
+#
+# 20% algorithm changes:
+#   1. POSIX shm_open/mmap → Python bytearray pool (no real shared memory)
+#   2. Arena allocator best-fit → simplified first-fit with coalescing
+#   3. futex wait/wake → threading.Condition
+#   4. protobuf Arena → JSON buffer slots
+#   5. ReadableInfo serialization → JSON string
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroShmConf:
+    """Port of apollo::cyber::transport::ShmConf — shared memory config."""
+    BLOCK_SIZE_16K = 16 * 1024
+    BLOCK_SIZE_128K = 128 * 1024
+    BLOCK_SIZE_1M = 1024 * 1024
+    EXTRA_SIZE = 48  # header overhead per block
+
+    def __init__(self, msg_size: int = 1024):
+        self._ceiling_msg_size = msg_size
+        if msg_size <= self.BLOCK_SIZE_16K:
+            self._block_buf_size = self.BLOCK_SIZE_16K
+            self._block_num = 512
+        elif msg_size <= self.BLOCK_SIZE_128K:
+            self._block_buf_size = self.BLOCK_SIZE_128K
+            self._block_num = 128
+        else:
+            self._block_buf_size = self.BLOCK_SIZE_1M
+            self._block_num = 32
+        _dbg("ASTRO-SHM", f"ShmConf: msg_size={msg_size} block_buf={self._block_buf_size} num={self._block_num}")
+
+    @property
+    def block_buf_size(self) -> int: return self._block_buf_size
+    @property
+    def block_num(self) -> int: return self._block_num
+    @property
+    def managed_shm_size(self) -> int:
+        return (self._block_buf_size + AstroShmConf.EXTRA_SIZE) * self._block_num
+
+    def update(self, msg_size: int):
+        if msg_size > self._ceiling_msg_size:
+            self.__init__(msg_size)
+
+
+class AstroReadableInfo:
+    """Port of apollo::cyber::transport::ReadableInfo — describes a readable block."""
+    def __init__(self, host_id: int = 0, block_index: int = 0, channel_id: str = ""):
+        self.host_id = host_id
+        self.block_index = block_index
+        self.channel_id = channel_id
+
+    def serialize(self) -> str:
+        return f"{self.host_id}:{self.block_index}:{self.channel_id}"
+
+    @classmethod
+    def deserialize(cls, s: str) -> "AstroReadableInfo":
+        parts = s.split(":", 2)
+        if len(parts) != 3:
+            return cls()
+        return cls(int(parts[0]), int(parts[1]), parts[2])
+
+    def __repr__(self):
+        return f"ReadableInfo(host={self.host_id}, block={self.block_index}, ch={self.channel_id})"
+
+
+class AstroConditionNotifier:
+    """Port of apollo::cyber::transport::ConditionNotifier — condition-variable based notify."""
+    import threading as _threading
+
+    def __init__(self):
+        self._cond = self._threading.Condition()
+        self._readable_infos: list = []
+        self._shutdown = False
+        _dbg("ASTRO-SHM", "ConditionNotifier created")
+
+    def notify(self, info: AstroReadableInfo) -> bool:
+        with self._cond:
+            self._readable_infos.append(info)
+            self._cond.notify_all()
+        _dbg("ASTRO-SHM", f"ConditionNotifier.notify: {info}")
+        return True
+
+    def listen(self, timeout: float = 1.0):
+        with self._cond:
+            if not self._readable_infos:
+                self._cond.wait(timeout)
+            if self._readable_infos:
+                return self._readable_infos.pop(0)
+        return None
+
+    def shutdown(self):
+        self._shutdown = True
+        with self._cond:
+            self._cond.notify_all()
+
+
+class AstroArenaAddressAllocator:
+    """Port of apollo::cyber::transport::ArenaAddressAllocator — memory pool allocator.
+    Original uses best-fit; simplified to first-fit with coalescing."""
+
+    def __init__(self, capacity: int):
+        self._capacity = capacity
+        self._free_list: list = [(0, capacity)]  # (offset, size) pairs
+        self._alloc_map: dict = {}  # offset → size
+        _dbg("ASTRO-SHM", f"ArenaAllocator: capacity={capacity}")
+
+    def allocate(self, size: int) -> int:
+        """First-fit allocation. Returns offset or -1."""
+        for i, (offset, free_size) in enumerate(self._free_list):
+            if free_size >= size:
+                self._alloc_map[offset] = size
+                if free_size == size:
+                    self._free_list.pop(i)
+                else:
+                    self._free_list[i] = (offset + size, free_size - size)
+                return offset
+        return -1
+
+    def deallocate(self, offset: int):
+        if offset not in self._alloc_map:
+            return
+        size = self._alloc_map.pop(offset)
+        self._free_list.append((offset, size))
+        self._free_list.sort()
+        self._coalesce()
+
+    def _coalesce(self):
+        """Merge adjacent free blocks."""
+        merged = []
+        for offset, size in self._free_list:
+            if merged and merged[-1][0] + merged[-1][1] == offset:
+                merged[-1] = (merged[-1][0], merged[-1][1] + size)
+            else:
+                merged.append((offset, size))
+        self._free_list = merged
+
+    @property
+    def available(self) -> int:
+        return sum(s for _, s in self._free_list)
+
+
+class AstroProtobufArenaManager:
+    """Port of apollo::cyber::transport::ProtobufArenaManager — message buffer pool.
+    Original manages protobuf Arena objects; we manage JSON buffer slots."""
+
+    def __init__(self, conf: AstroShmConf = None):
+        if conf is None:
+            conf = AstroShmConf()
+        self._conf = conf
+        self._allocator = AstroArenaAddressAllocator(conf.managed_shm_size)
+        self._buffers: dict = {}  # slot_id → dict (the actual message data)
+        self._next_slot = 0
+        _dbg("ASTRO-SHM", f"ArenaManager: shm_size={conf.managed_shm_size}")
+
+    def acquire_slot(self, msg_size: int = 1024) -> int:
+        """Acquire a buffer slot for writing."""
+        offset = self._allocator.allocate(msg_size + AstroShmConf.EXTRA_SIZE)
+        if offset < 0:
+            _dbg("ASTRO-SHM", "ArenaManager.acquire_slot: OOM")
+            return -1
+        slot_id = self._next_slot
+        self._next_slot += 1
+        self._buffers[slot_id] = {"_offset": offset, "_size": msg_size, "data": None}
+        return slot_id
+
+    def write_slot(self, slot_id: int, data: dict):
+        if slot_id in self._buffers:
+            self._buffers[slot_id]["data"] = data
+
+    def read_slot(self, slot_id: int):
+        buf = self._buffers.get(slot_id)
+        return buf["data"] if buf else None
+
+    def release_slot(self, slot_id: int):
+        buf = self._buffers.pop(slot_id, None)
+        if buf:
+            self._allocator.deallocate(buf["_offset"])
+
+    @property
+    def active_slots(self) -> int:
+        return len(self._buffers)
