@@ -1,20 +1,6 @@
 {
-  "status": "agent_dispatched",
+  "status": "converged",
   "cell_id": "output",
   "species": "cil-arrow-right",
-  "epoch": 0,
-  "bbox": {
-    "x": 220.0,
-    "y": 675.0,
-    "w": 160,
-    "h": 50,
-    "z": 3
-  },
-  "opacity": 0.749,
-  "species_params": {
-    "arrow_width_ratio": 0.232,
-    "head_height": 0.227,
-    "fill_opacity": 0.515,
-    "direction": "up"
-  }
+  "epoch": 4
 }

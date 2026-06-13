@@ -1,5 +1,7 @@
+from __future__ import annotations
 import os, sys, json, threading
-from typing import Any, Optional, Generic, TypeVar
+from typing import Any, Callable, List, Optional, Generic, TypeVar
+from dataclasses import dataclass
 
 _MT = TypeVar('_MT')
 

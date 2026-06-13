@@ -5,15 +5,15 @@
 </defs>
 <!-- [ASTRO-CELL] StyleProbe species=cil-bolt dominant_nbr=0 palette=0 blended_fill=#FF6F00 weight=0.20 (FAstroCellStyleProbe::BlendWithCubemap port, commit 5d07a0a) -->
 <!-- [ASTRO-CELL] PostProcessAO crowding_opacity=0.0500 (FAstroConstraintAO::ComputeConstraintWeight port) -->
-<!-- [ASTRO-CELL] ShadingEnergyConservation E_spec=1.0000 ms_comp=100.0000 total_energy=0.2776 (ShadingEnergyConservation.cpp port, analytic GGX/Schlick/cloth) -->
+<!-- [ASTRO-CELL] ShadingEnergyConservation E_spec=1.0000 ms_comp=100.0000 total_energy=0.2960 (ShadingEnergyConservation.cpp port, analytic GGX/Schlick/cloth) -->
 <g id="cell-ffn" data-z="3" opacity="0.0500" filter="url(#shadow-ffn)" transform="translate(230.0,470.0)">
 <rect x="0" y="0" width="140" height="45" rx="8" fill="#FFF3E0" stroke="#E65100" stroke-width="1.5"/>
 <polyline points="10.0,27.5 30.0,27.5 50.0,27.5 70.0,27.5 90.0,21.5 110.0,15.5 130.0,9.5" fill="none" stroke="#E65100" stroke-width="2" opacity="0.7"/>
 <text x="70.0" y="39" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#BF360C">Feed Forward</text>
-<!-- [ASTRO-CELL] PostProcessDeferredDecals species=2 ch=1 haloI=1.00 arcSeed=854839687 blend=1.00 -->
+<!-- [ASTRO-CELL] PostProcessDeferredDecals species=2 ch=1 haloI=1.00 arcSeed=3523634931 blend=1.00 -->
 <g class="decal-overlay" opacity="1.000">
-  <!-- decal: cil-bolt lightning highlight — G=0.818 ch1 -->
-  <path d="M67.22,14.17 L71.85,21.57 L68.52,23.98 L72.59,30.27" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.696"/>
-  <path d="M67.22,14.17 L71.85,21.57 L68.52,23.98 L72.59,30.27" fill="none" stroke="#FFE0B2" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.243"/>
+  <!-- decal: cil-bolt lightning highlight — G=0.402 ch1 -->
+  <path d="M67.22,14.17 L71.85,21.57 L68.52,23.98 L72.59,30.27" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.342"/>
+  <path d="M67.22,14.17 L71.85,21.57 L68.52,23.98 L72.59,30.27" fill="none" stroke="#FFE0B2" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.120"/>
 </g>
 </g>

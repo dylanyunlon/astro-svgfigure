@@ -1406,8 +1406,8 @@ def physics_engine():
     # pipeline.  Any DataVisitor subscribed to physics/force_field.json is now
     # notified atomically after each physics epoch.  Mirrors Apollo
     # Writer<ForceFieldMsg>::Write() call added in M004.
-    from channel_runtime import broadcast_force_batch as _broadcast_force_batch
-    _broadcast_force_batch(force_field)
+    from channels.data.data_dispatcher import DataDispatcher as _DD
+    _DD.instance().dispatch("physics/force_field.json", force_field)
 
     write_channel("physics/collision.json", {"collisions": collisions, "count": len(collisions)})
 

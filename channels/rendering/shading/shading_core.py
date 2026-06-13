@@ -1,9 +1,8 @@
 import os, sys, json, math
 import math as _math
 from typing import Any, Optional
-from channels.rendering.species.species_port import _species_f0
+from channels.rendering.constants import _species_f0
 
-from channels.rendering.species.species_port import _species_f0
 
 # ShadingEnergyConservation constants (mirrors acceleration_core)
 _SEC_COS_VIEW:      float = 0.7071067811865476   # cos(pi/4)

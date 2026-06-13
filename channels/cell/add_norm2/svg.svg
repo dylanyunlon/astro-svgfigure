@@ -5,7 +5,7 @@
 </defs>
 <!-- [ASTRO-CELL] StyleProbe species=cil-plus dominant_nbr=0 palette=0 blended_fill=#1E88E5 weight=0.20 (FAstroCellStyleProbe::BlendWithCubemap port, commit 5d07a0a) -->
 <!-- [ASTRO-CELL] PostProcessAO crowding_opacity=0.0500 (FAstroConstraintAO::ComputeConstraintWeight port) -->
-<!-- [ASTRO-CELL] ShadingEnergyConservation E_spec=1.0000 ms_comp=100.0000 total_energy=0.3340 (ShadingEnergyConservation.cpp port, analytic GGX/Schlick/cloth) -->
+<!-- [ASTRO-CELL] ShadingEnergyConservation E_spec=1.0000 ms_comp=100.0000 total_energy=0.3900 (ShadingEnergyConservation.cpp port, analytic GGX/Schlick/cloth) -->
 <g id="cell-add_norm2" data-z="5" opacity="0.0500" filter="url(#shadow-add_norm2)" transform="translate(230.0,575.0)">
 <rect x="0" y="0" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
 <line x1="60.0" y1="20.0" x2="80.0" y2="20.0" stroke="#C62828" stroke-width="2.5" opacity="0.6"/>

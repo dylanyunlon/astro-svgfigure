@@ -8,7 +8,7 @@ from channels.rendering.constants import (
     _PCSS_MAX_KERNEL_RADIUS, _SHADOW_FILTER_METHOD, _SHADOW_TRANSITION_SCALE,
     _STENCIL_OPTIMIZATION, _CAPSULE_MAX_DIST, _ASTRO_CELL_MAX_Z_LAYERS,
 )
-from channels.rendering.occlusion.occlusion_core import AstroCellOcclusionVolume
+from channels.rendering.occlusion.occlusion_core import AstroCellOcclusionVolume, project_cell_occlusion
 
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":

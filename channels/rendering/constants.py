@@ -32,3 +32,20 @@ _CELL_REGISTRY_PATH       = "physics/cell_registry.json"
 # ── Style Probe ──────────────────────────────────────────────────────────────
 _STYLE_PROBE_WEIGHT       = 0.20      # neighbour palette blend weight
 _SPECIES_LOCALITY_WEIGHT  = 0.15      # same-species affinity bonus
+
+# ── Species F0 (normal-incidence reflectance) ────────────────────────────────
+_F0_TABLE = {
+    "cil-eye":         0.04,
+    "cil-bolt":        0.80,
+    "cil-vector":      0.04,
+    "cil-plus":        0.02,
+    "cil-arrow-right": 0.06,
+    "cil-filter":      0.65,
+    "cil-code":        0.04,
+    "cil-layers":      0.08,
+    "cil-loop":        0.10,
+    "cil-graph":       0.03,
+}
+
+def _species_f0(species: str) -> float:
+    return _F0_TABLE.get(species, 0.04)

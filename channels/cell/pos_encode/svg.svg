@@ -5,7 +5,7 @@
 </defs>
 <!-- [ASTRO-CELL] StyleProbe species=cil-vector dominant_nbr=0 palette=0 blended_fill=#2E7D32 weight=0.20 (FAstroCellStyleProbe::BlendWithCubemap port, commit 5d07a0a) -->
 <!-- [ASTRO-CELL] PostProcessAO crowding_opacity=0.0500 (FAstroConstraintAO::ComputeConstraintWeight port) -->
-<!-- [ASTRO-CELL] ShadingEnergyConservation E_spec=0.9979 ms_comp=100.0000 total_energy=0.3341 (ShadingEnergyConservation.cpp port, analytic GGX/Schlick/cloth) -->
+<!-- [ASTRO-CELL] ShadingEnergyConservation E_spec=0.9979 ms_comp=100.0000 total_energy=0.3901 (ShadingEnergyConservation.cpp port, analytic GGX/Schlick/cloth) -->
 <g id="cell-pos_encode" data-z="5" opacity="0.0500" filter="url(#shadow-pos_encode)" transform="translate(220.0,150.0)">
 <rect x="0" y="0" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
 <line x1="57.9" y1="36.3" x2="102.1" y2="17.7" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
@@ -14,10 +14,10 @@
 <line x1="56.5" y1="22.2" x2="103.5" y2="31.8" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)"/>
 <line x1="57.9" y1="17.7" x2="102.1" y2="36.3" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)"/>
 <text x="80.0" y="44" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Positional Encoding</text>
-<!-- [ASTRO-CELL] PostProcessDeferredDecals species=3 ch=2 haloI=0.50 arcSeed=58121706 blend=1.00 -->
+<!-- [ASTRO-CELL] PostProcessDeferredDecals species=3 ch=2 haloI=0.50 arcSeed=3394166493 blend=1.00 -->
 <g class="decal-overlay" opacity="1.000">
-  <!-- decal: cil-vector arrow marker — R=0.50 G=0.867 ch2 -->
-  <defs><marker id="decal-arrow-7518" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350"/></marker></defs>
-  <line x1="74.36" y1="23.74" x2="85.64" y2="26.26" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-7518)"/>
+  <!-- decal: cil-vector arrow marker — R=0.50 G=0.871 ch2 -->
+  <defs><marker id="decal-arrow-5943" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350"/></marker></defs>
+  <line x1="74.37" y1="23.73" x2="85.63" y2="26.27" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-5943)"/>
 </g>
 </g>

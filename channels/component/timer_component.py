@@ -1,5 +1,6 @@
 import os, sys, json, threading
 from typing import Any, Optional, Generic, TypeVar
+from channels.component.component_base import AstroComponentBase
 
 _MT = TypeVar('_MT')
 

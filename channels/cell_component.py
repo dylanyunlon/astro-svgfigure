@@ -525,36 +525,11 @@ if __name__ == "__main__":
     proc(cell_id)
 
 
-# Lumen GI classes moved to channels/rendering/lumen/
-from channels.rendering.lumen import (
-    astro_gi_is_allowed, astro_gi_get_lighting_format,
-    AstroCellGatherCvarState, AstroCellDiffuseProbe,
-    AstroCellDiffuseProbeGrid, AstroCellRadianceCacheProbe,
-    AstroCellRadianceCacheClipmapLevel, AstroCellRadianceCache,
-    AstroCellMeshCardFace, AstroCellMeshCards,
-    AstroCellMeshCardsRegistry, AstroCellGlobalIlluminationPipeline,
-    get_astro_gi_pipeline,
-)
-
-
-# LightRendering/GPUScene classes moved to channels/rendering/lighting/
-from channels.rendering.lighting import (
-    AstroCellGPUSceneResourceParams, AstroCellPrimitiveCollector,
-    AstroCellGPUScene, get_astro_gpu_scene,
-    AstroCellDeferredLightUniforms, AstroCellSimpleLight,
-    AstroCellLightPass, run_cell_light_pass,
-    AstroCellTranslucencyLightingVolume,
-    AstroCellFrameRenderer, get_frame_renderer,
-)
-
-
-# Shadow/DeferredShading classes moved to channels/rendering/shadow/
-from channels.rendering.shadow import (
-    AstroCellShadowInfo, build_whole_scene_shadow_caster,
-    AstroCellShadowDepthPassParams, AstroCellShadowDepthRenderer,
-    AstroCellGBuffer, AstroCellDeferredShadingRenderer,
-    run_deferred_shading_pipeline,
-)
+# Lumen/Lighting/Shadow re-exports — lazy loaded to avoid circular imports
+# and 5000+ line UE5 rendering modules that proc() doesn't need.
+# Import on demand: from channels.rendering.lumen import ...
+# Import on demand: from channels.rendering.lighting import ...
+# Import on demand: from channels.rendering.shadow import ...
 
 
 

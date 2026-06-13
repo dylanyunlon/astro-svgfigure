@@ -1,5 +1,6 @@
-import os, sys, json, threading
-from typing import Any, Optional, Generic, TypeVar
+import os, sys, json, threading, dataclasses
+import abc as _abc_comp
+from typing import Any, Callable, Dict, List, Optional, Generic, TypeVar
 
 _MT = TypeVar('_MT')
 

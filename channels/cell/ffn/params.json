@@ -19,7 +19,7 @@
     "amplitude": 6.0,
     "seg_width": 20.0
   },
-  "epoch": 9,
+  "epoch": 4,
   "shadow": {
     "dx": 2.0,
     "dy": 2.0,
