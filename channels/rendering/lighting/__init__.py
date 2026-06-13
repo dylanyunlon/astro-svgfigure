@@ -26,3 +26,5 @@ __all__ = [
     "AstroCellFrameRenderer",
     "get_frame_renderer",
 ]
+
+from .lighting_port import *

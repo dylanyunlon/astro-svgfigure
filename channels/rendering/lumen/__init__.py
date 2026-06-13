@@ -30,3 +30,5 @@ __all__ = [
     "AstroCellGlobalIlluminationPipeline",
     "get_astro_gi_pipeline",
 ]
+
+from .lumen_port import *
