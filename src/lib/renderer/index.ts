@@ -1,38 +1,47 @@
 /**
  * src/lib/renderer/index.ts
  *
- * Public API for the composite render-to-texture system.
+ * Public API for the Nuke post-processing pipeline.
  *
- *   Scene            — base scene graph (children, add/remove, render traversal)
- *   FXScene          — offscreen RT-backed scene (manualRender, onCreate, texture)
- *   FXSceneCompositor— blits multiple FXScene textures onto the canvas
- *   RenderTarget     — raw FBO + texture attachment (single or MRT)
+ * Usage:
+ * ```ts
+ * import { Nuke, NukePass, BloomPass, DOFPass } from '$lib/renderer';
  *
- * AstroRenderer WebGL layer (xiaodi #31):
- *   AstroRenderer    — core WebGL2/1 renderer singleton
- *   AstroProgram     — shader program + uniform/attrib location cache
- *   AstroMesh        — VAO/VBO geometry wrapper
+ * const nuke = new Nuke(gl, width, height);
+ * const bloom = new BloomPass(nuke, sceneRT, outputRT, { bloomStrength: 1.2 });
+ * const dof   = new DOFPass(nuke, sceneRT, depthRT, outputRT, { focalZ: 0.5 });
+ *
+ * // Game loop:
+ * nuke.render();
+ * ```
  */
 
-export { Scene } from './Scene';
-export type { Renderable, Camera, SceneOptions } from './Scene';
-export { makeOrthoCameraForSize } from './Scene';
-
-export { FXScene, FXSceneCompositor } from './FXScene';
+export { Nuke, NukeEvent } from './Nuke';
 export type {
-  FXSceneOptions,
-  CompositeLayer,
-  OnCreateFn,
-  OnRenderFn,
-} from './FXScene';
+  RTOptions,
+  PingPongPair,
+  NukeListener,
+  NukeEventType,
+} from './Nuke';
 
-export { RenderTarget } from './RenderTarget';
-export type { RenderTargetOptions } from './RenderTarget';
+export { NukePass, FULLSCREEN_VERT_SRC, UV_FROM_FRAG_COORD } from './NukePass';
+export type { RenderTarget, UniformValue } from './NukePass';
 
-export { AstroRenderer, WEBGL1, WEBGL2, SHADOWS_LOW, SHADOWS_MED, SHADOWS_HIGH } from './AstroRenderer.js';
-export type { WebGLVersion, ShadowQuality, AstroExtensions, Viewport, RendererOptions } from './AstroRenderer.js';
+export { BloomPass } from './passes/BloomPass';
+export type { BloomPassConfig } from './passes/BloomPass';
 
-export { AstroProgram } from './AstroProgram.js';
+export { DOFPass } from './passes/DOFPass';
+export type { DOFPassConfig } from './passes/DOFPass';
 
-export { AstroMesh } from './AstroMesh.js';
-export type { DrawMode } from './AstroMesh.js';
+// ── Nuke post-processing pipeline (xiaodi #32) ────────────────────────────────
+export { Nuke, NukeEvent } from './Nuke';
+export type { RTOptions, PingPongPair, NukeListener, NukeEventType } from './Nuke';
+
+export { NukePass, FULLSCREEN_VERT_SRC, UV_FROM_FRAG_COORD } from './NukePass';
+export type { RenderTarget, UniformValue } from './NukePass';
+
+export { BloomPass } from './passes/BloomPass';
+export type { BloomPassConfig } from './passes/BloomPass';
+
+export { DOFPass } from './passes/DOFPass';
+export type { DOFPassConfig } from './passes/DOFPass';
