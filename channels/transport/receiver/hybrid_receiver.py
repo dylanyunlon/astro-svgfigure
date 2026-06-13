@@ -1,4 +1,5 @@
 import os, sys, json, threading
+import threading
 from typing import Any, Optional, Generic, TypeVar
 
 _MT = TypeVar('_MT')
@@ -180,7 +181,4 @@ class AstroHybridReceiver(AstroEndpoint):
 import dataclasses as _dc
 import struct as _struct
 import base64 as _base64
-
-
-@_dc.dataclass
 

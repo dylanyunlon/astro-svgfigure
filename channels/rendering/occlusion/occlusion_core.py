@@ -1,3 +1,5 @@
+from __future__ import annotations
+from dataclasses import dataclass, field
 import os, sys, json, math
 from typing import Any, Optional
 
@@ -408,4 +410,3 @@ class AstroCellLightShaftOcclusion:
 
 
 
-@dataclass

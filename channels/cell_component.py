@@ -4,40 +4,40 @@ import os
 import struct as _struct
 import sys
 from dataclasses import dataclass, field
-from channels.rendering.shadow import *
-from channels.rendering.nanite import *
-from channels.rendering.passes import *
-from channels.rendering.species import *
-from channels.rendering.scene import *
-from channels.rendering.effects import *
-from channels.rendering.postprocess import *
-from channels.rendering.reflection import *
-from channels.rendering.lumen import *
-from channels.rendering.distancefield import *
-from channels.rendering.lighting import *
-from channels.rendering.reflection import *
-from channels.rendering.occlusion import *
-from channels.rendering.resources import *
-from channels.rendering.registry import *
-from channels.rendering.shading import *
-from channels.rendering.styleprobe import *
-from channels.rendering.translucency import *
-from channels.rendering.species import *
-from channels.rendering.postprocess import *
-from channels.rendering.compositor import *
-from channels.rendering.effects import *
-from channels.rendering.scene import *
-from channels.rendering.passes import *
-from channels.rendering.acceleration import *
-from channels.rendering.nanite import *
-from channels.rendering.lumen import *
-from channels.rendering.distancefield import *
-from channels.rendering.streaming import *
-from channels.rendering.lighting import *
-from channels.rendering.shadow import *
+# from channels.rendering.shadow import * — lazy loaded
+# from channels.rendering.nanite import * — lazy loaded
+# from channels.rendering.passes import * — lazy loaded
+# from channels.rendering.species import * — lazy loaded
+# from channels.rendering.scene import * — lazy loaded
+# from channels.rendering.effects import * — lazy loaded
+# from channels.rendering.postprocess import * — lazy loaded
+# from channels.rendering.reflection import * — lazy loaded
+# from channels.rendering.lumen import * — lazy loaded
+# from channels.rendering.distancefield import * — lazy loaded
+# from channels.rendering.lighting import * — lazy loaded
+# from channels.rendering.reflection import * — lazy loaded
+# from channels.rendering.occlusion import * — lazy loaded
+# from channels.rendering.resources import * — lazy loaded
+# from channels.rendering.registry import * — lazy loaded
+# from channels.rendering.shading import * — lazy loaded
+# from channels.rendering.styleprobe import * — lazy loaded
+# from channels.rendering.translucency import * — lazy loaded
+# from channels.rendering.species import * — lazy loaded
+# from channels.rendering.postprocess import * — lazy loaded
+# from channels.rendering.compositor import * — lazy loaded
+# from channels.rendering.effects import * — lazy loaded
+# from channels.rendering.scene import * — lazy loaded
+# from channels.rendering.passes import * — lazy loaded
+# from channels.rendering.acceleration import * — lazy loaded
+# from channels.rendering.nanite import * — lazy loaded
+# from channels.rendering.lumen import * — lazy loaded
+# from channels.rendering.distancefield import * — lazy loaded
+# from channels.rendering.streaming import * — lazy loaded
+# from channels.rendering.lighting import * — lazy loaded
+# from channels.rendering.shadow import * — lazy loaded
 
 # All rendering logic split into channels/rendering/
-from channels.rendering import *
+# rendering modules imported explicitly where needed
 
 # ═══════════════════════════════════════════════
 

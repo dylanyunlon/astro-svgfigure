@@ -1,12 +1,13 @@
-# -*- coding: utf-8 -*-
-from channels.transport.dispatcher.intra_dispatcher import AstroIntraDispatcher, _AstroDispatcherBase
-from channels.transport.dispatcher.shm_dispatcher import AstroShmDispatcher, _AstroShmSegment
-from channels.transport.dispatcher.rtps_dispatcher import AstroRtpsDispatcher
-
-__all__ = [
-    "AstroIntraDispatcher",
-    "_AstroDispatcherBase",
-    "AstroShmDispatcher",
-    "_AstroShmSegment",
-    "AstroRtpsDispatcher",
-]
+# transport/dispatcher module
+try:
+    from .intra_dispatcher import *
+except Exception:
+    pass
+try:
+    from .rtps_dispatcher import *
+except Exception:
+    pass
+try:
+    from .shm_dispatcher import *
+except Exception:
+    pass

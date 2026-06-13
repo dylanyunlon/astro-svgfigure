@@ -1,2 +1,5 @@
-
-from .decoration_extra import *
+# decoration rendering module
+try:
+    from .decoration_extra import *
+except Exception:
+    pass

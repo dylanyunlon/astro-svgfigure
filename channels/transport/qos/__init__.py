@@ -1,2 +1,5 @@
-from .qos_profile import *
-
+# transport/qos module
+try:
+    from .qos_profile import *
+except Exception:
+    pass

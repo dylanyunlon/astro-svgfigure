@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 import os, sys, json, math
 from typing import Any, Optional
 
@@ -90,10 +91,6 @@ class LumenSceneConfig:
 
 
 @dataclass
-
-
-
-@dataclass
 class LumenMeshCard:
     """
     Lightweight representation of a single Lumen mesh card.
@@ -160,10 +157,6 @@ _RADIOSITY_UPDATE_FACTOR        = 64
 
 
 @dataclass
-
-
-
-@dataclass
 class LumenCardUpdateContext:
     """
     Python port of FLumenCardUpdateContext.
@@ -197,10 +190,6 @@ class LumenCardUpdateContext:
 
     def update_atlas_size(self):
         return self.update_atlas_width, self.update_atlas_height
-
-
-@dataclass
-
 
 
 @dataclass
@@ -313,10 +302,6 @@ _SSBN_FOLIAGE_OCC_STRENGTH     = 0.7
 _SSBN_MAX_MULTIBOUNCE_ALBEDO   = 0.5
 _SSBN_SLOPE_TOLERANCE          = 0.5
 _SSBN_FOREGROUND_REJECT_FRACTION = 0.3
-
-
-@dataclass
-
 
 
 @dataclass
@@ -485,10 +470,6 @@ class LumenVisualizeMode:
     SCREEN_PROBE_FRAMES_ACCUM=23;RADIOSITY_FRAMES_ACCUM=24
 
 
-@dataclass
-
-
-
 def visualize_lumen_scene(surface_cache, scene_cards:list, cfg:VisualizeConfig) -> dict:
     """按模式输出调试数据。这不是最终画面，只是看透了管线的 X 光片。"""
     out={}
@@ -507,4 +488,3 @@ def visualize_lumen_scene(surface_cache, scene_cards:list, cfg:VisualizeConfig) 
     return out
 
 
-@dataclass

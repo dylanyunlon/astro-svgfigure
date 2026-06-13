@@ -1,3 +1,5 @@
+from __future__ import annotations
+from dataclasses import dataclass, field
 import os, sys, json, math
 from typing import Any, Optional
 
@@ -74,14 +76,3 @@ def _clamp_supersample(factor: int) -> int:
     MaxSupersampleCaptureFactor constants in ReflectionEnvironmentCapture.cpp."""
     return max(1, min(8, factor))
 
-
-@dataclass
-
-
-@_ptdc
-
-
-@dataclass
-
-
-@_ptdc

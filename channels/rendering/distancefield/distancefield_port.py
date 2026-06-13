@@ -154,7 +154,6 @@ def render_distance_field_ao(
 # "世上本没有路，走的人多了，也便成了管线。"
 # ============================================================
 
-from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional, List, Dict, Tuple, Any

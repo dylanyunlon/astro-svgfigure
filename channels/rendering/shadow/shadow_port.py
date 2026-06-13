@@ -1,3 +1,5 @@
+from __future__ import annotations
+from dataclasses import dataclass, field
 import os, sys, json, math
 from typing import Any, Optional
 
@@ -806,4 +808,3 @@ _NANITE_MAT_PARALLEL: bool = True
 _RT_PRIM_CACHE_MT:    bool = True
 
 
-@dataclass

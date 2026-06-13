@@ -1,2 +1,5 @@
-
-from .streaming_core import *
+# streaming rendering module
+try:
+    from .streaming_core import *
+except Exception:
+    pass

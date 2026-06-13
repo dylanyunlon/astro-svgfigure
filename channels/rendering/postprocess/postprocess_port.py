@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os, sys, json, math
 from typing import Any, Optional
 
@@ -446,7 +447,6 @@ def run_temporal_aa_pass(
 #   鲁迅式：贴花不是装饰，而是承认世界本身已不够干净。
 # =============================================================================
 
-from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntEnum, IntFlag, auto
 from typing import Optional

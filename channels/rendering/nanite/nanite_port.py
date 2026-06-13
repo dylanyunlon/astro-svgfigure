@@ -1,3 +1,5 @@
+from __future__ import annotations
+from dataclasses import dataclass, field
 import os, sys, json, math
 from typing import Any, Optional
 
@@ -161,10 +163,6 @@ class NaniteCullRasterConfig:
     fast_vis_buffer_clear: int = 1    # 0=off 1=pixel 2=tile 3=metadata
 
 
-@dataclass
-
-
-
 # ----------------------------------------------------------
 # § 2  Editor — 选择轮廓与 HitProxy
 # ----------------------------------------------------------
@@ -174,10 +172,6 @@ class NaniteCullRasterConfig:
 @dataclass
 class NaniteEditorConfig:
     draw_lists_async_updates: bool = True
-
-
-@dataclass
-
 
 
 # ----------------------------------------------------------
@@ -310,10 +304,6 @@ class NaniteRayTracingContext:
 # 鲁迅：材质是皮肤，几何是骨骼。
 # 骨骼可以共享，皮肤必须各自承担。
 
-@dataclass
-
-
-
 # ----------------------------------------------------------
 # § 4  Materials Scene Extension — 材质数据缓冲区
 # ----------------------------------------------------------
@@ -329,10 +319,6 @@ class NaniteMaterialsConfig:
     defrag_enabled: bool = True
     force_defrag: int = 0
     defrag_low_water_mark: float = 0.375
-
-
-@dataclass
-
 
 
 @dataclass
@@ -446,10 +432,6 @@ class NaniteMaterialsSceneExtension:
 # 鲁迅：有些东西不让你看，有些东西只让你看。
 # OwnerNoSee 和 OnlyOwnerSee，是渲染器里的阶级制度。
 
-@dataclass
-
-
-
 # ----------------------------------------------------------
 # § 5  Ownership Visibility Scene Extension
 # ----------------------------------------------------------
@@ -540,10 +522,6 @@ NANITE_TESSELLATION_TABLE_SIZE           = 15
 NANITE_TESSELLATION_TABLE_PO2_SIZE       = 16   # next power of two ≥ SIZE
 NANITE_TESSELLATION_TABLE_IMMEDIATE_SIZE = 3
 BARYCENTRIC_MAX                          = 0x8000  # 固定小数精度
-
-
-@dataclass
-
 
 
 @dataclass
@@ -678,10 +656,6 @@ class TessellationTable:
 # 鲁迅：把所有的复杂性压缩进一个数据类，
 # 然后告诉别人"这很简单"。
 
-@dataclass
-
-
-
 # ----------------------------------------------------------
 # § 7  统一入口：NaniteRenderContext
 # ----------------------------------------------------------
@@ -772,4 +746,3 @@ class NaniteRenderContext:
 # Port: Lumen ScreenProbe HWRT    (LumenScreenProbeHardwareRayTracing.cpp)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@dataclass

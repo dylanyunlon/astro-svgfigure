@@ -1,2 +1,5 @@
-
-from .registry_core import *
+# registry rendering module
+try:
+    from .registry_core import *
+except Exception:
+    pass

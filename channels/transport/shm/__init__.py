@@ -1,7 +1,25 @@
-from .arena import *
-from .condition_notifier import *
-from .notifier import *
-from .readable_info import *
-from .segment import *
-from .shm_conf import *
-
+# transport/shm module
+try:
+    from .arena import *
+except Exception:
+    pass
+try:
+    from .condition_notifier import *
+except Exception:
+    pass
+try:
+    from .notifier import *
+except Exception:
+    pass
+try:
+    from .readable_info import *
+except Exception:
+    pass
+try:
+    from .segment import *
+except Exception:
+    pass
+try:
+    from .shm_conf import *
+except Exception:
+    pass

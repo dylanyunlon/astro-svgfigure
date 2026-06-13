@@ -1,3 +1,5 @@
+from __future__ import annotations
+from dataclasses import dataclass, field
 import os, sys, json, threading
 from typing import Any, Optional, Generic, TypeVar
 
@@ -177,7 +179,4 @@ import logging
 import time as _time
 
 _chanmgr_log = logging.getLogger("astro.channel_manager")
-
-
-@dataclasses.dataclass
 

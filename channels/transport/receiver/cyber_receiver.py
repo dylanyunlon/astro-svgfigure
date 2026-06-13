@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 import os, sys, json, threading
 from typing import Any, Optional, Generic, TypeVar
 
@@ -247,7 +248,4 @@ class CyberRtpsReceiver(_CyberReceiverBase):
 import abc as _abc_comp
 import json as _json_comp
 import os as _os_comp
-
-
-@dataclasses.dataclass
 
