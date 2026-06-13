@@ -1,6 +1,26 @@
 import os, sys, json, math
 from typing import Any, Optional
 
+# ---------------------------------------------------------------------------
+# Module-level constants (mirrors AstroCellZLayerHeight, AstroCellMaxZLayers,
+# _ASTRO_BBOX_TOLERANCE, and the cell-registry channel path)
+# ---------------------------------------------------------------------------
+
+# FAstroCellBBox::HasChanged tolerance (world units)
+_ASTRO_BBOX_TOLERANCE: float = 0.1
+
+# Maximum number of z-layer buckets (AstroCellMaxZLayers)
+_ASTRO_CELL_MAX_Z_LAYERS: int = 32
+
+# Height of each z-layer bucket in world units (AstroCellZLayerHeight)
+_ASTRO_CELL_Z_LAYER_HEIGHT: float = 100.0
+
+# Path to the JSON channel that backs GAstroCellZLayerRegistry + GAstroCellProxyMap
+_CELL_REGISTRY_PATH: str = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "physics", "cell_registry.json"
+)
+
+
 def _dbg(tag, msg):
     if os.environ.get(f"ASTRO_{tag.replace('-','_')}_VERBOSE", "0") == "1":
         print(f"[{tag}] {msg}", file=sys.stderr)
