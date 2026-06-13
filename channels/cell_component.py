@@ -11546,3 +11546,745 @@ def lumen_frame_tick(
         filtered_probes      = probes,
         probe_rays           = probe_rays,
     )
+
+
+# =============================================================================
+# DistanceField AO + LightingPost + ObjectCulling + ObjectManagement + ScreenGrid
+# 移植自 UE5 Renderer-Private，鲁迅式注释 20 %
+# =============================================================================
+
+import math
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# 全局开关 —— 对应 CVar r.DistanceFieldAO / r.AOQuality 等
+# 每一个 CVar 背后都是一场争论：性能组要关，画面组要开。
+# ---------------------------------------------------------------------------
+G_DISTANCE_FIELD_AO: bool = True
+G_DISTANCE_FIELD_AO_QUALITY: int = 2          # 0=off 1=medium 2=high
+G_AO_OBJECT_DISTANCE_FIELD: bool = True
+G_AO_GLOBAL_DISTANCE_FIELD: bool = True
+G_AO_GLOBAL_DF_START_DISTANCE: float = 1000.0
+G_AO_MAX_VIEW_DISTANCE: float = 20000.0
+G_AO_STEP_EXPONENT_SCALE: float = 0.5
+G_AO_DOWNSAMPLE_FACTOR: int = 2
+G_CONE_TRACE_DOWNSAMPLE_FACTOR: int = 4
+
+# LightingPost
+G_AO_USE_HISTORY: bool = True
+G_AO_CLEAR_HISTORY: bool = False
+G_AO_HISTORY_STABILITY_PASS: bool = True
+G_AO_HISTORY_WEIGHT: float = 0.85
+G_AO_HISTORY_DISTANCE_THRESHOLD: float = 30.0
+G_AO_VIEW_FADE_DISTANCE_SCALE: float = 0.70
+
+# ObjectCulling
+G_AO_SCATTER_TILE_CULLING: bool = True
+G_AVERAGE_DF_OBJECTS_PER_CULL_TILE: int = 512
+
+# ObjectManagement
+G_MESH_DF_MAX_OBJECT_BOUNDING_RADIUS: float = 100_000.0
+G_DF_PARALLEL_UPDATE: bool = False
+G_MESH_SDF_SURFACE_BIAS_EXPAND: float = 0.25
+
+# ScreenGrid
+G_AO_USE_JITTER: bool = True
+G_DF_AO_TRAVERSE_MIPS: bool = True
+NUM_CONE_SAMPLE_DIRECTIONS: int = 9
+CONE_TRACE_GLOBAL_DF_TILE_SIZE: int = 8
+
+
+def use_distance_field_ao() -> bool:
+    """r.DistanceFieldAO && r.AOQuality >= 1。两个条件缺一不可，像人一样。"""
+    return G_DISTANCE_FIELD_AO and G_DISTANCE_FIELD_AO_QUALITY >= 1
+
+
+def use_ao_object_distance_field() -> bool:
+    return G_AO_OBJECT_DISTANCE_FIELD and G_DISTANCE_FIELD_AO_QUALITY >= 2
+
+
+def get_max_ao_view_distance() -> float:
+    return G_AO_MAX_VIEW_DISTANCE
+
+
+def use_ao_history_stability_pass() -> bool:
+    return G_AO_HISTORY_STABILITY_PASS and G_DISTANCE_FIELD_AO_QUALITY >= 2
+
+
+# ---------------------------------------------------------------------------
+# 数据结构
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DFAOParameters:
+    """
+    对应 FDistanceFieldAOParameters。
+    距离场 AO 的两段衰减区间：近处用 Object SDF，远处用 Global SDF。
+    如同人生：年轻时斤斤计较细节，年老时只看大略。
+    """
+    object_max_occlusion_distance: float = 600.0
+    global_max_occlusion_distance: float = 0.0
+    contrast: float = 1.0
+
+    @classmethod
+    def from_sky_light(cls, occlusion_max_distance: float, contrast: float) -> "DFAOParameters":
+        contrast = max(0.01, min(2.0, contrast))
+        occlusion_max_distance = max(2.0, min(3000.0, occlusion_max_distance))
+        if G_AO_GLOBAL_DISTANCE_FIELD:
+            obj_dist = min(occlusion_max_distance, G_AO_GLOBAL_DF_START_DISTANCE)
+            glo_dist = occlusion_max_distance if occlusion_max_distance >= G_AO_GLOBAL_DF_START_DISTANCE else 0.0
+        else:
+            obj_dist = occlusion_max_distance
+            glo_dist = 0.0
+        return cls(object_max_occlusion_distance=obj_dist,
+                   global_max_occlusion_distance=glo_dist,
+                   contrast=contrast)
+
+
+@dataclass
+class IntPoint:
+    x: int = 0
+    y: int = 0
+
+    def divide_and_round_down(self, divisor: int) -> "IntPoint":
+        return IntPoint(self.x // divisor, self.y // divisor)
+
+
+@dataclass
+class DFObjectBounds:
+    """场景中一个 Mesh SDF 对象的包围球：中心 + 半径。"""
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    radius: float = 0.0
+    object_index: int = 0
+
+
+@dataclass
+class CulledObjectBuffer:
+    """FCulledObjectBuffers 简化版 —— culling 之后存活的对象列表。"""
+    object_indices: List[int] = field(default_factory=list)
+    indirect_arg_count: int = 0   # 等价于 RWObjectIndirectArguments[0]
+
+
+@dataclass
+class TileIntersectionData:
+    """每个屏幕 tile 与若干 SDF 对象的交叉列表。"""
+    tile_x: int = 0
+    tile_y: int = 0
+    object_indices: List[int] = field(default_factory=list)
+
+
+@dataclass
+class BentNormalAO:
+    """
+    遮蔽后的弯曲法线 —— 方向表示最不遮蔽的方向，长度表示可见度。
+    说白了：被压扁了多少，往哪个方向还能透口气。
+    """
+    bent_normal: Tuple[float, float, float] = (0.0, 1.0, 0.0)
+    occlusion: float = 0.0   # 0 = 完全不遮蔽，1 = 完全遮蔽
+
+
+@dataclass
+class AOHistoryState:
+    """对应 FTemporalAAHistory 在 DFAO 场景中的子集。"""
+    bent_normal_history: List[BentNormalAO] = field(default_factory=list)
+    valid: bool = False
+    frame_index: int = 0
+
+
+@dataclass
+class ScreenGridAOBuffer:
+    """屏幕格 cone-trace 的中间结果。对应 FAOScreenGridParameters。"""
+    width: int = 0
+    height: int = 0
+    # 每像素 NUM_CONE_SAMPLE_DIRECTIONS 个 float（遮蔽量）
+    cone_depths: List[float] = field(default_factory=list)
+
+
+@dataclass
+class DFSceneData:
+    """
+    FDistanceFieldSceneData 简化版。
+    整个场景的 SDF 资产目录：对象包围盒、Atlas 纹理尺寸。
+    没有这张清单，渲染器就是瞎子。
+    """
+    objects: List[DFObjectBounds] = field(default_factory=list)
+    brick_atlas_dims: Tuple[int, int, int] = (64, 64, 64)
+    num_objects_in_buffer: int = 0
+
+    def add_object(self, obj: DFObjectBounds) -> None:
+        if obj.radius > G_MESH_DF_MAX_OBJECT_BOUNDING_RADIUS:
+            # 太大的对象被排除 —— 排除不代表不存在，只是不纳入计算。
+            return
+        self.objects.append(obj)
+        self.num_objects_in_buffer += 1
+
+    def remove_object(self, object_index: int) -> None:
+        self.objects = [o for o in self.objects if o.object_index != object_index]
+        self.num_objects_in_buffer = len(self.objects)
+
+
+# ---------------------------------------------------------------------------
+# AmbientOcclusion — 核心参数 / 采样方向
+# ---------------------------------------------------------------------------
+
+# 对应 SpacedVectors9：半球上均匀分布的 9 个方向
+_SPACED_VECTORS_9: List[Tuple[float, float, float]] = [
+    (-0.1840, 0.5545, 0.8117),
+    ( 0.5404, 0.5404, 0.6455),
+    ( 0.8117, 0.3124, 0.4944),
+    ( 0.4944, 0.0000, 0.8693),
+    (-0.0000, 0.0000, 1.0000),
+    (-0.4944, 0.0000, 0.8693),
+    (-0.8117, 0.3124, 0.4944),
+    (-0.5404, 0.5404, 0.6455),
+    ( 0.1840, 0.5545, 0.8117),
+]
+
+
+def get_spaced_vectors(frame_number: int) -> List[Tuple[float, float, float]]:
+    """
+    按帧号旋转采样方向集合，实现时域超采样。
+    不同的帧看到不同的采样，合起来才是完整的真相。
+    """
+    angle = (frame_number % 4) * (math.pi / 4.0)
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    result = []
+    for vx, vy, vz in _SPACED_VECTORS_9:
+        rx = vx * cos_a - vy * sin_a
+        ry = vx * sin_a + vy * cos_a
+        result.append((rx, ry, vz))
+    return result
+
+
+def compute_bent_normal_normalize_factor(sample_dirs: List[Tuple[float, float, float]]) -> float:
+    """
+    无遮蔽时所有 cone 方向的合向量长度的倒数 —— 归一化用。
+    归一化之后，才能与别的数据相比较；不归一化的数字，像没有单位的重量。
+    """
+    ux = sum(d[0] for d in sample_dirs) / len(sample_dirs)
+    uy = sum(d[1] for d in sample_dirs) / len(sample_dirs)
+    uz = sum(d[2] for d in sample_dirs) / len(sample_dirs)
+    mag = math.sqrt(ux*ux + uy*uy + uz*uz)
+    return 1.0 / mag if mag > 1e-6 else 0.0
+
+
+def get_buffer_size_for_ao(view_width: int, view_height: int) -> IntPoint:
+    """对应 GetBufferSizeForAO：按 G_AO_DOWNSAMPLE_FACTOR 降采样。"""
+    return IntPoint(view_width // G_AO_DOWNSAMPLE_FACTOR,
+                    view_height // G_AO_DOWNSAMPLE_FACTOR)
+
+
+def get_buffer_size_for_cone_tracing(view_width: int, view_height: int) -> IntPoint:
+    ao = get_buffer_size_for_ao(view_width, view_height)
+    w = max(ao.x // G_CONE_TRACE_DOWNSAMPLE_FACTOR, 1)
+    h = max(ao.y // G_CONE_TRACE_DOWNSAMPLE_FACTOR, 1)
+    return IntPoint(w, h)
+
+
+# ---------------------------------------------------------------------------
+# ObjectManagement — 场景 SDF 对象的增删改
+# ---------------------------------------------------------------------------
+
+def update_distance_field_object_buffers(
+    scene_data: DFSceneData,
+    objects_to_add: List[DFObjectBounds],
+    objects_to_remove: List[int],
+    surface_bias_expand: float = G_MESH_SDF_SURFACE_BIAS_EXPAND,
+    parallel: bool = G_DF_PARALLEL_UPDATE,
+) -> None:
+    """
+    对应 UpdateDistanceFieldObjectBuffers。
+    先删再加，顺序不能错：若先加再删，可能误删新加的对象。
+    世界上有些事情也讲究顺序，颠倒了就是另一个故事。
+    """
+    for idx in objects_to_remove:
+        scene_data.remove_object(idx)
+
+    # 可并行（G_DF_PARALLEL_UPDATE），此处简化为串行
+    for obj in objects_to_add:
+        # 表面偏移：膨胀一个 voxel 的 surface_bias_expand 比例
+        expanded_radius = obj.radius * (1.0 + surface_bias_expand)
+        expanded = DFObjectBounds(
+            center=obj.center,
+            radius=expanded_radius,
+            object_index=obj.object_index,
+        )
+        scene_data.add_object(expanded)
+
+
+def setup_object_buffer_parameters(scene_data: DFSceneData) -> dict:
+    """
+    对应 DistanceField::SetupObjectBufferParameters。
+    返回一个参数字典，模拟 GPU SRV 绑定。
+    """
+    return {
+        "num_scene_objects": scene_data.num_objects_in_buffer,
+        "scene_objects": scene_data.objects,
+    }
+
+
+def setup_atlas_parameters(scene_data: DFSceneData) -> dict:
+    """
+    对应 DistanceField::SetupAtlasParameters。
+    Atlas 是所有 SDF brick 拼在一起的大纹理；这里只记录尺寸。
+    """
+    bx, by, bz = scene_data.brick_atlas_dims
+    return {
+        "brick_atlas_dims": (bx, by, bz),
+        "brick_atlas_texel_size": (1.0/bx, 1.0/by, 1.0/bz),
+    }
+
+
+# ---------------------------------------------------------------------------
+# ObjectCulling — 视锥 + 距离剔除
+# ---------------------------------------------------------------------------
+
+def _sphere_inside_frustum(
+    center: Tuple[float, float, float],
+    radius: float,
+    frustum_planes: List[Tuple[float, float, float, float]],   # (nx,ny,nz,d)
+) -> bool:
+    """
+    对应 GPU 端 CullObjectsForViewCS 的核心判断。
+    六个平面，一个都不能放过；像检查一个人，每个方面都要审视。
+    """
+    cx, cy, cz = center
+    for nx, ny, nz, d in frustum_planes:
+        dist = nx*cx + ny*cy + nz*cz + d
+        if dist < -radius:
+            return False
+    return True
+
+
+def cull_objects_to_view(
+    scene_data: DFSceneData,
+    frustum_planes: List[Tuple[float, float, float, float]],
+    ao_params: DFAOParameters,
+    view_origin: Tuple[float, float, float],
+) -> CulledObjectBuffer:
+    """
+    对应 CullObjectsToView。
+    先用视锥剔除，再按 AO 最大距离剔除。两重关卡，过了才算数。
+    """
+    buf = CulledObjectBuffer()
+    ox, oy, oz = view_origin
+    for obj in scene_data.objects:
+        cx, cy, cz = obj.center
+        dist_sq = (cx-ox)**2 + (cy-oy)**2 + (cz-oz)**2
+        max_dist = ao_params.object_max_occlusion_distance + obj.radius
+        if dist_sq > max_dist * max_dist:
+            continue
+        if dist_sq > G_AO_MAX_VIEW_DISTANCE**2:
+            continue
+        if not _sphere_inside_frustum(obj.center, obj.radius, frustum_planes):
+            continue
+        buf.object_indices.append(obj.object_index)
+    buf.indirect_arg_count = len(buf.object_indices)
+    return buf
+
+
+def build_tile_cones(
+    view_width: int,
+    view_height: int,
+    tile_size_x: int = 16,
+    tile_size_y: int = 16,
+) -> List[dict]:
+    """
+    对应 FBuildTileConesCS。
+    把屏幕分成 tile，每个 tile 计算一个包围锥（轴 + 半角余弦）。
+    锥越紧，后续剔除越激进；锥越松，剔除越保守。
+    """
+    ao_size = get_buffer_size_for_ao(view_width, view_height)
+    tiles_x = max(1, (ao_size.x + tile_size_x - 1) // tile_size_x)
+    tiles_y = max(1, (ao_size.y + tile_size_y - 1) // tile_size_y)
+    tiles = []
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            # 简化：tile 中心方向 = (0,0,1)，半角余弦 = 0.5
+            tiles.append({
+                "tile_x": tx, "tile_y": ty,
+                "cone_axis": (0.0, 0.0, 1.0),
+                "cone_cos": 0.5,
+                "depth_min": 0.0, "depth_max": G_AO_MAX_VIEW_DISTANCE,
+            })
+    return tiles
+
+
+def scatter_tile_culling(
+    culled_buf: CulledObjectBuffer,
+    tiles: List[dict],
+    scene_data: DFSceneData,
+) -> List[TileIntersectionData]:
+    """
+    对应 FObjectCullVS / FObjectCullPS —— 光栅化散射剔除。
+    用球体的包围盒覆盖哪些 tile，就把该对象写入哪些 tile 的列表。
+    规则简单，但执行一遍要遍历 N×M；复杂性从不消失，只是转移。
+    """
+    obj_map = {o.object_index: o for o in scene_data.objects}
+    tile_data = [
+        TileIntersectionData(tile_x=t["tile_x"], tile_y=t["tile_y"])
+        for t in tiles
+    ]
+    num_tiles_x = max((t["tile_x"] for t in tiles), default=0) + 1
+
+    for obj_idx in culled_buf.object_indices:
+        obj = obj_map.get(obj_idx)
+        if obj is None:
+            continue
+        # 简化：对象投影到所有 tile（实际应做包围矩形交集）
+        for td in tile_data:
+            td.object_indices.append(obj_idx)
+
+    return tile_data
+
+
+# ---------------------------------------------------------------------------
+# ScreenGrid cone-trace AO
+# ---------------------------------------------------------------------------
+
+_JITTER_OFFSETS: List[Tuple[float, float]] = [
+    (0.25, 0.00),
+    (0.75, 0.25),
+    (0.50, 0.75),
+    (0.00, 0.50),
+]
+
+
+def get_jitter_offset(frame_index: int, use_history: bool) -> Tuple[float, float]:
+    """
+    对应 GetJitterOffset。4 帧循环抖动，配合时域累积使用。
+    抖动是一种诚实：承认单帧的采样不够，借历史来补足。
+    """
+    if G_AO_USE_JITTER and use_history:
+        jx, jy = _JITTER_OFFSETS[frame_index % 4]
+        return jx * G_CONE_TRACE_DOWNSAMPLE_FACTOR, jy * G_CONE_TRACE_DOWNSAMPLE_FACTOR
+    return 0.0, 0.0
+
+
+def _sample_distance_field(
+    obj: DFObjectBounds,
+    ray_origin: Tuple[float, float, float],
+    ray_dir: Tuple[float, float, float],
+    t: float,
+) -> float:
+    """
+    SDF 球体采样的极简近似。
+    真正的实现要查 Atlas brick，这里用解析球替代。
+    """
+    px = ray_origin[0] + ray_dir[0] * t - obj.center[0]
+    py = ray_origin[1] + ray_dir[1] * t - obj.center[1]
+    pz = ray_origin[2] + ray_dir[2] * t - obj.center[2]
+    return math.sqrt(px*px + py*py + pz*pz) - obj.radius
+
+
+def cone_trace_object_occlusion(
+    ray_origin: Tuple[float, float, float],
+    cone_dir: Tuple[float, float, float],
+    tan_half_angle: float,
+    max_distance: float,
+    objects: List[DFObjectBounds],
+    traverse_mips: bool = True,
+) -> float:
+    """
+    对应 FConeTraceScreenGridObjectOcclusionCS 的单条 cone trace。
+    沿锥方向步进，累积遮蔽量。步长按指数增长（GAOStepExponentScale）。
+    快到终点时步子已经很大，精度换速度；起点附近小步谨慎前行。
+    """
+    step_scale = G_AO_STEP_EXPONENT_SCALE
+    t = 0.5  # 起始偏移避免自遮蔽
+    occlusion = 0.0
+    step = 0.5
+
+    while t < max_distance and occlusion < 1.0:
+        min_sdf = max_distance
+        for obj in objects:
+            sdf_val = _sample_distance_field(obj, ray_origin, cone_dir, t)
+            min_sdf = min(min_sdf, sdf_val)
+
+        cone_radius = t * tan_half_angle
+        if cone_radius > 1e-6:
+            occ_contribution = max(0.0, 1.0 - min_sdf / cone_radius)
+            occlusion = max(occlusion, occ_contribution)
+
+        step = max(step * (1.0 + step_scale), min_sdf * 0.5)
+        if traverse_mips:
+            step = max(step, t * 0.01)
+        t += step
+
+    return min(occlusion, 1.0)
+
+
+def compute_screen_grid_ao(
+    pixel_positions: List[Tuple[float, float, float]],  # 世界空间像素位置
+    pixel_normals: List[Tuple[float, float, float]],
+    objects: List[DFObjectBounds],
+    ao_params: DFAOParameters,
+    frame_number: int = 0,
+    use_history: bool = True,
+) -> List[BentNormalAO]:
+    """
+    对应 FConeTraceScreenGridObjectOcclusionCS 在一帧中的整体调度。
+    每个像素发射 9 条 cone，统计遮蔽；弯曲法线是遮蔽方向的加权平均。
+    九条 cone，九个证据，最终合议出一个结论。
+    """
+    sample_dirs = get_spaced_vectors(frame_number)
+    normalize_factor = compute_bent_normal_normalize_factor(sample_dirs)
+    tan_half_angle = math.tan(math.radians(16.0))   # ~AOConeHalfAngle
+    jx, jy = get_jitter_offset(frame_number, use_history)
+    results: List[BentNormalAO] = []
+
+    for pos, normal in zip(pixel_positions, pixel_normals):
+        # 将采样方向转到像素法线半球
+        px, py, pz = pos
+        nx, ny, nz = normal
+        occ_sum = 0.0
+        bent_x, bent_y, bent_z = 0.0, 0.0, 0.0
+
+        for dx, dy, dz in sample_dirs:
+            # 简化：不做切线空间旋转，直接以世界空间方向 trace
+            cone_dir = (dx, dy, dz)
+            occ = cone_trace_object_occlusion(
+                ray_origin=(px + nx * 0.5, py + ny * 0.5, pz + nz * 0.5),
+                cone_dir=cone_dir,
+                tan_half_angle=tan_half_angle,
+                max_distance=ao_params.object_max_occlusion_distance,
+                objects=objects,
+                traverse_mips=G_DF_AO_TRAVERSE_MIPS,
+            )
+            visibility = 1.0 - occ
+            bent_x += dx * visibility
+            bent_y += dy * visibility
+            bent_z += dz * visibility
+            occ_sum += occ
+
+        avg_occ = occ_sum / NUM_CONE_SAMPLE_DIRECTIONS
+        bx = bent_x * normalize_factor
+        by = bent_y * normalize_factor
+        bz = bent_z * normalize_factor
+        mag = math.sqrt(bx*bx + by*by + bz*bz)
+        if mag > 1e-6:
+            bx /= mag; by /= mag; bz /= mag
+
+        results.append(BentNormalAO(
+            bent_normal=(bx, by, bz),
+            occlusion=min(avg_occ, 1.0),
+        ))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# LightingPost — 历史积累、上采样
+# ---------------------------------------------------------------------------
+
+def compute_distance_fade(
+    depth: float,
+    fade_distance_scale: float = G_AO_VIEW_FADE_DISTANCE_SCALE,
+) -> float:
+    """
+    对应 DistanceFadeScale：AO 在远距离线性淡出。
+    远处的遮蔽本来就不可靠，淡出是对不确定性的诚实。
+    """
+    max_dist = get_max_ao_view_distance()
+    fade_start = max_dist * fade_distance_scale
+    if depth >= max_dist:
+        return 0.0
+    if depth <= fade_start:
+        return 1.0
+    return 1.0 - (depth - fade_start) / (max_dist - fade_start)
+
+
+def update_history_depth_rejection(
+    current: List[BentNormalAO],
+    history: AOHistoryState,
+    current_depths: List[float],
+    history_depths: List[float],
+) -> List[BentNormalAO]:
+    """
+    对应 UpdateHistoryDepthRejectionPS。
+    深度差异大的像素拒绝历史（防止 ghost）；差异小的融合历史（减少噪点）。
+    历史是有条件接受的，不是无条件信任的。
+    """
+    if not history.valid or G_AO_CLEAR_HISTORY:
+        return current
+
+    blended: List[BentNormalAO] = []
+    for i, (cur, hist) in enumerate(zip(current, history.bent_normal_history)):
+        cd = current_depths[i] if i < len(current_depths) else 0.0
+        hd = history_depths[i] if i < len(history_depths) else 0.0
+        depth_diff = abs(cd - hd)
+        if depth_diff > G_AO_HISTORY_DISTANCE_THRESHOLD:
+            blended.append(cur)
+        else:
+            w = G_AO_HISTORY_WEIGHT
+            bx = cur.bent_normal[0] * (1-w) + hist.bent_normal[0] * w
+            by = cur.bent_normal[1] * (1-w) + hist.bent_normal[1] * w
+            bz = cur.bent_normal[2] * (1-w) + hist.bent_normal[2] * w
+            occ = cur.occlusion * (1-w) + hist.occlusion * w
+            mag = math.sqrt(bx*bx + by*by + bz*bz)
+            if mag > 1e-6:
+                bx /= mag; by /= mag; bz /= mag
+            blended.append(BentNormalAO(bent_normal=(bx, by, bz), occlusion=occ))
+    return blended
+
+
+def filter_history_stability(
+    ao_buffer: List[BentNormalAO],
+    width: int,
+    height: int,
+) -> List[BentNormalAO]:
+    """
+    对应 FilterHistoryPS。在 AO 缓冲上做一次空间滤波，补洞、稳定。
+    补洞是为了让结果看起来更完整；完整不等于正确，但看起来好一些。
+    """
+    if not use_ao_history_stability_pass():
+        return ao_buffer
+    filtered = list(ao_buffer)
+    for i in range(len(filtered)):
+        row, col = divmod(i, max(width, 1))
+        neighbors = []
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                nr, nc = row + dr, col + dc
+                if 0 <= nr < height and 0 <= nc < width:
+                    neighbors.append(ao_buffer[nr * width + nc])
+        if neighbors:
+            avg_occ = sum(n.occlusion for n in neighbors) / len(neighbors)
+            bx = sum(n.bent_normal[0] for n in neighbors) / len(neighbors)
+            by = sum(n.bent_normal[1] for n in neighbors) / len(neighbors)
+            bz = sum(n.bent_normal[2] for n in neighbors) / len(neighbors)
+            mag = math.sqrt(bx*bx + by*by + bz*bz)
+            if mag > 1e-6:
+                bx /= mag; by /= mag; bz /= mag
+            filtered[i] = BentNormalAO(bent_normal=(bx, by, bz), occlusion=avg_occ)
+    return filtered
+
+
+def geometry_aware_upsample(
+    ao_low: List[BentNormalAO],
+    ao_low_width: int,
+    ao_low_height: int,
+    full_width: int,
+    full_height: int,
+    full_depths: List[float],
+    ao_low_depths: List[float],
+) -> List[BentNormalAO]:
+    """
+    对应 FGeometryAwareUpsamplePS。
+    将低分辨率 AO 上采样回全分辨率；深度权重避免边缘模糊。
+    上采样永远是在猜测：猜得有依据，猜错了也有借口。
+    """
+    result: List[BentNormalAO] = []
+    for fy in range(full_height):
+        for fx in range(full_width):
+            lx = min(fx * ao_low_width // max(full_width, 1), ao_low_width - 1)
+            ly = min(fy * ao_low_height // max(full_height, 1), ao_low_height - 1)
+            low_idx = ly * ao_low_width + lx
+            full_idx = fy * full_width + fx
+
+            fd = full_depths[full_idx] if full_idx < len(full_depths) else 0.0
+            ld = ao_low_depths[low_idx] if low_idx < len(ao_low_depths) else 0.0
+            depth_weight = 1.0 / (1.0 + abs(fd - ld) * 0.1)
+
+            if low_idx < len(ao_low):
+                src = ao_low[low_idx]
+                fade = compute_distance_fade(fd)
+                final_occ = src.occlusion * depth_weight * fade
+                result.append(BentNormalAO(
+                    bent_normal=src.bent_normal,
+                    occlusion=min(final_occ, 1.0),
+                ))
+            else:
+                result.append(BentNormalAO())
+    return result
+
+
+def update_ao_history(
+    history: AOHistoryState,
+    new_ao: List[BentNormalAO],
+    frame_index: int,
+) -> AOHistoryState:
+    """将当前帧 AO 写入历史，供下一帧使用。记录，为了下次少走弯路。"""
+    if not G_AO_USE_HISTORY:
+        return AOHistoryState(valid=False)
+    return AOHistoryState(
+        bent_normal_history=list(new_ao),
+        valid=True,
+        frame_index=frame_index,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 顶层接口：全帧 Distance Field AO pass
+# ---------------------------------------------------------------------------
+
+def render_distance_field_ao(
+    scene_data: DFSceneData,
+    pixel_positions: List[Tuple[float, float, float]],
+    pixel_normals: List[Tuple[float, float, float]],
+    pixel_depths: List[float],
+    view_width: int,
+    view_height: int,
+    frustum_planes: List[Tuple[float, float, float, float]],
+    view_origin: Tuple[float, float, float],
+    ao_params: DFAOParameters,
+    history: Optional[AOHistoryState] = None,
+    frame_index: int = 0,
+) -> Tuple[List[BentNormalAO], AOHistoryState]:
+    """
+    完整的 Distance Field AO 帧调度，对应 UE5 RenderDistanceFieldAO。
+
+    流程：ObjectCulling → TileCulling → ScreenGridConeTrace → LightingPost。
+    每一步都是上一步的筛选；最终到达屏幕的光，是经过了很多关卡的光。
+    不经审查的光，称为噪点。
+    """
+    if not use_distance_field_ao():
+        empty = [BentNormalAO() for _ in pixel_positions]
+        return empty, AOHistoryState()
+
+    # 1. 对象剔除
+    culled = cull_objects_to_view(scene_data, frustum_planes, ao_params, view_origin)
+
+    # 2. Tile cones
+    tiles = build_tile_cones(view_width, view_height)
+
+    # 3. Tile-object 交叉（scatter culling）
+    tile_intersections = scatter_tile_culling(culled, tiles, scene_data)
+
+    # 4. 收集存活的 SDF 对象
+    surviving_indices = set(culled.object_indices)
+    surviving_objects = [o for o in scene_data.objects if o.object_index in surviving_indices]
+
+    # 5. Screen-grid cone trace（低分辨率）
+    ao_size = get_buffer_size_for_ao(view_width, view_height)
+    # 为简化，假设 pixel_positions/normals 已是低分辨率
+    ao_low = compute_screen_grid_ao(
+        pixel_positions=pixel_positions,
+        pixel_normals=pixel_normals,
+        objects=surviving_objects,
+        ao_params=ao_params,
+        frame_number=frame_index,
+        use_history=(history is not None and history.valid),
+    )
+
+    # 6. 历史融合（depth rejection）
+    hist_depths = ([b.occlusion for b in history.bent_normal_history]
+                   if history and history.valid else [])
+    ao_blended = update_history_depth_rejection(
+        current=ao_low,
+        history=history or AOHistoryState(),
+        current_depths=pixel_depths,
+        history_depths=hist_depths,
+    )
+
+    # 7. 空间稳定滤波
+    ao_filtered = filter_history_stability(ao_blended, ao_size.x, ao_size.y)
+
+    # 8. 上采样到全分辨率（简化：跳过，直接返回低分辨率结果）
+    # geometry_aware_upsample(...) 可在此调用
+
+    # 9. 更新历史
+    new_history = update_ao_history(ao_filtered, ao_filtered, frame_index)
+
+    return ao_filtered, new_history
