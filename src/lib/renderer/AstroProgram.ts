@@ -10,7 +10,8 @@
  * AT bundle: uniformMatrix 调用 10 次, gl.createProgram 3 次 → 我们精确对齐。
  */
 
-import { AstroRenderer } from './AstroRenderer.js';
+import { AstroRenderer, WEBGL2 } from './AstroRenderer.js';
+import type { UniformBuffer } from './UniformBuffer.js';
 
 // ── AstroProgram ──────────────────────────────────────────────────────────────
 
@@ -163,6 +164,54 @@ export class AstroProgram {
     if (loc >= 0) {
       this.renderer.context.vertexAttribPointer(loc, size, type, normalized, stride, offset);
     }
+    return this;
+  }
+
+  // ── UBO binding (WebGL2) ─────────────────────────────────────────────────────
+
+  /**
+   * Bind a UniformBuffer to this program's named uniform block.
+   *
+   * WebGL2: calls gl.uniformBlockBinding so the block index maps to the UBO's
+   * binding point — after this, gl.bindBufferBase on that binding point is all
+   * that's needed each frame.
+   *
+   * WebGL1 fallback: calls ubo.fallbackBind(this) to push each field as an
+   * individual uniform call via the existing setter methods.
+   *
+   * Usage:
+   *   program.use();
+   *   program.bindUniformBlock(viewUBO);          // blockName from layout
+   *   program.bindUniformBlock(cellUBO, 'Cell');  // override blockName
+   */
+  bindUniformBlock(ubo: UniformBuffer, blockName?: string): this {
+    const name = blockName ?? ubo.layout.blockName;
+
+    if (this.renderer.version !== WEBGL2) {
+      // WebGL1 降级 — push all fields as regular uniforms
+      ubo.fallbackBind(this);
+      return this;
+    }
+
+    const gl = this.renderer.context as WebGL2RenderingContext;
+
+    // Cache the block index lookup (keyed by blockName, same as uniform locations)
+    const cacheKey = `__ubo_${name}`;
+    if (!this._uniformCache.has(cacheKey)) {
+      const blockIndex = gl.getUniformBlockIndex(this.program, name);
+      // Store the block index as a sentinel value (-1 = INVALID_INDEX)
+      // We piggy-back on _uniformCache with a prefixed key so no extra Map is needed.
+      this._uniformCache.set(cacheKey, blockIndex === gl.INVALID_INDEX ? null : (blockIndex as unknown as WebGLUniformLocation));
+    }
+
+    const cached = this._uniformCache.get(cacheKey);
+    if (cached === null || cached === undefined) return this; // block not found in shader
+
+    const blockIndex = cached as unknown as number;
+    gl.uniformBlockBinding(this.program, blockIndex, ubo.bindingPoint);
+    // Ensure the buffer is bound to its binding point
+    ubo.bind();
+
     return this;
   }
 
