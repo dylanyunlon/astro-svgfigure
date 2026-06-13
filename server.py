@@ -44,6 +44,58 @@ from backend.pipeline.svg_validator import validate_svg as validate_svg_func
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
+
+# ── Cell SSE pub/sub — DataNotifier → browser ────────────────────────────────
+# One asyncio.Queue per connected SSE client.  When DataNotifier fires a
+# callback we put the event onto every live queue so every browser tab gets it.
+_cell_event_queues: list[asyncio.Queue] = []
+_cell_event_queues_lock = threading.Lock()
+
+
+def _cell_broadcast(cell_id: str, params: dict) -> None:
+    """Thread-safe push: called from DataNotifier callback (sync thread)."""
+    payload = {"cell_id": cell_id, "params": params}
+    with _cell_event_queues_lock:
+        for q in _cell_event_queues:
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass  # slow client — drop rather than block
+
+
+def _register_cell_sse_notifier() -> None:
+    """
+    Register a DataNotifier callback for every cell channel so that any
+    pipeline write to channels/cell/{id}/params.json propagates to the SSE
+    stream.  Called once at startup.
+    """
+    try:
+        from channels.data.notifier import DataNotifier, Notifier
+
+        notifier = DataNotifier.instance()
+        cell_ids = [
+            "add_norm1", "add_norm2", "ffn",
+            "input_embed", "output", "pos_encode", "self_attn",
+        ]
+
+        for cell_id in cell_ids:
+            # We capture cell_id by default argument to avoid closure-over-loop-var
+            def _make_callback(cid: str):
+                def _cb():
+                    params_path = BASE_DIR / "channels" / "cell" / cid / "params.json"
+                    try:
+                        params = json.loads(params_path.read_text())
+                    except Exception:
+                        params = {}
+                    _cell_broadcast(cid, params)
+                return _cb
+
+            channel_path = f"cell/{cell_id}/params.json"
+            notifier.add_notifier(channel_path, Notifier(_make_callback(cell_id)))
+
+        logger.info("[cell-sse] DataNotifier callbacks registered for %d cells", len(cell_ids))
+    except Exception as exc:
+        logger.warning("[cell-sse] Could not register DataNotifier callbacks: %s", exc)
 WEB_DIR = BASE_DIR / "web"
 OUTPUTS_DIR = BASE_DIR / "outputs"
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -107,7 +159,17 @@ class RunRequest(BaseModel):
     reference_image_path: Optional[str] = None
 
 
-app = FastAPI()
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    """Register DataNotifier callbacks on startup."""
+    _register_cell_sse_notifier()
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
 
 # ── CORS (allow Astro frontend at :4321 to call us) ───────────────────
 _settings = get_settings()
@@ -130,9 +192,82 @@ def _get_ai_engine() -> AIEngine:
 
 
 # ============================================================================
+# Cell SSE Endpoint — DataNotifier → Server-Sent Events → browser
+# GET /api/cell-events streams real-time cell state to every connected client.
+# ============================================================================
+
+@app.get("/api/cell-events")
+async def api_cell_events() -> StreamingResponse:
+    """
+    GET /api/cell-events  →  text/event-stream
+
+    Pushes cell state updates to every connected browser tab in real-time.
+    Each SSE event:
+      event: cell_update
+      data: {"cell_id": "self_attn", "params": { ...CellParamsJson... }}
+
+    A keepalive comment (": ping") is sent every 15 s to prevent proxy
+    timeouts and to let the client detect a dropped connection quickly.
+
+    Flow:
+      pipeline writes channels/cell/{id}/params.json
+        → caller invokes DataNotifier.notify("cell/{id}/params.json")
+          → _cell_broadcast() puts payload onto every asyncio.Queue
+            → this generator reads the queue and streams SSE to browser
+              → CellEventSource.ts receives it and calls mgr.updateCell()
+    """
+    q: asyncio.Queue = asyncio.Queue(maxsize=256)
+    with _cell_event_queues_lock:
+        _cell_event_queues.append(q)
+
+    async def _initial_snapshot():
+        """Send current params.json for all cells immediately on connect."""
+        cell_dir = BASE_DIR / "channels" / "cell"
+        for params_file in sorted(cell_dir.glob("*/params.json")):
+            try:
+                params = json.loads(params_file.read_text())
+                cell_id = params_file.parent.name
+                data = json.dumps({"cell_id": cell_id, "params": params}, ensure_ascii=True)
+                yield f"event: cell_update\ndata: {data}\n\n"
+            except Exception:
+                pass
+
+    async def event_stream():
+        # 1. Initial snapshot so frontend hydrates without a separate /api/cells fetch
+        async for chunk in _initial_snapshot():
+            yield chunk
+
+        # 2. Live updates pushed by DataNotifier callbacks via _cell_broadcast()
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(q.get(), timeout=15.0)
+                    data = json.dumps(payload, ensure_ascii=True)
+                    yield f"event: cell_update\ndata: {data}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"   # keepalive — invisible to onmessage
+        finally:
+            with _cell_event_queues_lock:
+                try:
+                    _cell_event_queues.remove(q)
+                except ValueError:
+                    pass
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering
+        },
+    )
+
+
+# ============================================================================
 # Cell Pub/Sub Endpoint — Apollo CyberRT DataNotifier bridge
 # Sub-Claudes POST params here instead of git push.
 # Server writes to channels/ and fires DataNotifier callbacks.
+# Also triggers _cell_broadcast() so SSE clients get the update instantly.
 # ============================================================================
 
 @app.post("/api/cell/publish")
@@ -188,10 +323,23 @@ async def api_cell_publish(request_data: dict) -> JSONResponse:
             notified = False
             logger.warning(f"DataNotifier.notify failed: {notify_exc}")
 
+        # ── Broadcast to SSE clients ─────────────────────────────────────────
+        # agent_params is what the sub-Claude produced; also try to read the
+        # canonical params.json if the pipeline has already merged it there.
+        try:
+            canonical_path = os.path.join(cell_dir, "params.json")
+            if os.path.exists(canonical_path):
+                sse_params = json.loads(open(canonical_path).read())
+            else:
+                sse_params = agent_params
+            _cell_broadcast(cell_id, sse_params)
+        except Exception as sse_exc:
+            logger.warning(f"_cell_broadcast failed: {sse_exc}")
+
         logger.info(
             f"[cell/publish] cell_id={cell_id} "
             f"params_keys={list(agent_params.keys())} "
-            f"notified={notified}"
+            f"notified={notified} sse_clients={len(_cell_event_queues)}"
         )
 
         return JSONResponse({
@@ -199,6 +347,7 @@ async def api_cell_publish(request_data: dict) -> JSONResponse:
             "cell_id": cell_id,
             "channel": f"cell/{cell_id}/agent_params.json",
             "notified": notified,
+            "sse_clients": len(_cell_event_queues),
         })
 
     except Exception as e:
