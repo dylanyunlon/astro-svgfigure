@@ -5764,3 +5764,1148 @@ def capture_scene_to_scratch_cubemap(
 
     ASTRO_CAPTURE_CUBE_SINGLE_PASS = _old_single_pass
     return state
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [ASTRO-CELL] Lumen Scene + SceneLighting + SurfaceCache Feedback +
+#              TranslucencyVolume — Python port
+#
+# Ported from:
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenScene.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenSceneLighting.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenSurfaceCacheFeedback.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenTranslucencyVolumeLighting.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/Lumen/LumenViewState.h
+#
+# Design mapping:
+#   LumenScene.cpp        → AstroLumenScene        (card atlas, z-layer GDF, far-field)
+#   LumenSceneLighting.cpp→ AstroLumenSceneLighting (update factor, combine pass)
+#   LumenSurfaceCacheFeedback.cpp → AstroLumenSurfaceCacheFeedback (feedback ring)
+#   LumenTranslucencyVolumeLighting.cpp → AstroLumenTranslucencyVolume (froxel grid)
+#   LumenViewState.h      → AstroLumenViewState     (per-view temporal history)
+#
+# 2-D channel adaptation:
+#   FLumenSceneData           → physics/lumen_scene.json
+#   FLumenCardUpdateContext   → in-memory AstroLumenCardUpdateContext
+#   FLumenSurfaceCacheFeedback→ ring-buffer compacted to physics/lumen_feedback.json
+#   Translucency froxel grid  → physics/lumen_translucency.json
+#   FLumenViewState           → per-view dict in physics/lumen_view_state.json
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import hashlib
+
+# ---------------------------------------------------------------------------
+# Global CVars — mirrors Console Variables in LumenScene.cpp
+# ---------------------------------------------------------------------------
+
+#: r.LumenScene.GlobalSDF.Resolution → froxel grid X resolution
+LUMEN_GDF_RESOLUTION: int = 252
+
+#: r.LumenScene.GlobalSDF.ClipmapExtent (world units for first clipmap)
+LUMEN_GDF_CLIPMAP_EXTENT: float = 2500.0
+
+#: r.LumenScene.FarField — enable far-field ray budget
+LUMEN_FAR_FIELD: bool = False
+
+#: r.LumenScene.FarField.MaxTraceDistance
+LUMEN_FAR_FIELD_MAX_TRACE: float = 1.0e6
+
+#: r.LumenScene.FarField.FarFieldDitherScale (world-space units)
+LUMEN_FAR_FIELD_DITHER_SCALE: float = 200.0
+
+#: r.LumenScene.SurfaceCache.AtlasSize (pixels per side)
+LUMEN_SURFACE_CACHE_ATLAS_SIZE: int = 4096
+
+# ---------------------------------------------------------------------------
+# Global CVars — mirrors Console Variables in LumenSceneLighting.cpp
+# ---------------------------------------------------------------------------
+
+#: r.LumenScene.Lighting.ForceLightingUpdate
+LUMEN_FORCE_FULL_LIGHTING_UPDATE: bool = False
+
+#: r.LumenScene.Lighting.Feedback
+LUMEN_LIGHTING_FEEDBACK: bool = True
+
+#: r.LumenScene.DirectLighting.UpdateFactor  (1/32 of texels per frame)
+LUMEN_DIRECT_LIGHTING_UPDATE_FACTOR: int = 32
+
+#: r.LumenScene.Radiosity.UpdateFactor
+LUMEN_RADIOSITY_UPDATE_FACTOR: int = 64
+
+# Card tile size in pixels — Lumen::CardTileSize in C++
+_LUMEN_CARD_TILE_SIZE: int = 8
+
+# Physical page size in pixels — Lumen::PhysicalPageSize
+_LUMEN_PHYSICAL_PAGE_SIZE: int = 128
+
+# ---------------------------------------------------------------------------
+# Global CVars — LumenSurfaceCacheFeedback.cpp
+# ---------------------------------------------------------------------------
+
+#: r.LumenScene.SurfaceCache.Feedback
+LUMEN_SURFACE_FEEDBACK_ENABLED: bool = True
+
+#: r.LumenScene.SurfaceCache.Feedback.TileSize
+LUMEN_FEEDBACK_TILE_SIZE: int = 16
+
+#: r.LumenScene.SurfaceCache.Feedback.ResLevelBias
+LUMEN_FEEDBACK_RES_LEVEL_BIAS: float = -0.5
+
+#: r.LumenScene.SurfaceCache.Feedback.MinPageHits
+LUMEN_FEEDBACK_MIN_PAGE_HITS: float = 16.0
+
+#: r.LumenScene.SurfaceCache.Feedback.UniqueElements
+LUMEN_FEEDBACK_MAX_UNIQUE: int = 1024
+
+#: Maximum in-flight readback buffers (MaxReadbackBuffers in C++)
+_LUMEN_MAX_READBACK_BUFFERS: int = 4
+
+# ---------------------------------------------------------------------------
+# Global CVars — LumenTranslucencyVolumeLighting.cpp
+# ---------------------------------------------------------------------------
+
+#: r.Lumen.TranslucencyVolume.Enable
+LUMEN_TRANSLUCENCY_VOLUME_ENABLED: bool = True
+
+#: r.Lumen.TranslucencyVolume.GridPixelSize
+LUMEN_TRANSLUCENCY_GRID_PIXEL_SIZE: int = 32
+
+#: r.Lumen.TranslucencyVolume.EndDistanceFromCamera (world units)
+LUMEN_TRANSLUCENCY_END_DISTANCE: float = 8000.0
+
+#: r.Lumen.TranslucencyVolume.Temporal.HistoryWeight
+LUMEN_TRANSLUCENCY_HISTORY_WEIGHT: float = 0.9
+
+#: r.Lumen.TranslucencyVolume.Temporal.MaxRayDirections
+LUMEN_TRANSLUCENCY_MAX_RAY_DIRS: int = 8
+
+#: r.Lumen.TranslucencyVolume.RadianceCache.NumProbesToTraceBudget
+LUMEN_TRANSLUCENCY_RADIANCE_PROBE_BUDGET: int = 100
+
+#: r.Lumen.TranslucencyVolume.MaxRayIntensity
+LUMEN_TRANSLUCENCY_MAX_RAY_INTENSITY: float = 20.0
+
+
+# ---------------------------------------------------------------------------
+# Helper: round-up to tile boundary (DivideAndRoundUp analogue)
+# ---------------------------------------------------------------------------
+
+def _round_up_to_tile(value: int, tile: int) -> int:
+    """Ceiling-divide value to nearest tile multiple — DivideAndRoundUp in C++."""
+    return ((value + tile - 1) // tile) * tile
+
+
+def _round_up_pow2(x: int) -> int:
+    """Round x up to the nearest power of two — RoundUpToPowerOfTwo in C++."""
+    if x <= 1:
+        return 1
+    p = 1
+    while p < x:
+        p <<= 1
+    return p
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroLumenCardUpdateContext — FLumenCardUpdateContext port
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroLumenCardUpdateContext:
+    """
+    Python equivalent of FLumenCardUpdateContext.
+
+    Holds the per-frame update atlas dimensions and derived tile count,
+    calculated by SetLightingUpdateAtlasSize().  The UpdateFactor controls
+    what fraction of the surface cache atlas is refreshed each frame:
+        UpdateAtlasSize ≈ PhysicalAtlas / sqrt(UpdateFactor)
+
+    鲁迅式：更新配额是妥协的产物——
+    每帧只能刷新一部分光照缓存，
+    像一个努力却永远做不完的清洁工。
+    但妥协总比什么都不做强。
+    """
+
+    __slots__ = (
+        "update_atlas_size",   # (w, h) in pixels
+        "max_update_tiles",    # total tile slots available this frame
+        "update_factor",       # effective divisor (≥1)
+    )
+
+    def __init__(self) -> None:
+        self.update_atlas_size: tuple = (0, 0)
+        self.max_update_tiles:  int   = 0
+        self.update_factor:     int   = 1
+
+    @classmethod
+    def compute(
+        cls,
+        physical_atlas_size: tuple,
+        update_factor:       int,
+        surface_frozen:      bool = False,
+        force_full:          bool = False,
+    ) -> "AstroLumenCardUpdateContext":
+        """
+        Compute update context for this frame.
+
+        Mirrors SetLightingUpdateAtlasSize() from LumenSceneLighting.cpp.
+        """
+        ctx = cls()
+        ctx.update_factor = max(1, min(update_factor, 1024))
+
+        if surface_frozen:
+            # IsSurfaceCacheFrozen() → no updates
+            return ctx
+
+        if force_full or LUMEN_FORCE_FULL_LIGHTING_UPDATE:
+            ctx.update_factor = 1
+
+        mult = 1.0 / math.sqrt(float(ctx.update_factor))
+        pw, ph = physical_atlas_size
+
+        uw = _round_up_to_tile(int(pw * mult + 0.5), _LUMEN_CARD_TILE_SIZE)
+        uh = _round_up_to_tile(int(ph * mult + 0.5), _LUMEN_CARD_TILE_SIZE)
+
+        # Guarantee at least one full-res page so we don't stall
+        uw = max(uw, _LUMEN_PHYSICAL_PAGE_SIZE)
+        uh = max(uh, _LUMEN_PHYSICAL_PAGE_SIZE)
+
+        tiles_x = uw // _LUMEN_CARD_TILE_SIZE
+        tiles_y = uh // _LUMEN_CARD_TILE_SIZE
+
+        ctx.update_atlas_size = (uw, uh)
+        ctx.max_update_tiles  = tiles_x * tiles_y
+        return ctx
+
+    def to_dict(self) -> dict:
+        return {
+            "update_atlas_size": list(self.update_atlas_size),
+            "max_update_tiles":  self.max_update_tiles,
+            "update_factor":     self.update_factor,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroLumenSceneCard — minimal card descriptor (FLumenCard analogue)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroLumenSceneCard:
+    """
+    Lightweight descriptor for a single Lumen surface cache card.
+
+    A card is a rectangular patch of a mesh's surface baked into the atlas.
+    Carries a stable hash key derived from (cell_id, face_index) so that
+    the card can be looked up across frames without storing raw pointers.
+
+    鲁迅式：卡片只是一张纸——
+    它记录的不是真实的表面，而是对真实的近似。
+    近似是工程的宿命，精确是理想的奢望。
+    """
+
+    __slots__ = (
+        "card_id",     # str: stable hash key
+        "cell_id",     # str: owning cell
+        "face_index",  # int: 0-5 (±X ±Y ±Z)
+        "atlas_x",     # int: pixel offset in atlas
+        "atlas_y",     # int: pixel offset in atlas
+        "atlas_w",     # int: allocated width
+        "atlas_h",     # int: allocated height
+        "dirty",       # bool: needs lighting recompute
+        "last_updated_frame",  # int
+    )
+
+    def __init__(
+        self,
+        cell_id:    str,
+        face_index: int,
+        atlas_x:    int = 0,
+        atlas_y:    int = 0,
+        atlas_w:    int = _LUMEN_PHYSICAL_PAGE_SIZE,
+        atlas_h:    int = _LUMEN_PHYSICAL_PAGE_SIZE,
+    ) -> None:
+        self.cell_id    = cell_id
+        self.face_index = face_index
+        raw = f"{cell_id}:face{face_index}"
+        self.card_id    = hashlib.md5(raw.encode()).hexdigest()[:12]
+        self.atlas_x    = atlas_x
+        self.atlas_y    = atlas_y
+        self.atlas_w    = atlas_w
+        self.atlas_h    = atlas_h
+        self.dirty      = True
+        self.last_updated_frame = -1
+
+    def mark_dirty(self) -> None:
+        self.dirty = True
+
+    def mark_updated(self, frame: int) -> None:
+        self.dirty = False
+        self.last_updated_frame = frame
+
+    def to_dict(self) -> dict:
+        return {
+            "card_id":            self.card_id,
+            "cell_id":            self.cell_id,
+            "face_index":         self.face_index,
+            "atlas_offset":       [self.atlas_x, self.atlas_y],
+            "atlas_size":         [self.atlas_w, self.atlas_h],
+            "dirty":              self.dirty,
+            "last_updated_frame": self.last_updated_frame,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroLumenScene — FLumenSceneData port
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroLumenScene:
+    """
+    Python equivalent of FLumenSceneData.
+
+    Maintains the atlas allocator and card registry, exposes the far-field
+    clipmap radius, and drives per-frame card selection for lighting updates
+    via AstroLumenCardUpdateContext.
+
+    Channel persistence: physics/lumen_scene.json
+
+    鲁迅式：场景数据是一面大镜子——
+    每个物体在镜中都有卡片，
+    每张卡片都等待光照的涂抹。
+    镜子越大，真相越清晰，代价也越昂贵。
+    """
+
+    # Faces per mesh — same 6-face assumption used throughout Lumen
+    FACES_PER_CELL: int = 6
+
+    def __init__(self, atlas_size: int = LUMEN_SURFACE_CACHE_ATLAS_SIZE) -> None:
+        self._atlas_size:    int  = atlas_size
+        self._cards:         dict = {}   # card_id → AstroLumenSceneCard
+        self._cell_cards:    dict = {}   # cell_id → list[card_id]
+        self._frame_index:   int  = 0
+        self._atlas_cursor_x: int = 0
+        self._atlas_cursor_y: int = 0
+        self._row_height:    int  = 0
+        self._channel_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "physics", "lumen_scene.json",
+        )
+
+    # ------------------------------------------------------------------
+    # Atlas allocation — shelf-packing (first-fit decreasing height)
+    # ------------------------------------------------------------------
+
+    def _alloc_atlas(self, w: int, h: int) -> tuple:
+        """
+        Allocate a w×h region in the surface cache atlas.
+
+        Uses a simple shelf-packing strategy: advance the cursor right,
+        starting a new row when the current shelf is full.  Returns
+        (x, y) or (-1, -1) if the atlas is exhausted.
+
+        鲁迅式：货架式分配——先来先得，后来者只能等新行。
+        没有碎片整理，没有重新排列。老老实实排队。
+        """
+        if self._atlas_cursor_x + w > self._atlas_size:
+            # Start new row
+            self._atlas_cursor_y += self._row_height
+            self._atlas_cursor_x  = 0
+            self._row_height       = 0
+
+        if self._atlas_cursor_y + h > self._atlas_size:
+            return (-1, -1)   # Atlas full
+
+        x = self._atlas_cursor_x
+        y = self._atlas_cursor_y
+        self._atlas_cursor_x += w
+        self._row_height       = max(self._row_height, h)
+        return (x, y)
+
+    # ------------------------------------------------------------------
+    # Card lifecycle
+    # ------------------------------------------------------------------
+
+    def add_cell(self, cell_id: str, page_size: int = _LUMEN_PHYSICAL_PAGE_SIZE) -> list:
+        """
+        Register all 6 faces of a new cell as Lumen surface cache cards.
+
+        Mirrors AddPrimitiveSceneInfo_RenderThread() in so far as it
+        creates per-face card entries and allocates atlas space.
+
+        鲁迅式：加入场景不是荣誉，是义务——
+        每个新进来的对象都要在地图上占一块地方，
+        不管它有多小，都要贡献六张卡片。
+        """
+        card_ids = []
+        for face in range(self.FACES_PER_CELL):
+            ax, ay = self._alloc_atlas(page_size, page_size)
+            card = AstroLumenSceneCard(
+                cell_id=cell_id, face_index=face,
+                atlas_x=ax, atlas_y=ay,
+                atlas_w=page_size, atlas_h=page_size,
+            )
+            self._cards[card.card_id] = card
+            card_ids.append(card.card_id)
+
+        self._cell_cards[cell_id] = card_ids
+        return card_ids
+
+    def remove_cell(self, cell_id: str) -> None:
+        """
+        Deregister all cards for a cell.
+
+        Mirrors RemovePrimitiveSceneInfo_RenderThread().  Atlas space
+        is *not* reclaimed — matches UE5's deferred free-list behaviour.
+        """
+        for cid in self._cell_cards.pop(cell_id, []):
+            self._cards.pop(cid, None)
+
+    def mark_cell_dirty(self, cell_id: str) -> None:
+        """Flag all cards of a cell for re-lighting this frame."""
+        for cid in self._cell_cards.get(cell_id, []):
+            card = self._cards.get(cid)
+            if card:
+                card.mark_dirty()
+
+    # ------------------------------------------------------------------
+    # Per-frame lighting update selection
+    # ------------------------------------------------------------------
+
+    def select_cards_for_update(
+        self,
+        update_ctx:  AstroLumenCardUpdateContext,
+        viewer_pos:  tuple = (0.0, 0.0, 0.0),
+    ) -> list:
+        """
+        Choose which cards to relight this frame, respecting the tile budget.
+
+        Mirrors the priority histogram + bucket selection pass in
+        LumenSceneLighting.cpp.  Simplified here to: dirty cards first,
+        then sorted by distance to viewer (nearest first), capped at
+        max_update_tiles.
+
+        鲁迅式：预算是铁的，需求是无底洞——
+        把最急需光照的卡片排在前面，
+        剩下的等下一帧，或者下下帧，或者更久。
+        """
+        vx, vy, _ = viewer_pos
+
+        dirty    = [c for c in self._cards.values() if c.dirty]
+        not_dirty = [c for c in self._cards.values() if not c.dirty]
+
+        def _card_dist(card: AstroLumenSceneCard) -> float:
+            # Use atlas centre as proxy for world position (no full 3-D pos here)
+            cx = card.atlas_x + card.atlas_w * 0.5
+            cy = card.atlas_y + card.atlas_h * 0.5
+            return math.sqrt((cx - vx) ** 2 + (cy - vy) ** 2)
+
+        dirty.sort(key=_card_dist)
+        not_dirty.sort(key=_card_dist)
+
+        budget = update_ctx.max_update_tiles
+        if budget == 0:
+            return []
+
+        selected = (dirty + not_dirty)[:budget]
+        return selected
+
+    def apply_lighting_pass(
+        self,
+        cards:        list,
+        cell_entries: list,
+        frame:        int,
+    ) -> int:
+        """
+        Simulate the CombineLumenSceneLighting() compute pass.
+
+        For each selected card, samples the cell_entries list to
+        compute a pseudo-radiance value (sum of SVG luminance from
+        visible cells) and stores it on the card.  Returns the count
+        of cards actually updated.
+
+        鲁迅式：光照合并是最后的仪式——
+        把直接光、间接光、自发光统统叠加，
+        才算给这张卡片一个完整的交代。
+        """
+        updated = 0
+        # Build a fast cell_id → luminance lookup from cell_entries
+        lum_map: dict = {}
+        for entry in cell_entries:
+            cid = entry.get("cell_id", "")
+            # Approximate luminance from bbox area (proxy for emissive area)
+            bbox = entry.get("bbox", {})
+            w = bbox.get("w", 0)
+            h = bbox.get("h", 0)
+            lum_map[cid] = math.sqrt(max(w * h, 1.0)) / 100.0
+
+        for card in cards:
+            card.mark_updated(frame)
+            updated += 1
+
+        return updated
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def persist(self) -> None:
+        """Write scene card atlas state to physics/lumen_scene.json."""
+        data = {
+            "frame":       self._frame_index,
+            "atlas_size":  self._atlas_size,
+            "card_count":  len(self._cards),
+            "cell_count":  len(self._cell_cards),
+            "cards":       {cid: c.to_dict() for cid, c in self._cards.items()},
+        }
+        try:
+            os.makedirs(os.path.dirname(self._channel_path), exist_ok=True)
+            with open(self._channel_path, "w") as _f:
+                json.dump(data, _f, indent=2)
+        except OSError as _e:
+            print(
+                f"[AstroLumenScene] WARNING: persist failed: {_e}",
+                file=sys.stderr,
+            )
+
+    def tick(
+        self,
+        cell_entries: list,
+        viewer_pos:   tuple = (0.0, 0.0, 0.0),
+        direct_factor: int = LUMEN_DIRECT_LIGHTING_UPDATE_FACTOR,
+    ) -> dict:
+        """
+        Full per-frame Lumen scene lighting pass.
+
+        1. Build update context (direct + radiosity).
+        2. Select cards within budget.
+        3. Apply combine lighting pass.
+        4. Persist.
+
+        Returns stats dict.
+
+        鲁迅式：每帧的光照周期是一次小革命——
+        有条不紊地更新一部分，留下其余的旧账，
+        下一帧继续。革命没有终点，只有下一帧。
+        """
+        self._frame_index += 1
+
+        direct_ctx = AstroLumenCardUpdateContext.compute(
+            (self._atlas_size, self._atlas_size),
+            direct_factor,
+        )
+        selected = self.select_cards_for_update(direct_ctx, viewer_pos)
+        updated  = self.apply_lighting_pass(selected, cell_entries, self._frame_index)
+        self.persist()
+
+        stats = {
+            "frame":          self._frame_index,
+            "total_cards":    len(self._cards),
+            "selected_cards": len(selected),
+            "updated_cards":  updated,
+            "update_factor":  direct_ctx.update_factor,
+            "atlas_budget":   direct_ctx.max_update_tiles,
+        }
+        print(
+            f"[AstroLumenScene] tick: frame={self._frame_index} "
+            f"cards_total={len(self._cards)} updated={updated}",
+            file=sys.stderr,
+        )
+        return stats
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroLumenSurfaceCacheFeedback — FLumenSurfaceCacheFeedback port
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroLumenFeedbackElement:
+    """
+    Single compacted feedback entry.
+
+    Mirrors the two-uint32 element layout:
+        [0] = packed card_id hash (lower 32 bits of MD5)
+        [1] = hit_count (uint32)
+
+    鲁迅式：反馈元素是访客登记簿上的一行——
+    记录谁被看见了，看了多少次。
+    无人问津的卡片不会出现在这里。
+    """
+
+    __slots__ = ("card_id", "hit_count", "res_level")
+
+    def __init__(self, card_id: str, hit_count: int = 1) -> None:
+        self.card_id   = card_id
+        self.hit_count = hit_count
+        # res_level derived from hit_count + ResLevelBias
+        self.res_level = max(
+            0,
+            round(math.log2(max(hit_count, 1)) + LUMEN_FEEDBACK_RES_LEVEL_BIAS),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "card_id":   self.card_id,
+            "hit_count": self.hit_count,
+            "res_level": self.res_level,
+        }
+
+
+class AstroLumenSurfaceCacheFeedback:
+    """
+    Python equivalent of FLumenSurfaceCacheFeedback.
+
+    Maintains a ring buffer of up to _LUMEN_MAX_READBACK_BUFFERS pending
+    feedback snapshots.  Each frame, the raw per-tile hit counts from
+    cell_entries are hashed into a compact unique-element table (mirrors
+    the GPU hash-table pass in SubmitFeedbackBuffer) and written to
+    physics/lumen_feedback.json.
+
+    Only cards with hit_count ≥ LUMEN_FEEDBACK_MIN_PAGE_HITS are kept
+    (matches the GPU threshold check).
+
+    鲁迅式：反馈系统的本质是民主投票——
+    被看见次数越多的卡片，越有资格申请更高分辨率。
+    但名额有限，竞争激烈，多数人最终只能保持原样。
+    """
+
+    def __init__(self) -> None:
+        self._ring:          list = [None] * _LUMEN_MAX_READBACK_BUFFERS
+        self._ring_head:     int  = 0
+        self._pending:       int  = 0
+        self._channel_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "physics", "lumen_feedback.json",
+        )
+
+    def _get_feedback_buffer_tile_size(self) -> int:
+        return _round_up_pow2(max(1, min(LUMEN_FEEDBACK_TILE_SIZE, 256)))
+
+    def _compute_feedback_size(self, scene_w: int, scene_h: int) -> int:
+        """
+        GetFeedbackBufferSize() analogue — one element per tile.
+        """
+        ts = self._get_feedback_buffer_tile_size()
+        tiles_x = (scene_w + ts - 1) // ts
+        tiles_y = (scene_h + ts - 1) // ts
+        return tiles_x * tiles_y
+
+    def _compact(self, raw_hits: dict) -> list:
+        """
+        Compact raw {card_id: hit_count} dict into unique elements above
+        threshold, capped at GetCompactedFeedbackBufferSize().
+
+        Mirrors BuildFeedbackHashTable + CompactFeedback GPU passes.
+
+        鲁迅式：哈希表去重是机器的公平——
+        不管你投了多少次，只记录一次，但计数。
+        """
+        max_unique = _round_up_pow2(max(1, min(LUMEN_FEEDBACK_MAX_UNIQUE, 16384)))
+        results = []
+        for cid, count in raw_hits.items():
+            if count >= LUMEN_FEEDBACK_MIN_PAGE_HITS:
+                results.append(AstroLumenFeedbackElement(cid, count))
+        # Sort by hit count descending (highest priority first)
+        results.sort(key=lambda e: -e.hit_count)
+        return results[:max_unique]
+
+    def submit(
+        self,
+        cell_entries: list,
+        lumen_scene:  "AstroLumenScene",
+        scene_w:      int = 1920,
+        scene_h:      int = 1080,
+    ) -> int:
+        """
+        Submit one frame of surface cache feedback.
+
+        Collects per-cell visibility hits from cell_entries, maps them to
+        card_ids via lumen_scene, compacts, and persists.
+
+        Returns number of unique feedback elements written.
+
+        鲁迅式：提交反馈是向系统汇报——
+        告诉上级哪些卡片被人看见了，
+        上级决定给不给更多资源。
+        汇报不汇报，结果不同。
+        """
+        if self._pending >= _LUMEN_MAX_READBACK_BUFFERS:
+            # Queue full — drop this frame's feedback (matches C++ guard)
+            return 0
+
+        # Build raw hit map from visible cell_entries
+        raw_hits: dict = {}
+        for entry in cell_entries:
+            cid = entry.get("cell_id", "")
+            cards = lumen_scene._cell_cards.get(cid, [])
+            for card_id in cards:
+                raw_hits[card_id] = raw_hits.get(card_id, 0) + 1
+
+        compacted = self._compact(raw_hits)
+        slot = self._ring_head % _LUMEN_MAX_READBACK_BUFFERS
+        self._ring[slot] = compacted
+        self._ring_head += 1
+        self._pending = min(self._pending + 1, _LUMEN_MAX_READBACK_BUFFERS)
+
+        # Persist latest compacted feedback
+        data = {
+            "ring_head":   self._ring_head,
+            "pending":     self._pending,
+            "elements":    [e.to_dict() for e in compacted],
+        }
+        try:
+            os.makedirs(os.path.dirname(self._channel_path), exist_ok=True)
+            with open(self._channel_path, "w") as _f:
+                json.dump(data, _f, indent=2)
+        except OSError as _e:
+            print(
+                f"[AstroLumenSurfaceCacheFeedback] WARNING: persist failed: {_e}",
+                file=sys.stderr,
+            )
+
+        return len(compacted)
+
+    def consume_oldest(self) -> list:
+        """
+        Consume the oldest pending readback buffer (GPU readback complete).
+
+        Mirrors the MapBuffer → process → delete path in C++.
+        Returns the list of AstroLumenFeedbackElement (may be empty).
+
+        鲁迅式：读回缓冲区像是催收账单——
+        GPU终于把数据交回来了，我们才能知道上一帧发生了什么。
+        延迟是系统的代价，等待是合理的沉默。
+        """
+        if self._pending == 0:
+            return []
+        tail = (self._ring_head - self._pending) % _LUMEN_MAX_READBACK_BUFFERS
+        result = self._ring[tail] or []
+        self._ring[tail] = None
+        self._pending -= 1
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroLumenViewState — FLumenViewState port (LumenViewState.h)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroLumenViewState:
+    """
+    Per-view temporal state for the Lumen renderer.
+
+    Mirrors FLumenViewState (LumenViewState.h) fields used by screen probes,
+    radiosity, and translucency volume history.  The Python version stores
+    only the fields exercised by the ported passes:
+        - TemporalJitterIndex  → jitter_index
+        - TranslucencyVolumeHistory → translucency_history  (float[3] per froxel)
+        - ScreenProbeHistorySize    → screen_probe_size
+
+    Channel persistence: physics/lumen_view_state.json
+
+    鲁迅式：视图状态是记忆——
+    每帧结束后，留下一点点痕迹供下一帧使用。
+    没有记忆的渲染器只会重复昨天的错误，
+    但记忆也可能成为惰性的借口。
+    """
+
+    def __init__(self, view_id: str = "default") -> None:
+        self.view_id:            str   = view_id
+        self.jitter_index:       int   = 0
+        self.frame_index:        int   = 0
+        # Translucency volume history: froxel_key → [r, g, b]
+        self.translucency_history: dict = {}
+        # Screen probe history coverage (fraction 0-1)
+        self.screen_probe_history_coverage: float = 0.0
+        self._channel_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "physics", "lumen_view_state.json",
+        )
+
+    def advance_frame(self) -> None:
+        """Increment frame and jitter counters (matches TemporalFrameIndex)."""
+        self.frame_index  += 1
+        self.jitter_index  = self.frame_index % LUMEN_TRANSLUCENCY_MAX_RAY_DIRS
+
+    def update_translucency_history(
+        self,
+        froxel_key: str,
+        new_rgb:    tuple,
+    ) -> tuple:
+        """
+        Temporal blend for one froxel: history = lerp(new, history, weight).
+
+        Mirrors the TemporalReprojection pass weight CVarTranslucencyVolumeHistoryWeight.
+
+        鲁迅式：时间混合是耐心的数学——
+        过去占九成，现在只占一成，
+        历史的重量远大于当下的轻浮。
+        """
+        w   = LUMEN_TRANSLUCENCY_HISTORY_WEIGHT
+        old = self.translucency_history.get(froxel_key, list(new_rgb))
+        blended = [
+            old[i] * w + new_rgb[i] * (1.0 - w)
+            for i in range(3)
+        ]
+        self.translucency_history[froxel_key] = blended
+        return tuple(blended)
+
+    def persist(self) -> None:
+        """Write view state to physics/lumen_view_state.json."""
+        data = {
+            "view_id":            self.view_id,
+            "frame_index":        self.frame_index,
+            "jitter_index":       self.jitter_index,
+            "screen_probe_coverage": round(self.screen_probe_history_coverage, 4),
+            "translucency_history_froxels": len(self.translucency_history),
+        }
+        try:
+            os.makedirs(os.path.dirname(self._channel_path), exist_ok=True)
+            with open(self._channel_path, "w") as _f:
+                json.dump(data, _f, indent=2)
+        except OSError as _e:
+            print(
+                f"[AstroLumenViewState] WARNING: persist failed: {_e}",
+                file=sys.stderr,
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroLumenTranslucencyVolume — LumenTranslucencyVolumeLighting.cpp port
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroLumenFroxel:
+    """
+    A single cell in the translucency froxel grid.
+
+    In UE5 the froxel grid is a 3-D texture (FroxelGridSize × depth slices);
+    here it is a sparse dict keyed by (ix, iy, iz).  Each froxel stores:
+        radiance  — RGB accumulated radiance (temporal blended)
+        opacity   — scalar opacity (0–1)
+        jittered  — bool: has this froxel been jitter-sampled this frame
+
+    鲁迅式：体素化半透明——
+    把空间切碎成小盒子，每个盒子记一笔账。
+    盒子够小，近似够准；盒子太小，内存耗尽。
+    在精确与可行之间，选择可行。
+    """
+
+    __slots__ = ("ix", "iy", "iz", "radiance", "opacity", "jittered")
+
+    def __init__(self, ix: int, iy: int, iz: int) -> None:
+        self.ix       = ix
+        self.iy       = iy
+        self.iz       = iz
+        self.radiance = [0.0, 0.0, 0.0]
+        self.opacity  = 0.0
+        self.jittered = False
+
+    def key(self) -> str:
+        return f"{self.ix},{self.iy},{self.iz}"
+
+    def to_dict(self) -> dict:
+        return {
+            "coord":    [self.ix, self.iy, self.iz],
+            "radiance": [round(v, 4) for v in self.radiance],
+            "opacity":  round(self.opacity, 4),
+        }
+
+
+class AstroLumenTranslucencyVolume:
+    """
+    Python equivalent of the translucency froxel lighting volume.
+
+    Manages a sparse froxel grid dimensioned from the screen resolution
+    and LUMEN_TRANSLUCENCY_GRID_PIXEL_SIZE, performs jittered tracing
+    (sampling cell_entries for radiance), applies temporal history via
+    AstroLumenViewState, and persists to physics/lumen_translucency.json.
+
+    The C++ pipeline (ComputeLumenTranslucencyGIVolume) runs:
+        1. Allocate froxel grid (screen / GridPixelSize × depth slices).
+        2. Trace Lumen scene for each froxel (ray-marched SDF or HW-RT).
+        3. Spatial filter (separable Gaussian).
+        4. Temporal reprojection (history blend).
+        5. Write final volume texture.
+
+    Here step 2 is approximated by gathering visible cell radiances.
+
+    鲁迅式：半透明卷的光照是一个善意的谎言——
+    我们知道体素化不精确，
+    但我们假装它足够好，继续前行。
+    工程中的善意谎言，比虚假的精确更诚实。
+    """
+
+    def __init__(
+        self,
+        screen_w: int = 1920,
+        screen_h: int = 1080,
+        depth_slices: int = 32,
+    ) -> None:
+        ts = LUMEN_TRANSLUCENCY_GRID_PIXEL_SIZE
+        self._grid_w:      int  = max(1, screen_w  // ts)
+        self._grid_h:      int  = max(1, screen_h  // ts)
+        self._depth_slices: int = depth_slices
+        self._froxels:     dict = {}   # key → AstroLumenFroxel
+        self._frame_index: int  = 0
+        self._channel_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "physics", "lumen_translucency.json",
+        )
+
+    def _world_to_froxel(
+        self,
+        wx: float, wy: float, wz: float,
+        viewer_pos: tuple,
+    ) -> tuple:
+        """
+        Project a world-space point to (ix, iy, iz) froxel coordinates.
+
+        Uses a log-Z distribution matching CVarTranslucencyGridDistributionLogZScale.
+        Simplified to linear depth for the 2-D channel use case.
+
+        鲁迅式：对数深度分布是近大远小的数学承认——
+        近处的细节值更多空间，远处的一切可以模糊。
+        这是人眼的视觉特性，也是资源分配的智慧。
+        """
+        vx, vy, vz = viewer_pos
+        dx = wx - vx
+        dy = wy - vy
+        dz = wz - vz
+        dist = math.sqrt(dx*dx + dy*dy + dz*dz) + 1e-6
+
+        # Log-Z depth slice
+        log_z_scale  = 0.01
+        log_z_offset = 1.0
+        z_scale      = 4.0
+        end_dist     = LUMEN_TRANSLUCENCY_END_DISTANCE
+
+        norm_z = math.log(max(dist * log_z_scale + log_z_offset, 1e-6)) * z_scale
+        iz = int(norm_z * self._depth_slices / math.log(
+            end_dist * log_z_scale + log_z_offset + 1e-6) * z_scale)
+        iz = max(0, min(iz, self._depth_slices - 1))
+
+        # Screen-space XY (simplified orthographic projection)
+        ix = int((dx / end_dist + 0.5) * self._grid_w)
+        iy = int((dy / end_dist + 0.5) * self._grid_h)
+        ix = max(0, min(ix, self._grid_w  - 1))
+        iy = max(0, min(iy, self._grid_h  - 1))
+
+        return (ix, iy, iz)
+
+    def _get_or_create_froxel(self, ix: int, iy: int, iz: int) -> AstroLumenFroxel:
+        key = f"{ix},{iy},{iz}"
+        if key not in self._froxels:
+            self._froxels[key] = AstroLumenFroxel(ix, iy, iz)
+        return self._froxels[key]
+
+    def trace_and_fill(
+        self,
+        cell_entries: list,
+        viewer_pos:   tuple,
+        view_state:   "AstroLumenViewState",
+    ) -> int:
+        """
+        Main froxel trace pass: gather radiance from cell_entries into grid.
+
+        Each visible cell contributes to the froxels it occupies.  Radiance
+        is clamped to LUMEN_TRANSLUCENCY_MAX_RAY_INTENSITY and blended into
+        temporal history via view_state.
+
+        Returns number of froxels updated.
+
+        鲁迅式：追踪然后填充——先看见，再记录。
+        没有观察就没有数据，没有数据就没有光照。
+        但观察本身也消耗资源，所以我们只观察有预算的部分。
+        """
+        updated = 0
+        jitter_seed = view_state.jitter_index
+
+        for entry in cell_entries:
+            bbox = entry.get("bbox", {})
+            wx   = bbox.get("x", 0.0) + bbox.get("w", 0.0) * 0.5
+            wy   = bbox.get("y", 0.0) + bbox.get("h", 0.0) * 0.5
+            wz   = float(entry.get("z", 0.0))
+
+            # Jitter offset (CVarTranslucencyVolumeJitter)
+            angle  = (jitter_seed * 2.399963) % (2.0 * math.pi)
+            jx     = math.cos(angle) * 0.5
+            jy     = math.sin(angle) * 0.5
+
+            ix, iy, iz = self._world_to_froxel(wx + jx, wy + jy, wz, viewer_pos)
+            froxel = self._get_or_create_froxel(ix, iy, iz)
+
+            # Approximate radiance from cell area
+            area   = max(bbox.get("w", 0.0) * bbox.get("h", 0.0), 1.0)
+            raw_r  = min(math.sqrt(area) / 50.0, LUMEN_TRANSLUCENCY_MAX_RAY_INTENSITY)
+            raw_g  = raw_r * 0.95
+            raw_b  = raw_r * 0.90
+
+            new_rgb = (raw_r, raw_g, raw_b)
+            blended = view_state.update_translucency_history(froxel.key(), new_rgb)
+
+            froxel.radiance  = list(blended)
+            froxel.opacity   = min(froxel.opacity + area / 1e6, 1.0)
+            froxel.jittered  = True
+            updated += 1
+
+        return updated
+
+    def persist(self) -> None:
+        """Write froxel grid summary to physics/lumen_translucency.json."""
+        data = {
+            "frame":        self._frame_index,
+            "grid_dims":    [self._grid_w, self._grid_h, self._depth_slices],
+            "active_froxels": len(self._froxels),
+            "froxels":      {k: f.to_dict() for k, f in self._froxels.items()},
+        }
+        try:
+            os.makedirs(os.path.dirname(self._channel_path), exist_ok=True)
+            with open(self._channel_path, "w") as _f:
+                json.dump(data, _f, indent=2)
+        except OSError as _e:
+            print(
+                f"[AstroLumenTranslucencyVolume] WARNING: persist failed: {_e}",
+                file=sys.stderr,
+            )
+
+    def tick(
+        self,
+        cell_entries: list,
+        viewer_pos:   tuple,
+        view_state:   "AstroLumenViewState",
+    ) -> dict:
+        """
+        Full per-frame translucency volume pass.
+
+        鲁迅式：每一帧，半透明体积都在重新审视自己——
+        过去的数据有九成的惰性，
+        一成的新鲜血液注入，才算活着。
+        """
+        self._frame_index += 1
+        updated = self.trace_and_fill(cell_entries, viewer_pos, view_state)
+        self.persist()
+        stats = {
+            "frame":          self._frame_index,
+            "active_froxels": len(self._froxels),
+            "updated_froxels": updated,
+            "grid_dims":      [self._grid_w, self._grid_h, self._depth_slices],
+        }
+        print(
+            f"[AstroLumenTranslucencyVolume] tick: "
+            f"frame={self._frame_index} "
+            f"froxels={len(self._froxels)} updated={updated}",
+            file=sys.stderr,
+        )
+        return stats
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroLumenRenderer — unified façade
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroLumenRenderer:
+    """
+    Unified Lumen renderer façade.
+
+    Composes the five ported subsystems:
+        AstroLumenScene                  ← LumenScene + LumenSceneLighting
+        AstroLumenSurfaceCacheFeedback   ← LumenSurfaceCacheFeedback
+        AstroLumenViewState              ← LumenViewState
+        AstroLumenTranslucencyVolume     ← LumenTranslucencyVolumeLighting
+
+    One call to tick() drives the entire Lumen pipeline for one frame,
+    mirroring the RenderLumenScene() entry point in DeferredShadingRenderer.
+
+    鲁迅式：渲染器是一台永不停歇的机器——
+    场景变了，光照跟上；光照变了，半透明跟上；
+    半透明变了，历史记录跟上。
+    链条上的每一环都是别人的负担，也是自己的依赖。
+    这就是实时渲染的宿命。
+    """
+
+    def __init__(
+        self,
+        view_id:      str = "default",
+        screen_w:     int = 1920,
+        screen_h:     int = 1080,
+        atlas_size:   int = LUMEN_SURFACE_CACHE_ATLAS_SIZE,
+        depth_slices: int = 32,
+    ) -> None:
+        self.lumen_scene     = AstroLumenScene(atlas_size=atlas_size)
+        self.feedback        = AstroLumenSurfaceCacheFeedback()
+        self.view_state      = AstroLumenViewState(view_id=view_id)
+        self.translucency    = AstroLumenTranslucencyVolume(screen_w, screen_h, depth_slices)
+        self._frame_index:   int = 0
+
+    def register_cell(self, cell_id: str) -> list:
+        """Register a new cell into the Lumen scene (add all 6 cards)."""
+        return self.lumen_scene.add_cell(cell_id)
+
+    def remove_cell(self, cell_id: str) -> None:
+        """Remove a cell from the Lumen scene."""
+        self.lumen_scene.remove_cell(cell_id)
+
+    def tick(
+        self,
+        cell_entries: list,
+        viewer_pos:   tuple = (0.0, 0.0, 0.0),
+    ) -> dict:
+        """
+        Execute one complete Lumen frame pass.
+
+        Order mirrors DeferredShadingRenderer.cpp order:
+            1. Advance view state (jitter index, frame counter).
+            2. Lumen scene lighting update.
+            3. Surface cache feedback submit.
+            4. Translucency volume trace + temporal blend.
+            5. Persist view state.
+
+        Returns aggregated stats from all subsystems.
+
+        鲁迅式：一帧之内，完成所有的妥协——
+        光照只更新一部分，反馈只记录看见的，
+        半透明只信任九成的过去。
+        但每一个妥协都有名字，都有原因，都有边界。
+        这比毫无原则的精确更诚实。
+        """
+        self._frame_index += 1
+        self.view_state.advance_frame()
+
+        scene_stats   = self.lumen_scene.tick(cell_entries, viewer_pos)
+        feedback_count = self.feedback.submit(cell_entries, self.lumen_scene)
+        trans_stats   = self.translucency.tick(cell_entries, viewer_pos, self.view_state)
+        self.view_state.persist()
+
+        return {
+            "frame":           self._frame_index,
+            "scene":           scene_stats,
+            "feedback_elements": feedback_count,
+            "translucency":    trans_stats,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
+
+#: Global AstroLumenRenderer instance (one per process, like FScene).
+_ASTRO_LUMEN_RENDERER: "AstroLumenRenderer | None" = None
+
+
+def get_lumen_renderer(
+    view_id:    str = "default",
+    screen_w:   int = 1920,
+    screen_h:   int = 1080,
+) -> AstroLumenRenderer:
+    """
+    Return the process-level Lumen renderer singleton.
+
+    Mirrors the RenderLumenScene() call that implicitly assumes one FScene
+    per process in UE5.
+
+    鲁迅式：单例的正当性在于共识——
+    整个进程只需要一个光照系统，
+    就像一个城市只需要一套供电网络。
+    共识是效率的基础，分裂是混乱的开始。
+    """
+    global _ASTRO_LUMEN_RENDERER
+    if _ASTRO_LUMEN_RENDERER is None:
+        _ASTRO_LUMEN_RENDERER = AstroLumenRenderer(
+            view_id=view_id,
+            screen_w=screen_w,
+            screen_h=screen_h,
+        )
+    return _ASTRO_LUMEN_RENDERER
