@@ -1155,3 +1155,760 @@ def create_writer(
     if auto_init:
         w.init()
     return w
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroListenerHandler — ported from
+#   upstream/apollo-cyber/transport/message/listener_handler.h
+#
+# Original: template<MessageT> with Signal<shared_ptr<MessageT>, MessageInfo>
+#   • Connect(self_id, listener) — single-cast slot (no oppo filter)
+#   • Connect(self_id, oppo_id, listener) — filtered slot per sender
+#   • Disconnect(self_id) / Disconnect(self_id, oppo_id)
+#   • Run(msg, msg_info) — fires signal_ then per-oppo signals_[oppo_id]
+#   • RunFromString(str, msg_info) — parse then Run (proto deserialise)
+#
+# ASTRO changes (20% algorithm delta):
+#   1. MessageT template → duck-typed Python (any dict / str / object).
+#   2. Signal<> + base::Connection<> → plain list of callables (simpler).
+#   3. RunFromString: proto parse → json.loads (file-channel serialisation).
+#   4. oppo_id: uint64 hash → str (channel path or role name).
+#   5. AtomicRWLock → threading.Lock (Python GIL provides safety for reads;
+#      lock only for structural mutations, matching the write-guard pattern).
+#   6. is_raw_message_ flag preserved as _is_raw (bool).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import threading
+
+
+class AstroListenerHandler:
+    """
+    Callback manager for one message type on one channel.
+
+    Mirrors ListenerHandler<MessageT> from listener_handler.h.
+
+    Slots are keyed by self_id (str).  Per-sender (oppo_id) slots are stored
+    in _oppo_slots: {oppo_id: {self_id: callable}}.
+
+    Usage::
+
+        handler = AstroListenerHandler()
+        handler.connect("reader_A", lambda msg, info: print(msg))
+        handler.run({"value": 1}, {"sender": "tx_0"})
+        handler.disconnect("reader_A")
+    """
+
+    def __init__(self, is_raw: bool = False):
+        self._is_raw: bool = is_raw          # mirrors is_raw_message_
+        self._lock = threading.Lock()
+        # mirrors signal_conns_: {self_id: callable}
+        self._slots: Dict[str, Callable] = {}
+        # mirrors signals_conns_: {oppo_id: {self_id: callable}}
+        self._oppo_slots: Dict[str, Dict[str, Callable]] = {}
+
+    # ── connect ────────────────────────────────────────────────────────────────
+
+    def connect(self, self_id: str, listener: Callable) -> None:
+        """
+        Connect(self_id, listener) — register a broadcast listener.
+        Mirrors ListenerHandler::Connect(uint64_t self_id, const Listener&).
+        """
+        with self._lock:
+            self._slots[self_id] = listener
+        _dbg("ASTRO-LISTENER",
+             f"connect self={self_id} op=broadcast slots={len(self._slots)}")
+
+    def connect_filtered(self, self_id: str, oppo_id: str,
+                         listener: Callable) -> None:
+        """
+        Connect(self_id, oppo_id, listener) — register a sender-filtered slot.
+        Mirrors ListenerHandler::Connect(self_id, oppo_id, listener).
+        """
+        with self._lock:
+            if oppo_id not in self._oppo_slots:
+                self._oppo_slots[oppo_id] = {}
+            self._oppo_slots[oppo_id][self_id] = listener
+        _dbg("ASTRO-LISTENER",
+             f"connect_filtered self={self_id} oppo={oppo_id} op=filtered")
+
+    # ── disconnect ─────────────────────────────────────────────────────────────
+
+    def disconnect(self, self_id: str) -> None:
+        """
+        Disconnect(self_id) — remove broadcast slot.
+        Mirrors ListenerHandler::Disconnect(uint64_t self_id).
+        """
+        with self._lock:
+            self._slots.pop(self_id, None)
+        _dbg("ASTRO-LISTENER",
+             f"disconnect self={self_id} op=broadcast remaining={len(self._slots)}")
+
+    def disconnect_filtered(self, self_id: str, oppo_id: str) -> None:
+        """
+        Disconnect(self_id, oppo_id) — remove sender-filtered slot.
+        Mirrors ListenerHandler::Disconnect(self_id, oppo_id).
+        """
+        with self._lock:
+            bucket = self._oppo_slots.get(oppo_id)
+            if bucket is not None:
+                bucket.pop(self_id, None)
+                if not bucket:
+                    del self._oppo_slots[oppo_id]
+        _dbg("ASTRO-LISTENER",
+             f"disconnect_filtered self={self_id} oppo={oppo_id}")
+
+    # ── run ────────────────────────────────────────────────────────────────────
+
+    def run(self, msg: Any, msg_info: Dict) -> None:
+        """
+        Run(msg, msg_info) — fire broadcast slots then sender-filtered slots.
+        Mirrors ListenerHandler::Run(const Message&, const MessageInfo&).
+
+        oppo_id is resolved from msg_info["sender_id"] (str key, not hash).
+        """
+        with self._lock:
+            broadcast = list(self._slots.values())
+            sender_id: str = msg_info.get("sender_id", "")
+            filtered = list(
+                self._oppo_slots.get(sender_id, {}).values()
+            )
+
+        for cb in broadcast:
+            try:
+                cb(msg, msg_info)
+            except Exception as exc:  # noqa: BLE001
+                _dbg("ASTRO-LISTENER", f"run broadcast exc={exc}")
+
+        for cb in filtered:
+            try:
+                cb(msg, msg_info)
+            except Exception as exc:  # noqa: BLE001
+                _dbg("ASTRO-LISTENER", f"run filtered exc={exc}")
+
+    def run_from_string(self, raw: str, msg_info: Dict) -> None:
+        """
+        RunFromString(str, msg_info) — deserialise then run.
+        Mirrors ListenerHandler::RunFromString (proto parse → json.loads here).
+        """
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            _dbg("ASTRO-LISTENER", f"run_from_string parse_error={exc}")
+            return
+        self.run(msg, msg_info)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroIntraDispatcher — ported from
+#   upstream/apollo-cyber/transport/dispatcher/intra_dispatcher.h
+#   + dispatcher/dispatcher.h  (base class behaviour inlined)
+#
+# Original: singleton with AtomicHashMap<channel_id→ListenerHandlerBasePtr>
+#   and a ChannelChain (multi-type fan-out per channel).
+#   AddListener → GetHandler → handler.Connect(self_id, listener)
+#   OnMessage   → handler.Run(message, message_info)
+#   RemoveListener → handler.Disconnect(self_id)
+#
+# ASTRO changes (20% algorithm delta):
+#   1. channel_id: uint64_t → str (channel path, e.g. "cell/self_attn/bbox.json").
+#   2. AtomicHashMap → plain dict protected by threading.Lock.
+#   3. ChannelChain (multi-type fan-out) → single AstroListenerHandler per
+#      channel (one message type per channel in Astro's file-channel model).
+#   4. is_shutdown_ atomic bool → Python threading.Event.
+#   5. DECLARE_SINGLETON → class-level _instance + instance() classmethod.
+#   6. MessageInfo typed proto → plain dict with "sender_id" / "seq_num" keys.
+#   7. SHM and RTPS dispatch paths dropped (INTRA only in this class).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroIntraDispatcher:
+    """
+    Process-internal message dispatcher — Python port of IntraDispatcher.
+
+    Maintains a per-channel AstroListenerHandler registry.  When a transmitter
+    calls on_message() the handler fans the message out to all connected
+    receivers in the same process, mirroring the INTRA transport mode.
+
+    Singleton: obtain via AstroIntraDispatcher.instance().
+
+    Lifecycle::
+
+        disp = AstroIntraDispatcher.instance()
+        disp.add_listener("cell/self_attn/out.json", "reader_A",
+                          lambda msg, info: print("got", msg))
+        disp.on_message("cell/self_attn/out.json", {"value": 42},
+                        {"sender_id": "tx_0", "seq_num": 1})
+        disp.remove_listener("cell/self_attn/out.json", "reader_A")
+    """
+
+    _instance: Optional["AstroIntraDispatcher"] = None
+    _instance_lock = threading.Lock()
+
+    def __init__(self):
+        # mirrors is_shutdown_ std::atomic<bool>
+        self._shutdown = threading.Event()
+        # mirrors msg_listeners_ AtomicHashMap<channel_id, ListenerHandlerBasePtr>
+        self._handlers: Dict[str, AstroListenerHandler] = {}
+        self._lock = threading.Lock()
+        _dbg("ASTRO-INTRA", "AstroIntraDispatcher constructed")
+
+    # ── singleton ──────────────────────────────────────────────────────────────
+
+    @classmethod
+    def instance(cls) -> "AstroIntraDispatcher":
+        """DECLARE_SINGLETON equivalent."""
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Test helper — tear down singleton and release handlers."""
+        with cls._instance_lock:
+            if cls._instance is not None:
+                cls._instance.shutdown()
+            cls._instance = None
+
+    # ── lifecycle ──────────────────────────────────────────────────────────────
+
+    def shutdown(self) -> None:
+        """
+        Shutdown() — mark dispatcher as shut down; subsequent calls are no-ops.
+        Mirrors Dispatcher::Shutdown().
+        """
+        self._shutdown.set()
+        _dbg("ASTRO-INTRA", "shutdown called")
+
+    def is_shutdown(self) -> bool:
+        return self._shutdown.is_set()
+
+    # ── internal handler access ────────────────────────────────────────────────
+
+    def _get_or_create_handler(self, channel_id: str) -> AstroListenerHandler:
+        """
+        GetHandler<MessageT> equivalent — always returns the channel's handler,
+        creating it on first access (mirrors IntraDispatcher::GetHandler).
+        """
+        with self._lock:
+            if channel_id not in self._handlers:
+                self._handlers[channel_id] = AstroListenerHandler()
+                _dbg("ASTRO-INTRA",
+                     f"new handler ch={channel_id} total={len(self._handlers)}")
+            return self._handlers[channel_id]
+
+    # ── add_listener ──────────────────────────────────────────────────────────
+
+    def add_listener(self, channel_id: str, self_id: str,
+                     listener: Callable) -> None:
+        """
+        AddListener(self_attr, listener) — broadcast subscription.
+        Mirrors IntraDispatcher::AddListener<MessageT>(self_attr, listener).
+        """
+        if self.is_shutdown():
+            return
+        handler = self._get_or_create_handler(channel_id)
+        handler.connect(self_id, listener)
+        _dbg("ASTRO-INTRA",
+             f"add_listener ch={channel_id} self={self_id} mode=broadcast")
+
+    def add_listener_filtered(self, channel_id: str, self_id: str,
+                              oppo_id: str, listener: Callable) -> None:
+        """
+        AddListener(self_attr, opposite_attr, listener) — sender-filtered.
+        Mirrors IntraDispatcher::AddListener<MessageT>(self_attr, opposite_attr, …).
+        """
+        if self.is_shutdown():
+            return
+        handler = self._get_or_create_handler(channel_id)
+        handler.connect_filtered(self_id, oppo_id, listener)
+        _dbg("ASTRO-INTRA",
+             f"add_listener_filtered ch={channel_id} self={self_id} oppo={oppo_id}")
+
+    # ── remove_listener ───────────────────────────────────────────────────────
+
+    def remove_listener(self, channel_id: str, self_id: str) -> None:
+        """
+        RemoveListener(self_attr) — disconnect broadcast slot.
+        Mirrors IntraDispatcher::RemoveListener<MessageT>(self_attr).
+        """
+        if self.is_shutdown():
+            return
+        with self._lock:
+            handler = self._handlers.get(channel_id)
+        if handler:
+            handler.disconnect(self_id)
+            _dbg("ASTRO-INTRA",
+                 f"remove_listener ch={channel_id} self={self_id}")
+
+    def remove_listener_filtered(self, channel_id: str, self_id: str,
+                                 oppo_id: str) -> None:
+        """
+        RemoveListener(self_attr, opposite_attr) — disconnect filtered slot.
+        Mirrors IntraDispatcher::RemoveListener<MessageT>(self_attr, opposite_attr).
+        """
+        if self.is_shutdown():
+            return
+        with self._lock:
+            handler = self._handlers.get(channel_id)
+        if handler:
+            handler.disconnect_filtered(self_id, oppo_id)
+            _dbg("ASTRO-INTRA",
+                 f"remove_listener_filtered ch={channel_id} self={self_id} oppo={oppo_id}")
+
+    # ── on_message ────────────────────────────────────────────────────────────
+
+    def on_message(self, channel_id: str, message: Any,
+                   msg_info: Optional[Dict] = None) -> None:
+        """
+        OnMessage<MessageT>(channel_id, message, message_info) — deliver a
+        message to all listeners on the channel.
+
+        Mirrors IntraDispatcher::OnMessage which resolves the handler from
+        msg_listeners_ and calls handler->Run(message, message_info).
+
+        msg_info dict keys (mirrors MessageInfo proto):
+            sender_id : str   — transmitter role name / path
+            seq_num   : int   — monotonically increasing sequence number
+        """
+        if self.is_shutdown():
+            return
+        if msg_info is None:
+            msg_info = {"sender_id": "", "seq_num": 0}
+
+        with self._lock:
+            handler = self._handlers.get(channel_id)
+
+        if handler is None:
+            _dbg("ASTRO-INTRA",
+                 f"on_message ch={channel_id} no_handler — drop")
+            return
+
+        _dbg("ASTRO-INTRA",
+             f"on_message ch={channel_id} sender={msg_info.get('sender_id','')} "
+             f"seq={msg_info.get('seq_num', 0)}")
+        handler.run(message, msg_info)
+
+    # ── has_channel ───────────────────────────────────────────────────────────
+
+    def has_channel(self, channel_id: str) -> bool:
+        """HasChannel — True if any listener is registered on channel_id."""
+        with self._lock:
+            return channel_id in self._handlers
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroTransmitter / AstroIntraTransmitter — ported from
+#   upstream/apollo-cyber/transport/transmitter/transmitter.h
+#   (IntraTransmitter specialisation kept; SHM dropped; RTPS → HTTP POST)
+#
+# Original Transmitter<M>:
+#   • seq_num_ uint64, msg_info_ MessageInfo
+#   • Enable() / Disable() pure-virtual
+#   • Transmit(msg) → sets seq_num, send_time → calls Transmit(msg, msg_info)
+#   • AcquireMessage() pure-virtual (arena allocation hook)
+#
+# ASTRO changes:
+#   1. Template type M → duck-typed Python (any dict/str).
+#   2. msg_info_ proto → dict with sender_id / seq_num / send_time_us.
+#   3. AcquireMessage() → returns {} (no arena; heap-allocated every time).
+#   4. IntraTransmitter: Transmit calls AstroIntraDispatcher.on_message().
+#   5. RtpsTransmitter: Transmit does HTTP POST to self._endpoint URL.
+#   6. ShmTransmitter: not ported (inter-process shared memory not needed).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import urllib.request
+
+
+class AstroTransmitterBase:
+    """
+    Abstract base — mirrors Transmitter<M> from transmitter.h.
+
+    Subclasses implement enable(), disable(), transmit_impl(msg, msg_info).
+    """
+
+    def __init__(self, channel_id: str, sender_id: str = ""):
+        self.channel_id: str = channel_id
+        self.sender_id: str = sender_id or channel_id
+        self._seq_num: int = 0           # mirrors seq_num_
+        self._enabled: bool = False      # mirrors Enable/Disable state
+
+    # ── lifecycle ──────────────────────────────────────────────────────────────
+
+    def enable(self) -> None:
+        """Enable() — activate transmitter. Mirrors Transmitter::Enable()."""
+        self._enabled = True
+        _dbg("ASTRO-TX", f"enable ch={self.channel_id} sender={self.sender_id}")
+
+    def disable(self) -> None:
+        """Disable() — deactivate transmitter. Mirrors Transmitter::Disable()."""
+        self._enabled = False
+        _dbg("ASTRO-TX", f"disable ch={self.channel_id}")
+
+    # ── sequence ───────────────────────────────────────────────────────────────
+
+    def _next_seq(self) -> int:
+        """NextSeqNum() — increment and return seq_num_."""
+        self._seq_num += 1
+        return self._seq_num
+
+    # ── acquire ────────────────────────────────────────────────────────────────
+
+    def acquire_message(self) -> Dict:
+        """
+        AcquireMessage() — return an empty message container.
+        Mirrors the arena-allocation hook; here we just return {}.
+        """
+        return {}
+
+    # ── transmit ───────────────────────────────────────────────────────────────
+
+    def transmit(self, msg: Any) -> bool:
+        """
+        Transmit(msg) — stamp msg_info then delegate to transmit_impl.
+        Mirrors Transmitter<M>::Transmit(const MessagePtr& msg) which sets
+        seq_num, msg_seq_num, send_time before calling Transmit(msg, msg_info).
+        """
+        if not self._enabled:
+            _dbg("ASTRO-TX",
+                 f"transmit ch={self.channel_id} disabled — drop")
+            return False
+        msg_info = {
+            "sender_id": self.sender_id,
+            "seq_num": self._next_seq(),
+            "send_time_us": int(time.time() * 1_000_000),
+        }
+        _dbg("ASTRO-TX",
+             f"transmit ch={self.channel_id} seq={msg_info['seq_num']}")
+        return self._transmit_impl(msg, msg_info)
+
+    def _transmit_impl(self, msg: Any, msg_info: Dict) -> bool:
+        raise NotImplementedError
+
+
+class AstroIntraTransmitter(AstroTransmitterBase):
+    """
+    Intra-process transmitter — mirrors IntraTransmitter<M>.
+
+    Transmit calls AstroIntraDispatcher.on_message(), delivering the message
+    directly to in-process listeners without any serialisation.
+    """
+
+    def __init__(self, channel_id: str, sender_id: str = ""):
+        super().__init__(channel_id, sender_id)
+        self._dispatcher = AstroIntraDispatcher.instance()
+
+    def _transmit_impl(self, msg: Any, msg_info: Dict) -> bool:
+        self._dispatcher.on_message(self.channel_id, msg, msg_info)
+        return True
+
+
+class AstroRtpsTransmitter(AstroTransmitterBase):
+    """
+    RTPS-mode transmitter mapped to HTTP POST.
+
+    Original RtpsTransmitter<M> sends via DDS/RTPS participant.
+    ASTRO substitution: POST JSON to self._endpoint (configured at init).
+
+    Mirrors the enable/disable participant lifecycle:
+        Enable()  → store endpoint URL (participant.start() analogue)
+        Disable() → clear endpoint URL  (participant.stop() analogue)
+    """
+
+    def __init__(self, channel_id: str, sender_id: str = "",
+                 endpoint: str = ""):
+        super().__init__(channel_id, sender_id)
+        self._endpoint: str = endpoint   # HTTP URL for POST delivery
+
+    def enable(self) -> None:
+        super().enable()
+        _dbg("ASTRO-RTPS",
+             f"enable ch={self.channel_id} endpoint={self._endpoint}")
+
+    def disable(self) -> None:
+        super().disable()
+        _dbg("ASTRO-RTPS", f"disable ch={self.channel_id}")
+
+    def _transmit_impl(self, msg: Any, msg_info: Dict) -> bool:
+        """
+        Transmit via HTTP POST — replaces DDS participant.write().
+        Payload: {"channel_id": …, "msg_info": …, "data": msg}.
+        Returns True on HTTP 2xx, False otherwise (connection errors → False).
+        """
+        if not self._endpoint:
+            _dbg("ASTRO-RTPS",
+                 f"transmit ch={self.channel_id} no_endpoint — drop")
+            return False
+        payload = json.dumps({
+            "channel_id": self.channel_id,
+            "msg_info": msg_info,
+            "data": msg,
+        }).encode()
+        req = urllib.request.Request(
+            self._endpoint, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                ok = 200 <= resp.status < 300
+            _dbg("ASTRO-RTPS",
+                 f"post ch={self.channel_id} status={'ok' if ok else 'err'}")
+            return ok
+        except Exception as exc:  # noqa: BLE001
+            _dbg("ASTRO-RTPS",
+                 f"post ch={self.channel_id} exc={exc}")
+            return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroReceiver — ported from
+#   upstream/apollo-cyber/transport/receiver/receiver.h
+#
+# Original Receiver<M>:
+#   • Holds MessageListener (callback: (msg, msg_info, role_attr) → void)
+#   • Enable() / Disable() pure-virtual (register / deregister from dispatcher)
+#   • OnNewMessage(msg, msg_info) → calls msg_listener_
+#
+# ASTRO changes:
+#   1. Template type M → duck-typed Python.
+#   2. role_attr proto → dict with "channel_id" / "role_id" keys.
+#   3. IntraReceiver: Enable registers with AstroIntraDispatcher;
+#      Disable unregisters.
+#   4. MessageListener signature: (msg, msg_info, role_attr) → same as C++.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AstroIntraReceiver:
+    """
+    Intra-process receiver — mirrors IntraReceiver<M> from receiver.h.
+
+    Enable()  → AstroIntraDispatcher.add_listener(channel_id, role_id, cb)
+    Disable() → AstroIntraDispatcher.remove_listener(channel_id, role_id)
+    OnNewMessage delivered via AstroListenerHandler.run().
+
+    Usage::
+
+        def my_handler(msg, msg_info, role_attr):
+            print("received", msg)
+
+        rx = AstroIntraReceiver("cell/self_attn/out.json",
+                                "reader_A", my_handler)
+        rx.enable()
+        # … transmitter publishes …
+        rx.disable()
+    """
+
+    def __init__(self, channel_id: str, role_id: str,
+                 msg_listener: Callable):
+        self.channel_id: str = channel_id
+        self.role_id: str = role_id
+        self._role_attr: Dict = {"channel_id": channel_id, "role_id": role_id}
+        self._dispatcher = AstroIntraDispatcher.instance()
+        self._enabled: bool = False
+
+        # Wrap msg_listener to inject role_attr (matches C++ OnNewMessage sig).
+        def _cb(msg: Any, msg_info: Dict) -> None:
+            try:
+                msg_listener(msg, msg_info, self._role_attr)
+            except Exception as exc:  # noqa: BLE001
+                _dbg("ASTRO-RX", f"listener exc ch={channel_id} exc={exc}")
+
+        self._cb = _cb
+
+    def enable(self) -> None:
+        """
+        Enable() — register with dispatcher.
+        Mirrors IntraReceiver::Enable() which calls IntraDispatcher::AddListener.
+        """
+        if not self._enabled:
+            self._dispatcher.add_listener(
+                self.channel_id, self.role_id, self._cb)
+            self._enabled = True
+            _dbg("ASTRO-RX",
+                 f"enable ch={self.channel_id} role={self.role_id}")
+
+    def disable(self) -> None:
+        """
+        Disable() — unregister from dispatcher.
+        Mirrors IntraReceiver::Disable() → IntraDispatcher::RemoveListener.
+        """
+        if self._enabled:
+            self._dispatcher.remove_listener(
+                self.channel_id, self.role_id)
+            self._enabled = False
+            _dbg("ASTRO-RX",
+                 f"disable ch={self.channel_id} role={self.role_id}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroTransport — ported from
+#   upstream/apollo-cyber/transport/transport.h
+#
+# Original Transport singleton:
+#   • CreateTransmitter<M>(attr, mode) → Transmitter<M> (INTRA/SHM/RTPS/HYBRID)
+#   • CreateReceiver<M>(attr, listener, mode) → Receiver<M>
+#   • Holds IntraDispatcher*, ShmDispatcher*, RtpsDispatcher*, Participant*
+#
+# ASTRO changes (20% algorithm delta):
+#   1. Template generics → duck-typed Python factory methods.
+#   2. INTRA mode → AstroIntraTransmitter / AstroIntraReceiver.
+#   3. SHM mode → dropped (no inter-process SHM in Astro single-process model).
+#   4. RTPS mode → AstroRtpsTransmitter (HTTP POST) / no RTPS receiver.
+#   5. HYBRID mode → INTRA (default for in-process cell pub/sub).
+#   6. Participant (DDS) → optional HTTP endpoint string.
+#   7. ASTRO_TRANS_VERBOSE env var preserved for debug logging.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_TRANS_VERBOSE = os.environ.get("ASTRO_TRANS_VERBOSE", "0") == "1"
+
+
+def _trans_dbg(channel: str, mode: str, role: str, op: str) -> None:
+    """
+    ASTRO_TRANS_DBG macro equivalent.
+    Mirrors: AINFO << "[ASTRO-TRANS] ch=" << ch << " mode=" << mode …
+    """
+    if _TRANS_VERBOSE:
+        print(f"[ASTRO-TRANS] ch={channel} mode={mode} role={role} op={op}")
+
+
+class AstroTransport:
+    """
+    Transport factory — Python port of Transport singleton from transport.h.
+
+    Supported modes (OptionalMode enum analogues):
+        "INTRA"  — AstroIntraTransmitter / AstroIntraReceiver (default)
+        "RTPS"   — AstroRtpsTransmitter / (no receiver — pull model)
+        "HYBRID" — treated as INTRA
+
+    SHM is intentionally not ported.
+
+    Usage::
+
+        transport = AstroTransport.instance()
+        tx = transport.create_transmitter("cell/self_attn/out.json",
+                                          sender_id="tx_A")
+        tx.enable()
+
+        rx = transport.create_receiver("cell/self_attn/out.json",
+                                       role_id="rx_B",
+                                       listener=lambda m, i, a: print(m))
+        rx.enable()
+
+        tx.transmit({"value": 1})
+    """
+
+    _instance: Optional["AstroTransport"] = None
+    _instance_lock = threading.Lock()
+
+    def __init__(self):
+        self._shutdown = threading.Event()
+        # holds refs so GC doesn't collect live transmitters/receivers
+        self._transmitters: List[AstroTransmitterBase] = []
+        self._receivers: List[AstroIntraReceiver] = []
+        _dbg("ASTRO-TRANS", "AstroTransport constructed")
+
+    # ── singleton ──────────────────────────────────────────────────────────────
+
+    @classmethod
+    def instance(cls) -> "AstroTransport":
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        with cls._instance_lock:
+            if cls._instance is not None:
+                cls._instance.shutdown()
+            cls._instance = None
+
+    # ── lifecycle ──────────────────────────────────────────────────────────────
+
+    def shutdown(self) -> None:
+        """
+        Shutdown() — disable all transmitters and receivers.
+        Mirrors Transport::Shutdown() which shuts down dispatcher singletons.
+        """
+        self._shutdown.set()
+        for tx in self._transmitters:
+            tx.disable()
+        for rx in self._receivers:
+            rx.disable()
+        AstroIntraDispatcher.instance().shutdown()
+        _dbg("ASTRO-TRANS", "shutdown complete")
+
+    def is_shutdown(self) -> bool:
+        return self._shutdown.is_set()
+
+    # ── create_transmitter ────────────────────────────────────────────────────
+
+    def create_transmitter(
+        self,
+        channel_id: str,
+        sender_id: str = "",
+        mode: str = "INTRA",
+        rtps_endpoint: str = "",
+    ) -> AstroTransmitterBase:
+        """
+        CreateTransmitter<M>(attr, mode) — factory for transmitters.
+
+        Parameters
+        ----------
+        channel_id    : str  Channel path (e.g. "cell/self_attn/out.json").
+        sender_id     : str  Role identifier (default = channel_id).
+        mode          : str  "INTRA" | "RTPS" | "HYBRID" (HYBRID → INTRA).
+        rtps_endpoint : str  HTTP URL for RTPS mode.
+
+        Returns an enabled transmitter.
+        """
+        if self.is_shutdown():
+            _dbg("ASTRO-TRANS", "create_transmitter: shutdown — skip")
+            raise RuntimeError("AstroTransport is shut down")
+
+        _trans_dbg(channel_id, mode, "tx", "create")
+
+        if mode == "RTPS":
+            tx: AstroTransmitterBase = AstroRtpsTransmitter(
+                channel_id, sender_id, endpoint=rtps_endpoint)
+        else:
+            # INTRA or HYBRID → INTRA
+            tx = AstroIntraTransmitter(channel_id, sender_id)
+
+        tx.enable()
+        _trans_dbg(channel_id, mode, "tx", "enable")
+        self._transmitters.append(tx)
+        return tx
+
+    # ── create_receiver ───────────────────────────────────────────────────────
+
+    def create_receiver(
+        self,
+        channel_id: str,
+        role_id: str,
+        listener: Callable,
+        mode: str = "INTRA",
+    ) -> AstroIntraReceiver:
+        """
+        CreateReceiver<M>(attr, listener, mode) — factory for receivers.
+
+        Parameters
+        ----------
+        channel_id : str      Channel path.
+        role_id    : str      Unique role / reader name.
+        listener   : callable Signature: (msg, msg_info, role_attr) → None.
+        mode       : str      "INTRA" | "HYBRID" (RTPS receive not ported).
+
+        Returns an enabled receiver.
+        """
+        if self.is_shutdown():
+            raise RuntimeError("AstroTransport is shut down")
+
+        _trans_dbg(channel_id, mode, "rx", "create")
+
+        rx = AstroIntraReceiver(channel_id, role_id, listener)
+        rx.enable()
+        _trans_dbg(channel_id, mode, "rx", "enable")
+        self._receivers.append(rx)
+        return rx
