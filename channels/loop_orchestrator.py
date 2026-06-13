@@ -3488,10 +3488,13 @@ def run_loop(max_epochs=10):
     write_channel("skeleton/epoch.json", {
         "current": epoch, "max": max_epochs, "status": "converged"
     })
-    output = assemble_final_svg()
+    output_path = assemble_final_svg()
     print(f"\n{'=' * 60}")
-    print(f"Output: {output}")
-    return output
+    print(f"Output: {output_path}")
+    # Return SVG content (not path) so callers receive the complete SVG document
+    with open(output_path) as _svg_f:
+        svg_content = _svg_f.read()
+    return svg_content
 
 
 if __name__ == "__main__":
