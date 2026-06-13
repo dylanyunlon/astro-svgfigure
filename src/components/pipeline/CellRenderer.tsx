@@ -315,17 +315,27 @@ function buildCell(p: CellParams): Container {
 // ── Public mount function ─────────────────────────────────────────────────────
 
 /**
+ * CellRendererHandle — returned by mountCellRenderer.
+ * Includes the coordinate transform so CellInteraction can do hit-testing.
+ */
+export interface CellRendererHandle {
+  stop: () => void
+  /** canvas-space → cell-space transform, populated after mount */
+  transform: { scale: number; offX: number; offY: number }
+}
+
+/**
  * mountCellRenderer
  *
  * Initialises a PixiJS Application on the given canvas and renders
  * all provided CellParams (from params.json) using WebGL.
  *
- * Returns a stop() function that destroys the PixiJS app.
+ * Returns a CellRendererHandle with stop() and the layout transform.
  */
 export async function mountCellRenderer(
   canvas: HTMLCanvasElement,
   cells: CellParams[],
-): Promise<() => void> {
+): Promise<CellRendererHandle> {
   // Auto-size canvas to its container
   const rect = canvas.parentElement?.getBoundingClientRect()
   if (rect) {
@@ -367,16 +377,45 @@ export async function mountCellRenderer(
   root.position.set(offX, offY)
   app.stage.addChild(root)
 
-  // Render each cell
-  const sorted = [...cells].sort((a, b) => a.z - b.z)
+  // Render each cell; keep a map of cell_id → Container for nudge support
+  const sorted     = [...cells].sort((a, b) => a.z - b.z)
+  const cellContainers = new Map<string, any>()
   for (const p of sorted) {
     const cell = buildCell(p)
+    cellContainers.set(p.cell_id, cell)
     root.addChild(cell)
   }
 
-  return () => {
-    try {
-      app.destroy(false, { children: true, texture: true })
-    } catch { /* ignore */ }
+  // Per-frame nudge: read __cellNudgeState and offset containers smoothly
+  const basePositions = new Map<string, { x: number; y: number }>()
+  for (const p of cells) basePositions.set(p.cell_id, { x: p.bbox.x, y: p.bbox.y })
+
+  app.ticker.add(() => {
+    const nudgeMap = (
+      typeof window !== 'undefined'
+        ? (window as unknown as Record<string, unknown>)['__cellNudgeState']
+        : undefined
+    ) as Map<string, { dx: number; dy: number }> | undefined
+
+    for (const [id, container] of cellContainers) {
+      const base  = basePositions.get(id)!
+      const nudge = nudgeMap?.get(id)
+      const tx    = base.x + (nudge ? nudge.dx / (scale || 1) : 0)
+      const ty    = base.y + (nudge ? nudge.dy / (scale || 1) : 0)
+      // Lerp toward target for smooth spring feel
+      container.x += (tx - container.x) * 0.12
+      container.y += (ty - container.y) * 0.12
+    }
+  })
+
+  const transform = { scale, offX, offY }
+
+  return {
+    transform,
+    stop() {
+      try {
+        app.destroy(false, { children: true, texture: true })
+      } catch { /* ignore */ }
+    },
   }
 }

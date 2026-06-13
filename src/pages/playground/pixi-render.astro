@@ -130,6 +130,8 @@ const SPECIES_ACCENT: Record<string, string> = {
 <script>
   import { mountCellRenderer } from '@/components/pipeline/CellRenderer'
   import type { CellParams } from '@/components/pipeline/CellRenderer'
+  import { mountCellInteraction } from '@/lib/CellInteraction'
+  import type { CellInteractionHandle } from '@/lib/CellInteraction'
 
   const canvas    = document.getElementById('pr-canvas')    as HTMLCanvasElement
   const overlay   = document.getElementById('pr-overlay')   as HTMLDivElement
@@ -143,8 +145,7 @@ const SPECIES_ACCENT: Record<string, string> = {
   const cells: CellParams[] = JSON.parse(dataEl.textContent ?? '[]')
 
   let stopFn: (() => void) | null = null
-  let scale = 1
-  let offsetX = 0
+  let interactionHandle: CellInteractionHandle | null = null
 
   function setStatus(msg: string) { statusEl.textContent = msg }
 
@@ -162,15 +163,47 @@ const SPECIES_ACCENT: Record<string, string> = {
   }
 
   async function mount() {
+    // Tear down previous interaction layer before re-mounting
+    interactionHandle?.destroy()
+    interactionHandle = null
     if (stopFn) { stopFn(); stopFn = null }
+
     showOverlay('Initialising PixiJS WebGL…')
     errDiv.classList.add('hidden')
     setStatus(`Loading ${cells.length} cells…`)
 
     try {
-      stopFn = await mountCellRenderer(canvas, cells)
+      const handle = await mountCellRenderer(canvas, cells)
+      stopFn = handle.stop
+
+      // ── Mount interaction layer ──────────────────────────────────────────
+      interactionHandle = mountCellInteraction({
+        canvas,
+        cells,
+        transform: handle.transform,
+
+        // Mira prompt integration
+        sendPrompt(prompt: string) {
+          setStatus(`Mira ← "${prompt}"`)
+          // Post to global event bus if present (AT pubsub pattern)
+          window.dispatchEvent(new CustomEvent('mira:prompt', { detail: { prompt } }))
+        },
+
+        onHover(cell) {
+          // Sync sidebar highlight
+          document.querySelectorAll<HTMLLIElement>('.pr-cell-item').forEach(li => {
+            li.classList.toggle('pr-cell-item--active', cell ? li.dataset.cellId === cell.cell_id : false)
+          })
+        },
+
+        onClick(cell) {
+          setStatus(`▶ ${cell.label} — ${cell.species}`)
+        },
+      })
+      // ── End interaction ──────────────────────────────────────────────────
+
       hideOverlay()
-      setStatus(`✓ ${cells.length} cells rendered — WebGL active`)
+      setStatus(`✓ ${cells.length} cells rendered — hover/click active`)
     } catch (err) {
       showError(`Render failed: ${err instanceof Error ? err.message : String(err)}`)
       setStatus('✗ render error')
@@ -183,10 +216,15 @@ const SPECIES_ACCENT: Record<string, string> = {
     setStatus('Fit applied')
   })
 
-  // Highlight sidebar row on hover of cell label
+  // Static sidebar hover (fallback when not hovering canvas)
   document.querySelectorAll<HTMLLIElement>('.pr-cell-item').forEach(li => {
     li.addEventListener('mouseenter', () => li.classList.add('pr-cell-item--active'))
     li.addEventListener('mouseleave', () => li.classList.remove('pr-cell-item--active'))
+  })
+
+  // Listen for Mira prompt events (demo: log to console)
+  window.addEventListener('mira:prompt', (e) => {
+    console.log('[Mira]', (e as CustomEvent).detail.prompt)
   })
 
   mount()
