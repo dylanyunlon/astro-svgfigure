@@ -153,3 +153,229 @@ export type {
   SpeechInputOptions,
   AudioSystemBundle,
 } from '../audio-system'
+
+// ── AT: full module coverage ──────────────────────────────────────────────────
+
+// platform
+export {
+  Platform,
+  ScreenLock,
+  CookieNotice,
+  Privacy,
+  MetalDetector,
+  NBArchitektStdFont,
+} from '../platform';
+export type {
+  PlatformInfo,
+  ScreenLockOrientation,
+  CookieNoticeOptions,
+  PrivacySettings,
+  MetalCapabilities,
+  FontLoadOptions,
+} from '../platform';
+
+// physics-animation
+export {
+  PhysicalSync,
+  SkinAnimation,
+  Mirror,
+  PlayerModel,
+  Bounce,
+} from '../physics-animation';
+export type {
+  BoneTransform,
+  PhysicsBody,
+  PhysicalSyncOptions,
+  SkinClip,
+  SkinAnimationOptions,
+  MirrorAxis,
+  MirrorOptions,
+  PlayerModelOptions,
+  PlayerState,
+  BounceOptions,
+} from '../physics-animation';
+
+// fx-extensions
+export {
+  FXLayer,
+  FXStencil,
+  FXAssetsController,
+  FXScrollTransition,
+  FXSceneVisibility,
+  FXSceneCompositor,
+  FragUIHelper,
+  FXDhCwa,
+} from '../fx-extensions';
+export type {
+  FXLayerOptions,
+  StencilRegion,
+  FXAssetEntry,
+  FXAssetLoaded,
+  FXAssetProgress,
+  AssetKind,
+  ScrollTransitionKind,
+  FXScrollTransitionOptions,
+  FXScene,
+  FXSceneCompositorOptions,
+  FragUIHelperOptions,
+  FXDhCwaOptions,
+} from '../fx-extensions';
+
+// page-components
+export {
+  WorkItems,
+  WorkDetail,
+  WorkDetailContent,
+  TubesInteraction,
+  MoveNode,
+  Contact,
+  Footer,
+  Playground,
+  Theory,
+  Player,
+} from '../page-components';
+export type {
+  WorkItem,
+  WorkItemFilter,
+  WorkItemsOptions,
+  WorkDetailData,
+  WorkDetailOptions,
+  WorkDetailContentOptions,
+  TubeNode,
+  TubeEdge,
+  TubesInteractionOptions,
+  MoveNodeOptions,
+  ContactFormData,
+  ContactOptions,
+  FooterLink,
+  FooterOptions,
+  PlaygroundModule,
+  TheorySection,
+  TheoryOptions,
+  PlayerTrack,
+  PlayerOptions,
+} from '../page-components';
+
+// threed-pipeline
+export {
+  GaussianSplats,
+  DracoThread,
+  GeomThread,
+  GLTFLoader,
+} from '../threed-pipeline';
+export type {
+  SplatPoint,
+  GaussianSplatsOptions,
+  GaussianSplatsLoadResult,
+  GeometryData,
+  GLTFNode,
+  GLTFScene,
+  GLTFAnimation,
+  GLTFAnimationChannel,
+  DracoDecodeResult,
+  DracoThreadOptions,
+  GeomTask,
+  GeomTaskResult,
+  GLTFLoaderOptions,
+} from '../threed-pipeline';
+
+// engine-utils
+export {
+  ListNode,
+  LinkedList,
+  SnapshotFrame,
+  OptimizationProfiler,
+  CleanRoom,
+  Quaternion,
+  Interpolation,
+} from '../engine-utils';
+export type {
+  FrameSnapshot,
+  SnapshotFrameOptions,
+  ProfileSample,
+  ProfileReport,
+  Quat4,
+  EasingName,
+} from '../engine-utils';
+
+// asset-pipeline
+export {
+  AssetLoader,
+  AssetList,
+  CMSData,
+  Config,
+} from '../asset-pipeline';
+export type {
+  AssetType,
+  AssetDescriptor,
+  AssetResult,
+  AssetLoaderEvent,
+  AssetGroup,
+  CMSEntry,
+  CMSCollection,
+  CMSDataOptions,
+  ConfigValue,
+  ConfigSchema,
+} from '../asset-pipeline';
+
+// interaction
+export {
+  DragAndDrop,
+  ScrollController,
+  Keyboard,
+  ContextMenu,
+  UserInput,
+} from '../interaction';
+export type {
+  DragItem,
+  DropTarget,
+  DragAndDropOptions,
+  ScrollControllerOptions,
+  KeyCombo,
+  KeyBinding,
+  ContextMenuItem,
+  ContextMenuOptions,
+  PointerState,
+  UserInputOptions,
+} from '../interaction';
+
+// renderers/hydra-css
+export {
+  HydraObject,
+  HydraCSS,
+  FXController,
+  FXScroll,
+} from './hydra-css';
+export type {
+  CSSTransform,
+  HydraProp,
+  HydraObjectOptions,
+  HydraCSSOptions,
+  FXControllerOptions,
+  FXPhase,
+  FXControllerEvent,
+  FXScrollBinding,
+  FXScrollOptions,
+} from './hydra-css';
+
+// renderers/rendering-utils
+export {
+  ScreenProjection,
+  ScreenQuad,
+  Frustum,
+  Lighting,
+  LightVolume,
+  RTPool,
+} from './rendering-utils';
+export type {
+  ScreenProjectionOptions,
+  FrustumPlane,
+  AABB,
+  Sphere,
+  LightKind,
+  Light,
+  LightingUniforms,
+  LightVolumeOptions,
+  RTDescriptor,
+  RenderTarget,
+} from './rendering-utils';
