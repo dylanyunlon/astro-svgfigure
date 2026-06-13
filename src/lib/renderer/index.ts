@@ -45,3 +45,7 @@ export type { BloomPassConfig } from './passes/BloomPass';
 
 export { DOFPass } from './passes/DOFPass';
 export type { DOFPassConfig } from './passes/DOFPass';
+
+// ── Occlusion query — GPU visibility culling (xiaodi #53) ─────────────────────
+export { OcclusionQueryManager, patchCellInstanceManagerWithOcclusion } from './OcclusionQuery';
+export type { OcclusionQueryOptions, VisibilityMap } from './OcclusionQuery';
