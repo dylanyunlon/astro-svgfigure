@@ -90,3 +90,66 @@ export type {
 // L3: InteractAI + GLSEO (AT: 36 + 9 refs)
 export { InteractAI, GLSEO } from './interact-ai'
 export type { ChatMessage, InteractAIOptions, CellSEOData } from './interact-ai'
+
+// L4: XR system (AT: xr-system)
+export {
+  XRDeviceManager,
+  VRInput,
+  VRAbstractHand,
+  VRHandFingerTip,
+  VRControllerBeam,
+  UserInputVR,
+  WEBVRPolyfill,
+} from '../xr-system'
+export type {
+  XRSessionConfig,
+  XRFrameCallback,
+  VRInputState,
+  HandJointPose,
+  FingerTipState,
+  BeamHit,
+  BeamOptions,
+  VRActionMap,
+} from '../xr-system'
+
+// L4: Multiplayer (AT: multiplayer)
+export {
+  SocketConnection,
+  GameCenterPlayer,
+  GameCenterRoom,
+  GameCenter,
+  Multiplayer,
+} from '../multiplayer'
+export type {
+  PlayerId,
+  RoomId,
+  MessageId,
+  PlayerMeta,
+  RoomMeta,
+  NetworkMessage,
+  MultiplayerOptions,
+  MultiplayerConfig,
+  GameCenterConfig,
+  RpcResult,
+} from '../multiplayer'
+
+// L4: Audio system (AT: audio-system)
+export {
+  SFXController,
+  ResonanceAudioScene,
+  SpeechInputManager,
+  createAudioSystem,
+} from '../audio-system'
+export type {
+  SFXOptions,
+  SFXHandle,
+  ResonanceSourceOptions,
+  ResonanceSourceHandle,
+  ResonanceSceneOptions,
+  ResonanceRoomDimensions,
+  ResonanceMaterials,
+  SpeechGrammar,
+  SpeechResult,
+  SpeechInputOptions,
+  AudioSystemBundle,
+} from '../audio-system'
