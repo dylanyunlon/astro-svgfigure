@@ -1,12 +1,11 @@
+#!/usr/bin/env python3
 import json
 import math
 import os
 import sys
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict
 
-from channels.cell_component import (
-    AstroCellVisibilityQuery,
-    AstroCellLightPass,
-)
 
 # =============================================================================
 # [ASTRO-CELL] ShadowSetup + ShadowDepthRendering + DeferredShadingRenderer
@@ -1142,3 +1141,113 @@ def run_deferred_shading_pipeline(
     dsr = AstroCellDeferredShadingRenderer(viewport_w, viewport_h)
     return dsr.render(cell_entries, frame_index)
 
+
+# =============================================================================
+# [ASTRO-CELL] MeshPassProcessor + MeshDrawCommands + SceneCapture +
+#              ReflectionEnvironmentCapture → Python port
+#
+# Ported from (commit heads at time of writing):
+#   upstream/unreal-renderer-ue5/Renderer-Private/MeshPassProcessor.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/MeshDrawCommands.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/SceneCaptureRendering.cpp
+#   upstream/unreal-renderer-ue5/Renderer-Private/ReflectionEnvironmentCapture.cpp
+#
+# 鲁迅曾言：「有谁从小康人家而坠入困顿的么，我以为在这途路中，大概
+# 可以看见世人的真面目。」
+# MeshPassProcessor 亦然——当 PSO 状态切换压力在此集中，你才看清
+# draw call 分类与合批的真实代价。每一条 mesh draw command 都是一次
+# 对 GPU 状态机的主张；合并它们，是工程师对效率的永恒追求。
+#
+# Key UE5 constructs → Astro equivalents
+# ─────────────────────────────────────────────────────────────────────────────
+# [MeshPassProcessor]
+#   FGraphicsMinimalPipelineStateId   → AstroCellPipelineStateId
+#     PersistentIdTable (RWLock)      → _pipeline_state_table (dict + lock-free)
+#     bIsIdTableFrozen                → _pso_table_frozen flag
+#   FReadOnlyMeshDrawSingleShaderBindings.SetShaderBindings()
+#                                     → AstroCellShaderBindings.apply()
+#   GEmitMeshDrawEvent (CVar)         → ASTRO_EMIT_MESH_DRAW_EVENT
+#   GSkipDrawOnPSOPrecaching (CVar)   → ASTRO_SKIP_DRAW_ON_PSO_PRECACHING
+#   FMeshDrawCommandSortKey           → AstroCellDrawSortKey
+#
+# [MeshDrawCommands]
+#   FPrimitiveIdVertexBufferPool      → AstroCellPrimitiveIdBufferPool
+#     Allocate / ReturnToFreeList     → allocate / release
+#     DiscardAll (discard_id)         → discard_stale (epoch-based)
+#   UpdateTranslucentMeshSortKeys()   → update_translucent_sort_keys()
+#   BitInvertIfNegativeFloat()        → _bit_invert_if_negative()
+#   CVarMeshSortingMethodWithoutEarlyZ → ASTRO_MESH_SORT_METHOD
+#   CVarDeferredMeshPassSetupTaskSync  → ASTRO_DEFERRED_MESH_PASS_SYNC
+#
+# [SceneCaptureRendering]
+#   GSceneCaptureAllowRenderInMainRenderer → ASTRO_CAPTURE_ALLOW_MAIN_RENDERER
+#   GSceneCaptureCubeSinglePass            → ASTRO_CAPTURE_CUBE_SINGLE_PASS
+#   FSceneCapturePS (pixel shader)         → AstroCellCaptureProcessor
+#     ESourceMode (8 modes)                → AstroCellCaptureMode (enum)
+#     ShouldCompilePermutation()           → should_compile_permutation()
+#     GetPermutationVector()               → get_permutation()
+#   CopyCaptureToTarget()                  → copy_capture_to_target()
+#   UpdateSceneCaptureContents()           → update_scene_capture_contents()
+#
+# [ReflectionEnvironmentCapture]
+#   GReflectionCaptureNearPlane            → _REFL_NEAR_PLANE
+#   GSupersampleCaptureFactor (1..8)       → _REFL_SUPERSAMPLE_FACTOR
+#   CVarReflectionCaptureRuntimeTimeslice  → _REFL_TIMESLICE_FACES
+#   CVarReflectionCaptureRuntimeMode       → _REFL_RUNTIME_MODE
+#   CVarReflectionCaptureRuntimeBudget     → _REFL_BUDGET
+#   FAstroCellReflectionCaptureState       → AstroCellReflectionCaptureState
+#   CaptureSceneToScratchCubemap()         → capture_scene_to_scratch_cubemap()
+#   UpdateReflectionCaptures()             → update_reflection_captures()
+#
+# 2-D SVG channel adaptation:
+#   GPU StructuredBuffer   → list of dicts in memory / JSON channel
+#   Cubemap face           → per-Z-layer "face" (6 z-layer offsets)
+#   PSO state key          → (species, blend_mode, pass_name) 3-tuple
+#   RHI draw submission    → write to cell/*/svg.svg channel
+#   Persistent table lock  → atomic integer epoch counter (no true lock needed
+#                            in single-threaded epoch loop)
+# =============================================================================
+
+import struct as _struct
+
+# ---------------------------------------------------------------------------
+# Global flags — mirrors CVars from all four source files
+# ---------------------------------------------------------------------------
+
+#: Mirrors GEmitMeshDrawEvent — emit per-draw debug annotations in SVG.
+ASTRO_EMIT_MESH_DRAW_EVENT: bool = False
+
+#: Mirrors GSkipDrawOnPSOPrecaching — skip cells whose PSO is still compiling.
+ASTRO_SKIP_DRAW_ON_PSO_PRECACHING: bool = False
+
+#: Mirrors CVarMeshSortingMethodWithoutEarlyZ (0=state+Z, 1=strict Z).
+ASTRO_MESH_SORT_METHOD: int = 0
+
+#: Mirrors CVarDeferredMeshPassSetupTaskSync — defer batch sort to RDG exec.
+ASTRO_DEFERRED_MESH_PASS_SYNC: bool = True
+
+#: Mirrors GSceneCaptureAllowRenderInMainRenderer.
+ASTRO_CAPTURE_ALLOW_MAIN_RENDERER: bool = True
+
+#: Mirrors GSceneCaptureCubeSinglePass — all 6 faces in one pass.
+ASTRO_CAPTURE_CUBE_SINGLE_PASS: bool = True
+
+#: Mirrors GReflectionCaptureNearPlane (world units).
+_REFL_NEAR_PLANE: float = 5.0
+
+#: Mirrors GSupersampleCaptureFactor (clamped to [1, 8]).
+_REFL_SUPERSAMPLE_FACTOR: int = 1
+
+#: Mirrors CVarReflectionCaptureRuntimeTimeslice — faces rendered per frame.
+_REFL_TIMESLICE_FACES: int = 1
+
+#: Mirrors CVarReflectionCaptureRuntimeMode (0=Continuous, 1=Once).
+_REFL_RUNTIME_MODE: int = 1
+
+#: Mirrors CVarReflectionCaptureRuntimeBudget (0=unlimited).
+_REFL_BUDGET: int = 0
+
+
+# =============================================================================
+# [MeshDrawCommands] BitInvertIfNegativeFloat + sort-key helpers
+# =============================================================================

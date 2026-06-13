@@ -1,3 +1,12 @@
+#!/usr/bin/env python3
+import json
+import math
+import os
+import sys
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict
+
+
 # =============================================================================
 # AstroCellGlobalIllumination — 全局光照核心
 # (ported from Lumen / LumenDiffuseIndirect / LumenIrradianceFieldGather)
@@ -672,3 +681,4 @@ def get_astro_gi_pipeline() -> AstroCellGlobalIlluminationPipeline:
     if _ASTRO_GI_PIPELINE is None:
         _ASTRO_GI_PIPELINE = AstroCellGlobalIlluminationPipeline()
     return _ASTRO_GI_PIPELINE
+
