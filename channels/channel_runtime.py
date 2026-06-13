@@ -5581,3 +5581,656 @@ class AstroNodeServiceImpl:
             self.shutdown()
         except Exception:  # noqa: BLE001
             pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroUnderlayMessage — ported from
+#   upstream/apollo-cyber/transport/rtps/underlay_message.h
+#
+# 原典：Apollo RtpsTransmitter / RtpsReceiver 透过 FastCDR 序列化 UnderlayMessage，
+# 再由 eprosima fastrtps Participant 在 DDS/RTPS 网络上传输。
+# UnderlayMessage 是 IDL 自动生成的 POD 结构体，字段：
+#   int32_t m_timestamp — 发送端 epoch 时间戳（秒，截断为 int32）
+#   int32_t m_seq       — 每条消息的单调递增序号
+#   std::string m_data  — 序列化后的消息正文（任意字节串）
+#   std::string m_datatype — 消息类型名（对应 proto MessageDescriptor.full_name）
+#
+# 鲁迅曰：这消息的信封，薄薄的四个字段，却要走遍 DDS 的山山水水。
+# 打开来，不过是一个时间戳、一个序号、一堆字节和一个名字——正如一切旅途
+# 的终点，都只剩下问：你是谁，你从哪里来。
+#
+# 算法改动（20% 规则）：
+#   1. FastCDR serialize/deserialize → struct.pack / unpack + base64（Python 无 FastCDR）。
+#   2. getMaxCdrSerializedSize / getCdrSerializedSize → max_serialized_size() /
+#      serialized_size() 返回 int；两函数逻辑完整保留（变长字段 +4 对齐）。
+#   3. isKeyDefined() → 类方法 is_key_defined()（Apollo IDL 总返回 false）。
+#   4. serializeKey() → serialize_key() 为空操作（Key 未定义，同 C++ 实现）。
+#   5. m_timestamp 改为 float（monotonic_ns() 微秒精度）；int32 语义保留在
+#      serialise 路径（截断为 int32）以保持线格式兼容。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import struct as _struct
+import base64 as _base64
+
+
+class AstroUnderlayMessage:
+    """
+    Python port of ``apollo::cyber::transport::UnderlayMessage``.
+
+    Wire layout (CDR-approximate, little-endian):
+        int32  timestamp   (4 bytes, saturated to INT32 range)
+        int32  seq         (4 bytes)
+        uint32 data_len    (4 bytes) + data_len bytes  (m_data)
+        uint32 type_len    (4 bytes) + type_len bytes  (m_datatype)
+
+    ``serialize()`` packs to bytes; ``deserialize()`` restores from bytes.
+    Both are used by AstroRtpsTransmitter / AstroRtpsDispatcher ASTRO ports.
+
+    鲁迅曰：序号就是命运——第一条消息序号为一，最后一条也不过是个更大的整数，
+    中间的岁月，都压扁在那四个字节里。
+    """
+
+    _INT32_MAX: int =  2_147_483_647
+    _INT32_MIN: int = -2_147_483_648
+    _HDR_FMT: str   = "<ii"
+    _HDR_SIZE: int  = _struct.calcsize(_HDR_FMT)
+
+    def __init__(self, timestamp: float = 0.0, seq: int = 0,
+                 data: str = "", datatype: str = "") -> None:
+        self.timestamp: float = timestamp
+        self.seq:       int   = seq
+        self.data:      str   = data
+        self.datatype:  str   = datatype
+
+    def get_timestamp(self) -> int:
+        return self._clamp_int32(int(self.timestamp))
+    def set_timestamp(self, v: float) -> None:
+        self.timestamp = float(v)
+    def get_seq(self) -> int:
+        return self._clamp_int32(self.seq)
+    def set_seq(self, v: int) -> None:
+        self.seq = int(v)
+    def get_data(self) -> str:
+        return self.data
+    def set_data(self, v: str) -> None:
+        self.data = v
+    def get_datatype(self) -> str:
+        return self.datatype
+    def set_datatype(self, v: str) -> None:
+        self.datatype = v
+
+    @staticmethod
+    def max_serialized_size(current_alignment: int = 0) -> int:
+        return current_alignment + 4 + 4 + 4 + 65535 + 4 + 65535
+
+    @staticmethod
+    def serialized_size(msg: "AstroUnderlayMessage", current_alignment: int = 0) -> int:
+        return (current_alignment + 4 + 4
+                + 4 + len(msg.data.encode("utf-8"))
+                + 4 + len(msg.datatype.encode("utf-8")))
+
+    def serialize(self) -> bytes:
+        data_b  = self.data.encode("utf-8")
+        dtype_b = self.datatype.encode("utf-8")
+        return (
+            _struct.pack(self._HDR_FMT,
+                         self._clamp_int32(int(self.timestamp)),
+                         self._clamp_int32(self.seq))
+            + _struct.pack("<I", len(data_b))  + data_b
+            + _struct.pack("<I", len(dtype_b)) + dtype_b
+        )
+
+    @classmethod
+    def deserialize(cls, raw: bytes) -> "AstroUnderlayMessage":
+        if len(raw) < cls._HDR_SIZE + 8:
+            raise ValueError(f"AstroUnderlayMessage.deserialize: need ≥{cls._HDR_SIZE+8} bytes")
+        offset = 0
+        ts_i32, seq_i32 = _struct.unpack_from(cls._HDR_FMT, raw, offset); offset += cls._HDR_SIZE
+        data_len, = _struct.unpack_from("<I", raw, offset); offset += 4
+        data_b    = raw[offset: offset + data_len];          offset += data_len
+        dtype_len, = _struct.unpack_from("<I", raw, offset); offset += 4
+        dtype_b    = raw[offset: offset + dtype_len]
+        return cls(timestamp=float(ts_i32), seq=seq_i32,
+                   data=data_b.decode("utf-8", errors="replace"),
+                   datatype=dtype_b.decode("utf-8", errors="replace"))
+
+    @staticmethod
+    def key_max_serialized_size(current_alignment: int = 0) -> int:
+        return current_alignment
+    @staticmethod
+    def is_key_defined() -> bool:
+        return False
+    def serialize_key(self) -> bytes:
+        return b""
+
+    @classmethod
+    def _clamp_int32(cls, v: int) -> int:
+        return max(cls._INT32_MIN, min(cls._INT32_MAX, v))
+
+    def __repr__(self) -> str:
+        return (f"AstroUnderlayMessage(ts={self.timestamp}, seq={self.seq}, "
+                f"datatype={self.datatype!r}, data_len={len(self.data)})")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroWarehouseBase / AstroSingleValueWarehouse / AstroMultiValueWarehouse
+# Ported from: warehouse_base.h / single_value_warehouse.h / multi_value_warehouse.h
+#
+# 鲁迅曰：仓库里堆满了角色，按编号取，按属性找，钥匙和货物之间，
+# 隔着一道原子锁——那是文明对混乱最后的体面。
+#
+# 算法改动（20% 规则）：
+#   1. uint64_t key + RolePtr  → str channel_path + RoleRecord。
+#   2. AtomicRWLock            → threading.RLock。
+#   3. unordered_map           → dict[str, RoleRecord]（SingleValue）。
+#   4. unordered_multimap      → dict[str, list[RoleRecord]]（MultiValue）。
+#   5. ignore_if_exist         → Add() 参数保留，语义同原典。
+#   6. bool* out-param Search  → 返回 Optional[RoleRecord] / List[RoleRecord]。
+#   7. GetAllRoles 两重载      → get_all_roles() 合并为一个 Pythonic 接口。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import abc as _abc
+
+
+class AstroWarehouseBase(_abc.ABC):
+    """Abstract warehouse interface — port of WarehouseBase."""
+
+    @_abc.abstractmethod
+    def add(self, key: str, role: "RoleRecord", ignore_if_exist: bool = True) -> bool: ...
+    @_abc.abstractmethod
+    def clear(self) -> None: ...
+    @_abc.abstractmethod
+    def size(self) -> int: ...
+    @_abc.abstractmethod
+    def remove_by_key(self, key: str) -> None: ...
+    @_abc.abstractmethod
+    def remove_by_role(self, key: str, role: "RoleRecord") -> None: ...
+    @_abc.abstractmethod
+    def remove_by_attr(self, attr: "RoleRecord") -> None: ...
+    @_abc.abstractmethod
+    def search_key(self, key: str) -> bool: ...
+    @_abc.abstractmethod
+    def search_first(self, key: str) -> Optional["RoleRecord"]: ...
+    @_abc.abstractmethod
+    def search_all(self, key: str) -> List["RoleRecord"]: ...
+    @_abc.abstractmethod
+    def search_attr(self, attr: "RoleRecord") -> bool: ...
+    @_abc.abstractmethod
+    def search_attr_first(self, attr: "RoleRecord") -> Optional["RoleRecord"]: ...
+    @_abc.abstractmethod
+    def search_attr_all(self, attr: "RoleRecord") -> List["RoleRecord"]: ...
+    @_abc.abstractmethod
+    def get_all_roles(self) -> List["RoleRecord"]: ...
+
+    @staticmethod
+    def _matches(role: "RoleRecord", attr: "RoleRecord") -> bool:
+        if attr.channel_path and role.channel_path != attr.channel_path:
+            return False
+        if attr.node_name and role.node_name != attr.node_name:
+            return False
+        return True
+
+
+class AstroSingleValueWarehouse(AstroWarehouseBase):
+    """
+    One role per key — mirrors SingleValueWarehouse (unordered_map).
+
+    鲁迅曰：单值仓库是专制的——一把钥匙只开一扇门，
+    新来的若想入住，先得把旧的赶走。
+    """
+
+    def __init__(self) -> None:
+        self._roles: Dict[str, "RoleRecord"] = {}
+        self._lock  = threading.RLock()
+
+    def add(self, key: str, role: "RoleRecord", ignore_if_exist: bool = True) -> bool:
+        with self._lock:
+            if key in self._roles and ignore_if_exist:
+                return False
+            self._roles[key] = role
+        return True
+
+    def clear(self) -> None:
+        with self._lock: self._roles.clear()
+
+    def size(self) -> int:
+        with self._lock: return len(self._roles)
+
+    def remove_by_key(self, key: str) -> None:
+        with self._lock: self._roles.pop(key, None)
+
+    def remove_by_role(self, key: str, role: "RoleRecord") -> None:
+        with self._lock:
+            if self._roles.get(key) and self._roles[key].role_id == role.role_id:
+                del self._roles[key]
+
+    def remove_by_attr(self, attr: "RoleRecord") -> None:
+        with self._lock:
+            for k in [k for k, r in self._roles.items() if self._matches(r, attr)]:
+                del self._roles[k]
+
+    def search_key(self, key: str) -> bool:
+        with self._lock: return key in self._roles
+
+    def search_first(self, key: str) -> Optional["RoleRecord"]:
+        with self._lock: return self._roles.get(key)
+
+    def search_all(self, key: str) -> List["RoleRecord"]:
+        with self._lock:
+            r = self._roles.get(key); return [r] if r else []
+
+    def search_attr(self, attr: "RoleRecord") -> bool:
+        with self._lock: return any(self._matches(r, attr) for r in self._roles.values())
+
+    def search_attr_first(self, attr: "RoleRecord") -> Optional["RoleRecord"]:
+        with self._lock:
+            for r in self._roles.values():
+                if self._matches(r, attr): return r
+            return None
+
+    def search_attr_all(self, attr: "RoleRecord") -> List["RoleRecord"]:
+        with self._lock: return [r for r in self._roles.values() if self._matches(r, attr)]
+
+    def get_all_roles(self) -> List["RoleRecord"]:
+        with self._lock: return list(self._roles.values())
+
+
+class AstroMultiValueWarehouse(AstroWarehouseBase):
+    """
+    Multiple roles per key — mirrors MultiValueWarehouse (unordered_multimap).
+
+    鲁迅曰：多值仓库是民主的——一把钥匙后面站着一排人，
+    新来者也可以挤进去，只要还没有人和你同名同姓。
+    """
+
+    def __init__(self) -> None:
+        self._roles: Dict[str, List["RoleRecord"]] = {}
+        self._lock  = threading.RLock()
+
+    def add(self, key: str, role: "RoleRecord", ignore_if_exist: bool = True) -> bool:
+        with self._lock:
+            bucket = self._roles.setdefault(key, [])
+            if ignore_if_exist and any(r.role_id == role.role_id for r in bucket):
+                return False
+            bucket.append(role)
+        return True
+
+    def clear(self) -> None:
+        with self._lock: self._roles.clear()
+
+    def size(self) -> int:
+        with self._lock: return sum(len(v) for v in self._roles.values())
+
+    def remove_by_key(self, key: str) -> None:
+        with self._lock: self._roles.pop(key, None)
+
+    def remove_by_role(self, key: str, role: "RoleRecord") -> None:
+        with self._lock:
+            if key in self._roles:
+                self._roles[key] = [r for r in self._roles[key] if r.role_id != role.role_id]
+                if not self._roles[key]: del self._roles[key]
+
+    def remove_by_attr(self, attr: "RoleRecord") -> None:
+        with self._lock:
+            for key in list(self._roles):
+                self._roles[key] = [r for r in self._roles[key] if not self._matches(r, attr)]
+                if not self._roles[key]: del self._roles[key]
+
+    def search_key(self, key: str) -> bool:
+        with self._lock: return bool(self._roles.get(key))
+
+    def search_first(self, key: str) -> Optional["RoleRecord"]:
+        with self._lock:
+            b = self._roles.get(key); return b[0] if b else None
+
+    def search_all(self, key: str) -> List["RoleRecord"]:
+        with self._lock: return list(self._roles.get(key, []))
+
+    def search_attr(self, attr: "RoleRecord") -> bool:
+        with self._lock:
+            return any(self._matches(r, attr) for b in self._roles.values() for r in b)
+
+    def search_attr_first(self, attr: "RoleRecord") -> Optional["RoleRecord"]:
+        with self._lock:
+            for b in self._roles.values():
+                for r in b:
+                    if self._matches(r, attr): return r
+            return None
+
+    def search_attr_all(self, attr: "RoleRecord") -> List["RoleRecord"]:
+        with self._lock:
+            return [r for b in self._roles.values() for r in b if self._matches(r, attr)]
+
+    def get_all_roles(self) -> List["RoleRecord"]:
+        with self._lock:
+            return [r for b in self._roles.values() for r in b]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AstroChoreographyScheduler — ported from
+#   upstream/apollo-cyber/scheduler/policy/scheduler_choreography.h
+#
+# 原典：SchedulerChoreography 继承 Scheduler，引入"编舞"概念：
+#   choreography processors — 绑定 cr_confs_ 中指定任务的专用核。
+#   pool processors         — 处理其余任务的通用线程池。
+#
+# 鲁迅曰：编舞者把舞台分成两半——台前的明星各自占据指定的 CPU，
+# 台后的杂役共用一个线程池；分工清晰，却都在同一幕戏里表演。
+#
+# 算法改动（20% 规则）：
+#   1. ChoreographyTask proto   → ChoreographyTaskConf dataclass（name/priority/processor_id）。
+#   2. CRoutine (coroutine)     → Python callable。
+#   3. CPU affinity / OS policy → 仅记录，不实际调用 pthread_setaffinity。
+#   4. choreography processors  → _ChoreographyProcessor（私有 heapq/slot）。
+#   5. pool processors          → _PoolProcessor（共享 pool heapq）。
+#   6. DispatchTask             → 按 cr_confs_ 路由到 chore / pool。
+#   7. NotifyProcessor          → chore 任务唤醒专用 processor；pool 任务唤醒任意池 proc。
+#   8. CreateProcessor          → __init__ 中按 conf 分配两类 Processor。
+#   9. RemoveTask/RemoveCRoutine→ 从 cr_confs_、chore_map、task registry 三处清除。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclasses.dataclass
+class ChoreographyTaskConf:
+    """Per-task choreography conf — mirrors proto::ChoreographyTask."""
+    name:         str = ""
+    priority:     int = 0
+    processor_id: int = 0
+
+
+class _ChoreographyProcessor:
+    """Dedicated processor for one choreography slot."""
+
+    def __init__(self, proc_id: str, scheduler: "AstroChoreographyScheduler",
+                 slot_idx: int) -> None:
+        self._id = proc_id; self._sched = scheduler; self._slot_idx = slot_idx
+        self._running = False; self._wake = threading.Event()
+        self._snap = AstroSnapshot(processor_id=proc_id)
+        self._future: Optional[concurrent.futures.Future] = None
+
+    def bind_and_start(self, ex: concurrent.futures.ThreadPoolExecutor) -> None:
+        if self._running: return
+        self._running = True; self._future = ex.submit(self._run)
+
+    def stop(self) -> None:
+        if not self._running: return
+        self._running = False; self._wake.set()
+        if self._future:
+            try: self._future.result(timeout=2.0)
+            except Exception: pass
+
+    @property
+    def snapshot(self) -> AstroSnapshot: return self._snap
+
+    def notify(self) -> None: self._wake.set()
+
+    def _run(self) -> None:
+        _dbg("ASTRO-PROC", f"[ASTRO-PROCESSOR] ChoreographyProcessor::Run id={self._id} ONLINE")
+        while self._running:
+            task_name, func = self._sched._dequeue_chore(self._slot_idx)
+            if func is not None:
+                self._snap.execute_start_mono = time.monotonic()
+                self._snap.routine_name = task_name
+                _dbg("ASTRO-PROC", f"[ASTRO-PROCESSOR] chore tick: cell='{task_name}' proc={self._id}")
+                try: func()
+                except Exception as exc:
+                    _dbg("ASTRO-PROC", f"chore exc cell={task_name} exc={exc}")
+                finally: self._snap.execute_start_mono = 0.0; self._snap.routine_name = ""
+            else:
+                self._wake.clear(); self._wake.wait(timeout=0.01)
+
+
+class _PoolProcessor:
+    """Pool processor — shares the scheduler's pool heapq."""
+
+    def __init__(self, proc_id: str, scheduler: "AstroChoreographyScheduler") -> None:
+        self._id = proc_id; self._sched = scheduler
+        self._running = False; self._wake = threading.Event()
+        self._snap = AstroSnapshot(processor_id=proc_id)
+        self._future: Optional[concurrent.futures.Future] = None
+
+    def bind_and_start(self, ex: concurrent.futures.ThreadPoolExecutor) -> None:
+        if self._running: return
+        self._running = True; self._future = ex.submit(self._run)
+
+    def stop(self) -> None:
+        if not self._running: return
+        self._running = False; self._wake.set()
+        if self._future:
+            try: self._future.result(timeout=2.0)
+            except Exception: pass
+
+    @property
+    def snapshot(self) -> AstroSnapshot: return self._snap
+
+    def notify(self) -> None: self._wake.set()
+
+    def _run(self) -> None:
+        _dbg("ASTRO-PROC", f"[ASTRO-PROCESSOR] PoolProcessor::Run id={self._id} ONLINE")
+        while self._running:
+            task_name, func = self._sched._dequeue_pool()
+            if func is not None:
+                self._snap.execute_start_mono = time.monotonic()
+                self._snap.routine_name = task_name
+                _dbg("ASTRO-PROC", f"[ASTRO-PROCESSOR] pool tick: cell='{task_name}' proc={self._id}")
+                try: func()
+                except Exception as exc:
+                    _dbg("ASTRO-PROC", f"pool exc cell={task_name} exc={exc}")
+                finally: self._snap.execute_start_mono = 0.0; self._snap.routine_name = ""
+            else:
+                self._wake.clear(); self._wake.wait(timeout=0.01)
+
+
+class AstroChoreographyScheduler:
+    """
+    Choreography-policy scheduler — Python port of SchedulerChoreography.
+
+    Tasks in *chore_task_confs* → pinned choreography processors.
+    All other tasks → shared pool heapq served by pool processors.
+
+    Usage::
+
+        confs = [ChoreographyTaskConf("self_attn", priority=0, processor_id=0)]
+        sched = AstroChoreographyScheduler(chore_task_confs=confs,
+                                           num_chore_processors=1,
+                                           num_pool_processors=1)
+        sched.create_task(lambda: render("self_attn"), "self_attn", z=0)
+        sched.create_task(lambda: render("norm"),      "norm",      z=3)
+        sched.run_until_done()
+        sched.shutdown()
+    """
+
+    def __init__(
+        self,
+        chore_task_confs:              Optional[List[ChoreographyTaskConf]] = None,
+        num_chore_processors:          int = 1,
+        num_pool_processors:           int = 1,
+        choreography_affinity:         str = "",
+        pool_affinity:                 str = "",
+        choreography_processor_policy: str = "SCHED_OTHER",
+        pool_processor_policy:         str = "SCHED_OTHER",
+        choreography_processor_prio:   int = 0,
+        pool_processor_prio:           int = 0,
+        choreography_cpuset:           Optional[List[int]] = None,
+        pool_cpuset:                   Optional[List[int]] = None,
+    ) -> None:
+        self._stop: bool = False
+
+        # cr_confs_ — mirrors SchedulerChoreography::cr_confs_
+        self._cr_confs: Dict[str, ChoreographyTaskConf] = {
+            c.name: c for c in (chore_task_confs or [])
+        }
+
+        # OS-level policy fields (stored; not applied in Python)
+        self.choreography_affinity         = choreography_affinity
+        self.pool_affinity                 = pool_affinity
+        self.choreography_processor_policy = choreography_processor_policy
+        self.pool_processor_policy         = pool_processor_policy
+        self.choreography_processor_prio   = choreography_processor_prio
+        self.pool_processor_prio           = pool_processor_prio
+        self.choreography_cpuset: List[int] = choreography_cpuset or []
+        self.pool_cpuset:         List[int] = pool_cpuset or []
+
+        self._tasks: Dict[str, Any]   = {}
+        self._task_lock               = threading.Lock()
+
+        self._num_chore_procs = max(1, num_chore_processors)
+        self._chore_proc_queues: List[List[tuple]] = [[] for _ in range(self._num_chore_procs)]
+        self._chore_queue_locks: List[threading.Lock] = [threading.Lock() for _ in range(self._num_chore_procs)]
+        self._chore_map: Dict[str, int] = {}
+
+        self._num_pool_procs  = max(1, num_pool_processors)
+        self._pool_queue: List[tuple] = []
+        self._pool_q_lock = threading.Lock()
+        self._pool_q_seq  = 0
+
+        self._pending     = 0
+        self._pending_lock = threading.Lock()
+        self._all_done    = threading.Event()
+        self._all_done.set()
+
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._num_chore_procs + self._num_pool_procs,
+            thread_name_prefix="astro_chore",
+        )
+        self._chore_processors: List[_ChoreographyProcessor] = []
+        self._pool_processors:  List[_PoolProcessor]          = []
+        self._create_processors()
+
+        _dbg("ASTRO-CHORE",
+             f"AstroChoreographyScheduler constructed "
+             f"chore_procs={self._num_chore_procs} pool_procs={self._num_pool_procs} "
+             f"chore_tasks={list(self._cr_confs.keys())}")
+
+    def _create_processors(self) -> None:
+        """CreateProcessor() — mirrors SchedulerChoreography::CreateProcessor()."""
+        for idx in range(self._num_chore_procs):
+            p = _ChoreographyProcessor(f"chore_{idx}", self, idx)
+            p.bind_and_start(self._executor)
+            self._chore_processors.append(p)
+            _dbg("ASTRO-CHORE",
+                 f"CreateProcessor: chore idx={idx} ONLINE "
+                 f"policy={self.choreography_processor_policy} prio={self.choreography_processor_prio}")
+        for idx in range(self._num_pool_procs):
+            p = _PoolProcessor(f"pool_{idx}", self)
+            p.bind_and_start(self._executor)
+            self._pool_processors.append(p)
+            _dbg("ASTRO-CHORE",
+                 f"CreateProcessor: pool  idx={idx} ONLINE "
+                 f"policy={self.pool_processor_policy} prio={self.pool_processor_prio}")
+
+    def create_task(self, func: Callable[[], None], task_name: str,
+                    z: int = 3, channel_path: Optional[str] = None) -> bool:
+        """DispatchTask — route to choreography or pool based on cr_confs_."""
+        if self._stop: return False
+        with self._task_lock:
+            self._tasks[task_name] = func
+        if task_name in self._cr_confs:
+            conf    = self._cr_confs[task_name]
+            proc_id = conf.processor_id % self._num_chore_procs
+            self._chore_map[task_name] = proc_id
+            self._dispatch_chore(task_name, conf.priority, proc_id)
+            _dbg("ASTRO-CHORE", f"DispatchTask CHORE task={task_name} proc={proc_id} prio={conf.priority}")
+        else:
+            self._dispatch_pool(task_name, z)
+            _dbg("ASTRO-CHORE", f"DispatchTask POOL  task={task_name} z={z}")
+        if channel_path is not None:
+            def _notify_cb() -> None:
+                if not self._stop: self.notify_processor(task_name, z)
+            DataNotifier.instance().add_notifier(channel_path, Notifier(_notify_cb))
+        return True
+
+    def notify_processor(self, task_name: str, z: int = 3) -> bool:
+        """NotifyProcessor — mirrors SchedulerChoreography::NotifyProcessor(crid)."""
+        if self._stop: return False
+        with self._task_lock:
+            if task_name not in self._tasks: return False
+        if task_name in self._chore_map:
+            conf = self._cr_confs.get(task_name)
+            self._dispatch_chore(task_name, conf.priority if conf else 0, self._chore_map[task_name])
+        else:
+            self._dispatch_pool(task_name, z)
+        return True
+
+    def remove_task(self, task_name: str) -> bool:
+        """RemoveTask — mirrors SchedulerChoreography::RemoveTask."""
+        with self._task_lock:
+            removed = self._tasks.pop(task_name, None) is not None
+        self._cr_confs.pop(task_name, None)
+        self._chore_map.pop(task_name, None)
+        return removed
+
+    def remove_croutine(self, task_name: str) -> bool:
+        """RemoveCRoutine — mirrors SchedulerChoreography::RemoveCRoutine(crid)."""
+        return self.remove_task(task_name)
+
+    def _dispatch_chore(self, task_name: str, priority: int, proc_id: int) -> None:
+        with self._pending_lock:
+            self._pending += 1; self._all_done.clear()
+        with self._chore_queue_locks[proc_id]:
+            heapq.heappush(self._chore_proc_queues[proc_id], (priority, id(task_name), task_name))
+        if proc_id < len(self._chore_processors):
+            self._chore_processors[proc_id].notify()
+
+    def _dispatch_pool(self, task_name: str, z: int) -> None:
+        with self._pending_lock:
+            self._pending += 1; self._all_done.clear()
+        with self._pool_q_lock:
+            heapq.heappush(self._pool_queue, (z, self._pool_q_seq, task_name))
+            self._pool_q_seq += 1
+        for p in self._pool_processors: p.notify(); break
+
+    def _dequeue_chore(self, proc_id: int) -> Tuple[str, Optional[Callable]]:
+        with self._chore_queue_locks[proc_id]:
+            if not self._chore_proc_queues[proc_id]: return "", None
+            _, _, task_name = heapq.heappop(self._chore_proc_queues[proc_id])
+        with self._task_lock:
+            func = self._tasks.get(task_name)
+        return ("", None) if func is None else (task_name, self._wrap(func))
+
+    def _dequeue_pool(self) -> Tuple[str, Optional[Callable]]:
+        with self._pool_q_lock:
+            if not self._pool_queue: return "", None
+            _, _, task_name = heapq.heappop(self._pool_queue)
+        with self._task_lock:
+            func = self._tasks.get(task_name)
+        return ("", None) if func is None else (task_name, self._wrap(func))
+
+    def _wrap(self, func: Callable) -> Callable:
+        def _wrapped() -> None:
+            try: func()
+            finally:
+                with self._pending_lock:
+                    self._pending = max(0, self._pending - 1)
+                    if self._pending == 0: self._all_done.set()
+        return _wrapped
+
+    def run_until_done(self, timeout: float = 10.0) -> bool:
+        return self._all_done.wait(timeout=timeout)
+
+    def check_sched_status(self) -> str:
+        """CheckSchedStatus — mirrors SchedulerChoreography status snapshot."""
+        now = time.monotonic(); parts: List[str] = []
+        for p in self._chore_processors + self._pool_processors:  # type: ignore[operator]
+            s = p.snapshot
+            if s.execute_start_mono > 0.0:
+                parts.append(f"{s.processor_id}:{s.routine_name}:{int((now-s.execute_start_mono)*1000)}ms")
+            else:
+                parts.append(f"{s.processor_id}:idle")
+        snap = ", ".join(parts) + f", timestamp: {int(now*1e9)}"
+        _dbg("ASTRO-CHORE", f"[ASTRO-CHORE] CheckSchedStatus snap={snap}")
+        return snap
+
+    def shutdown(self) -> None:
+        """Shutdown — mirrors SchedulerChoreography::Shutdown()."""
+        if self._stop: return
+        self._stop = True
+        _dbg("ASTRO-CHORE",
+             f"[ASTRO-CHORE] Shutdown chore={len(self._chore_processors)} pool={len(self._pool_processors)}")
+        for p in self._chore_processors: p.stop()
+        for p in self._pool_processors:  p.stop()
+        with self._task_lock: self._tasks.clear()
+        for q in self._chore_proc_queues: q.clear()
+        with self._pool_q_lock: self._pool_queue.clear()
+        self._executor.shutdown(wait=False)
+        _dbg("ASTRO-CHORE", "AstroChoreographyScheduler shutdown complete")
