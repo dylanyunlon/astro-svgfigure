@@ -1,0 +1,42 @@
+{
+  "_comment": "AT UIL DOF parameters extracted from at_uil_params.json — applied to DOFPass.ts defaults",
+  "_source": "channels/physics/at_uil_params.json",
+
+  "homeScene": {
+    "uDOF": [0.72, 0.8, 0.3, 1],
+    "uDOFContrast": [1.28, 2.41],
+    "uNoDOFContrast": [1.33, 1.86],
+    "_mapping": {
+      "focalZ": "uDOF[0] = 0.72",
+      "nearTransition": "uDOF[1] = 0.8",
+      "farTransition": "uDOF[2] = 0.3",
+      "maxCoc": "uDOF[3] * 10 = 10",
+      "contrast": "avg(uDOFContrast) = 1.845 → 1.85"
+    }
+  },
+
+  "workPageComposite": {
+    "uDOF": [0.1, 0.41, 0.25, 0],
+    "uDOFContrast": [1.0, 1.14],
+    "_mapping": {
+      "focalZ": "uDOF[0] = 0.1",
+      "nearTransition": "uDOF[1] = 0.41",
+      "farTransition": "uDOF[2] = 0.25",
+      "maxCoc": "uDOF[3] * 10 = 0 (DOF disabled)",
+      "contrast": "avg(uDOFContrast) = 1.07"
+    }
+  },
+
+  "workGlassShader": {
+    "uDOFContrast": [1.0, 1.3]
+  },
+
+  "DOFPassDefaults": {
+    "focalZ": 0.72,
+    "nearTransition": 0.8,
+    "farTransition": 0.3,
+    "contrast": 1.85,
+    "maxCoc": 10,
+    "blurSteps": 8
+  }
+}

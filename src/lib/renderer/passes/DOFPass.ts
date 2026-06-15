@@ -13,12 +13,17 @@
  *   3. Bokeh vertical blur     — second axis of separable filter
  *   4. Composite               — lerp between sharp scene and blurred by CoC mask
  *
- * Parameters:
+ * Parameters (defaults sourced from channels/physics/at_uil_params.json):
  *   focalZ           — world-space focal distance (depth at focus)
+ *                      AT: HomeSceneVFX_home_uDOF[0] = 0.72
  *   nearTransition   — near-field blur fade distance (world units)
+ *                      AT: HomeSceneVFX_home_uDOF[1] = 0.8
  *   farTransition    — far-field blur fade distance (world units)
+ *                      AT: HomeSceneVFX_home_uDOF[2] = 0.3
  *   contrast         — sharpens the near/far transition curve
- *   maxCoc           — maximum CoC radius in pixels (default 10)
+ *                      AT: HomeSceneVFX_home_uDOFContrast avg([1.28, 2.41]) ≈ 1.85
+ *   maxCoc           — maximum CoC radius in pixels
+ *                      AT: HomeSceneVFX_home_uDOF[3] * 10 = 10
  *   blurSteps        — Gaussian sample count per axis (default 8)
  */
 
@@ -158,15 +163,15 @@ void main() {
 // ── DOFPassConfig ─────────────────────────────────────────────────────────────
 
 export interface DOFPassConfig {
-  /** World-space focal depth.  Default: 0.5 (normalised). */
+  /** World-space focal depth.  AT: HomeSceneVFX_home_uDOF[0].  Default: 0.72. */
   focalZ?: number;
-  /** Near-field transition distance.  Default: 0.1. */
+  /** Near-field transition distance.  AT: HomeSceneVFX_home_uDOF[1].  Default: 0.8. */
   nearTransition?: number;
-  /** Far-field transition distance.  Default: 0.2. */
+  /** Far-field transition distance.  AT: HomeSceneVFX_home_uDOF[2].  Default: 0.3. */
   farTransition?: number;
-  /** Curve contrast / sharpness.  Default: 1.5. */
+  /** Curve contrast / sharpness.  AT: avg(HomeSceneVFX_home_uDOFContrast).  Default: 1.85. */
   contrast?: number;
-  /** Maximum CoC radius in pixels.  Default: 10. */
+  /** Maximum CoC radius in pixels.  AT: HomeSceneVFX_home_uDOF[3] * 10.  Default: 10. */
   maxCoc?: number;
   /** Gaussian sample count per axis.  Default: 8. */
   blurSteps?: number;
@@ -210,10 +215,10 @@ export class DOFPass {
     config: DOFPassConfig = {}
   ) {
     this.nuke           = nuke;
-    this.focalZ         = config.focalZ         ?? 0.5;
-    this.nearTransition = config.nearTransition  ?? 0.1;
-    this.farTransition  = config.farTransition   ?? 0.2;
-    this.contrast       = config.contrast        ?? 1.5;
+    this.focalZ         = config.focalZ         ?? 0.72;
+    this.nearTransition = config.nearTransition  ?? 0.8;
+    this.farTransition  = config.farTransition   ?? 0.3;
+    this.contrast       = config.contrast        ?? 1.85;
     this.maxCoc         = config.maxCoc          ?? 10;
     this.blurSteps      = config.blurSteps       ?? 8;
 
