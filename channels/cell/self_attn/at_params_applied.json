@@ -1,0 +1,44 @@
+{
+  "_meta": {
+    "source": "channels/physics/xiaodi_options_table.json[\"cil-eye\"]",
+    "target": "src/lib/shaders/cil-eye.frag",
+    "applied_by": "xiaodi #61",
+    "task": "Apply AT UIL params to cil-eye species shader"
+  },
+  "bloom": {
+    "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength": 1.2,
+    "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomRadius": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomTintColor": "#ffffff",
+    "UnrealBloomComposite_shaderVariants_homebloomStrength": 0.6,
+    "UnrealBloomComposite_shaderVariants_homebloomRadius": 0.8,
+    "UnrealBloomLuminosity/UnrealBloomLuminosity/homebloom/luminosityThreshold": 0
+  },
+  "lighting": {
+    "HomeAlleyShader/HomeAlleyShader/Element_4_home_scene/uLight": [2.61, 0.29, 0.57, 0],
+    "HomeAlleyShader/HomeAlleyShader/Element_4_home_scene/uPhong": [1.82, 0.71],
+    "HomeAlleyShader/HomeAlleyShader/Element_4_home_scene/uPhongColor": "#d600ff",
+    "L_Element_11_home_sceneintensity": 3.44,
+    "L_Element_11_home_scenecolor": "#0bed90",
+    "L_Element_10_home_sceneintensity": 2.19,
+    "VolumetricLight_home_fExposure": 0.86,
+    "VolumetricLight_home_fDensity": 0.22,
+    "VolumetricLight_home_fDecay": 0.8,
+    "VolumetricLight_home_fWeight": 0.34
+  },
+  "shadow": {
+    "SHADOW_Element_9_home_scenefar": 40,
+    "SHADOW_Element_9_home_scenesize": 1024,
+    "SHADOW_Element_9_home_scenestatic": true,
+    "SHADOW_Element_9_home_sceneposition": [0, 6.51, 0],
+    "SHADOW_Element_9_home_scenetarget": [0, 0, 0]
+  },
+  "shader_uniform_mapping": {
+    "u_bloomStrength":    { "key": "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength", "value": 1.2 },
+    "u_bloomRadius":      { "key": "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomRadius",   "value": 1.0 },
+    "u_ambientIntensity": { "key": "L_Element_11_home_sceneintensity",                                  "value": 3.44 },
+    "u_ambientColor":     { "key": "L_Element_11_home_scenecolor",                                      "value": "#0bed90", "rgb": [0.047, 0.929, 0.565] },
+    "u_lightExposure":    { "key": "VolumetricLight_home_fExposure",                                    "value": 0.86 },
+    "u_shadowFar":        { "key": "SHADOW_Element_9_home_scenefar",                                    "value": 40.0 },
+    "u_shadowBias":       { "key": "SHADOW_Element_9_home_scenesize",                                   "note": "derived: 1/1024 ≈ 0.001", "value": 0.001 }
+  }
+}
