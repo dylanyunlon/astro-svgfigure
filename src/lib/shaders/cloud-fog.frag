@@ -36,15 +36,25 @@ in vec2  vUV;
 in float vDepth01;   // 0 = deepest layer, 1 = closest layer
 
 // ── uniforms ──────────────────────────────────────────────────────────────────
-uniform float uAlpha;
-uniform float uNoise;
-uniform float uSpeed;
-uniform float uScale;
+// AT UIL CloudFog defaults (source: channels/physics/at_uil_params.json)
+//   uAlpha      = 1.8        (INPUT_CloudFoghome_alpha)
+//   uNoise      = 1.0        (INPUT_CloudFoghome_noise)
+//   uSpeed      = 0.7        (INPUT_CloudFoghome_speed)
+//   uScale      = 6.0        (INPUT_CloudFoghome_scale)
+//   uPlaneCount = 20         (INPUT_CloudFoghome_planes)
+//   uFadeNear   = 2.0        (INPUT_CloudFoghome_fadeDist[0])
+//   uFadeFar    = 4.0        (INPUT_CloudFoghome_fadeDist[1])
+//   width       = [-4, 4]    (INPUT_CloudFoghome_width)
+//   height      = [-1, 4]    (INPUT_CloudFoghome_height)
+uniform float uAlpha;      // AT default: 1.8
+uniform float uNoise;      // AT default: 1.0
+uniform float uSpeed;      // AT default: 0.7
+uniform float uScale;      // AT default: 6.0
 uniform float uTime;
 uniform int   uLayerIndex;
-uniform int   uPlaneCount;
-uniform float uFadeNear;
-uniform float uFadeFar;
+uniform int   uPlaneCount; // AT default: 20
+uniform float uFadeNear;   // AT default: 2.0  (fadeDist[0])
+uniform float uFadeFar;    // AT default: 4.0  (fadeDist[1])
 uniform vec3  uFogColor;
 
 // ── output ────────────────────────────────────────────────────────────────────

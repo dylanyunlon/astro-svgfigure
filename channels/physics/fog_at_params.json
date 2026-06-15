@@ -1,0 +1,24 @@
+{
+  "source": "channels/physics/at_uil_params.json",
+  "module": "CloudFog",
+  "applied_by": "xiaodi #66",
+  "params": {
+    "alpha": 1.8,
+    "planes": 20,
+    "noise": 1,
+    "speed": 0.7,
+    "scale": 6,
+    "width": [-4, 4],
+    "height": [-1, 4],
+    "fadeDist": [2, 4]
+  },
+  "uniform_mapping": {
+    "uAlpha": 1.8,
+    "uPlaneCount": 20,
+    "uNoise": 1.0,
+    "uSpeed": 0.7,
+    "uScale": 6.0,
+    "uFadeNear": 2.0,
+    "uFadeFar": 4.0
+  }
+}
