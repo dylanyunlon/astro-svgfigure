@@ -1,0 +1,48 @@
+{
+  "name": "uil",
+  "version": "4.4.2",
+  "description": "JavaScript gui library",
+  "type": "module",
+  "main": "./build/uil.cjs",
+  "module": "./build/uil.module.js",
+  "exports": {
+    ".": {
+      "import": "./build/uil.module.js",
+      "require": "./build/uil.cjs"
+    },
+    "./build/*": "./build/*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lo-th/uil"
+  },
+  "files": [
+    "package.json",
+    "LICENSE",
+    "README.md",
+    "build"
+  ],
+  "directories": {
+    "doc": "docs",
+    "example": "examples"
+  },
+  "scripts": {
+    "build": "rollup -c utils/rollup.config.js"
+  },
+  "keywords": [
+    "uil",
+    "uil.js",
+    "ui"
+  ],
+  "author": "lo-th",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/lo-th/uil/issues"
+  },
+  "homepage": "http://lo-th.github.io/uil/",
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "^16.0.0",
+    "@rollup/plugin-terser": "^0.4.0",
+    "rollup": "^4.6.0"
+  }
+}

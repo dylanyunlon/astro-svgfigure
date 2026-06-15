@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>UIL icon creator</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+        <link rel="shortcut icon" href="./assets/favicon.ico">
+        <link rel="stylesheet" type="text/css" href="./assets/style.css">
+	</head>
+	<body>
+        <div id='debug3'></div>
+		<script type="module">
+
+
+			import {UIL} from '../src/Uil_dev.js'
+
+			const debug = document.querySelector('#debug3');
+
+		    let name = '', img
+		    let images = []
+
+		    let tmpImage = {}
+
+		    //let formats = [256,128,64,48,32,24,16]//,512,1024
+		    let formats = [256,128,64,48,40,32,24,20,16]//,512,1024
+		    //let formats = [256,128,64]//,512,1024
+		    //let formats = [256,128,64,48,32,16]//,512,1024
+
+		    let tmpCanvas = document.createElement("canvas");
+			let canvas = document.createElement("canvas");
+			canvas.width = canvas.height = 512
+			canvas.style.cssText = 'position:absolute; left:5px; top:0px; border-radius:2px;'
+
+			let ctx = canvas.getContext('2d')
+			ctx.fillRect(0, 0, 512, 512);
+
+			//document.body.appendChild( canvas )
+
+			const callbackLoader = ( name ) => {
+
+				switch(name){
+
+		            case 'LOAD ROUGHT' :
+		                UIL.Files.load( { callback:onLoad, type:'image', 'R' } )
+		            break;
+
+		            case 'LOAD METAL' :
+		                UIL.Files.load( { callback:onLoad, type:'image', 'M' } )
+		            break;
+
+		            case 'LOAD AO' :
+		                UIL.Files.load( { callback:onLoad, type:'image', 'A' } )
+		            break;
+
+		            case 'SAVE' :
+		                convert()
+		            break;
+		        }
+
+			}
+
+			const onLoad = ( img, Name, type ) => {
+
+				name = Name.substring( 0, Name.lastIndexOf('.') )
+				//console.log(name)
+				//ctx.clearRect(0, 0, 256, 256)
+				//ctx.drawImage(img, 0, 0, 256, 256);
+				//canvas.style.border = '1px solid #314d2f;'
+
+				tmpImage[type] = img
+
+			}
+
+		    const convert = () => {
+
+		    	if( !name ){ 
+		    		debug.innerHTML = 'Load image first !'
+		    		return
+		    	}
+
+		    	images = []
+
+		    	for( let i = 0; i < formats.length; i++){
+
+		    		let c = tmpCanvas
+		    		let s = formats[i]
+		    		c.width = s 
+		    		c.height = s
+
+		    		let ct = c.getContext('2d')
+		    		ct.clearRect( 0, 0, s, s )
+		    		ct.drawImage( canvas, 0, 0, s, s )
+
+		    		c.toBlob( function (blob) {
+
+		    			const reader = new FileReader()
+		    			reader.addEventListener('loadend', () => {
+		    				images[i] = new Uint8Array(reader.result)
+		    				if ( images.length === formats.length ){
+		    					UIL.Files.save( { name:name, data:new Uint8Array(pngToIco(images)), type:'icon' } )
+		    				}
+
+		    			})
+		    			reader.readAsArrayBuffer(blob);
+
+		    		}, "image/png")
+
+		    	}
+
+
+
+		    }
+
+			const pngToIco = ( images ) => {
+  
+			    let icoHead = [ //.ico header
+			        0, 0, // Reserved. Must always be 0 (2 bytes)
+			        1, 0, // Specifies image type: 1 for icon (.ICO) image, 2 for cursor (.CUR) image. Other values are invalid. (2 bytes)
+			        images.length & 255, (images.length >> 8) & 255 // Specifies number of images in the file. (2 bytes)
+			    ],
+			    icoBody = [],
+			    pngBody = [];
+
+			     for(let i = 0, num, pngHead, pngData, offset = 0; i < images.length; i++) {
+
+				    pngData = Array.from( images[i] );
+				    pngHead = [ //image directory (16 bytes)
+				      0,    // Width 0-255, should be 0 if 256 pixels (1 byte)
+				      0,    // Height 0-255, should be 0 if 256 pixels (1 byte)
+				      0,    // Color count, should be 0 if more than 256 colors (1 byte)
+				      0,    // Reserved, should be 0 (1 byte)
+				      1, 0, // Color planes when in .ICO format, should be 0 or 1, or the X hotspot when in .CUR format (2 bytes)
+				      32, 0 // Bits per pixel when in .ICO format, or the Y hotspot when in .CUR format (2 bytes)
+				    ];
+			    	num = pngData.length;
+			    	for (let i = 0; i < 4; i++) pngHead[pngHead.length] = ( num >> ( 8 * i )) & 255 // Size of the bitmap data in bytes (4 bytes)
+
+			    	num = icoHead.length + (( pngHead.length + 4 ) * images.length ) + offset
+			    	for (let i = 0; i < 4; i++) pngHead[pngHead.length] = ( num >> ( 8 * i )) & 255 // Offset in the file (4 bytes)
+
+			    	offset += pngData.length;
+			    	icoBody = icoBody.concat(pngHead) // combine image directory
+			    	pngBody = pngBody.concat(pngData) // combine actual image data
+			    }
+			    return icoHead.concat( icoBody, pngBody )
+
+			}
+
+			const dropElement = ( e ) => {
+
+				e.preventDefault();
+				let file
+				if (e.dataTransfer.items) file = e.dataTransfer.files[0]
+				else return;
+
+				var reader = new FileReader()
+			    var type = file.name.substring(file.name.lastIndexOf('.')+1, file.name.length );;
+
+			    if ( type === 'jpg' ||  type === 'png' ) reader.readAsDataURL( file );
+			    else { 
+			    	debug.innerHTML = 'Bad files format ?'
+			    	return
+			    }
+
+			    reader.onload = function ( e ) {
+
+			    	name = file.name.substring(0, file.name.lastIndexOf('.'))
+			    	img = new Image()
+					img.src = e.target.result
+					img.onload = function () {
+
+						onLoad( img, name )
+						//ctx.clearRect(0, 0, 256, 256)
+						//ctx.drawImage(img, 0, 0, 256, 256);
+					}
+
+			    }
+
+
+			}
+
+			document.addEventListener( 'dragover', function(e){ e.preventDefault() }, false );
+			document.addEventListener( 'dragend', function(e){ e.preventDefault() }, false );
+			document.addEventListener( 'dragleave', function(e){ e.preventDefault()}, false );
+			document.addEventListener( 'drop', dropElement, false );
+
+			const Canvas = []
+			const names = ['AO', 'METAL', 'ROUGHT']
+			let ui0 = new UIL.Gui( { w:128, close:false, css:'top:10px; left:10px;', colors:{sx:0} } )
+
+			let i = 3, c, ct
+
+			while(i--){
+
+				c = document.createElement("canvas");
+				c.width = c.height = 128
+				ct = c.getContext('2d')
+				ct.fillRect(0, 0, 128, 128)
+
+				//ui0.add( 'title',  { name:names[i], h:30, align:'center' })
+				ui0.add( 'empty', { h:138 }).appendChild( c )
+				ui0.add('button', { name:'LOAD ' + names[i], h:30 }).onChange( callbackLoader )
+
+				Canvas[i] = c
+
+			}
+
+			
+
+
+			
+			
+
+			// GUI
+			let ui = new UIL.Gui( { w:512, close:false, css:'top:10px; left:50%;', center: true, colors:{sx:0} } )
+			//ui.add( 'title',  { name:'IMAGE to ICON', h:30, align:'center' })
+			ui.add( 'empty', { h:522 }).appendChild( canvas )
+			//ui.add('button', { name:'LOAD', h:30 }).onChange( callbackLoader )
+			ui.add('button', { name:'SAVE', h:30 }).onChange( callbackLoader )
+			//ui.add('button', { value:[ 'LOAD', 'SAVE' ], h:30 }).onChange( callbackLoader )
+
+			//debug.innerHTML = 'Load or drag Image file'
+
+		</script>
+	</body>
+</html>
