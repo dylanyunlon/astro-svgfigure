@@ -166,6 +166,34 @@ export interface BloomPassConfig {
   levels?: number;
 }
 
+// ── BloomPass PRESETS (sourced from channels/physics/at_uil_params.json) ─────
+//
+// Keys map to UnrealBloomComposite scene names from AT's UIL param tree.
+// Values are taken verbatim from at_uil_params.json — no guessing.
+//
+// Source paths inside at_uil_params.json:
+//   strength → UnrealBloomComposite/UnrealBloomComposite/<scene>/bloomStrength
+//   radius   → UnrealBloomComposite/UnrealBloomComposite/<scene>/bloomRadius
+//   threshold→ UnrealBloomLuminosity/UnrealBloomLuminosity/<scene>/luminosityThreshold
+//
+// shaderVariants presets:
+//   strength → UnrealBloomComposite_shaderVariants_<scene>bloomStrength
+//   radius   → UnrealBloomComposite_shaderVariants_<scene>bloomRadius
+
+export type BloomPresetName =
+  | 'home'
+  | 'homebloom'
+  | 'globalbloom'
+  | 'cleanroom'
+  | 'workbloom'
+  | 'treescene'
+  | 'sv_contact'
+  | 'sv_about'
+  | 'sv_footer'
+  | 'sv_home'
+  | 'sv_work'
+  | 'sv_tree';
+
 // ── BloomPass ─────────────────────────────────────────────────────────────────
 
 /**
@@ -185,6 +213,113 @@ export interface BloomPassConfig {
 export class BloomPass {
   readonly nuke: Nuke;
   readonly name = 'bloom';
+
+  /**
+   * AT UIL per-scene bloom presets.
+   * All values sourced directly from channels/physics/at_uil_params.json.
+   *
+   * Two families:
+   *  • Core scenes  — UnrealBloomComposite/UnrealBloomComposite/<scene>/…
+   *  • shaderVariants (sv_*) — UnrealBloomComposite_shaderVariants_<scene>bloom…
+   */
+  static readonly PRESETS: Record<BloomPresetName, Required<BloomPassConfig>> = {
+    // ── Core scenes ──────────────────────────────────────────────────────────
+    home: {
+      bloomStrength:        3.8200000000000003,
+      bloomRadius:          1,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    homebloom: {
+      bloomStrength:        1.2,
+      bloomRadius:          1,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    globalbloom: {
+      bloomStrength:        0.3,
+      bloomRadius:          0.2,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    cleanroom: {
+      bloomStrength:        1,
+      bloomRadius:          1,
+      luminosityThreshold:  0.2,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    workbloom: {
+      bloomStrength:        1,
+      bloomRadius:          1,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    treescene: {
+      bloomStrength:        1,
+      bloomRadius:          1,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    // ── shaderVariants (UnrealBloomComposite_shaderVariants_…) ───────────────
+    sv_contact: {
+      bloomStrength:        0.8,
+      bloomRadius:          0.5,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    sv_about: {
+      bloomStrength:        1,
+      bloomRadius:          1,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    sv_footer: {
+      bloomStrength:        0.7,
+      bloomRadius:          0.5,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    sv_home: {
+      bloomStrength:        0.6,
+      bloomRadius:          0.8,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    sv_work: {
+      bloomStrength:        0.5,
+      bloomRadius:          0.5,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+    sv_tree: {
+      bloomStrength:        0.8,
+      bloomRadius:          0.7,
+      luminosityThreshold:  0,
+      luminositySmoothWidth: 0.04,
+      levels:               5,
+    },
+  };
+
+  /**
+   * Apply a named AT UIL preset, updating live uniforms.
+   * @param name — one of the keys in BloomPass.PRESETS
+   */
+  applyPreset(name: BloomPresetName): void {
+    const preset = BloomPass.PRESETS[name];
+    if (!preset) throw new Error(`BloomPass: unknown preset "${name}"`);
+    this.setUniforms(preset);
+  }
 
   bloomStrength: number;
   bloomRadius: number;
