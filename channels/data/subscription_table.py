@@ -118,6 +118,10 @@ class SubscriptionTable:
     def declare_writer(self, cell_id: str, channel_id: str):
         """Cell announces it will PUBLISH to this channel."""
         with self._mu:
+            # Prevent duplicates
+            existing = self._writers.get(channel_id, [])
+            if any(e.cell_id == cell_id for e in existing):
+                return
             entry = SubscriptionEntry(cell_id, channel_id, "WRITER")
             self._writers.setdefault(channel_id, []).append(entry)
             self._cell_pubs.setdefault(cell_id, set()).add(channel_id)
@@ -128,6 +132,10 @@ class SubscriptionTable:
                        callback: Optional[Callable] = None):
         """Cell announces it will SUBSCRIBE to this channel."""
         with self._mu:
+            # Prevent duplicates
+            existing = self._readers.get(channel_id, [])
+            if any(e.cell_id == cell_id for e in existing):
+                return
             entry = SubscriptionEntry(cell_id, channel_id, "READER",
                                       is_primary=is_primary,
                                       callback=callback)

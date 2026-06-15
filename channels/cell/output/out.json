@@ -1,6 +1,6 @@
 {
-  "status": "converged",
   "cell_id": "output",
   "species": "cil-arrow-right",
-  "epoch": 9
+  "bbox": {},
+  "bbox_delta": 0.1
 }

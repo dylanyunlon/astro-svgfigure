@@ -21,38 +21,14 @@
 
 
 
-<g id="cell-ffn" data-z="3" opacity="0.0500" filter="url(#shadow-ffn)" transform="translate(230.0,470.0)">
+<g id="cell-ffn" data-z="3" opacity="0.0500" filter="url(#shadow-ffn)" transform="translate(220.0,470.0)">
 <rect x="72.458" y="185.817" width="140" height="45" rx="8" fill="#FFF3E0" stroke="#E65100" stroke-width="1.5" />
 <path fill="none" stroke="#E65100" stroke-width="2" opacity="0.7" d="M 10.000,27.500 C 28.800,27.500 31.200,27.500 30.000,27.500 C 48.800,27.500 51.200,27.500 50.000,27.500 C 68.800,27.500 71.149,27.155 70.000,27.500 C 88.851,21.845 91.149,21.155 90.000,21.500 C 108.851,15.845 111.149,15.155 110.000,15.500 L 130.000,9.500" /><text x="142.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#BF360C">Feed Forward</text>
 
 <g class="decal-overlay" opacity="1.000">
   
-  <path d="M 67.220,14.170 C 71.214,20.553 70.878,22.274 71.850,21.570 C 69.492,23.276 69.172,24.987 68.520,23.980 L 72.590,30.270" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.838" />
-  <path d="M 67.220,14.170 C 71.214,20.553 70.878,22.274 71.850,21.570 C 69.492,23.276 69.172,24.987 68.520,23.980 L 72.590,30.270" fill="none" stroke="#FFE0B2" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.293" />
-</g>
-</g>
-    
-    <defs>
-  <filter id="shadow-input_embed" x="-20%" y="-20%" width="140%" height="140%">
-    <feDropShadow dx="2.0" dy="2.0" stdDeviation="3.75" flood-color="#000000" flood-opacity="0.35" />
-  </filter>
-</defs>
-
-
-
-<g id="cell-input_embed" data-z="3" opacity="0.0500" filter="url(#shadow-input_embed)" transform="translate(220.0,40.0)">
-<rect x="72.458" y="185.817" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5" />
-<line x1="130.358" y1="222.117" x2="174.558" y2="203.517" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)" />
-<line x1="128.958" y1="217.617" x2="175.958" y2="208.017" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)" />
-<line x1="128.458" y1="212.817" x2="176.458" y2="212.817" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)" />
-<line x1="128.958" y1="208.017" x2="175.958" y2="217.617" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)" />
-<line x1="130.358" y1="203.517" x2="174.558" y2="222.117" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)" />
-<text x="152.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Input Embedding</text>
-
-<g class="decal-overlay" opacity="1.000">
-  
-  <defs><marker id="decal-arrow-6610" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350" /></marker></defs>
-  <line x1="146.748" y1="209.927" x2="158.168" y2="211.707" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-6610)" />
+  <path d="M 67.220,14.170 C 71.214,20.553 70.878,22.274 71.850,21.570 C 69.492,23.276 69.172,24.987 68.520,23.980 L 72.590,30.270" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.300" />
+  <path d="M 67.220,14.170 C 71.214,20.553 70.878,22.274 71.850,21.570 C 69.492,23.276 69.172,24.987 68.520,23.980 L 72.590,30.270" fill="none" stroke="#FFE0B2" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.105" />
 </g>
 </g>
     
@@ -122,8 +98,32 @@
 
 <g class="decal-overlay" opacity="1.000">
   
-  <defs><marker id="decal-arrow-391" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350" /></marker></defs>
-  <line x1="146.718" y1="210.197" x2="158.198" y2="211.437" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-391)" />
+  <defs><marker id="decal-arrow-3022" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350" /></marker></defs>
+  <line x1="146.908" y1="209.237" x2="158.008" y2="212.397" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-3022)" />
+</g>
+</g>
+    
+    <defs>
+  <filter id="shadow-input_embed" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="8.0" dy="8.0" stdDeviation="5.35" flood-color="#000000" flood-opacity="0.55" />
+  </filter>
+</defs>
+
+
+
+<g id="cell-input_embed" data-z="5" opacity="0.0500" filter="url(#shadow-input_embed)" transform="translate(220.0,40.0)">
+<rect x="72.458" y="185.817" width="160" height="50" rx="8" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5" />
+<line x1="130.358" y1="222.117" x2="174.558" y2="203.517" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.958" y1="217.617" x2="175.958" y2="208.017" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.458" y1="212.817" x2="176.458" y2="212.817" stroke="#2E7D32" stroke-width="2.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="128.958" y1="208.017" x2="175.958" y2="217.617" stroke="#2E7D32" stroke-width="1.0" opacity="0.5" marker-end="url(#arrow-green)" />
+<line x1="130.358" y1="203.517" x2="174.558" y2="222.117" stroke="#2E7D32" stroke-width="1.5" opacity="0.5" marker-end="url(#arrow-green)" />
+<text x="152.458" y="197.817" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#1B5E20">Input Embedding</text>
+
+<g class="decal-overlay" opacity="1.000">
+  
+  <defs><marker id="decal-arrow-3158" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2E7D32" opacity="0.350" /></marker></defs>
+  <line x1="146.698" y1="210.357" x2="158.218" y2="211.277" stroke="#2E7D32" stroke-width="1.5" opacity="0.350" marker-end="url(#decal-arrow-3158)" />
 </g>
 </g>
     
@@ -135,7 +135,7 @@
 
 
 
-<g id="cell-add_norm1" data-z="5" opacity="0.0500" filter="url(#shadow-add_norm1)" transform="translate(230.0,370.0)">
+<g id="cell-add_norm1" data-z="5" opacity="0.0500" filter="url(#shadow-add_norm1)" transform="translate(220.0,370.0)">
 <rect x="72.458" y="185.817" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5" />
 <line x1="132.458" y1="205.817" x2="152.458" y2="205.817" stroke="#C62828" stroke-width="2.5" opacity="0.6" />
 <line x1="142.458" y1="195.817" x2="142.458" y2="215.817" stroke="#C62828" stroke-width="2.5" opacity="0.6" />
@@ -164,7 +164,7 @@
 
 
 
-<g id="cell-add_norm2" data-z="5" opacity="0.0500" filter="url(#shadow-add_norm2)" transform="translate(230.0,575.0)">
+<g id="cell-add_norm2" data-z="5" opacity="0.0500" filter="url(#shadow-add_norm2)" transform="translate(220.0,575.0)">
 <rect x="72.458" y="185.817" width="140" height="40" rx="8" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5" />
 <line x1="132.458" y1="205.817" x2="152.458" y2="205.817" stroke="#C62828" stroke-width="2.5" opacity="0.6" />
 <line x1="142.458" y1="195.817" x2="142.458" y2="215.817" stroke="#C62828" stroke-width="2.5" opacity="0.6" />
@@ -188,13 +188,13 @@
   <g id="edges-layer" style="pointer-events:none;">
     <path d="M300.0,90.0 L300.0,150.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
     <path d="M300.0,200.0 L300.0,260.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
-    <path d="M300.0,310.0 L300.0,370.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
-    <path d="M300.0,410.0 L300.0,470.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
-    <path d="M300.0,515.0 L300.0,575.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
-    <path d="M300.0,615.0 L300.0,675.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M300.0,310.0 L290.0,370.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M290.0,410.0 L290.0,470.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M290.0,515.0 L290.0,575.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
+    <path d="M290.0,615.0 L300.0,675.0" stroke="#888" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)" />
     
-    <path d="M340.0,200.0 C362.4,260.7 324.9,345.7 384.8,321.3 S324.9,345.7 265.0,370.0" stroke="#4CAF50" stroke-width="2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrow-green)" />
+    <path d="M340.0,200.0 C278.5,222.4 236.0,307.4 217.0,244.8 S236.0,307.4 255.0,370.0" stroke="#4CAF50" stroke-width="2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrow-green)" />
     
-    <path d="M335.0,410.0 C276.1,433.7 241.1,516.2 217.1,457.4 S241.1,516.2 265.0,575.0" stroke="#4CAF50" stroke-width="2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrow-green)" />
+    <path d="M325.0,410.0 C266.1,433.7 231.1,516.2 207.1,457.4 S231.1,516.2 255.0,575.0" stroke="#4CAF50" stroke-width="2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrow-green)" />
   </g>
 </svg>

@@ -2,7 +2,7 @@
   "cell_id": "ffn",
   "species": "cil-bolt",
   "bbox": {
-    "x": 230.0,
+    "x": 220.0,
     "y": 470.0,
     "w": 140,
     "h": 45,
@@ -19,7 +19,7 @@
     "amplitude": 6.0,
     "seg_width": 20.0
   },
-  "epoch": 4,
+  "epoch": 9,
   "shadow": {
     "dx": 2.0,
     "dy": 2.0,

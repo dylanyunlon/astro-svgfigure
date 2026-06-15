@@ -2,7 +2,7 @@
   "cell_id": "add_norm1",
   "species": "cil-plus",
   "bbox": {
-    "x": 230.0,
+    "x": 220.0,
     "y": 370.0,
     "w": 140,
     "h": 40,
@@ -19,7 +19,7 @@
     "stroke_width": 2.5,
     "dash_corners": true
   },
-  "epoch": 4,
+  "epoch": 9,
   "shadow": {
     "dx": 8.0,
     "dy": 8.0,

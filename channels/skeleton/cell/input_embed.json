@@ -3,9 +3,9 @@
   "label": "Input Embedding",
   "species": "cil-vector",
   "gene_traits": {
-    "primary_shape": "arrow_vec",
-    "pattern": "magnitude",
-    "line_style": "weighted",
+    "primary_shape": "arrow",
+    "pattern": "gradient",
+    "line_style": "solid",
     "family": "embedding"
   },
   "initial_bbox": {
@@ -13,7 +13,7 @@
     "y": 40,
     "w": 160,
     "h": 50,
-    "z": 3
+    "z": 5
   },
   "topology": {
     "incoming_edges": [],
