@@ -286,3 +286,73 @@ DEFAULT_PENDING_QUEUE_SIZE: int = 1  # mirrors const uint32_t in reader.h
 # (uint64_t).  Here we use a plain dict keyed by channel_path (string) guarded
 # by a threading.Lock so the registry is safe for multi-threaded test scenarios.
 # ───────────────────────────────────────────────────────────────────────────────
+
+class ChannelRegistry:
+    """
+    Lightweight topology map — mirrors ChannelManager role tracking.
+
+    Keeps a dict of { channel_path: {"writers": set(), "readers": set()} }
+    so readers can query has_writer() and writers can query has_reader().
+
+    Port of apollo::cyber::service_discovery::ChannelManager (role tracking only).
+    """
+    _instance = None
+    _inst_lock = threading.Lock()
+
+    def __init__(self):
+        self._map = {}
+        self._mu = threading.Lock()
+
+    @classmethod
+    def instance(cls):
+        if cls._instance is None:
+            with cls._inst_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset(cls):
+        with cls._inst_lock:
+            cls._instance = None
+
+    def join_writer(self, channel_path, role_id):
+        with self._mu:
+            if channel_path not in self._map:
+                self._map[channel_path] = {"writers": set(), "readers": set()}
+            self._map[channel_path]["writers"].add(role_id)
+
+    def leave_writer(self, channel_path, role_id):
+        with self._mu:
+            if channel_path in self._map:
+                self._map[channel_path]["writers"].discard(role_id)
+
+    def join_reader(self, channel_path, role_id):
+        with self._mu:
+            if channel_path not in self._map:
+                self._map[channel_path] = {"writers": set(), "readers": set()}
+            self._map[channel_path]["readers"].add(role_id)
+
+    def leave_reader(self, channel_path, role_id):
+        with self._mu:
+            if channel_path in self._map:
+                self._map[channel_path]["readers"].discard(role_id)
+
+    def has_writer(self, channel_path):
+        with self._mu:
+            return bool(self._map.get(channel_path, {}).get("writers"))
+
+    def has_reader(self, channel_path):
+        with self._mu:
+            return bool(self._map.get(channel_path, {}).get("readers"))
+
+
+class RoleRecord:
+    """Minimal role record for topology snapshots."""
+    __slots__ = ("channel_path", "node_name", "role_type", "host_name", "process_id")
+    def __init__(self, channel_path="", node_name="", role_type="", host_name="localhost", process_id=0):
+        self.channel_path = channel_path
+        self.node_name = node_name
+        self.role_type = role_type
+        self.host_name = host_name
+        self.process_id = process_id

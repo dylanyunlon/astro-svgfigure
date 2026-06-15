@@ -14,22 +14,43 @@ import abc
 import collections
 import concurrent.futures
 import dataclasses as _dc
+import json
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-# Re-import runtime internals used by node classes
-from channels.channel_runtime import (
-    _dbg,
-    DEFAULT_PENDING_QUEUE_SIZE,
-    ChannelBuffer,
-    ChannelRegistry,
-    DataDispatcher,
-    DataNotifier,
-    Notifier,
-    AstroChannelManager,
-    RoleRecord,
-)
+# Direct imports from source modules — avoids circular dependency through channel_runtime
+import os, sys
+
+def _dbg(tag, msg):
+    if os.environ.get(f'ASTRO_{tag.replace("-","_")}_VERBOSE', '0') == '1':
+        print(f'[{tag}] {msg}', file=sys.stderr)
+
+DEFAULT_PENDING_QUEUE_SIZE = 1
+
+from channels.data.channel_buffer import ChannelBuffer
+from channels.data.data_dispatcher import DataDispatcher
+from channels.data.notifier import DataNotifier, Notifier
+
+# Lazy imports to avoid circular dependency
+def _get_channel_registry():
+    from channels.channel_runtime import ChannelRegistry
+    return ChannelRegistry
+
+def _get_channel_manager():
+    from channels.service_discovery.channel_manager import AstroChannelManager
+    return AstroChannelManager
+
+# Forward references resolved at first use
+class _LazyRegistry:
+    _cls = None
+    @classmethod
+    def instance(cls):
+        if cls._cls is None:
+            cls._cls = _get_channel_registry()
+        return cls._cls.instance()
+
+ChannelRegistry = _LazyRegistry
 
 class AstroBlocker:
     """
@@ -496,6 +517,7 @@ def create_writer(
     if auto_init:
         w.init()
     return w
+@_dc.dataclass
 class ReaderConfig:
     """
     ReaderConfig — mirrors ``apollo::cyber::ReaderConfig``.
@@ -543,7 +565,7 @@ class AstroNodeChannelImpl:
         self._process_id: int = process_id
 
         # Join node-level topology — mirrors NodeManager::Join(node_attr_, ROLE_NODE)
-        self._ch_mgr: AstroChannelManager = AstroChannelManager.instance()
+        self._ch_mgr = _get_channel_manager().instance()
 
         # Track created objects so __del__ can leave topology
         self._writers: List[AstroCellWriter] = []
@@ -1150,7 +1172,7 @@ class AstroService:
         self._init:        bool = False
 
         # Topology: service server = WRITER role on the service channel
-        self._ch_mgr = AstroChannelManager.instance()
+        self._ch_mgr = _get_channel_manager().instance()
         self._ch_mgr.join(
             channel_path=service_name,
             node_name=node_name,
@@ -1207,7 +1229,7 @@ class AstroClient:
         self._service:     Optional[AstroService] = None
 
         # Topology: service client = READER role on the service channel
-        self._ch_mgr = AstroChannelManager.instance()
+        self._ch_mgr = _get_channel_manager().instance()
         self._ch_mgr.join(
             channel_path=service_name,
             node_name=node_name,

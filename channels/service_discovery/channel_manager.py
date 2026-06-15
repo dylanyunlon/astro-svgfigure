@@ -1,13 +1,28 @@
 from __future__ import annotations
-import os, sys, json, threading
-from typing import Any, Callable, List, Optional, Generic, TypeVar
+import os, sys, json, threading, time as _time, dataclasses, logging as _logging
+from typing import Any, Callable, Dict, List, Optional, Generic, TypeVar
 from dataclasses import dataclass
 
+_chanmgr_log = _logging.getLogger("astro.chanmgr")
 _MT = TypeVar('_MT')
 
 def _dbg(tag, msg):
     if os.environ.get(f'ASTRO_{tag.replace("-","_")}_VERBOSE', '0') == '1':
         print(f'[{tag}] {msg}', file=sys.stderr)
+
+
+class RoleRecord:
+    """Minimal role record for topology snapshots."""
+    __slots__ = ("channel_path", "node_name", "role_type", "role_id", "msg_type", "host_name", "process_id", "timestamp")
+    def __init__(self, channel_path="", node_name="", role_type="", role_id="", msg_type="", host_name="localhost", process_id=0, timestamp=None):
+        self.channel_path = channel_path
+        self.node_name = node_name
+        self.role_type = role_type
+        self.role_id = role_id
+        self.msg_type = msg_type
+        self.host_name = host_name
+        self.process_id = process_id
+        self.timestamp = timestamp or _time.monotonic()
 
 
 

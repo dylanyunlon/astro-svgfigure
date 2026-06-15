@@ -1,5 +1,6 @@
 import os, sys, json, threading
-from typing import Any, Optional, Generic, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Generic, TypeVar
+from channels.service_discovery.channel_manager import AstroChannelManager, ChangeEvent
 
 _MT = TypeVar('_MT')
 
