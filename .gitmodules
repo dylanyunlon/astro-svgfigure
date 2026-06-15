@@ -1,0 +1,3 @@
+[submodule "upstream/molstar"]
+	path = upstream/molstar
+	url = https://github.com/molstar/molstar.git
