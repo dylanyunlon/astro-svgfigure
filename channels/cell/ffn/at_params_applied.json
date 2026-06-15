@@ -1,0 +1,178 @@
+{
+  "task": "apply AT UIL params to cil-bolt species shader",
+  "author": "xiaodi #62",
+  "branch": "cell-pubsub-loop",
+  "source_file": "channels/physics/xiaodi_options_table.json",
+  "source_key": "cil-bolt",
+  "target_shader": "src/lib/shaders/cil-bolt.frag",
+  "applied_params": {
+    "CAMERA_Element_1_WorkDetaillerpSpeed": 0.07,
+    "CAMERA_Element_2_WorklerpSpeed": 0.07,
+    "CAMERA_Element_2_WorklerpSpeed2": 1,
+    "INPUT_Element_1_work_scenewiggle_speed": "0.7",
+    "SpineShader/SpineShader/Element_5_Work/uLight": [
+      1,
+      1,
+      1,
+      0.4
+    ],
+    "WorkGlassCubeShader/WorkGlassCubeShader/uLightDir": [
+      0,
+      0,
+      1
+    ],
+    "WorkGlassShader/WorkGlassShader/uLightDir": [
+      0,
+      -1.12,
+      4.6899999999999995
+    ],
+    "WorkSceneBackground/WorkSceneBackground/uLightPos": [
+      2.7400000000000007,
+      -1,
+      -9.820000000000002
+    ],
+    "UnrealBloomComposite/UnrealBloomComposite/workbloom/bloomStrength": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/workbloom/bloomRadius": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/work/bloomRadius": 1,
+    "UnrealBloomComposite_shaderVariants_workbloomStrength": 0.5,
+    "UnrealBloomComposite_shaderVariants_workbloomRadius": 0.5,
+    "UnrealBloomLuminosity/UnrealBloomLuminosity/workbloom/luminosityThreshold": 0,
+    "am_SplineParticleLife_Element_0_WorkDetailParticlesuSplineSpeed": [
+      0.82,
+      1.21
+    ],
+    "am_ProtonAntimatter_P_Element_0_WorkDetailParticlesuSCurlNoiseSpeed": 5,
+    "am_ProtonAntimatter_P_Element_0_WorkDetailParticlesuThicknessSpeed": 1,
+    "am_ProtonAntimatter_P_Element_4_work_pageuCurlNoiseSpeed": 10,
+    "BloomLuminosityPass/BloomLuminosityPass/luminosityThreshold": 0,
+    "INPUT_HydraBloom_Bloom_Intensity": "1",
+    "INPUT_HydraBloom_Bloom_Radius": "1",
+    "INPUT_HydraBloom_Bloom_Tint": "#ffffff",
+    "UnrealBloomComposite/UnrealBloomComposite/cleanroom/bloomStrength": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/cleanroom/bloomRadius": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/cleanroom/bloomTintColor": "#ffffff",
+    "UnrealBloomComposite/UnrealBloomComposite/bloomRadius": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/bloomStrength": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomRadius": 0.2,
+    "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomStrength": 0.3,
+    "UnrealBloomComposite/UnrealBloomComposite/home/bloomRadius": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/home/bloomStrength": 3.8200000000000003,
+    "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength": 1.2,
+    "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomRadius": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomTintColor": "#ffffff",
+    "UnrealBloomComposite/UnrealBloomComposite/treescene/bloomStrength": 1,
+    "UnrealBloomComposite/UnrealBloomComposite/treescene/bloomRadius": 1,
+    "UnrealBloomComposite_shaderVariants_contactbloomStrength": 0.8,
+    "UnrealBloomComposite_shaderVariants_contactbloomRadius": 0.5,
+    "UnrealBloomComposite_shaderVariants_contactbloomTintColor": "#ffffff",
+    "UnrealBloomComposite_shaderVariants_aboutbloomRadius": 1,
+    "UnrealBloomComposite_shaderVariants_aboutbloomStrength": 1,
+    "UnrealBloomComposite_shaderVariants_footerbloomRadius": 0.5,
+    "UnrealBloomComposite_shaderVariants_footerbloomStrength": 0.7,
+    "UnrealBloomComposite_shaderVariants_footerbloomTintColor": "#ffffff",
+    "UnrealBloomComposite_shaderVariants_homebloomStrength": 0.6,
+    "UnrealBloomComposite_shaderVariants_homebloomRadius": 0.8,
+    "UnrealBloomComposite_shaderVariants_treebloomStrength": 0.8,
+    "UnrealBloomComposite_shaderVariants_treebloomRadius": 0.7,
+    "UnrealBloomLuminosity/UnrealBloomLuminosity/treescene/luminosityThreshold": 0,
+    "UnrealBloomLuminosity/UnrealBloomLuminosity/cleanroom/luminosityThreshold": 0.2,
+    "UnrealBloomLuminosity/UnrealBloomLuminosity/globalbloom/luminosityThreshold": 0,
+    "UnrealBloomLuminosity/UnrealBloomLuminosity/home/luminosityThreshold": 0,
+    "UnrealBloomLuminosity/UnrealBloomLuminosity/homebloom/luminosityThreshold": 0,
+    "UnrealBloomLuminosity/UnrealBloomLuminosity/luminosityThreshold": 0,
+    "CAMERA_Element_10_CleanRoomlerpSpeed": 0.08,
+    "CAMERA_Element_1_HomelerpSpeed": 0.1,
+    "CAMERA_Element_1_HomelerpSpeed2": 1,
+    "L_Element_18_CleanRoomintensity": 1,
+    "L_Element_10_home_sceneintensity": 2.1900000000000004,
+    "L_Element_11_home_sceneintensity": 3.44,
+    "SHADOW_Element_1_ParticleTesttarget": [
+      1.45,
+      -0.32,
+      19.36
+    ],
+    "SHADOW_Element_1_ParticleTestfar": 400,
+    "SHADOW_Element_1_ParticleTestfov": 120,
+    "SHADOW_Element_1_ParticleTestposition": [
+      -1.85,
+      5.61,
+      -13.5
+    ],
+    "SHADOW_Element_1_ParticleTestsize": 2048,
+    "SHADOW_Element_9_home_scenefar": 40,
+    "SHADOW_Element_9_home_scenesize": 1024,
+    "SHADOW_Element_9_home_scenestatic": true,
+    "SHADOW_Element_9_home_sceneposition": [
+      0,
+      6.51,
+      0
+    ],
+    "SHADOW_Element_9_home_scenetarget": [
+      0,
+      0,
+      0
+    ]
+  },
+  "shader_mapping": {
+    "AT_BLOOM_INTENSITY": {
+      "source_key": "INPUT_HydraBloom_Bloom_Intensity",
+      "value": 1.0,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_BLOOM_INTENSITY"
+    },
+    "AT_BLOOM_RADIUS": {
+      "source_key": "INPUT_HydraBloom_Bloom_Radius",
+      "value": 1.0,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_BLOOM_RADIUS"
+    },
+    "AT_GLOBAL_BLOOM_STRENGTH": {
+      "source_key": "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomStrength",
+      "value": 0.3,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_GLOBAL_BLOOM_STRENGTH"
+    },
+    "AT_GLOBAL_BLOOM_RADIUS": {
+      "source_key": "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomRadius",
+      "value": 0.2,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_GLOBAL_BLOOM_RADIUS"
+    },
+    "AT_HOME_BLOOM_STRENGTH": {
+      "source_key": "UnrealBloomComposite_shaderVariants_homebloomStrength",
+      "value": 0.6,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_HOME_BLOOM_STRENGTH"
+    },
+    "AT_HOME_BLOOM_RADIUS": {
+      "source_key": "UnrealBloomComposite_shaderVariants_homebloomRadius",
+      "value": 0.8,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_HOME_BLOOM_RADIUS"
+    },
+    "AT_LIGHT_INTENSITY": {
+      "source_key": "L_Element_10_home_sceneintensity",
+      "value": 2.19,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_LIGHT_INTENSITY"
+    },
+    "AT_WIGGLE_SPEED": {
+      "source_key": "INPUT_Element_1_work_scenewiggle_speed",
+      "value": 0.7,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_WIGGLE_SPEED"
+    },
+    "AT_LUMINOSITY_THRESHOLD": {
+      "source_key": "BloomLuminosityPass/BloomLuminosityPass/luminosityThreshold",
+      "value": 0.0,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_LUMINOSITY_THRESHOLD"
+    },
+    "AT_LERP_SPEED": {
+      "source_key": "CAMERA_Element_1_HomelerpSpeed",
+      "value": 0.1,
+      "uniform_or_const": "const",
+      "glsl_name": "AT_LERP_SPEED"
+    }
+  }
+}
