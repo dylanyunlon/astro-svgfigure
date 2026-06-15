@@ -1,8 +1,9 @@
-import os, sys, json, threading
+import os, sys, json, threading, logging as _logging
 from typing import Any, Callable, Dict, List, Optional, Generic, TypeVar
 from channels.service_discovery.channel_manager import AstroChannelManager, ChangeEvent
 
 _MT = TypeVar('_MT')
+_chanmgr_log = _logging.getLogger("astro.topomgr")
 
 def _dbg(tag, msg):
     if os.environ.get(f'ASTRO_{tag.replace("-","_")}_VERBOSE', '0') == '1':
