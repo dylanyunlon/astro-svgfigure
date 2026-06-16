@@ -252,20 +252,21 @@ class AstroCellCompositor:
     # ------------------------------------------------------------------
     # compose — 镜像 FinalCompose / present
     # ------------------------------------------------------------------
-    def compose(self) -> str:
-        """将所有可见 cell 合成为一个 SVG 字符串。
+    def compose(self) -> dict:
+        """将所有可见 cell 合成为结构化 dict，供前端 PixiJS 消费。
+        不再拼接 SVG 字符串。
 
         仅输出 ``stencil=1`` 的条目（可见 cell）；每个 cell 生成一个带有
         ``data-cell-id``、``data-z``、``data-depth`` 以及可选
-        ``data-highlight`` 属性的 ``<g>`` 占位分组。完整的 SVG 内容由
+        ``data-highlight`` 属性的 group dict。完整的内容由
         各 cell 自身的 ``svg_fragment`` 字段提供（若存在）。
 
         Returns
         -------
-        str
-            合并后的 SVG 文档字符串（UTF-8）。
+        dict
+            结构化合成参数 dict，含 groups 列表。
         """
-        groups: list[str] = []
+        groups: list[dict] = []
         depth_ch = self._depth_manifest.get("depth_channel", {})
         custom_d = self._depth_manifest.get("custom_depth", {})
 
@@ -275,23 +276,22 @@ class AstroCellCompositor:
             cid = entry["cell_id"]
             z = entry.get("bbox", {}).get("z", 0.0)
             depth = depth_ch.get(cid, 0.0)
-            attrs = (
-                f'data-cell-id="{cid}" '
-                f'data-z="{z}" '
-                f'data-depth="{depth:.6f}"'
-            )
+            group: dict = {
+                "element": "g",
+                "data-cell-id": cid,
+                "data-z": z,
+                "data-depth": round(depth, 6),
+                "children": entry.get("svg_fragment", ""),
+            }
             if cid in custom_d:
-                attrs += f' data-highlight="{custom_d[cid]}"'
-            fragment = entry.get("svg_fragment", "")
-            groups.append(f'<g {attrs}>{fragment}</g>')
+                group["data-highlight"] = custom_d[cid]
+            groups.append(group)
 
-        inner = "\n  ".join(groups)
-        return (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<svg xmlns="http://www.w3.org/2000/svg">\n'
-            f'  {inner}\n'
-            "</svg>"
-        )
+        return {
+            "version": "1.0",
+            "encoding": "UTF-8",
+            "groups": groups,
+        }
 
 
 def compose_cell_svg(
@@ -996,8 +996,8 @@ class AstroCellTranslucencyRenderer:
         out_fmt = 1 if use_translucency_vector_path() else 0
         _transcode_rasterizer_args(bin_count, in_fmt, out_fmt)
 
-        # 生成各 cell 的半透明 SVG 片段
-        fragments: list[str] = []
+        # 生成各 cell 的半透明结构化 dict
+        fragments: list[dict] = []
         for entry in translucent:
             cid = entry["cell_id"]
             opacity = entry.get("opacity", 1.0)
@@ -1005,14 +1005,20 @@ class AstroCellTranslucencyRenderer:
             if not self._factory.should_compile_permutation("*", blend_mode):
                 blend_mode = "translucent"
             attrs = self._factory.prepare_svg_attrs(opacity, blend_mode)
-            attr_str = " ".join(f'{k}="{v}"' for k, v in attrs.items())
             fragment = entry.get("svg_fragment", "")
-            fragments.append(
-                f'<g data-cell-id="{cid}" {attr_str}>{fragment}</g>'
-            )
+            group: dict = {
+                "element": "g",
+                "data-cell-id": cid,
+                "children": fragment,
+            }
+            group.update(attrs)
+            fragments.append(group)
             increment_perf_counter("visible_clusters", 1)
 
-        inner = "\n    ".join(fragments)
-        return f'<g id="translucency-layer">\n    {inner}\n  </g>'
+        return {
+            "element": "g",
+            "id": "translucency-layer",
+            "children": fragments,
+        }
 
 

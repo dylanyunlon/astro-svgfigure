@@ -9186,29 +9186,39 @@ class AstroCellRendererModule:
         cell_entries: list,
         viewport_w:   float = 1200.0,
         viewport_h:   float = 900.0,
-    ) -> str:
+    ) -> list:
         """
-        Draw cell tiles into a single SVG fragment — mirrors DrawTileMesh().
+        Draw cell tiles — mirrors DrawTileMesh().
+        返回结构化 dict 列表，供前端 PixiJS 消费，不再拼接 SVG 字符串。
 
         鲁迅式：DrawTileMesh 是画布上的拼贴——
         每个单元格是一块瓦片，拼在一起才成为完整的画面。
         """
         fragments = []
         if _BIND_TILE_DUMMY_RT_V2:
-            fragments.append(
-                f'<rect x="0" y="0" width="{viewport_w}" height="{viewport_h}" '
-                f'fill="none" stroke="none" opacity="0" data-role="dummy-rt"/>'
-            )
+            fragments.append({
+                "element": "rect",
+                "x": 0,
+                "y": 0,
+                "width": viewport_w,
+                "height": viewport_h,
+                "fill": "none",
+                "stroke": "none",
+                "opacity": 0,
+                "data-role": "dummy-rt",
+            })
         for entry in cell_entries:
             cid      = entry.get("cell_id", "")
             bbox     = entry.get("bbox", {"x": 0, "y": 0, "w": 80, "h": 50})
             svg_frag = entry.get("svg_fragment", "")
             tx, ty   = bbox.get("x", 0), bbox.get("y", 0)
-            fragments.append(
-                f'<g data-cell-id="{cid}" '
-                f'transform="translate({tx},{ty})">{svg_frag}</g>'
-            )
-        return "\n".join(fragments)
+            fragments.append({
+                "element": "g",
+                "data-cell-id": cid,
+                "transform": {"translate": [tx, ty]},
+                "children": svg_frag,
+            })
+        return fragments
 
     def state_stream_debug_lines(self) -> list:
         return self._state_stream.debug_render_lines()
