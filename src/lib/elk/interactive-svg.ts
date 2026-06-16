@@ -17,6 +17,87 @@
  * GitHub: kieler/elkjs, xyflow/xyflow
  */
 
+
+// ──── Renderer Adapter ──────────────────────────────────
+/**
+ * SvgRendererAdapter — SVG DOM factory, PixiJS-style API.
+ *
+ * Centralises every document.createElementNS call that was previously
+ * scattered across business logic methods.  The public surface mirrors
+ * the PixiJS Graphics/Container pattern from pixi-cell-renderer.ts so
+ * a future swap to a canvas-based backend only requires replacing this
+ * adapter, not touching any interaction or layout code.
+ *
+ * Mapping to pixi-cell-renderer.ts equivalents:
+ *   createSvg()           ← Application canvas init (app.init({canvas}))
+ *   createGroup()         ← new Container()
+ *   createRect()          ← Graphics.roundRect / Graphics.rect
+ *   createCircle()        ← Graphics.circle
+ *   createLine()          ← Graphics.moveTo + lineTo (single segment)
+ *   createPath()          ← Graphics.bezierCurveTo / complex stroke paths
+ *   createText()          ← new Text({ text, style })
+ *   createPolygon()       ← arrow-head marker polygon
+ *   createMarker()        ← filter/texture registration in defs
+ *   createPattern()       ← grid tile pattern (cf. texture tile)
+ *   createForeignObject() ← HTML overlay integration
+ */
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
+class SvgRendererAdapter {
+  /** Create root <svg>. Mirrors: app.init({ canvas }) in PixiJS. */
+  createSvg(): SVGSVGElement {
+    return document.createElementNS(SVG_NS, 'svg') as SVGSVGElement
+  }
+  /** Create <defs>. Mirrors: filter/texture registry in PixiJS Application. */
+  createDefs(): SVGDefsElement {
+    return document.createElementNS(SVG_NS, 'defs') as SVGDefsElement
+  }
+  /** Create <rect>. Mirrors: Graphics.roundRect / Graphics.rect in PixiJS. */
+  createRect(): SVGRectElement {
+    return document.createElementNS(SVG_NS, 'rect') as SVGRectElement
+  }
+  /** Create <circle>. Mirrors: Graphics.circle in PixiJS. */
+  createCircle(): SVGCircleElement {
+    return document.createElementNS(SVG_NS, 'circle') as SVGCircleElement
+  }
+  /** Create <line>. Mirrors: Graphics.moveTo + lineTo (single segment). */
+  createLine(): SVGLineElement {
+    return document.createElementNS(SVG_NS, 'line') as SVGLineElement
+  }
+  /** Create <path>. Mirrors: Graphics.bezierCurveTo / complex strokes. */
+  createPath(): SVGPathElement {
+    return document.createElementNS(SVG_NS, 'path') as SVGPathElement
+  }
+  /** Create <polygon>. Used for arrowhead markers. */
+  createPolygon(): SVGPolygonElement {
+    return document.createElementNS(SVG_NS, 'polygon') as SVGPolygonElement
+  }
+  /** Create <g> group. Mirrors: new Container() in PixiJS. */
+  createGroup(): SVGGElement {
+    return document.createElementNS(SVG_NS, 'g') as SVGGElement
+  }
+  /** Create <text>. Mirrors: new Text({ text, style }) in PixiJS. */
+  createText(): SVGTextElement {
+    return document.createElementNS(SVG_NS, 'text') as SVGTextElement
+  }
+  /** Create <marker>. Used in <defs> for arrowhead definitions. */
+  createMarker(): SVGMarkerElement {
+    return document.createElementNS(SVG_NS, 'marker') as SVGMarkerElement
+  }
+  /** Create <pattern>. Used in <defs> for the dot-grid tile. */
+  createPattern(): SVGPatternElement {
+    return document.createElementNS(SVG_NS, 'pattern') as SVGPatternElement
+  }
+  /** Create <foreignObject>. Used for inline HTML label-edit input. */
+  createForeignObject(): SVGForeignObjectElement {
+    return document.createElementNS(SVG_NS, 'foreignObject') as SVGForeignObjectElement
+  }
+}
+
+/** Module-level singleton — shared across all editor instances.
+ *  Mirrors the PixiJS pattern of instantiating Graphics once per scene object. */
+const renderer = new SvgRendererAdapter()
+
 // ──── Types ─────────────────────────────────────────────
 export type HandlePosition = 'left' | 'right' | 'top' | 'bottom'
 export type HandleType = 'source' | 'target'
@@ -199,8 +280,8 @@ export class InteractiveSvgEditor {
     }
 
     // Create SVG element — fills container absolutely
-    this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-    this.svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+    this.svg = renderer.createSvg()
+    this.svg.setAttribute('xmlns', SVG_NS)
     this.svg.style.width = '100%'
     this.svg.style.height = '100%'
     this.svg.style.display = 'block'
@@ -293,10 +374,10 @@ export class InteractiveSvgEditor {
   // ──── SVG Element Creators ────────────────────────────
 
   private createDefs(): SVGDefsElement {
-    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
+    const defs = renderer.createDefs()
 
     // Default arrow marker
-    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker')
+    const marker = renderer.createMarker()
     marker.setAttribute('id', 'arrow-default')
     marker.setAttribute('markerWidth', String(ARROW_SIZE))
     marker.setAttribute('markerHeight', String(ARROW_SIZE / 1.5))
@@ -305,7 +386,7 @@ export class InteractiveSvgEditor {
     marker.setAttribute('orient', 'auto')
     marker.setAttribute('markerUnits', 'strokeWidth')
 
-    const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon')
+    const polygon = renderer.createPolygon()
     polygon.setAttribute('points', `0 0, ${ARROW_SIZE} ${ARROW_SIZE / 3}, 0 ${ARROW_SIZE / 1.5}`)
     polygon.setAttribute('fill', this.theme.edgeColor)
     marker.appendChild(polygon)
@@ -317,7 +398,7 @@ export class InteractiveSvgEditor {
       const bigGs = gs * 10  // Major grid every 10 units
 
       // Small dot pattern
-      const pattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern')
+      const pattern = renderer.createPattern()
       pattern.setAttribute('id', 'grid-pattern')
       pattern.setAttribute('width', String(bigGs))
       pattern.setAttribute('height', String(bigGs))
@@ -327,7 +408,7 @@ export class InteractiveSvgEditor {
       for (let gx = 0; gx <= bigGs; gx += gs) {
         for (let gy = 0; gy <= bigGs; gy += gs) {
           const isMajor = gx % bigGs === 0 && gy % bigGs === 0
-          const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+          const dot = renderer.createCircle()
           dot.setAttribute('cx', String(gx))
           dot.setAttribute('cy', String(gy))
           dot.setAttribute('r', isMajor ? '1.2' : '0.6')
@@ -344,7 +425,7 @@ export class InteractiveSvgEditor {
   }
 
   private createGrid(): SVGRectElement {
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+    const rect = renderer.createRect()
     rect.classList.add('svg-grid')
     // Make grid much larger than viewBox so it covers panning area
     rect.setAttribute('x', String(this.viewBox.x - this.viewBox.w * 2))
@@ -367,14 +448,14 @@ export class InteractiveSvgEditor {
   }
 
   private createNodeGroup(node: InteractiveNode, index: number): SVGGElement {
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+    const g = renderer.createGroup()
     g.setAttribute('data-node-id', node.id)
     g.classList.add('interactive-node')
     g.style.cursor = 'grab'
     g.style.transition = 'opacity 0.15s ease'
 
     // Main rect — with subtle shadow via filter
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+    const rect = renderer.createRect()
     rect.setAttribute('x', String(node.x))
     rect.setAttribute('y', String(node.y))
     rect.setAttribute('width', String(node.width))
@@ -402,7 +483,7 @@ export class InteractiveSvgEditor {
     g.appendChild(rect)
 
     // Label text
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+    const text = renderer.createText()
     const maxChars = Math.max(6, Math.floor(node.width / 8))
     const dl = node.label.length > maxChars ? node.label.slice(0, maxChars - 2) + '…' : node.label
     text.setAttribute('x', String(node.x + node.width / 2))
@@ -420,7 +501,7 @@ export class InteractiveSvgEditor {
     // Resize handles (hidden until selected)
     const corners = ['nw', 'ne', 'sw', 'se']
     for (const corner of corners) {
-      const handle = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      const handle = renderer.createRect()
       handle.classList.add('resize-handle', `resize-${corner}`)
       handle.setAttribute('width', String(HANDLE_SIZE))
       handle.setAttribute('height', String(HANDLE_SIZE))
@@ -484,7 +565,7 @@ export class InteractiveSvgEditor {
     for (const [position, handles] of Object.entries(byPosition)) {
       const count = handles.length
       handles.forEach((handle, idx) => {
-        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+        const circle = renderer.createCircle()
         circle.classList.add('node-handle')
         circle.setAttribute('data-handle-id', handle.id)
         circle.setAttribute('data-handle-type', handle.type)
@@ -568,7 +649,7 @@ export class InteractiveSvgEditor {
   /** Start a connection drag from a source handle */
   private startConnectionDrag(nodeId: string, handleId: string, pos: { x: number; y: number }, _e: MouseEvent) {
     // Create preview line
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+    const line = renderer.createLine()
     line.classList.add('connection-preview')
     line.setAttribute('x1', String(pos.x))
     line.setAttribute('y1', String(pos.y))
@@ -627,14 +708,14 @@ export class InteractiveSvgEditor {
   }
 
   private createEdgeGroup(edge: InteractiveEdge): SVGGElement {
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+    const g = renderer.createGroup()
     g.setAttribute('data-edge-id', edge.id)
     g.classList.add('interactive-edge')
 
     if (edge.points.length < 2) return g
 
     // Build path — use smooth rounded corners for orthogonal routing (ReactFlow-style)
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    const path = renderer.createPath()
     const d = this.buildSmoothEdgePath(edge.points)
     path.setAttribute('d', d)
     path.setAttribute('fill', 'none')
@@ -648,7 +729,7 @@ export class InteractiveSvgEditor {
     if (edge.label) {
       const mid = Math.floor(edge.points.length / 2)
       const mp = edge.points[mid]
-      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      const bg = renderer.createRect()
       bg.setAttribute('x', String(mp.x - edge.label.length * 3.5))
       bg.setAttribute('y', String(mp.y - 8))
       bg.setAttribute('width', String(edge.label.length * 7))
@@ -658,7 +739,7 @@ export class InteractiveSvgEditor {
       bg.setAttribute('opacity', '0.9')
       g.appendChild(bg)
 
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+      const text = renderer.createText()
       text.setAttribute('x', String(mp.x))
       text.setAttribute('y', String(mp.y + 4))
       text.setAttribute('text-anchor', 'middle')
@@ -1003,7 +1084,7 @@ export class InteractiveSvgEditor {
     const g = this.svg.querySelector(`[data-node-id="${nodeId}"]`)
     if (!g) return
 
-    const fo = document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject')
+    const fo = renderer.createForeignObject()
     fo.setAttribute('x', String(node.x + 4))
     fo.setAttribute('y', String(node.y + (node.isGroup ? 2 : node.height / 2 - 14)))
     fo.setAttribute('width', String(node.width - 8))
