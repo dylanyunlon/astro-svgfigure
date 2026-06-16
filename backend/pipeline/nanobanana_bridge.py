@@ -181,12 +181,12 @@ async def beautify_with_nanobanana(
                 fallback_scaffold = scaffold
             else:
                 fallback_scaffold = NanoBananaScaffold(**scaffold_dict)
-            fallback_svg = generate_skeleton_svg(fallback_scaffold)
+            fallback_scaffold_json = generate_skeleton_svg(fallback_scaffold)
             return {
                 "success": True,
-                "svg": fallback_svg,
+                "scaffold": fallback_scaffold_json,
                 "model_used": "skeleton-fallback",
-                "warning": f"LLM failed ({str(e)}), using skeleton SVG",
+                "warning": f"LLM failed ({str(e)}), using JSON scaffold for frontend render",
             }
         except Exception as fallback_err:
             return {
@@ -230,60 +230,53 @@ def _extract_svg(text: str) -> Optional[str]:
 
 
 # ============================================================================
-# Fallback: Generate skeleton SVG without LLM
+# Fallback: Generate skeleton JSON scaffold without LLM
 # ============================================================================
 
-def generate_skeleton_svg(scaffold: NanoBananaScaffold) -> str:
+def generate_skeleton_svg(scaffold: NanoBananaScaffold) -> Dict[str, Any]:
     """
-    Generate a basic skeleton SVG directly from scaffold without LLM.
-    Useful as fallback or for quick preview.
-    """
-    width = scaffold.canvas.get("width", 800)
-    height = scaffold.canvas.get("height", 600)
+    Return a structured JSON scaffold dict for frontend (PixiJS / TopologyPreview)
+    to render — no SVG string is produced here.
 
-    svg_parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'width="{width}" height="{height}">',
-        '  <defs>',
-        '    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">',
-        '      <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>',
-        '    </marker>',
-        '  </defs>',
-        f'  <rect width="{width}" height="{height}" fill="#fafafa" rx="4"/>',
+    Phase 5 refactor: SVG hard-coding removed; the front-end TopologyPreview.astro
+    consumes this JSON and renders via PixiJS Graphics API.
+
+    Returns:
+        dict with keys:
+          - type: "scaffold"  (renderer discriminator)
+          - canvas: {width, height}
+          - elements: list of node dicts  {id, x, y, width, height, label}
+          - connections: list of edge dicts {id, sourceId, targetId, points}
+    """
+    canvas = scaffold.canvas if isinstance(scaffold.canvas, dict) else {}
+    width = canvas.get("width", 800)
+    height = canvas.get("height", 600)
+
+    elements = [
+        {
+            "id": getattr(elem, "id", str(i)),
+            "x": elem.x,
+            "y": elem.y,
+            "width": elem.width,
+            "height": elem.height,
+            "label": elem.label,
+        }
+        for i, elem in enumerate(scaffold.elements)
     ]
 
-    # Color palette for nodes
-    colors = [
-        "#E3F2FD", "#E8F5E9", "#FFF3E0", "#F3E5F5",
-        "#E0F7FA", "#FBE9E7", "#F1F8E9", "#EDE7F6",
+    connections = [
+        {
+            "id": getattr(conn, "id", str(i)),
+            "sourceId": getattr(conn, "source_id", getattr(conn, "sourceId", None)),
+            "targetId": getattr(conn, "target_id", getattr(conn, "targetId", None)),
+            "points": conn.points if conn.points else [],
+        }
+        for i, conn in enumerate(scaffold.connections)
     ]
 
-    # Draw nodes
-    for i, elem in enumerate(scaffold.elements):
-        color = colors[i % len(colors)]
-        border = "#90CAF9" if i % 2 == 0 else "#A5D6A7"
-        svg_parts.append(
-            f'  <rect x="{elem.x}" y="{elem.y}" width="{elem.width}" height="{elem.height}" '
-            f'fill="{color}" stroke="{border}" stroke-width="2" rx="8"/>'
-        )
-        # Label
-        cx = elem.x + elem.width / 2
-        cy = elem.y + elem.height / 2
-        svg_parts.append(
-            f'  <text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="middle" '
-            f'font-family="system-ui, sans-serif" font-size="13" fill="#333">{elem.label}</text>'
-        )
-
-    # Draw edges
-    for conn in scaffold.connections:
-        if conn.points and len(conn.points) >= 2:
-            path_d = f"M {conn.points[0]['x']} {conn.points[0]['y']}"
-            for pt in conn.points[1:]:
-                path_d += f" L {pt['x']} {pt['y']}"
-            svg_parts.append(
-                f'  <path d="{path_d}" fill="none" stroke="#666" stroke-width="1.5" '
-                f'marker-end="url(#arrowhead)"/>'
-            )
-
-    svg_parts.append("</svg>")
-    return "\n".join(svg_parts)
+    return {
+        "type": "scaffold",
+        "canvas": {"width": width, "height": height},
+        "elements": elements,
+        "connections": connections,
+    }
