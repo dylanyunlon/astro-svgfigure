@@ -8,17 +8,30 @@ uniform vec2  u_resolution;
 uniform float u_armLength;    // half-length of each arm  [0..1]
 uniform float u_strokeWidth;  // half-width of stroke     [0..1]
 
-// SDF for an axis-aligned plus centered at origin
+// ── lygia/sdf/rectSDF.glsl (inlined) ────────────────────────────────────────
+// contributors: Patricio Gonzalez Vivo
+// Returns a rectangular SDF in [-1,1] centred space (max-norm variant).
+#ifndef FNC_RECTSDF
+#define FNC_RECTSDF
+float rectSDF(in vec2 st, in vec2 s) {
+    vec2 p = st * 2.0 - 1.0;   // remap [0,1]→[-1,1]; caller passes UV
+    return max(abs(p.x / s.x), abs(p.y / s.y));
+}
+// Signed box SDF variant (used for the arm extrusions)
+float sdBox2(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+#endif
+// ── end lygia rectSDF ────────────────────────────────────────────────────────
+
+// SDF for an axis-aligned plus centered at origin.
+// Built from two overlapping sdBox2 calls — equivalent to the previous
+// hand-written sdPlus but now uses the rectSDF family.
 float sdPlus(vec2 p, float armLen, float sw) {
-  // horizontal bar
-  vec2 dH = abs(p) - vec2(armLen, sw);
-  float h  = length(max(dH, 0.0)) + min(max(dH.x, dH.y), 0.0);
-
-  // vertical bar
-  vec2 dV = abs(p) - vec2(sw, armLen);
-  float v  = length(max(dV, 0.0)) + min(max(dV.x, dV.y), 0.0);
-
-  return min(h, v);
+    float h = sdBox2(p, vec2(armLen, sw));
+    float v = sdBox2(p, vec2(sw, armLen));
+    return min(h, v);
 }
 
 void main() {
@@ -28,7 +41,6 @@ void main() {
   float d    = sdPlus(p, u_armLength, u_strokeWidth);
   float mask = smoothstep(0.015, -0.015, d);
 
-  // Soft glow
   float glow = smoothstep(0.08, 0.0, d) * 0.25;
 
   float alpha = clamp(mask + glow, 0.0, 1.0);

@@ -1,6 +1,6 @@
 precision mediump float;
 
-// ─── AT UIL params applied from channels/physics/xiaodi_options_table.json ["cil-eye"] ───
+// ─── AT UIL params applied from channels/physics/xiaodi_options_table.json [\"cil-eye\"] ───
 //
 // bloom / glow (UnrealBloomComposite / homebloom):
 //   UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength  = 1.2
@@ -50,59 +50,71 @@ uniform float u_lightExposure;    // default 0.86  (VolumetricLight fExposure)
 uniform float u_shadowFar;     // default 40.0
 uniform float u_shadowBias;    // default 0.001 (derived from shadow size 1024)
 
+// ── lygia/sdf/circleSDF.glsl (inlined) ──────────────────────────────────────
+// contributors: Patricio Gonzalez Vivo
+// Returns a circle-shaped SDF.  circleSDF(vec2 st) → distance in [0,1] space.
+// Centered at 0.5; result * 2 == diameter-normalised distance.
+#ifndef FNC_CIRCLESDF
+#define FNC_CIRCLESDF
+float circleSDF(in vec2 v) {
+    v -= 0.5;
+    return length(v) * 2.0;
+}
+#endif
+// ── end lygia circleSDF ──────────────────────────────────────────────────────
+
 void main() {
   // Normalize fragment to bbox-local UV [0,1]
   vec2 fragCoord = gl_FragCoord.xy;
   vec2 uv = (fragCoord - u_bbox.xy) / u_bbox.zw;
 
-  // Map to [-1,1] centered space
-  vec2 p = uv * 2.0 - 1.0;
+  // circleSDF works in [0,1] UV space; result is 0 at centre, 1 at edge of unit circle.
+  // We map it to [-1,1] range for the legacy distance variable used below.
+  float dist = circleSDF(uv);   // [0, ~1.41]
 
-  float dist  = length(p);
+  // Angle still computed from centred coordinates
+  vec2 p = uv * 2.0 - 1.0;
   float angle = atan(p.y, p.x);
 
-  // --- Pupil ---
-  float pupil = 1.0 - smoothstep(u_pupilRadius - 0.02, u_pupilRadius + 0.02, dist);
+  // --- Pupil (using circleSDF result) ---
+  // u_pupilRadius is expressed in the original [-1,1] space → convert to circleSDF scale (*0.5)
+  float pupilR = u_pupilRadius * 0.5;
+  float pupil = 1.0 - smoothstep(pupilR - 0.01, pupilR + 0.01, dist);
 
   // --- Iris ring ---
-  float iris = smoothstep(u_pupilRadius + 0.02, u_pupilRadius + 0.08, dist)
-             * (1.0 - smoothstep(0.85, 1.0, dist));
+  float irisInner = (u_pupilRadius + 0.02) * 0.5;
+  float irisOuter = (u_pupilRadius + 0.08) * 0.5;
+  float iris = smoothstep(irisInner, irisOuter, dist)
+             * (1.0 - smoothstep(0.425, 0.5, dist));
 
   // --- Radial rays ---
-  float halfStep  = 3.14159265 / u_numRays;
-  float rayAngle  = mod(angle + u_time * 0.3, halfStep * 2.0) - halfStep;
-  float rayMask   = smoothstep(0.07, 0.0, abs(rayAngle));
-  float rayFade   = smoothstep(1.0, u_pupilRadius + 0.1, dist)
-                  * smoothstep(u_pupilRadius, u_pupilRadius + 0.12, dist);
-  float rays      = rayMask * rayFade * u_focalIntensity;
+  float halfStep = 3.14159265 / u_numRays;
+  float rayAngle = mod(angle + u_time * 0.3, halfStep * 2.0) - halfStep;
+  float rayMask  = smoothstep(0.07, 0.0, abs(rayAngle));
+  float rayFade  = smoothstep(0.5, irisInner + 0.06, dist)
+                 * smoothstep(pupilR, pupilR + 0.06, dist);
+  float rays     = rayMask * rayFade * u_focalIntensity;
 
-  // --- Sclera (outer white ellipse halo) ---
-  float sclera = smoothstep(1.05, 0.88, dist);
+  // --- Sclera (outer white ellipse halo) via circleSDF ---
+  float sclera = smoothstep(0.525, 0.44, dist);
 
   // --- AT ambient lighting (L_Element_11 + VolumetricLight) ---
-  // Radial fall-off for ambient: bright at centre, fades at edge
-  float ambientFalloff = 1.0 - smoothstep(0.0, 1.2, dist);
+  float ambientFalloff = 1.0 - smoothstep(0.0, 0.6, dist);
   vec3  ambientContrib = u_ambientColor * u_ambientIntensity * u_lightExposure * ambientFalloff;
 
   // --- AT bloom glow ring ---
-  // A soft additive glow at the iris boundary, scaled by bloomStrength / bloomRadius
-  float bloomRing = exp(-pow((dist - (u_pupilRadius + 0.15)) / max(u_bloomRadius * 0.18, 0.01), 2.0));
+  float bloomCenter = (u_pupilRadius + 0.15) * 0.5;
+  float bloomRing = exp(-pow((dist - bloomCenter) / max(u_bloomRadius * 0.09, 0.005), 2.0));
   float bloom     = bloomRing * u_bloomStrength * 0.35;
 
   // --- AT shadow attenuation ---
-  // Simulate a shadow that darkens the outer sclera region using far-plane distance
-  float shadowNorm   = clamp(dist / (u_shadowFar * 0.025), 0.0, 1.0);
+  float shadowNorm   = clamp(dist / (u_shadowFar * 0.0125), 0.0, 1.0);
   float shadowFactor = 1.0 - shadowNorm * (1.0 - u_shadowBias * 100.0);
 
   float alpha = clamp(sclera * (iris + rays) + pupil, 0.0, 1.0);
 
-  // Combine base color with AT ambient contribution
   vec3 finalColor = u_fillColor + ambientContrib * (iris + bloom) * alpha;
-
-  // Apply bloom additive on top
   finalColor += u_fillColor * bloom;
-
-  // Apply shadow attenuation
   finalColor *= shadowFactor;
 
   gl_FragColor = vec4(finalColor, alpha * u_opacity);
