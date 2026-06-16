@@ -18,6 +18,18 @@ export type { CellDescriptor, EdgeDescriptor } from './pixi-cell-renderer';
 
 export { renderCellGraphSDF } from './sdf-cell-renderer';
 
+// ── M010: species-keyed geometry batcher — upstream/pixijs-engine batcher fusion ──
+// Mirrors: Batcher.add/break/begin, BatcherPipe.buildStart/addToBatch/buildEnd,
+//          GlBatchAdaptor.execute, DefaultBatcher.packQuadAttributes, BatchableSprite
+export {
+  CellSpeciesBatch,
+  CellBatchManager,
+  createCellBatchManager,
+  formatCellBatchStats,
+  SPECIES_PALETTE,
+} from './cell-batch-renderer';
+export type { BatchCell } from './cell-batch-renderer';
+
 // ── M007: Cell blur module — upstream pixijs-engine BlurFilter adapted for bloom pipeline ──
 export {
   BlurFilter,
