@@ -1269,6 +1269,411 @@ export function setOutline(
   }
 }
 
+// ── HUD layer — pixijs-ui canvas-native controls (M170) ────────────────────
+//
+// HUD 组件使用 upstream/pixijs-ui 的原生 PixiJS 控件，直接在 canvas 内渲染：
+//
+//   Slider      — 控制 epoch 播放速度 (0.25×–4×)
+//   ProgressBar — 显示收敛进度 (0–100%)
+//   Button      — 手动收敛触发按钮 (带 Graphics 背景)
+//   FancyButton — 工具栏按钮 (导出 / 暂停 / 复位)
+//
+// 所有组件通过纯 PixiJS Graphics 构建纹理，无需外部图片资源。
+// HUD 层 zIndex 固定为 9999 保证在所有 cell/edge 层之上。
+
+import { Slider } from '../../../upstream/pixijs-ui/src/Slider';
+import { ProgressBar as UIProgressBar } from '../../../upstream/pixijs-ui/src/ProgressBar';
+import { Button as UIButton, ButtonContainer } from '../../../upstream/pixijs-ui/src/Button';
+import { FancyButton } from '../../../upstream/pixijs-ui/src/FancyButton';
+
+export interface HUDState {
+  /** Current epoch playback speed multiplier (0.25–4). */
+  speedMultiplier: number;
+  /** Convergence progress 0–100. */
+  convergenceProgress: number;
+  /** Whether epoch playback is currently paused. */
+  paused: boolean;
+}
+
+export interface HUDCallbacks {
+  onSpeedChange?: (multiplier: number) => void;
+  onManualConverge?: () => void;
+  onExport?: () => void;
+  onPauseToggle?: (paused: boolean) => void;
+  onReset?: () => void;
+}
+
+/**
+ * HUDLayer — builds and manages a pixijs-ui HUD on top of the cell canvas.
+ *
+ * Layout (bottom toolbar, 40px tall):
+ *   [⏸ Pause] [↺ Reset]  |  ───speed slider───  |  ══progress bar══  |  [⚡ Converge] [⬇ Export]
+ *
+ * @example
+ * const hud = new HUDLayer(app, { speedMultiplier: 1, convergenceProgress: 0, paused: false });
+ * hud.setCallbacks({ onSpeedChange: (v) => console.log('speed', v) });
+ * // Update progress at any time:
+ * hud.setProgress(42);
+ */
+export class HUDLayer {
+  private app: Application;
+  private container: Container;
+  private slider!: Slider;
+  private progressBar!: UIProgressBar;
+  private pauseBtn!: FancyButton;
+  private resetBtn!: FancyButton;
+  private convergeBtn!: FancyButton;
+  private exportBtn!: FancyButton;
+  private speedLabel!: Text;
+  private state: HUDState;
+  private callbacks: HUDCallbacks = {};
+
+  // HUD layout constants
+  private static readonly HUD_H       = 48;
+  private static readonly PAD         = 12;
+  private static readonly BTN_W       = 80;
+  private static readonly BTN_H       = 32;
+  private static readonly SLIDER_W    = 160;
+  private static readonly PROGRESS_W  = 180;
+  private static readonly BG_COLOR    = 0x0D0D1A;
+  private static readonly BG_ALPHA    = 0.82;
+  private static readonly ACCENT      = 0x5C6BC0;
+  private static readonly GREEN       = 0x43A047;
+  private static readonly ORANGE      = 0xFFA726;
+  private static readonly TEXT_STYLE  = {
+    fontFamily: 'Inter, system-ui, sans-serif',
+    fontSize: 11,
+    fill: 0xCCCCDD,
+    fontWeight: '500' as const,
+  };
+
+  constructor(app: Application, initialState: Partial<HUDState> = {}) {
+    this.app = app;
+    this.state = {
+      speedMultiplier:    initialState.speedMultiplier    ?? 1,
+      convergenceProgress: initialState.convergenceProgress ?? 0,
+      paused:             initialState.paused             ?? false,
+    };
+
+    this.container = new Container();
+    this.container.zIndex = 9999;
+    this.container.label  = 'hud-layer';
+    app.stage.addChild(this.container);
+
+    this._buildBackground();
+    this._buildSpeedSlider();
+    this._buildProgressBar();
+    this._buildButtons();
+    this._layoutComponents();
+  }
+
+  // ── Public API ────────────────────────────────────────────────────────────
+
+  setCallbacks(cb: HUDCallbacks): void {
+    this.callbacks = { ...this.callbacks, ...cb };
+  }
+
+  /** Update convergence progress bar (0–100). */
+  setProgress(pct: number): void {
+    this.state.convergenceProgress = Math.max(0, Math.min(100, pct));
+    this.progressBar.progress = this.state.convergenceProgress;
+  }
+
+  /** Programmatically set speed slider value. */
+  setSpeed(multiplier: number): void {
+    // Slider uses log scale: value 0–100 maps to 0.25×–4×
+    this.state.speedMultiplier = multiplier;
+    this.slider.value = this._speedToSlider(multiplier);
+    this._updateSpeedLabel(multiplier);
+  }
+
+  /** Reposition HUD if canvas is resized. */
+  resize(w: number, h: number): void {
+    this._layoutComponents(w, h);
+  }
+
+  destroy(): void {
+    this.app.stage.removeChild(this.container);
+    this.container.destroy({ children: true });
+  }
+
+  // ── Private builders ──────────────────────────────────────────────────────
+
+  private _buildBackground(): void {
+    const bg = new Graphics();
+    // Will be sized in _layoutComponents
+    (this.container as any).__hudBg = bg;
+    this.container.addChildAt(bg, 0);
+  }
+
+  private _buildSpeedSlider(): void {
+    const { SLIDER_W, ACCENT } = HUDLayer;
+
+    // Build bg/fill/thumb textures via Graphics → RenderTexture
+    const bgG = new Graphics();
+    bgG.roundRect(0, 0, SLIDER_W, 6, 3);
+    bgG.fill({ color: 0x2A2A4A });
+
+    const fillG = new Graphics();
+    fillG.roundRect(0, 0, SLIDER_W, 6, 3);
+    fillG.fill({ color: ACCENT });
+
+    const thumbG = new Graphics();
+    thumbG.circle(0, 0, 8);
+    thumbG.fill({ color: 0xFFFFFF });
+    thumbG.circle(0, 0, 5);
+    thumbG.fill({ color: ACCENT });
+
+    this.slider = new Slider({
+      bg:     bgG,
+      fill:   fillG,
+      slider: thumbG,
+      min:    0,
+      max:    100,
+      value:  this._speedToSlider(this.state.speedMultiplier),
+      step:   1,
+    });
+
+    this.slider.onUpdate.connect((val) => {
+      const mult = this._sliderToSpeed(val);
+      this.state.speedMultiplier = mult;
+      this._updateSpeedLabel(mult);
+      this.callbacks.onSpeedChange?.(mult);
+    });
+
+    // Speed label
+    this.speedLabel = new Text({
+      text: this._formatSpeed(this.state.speedMultiplier),
+      style: new TextStyle({ ...HUDLayer.TEXT_STYLE, fontSize: 10 }),
+    });
+
+    const sliderLabel = new Text({
+      text: 'SPEED',
+      style: new TextStyle({ ...HUDLayer.TEXT_STYLE, fontSize: 9, fill: 0x7777AA }),
+    });
+
+    (this.slider as any).__speedLabel    = this.speedLabel;
+    (this.slider as any).__sliderLabel   = sliderLabel;
+
+    this.container.addChild(sliderLabel);
+    this.container.addChild(this.slider);
+    this.container.addChild(this.speedLabel);
+  }
+
+  private _buildProgressBar(): void {
+    const { PROGRESS_W, GREEN } = HUDLayer;
+
+    const pbBgG = new Graphics();
+    pbBgG.roundRect(0, 0, PROGRESS_W, 10, 5);
+    pbBgG.fill({ color: 0x1E1E3A });
+
+    const pbFillG = new Graphics();
+    pbFillG.roundRect(0, 0, PROGRESS_W, 10, 5);
+    pbFillG.fill({ color: GREEN });
+
+    this.progressBar = new UIProgressBar({
+      bg:       pbBgG,
+      fill:     pbFillG,
+      progress: this.state.convergenceProgress,
+    });
+
+    const pbLabel = new Text({
+      text: 'CONVERGENCE',
+      style: new TextStyle({ ...HUDLayer.TEXT_STYLE, fontSize: 9, fill: 0x7777AA }),
+    });
+
+    (this.progressBar as any).__pbLabel = pbLabel;
+    this.container.addChild(pbLabel);
+    this.container.addChild(this.progressBar);
+  }
+
+  private _buildButtons(): void {
+    const { BTN_W, BTN_H, ACCENT, ORANGE, GREEN } = HUDLayer;
+
+    // ── Helper: build a FancyButton with Graphics textures ─────────────
+    const makeBtn = (
+      label: string,
+      baseColor: number,
+      hoverColor: number,
+    ): FancyButton => {
+      const mkView = (color: number): Graphics => {
+        const g = new Graphics();
+        g.roundRect(0, 0, BTN_W, BTN_H, 6);
+        g.fill({ color, alpha: 0.9 });
+        g.roundRect(0, 0, BTN_W, BTN_H, 6);
+        g.stroke({ color: 0xFFFFFF, width: 0.5, alpha: 0.15 });
+        return g;
+      };
+
+      return new FancyButton({
+        defaultView:  mkView(baseColor),
+        hoverView:    mkView(hoverColor),
+        pressedView:  mkView(hoverColor),
+        text:         label,
+        padding:      4,
+        textOffset:   { default: { y: 0 } },
+      });
+    };
+
+    // ⏸ Pause / ▶ Resume
+    this.pauseBtn = makeBtn(
+      this.state.paused ? '▶ Resume' : '⏸ Pause',
+      0x2A2A50, 0x3A3A70,
+    );
+    this.pauseBtn.onPress.connect(() => {
+      this.state.paused = !this.state.paused;
+      // Update label via internal text accessor
+      (this.pauseBtn as any).text = this.state.paused ? '▶ Resume' : '⏸ Pause';
+      this.callbacks.onPauseToggle?.(this.state.paused);
+    });
+
+    // ↺ Reset
+    this.resetBtn = makeBtn('↺ Reset', 0x2A3040, 0x3A4060);
+    this.resetBtn.onPress.connect(() => {
+      this.callbacks.onReset?.();
+    });
+
+    // ⚡ Manual Converge
+    this.convergeBtn = makeBtn('⚡ Converge', 0x1A3320, 0x2A5030);
+    this.convergeBtn.onPress.connect(() => {
+      // Flash progress bar green momentarily
+      this.progressBar.progress = Math.min(100, this.state.convergenceProgress + 5);
+      this.callbacks.onManualConverge?.();
+    });
+
+    // ⬇ Export
+    this.exportBtn = makeBtn('⬇ Export', 0x3A2010, 0x5A3820);
+    this.exportBtn.onPress.connect(() => {
+      this.callbacks.onExport?.();
+    });
+
+    this.container.addChild(this.pauseBtn);
+    this.container.addChild(this.resetBtn);
+    this.container.addChild(this.convergeBtn);
+    this.container.addChild(this.exportBtn);
+  }
+
+  private _layoutComponents(
+    w?: number,
+    h?: number,
+  ): void {
+    const cw = w  ?? this.app.screen.width;
+    const ch = h  ?? this.app.screen.height;
+    const { HUD_H, PAD, BTN_W, BTN_H, SLIDER_W, PROGRESS_W } = HUDLayer;
+
+    const barY = ch - HUD_H;
+
+    // ── Background ────────────────────────────────────────────────────────
+    const bg = (this.container as any).__hudBg as Graphics;
+    if (bg) {
+      bg.clear();
+      bg.rect(0, barY, cw, HUD_H);
+      bg.fill({ color: HUDLayer.BG_COLOR, alpha: HUDLayer.BG_ALPHA });
+      // top border line
+      bg.moveTo(0, barY);
+      bg.lineTo(cw, barY);
+      bg.stroke({ color: HUDLayer.ACCENT, width: 1, alpha: 0.3 });
+    }
+
+    const midY  = barY + HUD_H / 2;
+    const labelH = 10;
+
+    // ── Left: Pause + Reset buttons ───────────────────────────────────────
+    let x = PAD;
+
+    this.pauseBtn.position.set(x, midY - BTN_H / 2);
+    x += BTN_W + PAD;
+
+    this.resetBtn.position.set(x, midY - BTN_H / 2);
+    x += BTN_W + PAD * 2;
+
+    // ── Divider ───────────────────────────────────────────────────────────
+    // (drawn into bg Graphics is sufficient; skip explicit line for simplicity)
+
+    // ── Centre-left: Speed Slider ─────────────────────────────────────────
+    const sliderLabel = (this.slider as any).__sliderLabel as Text | undefined;
+    if (sliderLabel) {
+      sliderLabel.position.set(x, barY + 7);
+    }
+    this.slider.position.set(x, midY - 3);
+
+    const speedVal = (this.slider as any).__speedLabel as Text | undefined;
+    if (speedVal) {
+      speedVal.position.set(x + SLIDER_W + 6, midY - 5);
+    }
+    x += SLIDER_W + 46 + PAD * 2;
+
+    // ── Centre-right: Progress Bar ────────────────────────────────────────
+    const pbLabel = (this.progressBar as any).__pbLabel as Text | undefined;
+    if (pbLabel) {
+      pbLabel.position.set(x, barY + 7);
+    }
+    this.progressBar.position.set(x, midY - 5);
+    x += PROGRESS_W + PAD * 2;
+
+    // ── Right: Converge + Export ──────────────────────────────────────────
+    // Pin to right edge
+    const rightX = cw - PAD - BTN_W;
+    this.exportBtn.position.set(rightX, midY - BTN_H / 2);
+    this.convergeBtn.position.set(rightX - BTN_W - PAD, midY - BTN_H / 2);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /** Map slider value 0–100 to speed multiplier 0.25–4 (log scale). */
+  private _sliderToSpeed(val: number): number {
+    // val 0→100 maps to log2(0.25)=-2 … log2(4)=2
+    const logVal = -2 + (val / 100) * 4;
+    return Math.round(Math.pow(2, logVal) * 100) / 100;
+  }
+
+  /** Inverse: speed multiplier → slider value 0–100. */
+  private _speedToSlider(mult: number): number {
+    const logVal = Math.log2(Math.max(0.25, Math.min(4, mult)));
+    return Math.round(((logVal + 2) / 4) * 100);
+  }
+
+  private _formatSpeed(mult: number): string {
+    return `${mult.toFixed(2)}×`;
+  }
+
+  private _updateSpeedLabel(mult: number): void {
+    this.speedLabel.text = this._formatSpeed(mult);
+  }
+}
+
+/**
+ * attachHUD — convenience wrapper: creates a HUDLayer and wires it to the
+ * given Application.  Returns the HUDLayer instance so callers can call
+ * hud.setProgress(), hud.setSpeed(), hud.setCallbacks(), hud.resize() etc.
+ *
+ * @example
+ * const { app, stop } = await renderCellGraphLive(canvas, edges);
+ * const hud = attachHUD(app, { convergenceProgress: 0, speedMultiplier: 1 });
+ * hud.setCallbacks({ onManualConverge: () => triggerConverge() });
+ */
+export function attachHUD(
+  app: Application,
+  initialState: Partial<HUDState> = {},
+  callbacks: HUDCallbacks = {},
+): HUDLayer {
+  const hud = new HUDLayer(app, initialState);
+  hud.setCallbacks(callbacks);
+
+  // Auto-resize on window resize (optional but ergonomic)
+  const onResize = () => hud.resize(app.screen.width, app.screen.height);
+  window.addEventListener('resize', onResize);
+
+  // Expose cleanup on the hud instance
+  const origDestroy = hud.destroy.bind(hud);
+  (hud as any).destroy = () => {
+    window.removeEventListener('resize', onResize);
+    origDestroy();
+  };
+
+  return hud;
+}
+
 // ── params.json loader helper ───────────────────────────────────────────────
 
 /**
