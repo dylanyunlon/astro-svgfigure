@@ -2,15 +2,21 @@
 """
 msdf_gen.py — MSDF Pipeline for Astro SVGFigure
 ================================================
-Converts cell SVG fragments → multi-channel signed distance field textures.
+Converts cell species params → multi-channel signed distance field textures.
 
 Strategy:
-  1. Parse the SVG fragment (no root <svg> tag) from channels/cell/{id}/svg.svg
-  2. Extract geometric shapes: <path>, <rect>, <circle>, <polyline>, <polygon>, <line>
-  3. Convert every shape to SVG <path> d-strings (msdfgen only understands paths)
-  4. Wrap paths in a proper standalone SVG file → /tmp/msdf_{id}.svg
-  5. Run bin/msdfgen.linux msdf -svg ... -o channels/cell/{id}/msdf.png
-  6. Optionally produce a test-render preview at channels/cell/{id}/msdf_preview.png
+  1. Read channels/cell/{id}/params.json  (species + species_params + bbox)
+  2. Algorithmically generate SVG path d-strings from species geometry
+  3. Wrap paths in a proper standalone SVG file → /tmp/msdf_{id}.svg
+  4. Run bin/msdfgen.linux msdf -svg ... -o channels/cell/{id}/msdf.png
+  5. Optionally produce a test-render preview at channels/cell/{id}/msdf_preview.png
+
+Supported species and their species_params keys:
+  cil-eye         ring_count, pupil_radius, r_outer, r_inner_ratio
+  cil-bolt        zigzag_count, amplitude, seg_width
+  cil-plus        arm_length, stroke_width, dash_corners
+  cil-vector      arrow_count, arrow_length, angle_spread
+  cil-arrow-right arrow_width, arrow_height
 
 Usage:
   python3 backend/pipeline/msdf_gen.py <cell_id> [--size WxH] [--pxrange N] [--preview]
@@ -25,230 +31,288 @@ Active Theory note:
 """
 
 import argparse
+import json
 import math
 import os
-import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 REPO_ROOT   = Path(__file__).resolve().parents[2]
 MSDFGEN_BIN = REPO_ROOT / "bin" / "msdfgen.linux"
 CELL_DIR    = REPO_ROOT / "channels" / "cell"
 
-# ── Shape → path conversion helpers ────────────────────────────────────────
+# ── Low-level path primitives ───────────────────────────────────────────────
 
-def rect_to_path(x, y, w, h, rx=0, ry=0):
-    """Convert <rect> (with optional corner radii) to a path d-string."""
+def circle_path(cx, cy, r):
+    """Cubic-bezier approximation of a circle (4-arc, k≈0.5523)."""
+    cx, cy, r = float(cx), float(cy), float(r)
+    k = 0.5523 * r
+    return (
+        f"M {cx:.4f},{cy-r:.4f} "
+        f"C {cx+k:.4f},{cy-r:.4f} {cx+r:.4f},{cy-k:.4f} {cx+r:.4f},{cy:.4f} "
+        f"C {cx+r:.4f},{cy+k:.4f} {cx+k:.4f},{cy+r:.4f} {cx:.4f},{cy+r:.4f} "
+        f"C {cx-k:.4f},{cy+r:.4f} {cx-r:.4f},{cy+k:.4f} {cx-r:.4f},{cy:.4f} "
+        f"C {cx-r:.4f},{cy-k:.4f} {cx-k:.4f},{cy-r:.4f} {cx:.4f},{cy-r:.4f} Z"
+    )
+
+
+def rect_path(x, y, w, h, rx=0, ry=0):
+    """Rounded-rectangle path (k≈0.5523 cubic bezier arcs)."""
     rx = min(float(rx), float(w) / 2)
     ry = min(float(ry), float(h) / 2)
     x, y, w, h = float(x), float(y), float(w), float(h)
     if rx == 0 and ry == 0:
-        return (f"M {x},{y} L {x+w},{y} L {x+w},{y+h} "
-                f"L {x},{y+h} Z")
-    # Rounded rectangle using cubic bezier arcs (k ≈ 0.5523)
+        return f"M {x},{y} L {x+w},{y} L {x+w},{y+h} L {x},{y+h} Z"
     k = 0.5523
     return (
-        f"M {x+rx},{y} "
-        f"L {x+w-rx},{y} "
-        f"C {x+w-rx+rx*k},{y} {x+w},{y+ry-ry*k} {x+w},{y+ry} "
-        f"L {x+w},{y+h-ry} "
-        f"C {x+w},{y+h-ry+ry*k} {x+w-rx+rx*k},{y+h} {x+w-rx},{y+h} "
-        f"L {x+rx},{y+h} "
-        f"C {x+rx-rx*k},{y+h} {x},{y+h-ry+ry*k} {x},{y+h-ry} "
-        f"L {x},{y+ry} "
-        f"C {x},{y+ry-ry*k} {x+rx-rx*k},{y} {x+rx},{y} "
-        f"Z"
+        f"M {x+rx:.4f},{y:.4f} "
+        f"L {x+w-rx:.4f},{y:.4f} "
+        f"C {x+w-rx+rx*k:.4f},{y:.4f} {x+w:.4f},{y+ry-ry*k:.4f} {x+w:.4f},{y+ry:.4f} "
+        f"L {x+w:.4f},{y+h-ry:.4f} "
+        f"C {x+w:.4f},{y+h-ry+ry*k:.4f} {x+w-rx+rx*k:.4f},{y+h:.4f} {x+w-rx:.4f},{y+h:.4f} "
+        f"L {x+rx:.4f},{y+h:.4f} "
+        f"C {x+rx-rx*k:.4f},{y+h:.4f} {x:.4f},{y+h-ry+ry*k:.4f} {x:.4f},{y+h-ry:.4f} "
+        f"L {x:.4f},{y+ry:.4f} "
+        f"C {x:.4f},{y+ry-ry*k:.4f} {x+rx-rx*k:.4f},{y:.4f} {x+rx:.4f},{y:.4f} Z"
     )
 
 
-def circle_to_path(cx, cy, r):
-    """Convert <circle> to a cubic-bezier path (4-arc approximation)."""
-    cx, cy, r = float(cx), float(cy), float(r)
-    k = 0.5523 * r
-    return (
-        f"M {cx},{cy-r} "
-        f"C {cx+k},{cy-r} {cx+r},{cy-k} {cx+r},{cy} "
-        f"C {cx+r},{cy+k} {cx+k},{cy+r} {cx},{cy+r} "
-        f"C {cx-k},{cy+r} {cx-r},{cy+k} {cx-r},{cy} "
-        f"C {cx-r},{cy-k} {cx-k},{cy-r} {cx},{cy-r} "
-        f"Z"
-    )
+def line_path(x1, y1, x2, y2):
+    """Open line segment as a path (stroke only, no fill area)."""
+    return f"M {float(x1):.4f},{float(y1):.4f} L {float(x2):.4f},{float(y2):.4f}"
 
 
-def points_to_path(points_str, close=False):
-    """Convert SVG points attribute (polyline / polygon) to a path d-string."""
-    pts = re.findall(r"[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?",
-                     points_str)
-    if len(pts) < 4:
-        return None
-    coords = list(map(float, pts))
-    pairs  = [(coords[i], coords[i+1]) for i in range(0, len(coords)-1, 2)]
-    d = f"M {pairs[0][0]},{pairs[0][1]}"
-    for px, py in pairs[1:]:
-        d += f" L {px},{py}"
-    if close:
-        d += " Z"
-    return d
+# ── Species path generators ─────────────────────────────────────────────────
 
-
-def line_to_path(x1, y1, x2, y2):
-    """Convert <line> to a path d-string (open stroke, no area)."""
-    return (f"M {float(x1)},{float(y1)} L {float(x2)},{float(y2)}")
-
-
-# ── SVG bounding-box helpers ────────────────────────────────────────────────
-
-def parse_viewbox_or_rect(root_attrib):
-    """Best-effort extraction of (x, y, w, h) canvas from a <g> element."""
-    # We rely on the rect dimensions embedded in the fragment
-    return None
-
-
-def get_shape_bbox_from_paths(path_strings):
+def paths_cil_eye(w, h, sp):
     """
-    Rough bounding box from path coordinates (handles M/L/C/Q).
-    Returns (min_x, min_y, max_x, max_y) or None.
+    cil-eye: central pupil circle + radial ray lines emanating outward.
+      species_params: ring_count, pupil_radius, r_outer, r_inner_ratio
     """
-    nums = []
-    for d in path_strings:
-        nums.extend(map(float, re.findall(
-            r"[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?", d)))
-    if not nums:
-        return None
-    # pair up as x,y (rough — ignores control points intent but good enough
-    # for bounding box purposes)
-    xs = nums[0::2]
-    ys = nums[1::2]
-    if not xs or not ys:
-        return None
-    return min(xs), min(ys), max(xs), max(ys)
+    ring_count   = int(sp.get("ring_count",   10))
+    pupil_r      = float(sp.get("pupil_radius", 4.2))
+    r_outer      = float(sp.get("r_outer",      21.0))
+    r_inner_ratio = float(sp.get("r_inner_ratio", 0.3))
+
+    cx = w / 2.0
+    cy = h / 2.0
+    r_inner = r_outer * r_inner_ratio
+
+    paths = []
+    # Bounding rect (rounded)
+    paths.append(rect_path(0, 0, w, h, rx=8))
+    # Radial rays
+    for i in range(ring_count):
+        angle = 2 * math.pi * i / ring_count
+        x1 = cx + r_inner * math.cos(angle)
+        y1 = cy + r_inner * math.sin(angle)
+        x2 = cx + r_outer * math.cos(angle)
+        y2 = cy + r_outer * math.sin(angle)
+        paths.append(line_path(x1, y1, x2, y2))
+    # Pupil (filled circle)
+    paths.append(circle_path(cx, cy, pupil_r))
+    return paths
 
 
-# ── Main extraction ─────────────────────────────────────────────────────────
-
-SVG_NS = "http://www.w3.org/2000/svg"
-
-def _tag(el):
-    """Strip namespace from tag name."""
-    return el.tag.replace(f"{{{SVG_NS}}}", "").replace("{}", "")
-
-
-def extract_paths_from_fragment(svg_fragment_text):
+def paths_cil_bolt(w, h, sp):
     """
-    Parse an SVG fragment (no root <svg>) and return:
-      - list of (d_string, stroke_width) tuples  — shapes converted to paths
-      - (canvas_w, canvas_h) best guess
+    cil-bolt: ascending zigzag / polyline representing a feed-forward ramp.
+      species_params: zigzag_count, amplitude, seg_width
+    The line rises from left-bottom to right-top with zigzag teeth.
     """
-    # Wrap in root so ElementTree can parse it
-    wrapped = (
-        '<?xml version="1.0"?>'
-        f'<svg xmlns="{SVG_NS}" xmlns:xlink="http://www.w3.org/1999/xlink">'
-        + svg_fragment_text
-        + "</svg>"
-    )
-    # Strip comments (ElementTree doesn't handle them gracefully in all versions)
-    wrapped = re.sub(r"<!--.*?-->", "", wrapped, flags=re.DOTALL)
+    zigzag_count = int(sp.get("zigzag_count", 6))
+    amplitude    = float(sp.get("amplitude",   6.0))
+    seg_width    = float(sp.get("seg_width",  20.0))
 
-    try:
-        root = ET.fromstring(wrapped)
-    except ET.ParseError as e:
-        print(f"  [warn] XML parse error: {e}; retrying with strict stripping")
-        wrapped = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;)", "&amp;", wrapped)
-        root = ET.fromstring(wrapped)
+    paths = []
+    paths.append(rect_path(0, 0, w, h, rx=8))
 
-    paths = []         # list of d-strings
-    canvas_w = 160     # fallback
-    canvas_h = 60
+    # Build ascending zigzag from left to right across the cell
+    # Overall line travels from (margin, h*0.6) up to (w-margin, h*0.2)
+    margin = 10.0
+    x_start, y_start = margin, h * 0.6
+    x_end,   y_end   = w - margin, h * 0.2
+    total_w  = x_end - x_start
+    total_h  = y_end - y_start  # negative = upward
 
-    def walk(el, transform_stack):
-        tag = _tag(el)
+    pts = [(x_start, y_start)]
+    for i in range(1, zigzag_count + 1):
+        t = i / zigzag_count
+        bx = x_start + t * total_w
+        by = y_start + t * total_h
+        # alternate above / below the baseline
+        side = 1 if i % 2 == 1 else -1
+        tx = by + side * amplitude   # perpendicular offset (swap x/y for normal)
+        ty = bx - side * amplitude
+        # project offset onto perpendicular of the line direction
+        # direction unit vector
+        dx = total_w / math.hypot(total_w, total_h)
+        dy = total_h / math.hypot(total_w, total_h)
+        # perpendicular: (-dy, dx)
+        pts.append((bx + side * amplitude * (-dy),
+                    by + side * amplitude * dx))
 
-        # ── Detect canvas from outermost rect ──
-        nonlocal canvas_w, canvas_h
-        if tag == "rect":
-            a = el.attrib
-            w = float(a.get("width",  canvas_w))
-            h = float(a.get("height", canvas_h))
-            # take largest rect as canvas hint
-            if w * h > canvas_w * canvas_h:
-                canvas_w, canvas_h = w, h
-            rx = float(a.get("rx", 0))
-            ry = float(a.get("ry", rx))
-            d  = rect_to_path(
-                a.get("x", 0), a.get("y", 0), w, h, rx, ry)
-            paths.append(d)
+    pts.append((x_end, y_end))
+    d = "M " + " L ".join(f"{px:.4f},{py:.4f}" for px, py in pts)
+    paths.append(d)
+    return paths
 
-        elif tag == "path":
-            d = el.attrib.get("d", "").strip()
-            if d:
-                paths.append(d)
 
-        elif tag == "circle":
-            a  = el.attrib
-            cx = a.get("cx", 0)
-            cy = a.get("cy", 0)
-            r  = a.get("r",  1)
-            paths.append(circle_to_path(cx, cy, r))
+def paths_cil_plus(w, h, sp):
+    """
+    cil-plus: cross (+ symbol) with optional corner dash lines.
+      species_params: arm_length, stroke_width, dash_corners
+    """
+    arm_len      = float(sp.get("arm_length",   10.0))
+    stroke_w     = float(sp.get("stroke_width",  2.5))
+    dash_corners = bool(sp.get("dash_corners",   True))
 
-        elif tag == "ellipse":
-            a  = el.attrib
-            cx, cy = float(a.get("cx", 0)), float(a.get("cy", 0))
-            rx2, ry2 = float(a.get("rx", 1)), float(a.get("ry", 1))
-            k = 0.5523
-            paths.append(
-                f"M {cx},{cy-ry2} "
-                f"C {cx+rx2*k},{cy-ry2} {cx+rx2},{cy-ry2*k} {cx+rx2},{cy} "
-                f"C {cx+rx2},{cy+ry2*k} {cx+rx2*k},{cy+ry2} {cx},{cy+ry2} "
-                f"C {cx-rx2*k},{cy+ry2} {cx-rx2},{cy+ry2*k} {cx-rx2},{cy} "
-                f"C {cx-rx2},{cy-ry2*k} {cx-rx2*k},{cy-ry2} {cx},{cy-ry2} Z"
-            )
+    cx = w / 2.0
+    cy = h / 2.0
 
-        elif tag == "polyline":
-            d = points_to_path(el.attrib.get("points", ""), close=False)
-            if d:
-                paths.append(d)
+    paths = []
+    paths.append(rect_path(0, 0, w, h, rx=8))
 
-        elif tag == "polygon":
-            d = points_to_path(el.attrib.get("points", ""), close=True)
-            if d:
-                paths.append(d)
+    # Horizontal arm
+    paths.append(line_path(cx - arm_len, cy, cx + arm_len, cy))
+    # Vertical arm
+    paths.append(line_path(cx, cy - arm_len, cx, cy + arm_len))
 
-        elif tag == "line":
-            a = el.attrib
-            paths.append(line_to_path(
-                a.get("x1", 0), a.get("y1", 0),
-                a.get("x2", 0), a.get("y2", 0)))
+    if dash_corners:
+        # Four diagonal "corner" dashes emanating from centre at 45°
+        diag = arm_len * 0.85
+        for angle in (math.pi / 4, 3 * math.pi / 4,
+                      5 * math.pi / 4, 7 * math.pi / 4):
+            x2 = cx + diag * math.cos(angle)
+            y2 = cy + diag * math.sin(angle)
+            paths.append(line_path(cx, cy, x2, y2))
 
-        # Recurse into groups / defs / etc.
-        for child in el:
-            walk(child, transform_stack)
+    return paths
 
-    walk(root, [])
-    return paths, (canvas_w, canvas_h)
+
+def paths_cil_vector(w, h, sp):
+    """
+    cil-vector: fan of arrows spreading across the cell (embedding fan).
+      species_params: arrow_count, arrow_length, angle_spread
+    Each arrow goes from left-centre to right-side with a small arrowhead.
+    """
+    arrow_count  = int(sp.get("arrow_count",   5))
+    arrow_length = float(sp.get("arrow_length", 48.0))
+    angle_spread = float(sp.get("angle_spread", 0.8))  # total spread in radians
+
+    paths = []
+    paths.append(rect_path(0, 0, w, h, rx=8))
+
+    cx = w / 2.0
+    cy = h / 2.0
+    head_size = 4.0  # arrowhead leg length
+
+    for i in range(arrow_count):
+        # angles spread symmetrically around 0 (rightward)
+        if arrow_count > 1:
+            t = i / (arrow_count - 1)  # 0..1
+        else:
+            t = 0.5
+        angle = -angle_spread / 2 + t * angle_spread
+
+        x1 = cx - arrow_length / 2
+        y1 = cy
+        x2 = cx + arrow_length / 2 * math.cos(angle)
+        y2 = cy + arrow_length / 2 * math.sin(angle)
+
+        # Shaft
+        paths.append(line_path(x1, y1, x2, y2))
+
+        # Arrowhead (two short lines)
+        back_angle = math.atan2(y1 - y2, x1 - x2)
+        for da in (-0.4, 0.4):
+            hx = x2 + head_size * math.cos(back_angle + da)
+            hy = y2 + head_size * math.sin(back_angle + da)
+            paths.append(line_path(x2, y2, hx, hy))
+
+    return paths
+
+
+def paths_cil_arrow_right(w, h, sp):
+    """
+    cil-arrow-right: a simple rightward-pointing filled triangle / chevron.
+      species_params: arrow_width, arrow_height
+    """
+    arrow_w = float(sp.get("arrow_width",  48.0))
+    arrow_h = float(sp.get("arrow_height", 16.0))
+
+    cx = w / 2.0
+    cy = h / 2.0
+
+    paths = []
+    paths.append(rect_path(0, 0, w, h, rx=8))
+
+    # Triangle: left-top → right-centre → left-bottom → close
+    lx = cx - arrow_w / 2
+    rx_ = cx + arrow_w / 2
+    top_y    = cy - arrow_h / 2
+    bottom_y = cy + arrow_h / 2
+
+    d = (f"M {lx:.4f},{top_y:.4f} "
+         f"L {rx_:.4f},{cy:.4f} "
+         f"L {lx:.4f},{bottom_y:.4f} Z")
+    paths.append(d)
+    return paths
+
+
+# ── Dispatch table ──────────────────────────────────────────────────────────
+
+SPECIES_GENERATORS = {
+    "cil-eye":         paths_cil_eye,
+    "cil-bolt":        paths_cil_bolt,
+    "cil-plus":        paths_cil_plus,
+    "cil-vector":      paths_cil_vector,
+    "cil-arrow-right": paths_cil_arrow_right,
+}
+
+
+def generate_paths_from_params(params):
+    """
+    Read species + species_params + bbox from a params dict and return
+    (list_of_path_d_strings, canvas_w, canvas_h).
+    """
+    species  = params.get("species", "")
+    sp       = params.get("species_params", {})
+    bbox     = params.get("bbox", {})
+    cw       = float(bbox.get("w", 160))
+    ch       = float(bbox.get("h",  60))
+
+    generator = SPECIES_GENERATORS.get(species)
+    if generator is None:
+        # Fallback: plain rounded rect so msdfgen still has something to work with
+        print(f"  [warn] unknown species '{species}', using fallback rect",
+              file=sys.stderr)
+        return [rect_path(0, 0, cw, ch, rx=8)], cw, ch
+
+    paths = generator(cw, ch, sp)
+    return paths, cw, ch
 
 
 # ── SVG file builder ─────────────────────────────────────────────────────────
 
 def build_standalone_svg(paths, canvas_w, canvas_h, padding=8):
     """
-    Combine extracted path d-strings into a single valid SVG file.
-    msdfgen reads only the *last* path in the file (by design in v1.5),
-    so we merge everything into one compound path using the M … Z idiom.
+    Combine path d-strings into a single valid SVG file.
+    msdfgen reads only the *last* path in the file (v1.5 design), so we
+    merge everything into one compound path using the M … Z idiom.
     """
     if not paths:
-        raise ValueError("No paths extracted from SVG fragment")
+        raise ValueError("No paths to write into SVG")
 
-    # Merge into one compound path
     compound = " ".join(p.strip() for p in paths if p.strip())
 
     vb_x = -padding
     vb_y = -padding
-    vb_w = canvas_w  + padding * 2
-    vb_h = canvas_h  + padding * 2
+    vb_w = canvas_w + padding * 2
+    vb_h = canvas_h + padding * 2
 
     svg = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -292,32 +356,44 @@ def run_msdfgen(svg_path, output_png, size=(64, 32), pxrange=4, preview=False,
 def process_cell(cell_id, size=(64, 32), pxrange=4, preview=False, verbose=True):
     """
     Full pipeline for one cell.
+    Reads params.json → generates paths algorithmically → runs msdfgen.
     Returns True on success.
     """
-    cell_path = CELL_DIR / cell_id
-    svg_frag  = cell_path / "svg.svg"
-    out_png   = cell_path / "msdf.png"
-    prev_png  = cell_path / "msdf_preview.png"
+    cell_path  = CELL_DIR / cell_id
+    params_file = cell_path / "params.json"
+    out_png    = cell_path / "msdf.png"
+    prev_png   = cell_path / "msdf_preview.png"
 
-    if not svg_frag.exists():
-        print(f"  [ERROR] svg.svg not found: {svg_frag}", file=sys.stderr)
+    if not params_file.exists():
+        print(f"  [ERROR] params.json not found: {params_file}", file=sys.stderr)
         return False
 
     if verbose:
         print(f"── {cell_id} ──────────────────────────────────")
 
-    # 1. Read fragment
-    fragment = svg_frag.read_text(encoding="utf-8")
-    if verbose:
-        print(f"  fragment: {len(fragment)} chars")
+    # 1. Load params
+    try:
+        params = json.loads(params_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"  [ERROR] JSON parse error in params.json: {e}", file=sys.stderr)
+        return False
 
-    # 2. Extract shapes → path d-strings
-    paths, (cw, ch) = extract_paths_from_fragment(fragment)
+    species = params.get("species", "<unknown>")
     if verbose:
-        print(f"  shapes extracted: {len(paths)}  canvas: {cw}×{ch}")
+        print(f"  species: {species}")
+
+    # 2. Generate path d-strings from species + species_params
+    try:
+        paths, cw, ch = generate_paths_from_params(params)
+    except Exception as e:
+        print(f"  [ERROR] path generation failed: {e}", file=sys.stderr)
+        return False
+
+    if verbose:
+        print(f"  paths generated: {len(paths)}  canvas: {cw}×{ch}")
 
     if not paths:
-        print(f"  [WARN] No drawable shapes found in {cell_id}, skipping.",
+        print(f"  [WARN] No paths generated for {cell_id}, skipping.",
               file=sys.stderr)
         return False
 
@@ -368,7 +444,7 @@ def process_cell(cell_id, size=(64, 32), pxrange=4, preview=False, verbose=True)
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MSDF Pipeline — convert cell SVG fragments to distance field textures")
+        description="MSDF Pipeline — generate MSDF textures from cell params.json")
     parser.add_argument("cell_id",
         help="Cell ID (e.g. self_attn) or 'all' to process every cell")
     parser.add_argument("--size", default="64x32",
@@ -379,14 +455,12 @@ def main():
         help="Also generate a test-render preview PNG")
     args = parser.parse_args()
 
-    # Parse size
     try:
         sw, sh = map(int, args.size.lower().split("x"))
     except ValueError:
         print(f"Invalid --size '{args.size}', expected WxH", file=sys.stderr)
         sys.exit(1)
 
-    # Determine cells to process
     if args.cell_id == "all":
         cells = sorted(p.name for p in CELL_DIR.iterdir() if p.is_dir())
     else:
