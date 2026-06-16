@@ -3,6 +3,10 @@
  * Auto-registered PixiJS filter registry sourced from upstream/pixijs-filters-v2.
  * AdvancedBloomFilter (AT HydraBloom 等价实现) 来自 upstream/pixijs-filters (v1).
  * Provides FILTER_REGISTRY (name → constructor) and createFilter factory.
+ *
+ * M031: GlowFilter (pixijs-filters-v2/src/glow) 已注册为 cell 选中高亮的外发光。
+ *   - createCellGlow(color, opts)  — 按 hover/select 模式实例化 GlowFilter
+ *   - GlowFilterOptions type 同步导出，供 pixi-cell-renderer.ts 的 setGlow() 使用
  */
 
 // ─── advanced-bloom (upstream/pixijs-filters — AT HydraBloom 核心后处理) ────
@@ -46,6 +50,7 @@ import { ReflectionFilter } from '../../upstream/pixijs-filters-v2/src/reflectio
 // ─── light ───────────────────────────────────────────────────────────────────
 import { BloomFilter }          from '../../upstream/pixijs-filters-v2/src/bloom';
 import { GlowFilter }           from '../../upstream/pixijs-filters-v2/src/glow';
+export type { GlowFilterOptions } from '../../upstream/pixijs-filters-v2/src/glow/GlowFilter';
 import { GodrayFilter }         from '../../upstream/pixijs-filters-v2/src/godray';
 import { SimpleLightmapFilter } from '../../upstream/pixijs-filters-v2/src/simple-lightmap';
 
@@ -180,6 +185,58 @@ export function createFilter<O = any>(name: FilterName, options?: O): InstanceTy
     throw new Error(`[pixi-filters-registry] Unknown filter: "${name}"`);
   }
   return options !== undefined ? new entry.ctor(options) : new entry.ctor();
+}
+
+// ─── Cell glow presets (M031) ────────────────────────────────────────────────
+
+/**
+ * Glow preset names used by setGlow() in pixi-cell-renderer.ts.
+ *   'hover'  — soft cyan outer-glow applied on pointerover
+ *   'select' — intense gold outer-glow applied on pointertap / programmatic select
+ */
+export type CellGlowMode = 'hover' | 'select';
+
+/**
+ * Per-mode GlowFilter configuration (M031).
+ * distance/quality are compile-time constants baked into the GLSL shader;
+ * only outerStrength, alpha, and color can be mutated after construction.
+ *
+ * hover  → cool cyan, moderate strength, no knockout
+ * select → gold,      higher  strength, no knockout
+ */
+export const CELL_GLOW_PRESETS: Record<CellGlowMode, import('../../upstream/pixijs-filters-v2/src/glow/GlowFilter').GlowFilterOptions> = {
+  hover: {
+    distance:      12,
+    outerStrength: 2.5,
+    innerStrength: 0,
+    color:         0x88CCFF,   // cyan-blue (matches HOVER_COLOR in cell-event-system)
+    alpha:         0.9,
+    quality:       0.15,
+    knockout:      false,
+  },
+  select: {
+    distance:      14,
+    outerStrength: 4.0,
+    innerStrength: 0.5,
+    color:         0xFFD700,   // gold (matches SELECT_COLOR in cell-event-system)
+    alpha:         1.0,
+    quality:       0.15,
+    knockout:      false,
+  },
+};
+
+/**
+ * createCellGlow — instantiate a GlowFilter for the given interaction mode.
+ *
+ * Uses CELL_GLOW_PRESETS so callers don't hard-code filter parameters.
+ *
+ * @example
+ * // Applied by setGlow() internally; you can also call directly:
+ * const glow = createCellGlow('hover');
+ * container.filters = [glow];
+ */
+export function createCellGlow(mode: CellGlowMode): GlowFilter {
+  return new GlowFilter(CELL_GLOW_PRESETS[mode]);
 }
 
 // ─── Re-export all constructors for direct use ──────────────────────────────

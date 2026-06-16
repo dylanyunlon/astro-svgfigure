@@ -40,7 +40,7 @@
 import { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
 import { Application } from '../../upstream/pixijs-engine/src/app/Application';
 
-import { setOutline } from './pixi-cell-renderer';
+import { setOutline, setGlow } from './pixi-cell-renderer';
 import type { CellDescriptor } from './pixi-cell-renderer';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ export class CellEventSystem {
   }
 
   /**
-   * Programmatically select a cell (shows gold outline).
+   * Programmatically select a cell (shows gold outline + glow).
    * Deselects any previously selected cell.
    */
   selectCell(container: Container): void {
@@ -309,6 +309,8 @@ export class CellEventSystem {
     }
     this.selected = container;
     setOutline(container, true, SELECT_COLOR, SELECT_THICKNESS);
+    // M031: gold select glow
+    setGlow(container, 'select');
   }
 
   /**
@@ -357,6 +359,8 @@ export class CellEventSystem {
     // Apply hover outline only if not selected (selection takes priority)
     if (this.selected !== container) {
       setOutline(container, true, HOVER_COLOR, HOVER_THICKNESS);
+      // M031: hover glow — soft cyan outer-glow via GlowFilter
+      setGlow(container, 'hover');
     }
 
     // Show tooltip
@@ -399,6 +403,8 @@ export class CellEventSystem {
     // Remove hover outline only if not selected
     if (this.selected !== c) {
       setOutline(c, false);
+      // M031: remove hover glow
+      setGlow(c, false);
     }
 
     this._hideTooltip();
@@ -434,6 +440,8 @@ export class CellEventSystem {
       this.selected = container;
       // Selection outline supersedes hover outline
       setOutline(container, true, SELECT_COLOR, SELECT_THICKNESS);
+      // M031: select glow — intense gold outer-glow via GlowFilter
+      setGlow(container, 'select');
 
       this.opts.onClick(meta, true, nativeEvent);
       document.dispatchEvent(new CustomEvent<CellSelectEventDetail>('cell:select', {
@@ -453,11 +461,15 @@ export class CellEventSystem {
     if (!this.selected) return;
     const c     = this.selected;
     this.selected = null;
-    // If still hovered, revert to hover outline; else clear entirely
+    // If still hovered, revert to hover outline + hover glow; else clear entirely
     if (this.hovered === c) {
       setOutline(c, true, HOVER_COLOR, HOVER_THICKNESS);
+      // M031: revert to hover glow after deselect
+      setGlow(c, 'hover');
     } else {
       setOutline(c, false);
+      // M031: remove glow entirely
+      setGlow(c, false);
     }
   }
 

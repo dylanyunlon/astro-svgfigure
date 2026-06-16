@@ -14,9 +14,15 @@
  * - 新 cell fade in (alpha 0→1)，消失 cell fade out (alpha 1→0) 后销毁
  * - edge layer 每帧跟着 cell 当前位置实时重绘
  *
+ * M031: GlowFilter 外发光整合
+ * - setGlow(container, 'hover' | 'select' | false) — hover/select 时叠加 GlowFilter
+ * - GlowFilter 实例存于 container.__glowFilter，避免重复构造
+ * - buildCellContainer() 预置 __glowFilter = null / __glowMode = null 槽位
+ *
  * Upstream reference:
  *   upstream/pixijs-engine/src/scene/graphics/shared/Graphics.ts
  *   upstream/pixijs-engine/src/filters/defaults/blur/
+ *   upstream/pixijs-filters-v2/src/glow/GlowFilter.ts
  *   skills/pixijs/pixijs-filters/SKILL.md
  *   skills/pixijs/pixijs-graphics/SKILL.md
  */
@@ -34,6 +40,15 @@ import { GlitchFilter } from '../../../upstream/pixijs-filters/src/glitch';
 import { MotionBlurFilter } from '../../../upstream/pixijs-filters/src/motion-blur';
 import { AdjustmentFilter } from '../../../upstream/pixijs-filters/src/adjustment';
 import { OutlineFilter } from '../../../upstream/pixijs-filters/src/outline';
+
+// ── M031: GlowFilter — cell 选中/悬停外发光 ──────────────────────────────────
+// GlowFilter 来自 upstream/pixijs-filters-v2/src/glow（pixi-filters-registry 已注册）。
+// createCellGlow(mode) 按 hover/select 预设实例化，CellGlowMode 供 setGlow() 使用。
+import { GlowFilter } from '../../../upstream/pixijs-filters-v2/src/glow';
+import {
+  createCellGlow,
+  type CellGlowMode,
+} from './pixi-filters-registry';
 
 // ── Gaussian blur module (M007) ─────────────────────────────────────────────
 // pixi-blur-cell adapts upstream/pixijs-engine BlurFilter for the cell render
@@ -437,6 +452,14 @@ function buildCellContainer(desc: CellDescriptor): Container {
   // ── OutlineFilter slot (applied on hover/select via setOutline helper) ──
   (container as any).__outlineFilter = null;
   (container as any).__baseFilters = (container.filters as any[] | null) ?? [];
+
+  // ── M031: GlowFilter slot — hover/select 外发光 ────────────────────────
+  // GlowFilter 实例在首次 setGlow() 时按 mode 创建，后续复用同一实例以避免
+  // GLSL 重编译（distance/quality 已烘焙进 GLSL loop）。
+  // __glowFilter: 当前挂载的 GlowFilter 实例（null = 未激活）
+  // __glowMode:   'hover' | 'select' | null — 标记当前 glow 类型，用于去重
+  (container as any).__glowFilter = null as GlowFilter | null;
+  (container as any).__glowMode   = null as CellGlowMode | null;
 
   // ── crowding_opacity: applies after fade-in completes ──────────────────
   // Store as userData so the poll loop can respect it when fading in
@@ -1341,6 +1364,9 @@ export async function renderCellGraphLive(
 //   setOutline(container, true, 0xFFFFFF, 2);  // highlight on hover
 //   setOutline(container, false);               // remove outline
 //
+// Note: filter chain is rebuilt via _rebuildFilters() so that OutlineFilter
+// and GlowFilter (M031) coexist without clobbering each other.
+//
 export function setOutline(
   container: Container,
   active: boolean,
@@ -1348,18 +1374,83 @@ export function setOutline(
   thickness: number = 2,
   alpha: number = 0.85,
 ): void {
-  const base = (container as any).__baseFilters as any[] ?? [];
-
   if (active) {
     // Avoid stacking duplicate outline filters
     if ((container as any).__outlineFilter) return;
     const outline = new OutlineFilter({ thickness, color, alpha, quality: 0.1 });
     (container as any).__outlineFilter = outline;
-    container.filters = [...base, outline];
   } else {
     (container as any).__outlineFilter = null;
-    container.filters = base.length > 0 ? base : null;
   }
+  _rebuildFilters(container);
+}
+
+// ── setGlow — apply/remove GlowFilter on hover or selection (M031) ──────────
+//
+// GlowFilter 外发光：hover 时软青色外光，select 时金色强外光。
+// 两种模式对应 pixi-filters-registry.ts 中的 CELL_GLOW_PRESETS。
+//
+// Filter 合成顺序（filter chain）:
+//   [__baseFilters…, outlineFilter?, glowFilter]
+// GlowFilter 放在末位保证外发光叠加在 outline 之外，视觉上最醒目。
+//
+// 实例复用策略：
+//   同一 container 的 hover→hover 不重建；hover→select 销毁旧实例重建新的，
+//   因为 distance/quality 已在 GLSL 编译时硬编码无法运行时改变。
+//
+// Usage:
+//   setGlow(container, 'hover');    // hover 时外发光
+//   setGlow(container, 'select');   // select 时外发光
+//   setGlow(container, false);      // 移除外发光
+//
+export function setGlow(
+  container: Container,
+  mode: CellGlowMode | false,
+): void {
+  const prevGlow = (container as any).__glowFilter as GlowFilter | null;
+  const prevMode = (container as any).__glowMode   as CellGlowMode | null;
+
+  if (mode === false) {
+    // ── Remove glow ──────────────────────────────────────────────────────
+    if (!prevGlow) return;               // already off — no-op
+    (container as any).__glowFilter = null;
+    (container as any).__glowMode   = null;
+    _rebuildFilters(container);
+    return;
+  }
+
+  // ── Apply / update glow ─────────────────────────────────────────────────
+  if (prevMode === mode && prevGlow) return;  // same mode already active — no-op
+
+  // Destroy old instance if switching modes (distance baked in GLSL)
+  if (prevGlow && prevMode !== mode) {
+    prevGlow.destroy?.();
+    (container as any).__glowFilter = null;
+    (container as any).__glowMode   = null;
+  }
+
+  const glow = createCellGlow(mode);
+  (container as any).__glowFilter = glow;
+  (container as any).__glowMode   = mode;
+  _rebuildFilters(container);
+}
+
+/**
+ * _rebuildFilters — reassemble container.filters from slots after any change.
+ *
+ * Order: [...__baseFilters, outlineFilter?, glowFilter?]
+ * Kept internal; setOutline / setGlow are the public API.
+ */
+function _rebuildFilters(container: Container): void {
+  const base    = (container as any).__baseFilters    as any[]       ?? [];
+  const outline = (container as any).__outlineFilter  as any | null;
+  const glow    = (container as any).__glowFilter     as any | null;
+
+  const chain: any[] = [...base];
+  if (outline) chain.push(outline);
+  if (glow)    chain.push(glow);
+
+  container.filters = chain.length > 0 ? chain : null;
 }
 
 // ── HUD layer — pixijs-ui canvas-native controls (M170) ────────────────────
