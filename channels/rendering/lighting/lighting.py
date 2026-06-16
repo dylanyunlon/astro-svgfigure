@@ -1554,68 +1554,79 @@ class AstroCellSingleLayerWaterSurface:
         }
 
     def generate_svg_water_overlay(self, x: float, y: float, w: float, h: float,
-                                    filter_id: str, view_cos: float = 0.9) -> str:
+                                    filter_id: str, view_cos: float = 0.9) -> dict:
         """
-        生成水面 SVG 覆盖层。
+        返回水面渲染结构化参数 dict，供前端 PixiJS DisplacementFilter 消费。
+        不再拼接 SVG 字符串。
         鲁迅式：水面渲染是最诚实的谎言——每一层都声称在还原真实，
         但最终所有层叠加起来，不过是人眼可以接受的近似。
         """
         if not _SLW_ENABLED:
-            return ""
-        params = self.to_svg_filter_params(view_cos)
-        parts  = []
-        fid    = f"slw-{filter_id}"
+            return {"enabled": False}
 
-        parts.append(f'<defs>')
-        parts.append(f'  <filter id="{fid}" x="-5%" y="-5%" width="110%" height="110%">')
+        params = self.to_svg_filter_params(view_cos)
         r_s, g_s, b_s = params["absorption_r"], params["absorption_g"], params["absorption_b"]
-        parts.append(
-            f'    <feColorMatrix type="matrix" '
-            f'values="{r_s} 0 0 0 0  0 {g_s} 0 0 0  0 0 {b_s} 0 0  0 0 0 1 0"/>')
         disp_scale = math.sqrt(params["refraction_du"]**2 + params["refraction_dv"]**2) * 20.0
-        if disp_scale > 0.1:
-            parts.append(
-                f'    <feTurbulence type="turbulence" baseFrequency="0.02 0.04" '
-                f'numOctaves="3" seed="{abs(hash(filter_id)) % 999}" result="waves"/>')
-            parts.append(
-                f'    <feDisplacementMap in="SourceGraphic" in2="waves" '
-                f'scale="{disp_scale:.2f}" xChannelSelector="R" yChannelSelector="G"/>')
-        parts.append(f'  </filter></defs>')
+        turbulence_seed = abs(hash(filter_id)) % 999
 
         water_blue = "#{:02X}{:02X}{:02X}".format(
-            int(30 + params["absorption_r"] * 40),
-            int(80 + params["absorption_g"] * 60),
-            int(150 + params["absorption_b"] * 80),
+            int(30 + r_s * 40),
+            int(80 + g_s * 60),
+            int(150 + b_s * 80),
         )
-        parts.append(
-            f'<!-- [ASTRO-SLW] SingleLayerWater fresnel={params["fresnel"]:.3f} '
-            f'absorp=({r_s:.3f},{g_s:.3f},{b_s:.3f}) (SingleLayerWaterRendering.cpp port) -->')
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
-            f'rx="4" fill="{water_blue}" opacity="{1.0 - params["fresnel"]:.3f}" '
-            f'filter="url(#{fid})"/>')
-        if params["fresnel"] > 0.05:
-            parts.append(
-                f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
-                f'rx="4" fill="white" opacity="{params["fresnel"] * 0.35:.3f}"/>')
-        if params["caustics_strength"] > 0.05:
-            cid = f"caustics-{filter_id}"
-            parts.append(
-                f'<defs><filter id="{cid}">'
-                f'<feTurbulence type="fractalNoise" baseFrequency="0.08 0.12" '
-                f'numOctaves="4" seed="{(abs(hash(filter_id))+42)%999}"/>'
-                f'<feColorMatrix type="saturate" values="0"/>'
-                f'<feComponentTransfer><feFuncA type="linear" slope="{params["caustics_strength"]:.2f}"/>'
-                f'</feComponentTransfer></filter></defs>')
-            parts.append(
-                f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
-                f'rx="4" fill="#FFFDE7" opacity="{params["caustics_strength"] * 0.4:.3f}" '
-                f'filter="url(#{cid})"/>')
-        if params["foam_coverage"] > 0.1:
-            parts.append(
-                f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
-                f'rx="4" fill="white" opacity="{params["foam_coverage"] * 0.25:.3f}"/>')
-        return "\n".join(parts)
+
+        result: dict = {
+            "enabled": True,
+            "filter_id": filter_id,
+            # Geometry
+            "x": round(x, 1), "y": round(y, 1),
+            "w": round(w, 1), "h": round(h, 1),
+            "rx": 4,
+            # SingleLayerWater physical params (SingleLayerWaterRendering.cpp port)
+            "fresnel":          round(params["fresnel"], 4),
+            "absorption": {
+                "r": round(r_s, 4),
+                "g": round(g_s, 4),
+                "b": round(b_s, 4),
+            },
+            # Base water rect
+            "water_color": water_blue,
+            "water_opacity": round(1.0 - params["fresnel"], 3),
+            # Displacement / refraction (PixiJS DisplacementFilter)
+            "displacement": {
+                "enabled":          disp_scale > 0.1,
+                "scale":            round(disp_scale, 2),
+                "turbulence_seed":  turbulence_seed,
+                "base_frequency_x": 0.02,
+                "base_frequency_y": 0.04,
+                "num_octaves":      3,
+            },
+            # Fresnel specular highlight rect
+            "fresnel_highlight": {
+                "enabled": params["fresnel"] > 0.05,
+                "fill":    "white",
+                "opacity": round(params["fresnel"] * 0.35, 3),
+            },
+            # Caustics layer (fractalNoise → feComponentTransfer)
+            "caustics": {
+                "enabled":          params["caustics_strength"] > 0.05,
+                "strength":         round(params["caustics_strength"], 4),
+                "fill":             "#FFFDE7",
+                "opacity":          round(params["caustics_strength"] * 0.4, 3),
+                "turbulence_seed":  (abs(hash(filter_id)) + 42) % 999,
+                "base_frequency_x": 0.08,
+                "base_frequency_y": 0.12,
+                "num_octaves":      4,
+            },
+            # Foam layer
+            "foam": {
+                "enabled": params["foam_coverage"] > 0.1,
+                "coverage": round(params["foam_coverage"], 4),
+                "fill":    "white",
+                "opacity": round(params["foam_coverage"] * 0.25, 3),
+            },
+        }
+        return result
 
 
 # =============================================================================
