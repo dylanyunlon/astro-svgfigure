@@ -28,6 +28,32 @@ import { Text } from '../../upstream/pixijs-engine/src/scene/text/Text';
 import { TextStyle } from '../../upstream/pixijs-engine/src/scene/text/TextStyle';
 import { Ticker } from '../../upstream/pixijs-engine/src/ticker/Ticker';
 import { AdvancedBloomFilter } from '../../../upstream/pixijs-filters/src/advanced-bloom';
+import { DropShadowFilter } from '../../../upstream/pixijs-filters/src/drop-shadow';
+
+// ── params.json schema (M152 output) ───────────────────────────────────────
+
+export interface ParamsJson {
+  cell_id: string;
+  species: string;
+  bbox: { x: number; y: number; w: number; h: number; z?: number };
+  z?: number;
+  /** crowding_opacity — sets container.alpha */
+  opacity?: number;
+  /** hex string e.g. "#3F51B5" */
+  fill_color?: string;
+  /** hex string e.g. "#3F51B5" */
+  stroke_color?: string;
+  label?: string;
+  font_size?: number;
+  shadow?: {
+    dx: number;
+    dy: number;
+    blur: number;
+    opacity: number;
+  };
+  species_params?: Record<string, unknown>;
+  epoch?: number;
+}
 
 // ── Cell descriptor — this is ALL the LLM needs to produce ──────────────────
 
@@ -41,6 +67,8 @@ export interface CellDescriptor {
     incoming_edges: string[];
     outgoing_edges: string[];
   };
+  /** Optional params.json overlay (M152 output) — merged at build time or runtime */
+  params?: ParamsJson;
 }
 
 export interface EdgeDescriptor {
@@ -65,38 +93,69 @@ const SPECIES_COLOURS: Record<string, { fill: number; stroke: number; glow: numb
   'cil-graph':       { fill: 0x78909C, stroke: 0x37474F, glow: 0xB0BEC5 },
 };
 
-function getColours(species: string) {
-  return SPECIES_COLOURS[species] ?? { fill: 0x90A4AE, stroke: 0x607D8B, glow: 0xB0BEC5 };
+function hexToNum(hex: string): number {
+  return parseInt(hex.replace('#', ''), 16);
+}
+
+function getColours(
+  species: string,
+  fillOverride?: string,
+  strokeOverride?: string,
+): { fill: number; stroke: number; glow: number } {
+  const base = SPECIES_COLOURS[species] ?? { fill: 0x90A4AE, stroke: 0x607D8B, glow: 0xB0BEC5 };
+  return {
+    fill:   fillOverride   ? hexToNum(fillOverride)   : base.fill,
+    stroke: strokeOverride ? hexToNum(strokeOverride) : base.stroke,
+    glow:   base.glow,
+  };
 }
 
 // ── Species pattern drawers ─────────────────────────────────────────────────
 
-type PatternDrawer = (g: Graphics, w: number, h: number, col: number) => void;
+type PatternDrawer = (g: Graphics, w: number, h: number, col: number, sp?: Record<string, unknown>) => void;
 
 const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
-  'cil-eye': (g, w, h, col) => {
-    const cx = w / 2, cy = h / 2, r = Math.min(w, h) * 0.35;
-    for (let i = 3; i >= 1; i--) {
-      g.circle(cx, cy, r * (i / 3));
-      g.fill({ color: col, alpha: 0.08 * i });
+  'cil-eye': (g, w, h, col, sp) => {
+    const cx = w / 2, cy = h / 2;
+    const rOuter = (sp?.r_outer as number | undefined) ?? Math.min(w, h) * 0.35;
+    const ringCount = (sp?.ring_count as number | undefined) ?? 3;
+    const pupilRadius = (sp?.pupil_radius as number | undefined) ?? rOuter * 0.15;
+    const rInnerRatio = (sp?.r_inner_ratio as number | undefined) ?? 0.3;
+    for (let i = ringCount; i >= 1; i--) {
+      g.circle(cx, cy, rOuter * (i / ringCount));
+      g.fill({ color: col, alpha: 0.08 * i * (3 / ringCount) });
     }
-    g.circle(cx, cy, r * 0.15);
+    g.circle(cx, cy, pupilRadius);
     g.fill({ color: col, alpha: 0.5 });
+    // draw iris line using r_inner_ratio
+    g.circle(cx, cy, rOuter * rInnerRatio);
+    g.stroke({ color: col, width: 0.8, alpha: 0.25 });
   },
 
-  'cil-vector': (g, w, h, col) => {
+  'cil-vector': (g, w, h, col, sp) => {
     const pad = 8;
-    g.moveTo(pad, h / 2);
-    g.lineTo(w - pad * 3, h / 2);
-    g.moveTo(w - pad * 3, h / 2);
-    g.lineTo(w - pad * 4, h / 2 - 6);
-    g.moveTo(w - pad * 3, h / 2);
-    g.lineTo(w - pad * 4, h / 2 + 6);
-    g.stroke({ color: col, width: 1.5, alpha: 0.4 });
+    const arrowCount = (sp?.arrow_count as number | undefined) ?? 1;
+    const arrowLength = (sp?.arrow_length as number | undefined) ?? (w - pad * 4);
+    const angleSpread = (sp?.angle_spread as number | undefined) ?? 0;
+    const cx = w / 2, cy = h / 2;
+    const startX = cx - arrowLength / 2;
+    for (let i = 0; i < arrowCount; i++) {
+      const angle = arrowCount > 1 ? angleSpread * (i / (arrowCount - 1) - 0.5) : 0;
+      const endX = startX + arrowLength * Math.cos(angle);
+      const endY = cy + arrowLength * Math.sin(angle);
+      g.moveTo(startX, cy);
+      g.lineTo(endX, endY);
+      g.moveTo(endX, endY);
+      g.lineTo(endX - 6 * Math.cos(angle - 0.4), endY - 6 * Math.sin(angle - 0.4));
+      g.moveTo(endX, endY);
+      g.lineTo(endX - 6 * Math.cos(angle + 0.4), endY - 6 * Math.sin(angle + 0.4));
+      g.stroke({ color: col, width: 1.5, alpha: 0.4 });
+    }
   },
 
-  'cil-bolt': (g, w, h, col) => {
-    const n = 5, dy = h / (n + 1), amp = w * 0.15;
+  'cil-bolt': (g, w, h, col, sp) => {
+    const n = (sp?.zigzag_segments as number | undefined) ?? (sp?.num_rays as number | undefined) ?? 5;
+    const dy = h / (n + 1), amp = w * 0.15;
     g.moveTo(w / 2, 6);
     for (let i = 1; i <= n; i++) {
       const x = w / 2 + (i % 2 === 1 ? amp : -amp);
@@ -106,14 +165,24 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
     g.stroke({ color: col, width: 1.5, alpha: 0.35 });
   },
 
-  'cil-plus': (g, w, h, col) => {
-    const cx = w / 2, cy = h / 2, arm = Math.min(w, h) * 0.3;
+  'cil-plus': (g, w, h, col, sp) => {
+    const cx = w / 2, cy = h / 2;
+    const arm = (sp?.arm_length as number | undefined) ?? Math.min(w, h) * 0.3;
+    const strokeWidth = (sp?.stroke_width as number | undefined) ?? 2;
+    const dashCorners = (sp?.dash_corners as boolean | undefined) ?? false;
     g.moveTo(cx - arm, cy); g.lineTo(cx + arm, cy);
     g.moveTo(cx, cy - arm); g.lineTo(cx, cy + arm);
-    g.stroke({ color: col, width: 2, alpha: 0.3 });
+    g.stroke({ color: col, width: strokeWidth, alpha: 0.3 });
+    if (dashCorners) {
+      const d = arm * 0.6;
+      for (const [ox, oy] of [[-d,-d],[d,-d],[d,d],[-d,d]]) {
+        g.circle(cx + ox, cy + oy, 1.5);
+        g.fill({ color: col, alpha: 0.2 });
+      }
+    }
   },
 
-  'cil-arrow-right': (g, w, h, col) => {
+  'cil-arrow-right': (g, w, h, col, sp) => {
     const cx = w / 2, cy = h / 2, sz = Math.min(w, h) * 0.25;
     g.moveTo(cx - sz, cy - sz);
     g.lineTo(cx + sz * 0.5, cy);
@@ -121,7 +190,7 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
     g.stroke({ color: col, width: 2, alpha: 0.4 });
   },
 
-  'cil-filter': (g, w, h, col) => {
+  'cil-filter': (g, w, h, col, sp) => {
     const pad = 10, gw = (w - pad * 2) / 3, gh = (h - pad * 2) / 3;
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 3; c++) {
@@ -131,14 +200,14 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
     }
   },
 
-  'cil-code': (g, w, h, col) => {
+  'cil-code': (g, w, h, col, sp) => {
     const bx = 12, by = 8;
     g.moveTo(bx, by); g.lineTo(bx - 4, h / 2); g.lineTo(bx, h - by);
     g.moveTo(w - bx, by); g.lineTo(w - bx + 4, h / 2); g.lineTo(w - bx, h - by);
     g.stroke({ color: col, width: 1.5, alpha: 0.3 });
   },
 
-  'cil-layers': (g, w, h, col) => {
+  'cil-layers': (g, w, h, col, sp) => {
     for (let i = 0; i < 3; i++) {
       const off = i * 4;
       g.roundRect(6 + off, 6 + off, w - 12 - off * 2, h - 12 - off * 2, 3);
@@ -146,7 +215,7 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
     }
   },
 
-  'cil-loop': (g, w, h, col) => {
+  'cil-loop': (g, w, h, col, sp) => {
     const cx = w / 2, cy = h / 2, r = Math.min(w, h) * 0.3;
     g.arc(cx, cy, r, -Math.PI * 0.8, Math.PI * 0.5);
     g.stroke({ color: col, width: 1.5, alpha: 0.4 });
@@ -156,7 +225,7 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
     g.stroke({ color: col, width: 1.5, alpha: 0.4 });
   },
 
-  'cil-graph': (g, w, h, col) => {
+  'cil-graph': (g, w, h, col, sp) => {
     const pts = [[w*0.25, h*0.3], [w*0.6, h*0.25], [w*0.75, h*0.6], [w*0.35, h*0.7]];
     for (const [x, y] of pts) {
       g.circle(x, y, 3);
@@ -193,7 +262,13 @@ function createGlowSprite(w: number, h: number, glowColor: number, species: stri
 function buildCellContainer(desc: CellDescriptor): Container {
   const { bbox, species, label, z } = desc;
   const { w, h } = bbox;
-  const cols = getColours(species);
+
+  // ── Resolve params.json overrides ──────────────────────────────────────
+  const p = desc.params;
+  const cols = getColours(species, p?.fill_color, p?.stroke_color);
+  const speciesParams = p?.species_params;
+  const crowdingOpacity = (p?.opacity !== undefined) ? Math.max(0.15, Math.min(1, p.opacity)) : 1;
+  const fontSize = p?.font_size ?? 11;
 
   const container = new Container();
   container.position.set(bbox.x, bbox.y);
@@ -207,16 +282,31 @@ function buildCellContainer(desc: CellDescriptor): Container {
   body.fill({ color: cols.fill, alpha: 0.9 });
   body.roundRect(0, 0, w, h, 8);
   body.stroke({ color: cols.stroke, width: 1.5, alpha: 0.8 });
+
+  // ── DropShadowFilter from params.json shadow field ──────────────────────
+  if (p?.shadow) {
+    const { dx, dy, blur, opacity } = p.shadow;
+    const dropShadow = new DropShadowFilter({
+      offset: { x: dx, y: dy },
+      blur,
+      alpha: opacity,
+      color: 0x000000,
+      quality: 4,
+    });
+    // Compose with bloom on the body: [dropShadow, ...existing]
+    body.filters = [dropShadow];
+  }
+
   container.addChild(body);
 
   const pattern = new Graphics();
   const drawer = SPECIES_PATTERNS[species] ?? SPECIES_PATTERNS['cil-code'];
-  drawer(pattern, w, h, cols.stroke);
+  drawer(pattern, w, h, cols.stroke, speciesParams);
   container.addChild(pattern);
 
   const style = new TextStyle({
     fontFamily: 'Inter, system-ui, sans-serif',
-    fontSize: 11,
+    fontSize,
     fill: 0xFFFFFF,
     fontWeight: '500',
   });
@@ -224,6 +314,11 @@ function buildCellContainer(desc: CellDescriptor): Container {
   txt.anchor.set(0.5);
   txt.position.set(w / 2, h / 2);
   container.addChild(txt);
+
+  // ── crowding_opacity: applies after fade-in completes ──────────────────
+  // Store as userData so the poll loop can respect it when fading in
+  (container as any).__targetAlpha = crowdingOpacity;
+  container.alpha = 0; // caller sets to 0 for fade-in; will stop at __targetAlpha
 
   return container;
 }
@@ -327,9 +422,10 @@ export function pollCellChannels(
       lc.container.position.set(lc.curX, lc.curY);
 
       // Fade
+      const targetAlpha: number = (lc.container as any).__targetAlpha ?? 1;
       if (lc.fadeDir === 1) {
-        lc.container.alpha = Math.min(1, lc.container.alpha + FADE_SPEED);
-        if (lc.container.alpha >= 1) lc.fadeDir = 0;
+        lc.container.alpha = Math.min(targetAlpha, lc.container.alpha + FADE_SPEED);
+        if (lc.container.alpha >= targetAlpha) lc.fadeDir = 0;
       } else if (lc.fadeDir === -1) {
         lc.container.alpha = Math.max(0, lc.container.alpha - FADE_SPEED);
         if (lc.container.alpha <= 0) {
@@ -454,6 +550,8 @@ export async function renderCellGraph(
   // Draw cells
   for (const cell of cells) {
     const container = buildCellContainer(cell);
+    // In static mode: skip fade-in, go straight to target alpha
+    container.alpha = (container as any).__targetAlpha ?? 1;
     app.stage.addChild(container);
   }
 
@@ -492,4 +590,28 @@ export async function renderCellGraphLive(
   const stop = pollCellChannels(app, edges, edgeLayer);
 
   return { app, stop };
+}
+
+// ── params.json loader helper ───────────────────────────────────────────────
+
+/**
+ * mergeParamsJson — fetches a params.json file for a given cell_id and
+ * merges it into a CellDescriptor so that fill_color, stroke_color, shadow,
+ * opacity, and species_params are all available to buildCellContainer.
+ *
+ * Usage:
+ *   const cell = await mergeParamsJson(desc, '/channels/cell/self_attn/params.json');
+ */
+export async function mergeParamsJson(
+  desc: CellDescriptor,
+  paramsUrl: string,
+): Promise<CellDescriptor> {
+  try {
+    const res = await fetch(paramsUrl);
+    if (!res.ok) return desc;
+    const p: ParamsJson = await res.json();
+    return { ...desc, params: p };
+  } catch {
+    return desc;
+  }
 }
