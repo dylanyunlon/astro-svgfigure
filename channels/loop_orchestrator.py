@@ -2190,6 +2190,12 @@ def _weight_balance_pass(root, strength: float) -> None:
 # ---------------------------------------------------------------------------
 def post_process_svg(svg_string: str) -> str:
     """
+    [DEPRECATED — Phase 4, REFACTOR_PLAN.md]
+    assemble_final_svg() no longer produces an SVG string; it outputs
+    channels/composite_params.json for the PixiJS renderer.extract pipeline.
+    This function is retained for signature compatibility and will be removed
+    in a future cleanup phase.
+
     [ASTRO-SVG] post_process_svg — entry point mirroring the FAstroSvgPostProcess
     pass chain in PostProcessing.cpp commit f2a77b0.
 
@@ -2466,18 +2472,32 @@ def compute_edge_routes():
 
 def assemble_final_svg():
     """
-    Assemble all cell SVGs into final.svg.
+    Collect all cell params.json files and edge routes into composite_params.json
+    for consumption by the frontend PixiJS renderer.extract pipeline.
 
-    Algorithm (ported from SceneRendering.cpp commit 7eae73c):
+    Phase 4 of REFACTOR_PLAN.md: instead of assembling an SVG string, this function
+    outputs channels/composite_params.json containing:
+      - cells[]:  sorted cell parameter objects (z-layer + constraint-priority order)
+      - edges[]:  routed edge descriptors from physics/edge_routes.json
+      - canvas:   { width, height } canvas dimensions
+      - palette:  { zenith, horizon, nadir } background gradient stops (hex strings)
+
+    Algorithm (preserved from the original SVG assembler — SceneRendering.cpp 7eae73c):
       1. FAstroCellRegistry  — build slot registry from bbox + topology + species.
       2. FConstraintCollector— collect & pack constraints; derive outgoing_edge_count.
       3. Z-layer sort        — opaque cells precede translucent cells within a layer;
                                among same-opacity cells, higher outgoing-edge count
                                renders first (constraint priority, mirrors the C++
                                SortedPassIndices.StableSort weighted by ViewZLayer).
+      4. [ASTRO-VISIBILITY]  — cull fully-occluded cells per layer.
+      5. [ASTRO-PALETTE-BG]  — derive background gradient from cell-species palettes
+                               (FAstroGlobalBackgroundSampler, commit 3ec4df8).
+
+    Returns:
+        Path to channels/composite_params.json.
     """
-    svg_files  = glob.glob(os.path.join(CHANNELS, "cell", "*", "svg.svg"))
-    bbox_files = glob.glob(os.path.join(CHANNELS, "cell", "*", "bbox.json"))
+    params_files = glob.glob(os.path.join(CHANNELS, "cell", "*", "params.json"))
+    bbox_files   = glob.glob(os.path.join(CHANNELS, "cell", "*", "bbox.json"))
 
     # ── Load bbox map ──────────────────────────────────────────────────────────
     bbox_map: Dict[str, Dict] = {}
@@ -2516,14 +2536,14 @@ def assemble_final_svg():
         f"{collector.active_cell_count()} active constraints"
     )
 
-    # ── Load SVG fragments ─────────────────────────────────────────────────────
-    svg_map: Dict[str, str] = {}
-    for sf in svg_files:
-        cell_id = os.path.basename(os.path.dirname(sf))
-        with open(sf) as f:
-            svg_map[cell_id] = f.read()
+    # ── Load params.json for each cell ────────────────────────────────────────
+    params_map: Dict[str, Dict] = {}
+    for pf in params_files:
+        cell_id = os.path.basename(os.path.dirname(pf))
+        with open(pf) as f:
+            params_map[cell_id] = json.load(f)
 
-    # ── [ASTRO-ZLAYER-SORT] Build sort key and order fragments ─────────────────
+    # ── [ASTRO-ZLAYER-SORT] Build sort key and order cell params ───────────────
     #
     # Mirrors SetupMeshPass SortedPassIndices.StableSort (commit 7eae73c):
     #   • "Opaque" cells (non-translucent species) sort before translucent ones.
@@ -2539,7 +2559,7 @@ def assemble_final_svg():
         return (slot.z_layer, is_translucent, out_priority, slot.cell_id)
 
     sorted_slots = sorted(
-        [s for s in registry if s.active and s.cell_id in svg_map],
+        [s for s in registry if s.active and s.cell_id in params_map],
         key=_sort_key,
     )
 
@@ -2831,57 +2851,32 @@ def assemble_final_svg():
         f"(species={len(all_species)} palette_entries={len(palette_registry)})"
     )
 
-    # ── Defs — inject linearGradient derived from cell-species palette ─────────
-    # Replaces the flat #FAFAFA fill; mirrors how SetupSkyLightParameters
-    # injects PaletteColour into SkyLightData->Color replacing the scene tint.
-    # gradientUnits="objectBoundingBox" is made explicit (改 20%: the C++ patch
-    # comment notes the gradient "replaces the env-texture sample" — objectBoundingBox
-    # ensures the gradient scales with the SVG canvas regardless of viewBox transforms,
-    # matching the C++ intent of a full-frame background replacement).
-    # stop-opacity="1" mirrors C++ FinalColour.A = 1.0f (explicit alpha assignment).
-    defs = f'''  <defs>
-    <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#2E7D32"/>
-    </marker>
-    <!--
-      FAstroGlobalBackgroundSampler palette gradient — ported from
-      upstream/unreal-renderer/RayTracing/RaytracingSkylight.cpp commit 3ec4df8.
-      Stop colours are the cos\xb2-weighted average of all registered cell-species
-      palettes, sampled at zenith (y=0), horizon (y=0.5) and nadir (y=1)
-      via the 6-direction AstroSampleDirs weighted blend from SetupSkyLightParameters.
-    -->
-    <linearGradient id="astro-bg-gradient" x1="0" y1="0" x2="0" y2="1"
-                    gradientUnits="objectBoundingBox">
-      <stop offset="0%"   stop-color="{stop_top}"    stop-opacity="1"/>
-      <stop offset="50%"  stop-color="{stop_mid}"    stop-opacity="1"/>
-      <stop offset="100%" stop-color="{stop_bottom}" stop-opacity="1"/>
-    </linearGradient>
-  </defs>'''
+    # ── Emit composite_params.json for PixiJS renderer ────────────────────────
+    #
+    # Phase 4 (REFACTOR_PLAN.md): instead of building an SVG string, collect all
+    # per-cell params and edge routes into a single JSON file that the frontend
+    # PixiJS pipeline consumes via renderer.extract.
+    #
+    # Structure:
+    #   canvas:  { width, height }    — pixel dimensions for the PixiJS stage
+    #   palette: { zenith, horizon, nadir }  — background gradient stops (hex)
+    #   cells[]: ordered list of cell param objects, each enriched with:
+    #              render_order, z_layer, is_translucent, outgoing_edge_count
+    #   edges[]: edge route descriptors from physics/edge_routes.json
 
-    # ── Build SVG ──────────────────────────────────────────────────────────────
-    lines = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'width="{width}" height="{height}" style="max-width:100%;height:auto;">',
-        f'  <rect width="{width}" height="{height}" fill="url(#astro-bg-gradient)" rx="4"/>',
-        defs,
-    ]
+    # Build ordered cells list (z-layer + constraint-priority order, culled)
+    cells_out: List[Dict] = []
+    for render_order, slot in enumerate(sorted_slots):
+        cell_params = dict(params_map[slot.cell_id])   # shallow copy
+        cell_params["render_order"]        = render_order
+        cell_params["z_layer"]             = slot.z_layer
+        cell_params["is_translucent"]      = slot.species in _TRANSLUCENT_SPECIES
+        cell_params["outgoing_edge_count"] = collector.outgoing_edge_count(slot.cell_id)
+        cells_out.append(cell_params)
 
-    for z in sorted(z_groups.keys()):
-        lines.append(f'  <g id="z{z}-layer">')
-        for slot in z_groups[z]:
-            out_cnt = collector.outgoing_edge_count(slot.cell_id)
-            lines.append(
-                f'    <!-- cell: {slot.cell_id} species={slot.species} '
-                f'constraint_mask=0x{slot.constraint_mask:02X} out_edges={out_cnt} -->'
-            )
-            lines.append(f'    {svg_map[slot.cell_id]}')
-        lines.append(f'  </g>')
-
-    # ── [M009] Edge routing — read from physics/edge_routes.json ──────────────
-    # compute_edge_routes() runs first (obstacle-avoidance); we just render here.
+    # ── Load edge routes ───────────────────────────────────────────────────────
     edge_routes_path = os.path.join(CHANNELS, "physics", "edge_routes.json")
     if not os.path.exists(edge_routes_path):
-        # First run or routes not yet computed: generate them now.
         print("[Assemble] edge_routes.json missing — running compute_edge_routes()")
         compute_edge_routes()
 
@@ -2890,82 +2885,29 @@ def assemble_final_svg():
         with open(edge_routes_path) as _erf:
             edge_routes = json.load(_erf)
 
-    edge_lines = ['  <g id="edges-layer" style="pointer-events:none;">']
+    edges_out: List[Dict] = [
+        route for route in edge_routes.values() if len(route.get("points", [])) >= 2
+    ]
 
-    for eid, route in edge_routes.items():
-        pts     = route.get("points", [])
-        is_skip = route.get("is_skip", False)
-        blocked = route.get("blocked_by", [])
-
-        if len(pts) < 2:
-            continue
-
-        # Build SVG path from the routed points list.
-        # 2-point paths → straight line (L command).
-        # 3-point paths → smooth cubic Bezier through the waypoint (C command),
-        # giving a visually pleasing curve around the obstacle while passing
-        # exactly through the avoidance waypoint.
-        p0 = pts[0]
-        if len(pts) == 2:
-            p1 = pts[1]
-            d  = f"M{p0['x']:.1f},{p0['y']:.1f} L{p1['x']:.1f},{p1['y']:.1f}"
-        else:
-            # 3 points: start, waypoint, end → cubic Bezier
-            # Control points: cp1 pulls from start toward waypoint;
-            #                 cp2 pulls from waypoint toward end.
-            pw = pts[1]  # waypoint
-            p2 = pts[2]  # end
-            cp1x = (p0["x"] + pw["x"]) / 2
-            cp1y = (p0["y"] + pw["y"]) / 2
-            cp2x = (pw["x"] + p2["x"]) / 2
-            cp2y = (pw["y"] + p2["y"]) / 2
-            d = (
-                f"M{p0['x']:.1f},{p0['y']:.1f} "
-                f"C{cp1x:.1f},{cp1y:.1f} "
-                f"{cp2x:.1f},{cp2y:.1f} "
-                f"{pw['x']:.1f},{pw['y']:.1f} "
-                f"S{cp2x:.1f},{cp2y:.1f} "
-                f"{p2['x']:.1f},{p2['y']:.1f}"
-            )
-
-        # Visual style: skip connections are green dashed; regular are grey.
-        if is_skip:
-            style = (
-                'stroke="#4CAF50" stroke-width="2" fill="none" '
-                'stroke-dasharray="5,3" marker-end="url(#arrow-green)"'
-            )
-        else:
-            style = (
-                'stroke="#888" stroke-width="1.5" fill="none" '
-                'marker-end="url(#arrow-green)"'
-            )
-
-        # Embed debug info as SVG comment when edge was rerouted
-        if blocked:
-            edge_lines.append(
-                f'    <!-- edge {eid}: obstacle-avoided {blocked} -->'
-            )
-        edge_lines.append(f'    <path d="{d}" {style}/>')
-
-    edge_lines.append('  </g>')
     print(
-        f"[M009-EdgeRouter] Rendered {len(edge_routes)} edges from edge_routes.json "
-        f"({sum(1 for r in edge_routes.values() if r.get('blocked_by'))} rerouted)"
+        f"[M009-EdgeRouter] Collected {len(edges_out)} edges from edge_routes.json "
+        f"({sum(1 for r in edges_out if r.get('blocked_by'))} rerouted)"
     )
-    lines.extend(edge_lines)
 
-    lines.append('</svg>')
+    composite = {
+        "canvas":  {"width": width, "height": height},
+        "palette": {"zenith": stop_top, "horizon": stop_mid, "nadir": stop_bottom},
+        "cells":   cells_out,
+        "edges":   edges_out,
+    }
 
-    raw_svg    = "\n".join(lines)
-    # ── [ASTRO-SVG] Inject SVG post-processing passes (ported from PostProcessing.cpp f2a77b0) ──
-    final_svg  = post_process_svg(raw_svg)
-    output_path = os.path.join(CHANNELS, "..", "output_cell_loop.svg")
+    output_path = os.path.join(CHANNELS, "composite_params.json")
     with open(output_path, "w") as f:
-        f.write(final_svg)
+        json.dump(composite, f, indent=2)
 
     print(
-        f"[Assemble] final SVG: {len(sorted_slots)} cells, "
-        f"{len(z_groups)} z-layers, {width}x{height}"
+        f"[Assemble] composite_params.json: {len(cells_out)} cells, "
+        f"{len(edges_out)} edges, {len(z_groups)} z-layers, {width}x{height}"
     )
     return output_path
 
