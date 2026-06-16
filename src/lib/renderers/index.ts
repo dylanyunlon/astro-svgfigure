@@ -18,6 +18,26 @@ export type { CellDescriptor, EdgeDescriptor } from './pixi-cell-renderer';
 
 export { renderCellGraphSDF } from './sdf-cell-renderer';
 
+// ── M007: Cell blur module — upstream pixijs-engine BlurFilter adapted for bloom pipeline ──
+export {
+  BlurFilter,
+  BlurFilterPass,
+  CellBlurFilter,
+  getCellBlurPreset,
+  createCellBlurFilter,
+  applyBloomPreBlur,
+  acquireBlurPass,
+  releaseBlurPass,
+  buildBloomFilterChain,
+} from './pixi-blur-cell';
+export type {
+  BlurFilterOptions,
+  BlurFilterPassOptions,
+  CellBlurPreset,
+  CellBlurFilterOptions,
+  BloomPreBlurOptions,
+} from './pixi-blur-cell';
+
 export {
   AntimatterAttribute,
   AntimatterFBO,

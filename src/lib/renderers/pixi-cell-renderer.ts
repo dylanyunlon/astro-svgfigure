@@ -35,6 +35,17 @@ import { MotionBlurFilter } from '../../../upstream/pixijs-filters/src/motion-bl
 import { AdjustmentFilter } from '../../../upstream/pixijs-filters/src/adjustment';
 import { OutlineFilter } from '../../../upstream/pixijs-filters/src/outline';
 
+// ── Gaussian blur module (M007) ─────────────────────────────────────────────
+// pixi-blur-cell adapts upstream/pixijs-engine BlurFilter for the cell render
+// pipeline.  buildBloomFilterChain() places the pre-blur before the bloom
+// compositor in the filter chain, matching the AdvancedBloomFilter internals
+// (extract → gaussianBlur → composite) while giving us per-species tuning and
+// Ticker-driven bloom-pulse animation.
+import {
+  buildBloomFilterChain,
+  type CellBlurFilter,
+} from './pixi-blur-cell';
+
 // ── params.json schema (M152 output) ───────────────────────────────────────
 
 export interface ParamsJson {
@@ -256,9 +267,23 @@ function createGlowSprite(w: number, h: number, glowColor: number, species: stri
   const pad = 20;
   glow.roundRect(-pad, -pad, w + pad * 2, h + pad * 2, 12);
   glow.fill({ color: glowColor, alpha: 0.25 });
+
   const bloomScale = SPECIES_BLOOM_SCALE[species] ?? 1.5;
+
+  // ── M007: pre-blur Gaussian stage before bloom compositor ───────────────
+  // buildBloomFilterChain() inserts a species-tuned CellBlurFilter (sourced
+  // from upstream/pixijs-engine BlurFilter) *before* AdvancedBloomFilter in
+  // the filter chain.  This matches the bloom pipeline internals:
+  //   glow texture -> [CellBlurFilter] -> [AdvancedBloomFilter compositor]
+  // The CellBlurFilter is stored on the Graphics node so the Ticker can
+  // animate bloom-pulse via blurFilter.setStrengthForBloom(scale).
   const bloom = new AdvancedBloomFilter({ bloomScale, threshold: 0.5, blur: 8, quality: 4 });
-  glow.filters = [bloom];
+  const { filters, blurFilter } = buildBloomFilterChain(species, [bloom]);
+  glow.filters = filters as any[];
+
+  // Expose blur handle for Ticker-driven bloom pulse animation
+  (glow as any).__bloomBlur = blurFilter;
+
   return glow;
 }
 
@@ -1158,7 +1183,7 @@ export async function renderCellGraph(
   });
   app.stage.filters = [adjustment];
 
-  // ── Animate per-species filters (godray time, glitch seed) ─────────────
+  // ── Animate per-species filters (godray time, glitch seed, bloom pulse) ──
   const t0anim = performance.now();
   app.ticker.add(() => {
     const elapsed = (performance.now() - t0anim) / 1000;
@@ -1173,6 +1198,15 @@ export async function renderCellGraph(
           glitch.seed = Math.random();
           glitch.offset = 4 + Math.random() * 12;
         }
+      }
+
+      // M007: bloom pre-blur pulse — subtle ±20% strength oscillation
+      // Drives the Gaussian blur amplitude on the glow sprite, giving a
+      // soft breathing effect without touching the bloom compositor params.
+      const glowChild = (child as any).children?.[0]; // first child = glow sprite
+      const bloomBlur = glowChild ? (glowChild as any).__bloomBlur as CellBlurFilter | undefined : undefined;
+      if (bloomBlur) {
+        bloomBlur.setStrengthForBloom(1 + 0.2 * Math.sin(elapsed * 1.4));
       }
     }
   });
@@ -1233,7 +1267,7 @@ export async function renderCellGraphLive(
   });
   app.stage.filters = [adjustment];
 
-  // ── Animate per-species filters ─────────────────────────────────────────
+  // ── Animate per-species filters (godray, glitch, bloom pulse) ─────────────
   const t0anim = performance.now();
   app.ticker.add(() => {
     const elapsed = (performance.now() - t0anim) / 1000;
@@ -1245,6 +1279,13 @@ export async function renderCellGraphLive(
       if (glitch && Math.random() < 0.05) {
         glitch.seed = Math.random();
         glitch.offset = 4 + Math.random() * 12;
+      }
+
+      // M007: bloom pre-blur pulse for live-mode glow sprites
+      const glowChild = (child as any).children?.[0];
+      const bloomBlur = glowChild ? (glowChild as any).__bloomBlur as CellBlurFilter | undefined : undefined;
+      if (bloomBlur) {
+        bloomBlur.setStrengthForBloom(1 + 0.2 * Math.sin(elapsed * 1.4));
       }
     }
   });
