@@ -559,6 +559,56 @@ class AstroCellLightShaftBloom:
 
         return "\n".join(parts)
 
+    def emit_params(self) -> dict:
+        """
+        Emit AdvancedBloomFilter-compatible parameters as a JSON-serialisable dict.
+
+        Maps AT HydraBloom (LightShaftRendering.cpp) params → AdvancedBloomFilter
+        options consumed by the PixiJS front-end pipeline:
+
+            threshold   ← bloom_threshold   (luminance gate, 0 = all pixels bloom)
+            bloomScale  ← bloom_scale        (intensity, BloomScale)
+            brightness  ← 1.0               (base brightness, separate from scale)
+            blur        ← derived from bbox  (Kawase blur strength ≈ Gaussian σ)
+            quality     ← 4                  (Kawase blur passes, matches _LS_BLUR_PASSES)
+            pixelSize   ← { x:1, y:1 }       (sub-pixel, default)
+
+        Also includes AT-specific metadata (bloom_tint, blur_origin) so the
+        front-end can drive colour tinting independently.
+
+        The dict is the value placed under params.bloom in params.json.
+
+        鲁迅式：参数不是SVG字符串，而是意图的纯粹表达——
+        让渲染库去决定如何把意图变成像素，这才是正确的分工。
+        """
+        p       = self._p
+        bbox    = self._bbox
+        cell_w  = float(bbox.get("w", 100))
+        cell_h  = float(bbox.get("h", 50))
+
+        # Derive Kawase blur strength from cell size (mirrors _LS_FIRST_PASS_DIST)
+        base_sigma = max(1.0, min(cell_w, cell_h) * _LS_FIRST_PASS_DIST * 0.15)
+        # Kawase strength ≈ Gaussian σ × 1.4 (empirical match to _LS_BLUR_PASSES=4)
+        blur_strength = round(base_sigma * 1.4, 2)
+
+        bloom_r, bloom_g, bloom_b = p["bloom_tint"]
+
+        return {
+            # ── AdvancedBloomFilter options (mirrors AdvancedBloomFilterOptions) ──
+            "threshold":   round(float(p.get("bloom_threshold", 0.0)), 4),
+            "bloomScale":  round(float(p.get("bloom_scale",     0.25)), 4),
+            "brightness":  1.0,
+            "blur":        blur_strength,
+            "quality":     _LS_BLUR_PASSES,
+            "pixelSize":   {"x": 1, "y": 1},
+            # ── AT HydraBloom metadata (colour tint + light-shaft origin) ─────
+            "tint":        [round(bloom_r, 4), round(bloom_g, 4), round(bloom_b, 4)],
+            "blurOrigin":  {
+                "x": round(float(p.get("blur_origin_x", 0.5)), 4),
+                "y": round(float(p.get("blur_origin_y", 0.5)), 4),
+            },
+        }
+
 
 
 

@@ -1,8 +1,13 @@
 /**
  * pixi-filters-registry.ts
  * Auto-registered PixiJS filter registry sourced from upstream/pixijs-filters-v2.
+ * AdvancedBloomFilter (AT HydraBloom 等价实现) 来自 upstream/pixijs-filters (v1).
  * Provides FILTER_REGISTRY (name → constructor) and createFilter factory.
  */
+
+// ─── advanced-bloom (upstream/pixijs-filters — AT HydraBloom 核心后处理) ────
+import { AdvancedBloomFilter } from '../../upstream/pixijs-filters/src/advanced-bloom';
+export type { AdvancedBloomFilterOptions } from '../../upstream/pixijs-filters/src/advanced-bloom/AdvancedBloomFilter';
 
 // ─── blur ────────────────────────────────────────────────────────────────────
 import { KawaseBlurFilter }    from '../../upstream/pixijs-filters-v2/src/kawase-blur';
@@ -57,6 +62,8 @@ import { ConvolutionFilter } from '../../upstream/pixijs-filters-v2/src/convolut
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type FilterName =
+  // advanced-bloom (AT HydraBloom 等价实现 — upstream/pixijs-filters)
+  | 'advanced-bloom'
   // blur
   | 'kawase-blur' | 'backdrop-blur' | 'radial-blur'
   | 'zoom-blur'   | 'tilt-shift'    | 'motion-blur'
@@ -92,6 +99,9 @@ interface FilterMeta {
  * Add new filters here; createFilter picks them up automatically.
  */
 export const FILTER_REGISTRY: Record<FilterName, FilterMeta> = {
+  // ── advanced-bloom (AT HydraBloom core — upstream/pixijs-filters) ─────────
+  'advanced-bloom': { ctor: AdvancedBloomFilter, category: 'light' },
+
   // ── blur ──────────────────────────────────────────────────────────────────
   'kawase-blur':   { ctor: KawaseBlurFilter,    category: 'blur'    },
   'backdrop-blur': { ctor: BackdropBlurFilter,  category: 'blur'    },
@@ -174,6 +184,8 @@ export function createFilter<O = any>(name: FilterName, options?: O): InstanceTy
 
 // ─── Re-export all constructors for direct use ──────────────────────────────
 export {
+  // advanced-bloom (AT HydraBloom — upstream/pixijs-filters)
+  AdvancedBloomFilter,
   // blur
   KawaseBlurFilter, BackdropBlurFilter, RadialBlurFilter,
   ZoomBlurFilter, TiltShiftFilter, MotionBlurFilter,

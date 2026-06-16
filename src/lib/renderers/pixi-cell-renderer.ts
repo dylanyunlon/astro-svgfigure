@@ -67,6 +67,23 @@ export interface ParamsJson {
     blur: number;
     opacity: number;
   };
+  /**
+   * bloom — AdvancedBloomFilter options emitted by postprocess_port.py emit_params().
+   * Matches AdvancedBloomFilterOptions from upstream/pixijs-filters (AT HydraBloom port).
+   * Keys: threshold, bloomScale, brightness, blur, quality, pixelSize, tint, blurOrigin.
+   */
+  bloom?: {
+    threshold?: number;
+    bloomScale?: number;
+    brightness?: number;
+    blur?: number;
+    quality?: number;
+    pixelSize?: { x: number; y: number };
+    /** [r, g, b] in 0–1 range — AT HydraBloom tint */
+    tint?: [number, number, number];
+    /** normalised screen-space light shaft origin */
+    blurOrigin?: { x: number; y: number };
+  };
   species_params?: Record<string, unknown>;
   epoch?: number;
 }
@@ -262,13 +279,38 @@ const SPECIES_BLOOM_SCALE: Record<string, number> = {
   'cil-code': 0.8,
 };
 
-function createGlowSprite(w: number, h: number, glowColor: number, species: string): Graphics {
+/**
+ * createGlowSprite — build the bloom halo behind each cell.
+ *
+ * When params.bloom is present (emitted by postprocess_port.py emit_params()),
+ * its fields are forwarded directly to AdvancedBloomFilter so the Python-side
+ * AT HydraBloom parameters drive the PixiJS filter — no SVG strings.
+ *
+ * Fallback: species-driven defaults (SPECIES_BLOOM_SCALE table).
+ */
+function createGlowSprite(
+  w: number,
+  h: number,
+  glowColor: number,
+  species: string,
+  bloomParams?: ParamsJson['bloom'],
+): Graphics {
   const glow = new Graphics();
   const pad = 20;
   glow.roundRect(-pad, -pad, w + pad * 2, h + pad * 2, 12);
   glow.fill({ color: glowColor, alpha: 0.25 });
 
-  const bloomScale = SPECIES_BLOOM_SCALE[species] ?? 1.5;
+  // ── Resolve AdvancedBloomFilter options ─────────────────────────────────
+  // Priority: params.json bloom field (emit_params) → species defaults → library defaults
+  const speciesBloomScale = SPECIES_BLOOM_SCALE[species] ?? 1.5;
+  const bloom = new AdvancedBloomFilter({
+    threshold:  bloomParams?.threshold  ?? 0.5,
+    bloomScale: bloomParams?.bloomScale ?? speciesBloomScale,
+    brightness: bloomParams?.brightness ?? 1.0,
+    blur:       bloomParams?.blur       ?? 8,
+    quality:    bloomParams?.quality    ?? 4,
+    pixelSize:  bloomParams?.pixelSize  ?? { x: 1, y: 1 },
+  });
 
   // ── M007: pre-blur Gaussian stage before bloom compositor ───────────────
   // buildBloomFilterChain() inserts a species-tuned CellBlurFilter (sourced
@@ -277,12 +319,12 @@ function createGlowSprite(w: number, h: number, glowColor: number, species: stri
   //   glow texture -> [CellBlurFilter] -> [AdvancedBloomFilter compositor]
   // The CellBlurFilter is stored on the Graphics node so the Ticker can
   // animate bloom-pulse via blurFilter.setStrengthForBloom(scale).
-  const bloom = new AdvancedBloomFilter({ bloomScale, threshold: 0.5, blur: 8, quality: 4 });
   const { filters, blurFilter } = buildBloomFilterChain(species, [bloom]);
   glow.filters = filters as any[];
 
-  // Expose blur handle for Ticker-driven bloom pulse animation
-  (glow as any).__bloomBlur = blurFilter;
+  // Expose bloom filter handle for Ticker-driven param updates
+  (glow as any).__bloomBlur   = blurFilter;
+  (glow as any).__bloomFilter = bloom;
 
   return glow;
 }
@@ -304,7 +346,7 @@ function buildCellContainer(desc: CellDescriptor): Container {
   container.position.set(bbox.x, bbox.y);
   container.zIndex = z;
 
-  const glow = createGlowSprite(w, h, cols.glow, species);
+  const glow = createGlowSprite(w, h, cols.glow, species, p?.bloom);
   container.addChild(glow);
 
   const body = new Graphics();
