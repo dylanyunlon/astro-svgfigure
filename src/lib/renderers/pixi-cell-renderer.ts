@@ -29,6 +29,11 @@ import { TextStyle } from '../../upstream/pixijs-engine/src/scene/text/TextStyle
 import { Ticker } from '../../upstream/pixijs-engine/src/ticker/Ticker';
 import { AdvancedBloomFilter } from '../../../upstream/pixijs-filters/src/advanced-bloom';
 import { DropShadowFilter } from '../../../upstream/pixijs-filters/src/drop-shadow';
+import { GodrayFilter } from '../../../upstream/pixijs-filters/src/godray';
+import { GlitchFilter } from '../../../upstream/pixijs-filters/src/glitch';
+import { MotionBlurFilter } from '../../../upstream/pixijs-filters/src/motion-blur';
+import { AdjustmentFilter } from '../../../upstream/pixijs-filters/src/adjustment';
+import { OutlineFilter } from '../../../upstream/pixijs-filters/src/outline';
 
 // ── params.json schema (M152 output) ───────────────────────────────────────
 
@@ -314,6 +319,57 @@ function buildCellContainer(desc: CellDescriptor): Container {
   txt.anchor.set(0.5);
   txt.position.set(w / 2, h / 2);
   container.addChild(txt);
+
+  // ── Species post-process filters ────────────────────────────────────────
+  const speciesFilters: any[] = [];
+
+  if (species === 'cil-eye') {
+    // GodrayFilter: focal light beams — gives "iris illumination" feel
+    const godray = new GodrayFilter({
+      angle: 30,
+      gain: 0.4,
+      lacunarity: 2.5,
+      parallel: false,
+      center: { x: w / 2, y: h / 2 },
+      alpha: 0.6,
+      time: 0,
+    });
+    speciesFilters.push(godray);
+    // Animate godray time via ticker tag stored on container
+    (container as any).__godray = godray;
+  } else if (species === 'cil-bolt') {
+    // GlitchFilter: energy flicker — chaotic scanline displacement
+    const glitch = new GlitchFilter({
+      slices: 6,
+      offset: 8,
+      direction: 0,
+      fillMode: 0, // TRANSPARENT
+      seed: Math.random(),
+      average: false,
+      minSize: 8,
+      sampleSize: 512,
+    });
+    speciesFilters.push(glitch);
+    (container as any).__glitch = glitch;
+  } else if (species === 'cil-layers') {
+    // MotionBlurFilter: depth-of-field sense for layered stacking
+    const motionBlur = new MotionBlurFilter({
+      velocity: { x: 3, y: 1.5 },
+      kernelSize: 5,
+      offset: 0,
+    });
+    speciesFilters.push(motionBlur);
+  }
+
+  if (speciesFilters.length > 0) {
+    // Compose with any existing body filters
+    const existing = (container.filters as any[] | null) ?? [];
+    container.filters = [...existing, ...speciesFilters];
+  }
+
+  // ── OutlineFilter slot (applied on hover/select via setOutline helper) ──
+  (container as any).__outlineFilter = null;
+  (container as any).__baseFilters = (container.filters as any[] | null) ?? [];
 
   // ── crowding_opacity: applies after fade-in completes ──────────────────
   // Store as userData so the poll loop can respect it when fading in
@@ -1080,6 +1136,37 @@ export async function renderCellGraph(
     console.warn('[renderCellGraph] EdgeParticleSystem unavailable:', err);
   }
 
+  // ── Global AdjustmentFilter: subtle brightness/contrast/saturation lift ─
+  const adjustment = new AdjustmentFilter({
+    gamma: 1.0,
+    contrast: 1.05,
+    saturation: 1.1,
+    brightness: 1.02,
+    red: 1,
+    green: 1,
+    blue: 1,
+  });
+  app.stage.filters = [adjustment];
+
+  // ── Animate per-species filters (godray time, glitch seed) ─────────────
+  const t0anim = performance.now();
+  app.ticker.add(() => {
+    const elapsed = (performance.now() - t0anim) / 1000;
+    for (const child of app.stage.children) {
+      const godray = (child as any).__godray as GodrayFilter | undefined;
+      if (godray) godray.time = elapsed;
+
+      const glitch = (child as any).__glitch as GlitchFilter | undefined;
+      if (glitch) {
+        // Flicker: randomise seed and offset with low probability per frame
+        if (Math.random() < 0.05) {
+          glitch.seed = Math.random();
+          glitch.offset = 4 + Math.random() * 12;
+        }
+      }
+    }
+  });
+
   return app;
 }
 
@@ -1124,7 +1211,62 @@ export async function renderCellGraphLive(
 
   const stop = pollCellChannels(app, edges, edgeLayer, particleSystem);
 
+  // ── Global AdjustmentFilter ─────────────────────────────────────────────
+  const adjustment = new AdjustmentFilter({
+    gamma: 1.0,
+    contrast: 1.05,
+    saturation: 1.1,
+    brightness: 1.02,
+    red: 1,
+    green: 1,
+    blue: 1,
+  });
+  app.stage.filters = [adjustment];
+
+  // ── Animate per-species filters ─────────────────────────────────────────
+  const t0anim = performance.now();
+  app.ticker.add(() => {
+    const elapsed = (performance.now() - t0anim) / 1000;
+    for (const child of app.stage.children) {
+      const godray = (child as any).__godray as GodrayFilter | undefined;
+      if (godray) godray.time = elapsed;
+
+      const glitch = (child as any).__glitch as GlitchFilter | undefined;
+      if (glitch && Math.random() < 0.05) {
+        glitch.seed = Math.random();
+        glitch.offset = 4 + Math.random() * 12;
+      }
+    }
+  });
+
   return { app, stop };
+}
+
+// ── setOutline — apply/remove OutlineFilter on hover or selection ───────────
+//
+// Usage:
+//   setOutline(container, true, 0xFFFFFF, 2);  // highlight on hover
+//   setOutline(container, false);               // remove outline
+//
+export function setOutline(
+  container: Container,
+  active: boolean,
+  color: number = 0xFFFFFF,
+  thickness: number = 2,
+  alpha: number = 0.85,
+): void {
+  const base = (container as any).__baseFilters as any[] ?? [];
+
+  if (active) {
+    // Avoid stacking duplicate outline filters
+    if ((container as any).__outlineFilter) return;
+    const outline = new OutlineFilter({ thickness, color, alpha, quality: 0.1 });
+    (container as any).__outlineFilter = outline;
+    container.filters = [...base, outline];
+  } else {
+    (container as any).__outlineFilter = null;
+    container.filters = base.length > 0 ? base : null;
+  }
 }
 
 // ── params.json loader helper ───────────────────────────────────────────────
