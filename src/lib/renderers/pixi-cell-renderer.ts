@@ -376,6 +376,16 @@ function buildCellContainer(desc: CellDescriptor): Container {
   (container as any).__targetAlpha = crowdingOpacity;
   container.alpha = 0; // caller sets to 0 for fade-in; will stop at __targetAlpha
 
+  // ── CellMeta stamp — consumed by CellEventSystem.attachToCellContainers ─
+  // Stamped here so CellEventSystem can auto-register without a separate lookup.
+  // Mirrors AT's HitManager tagging pattern: object.__meta = descriptor.
+  (container as any).__cellMeta = {
+    cell_id: desc.cell_id,
+    label:   desc.label,
+    species: desc.species,
+    bbox:    { ...desc.bbox },
+  };
+
   return container;
 }
 

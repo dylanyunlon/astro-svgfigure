@@ -91,6 +91,18 @@ export type {
 export { InteractAI, GLSEO } from './interact-ai'
 export type { ChatMessage, InteractAIOptions, CellSEOData } from './interact-ai'
 
+// M012: CellEventSystem — PixiJS EventSystem adapter for cell pointer events
+// Fuses upstream/pixijs-engine/src/events (EventSystem, EventBoundary,
+// FederatedPointerEvent) into hover/click/drag interaction on cell Containers.
+export { CellEventSystem, attachCellEvents, makeCellMeta } from './cell-event-system'
+export type {
+  CellMeta,
+  CellEventSystemOptions,
+  CellPointerEventDetail,
+  CellSelectEventDetail,
+  CellDragEventDetail,
+} from './cell-event-system'
+
 // L4: XR system (AT: xr-system)
 export {
   XRDeviceManager,
