@@ -3931,6 +3931,23 @@ def convergence_check(
                 if isinstance(v, (int, float)):
                     vec.append(float(v))
 
+        # bloom (M027 AdvancedBloomFilter — params.bloom written by postprocess_port)
+        # Forward-compatible: only tracked when present in params.json.
+        # Mirrors FAstroParamDelta::BloomDelta() — threshold + scale are the
+        # two scalar convergence axes; tint RGB flattened as three more components.
+        bloom = params.get("bloom", {})
+        if isinstance(bloom, dict):
+            for k in ("threshold", "bloomScale", "strength", "blur"):
+                v = bloom.get(k)
+                if isinstance(v, (int, float)):
+                    vec.append(float(v))
+            # tint is a [R, G, B] list — flatten to three scalars
+            tint = bloom.get("tint")
+            if isinstance(tint, (list, tuple)):
+                for ch in tint:
+                    if isinstance(ch, (int, float)):
+                        vec.append(float(ch))
+
         return vec
 
     def _l2_delta(vec_a: list, vec_b: list) -> float:
