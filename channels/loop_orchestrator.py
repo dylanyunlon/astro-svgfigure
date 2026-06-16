@@ -2678,6 +2678,400 @@ def compute_edge_routes():
     return routed
 
 
+# =============================================================================
+# [ASTRO-M169] Graphology-inspired graph algorithms
+# Ports the core algorithms from upstream/graphology into Python using NetworkX:
+#   • Shortest-path edge routing  → reduce visual crossings (Dijkstra on a
+#     weighted proximity graph where edge weights encode crossing penalty)
+#   • Louvain community detection → auto-group related cells into visual clusters
+#   • Betweenness centrality      → identify focal cells for visual emphasis
+#
+# Writes:
+#   channels/physics/edge_routes.json  (enhanced, replaces M009 output in-place)
+#   channels/physics/cell_groups.json  (new: community groups + centrality scores)
+# =============================================================================
+
+def _build_nx_graph(bboxes, topology_edges):
+    """
+    Build a NetworkX DiGraph from cell bboxes and topology edges.
+    Node attributes: cx, cy (centre), w, h (size).
+    Edge attributes: weight=1 (default), is_skip.
+    """
+    import networkx as nx
+
+    G = nx.DiGraph()
+    for cid, b in bboxes.items():
+        cx = b["x"] + b["w"] / 2
+        cy = b["y"] + b["h"] / 2
+        G.add_node(cid, cx=cx, cy=cy, w=b["w"], h=b["h"])
+
+    for edge in topology_edges:
+        for src in edge.get("sources", []):
+            for tgt in edge.get("targets", []):
+                is_skip = edge.get("advanced", {}).get("semanticType") == "skip_connection"
+                # Skip edges get lower weight so shortest-path prefers them when
+                # they reduce crossings; regular edges weight=1.
+                w = 0.5 if is_skip else 1.0
+                G.add_edge(src, tgt, edge_id=edge["id"], weight=w,
+                           is_skip=is_skip, advanced=edge.get("advanced", {}))
+    return G
+
+
+def _count_crossings(routes):
+    """
+    Count pairwise crossing of straight segments across all routes.
+    Only checks first-segment pairs (start→waypoint or start→end) for speed.
+    Returns int.
+    """
+    def _ccw(ax, ay, bx, by, cx, cy):
+        return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax)
+
+    def _seg_cross(a1, a2, b1, b2):
+        ax1, ay1 = a1; ax2, ay2 = a2
+        bx1, by1 = b1; bx2, by2 = b2
+        return (_ccw(ax1, ay1, bx1, by1, bx2, by2) != _ccw(ax2, ay2, bx1, by1, bx2, by2) and
+                _ccw(ax1, ay1, ax2, ay2, bx1, by1) != _ccw(ax1, ay1, ax2, ay2, bx2, by2))
+
+    segs = []
+    for r in routes.values():
+        pts = r.get("points", [])
+        if len(pts) >= 2:
+            segs.append(((pts[0]["x"], pts[0]["y"]), (pts[-1]["x"], pts[-1]["y"])))
+
+    crossings = 0
+    for i in range(len(segs)):
+        for j in range(i + 1, len(segs)):
+            if _seg_cross(segs[i][0], segs[i][1], segs[j][0], segs[j][1]):
+                crossings += 1
+    return crossings
+
+
+def _graphology_shortest_path_routes(G, bboxes, existing_routes):
+    """
+    [M169-GraphologyShortestPath]
+    Port of graphology's dijkstra / bidirectional BFS utilities:
+    for each edge that has a crossing in the current layout, try to
+    re-route it through intermediate nodes whose centres form a less-crossing
+    path.  The crossing penalty is added as a virtual weight on segments that
+    cross another edge's bounding corridor.
+
+    Strategy:
+      1. Build a complete visibility graph where every pair of cell centres
+         is connected with weight = Euclidean distance + crossing_penalty.
+      2. For each topology edge find the cheapest intermediate path (if any
+         intermediate node reduces total crossings).
+      3. If the re-routed path has fewer crossings, adopt it and update points.
+    """
+    import networkx as nx
+
+    nodes = list(G.nodes(data=True))
+    # Build undirected visibility graph (all pairs)
+    VG = nx.Graph()
+    for nid, attr in nodes:
+        VG.add_node(nid, **attr)
+
+    CROSSING_PENALTY = 300.0   # px-equivalent penalty per crossing
+    existing_segs = []
+    for r in existing_routes.values():
+        pts = r.get("points", [])
+        if len(pts) >= 2:
+            existing_segs.append((
+                (pts[0]["x"], pts[0]["y"]),
+                (pts[-1]["x"], pts[-1]["y"]),
+                r["edge_id"],
+            ))
+
+    def _seg_intersect_1d(a0, a1, b0, b1):
+        lo = max(min(a0, a1), min(b0, b1))
+        hi = min(max(a0, a1), max(b0, b1))
+        return lo <= hi
+
+    def _segs_cross(p1, p2, q1, q2):
+        def ccw(a, b, c):
+            return (c[1]-a[1])*(b[0]-a[0]) > (b[1]-a[1])*(c[0]-a[0])
+        return (ccw(p1, q1, q2) != ccw(p2, q1, q2) and
+                ccw(p1, p2, q1) != ccw(p1, p2, q2))
+
+    for i, (ni, ai) in enumerate(nodes):
+        for j, (nj, aj) in enumerate(nodes):
+            if j <= i:
+                continue
+            dist = math.hypot(ai["cx"] - aj["cx"], ai["cy"] - aj["cy"])
+            # Penalise if this virtual segment crosses an existing routed edge
+            penalty = 0.0
+            pi = (ai["cx"], ai["cy"])
+            pj = (aj["cx"], aj["cy"])
+            for (sx, sy), (ex, ey), _ in existing_segs:
+                if _segs_cross(pi, pj, (sx, sy), (ex, ey)):
+                    penalty += CROSSING_PENALTY
+            VG.add_edge(ni, nj, weight=dist + penalty)
+
+    improved_routes = dict(existing_routes)
+    n_improved = 0
+
+    for eid, route in existing_routes.items():
+        srcs = route.get("sources", [])
+        tgts = route.get("targets", [])
+        if not srcs or not tgts:
+            continue
+        src, tgt = srcs[0], tgts[0]
+        if src not in VG or tgt not in VG:
+            continue
+
+        try:
+            path_nodes = nx.dijkstra_path(VG, src, tgt, weight="weight")
+        except nx.NetworkXNoPath:
+            continue
+
+        # Only use intermediate nodes (path_nodes[1:-1])
+        intermediates = path_nodes[1:-1]
+        if not intermediates:
+            continue  # direct path, no intermediate; keep existing
+
+        # Build new points list through intermediates
+        pts = route.get("points", [])
+        if len(pts) < 2:
+            continue
+        start_pt = pts[0]
+        end_pt   = pts[-1]
+
+        new_points = [start_pt]
+        for mid_id in intermediates:
+            md = G.nodes[mid_id] if mid_id in G.nodes else {}
+            if "cx" in md:
+                new_points.append({"x": md["cx"], "y": md["cy"]})
+        new_points.append(end_pt)
+
+        # Accept only if new path strictly reduces crossings vs direct
+        candidate = dict(improved_routes)
+        candidate[eid] = dict(route, points=new_points)
+        before = _count_crossings(improved_routes)
+        after  = _count_crossings(candidate)
+        if after < before:
+            improved_routes[eid] = dict(route,
+                                        points=new_points,
+                                        graphology_path=path_nodes)
+            n_improved += 1
+            print(f"[M169-ShortestPath] Edge {eid}: crossings {before}→{after} "
+                  f"via {' → '.join(path_nodes)}")
+
+    print(f"[M169-ShortestPath] Re-routed {n_improved}/{len(existing_routes)} edges "
+          f"for crossing reduction")
+    return improved_routes
+
+
+def _graphology_louvain_communities(G):
+    """
+    [M169-Louvain]
+    Port of graphology-communities-louvain:
+    Run Louvain community detection on the undirected projection of the cell
+    topology graph to discover natural cell groupings.
+
+    Returns dict: { community_id(int): [cell_id, ...] }
+    """
+    import networkx as nx
+    try:
+        import community.community_louvain as community_louvain
+        UG = G.to_undirected()
+        if len(UG.edges()) == 0:
+            # Degenerate: single community containing all nodes
+            return {0: list(G.nodes())}
+        partition = community_louvain.best_partition(UG, random_state=42)
+        groups = {}
+        for node, comm_id in partition.items():
+            groups.setdefault(comm_id, []).append(node)
+        print(f"[M169-Louvain] Detected {len(groups)} communities: "
+              + ", ".join(f"C{k}={v}" for k, v in sorted(groups.items())))
+        return groups
+    except ImportError:
+        # Fallback: simple BFS-based connected-component grouping
+        UG = G.to_undirected()
+        groups = {}
+        for i, comp in enumerate(nx.connected_components(UG)):
+            groups[i] = sorted(comp)
+        print(f"[M169-Louvain-fallback] {len(groups)} connected components")
+        return groups
+
+
+def _graphology_betweenness(G):
+    """
+    [M169-Betweenness]
+    Port of graphology-metrics centrality/betweenness:
+    Compute betweenness centrality for every node; nodes with high betweenness
+    are visual focal points in the diagram (all information flows through them).
+
+    Returns dict: { cell_id: float (0–1 normalised) }
+    """
+    import networkx as nx
+    UG = G.to_undirected()
+    if len(UG.nodes()) < 2:
+        return {n: 0.0 for n in UG.nodes()}
+    bc = nx.betweenness_centrality(UG, normalized=True, weight="weight")
+    ranked = sorted(bc.items(), key=lambda kv: kv[1], reverse=True)
+    print("[M169-Betweenness] Top focal cells: "
+          + ", ".join(f"{n}={v:.3f}" for n, v in ranked[:3]))
+    return bc
+
+
+def graphology_optimize():
+    """
+    [ASTRO-M169] Main entry point for graphology graph-algorithm optimisation.
+
+    Reads:
+      channels/cell/*/bbox.json          → node positions
+      channels/skeleton/topology.json    → edges
+      channels/physics/edge_routes.json  → existing M009 routes (enhanced)
+
+    Writes:
+      channels/physics/edge_routes.json  → updated with crossing-reduced paths
+      channels/physics/cell_groups.json  → community groups + betweenness scores
+    """
+    import networkx as nx  # noqa: F401 (imported for submodule use)
+
+    print("[M169] graphology_optimize: loading graph data …")
+
+    # ── 1. Load bboxes ────────────────────────────────────────────────────────
+    bbox_files = glob.glob(os.path.join(CHANNELS, "cell", "*", "bbox.json"))
+    bboxes = {}
+    for bf in bbox_files:
+        cid = os.path.basename(os.path.dirname(bf))
+        try:
+            with open(bf) as f:
+                bboxes[cid] = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Also pull from cell_registry.json (physics/) when live bboxes absent
+    if not bboxes:
+        reg_path = os.path.join(CHANNELS, "..", "physics", "cell_registry.json")
+        if os.path.exists(reg_path):
+            with open(reg_path) as f:
+                reg = json.load(f)
+            for cid, info in reg.get("cells", {}).items():
+                mn = info["bbox"]["min"]
+                mx = info["bbox"]["max"]
+                bboxes[cid] = {
+                    "x": mn[0], "y": mn[1],
+                    "w": mx[0] - mn[0], "h": mx[1] - mn[1],
+                }
+            print(f"[M169] Loaded {len(bboxes)} cells from cell_registry.json")
+
+    if not bboxes:
+        print("[M169] No bboxes available — skipping graphology_optimize")
+        return
+
+    # ── 2. Load topology ──────────────────────────────────────────────────────
+    topo_path = os.path.join(CHANNELS, "skeleton", "topology.json")
+    topology_edges = []
+    if os.path.exists(topo_path):
+        with open(topo_path) as f:
+            topo = json.load(f)
+        # ELK topology uses children + edges at top level
+        topology_edges = topo.get("edges", [])
+
+    # ── 3. Build graph ────────────────────────────────────────────────────────
+    G = _build_nx_graph(bboxes, topology_edges)
+    print(f"[M169] Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+
+    # ── 4. Load existing edge routes (M009) ───────────────────────────────────
+    er_path = os.path.join(CHANNELS, "physics", "edge_routes.json")
+    existing_routes = {}
+    if os.path.exists(er_path):
+        with open(er_path) as f:
+            existing_routes = json.load(f)
+    else:
+        # Bootstrap from topology so we have something to optimise
+        for edge in topology_edges:
+            eid = edge["id"]
+            srcs = edge.get("sources", [])
+            tgts = edge.get("targets", [])
+            if not srcs or not tgts:
+                continue
+            src, tgt = srcs[0], tgts[0]
+            if src not in bboxes or tgt not in bboxes:
+                continue
+            bs, bt = bboxes[src], bboxes[tgt]
+            sx = bs["x"] + bs["w"] / 2; sy = bs["y"] + bs["h"]
+            tx = bt["x"] + bt["w"] / 2; ty = bt["y"]
+            existing_routes[eid] = {
+                "edge_id": eid,
+                "sources": srcs,
+                "targets": tgts,
+                "is_skip": edge.get("advanced", {}).get("semanticType") == "skip_connection",
+                "advanced": edge.get("advanced", {}),
+                "points": [{"x": sx, "y": sy}, {"x": tx, "y": ty}],
+                "blocked_by": [],
+            }
+
+    crossings_before = _count_crossings(existing_routes)
+    print(f"[M169] Crossings before optimisation: {crossings_before}")
+
+    # ── 5. Shortest-path crossing reduction ───────────────────────────────────
+    optimised_routes = _graphology_shortest_path_routes(G, bboxes, existing_routes)
+
+    crossings_after = _count_crossings(optimised_routes)
+    print(f"[M169] Crossings after  optimisation: {crossings_after} "
+          f"(Δ={crossings_before - crossings_after})")
+
+    # Tag all routes with M169 metadata
+    for r in optimised_routes.values():
+        r.setdefault("m169", {})["crossings_before"] = crossings_before
+        r["m169"]["crossings_after"] = crossings_after
+
+    write_channel("physics/edge_routes.json", optimised_routes)
+    print(f"[M169] Wrote {len(optimised_routes)} routes → physics/edge_routes.json")
+
+    # ── 6. Louvain community detection ────────────────────────────────────────
+    communities = _graphology_louvain_communities(G)
+
+    # ── 7. Betweenness centrality ─────────────────────────────────────────────
+    betweenness = _graphology_betweenness(G)
+
+    max_bc = max(betweenness.values()) if betweenness else 1.0
+    if max_bc == 0:
+        max_bc = 1.0
+
+    # ── 8. Build cell_groups.json ─────────────────────────────────────────────
+    # community_id → {cells, centroid, is_focal, betweenness_scores}
+    cell_groups = {}
+    for comm_id, members in communities.items():
+        # Centroid of group (average of cell centres)
+        cxs = [bboxes[m]["x"] + bboxes[m]["w"] / 2
+               for m in members if m in bboxes]
+        cys = [bboxes[m]["y"] + bboxes[m]["h"] / 2
+               for m in members if m in bboxes]
+        centroid = {
+            "x": sum(cxs) / len(cxs) if cxs else 0.0,
+            "y": sum(cys) / len(cys) if cys else 0.0,
+        }
+
+        bc_scores = {m: round(betweenness.get(m, 0.0), 4) for m in members}
+        focal_cell = max(bc_scores, key=bc_scores.get) if bc_scores else None
+        is_focal   = (betweenness.get(focal_cell, 0.0) / max_bc) > 0.4 if focal_cell else False
+
+        cell_groups[str(comm_id)] = {
+            "community_id": comm_id,
+            "cells": sorted(members),
+            "centroid": centroid,
+            "focal_cell": focal_cell,
+            "is_focal_group": is_focal,
+            "betweenness_scores": bc_scores,
+        }
+
+    groups_out = {
+        "algorithm": "graphology-louvain + betweenness (M169)",
+        "n_communities": len(cell_groups),
+        "groups": cell_groups,
+        "betweenness": {k: round(v, 4) for k, v in betweenness.items()},
+        "crossings_before": crossings_before,
+        "crossings_after":  crossings_after,
+    }
+
+    write_channel("physics/cell_groups.json", groups_out)
+    print(f"[M169] Wrote {len(cell_groups)} groups → physics/cell_groups.json")
+    return groups_out
+
+
 def assemble_final_svg():
     """
     Collect all cell params.json files and edge routes into composite_params.json
@@ -3632,6 +4026,14 @@ def run_loop(max_epochs=10):
     # ── [M009] Compute obstacle-avoidance edge routes before assembly ──────────
     print("[run_loop] Computing obstacle-avoidance edge routes (M009)...")
     compute_edge_routes()
+
+    # ── [M169] Graphology graph-algorithm optimisation ─────────────────────────
+    # Run after M009 so we can enhance existing routes with shortest-path
+    # crossing reduction, plus Louvain community grouping and betweenness focal
+    # cell detection.  Writes physics/edge_routes.json (updated) and
+    # physics/cell_groups.json (new).
+    print("[run_loop] Running graphology optimisation (M169)...")
+    graphology_optimize()
 
     # ── Assemble final SVG ────────────────────────────────────────────────────
 

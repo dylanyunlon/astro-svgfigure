@@ -1,0 +1,57 @@
+{
+  "algorithm": "graphology-louvain + betweenness (M169)",
+  "n_communities": 2,
+  "groups": {
+    "0": {
+      "community_id": 0,
+      "cells": [
+        "add_norm1",
+        "add_norm2",
+        "ffn",
+        "output"
+      ],
+      "centroid": {
+        "x": 292.5,
+        "y": 544.375
+      },
+      "focal_cell": "add_norm1",
+      "is_focal_group": true,
+      "betweenness_scores": {
+        "add_norm2": 0.3333,
+        "add_norm1": 0.6,
+        "ffn": 0.0,
+        "output": 0.0
+      }
+    },
+    "1": {
+      "community_id": 1,
+      "cells": [
+        "input_embed",
+        "pos_encode",
+        "self_attn"
+      ],
+      "centroid": {
+        "x": 300.0,
+        "y": 175.0
+      },
+      "focal_cell": "pos_encode",
+      "is_focal_group": true,
+      "betweenness_scores": {
+        "self_attn": 0.0,
+        "input_embed": 0.0,
+        "pos_encode": 0.3333
+      }
+    }
+  },
+  "betweenness": {
+    "add_norm2": 0.3333,
+    "self_attn": 0.0,
+    "input_embed": 0.0,
+    "add_norm1": 0.6,
+    "pos_encode": 0.3333,
+    "ffn": 0.0,
+    "output": 0.0
+  },
+  "crossings_before": 0,
+  "crossings_after": 0
+}
