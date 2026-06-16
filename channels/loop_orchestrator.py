@@ -1274,6 +1274,199 @@ def _propagate_constraints(bboxes, force_field):
     )
 
 
+def physics_step(bboxes, force_field, topology_edges=None,
+                 alpha=0.3,
+                 link_strength=0.4,
+                 link_distance=None,
+                 charge_strength=-80.0,
+                 center_x=None, center_y=None,
+                 center_strength=0.05):
+    """
+    [M168] D3-force风格力导向物理步骤。
+
+    Implements the three canonical d3-force forces:
+
+      1. Link Force  — pulls topologically connected cells toward a target distance.
+         Mirrors d3.forceLink(): for each topology edge (source → target) compute
+         the displacement vector, compare to link_distance, and apply a spring-like
+         correction scaled by link_strength and the participating nodes' weights.
+
+      2. Many-Body / Charge Force — cell-to-cell repulsion (negative charge).
+         Mirrors d3.forceManyBody() with strength < 0: every cell repels every
+         other cell with magnitude ∝ charge_strength / dist², clamped to avoid
+         singularity at zero distance.
+
+      3. Center Force — gentle pull of all cells toward the canvas centroid.
+         Mirrors d3.forceCenter(): each cell is nudged by (canvas_centre - cell_centre)
+         scaled by center_strength each step.
+
+    All three force components are *additive*: they accumulate into force_field
+    alongside existing collision-response forces from _tiled_constraint_solve()
+    and the distance-field propagation from _propagate_constraints().  The `alpha`
+    parameter acts as d3's cooling coefficient — scale the force magnitude by
+    alpha so the simulation cools as epochs progress (pass a decaying alpha from
+    run_loop for annealing behaviour).
+
+    Args:
+        bboxes          : dict  cell_id → {x, y, w, h, z}
+        force_field     : dict  cell_id → {dx, dy, dz}   modified in-place
+        topology_edges  : list  of edge dicts {sources:[...], targets:[...]}
+                          If None or [], link force is skipped.
+        alpha           : float  d3-style cooling coefficient ∈ (0, 1].
+                          Scale factor applied to all force contributions this step.
+        link_strength   : float  spring stiffness for link force ∈ [0, 1].
+        link_distance   : float or None.  Target edge length in px.
+                          Defaults to the mean bbox diagonal of the two endpoints.
+        charge_strength : float  Many-body repulsion strength (negative = repel).
+                          Typical d3 default: −30.  Larger magnitude = stronger push.
+        center_x/y      : float or None.  Canvas centre.  Auto-detected from bboxes.
+        center_strength : float  Centre-pull weight ∈ [0, 1].
+
+    Returns:
+        dict  {\"link\": n_link, \"charge\": n_charge, \"center\": n_center}
+        — count of force contributions applied per category.
+    """
+    if not bboxes:
+        return {"link": 0, "charge": 0, "center": 0}
+
+    _EPSILON = 1e-6   # avoid division by zero, mirrors d3 jiggle()
+
+    # ── Precompute cell centroids ──────────────────────────────────────────────
+    cx = {cid: b["x"] + b["w"] * 0.5 for cid, b in bboxes.items()}
+    cy = {cid: b["y"] + b["h"] * 0.5 for cid, b in bboxes.items()}
+
+    # ── Canvas centre (for center force) ──────────────────────────────────────
+    if center_x is None:
+        center_x = sum(cx.values()) / max(len(cx), 1)
+    if center_y is None:
+        center_y = sum(cy.values()) / max(len(cy), 1)
+
+    # Cell "mass" proxy: bbox area — heavier cells move less (mirrors d3 node.mass).
+    mass = {cid: max(b["w"] * b["h"], 1.0) for cid, b in bboxes.items()}
+    total_mass = sum(mass.values())
+
+    # ── 1. CENTER FORCE ────────────────────────────────────────────────────────
+    # d3.forceCenter: shift all nodes so the weighted centroid sits at (cx, cy).
+    # Implementation mirrors d3-force/src/center.js::apply():
+    #   sx = Σ node.x * node.mass / totalMass   (weighted mean x)
+    #   sy = Σ node.y * node.mass / totalMass
+    #   each node.x -= sx; each node.y -= sy    (translated so mean = origin)
+    # Then we add the pull toward (center_x, center_y) scaled by center_strength.
+    n_center = 0
+    if center_strength > 0:
+        sx = sum(cx[cid] * mass[cid] for cid in bboxes) / total_mass
+        sy = sum(cy[cid] * mass[cid] for cid in bboxes) / total_mass
+        shift_x = (sx - center_x) * center_strength * alpha
+        shift_y = (sy - center_y) * center_strength * alpha
+        for cid in bboxes:
+            force_field[cid]["dx"] -= shift_x
+            force_field[cid]["dy"] -= shift_y
+            n_center += 1
+        print(
+            f"[M168-D3] CenterForce: centroid=({sx:.1f},{sy:.1f}) "
+            f"target=({center_x:.1f},{center_y:.1f}) "
+            f"shift=({shift_x:+.2f},{shift_y:+.2f}) alpha={alpha:.3f}"
+        )
+
+    # ── 2. CHARGE FORCE (Many-Body Repulsion) ─────────────────────────────────
+    # d3.forceManyBody with strength < 0: every pair (i, j) of cells repels.
+    # d3-force/src/manyBody.js: for each node pair compute unit vector and
+    # accumulate  F = strength / dist²  along that vector (clamped).
+    # For performance we skip cells on different z-layers (same rule as collision).
+    n_charge = 0
+    if charge_strength != 0.0:
+        cell_ids = list(bboxes.keys())
+        for i in range(len(cell_ids)):
+            for j in range(i + 1, len(cell_ids)):
+                a, b_id = cell_ids[i], cell_ids[j]
+                # Same z-layer only — mirrors the bSameLayer guard in ManyBody pass
+                if bboxes[a].get("z", 3) != bboxes[b_id].get("z", 3):
+                    continue
+                dx_ = cx[a] - cx[b_id]
+                dy_ = cy[a] - cy[b_id]
+                dist_sq = dx_ * dx_ + dy_ * dy_
+                if dist_sq < _EPSILON:
+                    # Jiggle: cells at same position get a tiny random-ish push
+                    dx_ = _EPSILON * (0.5 - (hash(a + b_id) & 0xFF) / 255.0)
+                    dy_ = _EPSILON * (0.5 - (hash(b_id + a) & 0xFF) / 255.0)
+                    dist_sq = dx_ * dx_ + dy_ * dy_
+                # F = strength / dist²  (negative strength → repulsion)
+                # Clamp dist_sq to avoid extreme forces at very short range.
+                dist_sq_clamped = max(dist_sq, 1.0)
+                fmag = charge_strength * alpha / dist_sq_clamped
+                fx = dx_ * fmag
+                fy = dy_ * fmag
+                force_field[a]["dx"] += fx
+                force_field[a]["dy"] += fy
+                force_field[b_id]["dx"] -= fx
+                force_field[b_id]["dy"] -= fy
+                n_charge += 1
+
+        print(
+            f"[M168-D3] ChargeForce: pairs={n_charge} "
+            f"strength={charge_strength} alpha={alpha:.3f}"
+        )
+
+    # ── 3. LINK FORCE ─────────────────────────────────────────────────────────
+    # d3.forceLink: for each topology edge (source, target) compute the
+    # spring correction force that drives the distance toward link_distance.
+    # d3-force/src/link.js::apply():
+    #   delta = target_pos - source_pos
+    #   dist  = hypot(delta)
+    #   correction = (dist - L) / dist * strength * alpha
+    #   source.vx += correction * delta.x * (target.strength / (source.strength + target.strength))
+    #   target.vx -= correction * delta.x * * (source.strength / ...)
+    # We use mass as the d3 "strength" proxy so heavier cells move less.
+    n_link = 0
+    if topology_edges:
+        for edge in topology_edges:
+            for src_id in edge.get("sources", []):
+                for tgt_id in edge.get("targets", []):
+                    if src_id not in bboxes or tgt_id not in bboxes:
+                        continue
+                    # Direction vector source → target
+                    dx_ = cx[tgt_id] - cx[src_id]
+                    dy_ = cy[tgt_id] - cy[src_id]
+                    dist = math.hypot(dx_, dy_) or _EPSILON
+
+                    # Default link_distance: mean of the two bbox diagonals
+                    if link_distance is None:
+                        bs = bboxes[src_id]
+                        bt = bboxes[tgt_id]
+                        diag_s = math.hypot(bs["w"], bs["h"])
+                        diag_t = math.hypot(bt["w"], bt["h"])
+                        target_dist = (diag_s + diag_t) * 0.5 + 8.0  # 8px gap
+                    else:
+                        target_dist = link_distance
+
+                    # Spring correction magnitude: (dist - target) / dist * k * alpha
+                    correction = (dist - target_dist) / dist * link_strength * alpha
+
+                    # d3 mass-weighted split: heavier node moves less
+                    m_src = mass[src_id]
+                    m_tgt = mass[tgt_id]
+                    m_total = m_src + m_tgt + _EPSILON
+                    w_src = m_tgt / m_total   # src gets tgt's share of correction
+                    w_tgt = m_src / m_total   # tgt gets src's share
+
+                    force_field[src_id]["dx"] += correction * dx_ * w_src
+                    force_field[src_id]["dy"] += correction * dy_ * w_src
+                    force_field[tgt_id]["dx"] -= correction * dx_ * w_tgt
+                    force_field[tgt_id]["dy"] -= correction * dy_ * w_tgt
+                    n_link += 1
+
+        print(
+            f"[M168-D3] LinkForce: edges={n_link} "
+            f"strength={link_strength} alpha={alpha:.3f}"
+        )
+
+    print(
+        f"[M168-D3] physics_step done: "
+        f"link={n_link} charge={n_charge} center={n_center} alpha={alpha:.3f}"
+    )
+    return {"link": n_link, "charge": n_charge, "center": n_center}
+
+
 def physics_engine():
     """
     Physics Engine organ — reads all cell/*/bbox.json, detects 3D collisions,
@@ -1376,6 +1569,21 @@ def physics_engine():
         with open(_topology_path_symm) as _tf:
             _topology_edges_symm = json.load(_tf).get("edges", [])
     _apply_symmetry_constraints(bboxes, force_field, _topology_edges_symm)
+
+    # --- 3c. [M168] D3-force风格力导向步骤 ----------------------------------------
+    # physics_step() 叠加三种 d3-force 力到 force_field：
+    #   • Link Force   — 拓扑连接边的弹簧约束，驱动相邻节点保持目标距离
+    #   • Charge Force — 多体排斥（负电荷），防止节点聚堆
+    #   • Center Force — 向画布重心的温和吸引，防止布局漂移到画布外
+    # alpha=0.3 对应 d3 默认冷却系数，与后续的 _propagate_constraints 叠加
+    physics_step(
+        bboxes, force_field,
+        topology_edges=_topology_edges_symm,
+        alpha=0.3,
+        link_strength=0.4,
+        charge_strength=-80.0,
+        center_strength=0.05,
+    )
 
     # --- 4. Global constraint propagation via distance field --------------------
     # Ported from FAstroGlobalConstraintPropagation::Propagate() (commit 7c6f675).
