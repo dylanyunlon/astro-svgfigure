@@ -391,3 +391,175 @@ class TestPipelineEndToEnd:
         cell_ids = {c["cell_id"] for c in composite["cells"]}
         assert SAMPLE_CELL in cell_ids, \
             f"{SAMPLE_CELL!r} not found in composite_params.json cells"
+
+
+# =============================================================================
+# Stage 5 — M173: convergence_check() outputs status.json
+# =============================================================================
+
+class TestConvergenceCheck:
+    """M173: convergence_check() must write channels/convergence/status.json."""
+
+    CONVERGENCE_DIR = os.path.join(CHANNELS_DIR, "convergence")
+    STATUS_PATH = os.path.join(CHANNELS_DIR, "convergence", "status.json")
+
+    def _run(self, epoch=0, snapshot_manager=None, threshold=0.5):
+        from channels.loop_orchestrator import convergence_check
+        return convergence_check(
+            epoch=epoch,
+            snapshot_manager=snapshot_manager,
+            threshold=threshold,
+        )
+
+    def test_returns_dict(self):
+        result = self._run(epoch=0)
+        assert isinstance(result, dict), \
+            f"convergence_check() must return dict, got {type(result)}"
+
+    def test_required_keys_in_return(self):
+        result = self._run(epoch=0)
+        required = {"epoch", "converged", "max_delta", "cell_deltas", "diverged", "threshold"}
+        missing = required - set(result.keys())
+        assert not missing, f"convergence_check() result missing keys: {missing}"
+
+    def test_status_json_written(self):
+        self._run(epoch=0)
+        assert os.path.isfile(self.STATUS_PATH), \
+            f"channels/convergence/status.json not written"
+
+    def test_status_json_is_valid(self):
+        self._run(epoch=0)
+        with open(self.STATUS_PATH) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+
+    def test_status_json_structure(self):
+        self._run(epoch=0)
+        with open(self.STATUS_PATH) as f:
+            data = json.load(f)
+        assert "epoch" in data and isinstance(data["epoch"], int)
+        assert "converged" in data and isinstance(data["converged"], bool)
+        assert "max_delta" in data and isinstance(data["max_delta"], (int, float))
+        assert "cell_deltas" in data and isinstance(data["cell_deltas"], dict)
+        assert "diverged" in data and isinstance(data["diverged"], bool)
+        assert "threshold" in data
+
+    def test_epoch0_all_cells_have_deltas(self):
+        result = self._run(epoch=0)
+        cell_deltas = result["cell_deltas"]
+        assert len(cell_deltas) > 0, "cell_deltas must not be empty"
+        for cell_id in ALL_CELLS:
+            assert cell_id in cell_deltas, \
+                f"cell_deltas missing entry for {cell_id!r}"
+
+    def test_epoch0_delta_is_numeric(self):
+        result = self._run(epoch=0)
+        for cell_id, delta in result["cell_deltas"].items():
+            assert isinstance(delta, (int, float)), \
+                f"cell_deltas[{cell_id!r}]={delta!r} is not numeric"
+            assert delta >= 0.0, \
+                f"cell_deltas[{cell_id!r}]={delta} must be non-negative"
+
+    def test_epoch0_converged_when_no_prior_snapshot(self):
+        """First epoch has no previous snapshot → all deltas 0 → converged."""
+        # Clean previous epoch 0 snapshot to simulate fresh run
+        ep0_dir = os.path.join(self.CONVERGENCE_DIR, "epoch_params", "0")
+        import shutil
+        if os.path.isdir(ep0_dir):
+            shutil.rmtree(ep0_dir)
+        result = self._run(epoch=0)
+        assert result["converged"] is True, \
+            "epoch 0 with no prior snapshot must be converged (delta=0)"
+        assert result["max_delta"] == 0.0
+
+    def test_epoch_snapshot_dir_created(self):
+        self._run(epoch=0)
+        ep0_dir = os.path.join(self.CONVERGENCE_DIR, "epoch_params", "0")
+        assert os.path.isdir(ep0_dir), \
+            "convergence/epoch_params/0/ must be created after epoch 0 run"
+
+    def test_cell_snapshots_saved(self):
+        self._run(epoch=0)
+        ep0_dir = os.path.join(self.CONVERGENCE_DIR, "epoch_params", "0")
+        for cell_id in ALL_CELLS:
+            snap_file = os.path.join(ep0_dir, f"{cell_id}.json")
+            assert os.path.isfile(snap_file), \
+                f"Epoch 0 snapshot missing for {cell_id!r}: {snap_file}"
+            with open(snap_file) as f:
+                snap_data = json.load(f)
+            assert isinstance(snap_data, dict), \
+                f"Snapshot for {cell_id!r} is not a dict"
+
+    def test_second_epoch_detects_stable_params(self):
+        """Two consecutive runs on same params → deltas near 0 → converged."""
+        import shutil
+        ep0_dir = os.path.join(self.CONVERGENCE_DIR, "epoch_params", "0")
+        if os.path.isdir(ep0_dir):
+            shutil.rmtree(ep0_dir)
+        self._run(epoch=0)
+        result = self._run(epoch=1)
+        assert result["converged"] is True, \
+            "Two epochs with identical params must converge (delta ≈ 0)"
+        assert result["max_delta"] == 0.0 or result["max_delta"] < 1e-6
+
+    def test_diverged_flag_false_on_normal_run(self):
+        result = self._run(epoch=0)
+        assert result["diverged"] is False, \
+            "diverged must be False on a normal stable run"
+
+    def test_rollback_called_on_divergence(self):
+        """Simulate a large param delta and verify rollback is triggered."""
+        import copy
+        import shutil
+
+        class _MockManager:
+            def __init__(self):
+                self.rollback_called = False
+                self.rollback_epoch = None
+            def rollback(self, ep):
+                self.rollback_called = True
+                self.rollback_epoch = ep
+
+        # Establish epoch 0 baseline
+        ep0_dir = os.path.join(self.CONVERGENCE_DIR, "epoch_params", "0")
+        if os.path.isdir(ep0_dir):
+            shutil.rmtree(ep0_dir)
+        self._run(epoch=0)
+
+        # Write a fake small-delta status to make divergence_factor kick in
+        small_status = {
+            "epoch": 0, "converged": True, "max_delta": 0.1,
+            "cell_deltas": {c: 0.0 for c in ALL_CELLS},
+            "diverged": False, "threshold": 0.5
+        }
+        with open(self.STATUS_PATH, "w") as f:
+            json.dump(small_status, f)
+
+        # Copy epoch 0 snapshots to epoch 1 so diff works
+        ep1_dir = os.path.join(self.CONVERGENCE_DIR, "epoch_params", "1")
+        os.makedirs(ep1_dir, exist_ok=True)
+        shutil.copytree(ep0_dir, ep1_dir, dirs_exist_ok=True)
+
+        # Mutate a cell's params drastically
+        params_path = os.path.join(CHANNELS_DIR, "cell", SAMPLE_CELL, "params.json")
+        with open(params_path) as f:
+            orig_params = json.load(f)
+        mutated = copy.deepcopy(orig_params)
+        mutated["bbox"]["x"] += 200.0  # large jump → divergence
+        with open(params_path, "w") as f:
+            json.dump(mutated, f, indent=2)
+
+        try:
+            mgr = _MockManager()
+            result = self._run(epoch=2, snapshot_manager=mgr)
+            assert result["diverged"] is True, \
+                "Expected diverged=True after large param jump"
+            assert mgr.rollback_called, \
+                "Expected rollback() to be called on snapshot_manager"
+            assert mgr.rollback_epoch == 1, \
+                f"Expected rollback to epoch 1, got {mgr.rollback_epoch}"
+        finally:
+            # Always restore original params
+            with open(params_path, "w") as f:
+                json.dump(orig_params, f, indent=2)
+            shutil.rmtree(ep1_dir, ignore_errors=True)

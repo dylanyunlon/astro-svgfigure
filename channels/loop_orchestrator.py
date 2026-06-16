@@ -3815,6 +3815,271 @@ def _compute_delta_max(bboxes_before: dict, bboxes_after: dict) -> float:
     return delta_max
 
 
+# =============================================================================
+# M173 — convergence_check()
+# Epoch-to-epoch cell parameter convergence detector.
+#
+# Ported from FAstroConvergenceController introduced in commit d31c85e of
+# upstream/unreal-renderer/SceneCaptureRendering.cpp.
+#
+# Mapping (C++ → Python):
+#   FAstroParamDelta          → per-cell numeric delta dict
+#   ConvergenceController::CheckEpoch()  → convergence_check()
+#   ParamSnapshot             → params.json for each cell in cell/{id}/params.json
+#   DeltaNorm                 → L2 norm over flattened numeric params vector
+#   ConvergenceStatus         → channels/convergence/status.json
+#   RollbackToSnapshot()      → snapshot.rollback() (EpochSnapshotManager)
+#
+# Algorithm:
+#   1. Read params.json from cell/{id}/params.json for each cell in the
+#      current epoch and from convergence/epoch_params/{epoch-1}/*.json
+#      (previous epoch snapshot written at end of last check).
+#   2. Flatten numeric scalars from species_params + bbox into a vector V.
+#   3. delta_norm(cell) = L2(V_now − V_prev) — same as FAstroParamDelta norm.
+#   4. converged = all(delta_norm < threshold)
+#   5. max_delta  = max(delta_norm values)
+#   6. Write channels/convergence/status.json.
+#   7. Save current params as epoch snapshot for next epoch comparison.
+#   8. If any delta_norm > DIVERGENCE_FACTOR * prev_max_delta → divergence:
+#      call snapshot.rollback() to restore cell bboxes, return "diverged".
+# =============================================================================
+
+def convergence_check(
+    epoch: int,
+    snapshot_manager=None,
+    threshold: float = 0.5,
+    divergence_factor: float = 3.0,
+) -> dict:
+    """
+    M173 — Convergence controller: epoch-to-epoch cell parameter check.
+
+    Compares params.json across adjacent epochs for all cells.
+    Computes per-cell L2 delta norm over numeric species_params + bbox fields.
+    Marks converged when ALL cell deltas fall below ``threshold``.
+
+    On divergence (any delta_norm > divergence_factor × previous max_delta)
+    triggers a rollback via ``snapshot_manager.rollback(epoch - 1)`` if
+    a snapshot manager is available.
+
+    Writes ``channels/convergence/status.json`` with:
+        {
+          "epoch":       <int>,
+          "converged":   <bool>,
+          "max_delta":   <float>,
+          "cell_deltas": { "<cell_id>": <float>, ... },
+          "diverged":    <bool>,
+          "threshold":   <float>
+        }
+
+    Returns the status dict.
+
+    Args:
+        epoch            : current epoch index (0-based).
+        snapshot_manager : optional EpochSnapshotManager; used for rollback on
+                           divergence.  If None, divergence is flagged in the
+                           status JSON but no rollback is performed.
+        threshold        : convergence threshold (default 0.5, same as
+                           GAstroRendererConfig.convergence_threshold).
+        divergence_factor: delta increase ratio that triggers divergence guard
+                           (default 3.0 — a 3× jump is treated as instability).
+
+    Returns:
+        dict  status written to channels/convergence/status.json.
+    """
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _flatten_params(params: dict) -> list:
+        """
+        Extract numeric scalars from params dict into a flat vector.
+
+        Fields included (mirrors FAstroParamDelta field list from d31c85e):
+          bbox: x, y, w, h, z
+          top-level: opacity, font_size, z
+          species_params: every numeric value (species-agnostic, flatten all)
+          shadow: dx, dy, blur, opacity
+
+        Non-numeric fields (strings, bools) are silently skipped.
+        """
+        vec = []
+
+        # bbox
+        bbox = params.get("bbox", {})
+        for k in ("x", "y", "w", "h", "z"):
+            v = bbox.get(k)
+            if isinstance(v, (int, float)):
+                vec.append(float(v))
+
+        # top-level numeric scalars
+        for k in ("opacity", "font_size", "z"):
+            v = params.get(k)
+            if isinstance(v, (int, float)):
+                vec.append(float(v))
+
+        # species_params — all numeric values, sorted for determinism
+        sp = params.get("species_params", {})
+        if isinstance(sp, dict):
+            for k in sorted(sp):
+                v = sp[k]
+                if isinstance(v, (int, float)):
+                    vec.append(float(v))
+
+        # shadow
+        shadow = params.get("shadow", {})
+        if isinstance(shadow, dict):
+            for k in ("dx", "dy", "blur", "opacity"):
+                v = shadow.get(k)
+                if isinstance(v, (int, float)):
+                    vec.append(float(v))
+
+        return vec
+
+    def _l2_delta(vec_a: list, vec_b: list) -> float:
+        """
+        Compute L2 norm of (vec_a − vec_b).
+        Pads shorter vector with zeros, mirrors FAstroParamDelta::Norm().
+        """
+        n = max(len(vec_a), len(vec_b))
+        total = 0.0
+        for i in range(n):
+            va = vec_a[i] if i < len(vec_a) else 0.0
+            vb = vec_b[i] if i < len(vec_b) else 0.0
+            diff = va - vb
+            total += diff * diff
+        return math.sqrt(total)
+
+    def _read_params(cell_id: str) -> dict:
+        """Read cell/{cell_id}/params.json; return {} on missing/error."""
+        p = os.path.join(CHANNELS, "cell", cell_id, "params.json")
+        if not os.path.isfile(p):
+            return {}
+        try:
+            with open(p) as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    # ── epoch snapshot dirs ────────────────────────────────────────────────
+    # Snapshots are stored at channels/convergence/epoch_params/{epoch}/*.json
+    # so that each epoch's params can be compared to the previous one.
+    CONVERGENCE_DIR = os.path.join(CHANNELS, "convergence")
+    EPOCH_PARAMS_DIR = os.path.join(CONVERGENCE_DIR, "epoch_params")
+    os.makedirs(CONVERGENCE_DIR, exist_ok=True)
+    os.makedirs(EPOCH_PARAMS_DIR, exist_ok=True)
+
+    prev_epoch_dir = os.path.join(EPOCH_PARAMS_DIR, str(epoch - 1))
+    curr_epoch_dir = os.path.join(EPOCH_PARAMS_DIR, str(epoch))
+    os.makedirs(curr_epoch_dir, exist_ok=True)
+
+    # ── discover cells ────────────────────────────────────────────────────
+    cell_dir = os.path.join(CHANNELS, "cell")
+    cell_ids = sorted(
+        d for d in os.listdir(cell_dir)
+        if os.path.isdir(os.path.join(cell_dir, d))
+    )
+
+    # ── compute per-cell delta norms ──────────────────────────────────────
+    cell_deltas: dict = {}
+
+    for cell_id in cell_ids:
+        # current params
+        curr_params = _read_params(cell_id)
+        vec_curr = _flatten_params(curr_params)
+
+        # save current params as snapshot for next epoch
+        snap_path = os.path.join(curr_epoch_dir, f"{cell_id}.json")
+        try:
+            with open(snap_path, "w") as f:
+                json.dump(curr_params, f, indent=2)
+        except OSError as _e:
+            import sys as _sys
+            print(f"[M173] WARNING: could not write snapshot {snap_path}: {_e}",
+                  file=_sys.stderr)
+
+        # previous params snapshot
+        prev_snap_path = os.path.join(prev_epoch_dir, f"{cell_id}.json")
+        if epoch == 0 or not os.path.isfile(prev_snap_path):
+            # First epoch — no previous snapshot, delta is 0 (nothing to compare)
+            cell_deltas[cell_id] = 0.0
+            continue
+
+        try:
+            with open(prev_snap_path) as f:
+                prev_params = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            cell_deltas[cell_id] = 0.0
+            continue
+
+        vec_prev = _flatten_params(prev_params)
+        delta = _l2_delta(vec_curr, vec_prev)
+        cell_deltas[cell_id] = round(delta, 6)
+
+    # ── aggregate ─────────────────────────────────────────────────────────
+    max_delta: float = max(cell_deltas.values()) if cell_deltas else 0.0
+    converged: bool = all(d < threshold for d in cell_deltas.values())
+
+    # ── divergence guard ──────────────────────────────────────────────────
+    # Read previous max_delta from status.json (if available) to detect a
+    # sudden large jump — mirrors FAstroConvergenceController divergence guard
+    # in RenderThread::CheckForDivergence().
+    diverged = False
+    prev_status_path = os.path.join(CONVERGENCE_DIR, "status.json")
+    if os.path.isfile(prev_status_path):
+        try:
+            with open(prev_status_path) as f:
+                prev_status = json.load(f)
+            prev_max_delta = float(prev_status.get("max_delta", 0.0))
+            # Only trigger divergence if prev_max_delta was meaningful (> 1e-6)
+            # and current jump exceeds factor threshold.
+            if prev_max_delta > 1e-6 and max_delta > divergence_factor * prev_max_delta:
+                diverged = True
+                print(
+                    f"[M173] DIVERGENCE: epoch={epoch} "
+                    f"max_delta={max_delta:.4f} > "
+                    f"{divergence_factor}× prev={prev_max_delta:.4f} "
+                    f"— triggering rollback to epoch {epoch - 1}"
+                )
+                if snapshot_manager is not None:
+                    snapshot_manager.rollback(epoch - 1)
+                else:
+                    print(
+                        f"[M173] WARNING: divergence detected but no snapshot_manager "
+                        f"provided — cannot rollback"
+                    )
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+
+    # ── write status.json ─────────────────────────────────────────────────
+    status = {
+        "epoch":       epoch,
+        "converged":   converged,
+        "max_delta":   round(max_delta, 6),
+        "cell_deltas": cell_deltas,
+        "diverged":    diverged,
+        "threshold":   threshold,
+    }
+
+    status_path = os.path.join(CONVERGENCE_DIR, "status.json")
+    try:
+        with open(status_path, "w") as f:
+            json.dump(status, f, indent=2)
+    except OSError as _e:
+        import sys as _sys
+        print(f"[M173] ERROR: could not write {status_path}: {_e}", file=_sys.stderr)
+
+    # ── progress log ──────────────────────────────────────────────────────
+    _cv = "✓ CONVERGED" if converged else "✗ not converged"
+    _dv = "  ⚠ DIVERGED" if diverged else ""
+    print(
+        f"[M173] epoch={epoch}  max_delta={max_delta:.4f}  "
+        f"threshold={threshold}  {_cv}{_dv}"
+    )
+    for cid, delta in sorted(cell_deltas.items()):
+        _marker = "✓" if delta < threshold else "✗"
+        print(f"  {_marker}  {cid:<18} delta={delta:.4f}")
+
+    return status
+
+
 def run_loop(max_epochs=10):
     """
     M007 — Multi-epoch growth + motion loop with convergence tracking.
@@ -3829,7 +4094,10 @@ def run_loop(max_epochs=10):
                               writes NEW force_field for next epoch to consume.
         4. snapshot.capture() — ring-buffer snapshot + total_force read-back.
         5. divergence guard — rollback if total_force increased.
-        6. convergence check — only exit when BOTH:
+        6. convergence_check() [M173] — diff params.json across epochs; compute
+             per-cell L2 delta norm over species_params + bbox; write
+             channels/convergence/status.json; rollback on param divergence.
+        7. convergence check — only exit when BOTH:
              • total_force < FORCE_THRESHOLD  (physics settled)
              • delta_max   < DELTA_THRESHOLD  (positions/sizes stable)
            AND at least MIN_EPOCHS have run (prevents false-early exit on
@@ -3967,6 +4235,23 @@ def run_loop(max_epochs=10):
                     f"[ASTRO-EPOCH] {len(diff_entries)} cell(s) changed "
                     f"since epoch {snap['epoch'] - 1}"
                 )
+
+        # ── Step 6b: M173 param-level convergence check ───────────────────────
+        # convergence_check() diffs params.json across adjacent epochs,
+        # computing per-cell L2 delta norms over species_params + bbox.
+        # Writes channels/convergence/status.json; triggers rollback on
+        # divergence (sudden delta spike > DIVERGENCE_FACTOR × prev max_delta).
+        _cv_status = convergence_check(
+            epoch=epoch,
+            snapshot_manager=snapshot,
+            threshold=GAstroRendererConfig.convergence_threshold,
+        )
+        if _cv_status.get("diverged"):
+            print(
+                f"[M173] param-level divergence at epoch={epoch}; "
+                f"snapshot rolled back — retrying"
+            )
+            continue
 
         # ── Step 7: divergence guard ──────────────────────────────────────────
         # If total_force increased epoch-over-epoch, rollback and retry.

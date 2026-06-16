@@ -1,0 +1,16 @@
+{
+  "epoch": 2,
+  "converged": false,
+  "max_delta": 200.0,
+  "cell_deltas": {
+    "add_norm1": 0.0,
+    "add_norm2": 0.0,
+    "ffn": 0.0,
+    "input_embed": 0.0,
+    "output": 0.0,
+    "pos_encode": 0.0,
+    "self_attn": 200.0
+  },
+  "diverged": true,
+  "threshold": 0.5
+}

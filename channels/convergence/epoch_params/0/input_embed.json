@@ -1,0 +1,29 @@
+{
+  "cell_id": "input_embed",
+  "species": "cil-vector",
+  "bbox": {
+    "x": 220.0,
+    "y": 40.0,
+    "w": 160,
+    "h": 50,
+    "z": 5
+  },
+  "z": 5,
+  "opacity": 0.05,
+  "fill_color": "#2E7D32",
+  "stroke_color": "#2E7D32",
+  "label": "Input Embedding",
+  "font_size": 10,
+  "species_params": {
+    "arrow_count": 5,
+    "arrow_length": 48.0,
+    "angle_spread": 0.8
+  },
+  "epoch": 9,
+  "shadow": {
+    "dx": 8.0,
+    "dy": 8.0,
+    "blur": 5.35,
+    "opacity": 0.55
+  }
+}

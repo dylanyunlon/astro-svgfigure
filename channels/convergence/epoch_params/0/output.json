@@ -1,0 +1,28 @@
+{
+  "cell_id": "output",
+  "species": "cil-arrow-right",
+  "bbox": {
+    "x": 220.0,
+    "y": 675.0,
+    "w": 160,
+    "h": 50,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.0937,
+  "fill_color": "#455A64",
+  "stroke_color": "#455A64",
+  "label": "Output",
+  "font_size": 10,
+  "species_params": {
+    "arrow_width": 48.0,
+    "arrow_height": 16.0
+  },
+  "epoch": 9,
+  "shadow": {
+    "dx": 2.0,
+    "dy": 2.0,
+    "blur": 3.75,
+    "opacity": 0.35
+  }
+}
