@@ -208,13 +208,19 @@ class AstroCellTranslucencyRenderer:
             attrs = self._factory.prepare_svg_attrs(opacity, blend_mode)
             attr_str = " ".join(f'{k}="{v}"' for k, v in attrs.items())
             fragment = entry.get("svg_fragment", "")
-            fragments.append(
-                f'<g data-cell-id="{cid}" {attr_str}>{fragment}</g>'
-            )
+            fragments.append({
+                "tag": "g",
+                "data-cell-id": cid,
+                **attrs,
+                "children": fragment,
+            })
             increment_perf_counter("visible_clusters", 1)
 
-        inner = "\n    ".join(fragments)
-        return f'<g id="translucency-layer">\n    {inner}\n  </g>'
+        return {
+            "tag": "g",
+            "id": "translucency-layer",
+            "children": fragments,
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

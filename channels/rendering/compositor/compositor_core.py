@@ -86,7 +86,7 @@ class AstroCellCompositor:
         str
             合并后的 SVG 文档字符串（UTF-8）。
         """
-        groups: list[str] = []
+        groups: list[dict] = []
         depth_ch = self._depth_manifest.get("depth_channel", {})
         custom_d = self._depth_manifest.get("custom_depth", {})
 
@@ -96,23 +96,23 @@ class AstroCellCompositor:
             cid = entry["cell_id"]
             z = entry.get("bbox", {}).get("z", 0.0)
             depth = depth_ch.get(cid, 0.0)
-            attrs = (
-                f'data-cell-id="{cid}" '
-                f'data-z="{z}" '
-                f'data-depth="{depth:.6f}"'
-            )
-            if cid in custom_d:
-                attrs += f' data-highlight="{custom_d[cid]}"'
             fragment = entry.get("svg_fragment", "")
-            groups.append(f'<g {attrs}>{fragment}</g>')
+            group: dict = {
+                "tag": "g",
+                "data-cell-id": cid,
+                "data-z": z,
+                "data-depth": round(depth, 6),
+                "children": fragment,
+            }
+            if cid in custom_d:
+                group["data-highlight"] = custom_d[cid]
+            groups.append(group)
 
-        inner = "\n  ".join(groups)
-        return (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<svg xmlns="http://www.w3.org/2000/svg">\n'
-            f'  {inner}\n'
-            "</svg>"
-        )
+        return {
+            "tag": "svg",
+            "xmlns": "http://www.w3.org/2000/svg",
+            "children": groups,
+        }
 
 
 

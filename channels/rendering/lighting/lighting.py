@@ -1710,15 +1710,25 @@ class AstroCellAtmosphericCompositor:
                     f'<!-- [ASTRO-CLOUD] VolumetricCloud trans={cloud_state.transmittance:.3f} '
                     f'sky_ao={sky_ao:.3f} samples={cloud_state.sample_count} '
                     f'(VolumetricCloudRendering.cpp port) -->')
-                parts.append(
-                    f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
-                    f'rx="6" fill="{fog_hex}" opacity="{fp["fog_alpha"]:.4f}" '
-                    f'style="mix-blend-mode:screen"/>')
+                parts.append({
+                    "tag": "rect",
+                    "x": round(x, 1), "y": round(y, 1),
+                    "width": round(w, 1), "height": round(h, 1),
+                    "rx": 6,
+                    "fill": fog_hex,
+                    "opacity": round(fp["fog_alpha"], 4),
+                    "style": "mix-blend-mode:screen",
+                })
                 if sky_ao > 0.05:
-                    parts.append(
-                        f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
-                        f'rx="6" fill="black" opacity="{sky_ao*0.25:.4f}" '
-                        f'style="mix-blend-mode:multiply"/>')
+                    parts.append({
+                        "tag": "rect",
+                        "x": round(x, 1), "y": round(y, 1),
+                        "width": round(w, 1), "height": round(h, 1),
+                        "rx": 6,
+                        "fill": "black",
+                        "opacity": round(sky_ao * 0.25, 4),
+                        "style": "mix-blend-mode:multiply",
+                    })
 
         # Phase 2: TranslucentLighting 辐射度调制
         if _TLV_ENABLED:
@@ -1735,10 +1745,15 @@ class AstroCellAtmosphericCompositor:
                     f'lum=({tlv[0]:.3f},{tlv[1]:.3f},{tlv[2]:.3f}) '
                     f'dim={_TLV_DIM} blur={_TLV_BLUR_ENABLED} '
                     f'(TranslucentLighting.cpp port) -->')
-                parts.append(
-                    f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" '
-                    f'rx="6" fill="{tlv_hex}" opacity="{min(0.12, lum*0.8):.4f}" '
-                    f'style="mix-blend-mode:add"/>')
+                parts.append({
+                    "tag": "rect",
+                    "x": round(x, 1), "y": round(y, 1),
+                    "width": round(w, 1), "height": round(h, 1),
+                    "rx": 6,
+                    "fill": tlv_hex,
+                    "opacity": round(min(0.12, lum * 0.8), 4),
+                    "style": "mix-blend-mode:add",
+                })
 
         # Phase 3: SingleLayerWater 水面效果
         if _SLW_ENABLED and (species in ("water", "cil-loop") or z <= 1):

@@ -282,22 +282,31 @@ class AstroCellPlanarReflectionPrefilter:
             f"translate(0,{-refl_y:.2f})"
         )
 
-        parts = [
-            f'<!-- [ASTRO-PLANAR-REFL] PlanarReflectionRendering.cpp port '
-            f'sigma={sigma} blend={alpha} refl_y={refl_y:.1f} -->',
-            f'<defs>',
-            f'  <filter id="{filter_id}" x="0" y="0" width="100%" height="100%">',
-            f'    <feGaussianBlur in="SourceGraphic" stdDeviation="0 {sigma}" '
-            f'result="blurred"/>',
-            f'    <feColorMatrix in="blurred" type="saturate" values="0.6"/>',
-            f'  </filter>',
-            f'</defs>',
-            f'<g class="planar-reflection" opacity="{alpha}" '
-            f'transform="{transform}" filter="url(#{filter_id})">',
-            f'  <use href="#cell-{cell_id}"/>',
-            f'</g>',
-        ]
-        return "\n".join(parts)
+        return {
+            "tag": "g",
+            "class": "planar-reflection",
+            "opacity": alpha,
+            "transform": transform,
+            "filter": f"url(#{filter_id})",
+            "defs": {
+                "filter": {
+                    "id": filter_id,
+                    "x": "0", "y": "0",
+                    "width": "100%", "height": "100%",
+                    "feGaussianBlur": {
+                        "in": "SourceGraphic",
+                        "stdDeviation": f"0 {sigma}",
+                        "result": "blurred",
+                    },
+                    "feColorMatrix": {
+                        "in": "blurred",
+                        "type": "saturate",
+                        "values": "0.6",
+                    },
+                }
+            },
+            "children": [{"tag": "use", "href": f"#cell-{cell_id}"}],
+        }
 
 
 
