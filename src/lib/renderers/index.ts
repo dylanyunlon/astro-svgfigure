@@ -198,6 +198,25 @@ export type {
   AudioSystemBundle,
 } from '../audio-system'
 
+// ── M011: pixijs-engine rendering/render-target fusion ───────────────────────
+// PixiRenderTarget    offscreen FBO wrapper (mirrors upstream RenderTarget + GlRenderTarget)
+// PixiRenderTargetPool acquire/release pool for bloom ping-pong (mirrors TexturePool + RTPool)
+// BloomFBOPass        WebGL2 multi-pass bloom: extract → Kawase blur → composite
+// BloomFBOPipeline    unified FBO + pixi-filters-registry AdvancedBloomFilter bridge
+export {
+  PixiRenderTarget,
+  PixiRenderTargetPool,
+  BloomFBOPass,
+  BloomFBOPipeline,
+  createOffscreenTarget,
+  buildBloomPipeline,
+} from './pixi-render-target';
+export type {
+  PixiRenderTargetOptions,
+  BloomFBOPassOptions,
+  BloomFBOPipelineOptions,
+} from './pixi-render-target';
+
 // ── AT: full module coverage ──────────────────────────────────────────────────
 
 // platform
