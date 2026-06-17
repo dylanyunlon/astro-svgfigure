@@ -732,3 +732,34 @@ export const CellEnvAdapter = {
     throw new Error('[CELL-ENV-DETECT] DOMParser not available in this environment');
   },
 } as const;
+
+// ── Quick WebGL2 + GPU tier detection ────────────────────────────────────────
+
+/**
+ * detectCapabilities — lightweight synchronous probe returning WebGL2 availability,
+ * max texture size, mobile flag, and a coarse GPU performance tier.
+ *
+ * Tier logic:
+ *   "low"  — no WebGL2 or MAX_TEXTURE_SIZE < 4096
+ *   "mid"  — WebGL2 present but running on Android/iPhone
+ *   "high" — WebGL2 present, desktop-class GPU
+ */
+export function detectCapabilities(): {
+  webgl2: boolean;
+  maxTex: number;
+  mobile: boolean;
+  tier: 'low' | 'mid' | 'high';
+} {
+  const c = document.createElement('canvas');
+  const gl = c.getContext('webgl2');
+  return {
+    webgl2: !!gl,
+    maxTex: gl ? gl.getParameter(gl.MAX_TEXTURE_SIZE) : 2048,
+    mobile: /Android|iPhone|iPad/.test(navigator.userAgent),
+    tier: (!gl || gl.getParameter(gl.MAX_TEXTURE_SIZE) < 4096)
+      ? 'low'
+      : /Android|iPhone/.test(navigator.userAgent)
+        ? 'mid'
+        : 'high',
+  };
+}
