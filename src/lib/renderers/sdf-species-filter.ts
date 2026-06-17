@@ -34,6 +34,10 @@ import {
   Filter,
   GlProgram,
   GpuProgram,
+  Mesh,
+  MeshGeometry,
+  Shader,
+  UniformGroup,
   type FilterSystem,
   type RenderSurface,
   type Texture,
@@ -1626,4 +1630,301 @@ export class CilEyeSDFFilter extends Filter {
   /** AT bloom ring radius factor. */
   get bloomRadius(): number { return this.uniforms.u_bloomRadius; }
   set bloomRadius(value: number) { this.uniforms.u_bloomRadius = value; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// M072: CilBoltSDFMesh — cil-bolt SDF shader → PixiJS Mesh 挂载
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Mesh-based alternative to CilBoltSDFFilter.  Instead of attaching as a
+// Filter on a transparent Graphics quad, this renders the cil-bolt lightning
+// directly as a Mesh (quad geometry + custom Shader), matching the pattern
+// used in sdf-cell-renderer.ts for full SDF cells.
+//
+// Advantages over the Filter path:
+//   - No intermediate render texture — renders directly to the scene graph
+//   - Easier to composite with z-ordering (Mesh is a Container child)
+//   - Uniform update via Shader.resources (no apply() override needed)
+//
+// Amber lightning uniforms (from species_params / params.json):
+//   u_fillColor       (vec3)  — amber lightning colour [r,g,b] 0-1
+//   u_opacity         (f32)   — overall opacity
+//   u_zigzagCount     (f32)   — zigzag segment count (default 6)
+//   u_amplitude       (f32)   — zigzag horizontal amplitude (default 0.35)
+//   u_time            (f32)   — animation time (seconds), Ticker-driven
+//   u_strokeWidth     (f32)   — bolt stroke thickness in NDC (default 0.045)
+//   u_glowIntensity   (f32)   — global bloom glow multiplier (default 1.0)
+//   u_wiggleSpeed     (f32)   — phase oscillation speed multiplier (default 0.7)
+//
+// Usage:
+//   const mesh = createCilBoltMesh(x, y, w, h, { fillColor: [1, 0.65, 0.15] });
+//   container.addChild(mesh);
+//   app.ticker.add(() => { mesh.shader.resources.cilBoltUniforms.uniforms.u_time = elapsed; });
+
+// ── Vertex shader for Mesh quad ─────────────────────────────────────────────
+const CIL_BOLT_MESH_VERTEX = /* glsl */`#version 300 es
+precision highp float;
+
+in vec2 aPosition;
+in vec2 aUV;
+
+out vec2 vUV;
+
+void main() {
+    vUV = aUV;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+// ── Fragment shader — cil-bolt.frag adapted for Mesh (vUV input) ────────────
+//
+// Key changes from CIL_BOLT_FRAGMENT (Filter version):
+//   1. Uses vUV (from MeshGeometry aUV) instead of vTextureCoord
+//   2. No sampler2D uTexture (Mesh draws directly, no input texture)
+//   3. #version 300 es + explicit precision (Mesh path doesn't prepend them)
+//   4. AT bloom constants promoted to uniforms: u_strokeWidth, u_glowIntensity, u_wiggleSpeed
+//   5. Output finalColor (GLSL 300 es out variable)
+const CIL_BOLT_MESH_FRAGMENT = /* glsl */`#version 300 es
+precision highp float;
+
+in vec2 vUV;
+out vec4 finalColor;
+
+// ── cil-bolt SDF uniforms ───────────────────────────────────────────────────
+uniform vec3  u_fillColor;
+uniform float u_opacity;
+uniform float u_zigzagCount;
+uniform float u_amplitude;
+uniform float u_time;
+
+// ── M072: amber lightning uniforms (promoted from AT constants) ──────────────
+uniform float u_strokeWidth;     // bolt stroke half-width in NDC (default 0.045)
+uniform float u_glowIntensity;   // global bloom intensity multiplier (default 1.0)
+uniform float u_wiggleSpeed;     // phase oscillation speed (default 0.7)
+
+// ---- AT UIL params (constants retained from cil-bolt.frag) ----
+const float AT_BLOOM_INTENSITY        = 1.0;
+const float AT_BLOOM_RADIUS           = 1.0;
+const float AT_GLOBAL_BLOOM_STRENGTH  = 0.3;
+const float AT_GLOBAL_BLOOM_RADIUS    = 0.2;
+const float AT_HOME_BLOOM_STRENGTH    = 0.6;
+const float AT_HOME_BLOOM_RADIUS      = 0.8;
+const float AT_LIGHT_INTENSITY        = 2.19;
+const float AT_LUMINOSITY_THRESHOLD   = 0.0;
+
+// ── lygia/math/saturate.glsl (inlined) ──────────────────────────────────────
+#ifndef FNC_SATURATE
+#define FNC_SATURATE
+#define saturate(V) clamp(V, 0.0, 1.0)
+#endif
+
+// ── lygia/sdf/lineSDF.glsl (inlined) ────────────────────────────────────────
+#ifndef FNC_LINESDF
+#define FNC_LINESDF
+float lineSDF(in vec2 st, in vec2 a, in vec2 b) {
+    vec2 b_to_a = b - a;
+    vec2 to_a   = st - a;
+    float h = saturate(dot(to_a, b_to_a) / dot(b_to_a, b_to_a));
+    return length(to_a - h * b_to_a);
+}
+#endif
+
+float strokeMask(vec2 p, vec2 a, vec2 b, float w) {
+    float d = lineSDF(p, a, b);
+    return smoothstep(w, w * 0.4, d);
+}
+
+void main() {
+  vec2 uv = vUV;
+  vec2 p  = uv * 2.0 - 1.0;   // [-1, 1]
+
+  float strokeW = u_strokeWidth;
+  float total   = 0.0;
+
+  float steps = u_zigzagCount;
+  float dy    = 2.0 / steps;
+
+  // Animated phase offset — speed driven by u_wiggleSpeed (promoted from AT constant)
+  float phase = sin(u_time * 2.5 * u_wiggleSpeed) * 0.15;
+
+  // Core stroke — zigzag segments via lineSDF
+  for (float i = 0.0; i < 32.0; i++) {
+    if (i >= steps) break;
+
+    float t0    = -1.0 + i       * dy;
+    float t1    = -1.0 + (i+1.0) * dy;
+    float side0 = (mod(i,       2.0) < 1.0 ? 1.0 : -1.0);
+    float side1 = (mod(i + 1.0, 2.0) < 1.0 ? 1.0 : -1.0);
+
+    vec2 a = vec2(side0 * u_amplitude + phase, t0);
+    vec2 b = vec2(side1 * u_amplitude + phase, t1);
+
+    total = max(total, strokeMask(p, a, b, strokeW));
+  }
+
+  // Global bloom pass
+  float glowGlobal  = 0.0;
+  float globalGlowW = strokeW * (3.5 * AT_GLOBAL_BLOOM_RADIUS / AT_BLOOM_RADIUS);
+  for (float i = 0.0; i < 32.0; i++) {
+    if (i >= steps) break;
+    float t0   = -1.0 + i * dy;
+    float t1   = -1.0 + (i+1.0) * dy;
+    float s0   = (mod(i,       2.0) < 1.0 ? 1.0 : -1.0);
+    float s1   = (mod(i + 1.0, 2.0) < 1.0 ? 1.0 : -1.0);
+    vec2 a     = vec2(s0 * u_amplitude + phase, t0);
+    vec2 b     = vec2(s1 * u_amplitude + phase, t1);
+    glowGlobal = max(glowGlobal, strokeMask(p, a, b, globalGlowW) * AT_GLOBAL_BLOOM_STRENGTH);
+  }
+
+  // Home bloom pass
+  float glowHome  = 0.0;
+  float homeGlowW = strokeW * (5.0 * AT_HOME_BLOOM_RADIUS / AT_BLOOM_RADIUS);
+  for (float i = 0.0; i < 32.0; i++) {
+    if (i >= steps) break;
+    float t0   = -1.0 + i * dy;
+    float t1   = -1.0 + (i+1.0) * dy;
+    float s0   = (mod(i,       2.0) < 1.0 ? 1.0 : -1.0);
+    float s1   = (mod(i + 1.0, 2.0) < 1.0 ? 1.0 : -1.0);
+    vec2 a     = vec2(s0 * u_amplitude + phase, t0);
+    vec2 b     = vec2(s1 * u_amplitude + phase, t1);
+    glowHome   = max(glowHome, strokeMask(p, a, b, homeGlowW) * AT_HOME_BLOOM_STRENGTH);
+  }
+
+  float lum     = dot(u_fillColor, vec3(0.2126, 0.7152, 0.0722));
+  float lumGate = step(AT_LUMINOSITY_THRESHOLD, lum);
+
+  // u_glowIntensity scales the combined bloom contribution
+  float bloomSum = (glowGlobal + glowHome) * lumGate * AT_BLOOM_INTENSITY
+                 * (AT_LIGHT_INTENSITY / 2.19) * u_glowIntensity;
+  float alpha    = clamp(total + bloomSum, 0.0, 1.0);
+
+  finalColor = vec4(u_fillColor, alpha * u_opacity);
+}
+`;
+
+// ── CilBoltSDFMesh options ──────────────────────────────────────────────────
+
+export interface CilBoltSDFMeshOptions {
+  /**
+   * Amber lightning fill colour [r, g, b] 0-1.
+   * Defaults to cil-bolt amber (0xFFA726 → [1.0, 0.643, 0.149]).
+   */
+  fillColor?: [number, number, number];
+  /** Overall opacity (0-1). @default 1.0 */
+  opacity?: number;
+  /** Number of zigzag segments. @default 6 */
+  zigzagCount?: number;
+  /** Zigzag horizontal amplitude in [-1,1] space. @default 0.35 */
+  amplitude?: number;
+  /** Starting animation time (seconds). @default 0 */
+  time?: number;
+  /**
+   * Bolt stroke half-width in NDC [-1,1] space.
+   * Derived from species_params.stroke_width / (min(w,h)/2), clamped [0.01, 0.15].
+   * @default 0.045
+   */
+  strokeWidth?: number;
+  /**
+   * Global bloom glow intensity multiplier.
+   * Scales the combined globalbloom + homebloom AT bloom passes.
+   * Derived from species_params.glow_intensity (direct).
+   * @default 1.0
+   */
+  glowIntensity?: number;
+  /**
+   * Phase oscillation speed multiplier (AT_WIGGLE_SPEED).
+   * Higher values = faster wiggle animation.
+   * Derived from species_params.wiggle_speed (direct).
+   * @default 0.7
+   */
+  wiggleSpeed?: number;
+}
+
+// ── CilBoltSDFMesh factory ──────────────────────────────────────────────────
+
+/**
+ * createCilBoltMesh — builds a PixiJS Mesh (quad) that renders the cil-bolt
+ * amber lightning SDF shader directly, without an intermediate Filter render pass.
+ *
+ * The Mesh is a quad positioned at (x, y) with size (w, h) in clip-space.
+ * All cil-bolt.frag SDF logic runs in the fragment shader; the vertex shader
+ * maps the quad corners to UV [0,1] for the SDF coordinate transform.
+ *
+ * ## Uniform injection from species_params (M072)
+ *   species_params.zigzag_segments → zigzagCount   (segment count)
+ *   species_params.amplitude       → amplitude      (horizontal width)
+ *   species_params.stroke_width    → strokeWidth    (px → NDC: px / (min(w,h)/2))
+ *   species_params.glow_intensity  → glowIntensity  (direct multiplier)
+ *   species_params.wiggle_speed    → wiggleSpeed    (direct multiplier)
+ *
+ * ## Ticker integration
+ * Drive u_time each frame via the uniform accessor:
+ *
+ *   const mesh = createCilBoltMesh(x, y, w, h, opts);
+ *   container.addChild(mesh);
+ *   app.ticker.add(() => {
+ *     (mesh.shader!.resources.cilBoltUniforms as any).uniforms.u_time = elapsed;
+ *   });
+ *
+ * @param x — cell x position in clip space
+ * @param y — cell y position in clip space
+ * @param w — cell width in pixels
+ * @param h — cell height in pixels
+ * @param options — amber lightning uniform options
+ * @returns PixiJS Mesh configured with cil-bolt SDF shader
+ */
+export function createCilBoltMesh(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  options?: CilBoltSDFMeshOptions,
+): Mesh {
+  const opts: Required<CilBoltSDFMeshOptions> = {
+    fillColor:     [1.0, 0.643, 0.149],   // cil-bolt amber (0xFFA726)
+    opacity:       1.0,
+    zigzagCount:   6,
+    amplitude:     0.35,
+    time:          0,
+    strokeWidth:   0.045,
+    glowIntensity: 1.0,
+    wiggleSpeed:   0.7,
+    ...options,
+  };
+
+  // Quad geometry with padding for glow overflow
+  const pad = 20;
+  const x0 = x - pad;
+  const y0 = y - pad;
+  const x1 = x + w + pad;
+  const y1 = y + h + pad;
+
+  const geometry = new MeshGeometry({
+    positions: new Float32Array([x0, y0, x1, y0, x1, y1, x0, y1]),
+    uvs: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
+    indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+  });
+
+  const uniforms = new UniformGroup({
+    u_fillColor:     { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
+    u_opacity:       { value: opts.opacity,       type: 'f32' },
+    u_zigzagCount:   { value: opts.zigzagCount,   type: 'f32' },
+    u_amplitude:     { value: opts.amplitude,     type: 'f32' },
+    u_time:          { value: opts.time,           type: 'f32' },
+    u_strokeWidth:   { value: opts.strokeWidth,   type: 'f32' },
+    u_glowIntensity: { value: opts.glowIntensity, type: 'f32' },
+    u_wiggleSpeed:   { value: opts.wiggleSpeed,   type: 'f32' },
+  });
+
+  const shader = Shader.from({
+    gl: {
+      vertex: CIL_BOLT_MESH_VERTEX,
+      fragment: CIL_BOLT_MESH_FRAGMENT,
+    },
+    resources: { cilBoltUniforms: uniforms },
+  });
+
+  const mesh = new Mesh({ geometry, shader });
+
+  return mesh;
 }
