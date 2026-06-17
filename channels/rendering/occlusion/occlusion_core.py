@@ -362,15 +362,27 @@ class AstroCellLightShaftOcclusion:
         self._cell_id = cell_id
         self._bbox    = bbox
 
-    def emit_svg(self) -> str:
+    def emit_params(self) -> dict:
         """
-        Emit the occlusion mask SVG fragment.
+        返回遮挡光柱的渲染参数 dict，供前端 PixiJS 消费。
 
-        Creates a radial gradient mask centred on the light shaft origin,
-        with opacity = 1 − OcclusionMaskDarkness at the centre and fading
-        to 1.0 at the edges (full brightness away from the shaft).
+        不再生成 SVG 字符串。所有渲染决策（radialGradient、mask、rect）
+        由前端根据此 dict 在 PixiJS/WebGL 层构建。
 
-        Returns SVG string.
+        返回字段说明：
+            gradient_id       : 渐变元素唯一 ID（字符串，供前端引用）
+            mask_id           : 蒙版元素唯一 ID（字符串，供前端引用）
+            cx                : 渐变圆心 X 坐标（screen-space，像素）
+            cy                : 渐变圆心 Y 坐标（screen-space，像素）
+            r_grad            : 渐变半径（像素）
+            darkness          : 遮挡蒙版中心不透明度 ∈ [0, 1]
+            depth_range       : OcclusionDepthRange 参数（从 params 直传）
+            rect_x            : 蒙版覆盖矩形左上角 X
+            rect_y            : 蒙版覆盖矩形左上角 Y
+            rect_w            : 蒙版覆盖矩形宽度
+            rect_h            : 蒙版覆盖矩形高度
+            mask_opacity      : 蒙版 rect fill opacity（固定 0.6，与原 SVG 一致）
+            bbox              : 原始 bbox dict（透传，方便前端复用）
 
         鲁迅式：遮挡蒙版是光柱的负像——用梯度来记录光的路径，
         用暗处来证明光曾经经过这里。
@@ -389,27 +401,22 @@ class AstroCellLightShaftOcclusion:
 
         # Radial gradient: dark at centre (light source), bright at edges
         r_grad = max(w, h) * 0.7
-        parts = [
-            f'<!-- [ASTRO-LS] LightShaftRendering.cpp Occlusion port '
-            f'darkness={darkness} depth_range={p["occlusion_depth_range"]:.1f} -->',
-            f'<defs>',
-            f'  <radialGradient id="{grad_id}" '
-            f'cx="{cx:.1f}" cy="{cy:.1f}" r="{r_grad:.1f}" '
-            f'gradientUnits="userSpaceOnUse">',
-            f'    <stop offset="0" stop-color="black" '
-            f'stop-opacity="{darkness:.3f}"/>',
-            f'    <stop offset="1" stop-color="black" stop-opacity="0"/>',
-            f'  </radialGradient>',
-            f'  <mask id="{mask_id}">',
-            f'    <rect x="{bbox.get("x",0):.1f}" y="{bbox.get("y",0):.1f}" '
-            f'width="{w:.1f}" height="{h:.1f}" '
-            f'fill="url(#{grad_id})" opacity="0.6"/>',
-            f'  </mask>',
-            f'</defs>',
-            f'<!-- [ASTRO-LS] Occlusion mask: apply mask="url(#{mask_id})" '
-            f'to a rect over the cell to dim the light shaft region -->',
-        ]
-        return "\n".join(parts)
+
+        return {
+            "gradient_id":  grad_id,
+            "mask_id":      mask_id,
+            "cx":           round(cx, 1),
+            "cy":           round(cy, 1),
+            "r_grad":       round(r_grad, 1),
+            "darkness":     darkness,
+            "depth_range":  round(p["occlusion_depth_range"], 1),
+            "rect_x":       round(float(bbox.get("x", 0)), 1),
+            "rect_y":       round(float(bbox.get("y", 0)), 1),
+            "rect_w":       round(w, 1),
+            "rect_h":       round(h, 1),
+            "mask_opacity": 0.6,
+            "bbox":         dict(bbox),
+        }
 
 
 

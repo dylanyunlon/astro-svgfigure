@@ -117,39 +117,42 @@ def render_cell_light_shafts(
     bbox:       dict,
     viewport_w: float = 1200.0,
     viewport_h: float = 900.0,
-) -> str:
+) -> dict:
     """
     Top-level light shaft renderer — mirrors the dispatch in
     FDeferredShadingSceneRenderer::RenderLightShaftBloom() /
     RenderLightShaftOcclusion().
 
     Checks whether light shafts should render for this cell/species; if so,
-    emits both the bloom filter and the occlusion mask SVG fragments.
+    collects bloom SVG and occlusion render params for PixiJS consumption.
 
-    Returns a concatenated SVG string, or empty string if not applicable.
+    Returns a dict with keys:
+        "bloom_svg"       : SVG string from AstroCellLightShaftBloom.emit_svg()
+                            (empty string if not applicable)
+        "occlusion_params": dict from AstroCellLightShaftOcclusion.emit_params()
+                            (None if not applicable)
+    Returns {"bloom_svg": "", "occlusion_params": None} if light shafts
+    should not render for this cell/species.
 
     鲁迅式：光柱渲染是条件艺术——条件不成立，一个字也不写；
     条件成立，则两种技术都要上，缺一不可。
     """
     if not should_render_light_shafts(species):
-        return ""
+        return {"bloom_svg": "", "occlusion_params": None}
     if not should_render_light_shafts_for_cell(cell_id, bbox, viewport_w, viewport_h):
-        return ""
+        return {"bloom_svg": "", "occlusion_params": None}
 
     params   = get_cell_light_shaft_params(cell_id, bbox, viewport_w, viewport_h)
     bloom    = AstroCellLightShaftBloom(params, cell_id, bbox, species)
     occ      = AstroCellLightShaftOcclusion(params, cell_id, bbox)
 
-    bloom_svg = bloom.emit_svg()
-    occ_svg   = occ.emit_svg()
+    bloom_svg  = bloom.emit_svg()
+    occ_params = occ.emit_params()
 
-    parts = []
-    if bloom_svg:
-        parts.append(bloom_svg)
-    if occ_svg:
-        parts.append(occ_svg)
-
-    return "\n".join(parts)
+    return {
+        "bloom_svg":        bloom_svg,
+        "occlusion_params": occ_params,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
