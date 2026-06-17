@@ -30,6 +30,8 @@
 
 import { createProgram } from './hydra-gl-layer';
 import { Color } from '../color-utils';
+import { PlaneGeometry } from '../renderer/geometry/PlaneGeometry';
+import { Geometry }      from '../renderer/geometry/Geometry';
 
 // ── MSDF Atlas 数据类型 ───────────────────────────────────────────────────────
 
@@ -817,4 +819,187 @@ export function makeOrthoProjection(
     0,                     0,                2 * nf, 0,
     -(right + left) * lr, -(top + bottom) * bt, -(far + near) * nf, 1,
   ]);
+}
+
+// ── createMSDFLabel — Mesh factory for pixi-cell-renderer ─────────────────────
+//
+// 提供 Three.js 风格 API 供 pixi-cell-renderer 替代 Text 对象:
+//   const mesh = createMSDFLabel(atlasTexture, 'Hello', 16, 0xff3300);
+//   scene.add(mesh);
+//
+// 内部使用 PlaneGeometry + 自定义 MSDF ShaderMaterial (vertex=msdf.vert, fragment=msdf.frag).
+
+// ── Texture 类型 (对齐项目 WebGL 纹理抽象) ──────────────────────────────────────
+
+/**
+ * Texture — MSDF atlas 纹理句柄.
+ *
+ * 封装 WebGLTexture (或 HTMLImageElement 待上传),
+ * 供 createMSDFLabel 读取并绑定到 shader uniform.
+ */
+export interface Texture {
+  /** 底层 WebGL 纹理对象 (已上传到 GPU) */
+  glTexture?: WebGLTexture;
+  /** 纹理宽度 (px) */
+  width: number;
+  /** 纹理高度 (px) */
+  height: number;
+  /** 原始图像 (可选, 用于延迟上传) */
+  image?: HTMLImageElement | ImageBitmap;
+}
+
+// ── MSDF ShaderMaterial ──────────────────────────────────────────────────────
+
+/**
+ * msdf.vert — MSDF label 顶点着色器.
+ *
+ * PlaneGeometry 提供 position (vec3) + uv (vec2),
+ * 直接传递 UV 给片元着色器进行纹理采样.
+ */
+const MSDF_LABEL_VERT = /* glsl */ `#version 300 es
+precision highp float;
+
+in vec3 position;
+in vec2 uv;
+
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+
+out vec2 vUv;
+
+void main() {
+  vUv = uv;
+  gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+/**
+ * msdf.frag — MSDF label 片元着色器.
+ *
+ * 采样 3-channel MSDF atlas, 用 median(r,g,b) 还原锐利 SDF,
+ * smoothstep 抗锯齿, 输出 uColor 前景色 + alpha 剪裁.
+ */
+const MSDF_LABEL_FRAG = /* glsl */ `#version 300 es
+precision highp float;
+
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uTexture;
+uniform vec3  uColor;
+uniform float uPxRange;
+
+float median(float r, float g, float b) {
+  return max(min(r, g), min(max(r, g), b));
+}
+
+float screenPxRange() {
+  vec2 unitRange = vec2(uPxRange) / vec2(textureSize(uTexture, 0));
+  vec2 screenTexSize = vec2(1.0) / fwidth(vUv);
+  return max(0.5 * dot(unitRange, screenTexSize), 1.0);
+}
+
+void main() {
+  vec3 msd = texture(uTexture, vUv).rgb;
+  float sd = median(msd.r, msd.g, msd.b);
+  float pxDist = screenPxRange() * (sd - 0.5);
+  float opacity = clamp(pxDist + 0.5, 0.0, 1.0);
+  if (opacity < 0.01) discard;
+  fragColor = vec4(uColor, opacity);
+}
+`;
+
+/** MSDF shader uniform 集合 */
+export interface MSDFUniforms {
+  uTexture:  Texture;
+  uColor:    [number, number, number];
+  uPxRange:  number;
+}
+
+/** ShaderMaterial — 绑定 MSDF vertex/fragment shader + uniforms */
+export interface ShaderMaterial {
+  vertexShader:   string;
+  fragmentShader: string;
+  uniforms:       MSDFUniforms;
+  transparent:    boolean;
+}
+
+// ── Mesh — 几何体 + 材质复合体 ───────────────────────────────────────────────
+
+/**
+ * Mesh — PlaneGeometry + ShaderMaterial 的复合对象.
+ *
+ * 供 pixi-cell-renderer 作为 cell label 的渲染单元,
+ * 替代原有 PixiJS Text (500 labels → 共享 1 个 MSDF atlas).
+ */
+export interface Mesh {
+  geometry:  Geometry;
+  material:  ShaderMaterial;
+  /** 世界坐标位置 */
+  position:  { x: number; y: number; z: number };
+  /** 缩放 */
+  scale:     { x: number; y: number; z: number };
+  /** 原始文字内容 (便于调试 & 更新) */
+  text:      string;
+  /** 字号 (px) */
+  fontSize:  number;
+  /** 可见性标记 */
+  visible:   boolean;
+}
+
+/**
+ * createMSDFLabel — 用 MSDF atlas 创建文字 label Mesh.
+ *
+ * @param texture   MSDF atlas 纹理 (Texture)
+ * @param text      要显示的文字
+ * @param fontSize  字号 (px)
+ * @param color     十六进制颜色 (0xRRGGBB)
+ * @returns Mesh    带 PlaneGeometry + MSDF ShaderMaterial 的渲染对象
+ *
+ * @example
+ *   const atlas: Texture = { glTexture: tex, width: 512, height: 512 };
+ *   const label = createMSDFLabel(atlas, 'mitochondria', 14, 0x00ff88);
+ *   // label.geometry: PlaneGeometry(14 * 12 * 0.6, 14 * 1.2)
+ *   // label.material: MSDF ShaderMaterial with median() fragment
+ */
+export function createMSDFLabel(
+  texture: Texture,
+  text: string,
+  fontSize: number,
+  color: number,
+): Mesh {
+  // ── 几何体: 宽 = fontSize * charCount * 0.6, 高 = fontSize * 1.2 ──────────
+  const width  = fontSize * text.length * 0.6;
+  const height = fontSize * 1.2;
+  const geometry = new PlaneGeometry(width, height);
+
+  // ── 颜色: 0xRRGGBB → normalized [r, g, b] ────────────────────────────────
+  const r = ((color >> 16) & 0xff) / 255;
+  const g = ((color >>  8) & 0xff) / 255;
+  const b = ( color        & 0xff) / 255;
+
+  // ── ShaderMaterial: msdf.vert + msdf.frag + uniforms ──────────────────────
+  const material: ShaderMaterial = {
+    vertexShader:   MSDF_LABEL_VERT,
+    fragmentShader: MSDF_LABEL_FRAG,
+    uniforms: {
+      uTexture:  texture,
+      uColor:    [r, g, b],
+      uPxRange:  4.0,
+    },
+    transparent: true,
+  };
+
+  // ── Mesh: geometry + material + transform ─────────────────────────────────
+  const mesh: Mesh = {
+    geometry,
+    material,
+    position: { x: 0, y: 0, z: 0 },
+    scale:    { x: 1, y: 1, z: 1 },
+    text,
+    fontSize,
+    visible: true,
+  };
+
+  return mesh;
 }
