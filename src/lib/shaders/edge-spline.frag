@@ -24,6 +24,11 @@
 //   uTime         — seconds, drives animated dash travel (float)
 //   uArcLength    — total arc length estimate in pixels (float)
 //   uCurvature    — curvature parameter from topology.json (float, 0-1)
+//   u_sourceColor — RGB colour at source node (vec3)
+//   u_targetColor — RGB colour at target node (vec3)
+//   u_flowSpeed   — flow-pulse scroll speed (float)
+//   u_thickness   — additional thickness control (float)
+//   u_time        — global animation time in seconds (float)
 //
 // Inputs from vertex:
 //   vFragCoordPx  — pixel-space position of this fragment
@@ -31,6 +36,7 @@
 //   vTangentDir   — unit tangent at vT
 //   vCurvePx      — pixel-space curve position at quad midpoint
 //   vHalfWidth    — stroke half-width in pixels
+//   v_t           — normalised parametric t for species colour lerp
 // ─────────────────────────────────────────────────────────────────────────────
 
 precision highp float;
@@ -41,6 +47,7 @@ in vec2  vTangentDir;
 in vec2  vCurvePx;
 in float vHalfWidth;
 in vec2  vFragCoordPx;
+in float v_t;           // normalised parametric t for species colour lerp
 
 // ── uniforms ──────────────────────────────────────────────────────────────────
 uniform vec3  uColor;
@@ -54,6 +61,13 @@ uniform float uGlowAlpha;
 uniform float uTime;
 uniform float uArcLength;
 uniform float uCurvature;
+
+// ── species colour & flow uniforms ───────────────────────────────────────────
+uniform vec3  u_sourceColor;  // RGB at source node
+uniform vec3  u_targetColor;  // RGB at target node
+uniform float u_flowSpeed;    // flow-pulse scroll speed
+uniform float u_thickness;    // additional thickness control
+uniform float u_time;         // global animation time (seconds)
 
 // ── output ────────────────────────────────────────────────────────────────────
 out vec4 finalColor;
@@ -98,7 +112,7 @@ vec3 curvatureTint(vec3 base) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void main() {
-    float halfW = vHalfWidth;
+    float halfW = vHalfWidth + u_thickness * 0.5;
 
     // Approx distance to Bézier centreline
     float dist  = approxDistToCurve();
@@ -119,8 +133,19 @@ void main() {
                     * dash;
     }
 
-    // Colour with optional curvature tint for skip connections
-    vec3 strokeCol = curvatureTint(uColor);
+    // ── Species colour gradient: source → target along v_t ──────────────
+    vec3 speciesColor = mix(u_sourceColor, u_targetColor, v_t);
+
+    // ── Flow pulse: scrolling bright band along the edge ────────────────
+    float pulse = fract(v_t - u_time * u_flowSpeed);
+    // Shape pulse into a soft peak (narrow bright band, fades to ~0.3)
+    float pulseIntensity = smoothstep(0.0, 0.15, pulse)
+                         * (1.0 - smoothstep(0.15, 0.45, pulse));
+    // Blend: species gradient base brightened by flow pulse
+    vec3 baseColor = speciesColor * (1.0 + 0.6 * pulseIntensity);
+
+    // Optional curvature tint for skip connections
+    vec3 strokeCol = curvatureTint(baseColor);
 
     // Composite
     vec3  col   = mix(uGlowColor, strokeCol, strokeAlpha);
