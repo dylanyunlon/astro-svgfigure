@@ -1332,6 +1332,55 @@ export class CilArrowRightSDFFilter extends Filter {
   /** Stroke half-width in NDC [0.01, 0.5]. Maps from species_params.arrow_width. */
   get shaftWidth(): number { return this.uniforms.u_shaft_width; }
   set shaftWidth(value: number) { this.uniforms.u_shaft_width = value; }
+
+  // ── M141: Factory — create CilArrowRightSDFFilter from agent_params.json species_params ──
+  //
+  // Encapsulates the uniform mapping logic so both sdf-cell-renderer.ts and
+  // pixi-cell-renderer.ts can produce an identical CilArrowRightSDFFilter from the
+  // same species_params dictionary without duplicating the conversion code.
+  //
+  // species_params mapping:
+  //   arrow_height (px) → arrowScale  (px / min(w,h) * 2, clamped [0.1, 1.5])
+  //   arrow_width  (px) → shaftWidth  (px / min(w,h),     clamped [0.01, 0.5])
+  //
+  // @param fillColor  — [r, g, b] 0-1 (from species colour palette)
+  // @param cellW      — cell width in pixels (for px → NDC normalisation)
+  // @param cellH      — cell height in pixels
+  // @param sp         — species_params from agent_params.json (may be undefined)
+
+  static fromSpeciesParams(
+    fillColor: [number, number, number],
+    cellW: number,
+    cellH: number,
+    sp?: Record<string, unknown>,
+  ): CilArrowRightSDFFilter {
+    const halfMin = Math.min(cellW, cellH) / 2;
+
+    // arrow_height (px) → arrowScale (NDC: px / halfMin, clamped [0.1, 1.5])
+    const arrowHeightPx = (sp?.arrow_height as number | undefined);
+    const arrowScaleVal = arrowHeightPx != null
+      ? Math.max(0.1, Math.min(1.5, arrowHeightPx / halfMin))
+      : (sp?.arrowScale as number | undefined)
+        ?? (sp?.arrow_scale as number | undefined)
+        ?? 1.0;
+
+    // arrow_width (px) → shaftWidth (NDC: px / min(w,h), clamped [0.01, 0.5])
+    const minDim = Math.min(cellW, cellH);
+    const arrowWidthPx = (sp?.arrow_width as number | undefined);
+    const shaftWidthVal = arrowWidthPx != null
+      ? Math.max(0.01, Math.min(0.5, arrowWidthPx / minDim))
+      : (sp?.shaftWidth as number | undefined)
+        ?? (sp?.shaft_width as number | undefined)
+        ?? 0.08;
+
+    return new CilArrowRightSDFFilter({
+      fillColor,
+      opacity:    1.0,
+      arrowScale: Math.max(0.1, Math.min(1.5, arrowScaleVal)),
+      shaftWidth: Math.max(0.01, Math.min(0.5, shaftWidthVal)),
+      time:       0,
+    });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
