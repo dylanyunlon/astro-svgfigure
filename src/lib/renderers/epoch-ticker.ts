@@ -802,6 +802,77 @@ export function wireEpochTickerToTimeline(
   })
 }
 
+// ─── Subsystem handle interfaces (duck-typed for decoupling) ─────────────────
+
+/**
+ * Duck-typed handle for EpochPlaybackController.
+ * Accepts an `update(dt)` call each frame to sync playback position.
+ */
+export interface PlaybackControllerHandle {
+  update(dt: number): void
+}
+
+/**
+ * Duck-typed handle for a Theatre.js sequence.
+ * `tick(dt)` advances the Theatre.js sequence position by `dt` milliseconds,
+ * triggering its internal bezier interpolation and onChange listeners.
+ */
+export interface TheatreSequenceHandle {
+  tick(dt: number): void
+}
+
+/**
+ * Duck-typed handle for EdgeParticleSystem.
+ * `update(dt)` runs one GPU transform-feedback pass and draws particles.
+ */
+export interface EdgeParticleHandle {
+  update(dt: number): void
+}
+
+/**
+ * Duck-typed handle for CloudFogBackground.
+ * `update(dt)` advances u_time and re-renders the fog layer.
+ */
+export interface CloudFogHandle {
+  update(dt: number): void
+}
+
+/**
+ * Duck-typed handle for CellInteraction.
+ * `check()` runs hit-testing and hover/click state reconciliation.
+ */
+export interface CellInteractionHandle {
+  check(): void
+}
+
+/**
+ * Duck-typed handle for a PixiJS-style renderer + stage.
+ * `render(stage)` submits a draw call for the scene graph.
+ */
+export interface RendererHandle {
+  render(stage: unknown): void
+}
+
+/**
+ * Full frame-loop subsystem handles.
+ * Each is optional — when omitted, that step is a no-op.
+ */
+export interface FrameLoopSubsystems {
+  /** 1) EpochPlaybackController — advances playback state */
+  playbackController?: PlaybackControllerHandle
+  /** 2) Theatre.js sequence — drives bezier interpolation */
+  theatreSequence?:    TheatreSequenceHandle
+  /** 3) EdgeParticleSystem — GPU particle simulation + draw */
+  edgeParticles?:      EdgeParticleHandle
+  /** 4) CloudFogBackground — volumetric fog layer update */
+  cloudFog?:           CloudFogHandle
+  /** 5) CellInteraction — hover/click hit-test reconciliation */
+  cellInteraction?:    CellInteractionHandle
+  /** 6) Renderer + stage — final PixiJS scene render */
+  renderer?:           RendererHandle
+  stage?:              unknown
+}
+
 // ─── Convenience: attach to a PixiJS Application ticker ──────────────────────
 
 /**
@@ -815,16 +886,33 @@ export function wireEpochTickerToTimeline(
  * This is the preferred pattern when the PixiJS Application already owns
  * a Ticker (the default case); it avoids double-ticking.
  *
+ * The tick(dt) function executes the full frame loop in strict order:
+ *   1) EpochPlaybackController.update(dt)  — advance playback state
+ *   2) Theatre sequence tick                — drive bezier interpolation
+ *   3) EdgeParticleSystem.update(dt)        — GPU particle sim + draw
+ *   4) CloudFogBackground.update(dt)        — fog layer update
+ *   5) CellInteraction.check()              — hover/click reconciliation
+ *   6) app.renderer.render(stage)           — final scene render
+ *
  * @param app           A PixiJS Application (must have app.ticker).
  * @param snapshots     Epoch snapshot array.
  * @param onFrame       Frame callback; receives EpochTickFrame each tick.
  * @param opts          EpochTickerOptions (useSharedTicker is ignored — app.ticker is used).
+ * @param subsystems    Optional subsystem handles for the full frame loop.
  * @returns             stop() to remove the listener and clean up.
  *
  * @example
  * ```ts
  * const { stop } = attachEpochTickerToApp(app, epochData.snapshots, ({ cells }) => {
  *   for (const c of cells) stage.getChildByName(c.cell_id)?.set(c)
+ * }, {}, {
+ *   playbackController: playback,
+ *   theatreSequence:    sequence,
+ *   edgeParticles:      eps,
+ *   cloudFog:           fog,
+ *   cellInteraction:    interaction,
+ *   renderer:           app.renderer,
+ *   stage:              app.stage,
  * })
  * // later:
  * stop()
@@ -835,6 +923,7 @@ export function attachEpochTickerToApp(
   snapshots: EpochSnapshot[],
   onFrame: EpochTickCallback,
   opts: Omit<EpochTickerOptions, 'useSharedTicker'> = {},
+  subsystems: FrameLoopSubsystems = {},
 ): { stop: () => void } {
 
   const msPerEpoch    = opts.msPerEpoch    ?? 1000
@@ -856,8 +945,20 @@ export function attachEpochTickerToApp(
   let paused    = false
 
   function tick(t: Ticker): void {
+    const dt = t.deltaMS
+
+    // ── Step 1: EpochPlaybackController.update(dt) ──────────────────────
+    // Advance playback state (rate, position tracking, state callbacks).
+    subsystems.playbackController?.update(dt)
+
+    // ── Step 2: Theatre sequence tick ───────────────────────────────────
+    // Drive Theatre.js bezier interpolation by advancing the sequence
+    // position. When no Theatre.js handle is provided, we advance the
+    // built-in linear position tracker instead.
+    subsystems.theatreSequence?.tick(dt)
+
     if (!paused) {
-      const delta = (t.deltaMS / msPerEpoch) * playbackSpeed * bounceDir
+      const delta = (dt / msPerEpoch) * playbackSpeed * bounceDir
       let next = position + delta
       const maxPos = epochCount - 1
 
@@ -895,7 +996,25 @@ export function attachEpochTickerToApp(
       else if (b)  cells.push({ ...b, opacity: b.opacity * blend })
     }
 
-    onFrame({ position: pos, epochIndex, blend, deltaTime: t.deltaTime, deltaMS: t.deltaMS, elapsedMS: t.elapsedMS, fps: t.FPS, cells })
+    onFrame({ position: pos, epochIndex, blend, deltaTime: t.deltaTime, deltaMS: dt, elapsedMS: t.elapsedMS, fps: t.FPS, cells })
+
+    // ── Step 3: EdgeParticleSystem.update(dt) ───────────────────────────
+    // Run one GPU transform-feedback pass and draw edge particles.
+    subsystems.edgeParticles?.update(dt)
+
+    // ── Step 4: CloudFogBackground.update(dt) ───────────────────────────
+    // Advance u_time and re-render the volumetric fog layer.
+    subsystems.cloudFog?.update(dt)
+
+    // ── Step 5: CellInteraction.check() ─────────────────────────────────
+    // Reconcile hover/click state against current cell positions.
+    subsystems.cellInteraction?.check()
+
+    // ── Step 6: app.renderer.render(stage) ──────────────────────────────
+    // Final PixiJS scene render — submit the composited frame.
+    if (subsystems.renderer && subsystems.stage !== undefined) {
+      subsystems.renderer.render(subsystems.stage)
+    }
   }
 
   app.ticker.add(tick, undefined, UPDATE_PRIORITY.NORMAL)
