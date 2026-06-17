@@ -1630,6 +1630,76 @@ export class CilEyeSDFFilter extends Filter {
   /** AT bloom ring radius factor. */
   get bloomRadius(): number { return this.uniforms.u_bloomRadius; }
   set bloomRadius(value: number) { this.uniforms.u_bloomRadius = value; }
+
+  // ── M071: Factory — create CilEyeSDFFilter from agent_params.json species_params ──
+  //
+  // Encapsulates the uniform mapping logic so both sdf-cell-renderer.ts and
+  // pixi-cell-renderer.ts can produce an identical CilEyeSDFFilter from the
+  // same species_params dictionary without duplicating the conversion code.
+  //
+  // @param fillColor  — [r, g, b] 0-1 (from species colour palette)
+  // @param cellW      — cell width in pixels (for px → NDC normalisation)
+  // @param cellH      — cell height in pixels
+  // @param sp         — species_params from agent_params.json (may be undefined)
+
+  static fromSpeciesParams(
+    fillColor: [number, number, number],
+    cellW: number,
+    cellH: number,
+    sp?: Record<string, unknown>,
+  ): CilEyeSDFFilter {
+    const halfMin = Math.min(cellW, cellH) / 2;
+
+    // ring_count / num_rays → numRays
+    const numRaysVal =
+      (sp?.ring_count  as number | undefined) ??
+      (sp?.num_rays    as number | undefined) ??
+      8;
+
+    // pupil_radius (px) → NDC, clamped [0.05, 0.6]
+    const pupilRadiusPx  = (sp?.pupil_radius as number | undefined);
+    const pupilRadiusVal = pupilRadiusPx != null
+      ? Math.max(0.05, Math.min(0.6, pupilRadiusPx / halfMin))
+      : 0.22;
+
+    // r_outer (px) → focalIntensity, clamped [0.3, 2.0]
+    const rOuterPx = (sp?.r_outer as number | undefined);
+    const focalIntensityVal = rOuterPx != null
+      ? Math.max(0.3, Math.min(2.0, (rOuterPx / halfMin) * 1.5))
+      : (sp?.focal_intensity as number | undefined) ?? 1.0;
+
+    // r_inner_ratio → bloomRadius, clamped [0.2, 2.0]
+    const rInnerRatioVal = (sp?.r_inner_ratio as number | undefined);
+    const bloomRadiusVal = rInnerRatioVal != null
+      ? Math.max(0.2, Math.min(2.0, rInnerRatioVal * 2.0))
+      : (sp?.bloom_radius as number | undefined) ?? 1.0;
+
+    // ambient_color: hex string or [r,g,b]
+    const ambientColorRaw = sp?.ambient_color;
+    let ambientColorVal: [number, number, number] = [0.047, 0.929, 0.565];
+    if (typeof ambientColorRaw === 'string' && ambientColorRaw.startsWith('#')) {
+      const c = parseInt(ambientColorRaw.replace('#', ''), 16);
+      ambientColorVal = [((c >> 16) & 0xff) / 255, ((c >> 8) & 0xff) / 255, (c & 0xff) / 255];
+    } else if (Array.isArray(ambientColorRaw) && ambientColorRaw.length === 3) {
+      ambientColorVal = ambientColorRaw as [number, number, number];
+    }
+
+    return new CilEyeSDFFilter({
+      fillColor,
+      opacity:          1.0,
+      numRays:          numRaysVal,
+      pupilRadius:      pupilRadiusVal,
+      focalIntensity:   focalIntensityVal,
+      bloomStrength:    (sp?.bloom_strength    as number | undefined) ?? 1.2,
+      bloomRadius:      bloomRadiusVal,
+      ambientIntensity: (sp?.ambient_intensity as number | undefined) ?? 3.44,
+      ambientColor:     ambientColorVal,
+      lightExposure:    (sp?.light_exposure    as number | undefined) ?? 0.86,
+      shadowFar:        (sp?.shadow_far        as number | undefined) ?? 40.0,
+      shadowBias:       (sp?.shadow_bias       as number | undefined) ?? 0.001,
+      time:             0,
+    });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

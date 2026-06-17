@@ -10,6 +10,15 @@
  *
  * 这就是 MSDF 的原理，只是没走 msdfgen 二进制转换那步，直接在 shader 里手写 SDF。
  *
+ * M071: cil-eye SDF Filter → PixiJS Mesh 挂载 + uniform injection from species_params
+ *   species === 'cil-eye' 时，不再使用 inline speciesEye() SDF 函数，
+ *   而是编译 cil-eye.frag 为 CilEyeSDFFilter (sdf-species-filter.ts)，
+ *   挂载到 Graphics quad overlay 上。Uniforms 从 agent_params.json 的
+ *   species_params 注入：ring_count → numRays, pupil_radius → pupilRadius (px→NDC),
+ *   r_outer → focalIntensity, r_inner_ratio → bloomRadius, 以及 AT bloom/ambient/shadow。
+ *   Ticker 驱动 __eyeFilter.time 做 SDF 径向光线旋转动画。
+ *   参考 M039 (commit b7811e0) 的实现模式。
+ *
  * Upstream reference:
  *   skills/pixijs/pixijs-custom-rendering/SKILL.md
  *   upstream/pixijs-engine/src/scene/mesh/shared/Mesh.ts
@@ -18,6 +27,7 @@
 import {
   Application,
   Container,
+  Graphics,
   Mesh,
   MeshGeometry,
   Shader,
@@ -28,6 +38,12 @@ import {
 // Resolved to upstream/pixijs-engine via tsconfig paths — no npm install needed
 
 import type { CellDescriptor, EdgeDescriptor } from './pixi-cell-renderer';
+
+// ── M071: CilEyeSDFFilter — cil-eye.frag SDF shader → PixiJS Filter ─────────
+// For species === 'cil-eye', mount CilEyeSDFFilter on a Graphics quad overlay
+// instead of using the inline speciesEye() SDF function.  Uniforms are injected
+// from agent_params.json species_params (via CellDescriptor.params.species_params).
+import { CilEyeSDFFilter } from './sdf-species-filter';
 
 // ── SDF Fragment Shader (GLSL ES 3.0) ───────────────────────────────────────
 // All species patterns are pure math — resolution-independent.
@@ -246,6 +262,65 @@ function buildSDFCellMesh(desc: CellDescriptor): Mesh {
   return mesh;
 }
 
+// ── M071: Build CilEyeSDFFilter with uniform injection from species_params ──
+//
+// Mirrors the M039/M053 approach in pixi-cell-renderer.ts:
+//   1. Create a transparent Graphics quad covering the cell bbox
+//   2. Instantiate CilEyeSDFFilter with uniforms derived from species_params
+//   3. Mount the filter on the Graphics quad
+//   4. Wrap in a Container positioned at the cell bbox
+//
+// species_params mapping (from agent_params.json):
+//   ring_count        → numRays          (radial ray / concentric ring count)
+//   pupil_radius      → pupilRadius      (px → NDC: px / (min(w,h)/2), clamped [0.05, 0.6])
+//   r_outer           → focalIntensity   (px → scale: r_outer/halfMin * 1.5, clamped [0.3, 2.0])
+//   r_inner_ratio     → bloomRadius      (ratio → bloom width: ratio * 2.0, clamped [0.2, 2.0])
+//   bloom_strength    → bloomStrength    (direct, default 1.2)
+//   ambient_intensity → ambientIntensity (direct, default 3.44)
+//   ambient_color     → ambientColor     (hex string or [r,g,b], default #0bed90)
+//   light_exposure    → lightExposure    (direct, default 0.86)
+//   shadow_far        → shadowFar        (direct, default 40.0)
+//   shadow_bias       → shadowBias       (direct, default 0.001)
+//   num_rays          → numRays          (fallback for ring_count)
+//   focal_intensity   → focalIntensity   (fallback for r_outer)
+
+function buildCilEyeFilterContainer(desc: CellDescriptor): Container {
+  const { bbox, species, z } = desc;
+  const { w, h } = bbox;
+  const speciesParams = desc.params?.species_params;
+
+  const container = new Container();
+  container.position.set(bbox.x, bbox.y);
+  container.zIndex = z;
+
+  // Transparent Graphics quad — the Filter renders into this
+  const pattern = new Graphics();
+  pattern.rect(0, 0, w, h);
+  pattern.fill({ color: 0x000000, alpha: 0 });
+
+  // Fill colour from species palette → [r, g, b] 0-1
+  const cols = getSDFColours(species);
+  const fc = cols.fill;
+
+  // M071: Use CilEyeSDFFilter.fromSpeciesParams for uniform injection.
+  // The factory handles all species_params → uniform mapping (ring_count → numRays,
+  // pupil_radius → pupilRadius in NDC, r_outer → focalIntensity, etc.)
+  const eyeFilter = CilEyeSDFFilter.fromSpeciesParams(
+    [fc[0], fc[1], fc[2]],
+    w,
+    h,
+    speciesParams,
+  );
+  pattern.filters = [eyeFilter];
+
+  // Expose filter for Ticker-driven radial ray rotation animation
+  (container as any).__eyeFilter = eyeFilter;
+
+  container.addChild(pattern);
+
+  return container;
+}
+
 // ── Export: SDF renderer entry point ─────────────────────────────────────────
 
 export async function renderCellGraphSDF(
@@ -266,31 +341,60 @@ export async function renderCellGraphSDF(
 
   app.stage.sortableChildren = true;
 
-  // Render cells as SDF quads
+  // Render cells
   for (const cell of cells) {
-    const mesh = buildSDFCellMesh(cell);
-    app.stage.addChild(mesh);
+    if (cell.species === 'cil-eye') {
+      // M071: cil-eye → CilEyeSDFFilter mounted on Graphics quad overlay.
+      // Compiles cil-eye.frag as a PixiJS Filter with full uniform injection
+      // from agent_params.json species_params, replacing the inline speciesEye()
+      // SDF function in the monolithic shader.
+      const eyeContainer = buildCilEyeFilterContainer(cell);
+      app.stage.addChild(eyeContainer);
 
-    // Label overlay (text still uses PixiJS Text — SDF text needs msdfgen)
-    const style = new TextStyle({
-      fontFamily: 'Inter, system-ui, sans-serif',
-      fontSize: 11,
-      fill: 0xFFFFFF,
-      fontWeight: '500',
-    });
-    const txt = new Text({ text: cell.label, style });
-    txt.anchor.set(0.5);
-    txt.position.set(cell.bbox.x + cell.bbox.w / 2, cell.bbox.y + cell.bbox.h / 2);
-    txt.zIndex = cell.z + 1;
-    app.stage.addChild(txt);
+      // Label overlay — positioned relative to the container
+      const style = new TextStyle({
+        fontFamily: 'Inter, system-ui, sans-serif',
+        fontSize: 11,
+        fill: 0xFFFFFF,
+        fontWeight: '500',
+      });
+      const txt = new Text({ text: cell.label, style });
+      txt.anchor.set(0.5);
+      txt.position.set(cell.bbox.w / 2, cell.bbox.h / 2);
+      eyeContainer.addChild(txt);
+    } else {
+      // All other species — use the inline monolithic SDF shader as before
+      const mesh = buildSDFCellMesh(cell);
+      app.stage.addChild(mesh);
+
+      // Label overlay (text still uses PixiJS Text — SDF text needs msdfgen)
+      const style = new TextStyle({
+        fontFamily: 'Inter, system-ui, sans-serif',
+        fontSize: 11,
+        fill: 0xFFFFFF,
+        fontWeight: '500',
+      });
+      const txt = new Text({ text: cell.label, style });
+      txt.anchor.set(0.5);
+      txt.position.set(cell.bbox.x + cell.bbox.w / 2, cell.bbox.y + cell.bbox.h / 2);
+      txt.zIndex = cell.z + 1;
+      app.stage.addChild(txt);
+    }
   }
 
   // Animate time uniform
   app.ticker.add(() => {
     const t = performance.now() / 1000;
     for (const child of app.stage.children) {
+      // Inline SDF Mesh — update uTime
       if (child instanceof Mesh && child.shader?.resources?.uniforms) {
         (child.shader.resources.uniforms as any).uniforms.uTime = t;
+      }
+
+      // M071: cil-eye CilEyeSDFFilter — update time for radial ray rotation
+      const eyeFilter = (child as any).__eyeFilter as CilEyeSDFFilter | undefined;
+      if (eyeFilter) {
+        eyeFilter.time = t;
       }
     }
   });
