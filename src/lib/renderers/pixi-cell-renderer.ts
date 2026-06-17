@@ -707,8 +707,19 @@ function buildCellContainer(desc: CellDescriptor): Container {
     // Expose for Ticker-driven scroll animation
     (container as any).__arrowRightFilter = arrowRightFilter;
   } else if (species === 'cil-eye') {
-    // M039: cil-eye → CilEyeSDFFilter (pupil + iris ring + radial rays + sclera halo SDF).
+    // M053: cil-eye → CilEyeSDFFilter (pupil + iris ring + radial rays + sclera halo SDF).
     // Ticker drives __eyeFilter.time for rotating radial ray animation.
+    // Uniform完善: params.json species_params 完整映射到 CilEyeSDFFilter uniforms:
+    //   ring_count    → numRays       (辐射光线数 / 同心环数)
+    //   pupil_radius  → pupilRadius   (像素→NDC归一化: px / (min(w,h)/2))
+    //   r_outer       → focalIntensity (外环半径→焦点强度: r_outer / min(w,h) * 2, clamp 0-2)
+    //   r_inner_ratio → bloomRadius   (内环比率 → bloom 半径缩放, 直接映射)
+    //   bloom_strength → bloomStrength (直接)
+    //   ambient_intensity → ambientIntensity (直接)
+    //   ambient_color  → ambientColor  ([r,g,b])
+    //   light_exposure → lightExposure (直接)
+    //   shadow_far     → shadowFar     (直接)
+    //   shadow_bias    → shadowBias    (直接)
     pattern.rect(0, 0, w, h);
     pattern.fill({ color: 0x000000, alpha: 0 });
 
@@ -717,15 +728,63 @@ function buildCellContainer(desc: CellDescriptor): Container {
     const g = ((fc >>  8) & 0xff) / 255;
     const b = ( fc        & 0xff) / 255;
 
+    // ── M053: params.json species_params → uniform mapping ─────────────────
+    // Normalisation reference: min(w,h)/2 maps pixel-space radii to NDC half-space [0,1].
+    const halfMin = Math.min(w, h) / 2;
+
+    // ring_count: 同心环/辐射条数 (int) → numRays (shader u_numRays)
+    // Fallback chain: ring_count → num_rays → default 8
+    const numRaysVal =
+      (speciesParams?.ring_count  as number | undefined) ??
+      (speciesParams?.num_rays    as number | undefined) ??
+      8;
+
+    // pupil_radius: pixel space → NDC [-1,1] half-space
+    // params.json pupil_radius=4.2 with h=50 → 4.2/25=0.168, clamped to [0.05, 0.6]
+    const pupilRadiusPx  = (speciesParams?.pupil_radius as number | undefined);
+    const pupilRadiusVal = pupilRadiusPx != null
+      ? Math.max(0.05, Math.min(0.6, pupilRadiusPx / halfMin))
+      : 0.22;
+
+    // r_outer: outer ring pixel radius → focalIntensity scale
+    // r_outer=21 with halfMin=25 → 21/25=0.84; map [0,1] → focalIntensity [0.3, 2.0]
+    const rOuterPx       = (speciesParams?.r_outer as number | undefined);
+    const focalIntensityVal = rOuterPx != null
+      ? Math.max(0.3, Math.min(2.0, (rOuterPx / halfMin) * 1.5))
+      : (speciesParams?.focal_intensity as number | undefined) ?? 1.0;
+
+    // r_inner_ratio: inner ring ratio [0,1] → bloomRadius (ring width factor)
+    // r_inner_ratio=0.3 maps to bloomRadius≈0.6 (multiply by 2 to span [0,1])
+    const rInnerRatioVal = (speciesParams?.r_inner_ratio as number | undefined);
+    const bloomRadiusVal = rInnerRatioVal != null
+      ? Math.max(0.2, Math.min(2.0, rInnerRatioVal * 2.0))
+      : (speciesParams?.bloom_radius as number | undefined) ?? 1.0;
+
+    // ambient_color: hex string or [r,g,b] array from params
+    const ambientColorRaw = speciesParams?.ambient_color;
+    let ambientColorVal: [number, number, number] = [0.047, 0.929, 0.565]; // default #0bed90
+    if (typeof ambientColorRaw === 'string' && ambientColorRaw.startsWith('#')) {
+      const c = parseInt(ambientColorRaw.replace('#', ''), 16);
+      ambientColorVal = [((c >> 16) & 0xff) / 255, ((c >> 8) & 0xff) / 255, (c & 0xff) / 255];
+    } else if (Array.isArray(ambientColorRaw) && ambientColorRaw.length === 3) {
+      ambientColorVal = ambientColorRaw as [number, number, number];
+    }
+
     const eyeFilter = new CilEyeSDFFilter({
-      fillColor:      [r, g, b],
-      opacity:        1.0,
-      numRays:        (speciesParams?.num_rays      as number | undefined) ?? 8,
-      pupilRadius:    (speciesParams?.pupil_radius  as number | undefined) ?? 0.22,
-      focalIntensity: (speciesParams?.focal_intensity as number | undefined) ?? 1.0,
-      bloomStrength:  (speciesParams?.bloom_strength as number | undefined) ?? 1.2,
-      bloomRadius:    (speciesParams?.bloom_radius   as number | undefined) ?? 1.0,
-      time:           0,
+      fillColor:        [r, g, b],
+      opacity:          1.0,
+      // M053: 完整 uniform 映射
+      numRays:          numRaysVal,
+      pupilRadius:      pupilRadiusVal,
+      focalIntensity:   focalIntensityVal,
+      bloomStrength:    (speciesParams?.bloom_strength    as number | undefined) ?? 1.2,
+      bloomRadius:      bloomRadiusVal,
+      ambientIntensity: (speciesParams?.ambient_intensity as number | undefined) ?? 3.44,
+      ambientColor:     ambientColorVal,
+      lightExposure:    (speciesParams?.light_exposure    as number | undefined) ?? 0.86,
+      shadowFar:        (speciesParams?.shadow_far        as number | undefined) ?? 40.0,
+      shadowBias:       (speciesParams?.shadow_bias       as number | undefined) ?? 0.001,
+      time:             0,
     });
     pattern.filters = [eyeFilter];
 
@@ -1673,6 +1732,10 @@ export async function renderCellGraph(
       }
 
       const godray = (child as any).__godray as GodrayFilter | undefined;
+      if (godray) {
+        godray.time = elapsed;
+        // M048: cil-bolt pulsing gain
+        const pulseBaseGain = (child as any).__godrayPulseBaseGain as number | undefined;
         const pulseAmp      = (child as any).__godrayPulseAmp      as number | undefined;
         const pulseFreq     = (child as any).__godrayPulseFreq     as number | undefined;
         if (pulseBaseGain !== undefined) {
