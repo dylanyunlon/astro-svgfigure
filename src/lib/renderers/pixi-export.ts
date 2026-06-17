@@ -435,6 +435,63 @@ export async function exportAsSVG(options: ExportOptions & {
   return svg;
 }
 
+// ── PNG export + download (M232) ─────────────────────────────────────────────
+
+/**
+ * Extract a PNG data‑URL from a live PixiJS Application.
+ *
+ * Tries the renderer's `extract.canvas()` for pixel‑perfect output first,
+ * then falls back to the Application's own canvas view.
+ *
+ * @param app  An initialised PixiJS Application instance.
+ * @returns    A `data:image/png;base64,…` string.
+ */
+export function exportToPNG(app: Application): string {
+  // Attempt PixiJS ExtractSystem → clean canvas snapshot
+  const renderer = (
+    app as unknown as {
+      renderer?: {
+        extract?: { canvas: (target?: unknown) => HTMLCanvasElement };
+      };
+    }
+  ).renderer;
+
+  if (renderer?.extract) {
+    const extracted = renderer.extract.canvas();
+    return extracted.toDataURL('image/png');
+  }
+
+  // Fallback: use the app's canvas directly
+  const view = (app as unknown as { canvas?: HTMLCanvasElement }).canvas
+    ?? (app as unknown as { view?: HTMLCanvasElement }).view;
+
+  if (!view) {
+    throw new Error(
+      'pixi-export/exportToPNG: unable to resolve canvas from Application',
+    );
+  }
+
+  return view.toDataURL('image/png');
+}
+
+/**
+ * Trigger a browser file‑download from a data‑URL or object‑URL.
+ *
+ * Creates a temporary `<a>` element, clicks it, then removes it.
+ *
+ * @param url   A `data:` or `blob:` URL pointing to the PNG data.
+ * @param name  Suggested filename for the download (default `"export.png"`).
+ */
+export function downloadPNG(url: string, name = 'export.png'): void {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function escapeXml(str: string): string {
