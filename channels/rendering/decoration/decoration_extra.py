@@ -389,9 +389,9 @@ _SPECIES_NAME_TO_INDEX: dict = {
     "cil-graph":       10,
 }
 
-# Species index → primary SVG fill colour (RGB 0-255 tuple).
+# Species index → primary fill colour (RGB 0-255 tuple).
 # Mirrors RepresentativeColour in FAstroCellRegistry::FCellEntry; values
-# derived from the fill colours used in the generate_svg_* functions below.
+# match the species palette consumed by the frontend PixiJS SDF filters.
 _SPECIES_INDEX_TO_COLOUR: dict = {
     1: (63,  81, 181),   # cil-eye         → #3F51B5 Indigo
     2: (255, 111,   0),  # cil-bolt        → #FF6F00 Amber

@@ -53,18 +53,22 @@
 
 ## 2. 严禁硬编码 SVG — 必须通过渲染库管线出图
 
-### 2.1 当前问题：大量 SVG 字符串拼接
+### 2.1 历史反模式及重构状态
 
-以下文件是**反模式**，必须重构为通过渲染库管线输出：
+以下文件曾是硬编码 SVG 反模式，现已按 AT 方式重构为渲染库管线：
 
-| 文件 | 问题 | 硬编码行数 |
-|------|------|-----------|
-| `channels/rendering/species/species_port.py` | 10 个 `generate_svg_cil_*()` 函数直接拼 `<rect>`/`<circle>`/`<line>`/`<path>`/`<text>` 字符串 | ~64 行 SVG 拼接 |
-| `channels/cell_component.py` | `SPECIES_GENERATORS` dict 调用上述函数，字符串替换颜色，拼出最终 `<g>` wrapper | 全文 567 行围绕字符串替换 |
-| `channels/loop_orchestrator.py` `assemble_final_svg()` | 拼 `<svg>` root + `<defs>` + `<linearGradient>` + z-layer `<g>` + edge `<path>` | ~100 行 SVG 模板 |
-| `backend/pipeline/nanobanana_bridge.py` `generate_skeleton_svg()` | 拼骨架 `<rect>` + `<text>` + arrow `<path>` | ~40 行 |
-| `channels/rendering/lighting/lighting.py` | `generate_svg_water_overlay()` 拼 `<rect>` 叠加层 | ~20 行 |
-| `channels/rendering/decoration/decoration_extra.py` | 拼 `<circle>`/`<line>`/`<path>` 装饰元素 | ~30 行 |
+| 文件 | 原问题 | 当前状态 |
+|------|--------|---------|
+| `channels/rendering/species/species_port.py` | 10 个 `generate_svg_cil_*()` 直接拼 SVG | ✅ 已删除 — species icon 由前端 SDF shader (`cil-*.frag`) + PixiJS Filter 渲染 |
+| `channels/cell_component.py` | `SPECIES_GENERATORS` + SVG 字符串替换 | ✅ 已重构 — `proc()` 只输出 JSON params |
+| `channels/loop_orchestrator.py` `assemble_final_svg()` | 拼 `<svg>` root + edge `<path>` | ✅ 已重构 — 输出 `composite_params.json` 供前端 PixiJS 消费 |
+| `backend/pipeline/nanobanana_bridge.py` `generate_skeleton_svg()` | 拼骨架 `<rect>` + `<text>` | ✅ 已重构 — 返回 JSON dict，前端 PixiJS Graphics 渲染 |
+| `channels/rendering/lighting/lighting.py` `generate_svg_water_overlay()` | 拼 `<rect>` 叠加层 | ✅ 已重构 — 返回 JSON params 供 PixiJS DisplacementFilter |
+| `channels/rendering/decoration/decoration_extra.py` | 拼装饰元素 | ✅ 已重构 — 仅颜色常量映射，无 SVG 拼接 |
+
+**遗留函数名**: `assemble_final_svg()`、`generate_skeleton_svg()`、`generate_svg_water_overlay()` 名字是历史遗留，实际内容已全部输出 JSON/dict。`post_process_svg()` 标记 DEPRECATED 待删除。
+
+**唯一合法 SVG 中间文件**: `msdf_gen.py` 的 `build_standalone_svg()` 生成临时 SVG 供 `msdfgen` 二进制读取——这是 AT `activetheory-svg2msdf` 资产管线标准做法。
 
 ### 2.2 ActiveTheory 的正确做法
 

@@ -109,7 +109,7 @@ channel_runtime.py 的 pub/sub 驱动多轮 epoch。
 
 - M141-M150: cell agent prompt 模板 (每个 species 的发育规则)
 - M151-M160: 多轮 epoch 信号传递 (resize/push/pull)
-- M161-M170: cell 自主 web search (学术特征 → svgwrite 算法)
+- M161-M170: cell 自主 web search (学术特征 → JSON 视觉参数计算，严禁生成 SVG)
 - M171-M180: convergence 控制 + divergence rollback
 
 ### Claude-6: Astro 前端集成 (M181-M210)

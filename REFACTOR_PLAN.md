@@ -1,23 +1,25 @@
 # REFACTOR PLAN: 消灭 SVG 硬编码，走渲染库管线
 
-## 现状诊断
+## 现状：重构已完成
 
-### 冗余系统
-前端 `pixi-cell-renderer.ts` 已经用 PixiJS Graphics API 实现了全部 10 个 species。
-后端 `species_port.py` 用 f-string 拼 SVG 做了同样的事。两套并行，后端那套是废的。
+所有 Phase 均已完成。后端不再输出任何 SVG 字符串，全部通过渲染库管线。
 
-### SVG 硬编码文件清单
+### 冗余系统（已消除）
+前端 `pixi-cell-renderer.ts` 用 PixiJS Graphics API 实现全部 10 个 species。
+后端 `species_port.py` 的 `generate_svg_*` 已全部删除，只保留 species metadata。
 
-| # | 文件 | 函数/区域 | 硬编码内容 | 依赖方 |
-|---|------|----------|-----------|--------|
-| 1 | `channels/rendering/species/species_port.py` | `generate_svg_cil_*` ×10 | 全部 species 的 SVG body | `cell_component.py` |
-| 2 | `channels/cell_component.py` L132-337 | `proc()` 中 svg 拼接 + `write_channel(svg.svg)` | cell wrapper `<g>` + svg body | `loop_orchestrator.py`, `msdf_gen.py` |
-| 3 | `channels/loop_orchestrator.py` L2467-2964 | `assemble_final_svg()` | `<svg>` root + defs + z-layer `<g>` + edge `<path>` | 最终输出 `output_cell_loop.svg` |
-| 4 | `backend/pipeline/nanobanana_bridge.py` L236-290 | `generate_skeleton_svg()` | 骨架 `<rect>` + `<text>` + arrow `<path>` | pipeline fallback |
-| 5 | `channels/rendering/lighting/lighting.py` L1556-1734 | `generate_svg_water_overlay()` | 水面叠加 `<rect>` 层 | compositor |
-| 6 | `channels/rendering/decoration/decoration_extra.py` L175-310 | 装饰叠加 | `<circle>` `<line>` `<path>` 装饰 | species_port |
-| 7 | `channels/rendering/compositor/compositor_core.py` | `<g>` + `<svg>` 拼合 | 合成层 | loop_orchestrator |
-| 8 | `channels/rendering/nanite/composition.py` | `<g>` + `<svg>` 拼合 | Nanite 合成 | loop_orchestrator |
+### SVG 硬编码文件清单（已全部重构）
+
+| # | 文件 | 原问题 | 当前状态 |
+|---|------|--------|---------|
+| 1 | `channels/rendering/species/species_port.py` | `generate_svg_cil_*` ×10 | ✅ 已删除，仅保留 `_species_f0()` 等 metadata |
+| 2 | `channels/cell_component.py` | `proc()` 中 svg 拼接 + `write_channel(svg.svg)` | ✅ 已重构，只输出 JSON params |
+| 3 | `channels/loop_orchestrator.py` | `assemble_final_svg()` 拼 SVG root | ✅ 已重构，输出 `composite_params.json` |
+| 4 | `backend/pipeline/nanobanana_bridge.py` | `generate_skeleton_svg()` 拼骨架 | ✅ 已重构，返回 JSON dict |
+| 5 | `channels/rendering/lighting/lighting.py` | `generate_svg_water_overlay()` 拼 rect | ✅ 已重构，返回 JSON params |
+| 6 | `channels/rendering/decoration/decoration_extra.py` | 装饰叠加 SVG | ✅ 已重构，仅颜色常量 |
+| 7 | `channels/rendering/compositor/compositor_core.py` | `<g>` 拼合 | ✅ 已重构，JSON 参数化 |
+| 8 | `channels/rendering/nanite/composition.py` | `<g>` 拼合 | ✅ 已重构，JSON 参数化 |
 
 ---
 
@@ -108,11 +110,8 @@ npm install @pixi/node  # PixiJS Node.js adapter
 
 ---
 
-## 执行顺序
+## 执行状态
 
-Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6
+✅ Phase 1 → ✅ Phase 2 → ✅ Phase 3 → ✅ Phase 4 → ✅ Phase 5 → ✅ Phase 6
 
-Phase 1 和 2 可以一起做（同一次 commit）。
-Phase 3 依赖 Phase 1 完成（不再有 svg.svg）。
-Phase 4 是最大的改动，需要前后端联调。
-Phase 5 和 6 是清理工作。
+全部完成。后端零 SVG 字符串拼接，前端走 PixiJS + SDF + Filters 渲染库管线。

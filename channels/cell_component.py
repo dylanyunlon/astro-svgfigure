@@ -73,7 +73,7 @@ def read_channel(path: str) -> dict:
 def proc(cell_id: str):
     """
     Apollo Component::Proc() equivalent.
-    Reads channels → generates SVG with species algorithm → publishes.
+    Reads channels → computes visual params → publishes JSON (SVG 由主 Claude 绝对静止模式生成).
 
     L3: If channels/cell/{cell_id}/agent_params.json exists (written by
     dispatch_cell_agent before this call), the agent's bbox and opacity

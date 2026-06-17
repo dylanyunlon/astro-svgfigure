@@ -20,9 +20,9 @@ git checkout cell-pubsub-loop
 ## 你的任务
 1. 读取你的胚胎信号，了解你的 species 基因特质
 2. 你是 cil-eye 种群：你的算法基因是 radial/heatmap/ray
-3. web search "multi-head attention visualization academic paper SVG"
-4. 用 svgwrite 或 xml.etree 算法生成你的 SVG 片段
-5. 你的 SVG 要体现 Multi-Head Attention 的学术视觉特征
+3. web search "multi-head attention visualization academic paper" 了解学术视觉特征
+4. 计算你的视觉参数 JSON（bbox、opacity、species_params 等），写入 agent_params.json
+5. **严禁生成 SVG** — SVG 由绝对静止模式下的主 Claude 直接生成，小弟只输出 JSON 参数
 6. 发育后的实际尺寸可能不同于初始 160x50
 
 ## 发布 (写入这些 channel 并 push)
