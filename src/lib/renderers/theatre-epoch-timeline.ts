@@ -1,47 +1,46 @@
 /**
- * theatre-epoch-timeline.ts — Theatre.js epoch timeline  (M042 revision)
+ * theatre-epoch-timeline.ts — Theatre.js per-cell SheetObject + epoch_params keyframes (M152)
  *
- * M042: Theatre.js epoch timeline — drives per-cell animation via upstream
- * Theatre.js getProject / Sheet / Sequence APIs.
+ * M152: Rewritten to use per-cell SheetObjects on a single "epoch" sheet
+ * within the "astro-svgfigure" project, with keyframes loaded directly
+ * from channels/convergence/epoch_params/{epochIndex}/{cell}.json.
  *
- * Architecture — fused with upstream/theatre-js core/sheets:
+ * Architecture:
  *
- *   Master Sheet  "EpochMaster"
- *   ├── ISequence  0 … N seconds  (one second per epoch)
- *   │   Each ISheetObject lives on THIS sheet; every prop gets a keyframe
- *   │   at every integer epoch position.  Theatre.js's own bezier interpolation
- *   │   engine therefore drives cross-epoch blending — we never lerp manually.
- *   │
- *   └── Snapshot Sheets  "Epoch 0" … "Epoch N-1"
- *       One ISheet per epoch, holding static overrides for each cell.
- *       These are read-only snapshots — useful for scrubbing to an exact epoch
- *       or letting Studio inspect / tweak one epoch in isolation.
+ *   Project "astro-svgfigure"
+ *   └── Sheet "epoch"
+ *       ├── SheetObject "input_embed"   props: { x, y, width, height, opacity, glowIntensity }
+ *       ├── SheetObject "self_attn"     props: { x, y, width, height, opacity, glowIntensity }
+ *       ├── SheetObject "add_norm1"     ...
+ *       ├── SheetObject "add_norm2"     ...
+ *       ├── SheetObject "ffn"           ...
+ *       ├── SheetObject "pos_encode"    ...
+ *       └── SheetObject "output"        ...
  *
- * Cell props per SheetObject (M042 spec):
- *   { x, y, w, h, opacity, bloomStrength }
- *   - bbox         → x, y, w, h
- *   - alpha        → opacity
- *   - bloom effect → bloomStrength (0–1 normalised post-process bloom intensity)
+ * Each SheetObject's props are keyframed at position 0 (epoch 0) and
+ * position 1 (epoch 1).  Theatre.js's built-in bezier interpolation engine
+ * drives the transition via sheet.sequence.play({ range: [0, 1] }).
  *
- * When a new epoch completes, play() is called on the ISequence so Theatre.js
- * interpolates all SheetObject props from the previous epoch values to the
- * new epoch keyframes via its built-in bezier engine.
+ * Epoch param files:
+ *   channels/convergence/epoch_params/0/{cell_id}.json  — epoch 0 values
+ *   channels/convergence/epoch_params/1/{cell_id}.json  — epoch 1 values
  *
- * Keyframe easing presets:
- *   'linear'  — [0, 0, 1, 1] handles
- *   'ease'    — [0.25, 0.1, 0.25, 1] CSS ease
- *   'spring'  — [0.34, 1.56, 0.64, 1] overshoot spring
+ * Each JSON has shape:
+ *   { cell_id, species, bbox: { x, y, w, h, z }, opacity, fill_color, ... }
+ *
+ * Mapping to SheetObject props:
+ *   x             ← bbox.x
+ *   y             ← bbox.y
+ *   width         ← bbox.w
+ *   height        ← bbox.h
+ *   opacity       ← opacity
+ *   glowIntensity ← 1 (default; no source field in epoch_params)
  *
  * Usage:
- *   const tl = createEpochTimeline(epochSnapshots)
- *   tl.play()                          // master sequence 0 → N, 1 s per epoch
- *   tl.seek(2.5)                       // halfway between epoch 2 and 3
- *   tl.onFrame(({ cells }) => …)       // interpolated CellState[] each rAF
- *   tl.readEpochSnapshot(2)            // static CellState[] for epoch 2
- *   tl.advanceEpoch(newCellStates)     // append new epoch → play sequence to it
- *
- * Upstream Theatre.js source is vendored; Astro tsconfig path aliases resolve
- * @theatre/core and @theatre/dataverse at build time.
+ *   const tl = await createEpochTimeline()
+ *   tl.play()                          // animate epoch 0 → epoch 1
+ *   tl.seek(0.5)                       // halfway between epochs
+ *   tl.onFrame(({ cells }) => …)       // interpolated CellState[] each tick
  */
 
 // ─── Vendored Theatre.js core ─────────────────────────────────────────────────
@@ -60,84 +59,68 @@ import type {
   ISequence,
 } from '../../../upstream/theatre-js/core/src/types/public'
 
+// ─── Epoch params path ────────────────────────────────────────────────────────
+
+/**
+ * Base path to epoch_params directory, relative to project root.
+ * At build time this resolves via Astro / Vite import.meta or Node fs.
+ */
+const EPOCH_PARAMS_BASE = 'channels/convergence/epoch_params'
+
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 /**
+ * Raw epoch param JSON as stored in epoch_params/{epoch}/{cell}.json.
+ */
+export interface EpochParamJSON {
+  cell_id:      string
+  species:      string
+  bbox:         { x: number; y: number; w: number; h: number; z?: number }
+  z?:           number
+  opacity:      number
+  fill_color:   string
+  stroke_color: string
+  label:        string
+  font_size:    number
+  species_params?: Record<string, unknown>
+  epoch?:       number
+  shadow?:      { dx: number; dy: number; blur: number; opacity: number }
+}
+
+/**
+ * SheetObject prop values — the Theatre.js-managed per-cell props.
+ * M152 spec: { x, y, width, height, opacity, glowIntensity }
+ */
+export interface CellSheetProps {
+  x:             number
+  y:             number
+  width:         number
+  height:        number
+  opacity:       number
+  glowIntensity: number
+}
+
+/**
  * One cell's visual state at a given instant.
- * All props are interpolated by Theatre.js between epoch keyframes.
+ * Includes the interpolated SheetObject props plus metadata.
  */
 export interface CellState {
   cell_id:       string
   x:             number
   y:             number
-  w:             number
-  h:             number
+  width:         number
+  height:        number
   opacity:       number
-  /** M042: bloom post-process intensity, 0 = no bloom, 1 = full bloom. */
-  bloomStrength: number
-  /** Depth / stacking order (kept for renderer compatibility). */
-  z:             number
-  /** 0–255 red channel (decoded from fill_color) */
-  r:             number
-  /** 0–255 green channel */
-  g:             number
-  /** 0–255 blue channel */
-  b:             number
-  /** Original hex string for convenience, e.g. '#3F51B5' */
-  color:         string
-}
-
-/**
- * One epoch's complete snapshot — every cell that existed at that moment.
- * Shape matches channels/physics/epoch_snapshots.json entries.
- */
-export interface EpochSheet {
-  epoch: number
-  cells: RawCellState[]
-}
-
-/**
- * Raw cell state as it arrives from the physics engine.
- * May use either flat {x,y,w,h} or the bbox.min/max triple format.
- */
-export interface RawCellState {
-  cell_id:    string
-  x?:         number
-  y?:         number
-  w?:         number
-  h?:         number
-  opacity?:   number
-  z?:         number
-  /** Hex string "#rrggbb" or "#rgb" */
-  fill_color?: string
-  /** Alternative bbox format from physics engine */
-  bbox?: {
-    min: [number, number, number]
-    max: [number, number, number]
-  }
-}
-
-/**
- * Top-level JSON wrapper as written by channels/physics/epoch_snapshots.json.
- */
-export interface EpochSnapshotsJSON {
-  meta?: {
-    total_epochs?: number
-    fps?: number
-    [key: string]: unknown
-  }
-  snapshots: EpochSheet[]
+  glowIntensity: number
 }
 
 /** Live interpolated frame emitted on each animation tick. */
 export interface EpochFrame {
-  /** Fractional master-sequence position (0 … N). */
+  /** Fractional sequence position (0 … 1). */
   position:   number
-  /** Integer index of the "from" epoch. */
-  epochIndex: number
-  /** 0–1 blend factor toward the next epoch (0 = fully at epochIndex). */
+  /** 0–1 blend factor (0 = epoch 0, 1 = epoch 1). */
   blend:      number
-  /** Interpolated cell states — ready to hand to PixiJS renderer. */
+  /** Interpolated cell states — ready to hand to renderer. */
   cells:      CellState[]
 }
 
@@ -147,8 +130,6 @@ export type FrameCallback = (frame: EpochFrame) => void
 export type EasingPreset = 'linear' | 'ease' | 'spring'
 
 export interface EpochTimelineOptions {
-  /** Project id passed to Theatre.js getProject(). Default: 'EpochTimeline'. */
-  projectId?: string
   /**
    * Easing between epoch keyframes.  Default: 'ease'.
    * 'linear'  — [0,0,1,1]
@@ -158,7 +139,6 @@ export interface EpochTimelineOptions {
   easing?: EasingPreset
   /**
    * Playback rate in epochs-per-second.  Default: 1.
-   * Overrides the Theatre.js sequence rate if set.
    */
   defaultRate?: number
 }
@@ -166,30 +146,19 @@ export interface EpochTimelineOptions {
 // ─── Theatre prop schema ──────────────────────────────────────────────────────
 
 /**
- * Every ISheetObject on the master sheet uses this compound prop schema.
- * Theatre.js tracks each leaf numerically; the Studio can scrub/keyframe them.
- *
- * M042 spec: x, y, w, h, opacity, bloomStrength (plus z/r/g/b for renderer compat)
+ * M152 spec: per-cell SheetObject props.
+ *   x, y, width, height  — spatial
+ *   opacity               — number(1, { range: [0, 1] })
+ *   glowIntensity         — number(1, { range: [0, 3] })
  */
 const CELL_PROPS = {
-  x:            types.number(0,   { range: [-4000, 4000] }),
-  y:            types.number(0,   { range: [-4000, 4000] }),
-  w:            types.number(100, { range: [0, 2000] }),
-  h:            types.number(50,  { range: [0, 2000] }),
-  opacity:      types.number(1,   { range: [0, 1] }),
-  /** M042: bloom post-process intensity per cell (0 = none, 1 = full bloom). */
-  bloomStrength: types.number(0,  { range: [0, 1] }),
-  z:            types.number(3,   { range: [0, 10] }),
-  r:            types.number(127, { range: [0, 255] }),
-  g:            types.number(127, { range: [0, 255] }),
-  b:            types.number(127, { range: [0, 255] }),
+  x:             types.number(0,   { range: [-4000, 4000] }),
+  y:             types.number(0,   { range: [-4000, 4000] }),
+  width:         types.number(100, { range: [0, 2000] }),
+  height:        types.number(50,  { range: [0, 2000] }),
+  opacity:       types.number(1,   { range: [0, 1] }),
+  glowIntensity: types.number(1,   { range: [0, 3] }),
 } as const
-
-type CellPropsValues = {
-  x: number; y: number; w: number; h: number
-  opacity: number; bloomStrength: number; z: number
-  r: number; g: number; b: number
-}
 
 // ─── Easing handle presets ────────────────────────────────────────────────────
 
@@ -199,100 +168,47 @@ const EASING_HANDLES: Record<EasingPreset, [number, number, number, number]> = {
   spring: [0.34, 1.56, 0.64, 1],
 }
 
-// ─── Colour helpers ───────────────────────────────────────────────────────────
-
-/** Parse '#rrggbb' or '#rgb' to { r, g, b } in 0–255. */
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  const clean = hex.replace('#', '')
-  if (clean.length === 3) {
-    return {
-      r: parseInt(clean[0] + clean[0], 16),
-      g: parseInt(clean[1] + clean[1], 16),
-      b: parseInt(clean[2] + clean[2], 16),
-    }
-  }
-  return {
-    r: parseInt(clean.slice(0, 2), 16),
-    g: parseInt(clean.slice(2, 4), 16),
-    b: parseInt(clean.slice(4, 6), 16),
-  }
-}
-
-/** Pack r, g, b (0–255) back to '#rrggbb'. */
-function rgbToHex(r: number, g: number, b: number): string {
-  const toHex = (n: number) =>
-    Math.round(Math.max(0, Math.min(255, n))).toString(16).padStart(2, '0')
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
-}
-
-// ─── Normalise raw cell state ─────────────────────────────────────────────────
+// ─── Helpers: extract SheetObject values from epoch param JSON ───────────────
 
 /**
- * Convert any RawCellState (flat or bbox) to a full CellState with defaults.
+ * Extract the SheetObject prop values from a raw epoch param JSON.
  */
-function normaliseCell(raw: RawCellState): CellState {
-  let x = 0, y = 0, w = 100, h = 50
-
-  if (typeof raw.x === 'number' && typeof raw.y === 'number') {
-    x = raw.x; y = raw.y
-    w = raw.w ?? 100; h = raw.h ?? 50
-  } else if (raw.bbox) {
-    const [x0, y0] = raw.bbox.min
-    const [x1, y1] = raw.bbox.max
-    x = x0; y = y0; w = x1 - x0; h = y1 - y0
-  } else {
-    console.warn(`[EpochTimeline] cell "${raw.cell_id}" has no coords — using zeros`)
-  }
-
-  const fillColor = raw.fill_color ?? '#808080'
-  const { r, g, b } = hexToRgb(fillColor)
-
+function epochParamToProps(param: EpochParamJSON): CellSheetProps {
   return {
-    cell_id: raw.cell_id,
-    x,
-    y,
-    w,
-    h,
-    opacity:       raw.opacity       ?? 1,
-    bloomStrength: (raw as any).bloomStrength ?? 0,
-    z:             raw.z             ?? 3,
-    r, g, b,
-    color: fillColor,
+    x:             param.bbox.x,
+    y:             param.bbox.y,
+    width:         param.bbox.w,
+    height:        param.bbox.h,
+    opacity:       param.opacity,
+    glowIntensity: 1,   // default; epoch_params don't carry glow data
   }
 }
 
 // ─── Theatre.js OnDiskState builder ──────────────────────────────────────────
 
 /**
- * Build the Theatre.js `OnDiskState` object that is passed as `config.state`
- * to `getProject()`.
+ * Build the Theatre.js `OnDiskState` for the "astro-svgfigure" project.
  *
- * The master sheet ("EpochMaster") receives one keyframe per prop per cell
- * at each integer epoch position, so the Theatre.js sequence engine itself
- * interpolates between epochs.  The snapshot sheets get only static overrides.
+ * The "epoch" sheet receives one keyframe per prop per cell at position 0
+ * (epoch 0 values) and position 1 (epoch 1 values).  Theatre.js's own
+ * bezier interpolation engine drives the cross-epoch blending.
  *
  * State format reference: upstream/theatre-js/core/src/types/private/core.ts
- *   OnDiskState = ProjectState_Historic
- *   definitionVersion must equal globals.currentProjectStateDefinitionVersion = '0.4.0'
+ *   definitionVersion = '0.4.0'
  */
 function buildTheatreState(
-  snapshots:    CellState[][],   // indexed by epochIndex; each is CellState[]
+  epoch0Params: Map<string, CellSheetProps>,
+  epoch1Params: Map<string, CellSheetProps>,
   easing:       EasingPreset,
 ): Record<string, unknown> {
 
   const handles = EASING_HANDLES[easing]
-  const N = snapshots.length         // total epoch count
 
-  // ── 1. Master sheet — keyframed sequence ───────────────────────────────────
-
-  /**
-   * Collect all unique cell_ids across all epochs so we can build a full
-   * keyframe track even for cells that appear/disappear between epochs.
-   */
-  const allCellIds = new Set<string>()
-  for (const snap of snapshots) {
-    for (const cell of snap) allCellIds.add(cell.cell_id)
-  }
+  // Collect all unique cell IDs across both epochs.
+  const allCellIds = new Set<string>([
+    ...epoch0Params.keys(),
+    ...epoch1Params.keys(),
+  ])
 
   type KFRecord = Record<string, {
     id: string
@@ -303,117 +219,69 @@ function buildTheatreState(
     type: 'bezier'
   }>
 
-  const masterTracksByObject: Record<string, {
+  const tracksByObject: Record<string, {
     trackIdByPropPath: Record<string, string>
     trackData: Record<string, { type: 'BasicKeyframedTrack'; keyframes: KFRecord }>
   }> = {}
 
-  const PROPS = ['x', 'y', 'w', 'h', 'opacity', 'bloomStrength', 'z', 'r', 'g', 'b'] as const
+  const PROPS: (keyof CellSheetProps)[] = ['x', 'y', 'width', 'height', 'opacity', 'glowIntensity']
 
   for (const cellId of allCellIds) {
     const trackIdByPropPath: Record<string, string> = {}
     const trackData: Record<string, { type: 'BasicKeyframedTrack'; keyframes: KFRecord }> = {}
 
+    // Get values for both epochs; fall back to defaults if cell absent.
+    const v0 = epoch0Params.get(cellId) ?? { x: 0, y: 0, width: 100, height: 50, opacity: 0, glowIntensity: 1 }
+    const v1 = epoch1Params.get(cellId) ?? { x: 0, y: 0, width: 100, height: 50, opacity: 0, glowIntensity: 1 }
+
     for (const prop of PROPS) {
       const trackId  = `${cellId}__${prop}`
-      const propPath = JSON.stringify([prop])    // '["x"]', '["opacity"]', etc.
+      const propPath = JSON.stringify([prop])    // e.g. '["x"]', '["opacity"]'
       trackIdByPropPath[propPath] = trackId
 
       const keyframes: KFRecord = {}
 
-      for (let e = 0; e < N; e++) {
-        // Find this cell in this epoch's snapshot (may be absent).
-        const epochCell = snapshots[e].find(c => c.cell_id === cellId)
+      // Keyframe at position 0 — epoch 0 values
+      keyframes[`${cellId}_${prop}_e0`] = {
+        id:             `${cellId}_${prop}_e0`,
+        position:       0,
+        value:          v0[prop],
+        handles,
+        connectedRight: true,
+        type:           'bezier',
+      }
 
-        /**
-         * If the cell is absent at an epoch, we treat it as:
-         *   opacity → 0 (faded out)
-         *   xyz unchanged (carry over nearest known position)
-         * We handle disappearance gracefully by using the previous epoch's
-         * position with opacity=0.
-         */
-        let value: number
-
-        if (epochCell) {
-          value = (epochCell as unknown as Record<string, number>)[prop]
-        } else {
-          // Scan back for last known value; for opacity default to 0.
-          let found = false
-          for (let prev = e - 1; prev >= 0; prev--) {
-            const prevCell = snapshots[prev].find(c => c.cell_id === cellId)
-            if (prevCell) {
-              value = prop === 'opacity'
-                ? 0
-                : (prevCell as unknown as Record<string, number>)[prop]
-              found = true
-              break
-            }
-          }
-          if (!found) {
-            // Scan forward for first known value; opacity=0 until it appears.
-            for (let next = e + 1; next < N; next++) {
-              const nextCell = snapshots[next].find(c => c.cell_id === cellId)
-              if (nextCell) {
-                value = prop === 'opacity'
-                  ? 0
-                  : (nextCell as unknown as Record<string, number>)[prop]
-                found = true
-                break
-              }
-            }
-            if (!found) value = 0
-          }
-        }
-
-        const kfId = `${cellId}_${prop}_e${e}`
-        keyframes[kfId] = {
-          id:             kfId,
-          position:       e,              // 1 position unit = 1 epoch = 1 second
-          value:          value!,
-          handles,
-          connectedRight: e < N - 1,     // last keyframe has no right connection
-          type:           'bezier',
-        }
+      // Keyframe at position 1 — epoch 1 values
+      keyframes[`${cellId}_${prop}_e1`] = {
+        id:             `${cellId}_${prop}_e1`,
+        position:       1,
+        value:          v1[prop],
+        handles,
+        connectedRight: false,
+        type:           'bezier',
       }
 
       trackData[trackId] = { type: 'BasicKeyframedTrack', keyframes }
     }
 
-    masterTracksByObject[cellId] = { trackIdByPropPath, trackData }
+    tracksByObject[cellId] = { trackIdByPropPath, trackData }
   }
 
-  const masterSheetState = {
+  const epochSheetState = {
     staticOverrides: { byObject: {} },
     sequence: {
       type:            'PositionalSequence',
-      length:          N - 1,   // positions 0 … N-1; final epoch = end of sequence
-      subUnitsPerUnit: 30,       // 30 fps grid for Studio scrubbing
-      tracksByObject:  masterTracksByObject,
+      length:          1,               // positions 0 → 1  (epoch 0 → epoch 1)
+      subUnitsPerUnit: 30,              // 30 fps grid for Studio scrubbing
+      tracksByObject,
     },
-  }
-
-  // ── 2. Snapshot sheets — one per epoch with static overrides ───────────────
-
-  const snapshotSheetsState: Record<string, unknown> = {}
-
-  for (let e = 0; e < N; e++) {
-    const byObject: Record<string, Record<string, number>> = {}
-    for (const cell of snapshots[e]) {
-      byObject[cell.cell_id] = {
-        x: cell.x, y: cell.y, w: cell.w, h: cell.h,
-        opacity: cell.opacity, bloomStrength: cell.bloomStrength, z: cell.z,
-        r: cell.r, g: cell.g, b: cell.b,
-      }
-    }
-    snapshotSheetsState[`Epoch ${e}`] = { staticOverrides: { byObject } }
   }
 
   return {
     definitionVersion: '0.4.0',
-    revisionHistory:   [`astro-svgfigure-m067-epoch-sheets`],
+    revisionHistory:   ['astro-svgfigure-m152-epoch-params'],
     sheetsById: {
-      EpochMaster: masterSheetState,
-      ...snapshotSheetsState,
+      epoch: epochSheetState,
     },
   }
 }
@@ -422,81 +290,69 @@ function buildTheatreState(
 
 class EpochTimeline {
 
-  /** Theatre.js project — one per page. */
+  /** Theatre.js project — "astro-svgfigure". */
   private readonly _project: IProject
 
-  /**
-   * Master sheet — holds the keyframed sequence that drives cross-epoch
-   * interpolation via Theatre.js's own bezier interpolation engine.
-   */
-  private readonly _masterSheet: ISheet
+  /** The "epoch" sheet — holds keyframed sequence for all cells. */
+  private readonly _epochSheet: ISheet
 
-  /**
-   * Master sequence convenience reference (= _masterSheet.sequence).
-   * Length = N-1 seconds; position 0 = epoch 0, position 1 = epoch 1, etc.
-   */
+  /** Master sequence (= _epochSheet.sequence). Length = 1 (position 0 → 1). */
   private readonly _sequence: ISequence
 
-  /**
-   * ISheetObjects on the master sheet, keyed by cell_id.
-   * All reads use val(obj.props) — Theatre.js handles interpolation.
-   */
+  /** ISheetObjects on the epoch sheet, keyed by cell_id. */
   private readonly _objects: Map<string, ISheetObject<typeof CELL_PROPS>> = new Map()
 
-  /**
-   * Snapshot ISheets indexed by epoch number.
-   * Read-only — used by readEpochSnapshot() only.
-   */
-  private readonly _snapshotSheets: Map<number, ISheet> = new Map()
+  /** Epoch 0 param values per cell. */
+  private readonly _epoch0: Map<string, CellSheetProps>
 
-  /** Normalised snapshots stored for reference (used to know which cells exist). */
-  private readonly _snapshots: CellState[][]
+  /** Epoch 1 param values per cell. */
+  private readonly _epoch1: Map<string, CellSheetProps>
 
-  /** Ordered unique list of all cell IDs across all epochs. */
+  /** Ordered unique list of all cell IDs. */
   private readonly _allCellIds: string[]
 
   /** Registered frame callbacks. */
   private readonly _callbacks: Set<FrameCallback> = new Set()
 
-  /** onChange unsubscribe handles (Theatre.js sequence position listener). */
+  /** onChange unsubscribe handles. */
   private readonly _unsubs: Array<() => void> = []
 
   /** True once the Theatre.js project is ready. */
   private _ready: boolean = false
 
-  /** Current playback position on master sequence (mirrors _sequence.position). */
+  /** Current playback position on sequence (0 … 1). */
   private _position: number = 0
 
   constructor(
-    snapshots: CellState[][],
-    opts: Required<EpochTimelineOptions>,
+    epoch0Params: Map<string, CellSheetProps>,
+    epoch1Params: Map<string, CellSheetProps>,
+    opts: Required<Pick<EpochTimelineOptions, 'easing' | 'defaultRate'>>,
   ) {
-    this._snapshots = snapshots
+    this._epoch0 = epoch0Params
+    this._epoch1 = epoch1Params
 
-    this._allCellIds = [...new Set(snapshots.flatMap(s => s.map(c => c.cell_id)))]
+    this._allCellIds = [...new Set([
+      ...epoch0Params.keys(),
+      ...epoch1Params.keys(),
+    ])]
 
-    // Build Theatre.js OnDiskState with keyframes baked from snapshots.
-    const theatreState = buildTheatreState(snapshots, opts.easing)
+    // Build Theatre.js OnDiskState with two keyframes per prop per cell.
+    const theatreState = buildTheatreState(epoch0Params, epoch1Params, opts.easing)
 
-    // Create the project; Theatre.js ingests the baked state immediately.
-    this._project = getProject(opts.projectId, { state: theatreState })
+    // 1) getProject("astro-svgfigure")
+    this._project = getProject('astro-svgfigure', { state: theatreState })
 
-    // Grab the master sheet and its sequence.
-    this._masterSheet = this._project.sheet('EpochMaster')
-    this._sequence    = this._masterSheet.sequence
+    // 2) .sheet("epoch")
+    this._epochSheet = this._project.sheet('epoch')
+    this._sequence   = this._epochSheet.sequence
 
-    // Register ISheetObjects for every cell on the master sheet.
+    // 3) Create SheetObject per cell with the M152 prop schema.
     for (const cellId of this._allCellIds) {
-      const obj = this._masterSheet.object(cellId, CELL_PROPS)
+      const obj = this._epochSheet.object(cellId, CELL_PROPS)
       this._objects.set(cellId, obj)
     }
 
-    // Register snapshot sheets (read-only static overrides).
-    for (let e = 0; e < snapshots.length; e++) {
-      this._snapshotSheets.set(e, this._project.sheet(`Epoch ${e}`))
-    }
-
-    // Listen to sequence position changes so _position stays in sync.
+    // Listen to sequence position changes to stay in sync and emit frames.
     const posUnsub = onChange(
       (this._sequence as unknown as { pointer: { position: unknown } }).pointer.position,
       (pos: number) => {
@@ -506,7 +362,7 @@ class EpochTimeline {
     )
     this._unsubs.push(posUnsub)
 
-    // Mark ready once the project resolves (Theatre.js project.ready is a Promise).
+    // Mark ready once the project resolves.
     this._project.ready.then(() => { this._ready = true })
   }
 
@@ -515,37 +371,35 @@ class EpochTimeline {
   /** True once the Theatre.js project state has been hydrated. */
   get ready(): boolean { return this._ready }
 
-  /** Total number of epochs. */
-  get epochCount(): number { return this._snapshots.length }
+  /** All cell IDs managed by this timeline. */
+  get cellIds(): readonly string[] { return this._allCellIds }
 
-  /**
-   * Current fractional master-sequence position (0 … epochCount - 1).
-   * Mirrors this._sequence.position.
-   */
+  /** Current fractional sequence position (0 … 1). */
   get position(): number { return this._position }
 
   /**
-   * Seek the master sequence to an arbitrary fractional epoch position.
+   * Seek the sequence to an arbitrary position between 0 and 1.
    * Theatre.js handles interpolation; callbacks receive the new frame.
    */
   seek(pos: number): void {
-    const clamped = Math.max(0, Math.min(pos, this._snapshots.length - 1))
+    const clamped = Math.max(0, Math.min(pos, 1))
     ;(this._sequence as unknown as { position: number }).position = clamped
   }
 
   /**
-   * Start playback of the master sequence from the current position.
-   * @param rate  epoch-units per second (default: 1)
+   * Play the sequence from position 0 → 1  (epoch 0 → epoch 1).
+   * Theatre.js interpolates all SheetObject props via its bezier engine.
+   * @param rate  playback rate (default: 1 = one second for full transition)
    */
   play(rate: number = 1): Promise<boolean> {
     return this._sequence.play({
-      range:    [0, this._snapshots.length - 1],
+      range:     [0, 1],
       rate,
       direction: 'normal',
     })
   }
 
-  /** Pause the master sequence. */
+  /** Pause the sequence. */
   pause(): void {
     this._sequence.pause()
   }
@@ -562,7 +416,7 @@ class EpochTimeline {
    */
   onFrame(cb: FrameCallback): () => void {
     this._callbacks.add(cb)
-    // Emit the current frame immediately so the caller can initialise layout.
+    // Emit the current frame immediately so the caller can initialise.
     cb(this._buildFrame())
     return () => this._callbacks.delete(cb)
   }
@@ -573,7 +427,7 @@ class EpochTimeline {
    */
   onCellChange(
     cellId: string,
-    cb: (values: CellPropsValues) => void,
+    cb: (values: CellSheetProps) => void,
   ): () => void {
     const obj = this._objects.get(cellId)
     if (!obj) {
@@ -584,20 +438,23 @@ class EpochTimeline {
   }
 
   /**
-   * Read the static CellState[] snapshot for a given epoch.
-   * These come from the "Epoch N" snapshot sheets and are not interpolated.
-   *
-   * Useful for jumping directly to a specific epoch state without animation.
+   * Read the static CellState[] for epoch 0.
    */
-  readEpochSnapshot(epochIndex: number): CellState[] {
-    const snap = this._snapshots[epochIndex]
-    if (!snap) {
-      console.warn(`[EpochTimeline] epoch ${epochIndex} out of range`)
-      return []
-    }
-    // For snapshot reads we just return the normalised data — the static overrides
-    // on the snapshot sheet are already encoded in our _snapshots array.
-    return snap.map(cell => ({ ...cell }))
+  readEpoch0(): CellState[] {
+    return this._allCellIds.map(id => {
+      const v = this._epoch0.get(id) ?? { x: 0, y: 0, width: 100, height: 50, opacity: 0, glowIntensity: 1 }
+      return { cell_id: id, ...v }
+    })
+  }
+
+  /**
+   * Read the static CellState[] for epoch 1.
+   */
+  readEpoch1(): CellState[] {
+    return this._allCellIds.map(id => {
+      const v = this._epoch1.get(id) ?? { x: 0, y: 0, width: 100, height: 50, opacity: 0, glowIntensity: 1 }
+      return { cell_id: id, ...v }
+    })
   }
 
   /**
@@ -608,74 +465,15 @@ class EpochTimeline {
   }
 
   /**
-   * Subscribe to Theatre.js value changes for a prop on a specific cell.
-   * More granular than onCellChange; fires only when the given prop changes.
+   * Get the SheetObject for a specific cell (for external Theatre.js Studio use).
    */
-  onPropChange<K extends keyof CellPropsValues>(
-    cellId: string,
-    prop: K,
-    cb: (value: CellPropsValues[K]) => void,
-  ): () => void {
-    const obj = this._objects.get(cellId)
-    if (!obj) {
-      console.warn(`[EpochTimeline] unknown cell "${cellId}"`)
-      return () => {}
-    }
-    // Access the specific prop pointer.
-    const propPointer = (obj.props as unknown as Record<string, unknown>)[prop]
-    return onChange(propPointer as Parameters<typeof onChange>[0], cb as (v: unknown) => void)
+  getObject(cellId: string): ISheetObject<typeof CELL_PROPS> | undefined {
+    return this._objects.get(cellId)
   }
 
   /**
-   * M042: Advance timeline with a new epoch's cell states.
-   *
-   * Called when a new epoch completes in the cell-pubsub loop.
-   * Steps:
-   *   1. Normalise the new raw cells to CellState[].
-   *   2. Append as the next epoch snapshot.
-   *   3. Rebuild Theatre.js OnDiskState with the new keyframe at position N.
-   *   4. Call sequence.play() so Theatre.js interpolates all SheetObject props
-   *      from the current (N-1) epoch values to the new epoch (N) values.
-   *
-   * @param rawCells  Raw cell states from the new epoch (same format as EpochSheet.cells).
-   * @param rate      Playback rate in epochs/second for the transition animation. Default: 1.
-   */
-  advanceEpoch(rawCells: RawCellState[], rate: number = 1): Promise<boolean> {
-    const newCells = rawCells.map(normaliseCell)
-
-    // Register any new cells that haven't been seen before.
-    for (const cell of newCells) {
-      if (!this._objects.has(cell.cell_id)) {
-        const obj = this._masterSheet.object(cell.cell_id, CELL_PROPS)
-        this._objects.set(cell.cell_id, obj)
-        ;(this._allCellIds as string[]).push(cell.cell_id)
-      }
-    }
-
-    // Append to snapshots array.
-    ;(this._snapshots as CellState[][]).push(newCells)
-
-    const N = this._snapshots.length
-    const newEpochIdx = N - 1
-
-    // Register snapshot sheet for this new epoch.
-    this._snapshotSheets.set(newEpochIdx, this._project.sheet(`Epoch ${newEpochIdx}`))
-
-    // Play the sequence from position newEpochIdx-1 → newEpochIdx so Theatre.js
-    // interpolates all SheetObject props to the new epoch's target values.
-    const fromPos = Math.max(0, newEpochIdx - 1)
-    const toPos   = newEpochIdx
-
-    return this._sequence.play({
-      range:     [fromPos, toPos],
-      rate,
-      direction: 'normal',
-    })
-  }
-
-  /**
-   * Destroy the timeline — pause sequence, unsubscribe all Theatre.js onChange
-   * listeners, and clear all registered frame callbacks.
+   * Destroy the timeline — pause sequence, unsubscribe all onChange listeners,
+   * and clear all registered frame callbacks.
    */
   destroy(): void {
     this._sequence.pause()
@@ -697,163 +495,192 @@ class EpochTimeline {
    *
    * Theatre.js has already done the bezier interpolation between keyframes
    * (driven by _sequence.position), so we just read val(obj.props) for each
-   * cell and pack the result.  No manual lerp needed.
+   * cell and pack the result.
    */
   private _buildFrame(): EpochFrame {
-    const pos        = this._position
-    const epochIndex = Math.min(Math.floor(pos), this._snapshots.length - 2)
-    const blend      = pos - Math.floor(pos)
+    const pos   = this._position
+    const blend = pos    // position 0…1 is exactly the blend factor
 
     const cells: CellState[] = []
 
     for (const [cellId, obj] of this._objects) {
-      const v = val(obj.props) as CellPropsValues
-
-      // Reconstruct #rrggbb from the interpolated r/g/b channels.
-      const color = rgbToHex(v.r, v.g, v.b)
+      const v = val(obj.props) as CellSheetProps
 
       cells.push({
-        cell_id: cellId,
-        x:            v.x,
-        y:            v.y,
-        w:            v.w,
-        h:            v.h,
-        opacity:      v.opacity,
-        bloomStrength: v.bloomStrength,
-        z:            v.z,
-        r:            v.r,
-        g:            v.g,
-        b:            v.b,
-        color,
+        cell_id:       cellId,
+        x:             v.x,
+        y:             v.y,
+        width:         v.width,
+        height:        v.height,
+        opacity:       v.opacity,
+        glowIntensity: v.glowIntensity,
       })
     }
 
-    return { position: pos, epochIndex, blend, cells }
+    return { position: pos, blend, cells }
   }
+}
+
+// ─── Epoch params loader ─────────────────────────────────────────────────────
+
+/**
+ * Discover all cell JSON files in an epoch_params directory and parse them.
+ *
+ * Works in both Node.js (SSR / build time) and browser (via fetch) contexts.
+ * Returns a Map<cell_id, CellSheetProps>.
+ */
+async function loadEpochParams(epochIndex: number): Promise<Map<string, CellSheetProps>> {
+  const result = new Map<string, CellSheetProps>()
+
+  // Dynamically import all JSON files from the epoch directory.
+  // Use Vite's import.meta.glob for build-time bundling, with eager loading.
+  // At build time Vite resolves the glob; at runtime the modules are already bundled.
+  const epoch0Modules = import.meta.glob<EpochParamJSON>(
+    '../../../channels/convergence/epoch_params/0/*.json',
+    { eager: true, import: 'default' },
+  )
+  const epoch1Modules = import.meta.glob<EpochParamJSON>(
+    '../../../channels/convergence/epoch_params/1/*.json',
+    { eager: true, import: 'default' },
+  )
+
+  const modules = epochIndex === 0 ? epoch0Modules : epoch1Modules
+
+  for (const [_path, param] of Object.entries(modules)) {
+    if (param && param.cell_id) {
+      result.set(param.cell_id, epochParamToProps(param))
+    }
+  }
+
+  return result
+}
+
+/**
+ * Load all cell JSON files from an epoch_params directory using Node.js fs.
+ * Fallback for SSR / test / non-Vite contexts.
+ */
+async function loadEpochParamsNode(epochIndex: number): Promise<Map<string, CellSheetProps>> {
+  const result = new Map<string, CellSheetProps>()
+
+  try {
+    const fs = await import('fs')
+    const path = await import('path')
+
+    // Resolve relative to project root.
+    const dir = path.resolve(EPOCH_PARAMS_BASE, String(epochIndex))
+    if (!fs.existsSync(dir)) {
+      console.warn(`[EpochTimeline] epoch_params dir not found: ${dir}`)
+      return result
+    }
+
+    const files = fs.readdirSync(dir).filter((f: string) => f.endsWith('.json'))
+
+    for (const file of files) {
+      const raw = fs.readFileSync(path.join(dir, file), 'utf-8')
+      const param: EpochParamJSON = JSON.parse(raw)
+      if (param.cell_id) {
+        result.set(param.cell_id, epochParamToProps(param))
+      }
+    }
+  } catch (err) {
+    console.warn(`[EpochTimeline] Failed to load epoch_params/${epochIndex}:`, err)
+  }
+
+  return result
 }
 
 // ─── Factory function ─────────────────────────────────────────────────────────
 
 /**
- * Create an EpochTimeline from epoch snapshot data.
+ * Create an EpochTimeline that:
+ *   1) Calls getProject("astro-svgfigure").sheet("epoch")
+ *   2) Creates a SheetObject per cell with props { x, y, width, height, opacity, glowIntensity }
+ *   3) Reads epoch 0 values from channels/convergence/epoch_params/0/{cell}.json
+ *   4) Reads epoch 1 values from channels/convergence/epoch_params/1/{cell}.json
+ *   5) Uses sheet.sequence to interpolate between the two keyframes
  *
- * @param data    Either the full JSON wrapper `{ snapshots: EpochSheet[] }` or
- *                a plain `EpochSheet[]` array.
- * @param options Optional configuration (easing, projectId, defaultRate).
+ * @param options  Optional easing and playback rate configuration.
  *
  * @example
  * ```ts
- * import epochData from '../../../channels/physics/epoch_snapshots.json'
- * const tl = createEpochTimeline(epochData, { easing: 'spring' })
+ * const tl = await createEpochTimeline({ easing: 'ease' })
  *
- * tl.onFrame(({ cells }) => {
+ * tl.onFrame(({ cells, blend }) => {
  *   for (const cell of cells) {
- *     pixiContainers.get(cell.cell_id)?.set({ x: cell.x, y: cell.y, alpha: cell.opacity })
+ *     pixiContainers.get(cell.cell_id)?.set({
+ *       x: cell.x, y: cell.y,
+ *       width: cell.width, height: cell.height,
+ *       alpha: cell.opacity,
+ *     })
  *   }
  * })
  *
- * tl.play(0.5)   // 0.5 epochs per second
+ * tl.play()   // interpolate epoch 0 → epoch 1 over 1 second
  * ```
  */
-export function createEpochTimeline(
-  data:    EpochSnapshotsJSON | EpochSheet[],
+export async function createEpochTimeline(
   options: EpochTimelineOptions = {},
-): EpochTimeline {
+): Promise<EpochTimeline> {
 
-  const rawSnapshots: EpochSheet[] = Array.isArray(data) ? data : data.snapshots
-
-  if (!Array.isArray(rawSnapshots) || rawSnapshots.length === 0) {
-    throw new Error(
-      '[createEpochTimeline] data must contain at least one epoch snapshot',
-    )
-  }
-
-  // Sort by epoch index so the sequence always plays in order.
-  const sorted = [...rawSnapshots].sort((a, b) => a.epoch - b.epoch)
-
-  // Normalise each epoch's cells to our canonical CellState shape.
-  const snapshots: CellState[][] = sorted.map(snap => snap.cells.map(normaliseCell))
-
-  const opts: Required<EpochTimelineOptions> = {
-    projectId:   options.projectId   ?? 'EpochTimeline',
-    easing:      options.easing      ?? 'ease',
+  const opts = {
+    easing:      options.easing      ?? 'ease' as EasingPreset,
     defaultRate: options.defaultRate ?? 1,
   }
 
-  return new EpochTimeline(snapshots, opts)
-}
+  // Load epoch params from JSON files.
+  let epoch0Params: Map<string, CellSheetProps>
+  let epoch1Params: Map<string, CellSheetProps>
 
-// ─── Helpers re-exported for external use ────────────────────────────────────
-
-/** Parse '#rrggbb' to {r, g, b} (0–255). */
-export { hexToRgb }
-
-/** Pack r,g,b (0–255) to '#rrggbb'. */
-export { rgbToHex }
-
-/** Normalise a raw cell to a canonical CellState. */
-export { normaliseCell as normaliseCellState }
-
-// ─── Re-export EpochTimeline type without exposing the class directly ─────────
-export type { EpochTimeline }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// M068: Theatre.js Project ↔ Topology JSON mapping
-//
-// Each topology.json corresponds to one Theatre.js Project instance.
-// Project lifecycle: create → hydrate sheets → animate → dispose.
-//
-// The getProject() call at L467 already handles the one-project-per-topology
-// pattern. This section adds topology-level helpers.
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Create a Theatre.js EpochTimeline from a topology JSON.
- *
- * Builds an initial CellState[] for epoch 0 from cellEntries, then creates
- * an EpochTimeline with `epochCount` copies of that epoch so the sequence has
- * length > 0 and SheetObjects are registered for all cells.
- *
- * One topology = one Theatre.js Project (projectId = `topology-${topologyId}`).
- */
-export function projectFromTopology(
-  topologyId:  string,
-  cellEntries: Array<{
-    cell_id: string
-    species:  string
-    bbox:     { x: number; y: number; w: number; h: number }
-  }>,
-  epochCount:  number,
-  opts?:       Partial<EpochTimelineOptions>,
-): EpochTimeline {
-  // Build a CellState for each entry with a neutral grey colour.
-  const epoch0: CellState[] = cellEntries.map(e => ({
-    cell_id:       e.cell_id,
-    x:             e.bbox.x,
-    y:             e.bbox.y,
-    w:             e.bbox.w,
-    h:             e.bbox.h,
-    opacity:       1,
-    bloomStrength: 0,
-    z:             3,
-    r:             127,
-    g:             127,
-    b:             179,   // 0.7 * 255 ≈ 179 — neutral blue-grey
-    color:         '#7f7fb3',
-  }))
-
-  // Replicate epoch 0 for `epochCount` epochs so the timeline has a valid
-  // sequence length even before real epoch data arrives via advanceEpoch().
-  const n = Math.max(1, epochCount)
-  const snapshots: CellState[][] = Array.from({ length: n }, () =>
-    epoch0.map(c => ({ ...c })),
-  )
-
-  const mergedOpts: Required<EpochTimelineOptions> = {
-    projectId:   opts?.projectId   ?? `topology-${topologyId}`,
-    easing:      opts?.easing      ?? 'ease',
-    defaultRate: opts?.defaultRate ?? 1,
+  try {
+    // Try Vite import.meta.glob path first (browser / Astro build).
+    epoch0Params = await loadEpochParams(0)
+    epoch1Params = await loadEpochParams(1)
+  } catch {
+    // Fallback to Node.js fs for SSR / test contexts.
+    epoch0Params = await loadEpochParamsNode(0)
+    epoch1Params = await loadEpochParamsNode(1)
   }
 
-  return new EpochTimeline(snapshots, mergedOpts)
+  if (epoch0Params.size === 0 && epoch1Params.size === 0) {
+    throw new Error(
+      '[createEpochTimeline] No cell params found in epoch_params/0 or epoch_params/1',
+    )
+  }
+
+  return new EpochTimeline(epoch0Params, epoch1Params, opts)
 }
+
+/**
+ * Synchronous factory — provide pre-loaded epoch params directly.
+ * Useful when the caller has already fetched / imported the JSON data.
+ *
+ * @param epoch0  Map of cell_id → epoch 0 param JSON objects.
+ * @param epoch1  Map of cell_id → epoch 1 param JSON objects.
+ * @param options Optional easing and playback rate.
+ */
+export function createEpochTimelineSync(
+  epoch0: Map<string, EpochParamJSON>,
+  epoch1: Map<string, EpochParamJSON>,
+  options: EpochTimelineOptions = {},
+): EpochTimeline {
+
+  const opts = {
+    easing:      options.easing      ?? 'ease' as EasingPreset,
+    defaultRate: options.defaultRate ?? 1,
+  }
+
+  const epoch0Props = new Map<string, CellSheetProps>()
+  const epoch1Props = new Map<string, CellSheetProps>()
+
+  for (const [id, param] of epoch0) epoch0Props.set(id, epochParamToProps(param))
+  for (const [id, param] of epoch1) epoch1Props.set(id, epochParamToProps(param))
+
+  return new EpochTimeline(epoch0Props, epoch1Props, opts)
+}
+
+// ─── Re-exports ──────────────────────────────────────────────────────────────
+
+/** Extract CellSheetProps from a raw EpochParamJSON. */
+export { epochParamToProps }
+
+export type { EpochTimeline }
