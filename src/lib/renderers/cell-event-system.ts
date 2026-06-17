@@ -18,6 +18,18 @@
  *   Click   → OutlineFilter (color: SELECT_COLOR, thickness: 3)
  *   Drag    → container.position.set(x, y) every pointermove frame
  *
+ * M050: cell hover tooltip
+ *   _showTooltip reads __cellMeta (cell_id, label, species, bbox, topology.in/out)
+ *   and renders a rich multi-row tooltip:
+ *     ┌──────────────────────────────────┐
+ *     │ cil-eye                          │  ← species badge
+ *     │ Self-Attention                   │  ← label
+ *     │ cell_attn_0                      │  ← cell_id (muted)
+ *     │ 120 × 60  ·  in 2  ·  out 3     │  ← dims + edge counts
+ *     └──────────────────────────────────┘
+ *   GlowFilter('hover') is triggered by existing M031 code path in
+ *   _onCellPointerOver → setGlow(container, 'hover'); no extra wiring needed.
+ *
  * Upstream references:
  *   upstream/pixijs-engine/src/events/EventSystem.ts
  *   upstream/pixijs-engine/src/events/EventBoundary.ts
@@ -62,12 +74,25 @@ const DRAG_Z_LIFT = 9999;
 /**
  * Metadata carried on each interactive cell container.
  * Stored as `__cellMeta` on the container object.
+ *
+ * M050: topology field added — counts of incoming/outgoing edges, read from
+ * CellDescriptor.topology by buildCellContainer() in pixi-cell-renderer.ts.
  */
 export interface CellMeta {
   cell_id:  string;
   label:    string;
   species:  string;
   bbox:     { x: number; y: number; w: number; h: number };
+  /**
+   * M050: edge connectivity counts stamped by buildCellContainer().
+   * Optional for backward-compat with containers built before M050.
+   */
+  topology?: {
+    /** Number of incoming edges */
+    in:  number;
+    /** Number of outgoing edges */
+    out: number;
+  };
 }
 
 /**
@@ -148,6 +173,38 @@ interface DragState {
   /** Pointer offset within the container at drag-start, in world space */
   offsetX:    number;
   offsetY:    number;
+}
+
+// ── M050: tooltip helpers ─────────────────────────────────────────────────────
+
+/**
+ * _SPECIES_BADGE_COLOR — maps species key to a soft accent colour used in the
+ * tooltip species badge row.  Matches the SPECIES_COLOURS palette in
+ * pixi-cell-renderer.ts (glow colour, slightly desaturated for text legibility).
+ */
+const _SPECIES_BADGE_COLOR: Record<string, string> = {
+  'cil-eye':         '#7986CB',
+  'cil-vector':      '#81C784',
+  'cil-bolt':        '#FFB74D',
+  'cil-plus':        '#F06292',
+  'cil-arrow-right': '#90A4AE',
+  'cil-filter':      '#BA68C8',
+  'cil-code':        '#4DB6AC',
+  'cil-layers':      '#64B5F6',
+  'cil-loop':        '#FFD54F',
+  'cil-graph':       '#90A4AE',
+};
+
+/**
+ * _escHtml — minimal HTML-escape to prevent XSS in tooltip innerHTML.
+ * Escapes &, <, >, " so cell_id / label strings are safe to inject.
+ */
+function _escHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 // ── CellEventSystem ───────────────────────────────────────────────────────────
@@ -592,6 +649,10 @@ export class CellEventSystem {
   /**
    * _createTooltip — builds the DOM tooltip element once.
    *
+   * M050: upgraded to a two-column card layout that shows species badge,
+   * label, cell_id, bbox dimensions, and topology edge counts — all sourced
+   * from __cellMeta stamped by buildCellContainer().
+   *
    * Mirrors AT's tooltip approach: a small absolutely-positioned div with
    * frosted-glass background, shown near the pointer.
    */
@@ -600,32 +661,65 @@ export class CellEventSystem {
     el.setAttribute('aria-hidden', 'true');
     el.setAttribute('role', 'tooltip');
     Object.assign(el.style, {
-      position:       'absolute',
-      pointerEvents:  'none',
-      zIndex:         '9000',
-      padding:        '4px 8px',
-      background:     'rgba(12, 12, 28, 0.88)',
-      backdropFilter: 'blur(8px)',
-      border:         '0.5px solid rgba(136, 204, 255, 0.35)',
-      borderRadius:   '6px',
-      color:          '#cce8ff',
-      fontSize:       '11px',
-      fontFamily:     'Inter, system-ui, sans-serif',
-      fontWeight:     '500',
-      lineHeight:     '1.4',
-      whiteSpace:     'nowrap',
-      display:        'none',
-      transition:     'opacity 0.12s',
-      opacity:        '0',
-      userSelect:     'none',
+      position:        'absolute',
+      pointerEvents:   'none',
+      zIndex:          '9000',
+      padding:         '7px 10px',
+      background:      'rgba(8, 8, 24, 0.92)',
+      backdropFilter:  'blur(12px)',
+      border:          '0.5px solid rgba(136, 204, 255, 0.30)',
+      borderRadius:    '8px',
+      color:           '#cce8ff',
+      fontSize:        '11px',
+      fontFamily:      'Inter, system-ui, sans-serif',
+      fontWeight:      '400',
+      lineHeight:      '1.5',
+      whiteSpace:      'nowrap',
+      display:         'none',
+      transition:      'opacity 0.12s',
+      opacity:         '0',
+      userSelect:      'none',
+      minWidth:        '120px',
+      boxShadow:       '0 4px 16px rgba(0,0,0,0.5)',
     });
     return el;
   }
 
   private _showTooltip(meta: CellMeta, e: PointerEvent | null): void {
+    // ── M050: rich tooltip from __cellMeta ─────────────────────────────────
+    // Row 1: species badge (muted, small)
+    // Row 2: label (prominent)
+    // Row 3: cell_id (monospace, muted)
+    // Row 4: bbox dimensions · in N · out N  (if topology present)
+
+    const speciesColor = _SPECIES_BADGE_COLOR[meta.species] ?? '#90A4AE';
+    const dimW = Math.round(meta.bbox.w);
+    const dimH = Math.round(meta.bbox.h);
+
+    // Build connectivity string from M050 topology field
+    let connLine = `${dimW} × ${dimH}`;
+    if (meta.topology !== undefined) {
+      connLine +=
+        `<span style="margin-left:6px;opacity:0.55">` +
+        `↓${meta.topology.in} ↑${meta.topology.out}` +
+        `</span>`;
+    }
+
     this.tooltip.innerHTML =
-      `<span style="opacity:0.55;font-size:10px">${meta.species}</span>` +
-      `<br><strong>${meta.cell_id}</strong>`;
+      // Species badge row
+      `<div style="font-size:9px;font-weight:600;letter-spacing:0.06em;` +
+      `color:${speciesColor};opacity:0.85;text-transform:uppercase;margin-bottom:2px">` +
+      _escHtml(meta.species) + `</div>` +
+      // Label row
+      `<div style="font-size:12px;font-weight:600;color:#e8f4ff;margin-bottom:1px">` +
+      _escHtml(meta.label) + `</div>` +
+      // cell_id row (monospace, muted)
+      `<div style="font-size:9.5px;font-family:'JetBrains Mono',monospace,monospace;` +
+      `opacity:0.5;margin-bottom:3px">` +
+      _escHtml(meta.cell_id) + `</div>` +
+      // Dimensions + edge counts row
+      `<div style="font-size:9px;opacity:0.65">` + connLine + `</div>`;
+
     this.tooltip.style.display = 'block';
     requestAnimationFrame(() => {
       this.tooltip.style.opacity = '1';
@@ -765,6 +859,9 @@ export function attachCellEvents(
  * `CellEventSystem.attachToCellContainers()` can pick it up without
  * requiring a separate descriptor lookup.
  *
+ * M050: now also stamps topology.in / topology.out from CellDescriptor
+ * so the hover tooltip can display edge counts.
+ *
  * @example
  * ```ts
  * const container = buildCellContainer(desc);
@@ -774,10 +871,14 @@ export function attachCellEvents(
  */
 export function makeCellMeta(container: Container, desc: CellDescriptor): void {
   const meta: CellMeta = {
-    cell_id: desc.cell_id,
-    label:   desc.label,
-    species: desc.species,
-    bbox:    { ...desc.bbox },
+    cell_id:  desc.cell_id,
+    label:    desc.label,
+    species:  desc.species,
+    bbox:     { ...desc.bbox },
+    topology: {
+      in:  desc.topology?.incoming_edges?.length ?? 0,
+      out: desc.topology?.outgoing_edges?.length ?? 0,
+    },
   };
   (container as any).__cellMeta = meta;
 }

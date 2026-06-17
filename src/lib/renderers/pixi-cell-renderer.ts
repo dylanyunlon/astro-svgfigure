@@ -35,6 +35,11 @@
  * - GlowFilter 实例存于 container.__glowFilter，避免重复构造
  * - buildCellContainer() 预置 __glowFilter = null / __glowMode = null 槽位
  *
+ * M050: cell hover tooltip
+ *   __cellMeta 扩展携带 topology.in / topology.out (边数)，供 CellEventSystem
+ *   tooltip 显示 label / species / 尺寸 / 连接数。hover 事件触发 setGlow('hover')
+ *   在已有 M031 路径上无需额外改动；__cellMeta 结构变更向后兼容旧读取路径。
+ *
  * Upstream reference:
  *   upstream/pixijs-engine/src/scene/graphics/shared/Graphics.ts
  *   upstream/pixijs-engine/src/filters/defaults/blur/
@@ -834,11 +839,16 @@ function buildCellContainer(desc: CellDescriptor): Container {
   // ── CellMeta stamp — consumed by CellEventSystem.attachToCellContainers ─
   // Stamped here so CellEventSystem can auto-register without a separate lookup.
   // Mirrors AT's HitManager tagging pattern: object.__meta = descriptor.
+  // M050: include topology edge counts so tooltip can display connectivity info.
   (container as any).__cellMeta = {
-    cell_id: desc.cell_id,
-    label:   desc.label,
-    species: desc.species,
-    bbox:    { ...desc.bbox },
+    cell_id:  desc.cell_id,
+    label:    desc.label,
+    species:  desc.species,
+    bbox:     { ...desc.bbox },
+    topology: {
+      in:  desc.topology?.incoming_edges?.length ?? 0,
+      out: desc.topology?.outgoing_edges?.length ?? 0,
+    },
   };
 
   return container;
