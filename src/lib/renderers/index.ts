@@ -16,6 +16,33 @@
 export { renderCellGraph } from './pixi-cell-renderer';
 export type { CellDescriptor, EdgeDescriptor } from './pixi-cell-renderer';
 
+// ── M016: PixiJS Ticker 驱动 epoch 动画帧循环 ─────────────────────────────────
+// EpochTicker       — 封装 upstream/pixijs-engine Ticker，驱动 epoch 位置推进
+// createEpochTicker — 工厂函数（接受 JSON snapshots 数组或 wrapper 对象）
+// attachEpochTickerToApp — 挂载到已有 PixiJS Application ticker（避免重复 Ticker）
+// wireEpochTickerToTimeline — 桥接 EpochTicker → Theatre.js EpochTimeline
+// UPDATE_PRIORITY   — 上游 const 重导出（INTERACTION/HIGH/NORMAL/LOW/UTILITY）
+// Ticker            — 上游 Ticker 类重导出（供调用方直接引用）
+export {
+  EpochTicker,
+  createEpochTicker,
+  attachEpochTickerToApp,
+  wireEpochTickerToTimeline,
+  normaliseEpochCell,
+  Ticker,
+  UPDATE_PRIORITY,
+} from './epoch-ticker';
+export type {
+  EpochCellState,
+  EpochSnapshot,
+  EpochTickFrame,
+  EpochTickCallback,
+  EpochLoopMode,
+  EpochTickerOptions,
+  SequenceRef,
+  TickerCallback,
+} from './epoch-ticker';
+
 export { renderCellGraphSDF } from './sdf-cell-renderer';
 
 // ── M010: species-keyed geometry batcher — upstream/pixijs-engine batcher fusion ──
