@@ -351,20 +351,36 @@ export class CilBoltSDFFilter extends Filter {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// M046: CilVectorSDFFilter — cil-vector.frag → PixiJS Filter
+// M062: CilVectorSDFFilter — cil-vector SDF shader → PixiJS Filter (arrow field animation)
 // ══════════════════════════════════════════════════════════════════════════════
 //
-// Wraps src/lib/shaders/cil-vector.frag (arrow grid SDF using polySDF + lineSDF).
-// Adapts the shader for PixiJS Filter context:
+// Wraps src/lib/shaders/cil-vector.frag (arrow grid SDF using polySDF + sdBox).
+// M062 upgrades the static M046 filter with full Ticker-driven u_time animation:
+//   - u_time drives per-arrow curl-noise angle rotation, making the vector field flow
+//   - u_arrow_length controls relative shaft+head scale (maps from params.json arrow_length px)
+//   - u_field_scale controls the curl-noise spatial frequency (from params.json field_scale)
+//
+// Shader changes vs M046:
+//   + uniform float u_time        — animation clock (seconds), drives angle modulation
+//   + uniform float u_arrow_length — normalised arrow scale relative to cell half-size [0.1, 1.0]
+//   + uniform float u_field_scale  — curl-noise frequency (higher = tighter swirls) [0.5, 8.0]
+//   • angle = jitter + curl_noise(cell_centre + time * flow_speed) * TAU
+//     where curl_noise is a simple 2D hash-based pseudo-curl giving coherent flow
+//   • scale driven by u_arrow_length (replaces hard-coded 0.45)
+//
+// Adapts for PixiJS Filter context:
 //   - vTextureCoord replaces gl_FragCoord + u_bbox UV
 //   - finalColor replaces gl_FragColor
 //   - u_bbox / u_resolution removed (not needed in Filter)
 //
 // Uniforms:
-//   u_fillColor   (vec3) — arrow colour [r,g,b] 0-1
-//   u_opacity     (f32)  — overall opacity
-//   u_arrowCount  (f32)  — arrows per row/col in the grid
-//   u_angleSpread (f32)  — variation in arrow angle (radians)
+//   u_fillColor    (vec3) — arrow colour [r,g,b] 0-1
+//   u_opacity      (f32)  — overall opacity
+//   u_arrowCount   (f32)  — arrows per row/col in the grid
+//   u_angleSpread  (f32)  — static per-cell angle jitter (radians)
+//   u_time         (f32)  — animation clock (seconds); driven by Ticker
+//   u_arrow_length (f32)  — normalised arrow length scale [0.1, 1.0]
+//   u_field_scale  (f32)  — curl-noise spatial frequency
 
 const CIL_VECTOR_FRAGMENT = /* glsl */`
 in vec2 vTextureCoord;
@@ -376,6 +392,9 @@ uniform vec3  u_fillColor;
 uniform float u_opacity;
 uniform float u_arrowCount;
 uniform float u_angleSpread;
+uniform float u_time;
+uniform float u_arrow_length;
+uniform float u_field_scale;
 
 #ifndef PI
 #define PI  3.1415926535897932384626433832795
@@ -430,8 +449,48 @@ float drawArrow(vec2 p, float angle, float scale) {
     return smoothstep(0.01, -0.01, d);
 }
 
+// ── Pseudo-random hash (lygia/math/rand inlined) ─────────────────────────────
 float rand(vec2 co) {
     return fract(sin(dot(co, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// ── Curl-noise-like coherent angle field ──────────────────────────────────────
+// Samples a 2D gradient field at (p * field_scale + time_offset) and returns
+// an angle in [0, TAU].  Uses two orthogonal hash values to form a smooth
+// pseudo-rotation.  The time offset makes the field advect — arrows appear to
+// "flow" across the cell as u_time increases.
+//
+// Implementation: simple bilinear-like interpolation on a hash grid.
+// Not true curl noise but gives the same coherent, divergence-free look at
+// the scale of a single cell (where we only need O(arrowCount^2) samples).
+float curlAngle(vec2 p, float fieldScale, float t) {
+    // Advect p gently in time — creates a slowly drifting flow
+    vec2 fp = p * fieldScale + vec2(t * 0.18, t * 0.11);
+
+    // Integer cell and fractional parts of the scaled/advected coordinate
+    vec2 i = floor(fp);
+    vec2 f = fract(fp);
+
+    // Smooth interpolation weights (smoothstep)
+    vec2 u = f * f * (3.0 - 2.0 * f);
+
+    // Hash at four corners of the noise cell → angles
+    float a00 = rand(i + vec2(0.0, 0.0)) * TAU;
+    float a10 = rand(i + vec2(1.0, 0.0)) * TAU;
+    float a01 = rand(i + vec2(0.0, 1.0)) * TAU;
+    float a11 = rand(i + vec2(1.0, 1.0)) * TAU;
+
+    // Bilinear mix of unit-circle components to avoid angle wraparound artefacts
+    vec2 v00 = vec2(cos(a00), sin(a00));
+    vec2 v10 = vec2(cos(a10), sin(a10));
+    vec2 v01 = vec2(cos(a01), sin(a01));
+    vec2 v11 = vec2(cos(a11), sin(a11));
+
+    vec2 vx0 = mix(v00, v10, u.x);
+    vec2 vx1 = mix(v01, v11, u.x);
+    vec2 vf  = mix(vx0, vx1, u.y);
+
+    return atan(vf.y, vf.x);  // returns angle in (-PI, PI]
 }
 
 void main() {
@@ -439,23 +498,39 @@ void main() {
     float n     = u_arrowCount;
     vec2  cell  = floor(uv * n);
     vec2  local = fract(uv * n) - 0.5;
+
+    // ── Static per-cell jitter (from u_angleSpread) ───────────────────────────
     float jitter = (rand(cell) * 2.0 - 1.0) * u_angleSpread;
-    float angle  = jitter;
-    float scale = 0.45;
+
+    // ── Curl-noise time-driven base angle ─────────────────────────────────────
+    // curlAngle is sampled at the cell's UV centre so all pixels within a cell
+    // share the same flowing angle, preserving the grid aesthetic.
+    vec2 cellCentre = (cell + 0.5) / n;   // [0,1] UV of cell centre
+    float flowAngle = curlAngle(cellCentre, u_field_scale, u_time);
+
+    float angle = flowAngle + jitter;
+
+    // u_arrow_length: [0.1, 1.0] normalised scale; 0.45 was the M046 default.
+    float scale = clamp(u_arrow_length * 0.9, 0.1, 0.9);
+
     float mask  = drawArrow(local, angle, scale);
     finalColor = vec4(u_fillColor, mask * u_opacity);
 }
 `;
 
+// ── WGSL stub — kept minimal; runtime uses GL path ──────────────────────────
 const CIL_VECTOR_WGSL = /* wgsl */`
 @group(0) @binding(1) var uTexture: texture_2d<f32>;
 @group(0) @binding(2) var uSampler: sampler;
 
 struct CilVectorUniforms {
-  u_fillColor:   vec3<f32>,
-  u_opacity:     f32,
-  u_arrowCount:  f32,
-  u_angleSpread: f32,
+  u_fillColor:    vec3<f32>,
+  u_opacity:      f32,
+  u_arrowCount:   f32,
+  u_angleSpread:  f32,
+  u_time:         f32,
+  u_arrow_length: f32,
+  u_field_scale:  f32,
 }
 
 @group(1) @binding(0) var<uniform> cilVectorUniforms : CilVectorUniforms;
@@ -465,45 +540,116 @@ fn mainFragment(
   @builtin(position) position: vec4<f32>,
   @location(0) uv : vec2<f32>
 ) -> @location(0) vec4<f32> {
-  return textureSample(uTexture, uSampler, uv) * vec4<f32>(cilVectorUniforms.u_fillColor, cilVectorUniforms.u_opacity);
+  // WGSL stub: passthrough — full WGSL port deferred (WebGL path used in practice)
+  return textureSample(uTexture, uSampler, uv)
+       * vec4<f32>(cilVectorUniforms.u_fillColor, cilVectorUniforms.u_opacity);
 }
 `;
 
+// ── CilVectorSDFFilter options ────────────────────────────────────────────────
+
 export interface CilVectorSDFFilterOptions {
-  /** Arrow fill colour [r,g,b] 0-1. Defaults to cil-vector green (0x66BB6A). */
+  /**
+   * Arrow fill colour [r,g,b] 0-1.
+   * Defaults to cil-vector green (0x66BB6A → [0.4, 0.733, 0.416]).
+   */
   fillColor?: [number, number, number];
   /** Overall opacity (0-1). @default 1.0 */
   opacity?: number;
   /** Arrows per row/column in the grid. @default 4 */
   arrowCount?: number;
-  /** Max random angle spread in radians. @default 0.4 */
+  /** Max static random angle spread in radians (applied on top of curl noise). @default 0.4 */
   angleSpread?: number;
+  /**
+   * Starting animation time (seconds). Driven by Ticker each frame to make
+   * the vector field flow.  Equivalent to `filter.time = elapsed` in the Ticker.
+   * @default 0
+   */
+  time?: number;
+  /**
+   * Normalised arrow length scale relative to cell half-size [0.1, 1.0].
+   * Maps from species_params.arrow_length (pixels) via px / (min(w,h)/2).
+   * @default 0.5
+   */
+  arrowLength?: number;
+  /**
+   * Curl-noise spatial frequency — higher = tighter, more turbulent swirls.
+   * Maps from species_params.field_scale.
+   * @default 2.5
+   */
+  fieldScale?: number;
 }
 
+// ── CilVectorSDFFilter ────────────────────────────────────────────────────────
+
 /**
- * CilVectorSDFFilter — PixiJS Filter wrapping the cil-vector.frag SDF arrow-grid shader.
+ * CilVectorSDFFilter — PixiJS Filter wrapping the cil-vector SDF arrow-grid shader.
  *
- * Renders a grid of randomised-angle arrows via polySDF (triangle head) +
- * sdBox (shaft).  Designed for cil-vector (embedding / positional-encoding) cells.
+ * M062 upgrade: adds Ticker-driven `u_time` uniform so the vector field flows
+ * coherently over time using a bilinear-interpolated curl-noise angle field.
+ * Each arrow's direction is the sum of:
+ *   • a per-cell static jitter (u_angleSpread)
+ *   • a time-advected smooth noise angle (u_field_scale, u_time)
+ *
+ * Designed for cil-vector (embedding / positional-encoding) cells where the
+ * flowing arrows visualise information streaming through the embedding space.
+ *
+ * ## Ticker integration (M062)
+ * The caller must drive `filter.time` each frame to animate the vector field:
+ *
+ *   const filter = new CilVectorSDFFilter({ fillColor: [0.4, 0.73, 0.42] });
+ *   container.__vectorFilter = filter;
+ *   // In the app.ticker.add() loop:
+ *   filter.time = elapsed;  // seconds since start
+ *
+ * ## Uniform mapping from species_params (M062)
+ *   arrow_count  → arrowCount  (grid density)
+ *   angle_spread → angleSpread (static jitter, radians)
+ *   arrow_length → arrowLength (px → px/(min(w,h)/2), normalised [0.1, 1.0])
+ *   field_scale  → fieldScale  (noise frequency, direct)
  *
  * @example
- *   const filter = new CilVectorSDFFilter({ fillColor: [0.4, 0.73, 0.42] });
- *   patternGraphics.filters = [filter];
+ *   const vectorFilter = new CilVectorSDFFilter({
+ *     fillColor:   [0.4, 0.733, 0.416],
+ *     arrowCount:  5,
+ *     angleSpread: 0.8,
+ *     arrowLength: 0.5,
+ *     fieldScale:  2.5,
+ *   });
+ *   patternGraphics.filters = [vectorFilter];
+ *   app.ticker.add(() => { vectorFilter.time += app.ticker.deltaMS / 1000; });
  */
 export class CilVectorSDFFilter extends Filter {
+  /** Default options — calibrated to cil-vector species visual style. */
   public static readonly DEFAULT_OPTIONS: Required<CilVectorSDFFilterOptions> = {
-    fillColor:   [0.4, 0.733, 0.416],  // 0x66BB6A
+    fillColor:   [0.4, 0.733, 0.416],  // 0x66BB6A — cil-vector green
     opacity:     1.0,
     arrowCount:  4,
     angleSpread: 0.4,
+    time:        0,
+    arrowLength: 0.5,   // ~midpoint; maps from arrow_length_px / halfMin
+    fieldScale:  2.5,   // moderate curl-noise frequency
   };
 
+  /**
+   * Typed uniform accessors (backed by the `cilVectorUniforms` resource).
+   * Updated in apply() before each draw call.
+   */
   public uniforms: {
-    u_fillColor:   Float32Array;
-    u_opacity:     number;
-    u_arrowCount:  number;
-    u_angleSpread: number;
+    u_fillColor:    Float32Array;   // vec3
+    u_opacity:      number;
+    u_arrowCount:   number;
+    u_angleSpread:  number;
+    u_time:         number;
+    u_arrow_length: number;
+    u_field_scale:  number;
   };
+
+  /**
+   * Current animation time in seconds.
+   * Set this every frame via the PixiJS Ticker to animate the vector field flow.
+   */
+  public time: number;
 
   constructor(options?: CilVectorSDFFilterOptions) {
     const opts = { ...CilVectorSDFFilter.DEFAULT_OPTIONS, ...options };
@@ -524,26 +670,38 @@ export class CilVectorSDFFilter extends Filter {
       glProgram,
       resources: {
         cilVectorUniforms: {
-          u_fillColor:   { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
-          u_opacity:     { value: opts.opacity,     type: 'f32' },
-          u_arrowCount:  { value: opts.arrowCount,  type: 'f32' },
-          u_angleSpread: { value: opts.angleSpread, type: 'f32' },
+          u_fillColor:    { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
+          u_opacity:      { value: opts.opacity,      type: 'f32' },
+          u_arrowCount:   { value: opts.arrowCount,   type: 'f32' },
+          u_angleSpread:  { value: opts.angleSpread,  type: 'f32' },
+          u_time:         { value: opts.time,         type: 'f32' },
+          u_arrow_length: { value: opts.arrowLength,  type: 'f32' },
+          u_field_scale:  { value: opts.fieldScale,   type: 'f32' },
         },
       },
     });
 
     this.uniforms = this.resources.cilVectorUniforms.uniforms as typeof this.uniforms;
+    this.time = opts.time;
   }
 
+  /**
+   * apply() — called by PixiJS every frame this filter is active.
+   * Syncs `this.time` → `u_time` uniform before rendering.
+   */
   public override apply(
     filterManager: FilterSystem,
     input: Texture,
     output: RenderSurface,
     clearMode: boolean,
   ): void {
+    this.uniforms.u_time = this.time;
     filterManager.applyFilter(this, input, output, clearMode);
   }
 
+  // ── Uniform accessors ──────────────────────────────────────────────────────
+
+  /** Arrow fill colour as [r, g, b] 0–1. */
   get fillColor(): Float32Array { return this.uniforms.u_fillColor; }
   set fillColor(value: [number, number, number] | Float32Array) {
     this.uniforms.u_fillColor[0] = value[0];
@@ -551,14 +709,25 @@ export class CilVectorSDFFilter extends Filter {
     this.uniforms.u_fillColor[2] = value[2];
   }
 
+  /** Overall opacity (0–1). */
   get opacity(): number { return this.uniforms.u_opacity; }
   set opacity(value: number) { this.uniforms.u_opacity = value; }
 
+  /** Arrows per row/column. */
   get arrowCount(): number { return this.uniforms.u_arrowCount; }
   set arrowCount(value: number) { this.uniforms.u_arrowCount = value; }
 
+  /** Static per-cell angle jitter in radians. */
   get angleSpread(): number { return this.uniforms.u_angleSpread; }
   set angleSpread(value: number) { this.uniforms.u_angleSpread = value; }
+
+  /** Normalised arrow length scale [0.1, 1.0]. */
+  get arrowLength(): number { return this.uniforms.u_arrow_length; }
+  set arrowLength(value: number) { this.uniforms.u_arrow_length = value; }
+
+  /** Curl-noise spatial frequency. */
+  get fieldScale(): number { return this.uniforms.u_field_scale; }
+  set fieldScale(value: number) { this.uniforms.u_field_scale = value; }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
