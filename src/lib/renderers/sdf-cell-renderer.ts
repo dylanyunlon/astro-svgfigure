@@ -27,6 +27,7 @@
 import {
   Application,
   Container,
+  Filter,
   Graphics,
   Mesh,
   MeshGeometry,
@@ -43,7 +44,14 @@ import type { CellDescriptor, EdgeDescriptor } from './pixi-cell-renderer';
 // For species === 'cil-eye', mount CilEyeSDFFilter on a Graphics quad overlay
 // instead of using the inline speciesEye() SDF function.  Uniforms are injected
 // from agent_params.json species_params (via CellDescriptor.params.species_params).
-import { CilEyeSDFFilter } from './sdf-species-filter';
+import {
+  CilEyeSDFFilter,
+  CilBoltSDFFilter,
+  CilVectorSDFFilter,
+  CilPlusSDFFilter,
+  CilArrowRightSDFFilter,
+} from './sdf-species-filter';
+import { getSpeciesPalette } from './cell-color-palette';
 
 // ── SDF Fragment Shader (GLSL ES 3.0) ───────────────────────────────────────
 // All species patterns are pure math — resolution-independent.
@@ -319,6 +327,66 @@ function buildCilEyeFilterContainer(desc: CellDescriptor): Container {
   container.addChild(pattern);
 
   return container;
+}
+
+// ── M211: createSpeciesSDFFilter — species → SDF Filter routing ─────────────
+//
+// Factory that maps a species string to the corresponding SDF Filter instance,
+// using each filter class's fromSpeciesParams factory (or direct constructor for
+// CilBoltSDFFilter which lacks one).  Fill colour is resolved from the
+// JSON-driven species palette (getSpeciesPalette) so callers don't need to
+// hard-code colour tables.
+//
+// @param species — species identifier (e.g. 'cil-eye', 'cil-bolt', ...)
+// @param cellW   — cell width in pixels (for px → NDC normalisation)
+// @param cellH   — cell height in pixels
+// @param sp      — species_params from agent_params.json (optional)
+// @returns         the matching SDF Filter, or null for unknown species
+
+export function createSpeciesSDFFilter(
+  species: string,
+  cellW: number,
+  cellH: number,
+  sp?: Record<string, unknown>,
+): Filter | null {
+  // Resolve fill colour from JSON-driven palette → [r, g, b] 0-1
+  const palette = getSpeciesPalette(species);
+  const primary = palette.primary;
+  const fillColor: [number, number, number] = [
+    ((primary >> 16) & 0xff) / 255,
+    ((primary >>  8) & 0xff) / 255,
+    ( primary        & 0xff) / 255,
+  ];
+
+  switch (species) {
+    case 'cil-eye':
+      return CilEyeSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp);
+
+    case 'cil-bolt':
+      // CilBoltSDFFilter has no fromSpeciesParams — construct directly with
+      // species_params mapping: zigzag_segments → zigzagCount, amplitude → amplitude
+      return new CilBoltSDFFilter({
+        fillColor,
+        opacity:     1.0,
+        zigzagCount: (sp?.zigzag_segments as number | undefined)
+                     ?? (sp?.num_rays      as number | undefined)
+                     ?? 6,
+        amplitude:   (sp?.amplitude as number | undefined) ?? 0.35,
+        time:        0,
+      });
+
+    case 'cil-vector':
+      return CilVectorSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp);
+
+    case 'cil-plus':
+      return CilPlusSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp);
+
+    case 'cil-arrow-right':
+      return CilArrowRightSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp);
+
+    default:
+      return null;
+  }
 }
 
 // ── Export: SDF renderer entry point ─────────────────────────────────────────
