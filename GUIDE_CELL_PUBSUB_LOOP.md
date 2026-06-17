@@ -47,7 +47,7 @@
 - **POST 回调**: 通过 `/api/cell/publish` 将计算结果推送回主系统
 - **递归调度**: 小弟也可作为管理者，通过 claude-hk-config 调度自己的小弟
 
-**关键约束：小弟只生成 JSON 参数，不生成 SVG**。SVG 渲染由 `cell_component.py` 从参数构建，或由绝对静止模式下的主 Claude 直接生成。
+**关键约束：小弟只生成 JSON 参数，不生成 SVG**。SVG 由绝对静止模式下的主 Claude 直接生成（可参考 Species 的 icon 风格）。
 
 ---
 
@@ -423,7 +423,7 @@ channels/cell/{cell_id}/
 ├── status.json          # cell_agent dispatch 后的状态
 ├── bbox.json            # 当前 bbox
 ├── out.json             # 输出数据
-├── svg.svg              # 该 cell 的 SVG 片段 (绝对静止: 主 Claude 直接生成)
+├── svg.svg              # 该 cell 的 SVG 片段 (绝对静止模式: 主 Claude 直接生成，小弟不参与)
 ├── msdf.png             # MSDF 距离场纹理
 └── msdf_preview.png     # MSDF 预览图
 ```
@@ -487,4 +487,4 @@ cd channels && python cell_agent.py --all  # 真实调度小弟
 ---
 
 *本文档聚焦 cell-pubsub-loop 分支的动态世界 pipeline。*
-*SVG 生成: 绝对静止模式下由主 Claude 直接生成，小弟 Claude 只负责 JSON 参数计算。*
+*SVG 生成: 绝对静止模式下由主 Claude 直接生成（可参考 Species icon 风格），小弟 Claude 只负责 JSON 参数计算，绝不生成 SVG。*
