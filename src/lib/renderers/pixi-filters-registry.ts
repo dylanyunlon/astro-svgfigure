@@ -239,6 +239,243 @@ export function createCellGlow(mode: CellGlowMode): GlowFilter {
   return new GlowFilter(CELL_GLOW_PRESETS[mode]);
 }
 
+// ─── Per-cell filter chain (M132) ──────────────────────────────────────────
+//
+// buildCellFilterChain(container, species, bloomVariant)
+//   → reads channels/physics/bloom_variants.json     for AdvancedBloomFilter params
+//   → reads channels/physics/species_visual_traits.json for GlowFilter + GodrayFilter params
+//   → assigns container.filters = [GlowFilter, AdvancedBloomFilter, GodrayFilter]
+//
+// This consolidates all three per-cell post-process filters into a single call,
+// driven entirely by the physics JSON data rather than hard-coded inline values.
+
+import type { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
+
+// ── JSON shape: channels/physics/bloom_variants.json ──────────────────────
+interface BloomVariantEntry {
+  bloomStrength: number;
+  bloomRadius: number;
+  luminosityThreshold: number;
+}
+
+/**
+ * bloom_variants.json keyed by scene/variant name.
+ * Underscore-prefixed keys (_source, _note) are metadata and excluded from lookup.
+ */
+type BloomVariantsMap = Record<string, BloomVariantEntry>;
+
+// ── JSON shape: channels/physics/species_visual_traits.json ───────────────
+interface SpeciesVisualColor {
+  primary: string;
+  secondary: string;
+  glow: string;        // hex color string used for GlowFilter color
+  hex_css: string;
+}
+
+interface SpeciesVisualTraitEntry {
+  _role: string;
+  color: SpeciesVisualColor;
+  scale: {
+    base_radius: number;
+    min_radius: number;
+    max_radius: number;
+    aspect_ratio: number;
+  };
+  internal_structure: {
+    count: number;
+    type: string;
+    description: string;
+  };
+  animation_hint: string;
+}
+
+type SpeciesVisualTraitsMap = Record<string, SpeciesVisualTraitEntry>;
+
+// ── Static JSON imports (bundler-resolved, channels/physics/) ─────────────
+// These are imported as JSON modules; the bundler (Vite/Astro) handles them.
+import bloomVariantsData from '../../../channels/physics/bloom_variants.json';
+import speciesVisualTraitsData from '../../../channels/physics/species_visual_traits.json';
+
+const BLOOM_VARIANTS  = bloomVariantsData as BloomVariantsMap;
+const SPECIES_TRAITS  = speciesVisualTraitsData as SpeciesVisualTraitsMap;
+
+/**
+ * Default bloom variant used when the caller doesn't specify one.
+ * "home" is the strongest scene bloom (bloomStrength 3.82) — visually prominent.
+ */
+const DEFAULT_BLOOM_VARIANT = 'home';
+
+/**
+ * Godray presets per species, derived from animation_hint and internal_structure
+ * in species_visual_traits.json. Each species gets a tuned GodrayFilter config
+ * that complements its visual identity.
+ */
+function buildGodrayOptions(
+  species: string,
+  traits: SpeciesVisualTraitEntry,
+): ConstructorParameters<typeof GodrayFilter>[0] {
+  const structureCount = traits.internal_structure.count;
+  const hint           = traits.animation_hint;
+
+  // Base godray config — species-specific overrides below
+  const base = {
+    alpha: 0.55,
+    time:  0,
+  };
+
+  // Radial / pulsing species get focal-point (non-parallel) rays
+  if (hint === 'pulse_radial' || hint === 'spin_loop' || hint === 'pulse_nodes') {
+    return {
+      ...base,
+      angle:      30,
+      gain:       0.4 + structureCount * 0.02,   // more internal structures → slightly brighter
+      lacunarity: 2.5,
+      parallel:   false,
+      center:     { x: 0, y: 0 },                // caller should reposition to cell centre
+    };
+  }
+
+  // Directional / flow species get parallel rays
+  if (hint === 'drift_horizontal' || hint === 'flow_right') {
+    return {
+      ...base,
+      angle:      15,
+      gain:       0.25,
+      lacunarity: 3.5,
+      parallel:   true,
+    };
+  }
+
+  // Electric / flash species get pulsing burst from top
+  if (hint === 'flash_angular') {
+    return {
+      ...base,
+      angle:      0,
+      gain:       0.55,
+      lacunarity: 2.0,
+      parallel:   false,
+      center:     { x: 0, y: 0 },
+      alpha:      0.7,
+    };
+  }
+
+  // Stacking / converging species get moderate parallel rays
+  if (hint === 'stack_rise' || hint === 'converge_merge') {
+    return {
+      ...base,
+      angle:      45,
+      gain:       0.3,
+      lacunarity: 3.0,
+      parallel:   true,
+      alpha:      0.4,
+    };
+  }
+
+  // Sweep / blink / other — moderate focal rays as fallback
+  return {
+    ...base,
+    angle:      25,
+    gain:       0.35,
+    lacunarity: 2.8,
+    parallel:   true,
+  };
+}
+
+/**
+ * Parse a CSS hex color string (#RRGGBB or #RGB) into a numeric 0xRRGGBB value.
+ */
+function hexToNumber(hex: string): number {
+  const cleaned = hex.replace('#', '');
+  if (cleaned.length === 3) {
+    const r = cleaned[0], g = cleaned[1], b = cleaned[2];
+    return parseInt(`${r}${r}${g}${g}${b}${b}`, 16);
+  }
+  return parseInt(cleaned, 16);
+}
+
+/**
+ * Available bloom variant names (keys from bloom_variants.json, excluding metadata).
+ */
+export type BloomVariantName = string;
+
+/**
+ * buildCellFilterChain — construct and assign the per-cell PixiJS filter chain.
+ *
+ * Reads physics JSON data to configure three filters in a fixed order:
+ *   1. GlowFilter          — species glow color from species_visual_traits.json
+ *   2. AdvancedBloomFilter  — bloom params from bloom_variants.json
+ *   3. GodrayFilter         — species-tuned godrays from species_visual_traits.json
+ *
+ * @param container     The PixiJS Container for the cell
+ * @param species       Species key (e.g. 'cil-eye', 'cil-bolt') from cell_registry
+ * @param bloomVariant  Key into bloom_variants.json (default: 'home')
+ * @returns             The three filter instances for external animation/mutation
+ *
+ * @example
+ * const { glowFilter, bloomFilter, godrayFilter } =
+ *   buildCellFilterChain(cellContainer, 'cil-eye', 'homebloom');
+ * // Animate godrayFilter.time in a Ticker callback
+ */
+export function buildCellFilterChain(
+  container: Container,
+  species: string,
+  bloomVariant: string = DEFAULT_BLOOM_VARIANT,
+): {
+  glowFilter: GlowFilter;
+  bloomFilter: AdvancedBloomFilter;
+  godrayFilter: GodrayFilter;
+} {
+  // ── 1. GlowFilter — species glow color ──────────────────────────────────
+  const traits = SPECIES_TRAITS[species];
+  const glowColor  = traits ? hexToNumber(traits.color.glow) : 0xFFFFFF;
+  const glowFilter = new GlowFilter({
+    distance:      10,
+    outerStrength: 3.0,
+    innerStrength: 0.5,
+    color:         glowColor,
+    alpha:         0.85,
+    quality:       0.15,
+    knockout:      false,
+  });
+
+  // ── 2. AdvancedBloomFilter — bloom variant params ───────────────────────
+  const bloom = BLOOM_VARIANTS[bloomVariant] ?? BLOOM_VARIANTS[DEFAULT_BLOOM_VARIANT];
+  const bloomFilter = new AdvancedBloomFilter({
+    threshold:  bloom.luminosityThreshold,
+    bloomScale: bloom.bloomStrength,
+    brightness: 1.0,
+    blur:       bloom.bloomRadius * 4,   // bloomRadius (0–1 range) scaled to blur strength
+    quality:    4,
+  });
+
+  // ── 3. GodrayFilter — species-tuned godrays ─────────────────────────────
+  const godrayOpts   = traits
+    ? buildGodrayOptions(species, traits)
+    : { angle: 30, gain: 0.35, lacunarity: 2.5, parallel: true, alpha: 0.5, time: 0 };
+  const godrayFilter = new GodrayFilter(godrayOpts);
+
+  // ── Assign the ordered filter chain ─────────────────────────────────────
+  container.filters = [glowFilter, bloomFilter, godrayFilter] as any[];
+
+  return { glowFilter, bloomFilter, godrayFilter };
+}
+
+/**
+ * getBloomVariantNames — list all available bloom variant keys.
+ * Excludes metadata keys (_source, _note).
+ */
+export function getBloomVariantNames(): string[] {
+  return Object.keys(BLOOM_VARIANTS).filter(k => !k.startsWith('_'));
+}
+
+/**
+ * getSpeciesNames — list all species keys from species_visual_traits.json.
+ * Excludes metadata keys (_comment).
+ */
+export function getSpeciesNames(): string[] {
+  return Object.keys(SPECIES_TRAITS).filter(k => !k.startsWith('_'));
+}
+
 // ─── Re-export all constructors for direct use ──────────────────────────────
 export {
   // advanced-bloom (AT HydraBloom — upstream/pixijs-filters)
@@ -262,4 +499,3 @@ export {
   // fx
   GlitchFilter, RGBSplitFilter, ConvolutionFilter,
 };
-# M030: GodrayFilter — 已在 M167 pixijs-filters全链 中实现
