@@ -1407,9 +1407,10 @@ export async function renderCellGraph(
   const bboxMap = new Map<string, { x: number; y: number; w: number; h: number }>();
   for (const c of cells) bboxMap.set(c.cell_id, c.bbox);
 
-  // Draw edges first (behind cells)
+  // M047: Draw edges first — zIndex -1 guarantees edge layer is below all
+  // cell containers (cell.z ≥ 1) regardless of incoming data.
   const edgeLayer = new Graphics();
-  edgeLayer.zIndex = 0;
+  edgeLayer.zIndex = -1;
   drawEdges(edgeLayer, edges, bboxMap);
   app.stage.addChild(edgeLayer);
 
@@ -1524,8 +1525,9 @@ export async function renderCellGraphLive(
 
   app.stage.sortableChildren = true;
 
+  // M047: edgeLayer zIndex -1 — guaranteed below all cell containers (cell.z ≥ 1)
   const edgeLayer = new Graphics();
-  edgeLayer.zIndex = 0;
+  edgeLayer.zIndex = -1;
   app.stage.addChild(edgeLayer);
 
   // ── GPU edge particle system (WebGL2 Transform Feedback) ───────────────

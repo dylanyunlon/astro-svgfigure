@@ -2,6 +2,12 @@
 /**
  * /pipeline — Astro 集成页面 (xiaodi #17)
  *
+ * M047: pipeline页面初始化整合
+ *   页面加载时: fetch('/api/cells') → renderCellGraph(canvas, cells, edges)
+ *   canvas 元素直接传给 PixiJS Application
+ *   Refresh (Next Epoch): POST '/api/cell-loop' → re-fetch → re-render
+ *   edge 层 zIndex = -1, cell 层 zIndex = cell.z (≥1) → edge 始终在 cell 之下
+ *
  * 三栏布局:
  *   左栏  — Cell 列表 (从 /api/cells 加载 params.json)
  *   中栏  — PixiJS 全屏渲染画布 (渲染 CellDescriptor[])
@@ -399,7 +405,10 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
     } catch { /* silent — epochs are optional */ }
   }
 
-  // ── Fetch + render cells ──────────────────────────────────────────────────
+  // ── M047: Fetch /api/cells → renderCellGraph() ───────────────────────────
+  // Init flow: fetch('/api/cells') → build EdgeDescriptor[] → size canvas →
+  //   renderCellGraph(canvas, cells, edges) via PixiJS.
+  // Refresh flow (POST /api/cell-loop): triggerEpoch() → fetchAndRender() below.
   async function fetchAndRender() {
     showStatus('Fetching cells…')
     const res = await fetch('/api/cells')
@@ -415,13 +424,15 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
     setConnected(true)
     hideError()
 
-    // Fit canvas to container
+    // Fit canvas to container — use fallback dimensions if layout not yet settled
     const rect = wrap.getBoundingClientRect()
-    canvas.width  = Math.floor(rect.width)
-    canvas.height = Math.floor(rect.height)
+    canvas.width  = Math.floor(rect.width)  || canvas.offsetWidth  || 800
+    canvas.height = Math.floor(rect.height) || canvas.offsetHeight || 600
 
     showStatus(`Rendering ${cells.length} cells (${renderMode})…`)
 
+    // M047: build edges from cell topology; edges are rendered below cells
+    // (edgeLayer.zIndex = -1 in pixi-cell-renderer, cells use cell.z ≥ 1)
     const edges = buildEdges(cells)
 
     if (pixiApp) {
@@ -429,6 +440,7 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
       pixiApp = null
     }
 
+    // M047: pass canvas element to PixiJS via renderCellGraph / renderCellGraphSDF
     if (renderMode === 'pixi') {
       pixiApp = await renderCellGraph(canvas, cells, edges)
     } else {
@@ -508,7 +520,7 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
 
   runPipelineBtn.addEventListener('click', runPipeline)
 
-  // ── Trigger epoch + re-render ─────────────────────────────────────────────
+  // ── M047 Refresh: POST /api/cell-loop → re-fetch → re-render ─────────────
   async function triggerEpoch() {
     if (running) return
     running = true
@@ -517,7 +529,9 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
 
     try {
       showStatus('Triggering epoch…')
+      // M047: POST /api/cell-loop → advance epoch in backend
       await fetch('/api/cell-loop', { method: 'POST' })
+      // M047: re-fetch /api/cells → re-render via renderCellGraph
       await fetchAndRender()
       await fetchEpochs()
     } catch (err: any) {
@@ -585,11 +599,13 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
     }, 350)
   }).observe(wrap)
 
-  // ── Bootstrap: load initial state ─────────────────────────────────────────
+  // ── M047 Bootstrap: page load → fetch /api/cells → renderCellGraph() ────────
+  // On page load, immediately attempt to fetch current cell state and render.
+  // If backend is offline the error overlay is shown (no epoch triggered).
   ;(async () => {
-    // Try to load existing cells without triggering a new epoch
     try {
       showStatus('Loading current state…')
+      // M047 init: fetch /api/cells → renderCellGraph(canvas, cells, edges)
       await fetchAndRender()
       await fetchEpochs()
     } catch {
