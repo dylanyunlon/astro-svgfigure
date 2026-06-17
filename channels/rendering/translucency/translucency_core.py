@@ -160,11 +160,11 @@ class AstroCellTranslucencyRenderer:
         self,
         cell_entries: list[dict],
         vis_set: set[str],
-    ) -> str:
+    ) -> dict:
         """执行半透明渲染通道 — 镜像 RenderTranslucency。
 
         筛选出可见且不透明度低于阈值的 cell，按 z-layer 降序（从远到近）
-        排列后执行前向 Alpha 合成，输出独立的半透明层 ``<g>`` 分组。
+        排列后执行前向 Alpha 合成，输出独立的半透明层参数字典。
 
         Parameters
         ----------
@@ -175,8 +175,9 @@ class AstroCellTranslucencyRenderer:
 
         Returns
         -------
-        str
-            半透明层 SVG 片段字符串（``<g id="translucency-layer">…</g>``）。
+        dict
+            半透明层结构化参数字典，格式为
+            ``{"layer_id": "translucency-layer", "entries": [...]}``。
         """
         # 筛选半透明可见 cell（镜像 IsTranslucentBlendMode 检查）
         translucent = [
@@ -186,7 +187,7 @@ class AstroCellTranslucencyRenderer:
         ]
 
         if not translucent:
-            return '<g id="translucency-layer"/>'
+            return {"layer_id": "translucency-layer", "entries": []}
 
         # 按 z 降序排列 — 从远到近前向合成（镜像 translucent draw order）
         translucent.sort(key=lambda e: e.get("bbox", {}).get("z", 0.0), reverse=True)
@@ -197,8 +198,8 @@ class AstroCellTranslucencyRenderer:
         out_fmt = 1 if use_translucency_vector_path() else 0
         _transcode_rasterizer_args(bin_count, in_fmt, out_fmt)
 
-        # 生成各 cell 的半透明 SVG 片段
-        fragments: list[str] = []
+        # 生成各 cell 的半透明渲染参数
+        entries: list[dict] = []
         for entry in translucent:
             cid = entry["cell_id"]
             opacity = entry.get("opacity", 1.0)
@@ -206,20 +207,17 @@ class AstroCellTranslucencyRenderer:
             if not self._factory.should_compile_permutation("*", blend_mode):
                 blend_mode = "translucent"
             attrs = self._factory.prepare_svg_attrs(opacity, blend_mode)
-            attr_str = " ".join(f'{k}="{v}"' for k, v in attrs.items())
-            fragment = entry.get("svg_fragment", "")
-            fragments.append({
-                "tag": "g",
-                "data-cell-id": cid,
+            render_params = entry.get("render_params", {})
+            entries.append({
+                "cell_id": cid,
                 **attrs,
-                "children": fragment,
+                "render_params": render_params,
             })
             increment_perf_counter("visible_clusters", 1)
 
         return {
-            "tag": "g",
-            "id": "translucency-layer",
-            "children": fragments,
+            "layer_id": "translucency-layer",
+            "entries": entries,
         }
 
 
