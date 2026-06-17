@@ -3,6 +3,10 @@
  * frustum culling, lighting, light volumes, render target pool
  */
 
+import { Container } from 'pixi.js';
+import { GlowFilter } from '@pixi/filter-glow';
+import { DropShadowFilter } from '@pixi/filter-drop-shadow';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface Vec2 { x: number; y: number; }
@@ -580,3 +584,31 @@ function transformVec3(m: Mat4, v: Vec3): Vec3 {
 }
 
 function dot(a: Vec3, b: Vec3): number { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+// ─── Drawing / Filter Wrappers ───────────────────────────────────────────────
+
+export function drawRoundedRect(
+  g: { beginFill(c: number): void; drawRoundedRect(x: number, y: number, w: number, h: number, r: number): void; endFill(): void },
+  w: number,
+  h: number,
+  r: number,
+  fill: number,
+): void {
+  g.beginFill(fill);
+  g.drawRoundedRect(0, 0, w, h, r);
+  g.endFill();
+}
+
+export function wrapWithGlow(child: Container, color: number, strength: number): Container {
+  const c = new Container();
+  c.addChild(child);
+  c.filters = [new GlowFilter({ color, outerStrength: strength })];
+  return c;
+}
+
+export function wrapWithShadow(child: Container, color: number, blur: number): Container {
+  const c = new Container();
+  c.addChild(child);
+  c.filters = [new DropShadowFilter({ color, blur })];
+  return c;
+}
