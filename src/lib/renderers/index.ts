@@ -514,3 +514,38 @@ export type {
   C2DCellDescriptor,
   C2DEdgeDescriptor,
 } from './cell-env-detect';
+
+// ── M020: cell-compressed-tex — ASTC/ETC2/BC 压缩纹理 for 大 topology 图 ────────
+// CompressedTexProbe     — WebGL 扩展探测，缓存 ASTC/ETC2/BC 能力
+// CompressedTexManager   — 生命周期：alloc atlas / loadKTX / loadDDS / destroy
+// TopologyTexAtlas       — bin-packer: cell 列表 → atlas layout (AtlasTile[])
+// parseKTXBuffer()       — KTX ArrayBuffer → TextureSourceOptions (ASTC/ETC2)
+// parseDDSBuffer()       — DDS ArrayBuffer → TextureSourceOptions (BC7/BC3/BC1)
+// createTopologyTex()    — RGBA8 pixels → CompressedSource (software encoder)
+// selectBestFormat()     — 根据 CompressedTexCapabilities 选最佳 TEXTURE_FORMATS
+// estimateMemorySaving() — 压缩 vs RGBA8 显存节省率计算
+// buildCompressedTopology() — 一键工厂：probe + select + alloc，返回 AtlasRecord
+// LARGE_TOPOLOGY_THRESHOLD — 启用压缩的最小 cell 数量 (64)
+export {
+  CompressedTexProbe,
+  CompressedTexManager,
+  TopologyTexAtlas,
+  parseKTXBuffer,
+  parseDDSBuffer,
+  createTopologyTex,
+  selectBestFormat,
+  estimateTextureMemory,
+  estimateMemorySaving,
+  buildCompressedTopology,
+  LARGE_TOPOLOGY_THRESHOLD,
+  ASTC_BLOCK_4x4,
+  COMPRESSED_BLOCK_BYTES,
+  COMPRESSED_BLOCK_DIM,
+} from './cell-compressed-tex';
+export type {
+  CompressedTexCapabilities,
+  AtlasTile,
+  TopologyAtlasLayout,
+  TopologyTexOptions,
+  AtlasRecord,
+} from './cell-compressed-tex';
