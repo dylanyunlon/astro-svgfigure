@@ -41,6 +41,13 @@
  *   u_arrow_scale ← arrow_height (px) / min(w,h) * 2, clamped [0.1, 1.5]
  *   u_shaft_width ← arrow_width  (px) / min(w,h),     clamped [0.01, 0.5]
  *   Ticker 继续驱动 __arrowRightFilter.time 做水平滚动动画。
+ * M130: species_params → Graphics+GlowFilter+DropShadowFilter from JSON
+ *   buildCellContainer 从 composite_params.json 每个 cell 的 species_params 读取：
+ *   corner_radius → Graphics.roundRect 圆角半径（替代硬编码 8/12）
+ *   opacity       → container.alpha（优先级高于 top-level p.opacity）
+ *   glow_intensity → 基线 GlowFilter.outerStrength（持久发光，非 hover/select）
+ *   shadow_blur   → DropShadowFilter.blur（优先级高于 p.shadow.blur）
+ *   全部从 JSON 驱动，不硬编码。
  * M048: GodrayFilter per-species
  *   cil-vector → directional parallel GodrayFilter (angle 15°, high lacunarity)
  *   cil-bolt   → pulsing focal GodrayFilter (center=top, Ticker-driven gain oscillation)
@@ -524,10 +531,13 @@ function createGlowSprite(
   glowColor: number,
   species: string,
   bloomParams?: ParamsJson['bloom'],
+  cornerRadius?: number,
 ): Graphics {
   const glow = new Graphics();
   const pad = 20;
-  glow.roundRect(-pad, -pad, w + pad * 2, h + pad * 2, 12);
+  // M130: corner radius driven by species_params.corner_radius (JSON), fallback 12
+  const glowRadius = cornerRadius ?? 12;
+  glow.roundRect(-pad, -pad, w + pad * 2, h + pad * 2, glowRadius);
   glow.fill({ color: glowColor, alpha: 0.25 });
 
   // ── M044: Resolve AdvancedBloomFilter options ───────────────────────────
@@ -591,29 +601,44 @@ function buildCellContainer(desc: CellDescriptor): Container {
   const p = desc.params;
   const cols = getColours(species, p?.fill_color, p?.stroke_color);
   const speciesParams = p?.species_params;
-  const crowdingOpacity = (p?.opacity !== undefined) ? Math.max(0.15, Math.min(1, p.opacity)) : 1;
+  // M130: species_params.opacity takes priority over top-level p.opacity (JSON-driven)
+  const spOpacity = speciesParams?.opacity as number | undefined;
+  const crowdingOpacity = spOpacity !== undefined
+    ? Math.max(0.15, Math.min(1, spOpacity))
+    : (p?.opacity !== undefined) ? Math.max(0.15, Math.min(1, p.opacity)) : 1;
   const fontSize = p?.font_size ?? 11;
+
+  // M130: species_params.corner_radius → Graphics roundRect radius (JSON-driven, no hardcode)
+  const cornerRadius = (speciesParams?.corner_radius as number | undefined) ?? 8;
 
   const container = new Container();
   container.position.set(bbox.x, bbox.y);
   container.zIndex = z;
 
-  const glow = createGlowSprite(w, h, cols.glow, species, p?.bloom);
+  const glow = createGlowSprite(w, h, cols.glow, species, p?.bloom, cornerRadius);
   container.addChild(glow);
 
   const body = new Graphics();
-  body.roundRect(0, 0, w, h, 8);
+  // M130: corner_radius from species_params.corner_radius (JSON-driven, no hardcode)
+  body.roundRect(0, 0, w, h, cornerRadius);
   body.fill({ color: cols.fill, alpha: 0.9 });
-  body.roundRect(0, 0, w, h, 8);
+  body.roundRect(0, 0, w, h, cornerRadius);
   body.stroke({ color: cols.stroke, width: 1.5, alpha: 0.8 });
 
-  // ── DropShadowFilter from params.json shadow field ──────────────────────
-  if (p?.shadow) {
-    const { dx, dy, blur, opacity } = p.shadow;
+  // ── DropShadowFilter from params.json shadow field + species_params.shadow_blur (M130) ──
+  // M130: species_params.shadow_blur overrides p.shadow.blur when present;
+  // if no top-level shadow but species_params.shadow_blur exists, create a DropShadowFilter
+  // with sensible defaults for offset/opacity — fully JSON-driven, no hardcode.
+  const spShadowBlur = speciesParams?.shadow_blur as number | undefined;
+  if (p?.shadow || spShadowBlur !== undefined) {
+    const shadowDx      = p?.shadow?.dx      ?? 2;
+    const shadowDy      = p?.shadow?.dy      ?? 2;
+    const shadowBlur    = spShadowBlur       ?? p?.shadow?.blur    ?? 4;
+    const shadowOpacity = p?.shadow?.opacity  ?? 0.25;
     const dropShadow = new DropShadowFilter({
-      offset: { x: dx, y: dy },
-      blur,
-      alpha: opacity,
+      offset: { x: shadowDx, y: shadowDy },
+      blur: shadowBlur,
+      alpha: shadowOpacity,
       color: 0x000000,
       quality: 4,
     });
@@ -939,6 +964,34 @@ function buildCellContainer(desc: CellDescriptor): Container {
   // __glowMode:   'hover' | 'select' | null — 标记当前 glow 类型，用于去重
   (container as any).__glowFilter = null as GlowFilter | null;
   (container as any).__glowMode   = null as CellGlowMode | null;
+
+  // ── M130: baseline GlowFilter from species_params.glow_intensity ────────
+  // When species_params.glow_intensity is present in JSON, create a persistent
+  // GlowFilter whose outerStrength is driven by the JSON value.
+  // This is a baseline ambient glow independent of hover/select interaction;
+  // hover/select setGlow() will replace __glowFilter when triggered and
+  // restore the baseline when deactivated.
+  // The glow colour comes from the species palette (cols.glow).
+  const spGlowIntensity = speciesParams?.glow_intensity as number | undefined;
+  if (spGlowIntensity !== undefined && spGlowIntensity > 0) {
+    const baselineGlow = new GlowFilter({
+      distance:      10,
+      outerStrength: spGlowIntensity,
+      innerStrength: 0,
+      color:         cols.glow,
+      alpha:         0.85,
+      quality:       0.15,
+      knockout:      false,
+    });
+    (container as any).__baselineGlowFilter = baselineGlow;
+    // Append to __baseFilters so it persists across hover/select toggles
+    const currentBase = (container as any).__baseFilters as any[] ?? [];
+    currentBase.push(baselineGlow);
+    (container as any).__baseFilters = currentBase;
+    container.filters = currentBase.length > 0 ? currentBase : null;
+  } else {
+    (container as any).__baselineGlowFilter = null;
+  }
 
   // ── crowding_opacity: applies after fade-in completes ──────────────────
   // Store as userData so the poll loop can respect it when fading in
