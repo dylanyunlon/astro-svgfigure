@@ -1030,18 +1030,37 @@ export class CilPlusSDFFilter extends Filter {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// M046: CilArrowRightSDFFilter — cil-arrow-right.frag → PixiJS Filter
+// M064: CilArrowRightSDFFilter — cil-arrow-right SDF shader → PixiJS Filter (upgraded)
 // ══════════════════════════════════════════════════════════════════════════════
 //
 // Wraps src/lib/shaders/cil-arrow-right.frag (tiled scrolling chevron via lineSDF).
-// Adapts for PixiJS Filter context (vTextureCoord, finalColor).
-// The u_time uniform should be driven by the Ticker for scroll animation.
+// M064 upgrades M046 by replacing u_arrowWidth with two properly-named uniforms
+// that map directly from species_params in composite_params.json / params.json:
+//
+//   u_arrow_scale  — overall chevron size within each tiled cell; scales the SDF
+//                    control points by this factor.  Derived from:
+//                      arrow_height (px) / min(cell_w, cell_h) * 2  clamped [0.1, 1.5]
+//                    Default: 1.0 (unit-size chevron, same as original)
+//
+//   u_shaft_width  — stroke half-thickness in normalised [-1,1] space; replaces
+//                    the old u_arrowWidth.  Derived from:
+//                      arrow_width (px) / min(cell_w, cell_h)  clamped [0.01, 0.5]
+//                    Default: 0.08
+//
+//   u_time         — animation clock (seconds), drives horizontal scroll; set each
+//                    frame by the Ticker via __arrowRightFilter.time = elapsed.
+//
+// Adapts for PixiJS Filter context:
+//   - vTextureCoord replaces gl_FragCoord + u_bbox UV
+//   - finalColor replaces gl_FragColor
+//   - u_bbox / u_resolution removed (not needed in Filter)
 //
 // Uniforms:
-//   u_fillColor   (vec3) — chevron colour [r,g,b] 0-1
-//   u_opacity     (f32)  — overall opacity
-//   u_arrowWidth  (f32)  — stroke thickness [0..1]
-//   u_time        (f32)  — animation time (seconds), drives horizontal scroll
+//   u_fillColor   (vec3) — chevron colour [r,g,b] 0-1; from species fill colour
+//   u_opacity     (f32)  — overall opacity [0,1]
+//   u_arrow_scale (f32)  — chevron size scale factor [0.1, 1.5]; from arrow_height
+//   u_shaft_width (f32)  — stroke half-width in NDC [0.01, 0.5]; from arrow_width
+//   u_time        (f32)  — animation time (seconds), Ticker-driven scroll
 
 const CIL_ARROW_RIGHT_FRAGMENT = /* glsl */`
 in vec2 vTextureCoord;
@@ -1051,7 +1070,8 @@ uniform sampler2D uTexture;
 
 uniform vec3  u_fillColor;
 uniform float u_opacity;
-uniform float u_arrowWidth;
+uniform float u_arrow_scale;
+uniform float u_shaft_width;
 uniform float u_time;
 
 #ifndef FNC_SATURATE
@@ -1069,11 +1089,13 @@ float lineSDF(in vec2 st, in vec2 a, in vec2 b) {
 }
 #endif
 
-float sdArrowRight(vec2 p, float w) {
-    vec2 a1 = vec2(-0.45,  0.40);
-    vec2 b1 = vec2( 0.45,  0.0 );
-    vec2 a2 = vec2(-0.45, -0.40);
-    vec2 b2 = vec2( 0.45,  0.0 );
+// SDF chevron / arrow-right glyph pointing +X, centred at origin.
+// u_arrow_scale scales the control points; u_shaft_width is the half-stroke radius.
+float sdArrowRight(vec2 p, float scale, float w) {
+    vec2 a1 = vec2(-0.45,  0.40) * scale;
+    vec2 b1 = vec2( 0.45,  0.0 ) * scale;
+    vec2 a2 = vec2(-0.45, -0.40) * scale;
+    vec2 b2 = vec2( 0.45,  0.0 ) * scale;
     float d1 = lineSDF(p, a1, b1);
     float d2 = lineSDF(p, a2, b2);
     return min(d1, d2) - w;
@@ -1089,7 +1111,7 @@ void main() {
     vec2  tiled  = fract(uv * vec2(cols, rows) + scroll);
     vec2  lp     = tiled * 2.0 - 1.0;
 
-    float d    = sdArrowRight(lp, u_arrowWidth * 0.5);
+    float d    = sdArrowRight(lp, u_arrow_scale, u_shaft_width);
     float mask = smoothstep(0.02, -0.01, d);
 
     float fade  = smoothstep(0.0, 0.6, tiled.x);
@@ -1104,10 +1126,11 @@ const CIL_ARROW_RIGHT_WGSL = /* wgsl */`
 @group(0) @binding(2) var uSampler: sampler;
 
 struct CilArrowRightUniforms {
-  u_fillColor:  vec3<f32>,
-  u_opacity:    f32,
-  u_arrowWidth: f32,
-  u_time:       f32,
+  u_fillColor:   vec3<f32>,
+  u_opacity:     f32,
+  u_arrow_scale: f32,
+  u_shaft_width: f32,
+  u_time:        f32,
 }
 
 @group(1) @binding(0) var<uniform> cilArrowRightUniforms : CilArrowRightUniforms;
@@ -1117,6 +1140,7 @@ fn mainFragment(
   @builtin(position) position: vec4<f32>,
   @location(0) uv : vec2<f32>
 ) -> @location(0) vec4<f32> {
+  // WGSL stub: passthrough — full WGSL port deferred (WebGL path used in practice)
   return textureSample(uTexture, uSampler, uv) * vec4<f32>(cilArrowRightUniforms.u_fillColor, cilArrowRightUniforms.u_opacity);
 }
 `;
@@ -1126,8 +1150,19 @@ export interface CilArrowRightSDFFilterOptions {
   fillColor?: [number, number, number];
   /** Overall opacity (0-1). @default 1.0 */
   opacity?: number;
-  /** Stroke thickness in normalised space. @default 0.08 */
-  arrowWidth?: number;
+  /**
+   * Overall chevron size scale within each tiled cell.
+   * 1.0 = unit-size (fills most of the [-1,1] NDC tile).
+   * Derived from species_params.arrow_height / min(cell_w, cell_h) * 2, clamped [0.1, 1.5].
+   * @default 1.0
+   */
+  arrowScale?: number;
+  /**
+   * Stroke half-thickness in normalised [-1,1] space.
+   * Derived from species_params.arrow_width (px) / min(cell_w, cell_h), clamped [0.01, 0.5].
+   * @default 0.08
+   */
+  shaftWidth?: number;
   /** Starting animation time (seconds). @default 0 */
   time?: number;
 }
@@ -1135,33 +1170,43 @@ export interface CilArrowRightSDFFilterOptions {
 /**
  * CilArrowRightSDFFilter — PixiJS Filter wrapping the cil-arrow-right.frag SDF chevron shader.
  *
+ * M064 upgrade: adds `u_arrow_scale` and `u_shaft_width` uniforms mapped from
+ * species_params (arrow_height → arrowScale, arrow_width → shaftWidth), replacing
+ * the old single `arrowWidth` param.
+ *
  * Renders a 3×3 tiled scrolling chevron pattern using lineSDF.
  * The animation time drives horizontal scroll — set `filter.time` each frame via Ticker.
  * Designed for cil-arrow-right (skip connection / routing flow) cells.
  *
- * ## Ticker integration
+ * ## Ticker integration (M064)
  *   const filter = new CilArrowRightSDFFilter({ fillColor: [0.47, 0.565, 0.612] });
  *   container.__arrowRightFilter = filter;
  *   // In the app.ticker.add() loop:
  *   filter.time = elapsed;
  *
+ * ## species_params mapping (buildCellContainer)
+ *   arrowScale = clamp(arrow_height / min(w, h) * 2, 0.1, 1.5)  — chevron size
+ *   shaftWidth = clamp(arrow_width  / min(w, h),     0.01, 0.5)  — stroke thickness
+ *
  * @example
- *   const filter = new CilArrowRightSDFFilter({ arrowWidth: 0.08 });
+ *   const filter = new CilArrowRightSDFFilter({ arrowScale: 1.0, shaftWidth: 0.08 });
  *   patternGraphics.filters = [filter];
  */
 export class CilArrowRightSDFFilter extends Filter {
   public static readonly DEFAULT_OPTIONS: Required<CilArrowRightSDFFilterOptions> = {
-    fillColor:  [0.471, 0.565, 0.612],  // 0x78909C
+    fillColor:  [0.471, 0.565, 0.612],  // 0x78909C — cil-arrow-right slate
     opacity:    1.0,
-    arrowWidth: 0.08,
+    arrowScale: 1.0,
+    shaftWidth: 0.08,
     time:       0,
   };
 
   public uniforms: {
-    u_fillColor:  Float32Array;
-    u_opacity:    number;
-    u_arrowWidth: number;
-    u_time:       number;
+    u_fillColor:   Float32Array;
+    u_opacity:     number;
+    u_arrow_scale: number;
+    u_shaft_width: number;
+    u_time:        number;
   };
 
   /** Current animation time in seconds. Drive with Ticker for scroll animation. */
@@ -1186,10 +1231,11 @@ export class CilArrowRightSDFFilter extends Filter {
       glProgram,
       resources: {
         cilArrowRightUniforms: {
-          u_fillColor:  { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
-          u_opacity:    { value: opts.opacity,    type: 'f32' },
-          u_arrowWidth: { value: opts.arrowWidth, type: 'f32' },
-          u_time:       { value: opts.time,       type: 'f32' },
+          u_fillColor:   { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
+          u_opacity:     { value: opts.opacity,    type: 'f32' },
+          u_arrow_scale: { value: opts.arrowScale, type: 'f32' },
+          u_shaft_width: { value: opts.shaftWidth, type: 'f32' },
+          u_time:        { value: opts.time,       type: 'f32' },
         },
       },
     });
@@ -1198,6 +1244,7 @@ export class CilArrowRightSDFFilter extends Filter {
     this.time = opts.time;
   }
 
+  /** apply() — syncs this.time → u_time each frame before rendering. */
   public override apply(
     filterManager: FilterSystem,
     input: Texture,
@@ -1207,6 +1254,8 @@ export class CilArrowRightSDFFilter extends Filter {
     this.uniforms.u_time = this.time;
     filterManager.applyFilter(this, input, output, clearMode);
   }
+
+  // ── Uniform accessors ──────────────────────────────────────────────────────
 
   get fillColor(): Float32Array { return this.uniforms.u_fillColor; }
   set fillColor(value: [number, number, number] | Float32Array) {
@@ -1218,8 +1267,13 @@ export class CilArrowRightSDFFilter extends Filter {
   get opacity(): number { return this.uniforms.u_opacity; }
   set opacity(value: number) { this.uniforms.u_opacity = value; }
 
-  get arrowWidth(): number { return this.uniforms.u_arrowWidth; }
-  set arrowWidth(value: number) { this.uniforms.u_arrowWidth = value; }
+  /** Overall chevron scale [0.1, 1.5]. Maps from species_params.arrow_height. */
+  get arrowScale(): number { return this.uniforms.u_arrow_scale; }
+  set arrowScale(value: number) { this.uniforms.u_arrow_scale = value; }
+
+  /** Stroke half-width in NDC [0.01, 0.5]. Maps from species_params.arrow_width. */
+  get shaftWidth(): number { return this.uniforms.u_shaft_width; }
+  set shaftWidth(value: number) { this.uniforms.u_shaft_width = value; }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

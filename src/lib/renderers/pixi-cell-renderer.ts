@@ -36,6 +36,11 @@
  *   CilPlusSDFFilter 升级添加 u_time + u_pulse_speed + u_pulse_amp 脉冲发光动画。
  *   u_cross_radius ↔ arm_length, u_cross_width ↔ stroke_width 从 species_params 读取。
  *   Ticker 驱动 container.__plusFilter.time 做十字呼吸脉冲效果。
+ * M064: cil-arrow-right SDF Filter uniform 升级
+ *   CilArrowRightSDFFilter 新增 u_arrow_scale + u_shaft_width，替代原 u_arrowWidth：
+ *   u_arrow_scale ← arrow_height (px) / min(w,h) * 2, clamped [0.1, 1.5]
+ *   u_shaft_width ← arrow_width  (px) / min(w,h),     clamped [0.01, 0.5]
+ *   Ticker 继续驱动 __arrowRightFilter.time 做水平滚动动画。
  * M048: GodrayFilter per-species
  *   cil-vector → directional parallel GodrayFilter (angle 15°, high lacunarity)
  *   cil-bolt   → pulsing focal GodrayFilter (center=top, Ticker-driven gain oscillation)
@@ -716,7 +721,10 @@ function buildCellContainer(desc: CellDescriptor): Container {
     // Expose on container for Ticker-driven pulse animation (M063)
     (container as any).__plusFilter = plusFilter;
   } else if (species === 'cil-arrow-right') {
-    // M046: cil-arrow-right → CilArrowRightSDFFilter (tiled scrolling chevron SDF).
+    // M064: cil-arrow-right → CilArrowRightSDFFilter (tiled scrolling chevron SDF).
+    // Upgraded uniforms: u_arrow_scale + u_shaft_width read from species_params.
+    //   species_params.arrow_height (px) → arrowScale = arrow_height / min(w,h) * 2, clamped [0.1, 1.5]
+    //   species_params.arrow_width  (px) → shaftWidth = arrow_width  / min(w,h),     clamped [0.01, 0.5]
     // Ticker drives __arrowRightFilter.time for horizontal scroll animation.
     pattern.rect(0, 0, w, h);
     pattern.fill({ color: 0x000000, alpha: 0 });
@@ -726,10 +734,22 @@ function buildCellContainer(desc: CellDescriptor): Container {
     const g = ((fc >>  8) & 0xff) / 255;
     const b = ( fc        & 0xff) / 255;
 
+    // Derive normalised arrowScale and shaftWidth from species_params pixel values
+    const minDim = Math.min(w, h) || 1;
+    const rawArrowHeight = (speciesParams?.arrow_height as number | undefined);
+    const rawArrowWidth  = (speciesParams?.arrow_width  as number | undefined);
+    const arrowScale = rawArrowHeight !== undefined
+      ? Math.max(0.1, Math.min(1.5, (rawArrowHeight / minDim) * 2))
+      : 1.0;
+    const shaftWidth = rawArrowWidth !== undefined
+      ? Math.max(0.01, Math.min(0.5, rawArrowWidth / minDim))
+      : 0.08;
+
     const arrowRightFilter = new CilArrowRightSDFFilter({
       fillColor:  [r, g, b],
       opacity:    1.0,
-      arrowWidth: (speciesParams?.arrow_width as number | undefined) ?? 0.08,
+      arrowScale,
+      shaftWidth,
       time:       0,
     });
     pattern.filters = [arrowRightFilter];
