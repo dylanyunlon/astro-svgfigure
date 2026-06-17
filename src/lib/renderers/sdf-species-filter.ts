@@ -732,6 +732,60 @@ export class CilVectorSDFFilter extends Filter {
   /** Curl-noise spatial frequency. */
   get fieldScale(): number { return this.uniforms.u_field_scale; }
   set fieldScale(value: number) { this.uniforms.u_field_scale = value; }
+
+  // ── M121: Factory — create CilVectorSDFFilter from agent_params.json species_params ──
+  //
+  // Encapsulates the uniform mapping logic so both sdf-cell-renderer.ts and
+  // pixi-cell-renderer.ts can produce an identical CilVectorSDFFilter from the
+  // same species_params dictionary without duplicating the conversion code.
+  //
+  // @param fillColor  — [r, g, b] 0-1 (from species colour palette)
+  // @param cellW      — cell width in pixels (for px → NDC normalisation)
+  // @param cellH      — cell height in pixels
+  // @param sp         — species_params from agent_params.json (may be undefined)
+
+  static fromSpeciesParams(
+    fillColor: [number, number, number],
+    cellW: number,
+    cellH: number,
+    sp?: Record<string, unknown>,
+  ): CilVectorSDFFilter {
+    const halfMin = Math.min(cellW, cellH) / 2;
+
+    // arrow_count → arrowCount (grid density), clamped [2, 12]
+    const arrowCountVal =
+      (sp?.arrow_count as number | undefined) ??
+      (sp?.arrowCount  as number | undefined) ??
+      4;
+
+    // angle_spread → angleSpread (static jitter radians), clamped [0, PI]
+    const angleSpreadVal =
+      (sp?.angle_spread as number | undefined) ??
+      (sp?.angleSpread  as number | undefined) ??
+      0.4;
+
+    // arrow_length (px) → arrowLength (normalised: px / halfMin), clamped [0.1, 1.0]
+    const arrowLengthPx = (sp?.arrow_length as number | undefined);
+    const arrowLengthVal = arrowLengthPx != null
+      ? Math.max(0.1, Math.min(1.0, arrowLengthPx / halfMin))
+      : (sp?.arrowLength as number | undefined) ?? 0.5;
+
+    // field_scale → fieldScale (curl-noise frequency), clamped [0.5, 8.0]
+    const fieldScaleVal =
+      (sp?.field_scale as number | undefined) ??
+      (sp?.fieldScale  as number | undefined) ??
+      2.5;
+
+    return new CilVectorSDFFilter({
+      fillColor,
+      opacity:     1.0,
+      arrowCount:  Math.max(2, Math.min(12, arrowCountVal)),
+      angleSpread: Math.max(0, Math.min(Math.PI, angleSpreadVal)),
+      arrowLength: arrowLengthVal,
+      fieldScale:  Math.max(0.5, Math.min(8.0, fieldScaleVal)),
+      time:        0,
+    });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
