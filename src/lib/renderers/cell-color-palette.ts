@@ -10,6 +10,26 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { Color } from 'pixi.js';
+import traitsData from "../../../channels/physics/species_visual_traits.json";
+
+// ── JSON-driven species palette ─────────────────────────────────────────────
+
+function hexToNum(hex: string): number {
+  return parseInt(hex.replace("#", ""), 16);
+}
+
+const FALLBACK = { primary: 0x90A4AE, glow: 0xB0BEC5, secondary: 0x78909C, shadow: 0x546E7A };
+
+export function getSpeciesPalette(species: string) {
+  const t = (traitsData as Record<string, any>)[species];
+  if (!t) return FALLBACK;
+  return {
+    primary: hexToNum(t.color.primary),
+    glow: hexToNum(t.color.glow),
+    secondary: hexToNum(t.color.secondary),
+    shadow: hexToNum(t.color.hex_css),
+  };
+}
 
 // ── Species palette from SPECIES_METADATA ───────────────────────────────────
 
