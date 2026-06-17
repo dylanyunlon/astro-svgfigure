@@ -259,7 +259,7 @@ class AstroCellCompositor:
         仅输出 ``stencil=1`` 的条目（可见 cell）；每个 cell 生成一个带有
         ``data-cell-id``、``data-z``、``data-depth`` 以及可选
         ``data-highlight`` 属性的 group dict。完整的内容由
-        各 cell 自身的 ``svg_fragment`` 字段提供（若存在）。
+        各 cell 自身的 ``render_params`` JSON dict 字段提供（若存在）。
 
         Returns
         -------
@@ -281,7 +281,7 @@ class AstroCellCompositor:
                 "data-cell-id": cid,
                 "data-z": z,
                 "data-depth": round(depth, 6),
-                "children": entry.get("svg_fragment", ""),
+                "render_params": entry.get("render_params", {}),
             }
             if cid in custom_d:
                 group["data-highlight"] = custom_d[cid]
@@ -759,7 +759,7 @@ class AstroCellStreamExporter:
         -------
         list[dict]
             每条记录包含 ``cell_id``、``bbox``、``species``、``v_start``、
-            ``i_start``、``v_count``、``i_count``、``svg_fragment``。
+            ``i_start``、``v_count``、``i_count``、``render_params``。
         """
         output_records: list[dict] = []
         for cid, cell_data in traversal_result.items():
@@ -772,7 +772,7 @@ class AstroCellStreamExporter:
                 "i_start":     alloc.get("i_start", 0),
                 "v_count":     alloc.get("v_count", 0),
                 "i_count":     alloc.get("i_count", 0),
-                "svg_fragment": cell_data.get("svg_fragment", ""),
+                "render_params": cell_data.get("render_params", {}),
             }
             output_records.append(record)
             increment_perf_counter("visible_clusters", 1)
@@ -959,7 +959,7 @@ class AstroCellTranslucencyRenderer:
         self,
         cell_entries: list[dict],
         vis_set: set[str],
-    ) -> str:
+    ) -> dict:
         """执行半透明渲染通道 — 镜像 RenderTranslucency。
 
         筛选出可见且不透明度低于阈值的 cell，按 z-layer 降序（从远到近）
@@ -974,8 +974,8 @@ class AstroCellTranslucencyRenderer:
 
         Returns
         -------
-        str
-            半透明层 SVG 片段字符串（``<g id="translucency-layer">…</g>``）。
+        dict
+            半透明层渲染参数 dict（``{"element": "g", "id": "translucency-layer", "children": […]}``）。
         """
         # 筛选半透明可见 cell（镜像 IsTranslucentBlendMode 检查）
         translucent = [
@@ -985,7 +985,7 @@ class AstroCellTranslucencyRenderer:
         ]
 
         if not translucent:
-            return '<g id="translucency-layer"/>'
+            return {"element": "g", "id": "translucency-layer", "children": []}
 
         # 按 z 降序排列 — 从远到近前向合成（镜像 translucent draw order）
         translucent.sort(key=lambda e: e.get("bbox", {}).get("z", 0.0), reverse=True)
@@ -1005,11 +1005,11 @@ class AstroCellTranslucencyRenderer:
             if not self._factory.should_compile_permutation("*", blend_mode):
                 blend_mode = "translucent"
             attrs = self._factory.prepare_svg_attrs(opacity, blend_mode)
-            fragment = entry.get("svg_fragment", "")
+            params = entry.get("render_params", {})
             group: dict = {
                 "element": "g",
                 "data-cell-id": cid,
-                "children": fragment,
+                "render_params": params,
             }
             group.update(attrs)
             fragments.append(group)
