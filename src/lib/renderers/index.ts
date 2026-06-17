@@ -162,6 +162,25 @@ export type {
   CellDragEventDetail,
 } from './cell-event-system'
 
+// M018: cell-a11y — ARIA labels + keyboard Tab navigation for cell Containers
+// Fuses upstream/pixijs-engine/src/accessibility (AccessibilitySystem,
+// accessibilityTarget) into the cell pipeline:
+//   applyCellA11y()    — stamp accessible/accessibleHint/tabIndex on one container
+//   attachCellA11y()   — post-render bulk helper
+//   CellA11yManager    — lifecycle manager (register/unregister/update/destroy)
+//   buildAriaLabel()   — species + cell_id → "Attention — self_attn_q"
+//   buildAriaTitle()   — species → "Attention"
+//   applyA11yToContainer() — one-shot helper from CellDescriptor
+export {
+  CellA11yManager,
+  attachCellA11y,
+  applyCellA11y,
+  applyA11yToContainer,
+  buildAriaLabel,
+  buildAriaTitle,
+} from './cell-a11y'
+export type { CellA11yOptions } from './cell-a11y'
+
 // L4: XR system (AT: xr-system)
 export {
   XRDeviceManager,
