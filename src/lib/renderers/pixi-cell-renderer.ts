@@ -93,12 +93,37 @@ export interface ParamsJson {
   /**
    * bloom — AdvancedBloomFilter options emitted by postprocess_port.py emit_params().
    * Matches AdvancedBloomFilterOptions from upstream/pixijs-filters (AT HydraBloom port).
-   * Keys: threshold, bloomScale, brightness, blur, quality, pixelSize, tint, blurOrigin.
+   *
+   * bloom_variants.json naming (M044):
+   *   bloomStrength      → maps to AdvancedBloomFilter.bloomScale
+   *   radius             → maps to AdvancedBloomFilter.blur (Kawase kernel radius)
+   *   luminosityThreshold → maps to AdvancedBloomFilter.threshold (alias for threshold)
+   *
+   * Keys: bloomStrength, radius, luminosityThreshold, threshold, bloomScale,
+   *        brightness, blur, quality, pixelSize, tint, blurOrigin.
    */
   bloom?: {
+    /**
+     * AT bloom_variants.json "bloomStrength" — drives AdvancedBloomFilter.bloomScale.
+     * Takes precedence over bloomScale when both are present.
+     */
+    bloomStrength?: number;
+    /**
+     * AT bloom_variants.json "bloomRadius" / "radius" — drives AdvancedBloomFilter.blur.
+     * Interpreted as a 0–1 normalised radius; mapped to blur pixels via BLOOM_RADIUS_SCALE.
+     * Takes precedence over blur when both are present.
+     */
+    radius?: number;
+    /**
+     * AT bloom_variants.json "luminosityThreshold" — alias for threshold.
+     * Takes precedence over threshold when both are present.
+     */
+    luminosityThreshold?: number;
     threshold?: number;
+    /** Direct AdvancedBloomFilter.bloomScale override (lower priority than bloomStrength). */
     bloomScale?: number;
     brightness?: number;
+    /** Direct AdvancedBloomFilter.blur override (lower priority than radius). */
     blur?: number;
     quality?: number;
     pixelSize?: { x: number; y: number };
@@ -296,20 +321,149 @@ const SPECIES_PATTERNS: Record<string, PatternDrawer> = {
 
 // ── Bloom glow factory ──────────────────────────────────────────────────────
 
-const SPECIES_BLOOM_SCALE: Record<string, number> = {
-  'cil-eye':  2.0,
-  'cil-bolt': 1.8,
-  'cil-code': 0.8,
+/**
+ * BLOOM_RADIUS_SCALE — normalised bloom_variants.json radius (0–1) →
+ * AdvancedBloomFilter blur pixels.
+ * radius 0 = no blur (2 px floor), radius 1 = 16 px.
+ */
+const BLOOM_RADIUS_SCALE = 16;
+
+/**
+ * BLOOM_DEFAULTS — per-species AdvancedBloomFilter defaults (M044).
+ *
+ * Values are calibrated to match the AT HydraBloom aesthetic for each species:
+ *   bloomStrength  → AdvancedBloomFilter.bloomScale (intensity of bloom overlay)
+ *   threshold      → luminance threshold for bloom extraction (0 = all glow, 1 = bright-only)
+ *   radius         → normalised Kawase blur radius (0–1); multiplied by BLOOM_RADIUS_SCALE
+ *
+ * These defaults mirror bloom_variants.json scene presets mapped onto the cil-* species:
+ *   cil-eye   (attention)   → intense, wide, low-threshold — like AT "home" scene
+ *   cil-bolt  (FFN/MLP)     → strong, tight, medium-threshold — like AT "workbloom"
+ *   cil-loop  (loop ctrl)   → warm moderate glow — like AT "sv_tree"
+ *   cil-vector (embedding)  → wide diffuse glow — like AT "homebloom"
+ *   cil-plus  (add&norm)    → subtle, almost none — like AT "globalbloom"
+ *   cil-layers (layers)     → mid-depth stack glow — like AT "cleanroom"
+ *   cil-filter (filter)     → moderate — like AT "sv_contact"
+ *   cil-code  (code/output) → restrained — like AT "sv_footer"
+ *   cil-graph (graph)       → minimal utility — like AT "sv_work"
+ *   cil-arrow-right (flow)  → soft directional — like AT "sv_home"
+ */
+interface BloomDefaults {
+  bloomStrength: number;
+  threshold: number;
+  radius: number;
+  /** Base bloom pulse amplitude (fraction of bloomStrength); Ticker multiplies this. */
+  pulseAmplitude: number;
+  /** Pulse frequency in radians/second. */
+  pulseFrequency: number;
+}
+
+const BLOOM_DEFAULTS: Record<string, BloomDefaults> = {
+  // Attention (self-attn) — bright, radiant, wide halo
+  'cil-eye': {
+    bloomStrength:  2.0,
+    threshold:      0.0,
+    radius:         1.0,
+    pulseAmplitude: 0.25,
+    pulseFrequency: 1.2,
+  },
+  // FFN / MLP — electric, intense, fast flicker
+  'cil-bolt': {
+    bloomStrength:  1.8,
+    threshold:      0.1,
+    radius:         0.75,
+    pulseAmplitude: 0.30,
+    pulseFrequency: 2.0,
+  },
+  // Embedding / positional encoding — wide diffuse
+  'cil-vector': {
+    bloomStrength:  1.2,
+    threshold:      0.0,
+    radius:         0.80,
+    pulseAmplitude: 0.15,
+    pulseFrequency: 0.8,
+  },
+  // Add & Norm — neutral, very subtle
+  'cil-plus': {
+    bloomStrength:  0.3,
+    threshold:      0.0,
+    radius:         0.20,
+    pulseAmplitude: 0.08,
+    pulseFrequency: 0.6,
+  },
+  // Skip connection / routing — directional soft glow
+  'cil-arrow-right': {
+    bloomStrength:  0.6,
+    threshold:      0.0,
+    radius:         0.50,
+    pulseAmplitude: 0.12,
+    pulseFrequency: 0.9,
+  },
+  // Filter / selection — moderate, organised
+  'cil-filter': {
+    bloomStrength:  0.8,
+    threshold:      0.0,
+    radius:         0.50,
+    pulseAmplitude: 0.15,
+    pulseFrequency: 1.0,
+  },
+  // Code / output — restrained readability glow
+  'cil-code': {
+    bloomStrength:  0.7,
+    threshold:      0.2,
+    radius:         0.44,
+    pulseAmplitude: 0.10,
+    pulseFrequency: 0.7,
+  },
+  // Layers — mid-depth stack depth cue
+  'cil-layers': {
+    bloomStrength:  1.0,
+    threshold:      0.2,
+    radius:         0.625,
+    pulseAmplitude: 0.12,
+    pulseFrequency: 0.85,
+  },
+  // Loop / control flow — warm cycling glow
+  'cil-loop': {
+    bloomStrength:  0.8,
+    threshold:      0.0,
+    radius:         0.70,
+    pulseAmplitude: 0.18,
+    pulseFrequency: 1.4,
+  },
+  // Graph / topology — minimal utility
+  'cil-graph': {
+    bloomStrength:  0.5,
+    threshold:      0.0,
+    radius:         0.50,
+    pulseAmplitude: 0.08,
+    pulseFrequency: 0.6,
+  },
+};
+
+/** Fallback bloom defaults for unknown species. */
+const DEFAULT_BLOOM: BloomDefaults = {
+  bloomStrength:  1.0,
+  threshold:      0.1,
+  radius:         0.5,
+  pulseAmplitude: 0.15,
+  pulseFrequency: 1.0,
 };
 
 /**
- * createGlowSprite — build the bloom halo behind each cell.
+ * createGlowSprite — build the bloom halo behind each cell (M044).
  *
- * When params.bloom is present (emitted by postprocess_port.py emit_params()),
- * its fields are forwarded directly to AdvancedBloomFilter so the Python-side
- * AT HydraBloom parameters drive the PixiJS filter — no SVG strings.
+ * Resolves AdvancedBloomFilter parameters from three sources (highest → lowest priority):
+ *   1. params.json bloom field (emitted by postprocess_port.py / bloom_variants.json):
+ *        bloomStrength  → bloomScale   (M044: bloom_variants.json naming)
+ *        luminosityThreshold → threshold  (M044 alias)
+ *        radius         → blur pixels via BLOOM_RADIUS_SCALE
+ *        bloomScale / threshold / blur → direct fallbacks
+ *   2. BLOOM_DEFAULTS[species] — per-species calibrated defaults (M044 table)
+ *   3. AdvancedBloomFilter library defaults
  *
- * Fallback: species-driven defaults (SPECIES_BLOOM_SCALE table).
+ * The base bloomScale is stored on __bloomFilterBaseScale so the Ticker pulse
+ * loop can modulate it without fighting the constructor value.
  */
 function createGlowSprite(
   w: number,
@@ -323,31 +477,53 @@ function createGlowSprite(
   glow.roundRect(-pad, -pad, w + pad * 2, h + pad * 2, 12);
   glow.fill({ color: glowColor, alpha: 0.25 });
 
-  // ── Resolve AdvancedBloomFilter options ─────────────────────────────────
-  // Priority: params.json bloom field (emit_params) → species defaults → library defaults
-  const speciesBloomScale = SPECIES_BLOOM_SCALE[species] ?? 1.5;
+  // ── M044: Resolve AdvancedBloomFilter options ───────────────────────────
+  // Per-species defaults from BLOOM_DEFAULTS table (mirrors bloom_variants.json)
+  const speciesDefaults = BLOOM_DEFAULTS[species] ?? DEFAULT_BLOOM;
+
+  // bloomStrength (bloom_variants.json naming) takes priority over bloomScale
+  const resolvedBloomScale =
+    bloomParams?.bloomStrength ??
+    bloomParams?.bloomScale    ??
+    speciesDefaults.bloomStrength;
+
+  // luminosityThreshold (bloom_variants.json alias) takes priority over threshold
+  const resolvedThreshold =
+    bloomParams?.luminosityThreshold ??
+    bloomParams?.threshold           ??
+    speciesDefaults.threshold;
+
+  // radius (bloom_variants.json, 0–1 normalised) → blur pixels
+  // Direct blur override takes lowest priority
+  const resolvedBlur = bloomParams?.radius !== undefined
+    ? Math.max(2, bloomParams.radius * BLOOM_RADIUS_SCALE)
+    : (bloomParams?.blur ?? Math.max(2, speciesDefaults.radius * BLOOM_RADIUS_SCALE));
+
   const bloom = new AdvancedBloomFilter({
-    threshold:  bloomParams?.threshold  ?? 0.5,
-    bloomScale: bloomParams?.bloomScale ?? speciesBloomScale,
+    threshold:  resolvedThreshold,
+    bloomScale: resolvedBloomScale,
     brightness: bloomParams?.brightness ?? 1.0,
-    blur:       bloomParams?.blur       ?? 8,
+    blur:       resolvedBlur,
     quality:    bloomParams?.quality    ?? 4,
     pixelSize:  bloomParams?.pixelSize  ?? { x: 1, y: 1 },
   });
 
   // ── M007: pre-blur Gaussian stage before bloom compositor ───────────────
-  // buildBloomFilterChain() inserts a species-tuned CellBlurFilter (sourced
-  // from upstream/pixijs-engine BlurFilter) *before* AdvancedBloomFilter in
-  // the filter chain.  This matches the bloom pipeline internals:
-  //   glow texture -> [CellBlurFilter] -> [AdvancedBloomFilter compositor]
-  // The CellBlurFilter is stored on the Graphics node so the Ticker can
-  // animate bloom-pulse via blurFilter.setStrengthForBloom(scale).
+  // buildBloomFilterChain() inserts a species-tuned CellBlurFilter *before*
+  // AdvancedBloomFilter in the chain:
+  //   glow texture → [CellBlurFilter] → [AdvancedBloomFilter compositor]
   const { filters, blurFilter } = buildBloomFilterChain(species, [bloom]);
   glow.filters = filters as any[];
 
-  // Expose bloom filter handle for Ticker-driven param updates
-  (glow as any).__bloomBlur   = blurFilter;
-  (glow as any).__bloomFilter = bloom;
+  // ── Expose handles for Ticker-driven bloom pulse (M044) ─────────────────
+  // __bloomFilter.bloomScale is modulated per-frame in the Ticker loop.
+  // __bloomFilterBaseScale anchors the species/params base so the pulse is
+  // a proportional oscillation rather than an absolute offset.
+  (glow as any).__bloomBlur            = blurFilter;
+  (glow as any).__bloomFilter          = bloom;
+  (glow as any).__bloomFilterBaseScale = resolvedBloomScale;
+  (glow as any).__bloomPulseAmplitude  = speciesDefaults.pulseAmplitude;
+  (glow as any).__bloomPulseFrequency  = speciesDefaults.pulseFrequency;
 
   return glow;
 }
@@ -1270,6 +1446,16 @@ export async function renderCellGraph(
   app.stage.filters = [adjustment];
 
   // ── Animate per-species filters (godray time, glitch seed, bloom pulse) ──
+  //
+  // M044 bloom pulse: per-frame AdvancedBloomFilter.bloomScale modulation.
+  // Each glow sprite stores on its Graphics node:
+  //   __bloomFilter          — AdvancedBloomFilter instance
+  //   __bloomFilterBaseScale — species/params resolved base bloomScale
+  //   __bloomPulseAmplitude  — species-calibrated pulse amplitude (BLOOM_DEFAULTS)
+  //   __bloomPulseFrequency  — species-calibrated pulse frequency (rad/s)
+  // The Ticker drives: bloomScale = base * (1 + amplitude * sin(freq * elapsed))
+  // This gives each species a distinct breathing rhythm while keeping the
+  // overall feel consistent with the AT HydraBloom animation pattern.
   const t0anim = performance.now();
   app.ticker.add(() => {
     const elapsed = (performance.now() - t0anim) / 1000;
@@ -1286,13 +1472,26 @@ export async function renderCellGraph(
         }
       }
 
-      // M007: bloom pre-blur pulse — subtle ±20% strength oscillation
-      // Drives the Gaussian blur amplitude on the glow sprite, giving a
-      // soft breathing effect without touching the bloom compositor params.
-      const glowChild = (child as any).children?.[0]; // first child = glow sprite
-      const bloomBlur = glowChild ? (glowChild as any).__bloomBlur as CellBlurFilter | undefined : undefined;
-      if (bloomBlur) {
-        bloomBlur.setStrengthForBloom(1 + 0.2 * Math.sin(elapsed * 1.4));
+      // M044: bloom pulse — animate AdvancedBloomFilter.bloomScale + pre-blur strength
+      // First child of each cell container is always the glow sprite.
+      const glowChild = (child as any).children?.[0];
+      if (glowChild) {
+        // M007: pre-blur Gaussian pulse (±20% strength oscillation on CellBlurFilter)
+        const bloomBlur = (glowChild as any).__bloomBlur as CellBlurFilter | undefined;
+        if (bloomBlur) {
+          bloomBlur.setStrengthForBloom(1 + 0.2 * Math.sin(elapsed * 1.4));
+        }
+
+        // M044: AdvancedBloomFilter.bloomScale pulse — species-specific amplitude & frequency
+        const bloomFilter = (glowChild as any).__bloomFilter as AdvancedBloomFilter | undefined;
+        const baseScale   = (glowChild as any).__bloomFilterBaseScale as number | undefined;
+        const pulseAmp    = (glowChild as any).__bloomPulseAmplitude  as number | undefined;
+        const pulseFreq   = (glowChild as any).__bloomPulseFrequency  as number | undefined;
+        if (bloomFilter && baseScale !== undefined) {
+          const amp  = pulseAmp  ?? 0.15;
+          const freq = pulseFreq ?? 1.0;
+          bloomFilter.bloomScale = baseScale * (1 + amp * Math.sin(freq * elapsed));
+        }
       }
     }
   });
@@ -1354,6 +1553,11 @@ export async function renderCellGraphLive(
   app.stage.filters = [adjustment];
 
   // ── Animate per-species filters (godray, glitch, bloom pulse) ─────────────
+  //
+  // M044: live-mode bloom pulse — identical per-species pulse logic as
+  // renderCellGraph (static mode).  AdvancedBloomFilter.bloomScale oscillates
+  // around each cell's resolved base value using species-specific amplitude and
+  // frequency stored at glow sprite build time (createGlowSprite).
   const t0anim = performance.now();
   app.ticker.add(() => {
     const elapsed = (performance.now() - t0anim) / 1000;
@@ -1367,11 +1571,25 @@ export async function renderCellGraphLive(
         glitch.offset = 4 + Math.random() * 12;
       }
 
-      // M007: bloom pre-blur pulse for live-mode glow sprites
+      // M044: bloom pulse — glow sprite is always first child of each cell container
       const glowChild = (child as any).children?.[0];
-      const bloomBlur = glowChild ? (glowChild as any).__bloomBlur as CellBlurFilter | undefined : undefined;
-      if (bloomBlur) {
-        bloomBlur.setStrengthForBloom(1 + 0.2 * Math.sin(elapsed * 1.4));
+      if (glowChild) {
+        // M007: pre-blur Gaussian pulse
+        const bloomBlur = (glowChild as any).__bloomBlur as CellBlurFilter | undefined;
+        if (bloomBlur) {
+          bloomBlur.setStrengthForBloom(1 + 0.2 * Math.sin(elapsed * 1.4));
+        }
+
+        // M044: AdvancedBloomFilter.bloomScale per-species pulse
+        const bloomFilter = (glowChild as any).__bloomFilter as AdvancedBloomFilter | undefined;
+        const baseScale   = (glowChild as any).__bloomFilterBaseScale as number | undefined;
+        const pulseAmp    = (glowChild as any).__bloomPulseAmplitude  as number | undefined;
+        const pulseFreq   = (glowChild as any).__bloomPulseFrequency  as number | undefined;
+        if (bloomFilter && baseScale !== undefined) {
+          const amp  = pulseAmp  ?? 0.15;
+          const freq = pulseFreq ?? 1.0;
+          bloomFilter.bloomScale = baseScale * (1 + amp * Math.sin(freq * elapsed));
+        }
       }
     }
   });
