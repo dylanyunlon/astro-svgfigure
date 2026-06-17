@@ -26,8 +26,12 @@
  * M046: cil-vector / cil-plus / cil-arrow-right SDF Filters
  *   buildCellContainer 对应 species 挂载 SDF Filter 替代 SPECIES_PATTERNS Graphics 画法：
  *   cil-vector      → CilVectorSDFFilter   (arrow-grid, static)
- *   cil-plus        → CilPlusSDFFilter     (plus/cross SDF, static)
+ *   cil-plus        → CilPlusSDFFilter     (plus/cross SDF, Ticker-driven pulse, see M063)
  *   cil-arrow-right → CilArrowRightSDFFilter (tiled chevron scroll, Ticker-driven __arrowRightFilter)
+ * M063: cil-plus SDF cross pulse animation
+ *   CilPlusSDFFilter 升级添加 u_time + u_pulse_speed + u_pulse_amp 脉冲发光动画。
+ *   u_cross_radius ↔ arm_length, u_cross_width ↔ stroke_width 从 species_params 读取。
+ *   Ticker 驱动 container.__plusFilter.time 做十字呼吸脉冲效果。
  * M048: GodrayFilter per-species
  *   cil-vector → directional parallel GodrayFilter (angle 15°, high lacunarity)
  *   cil-bolt   → pulsing focal GodrayFilter (center=top, Ticker-driven gain oscillation)
@@ -86,7 +90,7 @@ import {
 // 同样来自 sdf-species-filter.ts，分别对应 cil-vector / cil-plus / cil-arrow-right。
 // buildCellContainer 对应 species 时挂载：
 //   cil-vector      → CilVectorSDFFilter (arrow-grid SDF, static)
-//   cil-plus        → CilPlusSDFFilter   (plus/cross SDF, static)
+//   cil-plus        → CilPlusSDFFilter   (plus/cross SDF, M063 Ticker-driven pulse animation)
 //   cil-arrow-right → CilArrowRightSDFFilter (tiled scrolling chevron, Ticker-driven)
 import { CilBoltSDFFilter, CilVectorSDFFilter, CilPlusSDFFilter, CilArrowRightSDFFilter, CilEyeSDFFilter } from './sdf-species-filter';
 
@@ -660,7 +664,9 @@ function buildCellContainer(desc: CellDescriptor): Container {
     // No Ticker animation needed (static grid); expose for external override if desired
     (container as any).__vectorFilter = vectorFilter;
   } else if (species === 'cil-plus') {
-    // M046: cil-plus → CilPlusSDFFilter (plus/cross SDF, replaces SPECIES_PATTERNS draw).
+    // M063: cil-plus → CilPlusSDFFilter (plus/cross SDF, Ticker-driven pulse animation).
+    // M046 baseline: transparent quad, SDF renders cross over the cell area.
+    // M063 upgrade: adds u_time-driven glow pulse (u_cross_radius / u_cross_width uniforms).
     pattern.rect(0, 0, w, h);
     pattern.fill({ color: 0x000000, alpha: 0 });
 
@@ -669,21 +675,29 @@ function buildCellContainer(desc: CellDescriptor): Container {
     const g = ((fc >>  8) & 0xff) / 255;
     const b = ( fc        & 0xff) / 255;
 
-    // arm_length / stroke_width from species_params if present; normalise from pixel → [-1,1] space
+    // arm_length / stroke_width from species_params if present; normalise pixel → [-1,1] NDC
     // SPECIES_PATTERNS uses Math.min(w,h)*0.3 for arm — translate to ~0.55 in NDC
     const armLengthPx   = speciesParams?.arm_length   as number | undefined;
     const strokeWidthPx = speciesParams?.stroke_width as number | undefined;
     const armLength   = armLengthPx   != null ? armLengthPx   / (Math.min(w, h) / 2) : 0.55;
     const strokeWidth = strokeWidthPx != null ? strokeWidthPx / (Math.min(w, h) / 2) : 0.12;
 
+    // M063: pulse params from species_params; defaults calibrated for Add & Norm breathing rhythm
+    const pulseSpeed = (speciesParams?.pulse_speed as number | undefined) ?? 2.0;
+    const pulseAmp   = (speciesParams?.pulse_amp   as number | undefined) ?? 0.3;
+
     const plusFilter = new CilPlusSDFFilter({
       fillColor:   [r, g, b],
       opacity:     1.0,
       armLength,
       strokeWidth,
+      time:       0,
+      pulseSpeed,
+      pulseAmp,
     });
     pattern.filters = [plusFilter];
 
+    // Expose on container for Ticker-driven pulse animation (M063)
     (container as any).__plusFilter = plusFilter;
   } else if (species === 'cil-arrow-right') {
     // M046: cil-arrow-right → CilArrowRightSDFFilter (tiled scrolling chevron SDF).
@@ -1701,6 +1715,7 @@ export async function renderCellGraph(
   // M044 bloom pulse: per-frame AdvancedBloomFilter.bloomScale modulation.
   // M045: cil-bolt CilBoltSDFFilter time — __boltFilter.time driven per frame.
   // M046: cil-arrow-right CilArrowRightSDFFilter time — __arrowRightFilter.time per frame.
+  // M063: cil-plus CilPlusSDFFilter time — __plusFilter.time driven per frame (cross pulse).
   // M048 godray pulse: cil-bolt __godrayPulse* fields drive gain oscillation.
   //   __bloomFilter          — AdvancedBloomFilter instance
   //   __bloomFilterBaseScale — species/params resolved base bloomScale
@@ -1723,6 +1738,12 @@ export async function renderCellGraph(
       const arrowRightFilter = (child as any).__arrowRightFilter as CilArrowRightSDFFilter | undefined;
       if (arrowRightFilter) {
         arrowRightFilter.time = elapsed;
+      }
+
+      // M063: cil-plus SDF cross pulse animation — update CilPlusSDFFilter time
+      const plusFilter = (child as any).__plusFilter as CilPlusSDFFilter | undefined;
+      if (plusFilter) {
+        plusFilter.time = elapsed;
       }
 
       // M039: cil-eye SDF ray rotation animation — update CilEyeSDFFilter time
@@ -1833,6 +1854,7 @@ export async function renderCellGraphLive(
   //
   // M045: cil-bolt CilBoltSDFFilter time — live mode drives __boltFilter.time.
   // M046: cil-arrow-right CilArrowRightSDFFilter time — live mode drives __arrowRightFilter.time.
+  // M063: cil-plus CilPlusSDFFilter time — live mode drives __plusFilter.time (cross pulse).
   //
   // M048: cil-bolt godray gain pulse — same __godrayPulse* fields as static mode.
   const t0anim = performance.now();
@@ -1849,6 +1871,12 @@ export async function renderCellGraphLive(
       const arrowRightFilter = (child as any).__arrowRightFilter as CilArrowRightSDFFilter | undefined;
       if (arrowRightFilter) {
         arrowRightFilter.time = elapsed;
+      }
+
+      // M063: cil-plus SDF cross pulse animation — update CilPlusSDFFilter time
+      const plusFilter = (child as any).__plusFilter as CilPlusSDFFilter | undefined;
+      if (plusFilter) {
+        plusFilter.time = elapsed;
       }
 
       // M039: cil-eye SDF ray rotation animation — update CilEyeSDFFilter time

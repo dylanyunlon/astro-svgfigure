@@ -562,17 +562,27 @@ export class CilVectorSDFFilter extends Filter {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// M046: CilPlusSDFFilter — cil-plus.frag → PixiJS Filter
+// M063: CilPlusSDFFilter — cil-plus.frag → PixiJS Filter (cross pulse animation)
 // ══════════════════════════════════════════════════════════════════════════════
 //
 // Wraps src/lib/shaders/cil-plus.frag (plus/cross SDF using rectSDF + sdBox2).
 // Adapts for PixiJS Filter context (vTextureCoord, finalColor).
 //
+// M063 升级：添加 u_time 脉冲动画
+//   - 十字 SDF glow 环随 sin(u_time) 周期性呼吸
+//   - u_cross_width  ↔ u_strokeWidth  (half-width of cross stroke)
+//   - u_cross_radius ↔ u_armLength    (half-length of each arm)
+//   - u_pulse_speed  — 脉冲频率 (rad/s，默认 2.0)
+//   - u_pulse_amp    — 脉冲幅度 (0-1 glow intensity modulation，默认 0.3)
+//
 // Uniforms:
-//   u_fillColor   (vec3) — plus colour [r,g,b] 0-1
-//   u_opacity     (f32)  — overall opacity
-//   u_armLength   (f32)  — half-length of each arm [0..1]
-//   u_strokeWidth (f32)  — half-width of stroke [0..1]
+//   u_fillColor    (vec3) — plus colour [r,g,b] 0-1
+//   u_opacity      (f32)  — overall opacity
+//   u_cross_radius (f32)  — half-length of each arm [0..1]   (≡ armLength / u_armLength)
+//   u_cross_width  (f32)  — half-width of stroke [0..1]      (≡ strokeWidth / u_strokeWidth)
+//   u_time         (f32)  — animation time (seconds), drives pulse glow
+//   u_pulse_speed  (f32)  — glow pulse angular frequency (rad/s)
+//   u_pulse_amp    (f32)  — glow pulse amplitude (0-1 modulates glow intensity)
 
 const CIL_PLUS_FRAGMENT = /* glsl */`
 in vec2 vTextureCoord;
@@ -582,21 +592,29 @@ uniform sampler2D uTexture;
 
 uniform vec3  u_fillColor;
 uniform float u_opacity;
-uniform float u_armLength;
-uniform float u_strokeWidth;
+uniform float u_cross_radius;   // half-length of each arm in NDC [-1,1]
+uniform float u_cross_width;    // half-width of stroke in NDC [-1,1]
+uniform float u_time;           // animation time (seconds)
+uniform float u_pulse_speed;    // pulse angular frequency (rad/s)
+uniform float u_pulse_amp;      // pulse glow amplitude (0–1)
 
+// ── lygia/sdf/rectSDF.glsl (inlined) ────────────────────────────────────────
+// contributors: Patricio Gonzalez Vivo
 #ifndef FNC_RECTSDF
 #define FNC_RECTSDF
 float rectSDF(in vec2 st, in vec2 s) {
     vec2 p = st * 2.0 - 1.0;
     return max(abs(p.x / s.x), abs(p.y / s.y));
 }
+// Signed box SDF — used for arm extrusions
 float sdBox2(vec2 p, vec2 b) {
     vec2 d = abs(p) - b;
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
 }
 #endif
 
+// SDF for an axis-aligned plus centered at origin.
+// Two overlapping sdBox2 rectangles — identical to cil-plus.frag sdPlus().
 float sdPlus(vec2 p, float armLen, float sw) {
     float h = sdBox2(p, vec2(armLen, sw));
     float v = sdBox2(p, vec2(sw, armLen));
@@ -605,26 +623,40 @@ float sdPlus(vec2 p, float armLen, float sw) {
 
 void main() {
     vec2 uv = vTextureCoord;
-    vec2 p  = uv * 2.0 - 1.0;
+    vec2 p  = uv * 2.0 - 1.0;   // remap [0,1] → [-1,1]
 
-    float d    = sdPlus(p, u_armLength, u_strokeWidth);
+    float d    = sdPlus(p, u_cross_radius, u_cross_width);
+
+    // Core fill mask — sharp anti-aliased edge
     float mask = smoothstep(0.015, -0.015, d);
-    float glow = smoothstep(0.08, 0.0, d) * 0.25;
-    float alpha = clamp(mask + glow, 0.0, 1.0);
+
+    // Pulse glow: sin-wave modulated outer glow ring driven by u_time
+    // The pulse cycles the glow intensity between (base ± u_pulse_amp).
+    float pulse       = 0.5 + 0.5 * sin(u_time * u_pulse_speed);   // [0,1]
+    float glowBase    = 0.20;                                         // static inner glow floor
+    float glowPulse   = glowBase + u_pulse_amp * pulse;              // modulated peak
+    float glowNear    = smoothstep(0.08, 0.0,  d) * glowPulse;      // near-edge bloom
+    float glowFar     = smoothstep(0.22, 0.0,  d) * (u_pulse_amp * pulse * 0.35); // wide halo
+
+    float alpha = clamp(mask + glowNear + glowFar, 0.0, 1.0);
 
     finalColor = vec4(u_fillColor, alpha * u_opacity);
 }
 `;
 
+// ── WGSL stub — kept minimal; runtime uses GL path ──────────────────────────
 const CIL_PLUS_WGSL = /* wgsl */`
 @group(0) @binding(1) var uTexture: texture_2d<f32>;
 @group(0) @binding(2) var uSampler: sampler;
 
 struct CilPlusUniforms {
-  u_fillColor:   vec3<f32>,
-  u_opacity:     f32,
-  u_armLength:   f32,
-  u_strokeWidth: f32,
+  u_fillColor:    vec3<f32>,
+  u_opacity:      f32,
+  u_cross_radius: f32,
+  u_cross_width:  f32,
+  u_time:         f32,
+  u_pulse_speed:  f32,
+  u_pulse_amp:    f32,
 }
 
 @group(1) @binding(0) var<uniform> cilPlusUniforms : CilPlusUniforms;
@@ -634,45 +666,120 @@ fn mainFragment(
   @builtin(position) position: vec4<f32>,
   @location(0) uv : vec2<f32>
 ) -> @location(0) vec4<f32> {
-  return textureSample(uTexture, uSampler, uv) * vec4<f32>(cilPlusUniforms.u_fillColor, cilPlusUniforms.u_opacity);
+  // WGSL stub: passthrough — full WGSL port deferred (WebGL path used in practice)
+  return textureSample(uTexture, uSampler, uv)
+       * vec4<f32>(cilPlusUniforms.u_fillColor, cilPlusUniforms.u_opacity);
 }
 `;
 
+// ── CilPlusSDFFilter options ─────────────────────────────────────────────────
+
 export interface CilPlusSDFFilterOptions {
-  /** Plus colour [r,g,b] 0-1. Defaults to cil-plus pink (0xEC407A). */
+  /**
+   * Plus/cross fill colour as [r, g, b] in 0–1 range.
+   * Defaults to cil-plus pink (0xEC407A → [0.925, 0.251, 0.478]).
+   */
   fillColor?: [number, number, number];
-  /** Overall opacity (0-1). @default 1.0 */
+  /** Overall opacity of the cross (independent of container.alpha). @default 1.0 */
   opacity?: number;
-  /** Half-length of each arm in [-1,1] space. @default 0.55 */
+  /**
+   * Half-length of each arm in NDC [-1, 1] space.
+   * Maps to u_cross_radius (equivalent to legacy u_armLength).
+   * Derived from species_params.arm_length / (min(w,h)/2) in buildCellContainer.
+   * @default 0.55
+   */
   armLength?: number;
-  /** Half-width of stroke in [-1,1] space. @default 0.12 */
+  /**
+   * Half-width of the cross stroke in NDC [-1, 1] space.
+   * Maps to u_cross_width (equivalent to legacy u_strokeWidth).
+   * Derived from species_params.stroke_width / (min(w,h)/2) in buildCellContainer.
+   * @default 0.12
+   */
   strokeWidth?: number;
+  /**
+   * Starting animation time (seconds).
+   * Driven each frame by the PixiJS Ticker.
+   * @default 0
+   */
+  time?: number;
+  /**
+   * Glow pulse angular frequency in radians per second.
+   * Higher values = faster pulsing.
+   * @default 2.0
+   */
+  pulseSpeed?: number;
+  /**
+   * Glow pulse amplitude — how much the outer halo expands/contracts.
+   * Range [0, 1]; 0 = no pulse (static glow only).
+   * @default 0.3
+   */
+  pulseAmp?: number;
 }
+
+// ── CilPlusSDFFilter ─────────────────────────────────────────────────────────
 
 /**
  * CilPlusSDFFilter — PixiJS Filter wrapping the cil-plus.frag SDF plus/cross shader.
  *
- * Renders a crisp plus sign with a soft inner glow using rectSDF / sdBox2.
- * Designed for cil-plus (Add & Norm) cells.
+ * M063 upgrade: adds u_time-driven pulse animation to the cross glow.
+ * The outer halo cycles via sin(u_time * u_pulse_speed), producing a soft
+ * breathing effect consistent with AT HydraBloom animation patterns.
+ *
+ * Uniform mapping from species_params:
+ *   species_params.arm_length   → armLength   → u_cross_radius
+ *   species_params.stroke_width → strokeWidth → u_cross_width
+ *   species_params.pulse_speed  → pulseSpeed  → u_pulse_speed
+ *   species_params.pulse_amp    → pulseAmp    → u_pulse_amp
+ *
+ * ## Ticker integration (M063)
+ * The caller must drive `filter.time` each frame:
+ *
+ *   const filter = new CilPlusSDFFilter({ fillColor: [0.93, 0.25, 0.48] });
+ *   container.__plusFilter = filter;
+ *   // In the app.ticker.add() loop:
+ *   filter.time = elapsed;   // seconds since start
  *
  * @example
- *   const filter = new CilPlusSDFFilter({ fillColor: [0.93, 0.25, 0.48] });
- *   patternGraphics.filters = [filter];
+ *   const plusFilter = new CilPlusSDFFilter({
+ *     fillColor:   [0.925, 0.251, 0.478],
+ *     armLength:   0.55,
+ *     strokeWidth: 0.12,
+ *     pulseSpeed:  2.0,
+ *     pulseAmp:    0.3,
+ *   });
+ *   patternGraphics.filters = [plusFilter];
  */
 export class CilPlusSDFFilter extends Filter {
+  /** Default options — calibrated for cil-plus (Add & Norm) cells. */
   public static readonly DEFAULT_OPTIONS: Required<CilPlusSDFFilterOptions> = {
-    fillColor:   [0.925, 0.251, 0.478],  // 0xEC407A
+    fillColor:   [0.925, 0.251, 0.478],  // 0xEC407A — cil-plus pink
     opacity:     1.0,
     armLength:   0.55,
     strokeWidth: 0.12,
+    time:        0,
+    pulseSpeed:  2.0,   // ~0.33 Hz breathing cycle
+    pulseAmp:    0.3,
   };
 
+  /**
+   * Typed uniform accessors (backed by the `cilPlusUniforms` resource).
+   * Updated in apply() before each draw call.
+   */
   public uniforms: {
-    u_fillColor:   Float32Array;
-    u_opacity:     number;
-    u_armLength:   number;
-    u_strokeWidth: number;
+    u_fillColor:    Float32Array;   // vec3
+    u_opacity:      number;
+    u_cross_radius: number;         // ≡ armLength
+    u_cross_width:  number;         // ≡ strokeWidth
+    u_time:         number;
+    u_pulse_speed:  number;
+    u_pulse_amp:    number;
   };
+
+  /**
+   * Current animation time in seconds.
+   * Set this every frame via the PixiJS Ticker to animate the cross pulse.
+   */
+  public time: number;
 
   constructor(options?: CilPlusSDFFilterOptions) {
     const opts = { ...CilPlusSDFFilter.DEFAULT_OPTIONS, ...options };
@@ -693,26 +800,38 @@ export class CilPlusSDFFilter extends Filter {
       glProgram,
       resources: {
         cilPlusUniforms: {
-          u_fillColor:   { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
-          u_opacity:     { value: opts.opacity,     type: 'f32' },
-          u_armLength:   { value: opts.armLength,   type: 'f32' },
-          u_strokeWidth: { value: opts.strokeWidth, type: 'f32' },
+          u_fillColor:    { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
+          u_opacity:      { value: opts.opacity,     type: 'f32' },
+          u_cross_radius: { value: opts.armLength,   type: 'f32' },
+          u_cross_width:  { value: opts.strokeWidth, type: 'f32' },
+          u_time:         { value: opts.time,        type: 'f32' },
+          u_pulse_speed:  { value: opts.pulseSpeed,  type: 'f32' },
+          u_pulse_amp:    { value: opts.pulseAmp,    type: 'f32' },
         },
       },
     });
 
     this.uniforms = this.resources.cilPlusUniforms.uniforms as typeof this.uniforms;
+    this.time = opts.time;
   }
 
+  /**
+   * apply() — called by PixiJS every frame this filter is active.
+   * Syncs `this.time` → `u_time` uniform before rendering to drive pulse animation.
+   */
   public override apply(
     filterManager: FilterSystem,
     input: Texture,
     output: RenderSurface,
     clearMode: boolean,
   ): void {
+    this.uniforms.u_time = this.time;
     filterManager.applyFilter(this, input, output, clearMode);
   }
 
+  // ── Uniform accessors ──────────────────────────────────────────────────────
+
+  /** Cross fill colour as [r, g, b] 0–1. */
   get fillColor(): Float32Array { return this.uniforms.u_fillColor; }
   set fillColor(value: [number, number, number] | Float32Array) {
     this.uniforms.u_fillColor[0] = value[0];
@@ -720,14 +839,25 @@ export class CilPlusSDFFilter extends Filter {
     this.uniforms.u_fillColor[2] = value[2];
   }
 
+  /** Overall cross opacity (0–1). */
   get opacity(): number { return this.uniforms.u_opacity; }
   set opacity(value: number) { this.uniforms.u_opacity = value; }
 
-  get armLength(): number { return this.uniforms.u_armLength; }
-  set armLength(value: number) { this.uniforms.u_armLength = value; }
+  /** Half-length of each arm in NDC space (u_cross_radius). */
+  get armLength(): number { return this.uniforms.u_cross_radius; }
+  set armLength(value: number) { this.uniforms.u_cross_radius = value; }
 
-  get strokeWidth(): number { return this.uniforms.u_strokeWidth; }
-  set strokeWidth(value: number) { this.uniforms.u_strokeWidth = value; }
+  /** Half-width of the cross stroke in NDC space (u_cross_width). */
+  get strokeWidth(): number { return this.uniforms.u_cross_width; }
+  set strokeWidth(value: number) { this.uniforms.u_cross_width = value; }
+
+  /** Pulse angular frequency (rad/s). */
+  get pulseSpeed(): number { return this.uniforms.u_pulse_speed; }
+  set pulseSpeed(value: number) { this.uniforms.u_pulse_speed = value; }
+
+  /** Pulse glow amplitude (0–1). */
+  get pulseAmp(): number { return this.uniforms.u_pulse_amp; }
+  set pulseAmp(value: number) { this.uniforms.u_pulse_amp = value; }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
