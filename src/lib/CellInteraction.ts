@@ -13,6 +13,8 @@
  */
 
 import type { CellParams } from '../components/pipeline/CellRenderer'
+import type { Container }   from '../../upstream/pixijs-engine/src/scene/container/Container'
+import type { GlowFilter }  from '../../upstream/pixijs-filters-v2/src/glow/GlowFilter'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -464,4 +466,38 @@ export function getCellNudge(cellId: string): { dx: number; dy: number } | null 
   const map = (window as unknown as Record<string, unknown>)['__cellNudgeState'] as
     Map<string, { dx: number; dy: number }> | undefined
   return map?.get(cellId) ?? null
+}
+
+// ── PixiJS Container-level hover glow + tap select (M180) ────────────────────
+
+/**
+ * setupCellInteraction — attach hover highlight and tap-to-select behaviour
+ * directly to a PixiJS Container that represents a single cell.
+ *
+ * Hover:  boosts GlowFilter.outerStrength ×1.5 and scales the container to 1.02.
+ * Tap:    dispatches a global `cell-select` CustomEvent with `{ cellId }`.
+ */
+export function setupCellInteraction(
+  container: Container,
+  cellId: string,
+  glowFilter: GlowFilter | null,
+): void {
+  container.eventMode = 'static'
+  container.cursor    = 'pointer'
+
+  const origStrength = glowFilter?.outerStrength ?? 0
+
+  container.on('pointerover', () => {
+    if (glowFilter) glowFilter.outerStrength = origStrength * 1.5
+    container.scale.set(1.02)
+  })
+
+  container.on('pointerout', () => {
+    if (glowFilter) glowFilter.outerStrength = origStrength
+    container.scale.set(1.0)
+  })
+
+  container.on('pointertap', () => {
+    window.dispatchEvent(new CustomEvent('cell-select', { detail: { cellId } }))
+  })
 }
