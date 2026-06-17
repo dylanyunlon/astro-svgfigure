@@ -13,6 +13,27 @@
  * All visual quality is determined by the GPU pipeline, not LLM code generation.
  */
 
+// ── M017: cell-culling — viewport frustum skip offscreen ─────────────────────
+// CellCuller          — stateful culler class (margin-aware AABB frustum test)
+// sharedCellCuller    — shared singleton (mirrors Culler.shared pattern)
+// cullCells()         — free function wrapper for sharedCellCuller
+// attachCullingToTicker() — register culling as a HIGH-priority ticker callback
+// viewportFromStageTransform — derive world-space vp from panned/scaled stage
+// viewportFromCamera  — derive 2-D cell-px vp from OGL CameraController params
+export {
+  CellCuller,
+  sharedCellCuller,
+  cullCells,
+  attachCullingToTicker,
+  viewportFromStageTransform,
+  viewportFromCamera,
+} from './cell-culling';
+export type {
+  CellViewport,
+  CellBbox,
+  CullableLiveCell,
+} from './cell-culling';
+
 export { renderCellGraph } from './pixi-cell-renderer';
 export type { CellDescriptor, EdgeDescriptor } from './pixi-cell-renderer';
 

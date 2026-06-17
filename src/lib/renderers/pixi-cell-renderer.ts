@@ -61,6 +61,14 @@ import {
   type CellBlurFilter,
 } from './pixi-blur-cell';
 
+// ── M017: cell-culling — viewport frustum skip ───────────────────────────────
+// cullCells() sets container.visible = false for cells whose bbox is entirely
+// outside the canvas screen rect, skipping the entire subtree render + filter
+// evaluation for those cells.  Uses sharedCellCuller (64 px margin) so bloom
+// halos don't pop in at the edge.  Mirrors upstream Culler._cullRecursive
+// AABB test (upstream/pixijs-engine/src/culling/Culler.ts).
+import { sharedCellCuller } from './cell-culling';
+
 // ── params.json schema (M152 output) ───────────────────────────────────────
 
 export interface ParamsJson {
@@ -1104,6 +1112,19 @@ export function pollCellChannels(
       const { w, h } = lc.desc.bbox;
       bboxSnap.set(id, { x: lc.curX, y: lc.curY, w, h });
     }
+
+    // ── M017: frustum culling — skip offscreen cells ──────────────────────
+    // Run AFTER lerp so curX/curY reflect the current frame position.
+    // sharedCellCuller sets container.visible = false for any cell whose bbox
+    // is fully outside app.screen (+ 64 px bloom margin).  Invisible containers
+    // skip the entire subtree render and all filter evaluations (godray / glitch
+    // / bloom) at zero GPU cost.  Fade-out cells are exempt so the alpha
+    // animation can complete before destroy().
+    // __fadeDir is stamped onto container so CellCuller can read it:
+    for (const [, lc] of live) {
+      (lc.container as any).__fadeDir = lc.fadeDir;
+    }
+    sharedCellCuller.cull(live, app.screen);
 
     // Redraw edges at current (lerped) positions
     drawEdges(edgeLayer, edges, bboxSnap);
