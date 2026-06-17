@@ -2,10 +2,19 @@
  * EdgeParticleSystem.ts — WebGL2 Transform Feedback 粒子系统
  *
  * M041: 修复 EdgeParticleSystem WebGL2 transform feedback
+ * M150: bezier flow from route.json points + species color lerp + playbackRate
  *
  * 粒子沿 edge 贝塞尔曲线 source→target 流动。
  * 每条 edge (route.json) 对应一条三次贝塞尔曲线，粒子从 P0 出发沿曲线
- * 向 P1 流动，到达终点后随机 offset 重新从起点出发。
+ * 向 P3 流动，到达终点后随机 offset 重新从起点出发。
+ *
+ * M150 改进:
+ *   - 贝塞尔控制点直接从 route.json points[] 数组推导 (与 edge-particle-bridge
+ *     的 routeToBezier 一致): ≥4 points 直接映射 P0/P1/P2/P3, 3 points 用
+ *     中间点做 de Casteljau 升阶, 2 points 用 1/3 等分生成控制点
+ *   - 粒子颜色随 travel t 做 lerp(sourceSpeciesColor, targetSpeciesColor, t),
+ *     source/target species 从 species_assignment.json 解析
+ *   - 速度乘以全局 playbackRate (对接 EpochPlaybackController.rate)
  *
  * 架构 (参考 upstream/RESEARCH_121_webgl2_particles.md &
  *       upstream/RESEARCH_122_webgl2_particles_clean.md):
@@ -17,7 +26,7 @@
  *
  *   每个粒子状态 (4 floats — vec4):
  *     .x = travel  : 沿贝塞尔曲线的归一化进度 [0, 1]
- *     .y = speed   : 粒子速度 (每帧 travel += speed * dt)
+ *     .y = speed   : 粒子速度 (每帧 travel += speed * dt * playbackRate)
  *     .z = edgeIdx : 归属的 edge 索引 (float, 整数语义)
  *     .w = seed    : LCG 随机种子，到达终点时重新生成初始 offset
  *
@@ -27,7 +36,7 @@
  *
  *   Draw Pass (gl.POINTS):
  *     vertex shader 用 travel + edge 贝塞尔参数评估 XY 屏幕坐标
- *     fragment shader 输出发光点精灵
+ *     fragment shader 输出 lerp(srcColor, tgtColor, t) 发光点精灵
  *
  *   Ticker 集成:
  *     每帧调用 update(deltaMS) + draw() 即可；
@@ -39,6 +48,8 @@
  *   src/lib/renderers/antimatter-compute.ts — AntimatterPass TF 实现
  *   src/lib/EdgeRenderer.ts — route.json 格式与贝塞尔控制点推导
  *   src/lib/renderers/epoch-ticker.ts — Ticker 集成方式
+ *   src/lib/particle/edge-particle-bridge.ts — routeToBezier 控制点推导
+ *   src/lib/renderers/cell-color-palette.ts — species 颜色定义
  */
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -66,19 +77,61 @@ export interface EdgeParticleSystemConfig {
   speedRange?: [number, number];
   /** 粒子点精灵大小 (像素, default: 3) */
   pointSize?: number;
-  /** 粒子颜色 RGB [0,1] (default: [0.39, 0.71, 0.96] — #64B5F6 天蓝) */
+  /** 粒子颜色 RGB [0,1] — fallback when species color unavailable (default: [0.39, 0.71, 0.96] — #64B5F6 天蓝) */
   color?: [number, number, number];
-  /** skip 连接粒子颜色 (default: [1.0, 0.72, 0.30] — #FFB74D 琥珀) */
+  /** skip 连接粒子颜色 — fallback (default: [1.0, 0.72, 0.30] — #FFB74D 琥珀) */
   skipColor?: [number, number, number];
   /** 粒子透明度 (default: 0.7) */
   alpha?: number;
   /** 到达终点后随机重置到 [0, resetRange], 产生持续流动感 (default: 0.05) */
   resetRange?: number;
+  /** Path to species_assignment.json (default: '/channels/physics/species_assignment.json') */
+  speciesAssignmentPath?: string;
 }
+
+// ── Species color definitions (mirrors cell-color-palette.ts SPECIES_HEX) ────
+
+/** Hex → normalised RGB [0,1]³ */
+function hexToRgb01(hex: string): [number, number, number] {
+  const c = hex.replace('#', '');
+  return [
+    parseInt(c.slice(0, 2), 16) / 255,
+    parseInt(c.slice(2, 4), 16) / 255,
+    parseInt(c.slice(4, 6), 16) / 255,
+  ];
+}
+
+/**
+ * Species → colour map, matching channels/rendering/species/species_port.py
+ * and cell-color-palette.ts SPECIES_HEX.
+ */
+const SPECIES_COLOR_RGB: Record<string, [number, number, number]> = {
+  'cil-eye':         hexToRgb01('#3F51B5'),
+  'cil-vector':      hexToRgb01('#2E7D32'),
+  'cil-bolt':        hexToRgb01('#E65100'),
+  'cil-plus':        hexToRgb01('#C62828'),
+  'cil-arrow-right': hexToRgb01('#455A64'),
+  'cil-filter':      hexToRgb01('#7B1FA2'),
+  'cil-code':        hexToRgb01('#2E7D32'),
+  'cil-layers':      hexToRgb01('#1565C0'),
+  'cil-loop':        hexToRgb01('#F57F17'),
+  'cil-graph':       hexToRgb01('#00695C'),
+};
+
+const DEFAULT_SPECIES_COLOR: [number, number, number] = [0.4, 0.4, 0.4];
+
+/** species_assignment.json 的单条记录 */
+interface SpeciesAssignmentEntry {
+  species: string;
+  gene_traits?: Record<string, string>;
+}
+
+/** node name → species name 映射表 */
+type SpeciesAssignmentMap = Record<string, SpeciesAssignmentEntry>;
 
 // ── Bezier helpers ────────────────────────────────────────────────────────────
 
-/** 单条 edge 的贝塞尔参数 (上传到 GPU uniform array) */
+/** 单条 edge 的贝塞尔参数 + species 颜色 (上传到 GPU uniform array) */
 interface EdgeBezier {
   p0x: number; p0y: number;
   p1x: number; p1y: number;
@@ -86,38 +139,78 @@ interface EdgeBezier {
   c1x: number; c1y: number;
   /** 1 = skip connection, 0 = straight edge */
   isSkip: number;
+  /** source species RGB [0,1]³ */
+  srcColor: [number, number, number];
+  /** target species RGB [0,1]³ */
+  tgtColor: [number, number, number];
 }
 
 /**
- * 从 route.json points[] 和 curvature 推导三次贝塞尔控制点。
- * 与 EdgeRenderer.deriveControlPoints 完全等价，保持一致。
+ * Convert route.json points[] to cubic bezier P0/C0/C1/P3.
+ * Consistent with edge-particle-bridge.ts routeToBezier():
+ *   ≥4 points → P0=pts[0], C0=pts[1], C1=pts[-2], P3=pts[-1]
+ *   3 points  → P0=pts[0], P3=pts[2], C0/C1 derived via middle point
+ *   2 points  → P0=pts[0], P3=pts[1], C0/C1 at 1/3 & 2/3
+ *   1 point   → degenerate (all same)
  */
-function deriveControlPoints(
-  p0: { x: number; y: number },
-  p1: { x: number; y: number },
-  mid: { x: number; y: number },
-  curvature: number,
-): { c0: { x: number; y: number }; c1: { x: number; y: number } } {
-  return {
-    c0: {
-      x: p0.x + (mid.x - p0.x) * curvature,
-      y: p0.y + (mid.y - p0.y) * curvature,
-    },
-    c1: {
-      x: p1.x + (mid.x - p1.x) * curvature,
-      y: p1.y + (mid.y - p1.y) * curvature,
-    },
-  };
+function routeToCubicBezier(
+  pts: Array<{ x: number; y: number }>,
+): { p0: { x: number; y: number }; c0: { x: number; y: number }; c1: { x: number; y: number }; p3: { x: number; y: number } } {
+  if (pts.length >= 4) {
+    return {
+      p0: pts[0],
+      c0: pts[1],
+      c1: pts[pts.length - 2],
+      p3: pts[pts.length - 1],
+    };
+  }
+  if (pts.length === 3) {
+    // 3 points: use middle point to derive control points
+    // Quadratic-to-cubic elevation: C0 = P0 + 2/3*(M-P0), C1 = P3 + 2/3*(M-P3)
+    const p0 = pts[0];
+    const m  = pts[1];
+    const p3 = pts[2];
+    return {
+      p0,
+      c0: { x: p0.x + (2 / 3) * (m.x - p0.x), y: p0.y + (2 / 3) * (m.y - p0.y) },
+      c1: { x: p3.x + (2 / 3) * (m.x - p3.x), y: p3.y + (2 / 3) * (m.y - p3.y) },
+      p3,
+    };
+  }
+  if (pts.length === 2) {
+    const p0 = pts[0];
+    const p3 = pts[1];
+    return {
+      p0,
+      c0: { x: p0.x + (p3.x - p0.x) / 3, y: p0.y + (p3.y - p0.y) / 3 },
+      c1: { x: p0.x + (p3.x - p0.x) * 2 / 3, y: p0.y + (p3.y - p0.y) * 2 / 3 },
+      p3,
+    };
+  }
+  // Degenerate single point
+  const p = pts[0] || { x: 0, y: 0 };
+  return { p0: p, c0: p, c1: p, p3: p };
 }
 
-function buildEdgeBezier(route: EdgeRoute): EdgeBezier {
-  const pts = route.points;
-  const p0  = pts[0];
-  const p1  = pts[pts.length - 1];
-  const mid = pts[Math.floor(pts.length / 2)] ?? {
-    x: (p0.x + p1.x) * 0.5,
-    y: (p0.y + p1.y) * 0.5,
-  };
+/** Resolve species RGB [0,1]³ for a node name, using the species assignment map */
+function resolveSpeciesColor(
+  nodeName: string,
+  speciesMap: SpeciesAssignmentMap | null,
+  fallback: [number, number, number],
+): [number, number, number] {
+  if (!speciesMap) return fallback;
+  const entry = speciesMap[nodeName];
+  if (!entry) return fallback;
+  return SPECIES_COLOR_RGB[entry.species] ?? DEFAULT_SPECIES_COLOR;
+}
+
+function buildEdgeBezier(
+  route: EdgeRoute,
+  speciesMap: SpeciesAssignmentMap | null,
+  fallbackColor: [number, number, number],
+  skipFallbackColor: [number, number, number],
+): EdgeBezier {
+  const { p0, c0, c1, p3 } = routeToCubicBezier(route.points);
 
   const isSkip =
     route.advanced?.routing === 'SPLINES' ||
@@ -125,10 +218,19 @@ function buildEdgeBezier(route: EdgeRoute): EdgeBezier {
       ? 1
       : 0;
 
-  const curvature = route.advanced?.curvature ?? (isSkip ? 0.5 : 0.33);
-  const { c0, c1 } = deriveControlPoints(p0, p1, mid, curvature);
+  const fb = isSkip ? skipFallbackColor : fallbackColor;
+  const srcNode = route.sources[0] ?? '';
+  const tgtNode = route.targets[0] ?? '';
 
-  return { p0x: p0.x, p0y: p0.y, p1x: p1.x, p1y: p1.y, c0x: c0.x, c0y: c0.y, c1x: c1.x, c1y: c1.y, isSkip };
+  return {
+    p0x: p0.x, p0y: p0.y,
+    p1x: p3.x, p1y: p3.y,   // p1 = endpoint P3 (GPU naming: b0.zw = endpoint)
+    c0x: c0.x, c0y: c0.y,
+    c1x: c1.x, c1y: c1.y,
+    isSkip,
+    srcColor: resolveSpeciesColor(srcNode, speciesMap, fb),
+    tgtColor: resolveSpeciesColor(tgtNode, speciesMap, fb),
+  };
 }
 
 // ── LCG random (Microsoft VC++ params, same as RESEARCH_121) ─────────────────
@@ -200,6 +302,8 @@ in vec4 a_state;
 uniform float u_dt;
 // reset range: particles restart in [0, u_resetRange]
 uniform float u_resetRange;
+// Global playback rate multiplier (from EpochPlaybackController)
+uniform float u_playbackRate;
 
 // Bezier parameters packed: [p0x,p0y, p1x,p1y, c0x,c0y, c1x,c1y] per edge
 // 8 floats × MAX_EDGES
@@ -224,8 +328,8 @@ void main() {
   float edgeIdx = a_state.z;
   uint  seed    = floatBitsToUint(a_state.w);
 
-  // Advance particle along its edge
-  travel += speed * u_dt;
+  // Advance particle along its edge, scaled by playbackRate
+  travel += speed * u_dt * u_playbackRate;
 
   if (travel >= 1.0) {
     // Reached target — reset to [0, resetRange] with LCG jitter
@@ -257,8 +361,12 @@ uniform float u_pointSize;
 uniform vec4  u_bez0[${MAX_EDGES}]; // p0x,p0y, p1x,p1y
 uniform vec4  u_bez1[${MAX_EDGES}]; // c0x,c0y, c1x,c1y
 
+// Per-edge species colours: vec3(r,g,b) packed as vec4 (w unused)
+uniform vec4 u_srcColor[${MAX_EDGES}]; // source species colour per edge
+uniform vec4 u_tgtColor[${MAX_EDGES}]; // target species colour per edge
+
 out float v_alpha;
-out float v_skip;
+out vec3  v_color;    // lerped species colour for this particle
 
 // Evaluate cubic bezier at t
 vec2 bezier(int idx, float t) {
@@ -289,17 +397,18 @@ void main() {
   // Clamp index to valid range (defensive)
   edgeIdx = clamp(edgeIdx, 0, ${MAX_EDGES - 1});
 
-  vec2 posPx = bezier(edgeIdx, clamp(travel, 0.0, 1.0));
+  float t = clamp(travel, 0.0, 1.0);
+  vec2 posPx = bezier(edgeIdx, t);
 
   // Fade in / out at endpoints for smooth appearance
   float fadeIn  = smoothstep(0.0, 0.05, travel);
   float fadeOut = 1.0 - smoothstep(0.92, 1.0, travel);
   v_alpha = fadeIn * fadeOut;
 
-  // isSkip flag is encoded in b0.xy == b0.zw trick — instead we use
-  // the edgeIdx we already know from config upload (u_skip uniform unused).
-  // For simplicity, the fragment shader receives v_alpha; colour is per-draw.
-  v_skip  = 0.0; // see note — colour chosen by draw call, not per-particle
+  // Lerp species colour: source → target along travel
+  vec3 srcC = u_srcColor[edgeIdx].rgb;
+  vec3 tgtC = u_tgtColor[edgeIdx].rgb;
+  v_color = mix(srcC, tgtC, t);
 
   gl_Position  = vec4(pixelToNDC(posPx), 0.0, 1.0);
   gl_PointSize = u_pointSize;
@@ -309,11 +418,10 @@ void main() {
 const DRAW_FRAG = /* glsl */`#version 300 es
 precision highp float;
 
-uniform vec3  u_color;
 uniform float u_alpha;
 
 in float v_alpha;
-in float v_skip;
+in vec3  v_color;     // lerped species colour from vertex shader
 
 out vec4 fragColor;
 
@@ -332,7 +440,7 @@ void main() {
   if (alpha < 0.004) discard;
 
   // Pre-multiplied alpha (additive blend in draw())
-  fragColor = vec4(u_color * alpha, alpha);
+  fragColor = vec4(v_color * alpha, alpha);
 }
 `;
 
@@ -363,8 +471,14 @@ export class EdgeParticleSystem {
   private edgeRoutes: EdgeRoute[]  = [];
   private totalParticles = 0;
 
+  // ── Species mapping ─────────────────────────────────────────────────────
+  private speciesMap: SpeciesAssignmentMap | null = null;
+
   // ── Timing ──────────────────────────────────────────────────────────────
   private elapsed = 0;
+
+  // ── Playback rate (global speed multiplier) ─────────────────────────────
+  private _playbackRate = 1;
 
   // ── State ────────────────────────────────────────────────────────────────
   private _ready = false;
@@ -386,6 +500,7 @@ export class EdgeParticleSystem {
       skipColor:       config.skipColor       ?? [1.00, 0.72, 0.30],
       alpha:           config.alpha           ?? 0.7,
       resetRange:      config.resetRange      ?? 0.05,
+      speciesAssignmentPath: config.speciesAssignmentPath ?? '/channels/physics/species_assignment.json',
     };
   }
 
@@ -394,11 +509,18 @@ export class EdgeParticleSystem {
   /** True after init() completes successfully. */
   get ready(): boolean { return this._ready; }
 
+  /** Get / set global playback rate multiplier (default: 1). */
+  get playbackRate(): number { return this._playbackRate; }
+  set playbackRate(rate: number) { this._playbackRate = Math.max(0, rate); }
+
   /**
-   * Load route data and compile shaders.
+   * Load route data, species assignment, and compile shaders.
    * Call once; after this, call tick() every frame.
    */
   async loadRoutes(basePath = '/channels/edge'): Promise<void> {
+    // Load species assignment in parallel with routes
+    const speciesPromise = this._loadSpeciesAssignment();
+
     const edgeIds = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'skip1', 'skip2'];
     const routes: EdgeRoute[] = [];
     await Promise.all(
@@ -411,6 +533,10 @@ export class EdgeParticleSystem {
         }
       }),
     );
+
+    // Await species assignment (non-blocking — fallback to null if fails)
+    await speciesPromise;
+
     routes.sort((a, b) => edgeIds.indexOf(a.edge_id) - edgeIds.indexOf(b.edge_id));
     this.initFromRoutes(routes);
   }
@@ -418,8 +544,11 @@ export class EdgeParticleSystem {
   /**
    * Initialise directly from pre-loaded EdgeRoute array.
    * Use this when route data is already available (e.g. from EdgeRenderer).
+   * Optionally pass a pre-loaded species assignment map.
    */
-  initFromRoutes(routes: EdgeRoute[]): void {
+  initFromRoutes(routes: EdgeRoute[], speciesMap?: SpeciesAssignmentMap): void {
+    if (speciesMap) this.speciesMap = speciesMap;
+
     if (routes.length === 0) {
       console.warn('[EdgeParticleSystem] No routes provided — system inactive.');
       return;
@@ -433,7 +562,7 @@ export class EdgeParticleSystem {
     }
 
     this.edgeRoutes = routes;
-    this.edges      = routes.map(buildEdgeBezier);
+    this.edges      = routes.map(r => buildEdgeBezier(r, this.speciesMap, this.cfg.color, this.cfg.skipColor));
 
     this._compilePrograms();
     this._buildBuffers();
@@ -489,6 +618,20 @@ export class EdgeParticleSystem {
       this.stateBuf = null;
     }
     this._ready = false;
+  }
+
+  // ── Private: load species assignment ────────────────────────────────────
+
+  private async _loadSpeciesAssignment(): Promise<void> {
+    try {
+      const r = await fetch(this.cfg.speciesAssignmentPath);
+      if (r.ok) {
+        this.speciesMap = await r.json() as SpeciesAssignmentMap;
+      }
+    } catch {
+      // Species assignment unavailable — fall back to config colors
+      console.warn('[EdgeParticleSystem] species_assignment.json not found — using fallback colors.');
+    }
   }
 
   // ── Private: compile ──────────────────────────────────────────────────────
@@ -601,6 +744,33 @@ export class EdgeParticleSystem {
     if (loc1) gl.uniform4fv(loc1, bez1);
   }
 
+  // ── Private: upload species color uniforms ──────────────────────────────
+
+  private _uploadSpeciesColorUniforms(prog: WebGLProgram): void {
+    const { gl, edges } = this;
+
+    // Pack u_srcColor[i] = vec4(r, g, b, 0) and u_tgtColor[i] = vec4(r, g, b, 0)
+    const srcColors = new Float32Array(MAX_EDGES * 4);
+    const tgtColors = new Float32Array(MAX_EDGES * 4);
+
+    for (let i = 0; i < edges.length; i++) {
+      const e = edges[i];
+      srcColors[i * 4 + 0] = e.srcColor[0];
+      srcColors[i * 4 + 1] = e.srcColor[1];
+      srcColors[i * 4 + 2] = e.srcColor[2];
+      srcColors[i * 4 + 3] = 0;
+      tgtColors[i * 4 + 0] = e.tgtColor[0];
+      tgtColors[i * 4 + 1] = e.tgtColor[1];
+      tgtColors[i * 4 + 2] = e.tgtColor[2];
+      tgtColors[i * 4 + 3] = 0;
+    }
+
+    const srcLoc = gl.getUniformLocation(prog, 'u_srcColor[0]');
+    const tgtLoc = gl.getUniformLocation(prog, 'u_tgtColor[0]');
+    if (srcLoc) gl.uniform4fv(srcLoc, srcColors);
+    if (tgtLoc) gl.uniform4fv(tgtLoc, tgtColors);
+  }
+
   // ── Private: update pass (transform feedback) ─────────────────────────────
 
   private _update(deltaMS: number): void {
@@ -618,6 +788,9 @@ export class EdgeParticleSystem {
 
     const rrLoc = gl.getUniformLocation(this.updateProg, 'u_resetRange');
     if (rrLoc !== null) gl.uniform1f(rrLoc, this.cfg.resetRange);
+
+    const prLoc = gl.getUniformLocation(this.updateProg, 'u_playbackRate');
+    if (prLoc !== null) gl.uniform1f(prLoc, this._playbackRate);
 
     this._uploadBezierUniforms(this.updateProg);
 
@@ -668,43 +841,24 @@ export class EdgeParticleSystem {
     // Bezier params
     this._uploadBezierUniforms(this.drawProg);
 
+    // Species color uniforms (per-edge source/target)
+    this._uploadSpeciesColorUniforms(this.drawProg);
+
     // Additive blend for glow effect (AT standard for particles)
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
     gl.depthMask(false);
 
-    // ── Draw normal edges ──────────────────────────────────────────────
-    const cLoc = gl.getUniformLocation(this.drawProg, 'u_color');
-
-    const normalEdges  = edges.filter(e => !e.isSkip);
-    const skipEdges    = edges.filter(e => e.isSkip);
-    const PPE          = cfg.particlesPerEdge;
+    const PPE = cfg.particlesPerEdge;
 
     // Bind the READ-side VAO (updated state after _update swap)
-    // We need to re-create a minimal VAO pointing at the current read buffer
-    // because our pre-built VAOs were created for the update program's a_state.
     // The draw program also uses a_state so we can reuse the same VAO.
     gl.bindVertexArray(this.vao[this.currentIndex]);
 
-    // Normal edges (straight feed-forward)
-    if (normalEdges.length > 0) {
-      if (cLoc !== null) gl.uniform3fv(cLoc, new Float32Array(cfg.color));
-      for (let e = 0; e < edges.length; e++) {
-        if (edges[e].isSkip) continue;
-        const first = e * PPE;
-        gl.drawArrays(gl.POINTS, first, PPE);
-      }
-    }
-
-    // Skip connections (different colour)
-    if (skipEdges.length > 0) {
-      if (cLoc !== null) gl.uniform3fv(cLoc, new Float32Array(cfg.skipColor));
-      for (let e = 0; e < edges.length; e++) {
-        if (!edges[e].isSkip) continue;
-        const first = e * PPE;
-        gl.drawArrays(gl.POINTS, first, PPE);
-      }
-    }
+    // Draw all particles in a single call — colour is per-particle via
+    // lerp(srcColor, tgtColor, t) in the vertex shader, so no need to
+    // separate normal vs skip draw calls.
+    gl.drawArrays(gl.POINTS, 0, edges.length * PPE);
 
     gl.bindVertexArray(null);
     gl.depthMask(true);
