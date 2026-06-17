@@ -71,11 +71,14 @@ import {
   type EpochTimeline,
   type EpochFrame,
   type CellState,
+  type CellSheetProps,
   type EpochSheet,
   type EpochSnapshotsJSON,
   type RawCellState,
   type EpochTimelineOptions,
 } from './theatre-epoch-timeline'
+
+import { GlowFilter } from '../../../upstream/pixijs-filters-v2/src/glow'
 
 // ─── Re-export for consumers ───────────────────────────────────────────────────
 export type {
@@ -202,6 +205,9 @@ export class EpochCellBridge {
   /** EpochTimeline.onFrame() unsubscribe handle. */
   private _unsubFrame: (() => void) | null = null
 
+  /** Per-cell SheetObject.onValuesChange() unsubscribe handles (M160). */
+  private readonly _unsubValues: Array<() => void> = []
+
   /** True once attachToApp() has been called. */
   private _attached = false
 
@@ -265,6 +271,12 @@ export class EpochCellBridge {
       origW: origSize?.w ?? 100,
       origH: origSize?.h ?? 50,
     })
+
+    // ── M160: per-cell SheetObject.onValuesChange → PixiJS Container ──────
+    // Subscribe directly to the Theatre.js SheetObject so that every prop
+    // change (driven by sequence.play() bezier interpolation) is forwarded
+    // to the PixiJS Container without waiting for the batched onFrame cycle.
+    this._subscribeSheetObject(cellId, container)
   }
 
   /**
@@ -406,6 +418,9 @@ export class EpochCellBridge {
   destroy(): void {
     this._unsubFrame?.()
     this._unsubFrame = null
+    // M160: unsubscribe all per-cell SheetObject.onValuesChange listeners
+    for (const unsub of this._unsubValues) unsub()
+    this._unsubValues.length = 0
     this.detachFromApp()
     this._registry.clear()
   }
@@ -486,6 +501,48 @@ export class EpochCellBridge {
         }
       }
     }
+  }
+
+  // ── Private: per-cell SheetObject subscription (M160) ─────────────────────
+
+  /**
+   * Subscribe to a single cell's SheetObject.onValuesChange() and forward
+   * interpolated prop values directly to the PixiJS Container.
+   *
+   * This is the M160 "reactive bridge" — each cell gets its own listener so
+   * Theatre.js → PixiJS updates are immediate and per-object, rather than
+   * waiting for the batched EpochFrame cycle.
+   *
+   * Props forwarded:
+   *   x, y           → container.position.set(x, y)
+   *   opacity        → container.alpha
+   *   glowIntensity  → find GlowFilter in container.filters, set outerStrength
+   */
+  private _subscribeSheetObject(cellId: string, container: Container): void {
+    const sheetObj = this.timeline.getObject(cellId)
+    if (!sheetObj) return
+
+    const unsub = sheetObj.onValuesChange((values: CellSheetProps) => {
+      // ── Position ──────────────────────────────────────────────────────
+      container.position.set(values.x, values.y)
+
+      // ── Opacity ───────────────────────────────────────────────────────
+      container.alpha = Math.max(0, Math.min(1, values.opacity))
+
+      // ── Glow intensity → GlowFilter.outerStrength ─────────────────────
+      // Walk container.filters to find any GlowFilter instance and update
+      // its outerStrength to match the Theatre.js glowIntensity prop.
+      // Covers both __baselineGlowFilter and any other GlowFilter that may
+      // have been added by pixi-cell-renderer or pixi-filters-registry.
+      const filters = (container.filters as unknown[] | null) ?? []
+      for (const f of filters) {
+        if (f instanceof GlowFilter) {
+          f.outerStrength = values.glowIntensity
+        }
+      }
+    })
+
+    this._unsubValues.push(unsub)
   }
 }
 
