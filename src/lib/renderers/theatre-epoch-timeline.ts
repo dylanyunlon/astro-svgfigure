@@ -673,7 +673,12 @@ class EpochTimeline {
     })
   }
 
-
+  /**
+   * Destroy the timeline — pause sequence, unsubscribe all Theatre.js onChange
+   * listeners, and clear all registered frame callbacks.
+   */
+  destroy(): void {
+    this._sequence.pause()
     for (const unsub of this._unsubs) unsub()
     this._callbacks.clear()
     this._unsubs.length = 0
@@ -803,27 +808,52 @@ export type { EpochTimeline }
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Create a Theatre.js Project from a topology JSON.
- * One topology = one Project, with cells as SheetObjects.
+ * Create a Theatre.js EpochTimeline from a topology JSON.
+ *
+ * Builds an initial CellState[] for epoch 0 from cellEntries, then creates
+ * an EpochTimeline with `epochCount` copies of that epoch so the sequence has
+ * length > 0 and SheetObjects are registered for all cells.
+ *
+ * One topology = one Theatre.js Project (projectId = `topology-${topologyId}`).
  */
 export function projectFromTopology(
-  topologyId: string,
-  cellEntries: Array<{ cell_id: string; species: string; bbox: { x: number; y: number; w: number; h: number } }>,
-  epochCount: number,
-  opts?: Partial<EpochTimelineOptions>,
+  topologyId:  string,
+  cellEntries: Array<{
+    cell_id: string
+    species:  string
+    bbox:     { x: number; y: number; w: number; h: number }
+  }>,
+  epochCount:  number,
+  opts?:       Partial<EpochTimelineOptions>,
 ): EpochTimeline {
-  return new EpochTimeline(
-    cellEntries.map(e => ({
-      cellId: e.cell_id,
-      species: e.species,
-      x: e.bbox.x,
-      y: e.bbox.y,
-      w: e.bbox.w,
-      h: e.bbox.h,
-      opacity: 1.0,
-      colorR: 0.5, colorG: 0.5, colorB: 0.7,
-    })),
-    epochCount,
-    { ...opts, projectId: `topology-${topologyId}` },
-  );
+  // Build a CellState for each entry with a neutral grey colour.
+  const epoch0: CellState[] = cellEntries.map(e => ({
+    cell_id:       e.cell_id,
+    x:             e.bbox.x,
+    y:             e.bbox.y,
+    w:             e.bbox.w,
+    h:             e.bbox.h,
+    opacity:       1,
+    bloomStrength: 0,
+    z:             3,
+    r:             127,
+    g:             127,
+    b:             179,   // 0.7 * 255 ≈ 179 — neutral blue-grey
+    color:         '#7f7fb3',
+  }))
+
+  // Replicate epoch 0 for `epochCount` epochs so the timeline has a valid
+  // sequence length even before real epoch data arrives via advanceEpoch().
+  const n = Math.max(1, epochCount)
+  const snapshots: CellState[][] = Array.from({ length: n }, () =>
+    epoch0.map(c => ({ ...c })),
+  )
+
+  const mergedOpts: Required<EpochTimelineOptions> = {
+    projectId:   opts?.projectId   ?? `topology-${topologyId}`,
+    easing:      opts?.easing      ?? 'ease',
+    defaultRate: opts?.defaultRate ?? 1,
+  }
+
+  return new EpochTimeline(snapshots, mergedOpts)
 }

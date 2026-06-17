@@ -631,3 +631,64 @@ export {
   withGPUPrepare,
 } from './cell-prepare';
 export type { PrepareResult, CellPrepareOptions } from './cell-prepare';
+
+// ── M058: Theatre.js epoch timeline ↔ PixiJS Ticker 桥接 ───────────────────────
+//
+// EpochCellBridge  — 核心桥接类：
+//   registerContainer(cellId, container, origSize?) — 注册 PixiJS Container
+//   advanceEpoch(rawCells, rate?)  — 触发 Theatre.js sequence.play() N→N+1 过渡
+//   play / pause / stop / seek     — 代理到 EpochTimeline 播放控制
+//   attachToApp(app)               — 挂载到 PixiJS Application Ticker
+//   jumpToEpoch(n)                 — 无动画跳转到指定 epoch
+//   destroy()                      — 取消订阅 + 解除 Ticker
+//
+// createEpochCellBridge(data, opts) — 工厂函数
+//
+// renderCellGraphWithEpochBridge()  — 一键高层 API：初始化 PixiJS + 桥接，
+//                                     返回 { bridge, stop }
+//
+// buildContainerRegistry()          — 批量注册已有 Container Map
+//
+// EpochPubSubBridge — pubsub emitter 自动接线：emitter.on('epoch') → advanceEpoch()
+//
+// Props 插值（每帧从 SheetObject 读取）:
+//   x, y         → container.position.set()     bbox lerp
+//   w, h         → container.scale              (bboxScale=true 时)
+//   opacity      → container.alpha              opacity fade
+//   r, g, b      → container.tint               color interpolation
+//   bloomStrength → glow.__bloomFilter.bloomScale  bloom 强度
+//
+// Upstream 参考:
+//   src/lib/renderers/theatre-epoch-timeline.ts  — EpochTimeline / CellState
+//   src/lib/renderers/pixi-cell-renderer.ts      — buildCellContainer / __bloomFilter
+//   upstream/theatre-js/core/src/coreExports.ts  — val(), onChange()
+//   upstream/pixijs-engine/src/ticker/Ticker.ts  — Ticker
+export {
+  EpochCellBridge,
+  EpochPubSubBridge,
+  createEpochCellBridge,
+  renderCellGraphWithEpochBridge,
+  buildContainerRegistry,
+} from './theatre-epoch-cell-bridge';
+export type {
+  EpochCellBridgeOptions,
+} from './theatre-epoch-cell-bridge';
+
+// ── M042/M067: Theatre.js epoch timeline (re-export for convenience) ──────────
+export {
+  createEpochTimeline,
+  hexToRgb,
+  rgbToHex,
+  normaliseCellState,
+  projectFromTopology,
+} from './theatre-epoch-timeline';
+export type {
+  CellState as EpochCellStateTheatre,
+  EpochSheet,
+  EpochSnapshotsJSON,
+  RawCellState,
+  EpochFrame,
+  FrameCallback,
+  EasingPreset,
+  EpochTimelineOptions,
+} from './theatre-epoch-timeline';
