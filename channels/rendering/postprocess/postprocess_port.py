@@ -483,21 +483,36 @@ class AstroCellLightShaftBloom:
         self._bbox    = bbox
         self._species = species
 
-    def emit_svg(self) -> str:
+    def emit_svg(self) -> dict:
         """
-        Emit a multi-pass radial bloom filter + compositor as an SVG <filter>.
+        Return bloom filter parameters as a JSON-serialisable dict for PixiJS
+        AdvancedBloomFilter consumption (M034: SVG <defs> hardcode → JSON params).
 
-        The number of feGaussianBlur primitives equals min(_LS_BLUR_PASSES, 3)
-        to keep the SVG compact; each pass uses an increasing stdDeviation to
-        simulate the distance-proportional blur growth from the C++ shader.
+        All physical parameter calculations from LightShaftRendering.cpp are
+        preserved; only the output format changes from SVG string to structured dict.
 
-        Returns SVG string with filter definition and application hint comment.
+        Per-pass Gaussian σ values (sigmas) are kept in full so the front-end can
+        reconstruct the multi-pass Kawase blur sequence exactly:
+
+            filterId     ← "ls-bloom-{cell_id}"  (CSS filter reference anchor)
+            filterRegion ← SVG filter primitive subregion (x/y/w/h as percentages)
+            passes       ← per-pass blur descriptors with stdDeviation preserved
+            tintMatrix   ← feColorMatrix values as a flat 20-element list
+            blendMode    ← feBlend composite mode ("screen")
+            blurOrigin   ← light-shaft origin (normalised 0-1)
+            bloomScale   ← BloomScale / feColorMatrix alpha channel weight
+            threshold    ← luminance gate (0 = all pixels bloom)
+            brightness   ← base brightness multiplier
+            pixelSize    ← sub-pixel step { x, y }
+
+        Returns {} (empty dict) when should_render_light_shafts() is False.
 
         鲁迅式：多次模糊是耐心的象征——每一遍模糊都比上一遍更弥散，
         直到光柱从细线变成光晕，从光晕变成弥漫的辉光。
+        参数字典是意图的纯粹表达——让渲染库去决定如何把意图变成像素。
         """
         if not should_render_light_shafts(self._species):
-            return ""
+            return {}
 
         p         = self._p
         cell_id   = self._cell_id
@@ -505,7 +520,7 @@ class AstroCellLightShaftBloom:
         cell_w    = float(bbox.get("w", 100))
         cell_h    = float(bbox.get("h", 50))
 
-        # Bloom filter identifier
+        # Bloom filter identifier (CSS/SVG anchor, kept for front-end group binding)
         filter_id = f"ls-bloom-{cell_id}"
         bloom_r, bloom_g, bloom_b = p["bloom_tint"]
 
@@ -514,50 +529,50 @@ class AstroCellLightShaftBloom:
         base_sigma = max(1.0, min(cell_w, cell_h) * _LS_FIRST_PASS_DIST * 0.15)
         sigmas     = [base_sigma * (2 ** i) for i in range(min(_LS_BLUR_PASSES, 3))]
 
-        parts = [
-            f'<!-- [ASTRO-LS] LightShaftRendering.cpp Bloom port '
-            f'blur_origin=({p["blur_origin_x"]:.3f},{p["blur_origin_y"]:.3f}) '
-            f'bloom_scale={p["bloom_scale"]:.2f} passes={_LS_BLUR_PASSES} -->',
-            f'<defs>',
-            f'  <filter id="{filter_id}" '
-            f'x="-30%" y="-30%" width="160%" height="160%">',
+        # Kawase blur strength ≈ Gaussian σ of final pass × 1.4
+        blur_strength = round(sigmas[-1] * 1.4, 2)
+
+        # feColorMatrix values as flat 20-element list (row-major 4×5 RGBA matrix)
+        # Mirrors tint colour pass: BloomTint × BloomScale applied to alpha channel
+        bloom_scale = float(p.get("bloom_scale", 0.25))
+        tint_matrix = [
+            round(bloom_r, 4), 0, 0, 0, 0,
+            0, round(bloom_g, 4), 0, 0, 0,
+            0, 0, round(bloom_b, 4), 0, 0,
+            0, 0, 0, round(bloom_scale, 4), 0,
         ]
 
-        prev_result = "SourceGraphic"
-        for i, sigma in enumerate(sigmas):
-            result_name = f"blur{i}"
-            parts.append(
-                f'    <!-- Pass {i+1}: radial blur σ={sigma:.2f} -->'
-            )
-            parts.append(
-                f'    <feGaussianBlur in="{prev_result}" '
-                f'stdDeviation="{sigma:.2f}" result="{result_name}"/>'
-            )
-            prev_result = result_name
-
-        # Tint the final bloom layer with BloomTint colour
-        parts.append(
-            f'    <feColorMatrix in="{prev_result}" type="matrix" '
-            f'values="{bloom_r:.2f} 0 0 0 0  '
-            f'0 {bloom_g:.2f} 0 0 0  '
-            f'0 0 {bloom_b:.2f} 0 0  '
-            f'0 0 0 {p["bloom_scale"]:.2f} 0" result="tinted"/>'
-        )
-
-        # Composite: screen blend (additive bloom over original)
-        parts.append(
-            f'    <feBlend in="SourceGraphic" in2="tinted" '
-            f'mode="screen" result="bloomed"/>'
-        )
-
-        parts.append(f'  </filter>')
-        parts.append(f'</defs>')
-        parts.append(
-            f'<!-- [ASTRO-LS] bloom filter attached to cell-{cell_id}: '
-            f'apply filter="url(#{filter_id})" to the cell group -->'
-        )
-
-        return "\n".join(parts)
+        return {
+            # ── Filter identity & SVG region ──────────────────────────────────
+            "filterId":     filter_id,
+            "filterRegion": {"x": "-30%", "y": "-30%", "width": "160%", "height": "160%"},
+            # ── Multi-pass blur descriptors (LightShaftRendering.cpp passes) ──
+            "passes": [
+                {
+                    "pass":         i + 1,
+                    "stdDeviation": round(sigma, 4),
+                    "in":           "SourceGraphic" if i == 0 else f"blur{i - 1}",
+                    "result":       f"blur{i}",
+                }
+                for i, sigma in enumerate(sigmas)
+            ],
+            # ── Tint compositor (feColorMatrix + feBlend screen) ──────────────
+            "tintMatrix":   tint_matrix,
+            "blendMode":    "screen",
+            # ── AdvancedBloomFilter options (PixiJS API surface) ──────────────
+            "threshold":    round(float(p.get("bloom_threshold", 0.0)), 4),
+            "bloomScale":   round(bloom_scale, 4),
+            "brightness":   1.0,
+            "blur":         blur_strength,
+            "quality":      _LS_BLUR_PASSES,
+            "pixelSize":    {"x": 1, "y": 1},
+            # ── AT HydraBloom metadata (colour tint + light-shaft origin) ─────
+            "tint":         [round(bloom_r, 4), round(bloom_g, 4), round(bloom_b, 4)],
+            "blurOrigin":   {
+                "x": round(float(p.get("blur_origin_x", 0.5)), 4),
+                "y": round(float(p.get("blur_origin_y", 0.5)), 4),
+            },
+        }
 
     def emit_params(self) -> dict:
         """
