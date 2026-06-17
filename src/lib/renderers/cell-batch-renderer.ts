@@ -34,6 +34,8 @@ import { Graphics }      from '../../upstream/pixijs-engine/src/scene/graphics/s
 import { Sprite }        from '../../upstream/pixijs-engine/src/scene/sprite/Sprite';
 import { RenderTexture } from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/RenderTexture';
 import { Texture }       from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
+import { ParticleContainer } from '../../upstream/pixijs-engine/src/scene/particle-container/shared/ParticleContainer';
+import { Particle }          from '../../upstream/pixijs-engine/src/scene/particle-container/shared/Particle';
 
 import type { Application } from '../../upstream/pixijs-engine/src/app/Application';
 import type { CellDescriptor } from './pixi-cell-renderer';
@@ -582,4 +584,207 @@ export function createCellBatchManager(app: Application): CellBatchManager {
 export function formatCellBatchStats(mgr: CellBatchManager): string {
   const { drawCalls, cells, speciesBatches } = mgr.stats;
   return `[CellBatch] species=${speciesBatches}  drawCalls=${drawCalls}  cells=${cells}`;
+}
+
+// ─── Instanced rendering threshold ──────────────────────────────────────────
+//
+// When cell count exceeds the BATCH_THRESHOLD, the per-Container approach
+// (one Sprite per cell inside a regular Container) becomes a GPU state-switch
+// bottleneck.  ParticleContainer uses a single shared geometry buffer and one
+// draw call per texture — the same instanced-rendering pattern as upstream's
+// ParticleContainerPipe, but driven by our CellDescriptor data.
+//
+// shouldUseBatch() gates the decision; createBatchRenderer() builds the
+// ParticleContainer tree grouped by species (one ParticleContainer per species
+// texture, matching the one-draw-call-per-species invariant of CellBatchManager).
+
+const BATCH_THRESHOLD = 20;
+
+/**
+ * Returns `true` when the cell count is large enough to benefit from
+ * ParticleContainer instanced rendering instead of per-cell Containers.
+ *
+ * The threshold (>20) is the point at which GPU state-switch overhead from
+ * individual Container/Sprite pairs exceeds the cost of populating a
+ * ParticleContainer's shared vertex buffer.
+ */
+export function shouldUseBatch(cellCount: number): boolean {
+  return cellCount > BATCH_THRESHOLD;
+}
+
+/**
+ * createBatchRenderer
+ *
+ * Builds a ParticleContainer-based instanced renderer for the given cells and
+ * attaches it to `stage`.  All cells sharing the same species share one
+ * ParticleContainer (and therefore one draw call), mirroring the
+ * CellSpeciesBatch grouping but using PixiJS's built-in particle pipeline
+ * for maximum throughput.
+ *
+ * Returns a handle with:
+ *   • `container`  — the root Container added to `stage` (owns all
+ *     ParticleContainers)
+ *   • `update(cells)` — re-sync particle positions/alpha from fresh
+ *     CellDescriptor data (e.g. after lerp)
+ *   • `destroy()` — tear down everything and remove from `stage`
+ *
+ * Intended to be used behind the `shouldUseBatch()` gate:
+ *
+ * ```ts
+ * if (shouldUseBatch(cells.length)) {
+ *   const batch = createBatchRenderer(cells, app.stage, app);
+ *   // on tick: batch.update(newCells);
+ * } else {
+ *   // fall back to regular per-cell Container rendering
+ * }
+ * ```
+ *
+ * @param cells  Array of CellDescriptors to render
+ * @param stage  PixiJS Container to attach to (typically app.stage)
+ * @param app    PixiJS Application (needed for RenderTexture generation)
+ */
+export function createBatchRenderer(
+  cells: CellDescriptor[],
+  stage: Container,
+  app?: Application,
+): {
+  container: Container;
+  update: (cells: CellDescriptor[]) => void;
+  destroy: () => void;
+} {
+  // Root container that holds all per-species ParticleContainers
+  const root = new Container();
+  root.sortableChildren = true;
+  stage.addChild(root);
+
+  // Per-species ParticleContainer cache
+  //   species → { pc, texture, particles[] }
+  const speciesMap = new Map<
+    string,
+    {
+      pc: ParticleContainer;
+      tex: RenderTexture;
+      particles: Particle[];
+    }
+  >();
+
+  // Icon texture size — matches CellSpeciesBatch.getIconTexture()
+  const ICON_W = 64;
+  const ICON_H = 64;
+
+  /**
+   * Lazily create a RenderTexture for a species by drawing the same
+   * procedural icon that CellSpeciesBatch uses.  When `app` is unavailable
+   * we fall back to a plain coloured rect (still functional, just no inner
+   * species mark).
+   */
+  function getOrCreateSpeciesTexture(species: string): RenderTexture {
+    const pal = palette(species);
+    const g = new Graphics();
+    g.roundRect(0, 0, ICON_W, ICON_H, 8);
+    g.fill({ color: pal.fill, alpha: 0.92 });
+    g.roundRect(0, 0, ICON_W, ICON_H, 8);
+    g.stroke({ color: pal.stroke, width: 1.5, alpha: 0.85 });
+
+    const rt = RenderTexture.create({ width: ICON_W, height: ICON_H });
+    if (app) {
+      app.renderer.render({ container: g, target: rt });
+    }
+    g.destroy();
+    return rt;
+  }
+
+  /**
+   * Ensure a ParticleContainer exists for the given species and return it.
+   */
+  function ensureSpecies(species: string) {
+    let entry = speciesMap.get(species);
+    if (entry) return entry;
+
+    const tex = getOrCreateSpeciesTexture(species);
+    const pc = new ParticleContainer({
+      texture: tex as unknown as Texture,
+      dynamicProperties: {
+        position: true,
+        vertex:   true,   // enables scaleX/scaleY updates for variable cell sizes
+        color:    true,    // enables per-particle alpha/tint
+        rotation: false,
+        uvs:      false,
+      },
+    });
+
+    root.addChild(pc as unknown as Container);
+    entry = { pc, tex, particles: [] };
+    speciesMap.set(species, entry);
+    return entry;
+  }
+
+  /**
+   * Populate (or re-populate) from a CellDescriptor array.
+   * Clears existing particles and rebuilds — ParticleContainer's shared
+   * buffer makes this cheaper than individual Container add/remove.
+   */
+  function populate(descriptors: CellDescriptor[]): void {
+    // Clear all existing particles
+    for (const entry of speciesMap.values()) {
+      if (entry.particles.length > 0) {
+        entry.pc.removeParticles(0, entry.particles.length);
+        entry.particles.length = 0;
+      }
+    }
+
+    // Group cells by species and create Particles
+    for (const desc of descriptors) {
+      const entry = ensureSpecies(desc.species);
+      const pal   = palette(desc.species);
+      const alpha = desc.params?.opacity ?? 1;
+
+      const p = new Particle({
+        texture: entry.tex as unknown as Texture,
+        x:       desc.bbox.x,
+        y:       desc.bbox.y,
+        scaleX:  desc.bbox.w / ICON_W,
+        scaleY:  desc.bbox.h / ICON_H,
+        tint:    pal.fill,
+        alpha,
+      });
+
+      entry.pc.addParticle(p);
+      entry.particles.push(p);
+    }
+
+    // Signal ParticleContainer to re-upload static buffers
+    for (const entry of speciesMap.values()) {
+      entry.pc.update();
+    }
+  }
+
+  // Initial population
+  populate(cells);
+
+  // ── Public handle ───────────────────────────────────────────────────────────
+
+  return {
+    container: root,
+
+    /**
+     * Re-sync particle transforms from fresh CellDescriptor data.
+     * Call this each tick after lerp / physics / layout updates.
+     */
+    update(newCells: CellDescriptor[]): void {
+      populate(newCells);
+    },
+
+    /** Tear down all ParticleContainers and remove from stage. */
+    destroy(): void {
+      for (const entry of speciesMap.values()) {
+        entry.pc.removeParticles(0, entry.particles.length);
+        entry.pc.destroy({ children: true });
+        entry.tex.destroy(true);
+      }
+      speciesMap.clear();
+      stage.removeChild(root);
+      root.destroy({ children: true });
+    },
+  };
 }
