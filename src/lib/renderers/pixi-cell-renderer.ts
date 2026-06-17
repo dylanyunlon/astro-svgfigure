@@ -15,6 +15,9 @@
  * - edge layer 每帧跟着 cell 当前位置实时重绘
  *
  * M031: GlowFilter 外发光整合
+ * M048: GodrayFilter per-species
+ *   cil-vector → directional parallel GodrayFilter (angle 15°, high lacunarity)
+ *   cil-bolt   → pulsing focal GodrayFilter (center=top, Ticker-driven gain oscillation)
  * - setGlow(container, 'hover' | 'select' | false) — hover/select 时叠加 GlowFilter
  * - GlowFilter 实例存于 container.__glowFilter，避免重复构造
  * - buildCellContainer() 预置 __glowFilter = null / __glowMode = null 槽位
@@ -36,7 +39,6 @@ import { Ticker } from '../../upstream/pixijs-engine/src/ticker/Ticker';
 import { AdvancedBloomFilter } from '../../../upstream/pixijs-filters/src/advanced-bloom';
 import { DropShadowFilter } from '../../../upstream/pixijs-filters/src/drop-shadow';
 import { GodrayFilter } from '../../../upstream/pixijs-filters/src/godray';
-import { GlitchFilter } from '../../../upstream/pixijs-filters/src/glitch';
 import { MotionBlurFilter } from '../../../upstream/pixijs-filters/src/motion-blur';
 import { AdjustmentFilter } from '../../../upstream/pixijs-filters/src/adjustment';
 import { OutlineFilter } from '../../../upstream/pixijs-filters/src/outline';
@@ -603,20 +605,44 @@ function buildCellContainer(desc: CellDescriptor): Container {
     speciesFilters.push(godray);
     // Animate godray time via ticker tag stored on container
     (container as any).__godray = godray;
-  } else if (species === 'cil-bolt') {
-    // GlitchFilter: energy flicker — chaotic scanline displacement
-    const glitch = new GlitchFilter({
-      slices: 6,
-      offset: 8,
-      direction: 0,
-      fillMode: 0, // TRANSPARENT
-      seed: Math.random(),
-      average: false,
-      minSize: 8,
-      sampleSize: 512,
+  } else if (species === 'cil-vector') {
+    // M048: GodrayFilter per-species — cil-vector (embedding / positional encoding).
+    // Directional parallel rays emanating from upper-left at a shallow angle,
+    // evoking a diffuse "information flow" shaft of light across the cell.
+    // parallel=true uses angle (not a focal point), giving crisp directional rays
+    // that suit the embedding arrow visual already drawn inside the cell.
+    // Low gain + high lacunarity = many fine rays rather than one bright beam.
+    const godray = new GodrayFilter({
+      angle:      15,       // shallow diagonal — matches arrow direction in cil-vector pattern
+      gain:       0.25,     // low intensity: subtle ambient rays, not overpowering
+      lacunarity: 3.5,      // high lacunarity = dense, fine-grained ray texture
+      parallel:   true,     // directional (angle-based), not focal
+      alpha:      0.45,
+      time:       0,
     });
-    speciesFilters.push(glitch);
-    (container as any).__glitch = glitch;
+    speciesFilters.push(godray);
+    (container as any).__godray = godray;
+  } else if (species === 'cil-bolt') {
+    // M048: GodrayFilter per-species — cil-bolt (FFN / MLP).
+    // Pulsing non-parallel rays from a focal point at cell top-centre,
+    // simulating electric discharge bursting outward from the apex.
+    // The focal point (center) tracks cell centre-top so rays splay radially.
+    // gain and alpha are animated by the Ticker (see __godrayPulse* below).
+    const godray = new GodrayFilter({
+      angle:      0,        // unused when parallel=false; kept at default
+      gain:       0.55,     // moderate base gain; Ticker will pulse this
+      lacunarity: 2.0,      // fewer but wider rays = bold electric look
+      parallel:   false,    // focal point mode: rays burst from center
+      center:     { x: w / 2, y: 0 },   // apex of cell — radial burst downward
+      alpha:      0.7,
+      time:       0,
+    });
+    speciesFilters.push(godray);
+    // Expose for Ticker-driven pulse animation
+    (container as any).__godray              = godray;
+    (container as any).__godrayPulseBaseGain = 0.55;   // base gain to oscillate around
+    (container as any).__godrayPulseAmp      = 0.35;   // pulse amplitude (± fraction of base)
+    (container as any).__godrayPulseFreq     = 3.5;    // fast pulse frequency (rad/s) — electric feel
   } else if (species === 'cil-layers') {
     // MotionBlurFilter: depth-of-field sense for layered stacking
     const motionBlur = new MotionBlurFilter({
@@ -1293,7 +1319,7 @@ export function pollCellChannels(
     // Run AFTER lerp so curX/curY reflect the current frame position.
     // sharedCellCuller sets container.visible = false for any cell whose bbox
     // is fully outside app.screen (+ 64 px bloom margin).  Invisible containers
-    // skip the entire subtree render and all filter evaluations (godray / glitch
+    // skip the entire subtree render and all filter evaluations (godray / bloom
     // / bloom) at zero GPU cost.  Fade-out cells are exempt so the alpha
     // animation can complete before destroy().
     // __fadeDir is stamped onto container so CellCuller can read it:
@@ -1446,10 +1472,10 @@ export async function renderCellGraph(
   });
   app.stage.filters = [adjustment];
 
-  // ── Animate per-species filters (godray time, glitch seed, bloom pulse) ──
+  // ── Animate per-species filters (godray time + M048 pulse, bloom pulse) ──
   //
   // M044 bloom pulse: per-frame AdvancedBloomFilter.bloomScale modulation.
-  // Each glow sprite stores on its Graphics node:
+  // M048 godray pulse: cil-bolt __godrayPulse* fields drive gain oscillation.
   //   __bloomFilter          — AdvancedBloomFilter instance
   //   __bloomFilterBaseScale — species/params resolved base bloomScale
   //   __bloomPulseAmplitude  — species-calibrated pulse amplitude (BLOOM_DEFAULTS)
@@ -1462,14 +1488,14 @@ export async function renderCellGraph(
     const elapsed = (performance.now() - t0anim) / 1000;
     for (const child of app.stage.children) {
       const godray = (child as any).__godray as GodrayFilter | undefined;
-      if (godray) godray.time = elapsed;
-
-      const glitch = (child as any).__glitch as GlitchFilter | undefined;
-      if (glitch) {
-        // Flicker: randomise seed and offset with low probability per frame
-        if (Math.random() < 0.05) {
-          glitch.seed = Math.random();
-          glitch.offset = 4 + Math.random() * 12;
+      if (godray) {
+        godray.time = elapsed;
+        // M048: cil-bolt pulsing gain — rapid oscillation simulates electric burst
+        const pulseBaseGain = (child as any).__godrayPulseBaseGain as number | undefined;
+        const pulseAmp      = (child as any).__godrayPulseAmp      as number | undefined;
+        const pulseFreq     = (child as any).__godrayPulseFreq     as number | undefined;
+        if (pulseBaseGain !== undefined) {
+          godray.gain = pulseBaseGain * (1 + (pulseAmp ?? 0.35) * Math.sin((pulseFreq ?? 3.5) * elapsed));
         }
       }
 
@@ -1554,23 +1580,28 @@ export async function renderCellGraphLive(
   });
   app.stage.filters = [adjustment];
 
-  // ── Animate per-species filters (godray, glitch, bloom pulse) ─────────────
+  // ── Animate per-species filters (godray time + pulse, bloom pulse) ──────────
   //
   // M044: live-mode bloom pulse — identical per-species pulse logic as
   // renderCellGraph (static mode).  AdvancedBloomFilter.bloomScale oscillates
   // around each cell's resolved base value using species-specific amplitude and
   // frequency stored at glow sprite build time (createGlowSprite).
+  //
+  // M048: cil-bolt godray gain pulse — same __godrayPulse* fields as static mode.
   const t0anim = performance.now();
   app.ticker.add(() => {
     const elapsed = (performance.now() - t0anim) / 1000;
     for (const child of app.stage.children) {
       const godray = (child as any).__godray as GodrayFilter | undefined;
-      if (godray) godray.time = elapsed;
-
-      const glitch = (child as any).__glitch as GlitchFilter | undefined;
-      if (glitch && Math.random() < 0.05) {
-        glitch.seed = Math.random();
-        glitch.offset = 4 + Math.random() * 12;
+      if (godray) {
+        godray.time = elapsed;
+        // M048: cil-bolt pulsing gain
+        const pulseBaseGain = (child as any).__godrayPulseBaseGain as number | undefined;
+        const pulseAmp      = (child as any).__godrayPulseAmp      as number | undefined;
+        const pulseFreq     = (child as any).__godrayPulseFreq     as number | undefined;
+        if (pulseBaseGain !== undefined) {
+          godray.gain = pulseBaseGain * (1 + (pulseAmp ?? 0.35) * Math.sin((pulseFreq ?? 3.5) * elapsed));
+        }
       }
 
       // M044: bloom pulse — glow sprite is always first child of each cell container
