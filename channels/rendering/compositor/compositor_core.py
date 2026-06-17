@@ -10,18 +10,18 @@ def _dbg(tag, msg):
 
 
 class AstroCellCompositor:
-    """最终 SVG 合成器 — 镜像 NaniteComposition.cpp 中的渲染流水线。
+    """最终渲染参数合成器 — 镜像 NaniteComposition.cpp 中的渲染流水线。
 
-    将逐 cell 的 paint 字典按 z-layer 排序后，合并为单一 SVG 文档。每个 cell
-    贡献一个 ``<g data-cell-id="…">`` 分组；深度/模板元数据以 ``data-*``
-    属性形式嵌入，供 PixiJS / D3 渲染器按需读取。
+    将逐 cell 的 paint 字典按 z-layer 排序后，合并为单一 JSON render_params
+    字典。每个 cell 贡献一组结构化渲染参数；深度/模板元数据以键值对形式嵌入，
+    供 PixiJS / D3 渲染器按需读取。
 
     Lifecycle（镜像 FNaniteRenderer::Render 调用序列）::
 
         compositor = AstroCellCompositor(vis_set)
         compositor.begin_frame(cell_entries)          # ↔ InitViews
         compositor.emit_depth_stencil(depth_manifest) # ↔ EmitDepthStencil
-        svg_doc = compositor.compose()                # ↔ FinalCompose
+        render_params = compositor.compose()           # ↔ FinalCompose
 
     Parameters
     ----------
@@ -73,18 +73,18 @@ class AstroCellCompositor:
     # ------------------------------------------------------------------
     # compose — 镜像 FinalCompose / present
     # ------------------------------------------------------------------
-    def compose(self) -> str:
-        """将所有可见 cell 合成为一个 SVG 字符串。
+    def compose(self) -> dict:
+        """将所有可见 cell 合成为 JSON render_params 字典。
 
-        仅输出 ``stencil=1`` 的条目（可见 cell）；每个 cell 生成一个带有
-        ``data-cell-id``、``data-z``、``data-depth`` 以及可选
-        ``data-highlight`` 属性的 ``<g>`` 占位分组。完整的 SVG 内容由
-        各 cell 自身的 ``svg_fragment`` 字段提供（若存在）。
+        仅输出 ``stencil=1`` 的条目（可见 cell）；每个 cell 生成一个包含
+        ``cell_id``、``z``、``depth`` 以及可选 ``highlight`` 字段的渲染参数
+        字典。各 cell 自身的 ``render_params`` 字段（若存在）将合并入输出，
+        供下游渲染器（PixiJS / D3）按需消费。
 
         Returns
         -------
-        str
-            合并后的 SVG 文档字符串（UTF-8）。
+        dict
+            包含所有可见 cell 渲染参数的 JSON 兼容字典结构。
         """
         groups: list[dict] = []
         depth_ch = self._depth_manifest.get("depth_channel", {})
@@ -96,13 +96,13 @@ class AstroCellCompositor:
             cid = entry["cell_id"]
             z = entry.get("bbox", {}).get("z", 0.0)
             depth = depth_ch.get(cid, 0.0)
-            fragment = entry.get("svg_fragment", "")
+            params = entry.get("render_params", {})
             group: dict = {
                 "tag": "g",
                 "data-cell-id": cid,
                 "data-z": z,
                 "data-depth": round(depth, 6),
-                "children": fragment,
+                "children": params,
             }
             if cid in custom_d:
                 group["data-highlight"] = custom_d[cid]
@@ -126,11 +126,11 @@ def compose_cell_svg(
     cell_entries: list[dict],
     vis_set: set[str],
     depth_manifest: dict | None = None,
-) -> tuple[str, dict]:
+) -> tuple[dict, dict]:
     """顶层合成入口 — 镜像 FNaniteRenderer::Render 的 Composition 阶段。
 
     便利包装：构造 :class:`AstroCellCompositor`，依次执行三个 lifecycle 方法，
-    返回合成后的 SVG 字符串与填充后的 depth_manifest。
+    返回合成后的 JSON render_params 字典与填充后的 depth_manifest。
 
     Parameters
     ----------
@@ -143,8 +143,8 @@ def compose_cell_svg(
 
     Returns
     -------
-    tuple[str, dict]
-        ``(svg_document, depth_manifest)``
+    tuple[dict, dict]
+        ``(render_params, depth_manifest)``
     """
     compositor = AstroCellCompositor(vis_set)
     compositor.begin_frame(cell_entries)
