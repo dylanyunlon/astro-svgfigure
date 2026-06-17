@@ -15,6 +15,10 @@
  * - edge layer 每帧跟着 cell 当前位置实时重绘
  *
  * M031: GlowFilter 外发光整合
+ * M045: cil-bolt SDF shader → PixiJS Filter
+ *   buildCellContainer species==='cil-bolt' 时挂载 CilBoltSDFFilter（sdf-species-filter.ts）
+ *   到 Graphics pattern quad，替代 SPECIES_PATTERNS['cil-bolt'] 画法。
+ *   Ticker 驱动 container.__boltFilter.time 做 SDF 闪电动画。
  * M048: GodrayFilter per-species
  *   cil-vector → directional parallel GodrayFilter (angle 15°, high lacunarity)
  *   cil-bolt   → pulsing focal GodrayFilter (center=top, Ticker-driven gain oscillation)
@@ -51,6 +55,13 @@ import {
   createCellGlow,
   type CellGlowMode,
 } from './pixi-filters-registry';
+
+// ── M045: CilBoltSDFFilter — cil-bolt SDF shader → PixiJS Filter ─────────────
+// 将 src/lib/shaders/cil-bolt.frag 的 SDF 闪电 shader 封装为 PixiJS Filter。
+// buildCellContainer 在 species === 'cil-bolt' 时挂载此 Filter 到 pattern Graphics，
+// 替代 SPECIES_PATTERNS['cil-bolt'] 的 Graphics 画法。
+// Ticker 驱动 __boltFilter.time 做闪电动画。
+import { CilBoltSDFFilter } from './sdf-species-filter';
 
 // ── Gaussian blur module (M007) ─────────────────────────────────────────────
 // pixi-blur-cell adapts upstream/pixijs-engine BlurFilter for the cell render
@@ -573,8 +584,37 @@ function buildCellContainer(desc: CellDescriptor): Container {
   container.addChild(body);
 
   const pattern = new Graphics();
-  const drawer = SPECIES_PATTERNS[species] ?? SPECIES_PATTERNS['cil-code'];
-  drawer(pattern, w, h, cols.stroke, speciesParams);
+  if (species === 'cil-bolt') {
+    // M045: cil-bolt → CilBoltSDFFilter replaces the Graphics draw path.
+    // Draw a transparent background quad so the filter has a surface to paint on.
+    // The SDF shader covers the entire [0,w]×[0,h] area and handles its own
+    // coordinate mapping (vTextureCoord → [-1,1] NDC) internally.
+    pattern.rect(0, 0, w, h);
+    pattern.fill({ color: 0x000000, alpha: 0 }); // transparent — shader draws over it
+
+    // Resolve fill colour from params.json or species palette
+    const fc = cols.fill;
+    const r = ((fc >> 16) & 0xff) / 255;
+    const g = ((fc >>  8) & 0xff) / 255;
+    const b = ( fc        & 0xff) / 255;
+
+    const boltFilter = new CilBoltSDFFilter({
+      fillColor:   [r, g, b],
+      opacity:     1.0,
+      zigzagCount: (speciesParams?.zigzag_segments as number | undefined)
+                   ?? (speciesParams?.num_rays    as number | undefined)
+                   ?? 6,
+      amplitude:   (speciesParams?.amplitude as number | undefined) ?? 0.35,
+      time:        0,
+    });
+    pattern.filters = [boltFilter];
+
+    // Expose on container for Ticker-driven animation (see renderCellGraph / renderCellGraphLive)
+    (container as any).__boltFilter = boltFilter;
+  } else {
+    const drawer = SPECIES_PATTERNS[species] ?? SPECIES_PATTERNS['cil-code'];
+    drawer(pattern, w, h, cols.stroke, speciesParams);
+  }
   container.addChild(pattern);
 
   const style = new TextStyle({
@@ -1475,6 +1515,7 @@ export async function renderCellGraph(
   // ── Animate per-species filters (godray time + M048 pulse, bloom pulse) ──
   //
   // M044 bloom pulse: per-frame AdvancedBloomFilter.bloomScale modulation.
+  // M045: cil-bolt CilBoltSDFFilter time — __boltFilter.time driven per frame.
   // M048 godray pulse: cil-bolt __godrayPulse* fields drive gain oscillation.
   //   __bloomFilter          — AdvancedBloomFilter instance
   //   __bloomFilterBaseScale — species/params resolved base bloomScale
@@ -1487,6 +1528,12 @@ export async function renderCellGraph(
   app.ticker.add(() => {
     const elapsed = (performance.now() - t0anim) / 1000;
     for (const child of app.stage.children) {
+      // M045: cil-bolt SDF lightning animation — update CilBoltSDFFilter time
+      const boltFilter = (child as any).__boltFilter as CilBoltSDFFilter | undefined;
+      if (boltFilter) {
+        boltFilter.time = elapsed;
+      }
+
       const godray = (child as any).__godray as GodrayFilter | undefined;
       if (godray) {
         godray.time = elapsed;
@@ -1587,11 +1634,19 @@ export async function renderCellGraphLive(
   // around each cell's resolved base value using species-specific amplitude and
   // frequency stored at glow sprite build time (createGlowSprite).
   //
+  // M045: cil-bolt CilBoltSDFFilter time — live mode drives __boltFilter.time.
+  //
   // M048: cil-bolt godray gain pulse — same __godrayPulse* fields as static mode.
   const t0anim = performance.now();
   app.ticker.add(() => {
     const elapsed = (performance.now() - t0anim) / 1000;
     for (const child of app.stage.children) {
+      // M045: cil-bolt SDF lightning animation — update CilBoltSDFFilter time
+      const boltFilter = (child as any).__boltFilter as CilBoltSDFFilter | undefined;
+      if (boltFilter) {
+        boltFilter.time = elapsed;
+      }
+
       const godray = (child as any).__godray as GodrayFilter | undefined;
       if (godray) {
         godray.time = elapsed;
