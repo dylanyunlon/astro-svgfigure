@@ -570,3 +570,26 @@ export type {
   TopologyTexOptions,
   AtlasRecord,
 } from './cell-compressed-tex';
+
+// ── M022: cell-prepare — PixiJS PrepareSystem GPU 首帧预上传 ─────────────────
+// prepareCellGPU    — topology 加载后批量上传所有 cell 纹理/Graphics/Text 到 GPU
+// prepareStageGPU   — 任意 Container 子树 GPU upload（通用辅助）
+// warmCellAssets    — loadCellAssets() 完成后立即预热 SpeciesAssets Texture 列表
+// withGPUPrepare    — HOF 包装器：渲染工厂函数 + 自动 prepare，一步到位
+//
+// 消除首帧 texture upload 延迟：
+//   loadCellAssets() → warmCellAssets() → buildCellContainer() × N
+//   → prepareCellGPU() → app.ticker.start() → 首帧零 stall
+//
+// Upstream fusion:
+//   upstream/pixijs-engine/src/prepare/PrepareSystem.ts   (PrepareSystem.upload)
+//   upstream/pixijs-engine/src/prepare/PrepareBase.ts     (upload → Promise<void>)
+//   upstream/pixijs-engine/src/prepare/PrepareQueue.ts    (resolveQueueItem)
+//   upstream/pixijs-engine/src/prepare/PrepareUpload.ts   (uploadTextureSource)
+export {
+  prepareCellGPU,
+  prepareStageGPU,
+  warmCellAssets,
+  withGPUPrepare,
+} from './cell-prepare';
+export type { PrepareResult, CellPrepareOptions } from './cell-prepare';
