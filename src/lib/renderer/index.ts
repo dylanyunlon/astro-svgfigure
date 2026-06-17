@@ -49,3 +49,14 @@ export type { DOFPassConfig } from './passes/DOFPass';
 // ── Occlusion query — GPU visibility culling (xiaodi #53) ─────────────────────
 export { OcclusionQueryManager, patchCellInstanceManagerWithOcclusion } from './OcclusionQuery';
 export type { OcclusionQueryOptions, VisibilityMap } from './OcclusionQuery';
+
+// ── KawaseBlur / KawaseBloom — pixijs-filters port (M029) ────────────────────
+// KawaseBlurPass: downSample/upSample core engine ported from
+//   upstream/pixijs-filters/src/kawase-blur/KawaseBlurFilter.ts
+// KawaseBloomPass: AdvancedBloomFilter port, depends on KawaseBlurPass as
+//   its internal blur engine — mirrors the upstream dependency graph.
+export { KawaseBlurPass } from './passes/KawaseBlurPass';
+export type { KawaseBlurPassOptions } from './passes/KawaseBlurPass';
+
+export { KawaseBloomPass } from './passes/KawaseBloomPass';
+export type { KawaseBloomPassOptions } from './passes/KawaseBloomPass';
