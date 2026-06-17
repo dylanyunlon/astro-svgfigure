@@ -177,6 +177,8 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   import { renderCellGraph } from '@/lib/renderers/pixi-cell-renderer'
   import { renderCellGraphSDF } from '@/lib/renderers/sdf-cell-renderer'
   import type { CellDescriptor, EdgeDescriptor } from '@/lib/renderers/pixi-cell-renderer'
+  // M049: CloudFog 全屏背景
+  import { mountCloudFogBackground } from '@/lib/CloudFogBackground'
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const canvas       = document.getElementById('pl-canvas') as HTMLCanvasElement
@@ -207,6 +209,8 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   let running = false
   let autoLoopTimer: ReturnType<typeof setTimeout> | null = null
   let lastCells: CellDescriptor[] = []
+  // M049: CloudFog 背景停止函数
+  let stopFog: (() => void) | null = null
 
   // ── Connection badge ──────────────────────────────────────────────────────
   function setConnected(ok: boolean) {
@@ -603,6 +607,16 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   // On page load, immediately attempt to fetch current cell state and render.
   // If backend is offline the error overlay is shown (no epoch triggered).
   ;(async () => {
+    // M049: 挂载 CloudFog 全屏背景（zIndex=-1，最底层）
+    // wrap 是 PixiJS canvas 的父容器 (.relative.flex.flex-col.overflow-hidden)
+    try {
+      stopFog = await mountCloudFogBackground(wrap, {
+        paletteUrl: '/channels/composite_params.json',
+      })
+    } catch (e) {
+      console.warn('[M049] CloudFogBackground mount failed:', e)
+    }
+
     try {
       showStatus('Loading current state…')
       // M047 init: fetch /api/cells → renderCellGraph(canvas, cells, edges)
