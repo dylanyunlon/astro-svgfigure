@@ -349,3 +349,576 @@ export class CilBoltSDFFilter extends Filter {
   get amplitude(): number { return this.uniforms.u_amplitude; }
   set amplitude(value: number) { this.uniforms.u_amplitude = value; }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// M046: CilVectorSDFFilter — cil-vector.frag → PixiJS Filter
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Wraps src/lib/shaders/cil-vector.frag (arrow grid SDF using polySDF + lineSDF).
+// Adapts the shader for PixiJS Filter context:
+//   - vTextureCoord replaces gl_FragCoord + u_bbox UV
+//   - finalColor replaces gl_FragColor
+//   - u_bbox / u_resolution removed (not needed in Filter)
+//
+// Uniforms:
+//   u_fillColor   (vec3) — arrow colour [r,g,b] 0-1
+//   u_opacity     (f32)  — overall opacity
+//   u_arrowCount  (f32)  — arrows per row/col in the grid
+//   u_angleSpread (f32)  — variation in arrow angle (radians)
+
+const CIL_VECTOR_FRAGMENT = /* glsl */`
+in vec2 vTextureCoord;
+out vec4 finalColor;
+
+uniform sampler2D uTexture;
+
+uniform vec3  u_fillColor;
+uniform float u_opacity;
+uniform float u_arrowCount;
+uniform float u_angleSpread;
+
+#ifndef PI
+#define PI  3.1415926535897932384626433832795
+#endif
+#ifndef TAU
+#define TAU 6.2831853071795864769252867665590
+#endif
+
+#ifndef FNC_POLYSDF
+#define FNC_POLYSDF
+float polySDF(in vec2 st, in int V) {
+    st = st * 2.0 - 1.0;
+    float a = atan(st.x, st.y) + PI;
+    float r = length(st);
+    float v = TAU / float(V);
+    return cos(floor(0.5 + a / v) * v - a) * r;
+}
+#endif
+
+#ifndef FNC_SATURATE
+#define FNC_SATURATE
+#define saturate(V) clamp(V, 0.0, 1.0)
+#endif
+
+#ifndef FNC_LINESDF
+#define FNC_LINESDF
+float lineSDF(in vec2 st, in vec2 a, in vec2 b) {
+    vec2 b_to_a = b - a;
+    vec2 to_a   = st - a;
+    float h = saturate(dot(to_a, b_to_a) / dot(b_to_a, b_to_a));
+    return length(to_a - h * b_to_a);
+}
+#endif
+
+float sdBox(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+
+float drawArrow(vec2 p, float angle, float scale) {
+    float c = cos(angle), s = sin(angle);
+    vec2 lp = vec2(c * p.x + s * p.y, -s * p.x + c * p.y) / scale;
+    float shaft = sdBox(lp - vec2(-0.15, 0.0), vec2(0.22, 0.045));
+    vec2 headUV = (lp - vec2(0.13, 0.0)) / 0.32 + 0.5;
+    headUV = headUV - 0.5;
+    float tmp = headUV.x;
+    headUV.x = -headUV.y;
+    headUV.y =  tmp;
+    headUV = headUV + 0.5;
+    float head = polySDF(headUV, 3) * 0.32 - 0.16;
+    float d = min(shaft, head);
+    return smoothstep(0.01, -0.01, d);
+}
+
+float rand(vec2 co) {
+    return fract(sin(dot(co, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main() {
+    vec2 uv = vTextureCoord;
+    float n     = u_arrowCount;
+    vec2  cell  = floor(uv * n);
+    vec2  local = fract(uv * n) - 0.5;
+    float jitter = (rand(cell) * 2.0 - 1.0) * u_angleSpread;
+    float angle  = jitter;
+    float scale = 0.45;
+    float mask  = drawArrow(local, angle, scale);
+    finalColor = vec4(u_fillColor, mask * u_opacity);
+}
+`;
+
+const CIL_VECTOR_WGSL = /* wgsl */`
+@group(0) @binding(1) var uTexture: texture_2d<f32>;
+@group(0) @binding(2) var uSampler: sampler;
+
+struct CilVectorUniforms {
+  u_fillColor:   vec3<f32>,
+  u_opacity:     f32,
+  u_arrowCount:  f32,
+  u_angleSpread: f32,
+}
+
+@group(1) @binding(0) var<uniform> cilVectorUniforms : CilVectorUniforms;
+
+@fragment
+fn mainFragment(
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv : vec2<f32>
+) -> @location(0) vec4<f32> {
+  return textureSample(uTexture, uSampler, uv) * vec4<f32>(cilVectorUniforms.u_fillColor, cilVectorUniforms.u_opacity);
+}
+`;
+
+export interface CilVectorSDFFilterOptions {
+  /** Arrow fill colour [r,g,b] 0-1. Defaults to cil-vector green (0x66BB6A). */
+  fillColor?: [number, number, number];
+  /** Overall opacity (0-1). @default 1.0 */
+  opacity?: number;
+  /** Arrows per row/column in the grid. @default 4 */
+  arrowCount?: number;
+  /** Max random angle spread in radians. @default 0.4 */
+  angleSpread?: number;
+}
+
+/**
+ * CilVectorSDFFilter — PixiJS Filter wrapping the cil-vector.frag SDF arrow-grid shader.
+ *
+ * Renders a grid of randomised-angle arrows via polySDF (triangle head) +
+ * sdBox (shaft).  Designed for cil-vector (embedding / positional-encoding) cells.
+ *
+ * @example
+ *   const filter = new CilVectorSDFFilter({ fillColor: [0.4, 0.73, 0.42] });
+ *   patternGraphics.filters = [filter];
+ */
+export class CilVectorSDFFilter extends Filter {
+  public static readonly DEFAULT_OPTIONS: Required<CilVectorSDFFilterOptions> = {
+    fillColor:   [0.4, 0.733, 0.416],  // 0x66BB6A
+    opacity:     1.0,
+    arrowCount:  4,
+    angleSpread: 0.4,
+  };
+
+  public uniforms: {
+    u_fillColor:   Float32Array;
+    u_opacity:     number;
+    u_arrowCount:  number;
+    u_angleSpread: number;
+  };
+
+  constructor(options?: CilVectorSDFFilterOptions) {
+    const opts = { ...CilVectorSDFFilter.DEFAULT_OPTIONS, ...options };
+
+    const gpuProgram = GpuProgram.from({
+      vertex: { source: wgslVertex, entryPoint: 'mainVertex' },
+      fragment: { source: CIL_VECTOR_WGSL, entryPoint: 'mainFragment' },
+    });
+
+    const glProgram = GlProgram.from({
+      vertex,
+      fragment: CIL_VECTOR_FRAGMENT,
+      name: 'cil-vector-sdf-filter',
+    });
+
+    super({
+      gpuProgram,
+      glProgram,
+      resources: {
+        cilVectorUniforms: {
+          u_fillColor:   { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
+          u_opacity:     { value: opts.opacity,     type: 'f32' },
+          u_arrowCount:  { value: opts.arrowCount,  type: 'f32' },
+          u_angleSpread: { value: opts.angleSpread, type: 'f32' },
+        },
+      },
+    });
+
+    this.uniforms = this.resources.cilVectorUniforms.uniforms as typeof this.uniforms;
+  }
+
+  public override apply(
+    filterManager: FilterSystem,
+    input: Texture,
+    output: RenderSurface,
+    clearMode: boolean,
+  ): void {
+    filterManager.applyFilter(this, input, output, clearMode);
+  }
+
+  get fillColor(): Float32Array { return this.uniforms.u_fillColor; }
+  set fillColor(value: [number, number, number] | Float32Array) {
+    this.uniforms.u_fillColor[0] = value[0];
+    this.uniforms.u_fillColor[1] = value[1];
+    this.uniforms.u_fillColor[2] = value[2];
+  }
+
+  get opacity(): number { return this.uniforms.u_opacity; }
+  set opacity(value: number) { this.uniforms.u_opacity = value; }
+
+  get arrowCount(): number { return this.uniforms.u_arrowCount; }
+  set arrowCount(value: number) { this.uniforms.u_arrowCount = value; }
+
+  get angleSpread(): number { return this.uniforms.u_angleSpread; }
+  set angleSpread(value: number) { this.uniforms.u_angleSpread = value; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// M046: CilPlusSDFFilter — cil-plus.frag → PixiJS Filter
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Wraps src/lib/shaders/cil-plus.frag (plus/cross SDF using rectSDF + sdBox2).
+// Adapts for PixiJS Filter context (vTextureCoord, finalColor).
+//
+// Uniforms:
+//   u_fillColor   (vec3) — plus colour [r,g,b] 0-1
+//   u_opacity     (f32)  — overall opacity
+//   u_armLength   (f32)  — half-length of each arm [0..1]
+//   u_strokeWidth (f32)  — half-width of stroke [0..1]
+
+const CIL_PLUS_FRAGMENT = /* glsl */`
+in vec2 vTextureCoord;
+out vec4 finalColor;
+
+uniform sampler2D uTexture;
+
+uniform vec3  u_fillColor;
+uniform float u_opacity;
+uniform float u_armLength;
+uniform float u_strokeWidth;
+
+#ifndef FNC_RECTSDF
+#define FNC_RECTSDF
+float rectSDF(in vec2 st, in vec2 s) {
+    vec2 p = st * 2.0 - 1.0;
+    return max(abs(p.x / s.x), abs(p.y / s.y));
+}
+float sdBox2(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+#endif
+
+float sdPlus(vec2 p, float armLen, float sw) {
+    float h = sdBox2(p, vec2(armLen, sw));
+    float v = sdBox2(p, vec2(sw, armLen));
+    return min(h, v);
+}
+
+void main() {
+    vec2 uv = vTextureCoord;
+    vec2 p  = uv * 2.0 - 1.0;
+
+    float d    = sdPlus(p, u_armLength, u_strokeWidth);
+    float mask = smoothstep(0.015, -0.015, d);
+    float glow = smoothstep(0.08, 0.0, d) * 0.25;
+    float alpha = clamp(mask + glow, 0.0, 1.0);
+
+    finalColor = vec4(u_fillColor, alpha * u_opacity);
+}
+`;
+
+const CIL_PLUS_WGSL = /* wgsl */`
+@group(0) @binding(1) var uTexture: texture_2d<f32>;
+@group(0) @binding(2) var uSampler: sampler;
+
+struct CilPlusUniforms {
+  u_fillColor:   vec3<f32>,
+  u_opacity:     f32,
+  u_armLength:   f32,
+  u_strokeWidth: f32,
+}
+
+@group(1) @binding(0) var<uniform> cilPlusUniforms : CilPlusUniforms;
+
+@fragment
+fn mainFragment(
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv : vec2<f32>
+) -> @location(0) vec4<f32> {
+  return textureSample(uTexture, uSampler, uv) * vec4<f32>(cilPlusUniforms.u_fillColor, cilPlusUniforms.u_opacity);
+}
+`;
+
+export interface CilPlusSDFFilterOptions {
+  /** Plus colour [r,g,b] 0-1. Defaults to cil-plus pink (0xEC407A). */
+  fillColor?: [number, number, number];
+  /** Overall opacity (0-1). @default 1.0 */
+  opacity?: number;
+  /** Half-length of each arm in [-1,1] space. @default 0.55 */
+  armLength?: number;
+  /** Half-width of stroke in [-1,1] space. @default 0.12 */
+  strokeWidth?: number;
+}
+
+/**
+ * CilPlusSDFFilter — PixiJS Filter wrapping the cil-plus.frag SDF plus/cross shader.
+ *
+ * Renders a crisp plus sign with a soft inner glow using rectSDF / sdBox2.
+ * Designed for cil-plus (Add & Norm) cells.
+ *
+ * @example
+ *   const filter = new CilPlusSDFFilter({ fillColor: [0.93, 0.25, 0.48] });
+ *   patternGraphics.filters = [filter];
+ */
+export class CilPlusSDFFilter extends Filter {
+  public static readonly DEFAULT_OPTIONS: Required<CilPlusSDFFilterOptions> = {
+    fillColor:   [0.925, 0.251, 0.478],  // 0xEC407A
+    opacity:     1.0,
+    armLength:   0.55,
+    strokeWidth: 0.12,
+  };
+
+  public uniforms: {
+    u_fillColor:   Float32Array;
+    u_opacity:     number;
+    u_armLength:   number;
+    u_strokeWidth: number;
+  };
+
+  constructor(options?: CilPlusSDFFilterOptions) {
+    const opts = { ...CilPlusSDFFilter.DEFAULT_OPTIONS, ...options };
+
+    const gpuProgram = GpuProgram.from({
+      vertex: { source: wgslVertex, entryPoint: 'mainVertex' },
+      fragment: { source: CIL_PLUS_WGSL, entryPoint: 'mainFragment' },
+    });
+
+    const glProgram = GlProgram.from({
+      vertex,
+      fragment: CIL_PLUS_FRAGMENT,
+      name: 'cil-plus-sdf-filter',
+    });
+
+    super({
+      gpuProgram,
+      glProgram,
+      resources: {
+        cilPlusUniforms: {
+          u_fillColor:   { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
+          u_opacity:     { value: opts.opacity,     type: 'f32' },
+          u_armLength:   { value: opts.armLength,   type: 'f32' },
+          u_strokeWidth: { value: opts.strokeWidth, type: 'f32' },
+        },
+      },
+    });
+
+    this.uniforms = this.resources.cilPlusUniforms.uniforms as typeof this.uniforms;
+  }
+
+  public override apply(
+    filterManager: FilterSystem,
+    input: Texture,
+    output: RenderSurface,
+    clearMode: boolean,
+  ): void {
+    filterManager.applyFilter(this, input, output, clearMode);
+  }
+
+  get fillColor(): Float32Array { return this.uniforms.u_fillColor; }
+  set fillColor(value: [number, number, number] | Float32Array) {
+    this.uniforms.u_fillColor[0] = value[0];
+    this.uniforms.u_fillColor[1] = value[1];
+    this.uniforms.u_fillColor[2] = value[2];
+  }
+
+  get opacity(): number { return this.uniforms.u_opacity; }
+  set opacity(value: number) { this.uniforms.u_opacity = value; }
+
+  get armLength(): number { return this.uniforms.u_armLength; }
+  set armLength(value: number) { this.uniforms.u_armLength = value; }
+
+  get strokeWidth(): number { return this.uniforms.u_strokeWidth; }
+  set strokeWidth(value: number) { this.uniforms.u_strokeWidth = value; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// M046: CilArrowRightSDFFilter — cil-arrow-right.frag → PixiJS Filter
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Wraps src/lib/shaders/cil-arrow-right.frag (tiled scrolling chevron via lineSDF).
+// Adapts for PixiJS Filter context (vTextureCoord, finalColor).
+// The u_time uniform should be driven by the Ticker for scroll animation.
+//
+// Uniforms:
+//   u_fillColor   (vec3) — chevron colour [r,g,b] 0-1
+//   u_opacity     (f32)  — overall opacity
+//   u_arrowWidth  (f32)  — stroke thickness [0..1]
+//   u_time        (f32)  — animation time (seconds), drives horizontal scroll
+
+const CIL_ARROW_RIGHT_FRAGMENT = /* glsl */`
+in vec2 vTextureCoord;
+out vec4 finalColor;
+
+uniform sampler2D uTexture;
+
+uniform vec3  u_fillColor;
+uniform float u_opacity;
+uniform float u_arrowWidth;
+uniform float u_time;
+
+#ifndef FNC_SATURATE
+#define FNC_SATURATE
+#define saturate(V) clamp(V, 0.0, 1.0)
+#endif
+
+#ifndef FNC_LINESDF
+#define FNC_LINESDF
+float lineSDF(in vec2 st, in vec2 a, in vec2 b) {
+    vec2 b_to_a = b - a;
+    vec2 to_a   = st - a;
+    float h = saturate(dot(to_a, b_to_a) / dot(b_to_a, b_to_a));
+    return length(to_a - h * b_to_a);
+}
+#endif
+
+float sdArrowRight(vec2 p, float w) {
+    vec2 a1 = vec2(-0.45,  0.40);
+    vec2 b1 = vec2( 0.45,  0.0 );
+    vec2 a2 = vec2(-0.45, -0.40);
+    vec2 b2 = vec2( 0.45,  0.0 );
+    float d1 = lineSDF(p, a1, b1);
+    float d2 = lineSDF(p, a2, b2);
+    return min(d1, d2) - w;
+}
+
+void main() {
+    vec2 uv = vTextureCoord;
+
+    float cols   = 3.0;
+    float rows   = 3.0;
+    vec2  scroll = vec2(u_time * 0.25, 0.0);
+
+    vec2  tiled  = fract(uv * vec2(cols, rows) + scroll);
+    vec2  lp     = tiled * 2.0 - 1.0;
+
+    float d    = sdArrowRight(lp, u_arrowWidth * 0.5);
+    float mask = smoothstep(0.02, -0.01, d);
+
+    float fade  = smoothstep(0.0, 0.6, tiled.x);
+    float alpha = mask * (0.4 + 0.6 * fade);
+
+    finalColor = vec4(u_fillColor, clamp(alpha, 0.0, 1.0) * u_opacity);
+}
+`;
+
+const CIL_ARROW_RIGHT_WGSL = /* wgsl */`
+@group(0) @binding(1) var uTexture: texture_2d<f32>;
+@group(0) @binding(2) var uSampler: sampler;
+
+struct CilArrowRightUniforms {
+  u_fillColor:  vec3<f32>,
+  u_opacity:    f32,
+  u_arrowWidth: f32,
+  u_time:       f32,
+}
+
+@group(1) @binding(0) var<uniform> cilArrowRightUniforms : CilArrowRightUniforms;
+
+@fragment
+fn mainFragment(
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv : vec2<f32>
+) -> @location(0) vec4<f32> {
+  return textureSample(uTexture, uSampler, uv) * vec4<f32>(cilArrowRightUniforms.u_fillColor, cilArrowRightUniforms.u_opacity);
+}
+`;
+
+export interface CilArrowRightSDFFilterOptions {
+  /** Chevron colour [r,g,b] 0-1. Defaults to cil-arrow-right slate (0x78909C). */
+  fillColor?: [number, number, number];
+  /** Overall opacity (0-1). @default 1.0 */
+  opacity?: number;
+  /** Stroke thickness in normalised space. @default 0.08 */
+  arrowWidth?: number;
+  /** Starting animation time (seconds). @default 0 */
+  time?: number;
+}
+
+/**
+ * CilArrowRightSDFFilter — PixiJS Filter wrapping the cil-arrow-right.frag SDF chevron shader.
+ *
+ * Renders a 3×3 tiled scrolling chevron pattern using lineSDF.
+ * The animation time drives horizontal scroll — set `filter.time` each frame via Ticker.
+ * Designed for cil-arrow-right (skip connection / routing flow) cells.
+ *
+ * ## Ticker integration
+ *   const filter = new CilArrowRightSDFFilter({ fillColor: [0.47, 0.565, 0.612] });
+ *   container.__arrowRightFilter = filter;
+ *   // In the app.ticker.add() loop:
+ *   filter.time = elapsed;
+ *
+ * @example
+ *   const filter = new CilArrowRightSDFFilter({ arrowWidth: 0.08 });
+ *   patternGraphics.filters = [filter];
+ */
+export class CilArrowRightSDFFilter extends Filter {
+  public static readonly DEFAULT_OPTIONS: Required<CilArrowRightSDFFilterOptions> = {
+    fillColor:  [0.471, 0.565, 0.612],  // 0x78909C
+    opacity:    1.0,
+    arrowWidth: 0.08,
+    time:       0,
+  };
+
+  public uniforms: {
+    u_fillColor:  Float32Array;
+    u_opacity:    number;
+    u_arrowWidth: number;
+    u_time:       number;
+  };
+
+  /** Current animation time in seconds. Drive with Ticker for scroll animation. */
+  public time: number;
+
+  constructor(options?: CilArrowRightSDFFilterOptions) {
+    const opts = { ...CilArrowRightSDFFilter.DEFAULT_OPTIONS, ...options };
+
+    const gpuProgram = GpuProgram.from({
+      vertex: { source: wgslVertex, entryPoint: 'mainVertex' },
+      fragment: { source: CIL_ARROW_RIGHT_WGSL, entryPoint: 'mainFragment' },
+    });
+
+    const glProgram = GlProgram.from({
+      vertex,
+      fragment: CIL_ARROW_RIGHT_FRAGMENT,
+      name: 'cil-arrow-right-sdf-filter',
+    });
+
+    super({
+      gpuProgram,
+      glProgram,
+      resources: {
+        cilArrowRightUniforms: {
+          u_fillColor:  { value: new Float32Array(opts.fillColor), type: 'vec3<f32>' },
+          u_opacity:    { value: opts.opacity,    type: 'f32' },
+          u_arrowWidth: { value: opts.arrowWidth, type: 'f32' },
+          u_time:       { value: opts.time,       type: 'f32' },
+        },
+      },
+    });
+
+    this.uniforms = this.resources.cilArrowRightUniforms.uniforms as typeof this.uniforms;
+    this.time = opts.time;
+  }
+
+  public override apply(
+    filterManager: FilterSystem,
+    input: Texture,
+    output: RenderSurface,
+    clearMode: boolean,
+  ): void {
+    this.uniforms.u_time = this.time;
+    filterManager.applyFilter(this, input, output, clearMode);
+  }
+
+  get fillColor(): Float32Array { return this.uniforms.u_fillColor; }
+  set fillColor(value: [number, number, number] | Float32Array) {
+    this.uniforms.u_fillColor[0] = value[0];
+    this.uniforms.u_fillColor[1] = value[1];
+    this.uniforms.u_fillColor[2] = value[2];
+  }
+
+  get opacity(): number { return this.uniforms.u_opacity; }
+  set opacity(value: number) { this.uniforms.u_opacity = value; }
+
+  get arrowWidth(): number { return this.uniforms.u_arrowWidth; }
+  set arrowWidth(value: number) { this.uniforms.u_arrowWidth = value; }
+}

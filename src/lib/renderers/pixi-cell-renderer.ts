@@ -19,6 +19,11 @@
  *   buildCellContainer species==='cil-bolt' 时挂载 CilBoltSDFFilter（sdf-species-filter.ts）
  *   到 Graphics pattern quad，替代 SPECIES_PATTERNS['cil-bolt'] 画法。
  *   Ticker 驱动 container.__boltFilter.time 做 SDF 闪电动画。
+ * M046: cil-vector / cil-plus / cil-arrow-right SDF Filters
+ *   buildCellContainer 对应 species 挂载 SDF Filter 替代 SPECIES_PATTERNS Graphics 画法：
+ *   cil-vector      → CilVectorSDFFilter   (arrow-grid, static)
+ *   cil-plus        → CilPlusSDFFilter     (plus/cross SDF, static)
+ *   cil-arrow-right → CilArrowRightSDFFilter (tiled chevron scroll, Ticker-driven __arrowRightFilter)
  * M048: GodrayFilter per-species
  *   cil-vector → directional parallel GodrayFilter (angle 15°, high lacunarity)
  *   cil-bolt   → pulsing focal GodrayFilter (center=top, Ticker-driven gain oscillation)
@@ -61,7 +66,14 @@ import {
 // buildCellContainer 在 species === 'cil-bolt' 时挂载此 Filter 到 pattern Graphics，
 // 替代 SPECIES_PATTERNS['cil-bolt'] 的 Graphics 画法。
 // Ticker 驱动 __boltFilter.time 做闪电动画。
-import { CilBoltSDFFilter } from './sdf-species-filter';
+//
+// M046: CilVectorSDFFilter / CilPlusSDFFilter / CilArrowRightSDFFilter
+// 同样来自 sdf-species-filter.ts，分别对应 cil-vector / cil-plus / cil-arrow-right。
+// buildCellContainer 对应 species 时挂载：
+//   cil-vector      → CilVectorSDFFilter (arrow-grid SDF, static)
+//   cil-plus        → CilPlusSDFFilter   (plus/cross SDF, static)
+//   cil-arrow-right → CilArrowRightSDFFilter (tiled scrolling chevron, Ticker-driven)
+import { CilBoltSDFFilter, CilVectorSDFFilter, CilPlusSDFFilter, CilArrowRightSDFFilter } from './sdf-species-filter';
 
 // ── Gaussian blur module (M007) ─────────────────────────────────────────────
 // pixi-blur-cell adapts upstream/pixijs-engine BlurFilter for the cell render
@@ -611,6 +623,74 @@ function buildCellContainer(desc: CellDescriptor): Container {
 
     // Expose on container for Ticker-driven animation (see renderCellGraph / renderCellGraphLive)
     (container as any).__boltFilter = boltFilter;
+  } else if (species === 'cil-vector') {
+    // M046: cil-vector → CilVectorSDFFilter (arrow-grid SDF, replaces SPECIES_PATTERNS draw).
+    // Transparent quad; shader renders arrow grid over the entire cell area.
+    pattern.rect(0, 0, w, h);
+    pattern.fill({ color: 0x000000, alpha: 0 });
+
+    const fc = cols.fill;
+    const r = ((fc >> 16) & 0xff) / 255;
+    const g = ((fc >>  8) & 0xff) / 255;
+    const b = ( fc        & 0xff) / 255;
+
+    const vectorFilter = new CilVectorSDFFilter({
+      fillColor:   [r, g, b],
+      opacity:     1.0,
+      arrowCount:  (speciesParams?.arrow_count  as number | undefined) ?? 4,
+      angleSpread: (speciesParams?.angle_spread as number | undefined) ?? 0.4,
+    });
+    pattern.filters = [vectorFilter];
+
+    // No Ticker animation needed (static grid); expose for external override if desired
+    (container as any).__vectorFilter = vectorFilter;
+  } else if (species === 'cil-plus') {
+    // M046: cil-plus → CilPlusSDFFilter (plus/cross SDF, replaces SPECIES_PATTERNS draw).
+    pattern.rect(0, 0, w, h);
+    pattern.fill({ color: 0x000000, alpha: 0 });
+
+    const fc = cols.fill;
+    const r = ((fc >> 16) & 0xff) / 255;
+    const g = ((fc >>  8) & 0xff) / 255;
+    const b = ( fc        & 0xff) / 255;
+
+    // arm_length / stroke_width from species_params if present; normalise from pixel → [-1,1] space
+    // SPECIES_PATTERNS uses Math.min(w,h)*0.3 for arm — translate to ~0.55 in NDC
+    const armLengthPx   = speciesParams?.arm_length   as number | undefined;
+    const strokeWidthPx = speciesParams?.stroke_width as number | undefined;
+    const armLength   = armLengthPx   != null ? armLengthPx   / (Math.min(w, h) / 2) : 0.55;
+    const strokeWidth = strokeWidthPx != null ? strokeWidthPx / (Math.min(w, h) / 2) : 0.12;
+
+    const plusFilter = new CilPlusSDFFilter({
+      fillColor:   [r, g, b],
+      opacity:     1.0,
+      armLength,
+      strokeWidth,
+    });
+    pattern.filters = [plusFilter];
+
+    (container as any).__plusFilter = plusFilter;
+  } else if (species === 'cil-arrow-right') {
+    // M046: cil-arrow-right → CilArrowRightSDFFilter (tiled scrolling chevron SDF).
+    // Ticker drives __arrowRightFilter.time for horizontal scroll animation.
+    pattern.rect(0, 0, w, h);
+    pattern.fill({ color: 0x000000, alpha: 0 });
+
+    const fc = cols.fill;
+    const r = ((fc >> 16) & 0xff) / 255;
+    const g = ((fc >>  8) & 0xff) / 255;
+    const b = ( fc        & 0xff) / 255;
+
+    const arrowRightFilter = new CilArrowRightSDFFilter({
+      fillColor:  [r, g, b],
+      opacity:    1.0,
+      arrowWidth: (speciesParams?.arrow_width as number | undefined) ?? 0.08,
+      time:       0,
+    });
+    pattern.filters = [arrowRightFilter];
+
+    // Expose for Ticker-driven scroll animation
+    (container as any).__arrowRightFilter = arrowRightFilter;
   } else {
     const drawer = SPECIES_PATTERNS[species] ?? SPECIES_PATTERNS['cil-code'];
     drawer(pattern, w, h, cols.stroke, speciesParams);
@@ -1516,6 +1596,7 @@ export async function renderCellGraph(
   //
   // M044 bloom pulse: per-frame AdvancedBloomFilter.bloomScale modulation.
   // M045: cil-bolt CilBoltSDFFilter time — __boltFilter.time driven per frame.
+  // M046: cil-arrow-right CilArrowRightSDFFilter time — __arrowRightFilter.time per frame.
   // M048 godray pulse: cil-bolt __godrayPulse* fields drive gain oscillation.
   //   __bloomFilter          — AdvancedBloomFilter instance
   //   __bloomFilterBaseScale — species/params resolved base bloomScale
@@ -1532,6 +1613,12 @@ export async function renderCellGraph(
       const boltFilter = (child as any).__boltFilter as CilBoltSDFFilter | undefined;
       if (boltFilter) {
         boltFilter.time = elapsed;
+      }
+
+      // M046: cil-arrow-right SDF scroll animation — update CilArrowRightSDFFilter time
+      const arrowRightFilter = (child as any).__arrowRightFilter as CilArrowRightSDFFilter | undefined;
+      if (arrowRightFilter) {
+        arrowRightFilter.time = elapsed;
       }
 
       const godray = (child as any).__godray as GodrayFilter | undefined;
@@ -1635,6 +1722,7 @@ export async function renderCellGraphLive(
   // frequency stored at glow sprite build time (createGlowSprite).
   //
   // M045: cil-bolt CilBoltSDFFilter time — live mode drives __boltFilter.time.
+  // M046: cil-arrow-right CilArrowRightSDFFilter time — live mode drives __arrowRightFilter.time.
   //
   // M048: cil-bolt godray gain pulse — same __godrayPulse* fields as static mode.
   const t0anim = performance.now();
@@ -1645,6 +1733,12 @@ export async function renderCellGraphLive(
       const boltFilter = (child as any).__boltFilter as CilBoltSDFFilter | undefined;
       if (boltFilter) {
         boltFilter.time = elapsed;
+      }
+
+      // M046: cil-arrow-right SDF scroll animation — update CilArrowRightSDFFilter time
+      const arrowRightFilter = (child as any).__arrowRightFilter as CilArrowRightSDFFilter | undefined;
+      if (arrowRightFilter) {
+        arrowRightFilter.time = elapsed;
       }
 
       const godray = (child as any).__godray as GodrayFilter | undefined;
