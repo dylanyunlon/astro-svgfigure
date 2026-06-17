@@ -36,6 +36,18 @@ export class EpochPlaybackController {
   /** rAF handle for position tracking */
   private _rafId: number | null = null;
 
+  /** Loop playback — when true, rewind to 0 instead of stopping at end */
+  private _loop = false;
+
+  /** Speed presets for cycleSpeed() */
+  private _presets: PlaybackRate[] = [0.25, 0.5, 1, 2, 4];
+
+  /** Registered epoch-change listeners */
+  private _epochCb: Array<(epoch: number) => void> = [];
+
+  /** Last integer epoch emitted, for dedup in onEpochChange */
+  private _lastEpochInt = -1;
+
   constructor(maxEpoch: number, callbacks: PlaybackCallbacks = {}) {
     this._maxEpoch = maxEpoch;
     this._callbacks = callbacks;
@@ -50,6 +62,7 @@ export class EpochPlaybackController {
   get rate(): PlaybackRate { return this._rate; }
   get position(): number { return this._position; }
   get maxEpoch(): number { return this._maxEpoch; }
+  get loop(): boolean { return this._loop; }
 
   // ── Playback controls ───────────────────────────────────────────────────
 
@@ -123,6 +136,25 @@ export class EpochPlaybackController {
   /** Update max epoch count (e.g. when new epochs are generated) */
   setMaxEpoch(n: number): void { this._maxEpoch = n; }
 
+  /** Enable / disable loop playback */
+  setLoop(v: boolean): void { this._loop = v; }
+
+  /** Cycle through speed presets: 0.25 → 0.5 → 1 → 2 → 4 → 0.25 … */
+  cycleSpeed(): PlaybackRate {
+    const idx = this._presets.indexOf(this._rate);
+    const next = this._presets[(idx + 1) % this._presets.length];
+    this.setRate(next);
+    return next;
+  }
+
+  /** Register a callback fired whenever the integer epoch changes */
+  onEpochChange(cb: (epoch: number) => void): () => void {
+    this._epochCb.push(cb);
+    return () => {
+      this._epochCb = this._epochCb.filter((fn) => fn !== cb);
+    };
+  }
+
   // ── Position tracking ─────────────────────────────────────────────────
 
   private _startPositionTracking(): void {
@@ -130,6 +162,38 @@ export class EpochPlaybackController {
       if (this._sequence && this._state === 'playing') {
         this._position = this._sequence.position;
         this._callbacks.onPositionChange?.(this._position);
+
+        // ── Epoch-change detection ──────────────────────────────────
+        const currentInt = Math.floor(this._position);
+        if (currentInt !== this._lastEpochInt) {
+          this._lastEpochInt = currentInt;
+          for (const cb of this._epochCb) cb(currentInt);
+        }
+
+        // ── End-of-timeline: loop or pause ──────────────────────────
+        if (this._position >= this._maxEpoch) {
+          if (this._loop) {
+            // Rewind to 0, fire epoch-change, keep playing
+            this.seekTo(0);
+            this._lastEpochInt = 0;
+            for (const cb of this._epochCb) cb(0);
+            // Restart playback from beginning
+            this._sequence.pause();
+            this._sequence.play({
+              range: [0, this._maxEpoch],
+              rate: this._rate,
+              iterationCount: 1,
+            });
+          } else {
+            this._sequence.pause();
+            this._state = 'paused';
+            this._callbacks.onComplete?.();
+            this._callbacks.onStateChange?.('paused');
+            this._stopPositionTracking();
+            return;
+          }
+        }
+
         this._rafId = requestAnimationFrame(tick);
       }
     };
@@ -151,5 +215,6 @@ export class EpochPlaybackController {
   dispose(): void {
     this._stopPositionTracking();
     this._sequence = null;
+    this._epochCb = [];
   }
 }
