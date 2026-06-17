@@ -488,3 +488,29 @@ export type {
   RTDescriptor,
   RenderTarget,
 } from './rendering-utils';
+
+// ── M019: cell-env-detect — WebGL2/WebGPU capability probe + Canvas2D fallback ─
+// detectCellEnv()         — async probe → CellEnvReport (cached after first call)
+// buildRendererPreference — CellRenderBackend → PixiJS autoDetectRenderer preference[]
+// createCellCanvas2D      — one-shot Canvas2D cell graph render (no WebGL)
+// CellCanvas2DRenderer    — stateful class-based Canvas2D fallback renderer
+// CellEnvAdapter          — PixiJS Adapter shim for the detected environment
+// Probe priority:  WebGPU → WebGL2 → WebGL1 → Canvas2D
+// Upstream fusion: environment-browser/BrowserAdapter, utils/browser/isWebGLSupported,
+//                  utils/browser/isWebGPUSupported, renderers/autoDetectRenderer,
+//                  renderers/canvas/CanvasContextSystem
+export {
+  detectCellEnv,
+  buildRendererPreference,
+  createCellCanvas2D,
+  CellCanvas2DRenderer,
+  CellEnvAdapter,
+  _resetCellEnvCache,
+} from './cell-env-detect';
+export type {
+  CellRenderBackend,
+  CellGpuFeatures,
+  CellEnvReport,
+  C2DCellDescriptor,
+  C2DEdgeDescriptor,
+} from './cell-env-detect';
