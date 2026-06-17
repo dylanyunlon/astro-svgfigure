@@ -28,6 +28,116 @@ const TOPOLOGY_MAP: Record<string, string[]> = {
   output:       [],
 }
 
+interface CompositeCell {
+  cell_id: string;
+  label?: string;
+  species?: string;
+  bbox?: { x: number; y: number; w: number; h: number; z?: number };
+  z?: number;
+  [key: string]: unknown;
+}
+
+interface CompositeEdge {
+  edge_id?: string;
+  id?: string;
+  sources?: string[];
+  source?: string;
+  targets?: string[];
+  target?: string;
+  is_skip?: boolean;
+  type?: string;
+  [key: string]: unknown;
+}
+
+interface CompositeParams {
+  cells?: CompositeCell[];
+  edges?: CompositeEdge[];
+  [key: string]: unknown;
+}
+
+/**
+ * Read channels/composite_params.json (output of assemble_final_svg()) and
+ * build CellDescriptor[] + EdgeDescriptor[] for the frontend.
+ * Returns null if the file does not exist or has no cells[].
+ */
+function readFromCompositeParams(): { cells: unknown[]; edges: unknown[] } | null {
+  const compositePath = join(process.cwd(), 'channels', 'composite_params.json')
+  if (!existsSync(compositePath)) return null
+
+  let composite: CompositeParams
+  try {
+    composite = JSON.parse(readFileSync(compositePath, 'utf-8'))
+  } catch {
+    return null
+  }
+
+  if (!composite.cells || composite.cells.length === 0) return null
+
+  // Build a lookup: cell_id → list of incoming source IDs (derived from edges)
+  const incomingMap: Record<string, string[]> = {}
+  const outgoingMap: Record<string, string[]> = {}
+  for (const cell of composite.cells) {
+    incomingMap[cell.cell_id] = []
+    outgoingMap[cell.cell_id] = []
+  }
+  for (const edge of (composite.edges ?? [])) {
+    const srcs = edge.sources ?? (edge.source ? [edge.source] : [])
+    const tgts = edge.targets ?? (edge.target ? [edge.target] : [])
+    for (const src of srcs) {
+      for (const tgt of tgts) {
+        if (!outgoingMap[src]) outgoingMap[src] = []
+        if (!incomingMap[tgt]) incomingMap[tgt] = []
+        outgoingMap[src].push(tgt)
+        incomingMap[tgt].push(src)
+      }
+    }
+  }
+
+  // Map composite cells → CellDescriptor
+  const cells: unknown[] = composite.cells.map((c) => ({
+    cell_id: c.cell_id,
+    label:   c.label   ?? c.cell_id,
+    species: c.species ?? 'cil-code',
+    bbox: c.bbox
+      ? { x: c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h }
+      : { x: 0, y: 0, w: 120, h: 40 },
+    z: c.z ?? c.bbox?.z ?? 1,
+    topology: {
+      incoming_edges: incomingMap[c.cell_id] ?? [],
+      outgoing_edges: outgoingMap[c.cell_id] ?? [],
+    },
+    // Pass through extra fields (fill_color, stroke_color, opacity, etc.)
+    ...(c.fill_color   !== undefined && { fill_color:   c.fill_color }),
+    ...(c.stroke_color !== undefined && { stroke_color: c.stroke_color }),
+    ...(c.opacity      !== undefined && { opacity:      c.opacity }),
+    ...(c.shadow       !== undefined && { shadow:       c.shadow }),
+    ...(c.species_params !== undefined && { species_params: c.species_params }),
+    ...(c.epoch        !== undefined && { epoch:        c.epoch }),
+    ...(c.render_order !== undefined && { render_order: c.render_order }),
+    ...(c.z_layer      !== undefined && { z_layer:      c.z_layer }),
+    ...(c.is_translucent !== undefined && { is_translucent: c.is_translucent }),
+  }))
+
+  // Sort by bbox.y (top→bottom visual order)
+  cells.sort((a: any, b: any) => (a.bbox?.y ?? 0) - (b.bbox?.y ?? 0))
+
+  // Map composite edges → EdgeDescriptor
+  const edges: unknown[] = (composite.edges ?? []).map((e) => {
+    const edgeId  = e.edge_id ?? e.id ?? 'edge'
+    const srcs    = e.sources ?? (e.source ? [e.source] : [])
+    const tgts    = e.targets ?? (e.target ? [e.target] : [])
+    const isSkip  = e.is_skip ?? e.type === 'skip_connection'
+    return {
+      id:     edgeId,
+      source: srcs[0] ?? '',
+      target: tgts[0] ?? '',
+      type:   isSkip ? 'skip_connection' : 'normal',
+    }
+  })
+
+  return { cells, edges }
+}
+
 /** Read channels/cell/*/params.json and build CellDescriptor[] */
 function readCellsFromFs(): unknown[] {
   const channelsDir = join(process.cwd(), 'channels', 'cell')
@@ -92,7 +202,20 @@ export const GET: APIRoute = async () => {
   } catch (fetchErr: any) {
     clearTimeout(timeout)
 
-    // ── Fallback: read from filesystem ──────────────────────────────────────
+    // ── Fallback priority 1: channels/composite_params.json (assemble_final_svg output) ──
+    const composite = readFromCompositeParams()
+    if (composite) {
+      return new Response(JSON.stringify({ cells: composite.cells, edges: composite.edges }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'X-Source': 'composite-params-fallback',
+        },
+      })
+    }
+
+    // ── Fallback priority 2: channels/cell/*/params.json (legacy per-cell files) ──
     const fsCells = readCellsFromFs()
     if (fsCells.length > 0) {
       return new Response(JSON.stringify(fsCells), {
