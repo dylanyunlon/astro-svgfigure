@@ -1341,20 +1341,23 @@ class AstroCellMeshPassProcessor:
             sort_key = self._assign_sort_key(entry, pso, blend_mode)
 
             # ── Draw event annotation ─────────────────────────────────────────
-            draw_event = ""
+            draw_event: dict = {}
             if self.emit_draw_events:
-                draw_event = (
-                    f"<!-- [ASTRO-MDC] MeshDrawEvent pass={self.pass_name} "
-                    f"cell={cell_id} pso_id={pso.id} "
-                    f"sort={sort_key.packed()} -->"
-                )
+                draw_event = {
+                    "tag":        "ASTRO-MDC",
+                    "event":      "MeshDrawEvent",
+                    "pass":       self.pass_name,
+                    "cell":       cell_id,
+                    "pso_id":     pso.id,
+                    "sort":       sort_key.packed(),
+                }
 
             enriched = dict(entry)
             enriched.update({
                 "pso_id":     pso.id,
                 "sort_key":   sort_key,
                 "svg_attrs":  svg_attrs,
-                "draw_event": draw_event,
+                "debug":      draw_event,
             })
             result.append(enriched)
 
@@ -8443,9 +8446,13 @@ class AstroCellRoughRefraction:
         self.dy_uv = ratio   * 0.01 * h
         self.bbox  = bbox
 
-    def emit_svg_filter(self, cell_id: str) -> str:
+    def emit_filter_params(self, cell_id: str) -> dict:
         """
-        Emit an SVG <filter> element implementing rough refraction.
+        Return a JSON-serialisable dict describing the distortion filter params.
+
+        Replaces the former emit_svg_filter() which returned a hard-coded SVG
+        string.  Callers are now responsible for serialising the dict to whatever
+        output format is required (SVG, JSON pipeline, debug log, …).
 
         Mirrors the C++ DistortionScreen pass output:
           - feGaussianBlur (rough refraction blur)
@@ -8457,53 +8464,73 @@ class AstroCellRoughRefraction:
         """
         p = self._params
         if not ASTRO_DISTORTION_ENABLED or p.quality == 0:
-            return ""
+            return {}
 
         blur_std = round(p.blur_sigma, 2)
         dx       = round(self.dx_uv, 2)
         dy       = round(self.dy_uv, 2)
 
-        parts = [
-            f'<!-- [ASTRO-DISTORTION] DistortionRendering.cpp port '
-            f'quality={p.quality} blur_sigma={blur_std} '
-            f'dx_uv={dx} dy_uv={dy} rough_refraction={p.use_rough_refraction} -->',
-            f'<filter id="distortion-{cell_id}" '
-            f'x="-10%" y="-10%" width="120%" height="120%">',
-        ]
+        primitives: list[dict] = []
 
         if p.use_rough_refraction:
             # feGaussianBlur: mirrors SceneColorScratchTexture blur
-            parts.append(
-                f'  <feGaussianBlur in="SourceGraphic" '
-                f'stdDeviation="{blur_std}" result="blurred"/>'
-            )
+            primitives.append({
+                "type": "feGaussianBlur",
+                "in": "SourceGraphic",
+                "stdDeviation": blur_std,
+                "result": "blurred",
+            })
             # feDisplacementMap: mirrors DistortionAccumRT UV offset
-            parts.append(
-                f'  <feDisplacementMap in="blurred" in2="SourceGraphic" '
-                f'scale="{max(dx, dy):.2f}" '
-                f'xChannelSelector="R" yChannelSelector="G" result="displaced"/>'
-            )
+            primitives.append({
+                "type": "feDisplacementMap",
+                "in": "blurred",
+                "in2": "SourceGraphic",
+                "scale": round(max(dx, dy), 2),
+                "xChannelSelector": "R",
+                "yChannelSelector": "G",
+                "result": "displaced",
+            })
             # feComposite: mirrors the composite blend back to scene color
-            parts.append(
-                f'  <feComposite in="displaced" in2="SourceGraphic" '
-                f'operator="over" result="refracted"/>'
-            )
+            primitives.append({
+                "type": "feComposite",
+                "in": "displaced",
+                "in2": "SourceGraphic",
+                "operator": "over",
+                "result": "refracted",
+            })
             # feBlend: merge refracted layer with original (luminance clamp baked in)
-            alpha = round(min(1.0, p.quality * 0.3), 2)
-            parts.append(
-                f'  <feBlend in="refracted" in2="SourceGraphic" '
-                f'mode="normal" result="final"/>'
-            )
+            primitives.append({
+                "type": "feBlend",
+                "in": "refracted",
+                "in2": "SourceGraphic",
+                "mode": "normal",
+                "result": "final",
+            })
         else:
             # Quality 1: simple UV-only displacement (no blur)
-            parts.append(
-                f'  <feDisplacementMap in="SourceGraphic" in2="SourceGraphic" '
-                f'scale="{max(dx, dy) * 0.5:.2f}" '
-                f'xChannelSelector="R" yChannelSelector="G" result="final"/>'
-            )
+            primitives.append({
+                "type": "feDisplacementMap",
+                "in": "SourceGraphic",
+                "in2": "SourceGraphic",
+                "scale": round(max(dx, dy) * 0.5, 2),
+                "xChannelSelector": "R",
+                "yChannelSelector": "G",
+                "result": "final",
+            })
 
-        parts.append('</filter>')
-        return "\n".join(parts)
+        return {
+            "filter_id": f"distortion-{cell_id}",
+            "region": {"x": "-10%", "y": "-10%", "width": "120%", "height": "120%"},
+            "debug": {
+                "source": "DistortionRendering.cpp port",
+                "quality": p.quality,
+                "blur_sigma": blur_std,
+                "dx_uv": dx,
+                "dy_uv": dy,
+                "rough_refraction": p.use_rough_refraction,
+            },
+            "primitives": primitives,
+        }
 
 
 
@@ -8528,15 +8555,14 @@ def apply_cell_distortion(
     svg_content: str,
     viewport_w: float = 1200.0,
     viewport_h: float = 900.0,
-) -> str:
+) -> dict | str:
     """
     Top-level distortion application — mirrors RenderDistortion() dispatch.
 
     Called from proc() after shadow + AO parameters are computed, before the
-    final SVG <g> wrapper is assembled.  Injects the distortion <filter> def
-    and adds a filter reference attribute to the cell's SVG group.
-
-    Returns (potentially modified) svg_content with distortion filter injected.
+    final SVG <g> wrapper is assembled.  Returns a JSON-serialisable params dict
+    (from emit_filter_params) when distortion is active, otherwise returns
+    svg_content unchanged.
 
     鲁迅式：折射是最后的化妆——在一切颜色和阴影确定之后，
     折射悄悄地扭曲了边缘，让透明的物体看起来不那么透明，
@@ -8550,10 +8576,10 @@ def apply_cell_distortion(
         return svg_content
 
     refraction = AstroCellRoughRefraction(params, bbox)
-    filter_def = refraction.emit_svg_filter(cell_id)
+    filter_params = refraction.emit_filter_params(cell_id)
 
-    if filter_def:
-        return filter_def + "\n" + svg_content
+    if filter_params:
+        return filter_params
 
     return svg_content
 
@@ -8731,9 +8757,9 @@ class AstroCellStaticDrawCommandCache:
     def get(self, cell_id: str, epoch: int) -> str | None:
         return self._cache.get((cell_id, epoch))
 
-    def put(self, cell_id: str, epoch: int, svg_fragment: str) -> None:
+    def put(self, cell_id: str, epoch: int, params_fragment: dict) -> None:
         if _MDC_CACHE_MT:
-            self._cache[(cell_id, epoch)] = svg_fragment
+            self._cache[(cell_id, epoch)] = params_fragment
 
     def invalidate_cell(self, cell_id: str) -> None:
         stale = [k for k in self._cache if k[0] == cell_id]
