@@ -262,3 +262,4 @@ export {
   // fx
   GlitchFilter, RGBSplitFilter, ConvolutionFilter,
 };
+# M030: GodrayFilter — 已在 M167 pixijs-filters全链 中实现
