@@ -729,3 +729,39 @@ export { normaliseCell as normaliseCellState }
 
 // ─── Re-export EpochTimeline type without exposing the class directly ─────────
 export type { EpochTimeline }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// M068: Theatre.js Project ↔ Topology JSON mapping
+//
+// Each topology.json corresponds to one Theatre.js Project instance.
+// Project lifecycle: create → hydrate sheets → animate → dispose.
+//
+// The getProject() call at L467 already handles the one-project-per-topology
+// pattern. This section adds topology-level helpers.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Create a Theatre.js Project from a topology JSON.
+ * One topology = one Project, with cells as SheetObjects.
+ */
+export function projectFromTopology(
+  topologyId: string,
+  cellEntries: Array<{ cell_id: string; species: string; bbox: { x: number; y: number; w: number; h: number } }>,
+  epochCount: number,
+  opts?: Partial<EpochTimelineOptions>,
+): EpochTimeline {
+  return new EpochTimeline(
+    cellEntries.map(e => ({
+      cellId: e.cell_id,
+      species: e.species,
+      x: e.bbox.x,
+      y: e.bbox.y,
+      w: e.bbox.w,
+      h: e.bbox.h,
+      opacity: 1.0,
+      colorR: 0.5, colorG: 0.5, colorB: 0.7,
+    })),
+    epochCount,
+    { ...opts, projectId: `topology-${topologyId}` },
+  );
+}
