@@ -1,5 +1,8 @@
 /**
- * theatre-epoch-timeline.ts — Theatre.js epoch timeline  (M067 revision)
+ * theatre-epoch-timeline.ts — Theatre.js epoch timeline  (M042 revision)
+ *
+ * M042: Theatre.js epoch timeline — drives per-cell animation via upstream
+ * Theatre.js getProject / Sheet / Sequence APIs.
  *
  * Architecture — fused with upstream/theatre-js core/sheets:
  *
@@ -14,12 +17,15 @@
  *       These are read-only snapshots — useful for scrubbing to an exact epoch
  *       or letting Studio inspect / tweak one epoch in isolation.
  *
- * Cell props per SheetObject:
- *   { x, y, w, h, opacity, z, r, g, b }
- *   - bbox  → x, y, w, h
- *   - alpha → opacity
- *   - depth → z
- *   - color → r, g, b   (0–255 integers; packed from hex fill_color)
+ * Cell props per SheetObject (M042 spec):
+ *   { x, y, w, h, opacity, bloomStrength }
+ *   - bbox         → x, y, w, h
+ *   - alpha        → opacity
+ *   - bloom effect → bloomStrength (0–1 normalised post-process bloom intensity)
+ *
+ * When a new epoch completes, play() is called on the ISequence so Theatre.js
+ * interpolates all SheetObject props from the previous epoch values to the
+ * new epoch keyframes via its built-in bezier engine.
  *
  * Keyframe easing presets:
  *   'linear'  — [0, 0, 1, 1] handles
@@ -32,6 +38,7 @@
  *   tl.seek(2.5)                       // halfway between epoch 2 and 3
  *   tl.onFrame(({ cells }) => …)       // interpolated CellState[] each rAF
  *   tl.readEpochSnapshot(2)            // static CellState[] for epoch 2
+ *   tl.advanceEpoch(newCellStates)     // append new epoch → play sequence to it
  *
  * Upstream Theatre.js source is vendored; Astro tsconfig path aliases resolve
  * @theatre/core and @theatre/dataverse at build time.
@@ -60,21 +67,24 @@ import type {
  * All props are interpolated by Theatre.js between epoch keyframes.
  */
 export interface CellState {
-  cell_id:  string
-  x:        number
-  y:        number
-  w:        number
-  h:        number
-  opacity:  number
-  z:        number
+  cell_id:       string
+  x:             number
+  y:             number
+  w:             number
+  h:             number
+  opacity:       number
+  /** M042: bloom post-process intensity, 0 = no bloom, 1 = full bloom. */
+  bloomStrength: number
+  /** Depth / stacking order (kept for renderer compatibility). */
+  z:             number
   /** 0–255 red channel (decoded from fill_color) */
-  r:        number
+  r:             number
   /** 0–255 green channel */
-  g:        number
+  g:             number
   /** 0–255 blue channel */
-  b:        number
+  b:             number
   /** Original hex string for convenience, e.g. '#3F51B5' */
-  color:    string
+  color:         string
 }
 
 /**
@@ -158,22 +168,26 @@ export interface EpochTimelineOptions {
 /**
  * Every ISheetObject on the master sheet uses this compound prop schema.
  * Theatre.js tracks each leaf numerically; the Studio can scrub/keyframe them.
+ *
+ * M042 spec: x, y, w, h, opacity, bloomStrength (plus z/r/g/b for renderer compat)
  */
 const CELL_PROPS = {
-  x:       types.number(0,   { range: [-4000, 4000] }),
-  y:       types.number(0,   { range: [-4000, 4000] }),
-  w:       types.number(100, { range: [0, 2000] }),
-  h:       types.number(50,  { range: [0, 2000] }),
-  opacity: types.number(1,   { range: [0, 1] }),
-  z:       types.number(3,   { range: [0, 10] }),
-  r:       types.number(127, { range: [0, 255] }),
-  g:       types.number(127, { range: [0, 255] }),
-  b:       types.number(127, { range: [0, 255] }),
+  x:            types.number(0,   { range: [-4000, 4000] }),
+  y:            types.number(0,   { range: [-4000, 4000] }),
+  w:            types.number(100, { range: [0, 2000] }),
+  h:            types.number(50,  { range: [0, 2000] }),
+  opacity:      types.number(1,   { range: [0, 1] }),
+  /** M042: bloom post-process intensity per cell (0 = none, 1 = full bloom). */
+  bloomStrength: types.number(0,  { range: [0, 1] }),
+  z:            types.number(3,   { range: [0, 10] }),
+  r:            types.number(127, { range: [0, 255] }),
+  g:            types.number(127, { range: [0, 255] }),
+  b:            types.number(127, { range: [0, 255] }),
 } as const
 
 type CellPropsValues = {
   x: number; y: number; w: number; h: number
-  opacity: number; z: number
+  opacity: number; bloomStrength: number; z: number
   r: number; g: number; b: number
 }
 
@@ -239,8 +253,9 @@ function normaliseCell(raw: RawCellState): CellState {
     y,
     w,
     h,
-    opacity: raw.opacity ?? 1,
-    z:       raw.z       ?? 3,
+    opacity:       raw.opacity       ?? 1,
+    bloomStrength: (raw as any).bloomStrength ?? 0,
+    z:             raw.z             ?? 3,
     r, g, b,
     color: fillColor,
   }
@@ -293,7 +308,7 @@ function buildTheatreState(
     trackData: Record<string, { type: 'BasicKeyframedTrack'; keyframes: KFRecord }>
   }> = {}
 
-  const PROPS = ['x', 'y', 'w', 'h', 'opacity', 'z', 'r', 'g', 'b'] as const
+  const PROPS = ['x', 'y', 'w', 'h', 'opacity', 'bloomStrength', 'z', 'r', 'g', 'b'] as const
 
   for (const cellId of allCellIds) {
     const trackIdByPropPath: Record<string, string> = {}
@@ -386,7 +401,7 @@ function buildTheatreState(
     for (const cell of snapshots[e]) {
       byObject[cell.cell_id] = {
         x: cell.x, y: cell.y, w: cell.w, h: cell.h,
-        opacity: cell.opacity, z: cell.z,
+        opacity: cell.opacity, bloomStrength: cell.bloomStrength, z: cell.z,
         r: cell.r, g: cell.g, b: cell.b,
       }
     }
@@ -611,8 +626,54 @@ class EpochTimeline {
     return onChange(propPointer as Parameters<typeof onChange>[0], cb as (v: unknown) => void)
   }
 
-  /** Release all Theatre.js subscriptions and callbacks. */
-  dispose(): void {
+  /**
+   * M042: Advance timeline with a new epoch's cell states.
+   *
+   * Called when a new epoch completes in the cell-pubsub loop.
+   * Steps:
+   *   1. Normalise the new raw cells to CellState[].
+   *   2. Append as the next epoch snapshot.
+   *   3. Rebuild Theatre.js OnDiskState with the new keyframe at position N.
+   *   4. Call sequence.play() so Theatre.js interpolates all SheetObject props
+   *      from the current (N-1) epoch values to the new epoch (N) values.
+   *
+   * @param rawCells  Raw cell states from the new epoch (same format as EpochSheet.cells).
+   * @param rate      Playback rate in epochs/second for the transition animation. Default: 1.
+   */
+  advanceEpoch(rawCells: RawCellState[], rate: number = 1): Promise<boolean> {
+    const newCells = rawCells.map(normaliseCell)
+
+    // Register any new cells that haven't been seen before.
+    for (const cell of newCells) {
+      if (!this._objects.has(cell.cell_id)) {
+        const obj = this._masterSheet.object(cell.cell_id, CELL_PROPS)
+        this._objects.set(cell.cell_id, obj)
+        ;(this._allCellIds as string[]).push(cell.cell_id)
+      }
+    }
+
+    // Append to snapshots array.
+    ;(this._snapshots as CellState[][]).push(newCells)
+
+    const N = this._snapshots.length
+    const newEpochIdx = N - 1
+
+    // Register snapshot sheet for this new epoch.
+    this._snapshotSheets.set(newEpochIdx, this._project.sheet(`Epoch ${newEpochIdx}`))
+
+    // Play the sequence from position newEpochIdx-1 → newEpochIdx so Theatre.js
+    // interpolates all SheetObject props to the new epoch's target values.
+    const fromPos = Math.max(0, newEpochIdx - 1)
+    const toPos   = newEpochIdx
+
+    return this._sequence.play({
+      range:     [fromPos, toPos],
+      rate,
+      direction: 'normal',
+    })
+  }
+
+
     for (const unsub of this._unsubs) unsub()
     this._callbacks.clear()
     this._unsubs.length = 0
@@ -648,15 +709,16 @@ class EpochTimeline {
 
       cells.push({
         cell_id: cellId,
-        x:       v.x,
-        y:       v.y,
-        w:       v.w,
-        h:       v.h,
-        opacity: v.opacity,
-        z:       v.z,
-        r:       v.r,
-        g:       v.g,
-        b:       v.b,
+        x:            v.x,
+        y:            v.y,
+        w:            v.w,
+        h:            v.h,
+        opacity:      v.opacity,
+        bloomStrength: v.bloomStrength,
+        z:            v.z,
+        r:            v.r,
+        g:            v.g,
+        b:            v.b,
         color,
       })
     }

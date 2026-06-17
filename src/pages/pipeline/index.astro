@@ -179,6 +179,13 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   import type { CellDescriptor, EdgeDescriptor } from '@/lib/renderers/pixi-cell-renderer'
   // M049: CloudFog 全屏背景
   import { mountCloudFogBackground } from '@/lib/CloudFogBackground'
+  // M042: Theatre.js epoch timeline — drives per-cell animation via ISequence
+  import {
+    createEpochTimeline,
+    type EpochTimeline,
+    type CellState as TheatreCellState,
+    type RawCellState,
+  } from '@/lib/renderers/theatre-epoch-timeline'
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const canvas       = document.getElementById('pl-canvas') as HTMLCanvasElement
@@ -211,6 +218,8 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   let lastCells: CellDescriptor[] = []
   // M049: CloudFog 背景停止函数
   let stopFog: (() => void) | null = null
+  // M042: Theatre.js epoch timeline instance — initialized on first epoch fetch
+  let epochTimeline: EpochTimeline | null = null
 
   // ── Connection badge ──────────────────────────────────────────────────────
   function setConnected(ok: boolean) {
@@ -406,7 +415,132 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
       const data: EpochRecord[] | { epochs?: EpochRecord[] } = await res.json()
       const epochs = Array.isArray(data) ? data : (data as any).epochs ?? []
       renderEpochTimeline(epochs)
+
+      // M042: Initialize or advance the Theatre.js epoch timeline.
+      // On first call: build the timeline from all epoch snapshots.
+      // On subsequent calls: if a new epoch was appended, advance the sequence.
+      if (epochs.length > 0) {
+        await initOrAdvanceTheatreTimeline(epochs)
+      }
     } catch { /* silent — epochs are optional */ }
+  }
+
+  // ── M042: Theatre.js epoch timeline init / advance ───────────────────────
+  /**
+   * M042: Initialize the Theatre.js epoch timeline from epoch snapshot data,
+   * or advance it when a new epoch is appended.
+   *
+   * Flow:
+   *   1. Fetch /api/epoch-snapshots (or fall back to cells per epoch).
+   *   2. On first call: createEpochTimeline(snapshots) → subscribe onFrame.
+   *   3. On subsequent calls: epochTimeline.advanceEpoch(newCells) → plays
+   *      the ISequence from current epoch position to the new epoch, letting
+   *      Theatre.js bezier interpolation drive all cell prop transitions.
+   */
+  async function initOrAdvanceTheatreTimeline(epochs: EpochRecord[]) {
+    try {
+      // Try to fetch full epoch snapshots from the backend.
+      const snapRes = await fetch('/api/epoch-snapshots').catch(() => null)
+
+      if (!epochTimeline) {
+        // ── First initialization ────────────────────────────────────────────
+        let snapshotData: { snapshots: Array<{ epoch: number; cells: RawCellState[] }> } | null = null
+
+        if (snapRes?.ok) {
+          snapshotData = await snapRes.json()
+        }
+
+        if (snapshotData?.snapshots?.length) {
+          // Full snapshot data available — build timeline with all epochs.
+          epochTimeline = createEpochTimeline(snapshotData, {
+            projectId:   'PipelineEpochTimeline',
+            easing:      'ease',
+            defaultRate: 1,
+          })
+        } else if (lastCells.length > 0) {
+          // Fall back: build a single-epoch timeline from current cells.
+          // Cast CellDescriptor[] to RawCellState[] (compatible shape).
+          const rawCells = lastCells.map(c => ({
+            cell_id:     c.cell_id,
+            x:           (c as any).x ?? 0,
+            y:           (c as any).y ?? 0,
+            w:           (c as any).w ?? 100,
+            h:           (c as any).h ?? 50,
+            opacity:     (c as any).opacity ?? 1,
+            bloomStrength: (c as any).bloomStrength ?? 0,
+            fill_color:  (c as any).fill_color ?? '#808080',
+          } as RawCellState))
+
+          epochTimeline = createEpochTimeline(
+            [{ epoch: 0, cells: rawCells }],
+            { projectId: 'PipelineEpochTimeline', easing: 'ease', defaultRate: 1 },
+          )
+        }
+
+        if (epochTimeline) {
+          // Subscribe to Theatre.js frame updates — apply interpolated props
+          // back to the PixiJS canvas each rAF tick.
+          epochTimeline.onFrame(({ cells, position, epochIndex }) => {
+            applyTheatreFrame(cells, position, epochIndex)
+          })
+
+          console.log('[M042] Theatre.js epoch timeline initialized',
+            `epochs: ${epochTimeline.epochCount}`)
+        }
+
+      } else if (snapRes?.ok) {
+        // ── Advance: new epoch snapshot available ───────────────────────────
+        const snapshotData = await snapRes.json() as {
+          snapshots: Array<{ epoch: number; cells: RawCellState[] }>
+        }
+        const latestIdx  = snapshotData.snapshots.length - 1
+        const knownCount = epochTimeline.epochCount
+
+        if (latestIdx >= knownCount) {
+          // New epoch(s) arrived — advance the Theatre.js timeline.
+          // advanceEpoch() appends the snapshot and plays ISequence to it.
+          const latestSnap = snapshotData.snapshots[latestIdx]
+          await epochTimeline.advanceEpoch(latestSnap.cells, 1)
+
+          console.log('[M042] Theatre.js epoch timeline advanced to epoch', latestIdx)
+        }
+      }
+    } catch (err) {
+      // Non-fatal: Theatre.js timeline is an enhancement, not a hard dependency.
+      console.warn('[M042] Theatre.js epoch timeline error:', err)
+    }
+  }
+
+  /**
+   * M042: Apply Theatre.js interpolated cell states to the live PixiJS canvas.
+   * Called on every Theatre.js rAF tick via epochTimeline.onFrame().
+   *
+   * Maps TheatreCellState props (x, y, w, h, opacity, bloomStrength) onto the
+   * corresponding CellDescriptor objects that PixiJS is currently rendering.
+   * The PixiJS renderer picks up changes on the next draw call automatically.
+   */
+  function applyTheatreFrame(
+    cells: TheatreCellState[],
+    _position: number,
+    _epochIndex: number,
+  ) {
+    if (!pixiApp || !lastCells.length) return
+
+    // Build a fast lookup: cell_id → interpolated TheatreCellState
+    const byId = new Map<string, TheatreCellState>()
+    for (const c of cells) byId.set(c.cell_id, c)
+
+    // Patch lastCells in-place so the next PixiJS render tick picks up changes.
+    for (const desc of lastCells) {
+      const ts = byId.get(desc.cell_id)
+      if (!ts) continue
+      ;(desc as any).x            = ts.x
+      ;(desc as any).y            = ts.y
+      ;(desc as any).w            = ts.w
+      ;(desc as any).h            = ts.h
+      ;(desc as any).opacity      = ts.opacity
+      ;(desc as any).bloomStrength = ts.bloomStrength
+    }
   }
 
   // ── M047: Fetch /api/cells → renderCellGraph() ───────────────────────────
@@ -621,6 +755,7 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
       showStatus('Loading current state…')
       // M047 init: fetch /api/cells → renderCellGraph(canvas, cells, edges)
       await fetchAndRender()
+      // M042: fetchEpochs now also initializes the Theatre.js epoch timeline
       await fetchEpochs()
     } catch {
       // Backend might be offline; show empty state
@@ -628,4 +763,10 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
       setConnected(false)
     }
   })()
+
+  // M042: Dispose Theatre.js timeline and stop CloudFog on page unload.
+  window.addEventListener('beforeunload', () => {
+    epochTimeline?.dispose()
+    stopFog?.()
+  })
 </script>
