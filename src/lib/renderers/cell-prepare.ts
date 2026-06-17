@@ -40,6 +40,7 @@
 // Must be imported before any renderer.prepare access.
 import '../../upstream/pixijs-engine/src/prepare/init';
 
+import { Assets } from 'pixi.js';
 import { PrepareSystem } from '../../upstream/pixijs-engine/src/prepare/PrepareSystem';
 import { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
 
@@ -317,6 +318,25 @@ export async function warmCellAssets(
   }
 
   return { elapsedMs, queueSize: textures.length, prepared: true };
+}
+
+/**
+ * prepareRendering — fetch cell descriptors from /api/cells and preload all MSDF textures.
+ *
+ * Calls the /api/cells endpoint, filters cells that have an msdf_path, and
+ * uses Assets.load() to preload all MSDF textures into the PixiJS asset cache.
+ * This ensures MSDF font atlases are ready in memory before any cell rendering
+ * begins, eliminating lazy-load stalls on first text render.
+ *
+ * @param app  Running PixiJS Application (must be post-init)
+ */
+export async function prepareRendering(app: Application) {
+  const d = await (await fetch('/api/cells')).json();
+  await Promise.all(
+    d.cells
+      .filter((c: any) => c.msdf_path)
+      .map((c: any) => Assets.load(c.msdf_path)),
+  );
 }
 
 /**
