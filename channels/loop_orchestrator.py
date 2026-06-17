@@ -21,6 +21,18 @@ import glob
 
 from dataclasses import dataclass as _dc_dataclass
 
+# M174 — params-level divergence rollback snapshot manager.
+# Imported lazily inside functions that need it so loop_orchestrator remains
+# runnable without snapshot_manager on sys.path in minimal test environments.
+try:
+    from snapshot_manager import (
+        ParamsSnapshotManager as _ParamsSnapshotManager,
+        compute_param_deltas as _compute_param_deltas,
+    )
+    _SNAPSHOT_MANAGER_AVAILABLE = True
+except ImportError:
+    _SNAPSHOT_MANAGER_AVAILABLE = False
+
 CHANNELS = os.path.dirname(os.path.abspath(__file__))
 
 @_dc_dataclass
@@ -3847,6 +3859,7 @@ def _compute_delta_max(bboxes_before: dict, bboxes_after: dict) -> float:
 def convergence_check(
     epoch: int,
     snapshot_manager=None,
+    params_snapshot_manager=None,
     threshold: float = 0.5,
     divergence_factor: float = 3.0,
 ) -> dict:
@@ -3874,14 +3887,19 @@ def convergence_check(
     Returns the status dict.
 
     Args:
-        epoch            : current epoch index (0-based).
-        snapshot_manager : optional EpochSnapshotManager; used for rollback on
-                           divergence.  If None, divergence is flagged in the
-                           status JSON but no rollback is performed.
-        threshold        : convergence threshold (default 0.5, same as
-                           GAstroRendererConfig.convergence_threshold).
-        divergence_factor: delta increase ratio that triggers divergence guard
-                           (default 3.0 — a 3× jump is treated as instability).
+        epoch                   : current epoch index (0-based).
+        snapshot_manager        : optional EpochSnapshotManager; used for bbox
+                                  rollback on divergence.  If None, divergence is
+                                  flagged in the status JSON but no bbox rollback
+                                  is performed.
+        params_snapshot_manager : optional ParamsSnapshotManager (M174); handles
+                                  params.json snapshot I/O and params-level
+                                  rollback.  When provided it replaces the inline
+                                  snapshot write logic for that pathway.
+        threshold               : convergence threshold (default 0.5, same as
+                                  GAstroRendererConfig.convergence_threshold).
+        divergence_factor       : delta increase ratio that triggers divergence
+                                  guard (default 3.0 — a 3× jump is instability).
 
     Returns:
         dict  status written to channels/convergence/status.json.
@@ -3995,40 +4013,68 @@ def convergence_check(
     )
 
     # ── compute per-cell delta norms ──────────────────────────────────────
+    # M174: delegate snapshot I/O to ParamsSnapshotManager when available.
     cell_deltas: dict = {}
 
-    for cell_id in cell_ids:
-        # current params
-        curr_params = _read_params(cell_id)
-        vec_curr = _flatten_params(curr_params)
+    if params_snapshot_manager is not None:
+        # ── M174 fast path: capture via ParamsSnapshotManager ────────────
+        # capture() writes convergence/epoch_params/{epoch}/*.json and keeps
+        # the ring buffer up to date — no inline file I/O needed here.
+        _psm_snap = params_snapshot_manager.capture(epoch)
+        curr_cell_params = _psm_snap["cell_params"]
+        prev_cell_params = (
+            params_snapshot_manager.load_epoch_params(epoch - 1)
+            if epoch > 0 else {}
+        )
+        # Use the module-level helper from snapshot_manager.py
+        if _SNAPSHOT_MANAGER_AVAILABLE:
+            cell_deltas = _compute_param_deltas(prev_cell_params, curr_cell_params)
+        else:
+            for cell_id in cell_ids:
+                curr_params = curr_cell_params.get(cell_id, {})
+                prev_params = prev_cell_params.get(cell_id)
+                if epoch == 0 or prev_params is None:
+                    cell_deltas[cell_id] = 0.0
+                else:
+                    delta = _l2_delta(
+                        _flatten_params(curr_params),
+                        _flatten_params(prev_params),
+                    )
+                    cell_deltas[cell_id] = round(delta, 6)
+    else:
+        # ── Legacy inline path (no ParamsSnapshotManager) ────────────────
+        for cell_id in cell_ids:
+            # current params
+            curr_params = _read_params(cell_id)
+            vec_curr = _flatten_params(curr_params)
 
-        # save current params as snapshot for next epoch
-        snap_path = os.path.join(curr_epoch_dir, f"{cell_id}.json")
-        try:
-            with open(snap_path, "w") as f:
-                json.dump(curr_params, f, indent=2)
-        except OSError as _e:
-            import sys as _sys
-            print(f"[M173] WARNING: could not write snapshot {snap_path}: {_e}",
-                  file=_sys.stderr)
+            # save current params as snapshot for next epoch
+            snap_path = os.path.join(curr_epoch_dir, f"{cell_id}.json")
+            try:
+                with open(snap_path, "w") as f:
+                    json.dump(curr_params, f, indent=2)
+            except OSError as _e:
+                import sys as _sys
+                print(f"[M173] WARNING: could not write snapshot {snap_path}: {_e}",
+                      file=_sys.stderr)
 
-        # previous params snapshot
-        prev_snap_path = os.path.join(prev_epoch_dir, f"{cell_id}.json")
-        if epoch == 0 or not os.path.isfile(prev_snap_path):
-            # First epoch — no previous snapshot, delta is 0 (nothing to compare)
-            cell_deltas[cell_id] = 0.0
-            continue
+            # previous params snapshot
+            prev_snap_path = os.path.join(prev_epoch_dir, f"{cell_id}.json")
+            if epoch == 0 or not os.path.isfile(prev_snap_path):
+                # First epoch — no previous snapshot, delta is 0 (nothing to compare)
+                cell_deltas[cell_id] = 0.0
+                continue
 
-        try:
-            with open(prev_snap_path) as f:
-                prev_params = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            cell_deltas[cell_id] = 0.0
-            continue
+            try:
+                with open(prev_snap_path) as f:
+                    prev_params = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                cell_deltas[cell_id] = 0.0
+                continue
 
-        vec_prev = _flatten_params(prev_params)
-        delta = _l2_delta(vec_curr, vec_prev)
-        cell_deltas[cell_id] = round(delta, 6)
+            vec_prev = _flatten_params(prev_params)
+            delta = _l2_delta(vec_curr, vec_prev)
+            cell_deltas[cell_id] = round(delta, 6)
 
     # ── aggregate ─────────────────────────────────────────────────────────
     max_delta: float = max(cell_deltas.values()) if cell_deltas else 0.0
@@ -4152,6 +4198,15 @@ def run_loop(max_epochs=10):
     # module-level singleton in SceneCaptureRendering.cpp d31c85e).
     snapshot = EpochSnapshotManager(CHANNELS)
 
+    # [M174] Instantiate params-level snapshot manager.
+    # Saves cell/*/params.json per epoch and provides divergence rollback
+    # at the params level (complementing EpochSnapshotManager's bbox rollback).
+    _params_snapshot = (
+        _ParamsSnapshotManager(CHANNELS)
+        if _SNAPSHOT_MANAGER_AVAILABLE
+        else None
+    )
+
     # Track previous-epoch bboxes to compute delta_max each round.
     # Initialised from whatever bbox.json files exist before epoch 0.
     _prev_bboxes: dict = {}
@@ -4253,14 +4308,17 @@ def run_loop(max_epochs=10):
                     f"since epoch {snap['epoch'] - 1}"
                 )
 
-        # ── Step 6b: M173 param-level convergence check ───────────────────────
+        # ── Step 6b: M173/M174 param-level convergence check ─────────────────
         # convergence_check() diffs params.json across adjacent epochs,
         # computing per-cell L2 delta norms over species_params + bbox.
+        # M174: ParamsSnapshotManager handles snapshot I/O (capture + rollback)
+        # so convergence_check() does not write files inline when it is present.
         # Writes channels/convergence/status.json; triggers rollback on
         # divergence (sudden delta spike > DIVERGENCE_FACTOR × prev max_delta).
         _cv_status = convergence_check(
             epoch=epoch,
             snapshot_manager=snapshot,
+            params_snapshot_manager=_params_snapshot,
             threshold=GAstroRendererConfig.convergence_threshold,
         )
         if _cv_status.get("diverged"):
