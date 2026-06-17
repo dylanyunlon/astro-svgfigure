@@ -13,6 +13,44 @@
  * All visual quality is determined by the GPU pipeline, not LLM code generation.
  */
 
+// ── M023: cell-csp-shader — CSP 策略下 shader 编译方案 ───────────────────────
+// installCSPShaderPolyfill  — 向 PixiJS 注入 eval-free shader sync polyfill
+// installCSPShaderPolyfillSync — 同步语义别名，顶层 await 友好
+// isCspBlocked              — 检测当前环境 CSP 是否禁止 unsafe-eval
+// CSPShaderRegistry         — 预编译 WebGL program 缓存（无 new Function）
+// CellCSPShaderProgram      — cell 渲染 program + uniform location 缓存包装
+// createCellCSPShader       — 一步工厂：canvas → registry + cellProgram
+// warmupCellShaders         — 预热所有 cell shader，消除首帧编译 stall
+// SPECIES_ID_MAP            — species 名称 → uSpeciesId int 映射表
+// GLSL 常量（tree-shakeable 静态字符串）:
+//   CELL_VERT_GLSL / CELL_FRAG_GLSL       — cell body SDF shader
+//   EDGE_PARTICLE_VERT_GLSL / _FRAG_GLSL  — edge 粒子 render shader
+//   EDGE_SIM_VERT_GLSL / _FRAG_GLSL       — edge 粒子 Transform Feedback 模拟 shader
+//
+// Upstream 整合参考:
+//   upstream/pixijs-engine/src/unsafe-eval/init.ts             — selfInstall() 注入模式
+//   upstream/pixijs-engine/src/unsafe-eval/shader/generateShaderSyncPolyfill.ts
+//   upstream/pixijs-engine/src/unsafe-eval/uniforms/generateUniformsSyncPolyfill.ts
+//   upstream/pixijs-engine/src/unsafe-eval/ubo/generateUboSyncPolyfill.ts
+//   upstream/pixijs-engine/src/rendering/renderers/gl/shader/GenerateShaderSyncCode.ts
+export {
+  installCSPShaderPolyfill,
+  installCSPShaderPolyfillSync,
+  isCspBlocked,
+  CSPShaderRegistry,
+  CellCSPShaderProgram,
+  createCellCSPShader,
+  warmupCellShaders,
+  SPECIES_ID_MAP,
+  CELL_VERT_GLSL,
+  CELL_FRAG_GLSL,
+  EDGE_PARTICLE_VERT_GLSL,
+  EDGE_PARTICLE_FRAG_GLSL,
+  EDGE_SIM_VERT_GLSL,
+  EDGE_SIM_FRAG_GLSL,
+} from './cell-csp-shader';
+export type { CellCSPUniformSet } from './cell-csp-shader';
+
 // ── M017: cell-culling — viewport frustum skip offscreen ─────────────────────
 // CellCuller          — stateful culler class (margin-aware AABB frustum test)
 // sharedCellCuller    — shared singleton (mirrors Culler.shared pattern)
