@@ -4,6 +4,11 @@
  * Active Theory 风格：沿样条线轨迹发射粒子，实现 AT 的 SplineParticleLife class。
  * 粒子沿 Catmull-Rom 样条流动，life cycle 由 uSplineSpeed 控制。
  *
+ * M151: CatmullRom + weight-scaled particles
+ *   1) 从 points 数组构建 Catmull-Rom 样条（参考 webgl2-particles TF 架构）
+ *   2) 弧长参数化表实现均匀采样，N 个粒子沿样条等距分布
+ *   3) 粒子 size = edge.weight * baseSizeFactor
+ *
  * 参数来源: channels/physics/at_uil_params.json
  *
  *   am_SplineParticleLife_Element_0_WorkDetailParticles:
@@ -22,6 +27,7 @@
  *   channels/physics/at_uil_params.json  INPUT_P_Element_0_WorkDetailParticlescode_1_preset = "spline"
  *   src/lib/gpgpu/constraint-texture.ts (texture init pattern)
  *   ParticleSystem.ts (integration point)
+ *   upstream/RESEARCH_122_webgl2_particles_clean.md — TF ping-pong 机制
  */
 
 import { ParticleSystem } from './ParticleSystem.js';
@@ -40,6 +46,17 @@ export interface SplineJSON {
   splines: Array<{
     points: Array<{ x: number; y: number; z: number }>;
   }>;
+}
+
+/**
+ * Edge descriptor for weight-scaled particle sizing.
+ * Each edge owns a spline; its weight controls particle size along that spline.
+ */
+export interface SplineEdge {
+  /** Control points defining the Catmull-Rom spline path */
+  points: SplinePoint[];
+  /** Edge weight — multiplied by baseSizeFactor to determine particle size */
+  weight: number;
 }
 
 export interface SplineEmitterConfig {
@@ -83,10 +100,21 @@ export interface SplineEmitterConfig {
    * Speed at which thickness variation animates.
    */
   thicknessSpeed?: number;
+  /**
+   * Base size factor multiplied by edge.weight to compute per-particle size.
+   * size = edge.weight * baseSizeFactor.   Default: 1.0
+   */
+  baseSizeFactor?: number;
+  /**
+   * Number of linear segments used to approximate arc length per spline
+   * segment during arc-length table construction. Higher = more accurate
+   * uniform sampling at the cost of init time. Default: 64
+   */
+  arcLengthDivisions?: number;
 }
 
 export interface SplineParticleState {
-  /** Current travel position [0, 1] along spline */
+  /** Current travel position [0, 1] along spline (arc-length parameterised) */
   travel: number;
   /** Individual speed scalar [uSplineSpeed.min, uSplineSpeed.max] */
   speed: number;
@@ -99,14 +127,16 @@ export interface SplineParticleState {
 // ── AT parameter defaults ────────────────────────────────────────────────────
 
 const AT_SPLINE_DEFAULTS: Required<SplineEmitterConfig> = {
-  splineSpeed:    [0.82, 1.21],  // am_SplineParticleLife uSplineSpeed
-  timeMultiplier: 0.17,          // am_SplineParticleLife uTimeMultiplier
-  startOffset:    1,             // am_SplineParticleLife uStartOffset
-  startSpacing:   0,             // am_SplineParticleLife uStartSpacing
-  maxSDelay:      0,             // am_SplineParticleLife uMaxSDelay
-  flowRange:      [1, 1],        // am_SplineParticleLife uFlowRange
-  infinite:       true,          // SplineConfig.infinite
-  thicknessSpeed: 1,             // am_ProtonAntimatter uThicknessSpeed
+  splineSpeed:        [0.82, 1.21],  // am_SplineParticleLife uSplineSpeed
+  timeMultiplier:     0.17,          // am_SplineParticleLife uTimeMultiplier
+  startOffset:        1,             // am_SplineParticleLife uStartOffset
+  startSpacing:       0,             // am_SplineParticleLife uStartSpacing
+  maxSDelay:          0,             // am_SplineParticleLife uMaxSDelay
+  flowRange:          [1, 1],        // am_SplineParticleLife uFlowRange
+  infinite:           true,          // SplineConfig.infinite
+  thicknessSpeed:     1,             // am_ProtonAntimatter uThicknessSpeed
+  baseSizeFactor:     1.0,           // weight→size multiplier
+  arcLengthDivisions: 64,            // arc-length LUT resolution per segment
 };
 
 // ── Catmull-Rom evaluation ───────────────────────────────────────────────────
@@ -157,13 +187,105 @@ function evalSpline(
   );
 }
 
+// ── Arc-length parameterisation ─────────────────────────────────────────────
+
+/**
+ * Pre-computed arc-length look-up table for a single spline.
+ *
+ * Maps uniform arc-length fraction u ∈ [0,1] → parametric t ∈ [0,1]
+ * so that equal increments of u produce equal distance steps along the curve.
+ *
+ * Construction follows the standard approach used by webgl2-particles and
+ * THREE.CurvePath: sample the curve at many fine parametric steps, accumulate
+ * chord-length, then normalise to [0,1].
+ */
+interface ArcLengthTable {
+  /** Cumulative normalised arc-lengths, length = divisions + 1, range [0, 1] */
+  arcLengths: Float32Array;
+  /** Total arc length of the spline in world units */
+  totalLength: number;
+}
+
+/**
+ * Build an arc-length LUT for a Catmull-Rom spline.
+ *
+ * @param points     Control points array
+ * @param divisions  Total number of linear segments to approximate the curve
+ * @param infinite   Whether the spline wraps
+ */
+function buildArcLengthTable(
+  points: SplinePoint[],
+  divisions: number,
+  infinite: boolean,
+): ArcLengthTable {
+  const arcLengths = new Float32Array(divisions + 1);
+  arcLengths[0] = 0;
+
+  let prev = evalSpline(points, 0, infinite);
+  let cumulative = 0;
+
+  for (let i = 1; i <= divisions; i++) {
+    const t = i / divisions;
+    const cur = evalSpline(points, t, infinite);
+    const dx = cur.x - prev.x;
+    const dy = cur.y - prev.y;
+    const dz = cur.z - prev.z;
+    cumulative += Math.sqrt(dx * dx + dy * dy + dz * dz);
+    arcLengths[i] = cumulative;
+    prev = cur;
+  }
+
+  // Normalise to [0, 1]
+  const totalLength = cumulative;
+  if (totalLength > 0) {
+    for (let i = 1; i <= divisions; i++) {
+      arcLengths[i] /= totalLength;
+    }
+  }
+
+  return { arcLengths, totalLength };
+}
+
+/**
+ * Map a uniform arc-length fraction u ∈ [0,1] to parametric t ∈ [0,1]
+ * using binary search on the LUT, then linear interpolation.
+ */
+function arcLengthToParametric(u: number, table: ArcLengthTable): number {
+  const { arcLengths } = table;
+  const n = arcLengths.length; // divisions + 1
+
+  // Edge cases
+  if (u <= 0) return 0;
+  if (u >= 1) return 1;
+
+  // Binary search for the segment containing u
+  let lo = 0;
+  let hi = n - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (arcLengths[mid] < u) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+
+  // Linear interpolation within the found segment
+  const segLen = arcLengths[hi] - arcLengths[lo];
+  const frac = segLen > 0 ? (u - arcLengths[lo]) / segLen : 0;
+  return (lo + frac) / (n - 1);
+}
+
 // ── SplineEmitter ────────────────────────────────────────────────────────────
 
 export class SplineEmitter {
   private config: Required<SplineEmitterConfig>;
   private splines: SplinePoint[][] = [];
+  private arcTables: ArcLengthTable[] = [];
+  private edgeWeights: number[] = [];
   private states:  SplineParticleState[] = [];
   private positions: Float32Array;   // flat xyz per particle
+  private sizes: Float32Array;       // per-particle size (weight * baseSizeFactor)
   readonly particleCount: number;
 
   /**
@@ -174,12 +296,14 @@ export class SplineEmitter {
     this.particleCount = particleCount;
     this.config = { ...AT_SPLINE_DEFAULTS, ...config };
     this.positions = new Float32Array(particleCount * 3);
+    this.sizes = new Float32Array(particleCount);
 
     console.log(
       `[SplineEmitter] ${particleCount} particles ` +
       `splineSpeed=[${this.config.splineSpeed}] ` +
       `timeMultiplier=${this.config.timeMultiplier} ` +
-      `infinite=${this.config.infinite}`,
+      `infinite=${this.config.infinite} ` +
+      `baseSizeFactor=${this.config.baseSizeFactor}`,
     );
   }
 
@@ -188,45 +312,134 @@ export class SplineEmitter {
   /**
    * Load spline geometry from AT's JSON format
    * (assets/geometry/work/splines_anim4-SPLINES.json).
+   * All splines receive a default weight of 1.0.
    */
   loadFromJSON(json: SplineJSON): void {
     this.splines = json.splines.map(s => s.points);
+    this.edgeWeights = this.splines.map(() => 1.0);
+    this._buildArcTables();
     this._initParticleStates();
     console.log(`[SplineEmitter] Loaded ${this.splines.length} splines`);
   }
 
   /**
    * Set splines programmatically (array of point arrays).
+   * All splines receive a default weight of 1.0.
    */
   setSplines(splines: SplinePoint[][]): void {
     this.splines = splines;
+    this.edgeWeights = splines.map(() => 1.0);
+    this._buildArcTables();
     this._initParticleStates();
   }
 
+  /**
+   * Set splines from edge descriptors with per-edge weight.
+   * Particles on each edge are sized by edge.weight * baseSizeFactor.
+   *
+   * Each edge's points array is used to construct a Catmull-Rom spline.
+   * Particles are uniformly distributed along each spline via arc-length
+   * parameterisation.
+   */
+  setEdges(edges: SplineEdge[]): void {
+    this.splines = edges.map(e => e.points);
+    this.edgeWeights = edges.map(e => e.weight);
+    this._buildArcTables();
+    this._initParticleStates();
+    console.log(
+      `[SplineEmitter] setEdges: ${edges.length} edges, ` +
+      `weights=[${this.edgeWeights.map(w => w.toFixed(2)).join(', ')}]`,
+    );
+  }
+
+  /**
+   * Build arc-length LUTs for all loaded splines.
+   * Called automatically by loadFromJSON / setSplines / setEdges.
+   */
+  private _buildArcTables(): void {
+    const { arcLengthDivisions, infinite } = this.config;
+    const totalSegments = this.splines.reduce(
+      (sum, pts) => sum + Math.max(0, pts.length - 1), 0,
+    );
+    // Scale divisions by segment count so longer splines get finer resolution
+    this.arcTables = this.splines.map(pts => {
+      const segments = Math.max(1, pts.length - 1);
+      const divs = arcLengthDivisions * segments;
+      return buildArcLengthTable(pts, divs, infinite);
+    });
+
+    if (totalSegments > 0) {
+      const lengths = this.arcTables.map(t => t.totalLength.toFixed(2));
+      console.log(
+        `[SplineEmitter] Arc-length tables built, ` +
+        `lengths=[${lengths.join(', ')}]`,
+      );
+    }
+  }
+
   private _initParticleStates(): void {
-    const { splineSpeed, startOffset, startSpacing, maxSDelay, flowRange } = this.config;
+    const { splineSpeed, startOffset, startSpacing, maxSDelay } = this.config;
+    const { baseSizeFactor } = this.config;
     const n = this.splines.length;
 
     this.states = Array.from({ length: this.particleCount }, (_, i) => {
       // AT: uSplineSpeed = [0.82, 1.21] — random speed per particle
       const speed = splineSpeed[0] + Math.random() * (splineSpeed[1] - splineSpeed[0]);
 
-      // AT: uStartOffset = 1, uStartSpacing = 0
-      const travel = ((startOffset + i * startSpacing) % 1 + 1) % 1;
+      const splineIndex = n > 0 ? i % n : 0;
+
+      // Uniform distribution: divide particles equally among splines,
+      // then space them evenly along each spline via arc-length fraction.
+      const particlesOnThisSpline = Math.ceil(this.particleCount / Math.max(1, n));
+      const localIdx = Math.floor(i / Math.max(1, n));
+      const uniformU = particlesOnThisSpline > 1
+        ? localIdx / (particlesOnThisSpline - 1)
+        : 0.5;
+
+      // Combine uniform arc-length position with AT offset/spacing
+      const travel = ((startOffset * uniformU + i * startSpacing) % 1 + 1) % 1;
 
       // AT: uMaxSDelay = 0
       const delay = Math.random() * maxSDelay;
 
-      // AT: uFlowRange = [1,1]
-      const _ = flowRange; // accessed in update
-
-      return {
-        travel,
-        speed,
-        delay,
-        splineIndex: n > 0 ? i % n : 0,
-      };
+      return { travel, speed, delay, splineIndex };
     });
+
+    // Compute per-particle sizes: size = edge.weight * baseSizeFactor
+    for (let i = 0; i < this.particleCount; i++) {
+      const si = this.states[i].splineIndex;
+      const weight = si < this.edgeWeights.length ? this.edgeWeights[si] : 1.0;
+      this.sizes[i] = weight * baseSizeFactor;
+    }
+
+    // Place particles at their initial uniform positions along each spline
+    this._sampleUniformPositions();
+  }
+
+  /**
+   * Place all particles at their current travel positions using arc-length
+   * parameterisation so they are evenly spaced along each spline.
+   */
+  private _sampleUniformPositions(): void {
+    const { infinite } = this.config;
+
+    for (let i = 0; i < this.particleCount; i++) {
+      const state = this.states[i];
+      const spline = this.splines[state.splineIndex];
+      if (!spline || spline.length < 2) continue;
+
+      const table = this.arcTables[state.splineIndex];
+      // Map uniform arc-length u → parametric t
+      const t = table
+        ? arcLengthToParametric(state.travel, table)
+        : state.travel;
+
+      const pos = evalSpline(spline, t, infinite);
+      const base = i * 3;
+      this.positions[base + 0] = pos.x;
+      this.positions[base + 1] = pos.y;
+      this.positions[base + 2] = pos.z;
+    }
   }
 
   // ── Update ───────────────────────────────────────────────────────────────
@@ -234,6 +447,9 @@ export class SplineEmitter {
   /**
    * Advance all particle positions along their splines.
    * Call this each frame before uploading to GPU texture.
+   *
+   * Travel is in arc-length space so velocity produces uniform speed
+   * regardless of control-point density.
    *
    * @param delta  Frame delta normalised to 60fps (AT's HZ).
    */
@@ -268,7 +484,13 @@ export class SplineEmitter {
       const spline = this.splines[state.splineIndex];
       if (!spline || spline.length < 2) continue;
 
-      const pos = evalSpline(spline, state.travel, infinite);
+      // Arc-length → parametric mapping for uniform spacing
+      const table = this.arcTables[state.splineIndex];
+      const t = table
+        ? arcLengthToParametric(state.travel, table)
+        : state.travel;
+
+      const pos = evalSpline(spline, t, infinite);
       const base = i * 3;
       this.positions[base + 0] = pos.x;
       this.positions[base + 1] = pos.y;
@@ -323,8 +545,19 @@ export class SplineEmitter {
   /** Current particle positions as flat Float32Array [x,y,z, x,y,z, ...] */
   get positionArray(): Float32Array { return this.positions; }
 
+  /** Per-particle sizes: size[i] = edge.weight * baseSizeFactor */
+  get sizeArray(): Float32Array { return this.sizes; }
+
+  /** Get size for particle i (edge.weight * baseSizeFactor) */
+  getParticleSize(i: number): number { return this.sizes[i] ?? 0; }
+
   /** Travel progress for particle i ∈ [0, 1] */
   getTravelProgress(i: number): number { return this.states[i]?.travel ?? 0; }
+
+  /** Arc-length of spline at given index (world units) */
+  getSplineLength(splineIndex: number): number {
+    return this.arcTables[splineIndex]?.totalLength ?? 0;
+  }
 
   /** AT: uSplineSpeed range */
   get splineSpeed(): [number, number] { return this.config.splineSpeed; }
@@ -334,6 +567,9 @@ export class SplineEmitter {
 
   /** AT: uThicknessSpeed */
   get thicknessSpeed(): number { return this.config.thicknessSpeed; }
+
+  /** Current base size factor */
+  get baseSizeFactor(): number { return this.config.baseSizeFactor; }
 
   /** Update AT params at runtime */
   setSplineSpeed(min: number, max: number): void {
@@ -346,4 +582,14 @@ export class SplineEmitter {
 
   setTimeMultiplier(v: number): void { this.config.timeMultiplier = v; }
   setThicknessSpeed(v: number): void { this.config.thicknessSpeed = v; }
+
+  /** Update base size factor and recompute all particle sizes */
+  setBaseSizeFactor(v: number): void {
+    this.config.baseSizeFactor = v;
+    for (let i = 0; i < this.particleCount; i++) {
+      const si = this.states[i]?.splineIndex ?? 0;
+      const weight = si < this.edgeWeights.length ? this.edgeWeights[si] : 1.0;
+      this.sizes[i] = weight * v;
+    }
+  }
 }
