@@ -922,3 +922,355 @@ export class CilArrowRightSDFFilter extends Filter {
   get arrowWidth(): number { return this.uniforms.u_arrowWidth; }
   set arrowWidth(value: number) { this.uniforms.u_arrowWidth = value; }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// M039: CilEyeSDFFilter — cil-eye.frag → PixiJS Filter
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Wraps src/lib/shaders/cil-eye.frag (attention/perception cell: pupil + iris
+// ring + radial rays + sclera halo, all drawn via circleSDF).
+//
+// Adapts the shader for PixiJS Filter context:
+//   - vTextureCoord replaces gl_FragCoord + u_bbox UV
+//   - finalColor replaces gl_FragColor
+//   - u_bbox / u_resolution removed (not needed in Filter)
+//   - u_time driven by Ticker each frame (radial ray rotation)
+//
+// AT UIL defaults (from channels/physics/xiaodi_options_table.json / cil-eye):
+//   bloomStrength=1.2  bloomRadius=1.0  ambientIntensity=3.44
+//   ambientColor=#0bed90  lightExposure=0.86  shadowFar=40  shadowBias=0.001
+//
+// Uniforms:
+//   u_fillColor        (vec3) — base cell colour [r,g,b] 0-1
+//   u_opacity          (f32)  — overall opacity
+//   u_numRays          (f32)  — radial ray count (default 8)
+//   u_pupilRadius      (f32)  — pupil radius in [-1,1] space (default 0.22)
+//   u_focalIntensity   (f32)  — ray brightness multiplier (default 1.0)
+//   u_time             (f32)  — animation time (seconds), drives ray rotation
+//   u_bloomStrength    (f32)  — bloom ring intensity (default 1.2)
+//   u_bloomRadius      (f32)  — bloom ring width factor (default 1.0)
+//   u_ambientIntensity (f32)  — ambient light intensity (default 3.44)
+//   u_ambientColor     (vec3) — ambient light colour (default #0bed90)
+//   u_lightExposure    (f32)  — volumetric light exposure (default 0.86)
+//   u_shadowFar        (f32)  — shadow far plane (default 40.0)
+//   u_shadowBias       (f32)  — shadow bias (default 0.001)
+
+const CIL_EYE_FRAGMENT = /* glsl */`
+in vec2 vTextureCoord;
+out vec4 finalColor;
+
+uniform sampler2D uTexture;
+
+// ── cil-eye SDF uniforms ─────────────────────────────────────────────────────
+uniform vec3  u_fillColor;
+uniform float u_opacity;
+
+uniform float u_numRays;
+uniform float u_pupilRadius;
+uniform float u_focalIntensity;
+uniform float u_time;
+
+// AT bloom uniforms (defaults from UIL cil-eye entry)
+uniform float u_bloomStrength;   // default 1.2
+uniform float u_bloomRadius;     // default 1.0
+
+// AT ambient light uniforms
+uniform float u_ambientIntensity; // default 3.44
+uniform vec3  u_ambientColor;     // default #0bed90 = (0.047, 0.929, 0.565)
+uniform float u_lightExposure;    // default 0.86
+
+// AT shadow uniforms
+uniform float u_shadowFar;     // default 40.0
+uniform float u_shadowBias;    // default 0.001
+
+// ── lygia/sdf/circleSDF.glsl (inlined) ──────────────────────────────────────
+#ifndef FNC_CIRCLESDF
+#define FNC_CIRCLESDF
+float circleSDF(in vec2 v) {
+    v -= 0.5;
+    return length(v) * 2.0;
+}
+#endif
+
+void main() {
+  // vTextureCoord is [0,1]^2 — already the UV we need (replaces u_bbox calculation)
+  vec2 uv = vTextureCoord;
+
+  // circleSDF result: 0 at centre, ~1.41 at corner
+  float dist = circleSDF(uv);
+
+  // Centred coordinates for angle
+  vec2 p = uv * 2.0 - 1.0;
+  float angle = atan(p.y, p.x);
+
+  // --- Pupil ---
+  float pupilR = u_pupilRadius * 0.5;
+  float pupil  = 1.0 - smoothstep(pupilR - 0.01, pupilR + 0.01, dist);
+
+  // --- Iris ring ---
+  float irisInner = (u_pupilRadius + 0.02) * 0.5;
+  float irisOuter = (u_pupilRadius + 0.08) * 0.5;
+  float iris = smoothstep(irisInner, irisOuter, dist)
+             * (1.0 - smoothstep(0.425, 0.5, dist));
+
+  // --- Radial rays ---
+  float halfStep = 3.14159265 / u_numRays;
+  float rayAngle = mod(angle + u_time * 0.3, halfStep * 2.0) - halfStep;
+  float rayMask  = smoothstep(0.07, 0.0, abs(rayAngle));
+  float rayFade  = smoothstep(0.5, irisInner + 0.06, dist)
+                 * smoothstep(pupilR, pupilR + 0.06, dist);
+  float rays     = rayMask * rayFade * u_focalIntensity;
+
+  // --- Sclera (outer halo) ---
+  float sclera = smoothstep(0.525, 0.44, dist);
+
+  // --- AT ambient lighting ---
+  float ambientFalloff = 1.0 - smoothstep(0.0, 0.6, dist);
+  vec3  ambientContrib = u_ambientColor * u_ambientIntensity * u_lightExposure * ambientFalloff;
+
+  // --- AT bloom glow ring ---
+  float bloomCenter = (u_pupilRadius + 0.15) * 0.5;
+  float bloomRing   = exp(-pow((dist - bloomCenter) / max(u_bloomRadius * 0.09, 0.005), 2.0));
+  float bloom       = bloomRing * u_bloomStrength * 0.35;
+
+  // --- AT shadow attenuation ---
+  float shadowNorm   = clamp(dist / (u_shadowFar * 0.0125), 0.0, 1.0);
+  float shadowFactor = 1.0 - shadowNorm * (1.0 - u_shadowBias * 100.0);
+
+  float alpha = clamp(sclera * (iris + rays) + pupil, 0.0, 1.0);
+
+  vec3 fc = u_fillColor + ambientContrib * (iris + bloom) * alpha;
+  fc += u_fillColor * bloom;
+  fc *= shadowFactor;
+
+  finalColor = vec4(fc, alpha * u_opacity);
+}
+`;
+
+// ── WGSL stub (WebGPU fallback — GL path used in practice) ──────────────────
+const CIL_EYE_WGSL = /* wgsl */`
+@group(0) @binding(1) var uTexture: texture_2d<f32>;
+@group(0) @binding(2) var uSampler: sampler;
+
+struct CilEyeUniforms {
+  u_fillColor:        vec3<f32>,
+  u_opacity:          f32,
+  u_numRays:          f32,
+  u_pupilRadius:      f32,
+  u_focalIntensity:   f32,
+  u_time:             f32,
+  u_bloomStrength:    f32,
+  u_bloomRadius:      f32,
+  u_ambientIntensity: f32,
+  u_ambientColor:     vec3<f32>,
+  u_lightExposure:    f32,
+  u_shadowFar:        f32,
+  u_shadowBias:       f32,
+}
+
+@group(1) @binding(0) var<uniform> cilEyeUniforms : CilEyeUniforms;
+
+@fragment
+fn mainFragment(
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv : vec2<f32>
+) -> @location(0) vec4<f32> {
+  // WGSL stub: passthrough — full WGSL port deferred (WebGL path used in practice)
+  return textureSample(uTexture, uSampler, uv)
+       * vec4<f32>(cilEyeUniforms.u_fillColor, cilEyeUniforms.u_opacity);
+}
+`;
+
+// ── CilEyeSDFFilter options ──────────────────────────────────────────────────
+
+export interface CilEyeSDFFilterOptions {
+  /**
+   * Base fill colour for the eye, as [r, g, b] in 0–1 range.
+   * Defaults to cil-eye indigo (0x5C6BC0 → [0.361, 0.420, 0.753]).
+   */
+  fillColor?: [number, number, number];
+  /** Overall opacity of the eye (independent of container.alpha). @default 1.0 */
+  opacity?: number;
+  /** Number of radial rays emanating from the iris ring. @default 8 */
+  numRays?: number;
+  /** Pupil radius in [-1,1] normalised space. @default 0.22 */
+  pupilRadius?: number;
+  /** Brightness multiplier for the radial rays. @default 1.0 */
+  focalIntensity?: number;
+  /** Starting animation time (seconds). @default 0 */
+  time?: number;
+  /** AT bloom ring strength (UIL homebloom/bloomStrength). @default 1.2 */
+  bloomStrength?: number;
+  /** AT bloom ring radius factor (UIL homebloom/bloomRadius). @default 1.0 */
+  bloomRadius?: number;
+  /** AT ambient light intensity (L_Element_11 intensity). @default 3.44 */
+  ambientIntensity?: number;
+  /** AT ambient light colour [r,g,b] 0-1 (L_Element_11 #0bed90). @default [0.047, 0.929, 0.565] */
+  ambientColor?: [number, number, number];
+  /** AT volumetric light exposure (VolumetricLight fExposure). @default 0.86 */
+  lightExposure?: number;
+  /** AT shadow far plane (SHADOW_Element_9 far). @default 40.0 */
+  shadowFar?: number;
+  /** AT shadow bias (derived from shadow size 1024). @default 0.001 */
+  shadowBias?: number;
+}
+
+// ── CilEyeSDFFilter ──────────────────────────────────────────────────────────
+
+/**
+ * CilEyeSDFFilter — PixiJS Filter wrapping the cil-eye.frag SDF eye shader.
+ *
+ * Renders the attention/perception cell pattern: pupil (solid disc), iris ring,
+ * radial rotating rays, and sclera halo — all from pure SDF (circleSDF), with
+ * AT-calibrated ambient lighting, bloom glow ring, and shadow attenuation.
+ *
+ * ## Ticker integration (M039)
+ * The caller must drive `filter.time` each frame to animate ray rotation:
+ *
+ *   const filter = new CilEyeSDFFilter({ fillColor: [0.361, 0.420, 0.753] });
+ *   container.__eyeFilter = filter;
+ *   // In the app.ticker.add() loop:
+ *   filter.time = elapsed;  // seconds since start
+ *
+ * @example
+ *   const eyeFilter = new CilEyeSDFFilter({
+ *     fillColor: [0.361, 0.420, 0.753],
+ *     numRays: 8,
+ *     pupilRadius: 0.22,
+ *   });
+ *   patternGraphics.filters = [eyeFilter];
+ */
+export class CilEyeSDFFilter extends Filter {
+  /** Default options — AT UIL calibrated values for cil-eye. */
+  public static readonly DEFAULT_OPTIONS: Required<CilEyeSDFFilterOptions> = {
+    fillColor:        [0.361, 0.420, 0.753],  // 0x5C6BC0 — cil-eye indigo
+    opacity:          1.0,
+    numRays:          8,
+    pupilRadius:      0.22,
+    focalIntensity:   1.0,
+    time:             0,
+    bloomStrength:    1.2,   // UIL homebloom/bloomStrength
+    bloomRadius:      1.0,   // UIL homebloom/bloomRadius
+    ambientIntensity: 3.44,  // L_Element_11 intensity
+    ambientColor:     [0.047, 0.929, 0.565],  // #0bed90
+    lightExposure:    0.86,  // VolumetricLight fExposure
+    shadowFar:        40.0,  // SHADOW_Element_9 far
+    shadowBias:       0.001, // derived from shadow size 1024
+  };
+
+  public uniforms: {
+    u_fillColor:        Float32Array;   // vec3
+    u_opacity:          number;
+    u_numRays:          number;
+    u_pupilRadius:      number;
+    u_focalIntensity:   number;
+    u_time:             number;
+    u_bloomStrength:    number;
+    u_bloomRadius:      number;
+    u_ambientIntensity: number;
+    u_ambientColor:     Float32Array;   // vec3
+    u_lightExposure:    number;
+    u_shadowFar:        number;
+    u_shadowBias:       number;
+  };
+
+  /**
+   * Current animation time in seconds.
+   * Set this every frame via the PixiJS Ticker to animate radial ray rotation.
+   */
+  public time: number;
+
+  constructor(options?: CilEyeSDFFilterOptions) {
+    const opts = { ...CilEyeSDFFilter.DEFAULT_OPTIONS, ...options };
+
+    const gpuProgram = GpuProgram.from({
+      vertex: {
+        source: wgslVertex,
+        entryPoint: 'mainVertex',
+      },
+      fragment: {
+        source: CIL_EYE_WGSL,
+        entryPoint: 'mainFragment',
+      },
+    });
+
+    const glProgram = GlProgram.from({
+      vertex,
+      fragment: CIL_EYE_FRAGMENT,
+      name: 'cil-eye-sdf-filter',
+    });
+
+    super({
+      gpuProgram,
+      glProgram,
+      resources: {
+        cilEyeUniforms: {
+          u_fillColor:        { value: new Float32Array(opts.fillColor),        type: 'vec3<f32>' },
+          u_opacity:          { value: opts.opacity,          type: 'f32' },
+          u_numRays:          { value: opts.numRays,          type: 'f32' },
+          u_pupilRadius:      { value: opts.pupilRadius,      type: 'f32' },
+          u_focalIntensity:   { value: opts.focalIntensity,   type: 'f32' },
+          u_time:             { value: opts.time,             type: 'f32' },
+          u_bloomStrength:    { value: opts.bloomStrength,    type: 'f32' },
+          u_bloomRadius:      { value: opts.bloomRadius,      type: 'f32' },
+          u_ambientIntensity: { value: opts.ambientIntensity, type: 'f32' },
+          u_ambientColor:     { value: new Float32Array(opts.ambientColor),     type: 'vec3<f32>' },
+          u_lightExposure:    { value: opts.lightExposure,    type: 'f32' },
+          u_shadowFar:        { value: opts.shadowFar,        type: 'f32' },
+          u_shadowBias:       { value: opts.shadowBias,       type: 'f32' },
+        },
+      },
+    });
+
+    this.uniforms = this.resources.cilEyeUniforms.uniforms as typeof this.uniforms;
+    this.time = opts.time;
+  }
+
+  /**
+   * apply() — called by PixiJS every frame this filter is active.
+   * Syncs `this.time` → `u_time` uniform before rendering.
+   */
+  public override apply(
+    filterManager: FilterSystem,
+    input: Texture,
+    output: RenderSurface,
+    clearMode: boolean,
+  ): void {
+    this.uniforms.u_time = this.time;
+    filterManager.applyFilter(this, input, output, clearMode);
+  }
+
+  // ── Uniform accessors ──────────────────────────────────────────────────────
+
+  /** Eye fill colour as [r, g, b] 0–1. */
+  get fillColor(): Float32Array { return this.uniforms.u_fillColor; }
+  set fillColor(value: [number, number, number] | Float32Array) {
+    this.uniforms.u_fillColor[0] = value[0];
+    this.uniforms.u_fillColor[1] = value[1];
+    this.uniforms.u_fillColor[2] = value[2];
+  }
+
+  /** Overall eye opacity (0–1). */
+  get opacity(): number { return this.uniforms.u_opacity; }
+  set opacity(value: number) { this.uniforms.u_opacity = value; }
+
+  /** Number of radial rays. */
+  get numRays(): number { return this.uniforms.u_numRays; }
+  set numRays(value: number) { this.uniforms.u_numRays = value; }
+
+  /** Pupil radius in [-1,1] normalised space. */
+  get pupilRadius(): number { return this.uniforms.u_pupilRadius; }
+  set pupilRadius(value: number) { this.uniforms.u_pupilRadius = value; }
+
+  /** Ray brightness multiplier. */
+  get focalIntensity(): number { return this.uniforms.u_focalIntensity; }
+  set focalIntensity(value: number) { this.uniforms.u_focalIntensity = value; }
+
+  /** AT bloom ring strength. */
+  get bloomStrength(): number { return this.uniforms.u_bloomStrength; }
+  set bloomStrength(value: number) { this.uniforms.u_bloomStrength = value; }
+
+  /** AT bloom ring radius factor. */
+  get bloomRadius(): number { return this.uniforms.u_bloomRadius; }
+  set bloomRadius(value: number) { this.uniforms.u_bloomRadius = value; }
+}

@@ -15,6 +15,10 @@
  * - edge layer 每帧跟着 cell 当前位置实时重绘
  *
  * M031: GlowFilter 外发光整合
+ * M039: cil-eye SDF shader → PixiJS Filter
+ *   buildCellContainer species==='cil-eye' 时挂载 CilEyeSDFFilter（sdf-species-filter.ts）
+ *   到 Graphics pattern quad，替代 SPECIES_PATTERNS['cil-eye'] 画法。
+ *   Ticker 驱动 container.__eyeFilter.time 做 SDF 径向光线旋转动画。
  * M045: cil-bolt SDF shader → PixiJS Filter
  *   buildCellContainer species==='cil-bolt' 时挂载 CilBoltSDFFilter（sdf-species-filter.ts）
  *   到 Graphics pattern quad，替代 SPECIES_PATTERNS['cil-bolt'] 画法。
@@ -61,6 +65,12 @@ import {
   type CellGlowMode,
 } from './pixi-filters-registry';
 
+// ── M039: CilEyeSDFFilter — cil-eye SDF shader → PixiJS Filter ──────────────
+//
+// buildCellContainer 在 species === 'cil-eye' 时挂载此 Filter 到 pattern Graphics，
+// 替代 SPECIES_PATTERNS['cil-eye'] Graphics 画法。
+// Ticker 驱动 __eyeFilter.time 做径向光线旋转动画。
+//
 // ── M045: CilBoltSDFFilter — cil-bolt SDF shader → PixiJS Filter ─────────────
 // 将 src/lib/shaders/cil-bolt.frag 的 SDF 闪电 shader 封装为 PixiJS Filter。
 // buildCellContainer 在 species === 'cil-bolt' 时挂载此 Filter 到 pattern Graphics，
@@ -73,7 +83,7 @@ import {
 //   cil-vector      → CilVectorSDFFilter (arrow-grid SDF, static)
 //   cil-plus        → CilPlusSDFFilter   (plus/cross SDF, static)
 //   cil-arrow-right → CilArrowRightSDFFilter (tiled scrolling chevron, Ticker-driven)
-import { CilBoltSDFFilter, CilVectorSDFFilter, CilPlusSDFFilter, CilArrowRightSDFFilter } from './sdf-species-filter';
+import { CilBoltSDFFilter, CilVectorSDFFilter, CilPlusSDFFilter, CilArrowRightSDFFilter, CilEyeSDFFilter } from './sdf-species-filter';
 
 // ── Gaussian blur module (M007) ─────────────────────────────────────────────
 // pixi-blur-cell adapts upstream/pixijs-engine BlurFilter for the cell render
@@ -691,6 +701,31 @@ function buildCellContainer(desc: CellDescriptor): Container {
 
     // Expose for Ticker-driven scroll animation
     (container as any).__arrowRightFilter = arrowRightFilter;
+  } else if (species === 'cil-eye') {
+    // M039: cil-eye → CilEyeSDFFilter (pupil + iris ring + radial rays + sclera halo SDF).
+    // Ticker drives __eyeFilter.time for rotating radial ray animation.
+    pattern.rect(0, 0, w, h);
+    pattern.fill({ color: 0x000000, alpha: 0 });
+
+    const fc = cols.fill;
+    const r = ((fc >> 16) & 0xff) / 255;
+    const g = ((fc >>  8) & 0xff) / 255;
+    const b = ( fc        & 0xff) / 255;
+
+    const eyeFilter = new CilEyeSDFFilter({
+      fillColor:      [r, g, b],
+      opacity:        1.0,
+      numRays:        (speciesParams?.num_rays      as number | undefined) ?? 8,
+      pupilRadius:    (speciesParams?.pupil_radius  as number | undefined) ?? 0.22,
+      focalIntensity: (speciesParams?.focal_intensity as number | undefined) ?? 1.0,
+      bloomStrength:  (speciesParams?.bloom_strength as number | undefined) ?? 1.2,
+      bloomRadius:    (speciesParams?.bloom_radius   as number | undefined) ?? 1.0,
+      time:           0,
+    });
+    pattern.filters = [eyeFilter];
+
+    // Expose for Ticker-driven ray rotation animation
+    (container as any).__eyeFilter = eyeFilter;
   } else {
     const drawer = SPECIES_PATTERNS[species] ?? SPECIES_PATTERNS['cil-code'];
     drawer(pattern, w, h, cols.stroke, speciesParams);
@@ -1621,11 +1656,13 @@ export async function renderCellGraph(
         arrowRightFilter.time = elapsed;
       }
 
+      // M039: cil-eye SDF ray rotation animation — update CilEyeSDFFilter time
+      const eyeFilter = (child as any).__eyeFilter as CilEyeSDFFilter | undefined;
+      if (eyeFilter) {
+        eyeFilter.time = elapsed;
+      }
+
       const godray = (child as any).__godray as GodrayFilter | undefined;
-      if (godray) {
-        godray.time = elapsed;
-        // M048: cil-bolt pulsing gain — rapid oscillation simulates electric burst
-        const pulseBaseGain = (child as any).__godrayPulseBaseGain as number | undefined;
         const pulseAmp      = (child as any).__godrayPulseAmp      as number | undefined;
         const pulseFreq     = (child as any).__godrayPulseFreq     as number | undefined;
         if (pulseBaseGain !== undefined) {
@@ -1739,6 +1776,12 @@ export async function renderCellGraphLive(
       const arrowRightFilter = (child as any).__arrowRightFilter as CilArrowRightSDFFilter | undefined;
       if (arrowRightFilter) {
         arrowRightFilter.time = elapsed;
+      }
+
+      // M039: cil-eye SDF ray rotation animation — update CilEyeSDFFilter time
+      const eyeFilter = (child as any).__eyeFilter as CilEyeSDFFilter | undefined;
+      if (eyeFilter) {
+        eyeFilter.time = elapsed;
       }
 
       const godray = (child as any).__godray as GodrayFilter | undefined;
