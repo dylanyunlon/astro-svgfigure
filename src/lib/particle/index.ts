@@ -44,3 +44,6 @@ export type { ParticleSystemConfig, ParticleSystemUniforms, GPGPURenderTexture }
 
 export { SplineEmitter }     from './SplineEmitter.js';
 export type { SplineEmitterConfig, SplinePoint, SplineJSON, SplineParticleState } from './SplineEmitter.js';
+
+export { EdgeParticleSystem, createEdgeParticleSystem } from './EdgeParticleSystem.js';
+export type { EdgeParticleSystemConfig, EdgeRoute as EdgeParticleRoute } from './EdgeParticleSystem.js';
