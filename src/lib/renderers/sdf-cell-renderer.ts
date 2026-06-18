@@ -329,64 +329,163 @@ function buildCilEyeFilterContainer(desc: CellDescriptor): Container {
   return container;
 }
 
-// ── M211: createSpeciesSDFFilter — species → SDF Filter routing ─────────────
+// ── M382: createParametricSDFFilter — parametric SDF Filter (no switch) ─────
 //
-// Factory that maps a species string to the corresponding SDF Filter instance,
-// using each filter class's fromSpeciesParams factory (or direct constructor for
-// CilBoltSDFFilter which lacks one).  Fill colour is resolved from the
-// JSON-driven species palette (getSpeciesPalette) so callers don't need to
-// hard-code colour tables.
+// Replaces the former switch(species) routing with a fully data-driven lookup:
+//   sdf_shape      → determines which Filter class to instantiate
+//   algorithm_gene → stored on the returned filter for Ticker animation dispatch
+//   primary_color  → parsed to [r,g,b] 0-1 for the filter's fillColor
 //
-// @param species — species identifier (e.g. 'cil-eye', 'cil-bolt', ...)
-// @param cellW   — cell width in pixels (for px → NDC normalisation)
-// @param cellH   — cell height in pixels
-// @param sp      — species_params from agent_params.json (optional)
-// @returns         the matching SDF Filter, or null for unknown species
+// sdf_shape is read from sp.sdf_shape first; when absent, resolved from
+// species_visual_traits.json internal_structure.type via the species string.
+// Similarly, algorithm_gene falls back to animation_hint from traits JSON,
+// and primary_color falls back to the palette's primary hex.
+//
+// The SDF_SHAPE_FILTERS table maps every known sdf_shape string to a factory
+// function, eliminating the closed switch and making new shapes addable by
+// inserting a single table row.
+//
+// @param params.species        — species identifier for trait/palette fallback
+// @param params.cellW          — cell width in pixels
+// @param params.cellH          — cell height in pixels
+// @param params.sp             — species_params from agent_params.json (optional)
+// @returns                       the matching SDF Filter, or null for unknown shape
 
-export function createSpeciesSDFFilter(
-  species: string,
+/** Params bag for createParametricSDFFilter */
+export interface ParametricSDFParams {
+  species: string;
+  cellW: number;
+  cellH: number;
+  sp?: Record<string, unknown>;
+}
+
+// ── sdf_shape → Filter factory table ────────────────────────────────────────
+// Each entry receives the resolved fillColor, cell dimensions, and species_params,
+// returning the corresponding SDF Filter instance.
+
+type SDFFilterFactory = (
+  fillColor: [number, number, number],
   cellW: number,
   cellH: number,
   sp?: Record<string, unknown>,
-): Filter | null {
-  // Resolve fill colour from JSON-driven palette → [r, g, b] 0-1
-  const palette = getSpeciesPalette(species);
-  const primary = palette.primary;
-  const fillColor: [number, number, number] = [
-    ((primary >> 16) & 0xff) / 255,
-    ((primary >>  8) & 0xff) / 255,
-    ( primary        & 0xff) / 255,
+) => Filter;
+
+const SDF_SHAPE_FILTERS: Record<string, SDFFilterFactory> = {
+  // radial_rays — concentric ring / radial ray pattern (CilEyeSDFFilter)
+  radial_rays: (fillColor, cellW, cellH, sp) =>
+    CilEyeSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp),
+
+  // zigzag_layers — lightning bolt / activation zigzag (CilBoltSDFFilter)
+  zigzag_layers: (fillColor, _cellW, _cellH, sp) =>
+    new CilBoltSDFFilter({
+      fillColor,
+      opacity:     1.0,
+      zigzagCount: (sp?.zigzag_segments as number | undefined)
+                   ?? (sp?.num_rays      as number | undefined)
+                   ?? 6,
+      amplitude:   (sp?.amplitude as number | undefined) ?? 0.35,
+      time:        0,
+    }),
+
+  // parallel_arrows — vector field / embedding arrows (CilVectorSDFFilter)
+  parallel_arrows: (fillColor, cellW, cellH, sp) =>
+    CilVectorSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp),
+
+  // cross_bars — additive cross pattern (CilPlusSDFFilter)
+  cross_bars: (fillColor, cellW, cellH, sp) =>
+    CilPlusSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp),
+
+  // single_directed_arrow — directional flow arrow (CilArrowRightSDFFilter)
+  single_directed_arrow: (fillColor, cellW, cellH, sp) =>
+    CilArrowRightSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp),
+};
+
+// ── Species → default sdf_shape fallback (from species_visual_traits.json) ──
+// Hardcoded lookup so we don't re-import the full traits JSON here; kept in sync
+// with channels/physics/species_visual_traits.json internal_structure.type.
+
+const SPECIES_DEFAULT_SHAPE: Record<string, string> = {
+  'cil-eye':         'radial_rays',
+  'cil-bolt':        'zigzag_layers',
+  'cil-vector':      'parallel_arrows',
+  'cil-plus':        'cross_bars',
+  'cil-arrow-right': 'single_directed_arrow',
+  'cil-filter':      'horizontal_filter_bars',
+  'cil-code':        'bracket_tokens',
+  'cil-layers':      'stacked_planes',
+  'cil-loop':        'circular_loop_arcs',
+  'cil-graph':       'node_edge_graph',
+};
+
+// ── Species → default algorithm_gene fallback (animation_hint from traits) ──
+
+const SPECIES_DEFAULT_ALGO: Record<string, string> = {
+  'cil-eye':         'pulse_radial',
+  'cil-bolt':        'flash_angular',
+  'cil-vector':      'drift_horizontal',
+  'cil-plus':        'converge_merge',
+  'cil-arrow-right': 'flow_right',
+  'cil-filter':      'sweep_filter',
+  'cil-code':        'blink_tokens',
+  'cil-layers':      'stack_rise',
+  'cil-loop':        'spin_loop',
+  'cil-graph':       'pulse_nodes',
+};
+
+/** Parse a hex colour string (e.g. "#F5A623") to [r, g, b] in 0-1 range. */
+function hexToRGB01(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace('#', ''), 16);
+  return [
+    ((n >> 16) & 0xff) / 255,
+    ((n >>  8) & 0xff) / 255,
+    ( n        & 0xff) / 255,
   ];
+}
 
-  switch (species) {
-    case 'cil-eye':
-      return CilEyeSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp);
+export function createParametricSDFFilter(
+  params: ParametricSDFParams,
+): Filter | null {
+  const { species, cellW, cellH, sp } = params;
 
-    case 'cil-bolt':
-      // CilBoltSDFFilter has no fromSpeciesParams — construct directly with
-      // species_params mapping: zigzag_segments → zigzagCount, amplitude → amplitude
-      return new CilBoltSDFFilter({
-        fillColor,
-        opacity:     1.0,
-        zigzagCount: (sp?.zigzag_segments as number | undefined)
-                     ?? (sp?.num_rays      as number | undefined)
-                     ?? 6,
-        amplitude:   (sp?.amplitude as number | undefined) ?? 0.35,
-        time:        0,
-      });
+  // 1. Resolve sdf_shape: explicit sp.sdf_shape → species default → null
+  const sdfShape = (sp?.sdf_shape as string | undefined)
+    ?? SPECIES_DEFAULT_SHAPE[species]
+    ?? null;
+  if (!sdfShape) return null;
 
-    case 'cil-vector':
-      return CilVectorSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp);
+  // 2. Resolve algorithm_gene: explicit sp.algorithm_gene → species default
+  const algorithmGene = (sp?.algorithm_gene as string | undefined)
+    ?? SPECIES_DEFAULT_ALGO[species]
+    ?? 'pulse_radial';
 
-    case 'cil-plus':
-      return CilPlusSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp);
-
-    case 'cil-arrow-right':
-      return CilArrowRightSDFFilter.fromSpeciesParams(fillColor, cellW, cellH, sp);
-
-    default:
-      return null;
+  // 3. Resolve fillColor: sp.primary_color (hex) → palette fallback
+  let fillColor: [number, number, number];
+  const primaryColorHex = sp?.primary_color as string | undefined;
+  if (primaryColorHex) {
+    fillColor = hexToRGB01(primaryColorHex);
+  } else {
+    const palette = getSpeciesPalette(species);
+    const primary = palette.primary;
+    fillColor = [
+      ((primary >> 16) & 0xff) / 255,
+      ((primary >>  8) & 0xff) / 255,
+      ( primary        & 0xff) / 255,
+    ];
   }
+
+  // 4. Look up the factory for this sdf_shape
+  const factory = SDF_SHAPE_FILTERS[sdfShape];
+  if (!factory) return null;
+
+  // 5. Instantiate the filter
+  const filter = factory(fillColor, cellW, cellH, sp);
+
+  // 6. Tag the filter with algorithm_gene so the Ticker / animation loop
+  //    can dispatch animation behaviour without another switch.
+  (filter as any).__algorithmGene = algorithmGene;
+  (filter as any).__sdfShape = sdfShape;
+
+  return filter;
 }
 
 // ── Export: SDF renderer entry point ─────────────────────────────────────────
