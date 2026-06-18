@@ -24,6 +24,7 @@ export const PRESETS: Record<string, ElkPreset> = {
       'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
       'elk.padding': '[top=30,left=30,bottom=30,right=30]'
     },
     defaultNodeSize: { width: 160, height: 55 },
@@ -58,6 +59,7 @@ export const PRESETS: Record<string, ElkPreset> = {
       'elk.spacing.edgeNode': '25',
       'elk.edgeRouting': 'SPLINES',
       'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
       'elk.padding': '[top=25,left=25,bottom=25,right=25]'
     },
     defaultNodeSize: { width: 120, height: 70 },

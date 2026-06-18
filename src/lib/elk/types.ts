@@ -55,6 +55,12 @@ export interface ElkNode {
   edges?: ElkEdge[]
   layoutOptions?: ElkLayoutOptions
   properties?: Record<string, unknown>
+  /** True when this node is a compound/group container */
+  group?: boolean
+  /** Hide the group border (render children only) */
+  borderless?: boolean
+  /** Icon hint for PixiJS species palette */
+  iconHint?: string
 }
 
 // ============================================================

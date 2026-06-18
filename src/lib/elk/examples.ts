@@ -77,9 +77,80 @@ export const RESNET_EXAMPLE = {
   ],
 }
 
+/**
+ * Encoder-Decoder compound node example.
+ *
+ * Demonstrates ELK hierarchical layout with nested `children` arrays.
+ * The encoder and decoder groups are compound nodes whose children are
+ * laid out in-place by ELK when `elk.hierarchyHandling: INCLUDE_CHILDREN`.
+ * Cross-boundary edges (latent_z) connect nodes across compound boundaries.
+ */
+export const ENCODER_DECODER_EXAMPLE = {
+  id: 'root',
+  layoutOptions: {
+    'elk.algorithm': 'layered',
+    'elk.direction': 'DOWN',
+    'elk.spacing.nodeNode': '50',
+    'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+    'elk.edgeRouting': 'ORTHOGONAL',
+  },
+  children: [
+    { id: 'input', width: 160, height: 45, labels: [{ text: 'Input x' }] },
+    {
+      id: 'encoder',
+      labels: [{ text: 'Encoder' }],
+      group: true,
+      layoutOptions: {
+        'elk.padding': '[top=35,left=12,bottom=12,right=12]',
+        'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+      },
+      children: [
+        { id: 'enc_conv1', width: 130, height: 40, labels: [{ text: 'Conv 3×3' }] },
+        { id: 'enc_pool',  width: 130, height: 40, labels: [{ text: 'MaxPool' }] },
+        { id: 'enc_conv2', width: 130, height: 40, labels: [{ text: 'Conv 3×3' }] },
+      ],
+      edges: [
+        { id: 'enc_e1', sources: ['enc_conv1'], targets: ['enc_pool'] },
+        { id: 'enc_e2', sources: ['enc_pool'],  targets: ['enc_conv2'] },
+      ],
+    },
+    { id: 'latent', width: 140, height: 45, labels: [{ text: 'Latent z' }] },
+    {
+      id: 'decoder',
+      labels: [{ text: 'Decoder' }],
+      group: true,
+      layoutOptions: {
+        'elk.padding': '[top=35,left=12,bottom=12,right=12]',
+        'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+      },
+      children: [
+        { id: 'dec_conv1',  width: 130, height: 40, labels: [{ text: 'ConvT 3×3' }] },
+        { id: 'dec_upsamp', width: 130, height: 40, labels: [{ text: 'Upsample' }] },
+        { id: 'dec_conv2',  width: 130, height: 40, labels: [{ text: 'ConvT 3×3' }] },
+      ],
+      edges: [
+        { id: 'dec_e1', sources: ['dec_conv1'],  targets: ['dec_upsamp'] },
+        { id: 'dec_e2', sources: ['dec_upsamp'], targets: ['dec_conv2'] },
+      ],
+    },
+    { id: 'output', width: 160, height: 45, labels: [{ text: 'Output x̂' }] },
+  ],
+  edges: [
+    { id: 'e_in',  sources: ['input'],     targets: ['enc_conv1'] },
+    { id: 'e_lat', sources: ['enc_conv2'], targets: ['latent'],
+      advanced: { semanticType: 'data_flow', edgeLabels: [{ text: 'μ, σ', position: 0.5 }] } },
+    { id: 'e_dec', sources: ['latent'],    targets: ['dec_conv1'] },
+    { id: 'e_out', sources: ['dec_conv2'], targets: ['output'] },
+    { id: 'e_skip', sources: ['enc_conv1'], targets: ['dec_conv2'],
+      advanced: { semanticType: 'skip_connection', routing: 'SPLINES', curvature: 0.7,
+        strokeColor: '#4CAF50', strokeWidth: 2, crossesGroupBoundary: true } },
+  ],
+}
+
 export const EXAMPLES = {
   transformer: { name: 'Transformer', graph: TRANSFORMER_EXAMPLE },
   vae: { name: 'VAE', graph: VAE_EXAMPLE },
   resnet: { name: 'ResNet', graph: RESNET_EXAMPLE },
+  'encoder-decoder': { name: 'Encoder-Decoder (compound)', graph: ENCODER_DECODER_EXAMPLE },
 }
 export default EXAMPLES

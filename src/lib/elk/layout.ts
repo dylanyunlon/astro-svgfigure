@@ -124,11 +124,12 @@ export const POST: APIRoute = async ({ request }) => {
         if (hasChildren) {
           sanitized.children = sanitizeNodeList(node.children, depth + 1)
 
-          // Ensure compound nodes have padding layoutOptions for proper ELK sizing
-          if (!sanitized.layoutOptions) {
-            sanitized.layoutOptions = {
-              'elk.padding': '[top=30,left=10,bottom=10,right=10]',
-            }
+          // Ensure compound nodes carry hierarchyHandling + padding so ELK
+          // lays out their children in-place rather than pulling them to root.
+          sanitized.layoutOptions = {
+            'elk.padding': '[top=30,left=10,bottom=10,right=10]',
+            'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+            ...(sanitized.layoutOptions || {}),
           }
 
           // Sanitize nested edges within compound nodes

@@ -237,3 +237,15 @@ export const HIERARCHY_LAYOUT_OPTIONS: Record<string, string> = {
   'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
   'elk.edgeRouting': 'ORTHOGONAL',
 } as const
+
+/**
+ * Default layoutOptions applied to compound (parent) nodes whose
+ * `children` array is non-empty.  These ensure ELK reserves padding
+ * for the group label and lays out the nested children correctly.
+ *
+ * Ref: https://www.eclipse.org/elk/reference/options.html
+ */
+export const COMPOUND_NODE_LAYOUT_OPTIONS: Record<string, string> = {
+  'elk.padding': '[top=30,left=10,bottom=10,right=10]',
+  'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+} as const

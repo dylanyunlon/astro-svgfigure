@@ -198,24 +198,168 @@ function convertEdge(edge: ElkLayoutedEdge, index: number, nodeMap: Map<string, 
 
 /**
  * Convert InteractiveGraph → ELK input JSON (for re-layout)
+ *
+ * Reconstructs the nested compound-node hierarchy from the flat
+ * InteractiveGraph node list.  Group (compound) nodes become parents
+ * whose `children` array holds the nodes that were spatially inside
+ * them, mirroring the ELK `children` nesting that enables
+ * `elk.hierarchyHandling: INCLUDE_CHILDREN`.
  */
 export function interactiveToElk(graph: InteractiveGraph): any {
-  return {
-    id: 'root',
-    children: graph.nodes
-      .filter((n) => !n.isGroup) // Only top-level non-group nodes for re-layout
-      .map((n) => ({
-        id: n.id,
-        width: n.width,
-        height: n.height,
-        labels: [{ text: n.label }],
-      })),
-    edges: graph.edges.map((e) => ({
+  // Build a parentId→children map.  InteractiveNodes carry no explicit
+  // parentId, so we infer containment from spatial overlap: a non-group
+  // node whose center falls inside a group node is treated as its child.
+  // When multiple group nodes overlap, the smallest enclosing group wins.
+  const groups = graph.nodes.filter((n) => n.isGroup)
+  const nonGroups = graph.nodes.filter((n) => !n.isGroup)
+
+  // Map every nodeId → its direct parent groupId (or null for root)
+  const parentOf = new Map<string, string | null>()
+
+  for (const node of nonGroups) {
+    const cx = node.x + node.width / 2
+    const cy = node.y + node.height / 2
+    let bestGroup: InteractiveNode | null = null
+    let bestArea = Infinity
+    for (const g of groups) {
+      if (
+        cx >= g.x && cx <= g.x + g.width &&
+        cy >= g.y && cy <= g.y + g.height
+      ) {
+        const area = g.width * g.height
+        if (area < bestArea) {
+          bestArea = area
+          bestGroup = g
+        }
+      }
+    }
+    parentOf.set(node.id, bestGroup ? bestGroup.id : null)
+  }
+
+  // Groups can also be nested inside other groups
+  for (const g of groups) {
+    const cx = g.x + g.width / 2
+    const cy = g.y + g.height / 2
+    let bestParent: InteractiveNode | null = null
+    let bestArea = Infinity
+    for (const pg of groups) {
+      if (pg.id === g.id) continue
+      if (
+        cx >= pg.x && cx <= pg.x + pg.width &&
+        cy >= pg.y && cy <= pg.y + pg.height &&
+        pg.width * pg.height > g.width * g.height // parent must be bigger
+      ) {
+        const area = pg.width * pg.height
+        if (area < bestArea) {
+          bestArea = area
+          bestParent = pg
+        }
+      }
+    }
+    parentOf.set(g.id, bestParent ? bestParent.id : null)
+  }
+
+  // Collect children per parent
+  const childrenOf = new Map<string | null, string[]>()
+  for (const [nodeId, pid] of parentOf) {
+    if (!childrenOf.has(pid)) childrenOf.set(pid, [])
+    childrenOf.get(pid)!.push(nodeId)
+  }
+
+  const nodeById = new Map<string, InteractiveNode>()
+  for (const n of graph.nodes) nodeById.set(n.id, n)
+
+  function buildElkNode(nodeId: string): any {
+    const n = nodeById.get(nodeId)!
+    const elkNode: any = {
+      id: n.id,
+      width: n.width,
+      height: n.height,
+      labels: [{ text: n.label }],
+    }
+
+    const kids = childrenOf.get(nodeId)
+    if (kids && kids.length > 0) {
+      elkNode.children = kids.map(buildElkNode)
+      elkNode.layoutOptions = {
+        'elk.padding': '[top=30,left=10,bottom=10,right=10]',
+        'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+      }
+    }
+    return elkNode
+  }
+
+  // Root-level nodes are those with parentOf === null
+  const rootIds = childrenOf.get(null) || []
+  // Also include any nodes that didn't end up in parentOf (safety net)
+  const allMapped = new Set(parentOf.keys())
+  for (const n of graph.nodes) {
+    if (!allMapped.has(n.id)) rootIds.push(n.id)
+  }
+
+  // Classify edges: if both endpoints share a common compound ancestor,
+  // attach the edge to that ancestor; otherwise keep at root.
+  function findAncestors(nodeId: string): string[] {
+    const path: string[] = []
+    let cur: string | null | undefined = parentOf.get(nodeId)
+    while (cur) {
+      path.push(cur)
+      cur = parentOf.get(cur)
+    }
+    return path
+  }
+
+  const rootEdges: any[] = []
+  const compoundEdges = new Map<string, any[]>()
+
+  for (const e of graph.edges) {
+    const srcAncestors = findAncestors(e.sourceId)
+    const tgtAncestors = findAncestors(e.targetId)
+    const tgtSet = new Set(tgtAncestors)
+
+    // Find lowest common compound ancestor
+    let lca: string | null = null
+    // Check if source is directly a child of target's ancestor chain (or vice versa)
+    if (tgtSet.has(parentOf.get(e.sourceId)!) && parentOf.get(e.sourceId) === parentOf.get(e.targetId)) {
+      lca = parentOf.get(e.sourceId)!
+    } else {
+      for (const a of srcAncestors) {
+        if (tgtSet.has(a)) { lca = a; break }
+      }
+    }
+
+    const elkEdge: any = {
       id: e.id,
       sources: [e.sourceId],
       targets: [e.targetId],
       ...(e.label ? { labels: [{ text: e.label }] } : {}),
-    })),
+    }
+
+    if (lca) {
+      if (!compoundEdges.has(lca)) compoundEdges.set(lca, [])
+      compoundEdges.get(lca)!.push(elkEdge)
+    } else {
+      rootEdges.push(elkEdge)
+    }
+  }
+
+  // Rebuild tree, attaching compound edges
+  function buildElkNodeWithEdges(nodeId: string): any {
+    const base = buildElkNode(nodeId)
+    const innerEdges = compoundEdges.get(nodeId)
+    if (innerEdges && innerEdges.length > 0) {
+      base.edges = innerEdges
+    }
+    return base
+  }
+
+  return {
+    id: 'root',
+    layoutOptions: {
+      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+    },
+    children: rootIds.map(buildElkNodeWithEdges),
+    edges: rootEdges,
   }
 }
 
