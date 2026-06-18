@@ -91,6 +91,162 @@ def proc(cell_id: str):
     gene_traits = skeleton["gene_traits"]
     bbox = skeleton["initial_bbox"].copy()
 
+    # ── [M371] Hierarchical compound proc ───────────────────────────────────
+    # Detect compound parent (has children_ids) and child cells (has parent_id).
+    #
+    # Compound parent:
+    #   When skeleton declares children_ids, this cell is a transparent
+    #   container.  Its bbox is computed as union(children bboxes) + 20px
+    #   padding on each side.  The proc short-circuits after publishing
+    #   bbox/status/params — no species rendering, no shadow, no crowding.
+    #
+    # Child cell:
+    #   When skeleton declares parent_id, the child's position is relative
+    #   to the parent's published origin.  The parent's (x, y) is read from
+    #   channels/cell/{parent_id}/bbox.json and added as an offset so the
+    #   child's absolute position = parent_origin + child_local_position.
+    # ──────────────────────────────────────────────────────────────────────────
+    _COMPOUND_PADDING = 20  # px on each side of the union bbox
+
+    children_ids = skeleton.get("children_ids", None)
+    parent_id = skeleton.get("parent_id", None)
+
+    # ── Child cell: convert local position to absolute ────────────────────
+    if parent_id is not None:
+        _parent_bbox_path = os.path.join(CHANNELS, "cell", parent_id, "bbox.json")
+        if os.path.isfile(_parent_bbox_path):
+            try:
+                with open(_parent_bbox_path) as _pbf:
+                    _parent_bbox = json.load(_pbf)
+                # Child position is relative to parent origin — offset by
+                # parent's top-left corner (+ padding to stay inside container)
+                bbox["x"] += _parent_bbox["x"] + _COMPOUND_PADDING
+                bbox["y"] += _parent_bbox["y"] + _COMPOUND_PADDING
+                print(
+                    f"[M371] Child cell_id={cell_id} parent_id={parent_id} "
+                    f"offset by parent origin ({_parent_bbox['x']}, {_parent_bbox['y']}) "
+                    f"→ absolute ({bbox['x']}, {bbox['y']})",
+                    file=sys.stderr,
+                )
+            except Exception as _pe:
+                print(
+                    f"[M371] WARNING: failed to read parent bbox for "
+                    f"cell_id={cell_id} parent_id={parent_id}: {_pe}",
+                    file=sys.stderr,
+                )
+
+    # ── Compound parent: wait for children, compute union bbox ────────────
+    if children_ids is not None and len(children_ids) > 0:
+        # Collect children bboxes — children must have been processed first
+        # (run_all_cells topological order guarantees children before parents
+        # when compound groups are in the topology).
+        _child_bboxes = []
+        for _cid in children_ids:
+            _child_bbox_path = os.path.join(CHANNELS, "cell", _cid, "bbox.json")
+            if os.path.isfile(_child_bbox_path):
+                try:
+                    with open(_child_bbox_path) as _cbf:
+                        _child_bboxes.append(json.load(_cbf))
+                except (json.JSONDecodeError, OSError) as _ce:
+                    print(
+                        f"[M371] WARNING: cannot read child bbox "
+                        f"child_id={_cid}: {_ce}",
+                        file=sys.stderr,
+                    )
+            else:
+                print(
+                    f"[M371] WARNING: child bbox not yet published "
+                    f"child_id={_cid} — skipping in union",
+                    file=sys.stderr,
+                )
+
+        if _child_bboxes:
+            # Union of all children bboxes
+            _min_x = min(cb["x"] for cb in _child_bboxes)
+            _min_y = min(cb["y"] for cb in _child_bboxes)
+            _max_x = max(cb["x"] + cb["w"] for cb in _child_bboxes)
+            _max_y = max(cb["y"] + cb["h"] for cb in _child_bboxes)
+
+            # Inflate by padding on each side
+            bbox["x"] = _min_x - _COMPOUND_PADDING
+            bbox["y"] = _min_y - _COMPOUND_PADDING
+            bbox["w"] = (_max_x - _min_x) + 2 * _COMPOUND_PADDING
+            bbox["h"] = (_max_y - _min_y) + 2 * _COMPOUND_PADDING
+            # z: compound container sits behind its children
+            bbox["z"] = min((cb.get("z", 3) for cb in _child_bboxes), default=3) - 1
+
+        print(
+            f"[M371] Compound parent cell_id={cell_id} "
+            f"children={children_ids} collected={len(_child_bboxes)} "
+            f"union bbox=({bbox['x']},{bbox['y']},{bbox['w']},{bbox['h']}) "
+            f"z={bbox['z']}",
+            file=sys.stderr,
+        )
+
+        # ── Short-circuit: publish as transparent container ────────────────
+        # No species rendering, no shadow, no crowding opacity — just a
+        # transparent grouping rectangle with dashed stroke.
+        current_epoch = read_channel("skeleton/epoch.json")["current"]
+        cell_dir = f"cell/{cell_id}"
+        write_channel(f"{cell_dir}/bbox.json", {
+            "x": bbox["x"], "y": bbox["y"],
+            "w": bbox["w"], "h": bbox["h"],
+            "z": bbox["z"],
+            "species": species,
+            "epoch": current_epoch,
+            "compound": True,
+            "children_ids": children_ids,
+        })
+        write_channel(f"{cell_dir}/status.json", {
+            "status": "converged",
+            "cell_id": cell_id,
+            "species": species,
+            "epoch": current_epoch,
+            "compound": True,
+        })
+        _compound_params: dict = {
+            "cell_id":        cell_id,
+            "species":        species,
+            "compound":       True,
+            "children_ids":   children_ids,
+            "bbox":           {
+                "x": bbox["x"], "y": bbox["y"],
+                "w": bbox["w"], "h": bbox["h"],
+                "z": bbox["z"],
+            },
+            "z":              bbox["z"],
+            "opacity":        0.0,
+            "fill_color":     "none",
+            "stroke_color":   "#888888",
+            "stroke_dash":    "6,3",
+            "label":          label,
+            "font_size":      10,
+            "species_params": {},
+            "epoch":          current_epoch,
+            "shadow":         {"dx": 0, "dy": 0, "blur": 0, "opacity": 0},
+        }
+        write_channel(f"{cell_dir}/params.json", _compound_params)
+
+        # Register in cell_registry
+        published_bbox = {
+            "x": bbox["x"], "y": bbox["y"],
+            "w": bbox["w"], "h": bbox["h"],
+            "z": bbox["z"],
+        }
+        registry = _load_cell_registry()
+        if cell_id in registry["cells"]:
+            update_cell_constraint(cell_id, published_bbox, current_epoch)
+        else:
+            register_cell_in_z_layer(cell_id, published_bbox, species, current_epoch)
+
+        print(
+            f"[Cell {cell_id}] COMPOUND container "
+            f"bbox=({bbox['x']},{bbox['y']},{bbox['w']},{bbox['h']}) "
+            f"z={bbox['z']} children={children_ids}",
+        )
+        return None
+    # ── End [M371] compound proc ──────────────────────────────────────────
+
     # Apply force field adjustments
     force = force_field.get(cell_id, {"dx": 0, "dy": 0, "dz": 0})
     bbox["x"] += force["dx"]
