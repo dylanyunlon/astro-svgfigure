@@ -1,26 +1,19 @@
 ---
 /**
- * /generate — 核心 Pipeline 生成页 (3-Step 重构版)
+ * /generate — Submit method text → POST /api/topology → redirect to /pipeline
  *
- * 新流程:
- *   Step 1: Text → LLM 拓扑 → ELK.js 布局 → 骨架 SVG (用户确认组件无缺失)
- *   Step 2: Grok 4 反推专业 prompt (从骨架 SVG + method text)
- *   Step 3: Gemini 3 Pro Image → 科研级图片 (4K PNG)
+ * 简化版: 只收集输入、提交拓扑请求，成功后跳转 /pipeline。
+ * 不在此页面拼 SVG / 做 layout / 做编辑。
  *
- * 使用 astro-pure 组件 (Card, Button, Collapse, Label)
- * GitHub 背书: withastro/astro, cworld1/astro-theme-pure, kieler/elkjs
+ * GitHub 背书: withastro/astro, cworld1/astro-theme-pure
  */
 export const prerender = false
 
-import { Button, Card, Collapse, Label } from 'astro-pure/user'
+import { Button, Card, Collapse } from 'astro-pure/user'
 import GenerateLayout from '@/layouts/GenerateLayout.astro'
 import TextInput from '@/components/pipeline/TextInput.astro'
-import PipelineSteps from '@/components/pipeline/PipelineSteps.astro'
-import SvgPreview from '@/components/pipeline/SvgPreview.astro'
-import SvgEditor from '@/components/pipeline/SvgEditor.astro'
-import ExportPanel from '@/components/pipeline/ExportPanel.astro'
-import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
 import HealthCheck from '@/components/pipeline/HealthCheck.astro'
+import ErrorDisplay from '@/components/pipeline/ErrorDisplay.astro'
 ---
 
 <GenerateLayout meta={{ title: 'Generate Figure' }} highlightColor='#4F46E5'>
@@ -28,152 +21,73 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
     <div class='flex flex-col items-center gap-y-2 text-center'>
       <h1 class='text-2xl font-medium'>Generate Academic Figure</h1>
       <p class='text-sm text-muted-foreground max-w-xl'>
-        Describe your paper method → Planner Agent generates layout draft →
-        Stylist Agent refines the description → Visualizer produces publication-quality figure.
+        Describe your paper method → Planner Agent generates topology →
+        Pipeline page handles layout, editing, and visualization.
       </p>
       <HealthCheck />
     </div>
 
-    <div class='grid grid-cols-1 gap-4 lg:grid-cols-12'>
-      {/* Left panel */}
-      <div class='flex flex-col gap-y-4 lg:col-span-3'>
-        <Card heading='Input'>
-          <TextInput />
-        </Card>
+    <div class='mx-auto flex w-full max-w-2xl flex-col gap-y-4'>
+      <Card heading='Input'>
+        <TextInput />
+      </Card>
 
-        <Card heading='Pipeline'>
-          <PipelineSteps />
-        </Card>
-
-        <button id='generate-btn'
-          class='group flex w-full items-center justify-center gap-x-2 rounded-xl border bg-primary px-4 py-2.5 text-sm font-medium text-white transition-all hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed'>
-          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
-            <polygon points='5 3 19 12 5 21 5 3' />
-          </svg>
-          <span id='generate-btn-text'>Step 1: Generate Draft</span>
-        </button>
-
-        <button id='generate-figure-btn' disabled
-          class='group flex w-full items-center justify-center gap-x-2 rounded-xl border bg-purple-600 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed'>
-          <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
-            <path d='M15 8h.01M3 6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6z' />
-            <path d='m3 16 5-5c.928-.893 2.072-.893 3 0l5 5' />
-          </svg>
-          <span id='generate-figure-text'>Step 2→3: Generate Figure</span>
-        </button>
-
-        <Collapse title='Advanced Options'>
-          <div class='flex flex-col gap-y-3 pb-2'>
-            <div class='flex flex-col gap-y-1'>
-              <label class='text-xs text-muted-foreground' for='opt-preset'>Layout Preset</label>
-              <select id='opt-preset' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
-                <option value='academic-paper'>Academic Paper</option>
-                <option value='neural-network'>Neural Network</option>
-                <option value='flowchart'>Flowchart</option>
-              </select>
-            </div>
-            <div class='flex flex-col gap-y-1'>
-              <label class='text-xs text-muted-foreground' for='opt-direction'>Direction</label>
-              <select id='opt-direction' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
-                <option value='DOWN'>Top → Bottom</option>
-                <option value='RIGHT'>Left → Right</option>
-                <option value='UP'>Bottom → Top</option>
-                <option value='LEFT'>Right → Left</option>
-              </select>
-            </div>
-            <div class='flex flex-col gap-y-1'>
-              <label class='text-xs text-muted-foreground' for='opt-aspect'>Image Aspect Ratio</label>
-              <select id='opt-aspect' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
-                <option value='16:9' selected>16:9 (Landscape)</option>
-                <option value='4:3'>4:3</option>
-                <option value='1:1'>1:1 (Square)</option>
-              </select>
-            </div>
+      <Collapse title='Advanced Options'>
+        <div class='flex flex-col gap-y-3 pb-2'>
+          <div class='flex flex-col gap-y-1'>
+            <label class='text-xs text-muted-foreground' for='opt-direction'>Direction</label>
+            <select id='opt-direction' class='rounded-lg border bg-muted px-3 py-1.5 text-sm text-foreground'>
+              <option value='DOWN'>Top → Bottom</option>
+              <option value='RIGHT'>Left → Right</option>
+              <option value='UP'>Bottom → Top</option>
+              <option value='LEFT'>Right → Left</option>
+            </select>
           </div>
-        </Collapse>
-
-        <Collapse title='Stylist Prompt (Editable)'>
-          <div class='flex flex-col gap-y-2 pb-2'>
-            <textarea id='grok-prompt-text' rows='6'
-              class='w-full rounded-lg border bg-muted p-2 text-xs text-foreground placeholder:text-muted-foreground'
-              placeholder='Waiting for Step 2... The Stylist Agent will auto-generate a refined description. You can then edit it before clicking Regenerate.'></textarea>
-            <p id='grok-prompt-hint' class='text-xs text-muted-foreground'>Run Step 2→3 to generate description. Edit to refine the final image.</p>
-          </div>
-        </Collapse>
-      </div>
-
-      {/* Center panel */}
-      <div class='flex flex-col gap-y-4 lg:col-span-6'>
-        <ErrorDisplay />
-        <SvgEditor />
-        <SvgPreview />
-
-        <div id='final-image-section' class='hidden'>
-          <div class='flex items-center justify-between mb-2'>
-            <span class='text-sm font-medium'>Scientific Figure (Visualizer Output)</span>
-            <div class='flex gap-x-2'>
-              <button id='download-image-btn' class='rounded-lg border px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted'>Download PNG</button>
-              <button id='regenerate-btn' class='rounded-lg border bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700'>Regenerate</button>
-            </div>
-          </div>
-          <div class='overflow-hidden rounded-xl border'>
-            <img id='final-image' class='h-auto w-full' alt='Generated scientific figure' />
-          </div>
-          <p id='final-image-info' class='mt-1 text-xs text-muted-foreground'></p>
         </div>
+      </Collapse>
+
+      <button id='generate-btn'
+        class='group flex w-full items-center justify-center gap-x-2 rounded-xl border bg-primary px-4 py-2.5 text-sm font-medium text-white transition-all hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed'>
+        <svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+          <polygon points='5 3 19 12 5 21 5 3' />
+        </svg>
+        <span id='generate-btn-text'>Generate & Continue</span>
+      </button>
+
+      <div id='status-bar' class='hidden rounded-lg border bg-muted px-4 py-2 text-center text-sm text-muted-foreground'>
+        <span id='status-text'>Analyzing structure...</span>
+        <span id='status-elapsed' class='ml-2 tabular-nums'></span>
       </div>
 
-      {/* Right panel */}
-      <div class='flex flex-col gap-y-4 lg:col-span-3'>
-        <Card heading='Export SVG'>
-          <ExportPanel />
-        </Card>
-        <Collapse title='Planner Output JSON'>
-          <pre id='topology-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
-        </Collapse>
-        <Collapse title='Structured Layout Data'>
-          <pre id='layouted-json' class='overflow-auto rounded-lg bg-background p-3 text-xs text-muted-foreground' style='max-height: 200px;'>Waiting...</pre>
-        </Collapse>
-      </div>
+      <ErrorDisplay />
     </div>
   </main>
 </GenerateLayout>
 
 <script>
-  // === 3-Step Pipeline Orchestrator ===
+  // === Generate → POST /api/topology → redirect /pipeline ===
   const generateBtn = document.getElementById('generate-btn') as HTMLButtonElement
   const generateBtnText = document.getElementById('generate-btn-text') as HTMLSpanElement
-  const generateFigureBtn = document.getElementById('generate-figure-btn') as HTMLButtonElement
-  const generateFigureText = document.getElementById('generate-figure-text') as HTMLSpanElement
   const textarea = document.getElementById('method-text') as HTMLTextAreaElement
-  const statusText = document.getElementById('pipeline-status-text') as HTMLElement
-  const elapsedEl = document.getElementById('pipeline-elapsed') as HTMLElement
-  const topologyPre = document.getElementById('topology-json') as HTMLPreElement
-  const layoutedPre = document.getElementById('layouted-json') as HTMLPreElement
-  const promptTextarea = document.getElementById('grok-prompt-text') as HTMLTextAreaElement
-  const finalImageSection = document.getElementById('final-image-section') as HTMLElement
-  const finalImage = document.getElementById('final-image') as HTMLImageElement
-  const finalImageInfo = document.getElementById('final-image-info') as HTMLElement
-  const downloadBtn = document.getElementById('download-image-btn') as HTMLButtonElement
-  const regenerateBtn = document.getElementById('regenerate-btn') as HTMLButtonElement
-  const steps = (window as any).__pipelineSteps
-  const preview = (window as any).__svgPreview
-  const exportPanel = (window as any).__exportPanel
+  const statusBar = document.getElementById('status-bar') as HTMLElement
+  const statusText = document.getElementById('status-text') as HTMLElement
+  const statusElapsed = document.getElementById('status-elapsed') as HTMLElement
   const errorDisplay = (window as any).__errorDisplay
 
-  let running = false, startTime = 0, timerInterval: number | null = null
-  let currentSkeletonSvg = '', currentImageB64 = '', currentMimeType = 'image/png'
+  let running = false
+  let startTime = 0
+  let timerInterval: number | null = null
 
   function startTimer() {
     startTime = Date.now()
     timerInterval = window.setInterval(() => {
-      if (elapsedEl) elapsedEl.textContent = `${((Date.now() - startTime) / 1000).toFixed(1)}s`
+      if (statusElapsed) statusElapsed.textContent = `${((Date.now() - startTime) / 1000).toFixed(1)}s`
     }, 100)
   }
-  function stopTimer() { if (timerInterval) { clearInterval(timerInterval); timerInterval = null } }
-  function elapsed() { return ((Date.now() - startTime) / 1000).toFixed(1) }
+  function stopTimer() {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
+  }
 
-  // ===== STEP 1: LLM Topology + ELK Layout → Skeleton SVG =====
   generateBtn?.addEventListener('click', async () => {
     if (running) return
     const text = textarea?.value?.trim()
@@ -181,302 +95,43 @@ import HealthCheck from '@/components/pipeline/HealthCheck.astro'
 
     running = true
     generateBtn.disabled = true
-    generateFigureBtn.disabled = true
     generateBtnText.textContent = 'Generating...'
-    steps?.resetAll()
-    preview?.clear()
-    exportPanel?.disable()
+    statusBar?.classList.remove('hidden')
+    statusText.textContent = 'Planner analyzing structure...'
     errorDisplay?.hide()
-    finalImageSection?.classList.add('hidden')
-    promptTextarea.value = ''
-    // Reset confirm button
-    ;(window as any).__svgEditor?.resetConfirm()
     startTimer()
 
-    const preset = (document.getElementById('opt-preset') as HTMLSelectElement)?.value
     const direction = (document.getElementById('opt-direction') as HTMLSelectElement)?.value
 
     try {
-      steps?.setStatus('step-topology', 'running')
-      statusText.textContent = 'Step 1: Planner analyzing structure...'
-
-      const topoRes = await fetch('/api/topology', {
+      const res = await fetch('/api/topology', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, direction }),
       })
-      if (!topoRes.ok) { const e = await topoRes.json(); throw new Error(`Topology: ${e.error || 'Failed'}`) }
-      const topoData = await topoRes.json()
-      const topology = topoData.topology || topoData.graph || topoData
-      topologyPre.textContent = JSON.stringify(topology, null, 2)
 
-      statusText.textContent = 'Step 1: Computing layout composition...'
-      const layoutRes = await fetch('/api/layout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ graph: topology, preset, options: { direction } }),
-      })
-      if (!layoutRes.ok) { const e = await layoutRes.json(); throw new Error(`Layout: ${e.error || 'Failed'}`) }
-      const layoutData = await layoutRes.json()
-      layoutedPre.textContent = JSON.stringify(layoutData.layouted, null, 2)
-
-      currentSkeletonSvg = layoutData.skeletonSvg || ''
-      if (currentSkeletonSvg) {
-        // Pass both SVG and layouted JSON — enables interactive editor
-        preview?.showSkeleton(currentSkeletonSvg, layoutData.layouted)
-        preview?.show(currentSkeletonSvg)
-        // Auto-switch to skeleton tab so user can verify components
-        document.getElementById('tab-skeleton')?.click()
-        exportPanel?.enable()
-      } else if (layoutData.layouted) {
-        // SVG generation failed but we have layouted data — try interactive rendering
-        console.warn('skeletonSvg empty, falling back to interactive render from layouted JSON')
-        preview?.showSkeleton('', layoutData.layouted)
-        document.getElementById('tab-skeleton')?.click()
-        exportPanel?.enable()
+      if (!res.ok) {
+        const e = await res.json()
+        throw new Error(`Topology: ${e.error || 'Failed'}`)
       }
 
-      steps?.setStatus('step-topology', 'done')
-      steps?.setStatus('step-edit', 'running')
-      statusText.textContent = `Step 1 done (${elapsed()}s) — Edit draft below, then click "Confirm Edit" → "Step 2→3"`
-      statusText.style.color = ''
-      // Step 2→3 stays disabled until user clicks "Confirm Edit"
-      generateFigureBtn.disabled = true
-
+      // Success — redirect to pipeline
+      window.location.href = '/pipeline'
     } catch (err: any) {
-      document.querySelectorAll('.pipeline-step[data-status="running"]').forEach(el => {
-        ;(el as HTMLElement).dataset.status = 'error'
-      })
+      stopTimer()
       const msg = err.message || 'Unknown error'
       let hint = ''
       if (msg.includes('502') || msg.includes('connect')) hint = 'Start backend: python server.py'
-      else if (msg.includes('ELK')) hint = 'Try simpler description'
       else if (msg.includes('500')) hint = 'Check API keys in .env'
-      errorDisplay?.show({ title: 'Step 1 Error', message: msg, hint, step: 'Step 1' })
+      else if (msg.includes('timed out')) hint = 'Try again or use a simpler description.'
+      errorDisplay?.show({ title: 'Generation Error', message: msg, hint, step: 'Topology' })
       statusText.textContent = `Error: ${msg}`
-      statusText.style.color = 'var(--color-danger, #ef4444)'
+      statusBar?.classList.remove('hidden')
     } finally {
-      stopTimer(); running = false
+      stopTimer()
+      running = false
       generateBtn.disabled = false
-      generateBtnText.textContent = 'Step 1: Generate Draft'
+      generateBtnText.textContent = 'Generate & Continue'
     }
   })
-
-  // ===== STEP 2→3: Grok 4 prompt + Gemini 3 image =====
-  generateFigureBtn?.addEventListener('click', () => runFigureGen())
-  regenerateBtn?.addEventListener('click', () => runFigureGen(promptTextarea.value))
-
-  async function runFigureGen(customPrompt?: string) {
-    if (running || !currentSkeletonSvg) return
-    const text = textarea?.value?.trim()
-    if (!text) return
-
-    running = true
-    generateFigureBtn.disabled = true
-    generateBtn.disabled = true
-    generateFigureText.textContent = 'Generating...'
-    errorDisplay?.hide()
-    finalImageSection?.classList.add('hidden')
-    startTimer()
-
-    const aspect = (document.getElementById('opt-aspect') as HTMLSelectElement)?.value
-
-    try {
-      // Get latest SVG from interactive editor (user may have edited it)
-      const editorSvg = preview?.getSkeletonSvg()
-      if (editorSvg) currentSkeletonSvg = editorSvg
-
-      // Extract structured graph data from interactive editor (nodes with x,y,w,h + edges)
-      // This provides Gemini with EXACT spatial layout information the user confirmed
-      const editor = preview?.getEditor()
-      const elkGraph = editor ? editor.getGraph() : null
-
-      // Mark edit step as done
-      steps?.setStatus('step-edit', 'done')
-
-      // Step 2: Grok 4 prompt
-      steps?.setStatus('step-grok-prompt', 'running')
-      if (!customPrompt) {
-        statusText.textContent = 'Step 2: Stylist refining description...'
-        const pRes = await fetch('/api/generate-prompt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            method_text: text, svg_content: currentSkeletonSvg,
-            elk_graph: elkGraph,
-          }),
-        })
-        if (!pRes.ok) { const e = await pRes.json(); throw new Error(`Grok: ${e.error || 'Failed'}`) }
-        const pData = await pRes.json()
-        if (pData.success && pData.prompt) {
-          promptTextarea.value = pData.prompt
-          customPrompt = pData.prompt
-          // Highlight prompt area to show it's editable
-          promptTextarea.classList.add('ring-2', 'ring-purple-400')
-          const hint = document.getElementById('grok-prompt-hint')
-          if (hint) hint.textContent = '✏️ Prompt generated! Edit above and click Regenerate to refine.'
-          setTimeout(() => promptTextarea.classList.remove('ring-2', 'ring-purple-400'), 3000)
-        } else { throw new Error(`Grok: ${pData.error || 'Empty prompt'}`) }
-      }
-      steps?.setStatus('step-grok-prompt', 'done')
-
-      // Step 3: Gemini 3 Image
-      steps?.setStatus('step-gemini-image', 'running')
-      statusText.textContent = 'Step 3: Visualizer generating figure...'
-      const iRes = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          svg_content: currentSkeletonSvg, method_text: text,
-          custom_prompt: customPrompt, aspect_ratio: aspect || '16:9', image_size: '4K',
-          elk_graph: elkGraph,
-        }),
-      })
-      if (!iRes.ok) { const e = await iRes.json(); throw new Error(`Gemini: ${e.error || 'Failed'}`) }
-      const iData = await iRes.json()
-
-      if (iData.success && iData.image_b64) {
-        currentImageB64 = iData.image_b64
-        currentMimeType = iData.mime_type || 'image/png'
-        finalImage.src = `data:${currentMimeType};base64,${currentImageB64}`
-        finalImageSection?.classList.remove('hidden')
-        // Auto-switch to Final tab to show the generated image
-        document.getElementById('tab-final')?.click()
-        finalImageInfo.textContent = `Prompt: ${iData.prompt_model_used || '?'} → Image: ${iData.image_model_used || '?'} | ${elapsed()}s`
-        steps?.setStatus('step-gemini-image', 'done')
-        statusText.textContent = `Done! Figure generated (${elapsed()}s)`
-        statusText.style.color = ''
-      } else { throw new Error(`Gemini: ${iData.error || 'No image'}`) }
-
-    } catch (err: any) {
-      document.querySelectorAll('.pipeline-step[data-status="running"]').forEach(el => {
-        ;(el as HTMLElement).dataset.status = 'error'
-      })
-      const msg = err.message || 'Unknown error'
-      let hint = ''
-      if (msg.includes('Grok')) hint = 'Check API key for the Stylist Agent (uses OpenAI format)'
-      else if (msg.includes('Gemini')) hint = 'Check API key for the Visualizer Agent.'
-      else if (msg.includes('502')) hint = 'Start backend: python server.py'
-      else if (msg.includes('timed out')) hint = 'Image gen can take ~2min. Try again.'
-      errorDisplay?.show({ title: 'Figure Error', message: msg, hint, step: 'Step 2-3' })
-      statusText.textContent = `Error: ${msg}`
-      statusText.style.color = 'var(--color-danger, #ef4444)'
-    } finally {
-      stopTimer(); running = false
-      generateFigureBtn.disabled = false; generateBtn.disabled = false
-      generateFigureText.textContent = 'Step 2→3: Generate Figure'
-    }
-  }
-
-  downloadBtn?.addEventListener('click', () => {
-    if (!currentImageB64) return
-    const link = document.createElement('a')
-    link.href = `data:${currentMimeType};base64,${currentImageB64}`
-    link.download = `scientific-figure.${currentMimeType.split('/')[1] || 'png'}`
-    link.click()
-  })
-
-  // ===== SVG Editor Toolbar Wiring =====
-  const svgEditor = (window as any).__svgEditor
-
-  // Re-Layout: send modified graph back to ELK
-  document.getElementById('btn-relayout')?.addEventListener('click', async () => {
-    const elkJson = preview?.getElkJson()
-    if (!elkJson) return
-    const preset = (document.getElementById('opt-preset') as HTMLSelectElement)?.value
-    const direction = (document.getElementById('opt-direction') as HTMLSelectElement)?.value
-    try {
-      const res = await fetch('/api/layout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ graph: elkJson, preset, options: { direction } }),
-      })
-      if (!res.ok) throw new Error('Re-layout failed')
-      const data = await res.json()
-      if (data.layouted) {
-        preview?.showSkeleton(data.skeletonSvg || '', data.layouted)
-        currentSkeletonSvg = data.skeletonSvg || preview?.getSkeletonSvg() || ''
-        layoutedPre.textContent = JSON.stringify(data.layouted, null, 2)
-      }
-    } catch (err: any) {
-      errorDisplay?.show({ title: 'Re-Layout Error', message: err.message, hint: '', step: 'Editor' })
-    }
-  })
-
-  // Add Node
-  document.getElementById('btn-add-node')?.addEventListener('click', () => {
-    const editor = preview?.getEditor()
-    if (editor) {
-      const name = prompt('Node label:', 'New Node')
-      if (name) editor.addNode(name)
-    }
-  })
-
-  // Delete Node
-  document.getElementById('btn-delete-node')?.addEventListener('click', () => {
-    const editor = preview?.getEditor()
-    if (editor) editor.removeSelectedNode()
-  })
-
-  // Fit View
-  document.getElementById('btn-fit-view')?.addEventListener('click', () => {
-    const editor = preview?.getEditor()
-    if (editor) editor.fitView()
-  })
-
-  // Export SVG
-  document.getElementById('btn-export-svg')?.addEventListener('click', () => {
-    const svg = preview?.getSkeletonSvg() || preview?.getSvg()
-    if (!svg) return
-    const blob = new Blob([svg], { type: 'image/svg+xml' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'skeleton.svg'
-    a.click()
-    URL.revokeObjectURL(url)
-  })
-
-  // Export JSON
-  document.getElementById('btn-export-json')?.addEventListener('click', () => {
-    const json = preview?.getElkJson()
-    if (!json) return
-    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'layout.json'
-    a.click()
-    URL.revokeObjectURL(url)
-  })
-
-  // Snap to grid toggle
-  document.getElementById('chk-snap-grid')?.addEventListener('change', (e) => {
-    // Note: snap-to-grid is set at editor init time; toggle requires re-init
-    // For now, this is a visual indicator only
-  })
-
-  // ===== CONFIRM EDIT =====
-  document.getElementById('btn-confirm-edit')?.addEventListener('click', () => {
-    const editor = preview?.getEditor()
-    if (editor) {
-      // Lock the editor
-      editor.confirmEdit()
-      // Update skeleton SVG from editor
-      currentSkeletonSvg = editor.toStaticSvg() || currentSkeletonSvg
-      // Visual feedback
-      const svgEditor = (window as any).__svgEditor
-      svgEditor?.setConfirmed(true)
-      // Mark edit step as done
-      steps?.setStatus('step-edit', 'done')
-      // Enable Step 2→3 button
-      generateFigureBtn.disabled = false
-      statusText.textContent = 'Draft confirmed! Click "Step 2→3" to generate figure.'
-      statusText.style.color = ''
-    }
-  })
-
-  // Update currentSkeletonSvg from editor when Step 2 is about to run
-  const origRunFigureGen = runFigureGen
-
 </script>
