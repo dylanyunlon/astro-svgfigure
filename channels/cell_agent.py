@@ -22,12 +22,15 @@ Usage:
 """
 
 import json
+import math
 import os
 import sys
+import time
 import uuid
 import urllib.request
 import urllib.error
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, Optional
 
 CHANNELS = os.path.dirname(os.path.abspath(__file__))
 
@@ -809,8 +812,133 @@ def dispatch_cell_agent(cell_id: str, dry_run: bool = False) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Concurrent dispatch — run_all_cells
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MAX_WORKERS = 10  # cookie supports 10 concurrent sub-Claude sessions
+_SINGLE_CELL_TIMEOUT = 90  # seconds per cell dispatch
+_MIN_TOTAL_TIMEOUT = 300   # never less than 5 minutes total
+
+
+def _compute_total_timeout(cell_count: int) -> float:
+    """max(single_cell_timeout × ceil(cell_count / max_workers), 300s)"""
+    batches = math.ceil(cell_count / _MAX_WORKERS)
+    return max(_SINGLE_CELL_TIMEOUT * batches, _MIN_TOTAL_TIMEOUT)
+
+
+def _dispatch_one(cell_id: str, dry_run: bool) -> tuple[str, bool, float]:
+    """
+    Dispatch a single cell, return (cell_id, success, elapsed_ms).
+    Each cell is independent — failure here never propagates.
+    """
+    t0 = time.monotonic()
+    try:
+        dispatch_cell_agent(cell_id, dry_run=dry_run)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        return (cell_id, True, elapsed_ms)
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        print(f"[cell_agent] ERROR cell_id={cell_id}: {exc}", file=sys.stderr)
+        return (cell_id, False, elapsed_ms)
+
+
+def run_all_cells(
+    dry_run: bool = False,
+    on_cell_complete: Optional[Callable[[str, bool, float], None]] = None,
+) -> dict[str, str]:
+    """
+    Dispatch all cells.
+
+    - dry_run=True  → serial dispatch (deterministic, no network)
+    - dry_run=False → concurrent dispatch via ThreadPoolExecutor(max_workers=10)
+
+    Args:
+        dry_run:          If True, run serial with local stub params.
+        on_cell_complete:  Optional callback(cell_id, success, elapsed_ms)
+                          invoked as each cell finishes.
+
+    Returns:
+        Dict mapping cell_id → "success" | "fail" | "timeout".
+    """
+    ids = _all_cell_ids()
+    if not ids:
+        print("[cell_agent] run_all_cells: no cells found", file=sys.stderr)
+        return {}
+
+    print(
+        f"[cell_agent] run_all_cells: {len(ids)} cells, "
+        f"mode={'dry_run (serial)' if dry_run else f'live (concurrent, max_workers={_MAX_WORKERS})'}",
+        file=sys.stderr,
+    )
+
+    results: dict[str, str] = {}
+
+    # ── dry_run: serial (deterministic, no network needed) ────────────────
+    if dry_run:
+        for cid in ids:
+            cell_id, success, elapsed_ms = _dispatch_one(cid, dry_run=True)
+            results[cell_id] = "success" if success else "fail"
+            if on_cell_complete:
+                on_cell_complete(cell_id, success, elapsed_ms)
+        return results
+
+    # ── live: concurrent dispatch ─────────────────────────────────────────
+    total_timeout = _compute_total_timeout(len(ids))
+    print(
+        f"[cell_agent] total_timeout={total_timeout:.0f}s for {len(ids)} cells",
+        file=sys.stderr,
+    )
+
+    # Pre-mark all cells as timeout; completed ones override below
+    for cid in ids:
+        results[cid] = "timeout"
+
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+        future_to_cid = {
+            executor.submit(_dispatch_one, cid, False): cid
+            for cid in ids
+        }
+        try:
+            for future in as_completed(future_to_cid, timeout=total_timeout):
+                cell_id, success, elapsed_ms = future.result()
+                results[cell_id] = "success" if success else "fail"
+                if on_cell_complete:
+                    on_cell_complete(cell_id, success, elapsed_ms)
+        except TimeoutError:
+            # as_completed raised because total_timeout expired.
+            # Any futures still pending stay marked "timeout".
+            timed_out = [cid for cid, st in results.items() if st == "timeout"]
+            print(
+                f"[cell_agent] total timeout ({total_timeout:.0f}s) expired. "
+                f"Timed-out cells: {timed_out}",
+                file=sys.stderr,
+            )
+
+    # Summary
+    counts = {"success": 0, "fail": 0, "timeout": 0}
+    for st in results.values():
+        counts[st] += 1
+    print(
+        f"[cell_agent] run_all_cells done: {counts['success']} success, "
+        f"{counts['fail']} fail, {counts['timeout']} timeout "
+        f"(out of {len(ids)})",
+        file=sys.stderr,
+    )
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI entry point
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _cli_progress(cell_id: str, success: bool, elapsed_ms: float):
+    """Default on_cell_complete callback for CLI usage."""
+    tag = "OK" if success else "FAIL"
+    print(
+        f"[cell_agent] [{tag}] {cell_id}  ({elapsed_ms:.0f}ms)",
+        file=sys.stderr,
+    )
+
 
 if __name__ == "__main__":
     import argparse
@@ -836,13 +964,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.all:
-        ids = _all_cell_ids()
-        print(f"[cell_agent] dispatching {len(ids)} cells: {ids}", file=sys.stderr)
-        for cid in ids:
-            try:
-                dispatch_cell_agent(cid, dry_run=args.dry_run)
-            except Exception as exc:
-                print(f"[cell_agent] ERROR cell_id={cid}: {exc}", file=sys.stderr)
+        results = run_all_cells(
+            dry_run=args.dry_run,
+            on_cell_complete=_cli_progress,
+        )
+        # Exit code 1 if any cell failed or timed out
+        if any(st != "success" for st in results.values()):
+            sys.exit(1)
     elif args.cell_id:
         dispatch_cell_agent(args.cell_id, dry_run=args.dry_run)
     else:
