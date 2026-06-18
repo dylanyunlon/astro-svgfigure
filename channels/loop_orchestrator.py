@@ -198,7 +198,8 @@ def _sweep_line_overlaps(rects_by_z):
     return pairs
 
 
-def _tiled_constraint_solve(bboxes, force_field, canvas_w=None, canvas_h=None):
+def _tiled_constraint_solve(bboxes, force_field, canvas_w=None, canvas_h=None,
+                           parent_of=None):
     """
     [ASTRO-TILEDSOLVER] Per-tile cell constraint solver.
 
@@ -237,11 +238,21 @@ def _tiled_constraint_solve(bboxes, force_field, canvas_w=None, canvas_h=None):
           the pair — the tile of the cell with the lexicographically smaller id
           takes responsibility, matching the C++ primary-tile pattern).
 
+    [M350] Hierarchy-aware collision grouping:
+        When parent_of is provided, collision detection is restricted to
+        sibling cells (same parent_id).  Cells belonging to different
+        compound groups do not collide with each other — their parent
+        bboxes handle inter-group spacing instead.  This mirrors the
+        HISM per-cluster cull in commit a7e1c3f where instances within
+        the same cluster are tested against each other but cross-cluster
+        tests are performed at the cluster AABB level only.
+
     Args:
         bboxes      : dict  cell_id → {x, y, w, h, z}
         force_field : dict  cell_id → {dx, dy, dz}  — modified in-place
         canvas_w    : int   canvas pixel width  (auto-detected from bboxes if None)
         canvas_h    : int   canvas pixel height (auto-detected from bboxes if None)
+        parent_of   : dict  cell_id → parent_id | None  (M350 hierarchy map)
 
     Returns:
         list of (cell_a, cell_b, overlap_x, overlap_y, z) collision tuples
@@ -346,6 +357,16 @@ def _tiled_constraint_solve(bboxes, force_field, canvas_w=None, canvas_h=None):
                     # Same-z layer only (preserved from original physics_engine rule).
                     if ba.get("z", 3) != bb.get("z", 3):
                         continue
+
+                    # [M350] Hierarchy-aware collision grouping:
+                    # Only cells sharing the same parent_id (siblings) collide.
+                    # Cross-group collisions are handled at the parent AABB level.
+                    # Root-level cells (parent=None) collide with other root cells.
+                    if parent_of:
+                        pa = parent_of.get(cell_a)
+                        pb_ = parent_of.get(cell_b)
+                        if pa != pb_:
+                            continue
 
                     # AABB overlap test — mirrors the bOverlaps check in BuildTileBatches:
                     #   C.BBoxMaxX > TileMinX && C.BBoxMinX < TileMaxX && …
@@ -1286,6 +1307,267 @@ def _propagate_constraints(bboxes, force_field):
     )
 
 
+# =============================================================================
+# [M350] Hierarchical Physics — parent_id aware collision grouping,
+# compound boundary constraints, and parent bbox union computation.
+#
+# Ported from FAstroHierarchicalConstraintSolver introduced in commit a7e1c3f
+# of upstream/unreal-renderer/HierarchicalInstancedStaticMeshRendering.cpp.
+#
+# Concept mapping (Unreal HISM → astro-svgfigure hierarchy):
+#   HISM cluster           → compound group (parent cell with group=true)
+#   Instance index         → child cell_id within a compound group
+#   Cluster bounds         → parent bbox = union(children) + padding
+#   Per-cluster cull       → collision grouping by parent_id (siblings only)
+#   HISM occlusion bounds  → compound boundary constraint (children ⊂ parent)
+#
+# Three subsystems:
+#   1. _build_hierarchy_map()  — parse topology.json tree → parent_id mapping
+#   2. _apply_compound_boundary_constraints() — children cannot leave parent bbox
+#   3. _compute_parent_bbox_union() — parent bbox = union(children) + padding
+# =============================================================================
+
+
+def _build_hierarchy_map():
+    """
+    [M350] Parse topology.json to extract parent-child hierarchy.
+
+    Walks the nested ELK topology tree recursively.  Any node with
+    ``group: true`` and non-empty ``children`` is a compound parent.
+    Each child records its parent's id.
+
+    Returns:
+        (parent_of, children_of, group_ids)
+        parent_of   : dict  cell_id → parent_id (or None for root-level cells)
+        children_of : dict  parent_id → [child_id, …]  (only compound groups)
+        group_ids   : set   of cell_ids that are compound groups
+    """
+    topo_path = os.path.join(CHANNELS, "skeleton", "topology.json")
+    parent_of: dict = {}      # cell_id → parent_id | None
+    children_of: dict = {}    # parent_id → [child_ids]
+    group_ids: set = set()
+
+    if not os.path.exists(topo_path):
+        print("[M350-HIERARCHY] No topology.json found; hierarchy disabled")
+        return parent_of, children_of, group_ids
+
+    with open(topo_path) as f:
+        topo = json.load(f)
+
+    def _walk(node, parent_id):
+        """Recursively walk ELK node tree."""
+        for child in node.get("children", []):
+            cid = child.get("id", "")
+            if not cid:
+                continue
+            # Skip label-only nodes (they don't participate in physics)
+            if child.get("labelOnly", False):
+                continue
+
+            parent_of[cid] = parent_id
+
+            is_group = child.get("group", False)
+            has_children = bool(child.get("children"))
+
+            if is_group and has_children:
+                group_ids.add(cid)
+                children_of[cid] = []
+                # Register child cells of this group
+                for grandchild in child.get("children", []):
+                    gcid = grandchild.get("id", "")
+                    if gcid and not grandchild.get("labelOnly", False):
+                        children_of[cid].append(gcid)
+                # Recurse into the group
+                _walk(child, cid)
+
+            if parent_id is not None and parent_id in children_of:
+                if cid not in children_of[parent_id]:
+                    children_of[parent_id].append(cid)
+
+    _walk(topo, None)
+
+    n_parented = sum(1 for v in parent_of.values() if v is not None)
+    print(
+        f"[M350-HIERARCHY] Built hierarchy: "
+        f"{len(parent_of)} cells, {len(group_ids)} compound groups, "
+        f"{n_parented} parented cells"
+    )
+    for gid in sorted(group_ids):
+        kids = children_of.get(gid, [])
+        print(f"  compound={gid}: {len(kids)} children → {kids}")
+
+    return parent_of, children_of, group_ids
+
+
+def _apply_compound_boundary_constraints(bboxes, force_field, children_of,
+                                         group_ids, padding=15.0):
+    """
+    [M350] Compound boundary constraint — children cannot escape parent bbox.
+
+    For each compound group, if a child cell's bbox extends beyond the
+    parent's bbox (minus padding), a containment force pushes the child
+    back inward.  This is the "HISM occlusion bounds" analogue: each
+    cluster defines a bounding volume and instances are culled/constrained
+    to remain within it.
+
+    Ported from FAstroHISMBoundsConstraint::EnforceClusterBounds() in
+    commit a7e1c3f — the C++ version clamps instance transforms to the
+    cluster AABB; here we convert the clamping into a force impulse so
+    the child drifts back within the parent rather than snapping.
+
+    Args:
+        bboxes      : dict  cell_id → {x, y, w, h, z}
+        force_field : dict  cell_id → {dx, dy, dz}  — modified in-place
+        children_of : dict  parent_id → [child_ids]
+        group_ids   : set   of compound group cell_ids
+        padding     : float  minimum pixel padding inside parent boundary
+    """
+    if not group_ids:
+        return
+
+    _BOUNDARY_STRENGTH = 0.6   # fraction of overshoot applied as force
+
+    total_constrained = 0
+
+    for parent_id in sorted(group_ids):
+        if parent_id not in bboxes:
+            continue
+        pb = bboxes[parent_id]
+        # Parent inner boundary (the region children must stay within)
+        p_min_x = pb["x"] + padding
+        p_min_y = pb["y"] + padding
+        p_max_x = pb["x"] + pb["w"] - padding
+        p_max_y = pb["y"] + pb["h"] - padding
+
+        # Guard: if parent is too small for padding, use raw bounds
+        if p_min_x >= p_max_x:
+            p_min_x = pb["x"]
+            p_max_x = pb["x"] + pb["w"]
+        if p_min_y >= p_max_y:
+            p_min_y = pb["y"]
+            p_max_y = pb["y"] + pb["h"]
+
+        for child_id in children_of.get(parent_id, []):
+            if child_id not in bboxes or child_id not in force_field:
+                continue
+            cb = bboxes[child_id]
+            c_min_x = cb["x"]
+            c_min_y = cb["y"]
+            c_max_x = cb["x"] + cb["w"]
+            c_max_y = cb["y"] + cb["h"]
+
+            dx_push = 0.0
+            dy_push = 0.0
+
+            # Left overshoot: child extends past parent left edge
+            if c_min_x < p_min_x:
+                dx_push += (p_min_x - c_min_x) * _BOUNDARY_STRENGTH
+            # Right overshoot: child extends past parent right edge
+            if c_max_x > p_max_x:
+                dx_push -= (c_max_x - p_max_x) * _BOUNDARY_STRENGTH
+            # Top overshoot
+            if c_min_y < p_min_y:
+                dy_push += (p_min_y - c_min_y) * _BOUNDARY_STRENGTH
+            # Bottom overshoot
+            if c_max_y > p_max_y:
+                dy_push -= (c_max_y - p_max_y) * _BOUNDARY_STRENGTH
+
+            if abs(dx_push) > 0.01 or abs(dy_push) > 0.01:
+                force_field[child_id]["dx"] += dx_push
+                force_field[child_id]["dy"] += dy_push
+                total_constrained += 1
+
+    print(
+        f"[M350-BOUNDARY] Compound boundary constraints: "
+        f"{total_constrained} children constrained across "
+        f"{len(group_ids)} compound groups (padding={padding}px)"
+    )
+
+
+def _compute_parent_bbox_union(bboxes, children_of, group_ids, padding=15.0):
+    """
+    [M350] Recompute parent bbox as union(children bboxes) + padding.
+
+    For each compound group, computes the axis-aligned bounding box that
+    encloses all child cells, then inflates by ``padding`` on each side.
+    The parent's bbox in ``bboxes`` is updated in-place and also written
+    to disk so downstream passes (rendering, assembly) see the correct
+    compound bounds.
+
+    Ported from FAstroHISMClusterBoundsUpdate::RecomputeClusterAABB() in
+    commit a7e1c3f — the C++ version aggregates instance transforms into
+    the cluster's FBoxSphereBounds each frame; here we aggregate child
+    bboxes each epoch.
+
+    Args:
+        bboxes      : dict  cell_id → {x, y, w, h, z}  — modified in-place
+        children_of : dict  parent_id → [child_ids]
+        group_ids   : set   of compound group cell_ids
+        padding     : float  pixels of padding added to each side
+
+    Returns:
+        int — number of parent bboxes updated
+    """
+    if not group_ids:
+        return 0
+
+    updated = 0
+
+    for parent_id in sorted(group_ids):
+        kids = children_of.get(parent_id, [])
+        # Only consider children that have bboxes
+        child_bboxes = [bboxes[cid] for cid in kids if cid in bboxes]
+        if not child_bboxes:
+            continue
+
+        # Compute union AABB of all children
+        union_min_x = min(cb["x"] for cb in child_bboxes)
+        union_min_y = min(cb["y"] for cb in child_bboxes)
+        union_max_x = max(cb["x"] + cb["w"] for cb in child_bboxes)
+        union_max_y = max(cb["y"] + cb["h"] for cb in child_bboxes)
+
+        # Apply padding
+        new_x = union_min_x - padding
+        new_y = union_min_y - padding
+        new_w = (union_max_x - union_min_x) + 2 * padding
+        new_h = (union_max_y - union_min_y) + 2 * padding
+
+        # Update parent bbox in-place
+        if parent_id in bboxes:
+            old_b = bboxes[parent_id]
+            bboxes[parent_id]["x"] = new_x
+            bboxes[parent_id]["y"] = new_y
+            bboxes[parent_id]["w"] = new_w
+            bboxes[parent_id]["h"] = new_h
+            # Preserve z and other fields
+        else:
+            # Parent not yet in bboxes — create entry
+            bboxes[parent_id] = {
+                "x": new_x, "y": new_y, "w": new_w, "h": new_h,
+                "z": 5,   # groups default to z=5
+            }
+
+        # Persist updated parent bbox to disk
+        parent_bbox_path = os.path.join(
+            CHANNELS, "cell", parent_id, "bbox.json"
+        )
+        os.makedirs(os.path.dirname(parent_bbox_path), exist_ok=True)
+        with open(parent_bbox_path, "w") as f:
+            json.dump(bboxes[parent_id], f, indent=2)
+
+        updated += 1
+        print(
+            f"[M350-UNION] Parent {parent_id}: "
+            f"bbox=({new_x:.1f},{new_y:.1f},{new_w:.1f},{new_h:.1f}) "
+            f"from {len(child_bboxes)} children + {padding}px padding"
+        )
+
+    print(
+        f"[M350-UNION] Updated {updated} compound parent bboxes"
+    )
+    return updated
+
+
 def physics_step(bboxes, force_field, topology_edges=None,
                  alpha=0.3,
                  link_strength=0.4,
@@ -1501,6 +1783,10 @@ def physics_engine():
     field (_propagate_constraints) is applied — ported from commit 7c6f675 of
     upstream/unreal-renderer/DistanceFieldGlobalIllumination.cpp.
 
+    [M350] Hierarchical physics: collision grouping respects parent_id so only
+    sibling cells collide.  Compound boundary constraints keep children within
+    parent bbox.  Parent bbox = union(children) + padding.
+
     Only same-z cells can collide. Different z = no collision (preserved).
     """
     bbox_files = glob.glob(os.path.join(CHANNELS, "cell", "*", "bbox.json"))
@@ -1511,6 +1797,23 @@ def physics_engine():
             bboxes[cell_id] = json.load(f)
 
     force_field = {cid: {"dx": 0, "dy": 0, "dz": 0} for cid in bboxes}
+
+    # --- 0. [M350] Build hierarchy map from topology ────────────────────────────
+    # Parse topology.json to extract parent-child relationships.  This feeds
+    # the tiled constraint solver (sibling-only collisions), compound boundary
+    # constraints, and parent bbox union computation.
+    parent_of, children_of, group_ids = _build_hierarchy_map()
+
+    # Ensure force_field entries exist for all group parents even if they
+    # didn't have bbox files yet (they will be computed by union below).
+    for gid in group_ids:
+        if gid not in force_field:
+            force_field[gid] = {"dx": 0, "dy": 0, "dz": 0}
+
+    # --- 0b. [M350] Compute parent bbox as union(children) + padding ───────────
+    # Must run before collision detection so parent bboxes are up-to-date
+    # and available for compound boundary constraints.
+    _compute_parent_bbox_union(bboxes, children_of, group_ids, padding=15.0)
 
     # --- 1. Bucket cells by z-layer (same-z-only rule preserved from original) ---
     rects_by_z = {}
@@ -1548,13 +1851,25 @@ def physics_engine():
     # than N), vs the previous O(N^2) double-loop.  Matches the GPU
     # tiled-deferred reduction from O(numLights x numPixels) to
     # O(numLights/tile x numPixels).
+    #
+    # [M350] parent_of is passed to restrict collisions to sibling cells.
     force_field = {cid: {"dx": 0, "dy": 0, "dz": 0} for cid in bboxes}
 
-    collisions = _tiled_constraint_solve(bboxes, force_field)
+    collisions = _tiled_constraint_solve(
+        bboxes, force_field, parent_of=parent_of if parent_of else None
+    )
 
     print(
         f"[Physics] {len(collisions)} collisions detected "
         f"(tiled constraint solver O(N*K), ported from TiledDeferredLightRendering.cpp 7c82b90)"
+    )
+
+    # --- 3a. [M350] Compound boundary constraints ────────────────────────────────
+    # Children cannot escape their parent's bbox.  Containment forces push
+    # overflowing children back inward.  Runs after collision detection so
+    # that sibling repulsion and boundary containment compose additively.
+    _apply_compound_boundary_constraints(
+        bboxes, force_field, children_of, group_ids, padding=15.0
     )
 
     # --- 3b. Cell symmetry mirror constraints ------------------------------------
@@ -1620,6 +1935,11 @@ def physics_engine():
         for (gx, gy, z), meta in voxel_grid.items()
     }
     write_channel("physics/z_layers.json", voxel_grid_json)
+
+    # --- 5b. [M350] Re-compute parent bbox union after all forces ──────────────
+    # Forces may have shifted children; update parent bboxes to reflect the
+    # final child positions this epoch (consumed by rendering/assembly).
+    _compute_parent_bbox_union(bboxes, children_of, group_ids, padding=15.0)
 
     # [M004] Replace direct write_channel with broadcast_force_batch so every
     # force-field update goes through the DataDispatcher → DataNotifier pub/sub
