@@ -60,6 +60,22 @@
  *   tooltip 显示 label / species / 尺寸 / 连接数。hover 事件触发 setGlow('hover')
  *   在已有 M031 路径上无需额外改动；__cellMeta 结构变更向后兼容旧读取路径。
  *
+ * M351: Compound node — nested Container + cell membrane (细胞壁)
+ *   buildCellContainer 重构为 compound node 架构：
+ *     compound (Container) — root compound node
+ *       ├─ glow           — bloom halo (unchanged)
+ *       ├─ membrane        — cell membrane (细胞壁), double-stroke bilayer
+ *       └─ innerContainer  — inner cytoplasm Container
+ *            ├─ body       — inner rounded rect fill/stroke
+ *            ├─ pattern    — SDF / procedural species pattern
+ *            └─ txt        — label text
+ *   Membrane 参数从 species_params JSON 读取：
+ *     membrane_thickness  → bilayer 厚度 px (default 3)
+ *     membrane_opacity    → 填充透明度 (default 0.12)
+ *     membrane_color      → 膜颜色 hex (default species stroke)
+ *   Inner content insets by membrane_thickness on all sides.
+ *   Exposes __membrane, __innerContainer, __membraneThickness on compound.
+ *
  * Upstream reference:
  *   upstream/pixijs-engine/src/scene/graphics/shared/Graphics.ts
  *   upstream/pixijs-engine/src/filters/defaults/blur/
@@ -598,6 +614,29 @@ function createGlowSprite(
 }
 
 // ── Cell container builder ──────────────────────────────────────────────────
+//
+// M351: Compound node architecture — nested Container + cell membrane (细胞壁).
+//
+// Structure (parent → child):
+//   compound (Container) — root compound node, positioned at bbox.x/y
+//     ├─ glow (Graphics) — bloom halo backdrop (unchanged)
+//     ├─ membrane (Graphics) — cell membrane / cell wall (细胞壁)
+//     │    Double-stroke lipid bilayer: outer boundary + inner boundary with
+//     │    translucent fill between them, simulating a biological cell membrane.
+//     │    Params: species_params.membrane_thickness, membrane_opacity, membrane_color
+//     └─ innerContainer (Container) — inner cytoplasm region
+//          ├─ body (Graphics) — rounded rect fill + stroke (inner cell body)
+//          ├─ pattern (Graphics) — species-specific SDF / procedural pattern
+//          └─ txt (Text) — label text
+//
+// The compound container exposes:
+//   __membrane        — Graphics reference for the cell wall layer
+//   __innerContainer  — Container reference for the inner content region
+//   __membraneThickness — resolved membrane thickness for hit-testing
+//
+// The membrane insets the inner content by membraneThickness on all sides,
+// creating a visual gap between the outer boundary and the inner body that
+// reads as a phospholipid bilayer / cell wall.
 
 function buildCellContainer(desc: CellDescriptor): Container {
   const { bbox, species, label, z } = desc;
@@ -618,18 +657,64 @@ function buildCellContainer(desc: CellDescriptor): Container {
   // M130: species_params.corner_radius → Graphics roundRect radius (JSON-driven, no hardcode)
   const cornerRadius = (speciesParams?.corner_radius as number | undefined) ?? 8;
 
-  const container = new Container();
-  container.position.set(bbox.x, bbox.y);
-  container.zIndex = z;
+  // ── M351: Membrane (细胞壁) parameters — JSON-driven ──────────────────
+  // membrane_thickness: total thickness of the cell wall in pixels (default 3)
+  // membrane_opacity:   alpha of the translucent fill between outer/inner strokes (default 0.12)
+  // membrane_color:     hex override for membrane colour; defaults to species stroke colour
+  const membraneThickness = (speciesParams?.membrane_thickness as number | undefined) ?? 3;
+  const membraneOpacity   = (speciesParams?.membrane_opacity   as number | undefined) ?? 0.12;
+  const membraneColorRaw  = speciesParams?.membrane_color as string | undefined;
+  const membraneColor     = membraneColorRaw ? hexToNum(membraneColorRaw) : cols.stroke;
 
+  // ── M351: Compound container — root of the compound node ───────────────
+  const compound = new Container();
+  compound.position.set(bbox.x, bbox.y);
+  compound.zIndex = z;
+
+  // ── Glow layer — unchanged, attached to compound root ──────────────────
   const glow = createGlowSprite(w, h, cols.glow, species, p?.bloom, cornerRadius);
-  container.addChild(glow);
+  compound.addChild(glow);
+
+  // ── M351: Cell membrane (细胞壁) — double-stroke bilayer ───────────────
+  // The membrane draws the full-size outer boundary of the cell.
+  // Outer stroke → translucent fill → inner stroke, forming a bilayer.
+  const membrane = new Graphics();
+
+  // Outer stroke — full cell boundary
+  membrane.roundRect(0, 0, w, h, cornerRadius);
+  membrane.stroke({ color: membraneColor, width: 1.2, alpha: 0.7 });
+
+  // Translucent bilayer fill between outer and inner boundaries
+  if (membraneThickness > 1) {
+    const halfT = membraneThickness / 2;
+    membrane.roundRect(halfT, halfT, w - membraneThickness, h - membraneThickness, Math.max(0, cornerRadius - halfT));
+    membrane.fill({ color: membraneColor, alpha: membraneOpacity });
+  }
+
+  // Inner stroke — inner boundary of the membrane
+  membrane.roundRect(membraneThickness, membraneThickness, w - membraneThickness * 2, h - membraneThickness * 2, Math.max(0, cornerRadius - membraneThickness));
+  membrane.stroke({ color: membraneColor, width: 0.8, alpha: 0.45 });
+
+  compound.addChild(membrane);
+
+  // ── M351: Inner container — cytoplasm region inside the membrane ───────
+  // The inner container is offset by membraneThickness so all child content
+  // (body, pattern, label) is rendered inside the cell wall boundary.
+  const innerContainer = new Container();
+  innerContainer.position.set(membraneThickness, membraneThickness);
+  compound.addChild(innerContainer);
+
+  // Inner dimensions — available space after membrane inset
+  const innerW = w - membraneThickness * 2;
+  const innerH = h - membraneThickness * 2;
 
   const body = new Graphics();
   // M130: corner_radius from species_params.corner_radius (JSON-driven, no hardcode)
-  body.roundRect(0, 0, w, h, cornerRadius);
+  // Inner body uses reduced corner radius to fit inside membrane
+  const innerCornerRadius = Math.max(0, cornerRadius - membraneThickness);
+  body.roundRect(0, 0, innerW, innerH, innerCornerRadius);
   body.fill({ color: cols.fill, alpha: 0.9 });
-  body.roundRect(0, 0, w, h, cornerRadius);
+  body.roundRect(0, 0, innerW, innerH, innerCornerRadius);
   body.stroke({ color: cols.stroke, width: 1.5, alpha: 0.8 });
 
   // ── DropShadowFilter from params.json shadow field + species_params.shadow_blur (M130) ──
@@ -653,7 +738,7 @@ function buildCellContainer(desc: CellDescriptor): Container {
     body.filters = [dropShadow];
   }
 
-  container.addChild(body);
+  innerContainer.addChild(body);
 
   const pattern = new Graphics();
 
@@ -671,8 +756,9 @@ function buildCellContainer(desc: CellDescriptor): Container {
   ];
 
   // Helper: draw transparent quad for SDF filters to paint on
+  // M351: uses inner dimensions (after membrane inset) so patterns fill cytoplasm area
   const drawSDFQuad = () => {
-    pattern.rect(0, 0, w, h);
+    pattern.rect(0, 0, innerW, innerH);
     pattern.fill({ color: 0x000000, alpha: 0 });
   };
 
@@ -690,12 +776,12 @@ function buildCellContainer(desc: CellDescriptor): Container {
         time:        0,
       });
       pattern.filters = [boltFilter];
-      (container as any).__boltFilter = boltFilter;
+      (compound as any).__boltFilter = boltFilter;
     },
 
     'cil-vector': () => {
       drawSDFQuad();
-      const halfMin = Math.min(w, h) / 2;
+      const halfMin = Math.min(innerW, innerH) / 2;
       const arrowLengthPx = speciesParams?.arrow_length as number | undefined;
       const arrowLengthNorm = arrowLengthPx != null
         ? Math.max(0.1, Math.min(1.0, arrowLengthPx / halfMin))
@@ -710,15 +796,15 @@ function buildCellContainer(desc: CellDescriptor): Container {
         fieldScale:  (speciesParams?.field_scale  as number | undefined) ?? 2.5,
       });
       pattern.filters = [vectorFilter];
-      (container as any).__vectorFilter = vectorFilter;
+      (compound as any).__vectorFilter = vectorFilter;
     },
 
     'cil-plus': () => {
       drawSDFQuad();
       const armLengthPx   = speciesParams?.arm_length   as number | undefined;
       const strokeWidthPx = speciesParams?.stroke_width as number | undefined;
-      const armLength   = armLengthPx   != null ? armLengthPx   / (Math.min(w, h) / 2) : 0.55;
-      const strokeWidth = strokeWidthPx != null ? strokeWidthPx / (Math.min(w, h) / 2) : 0.12;
+      const armLength   = armLengthPx   != null ? armLengthPx   / (Math.min(innerW, innerH) / 2) : 0.55;
+      const strokeWidth = strokeWidthPx != null ? strokeWidthPx / (Math.min(innerW, innerH) / 2) : 0.12;
       const pulseSpeed = (speciesParams?.pulse_speed as number | undefined) ?? 2.0;
       const pulseAmp   = (speciesParams?.pulse_amp   as number | undefined) ?? 0.3;
       const plusFilter = new CilPlusSDFFilter({
@@ -731,12 +817,12 @@ function buildCellContainer(desc: CellDescriptor): Container {
         pulseAmp,
       });
       pattern.filters = [plusFilter];
-      (container as any).__plusFilter = plusFilter;
+      (compound as any).__plusFilter = plusFilter;
     },
 
     'cil-arrow-right': () => {
       drawSDFQuad();
-      const minDim = Math.min(w, h) || 1;
+      const minDim = Math.min(innerW, innerH) || 1;
       const rawArrowHeight = (speciesParams?.arrow_height as number | undefined);
       const rawArrowWidth  = (speciesParams?.arrow_width  as number | undefined);
       const arrowScale = rawArrowHeight !== undefined
@@ -753,12 +839,12 @@ function buildCellContainer(desc: CellDescriptor): Container {
         time:       0,
       });
       pattern.filters = [arrowRightFilter];
-      (container as any).__arrowRightFilter = arrowRightFilter;
+      (compound as any).__arrowRightFilter = arrowRightFilter;
     },
 
     'cil-eye': () => {
       drawSDFQuad();
-      const halfMin = Math.min(w, h) / 2;
+      const halfMin = Math.min(innerW, innerH) / 2;
       const numRaysVal =
         (speciesParams?.ring_count  as number | undefined) ??
         (speciesParams?.num_rays    as number | undefined) ??
@@ -799,7 +885,7 @@ function buildCellContainer(desc: CellDescriptor): Container {
         time:             0,
       });
       pattern.filters = [eyeFilter];
-      (container as any).__eyeFilter = eyeFilter;
+      (compound as any).__eyeFilter = eyeFilter;
     },
   };
 
@@ -808,10 +894,11 @@ function buildCellContainer(desc: CellDescriptor): Container {
     sdfBuilder();
   } else {
     // Fallback: legacy SPECIES_PATTERNS Graphics drawer (no SDF)
+    // M351: pattern draws inside inner dimensions (cytoplasm area)
     const drawer = SPECIES_PATTERNS[species] ?? SPECIES_PATTERNS['cil-code'];
-    drawer(pattern, w, h, cols.stroke, speciesParams);
+    drawer(pattern, innerW, innerH, cols.stroke, speciesParams);
   }
-  container.addChild(pattern);
+  innerContainer.addChild(pattern);
 
   const style = new TextStyle({
     fontFamily: 'Inter, system-ui, sans-serif',
@@ -821,8 +908,9 @@ function buildCellContainer(desc: CellDescriptor): Container {
   });
   const txt = new Text({ text: label, style });
   txt.anchor.set(0.5);
-  txt.position.set(w / 2, h / 2);
-  container.addChild(txt);
+  // M351: text centered within inner dimensions (cytoplasm area)
+  txt.position.set(innerW / 2, innerH / 2);
+  innerContainer.addChild(txt);
 
   // ── M342: Post-process filters — data-driven from species_params ─────────
   // Instead of switch(species), read godray / motion_blur config objects from
@@ -847,6 +935,7 @@ function buildCellContainer(desc: CellDescriptor): Container {
     const grParallel   = (godrayConfig.parallel    as boolean | undefined) ?? false;
     const grAlpha      = (godrayConfig.alpha       as number | undefined) ?? 0.6;
     // Center: normalised [0,1] → pixel; uses center_x / center_y from species_params
+    // M351: godray center uses full cell dimensions (w, h) since it's applied to compound
     const grCenterX    = (godrayConfig.center_x    as number | undefined);
     const grCenterY    = (godrayConfig.center_y    as number | undefined);
 
@@ -864,16 +953,16 @@ function buildCellContainer(desc: CellDescriptor): Container {
 
     const godray = new GodrayFilter(godrayOpts as any);
     speciesFilters.push(godray);
-    (container as any).__godray = godray;
+    (compound as any).__godray = godray;
 
     // Godray pulse animation params (continuous from species_params.godray)
     const pulseBaseGain = godrayConfig.pulse_base_gain as number | undefined;
     const pulseAmp      = godrayConfig.pulse_amp       as number | undefined;
     const pulseFreq     = godrayConfig.pulse_freq      as number | undefined;
     if (pulseBaseGain !== undefined) {
-      (container as any).__godrayPulseBaseGain = pulseBaseGain;
-      (container as any).__godrayPulseAmp      = pulseAmp  ?? 0.35;
-      (container as any).__godrayPulseFreq     = pulseFreq ?? 3.5;
+      (compound as any).__godrayPulseBaseGain = pulseBaseGain;
+      (compound as any).__godrayPulseAmp      = pulseAmp  ?? 0.35;
+      (compound as any).__godrayPulseFreq     = pulseFreq ?? 3.5;
     }
   }
 
@@ -897,22 +986,22 @@ function buildCellContainer(desc: CellDescriptor): Container {
   }
 
   if (speciesFilters.length > 0) {
-    // Compose with any existing body filters
-    const existing = (container.filters as any[] | null) ?? [];
-    container.filters = [...existing, ...speciesFilters];
+    // Compose with any existing compound filters
+    const existing = (compound.filters as any[] | null) ?? [];
+    compound.filters = [...existing, ...speciesFilters];
   }
 
   // ── OutlineFilter slot (applied on hover/select via setOutline helper) ──
-  (container as any).__outlineFilter = null;
-  (container as any).__baseFilters = (container.filters as any[] | null) ?? [];
+  (compound as any).__outlineFilter = null;
+  (compound as any).__baseFilters = (compound.filters as any[] | null) ?? [];
 
   // ── M031: GlowFilter slot — hover/select 外发光 ────────────────────────
   // GlowFilter 实例在首次 setGlow() 时按 mode 创建，后续复用同一实例以避免
   // GLSL 重编译（distance/quality 已烘焙进 GLSL loop）。
   // __glowFilter: 当前挂载的 GlowFilter 实例（null = 未激活）
   // __glowMode:   'hover' | 'select' | null — 标记当前 glow 类型，用于去重
-  (container as any).__glowFilter = null as GlowFilter | null;
-  (container as any).__glowMode   = null as CellGlowMode | null;
+  (compound as any).__glowFilter = null as GlowFilter | null;
+  (compound as any).__glowMode   = null as CellGlowMode | null;
 
   // ── M130: baseline GlowFilter from species_params.glow_intensity ────────
   // When species_params.glow_intensity is present in JSON, create a persistent
@@ -932,26 +1021,34 @@ function buildCellContainer(desc: CellDescriptor): Container {
       quality:       0.15,
       knockout:      false,
     });
-    (container as any).__baselineGlowFilter = baselineGlow;
+    (compound as any).__baselineGlowFilter = baselineGlow;
     // Append to __baseFilters so it persists across hover/select toggles
-    const currentBase = (container as any).__baseFilters as any[] ?? [];
+    const currentBase = (compound as any).__baseFilters as any[] ?? [];
     currentBase.push(baselineGlow);
-    (container as any).__baseFilters = currentBase;
-    container.filters = currentBase.length > 0 ? currentBase : null;
+    (compound as any).__baseFilters = currentBase;
+    compound.filters = currentBase.length > 0 ? currentBase : null;
   } else {
-    (container as any).__baselineGlowFilter = null;
+    (compound as any).__baselineGlowFilter = null;
   }
 
   // ── crowding_opacity: applies after fade-in completes ──────────────────
   // Store as userData so the poll loop can respect it when fading in
-  (container as any).__targetAlpha = crowdingOpacity;
-  container.alpha = 0; // caller sets to 0 for fade-in; will stop at __targetAlpha
+  (compound as any).__targetAlpha = crowdingOpacity;
+  compound.alpha = 0; // caller sets to 0 for fade-in; will stop at __targetAlpha
+
+  // ── M351: Expose compound node structure for external access ───────────
+  // __membrane:           Graphics reference to the cell wall layer
+  // __innerContainer:     Container reference to the inner cytoplasm region
+  // __membraneThickness:  resolved membrane thickness (px) for hit-testing
+  (compound as any).__membrane          = membrane;
+  (compound as any).__innerContainer    = innerContainer;
+  (compound as any).__membraneThickness = membraneThickness;
 
   // ── CellMeta stamp — consumed by CellEventSystem.attachToCellContainers ─
   // Stamped here so CellEventSystem can auto-register without a separate lookup.
   // Mirrors AT's HitManager tagging pattern: object.__meta = descriptor.
   // M050: include topology edge counts so tooltip can display connectivity info.
-  (container as any).__cellMeta = {
+  (compound as any).__cellMeta = {
     cell_id:  desc.cell_id,
     label:    desc.label,
     species:  desc.species,
@@ -962,7 +1059,7 @@ function buildCellContainer(desc: CellDescriptor): Container {
     },
   };
 
-  return container;
+  return compound;
 }
 
 // ── Edge renderer ───────────────────────────────────────────────────────────
