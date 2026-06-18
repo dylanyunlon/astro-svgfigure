@@ -1,0 +1,29 @@
+{
+  "cell_id": "nonleaf_styling",
+  "label": "Non-Leaf Style Supplement",
+  "species": "cil-layers",
+  "gene_traits": {
+    "primary_shape": "stack",
+    "pattern": "layered",
+    "line_style": "solid",
+    "family": "pooling"
+  },
+  "initial_bbox": {
+    "x": 670,
+    "y": 3177,
+    "w": 180,
+    "h": 125,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "s2_e7"
+    ],
+    "outgoing_edges": [
+      "e6",
+      "e7"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "stage2_group"
+}

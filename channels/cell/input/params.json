@@ -1,0 +1,19 @@
+{
+  "cell_id": "input",
+  "parent_id": null,
+  "species": "cil-vector",
+  "bbox": {
+    "x": 220,
+    "y": 40,
+    "w": 160,
+    "h": 45,
+    "z": 5
+  },
+  "z": 5,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Input x",
+  "font_size": 10,
+  "is_group": false
+}

@@ -1,0 +1,24 @@
+{
+  "cell_id": "encoder",
+  "label": "Encoder",
+  "species": "cil-vector",
+  "gene_traits": {
+    "primary_shape": "arrow",
+    "pattern": "gradient",
+    "line_style": "solid",
+    "family": "embedding"
+  },
+  "initial_bbox": {
+    "x": 220,
+    "y": 145,
+    "w": 140,
+    "h": 50,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": []
+  },
+  "parent_id": null,
+  "is_group": true
+}

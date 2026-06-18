@@ -1,0 +1,24 @@
+{
+  "cell_id": "hidden_elements",
+  "label": "Visually Hidden Parts",
+  "species": "cil-bolt",
+  "gene_traits": {
+    "primary_shape": "zigzag",
+    "pattern": "stripe",
+    "line_style": "dash",
+    "family": "activation"
+  },
+  "initial_bbox": {
+    "x": 700,
+    "y": 626,
+    "w": 150,
+    "h": 105,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": []
+  },
+  "is_group": false,
+  "parent_id": "noise_types"
+}

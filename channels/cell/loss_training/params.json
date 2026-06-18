@@ -1,0 +1,19 @@
+{
+  "cell_id": "loss_training",
+  "parent_id": null,
+  "species": "cil-plus",
+  "bbox": {
+    "x": 1082,
+    "y": 25,
+    "w": 150,
+    "h": 105,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Training Loss",
+  "font_size": 10,
+  "is_group": false
+}

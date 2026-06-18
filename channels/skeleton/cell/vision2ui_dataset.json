@@ -1,0 +1,26 @@
+{
+  "cell_id": "vision2ui_dataset",
+  "label": "Vision2UI Dataset",
+  "species": "cil-vector",
+  "gene_traits": {
+    "primary_shape": "arrow",
+    "pattern": "gradient",
+    "line_style": "solid",
+    "family": "embedding"
+  },
+  "initial_bbox": {
+    "x": 525,
+    "y": 315,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": [
+      "bp_e1"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "bbox_pruning_group"
+}

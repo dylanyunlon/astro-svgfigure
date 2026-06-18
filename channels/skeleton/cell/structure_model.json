@@ -1,0 +1,26 @@
+{
+  "cell_id": "structure_model",
+  "label": "Structure Model (Pix2Struct)",
+  "species": "cil-eye",
+  "gene_traits": {
+    "primary_shape": "radial",
+    "pattern": "heatmap",
+    "line_style": "ray",
+    "family": "attention"
+  },
+  "initial_bbox": {
+    "x": 592.6666666666666,
+    "y": 1067,
+    "w": 556.6666666666666,
+    "h": 735,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [
+      "s1_e1"
+    ],
+    "outgoing_edges": []
+  },
+  "is_group": true,
+  "parent_id": "stage1_group"
+}

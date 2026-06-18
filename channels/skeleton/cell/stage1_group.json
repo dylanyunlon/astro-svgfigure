@@ -1,0 +1,27 @@
+{
+  "cell_id": "stage1_group",
+  "label": "Stage 1: Coarse DOM Layout Generation",
+  "species": "cil-graph",
+  "gene_traits": {
+    "primary_shape": "scatter",
+    "pattern": "connected",
+    "line_style": "dot",
+    "family": "graph"
+  },
+  "initial_bbox": {
+    "x": 335,
+    "y": 235,
+    "w": 829.3333333333333,
+    "h": 1587,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [
+      "e1",
+      "e13"
+    ],
+    "outgoing_edges": []
+  },
+  "is_group": true,
+  "parent_id": null
+}

@@ -1,0 +1,26 @@
+{
+  "cell_id": "alignment_group",
+  "label": "Alignment Criteria",
+  "species": "cil-layers",
+  "gene_traits": {
+    "primary_shape": "stack",
+    "pattern": "layered",
+    "line_style": "solid",
+    "family": "pooling"
+  },
+  "initial_bbox": {
+    "x": 533,
+    "y": 3820,
+    "w": 450,
+    "h": 145,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [
+      "e8"
+    ],
+    "outgoing_edges": []
+  },
+  "is_group": true,
+  "parent_id": null
+}

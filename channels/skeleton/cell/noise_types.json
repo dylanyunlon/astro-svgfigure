@@ -1,0 +1,28 @@
+{
+  "cell_id": "noise_types",
+  "label": "Real-World Noise Types",
+  "species": "cil-bolt",
+  "gene_traits": {
+    "primary_shape": "zigzag",
+    "pattern": "stripe",
+    "line_style": "dash",
+    "family": "activation"
+  },
+  "initial_bbox": {
+    "x": 360,
+    "y": 591,
+    "w": 500,
+    "h": 150,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [
+      "bp_e2"
+    ],
+    "outgoing_edges": [
+      "bp_e3"
+    ]
+  },
+  "is_group": true,
+  "parent_id": "bbox_pruning_group"
+}

@@ -1,0 +1,30 @@
+{
+  "cell_id": "softmax_layer",
+  "label": "Softmax (W \u00b7 ht)",
+  "species": "cil-code",
+  "gene_traits": {
+    "primary_shape": "bracket",
+    "pattern": "monospace",
+    "line_style": "solid",
+    "family": "compute"
+  },
+  "initial_bbox": {
+    "x": 771.0,
+    "y": 1530.75,
+    "w": 150,
+    "h": 105,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "sm_e5",
+      "sm_e6"
+    ],
+    "outgoing_edges": [
+      "sm_e7",
+      "sm_e8"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "structure_model"
+}

@@ -1,0 +1,28 @@
+{
+  "cell_id": "input_image",
+  "label": "High-Resolution Design Image",
+  "species": "cil-code",
+  "gene_traits": {
+    "primary_shape": "bracket",
+    "pattern": "monospace",
+    "line_style": "solid",
+    "family": "compute"
+  },
+  "initial_bbox": {
+    "x": 12,
+    "y": 18,
+    "w": 160,
+    "h": 112,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": [
+      "e1",
+      "e2",
+      "e15"
+    ]
+  },
+  "is_group": false,
+  "parent_id": null
+}

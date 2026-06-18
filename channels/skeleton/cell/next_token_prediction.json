@@ -1,0 +1,29 @@
+{
+  "cell_id": "next_token_prediction",
+  "label": "Next-Token Prediction",
+  "species": "cil-loop",
+  "gene_traits": {
+    "primary_shape": "arc",
+    "pattern": "circular",
+    "line_style": "dash",
+    "family": "sampling"
+  },
+  "initial_bbox": {
+    "x": 913.5,
+    "y": 1669,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "sm_e4",
+      "sm_e8"
+    ],
+    "outgoing_edges": [
+      "sm_e5"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "structure_model"
+}

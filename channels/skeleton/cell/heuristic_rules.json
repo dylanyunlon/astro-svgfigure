@@ -1,0 +1,28 @@
+{
+  "cell_id": "heuristic_rules",
+  "label": "Heuristic Pruning Rules",
+  "species": "cil-filter",
+  "gene_traits": {
+    "primary_shape": "grid",
+    "pattern": "checker",
+    "line_style": "solid",
+    "family": "convolution"
+  },
+  "initial_bbox": {
+    "x": 525,
+    "y": 761,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "bp_e3"
+    ],
+    "outgoing_edges": [
+      "bp_e4"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "bbox_pruning_group"
+}

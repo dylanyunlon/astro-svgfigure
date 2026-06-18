@@ -1,0 +1,28 @@
+{
+  "cell_id": "dec_conv1",
+  "label": "ConvT 3\u00d73",
+  "species": "cil-filter",
+  "gene_traits": {
+    "primary_shape": "grid",
+    "pattern": "checker",
+    "line_style": "solid",
+    "family": "convolution"
+  },
+  "initial_bbox": {
+    "x": 220,
+    "y": 470,
+    "w": 130,
+    "h": 40,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "e_dec"
+    ],
+    "outgoing_edges": [
+      "dec_e1"
+    ]
+  },
+  "parent_id": "decoder",
+  "is_group": false
+}

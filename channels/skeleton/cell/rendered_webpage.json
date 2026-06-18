@@ -1,0 +1,29 @@
+{
+  "cell_id": "rendered_webpage",
+  "label": "Rendered Webpage",
+  "species": "cil-arrow-right",
+  "gene_traits": {
+    "primary_shape": "chevron",
+    "pattern": "solid",
+    "line_style": "solid",
+    "family": "terminal"
+  },
+  "initial_bbox": {
+    "x": 673.3333333333334,
+    "y": 3587,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "out_e1",
+      "out_e2"
+    ],
+    "outgoing_edges": [
+      "e8"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "output_group"
+}

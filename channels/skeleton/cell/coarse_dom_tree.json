@@ -1,0 +1,29 @@
+{
+  "cell_id": "coarse_dom_tree",
+  "label": "Coarse DOM Tree + BBoxes",
+  "species": "cil-graph",
+  "gene_traits": {
+    "primary_shape": "scatter",
+    "pattern": "connected",
+    "line_style": "dot",
+    "family": "graph"
+  },
+  "initial_bbox": {
+    "x": 718,
+    "y": 1927,
+    "w": 180,
+    "h": 125,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "e3"
+    ],
+    "outgoing_edges": [
+      "e4",
+      "e5"
+    ]
+  },
+  "is_group": false,
+  "parent_id": null
+}

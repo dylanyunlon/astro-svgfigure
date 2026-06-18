@@ -1,0 +1,29 @@
+{
+  "cell_id": "pruned_dataset",
+  "label": "Pruned Clean Dataset",
+  "species": "cil-vector",
+  "gene_traits": {
+    "primary_shape": "arrow",
+    "pattern": "gradient",
+    "line_style": "solid",
+    "family": "embedding"
+  },
+  "initial_bbox": {
+    "x": 525,
+    "y": 899,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "bp_e4"
+    ],
+    "outgoing_edges": [
+      "s1_e1",
+      "e10"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "bbox_pruning_group"
+}

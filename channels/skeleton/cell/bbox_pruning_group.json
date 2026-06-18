@@ -1,0 +1,24 @@
+{
+  "cell_id": "bbox_pruning_group",
+  "label": "BBox-Based Data Pruning",
+  "species": "cil-vector",
+  "gene_traits": {
+    "primary_shape": "arrow",
+    "pattern": "gradient",
+    "line_style": "solid",
+    "family": "embedding"
+  },
+  "initial_bbox": {
+    "x": 350,
+    "y": 275,
+    "w": 520,
+    "h": 752,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": []
+  },
+  "is_group": true,
+  "parent_id": "stage1_group"
+}

@@ -1,0 +1,26 @@
+{
+  "cell_id": "weight_matrix",
+  "label": "Weight Matrix W",
+  "species": "cil-code",
+  "gene_traits": {
+    "primary_shape": "bracket",
+    "pattern": "monospace",
+    "line_style": "solid",
+    "family": "compute"
+  },
+  "initial_bbox": {
+    "x": 776.0,
+    "y": 1401,
+    "w": 140,
+    "h": 100,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": [
+      "sm_e6"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "structure_model"
+}

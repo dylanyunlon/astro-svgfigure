@@ -1,0 +1,29 @@
+{
+  "cell_id": "vit_encoder",
+  "label": "ViT Encoder (Enc\u03b8)",
+  "species": "cil-eye",
+  "gene_traits": {
+    "primary_shape": "radial",
+    "pattern": "heatmap",
+    "line_style": "ray",
+    "family": "attention"
+  },
+  "initial_bbox": {
+    "x": 936.0,
+    "y": 1245,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "sm_e1",
+      "e11"
+    ],
+    "outgoing_edges": [
+      "sm_e2"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "structure_model"
+}

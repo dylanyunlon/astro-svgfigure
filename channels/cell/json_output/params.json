@@ -1,0 +1,19 @@
+{
+  "cell_id": "json_output",
+  "parent_id": "structure_model",
+  "species": "cil-arrow-right",
+  "bbox": {
+    "x": 723.5,
+    "y": 1669,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "JSON DOM Tree Output",
+  "font_size": 10,
+  "is_group": false
+}

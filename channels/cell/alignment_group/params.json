@@ -1,0 +1,19 @@
+{
+  "cell_id": "alignment_group",
+  "parent_id": null,
+  "species": "cil-layers",
+  "bbox": {
+    "x": 533,
+    "y": 3820,
+    "w": 450,
+    "h": 145,
+    "z": 5
+  },
+  "z": 5,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Alignment Criteria",
+  "font_size": 10,
+  "is_group": true
+}

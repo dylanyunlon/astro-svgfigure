@@ -1,0 +1,27 @@
+{
+  "cell_id": "ram_resource",
+  "label": "GPU/RAM Resources",
+  "species": "cil-code",
+  "gene_traits": {
+    "primary_shape": "bracket",
+    "pattern": "monospace",
+    "line_style": "solid",
+    "family": "compute"
+  },
+  "initial_bbox": {
+    "x": 1912,
+    "y": 30,
+    "w": 140,
+    "h": 100,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": [
+      "e13",
+      "e14"
+    ]
+  },
+  "is_group": false,
+  "parent_id": null
+}

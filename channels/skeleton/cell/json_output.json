@@ -1,0 +1,28 @@
+{
+  "cell_id": "json_output",
+  "label": "JSON DOM Tree Output",
+  "species": "cil-arrow-right",
+  "gene_traits": {
+    "primary_shape": "chevron",
+    "pattern": "solid",
+    "line_style": "solid",
+    "family": "terminal"
+  },
+  "initial_bbox": {
+    "x": 723.5,
+    "y": 1669,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "sm_e7"
+    ],
+    "outgoing_edges": [
+      "e3"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "structure_model"
+}

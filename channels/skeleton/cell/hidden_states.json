@@ -1,0 +1,28 @@
+{
+  "cell_id": "hidden_states",
+  "label": "Hidden State Vectors",
+  "species": "cil-bolt",
+  "gene_traits": {
+    "primary_shape": "zigzag",
+    "pattern": "stripe",
+    "line_style": "dash",
+    "family": "activation"
+  },
+  "initial_bbox": {
+    "x": 936.0,
+    "y": 1383,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "sm_e2"
+    ],
+    "outgoing_edges": [
+      "sm_e3"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "structure_model"
+}

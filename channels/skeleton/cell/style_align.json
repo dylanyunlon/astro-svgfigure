@@ -1,0 +1,24 @@
+{
+  "cell_id": "style_align",
+  "label": "Style",
+  "species": "cil-layers",
+  "gene_traits": {
+    "primary_shape": "stack",
+    "pattern": "layered",
+    "line_style": "solid",
+    "family": "pooling"
+  },
+  "initial_bbox": {
+    "x": 843,
+    "y": 3855,
+    "w": 130,
+    "h": 100,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": []
+  },
+  "is_group": false,
+  "parent_id": "alignment_group"
+}

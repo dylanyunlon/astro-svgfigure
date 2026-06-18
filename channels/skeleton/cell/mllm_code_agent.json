@@ -1,0 +1,28 @@
+{
+  "cell_id": "mllm_code_agent",
+  "label": "MLLM Code Agent",
+  "species": "cil-code",
+  "gene_traits": {
+    "primary_shape": "bracket",
+    "pattern": "monospace",
+    "line_style": "solid",
+    "family": "compute"
+  },
+  "initial_bbox": {
+    "x": 670,
+    "y": 2473,
+    "w": 180,
+    "h": 125,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "s2_e2"
+    ],
+    "outgoing_edges": [
+      "s2_e3"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "stage2_group"
+}

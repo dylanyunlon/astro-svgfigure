@@ -1,0 +1,28 @@
+{
+  "cell_id": "dec_upsamp",
+  "label": "Upsample",
+  "species": "cil-loop",
+  "gene_traits": {
+    "primary_shape": "arc",
+    "pattern": "circular",
+    "line_style": "dash",
+    "family": "sampling"
+  },
+  "initial_bbox": {
+    "x": 220,
+    "y": 570,
+    "w": 130,
+    "h": 40,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "dec_e1"
+    ],
+    "outgoing_edges": [
+      "dec_e2"
+    ]
+  },
+  "parent_id": "decoder",
+  "is_group": false
+}

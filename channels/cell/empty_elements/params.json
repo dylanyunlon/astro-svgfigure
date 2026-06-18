@@ -1,0 +1,19 @@
+{
+  "cell_id": "empty_elements",
+  "parent_id": "noise_types",
+  "species": "cil-code",
+  "bbox": {
+    "x": 540,
+    "y": 628.5,
+    "w": 140,
+    "h": 100,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Empty/Small Elements",
+  "font_size": 10,
+  "is_group": false
+}

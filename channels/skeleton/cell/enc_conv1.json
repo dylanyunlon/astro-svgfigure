@@ -1,0 +1,29 @@
+{
+  "cell_id": "enc_conv1",
+  "label": "Conv 3\u00d73",
+  "species": "cil-filter",
+  "gene_traits": {
+    "primary_shape": "grid",
+    "pattern": "checker",
+    "line_style": "solid",
+    "family": "convolution"
+  },
+  "initial_bbox": {
+    "x": 220,
+    "y": 255,
+    "w": 130,
+    "h": 40,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "e_in"
+    ],
+    "outgoing_edges": [
+      "e_skip",
+      "enc_e1"
+    ]
+  },
+  "parent_id": "encoder",
+  "is_group": false
+}

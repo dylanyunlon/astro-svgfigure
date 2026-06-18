@@ -1,0 +1,29 @@
+{
+  "cell_id": "transformer_decoder",
+  "label": "Transformer Decoder (Dec\u03c6)",
+  "species": "cil-eye",
+  "gene_traits": {
+    "primary_shape": "radial",
+    "pattern": "heatmap",
+    "line_style": "ray",
+    "family": "attention"
+  },
+  "initial_bbox": {
+    "x": 964.3333333333333,
+    "y": 1521,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "sm_e3",
+      "e12"
+    ],
+    "outgoing_edges": [
+      "sm_e4"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "structure_model"
+}

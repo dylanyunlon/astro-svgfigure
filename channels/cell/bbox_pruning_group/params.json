@@ -1,0 +1,19 @@
+{
+  "cell_id": "bbox_pruning_group",
+  "parent_id": "stage1_group",
+  "species": "cil-vector",
+  "bbox": {
+    "x": 350,
+    "y": 275,
+    "w": 520,
+    "h": 752,
+    "z": 5
+  },
+  "z": 5,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "BBox-Based Data Pruning",
+  "font_size": 10,
+  "is_group": true
+}

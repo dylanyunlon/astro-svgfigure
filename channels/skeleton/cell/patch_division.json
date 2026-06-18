@@ -1,0 +1,29 @@
+{
+  "cell_id": "patch_division",
+  "label": "Fixed-Size Patch Division",
+  "species": "cil-code",
+  "gene_traits": {
+    "primary_shape": "bracket",
+    "pattern": "monospace",
+    "line_style": "solid",
+    "family": "compute"
+  },
+  "initial_bbox": {
+    "x": 907.6666666666665,
+    "y": 1107,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "topology": {
+    "incoming_edges": [
+      "e2",
+      "e9"
+    ],
+    "outgoing_edges": [
+      "sm_e1"
+    ]
+  },
+  "is_group": false,
+  "parent_id": "structure_model"
+}

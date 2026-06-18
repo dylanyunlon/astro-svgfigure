@@ -1,0 +1,24 @@
+{
+  "cell_id": "output_group",
+  "label": "Final Output",
+  "species": "cil-arrow-right",
+  "gene_traits": {
+    "primary_shape": "chevron",
+    "pattern": "solid",
+    "line_style": "solid",
+    "family": "terminal"
+  },
+  "initial_bbox": {
+    "x": 645,
+    "y": 3427,
+    "w": 340,
+    "h": 288,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [],
+    "outgoing_edges": []
+  },
+  "is_group": true,
+  "parent_id": null
+}

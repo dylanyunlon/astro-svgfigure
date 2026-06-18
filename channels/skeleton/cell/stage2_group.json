@@ -1,0 +1,27 @@
+{
+  "cell_id": "stage2_group",
+  "label": "Stage 2: Fine-Grained Code Synthesis",
+  "species": "cil-code",
+  "gene_traits": {
+    "primary_shape": "bracket",
+    "pattern": "monospace",
+    "line_style": "solid",
+    "family": "compute"
+  },
+  "initial_bbox": {
+    "x": 655,
+    "y": 2157,
+    "w": 233.33333333333331,
+    "h": 1160,
+    "z": 5
+  },
+  "topology": {
+    "incoming_edges": [
+      "e4",
+      "e14"
+    ],
+    "outgoing_edges": []
+  },
+  "is_group": true,
+  "parent_id": null
+}
