@@ -328,7 +328,6 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
       - No API key needed — uses cookie authentication
 
     Returns the parsed agent_params dict (bbox, opacity, species_params).
-    Falls back to dry_run hash if dispatch fails.
     """
     import re
 
@@ -623,14 +622,14 @@ def _validate_output(raw_out: dict, skeleton: dict, force_field: dict) -> dict:
 # dispatch_cell_agent — main public function
 # ─────────────────────────────────────────────────────────────────────────────
 
-def dispatch_cell_agent(cell_id: str, dry_run: bool = False) -> dict:
+def dispatch_cell_agent(cell_id: str) -> dict:
     """
     Dispatch a sub-Claude for a single cell.
 
     1. Read skeleton/cell/{cell_id}.json + physics/force_field.json
     2. Select SPECIES_PROMPTS[species] as system prompt
     3. Build user message with skeleton + force state
-    4. Call Anthropic API (or use stub in dry_run mode)
+    4. Call sub-Claude via claude.hk.cn (requires .claude-hk-config)
     5. Parse JSON response: {bbox, opacity, species_params}
     6. Write channels/cell/{cell_id}/status.json
 
@@ -647,145 +646,45 @@ def dispatch_cell_agent(cell_id: str, dry_run: bool = False) -> dict:
     species = skeleton.get("species", "cil-arrow-right")
     base_prompt = SPECIES_PROMPTS.get(species, _DEFAULT_SPECIES_PROMPT)
 
-    # When running live (not dry_run), prepend the research prefix so the
-    # sub-Claude searches for academic characteristics of its domain.
+    # Prepend the research prefix so the sub-Claude searches for academic
+    # characteristics of its domain.
     # The {label} placeholder is filled with the cell's actual label.
     label = skeleton.get("label", cell_id)
-    if not dry_run:
-        prefix = _RESEARCH_PREFIX.replace("{label}", label)
-        system_prompt = prefix + base_prompt
-    else:
-        system_prompt = base_prompt
+    prefix = _RESEARCH_PREFIX.replace("{label}", label)
+    system_prompt = prefix + base_prompt
+
+    # ── Auth gate: no .claude-hk-config = crash, no fake fallback ────────
+    config_dir = os.path.join(CHANNELS, "..", ".claude-hk-config")
+    if not os.path.isdir(config_dir):
+        raise RuntimeError(
+            "Missing .claude-hk-config — cannot dispatch without authentication. "
+            "No dry_run fallback."
+        )
 
     user_message = _build_user_message(skeleton, force_field)
 
     print(f"[cell_agent] dispatching cell_id={cell_id} species={species}",
           file=sys.stderr)
 
-    if dry_run:
-        # ── Dry-run stub: compute deterministic per-species params without API ─
-        # Uses a stable hash of cell_id for per-cell variation within valid ranges.
-        import hashlib
-        _seed = int(hashlib.md5(cell_id.encode()).hexdigest()[:8], 16)
-        def _jitter(lo: float, hi: float, bits: int = 0) -> float:
-            return round(lo + ((_seed >> bits) & 0xFF) / 255.0 * (hi - lo), 3)
-
-        ib = skeleton["initial_bbox"]
-        force = force_field.get(cell_id, {})
-        _bbox = {
-            "x": round(ib["x"] + force.get("dx", 0.0), 2),
-            "y": round(ib["y"] + force.get("dy", 0.0), 2),
-            "w": ib["w"],
-            "h": ib["h"],
-            "z": ib.get("z", 3),
-        }
-        _opacity = _jitter(0.72, 0.96, 0)
-
-        if species == "cil-eye":
-            _sp: dict = {
-                "num_rays":        4 + (_seed & 0xF) % 13,
-                "focal_intensity": _jitter(0.3, 1.0, 4),
-                "halo_radius":     _jitter(0.1, 0.5, 12),
-                "ray_opacity_min": _jitter(0.1, 0.4, 16),
-                "ray_opacity_max": _jitter(0.4, 0.9, 20),
-            }
-        elif species == "cil-bolt":
-            _sp = {
-                "zigzag_segments": 4 + (_seed & 0x7) % 7,
-                "arc_seed":        _seed & 0xFFFF,
-                "stroke_weight":   _jitter(1.5, 3.0, 8),
-                "activation_type": ["relu", "gelu", "swish"][_seed % 3],
-            }
-        elif species == "cil-vector":
-            _sp = {
-                "num_arrows":    3 + (_seed & 0x7) % 6,
-                "angle_spread":  _jitter(0.2, 1.2, 4),
-                "arrow_weight":  _jitter(1.0, 2.5, 8),
-                "arrow_opacity": _jitter(0.4, 0.85, 12),
-            }
-        elif species == "cil-plus":
-            _sp = {
-                "arm_ratio":      _jitter(0.2, 0.4, 4),
-                "stroke_weight":  _jitter(2.0, 4.0, 8),
-                "diag_dasharray": ["3,2", "4,3", "5,2"][_seed % 3],
-                "norm_strength":  _jitter(0.3, 1.0, 12),
-            }
-        elif species == "cil-arrow-right":
-            _sp = {
-                "arrow_width_ratio": _jitter(0.2, 0.45, 4),
-                "head_height":       _jitter(0.2, 0.4, 8),
-                "fill_opacity":      _jitter(0.4, 0.7, 12),
-                "direction":         ["right", "up", "down"][_seed % 3],
-            }
-        elif species == "cil-filter":
-            _gs = 2 + (_seed & 0x3) % 4
-            _sp = {
-                "grid_size":       _gs,
-                "highlight_cx":    _seed % _gs,
-                "highlight_cy":    (_seed >> 2) % _gs,
-                "highlight_alpha": _jitter(0.3, 0.7, 4),
-                "grid_opacity":    _jitter(0.4, 0.8, 8),
-            }
-        elif species == "cil-code":
-            _sp = {
-                "brace_arm_ratio": _jitter(0.2, 0.4, 4),
-                "nib_ratio":       _jitter(0.15, 0.3, 8),
-                "corner_radius":   _jitter(0.25, 0.45, 12),
-                "stroke_weight":   _jitter(1.5, 3.0, 16),
-            }
-        elif species == "cil-layers":
-            _sp = {
-                "num_layers":    2 + (_seed & 0x3) % 4,
-                "stagger_step":  _jitter(0.25, 0.45, 4),
-                "layer_opacity": [_jitter(0.4, 0.8, i * 4) for i in range(3)],
-                "layer_colours": ["#90CAF9", "#42A5F5", "#1E88E5"],
-            }
-        elif species == "cil-loop":
-            _sp = {
-                "arc_gap_degrees": _jitter(40, 90, 4),
-                "arc_radius":      _jitter(0.2, 0.35, 8),
-                "stroke_weight":   _jitter(1.8, 3.0, 12),
-                "arc_opacity":     _jitter(0.6, 0.9, 16),
-                "dot_radius":      _jitter(0.1, 0.2, 20),
-            }
-        elif species == "cil-graph":
-            _sp = {
-                "num_nodes":    3 + (_seed & 0x7) % 5,
-                "outer_radius": _jitter(0.25, 0.35, 4),
-                "node_radius":  _jitter(0.04, 0.07, 8),
-                "edge_opacity": _jitter(0.4, 0.7, 12),
-                "node_opacity": _jitter(0.6, 0.9, 16),
-            }
-        else:
-            _sp = {
-                "corner_radius": _jitter(6, 16, 4),
-                "stroke_weight": _jitter(1.0, 2.5, 8),
-                "fill_opacity":  _jitter(0.5, 0.9, 12),
-            }
-
-        raw_output = {"bbox": _bbox, "opacity": _opacity, "species_params": _sp}
-        print(f"[cell_agent] dry_run=True species={species} deterministic params computed",
-              file=sys.stderr)
-    else:
-        # ── Live dispatch: sub-Claude via claude.hk.cn ────────────────────────
-        # Each cell gets its own conversation with repl + web_search.
-        # The sub-Claude searches for academic characteristics, computes params,
-        # and pushes agent_params.json to git from its VM.
-        raw_output = _dispatch_via_hk(
-            system_prompt, user_message,
-            cell_id=cell_id, skeleton=skeleton,
+    # ── Live dispatch: sub-Claude via claude.hk.cn ────────────────────────
+    # Each cell gets its own conversation with repl + web_search.
+    # The sub-Claude searches for academic characteristics, computes params,
+    # and pushes agent_params.json to git from its VM.
+    raw_output = _dispatch_via_hk(
+        system_prompt, user_message,
+        cell_id=cell_id, skeleton=skeleton,
+    )
+    dispatched = raw_output.get("_dispatched", False)
+    if dispatched:
+        print(
+            f"[cell_agent] live dispatch: cell_id={cell_id} "
+            f"conv={raw_output.get('_conv_id','?')[:12]} "
+            f"(sub-Claude will push params via git)",
+            file=sys.stderr,
         )
-        dispatched = raw_output.get("_dispatched", False)
-        if dispatched:
-            print(
-                f"[cell_agent] live dispatch: cell_id={cell_id} "
-                f"conv={raw_output.get('_conv_id','?')[:12]} "
-                f"(sub-Claude will push params via git)",
-                file=sys.stderr,
-            )
-            # Remove dispatch metadata before persisting
-            raw_output.pop("_dispatched", None)
-            raw_output.pop("_conv_id", None)
+        # Remove dispatch metadata before persisting
+        raw_output.pop("_dispatched", None)
+        raw_output.pop("_conv_id", None)
 
     # ── Validate / fill defaults ──────────────────────────────────────────────
     output = _validate_output(raw_output, skeleton, force_field)
@@ -835,14 +734,14 @@ def _compute_total_timeout(cell_count: int) -> float:
     return max(_SINGLE_CELL_TIMEOUT * batches, _MIN_TOTAL_TIMEOUT)
 
 
-def _dispatch_one(cell_id: str, dry_run: bool) -> tuple[str, bool, float]:
+def _dispatch_one(cell_id: str) -> tuple[str, bool, float]:
     """
     Dispatch a single cell, return (cell_id, success, elapsed_ms).
     Each cell is independent — failure here never propagates.
     """
     t0 = time.monotonic()
     try:
-        dispatch_cell_agent(cell_id, dry_run=dry_run)
+        dispatch_cell_agent(cell_id)
         elapsed_ms = (time.monotonic() - t0) * 1000
         return (cell_id, True, elapsed_ms)
     except Exception as exc:
@@ -852,17 +751,12 @@ def _dispatch_one(cell_id: str, dry_run: bool) -> tuple[str, bool, float]:
 
 
 def run_all_cells(
-    dry_run: bool = False,
     on_cell_complete: Optional[Callable[[str, bool, float], None]] = None,
 ) -> dict[str, str]:
     """
-    Dispatch all cells.
-
-    - dry_run=True  → serial dispatch (deterministic, no network)
-    - dry_run=False → concurrent dispatch via ThreadPoolExecutor(max_workers=10)
+    Dispatch all cells via concurrent ThreadPoolExecutor(max_workers=10).
 
     Args:
-        dry_run:          If True, run serial with local stub params.
         on_cell_complete:  Optional callback(cell_id, success, elapsed_ms)
                           invoked as each cell finishes.
 
@@ -876,22 +770,13 @@ def run_all_cells(
 
     print(
         f"[cell_agent] run_all_cells: {len(ids)} cells, "
-        f"mode={'dry_run (serial)' if dry_run else f'live (concurrent, max_workers={_MAX_WORKERS})'}",
+        f"mode=live (concurrent, max_workers={_MAX_WORKERS})",
         file=sys.stderr,
     )
 
     results: dict[str, str] = {}
 
-    # ── dry_run: serial (deterministic, no network needed) ────────────────
-    if dry_run:
-        for cid in ids:
-            cell_id, success, elapsed_ms = _dispatch_one(cid, dry_run=True)
-            results[cell_id] = "success" if success else "fail"
-            if on_cell_complete:
-                on_cell_complete(cell_id, success, elapsed_ms)
-        return results
-
-    # ── live: concurrent dispatch ─────────────────────────────────────────
+    # ── Concurrent dispatch ──────────────────────────────────────────────
     total_timeout = _compute_total_timeout(len(ids))
     print(
         f"[cell_agent] total_timeout={total_timeout:.0f}s for {len(ids)} cells",
@@ -904,7 +789,7 @@ def run_all_cells(
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         future_to_cid = {
-            executor.submit(_dispatch_one, cid, False): cid
+            executor.submit(_dispatch_one, cid): cid
             for cid in ids
         }
         try:
@@ -965,23 +850,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Dispatch all cells found in skeleton/cell/.",
     )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Skip API call; use deterministic stub output (no ANTHROPIC_API_KEY needed).",
-    )
     args = parser.parse_args()
 
     if args.all:
         results = run_all_cells(
-            dry_run=args.dry_run,
             on_cell_complete=_cli_progress,
         )
         # Exit code 1 if any cell failed or timed out
         if any(st != "success" for st in results.values()):
             sys.exit(1)
     elif args.cell_id:
-        dispatch_cell_agent(args.cell_id, dry_run=args.dry_run)
+        dispatch_cell_agent(args.cell_id)
     else:
         parser.print_help()
         sys.exit(1)
