@@ -374,7 +374,6 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
         server_url = "http://127.0.0.1:8000"  # fallback
 
     label = skeleton.get("label", cell_id)
-    species = skeleton.get("species", "unknown")
 
     # ── Step 1: Create conversation ────────────────────────────────────────
     create_data = json.dumps({
@@ -387,35 +386,39 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
     conv_id = json.loads(resp.read()).get("uuid", "")
 
     # ── Step 2: Build prompt ───────────────────────────────────────────────
-    # The sub-Claude:
-    #   1. Web searches for academic visual characteristics
-    #   2. Computes params in repl
-    #   3. POSTs to /api/cell/publish (triggers DataNotifier, no git needed)
+    # The sub-Claude IS the cell. No pre-assigned species — it web-searches
+    # academic visual characteristics for its label, then decides its own
+    # species identity (colors, shape, animation, algorithm gene).
 
     ib = skeleton.get("initial_bbox", {})
-    prompt = f"""你是 astro-svgfigure 项目的细胞 {cell_id}。你的任务是为自己决定视觉参数。
+    prompt = f"""你是细胞 {cell_id}，功能是 "{label}"。你没有预设物种——你就是自己的 species。
 
-## 你是谁
+## 你的身份
 - cell_id: {cell_id}
-- label: {label}
-- species: {species}
+- label (功能): {label}
 - 初始 bbox: x={ib.get('x',0)} y={ib.get('y',0)} w={ib.get('w',100)} h={ib.get('h',50)}
-
-## 系统 prompt (你的物种身份)
-{system_prompt}
 
 ## 上下文
 {user_message}
 
 ## 你的工作流程
 
-1. **搜索** — 用 web search 搜索 "{label}" 在学术论文/技术图中通常怎么画。
-   搜索: "{label} diagram visualization academic"
+1. **Web Search 学术视觉特征** — 用 web search 搜索 "{label}" 在学术论文、技术架构图、教科书中的视觉表现。
+   搜索示例:
+   - "{label} diagram visualization academic paper"
+   - "{label} architecture figure style color"
+   - "{label} neural network illustration"
+   从搜索结果中提取: 典型颜色、形状轮廓、动画/流动感、内部结构模式。
 
-2. **分析** — 根据搜索结果决定视觉参数:
-   - 形状比例 (宽扁 vs 瘦高 vs 方形)
-   - 颜色关联
-   - 内部结构/子组件数量
+2. **决定你的 species 参数** — 根据搜索结果，自主决定以下五项:
+   - **primary_color**: 主色 (hex, 如 "#3F51B5")，必须来自搜索到的学术配色惯例
+   - **glow_color**: 辉光色 (hex)，与 primary_color 同色系但更亮或更柔
+   - **algorithm_gene**: 你的内部算法基因 (字符串)，描述你的视觉生成逻辑
+     例: "radial_ray_heatmap", "zigzag_lightning", "parallel_arrow_field",
+          "stacked_layers", "circular_arc_loop", "graph_node_edge" 等
+   - **sdf_shape**: 你的 SDF 轮廓形状
+     例: "circle", "rounded_rect", "hexagon", "diamond", "capsule", "star" 等
+   - **animation_speed**: 动画速度 (float 0.1–2.0)，节奏反映你的功能特性
 
 3. **发布** — 在 repl 里执行这段代码，把你的参数 POST 到服务器:
 ```python
@@ -423,9 +426,14 @@ import json, urllib.request
 
 agent_params = {{
     "bbox": {{"x": {ib.get('x',0)}, "y": {ib.get('y',0)}, "w": ..., "h": ..., "z": ...}},
-    "opacity": ...,  # 0.35-1.0, 根据搜索结果决定
+    "opacity": ...,  # 0.35-1.0
     "species_params": {{
-        # 根据你的 species 类型和搜索结果填写具体参数
+        "primary_color": "...",      # 你搜索后决定的主色
+        "glow_color": "...",         # 辉光色
+        "algorithm_gene": "...",     # 你的视觉算法基因
+        "sdf_shape": "...",          # SDF 轮廓
+        "animation_speed": ...,      # 0.1-2.0
+        # 你还可以加任何你认为必要的额外参数
     }}
 }}
 
@@ -446,7 +454,8 @@ print(resp.read().decode())
 ```
 
 重要:
-- 先搜索再决定参数，不要猜
+- 先 web search 再决定参数，不要猜——你的颜色和形状必须有学术依据
+- 你就是自己的 species，不存在预设物种分类
 - 必须执行上面的 Python 代码把参数 POST 回服务器
 - POST 到 {server_url}/api/cell/publish，不要用 git push"""
 
@@ -478,8 +487,8 @@ print(resp.read().decode())
 
     print(
         f"[cell_agent] dispatched via claude.hk.cn: "
-        f"cell_id={cell_id} species={species} label={label} "
-        f"conv={conv_id[:12]} model={model}",
+        f"cell_id={cell_id} label={label} "
+        f"conv={conv_id[:12]} model={model} (self-species via web search)",
         file=sys.stderr,
     )
 
