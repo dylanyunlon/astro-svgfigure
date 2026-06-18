@@ -2731,8 +2731,8 @@ def _weight_balance_pass(root, strength: float) -> None:
 def post_process_svg(svg_string: str) -> str:
     """
     [DEPRECATED — Phase 4, REFACTOR_PLAN.md]
-    assemble_final_svg() no longer produces an SVG string; it outputs
-    channels/composite_params.json for the PixiJS renderer.extract pipeline.
+    assemble_composite_params() outputs channels/output/composite_params.json
+    for the PixiJS renderer.extract pipeline — no SVG is produced.
     This function is retained for signature compatibility and will be removed
     in a future cleanup phase.
 
@@ -2750,7 +2750,8 @@ def post_process_svg(svg_string: str) -> str:
     input (mirrors Context.FinalOutput chaining in the C++ compositing graph).
 
     Args:
-        svg_string: Assembled SVG string (from assemble_final_svg pre-output).
+        svg_string: Assembled SVG string (legacy; assemble_composite_params
+                    now outputs JSON instead).
 
     Returns:
         Post-processed SVG string.
@@ -3404,31 +3405,34 @@ def graphology_optimize():
     return groups_out
 
 
-def assemble_final_svg():
+def assemble_composite_params():
     """
-    Collect all cell params.json files and edge routes into composite_params.json
-    for consumption by the frontend PixiJS renderer.extract pipeline.
+    Collect all cell params.json files and edge routes into
+    channels/output/composite_params.json for consumption by the frontend
+    PixiJS renderer.extract pipeline.
 
-    Phase 4 of REFACTOR_PLAN.md: instead of assembling an SVG string, this function
-    outputs channels/composite_params.json containing:
-      - cells[]:  sorted cell parameter objects (z-layer + constraint-priority order)
-      - edges[]:  routed edge descriptors from physics/edge_routes.json
-      - canvas:   { width, height } canvas dimensions
-      - palette:  { zenith, horizon, nadir } background gradient stops (hex strings)
+    Output JSON schema:
+      {
+        cells:   [{id, x, y, width, height, species_params, parent_id,
+                   children_ids, render_order, z_layer, is_translucent,
+                   outgoing_edge_count}],
+        edges:   [{source, target, route_points}],
+        canvas:  {width, height},
+        palette: {zenith, horizon, nadir}
+      }
 
-    Algorithm (preserved from the original SVG assembler — SceneRendering.cpp 7eae73c):
+    Algorithm (preserved from SceneRendering.cpp 7eae73c):
       1. FAstroCellRegistry  — build slot registry from bbox + topology + species.
-      2. FConstraintCollector— collect & pack constraints; derive outgoing_edge_count.
+      2. FConstraintCollector — collect & pack constraints; derive outgoing_edge_count.
       3. Z-layer sort        — opaque cells precede translucent cells within a layer;
                                among same-opacity cells, higher outgoing-edge count
-                               renders first (constraint priority, mirrors the C++
-                               SortedPassIndices.StableSort weighted by ViewZLayer).
+                               renders first (constraint priority).
       4. [ASTRO-VISIBILITY]  — cull fully-occluded cells per layer.
       5. [ASTRO-PALETTE-BG]  — derive background gradient from cell-species palettes
                                (FAstroGlobalBackgroundSampler, commit 3ec4df8).
 
     Returns:
-        Path to channels/composite_params.json.
+        Path to channels/output/composite_params.json.
     """
     params_files = glob.glob(os.path.join(CHANNELS, "cell", "*", "params.json"))
     bbox_files   = glob.glob(os.path.join(CHANNELS, "cell", "*", "bbox.json"))
@@ -3787,26 +3791,45 @@ def assemble_final_svg():
 
     # ── Emit composite_params.json for PixiJS renderer ────────────────────────
     #
-    # Phase 4 (REFACTOR_PLAN.md): instead of building an SVG string, collect all
-    # per-cell params and edge routes into a single JSON file that the frontend
-    # PixiJS pipeline consumes via renderer.extract.
+    # Backend outputs JSON only — frontend PixiJS consumes this and renders to
+    # canvas, exporting via renderer.extract.
     #
-    # Structure:
-    #   canvas:  { width, height }    — pixel dimensions for the PixiJS stage
-    #   palette: { zenith, horizon, nadir }  — background gradient stops (hex)
-    #   cells[]: ordered list of cell param objects, each enriched with:
-    #              render_order, z_layer, is_translucent, outgoing_edge_count
-    #   edges[]: edge route descriptors from physics/edge_routes.json
+    # Schema:
+    #   canvas:  { width, height }
+    #   palette: { zenith, horizon, nadir }
+    #   cells[]: { id, x, y, width, height, species_params, parent_id,
+    #              children_ids, render_order, z_layer, is_translucent,
+    #              outgoing_edge_count }
+    #   edges[]: { source, target, route_points }
+
+    # ── Load hierarchy map for parent_id / children_ids ────────────────────────
+    parent_of, children_of, _group_ids = _build_hierarchy_map()
 
     # Build ordered cells list (z-layer + constraint-priority order, culled)
     cells_out: List[Dict] = []
     for render_order, slot in enumerate(sorted_slots):
-        cell_params = dict(params_map[slot.cell_id])   # shallow copy
-        cell_params["render_order"]        = render_order
-        cell_params["z_layer"]             = slot.z_layer
-        cell_params["is_translucent"]      = slot.species in _TRANSLUCENT_SPECIES
-        cell_params["outgoing_edge_count"] = collector.outgoing_edge_count(slot.cell_id)
-        cells_out.append(cell_params)
+        cid = slot.cell_id
+        bbox = bbox_map.get(cid, {})
+        sp = species_map.get(cid, "")
+        cell_params = params_map.get(cid, {})
+        cells_out.append({
+            "id":                  cid,
+            "x":                   bbox.get("x", 0),
+            "y":                   bbox.get("y", 0),
+            "width":               bbox.get("w", 0),
+            "height":              bbox.get("h", 0),
+            "species_params":      {
+                "species": sp,
+                **{k: v for k, v in cell_params.items()
+                   if k not in ("id", "x", "y", "w", "h")},
+            },
+            "parent_id":           parent_of.get(cid),
+            "children_ids":        children_of.get(cid, []),
+            "render_order":        render_order,
+            "z_layer":             slot.z_layer,
+            "is_translucent":      slot.species in _TRANSLUCENT_SPECIES,
+            "outgoing_edge_count": collector.outgoing_edge_count(cid),
+        })
 
     # ── Load edge routes ───────────────────────────────────────────────────────
     edge_routes_path = os.path.join(CHANNELS, "physics", "edge_routes.json")
@@ -3819,23 +3842,31 @@ def assemble_final_svg():
         with open(edge_routes_path) as _erf:
             edge_routes = json.load(_erf)
 
-    edges_out: List[Dict] = [
-        route for route in edge_routes.values() if len(route.get("points", [])) >= 2
-    ]
+    edges_out: List[Dict] = []
+    for route in edge_routes.values():
+        pts = route.get("points", [])
+        if len(pts) < 2:
+            continue
+        edges_out.append({
+            "source":       (route.get("sources") or [None])[0],
+            "target":       (route.get("targets") or [None])[0],
+            "route_points": pts,
+        })
 
     print(
-        f"[M009-EdgeRouter] Collected {len(edges_out)} edges from edge_routes.json "
-        f"({sum(1 for r in edges_out if r.get('blocked_by'))} rerouted)"
+        f"[M009-EdgeRouter] Collected {len(edges_out)} edges from edge_routes.json"
     )
 
     composite = {
-        "canvas":  {"width": width, "height": height},
-        "palette": {"zenith": stop_top, "horizon": stop_mid, "nadir": stop_bottom},
         "cells":   cells_out,
         "edges":   edges_out,
+        "canvas":  {"width": width, "height": height},
+        "palette": {"zenith": stop_top, "horizon": stop_mid, "nadir": stop_bottom},
     }
 
-    output_path = os.path.join(CHANNELS, "composite_params.json")
+    output_dir = os.path.join(CHANNELS, "output")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "composite_params.json")
     with open(output_path, "w") as f:
         json.dump(composite, f, indent=2)
 
@@ -4715,18 +4746,18 @@ def run_loop(max_epochs=10):
     print("[run_loop] Running graphology optimisation (M169)...")
     graphology_optimize()
 
-    # ── Assemble final SVG ────────────────────────────────────────────────────
+    # ── Assemble composite params ────────────────────────────────────────────
 
     write_channel("skeleton/epoch.json", {
         "current": epoch, "max": max_epochs, "status": "converged"
     })
-    output_path = assemble_final_svg()
+    output_path = assemble_composite_params()
     print(f"\n{'=' * 60}")
     print(f"Output: {output_path}")
-    # Return SVG content (not path) so callers receive the complete SVG document
-    with open(output_path) as _svg_f:
-        svg_content = _svg_f.read()
-    return svg_content
+    # Return JSON content so callers receive the composite params document
+    with open(output_path) as _out_f:
+        composite_content = _out_f.read()
+    return composite_content
 
 
 if __name__ == "__main__":
