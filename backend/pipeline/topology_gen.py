@@ -459,8 +459,8 @@ def _fix_node_list(
 
         fixed_node = {
             "id": node_id,
-            "width": node.get("width") or (250 if "children" in node else 150),
-            "height": node.get("height") or (200 if "children" in node else 50),
+            "width": node.get("width") or (250 if ("children" in node or "edges" in node) else 150),
+            "height": node.get("height") or (200 if ("children" in node or "edges" in node) else 50),
         }
 
         # Ensure labels (handle null labels from LLM)
@@ -490,16 +490,57 @@ def _fix_node_list(
             fixed_node["layoutOptions"] = lo
 
         # Recursively fix nested children (compound nodes)
-        if "children" in node and isinstance(node["children"], list):
-            nested_children = _fix_node_list(node["children"], all_valid_ids, depth + 1)
+        # Detect compound intent: node has "children" key (even if None) or "edges"
+        raw_children = node.get("children")
+        nested_edges = node.get("edges")
+        has_compound_intent = "children" in node or "edges" in node
+
+        if has_compound_intent:
+            # Normalise children: None / non-list → empty list
+            if not isinstance(raw_children, list):
+                raw_children = []
+            nested_children = _fix_node_list(raw_children, all_valid_ids, depth + 1)
+
+            # Auto-create orphan nodes referenced by nested edges BEFORE
+            # _fix_edge_list runs, so edge references stay valid.
+            if isinstance(nested_edges, list) and nested_edges:
+                orphan_ids: set = set()
+                for edge in nested_edges:
+                    if not isinstance(edge, dict):
+                        continue
+                    for src in (edge.get("sources") or edge.get("source") or []):
+                        s = src if isinstance(src, str) else ""
+                        if s and s not in all_valid_ids:
+                            orphan_ids.add(s)
+                    for tgt in (edge.get("targets") or edge.get("target") or []):
+                        t = tgt if isinstance(tgt, str) else ""
+                        if t and t not in all_valid_ids:
+                            orphan_ids.add(t)
+                if orphan_ids:
+                    for orphan_id in orphan_ids:
+                        nested_children.append({
+                            "id": orphan_id,
+                            "width": 150,
+                            "height": 50,
+                            "labels": [{"text": orphan_id.replace("_", " ").title()}],
+                        })
+                        all_valid_ids.add(orphan_id)
+                    logger.warning(
+                        f"Auto-created {len(orphan_ids)} missing child nodes "
+                        f"inside compound '{node_id}': {orphan_ids}"
+                    )
+
             fixed_node["children"] = nested_children
 
-            # Fix nested edges inside compound nodes
-            nested_edges = node.get("edges", [])
-            if isinstance(nested_edges, list) and nested_edges:
-                fixed_node["edges"] = _fix_edge_list(
-                    nested_edges, all_valid_ids, edge_id_prefix=f"inner_{node_id}_e"
-                )
+        # Fix nested edges inside compound nodes (independent of children)
+        if isinstance(nested_edges, list) and nested_edges:
+            fixed_node["edges"] = _fix_edge_list(
+                nested_edges, all_valid_ids, edge_id_prefix=f"inner_{node_id}_e"
+            )
+            # Ensure compound node always has a children list so
+            # downstream code can iterate it
+            if "children" not in fixed_node:
+                fixed_node["children"] = []
 
         fixed_children.append(fixed_node)
 
