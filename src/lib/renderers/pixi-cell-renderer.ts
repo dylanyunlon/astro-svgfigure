@@ -242,12 +242,18 @@ function getColours(
   species: string,
   fillOverride?: string,
   strokeOverride?: string,
+  speciesParams?: Record<string, unknown>,
 ): { fill: number; stroke: number; glow: number } {
+  // M342: continuous species_params — read primary_color / glow directly from
+  // species_params when present, falling back to the legacy SPECIES_COLOURS table.
+  const spPrimaryColor = speciesParams?.primary_color as string | undefined;
+  const spGlow         = speciesParams?.glow          as string | undefined;
+
   const base = SPECIES_COLOURS[species] ?? { fill: 0x90A4AE, stroke: 0x607D8B, glow: 0xB0BEC5 };
   return {
-    fill:   fillOverride   ? hexToNum(fillOverride)   : base.fill,
+    fill:   fillOverride   ? hexToNum(fillOverride)   : (spPrimaryColor ? hexToNum(spPrimaryColor) : base.fill),
     stroke: strokeOverride ? hexToNum(strokeOverride) : base.stroke,
-    glow:   base.glow,
+    glow:   spGlow ? hexToNum(spGlow) : base.glow,
   };
 }
 
@@ -599,8 +605,9 @@ function buildCellContainer(desc: CellDescriptor): Container {
 
   // ── Resolve params.json overrides ──────────────────────────────────────
   const p = desc.params;
-  const cols = getColours(species, p?.fill_color, p?.stroke_color);
   const speciesParams = p?.species_params;
+  // M342: pass speciesParams so getColours reads primary_color / glow directly
+  const cols = getColours(species, p?.fill_color, p?.stroke_color, speciesParams);
   // M130: species_params.opacity takes priority over top-level p.opacity (JSON-driven)
   const spOpacity = speciesParams?.opacity as number | undefined;
   const crowdingOpacity = spOpacity !== undefined
@@ -649,223 +656,158 @@ function buildCellContainer(desc: CellDescriptor): Container {
   container.addChild(body);
 
   const pattern = new Graphics();
-  if (species === 'cil-bolt') {
-    // M045: cil-bolt → CilBoltSDFFilter replaces the Graphics draw path.
-    // Draw a transparent background quad so the filter has a surface to paint on.
-    // The SDF shader covers the entire [0,w]×[0,h] area and handles its own
-    // coordinate mapping (vTextureCoord → [-1,1] NDC) internally.
-    pattern.rect(0, 0, w, h);
-    pattern.fill({ color: 0x000000, alpha: 0 }); // transparent — shader draws over it
 
-    // Resolve fill colour from params.json or species palette
-    const fc = cols.fill;
-    const r = ((fc >> 16) & 0xff) / 255;
-    const g = ((fc >>  8) & 0xff) / 255;
-    const b = ( fc        & 0xff) / 255;
+  // ── M342: Continuous species_params rendering ────────────────────────────
+  // SDF filter type is read from species_params.sdf_type (or falls back to
+  // species name for backward compat).  No switch(species) — the JSON drives
+  // which SDF filter is constructed and what uniforms are passed.
+  const sdfType = (speciesParams?.sdf_type as string | undefined) ?? species;
 
-    const boltFilter = new CilBoltSDFFilter({
-      fillColor:   [r, g, b],
-      opacity:     1.0,
-      zigzagCount: (speciesParams?.zigzag_segments as number | undefined)
-                   ?? (speciesParams?.num_rays    as number | undefined)
-                   ?? 6,
-      amplitude:   (speciesParams?.amplitude as number | undefined) ?? 0.35,
-      time:        0,
-    });
-    pattern.filters = [boltFilter];
+  // Extract fill colour as normalised RGB for SDF filter uniforms
+  const fillRGB: [number, number, number] = [
+    ((cols.fill >> 16) & 0xff) / 255,
+    ((cols.fill >>  8) & 0xff) / 255,
+    ( cols.fill        & 0xff) / 255,
+  ];
 
-    // Expose on container for Ticker-driven animation (see renderCellGraph / renderCellGraphLive)
-    (container as any).__boltFilter = boltFilter;
-  } else if (species === 'cil-vector') {
-    // M062: cil-vector → CilVectorSDFFilter (arrow-grid SDF, Ticker-driven vector field flow).
-    // Transparent quad; shader renders arrow grid over the entire cell area.
-    // M062 upgrade: u_time driven by Ticker for curl-noise vector field animation;
-    //   arrow_length / field_scale from species_params mapped to u_arrow_length / u_field_scale.
+  // Helper: draw transparent quad for SDF filters to paint on
+  const drawSDFQuad = () => {
     pattern.rect(0, 0, w, h);
     pattern.fill({ color: 0x000000, alpha: 0 });
+  };
 
-    const fc = cols.fill;
-    const r = ((fc >> 16) & 0xff) / 255;
-    const g = ((fc >>  8) & 0xff) / 255;
-    const b = ( fc        & 0xff) / 255;
+  // ── SDF filter registry — maps sdf_type → filter constructor + container slot ──
+  const SDF_BUILDERS: Record<string, () => void> = {
+    'cil-bolt': () => {
+      drawSDFQuad();
+      const boltFilter = new CilBoltSDFFilter({
+        fillColor:   fillRGB,
+        opacity:     1.0,
+        zigzagCount: (speciesParams?.zigzag_segments as number | undefined)
+                     ?? (speciesParams?.num_rays    as number | undefined)
+                     ?? 6,
+        amplitude:   (speciesParams?.amplitude as number | undefined) ?? 0.35,
+        time:        0,
+      });
+      pattern.filters = [boltFilter];
+      (container as any).__boltFilter = boltFilter;
+    },
 
-    // M062: arrow_length pixels → normalised [0.1, 1.0] via px / (min(w,h)/2)
-    const halfMin = Math.min(w, h) / 2;
-    const arrowLengthPx = speciesParams?.arrow_length as number | undefined;
-    const arrowLengthNorm = arrowLengthPx != null
-      ? Math.max(0.1, Math.min(1.0, arrowLengthPx / halfMin))
-      : 0.5;
+    'cil-vector': () => {
+      drawSDFQuad();
+      const halfMin = Math.min(w, h) / 2;
+      const arrowLengthPx = speciesParams?.arrow_length as number | undefined;
+      const arrowLengthNorm = arrowLengthPx != null
+        ? Math.max(0.1, Math.min(1.0, arrowLengthPx / halfMin))
+        : 0.5;
+      const vectorFilter = new CilVectorSDFFilter({
+        fillColor:   fillRGB,
+        opacity:     1.0,
+        arrowCount:  (speciesParams?.arrow_count  as number | undefined) ?? 4,
+        angleSpread: (speciesParams?.angle_spread as number | undefined) ?? 0.4,
+        time:        0,
+        arrowLength: arrowLengthNorm,
+        fieldScale:  (speciesParams?.field_scale  as number | undefined) ?? 2.5,
+      });
+      pattern.filters = [vectorFilter];
+      (container as any).__vectorFilter = vectorFilter;
+    },
 
-    const vectorFilter = new CilVectorSDFFilter({
-      fillColor:   [r, g, b],
-      opacity:     1.0,
-      arrowCount:  (speciesParams?.arrow_count  as number | undefined) ?? 4,
-      angleSpread: (speciesParams?.angle_spread as number | undefined) ?? 0.4,
-      time:        0,
-      arrowLength: arrowLengthNorm,
-      fieldScale:  (speciesParams?.field_scale  as number | undefined) ?? 2.5,
-    });
-    pattern.filters = [vectorFilter];
+    'cil-plus': () => {
+      drawSDFQuad();
+      const armLengthPx   = speciesParams?.arm_length   as number | undefined;
+      const strokeWidthPx = speciesParams?.stroke_width as number | undefined;
+      const armLength   = armLengthPx   != null ? armLengthPx   / (Math.min(w, h) / 2) : 0.55;
+      const strokeWidth = strokeWidthPx != null ? strokeWidthPx / (Math.min(w, h) / 2) : 0.12;
+      const pulseSpeed = (speciesParams?.pulse_speed as number | undefined) ?? 2.0;
+      const pulseAmp   = (speciesParams?.pulse_amp   as number | undefined) ?? 0.3;
+      const plusFilter = new CilPlusSDFFilter({
+        fillColor:   fillRGB,
+        opacity:     1.0,
+        armLength,
+        strokeWidth,
+        time:       0,
+        pulseSpeed,
+        pulseAmp,
+      });
+      pattern.filters = [plusFilter];
+      (container as any).__plusFilter = plusFilter;
+    },
 
-    // M062: Ticker-driven vector field flow — __vectorFilter.time updated each frame
-    (container as any).__vectorFilter = vectorFilter;
-  } else if (species === 'cil-plus') {
-    // M063: cil-plus → CilPlusSDFFilter (plus/cross SDF, Ticker-driven pulse animation).
-    // M046 baseline: transparent quad, SDF renders cross over the cell area.
-    // M063 upgrade: adds u_time-driven glow pulse (u_cross_radius / u_cross_width uniforms).
-    pattern.rect(0, 0, w, h);
-    pattern.fill({ color: 0x000000, alpha: 0 });
+    'cil-arrow-right': () => {
+      drawSDFQuad();
+      const minDim = Math.min(w, h) || 1;
+      const rawArrowHeight = (speciesParams?.arrow_height as number | undefined);
+      const rawArrowWidth  = (speciesParams?.arrow_width  as number | undefined);
+      const arrowScale = rawArrowHeight !== undefined
+        ? Math.max(0.1, Math.min(1.5, (rawArrowHeight / minDim) * 2))
+        : 1.0;
+      const shaftWidth = rawArrowWidth !== undefined
+        ? Math.max(0.01, Math.min(0.5, rawArrowWidth / minDim))
+        : 0.08;
+      const arrowRightFilter = new CilArrowRightSDFFilter({
+        fillColor:  fillRGB,
+        opacity:    1.0,
+        arrowScale,
+        shaftWidth,
+        time:       0,
+      });
+      pattern.filters = [arrowRightFilter];
+      (container as any).__arrowRightFilter = arrowRightFilter;
+    },
 
-    const fc = cols.fill;
-    const r = ((fc >> 16) & 0xff) / 255;
-    const g = ((fc >>  8) & 0xff) / 255;
-    const b = ( fc        & 0xff) / 255;
+    'cil-eye': () => {
+      drawSDFQuad();
+      const halfMin = Math.min(w, h) / 2;
+      const numRaysVal =
+        (speciesParams?.ring_count  as number | undefined) ??
+        (speciesParams?.num_rays    as number | undefined) ??
+        8;
+      const pupilRadiusPx  = (speciesParams?.pupil_radius as number | undefined);
+      const pupilRadiusVal = pupilRadiusPx != null
+        ? Math.max(0.05, Math.min(0.6, pupilRadiusPx / halfMin))
+        : 0.22;
+      const rOuterPx = (speciesParams?.r_outer as number | undefined);
+      const focalIntensityVal = rOuterPx != null
+        ? Math.max(0.3, Math.min(2.0, (rOuterPx / halfMin) * 1.5))
+        : (speciesParams?.focal_intensity as number | undefined) ?? 1.0;
+      const rInnerRatioVal = (speciesParams?.r_inner_ratio as number | undefined);
+      const bloomRadiusVal = rInnerRatioVal != null
+        ? Math.max(0.2, Math.min(2.0, rInnerRatioVal * 2.0))
+        : (speciesParams?.bloom_radius as number | undefined) ?? 1.0;
+      const ambientColorRaw = speciesParams?.ambient_color;
+      let ambientColorVal: [number, number, number] = [0.047, 0.929, 0.565];
+      if (typeof ambientColorRaw === 'string' && ambientColorRaw.startsWith('#')) {
+        const c = parseInt(ambientColorRaw.replace('#', ''), 16);
+        ambientColorVal = [((c >> 16) & 0xff) / 255, ((c >> 8) & 0xff) / 255, (c & 0xff) / 255];
+      } else if (Array.isArray(ambientColorRaw) && ambientColorRaw.length === 3) {
+        ambientColorVal = ambientColorRaw as [number, number, number];
+      }
+      const eyeFilter = new CilEyeSDFFilter({
+        fillColor:        fillRGB,
+        opacity:          1.0,
+        numRays:          numRaysVal,
+        pupilRadius:      pupilRadiusVal,
+        focalIntensity:   focalIntensityVal,
+        bloomStrength:    (speciesParams?.bloom_strength    as number | undefined) ?? 1.2,
+        bloomRadius:      bloomRadiusVal,
+        ambientIntensity: (speciesParams?.ambient_intensity as number | undefined) ?? 3.44,
+        ambientColor:     ambientColorVal,
+        lightExposure:    (speciesParams?.light_exposure    as number | undefined) ?? 0.86,
+        shadowFar:        (speciesParams?.shadow_far        as number | undefined) ?? 40.0,
+        shadowBias:       (speciesParams?.shadow_bias       as number | undefined) ?? 0.001,
+        time:             0,
+      });
+      pattern.filters = [eyeFilter];
+      (container as any).__eyeFilter = eyeFilter;
+    },
+  };
 
-    // arm_length / stroke_width from species_params if present; normalise pixel → [-1,1] NDC
-    // SPECIES_PATTERNS uses Math.min(w,h)*0.3 for arm — translate to ~0.55 in NDC
-    const armLengthPx   = speciesParams?.arm_length   as number | undefined;
-    const strokeWidthPx = speciesParams?.stroke_width as number | undefined;
-    const armLength   = armLengthPx   != null ? armLengthPx   / (Math.min(w, h) / 2) : 0.55;
-    const strokeWidth = strokeWidthPx != null ? strokeWidthPx / (Math.min(w, h) / 2) : 0.12;
-
-    // M063: pulse params from species_params; defaults calibrated for Add & Norm breathing rhythm
-    const pulseSpeed = (speciesParams?.pulse_speed as number | undefined) ?? 2.0;
-    const pulseAmp   = (speciesParams?.pulse_amp   as number | undefined) ?? 0.3;
-
-    const plusFilter = new CilPlusSDFFilter({
-      fillColor:   [r, g, b],
-      opacity:     1.0,
-      armLength,
-      strokeWidth,
-      time:       0,
-      pulseSpeed,
-      pulseAmp,
-    });
-    pattern.filters = [plusFilter];
-
-    // Expose on container for Ticker-driven pulse animation (M063)
-    (container as any).__plusFilter = plusFilter;
-  } else if (species === 'cil-arrow-right') {
-    // M064: cil-arrow-right → CilArrowRightSDFFilter (tiled scrolling chevron SDF).
-    // Upgraded uniforms: u_arrow_scale + u_shaft_width read from species_params.
-    //   species_params.arrow_height (px) → arrowScale = arrow_height / min(w,h) * 2, clamped [0.1, 1.5]
-    //   species_params.arrow_width  (px) → shaftWidth = arrow_width  / min(w,h),     clamped [0.01, 0.5]
-    // Ticker drives __arrowRightFilter.time for horizontal scroll animation.
-    pattern.rect(0, 0, w, h);
-    pattern.fill({ color: 0x000000, alpha: 0 });
-
-    const fc = cols.fill;
-    const r = ((fc >> 16) & 0xff) / 255;
-    const g = ((fc >>  8) & 0xff) / 255;
-    const b = ( fc        & 0xff) / 255;
-
-    // Derive normalised arrowScale and shaftWidth from species_params pixel values
-    const minDim = Math.min(w, h) || 1;
-    const rawArrowHeight = (speciesParams?.arrow_height as number | undefined);
-    const rawArrowWidth  = (speciesParams?.arrow_width  as number | undefined);
-    const arrowScale = rawArrowHeight !== undefined
-      ? Math.max(0.1, Math.min(1.5, (rawArrowHeight / minDim) * 2))
-      : 1.0;
-    const shaftWidth = rawArrowWidth !== undefined
-      ? Math.max(0.01, Math.min(0.5, rawArrowWidth / minDim))
-      : 0.08;
-
-    const arrowRightFilter = new CilArrowRightSDFFilter({
-      fillColor:  [r, g, b],
-      opacity:    1.0,
-      arrowScale,
-      shaftWidth,
-      time:       0,
-    });
-    pattern.filters = [arrowRightFilter];
-
-    // Expose for Ticker-driven scroll animation
-    (container as any).__arrowRightFilter = arrowRightFilter;
-  } else if (species === 'cil-eye') {
-    // M053: cil-eye → CilEyeSDFFilter (pupil + iris ring + radial rays + sclera halo SDF).
-    // Ticker drives __eyeFilter.time for rotating radial ray animation.
-    // Uniform完善: params.json species_params 完整映射到 CilEyeSDFFilter uniforms:
-    //   ring_count    → numRays       (辐射光线数 / 同心环数)
-    //   pupil_radius  → pupilRadius   (像素→NDC归一化: px / (min(w,h)/2))
-    //   r_outer       → focalIntensity (外环半径→焦点强度: r_outer / min(w,h) * 2, clamp 0-2)
-    //   r_inner_ratio → bloomRadius   (内环比率 → bloom 半径缩放, 直接映射)
-    //   bloom_strength → bloomStrength (直接)
-    //   ambient_intensity → ambientIntensity (直接)
-    //   ambient_color  → ambientColor  ([r,g,b])
-    //   light_exposure → lightExposure (直接)
-    //   shadow_far     → shadowFar     (直接)
-    //   shadow_bias    → shadowBias    (直接)
-    pattern.rect(0, 0, w, h);
-    pattern.fill({ color: 0x000000, alpha: 0 });
-
-    const fc = cols.fill;
-    const r = ((fc >> 16) & 0xff) / 255;
-    const g = ((fc >>  8) & 0xff) / 255;
-    const b = ( fc        & 0xff) / 255;
-
-    // ── M053: params.json species_params → uniform mapping ─────────────────
-    // Normalisation reference: min(w,h)/2 maps pixel-space radii to NDC half-space [0,1].
-    const halfMin = Math.min(w, h) / 2;
-
-    // ring_count: 同心环/辐射条数 (int) → numRays (shader u_numRays)
-    // Fallback chain: ring_count → num_rays → default 8
-    const numRaysVal =
-      (speciesParams?.ring_count  as number | undefined) ??
-      (speciesParams?.num_rays    as number | undefined) ??
-      8;
-
-    // pupil_radius: pixel space → NDC [-1,1] half-space
-    // params.json pupil_radius=4.2 with h=50 → 4.2/25=0.168, clamped to [0.05, 0.6]
-    const pupilRadiusPx  = (speciesParams?.pupil_radius as number | undefined);
-    const pupilRadiusVal = pupilRadiusPx != null
-      ? Math.max(0.05, Math.min(0.6, pupilRadiusPx / halfMin))
-      : 0.22;
-
-    // r_outer: outer ring pixel radius → focalIntensity scale
-    // r_outer=21 with halfMin=25 → 21/25=0.84; map [0,1] → focalIntensity [0.3, 2.0]
-    const rOuterPx       = (speciesParams?.r_outer as number | undefined);
-    const focalIntensityVal = rOuterPx != null
-      ? Math.max(0.3, Math.min(2.0, (rOuterPx / halfMin) * 1.5))
-      : (speciesParams?.focal_intensity as number | undefined) ?? 1.0;
-
-    // r_inner_ratio: inner ring ratio [0,1] → bloomRadius (ring width factor)
-    // r_inner_ratio=0.3 maps to bloomRadius≈0.6 (multiply by 2 to span [0,1])
-    const rInnerRatioVal = (speciesParams?.r_inner_ratio as number | undefined);
-    const bloomRadiusVal = rInnerRatioVal != null
-      ? Math.max(0.2, Math.min(2.0, rInnerRatioVal * 2.0))
-      : (speciesParams?.bloom_radius as number | undefined) ?? 1.0;
-
-    // ambient_color: hex string or [r,g,b] array from params
-    const ambientColorRaw = speciesParams?.ambient_color;
-    let ambientColorVal: [number, number, number] = [0.047, 0.929, 0.565]; // default #0bed90
-    if (typeof ambientColorRaw === 'string' && ambientColorRaw.startsWith('#')) {
-      const c = parseInt(ambientColorRaw.replace('#', ''), 16);
-      ambientColorVal = [((c >> 16) & 0xff) / 255, ((c >> 8) & 0xff) / 255, (c & 0xff) / 255];
-    } else if (Array.isArray(ambientColorRaw) && ambientColorRaw.length === 3) {
-      ambientColorVal = ambientColorRaw as [number, number, number];
-    }
-
-    const eyeFilter = new CilEyeSDFFilter({
-      fillColor:        [r, g, b],
-      opacity:          1.0,
-      // M053: 完整 uniform 映射
-      numRays:          numRaysVal,
-      pupilRadius:      pupilRadiusVal,
-      focalIntensity:   focalIntensityVal,
-      bloomStrength:    (speciesParams?.bloom_strength    as number | undefined) ?? 1.2,
-      bloomRadius:      bloomRadiusVal,
-      ambientIntensity: (speciesParams?.ambient_intensity as number | undefined) ?? 3.44,
-      ambientColor:     ambientColorVal,
-      lightExposure:    (speciesParams?.light_exposure    as number | undefined) ?? 0.86,
-      shadowFar:        (speciesParams?.shadow_far        as number | undefined) ?? 40.0,
-      shadowBias:       (speciesParams?.shadow_bias       as number | undefined) ?? 0.001,
-      time:             0,
-    });
-    pattern.filters = [eyeFilter];
-
-    // Expose for Ticker-driven ray rotation animation
-    (container as any).__eyeFilter = eyeFilter;
+  const sdfBuilder = SDF_BUILDERS[sdfType];
+  if (sdfBuilder) {
+    sdfBuilder();
   } else {
+    // Fallback: legacy SPECIES_PATTERNS Graphics drawer (no SDF)
     const drawer = SPECIES_PATTERNS[species] ?? SPECIES_PATTERNS['cil-code'];
     drawer(pattern, w, h, cols.stroke, speciesParams);
   }
@@ -882,67 +824,74 @@ function buildCellContainer(desc: CellDescriptor): Container {
   txt.position.set(w / 2, h / 2);
   container.addChild(txt);
 
-  // ── Species post-process filters ────────────────────────────────────────
+  // ── M342: Post-process filters — data-driven from species_params ─────────
+  // Instead of switch(species), read godray / motion_blur config objects from
+  // species_params.  Backward compat: species name seeds defaults when
+  // species_params.godray is absent but species is a known godray species.
   const speciesFilters: any[] = [];
 
-  if (species === 'cil-eye') {
-    // GodrayFilter: focal light beams — gives "iris illumination" feel
-    const godray = new GodrayFilter({
-      angle: 30,
-      gain: 0.4,
-      lacunarity: 2.5,
-      parallel: false,
-      center: { x: w / 2, y: h / 2 },
-      alpha: 0.6,
-      time: 0,
-    });
-    speciesFilters.push(godray);
-    // Animate godray time via ticker tag stored on container
-    (container as any).__godray = godray;
-  } else if (species === 'cil-vector') {
-    // M048: GodrayFilter per-species — cil-vector (embedding / positional encoding).
-    // Directional parallel rays emanating from upper-left at a shallow angle,
-    // evoking a diffuse "information flow" shaft of light across the cell.
-    // parallel=true uses angle (not a focal point), giving crisp directional rays
-    // that suit the embedding arrow visual already drawn inside the cell.
-    // Low gain + high lacunarity = many fine rays rather than one bright beam.
-    const godray = new GodrayFilter({
-      angle:      15,       // shallow diagonal — matches arrow direction in cil-vector pattern
-      gain:       0.25,     // low intensity: subtle ambient rays, not overpowering
-      lacunarity: 3.5,      // high lacunarity = dense, fine-grained ray texture
-      parallel:   true,     // directional (angle-based), not focal
-      alpha:      0.45,
+  // ── GodrayFilter: read from species_params.godray object, fallback to species defaults
+  const spGodray = speciesParams?.godray as Record<string, unknown> | undefined;
+  // Determine godray defaults from species name for backward compat (only when no explicit godray params)
+  const GODRAY_SPECIES_DEFAULTS: Record<string, Record<string, unknown>> = {
+    'cil-eye':    { angle: 30, gain: 0.4, lacunarity: 2.5, parallel: false, center_x: 0.5, center_y: 0.5, alpha: 0.6 },
+    'cil-vector': { angle: 15, gain: 0.25, lacunarity: 3.5, parallel: true, alpha: 0.45 },
+    'cil-bolt':   { angle: 0, gain: 0.55, lacunarity: 2.0, parallel: false, center_x: 0.5, center_y: 0.0, alpha: 0.7, pulse_base_gain: 0.55, pulse_amp: 0.35, pulse_freq: 3.5 },
+  };
+  const godrayConfig = spGodray ?? GODRAY_SPECIES_DEFAULTS[species];
+
+  if (godrayConfig) {
+    const grAngle      = (godrayConfig.angle      as number | undefined) ?? 0;
+    const grGain       = (godrayConfig.gain        as number | undefined) ?? 0.4;
+    const grLacunarity = (godrayConfig.lacunarity  as number | undefined) ?? 2.5;
+    const grParallel   = (godrayConfig.parallel    as boolean | undefined) ?? false;
+    const grAlpha      = (godrayConfig.alpha       as number | undefined) ?? 0.6;
+    // Center: normalised [0,1] → pixel; uses center_x / center_y from species_params
+    const grCenterX    = (godrayConfig.center_x    as number | undefined);
+    const grCenterY    = (godrayConfig.center_y    as number | undefined);
+
+    const godrayOpts: Record<string, unknown> = {
+      angle:      grAngle,
+      gain:       grGain,
+      lacunarity: grLacunarity,
+      parallel:   grParallel,
+      alpha:      grAlpha,
       time:       0,
-    });
+    };
+    if (!grParallel && (grCenterX !== undefined || grCenterY !== undefined)) {
+      godrayOpts.center = { x: (grCenterX ?? 0.5) * w, y: (grCenterY ?? 0.5) * h };
+    }
+
+    const godray = new GodrayFilter(godrayOpts as any);
     speciesFilters.push(godray);
     (container as any).__godray = godray;
-  } else if (species === 'cil-bolt') {
-    // M048: GodrayFilter per-species — cil-bolt (FFN / MLP).
-    // Pulsing non-parallel rays from a focal point at cell top-centre,
-    // simulating electric discharge bursting outward from the apex.
-    // The focal point (center) tracks cell centre-top so rays splay radially.
-    // gain and alpha are animated by the Ticker (see __godrayPulse* below).
-    const godray = new GodrayFilter({
-      angle:      0,        // unused when parallel=false; kept at default
-      gain:       0.55,     // moderate base gain; Ticker will pulse this
-      lacunarity: 2.0,      // fewer but wider rays = bold electric look
-      parallel:   false,    // focal point mode: rays burst from center
-      center:     { x: w / 2, y: 0 },   // apex of cell — radial burst downward
-      alpha:      0.7,
-      time:       0,
-    });
-    speciesFilters.push(godray);
-    // Expose for Ticker-driven pulse animation
-    (container as any).__godray              = godray;
-    (container as any).__godrayPulseBaseGain = 0.55;   // base gain to oscillate around
-    (container as any).__godrayPulseAmp      = 0.35;   // pulse amplitude (± fraction of base)
-    (container as any).__godrayPulseFreq     = 3.5;    // fast pulse frequency (rad/s) — electric feel
-  } else if (species === 'cil-layers') {
-    // MotionBlurFilter: depth-of-field sense for layered stacking
+
+    // Godray pulse animation params (continuous from species_params.godray)
+    const pulseBaseGain = godrayConfig.pulse_base_gain as number | undefined;
+    const pulseAmp      = godrayConfig.pulse_amp       as number | undefined;
+    const pulseFreq     = godrayConfig.pulse_freq      as number | undefined;
+    if (pulseBaseGain !== undefined) {
+      (container as any).__godrayPulseBaseGain = pulseBaseGain;
+      (container as any).__godrayPulseAmp      = pulseAmp  ?? 0.35;
+      (container as any).__godrayPulseFreq     = pulseFreq ?? 3.5;
+    }
+  }
+
+  // ── MotionBlurFilter: read from species_params.motion_blur, fallback to species defaults
+  const spMotionBlur = speciesParams?.motion_blur as Record<string, unknown> | undefined;
+  const MOTION_BLUR_SPECIES_DEFAULTS: Record<string, Record<string, unknown>> = {
+    'cil-layers': { velocity_x: 3, velocity_y: 1.5, kernel_size: 5, offset: 0 },
+  };
+  const motionBlurConfig = spMotionBlur ?? MOTION_BLUR_SPECIES_DEFAULTS[species];
+
+  if (motionBlurConfig) {
     const motionBlur = new MotionBlurFilter({
-      velocity: { x: 3, y: 1.5 },
-      kernelSize: 5,
-      offset: 0,
+      velocity:   {
+        x: (motionBlurConfig.velocity_x   as number | undefined) ?? 3,
+        y: (motionBlurConfig.velocity_y   as number | undefined) ?? 1.5,
+      },
+      kernelSize: (motionBlurConfig.kernel_size as number | undefined) ?? 5,
+      offset:     (motionBlurConfig.offset      as number | undefined) ?? 0,
     });
     speciesFilters.push(motionBlur);
   }
