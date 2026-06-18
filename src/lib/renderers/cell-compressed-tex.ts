@@ -63,6 +63,10 @@ import type { TextureSourceOptions }
 import type { Renderer }
   from '../../upstream/pixijs-engine/src/rendering/renderers/types';
 
+// ── KTX2 container parser (npm: ktx-parse ^1.1.0) ────────────────────────────
+import { read as readKTX2 } from 'ktx-parse';
+import type { KTX2Container } from 'ktx-parse';
+
 // ── Cell types (pixi-cell-renderer compat) ───────────────────────────────────
 import type { CellDescriptor } from './pixi-cell-renderer';
 
@@ -1184,7 +1188,274 @@ export function buildCompressedTopology(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// § 11. Internal helpers
+// § 11. KTX2 compressed texture loading — loadTexture(src, useCompressed)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * VkFormat → PixiJS TEXTURE_FORMATS mapping for KTX2 containers.
+ *
+ * ktx-parse exposes vkFormat as a number; we map the compressed (and common
+ * uncompressed) VK enum values to the TEXTURE_FORMATS strings that PixiJS 8's
+ * CompressedSource accepts.
+ *
+ * Source of truth:
+ *   - ktx-parse/dist/constants.d.ts   (VK_FORMAT_* values)
+ *   - upstream/pixijs-engine/src/compressed-textures/ktx2/utils/vkFormatToGPUFormat.ts
+ *   - upstream/pixijs-engine/src/compressed-textures/ktx2/utils/glFormatToGPUFormat.ts
+ *
+ * @internal
+ */
+const VK_FORMAT_TO_TEXTURE: Record<number, TEXTURE_FORMATS> = {
+  // ── Uncompressed ──────────────────────────────────────────────────────────
+  23:  'rgb8unorm',            // VK_FORMAT_R8G8B8_UNORM
+  37:  'rgba8unorm',           // VK_FORMAT_R8G8B8A8_UNORM
+  43:  'rgba8unorm-srgb',      // VK_FORMAT_R8G8B8A8_SRGB
+
+  // ── BC (S3TC / BPTC) ─────────────────────────────────────────────────────
+  131: 'bc1-rgba-unorm',       // VK_FORMAT_BC1_RGB_UNORM_BLOCK
+  132: 'bc1-rgba-unorm-srgb',  // VK_FORMAT_BC1_RGB_SRGB_BLOCK
+  133: 'bc1-rgba-unorm',       // VK_FORMAT_BC1_RGBA_UNORM_BLOCK
+  134: 'bc1-rgba-unorm-srgb',  // VK_FORMAT_BC1_RGBA_SRGB_BLOCK
+  135: 'bc2-rgba-unorm',       // VK_FORMAT_BC2_UNORM_BLOCK
+  136: 'bc2-rgba-unorm-srgb',  // VK_FORMAT_BC2_SRGB_BLOCK
+  137: 'bc3-rgba-unorm',       // VK_FORMAT_BC3_UNORM_BLOCK
+  138: 'bc3-rgba-unorm-srgb',  // VK_FORMAT_BC3_SRGB_BLOCK
+  139: 'bc4-r-unorm',          // VK_FORMAT_BC4_UNORM_BLOCK
+  140: 'bc4-r-snorm',          // VK_FORMAT_BC4_SNORM_BLOCK
+  141: 'bc5-rg-unorm',         // VK_FORMAT_BC5_UNORM_BLOCK
+  142: 'bc5-rg-snorm',         // VK_FORMAT_BC5_SNORM_BLOCK
+  143: 'bc6h-rgb-ufloat',      // VK_FORMAT_BC6H_UFLOAT_BLOCK
+  144: 'bc6h-rgb-float',       // VK_FORMAT_BC6H_SFLOAT_BLOCK
+  145: 'bc7-rgba-unorm',       // VK_FORMAT_BC7_UNORM_BLOCK
+  146: 'bc7-rgba-unorm-srgb',  // VK_FORMAT_BC7_SRGB_BLOCK
+
+  // ── ETC2 ──────────────────────────────────────────────────────────────────
+  147: 'etc2-rgb8unorm',       // VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK
+  148: 'etc2-rgb8unorm-srgb',  // VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK
+  149: 'etc2-rgb8a1unorm',     // VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK
+  150: 'etc2-rgb8a1unorm-srgb',// VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK
+  151: 'etc2-rgba8unorm',      // VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK
+  152: 'etc2-rgba8unorm-srgb', // VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK
+
+  // ── EAC ───────────────────────────────────────────────────────────────────
+  153: 'eac-r11unorm',         // VK_FORMAT_EAC_R11_UNORM_BLOCK
+  155: 'eac-rg11unorm',        // VK_FORMAT_EAC_R11G11_UNORM_BLOCK
+
+  // ── ASTC ──────────────────────────────────────────────────────────────────
+  157: 'astc-4x4-unorm',       // VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+  158: 'astc-4x4-unorm-srgb',  // VK_FORMAT_ASTC_4x4_SRGB_BLOCK
+  159: 'astc-5x4-unorm',       // VK_FORMAT_ASTC_5x4_UNORM_BLOCK
+  160: 'astc-5x4-unorm-srgb',  // VK_FORMAT_ASTC_5x4_SRGB_BLOCK
+  161: 'astc-5x5-unorm',       // VK_FORMAT_ASTC_5x5_UNORM_BLOCK
+  162: 'astc-5x5-unorm-srgb',  // VK_FORMAT_ASTC_5x5_SRGB_BLOCK
+  163: 'astc-6x5-unorm',       // VK_FORMAT_ASTC_6x5_UNORM_BLOCK
+  164: 'astc-6x5-unorm-srgb',  // VK_FORMAT_ASTC_6x5_SRGB_BLOCK
+  165: 'astc-6x6-unorm',       // VK_FORMAT_ASTC_6x6_UNORM_BLOCK
+  166: 'astc-6x6-unorm-srgb',  // VK_FORMAT_ASTC_6x6_SRGB_BLOCK
+  167: 'astc-8x5-unorm',       // VK_FORMAT_ASTC_8x5_UNORM_BLOCK
+  168: 'astc-8x5-unorm-srgb',  // VK_FORMAT_ASTC_8x5_SRGB_BLOCK
+  169: 'astc-8x6-unorm',       // VK_FORMAT_ASTC_8x6_UNORM_BLOCK
+  170: 'astc-8x6-unorm-srgb',  // VK_FORMAT_ASTC_8x6_SRGB_BLOCK
+  171: 'astc-8x8-unorm',       // VK_FORMAT_ASTC_8x8_UNORM_BLOCK
+  172: 'astc-8x8-unorm-srgb',  // VK_FORMAT_ASTC_8x8_SRGB_BLOCK
+  173: 'astc-10x5-unorm',      // VK_FORMAT_ASTC_10x5_UNORM_BLOCK
+  174: 'astc-10x5-unorm-srgb', // VK_FORMAT_ASTC_10x5_SRGB_BLOCK
+  175: 'astc-10x6-unorm',      // VK_FORMAT_ASTC_10x6_UNORM_BLOCK
+  176: 'astc-10x6-unorm-srgb', // VK_FORMAT_ASTC_10x6_SRGB_BLOCK
+  177: 'astc-10x8-unorm',      // VK_FORMAT_ASTC_10x8_UNORM_BLOCK
+  178: 'astc-10x8-unorm-srgb', // VK_FORMAT_ASTC_10x8_SRGB_BLOCK
+  179: 'astc-10x10-unorm',     // VK_FORMAT_ASTC_10x10_UNORM_BLOCK
+  180: 'astc-10x10-unorm-srgb',// VK_FORMAT_ASTC_10x10_SRGB_BLOCK
+  181: 'astc-12x10-unorm',     // VK_FORMAT_ASTC_12x10_UNORM_BLOCK
+  182: 'astc-12x10-unorm-srgb',// VK_FORMAT_ASTC_12x10_SRGB_BLOCK
+  183: 'astc-12x12-unorm',     // VK_FORMAT_ASTC_12x12_UNORM_BLOCK
+  184: 'astc-12x12-unorm-srgb',// VK_FORMAT_ASTC_12x12_SRGB_BLOCK
+};
+
+/**
+ * Parse a KTX2 ArrayBuffer (using ktx-parse) into TextureSourceOptions
+ * compatible with PixiJS 8 CompressedSource.
+ *
+ * Handles non-supercompressed KTX2 containers (vkFormat ≠ VK_FORMAT_UNDEFINED).
+ * For Basis-supercompressed KTX2 files (ETC1S / UASTC with BasisLZ or Zstd),
+ * the upstream PixiJS loadKTX2 worker + libktx transcoder must be used instead.
+ *
+ * @param buf  Raw KTX2 file bytes
+ * @throws if the format is unsupported or the container uses supercompression
+ * @internal
+ */
+export function parseKTX2Buffer(buf: ArrayBuffer): TextureSourceOptions<Uint8Array[]> {
+  const container: KTX2Container = readKTX2(new Uint8Array(buf));
+
+  // Basis-supercompressed containers need libktx transcoder — not handled here
+  if (container.vkFormat === 0) {
+    throw new Error(
+      '[CELL-COMPRESSED-TEX] KTX2: Basis-supercompressed (vkFormat=0) containers require ' +
+      'the upstream PixiJS loadKTX2 worker + libktx transcoder. Use loadTexture() which ' +
+      'will fall back to the image path, or supply a non-supercompressed .ktx2 file.',
+    );
+  }
+
+  const format = VK_FORMAT_TO_TEXTURE[container.vkFormat];
+  if (!format) {
+    throw new Error(
+      `[CELL-COMPRESSED-TEX] KTX2: unsupported vkFormat ${container.vkFormat}`,
+    );
+  }
+
+  const levels: Uint8Array[] = container.levels.map(level => level.levelData);
+
+  return {
+    format,
+    width:     container.pixelWidth,
+    height:    container.pixelHeight || 1,
+    resource:  levels,
+    alphaMode: 'no-premultiply-alpha',
+  };
+}
+
+/**
+ * Load a texture from a URL, optionally using KTX2 compressed texture format.
+ *
+ * This is the primary entry point for M311 KTX2 compressed texture support.
+ *
+ * Behaviour:
+ *   - `useCompressed = true` AND `src` ends with `.ktx2`:
+ *       Fetches the KTX2 file, parses via ktx-parse, creates a CompressedSource,
+ *       and returns a GPU-uploadable Texture.
+ *   - `useCompressed = true` AND `src` does NOT end with `.ktx2`:
+ *       Probes for a `.ktx2` sibling file by replacing the extension.
+ *       If the probe fetch succeeds (HTTP 200), loads as KTX2.
+ *       Otherwise falls back to standard image loading.
+ *   - `useCompressed = false`:
+ *       Always loads via standard Image → TextureSource path (uncompressed RGBA8).
+ *
+ * For Basis-supercompressed KTX2 files (vkFormat === 0), the function catches
+ * the parse error and falls back to standard image loading with a console warning,
+ * since those files require the libktx WASM transcoder that this standalone
+ * function does not bundle.
+ *
+ * @param src            URL of the texture (image or .ktx2 file)
+ * @param useCompressed  When true, attempt KTX2 compressed loading
+ * @returns              PixiJS Texture ready for rendering
+ *
+ * @example
+ * ```ts
+ * // Load a KTX2 compressed texture directly
+ * const tex = await loadTexture('/assets/cell-atlas.ktx2', true);
+ *
+ * // Load with auto-detection: probes for .ktx2 sibling of a .png
+ * const tex2 = await loadTexture('/assets/cell-atlas.png', true);
+ *
+ * // Force uncompressed loading
+ * const tex3 = await loadTexture('/assets/cell-atlas.png', false);
+ * ```
+ */
+export async function loadTexture(
+  src: string,
+  useCompressed: boolean,
+): Promise<Texture> {
+  // ── KTX2 compressed path ──────────────────────────────────────────────────
+  if (useCompressed) {
+    let ktx2Url: string;
+    let isProbed = false;
+
+    if (src.toLowerCase().endsWith('.ktx2')) {
+      ktx2Url = src;
+    } else {
+      // Probe for a .ktx2 sibling: /assets/foo.png → /assets/foo.ktx2
+      const dotIdx = src.lastIndexOf('.');
+      ktx2Url = (dotIdx >= 0 ? src.slice(0, dotIdx) : src) + '.ktx2';
+      isProbed = true;
+    }
+
+    try {
+      const resp = await fetch(ktx2Url);
+      if (!resp.ok) {
+        if (isProbed) {
+          console.debug(
+            `[CELL-COMPRESSED-TEX] KTX2 probe miss (${resp.status}): ${ktx2Url} → image fallback`,
+          );
+          return _loadImageTexture(src);
+        }
+        throw new Error(`[CELL-COMPRESSED-TEX] KTX2 fetch failed: ${resp.status} ${ktx2Url}`);
+      }
+
+      const buf     = await resp.arrayBuffer();
+      const opts    = parseKTX2Buffer(buf);
+      const source  = new CompressedSource({ ...opts, resolution: 1 });
+      const texture = new Texture({ source });
+
+      console.debug(
+        `[CELL-COMPRESSED-TEX] KTX2 loaded: ${ktx2Url} ` +
+        `${opts.width}×${opts.height} format=${String(opts.format)} ` +
+        `levels=${opts.resource?.length ?? 1}`,
+      );
+
+      return texture;
+    } catch (err) {
+      // Basis-supercompressed or other parse failure → fall back
+      if (isProbed) {
+        console.debug(
+          `[CELL-COMPRESSED-TEX] KTX2 probe parse error → image fallback:`,
+          err,
+        );
+        return _loadImageTexture(src);
+      }
+      // Non-probed direct .ktx2 URL — caller explicitly asked for KTX2,
+      // still fall back gracefully with a warning
+      console.warn(
+        `[CELL-COMPRESSED-TEX] KTX2 load failed, falling back to image:`,
+        err,
+      );
+      // Try to load the image extension variant
+      const dotIdx  = src.lastIndexOf('.');
+      const imgUrl  = (dotIdx >= 0 ? src.slice(0, dotIdx) : src) + '.png';
+      return _loadImageTexture(imgUrl);
+    }
+  }
+
+  // ── Standard image path ───────────────────────────────────────────────────
+  return _loadImageTexture(src);
+}
+
+/**
+ * Load a standard (uncompressed) image as a PixiJS Texture.
+ *
+ * Creates an HTMLImageElement, waits for load, wraps in TextureSource → Texture.
+ * Works in any browser; the GPU receives RGBA8 uncompressed data.
+ *
+ * @param url  Image URL (.png, .jpg, .webp, etc.)
+ * @internal
+ */
+async function _loadImageTexture(url: string): Promise<Texture> {
+  // SSR guard
+  if (typeof Image === 'undefined') {
+    console.warn('[CELL-COMPRESSED-TEX] Image not available (SSR), returning empty texture');
+    return Texture.EMPTY;
+  }
+
+  return new Promise<Texture>((resolve, reject) => {
+    const img     = new Image();
+    img.crossOrigin = 'anonymous';
+
+    img.onload = () => {
+      const source  = new TextureSource({ resource: img, resolution: 1 });
+      const texture = new Texture({ source });
+      console.debug(`[CELL-COMPRESSED-TEX] Image loaded: ${url} ${img.width}×${img.height}`);
+      resolve(texture);
+    };
+
+    img.onerror = (_event) => {
+      reject(new Error(`[CELL-COMPRESSED-TEX] Image load failed: ${url}`));
+    };
+
+    img.src = url;
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 12. Internal helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
