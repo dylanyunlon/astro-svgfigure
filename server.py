@@ -678,8 +678,35 @@ def api_cells() -> JSONResponse:
     """
     GET /api/cells
     Returns CellDescriptor[] — one entry per channels/cell/*/params.json.
+    Each descriptor is enriched with ``parent_id`` (str | None) and
+    ``children`` (list[str]) derived from topology.json edges.
     """
     try:
+        # -- Build parent/children maps from topology.json edges -----------
+        parent_map: dict[str, str | None] = {}   # cell_id → parent_id
+        children_map: dict[str, list[str]] = {}   # cell_id → [child_ids]
+
+        topo_path = _CHANNELS_DIR / "skeleton" / "topology.json"
+        if topo_path.exists():
+            topo = json.loads(topo_path.read_text())
+            # Initialise every node declared in topology children
+            for node in topo.get("children", []):
+                nid = node.get("id", "")
+                if nid:
+                    parent_map.setdefault(nid, None)
+                    children_map.setdefault(nid, [])
+            # Walk non-skip edges to establish hierarchy
+            for edge in topo.get("edges", []):
+                advanced = edge.get("advanced", {})
+                if advanced.get("semanticType") == "skip_connection":
+                    continue
+                src = edge.get("sources", [None])[0]
+                tgt = edge.get("targets", [None])[0]
+                if src and tgt:
+                    parent_map[tgt] = src
+                    children_map.setdefault(src, []).append(tgt)
+
+        # -- Assemble descriptors -----------------------------------------
         descriptors = []
         for params_file in sorted(_CHANNELS_DIR.glob("cell/*/params.json")):
             cell_id = params_file.parent.name
@@ -688,6 +715,9 @@ def api_cells() -> JSONResponse:
             status_file = params_file.parent / "status.json"
             if status_file.exists():
                 data["status"] = json.loads(status_file.read_text())
+            # Attach hierarchy fields from topology
+            data["parent_id"] = parent_map.get(cell_id)
+            data["children"] = children_map.get(cell_id, [])
             descriptors.append(data)
         return JSONResponse(descriptors)
     except Exception as e:
