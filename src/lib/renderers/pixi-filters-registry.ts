@@ -476,6 +476,79 @@ export function getSpeciesNames(): string[] {
   return Object.keys(SPECIES_TRAITS).filter(k => !k.startsWith('_'));
 }
 
+// ─── M390: Parametric filter chain from species_params ─────────────────────
+//
+// buildFilterChain(sp) reads glow_intensity, glow_color, bloom_strength
+// directly from the species_params record. No species-name lookup involved.
+// Returns only the filters whose corresponding parameter is > 0.
+
+/**
+ * Shape returned by buildFilterChain.
+ * Each filter field is present only when its trigger parameter > 0.
+ */
+export interface ParametricFilterChainResult {
+  glowFilter:  GlowFilter  | null;
+  bloomFilter: BloomFilter  | null;
+  /** Flat array of the instantiated filters (non-null), ready for container.filters. */
+  filters: (GlowFilter | BloomFilter)[];
+}
+
+/**
+ * buildFilterChain — construct a PixiJS filter chain purely from species_params.
+ *
+ * Reads numeric / color values directly from the params record:
+ *   - glow_intensity > 0  → GlowFilter  (color = glow_color, outerStrength = glow_intensity)
+ *   - bloom_strength > 0  → BloomFilter  (strength = bloom_strength)
+ *
+ * No species name is used for lookup — the caller passes the already-resolved
+ * species_params object (e.g. from composite_params.json or params.json).
+ *
+ * @param sp  species_params record (Record<string, unknown>)
+ * @returns   ParametricFilterChainResult with nullable filter refs + flat array
+ *
+ * @example
+ * const { filters, glowFilter, bloomFilter } = buildFilterChain(cell.species_params);
+ * container.filters = filters;
+ */
+export function buildFilterChain(
+  sp: Record<string, unknown>,
+): ParametricFilterChainResult {
+  let glowFilter:  GlowFilter  | null = null;
+  let bloomFilter: BloomFilter  | null = null;
+
+  // ── GlowFilter — glow_intensity > 0 ──────────────────────────────────────
+  const glowIntensity = (sp?.glow_intensity as number | undefined) ?? 0;
+  if (glowIntensity > 0) {
+    const glowColorRaw = sp?.glow_color as string | undefined;
+    const glowColor    = glowColorRaw ? hexToNumber(glowColorRaw) : 0xFFFFFF;
+    glowFilter = new GlowFilter({
+      distance:      10,
+      outerStrength: glowIntensity,
+      innerStrength: 0,
+      color:         glowColor,
+      alpha:         0.85,
+      quality:       0.15,
+      knockout:      false,
+    });
+  }
+
+  // ── BloomFilter — bloom_strength > 0 ──────────────────────────────────────
+  const bloomStrength = (sp?.bloom_strength as number | undefined) ?? 0;
+  if (bloomStrength > 0) {
+    bloomFilter = new BloomFilter({
+      strength: bloomStrength,
+      quality:  4,
+    });
+  }
+
+  // ── Collect non-null filters into a flat array ────────────────────────────
+  const filters: (GlowFilter | BloomFilter)[] = [];
+  if (glowFilter)  filters.push(glowFilter);
+  if (bloomFilter) filters.push(bloomFilter);
+
+  return { glowFilter, bloomFilter, filters };
+}
+
 // ─── Re-export all constructors for direct use ──────────────────────────────
 export {
   // advanced-bloom (AT HydraBloom — upstream/pixijs-filters)
