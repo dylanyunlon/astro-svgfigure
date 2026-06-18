@@ -48,26 +48,83 @@ BASE_DIR = Path(__file__).resolve().parent
 # ── Cell SSE pub/sub — DataNotifier → browser ────────────────────────────────
 # One asyncio.Queue per connected SSE client.  When DataNotifier fires a
 # callback we put the event onto every live queue so every browser tab gets it.
+#
+# Queue items are dicts with an "event" key (the SSE event name) and a "data"
+# key (the JSON-serialisable payload).  The event_stream() generator reads
+# "event" to emit the correct `event:` line in the SSE frame.
 _cell_event_queues: list[asyncio.Queue] = []
 _cell_event_queues_lock = threading.Lock()
 
 
-def _cell_broadcast(cell_id: str, params: dict) -> None:
-    """Thread-safe push: called from DataNotifier callback (sync thread)."""
-    payload = {"cell_id": cell_id, "params": params}
+def _sse_broadcast(event: str, data: dict) -> None:
+    """
+    Thread-safe push of an arbitrary SSE event to every connected client.
+
+    Parameters
+    ----------
+    event : str
+        SSE event name (e.g. "cell_update", "topology_updated", "epoch_completed").
+    data : dict
+        JSON-serialisable payload.
+    """
+    envelope = {"event": event, "data": data}
     with _cell_event_queues_lock:
         for q in _cell_event_queues:
             try:
-                q.put_nowait(payload)
+                q.put_nowait(envelope)
             except asyncio.QueueFull:
                 pass  # slow client — drop rather than block
 
 
+# ── Typed broadcast helpers ──────────────────────────────────────────────────
+
+def _cell_broadcast(cell_id: str, params: dict) -> None:
+    """Backward-compat: broadcasts a cell_update event (also used by DataNotifier)."""
+    _sse_broadcast("cell_update", {"cell_id": cell_id, "params": params})
+
+
+def _broadcast_cell_params_updated(cell_id: str, params: dict) -> None:
+    """Broadcast cell_params_updated — fired when a cell's params.json is written."""
+    _sse_broadcast("cell_params_updated", {"cell_id": cell_id, "params": params})
+
+
+def _broadcast_topology_updated(topology: dict) -> None:
+    """Broadcast topology_updated — fired when skeleton/topology.json changes."""
+    _sse_broadcast("topology_updated", {"topology": topology})
+
+
+def _broadcast_epoch_completed(epoch: int, metrics: dict) -> None:
+    """Broadcast epoch_completed — fired at the end of each epoch in the loop."""
+    _sse_broadcast("epoch_completed", {"epoch": epoch, **metrics})
+
+
+def _broadcast_cell_loop_started(max_epochs: int) -> None:
+    """Broadcast cell_loop_started — fired when run_loop() begins."""
+    _sse_broadcast("cell_loop_started", {
+        "max_epochs": max_epochs,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+def _broadcast_cell_loop_finished(final_epoch: int, converged: bool, cells: dict) -> None:
+    """Broadcast cell_loop_finished — fired when run_loop() ends."""
+    _sse_broadcast("cell_loop_finished", {
+        "final_epoch": final_epoch,
+        "converged": converged,
+        "cell_count": len(cells),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
 def _register_cell_sse_notifier() -> None:
     """
-    Register a DataNotifier callback for every cell channel so that any
-    pipeline write to channels/cell/{id}/params.json propagates to the SSE
-    stream.  Called once at startup.
+    Register DataNotifier callbacks so that pipeline writes to channel files
+    propagate to the SSE stream.  Called once at startup.
+
+    Watched channels:
+      - cell/{id}/params.json  → cell_update + cell_params_updated
+      - skeleton/topology.json → topology_updated
+      - skeleton/epoch.json    → epoch_completed
     """
     try:
         from channels.data.notifier import DataNotifier, Notifier
@@ -78,8 +135,8 @@ def _register_cell_sse_notifier() -> None:
             "input_embed", "output", "pos_encode", "self_attn",
         ]
 
+        # ── Per-cell params.json watchers ────────────────────────────────────
         for cell_id in cell_ids:
-            # We capture cell_id by default argument to avoid closure-over-loop-var
             def _make_callback(cid: str):
                 def _cb():
                     params_path = BASE_DIR / "channels" / "cell" / cid / "params.json"
@@ -87,13 +144,42 @@ def _register_cell_sse_notifier() -> None:
                         params = json.loads(params_path.read_text())
                     except Exception:
                         params = {}
+                    # Fire both event types so old and new listeners both work
                     _cell_broadcast(cid, params)
+                    _broadcast_cell_params_updated(cid, params)
                 return _cb
 
             channel_path = f"cell/{cell_id}/params.json"
             notifier.add_notifier(channel_path, Notifier(_make_callback(cell_id)))
 
-        logger.info("[cell-sse] DataNotifier callbacks registered for %d cells", len(cell_ids))
+        # ── Topology watcher ─────────────────────────────────────────────────
+        def _topology_cb():
+            topo_path = BASE_DIR / "channels" / "skeleton" / "topology.json"
+            try:
+                topology = json.loads(topo_path.read_text())
+            except Exception:
+                topology = {}
+            _broadcast_topology_updated(topology)
+
+        notifier.add_notifier("skeleton/topology.json", Notifier(_topology_cb))
+
+        # ── Epoch watcher (epoch.json written by run_loop each iteration) ────
+        def _epoch_cb():
+            epoch_path = BASE_DIR / "channels" / "skeleton" / "epoch.json"
+            try:
+                epoch_data = json.loads(epoch_path.read_text())
+            except Exception:
+                epoch_data = {}
+            epoch_num = epoch_data.get("current", -1)
+            _broadcast_epoch_completed(epoch_num, epoch_data)
+
+        notifier.add_notifier("skeleton/epoch.json", Notifier(_epoch_cb))
+
+        logger.info(
+            "[cell-sse] DataNotifier callbacks registered for %d cells "
+            "+ topology + epoch watchers",
+            len(cell_ids),
+        )
     except Exception as exc:
         logger.warning("[cell-sse] Could not register DataNotifier callbacks: %s", exc)
 WEB_DIR = BASE_DIR / "web"
@@ -201,27 +287,33 @@ async def api_cell_events() -> StreamingResponse:
     """
     GET /api/cell-events  →  text/event-stream
 
-    Pushes cell state updates to every connected browser tab in real-time.
-    Each SSE event:
-      event: cell_update
-      data: {"cell_id": "self_attn", "params": { ...CellParamsJson... }}
+    Pushes real-time updates to every connected browser tab.
+
+    SSE event types
+    ───────────────
+      cell_update          — legacy per-cell state (backward compat)
+      cell_params_updated  — cell params.json written
+      topology_updated     — skeleton/topology.json changed
+      epoch_completed      — one epoch of the convergence loop finished
+      cell_loop_started    — run_loop() begins
+      cell_loop_finished   — run_loop() ends (converged or max-epoch)
 
     A keepalive comment (": ping") is sent every 15 s to prevent proxy
     timeouts and to let the client detect a dropped connection quickly.
 
     Flow:
-      pipeline writes channels/cell/{id}/params.json
-        → caller invokes DataNotifier.notify("cell/{id}/params.json")
-          → _cell_broadcast() puts payload onto every asyncio.Queue
+      pipeline writes a channel file
+        → DataNotifier.notify() or explicit _broadcast_*() call
+          → _sse_broadcast() puts envelope onto every asyncio.Queue
             → this generator reads the queue and streams SSE to browser
-              → CellEventSource.ts receives it and calls mgr.updateCell()
     """
     q: asyncio.Queue = asyncio.Queue(maxsize=256)
     with _cell_event_queues_lock:
         _cell_event_queues.append(q)
 
     async def _initial_snapshot():
-        """Send current params.json for all cells immediately on connect."""
+        """Send current state for all cells + topology immediately on connect."""
+        # ── Cell params snapshots ────────────────────────────────────────
         cell_dir = BASE_DIR / "channels" / "cell"
         for params_file in sorted(cell_dir.glob("*/params.json")):
             try:
@@ -232,18 +324,40 @@ async def api_cell_events() -> StreamingResponse:
             except Exception:
                 pass
 
+        # ── Topology snapshot ────────────────────────────────────────────
+        topo_path = BASE_DIR / "channels" / "skeleton" / "topology.json"
+        if topo_path.exists():
+            try:
+                topology = json.loads(topo_path.read_text())
+                data = json.dumps({"topology": topology}, ensure_ascii=True)
+                yield f"event: topology_updated\ndata: {data}\n\n"
+            except Exception:
+                pass
+
+        # ── Current epoch snapshot ───────────────────────────────────────
+        epoch_path = BASE_DIR / "channels" / "skeleton" / "epoch.json"
+        if epoch_path.exists():
+            try:
+                epoch_data = json.loads(epoch_path.read_text())
+                data = json.dumps(epoch_data, ensure_ascii=True)
+                yield f"event: epoch_completed\ndata: {data}\n\n"
+            except Exception:
+                pass
+
     async def event_stream():
-        # 1. Initial snapshot so frontend hydrates without a separate /api/cells fetch
+        # 1. Initial snapshot so frontend hydrates without separate REST fetches
         async for chunk in _initial_snapshot():
             yield chunk
 
-        # 2. Live updates pushed by DataNotifier callbacks via _cell_broadcast()
+        # 2. Live updates pushed via _sse_broadcast()
         try:
             while True:
                 try:
-                    payload = await asyncio.wait_for(q.get(), timeout=15.0)
+                    envelope = await asyncio.wait_for(q.get(), timeout=15.0)
+                    event_name = envelope.get("event", "cell_update")
+                    payload = envelope.get("data", envelope)
                     data = json.dumps(payload, ensure_ascii=True)
-                    yield f"event: cell_update\ndata: {data}\n\n"
+                    yield f"event: {event_name}\ndata: {data}\n\n"
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"   # keepalive — invisible to onmessage
         finally:
@@ -333,6 +447,7 @@ async def api_cell_publish(request_data: dict) -> JSONResponse:
             else:
                 sse_params = agent_params
             _cell_broadcast(cell_id, sse_params)
+            _broadcast_cell_params_updated(cell_id, sse_params)
         except Exception as sse_exc:
             logger.warning(f"_cell_broadcast failed: {sse_exc}")
 
@@ -391,9 +506,13 @@ async def api_topology(request_data: dict) -> JSONResponse:
         )
 
         if result.success:
+            topo_dict = result.topology.model_dump(exclude_none=True) if result.topology else None
+            # ── Broadcast topology change to SSE clients ─────────────────
+            if topo_dict:
+                _broadcast_topology_updated(topo_dict)
             return JSONResponse({
                 "success": True,
-                "topology": result.topology.model_dump(exclude_none=True) if result.topology else None,
+                "topology": topo_dict,
                 "model_used": result.model_used,
             })
         else:
@@ -654,6 +773,10 @@ async def api_cell_loop(request_data: dict) -> JSONResponse:
 
         import importlib, loop_orchestrator as _lo
         importlib.reload(_lo)
+
+        # ── Broadcast loop start to SSE clients ──────────────────────────
+        _broadcast_cell_loop_started(max_epochs)
+
         output_svg = _lo.run_loop(max_epochs=max_epochs)
 
         # Collect all cell params.json
@@ -661,6 +784,20 @@ async def api_cell_loop(request_data: dict) -> JSONResponse:
         for params_file in _CHANNELS_DIR.glob("cell/*/params.json"):
             cell_id = params_file.parent.name
             cells_result[cell_id] = json.loads(params_file.read_text())
+
+        # ── Determine convergence from epoch.json ────────────────────────
+        _epoch_file = _CHANNELS_DIR / "skeleton" / "epoch.json"
+        _epoch_info: dict = {}
+        if _epoch_file.exists():
+            try:
+                _epoch_info = json.loads(_epoch_file.read_text())
+            except Exception:
+                pass
+        _final_epoch = _epoch_info.get("current", max_epochs - 1)
+        _converged = _epoch_info.get("status") == "converged"
+
+        # ── Broadcast loop finish to SSE clients ─────────────────────────
+        _broadcast_cell_loop_finished(_final_epoch, _converged, cells_result)
 
         return JSONResponse({
             "success": True,
@@ -670,6 +807,8 @@ async def api_cell_loop(request_data: dict) -> JSONResponse:
 
     except Exception as e:
         logger.exception("api_cell_loop error")
+        # Broadcast loop failure so SSE clients know it stopped
+        _broadcast_cell_loop_finished(-1, False, {})
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
