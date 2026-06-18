@@ -1,10 +1,11 @@
 /**
- * EdgeRenderer.ts — edge渲染 (Graphics-based bezier edges with species palette)
+ * EdgeRenderer.ts — edge渲染 (Graphics-based bezier edges with species_params)
  *
  * Reads edge topology from channels/physics/edge_routes.json and renders each
  * connection as a cubic Bézier curve using PixiJS Graphics.  Stroke colour is
- * derived from the source cell's species via getSpeciesPalette, giving every
- * edge a colour that visually ties it to the cell it originates from.
+ * derived from the source cell's species_params.primary_color (read from
+ * channels/rendering/species/params.json), giving every edge a colour that
+ * visually ties it to the cell it originates from.
  *
  * A lightweight "flow" animation shifts a dash-offset along each curve every
  * frame so the viewer perceives signal travelling from source → target.
@@ -17,7 +18,28 @@
 
 import { Container, Graphics } from 'pixi.js';
 import routes from '../../channels/physics/edge_routes.json';
-import { getSpeciesPalette } from './renderers/cell-color-palette';
+import speciesParamsArr from '../../channels/rendering/species/params.json';
+
+// ── Species params lookup (species → primary_color hex number) ──────────────
+
+interface SpeciesParamEntry {
+  species: string;
+  primary_color?: string;
+  [key: string]: unknown;
+}
+
+function hexToNum(hex: string): number {
+  return parseInt(hex.replace('#', ''), 16);
+}
+
+const DEFAULT_EDGE_COLOR = 0x90A4AE;
+
+const speciesColorMap: Record<string, number> = {};
+for (const entry of speciesParamsArr as SpeciesParamEntry[]) {
+  if (entry.species && entry.primary_color) {
+    speciesColorMap[entry.species] = hexToNum(entry.primary_color);
+  }
+}
 
 // ── Route data shapes ────────────────────────────────────────────────────────
 
@@ -142,11 +164,11 @@ export class EdgeRenderer {
       const pts = route.points;
       if (pts.length < 2) continue;
 
-      // Resolve source species for palette colour
+      // Resolve source species for colour from species_params.primary_color
       const sourceId = route.sources[0] ?? '';
       const cellInfo = cellMap.get(sourceId);
       const species = cellInfo?.species ?? '';
-      const palette = getSpeciesPalette(species);
+      const strokeColor = speciesColorMap[species] ?? DEFAULT_EDGE_COLOR;
 
       const p0 = pts[0];
       const p1 = pts[pts.length - 1];
@@ -161,7 +183,6 @@ export class EdgeRenderer {
       const gfx = new Graphics();
 
       // Initial draw
-      const strokeColor = palette.primary;
       const width = isSkip ? SKIP_EDGE_WIDTH : EDGE_WIDTH;
       const alpha = isSkip ? SKIP_ALPHA : EDGE_ALPHA;
 
