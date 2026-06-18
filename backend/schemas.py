@@ -125,6 +125,11 @@ class ScaffoldElement(BaseModel):
     height: float
     style: str = "rounded_rect"
     fill: str = "#E3F2FD"
+    children: Optional[List["ScaffoldElement"]] = None
+
+
+# Resolve forward references for self-referencing ScaffoldElement
+ScaffoldElement.model_rebuild()
 
 
 class ScaffoldConnection(BaseModel):

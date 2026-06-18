@@ -96,20 +96,28 @@ def build_scaffold(
 
     elements: List[ScaffoldElement] = []
     connections: List[ScaffoldConnection] = []
+    # flat_index collects every element (including deeply nested children)
+    # for edge-routing lookups and canvas-size computation.
+    flat_index: List[ScaffoldElement] = []
 
     total_nodes = len(children)
 
     # ── Convert nodes to scaffold elements (recursive for compound nodes) ──
-    _build_elements_recursive(children, elements, connections, padding, depth=0, parent_id=None)
+    _build_elements_recursive(
+        children, elements, connections, padding,
+        depth=0, parent_id=None,
+        offset_x=0.0, offset_y=0.0,
+        flat_index=flat_index,
+    )
 
     # ── Convert top-level edges to scaffold connections ─────────────────
     for edge in edges:
-        conn = _build_connection_from_edge(edge, elements, padding)
+        conn = _build_connection_from_edge(edge, flat_index, padding)
         if conn:
             connections.append(conn)
 
-    # ── Compute canvas dimensions ───────────────────────────────────────
-    canvas_width, canvas_height = _compute_canvas_size(elements, padding)
+    # ── Compute canvas dimensions (using flat_index to include all nodes) ─
+    canvas_width, canvas_height = _compute_canvas_size(flat_index, padding)
 
     scaffold = NanoBananaScaffold(
         figure_type="academic_architecture",
@@ -126,8 +134,9 @@ def build_scaffold(
     )
 
     logger.info(
-        f"Scaffold built: {len(elements)} elements, {len(connections)} connections, "
-        f"canvas={canvas_width}x{canvas_height}"
+        f"Scaffold built: {len(elements)} top-level elements, "
+        f"{len(flat_index)} total nodes (incl. nested children), "
+        f"{len(connections)} connections, canvas={canvas_width}x{canvas_height}"
     )
 
     return scaffold
@@ -180,15 +189,28 @@ def _build_elements_recursive(
     padding: float,
     depth: int = 0,
     parent_id: Optional[str] = None,
+    offset_x: float = 0.0,
+    offset_y: float = 0.0,
+    flat_index: Optional[List[ScaffoldElement]] = None,
 ) -> None:
     """
     Recursively build scaffold elements from ELK nodes, handling compound nodes.
 
-    For compound (group) nodes:
-      - Creates a group element with borderless background tint
-      - Recursively processes nested children
-      - Processes nested edges within the compound node
+    Compound (group) nodes get their children nested under ``elem.children``
+    instead of appended to the top-level list, preserving the full hierarchy
+    so that all 40+ nodes appear in the skeleton — not just the top-level shells.
+
+    ELK child coordinates are **relative to their parent**.  ``offset_x / offset_y``
+    accumulate the ancestor chain so every element ends up with absolute canvas
+    coordinates.
+
+    ``flat_index`` is a shared flat list that collects *every* element regardless of
+    depth — used by ``_compute_simple_connection`` and ``_compute_canvas_size`` to
+    locate nodes that live inside compound parents.
     """
+    if flat_index is None:
+        flat_index = []
+
     total = len(children) if isinstance(children, list) else 0
 
     for i, node in enumerate(children if isinstance(children, list) else []):
@@ -215,8 +237,8 @@ def _build_elements_recursive(
             is_group = getattr(node, "group", False)
             is_borderless = getattr(node, "borderless", False)
             icon_hint = getattr(node, "iconHint", None)
-            nested_children = getattr(node, "children", [])
-            nested_edges = getattr(node, "edges", [])
+            nested_children = getattr(node, "children", []) or []
+            nested_edges = getattr(node, "edges", []) or []
 
         node_type = _classify_node(node_id, i, total)
 
@@ -232,32 +254,51 @@ def _build_elements_recursive(
             fill = NODE_COLORS[(i + depth * 3) % len(NODE_COLORS)]
             style = "rounded_rect"
 
+        # Absolute position = parent offset + own relative position + canvas padding
+        abs_x = offset_x + x + padding
+        abs_y = offset_y + y + padding
+
         elem = ScaffoldElement(
             id=node_id,
             type=node_type if not is_group else "group",
             label=label,
-            x=x + padding,
-            y=y + padding,
+            x=abs_x,
+            y=abs_y,
             width=w,
             height=h,
             style=style,
             fill=fill,
         )
-        elements.append(elem)
 
-        # Recursively process nested children (compound nodes)
+        # Always add to flat_index for edge-routing lookups & canvas sizing
+        flat_index.append(elem)
+
+        # Recursively process nested children — nest them under elem.children
         if nested_children and isinstance(nested_children, list):
+            child_elements: List[ScaffoldElement] = []
             _build_elements_recursive(
-                nested_children, elements, connections,
-                padding, depth + 1, parent_id=node_id,
+                nested_children,
+                child_elements,
+                connections,
+                padding=0.0,  # padding already baked into abs_x/abs_y
+                depth=depth + 1,
+                parent_id=node_id,
+                offset_x=abs_x,
+                offset_y=abs_y,
+                flat_index=flat_index,
             )
+            if child_elements:
+                elem.children = child_elements
 
         # Process nested edges inside compound nodes
         if nested_edges and isinstance(nested_edges, list):
             for edge in nested_edges:
-                conn = _build_connection_from_edge(edge, elements, padding)
+                conn = _build_connection_from_edge(edge, flat_index, padding=0.0)
                 if conn:
                     connections.append(conn)
+
+        # Append to the *current-level* elements list (top-level or parent's children)
+        elements.append(elem)
 
 
 def _build_connection_from_edge(
