@@ -137,6 +137,8 @@ export { TuringPatternSpecies, speciesTuringMode, TuringPatternParams, TuringPat
 export { UniformValue, SpeciesUniformBag, PhysicsState, initSpeciesLive, getSpeciesUniforms, physicsUniformsToState, getLoadedSpecies } from './uil-species-live';
 // density-field-texture (M763)
 export { DensityFieldTextureConfig, DensityFieldTexture, ParticleSource, selfTest as densityFieldTextureSelfTest } from './density-field-texture';
+// velocity-field-texture (M764)
+export { VelocityFieldTextureConfig, VelocityFieldTexture, VelocityParticleSource, selfTest as velocityFieldTextureSelfTest } from './velocity-field-texture';
 // water-caustics
 export { WaterCausticsConfig, WaterCaustics } from './water-caustics';
 // world-boundary
