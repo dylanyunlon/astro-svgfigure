@@ -6,6 +6,11 @@
 import { SpatialHash, buildSpatialHash, queryNeighbors } from "./spatial-hash";
 import { DFSPHSolver, solvePressure, applyPressureForces } from "./dfsph-solver";
 import {
+  Particle as DfsphParticle,
+  pressureSolve as dfsphPressureSolve,
+  divergenceSolve as dfsphDivergenceSolve,
+} from "./dfsph-solver";
+import {
   RigidBody,
   integrateRigidBody,
   applyImpulseToRigidBody,
@@ -323,9 +328,100 @@ function substep(world: World, dt: number): void {
   // 3. Boundary density contribution (wall particles inflate density near edges)
   applyBoundaryDensity(particles, wallParticles, world._hash, config);
 
-  // 4. DFSPH pressure solve + force application
-  solvePressure(_solver, particles, neighborsMap, config);
+  // 4. DFSPH pressure + divergence solve loops
+  //
+  // DFSPH (Bender & Koschier 2017) splits pressure correction into two nested
+  // iterations: a density-error correction loop and a divergence-free loop.
+  //
+  //  · Pressure correction  — 3 iterations per frame
+  //    Each iteration: density pass → force pass (GPU) + CPU pressure solve
+  //    Drives  ρ*_i → ρ₀  by correcting predicted velocities.
+  //
+  //  · Divergence correction — 2 iterations per frame
+  //    Each iteration: density pass → force pass (GPU) + CPU divergence solve
+  //    Drives  div v_i → 0  (incompressibility in velocity field).
+  //
+  // The SPHGPUOrchestrator compute passes keep the GPU-side density / pressure
+  // buffers in sync with the CPU state so the renderer always sees up-to-date
+  // values without an extra readback.
+
+  const PRESSURE_ITERS   = 3;
+  const DIVERGENCE_ITERS = 2;
+
+  // ── 4a. Pressure correction loop ──────────────────────────────────────
+  for (let iter = 0; iter < PRESSURE_ITERS; iter++) {
+    // CPU: run one DFSPH pressure solve step (updates particle.vx/vy).
+    // Uses the correctly-imported pressureSolve from dfsph-solver.ts.
+    dfsphPressureSolve(
+      particles as unknown as DfsphParticle[],
+      particles.map((p) => {
+        const ns = neighborsMap.get(p.id) ?? [];
+        return ns.map((n) => particles.indexOf(n));
+      }),
+      config.smoothingRadius,
+      1.0,           // unit mass
+      dt,
+      config.restDensity,
+      1,             // single iteration per outer loop step
+    );
+
+    // GPU: re-compute density + pressure from the corrected velocities so
+    // the force pass operates on fresh data; forces are also recalculated.
+    if ((world as any).orchestrator) {
+      const orch     = (world as any).orchestrator as import("./SPHGPUOrchestrator").SPHGPUOrchestrator;
+      const nbLists  = particles.map((p) => {
+        const ns = neighborsMap.get(p.id) ?? [];
+        return ns.map((n) => particles.indexOf(n));
+      });
+      orch.uploadNeighborLists(nbLists, particles.length);
+      const gpuDevice: GPUDevice | undefined = (world as any)._gpuDevice;
+      if (gpuDevice) {
+        const enc = gpuDevice.createCommandEncoder({ label: `dfsph-pressure-iter-${iter}` });
+        orch.encodeDensityPressure(enc, particles.length);
+        orch.encodeForces(enc, particles.length);
+        gpuDevice.queue.submit([enc.finish()]);
+      }
+    }
+  }
+
+  // Apply the pressure forces accumulated by the legacy CPU solver
+  // (kept for backwards compatibility with the existing substep pipeline).
   applyPressureForces(particles, neighborsMap, config);
+
+  // ── 4b. Divergence-free correction loop ───────────────────────────────
+  for (let iter = 0; iter < DIVERGENCE_ITERS; iter++) {
+    // CPU: run one DFSPH divergence solve step (corrects velocity divergence).
+    dfsphDivergenceSolve(
+      particles as unknown as DfsphParticle[],
+      particles.map((p) => {
+        const ns = neighborsMap.get(p.id) ?? [];
+        return ns.map((n) => particles.indexOf(n));
+      }),
+      config.smoothingRadius,
+      1.0,           // unit mass
+      dt,
+      config.restDensity,
+      1,             // single iteration per outer loop step
+    );
+
+    // GPU: re-dispatch density + force passes to reflect divergence-corrected
+    // velocities before the integrator commits the final positions.
+    if ((world as any).orchestrator) {
+      const orch    = (world as any).orchestrator as import("./SPHGPUOrchestrator").SPHGPUOrchestrator;
+      const nbLists = particles.map((p) => {
+        const ns = neighborsMap.get(p.id) ?? [];
+        return ns.map((n) => particles.indexOf(n));
+      });
+      orch.uploadNeighborLists(nbLists, particles.length);
+      const gpuDevice: GPUDevice | undefined = (world as any)._gpuDevice;
+      if (gpuDevice) {
+        const enc = gpuDevice.createCommandEncoder({ label: `dfsph-divergence-iter-${iter}` });
+        orch.encodeDensityPressure(enc, particles.length);
+        orch.encodeForces(enc, particles.length);
+        gpuDevice.queue.submit([enc.finish()]);
+      }
+    }
+  }
 
   // 5. Fluid–rigid coupling: compute coupling forces, transfer momentum
   const couplingForces = computeFluidRigidCoupling(

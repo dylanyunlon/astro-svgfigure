@@ -1213,6 +1213,160 @@ export class SPHGPUOrchestrator {
     }
   }
 
+  // =========================================================================
+  // Public encode-style API used by SPHWorld and world-stepper DFSPH loop
+  // =========================================================================
+
+  /**
+   * Async init shim — the constructor already performs synchronous
+   * initialisation; this exists so callers that `await orchestrator.init()`
+   * continue to work after refactors.
+   */
+  async init(): Promise<void> { /* GPU pipelines already built in constructor */ }
+
+  // ── Neighbor / boundary upload ──────────────────────────────────────────
+
+  /**
+   * Upload neighbour CSR lists built on the CPU into GPU storage buffers and
+   * refresh the dynamic neighbor bind group.
+   *
+   * @param neighborLists - per-particle array-of-arrays of neighbour indices
+   * @param n             - number of fluid particles
+   */
+  uploadNeighborLists(
+    neighborLists: number[][],
+    n: number,
+  ): void {
+    const dev = this.device;
+
+    // Build flat CSR arrays
+    const rowPtr: number[]  = [0];
+    const neighborData: number[] = [];
+    for (let i = 0; i < n; i++) {
+      for (const j of neighborLists[i]) {
+        neighborData.push(j);
+      }
+      rowPtr.push(neighborData.length);
+    }
+
+    const rowPtrArr      = new Int32Array(rowPtr);
+    const neighborArr    = neighborData.length > 0
+      ? new Int32Array(neighborData)
+      : new Int32Array(1);
+
+    const neighborBuf = dev.createBuffer({
+      label: "neighbor-data-upload",
+      size : Math.max(neighborArr.byteLength, 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    const rowPtrBuf = dev.createBuffer({
+      label: "row-ptr-upload",
+      size : Math.max(rowPtrArr.byteLength, 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    dev.queue.writeBuffer(neighborBuf, 0, neighborArr);
+    dev.queue.writeBuffer(rowPtrBuf,   0, rowPtrArr);
+
+    this.updateNeighborBG({ neighborBuf, rowPtrBuf });
+
+    // Destroy the old staging buffers on the next microtask (GPU queue is async)
+    Promise.resolve().then(() => { neighborBuf.destroy(); rowPtrBuf.destroy(); });
+  }
+
+  // ── Per-pass encode helpers (share an existing GPUCommandEncoder) ────────
+
+  /**
+   * Encode the density + pressure compute pass into `encoder`.
+   * Precondition: `uploadNeighborLists` must have been called this frame.
+   *
+   * @param encoder - command encoder to append the pass into
+   * @param n       - number of fluid particles
+   */
+  encodeDensityPressure(encoder: GPUCommandEncoder, n: number): void {
+    const wg = Math.ceil(n / WORKGROUP_SIZE);
+
+    const pass = encoder.beginComputePass({ label: "dfsph-density-pressure" });
+    pass.setPipeline(this.densityPipeline);
+    pass.setBindGroup(0, this.uniformBG);
+    pass.setBindGroup(1, this.densityParticleBG);
+    pass.setBindGroup(2, this.neighborBG!);
+    pass.setBindGroup(3, this._getOrCreateEmptyBoundaryBG());
+    pass.dispatchWorkgroups(wg);
+    pass.end();
+  }
+
+  /**
+   * Encode the pressure-gradient + viscosity force compute pass into `encoder`.
+   * Precondition: density pass must have been dispatched this frame.
+   *
+   * @param encoder - command encoder to append the pass into
+   * @param n       - number of fluid particles
+   */
+  encodeForces(encoder: GPUCommandEncoder, n: number): void {
+    const wg = Math.ceil(n / WORKGROUP_SIZE);
+
+    const pass = encoder.beginComputePass({ label: "dfsph-forces" });
+    pass.setPipeline(this.forcePipeline);
+    pass.setBindGroup(0, this.uniformBG);
+    pass.setBindGroup(1, this.forceParticleBG);
+    pass.setBindGroup(2, this.neighborBG!);
+    pass.setBindGroup(3, this._getOrCreateEmptyBoundaryBG());
+    pass.dispatchWorkgroups(wg);
+    pass.end();
+  }
+
+  /**
+   * Encode the symplectic Euler integration + boundary clamp pass into `encoder`.
+   * Also writes the per-frame `dt` into the uniform buffer.
+   *
+   * @param encoder - command encoder to append the pass into
+   * @param n       - number of fluid particles
+   * @param dt      - current frame Δt (seconds)
+   */
+  encodeIntegrate(encoder: GPUCommandEncoder, n: number, dt: number): void {
+    // Patch `dt` in the uniform buffer (offset 5 × 4 = byte 20)
+    const dtBuf = new Float32Array([dt]);
+    this.device.queue.writeBuffer(this.uniformBuf, 20, dtBuf);
+
+    const wg = Math.ceil(n / WORKGROUP_SIZE);
+
+    const pass = encoder.beginComputePass({ label: "dfsph-integrate" });
+    pass.setPipeline(this.integratePipeline);
+    pass.setBindGroup(0, this.uniformBG);
+    pass.setBindGroup(1, this.integrateParticleBG);
+    pass.dispatchWorkgroups(wg);
+    pass.end();
+  }
+
+  // ── Internal helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Returns a lazily-created empty boundary bind group (zero particles) so
+   * the density and force shaders can still bind group 3 without a real
+   * boundary buffer.
+   */
+  private _emptyBoundaryBG: GPUBindGroup | null = null;
+  private _emptyBoundaryBuf: GPUBuffer | null    = null;
+
+  private _getOrCreateEmptyBoundaryBG(): GPUBindGroup {
+    if (this._emptyBoundaryBG) return this._emptyBoundaryBG;
+
+    this._emptyBoundaryBuf = this.device.createBuffer({
+      label: "boundary-empty",
+      size : 16,          // one vec4f placeholder
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this._emptyBoundaryBG = this.device.createBindGroup({
+      label  : "boundary-empty-bg",
+      layout : this.boundaryBGL,
+      entries: [{ binding: 0, resource: { buffer: this._emptyBoundaryBuf } }],
+    });
+    return this._emptyBoundaryBG;
+  }
+
+  // =========================================================================
+
   // -------------------------------------------------------------------------
   /** Release GPU resources owned by this orchestrator. */
   destroy(): void {
@@ -1220,6 +1374,9 @@ export class SPHGPUOrchestrator {
     this.hashUniformBuf.destroy();
     this.scanUniformBuf.destroy();
     this.scanBlockSumBuf?.destroy();
+    this._emptyBoundaryBuf?.destroy();
+    this._emptyBoundaryBuf  = null;
+    this._emptyBoundaryBG   = null;
     // GPUComputePipelines and GPUBindGroupLayouts are GC'd by the device;
     // no explicit destroy() method exists for them in the WebGPU spec.
     this.neighborBG       = null;
