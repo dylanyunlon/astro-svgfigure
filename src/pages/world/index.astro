@@ -286,6 +286,18 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <span class="hud-value" id="hud-fps">—</span>
       </div>
       <div class="hud-row">
+        <span class="hud-label">COLLISIONS</span>
+        <span class="hud-value" id="hud-collisions">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">PRESSURE IT.</span>
+        <span class="hud-value" id="hud-pressure-iters">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">MEM</span>
+        <span class="hud-value" id="hud-memory">—</span>
+      </div>
+      <div class="hud-row">
         <span class="hud-label">BACKEND</span>
         <span class="hud-value" id="hud-backend">—</span>
       </div>
@@ -373,13 +385,16 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   }
 
   // ── DOM refs ─────────────────────────────────────────────────────────────────
-  const canvas        = document.getElementById('sph-canvas')     as HTMLCanvasElement;
-  const hud           = document.getElementById('hud')            as HTMLElement;
-  const hudParticles  = document.getElementById('hud-particles')  as HTMLElement;
-  const hudFps        = document.getElementById('hud-fps')        as HTMLElement;
-  const hudBackend    = document.getElementById('hud-backend')    as HTMLElement;
-  const hudQos        = document.getElementById('hud-qos')        as HTMLElement;
-  const hudSimTime    = document.getElementById('hud-sim-time')   as HTMLElement;
+  const canvas            = document.getElementById('sph-canvas')         as HTMLCanvasElement;
+  const hud               = document.getElementById('hud')                as HTMLElement;
+  const hudParticles      = document.getElementById('hud-particles')      as HTMLElement;
+  const hudFps            = document.getElementById('hud-fps')            as HTMLElement;
+  const hudCollisions     = document.getElementById('hud-collisions')     as HTMLElement;
+  const hudPressureIters  = document.getElementById('hud-pressure-iters') as HTMLElement;
+  const hudMemory         = document.getElementById('hud-memory')         as HTMLElement;
+  const hudBackend        = document.getElementById('hud-backend')        as HTMLElement;
+  const hudQos            = document.getElementById('hud-qos')            as HTMLElement;
+  const hudSimTime        = document.getElementById('hud-sim-time')       as HTMLElement;
   const fallbackBanner= document.getElementById('webgpu-fallback')as HTMLElement;
   const initOverlay   = document.getElementById('init-overlay')   as HTMLElement;
   const qosBtns       = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
@@ -729,6 +744,35 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       // Update HUD
       hudParticles.textContent = world.particleCount?.toLocaleString() ?? profile.particleCount.toLocaleString();
       hudFps.textContent       = meter.fps.toFixed(1);
+
+      // ── Collision pairs ──────────────────────────────────────────────────────
+      // Prefer world.getManifolds() (already queried above for debug overlay),
+      // then a dedicated collisionPairCount accessor, then fall back to '—'.
+      const manifoldsForHUD  = world.getManifolds?.() ?? [];
+      const collisionCount   =
+        typeof world.collisionPairCount === 'number'
+          ? world.collisionPairCount
+          : manifoldsForHUD.length;
+      hudCollisions.textContent = collisionCount.toLocaleString();
+
+      // ── Pressure solver iterations ───────────────────────────────────────────
+      // SPHWorld may expose lastPressureIters, pressureIterations, or substepCount.
+      const pressureIters =
+        world.lastPressureIters     ??
+        world.pressureIterations    ??
+        world.lastSubstepIterations ??
+        (world.substeps ?? profile.substeps);
+      hudPressureIters.textContent = String(pressureIters);
+
+      // ── Memory ───────────────────────────────────────────────────────────────
+      // Use the Performance Memory API (Chrome) when available; otherwise show '—'.
+      const perf = performance as any;
+      if (perf.memory?.usedJSHeapSize !== undefined) {
+        const mb = perf.memory.usedJSHeapSize / 1_048_576;
+        hudMemory.textContent = `${mb.toFixed(1)} MB`;
+      } else {
+        hudMemory.textContent = '—';
+      }
 
       rafId = requestAnimationFrame(loop);
     }
