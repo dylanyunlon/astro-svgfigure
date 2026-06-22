@@ -2,6 +2,9 @@
 import * as Comlink from "comlink";
 import { WorldStepperV2, StepSnapshot } from "./world-stepper";
 import { QoSSpatialBridge, QoSLevel } from "./qos-spatial-bridge";
+import { ATRenderPipeline, type ATRenderPipelineOptions } from "./ATRenderPipeline";
+import { PerformanceBudget, type Tier, type TierConfig } from "./performance-budget";
+import { serializeWorld, deserializeWorld } from "./world-serializer";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +55,8 @@ export interface WorkerSnapshot {
   particleCount: number;
   simTime: number;
   stepMs: number;
+  tier: Tier;
+  tierConfig: TierConfig;
 }
 
 export interface RaycastHit {
@@ -66,6 +71,7 @@ export interface RaycastHit {
 
 let stepper: WorldStepperV2 | null = null;
 let qosBridge: QoSSpatialBridge | null = null;
+let perfBudget: PerformanceBudget | null = null;
 let initialized = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -86,6 +92,7 @@ const api = {
     if (initialized) {
       stepper?.dispose();
       qosBridge?.dispose();
+      perfBudget = null;
     }
 
     stepper = new WorldStepperV2({
@@ -99,6 +106,16 @@ const api = {
     });
 
     qosBridge = new QoSSpatialBridge(stepper);
+
+    // Adaptive performance budget — auto-adjusts substeps/particle caps per tier
+    perfBudget = new PerformanceBudget('HIGH');
+    perfBudget.onTierChange((next, _prev) => {
+      if (!stepper) return;
+      const cfg = PerformanceBudget.configFor(next);
+      stepper.setSubsteps(cfg.substeps);
+      stepper.setMaxParticles(cfg.maxParticles);
+    });
+
     initialized = true;
   },
 
@@ -153,6 +170,9 @@ const api = {
     const raw: StepSnapshot = stepper!.step();
     const stepMs = performance.now() - t0;
 
+    // Feed frame timing to the adaptive performance budget
+    perfBudget!.tick(stepMs);
+
     // Clone into fresh ArrayBuffers so we can transfer without detaching stepper's memory
     const positions  = cloneF32(raw.positions);
     const velocities = cloneF32(raw.velocities);
@@ -167,6 +187,8 @@ const api = {
       particleCount: raw.particleCount,
       simTime:       raw.simTime,
       stepMs,
+      tier:          perfBudget!.tier,
+      tierConfig:    perfBudget!.config,
     };
 
     return Comlink.transfer(snapshot, [
@@ -203,6 +225,44 @@ const api = {
       normal:        result.normal,
       particleIndex: result.particleIndex,
     };
+  },
+
+  // ── setTier ─────────────────────────────────────────────────────────────────
+  setTier(tier: Tier): void {
+    assertInit();
+    perfBudget!.setTier(tier);
+  },
+
+  // ── getTierSnapshot ─────────────────────────────────────────────────────────
+  getTierSnapshot(): {
+    tier: Tier;
+    fps: number;
+    frameCount: number;
+    config: TierConfig;
+  } {
+    assertInit();
+    const snap = perfBudget!.snapshot();
+    return {
+      tier:       snap.tier,
+      fps:        snap.fps,
+      frameCount: snap.frameCount,
+      config:     snap.config,
+    };
+  },
+
+  // ── serialize → binary world snapshot (transferable) ────────────────────────
+  serialize(): Comlink.Transfer<ArrayBuffer> {
+    assertInit();
+    const world = stepper!.getWorld();
+    const buf = serializeWorld(world);
+    return Comlink.transfer(buf, [buf]);
+  },
+
+  // ── deserialize ← restore world from binary snapshot ───────────────────────
+  deserialize(buf: ArrayBuffer): void {
+    assertInit();
+    const world = deserializeWorld(buf);
+    stepper!.restoreWorld(world);
   },
 };
 
