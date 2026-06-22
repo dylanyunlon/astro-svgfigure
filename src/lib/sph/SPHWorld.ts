@@ -10,6 +10,8 @@ import {
   GPUBufferSet, SimParams, ParticleData,
   ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
 } from "./types";
+import { CollisionWorld, createCircleBody } from './collision/CollisionWorld';
+import { SceneQuery } from './collision/SceneQuery';
 
 // ─────────────────────────────────────────────
 // GPU buffer helpers
@@ -86,12 +88,13 @@ export class SPHWorld {
   private format!: GPUTextureFormat;
 
   // ── Sub-systems ─────────────────────────────
-  private grid!:         SpatialHashGrid;
-  private nlBuilder!:    NeighborListBuilder;
-  private orchestrator!: SPHGPUOrchestrator;
-  private renderer!:     ParticleRenderer;
-  private boundary!:     BoundaryModel;
-  private gpuBufs!:      GPUBufferSet;
+  private grid!:           SpatialHashGrid;
+  private nlBuilder!:      NeighborListBuilder;
+  private orchestrator!:   SPHGPUOrchestrator;
+  private renderer!:       ParticleRenderer;
+  private boundary!:       BoundaryModel;
+  private gpuBufs!:        GPUBufferSet;
+  private collisionWorld!: CollisionWorld;
 
   // ── CPU-side particle state ──────────────────
   private cpuPos: ParticleData = {
@@ -204,6 +207,8 @@ export class SPHWorld {
       this.domainH,
       this.params.h,
     );
+
+    this.collisionWorld = new CollisionWorld();
   }
 
   // ────────────────────────────────────────────
@@ -254,6 +259,10 @@ export class SPHWorld {
     this.obstacles.push(obstacle);
     this.boundary.addObstacle(obstacle);
     this.orchestrator.updateObstacles(this.obstacles);
+
+    // Mirror obstacle into the collision world as a static circle body
+    const { body, shape } = createCircleBody(obstacle.cx, obstacle.cy, obstacle.r, 'static');
+    this.collisionWorld.addBody(body, shape);
   }
 
   // ────────────────────────────────────────────
@@ -305,6 +314,9 @@ export class SPHWorld {
 
     // Upload neighbour lists for GPU passes
     this.orchestrator.uploadNeighborLists(neighborLists, n);
+
+    // ── Collision world step ───────────────────
+    this.collisionWorld.step(dt);
 
     // ── 3 · 4 · 5  GPU compute ─────────────────
     const commandEncoder = this.device.createCommandEncoder({
@@ -368,6 +380,17 @@ export class SPHWorld {
     this.orchestrator?.destroy();
     this.renderer?.destroy();
     this.device?.destroy();
+  }
+
+  // ────────────────────────────────────────────
+
+  /**
+   * Expose the CollisionWorld's SceneQuery for external raycasts /
+   * overlap queries against static obstacle bodies.
+   */
+  getSceneQuery(): SceneQuery {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.collisionWorld as any).sceneQuery as SceneQuery;
   }
 
   // ────────────────────────────────────────────
