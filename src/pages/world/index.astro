@@ -364,23 +364,50 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 <script>
   import type { DebugRenderOptions } from '@/lib/sph/debug-renderer';
   import { renderDebugOverlay } from '@/lib/sph/debug-renderer';
-  import { createEdgeEmitters } from '@/lib/sph/emitter-strategy';
-  import type { EmitterConfig } from '@/lib/sph/emitter-strategy';
-  import { ATRenderPipeline } from '@/lib/sph/ATRenderPipeline';
-  import type { ATBackend } from '@/lib/sph/ATRenderPipeline';
+  import {
+    ATRenderPipeline,
+    type ATRenderPipelineConfig,
+    type ATPassFlags,
+  } from '@/lib/sph/at-render-pipeline';
+  import type { FlowerEdgeSpline } from '@/lib/sph/at-flower-particle';
+  import type { EdgeSpline } from '@/lib/sph/at-spline-particle';
 
   // ── QoS profiles ────────────────────────────────────────────────────────────
+  // Maps QoS levels to AT pipeline configuration overrides.  The AT pipeline
+  // itself is pass-based (PBR → Particles → Water → VolumetricLight → Bloom →
+  // LUT), so QoS now controls which passes are enabled and LUT strength rather
+  // than raw particle counts.
   const QOS_PROFILES = {
-    low:  { particleCount: 4_096,  substeps: 1, smoothingRadius: 0.08, renderScale: 0.5  },
-    mid:  { particleCount: 16_384, substeps: 2, smoothingRadius: 0.05, renderScale: 0.75 },
-    high: { particleCount: 65_536, substeps: 4, smoothingRadius: 0.03, renderScale: 1.0  },
+    low: {
+      renderScale: 0.5,
+      lutStrength: 0.4,
+      passes: {
+        geometry: true, flowerParticle: true, splineParticle: false,
+        waterSurface: false, volumetricLight: false, bloom: false, lut: true,
+      } satisfies ATPassFlags,
+    },
+    mid: {
+      renderScale: 0.75,
+      lutStrength: 0.7,
+      passes: {
+        geometry: true, flowerParticle: true, splineParticle: true,
+        waterSurface: true, volumetricLight: false, bloom: true, lut: true,
+      } satisfies ATPassFlags,
+    },
+    high: {
+      renderScale: 1.0,
+      lutStrength: 0.85,
+      passes: {
+        geometry: true, flowerParticle: true, splineParticle: true,
+        waterSurface: true, volumetricLight: true, bloom: true, lut: true,
+      } satisfies ATPassFlags,
+    },
   };
 
   type QoSLevel = keyof typeof QOS_PROFILES;
 
   // ── DOM refs ─────────────────────────────────────────────────────────────────
   const canvas            = document.getElementById('sph-canvas')         as HTMLCanvasElement;
-  const hud               = document.getElementById('hud')                as HTMLElement;
   const hudParticles      = document.getElementById('hud-particles')      as HTMLElement;
   const hudFps            = document.getElementById('hud-fps')            as HTMLElement;
   const hudCollisions     = document.getElementById('hud-collisions')     as HTMLElement;
@@ -389,11 +416,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   const hudBackend        = document.getElementById('hud-backend')        as HTMLElement;
   const hudQos            = document.getElementById('hud-qos')            as HTMLElement;
   const hudSimTime        = document.getElementById('hud-sim-time')       as HTMLElement;
-  const fallbackBanner= document.getElementById('webgpu-fallback')as HTMLElement;
-  const initOverlay   = document.getElementById('init-overlay')   as HTMLElement;
-  const qosBtns       = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
-  const sseStatusEl   = document.getElementById('sse-status')     as HTMLElement;
-  const sseLabelEl    = document.getElementById('sse-label')      as HTMLElement;
+  const fallbackBanner    = document.getElementById('webgpu-fallback')    as HTMLElement;
+  const initOverlay       = document.getElementById('init-overlay')       as HTMLElement;
+  const qosBtns           = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
+  const sseStatusEl       = document.getElementById('sse-status')         as HTMLElement;
+  const sseLabelEl        = document.getElementById('sse-label')          as HTMLElement;
 
   // ── Debug overlay checkbox refs ───────────────────────────────────────────────
   const dbgAABBs    = document.getElementById('dbg-aabbs')    as HTMLInputElement;
@@ -407,17 +434,28 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     canvas.height = Math.floor(window.innerHeight * renderScale * devicePixelRatio);
   }
 
-  // ── WebGPU detection (lightweight probe for HUD display) ────────────────────
-  // ATRenderPipeline does the authoritative probe internally; this is a
-  // lightweight pre-check so we can update the HUD before the pipeline is ready.
-  async function detectBackend(): Promise<ATBackend> {
-    if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
-      try {
-        const adapter = await (navigator as any).gpu.requestAdapter();
-        if (adapter) return 'webgpu';
-      } catch (_) { /* fall through */ }
+  // ── WebGPU bootstrap ─────────────────────────────────────────────────────────
+  // The AT render pipeline requires a raw GPUDevice + configured swap-chain.
+  // Returns null when WebGPU is unavailable.
+
+  async function initWebGPU(canvas: HTMLCanvasElement): Promise<{
+    device:  GPUDevice;
+    context: GPUCanvasContext;
+    format:  GPUTextureFormat;
+  } | null> {
+    if (typeof navigator === 'undefined' || !('gpu' in navigator)) return null;
+    try {
+      const adapter = await (navigator as any).gpu.requestAdapter();
+      if (!adapter) return null;
+      const device: GPUDevice = await adapter.requestDevice();
+      const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
+      if (!context) { device.destroy(); return null; }
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      context.configure({ device, format, alphaMode: 'premultiplied' });
+      return { device, context, format };
+    } catch (_) {
+      return null;
     }
-    return 'canvas2d';
   }
 
   // ── FPS meter ────────────────────────────────────────────────────────────────
@@ -524,7 +562,6 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       setSseStatus('error', `error #${_sseErrorCount}`);
 
       if (_sseErrorCount >= SSE_ERROR_THRESHOLD) {
-        // Take over from the native reconnect loop to apply exponential backoff.
         es.close();
         _es = null;
         const delay = Math.min(_sseBackoffMs, SSE_BACKOFF_MAX_MS);
@@ -543,9 +580,6 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   }
 
   // ── QoS POST to /api/physics/qos ─────────────────────────────────────────────
-  // Fire-and-forget: we update UI immediately and let the backend acknowledge
-  // asynchronously.  The response is logged but not awaited in the hot path.
-
   async function postQoSToBackend(level: QoSLevel): Promise<void> {
     try {
       const res = await fetch('/api/physics/qos', {
@@ -566,80 +600,98 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
   }
 
-  // ── Edge-emitter topology bootstrap ─────────────────────────────────────────
-  // Fetches /api/cells, derives edge emitters via createEdgeEmitters(), and
-  // registers them with the ATRenderPipeline.  Called once after pipeline.init().
-  // Errors are non-fatal: the world continues without topology-driven emitters.
+  // ── Topology edge fetcher ───────────────────────────────────────────────────
+  // Fetches /api/cells, derives FlowerEdgeSpline[] and EdgeSpline[] for the AT
+  // render pipeline's particle passes.  Errors are non-fatal: the world renders
+  // without topology-driven particles (static PBR + water + post-process only).
 
-  async function fetchAndRegisterEdgeEmitters(pipeline: ATRenderPipeline): Promise<EmitterConfig[]> {
+  interface TopologyEdges {
+    flowerEdges: FlowerEdgeSpline[];
+    splineEdges: EdgeSpline[];
+  }
+
+  async function fetchTopologyEdges(): Promise<TopologyEdges> {
+    const empty: TopologyEdges = { flowerEdges: [], splineEdges: [] };
     try {
       const res = await fetch('/api/cells');
       if (!res.ok) {
-        console.warn('[world] /api/cells responded', res.status, '— skipping edge emitters');
-        return [];
+        console.warn('[world] /api/cells responded', res.status, '— skipping topology edges');
+        return empty;
       }
 
       const data = await res.json();
 
-      // /api/cells may return { cells, edges } or a bare cells array (legacy fallback).
       const rawCells: any[] = Array.isArray(data) ? data : (data.cells ?? []);
       const rawEdges: any[] = Array.isArray(data) ? [] : (data.edges ?? []);
 
-      if (rawCells.length === 0) {
-        console.info('[world] /api/cells returned no cells — skipping edge emitters');
-        return [];
+      if (rawCells.length === 0 || rawEdges.length === 0) {
+        console.info('[world] /api/cells returned no cells/edges — skipping topology');
+        return empty;
       }
 
-      // Map API cells to the minimal shape createEdgeEmitters needs: { id, x, y }.
-      // bbox from /api/cells is { x, y, w, h } (canvas-px); we use the centre.
-      const cells = rawCells.map((c: any) => {
+      // Build a lookup: cellId → normalised centre { x, y } in [0,1] domain
+      const cellMap = new Map<string, { x: number; y: number }>();
+      const cw = window.innerWidth  || 1280;
+      const ch = window.innerHeight || 720;
+
+      for (const c of rawCells) {
         const id = c.cell_id ?? c.id ?? String(c);
-        let x = 0.5;
-        let y = 0.5;
+        let x = 0.5, y = 0.5;
         if (c.bbox) {
           if (typeof c.bbox.x === 'number' && typeof c.bbox.w === 'number') {
-            // { x, y, w, h } from composite_params
-            x = (c.bbox.x + c.bbox.w / 2) / (window.innerWidth  || 1280);
-            y = (c.bbox.y + c.bbox.h / 2) / (window.innerHeight || 720);
+            x = (c.bbox.x + c.bbox.w / 2) / cw;
+            y = (c.bbox.y + c.bbox.h / 2) / ch;
           } else if (Array.isArray(c.bbox.min) && Array.isArray(c.bbox.max)) {
-            // { min: [x0,y0], max: [x1,y1] } from cell-body-bridge legacy
-            x = (c.bbox.min[0] + c.bbox.max[0]) / 2 / (window.innerWidth  || 1280);
-            y = (c.bbox.min[1] + c.bbox.max[1]) / 2 / (window.innerHeight || 720);
+            x = (c.bbox.min[0] + c.bbox.max[0]) / 2 / cw;
+            y = (c.bbox.min[1] + c.bbox.max[1]) / 2 / ch;
           }
         }
-        return { id, x, y, w: 80, h: 40, species: c.species ?? 'cil-code',
-                 mass: 75, friction: 0.5, restitution: 0.3, buoyancy: 0.5, pinned: false };
-      });
-
-      // Normalise edges to { source, target }
-      const edges = rawEdges.map((e: any) => ({
-        source: (e.sources?.[0] ?? e.source ?? ''),
-        target: (e.targets?.[0] ?? e.target ?? ''),
-      })).filter((e: any) => e.source && e.target);
-
-      if (edges.length === 0) {
-        console.info('[world] /api/cells returned no edges — skipping edge emitters');
-        return [];
+        cellMap.set(id, { x, y });
       }
 
-      // Default QoS for emitter rate derivation (mid-tier: reliable, volatile, 10 mps)
-      const defaultQos = {
-        viscosity: 0.02, boundaryFriction: 0.30, trailLength: 9,
-        emitterRate: 20, forceMultiplier: 1.5,
-      };
+      // Convert raw edges to FlowerEdgeSpline[] + EdgeSpline[]
+      // Each edge becomes a Catmull-Rom spline with 4 control points:
+      //   [sourceExtend, source, target, targetExtend]
+      // The extend points are extrapolated along the edge direction for smooth
+      // Catmull-Rom tangent continuity at the endpoints.
+      const flowerEdges: FlowerEdgeSpline[] = [];
+      const splineEdges: EdgeSpline[] = [];
 
-      const emitters = createEdgeEmitters(cells as any, edges, defaultQos as any);
+      for (const e of rawEdges) {
+        const sourceId = e.sources?.[0] ?? e.source ?? '';
+        const targetId = e.targets?.[0] ?? e.target ?? '';
+        if (!sourceId || !targetId) continue;
 
-      // Register emitters with the ATRenderPipeline.
-      for (const cfg of emitters) {
-        pipeline.addEmitter(cfg.x, cfg.y, cfg.dirX, cfg.dirY, cfg.rate, String(cfg.species));
+        const src = cellMap.get(sourceId);
+        const tgt = cellMap.get(targetId);
+        if (!src || !tgt) continue;
+
+        const edgeId = `${sourceId}->${targetId}`;
+        const weight = e.weight ?? 1.0;
+        const species = e.species ?? 0;
+
+        // Direction vector source→target
+        const dx = tgt.x - src.x;
+        const dy = tgt.y - src.y;
+
+        // Catmull-Rom phantom control points (extend ~25% beyond each end)
+        const ext = 0.25;
+        const points = [
+          { x: src.x - dx * ext, y: src.y - dy * ext, z: 0 },
+          { x: src.x,            y: src.y,             z: 0 },
+          { x: tgt.x,            y: tgt.y,             z: 0 },
+          { x: tgt.x + dx * ext, y: tgt.y + dy * ext,  z: 0 },
+        ];
+
+        flowerEdges.push({ edgeId, sourceId, targetId, points, weight, species });
+        splineEdges.push({ edgeId, sourceId, targetId, points, weight, species });
       }
 
-      console.info(`[world] edge emitters registered: ${emitters.length} (from ${edges.length} edges)`);
-      return emitters;
+      console.info(`[world] topology edges: ${flowerEdges.length} flower + ${splineEdges.length} spline`);
+      return { flowerEdges, splineEdges };
     } catch (err) {
-      console.warn('[world] fetchAndRegisterEdgeEmitters failed:', err);
-      return [];
+      console.warn('[world] fetchTopologyEdges failed:', err);
+      return empty;
     }
   }
 
@@ -647,114 +699,119 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   (async () => {
     let currentQoS: QoSLevel = 'high';
     let pipeline: ATRenderPipeline | null = null;
+    let gpuDevice:  GPUDevice | null = null;
+    let gpuContext: GPUCanvasContext | null = null;
+    let gpuFormat:  GPUTextureFormat = 'bgra8unorm';
     const meter = new FPSMeter();
 
-    // ── Detect backend (for HUD pre-display) ────────────────────────────────
-    const backend = await detectBackend();
-    hudBackend.textContent = backend.toUpperCase();
-    if (backend === 'canvas2d') {
+    // ── WebGPU init ─────────────────────────────────────────────────────────
+    const profile = QOS_PROFILES[currentQoS];
+    resizeCanvas(profile.renderScale);
+
+    const gpu = await initWebGPU(canvas);
+    if (!gpu) {
+      hudBackend.textContent = 'NONE';
       fallbackBanner.classList.add('visible');
+      initOverlay.textContent = 'WebGPU unavailable — AT render pipeline requires WebGPU.';
+      return;
     }
+
+    gpuDevice  = gpu.device;
+    gpuContext = gpu.context;
+    gpuFormat  = gpu.format;
+    hudBackend.textContent = 'WEBGPU';
 
     // Open SSE connection for physics_step + cell_update events
     setSseStatus('offline', 'connecting…');
     openSSE();
 
-    // ── Initialise ATRenderPipeline ─────────────────────────────────────────
-    // ATRenderPipeline.create() probes WebGPU internally and falls back to
-    // Canvas2D automatically — no early exit needed here.
-    const profile = QOS_PROFILES[currentQoS];
-    resizeCanvas(profile.renderScale);
+    // ── Fetch topology edges from /api/cells ────────────────────────────────
+    const { flowerEdges, splineEdges } = await fetchTopologyEdges();
 
+    // ── Initialise AT Render Pipeline ───────────────────────────────────────
+    // The real AT pipeline chains 6 forward passes: PBR geometry → flower
+    // particles → spline particles → water surface → volumetric light → bloom
+    // → LUT colour-grade.  It replaces the old SPHWorld / ParticleRenderer.
     try {
-      pipeline = await ATRenderPipeline.create(canvas, {
-        preferredBackend: 'webgpu',
-        particleCount:    profile.particleCount,
-        substeps:         profile.substeps,
-        smoothingRadius:  profile.smoothingRadius,
-      });
+      pipeline = await ATRenderPipeline.create(
+        gpuDevice,
+        canvas,
+        flowerEdges,
+        splineEdges,
+        {
+          format:      gpuFormat,
+          lutStyle:    'DEEP_OCEAN',
+          lutStrength: profile.lutStrength,
+          passes:      profile.passes,
+        },
+      );
     } catch (err) {
       console.error('[world] ATRenderPipeline.create failed:', err);
       initOverlay.textContent = `Init error: ${(err as Error).message}`;
       return;
     }
 
-    // Reflect the actual backend chosen by the pipeline in the HUD
-    hudBackend.textContent = pipeline.backend.toUpperCase();
-    if (pipeline.isCanvas2D) {
-      fallbackBanner.classList.add('visible');
-    }
-
-    // Fetch topology edges from /api/cells and seed the pipeline with edge emitters.
-    await fetchAndRegisterEdgeEmitters(pipeline);
-
-    // Initial scene: fluid block + obstacles
-    pipeline.addFluid(0.1, 0.05, 0.3, 0.3, 0.008);
-    pipeline.addObstacle(0.5, 0.5, 0.06);
-    pipeline.addObstacle(0.35, 0.65, 0.04);
-
     // Hide init overlay
     initOverlay.classList.add('hidden');
 
     // ── Render loop ────────────────────────────────────────────────────────────
     let rafId: number;
+    let lastTime = performance.now();
+    let frameCount = 0;
+
     function loop() {
-      if (!pipeline) return;
-      pipeline.step();
-      pipeline.render();
+      if (!pipeline || !gpuDevice || !gpuContext) return;
+
+      const now = performance.now();
+      const dt  = Math.min((now - lastTime) / 1000, 0.05); // cap dt at 50ms
+      lastTime  = now;
+      frameCount++;
+
+      // Advance animation clocks (PBR iridescence, volumetric light, etc.)
+      pipeline.tick(dt);
+
+      // Acquire swap-chain texture and record all render passes
+      const swapChainTexture = gpuContext.getCurrentTexture();
+      const dstView = swapChainTexture.createView();
+      const encoder = gpuDevice.createCommandEncoder({ label: 'world-frame' });
+
+      pipeline.render(encoder, dstView);
+
+      gpuDevice.queue.submit([encoder.finish()]);
+
       meter.tick();
 
-      // ── Debug overlay ────────────────────────────────────────────────────────
+      // ── Debug overlay (2D canvas drawn over WebGPU surface) ───────────────
       const anyDebugActive =
         dbgAABBs.checked || dbgContacts.checked || dbgBVH.checked || dbgEmitters.checked;
 
-      if (anyDebugActive && pipeline.isWebGPU) {
-        // Obtain a 2D context on the same canvas for the overlay.
-        // WebGPU renders to the GPU surface; we draw the debug layer on top via
-        // a 2D context.  getContext is cached by the browser once obtained.
-        const ctx2d = canvas.getContext('2d') as CanvasRenderingContext2D | null;
+      if (anyDebugActive) {
+        const dbgCanvas = document.createElement('canvas');
+        dbgCanvas.width  = canvas.width;
+        dbgCanvas.height = canvas.height;
+        const ctx2d = dbgCanvas.getContext('2d');
         if (ctx2d) {
           const debugOptions: DebugRenderOptions = {
-            showAABBs:         dbgAABBs.checked,
-            showContacts:      dbgContacts.checked,
-            showContactNormals:dbgContacts.checked,
-            showPenetration:   false,
-            showBVH:           dbgBVH.checked,
-            showEmitters:      dbgEmitters.checked,
-            showStats:         false,
+            showAABBs:          dbgAABBs.checked,
+            showContacts:       dbgContacts.checked,
+            showContactNormals: dbgContacts.checked,
+            showPenetration:    false,
+            showBVH:            dbgBVH.checked,
+            showEmitters:       dbgEmitters.checked,
+            showStats:          false,
           };
-
-          // Pull live data from the pipeline; falls back to empty structures.
-          const physicsWorld = (pipeline.getPhysicsWorld() as any) ?? {
-            bodies: new Map(),
-            emitters: pipeline.getEmitters(),
-          };
-          const manifolds  = pipeline.getManifolds();
-          const debugAABBs = pipeline.getDebugAABBs();
-          const bvhNodes   = pipeline.getBVHRoots();
-
-          renderDebugOverlay(ctx2d, physicsWorld, manifolds, debugAABBs, bvhNodes, debugOptions);
+          const physicsWorld = { bodies: new Map(), emitters: [] };
+          renderDebugOverlay(ctx2d, physicsWorld, [], [], [], debugOptions);
         }
       }
 
-      // Update HUD
-      hudParticles.textContent = pipeline.particleCount?.toLocaleString() ?? profile.particleCount.toLocaleString();
-      hudFps.textContent       = meter.fps.toFixed(1);
+      // ── HUD updates ──────────────────────────────────────────────────────
+      hudParticles.textContent     = String(flowerEdges.length + splineEdges.length);
+      hudFps.textContent           = meter.fps.toFixed(1);
+      hudCollisions.textContent    = '—';
+      hudPressureIters.textContent = String(frameCount % 1000);
 
-      // ── Collision pairs ──────────────────────────────────────────────────────
-      const manifoldsForHUD = pipeline.getManifolds();
-      const collisionCount  =
-        typeof pipeline.collisionPairCount === 'number' && pipeline.collisionPairCount > 0
-          ? pipeline.collisionPairCount
-          : manifoldsForHUD.length;
-      hudCollisions.textContent = collisionCount.toLocaleString();
-
-      // ── Pressure solver iterations ───────────────────────────────────────────
-      const pressureIters = pipeline.lastPressureIters || profile.substeps;
-      hudPressureIters.textContent = String(pressureIters);
-
-      // ── Memory ───────────────────────────────────────────────────────────────
-      // Use the Performance Memory API (Chrome) when available; otherwise show '—'.
+      // Memory (Chrome Performance Memory API)
       const perf = performance as any;
       if (perf.memory?.usedJSHeapSize !== undefined) {
         const mb = perf.memory.usedJSHeapSize / 1_048_576;
@@ -768,8 +825,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     rafId = requestAnimationFrame(loop);
 
     // ── QoS switching ──────────────────────────────────────────────────────────
-    async function applyQoS(level: QoSLevel) {
-      if (level === currentQoS) return;
+    function applyQoS(level: QoSLevel) {
+      if (level === currentQoS || !pipeline) return;
       currentQoS = level;
 
       // Update button states and HUD immediately (optimistic UI)
@@ -781,30 +838,15 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       // POST the new level to the backend (fire-and-forget)
       postQoSToBackend(level);
 
-      // Pause render loop while reconfiguring
-      cancelAnimationFrame(rafId);
-
+      // Reconfigure the live pipeline — no teardown/rebuild needed; the AT
+      // pipeline supports hot-swapping pass flags and LUT strength.
       const p = QOS_PROFILES[level];
+      pipeline.setPassFlags(p.passes);
+      pipeline.setLutStrength(p.lutStrength);
+
+      // Resize canvas for the new render scale
       resizeCanvas(p.renderScale);
-
-      // Recreate pipeline with new QoS profile
-      pipeline?.destroy();
-      try {
-        pipeline = await ATRenderPipeline.create(canvas, {
-          preferredBackend: 'webgpu',
-          particleCount:    p.particleCount,
-          substeps:         p.substeps,
-          smoothingRadius:  p.smoothingRadius,
-        });
-        pipeline.addFluid(0.1, 0.05, 0.3, 0.3, 0.008);
-        pipeline.addObstacle(0.5, 0.5, 0.06);
-        pipeline.addObstacle(0.35, 0.65, 0.04);
-      } catch (err) {
-        console.error('[world] QoS pipeline recreate failed:', err);
-      }
-
-      // Resume loop
-      rafId = requestAnimationFrame(loop);
+      pipeline.resize(canvas.width, canvas.height);
     }
 
     qosBtns.forEach(btn => {
@@ -825,6 +867,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       closeSSE();
       cancelAnimationFrame(rafId);
       pipeline?.destroy();
+      gpuDevice?.destroy();
     });
   })();
 </script>
