@@ -352,6 +352,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 <script>
   import type { DebugRenderOptions } from '@/lib/sph/debug-renderer';
   import { renderDebugOverlay } from '@/lib/sph/debug-renderer';
+  import { createEdgeEmitters } from '@/lib/sph/emitter-strategy';
+  import type { EmitterConfig } from '@/lib/sph/emitter-strategy';
 
   // ── QoS profiles ────────────────────────────────────────────────────────────
   const QOS_PROFILES = {
@@ -553,6 +555,86 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
   }
 
+  // ── Edge-emitter topology bootstrap ─────────────────────────────────────────
+  // Fetches /api/cells, derives edge emitters via createEdgeEmitters(), and
+  // registers them with the SPH world.  Called once after world.init().
+  // Errors are non-fatal: the world continues without topology-driven emitters.
+
+  async function fetchAndRegisterEdgeEmitters(world: any): Promise<EmitterConfig[]> {
+    try {
+      const res = await fetch('/api/cells');
+      if (!res.ok) {
+        console.warn('[world] /api/cells responded', res.status, '— skipping edge emitters');
+        return [];
+      }
+
+      const data = await res.json();
+
+      // /api/cells may return { cells, edges } or a bare cells array (legacy fallback).
+      const rawCells: any[] = Array.isArray(data) ? data : (data.cells ?? []);
+      const rawEdges: any[] = Array.isArray(data) ? [] : (data.edges ?? []);
+
+      if (rawCells.length === 0) {
+        console.info('[world] /api/cells returned no cells — skipping edge emitters');
+        return [];
+      }
+
+      // Map API cells to the minimal shape createEdgeEmitters needs: { id, x, y }.
+      // bbox from /api/cells is { x, y, w, h } (canvas-px); we use the centre.
+      const cells = rawCells.map((c: any) => {
+        const id = c.cell_id ?? c.id ?? String(c);
+        let x = 0.5;
+        let y = 0.5;
+        if (c.bbox) {
+          if (typeof c.bbox.x === 'number' && typeof c.bbox.w === 'number') {
+            // { x, y, w, h } from composite_params
+            x = (c.bbox.x + c.bbox.w / 2) / (window.innerWidth  || 1280);
+            y = (c.bbox.y + c.bbox.h / 2) / (window.innerHeight || 720);
+          } else if (Array.isArray(c.bbox.min) && Array.isArray(c.bbox.max)) {
+            // { min: [x0,y0], max: [x1,y1] } from cell-body-bridge legacy
+            x = (c.bbox.min[0] + c.bbox.max[0]) / 2 / (window.innerWidth  || 1280);
+            y = (c.bbox.min[1] + c.bbox.max[1]) / 2 / (window.innerHeight || 720);
+          }
+        }
+        return { id, x, y, w: 80, h: 40, species: c.species ?? 'cil-code',
+                 mass: 75, friction: 0.5, restitution: 0.3, buoyancy: 0.5, pinned: false };
+      });
+
+      // Normalise edges to { source, target }
+      const edges = rawEdges.map((e: any) => ({
+        source: (e.sources?.[0] ?? e.source ?? ''),
+        target: (e.targets?.[0] ?? e.target ?? ''),
+      })).filter((e: any) => e.source && e.target);
+
+      if (edges.length === 0) {
+        console.info('[world] /api/cells returned no edges — skipping edge emitters');
+        return [];
+      }
+
+      // Default QoS for emitter rate derivation (mid-tier: reliable, volatile, 10 mps)
+      const defaultQos = {
+        viscosity: 0.02, boundaryFriction: 0.30, trailLength: 9,
+        emitterRate: 20, forceMultiplier: 1.5,
+      };
+
+      const emitters = createEdgeEmitters(cells as any, edges, defaultQos as any);
+
+      // Register emitters with the world if it exposes addEmitter(); otherwise
+      // they are still returned so the caller can store them for the debug overlay.
+      for (const cfg of emitters) {
+        if (typeof world.addEmitter === 'function') {
+          world.addEmitter(cfg.x, cfg.y, cfg.dirX, cfg.dirY, cfg.rate, String(cfg.species));
+        }
+      }
+
+      console.info(`[world] edge emitters registered: ${emitters.length} (from ${edges.length} edges)`);
+      return emitters;
+    } catch (err) {
+      console.warn('[world] fetchAndRegisterEdgeEmitters failed:', err);
+      return [];
+    }
+  }
+
   // ── Main ─────────────────────────────────────────────────────────────────────
   (async () => {
     if (!navigator.gpu) {
@@ -591,6 +673,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     });
 
     await world.init();
+
+    // Fetch topology edges from /api/cells and seed the world with edge emitters.
+    await fetchAndRegisterEdgeEmitters(world);
 
     // Initial scene: fluid block + obstacles
     world.addFluid(0.1, 0.05, 0.3, 0.3, 0.008);
