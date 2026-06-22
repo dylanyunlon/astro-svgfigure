@@ -831,13 +831,10 @@ import type {
 import { computeAABB } from './AABB';
 import { BVHTree } from './BVHTree';
 import { SortAndSweep } from './SortAndSweep';
-import { gjk, ConvexShape } from './GJK';
-import { epa } from './EPA';
-import { satCircleCircle, satCirclePolygon, satPolygonPolygon } from './SAT';
 import { ContactSolver } from './ContactSolver';
 import { PositionSolver } from './PositionSolver';
 import { SceneQuery } from './SceneQuery';
-// createCircleBody/createBoxBody inlined below;
+// computeContactInfo, createCircleBody, createBoxBody inlined above;
 
 export interface CollisionWorldConfig {
   /** Which broad-phase algorithm to use (default: 'bvh') */
