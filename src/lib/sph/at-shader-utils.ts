@@ -12,6 +12,11 @@
  *                   Exclusion, ColorDodge, ColorBurn, Subtract)
  *                   float + vec3 重载 + opacity 变体
  *
+ * 额外新增（非 compiled.vs 直接移植，但 AT 各 shader 中高频使用）:
+ *   UV transforms — uvScale/Rotate/Translate/Tile/Polar + center 变体
+ *   rotation      — rotate2D, rotationX/Y/Z (mat4x4), rotationAxisAngle,
+ *                   rotationEuler (mat3x3), applyRotation/Dir helpers
+ *
  * 每个区块均可单独注入 WGSL 字符串，也可使用合并的 AT_SHADER_UTILS_WGSL。
  *
  * WGSL 命名约定（无函数重载，后缀区分类型）：
@@ -276,7 +281,178 @@ fn rangeMirror(v: f32, iMin: f32, iMax: f32, oMin: f32, oMax: f32) -> f32 {
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 3  blendmodes.glsl → WGSL
+// § 3  UV transforms + Rotation matrices → WGSL
+//
+// AT compiled.vs commonly applies UV scale/rotate/translate in vertex shaders
+// (Gem.vs, Sky.vs, WorkDetailParticles, ProtonAntimatter particle UVs).
+// Also: 2D/3D rotation matrices used for particle spin, curl field orientation.
+// Provides: uvScale, uvRotate, uvTranslate, uvScaleCenter, uvRotateCenter,
+//           rotate2D, rotationX/Y/Z (mat4x4), rotationAxisAngle.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const WGSL_UV_TRANSFORMS = /* wgsl */`
+// ──────────────────────────────────────────────────────────────────────────────
+// AT UV transforms + rotation matrices (WGSL)
+// Used in: Gem.vs UV tiling, Sky.vs parallax, WorkDetailParticles spin,
+//          ProtonAntimatter orbit rotation, curl-flow-field orientation.
+// Ref: AT compiled.vs UV manipulation patterns + standard rotation matrices
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ── UV manipulation ──────────────────────────────────────────────────────────
+
+// Scale UV around origin (0,0)
+fn uvScale(uv: vec2f, scale: vec2f) -> vec2f {
+    return uv * scale;
+}
+
+// Scale UV around center (0.5, 0.5) — AT pattern for texture zoom
+fn uvScaleCenter(uv: vec2f, scale: vec2f) -> vec2f {
+    return (uv - vec2f(0.5)) * scale + vec2f(0.5);
+}
+
+// Translate UV
+fn uvTranslate(uv: vec2f, offset: vec2f) -> vec2f {
+    return uv + offset;
+}
+
+// Rotate UV around origin by angle (radians)
+fn uvRotate(uv: vec2f, angle: f32) -> vec2f {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2f(uv.x * c - uv.y * s,
+                 uv.x * s + uv.y * c);
+}
+
+// Rotate UV around center (0.5, 0.5) — AT pattern for spinning textures
+fn uvRotateCenter(uv: vec2f, angle: f32) -> vec2f {
+    let centered = uv - vec2f(0.5);
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2f(centered.x * c - centered.y * s,
+                 centered.x * s + centered.y * c) + vec2f(0.5);
+}
+
+// Flip UV axes
+fn uvFlipX(uv: vec2f) -> vec2f { return vec2f(1.0 - uv.x, uv.y); }
+fn uvFlipY(uv: vec2f) -> vec2f { return vec2f(uv.x, 1.0 - uv.y); }
+
+// Tile UV (repeat) — AT uses for repeating patterns in Sky.fs
+fn uvTile(uv: vec2f, tiles: vec2f) -> vec2f {
+    return fract(uv * tiles);
+}
+
+// Tile with offset per row — AT brick pattern in Terrain.vs
+fn uvTileOffset(uv: vec2f, tiles: vec2f, rowOffset: f32) -> vec2f {
+    let scaled = uv * tiles;
+    let row = floor(scaled.y);
+    let offset = row * rowOffset;
+    return fract(vec2f(scaled.x + offset, scaled.y));
+}
+
+// Aspect-ratio-correct UV — maps UV to preserve aspect in a quad
+fn uvAspect(uv: vec2f, aspect: f32) -> vec2f {
+    var result = uv - vec2f(0.5);
+    if (aspect > 1.0) {
+        result.x *= aspect;
+    } else {
+        result.y /= aspect;
+    }
+    return result + vec2f(0.5);
+}
+
+// Polar UV — cartesian (0..1, 0..1) → (angle/TAU, radius)
+fn uvPolar(uv: vec2f) -> vec2f {
+    let centered = uv - vec2f(0.5);
+    let angle = atan2(centered.y, centered.x);
+    let radius = length(centered) * 2.0;
+    return vec2f(angle / (2.0 * AT_PI) + 0.5, radius);
+}
+
+// ── 2D rotation matrix ───────────────────────────────────────────────────────
+
+fn rotate2D(angle: f32) -> mat2x2f {
+    let c = cos(angle);
+    let s = sin(angle);
+    return mat2x2f(c, s, -s, c);
+}
+
+// ── 3D rotation matrices ─────────────────────────────────────────────────────
+// AT compiled.vs uses these for particle spin / orbit in WorkDetailParticles,
+// ProtonAntimatter 3D orbit, curl-aura field orientation.
+
+fn rotationX(angle: f32) -> mat4x4f {
+    let c = cos(angle);
+    let s = sin(angle);
+    return mat4x4f(
+        1.0, 0.0, 0.0, 0.0,
+        0.0,   c,   s, 0.0,
+        0.0,  -s,   c, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    );
+}
+
+fn rotationY(angle: f32) -> mat4x4f {
+    let c = cos(angle);
+    let s = sin(angle);
+    return mat4x4f(
+          c, 0.0,  -s, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+          s, 0.0,   c, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    );
+}
+
+fn rotationZ(angle: f32) -> mat4x4f {
+    let c = cos(angle);
+    let s = sin(angle);
+    return mat4x4f(
+          c,   s, 0.0, 0.0,
+         -s,   c, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    );
+}
+
+// Rotation around arbitrary axis (Rodrigues' rotation formula)
+// AT: used in ProtonAntimatter orbit axis, curl-flow-field arbitrary spin
+fn rotationAxisAngle(axis: vec3f, angle: f32) -> mat4x4f {
+    let a = normalize(axis);
+    let c = cos(angle);
+    let s = sin(angle);
+    let t = 1.0 - c;
+    return mat4x4f(
+        t * a.x * a.x + c,         t * a.x * a.y + s * a.z,   t * a.x * a.z - s * a.y,  0.0,
+        t * a.x * a.y - s * a.z,   t * a.y * a.y + c,         t * a.y * a.z + s * a.x,  0.0,
+        t * a.x * a.z + s * a.y,   t * a.y * a.z - s * a.x,   t * a.z * a.z + c,        0.0,
+        0.0,                        0.0,                        0.0,                       1.0
+    );
+}
+
+// 3x3 rotation from Euler angles (ZYX order) — for normal/direction transforms
+fn rotationEuler(pitch: f32, yaw: f32, roll: f32) -> mat3x3f {
+    let cx = cos(pitch); let sx = sin(pitch);
+    let cy = cos(yaw);   let sy = sin(yaw);
+    let cz = cos(roll);  let sz = sin(roll);
+    return mat3x3f(
+        cy * cz,                    cy * sz,                   -sy,
+        sx * sy * cz - cx * sz,     sx * sy * sz + cx * cz,    sx * cy,
+        cx * sy * cz + sx * sz,     cx * sy * sz - sx * cz,    cx * cy
+    );
+}
+
+// Apply mat4 rotation to vec3 position (ignores translation row)
+fn applyRotation(m: mat4x4f, v: vec3f) -> vec3f {
+    return (m * vec4f(v, 1.0)).xyz;
+}
+
+// Apply mat4 rotation to vec3 direction (w=0, no translation)
+fn applyRotationDir(m: mat4x4f, v: vec3f) -> vec3f {
+    return (m * vec4f(v, 0.0)).xyz;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 4  blendmodes.glsl → WGSL
 //
 // Photoshop blend modes — ported from lygia/color/blend/*.wgsl
 // + Jamie Owen reference implementations.
@@ -508,14 +684,14 @@ fn blendReflect3Opacity(base: vec3f, blend: vec3f, opacity: f32) -> vec3f {
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 4  Merged export — AT_SHADER_UTILS_WGSL
+// § 5  Merged export — AT_SHADER_UTILS_WGSL
 //
 // Drop-in for a WGSL shader that needs all three libraries.
 // Order: RANGE (no deps) → EASES (no deps) → BLEND_MODES (no deps)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Combined WGSL string: range.glsl + eases.glsl + blendmodes.glsl
+ * Combined WGSL string: range.glsl + eases.glsl + UV transforms + blendmodes.glsl
  *
  * Usage in a WebGPU compute/render shader:
  *
@@ -530,6 +706,8 @@ fn blendReflect3Opacity(base: vec3f, blend: vec3f, opacity: f32) -> vec3f {
  *       let t   = f32(gid.x) / 1024.0;
  *       let pos = range(t, 0.0, 1.0, -5.0, 5.0);
  *       let ease = easeOutCubic(t);
+ *       let uv  = uvRotateCenter(vec2f(t, 0.5), 0.785);
+ *       let rot = rotationY(t * AT_PI);
  *       // ...
  *     }
  *   `;
@@ -537,17 +715,18 @@ fn blendReflect3Opacity(base: vec3f, blend: vec3f, opacity: f32) -> vec3f {
  *
  * Or inject only what you need:
  *   ```ts
- *   import { WGSL_RANGE, WGSL_EASES, WGSL_BLEND_MODES } from '$lib/sph/at-shader-utils.js';
+ *   import { WGSL_RANGE, WGSL_EASES, WGSL_UV_TRANSFORMS, WGSL_BLEND_MODES } from '$lib/sph/at-shader-utils.js';
  *   ```
  */
 export const AT_SHADER_UTILS_WGSL: string = [
   WGSL_RANGE,
   WGSL_EASES,
+  WGSL_UV_TRANSFORMS,
   WGSL_BLEND_MODES,
 ].join('\n');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 5  TypeScript mirrors — same functions available CPU-side
+// § 6  TypeScript mirrors — same functions available CPU-side
 //
 // Used by tween-system.ts, proton-controller.ts, physics-animation.ts etc.
 // Kept in sync with the WGSL implementations above so CPU preview / unit
@@ -711,3 +890,74 @@ export const ATEasing = {
 } as const satisfies Record<string, EasingFn>;
 
 export type ATEasingName = keyof typeof ATEasing;
+
+// ── UV transforms (CPU mirrors) ──────────────────────────────────────────────
+
+export function uvScale(uv: [number, number], scale: [number, number]): [number, number] {
+  return [uv[0] * scale[0], uv[1] * scale[1]];
+}
+
+export function uvScaleCenter(uv: [number, number], scale: [number, number]): [number, number] {
+  return [(uv[0] - 0.5) * scale[0] + 0.5, (uv[1] - 0.5) * scale[1] + 0.5];
+}
+
+export function uvTranslate(uv: [number, number], offset: [number, number]): [number, number] {
+  return [uv[0] + offset[0], uv[1] + offset[1]];
+}
+
+export function uvRotate(uv: [number, number], angle: number): [number, number] {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return [uv[0] * c - uv[1] * s, uv[0] * s + uv[1] * c];
+}
+
+export function uvRotateCenter(uv: [number, number], angle: number): [number, number] {
+  const cx = uv[0] - 0.5, cy = uv[1] - 0.5;
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return [cx * c - cy * s + 0.5, cx * s + cy * c + 0.5];
+}
+
+export function uvTile(uv: [number, number], tiles: [number, number]): [number, number] {
+  const fract = (v: number) => v - Math.floor(v);
+  return [fract(uv[0] * tiles[0]), fract(uv[1] * tiles[1])];
+}
+
+/** 2D rotation matrix as flat [a, b, c, d] → [[a,b],[c,d]] column-major */
+export function rotate2D(angle: number): [number, number, number, number] {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return [c, s, -s, c];
+}
+
+/** 4×4 rotation matrix as flat 16-element array (column-major, WebGPU convention) */
+export type Mat4 = [
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+];
+
+export function rotationX(angle: number): Mat4 {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return [1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1];
+}
+
+export function rotationY(angle: number): Mat4 {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return [c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1];
+}
+
+export function rotationZ(angle: number): Mat4 {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return [c,s,0,0, -s,c,0,0, 0,0,1,0, 0,0,0,1];
+}
+
+export function rotationAxisAngle(axis: [number, number, number], angle: number): Mat4 {
+  const len = Math.sqrt(axis[0] ** 2 + axis[1] ** 2 + axis[2] ** 2);
+  const ax = axis[0] / len, ay = axis[1] / len, az = axis[2] / len;
+  const c = Math.cos(angle), s = Math.sin(angle), t = 1 - c;
+  return [
+    t*ax*ax+c,      t*ax*ay+s*az,  t*ax*az-s*ay, 0,
+    t*ax*ay-s*az,   t*ay*ay+c,     t*ay*az+s*ax, 0,
+    t*ax*az+s*ay,   t*ay*az-s*ax,  t*az*az+c,    0,
+    0,              0,             0,              1,
+  ];
+}
