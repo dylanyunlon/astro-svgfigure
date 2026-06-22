@@ -68,6 +68,8 @@ export { EnvironmentFxConfig, EnvironmentFxParams, EnvironmentFx, EnvironmentFxP
 export { SPHParticleAOS, SPHParticleSOA, FlowmapBridgeOptions, rasterizeVelocityField, rasterizeVelocityFieldSOA, dissipateField, normalizeVelocityField, FlowmapBridge } from './flowmap-bridge';
 // fluid-rigid-coupling
 export { BoundaryVolumeTable, computeBoundaryVolumes, refreshBoundaryState, addBoundaryDensity, computeCouplingForces, stepFluidRigidCoupling, buildBoundaryNeighbors } from './fluid-rigid-coupling';
+// fluid-surface-mesh
+export { FluidSurfaceMeshConfig, FluidSurfaceMesh, Vertex2D, ContourSegment, SurfaceTriangleMesh, drawContourToCanvas, drawFieldHeatmap, selfTest as fluidSurfaceMeshSelfTest } from './fluid-surface-mesh';
 // lattice-boltzmann-bg
 export { LBM_GRID, SPH_PARTICLE_COUNT, LBMConfig, LBMBuffers, LatticeBoltzmannBackground, createDualLayerFluid } from './lattice-boltzmann-bg';
 // lut-generator
