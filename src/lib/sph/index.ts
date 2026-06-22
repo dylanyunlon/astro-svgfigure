@@ -1,3 +1,5 @@
+export { ATFlowerParticleRenderer, edgeRouteToFlowerSpline, createATFlowerForSPH, AT_FLOWER_DEFAULTS } from './at-flower-particle';
+export type { FlowerEdgeSpline, FlowerPoint3, ATFlowerConfig } from './at-flower-particle';
 export { SplineParticleLife, edgeRouteToSplineData, createSplineParticleLifeForSPH } from './spline-particle-life';
 export type { EdgeSplineData, SplineParticle, SplineParticleLifeConfig, ParticlePhase, SplinePoint3 } from './spline-particle-life';
 export { AtmospherePass, ATMOSPHERE_PRESETS } from './atmosphere';
