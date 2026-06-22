@@ -16,3 +16,4 @@ export { qosToSpatial, interpolateConfigs, QOS_PRESETS, qosSpatial } from './qos
 export { BoidsCompute, BOIDS_WORKGROUP, BOIDS_MAX } from './boids-compute';
 export type { BoidsParams, BoidsSnapshot } from './boids-compute';
 export * from './types';
+export * as collision from './collision';

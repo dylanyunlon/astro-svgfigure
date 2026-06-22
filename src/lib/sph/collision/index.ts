@@ -109,3 +109,72 @@ export { PositionSolver } from './PositionSolver';
 
 // ContactConstraint type (defined in ../types, surfaced via ContactSolver)
 export type { ContactConstraint } from './ContactSolver';
+
+// AABB.ts — standalone AABB utility functions (unique to this file)
+export {
+  aabbOverlap,
+  aabbUnion,
+  aabbPerimeter,
+  aabbExpand,
+  aabbFromCircle,
+  aabbFromPoints,
+  aabbContains,
+  aabbCenter,
+} from './AABB';
+
+// CollisionWorld.ts — monolithic collision world (unique exports only)
+export {
+  vec2,
+  aabbFromBox,
+  computeContactInfo,
+  createCircleBody,
+  createBoxBody,
+  resetIdCounter,
+} from './CollisionWorld';
+export type {
+  Vec2,
+  ShapeType,
+  BodyType,
+  BroadPhasePair,
+  ContactInfo,
+  SPHParticle,
+  SPHWorld,
+} from './CollisionWorld';
+
+// EPA.ts — standalone GJK/EPA on Vec2[] arrays (unique exports only)
+export {
+  detectCollision,
+} from './EPA';
+export type {
+  CollisionResult,
+} from './EPA';
+
+// GJK.ts — class-based shapes + collision (unique exports only)
+export {
+  Circle,
+  Polygon,
+  collide,
+} from './GJK';
+export type {
+  CollisionInfo,
+} from './GJK';
+
+// SceneQuery.ts — full-featured scene query (unique exports only)
+export {
+  closestPointOnSegment,
+  closestPointOnConvex,
+  closestPointOnShape,
+  aabbFromShape,
+  aabbOverlapsAABB,
+  rayIntersectsAABB,
+} from './SceneQuery';
+export type {
+  AABB2,
+  Ray2,
+  CircleShape,
+  AABBShape,
+  CapsuleShape,
+  ConvexPolygonShape,
+  Shape,
+  UserData,
+} from './SceneQuery';
