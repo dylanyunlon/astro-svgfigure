@@ -258,6 +258,89 @@ Given the cell skeleton and force-field state, output ONLY valid JSON:
 No markdown fences. No explanation. Pure JSON only.""",
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SCENE_QUERY_PROMPT
+# Appended to every species prompt so sub-Claude knows it can interrogate
+# the live physics world before committing to its visual parameters.
+#
+# Three query primitives are exposed by the physics engine:
+#   raycast(origin, direction, max_dist)
+#       Cast a ray from `origin` [x, y] along `direction` [dx, dy] (unit
+#       vector). Returns the first cell hit and the distance in pixels, or
+#       null if nothing is within max_dist.  Useful for knowing "what is
+#       directly in front of / above / below me?"
+#
+#   overlapCircle(center, radius)
+#       Return all cells whose bounding-box centres lie within `radius`
+#       pixels of `center` [x, y].  Use this to enumerate an interaction
+#       neighbourhood without caring about direction.
+#
+#   closestPoint(cell_id)
+#       Return the point on `cell_id`'s bounding box that is closest to
+#       this cell's centre, together with the straight-line distance.
+#       Useful for fine-grained overlap / proximity decisions.
+#
+# How to use them in your reasoning (do NOT call them as Python — describe
+# the query and the physics engine will inject results into scene_context):
+#   • "I will overlapCircle my centre with radius=150 to find neighbours."
+#   • "I will raycast rightward to see if cil-arrow-right is in my path."
+#   • "I will closestPoint(feed_fwd) to measure exact gap before sizing."
+#
+# The results appear in scene_context["physics_queries"] in the user message.
+# Incorporate the query results when choosing bbox size, position, and
+# species_params — especially num_rays, arc_radius, or grid_size values
+# that should react to neighbouring cell density.
+# ─────────────────────────────────────────────────────────────────────────────
+
+SCENE_QUERY_PROMPT = """
+## Physics World Queries
+
+Before finalising your JSON parameters you MAY inspect the live physics world
+using three query primitives.  Describe the query you want in plain text
+inside a <scene_query> block; the engine will resolve it and inject the result
+into scene_context["physics_queries"] before you output your final JSON.
+
+### raycast(origin, direction, max_dist)
+Cast a ray from point `origin` [x, y] in unit-vector direction `direction`
+[dx, dy] up to `max_dist` pixels.
+Returns: {"hit": "<cell_id>|null", "distance_px": <float>}
+Use when: you need to know what lies directly ahead/above/below/beside you.
+Example:
+  <scene_query>
+    raycast([cx, cy], [1, 0], 300)   // scan rightward 300 px
+  </scene_query>
+
+### overlapCircle(center, radius)
+Return every cell whose bbox centre is within `radius` pixels of `center`.
+Returns: [{"cell_id": str, "species": str, "distance_px": float}, ...]
+Use when: you want a full neighbourhood census without caring about direction.
+Example:
+  <scene_query>
+    overlapCircle([cx, cy], 150)     // all cells within 150 px
+  </scene_query>
+
+### closestPoint(cell_id)
+Return the point on `cell_id`'s bounding box closest to your own centre,
+plus the straight-line distance between the two boxes.
+Returns: {"point": [x, y], "distance_px": float}
+Use when: you need pixel-precise gap measurement for sizing or alignment.
+Example:
+  <scene_query>
+    closestPoint("feed_fwd")
+  </scene_query>
+
+### Guidelines
+- Issue at most **3 queries** total; each costs one physics tick.
+- Query results arrive in scene_context["physics_queries"] (list of dicts
+  with keys "type", "args", "result").
+- Use query results to justify concrete param choices:
+    • dense neighbourhood → reduce num_rays / num_nodes to avoid clutter
+    • wide-open space     → expand arc_radius / outer_radius
+    • direct ray hit      → align arrow direction toward the hit cell
+- If scene_context already contains enough nearby_cells / collision_pairs
+  information, skip the queries and proceed directly to JSON output.
+"""
+
 # Fallback for unknown species
 _DEFAULT_SPECIES_PROMPT = """You are an **unclassified** cell in a transformer architecture diagram.
 You represent a generic transformation block — processing input and emitting output.
