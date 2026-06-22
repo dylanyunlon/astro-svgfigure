@@ -52,6 +52,8 @@ export { RGB, RGBA, ThemePalette, QOS_THEME, ParticleColorInput, resolveParticle
 export { CollisionFXConfig, CollisionFXSystem, estimateFlowerImpulse } from './collision-fx-system';
 // contact-sparks
 export { Vec2, SparkConfig, ContactSparkSystem, estimateImpulse } from './contact-sparks';
+// curl-aura
+export { AURA_STRIDE, CurlAuraOptions, CurlAuraRenderer, CellAuraDescriptor, PackedAuraResult, packAuraData, packAuraDataSOA } from './curl-aura';
 // curl-flow-field
 export { CurlFlowFieldParams, ResolvedCurlParams, CurlSample, CurlFlowField, createCurlFlowField } from './curl-flow-field';
 // debug-renderer
