@@ -140,3 +140,6 @@ export { RectBoundaryShape, CircleBoundaryShape, PolygonBoundaryShape, BoundaryS
 export { SPECIES_COLORS, CELL_KIND_COLORS, RenderOptions, DEFAULT_OPTIONS, BVHNodeFlat, ContactPoint, WorldRenderExtras, renderWorld } from './world-renderer';
 // world-stepper
 export { Particle, Emitter, WorldConfig, World, createWorld, addFluidBlock, addRigidBody, addEmitter /* +7 more */ } from './world-stepper';
+// transition-system (M748)
+export { TransitionSystem, TRANSITION_PRESETS, getGlobalTransitionSystem, setGlobalTransitionSystem } from './transition-system';
+export type { TransitionDirection, TransitionMode, TransitionPhase, DissolveParticle, CellShapeSnapshot, TransitionConfig, TransitionState } from './transition-system';
