@@ -1,5 +1,11 @@
 // src/lib/sph/collision/index.ts
 // Barrel export for all collision sub-modules.
+//
+// kebab-case files are the canonical implementations.
+// PascalCase files (AABB.ts, BVHTree.ts, etc.) are retained alongside them;
+// unique classes from those files are exported here with no name conflicts.
+
+// ── kebab-case modules ────────────────────────────────────────────────────────
 
 export {
   AABB,
@@ -77,3 +83,14 @@ export {
   WorldStats,
   CollisionWorld,
 } from './collision-world';
+
+// ── PascalCase modules (unique exports only, no name conflicts) ───────────────
+
+// ContactSolver.ts — impulse-based contact resolution class
+export { ContactSolver } from './ContactSolver';
+
+// PositionSolver.ts — Baumgarte position correction class
+export { PositionSolver } from './PositionSolver';
+
+// ContactConstraint type (defined in ../types, surfaced via ContactSolver)
+export type { ContactConstraint } from './ContactSolver';
