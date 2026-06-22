@@ -101,7 +101,7 @@ export { PostProcessStyle, PostProcessParams, PostProcessPipeline, PostProcessPr
 // qos-spatial-bridge
 export { Reliability, Durability, QoSProfile, SpatialPhysics, qosToSpatial, APOLLO_PROFILES, PROFILE_DESCRIPTIONS } from './qos-spatial-bridge';
 // reaction-diffusion
-export { RD_DEFAULT_SIZE, RD_DEFAULT_SUBSTEPS, GrayScottSpecies, GrayScottParams, RDSimConfig, parameterSpace, ReactionDiffusionSim } from './reaction-diffusion';
+export { RD_DEFAULT_SIZE, RD_DEFAULT_SUBSTEPS, RD_MAX_SPECIES, GrayScottSpecies, GrayScottParams, RDSimConfig, SpeciesParamEntry, SpeciesRegion, parameterSpace, speciesGrayScottParams, buildDefaultSpeciesLUT, SPECIES_GRAYSCOTT_MAP, ReactionDiffusionSim } from './reaction-diffusion';
 // rigid-body
 export { RigidBody, RigidBodyOptions, createRigidBody, sampleBoundaryParticles, applyForce, integrateRigidBodies, resolveRigidRigidCollisions, resetForces } from './rigid-body';
 // ripple-effect
