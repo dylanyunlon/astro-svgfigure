@@ -109,7 +109,7 @@ export class SPHWorld {
   // ── Scene state ─────────────────────────────
   private obstacles:   ObstacleData[]  = [];
   private params!:     SimParams;
-  private qosProfile:  QoSProfileName  = "balanced";
+  private qosProfile:  QoSProfileName  = "DEFAULT";
   private domainW:     number;
   private domainH:     number;
 

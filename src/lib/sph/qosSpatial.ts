@@ -43,6 +43,9 @@ export const QOS_PRESETS: Record<QoSProfileName, QoSProfile> = {
   },
 };
 
+// alias used by SPHWorld.ts (imported as `qosSpatial`)
+export const qosSpatial = QOS_PRESETS;
+
 export function qosToSpatial(qos: QoSProfile): SpatialConfig {
   const boundaryStiffness =
     qos.reliability === 'RELIABLE' ? 50000 : 8000;
