@@ -507,6 +507,23 @@ interface NeighborCSR {
 }
 
 // ---------------------------------------------------------------------------
+// Perf-log entry produced by GPU timestamp profiling
+// ---------------------------------------------------------------------------
+
+export interface PerfEntry {
+  /** Monotonic frame counter (increments every `tick` call). */
+  frame     : number;
+  /** Density + pressure pass GPU time (ms). */
+  densityMs : number;
+  /** Force computation pass GPU time (ms). */
+  forceMs   : number;
+  /** Integration pass GPU time (ms). */
+  integrateMs: number;
+  /** Sum of the three pass durations (ms). */
+  totalMs   : number;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -572,9 +589,56 @@ export class SPHGPUOrchestrator {
   private lastRowPtrBuf    : GPUBuffer | null = null;
   private lastBoundaryBuf  : GPUBuffer | null = null;
 
+  // ── GPU timestamp profiling ──────────────────────────────────────────────
+  // Enabled only when the device was requested with `timestamp-query` feature.
+  private readonly tsEnabled : boolean = false;
+
+  // QuerySet holds 2 timestamps per named pass (write + end = 2 timestamps).
+  // We profile 3 core passes: density(0-1), force(2-3), integrate(4-5).
+  private tsQuerySet    : GPUQuerySet   | null = null;
+  // Resolve buffer receives the raw u64 ns values from the GPU.
+  private tsResolveBuf  : GPUBuffer     | null = null;
+  // Map buffer is COPY_DST + MAP_READ so the CPU can read timestamps back.
+  private tsMapBuf      : GPUBuffer     | null = null;
+
+  // Number of timestamp slots we allocate (2 per pass × 3 passes).
+  private static readonly TS_SLOTS = 6;
+
+  /** Rolling performance log: ring buffer of `perfLog` entries (last 60). */
+  readonly perfLog: PerfEntry[] = [];
+  private static readonly PERF_LOG_MAX = 60;
+
+  /** Monotonic counter incremented every `tick()` call. */
+  private frameCounter = 0;
+
   constructor(device: GPUDevice, bufs: GPUBufferSet) {
     this.device = device;
     this.bufs   = bufs;
+
+    // Enable GPU timestamp profiling if the device supports it.
+    (this as { tsEnabled: boolean }).tsEnabled =
+      device.features.has("timestamp-query");
+
+    if (this.tsEnabled) {
+      const slots = SPHGPUOrchestrator.TS_SLOTS;
+      this.tsQuerySet = device.createQuerySet({
+        label: "sph-ts-queryset",
+        type : "timestamp",
+        count: slots,
+      });
+      // resolve buffer: slots x 8 bytes (u64 nanoseconds each)
+      this.tsResolveBuf = device.createBuffer({
+        label: "sph-ts-resolve",
+        size : slots * 8,
+        usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+      });
+      this.tsMapBuf = device.createBuffer({
+        label: "sph-ts-map",
+        size : slots * 8,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+    }
+
     this.init();
   }
 
@@ -831,9 +895,11 @@ export class SPHGPUOrchestrator {
     neighborCSR: NeighborCSR,
     boundaryBuf: GPUBuffer,
   ): void {
-    const dev = this.device;
-    const n   = simParams.count;
-    const wg  = Math.ceil(n / WORKGROUP_SIZE);
+    const dev   = this.device;
+    const n     = simParams.count;
+    const wg    = Math.ceil(n / WORKGROUP_SIZE);
+    const frame = this.frameCounter++;
+    const ts    = this.tsEnabled;
 
     // 1. Upload uniforms
     this.uploadUniforms(simParams);
@@ -849,9 +915,18 @@ export class SPHGPUOrchestrator {
 
     // ------------------------------------------------------------------
     // Pass 1 — density + pressure
+    // Timestamp slots: begin=0, end=1
     // ------------------------------------------------------------------
     {
-      const pass = encoder.beginComputePass({ label: "density-pass" });
+      const passDesc: GPUComputePassDescriptor = { label: "density-pass" };
+      if (ts) {
+        passDesc.timestampWrites = {
+          querySet                 : this.tsQuerySet!,
+          beginningOfPassWriteIndex: 0,
+          endOfPassWriteIndex      : 1,
+        };
+      }
+      const pass = encoder.beginComputePass(passDesc);
       pass.setPipeline(this.densityPipeline);
       pass.setBindGroup(0, this.uniformBG);
       pass.setBindGroup(1, this.densityParticleBG);
@@ -863,9 +938,18 @@ export class SPHGPUOrchestrator {
 
     // ------------------------------------------------------------------
     // Pass 2 — pressure gradient + viscosity → forceX / forceY
+    // Timestamp slots: begin=2, end=3
     // ------------------------------------------------------------------
     {
-      const pass = encoder.beginComputePass({ label: "force-pass" });
+      const passDesc: GPUComputePassDescriptor = { label: "force-pass" };
+      if (ts) {
+        passDesc.timestampWrites = {
+          querySet                 : this.tsQuerySet!,
+          beginningOfPassWriteIndex: 2,
+          endOfPassWriteIndex      : 3,
+        };
+      }
+      const pass = encoder.beginComputePass(passDesc);
       pass.setPipeline(this.forcePipeline);
       pass.setBindGroup(0, this.uniformBG);
       pass.setBindGroup(1, this.forceParticleBG);
@@ -877,9 +961,18 @@ export class SPHGPUOrchestrator {
 
     // ------------------------------------------------------------------
     // Pass 3 — symplectic Euler integration + boundary clamp
+    // Timestamp slots: begin=4, end=5
     // ------------------------------------------------------------------
     {
-      const pass = encoder.beginComputePass({ label: "integrate-pass" });
+      const passDesc: GPUComputePassDescriptor = { label: "integrate-pass" };
+      if (ts) {
+        passDesc.timestampWrites = {
+          querySet                 : this.tsQuerySet!,
+          beginningOfPassWriteIndex: 4,
+          endOfPassWriteIndex      : 5,
+        };
+      }
+      const pass = encoder.beginComputePass(passDesc);
       pass.setPipeline(this.integratePipeline);
       pass.setBindGroup(0, this.uniformBG);
       pass.setBindGroup(1, this.integrateParticleBG);
@@ -887,7 +980,93 @@ export class SPHGPUOrchestrator {
       pass.end();
     }
 
+    // ------------------------------------------------------------------
+    // Timestamp resolve: copy raw u64 ns values from QuerySet → GPU buffer
+    // ------------------------------------------------------------------
+    if (ts) {
+      encoder.resolveQuerySet(
+        this.tsQuerySet!,
+        0,
+        SPHGPUOrchestrator.TS_SLOTS,
+        this.tsResolveBuf!,
+        0,
+      );
+      // Copy to MAP_READ staging buffer so the CPU can read asynchronously.
+      encoder.copyBufferToBuffer(
+        this.tsResolveBuf!, 0,
+        this.tsMapBuf!,    0,
+        SPHGPUOrchestrator.TS_SLOTS * 8,
+      );
+    }
+
     dev.queue.submit([encoder.finish()]);
+
+    // ------------------------------------------------------------------
+    // Async readback: map the staging buffer and append a PerfEntry.
+    // Fire-and-forget so tick() stays synchronous.
+    // ------------------------------------------------------------------
+    if (ts) {
+      this._readbackTimestamps(frame).catch(() => { /* profiling is best-effort */ });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  /**
+   * Map the timestamp staging buffer, convert raw u64 ns → ms, push a
+   * PerfEntry into `perfLog`, then unmap.
+   *
+   * Called asynchronously after each tick when timestamp-query is available.
+   */
+  private async _readbackTimestamps(frame: number): Promise<void> {
+    const mapBuf = this.tsMapBuf!;
+
+    // Wait for the GPU to finish writing the resolve output.
+    await mapBuf.mapAsync(GPUMapMode.READ);
+
+    try {
+      const raw = new BigUint64Array(mapBuf.getMappedRange());
+      // Convert nanoseconds (BigInt) → milliseconds (float).
+      const densityMs    = Number(raw[1] - raw[0]) / 1_000_000;
+      const forceMs      = Number(raw[3] - raw[2]) / 1_000_000;
+      const integrateMs  = Number(raw[5] - raw[4]) / 1_000_000;
+      const totalMs      = densityMs + forceMs + integrateMs;
+
+      const entry: PerfEntry = { frame, densityMs, forceMs, integrateMs, totalMs };
+
+      // Maintain the ring buffer.
+      if (this.perfLog.length >= SPHGPUOrchestrator.PERF_LOG_MAX) {
+        this.perfLog.shift();
+      }
+      this.perfLog.push(entry);
+    } finally {
+      mapBuf.unmap();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  /**
+   * Return a human-readable summary of the last N entries in `perfLog`.
+   * Useful for on-screen overlays or console debugging.
+   *
+   * @param n - number of recent frames to average (default: all available)
+   */
+  perfSummary(n?: number): string {
+    const log = n !== undefined ? this.perfLog.slice(-n) : this.perfLog;
+    if (log.length === 0) {
+      return this.tsEnabled
+        ? "GPU profiling enabled — no data yet"
+        : "GPU profiling unavailable (timestamp-query feature not present)";
+    }
+    const avg = (fn: (e: PerfEntry) => number): string =>
+      (log.reduce((s, e) => s + fn(e), 0) / log.length).toFixed(3);
+
+    return [
+      `[SPH GPU perf — avg over ${log.length} frame(s)]`,
+      `  density   : ${avg(e => e.densityMs)} ms`,
+      `  force     : ${avg(e => e.forceMs)} ms`,
+      `  integrate : ${avg(e => e.integrateMs)} ms`,
+      `  total     : ${avg(e => e.totalMs)} ms`,
+    ].join("\n");
   }
 
   // -------------------------------------------------------------------------
@@ -1390,5 +1569,12 @@ export class SPHGPUOrchestrator {
     this.lastBoundaryBuf  = null;
     this.lastCellCountBuf = null;
     this.lastScanDataBuf  = null;
+    // Timestamp profiling resources
+    this.tsQuerySet?.destroy();
+    this.tsResolveBuf?.destroy();
+    this.tsMapBuf?.destroy();
+    this.tsQuerySet   = null;
+    this.tsResolveBuf = null;
+    this.tsMapBuf     = null;
   }
 }
