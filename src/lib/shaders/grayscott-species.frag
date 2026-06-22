@@ -3,6 +3,12 @@ precision mediump float;
 // ── grayscott-species.frag ────────────────────────────────────────────────────
 // Gray-Scott Reaction-Diffusion Turing Pattern — species surface shader.
 //
+// ⚠️  SUPERSEDED BY WebGPU COMPUTE PIPELINE (M601)
+//     This fragment shader remains as a WebGL 1 / fallback path.
+//     For WebGPU targets use src/lib/sph/reaction-diffusion.ts instead:
+//       • ReactionDiffusionSim — full GPU ping-pong compute
+//       • parameterSpace(name) — Munafo/Pearson canonical (f, k) lookup
+//
 // Generates procedural Turing patterns (spots / stripes / worms / mitosis)
 // directly on each cell's surface without a ping-pong texture.  We simulate
 // several RD iterations per fragment using spatially-varying virtual "pixels"
@@ -12,10 +18,10 @@ precision mediump float;
 // Each species carries its own (f, k) parameter pair that selects a different
 // region of the Gray-Scott phase diagram:
 //
-//   cil-eye    (0)  f=0.055 k=0.062  → coral / spots     (瞳孔 spot pattern)
-//   cil-bolt   (1)  f=0.018 k=0.051  → waves / maze      (闪电 wave pattern)
-//   cil-vector (2)  f=0.029 k=0.057  → worms / filaments  (方向流 worm pattern)
-//   cil-plus   (3)  f=0.025 k=0.060  → mitosis / pearls  (细胞分裂 pattern)
+//   cil-eye    (0)  f=0.0545 k=0.0620  → coral / spots     (瞳孔 spot pattern)
+//   cil-bolt   (1)  f=0.0180 k=0.0510  → waves / maze      (闪电 wave pattern)
+//   cil-vector (2)  f=0.0290 k=0.0570  → worms / filaments  (方向流 worm pattern)
+//   cil-plus   (3)  f=0.0367 k=0.0649  → mitosis / pearls  (细胞分裂 pattern)
 //   species 4-9     fall back to the u_feedKill override from the host.
 //
 // Physics coupling:
@@ -31,7 +37,8 @@ precision mediump float;
 //   P. Gonzalez Vivo — lygia.xyz
 //   Pearson, J.E. (1993) — Complex Patterns in a Simple System, Science 261
 //   Munafo, R. — mrob.com/pub/comp/xmorphia
-//   Shaders: M550 — cell-pubsub-loop branch
+//   Karl Sims — karlsims.com/rd.html  (coral f=0.0545,k=0.062; mitosis f=0.0367,k=0.0649)
+//   Shaders: M550 (fragment) → M601 (WebGPU compute) — cell-pubsub-loop branch
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── lygia imports ─────────────────────────────────────────────────────────────
@@ -58,14 +65,14 @@ uniform vec2  u_feedKill;   // (f, k) override for species 4-9
 // Implemented as a branchless lerp-chain instead of a switch (WebGL 1 compat).
 
 vec2 speciesFeedKill(int idx) {
-    // species 0 — cil-eye     spots   f=0.055 k=0.062
-    vec2 fk0 = vec2(0.055, 0.062);
-    // species 1 — cil-bolt    waves   f=0.018 k=0.051
-    vec2 fk1 = vec2(0.018, 0.051);
-    // species 2 — cil-vector  worms   f=0.029 k=0.057
-    vec2 fk2 = vec2(0.029, 0.057);
-    // species 3 — cil-plus    mitosis f=0.025 k=0.060
-    vec2 fk3 = vec2(0.025, 0.060);
+    // species 0 — cil-eye     coral/spots   f=0.0545 k=0.0620  (Karl Sims / Munafo κ)
+    vec2 fk0 = vec2(0.0545, 0.0620);
+    // species 1 — cil-bolt    maze/waves    f=0.0180 k=0.0510  (Munafo γ / maze)
+    vec2 fk1 = vec2(0.0180, 0.0510);
+    // species 2 — cil-vector  worms/filaments f=0.0290 k=0.0570 (Pearson δ labyrinth)
+    vec2 fk2 = vec2(0.0290, 0.0570);
+    // species 3 — cil-plus    mitosis/pearls  f=0.0367 k=0.0649 (Karl Sims / Munafo λ)
+    vec2 fk3 = vec2(0.0367, 0.0649);
 
     // branchless index selection (WebGL 1 / mediump safe)
     float i = float(idx);
