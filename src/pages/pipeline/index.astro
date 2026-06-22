@@ -8,6 +8,14 @@
  *   Refresh (Next Epoch): POST '/api/cell-loop' → re-fetch → re-render
  *   edge 层 zIndex = -1, cell 层 zIndex = cell.z (≥1) → edge 始终在 cell 之下
  *
+ * M421: SSE EventSource driven — real-time cell event stream
+ *   EventSource("/api/cell-events") listens for SSE events:
+ *     topology_updated    → refetch /api/cells → rebuild full render (cells + edges)
+ *     cell_params_updated → patch matching CellDescriptor in-place → update left panel + PixiJS stage
+ *     cell_update         → CellEventSource compat: patch bbox/opacity/fill_color
+ *   Reconnect: exponential backoff 1s → 2s → 4s → … → 30s cap
+ *   import from upstream/pixijs-engine/src/ for Container type
+ *
  * 三栏布局:
  *   左栏  — Cell 列表 (从 /api/cells 加载 params.json)
  *   中栏  — PixiJS 全屏渲染画布 (渲染 CellDescriptor[])
@@ -17,6 +25,7 @@
  *   1. fetch('/api/cells')       → CellDescriptor[] → PixiJS render + 左栏
  *   2. POST('/api/cell-loop')    → 触发下一个 epoch
  *   3. fetch('/api/epochs')      → EpochRecord[]   → 右栏时间线
+ *   4. SSE /api/cell-events      → topology_updated | cell_params_updated → live update
  *
  * GitHub 背书: withastro/astro, pixijs/pixijs, cworld1/astro-theme-pure
  */
@@ -174,6 +183,7 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
 
 <script>
   import type { Application } from '../../upstream/pixijs-engine/src/app/Application'
+  import type { Container } from '../../upstream/pixijs-engine/src/scene/container/Container'
   import { renderCellGraph } from '@/lib/renderers/pixi-cell-renderer'
   import { renderCellGraphSDF } from '@/lib/renderers/sdf-cell-renderer'
   import type { CellDescriptor, EdgeDescriptor } from '@/lib/renderers/pixi-cell-renderer'
@@ -220,6 +230,158 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   let stopFog: (() => void) | null = null
   // M042: Theatre.js epoch timeline instance — initialized on first epoch fetch
   let epochTimeline: EpochTimeline | null = null
+
+  // ── M421: SSE EventSource — real-time cell-events stream ──────────────────
+  // Connects to GET /api/cell-events (text/event-stream).
+  // Event types:
+  //   topology_updated    → refetch /api/cells → rebuild full render
+  //   cell_params_updated → patch matching cell in-place → update left panel
+  // Reconnect: exponential backoff 1s → 2s → 4s → … → 30s cap.
+  let sseSource: EventSource | null = null
+  let sseBackoffMs = 1_000
+  const SSE_BACKOFF_MAX = 30_000
+  let sseErrorCount = 0
+  const SSE_ERROR_THRESHOLD = 3
+
+  /**
+   * M421: Open SSE connection to /api/cell-events.
+   * Listens for topology_updated and cell_params_updated events.
+   */
+  function sseConnect(): void {
+    if (sseSource) return
+    if (typeof EventSource === 'undefined') {
+      console.warn('[M421] EventSource API not available')
+      return
+    }
+
+    const es = new EventSource('/api/cell-events')
+    sseSource = es
+
+    es.onopen = () => {
+      sseErrorCount = 0
+      sseBackoffMs = 1_000
+      setConnected(true)
+      console.info('[M421] SSE connected → /api/cell-events')
+    }
+
+    // ── topology_updated: full rebuild ────────────────────────────────────
+    es.addEventListener('topology_updated', async () => {
+      console.info('[M421] SSE topology_updated → refetch /api/cells')
+      try {
+        await fetchAndRender()
+        await fetchEpochs()
+      } catch (err: any) {
+        console.warn('[M421] topology_updated refetch failed:', err.message)
+      }
+    })
+
+    // ── cell_params_updated: patch single cell ───────────────────────────
+    es.addEventListener('cell_params_updated', (ev: MessageEvent) => {
+      let payload: { cell_id: string; params: Record<string, any> }
+      try {
+        payload = JSON.parse(ev.data)
+      } catch {
+        console.warn('[M421] cell_params_updated: invalid JSON', ev.data)
+        return
+      }
+
+      const { cell_id, params } = payload
+      if (!cell_id) return
+
+      // Patch the matching CellDescriptor in lastCells
+      const target = lastCells.find(c => c.cell_id === cell_id)
+      if (!target) {
+        console.warn(`[M421] cell_params_updated: unknown cell_id "${cell_id}"`)
+        return
+      }
+
+      // Apply params overlay: bbox, opacity, fill_color, label, species, etc.
+      if (params.bbox) {
+        target.bbox = { ...target.bbox, ...params.bbox }
+      }
+      if (params.opacity != null) (target as any).opacity = params.opacity
+      if (params.fill_color)      (target as any).fill_color = params.fill_color
+      if (params.stroke_color)    (target as any).stroke_color = params.stroke_color
+      if (params.label)           target.label = params.label
+      if (params.species)         target.species = params.species
+      if (params.z != null)       target.z = params.z
+
+      // Merge any extra params for species_params / arbitrary fields
+      if (params.species_params && target.params) {
+        target.params = { ...target.params, ...params.species_params }
+      }
+
+      // Update the PixiJS stage in-place if the app is live.
+      // Find the Container whose name matches cell_id and patch its props.
+      if (pixiApp) {
+        try {
+          const stage = (pixiApp as any).stage as Container | undefined
+          if (stage) {
+            const child = stage.children.find(
+              (c: any) => c.name === cell_id || c.label === cell_id,
+            )
+            if (child) {
+              if (params.bbox) {
+                child.x = params.bbox.x ?? child.x
+                child.y = params.bbox.y ?? child.y
+              }
+              if (params.opacity != null) child.alpha = params.opacity
+            }
+          }
+        } catch { /* non-fatal: canvas may re-render soon */ }
+      }
+
+      // Re-render left panel to reflect updated params
+      renderCellList(lastCells)
+
+      console.debug(`[M421] cell_params_updated: patched "${cell_id}"`)
+    })
+
+    // ── Also handle generic cell_update (CellEventSource compat) ─────────
+    es.addEventListener('cell_update', (ev: MessageEvent) => {
+      let payload: { cell_id: string; params: Record<string, any> }
+      try {
+        payload = JSON.parse(ev.data)
+      } catch { return }
+
+      const { cell_id, params } = payload
+      if (!cell_id) return
+
+      const target = lastCells.find(c => c.cell_id === cell_id)
+      if (!target) return
+
+      if (params.bbox)            target.bbox = { ...target.bbox, ...params.bbox }
+      if (params.opacity != null)  (target as any).opacity = params.opacity
+      if (params.fill_color)       (target as any).fill_color = params.fill_color
+
+      renderCellList(lastCells)
+    })
+
+    // ── Error / reconnect with exponential backoff ───────────────────────
+    es.onerror = () => {
+      setConnected(false)
+      sseErrorCount++
+
+      if (sseErrorCount >= SSE_ERROR_THRESHOLD) {
+        // Close and manually reconnect with backoff
+        sseDisconnect()
+        const delay = Math.min(sseBackoffMs, SSE_BACKOFF_MAX)
+        console.warn(`[M421] SSE error #${sseErrorCount} — reconnecting in ${delay}ms`)
+        setTimeout(() => {
+          sseBackoffMs = Math.min(sseBackoffMs * 2, SSE_BACKOFF_MAX)
+          sseConnect()
+        }, delay)
+      }
+    }
+  }
+
+  /** M421: Close SSE connection. */
+  function sseDisconnect(): void {
+    if (sseSource) {
+      sseSource.close()
+      sseSource = null
+    }
+  }
 
   // ── Connection badge ──────────────────────────────────────────────────────
   function setConnected(ok: boolean) {
@@ -762,10 +924,17 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
       hideStatus()
       setConnected(false)
     }
+
+    // M421: Start SSE EventSource after initial render.
+    // topology_updated → refetch /api/cells → full rebuild.
+    // cell_params_updated → patch single cell in-place.
+    sseConnect()
   })()
 
   // M042: Dispose Theatre.js timeline and stop CloudFog on page unload.
+  // M421: Disconnect SSE EventSource on page unload.
   window.addEventListener('beforeunload', () => {
+    sseDisconnect()
     epochTimeline?.dispose()
     stopFog?.()
   })
