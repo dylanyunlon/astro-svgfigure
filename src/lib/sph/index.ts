@@ -10,6 +10,7 @@ export { BoundaryModel } from './BoundaryModel';
 export { SPHGPUOrchestrator } from './SPHGPUOrchestrator';
 export { ParticleRenderer } from './ParticleRenderer';
 export { SPHWorld } from './SPHWorld';
+export type { EffectModule, EffectName } from './SPHWorld';
 export { ATRenderPipeline } from './ATRenderPipeline';
 export type { ATBackend, ATRenderPipelineOptions } from './ATRenderPipeline';
 export { qosToSpatial, interpolateConfigs, QOS_PRESETS, qosSpatial } from './qosSpatial';

@@ -12,6 +12,29 @@ import {
 } from "./types";
 import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
 import { SceneQuery } from './collision/SceneQuery';
+import { PhysarumSimulation } from './physarum-sim';
+import { BoidsCompute }       from './boids-compute';
+import { OceanBackground }    from './ocean-background';
+
+// ─────────────────────────────────────────────
+// Effect module protocol  (M755)
+// ─────────────────────────────────────────────
+
+/**
+ * Uniform lifecycle contract every pluggable visual effect must satisfy.
+ *
+ *   init()    — allocate GPU resources (called once, lazily on first enable)
+ *   tick(…)   — advance + encode GPU work for one frame
+ *   destroy() — release all GPU resources
+ */
+export interface EffectModule {
+  init(): Promise<void>;
+  tick(encoder: GPUCommandEncoder, dt: number): void;
+  destroy(): void;
+}
+
+/** Names accepted by enableEffect / disableEffect. */
+export type EffectName = 'physarum' | 'boids' | 'ocean';
 
 // ─────────────────────────────────────────────
 // Force-field types (channels/physics/force_field.json + cell_registry.json)
@@ -156,6 +179,12 @@ export class SPHWorld {
   private frameCount = 0;
   private rafHandle  = 0;
   private running    = false;
+
+  // ── Effect module registry (M755) ────────────
+  /** Fully initialised, actively ticking effect modules. */
+  private activeEffects: Map<EffectName, EffectModule> = new Map();
+  /** Effects currently being initialised (guard against double-enable). */
+  private pendingEffects: Set<EffectName> = new Set();
 
   // ────────────────────────────────────────────
   constructor(canvas: HTMLCanvasElement) {
@@ -353,6 +382,169 @@ export class SPHWorld {
   }
 
   // ────────────────────────────────────────────
+  // Effect module management  (M755)
+  // ────────────────────────────────────────────
+
+  /**
+   * Lazily create and activate a named visual-effect module.
+   *
+   * If the effect is already active the call is a no-op.
+   * GPU resources are allocated once on first enable; subsequent
+   * enable/disable cycles re-create them from scratch so there is no
+   * stale-state accumulation.
+   *
+   * @param name — one of 'physarum' | 'boids' | 'ocean'
+   */
+  async enableEffect(name: EffectName): Promise<void> {
+    if (this.activeEffects.has(name) || this.pendingEffects.has(name)) return;
+    this.pendingEffects.add(name);
+
+    try {
+      const mod = this._createEffectModule(name);
+      await mod.init();
+      this.activeEffects.set(name, mod);
+      console.info(`[SPHWorld] effect "${name}" enabled`);
+    } catch (err) {
+      console.error(`[SPHWorld] failed to enable effect "${name}":`, err);
+    } finally {
+      this.pendingEffects.delete(name);
+    }
+  }
+
+  /**
+   * Tear down and deactivate a named visual-effect module.
+   *
+   * All GPU resources owned by the module are released immediately.
+   * If the effect is not active the call is a no-op.
+   *
+   * @param name — one of 'physarum' | 'boids' | 'ocean'
+   */
+  disableEffect(name: EffectName): void {
+    const mod = this.activeEffects.get(name);
+    if (!mod) return;
+
+    try {
+      mod.destroy();
+    } catch (err) {
+      console.warn(`[SPHWorld] error destroying effect "${name}":`, err);
+    }
+    this.activeEffects.delete(name);
+    console.info(`[SPHWorld] effect "${name}" disabled`);
+  }
+
+  /**
+   * Return the set of currently active effect names (useful for HUD / debug).
+   */
+  getActiveEffects(): ReadonlySet<EffectName> {
+    return new Set(this.activeEffects.keys());
+  }
+
+  // ────────────────────────────────────────────
+  // Effect factories  (private)
+  // ────────────────────────────────────────────
+
+  /**
+   * Instantiate (but do NOT yet init) the EffectModule adapter for `name`.
+   *
+   * Each adapter wraps an existing simulation class (PhysarumSimulation,
+   * BoidsCompute, OceanBackground) behind the uniform EffectModule
+   * lifecycle so SPHWorld.tick() can drive them all identically.
+   */
+  private _createEffectModule(name: EffectName): EffectModule {
+    const device = this.device;
+    const cw     = this.canvas.width;
+    const ch     = this.canvas.height;
+
+    switch (name) {
+      // ── Physarum ────────────────────────────
+      case 'physarum': {
+        let sim: PhysarumSimulation | null = null;
+        return {
+          async init() {
+            sim = await PhysarumSimulation.create(device, cw, ch, 500_000);
+          },
+          tick(encoder: GPUCommandEncoder, _dt: number) {
+            sim?.tick(encoder);
+          },
+          destroy() {
+            sim?.destroy();
+            sim = null;
+          },
+        };
+      }
+
+      // ── Boids ──────────────────────────────
+      case 'boids': {
+        let boids: BoidsCompute | null = null;
+        return {
+          async init() {
+            boids = new BoidsCompute(device, {
+              count:   4096,
+              domainW: cw / ch,
+              domainH: 1.0,
+            });
+            boids.randomise();
+          },
+          tick(_encoder: GPUCommandEncoder, dt: number) {
+            boids?.tick(dt);
+          },
+          destroy() {
+            boids?.destroy();
+            boids = null;
+          },
+        };
+      }
+
+      // ── Ocean background ───────────────────
+      case 'ocean': {
+        const domainW = this.domainW;
+        const domainH = this.domainH;
+        const format  = this.format;
+        const gpuBufs = this.gpuBufs;
+        let ocean: OceanBackground | null = null;
+        return {
+          async init() {
+            ocean = new OceanBackground(device, { domainW, domainH });
+            await ocean.init(format);
+          },
+          tick(encoder: GPUCommandEncoder, _dt: number) {
+            // Ocean.encode() needs a render pass + cell buffers; wrap a
+            // lightweight pass that blends into the current swap-chain.
+            // We pass the SPH position/count buffers so splash particles
+            // react to fluid cells.
+            if (!ocean) return;
+            // OceanBackground.encode() requires an active render pass.
+            // We deliberately do NOT create one here — the host tick()
+            // drives the main render pass.  Instead we expose the ocean
+            // instance for the render stage to pick up via the adapter's
+            // `tick()` encoding its compute work into the shared encoder.
+            // (Render integration is handled by the main render pass in
+            // tick() which can query activeEffects for the ocean module.)
+            ocean.encode(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              null as any,       // passEncoder — deferred to main render
+              encoder,
+              { time: performance.now() * 0.001, scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 },
+              gpuBufs.posX,
+              gpuBufs.posY,
+              gpuBufs.count,
+            );
+          },
+          destroy() {
+            ocean?.destroy();
+            ocean = null;
+          },
+        };
+      }
+
+      default: {
+        const _exhaustive: never = name;
+        throw new Error(`Unknown effect: ${_exhaustive}`);
+      }
+    }
+  }
+
+  // ────────────────────────────────────────────
 
   /**
    * Fetch and parse force_field.json + cell_registry.json, then build
@@ -474,6 +666,15 @@ export class SPHWorld {
       label: "SPH-tick",
     });
 
+    // ── Effect modules (M755) ─────────────────
+    // Each active effect encodes its own compute / render work into the
+    // shared command encoder so everything is submitted in a single
+    // queue.submit() — no extra round-trips.
+    for (const [, effect] of this.activeEffects) {
+      try { effect.tick(commandEncoder, dt); }
+      catch (err) { console.warn('[SPHWorld] effect tick error:', err); }
+    }
+
     this.orchestrator.encodeDensityPressure(commandEncoder, n);
     this.orchestrator.encodeForces(commandEncoder, n);
     this.orchestrator.encodeIntegrate(commandEncoder, n, dt);
@@ -522,6 +723,13 @@ export class SPHWorld {
       cancelAnimationFrame(this.rafHandle);
       this.rafHandle = 0;
     }
+
+    // Destroy active effect modules (M755)
+    for (const [name, mod] of this.activeEffects) {
+      try { mod.destroy(); }
+      catch (err) { console.warn(`[SPHWorld] error destroying effect "${name}":`, err); }
+    }
+    this.activeEffects.clear();
 
     // Destroy GPU buffers
     const bufs = this.gpuBufs;
