@@ -1,0 +1,12 @@
+{
+  "cil-eye":         { "mass": 120, "friction": 0.7, "restitution": 0.2, "buoyancy": 0.3 },
+  "cil-bolt":        { "mass": 60,  "friction": 0.3, "restitution": 0.5, "buoyancy": 0.8 },
+  "cil-vector":      { "mass": 80,  "friction": 0.5, "restitution": 0.3, "buoyancy": 0.5 },
+  "cil-plus":        { "mass": 100, "friction": 0.8, "restitution": 0.1, "buoyancy": 0.2 },
+  "cil-arrow-right": { "mass": 50,  "friction": 0.4, "restitution": 0.4, "buoyancy": 0.7 },
+  "cil-filter":      { "mass": 90,  "friction": 0.6, "restitution": 0.2, "buoyancy": 0.4 },
+  "cil-layers":      { "mass": 110, "friction": 0.7, "restitution": 0.15, "buoyancy": 0.25 },
+  "cil-loop":        { "mass": 70,  "friction": 0.4, "restitution": 0.6, "buoyancy": 0.6 },
+  "cil-code":        { "mass": 75,  "friction": 0.5, "restitution": 0.3, "buoyancy": 0.5 },
+  "cil-graph":       { "mass": 95,  "friction": 0.6, "restitution": 0.2, "buoyancy": 0.35 }
+}

@@ -2,6 +2,8 @@
 // Bridges cell_registry.json + species_assignment.json to RigidBody creation.
 // Maps the 7 Transformer cells from /api/cells into SPH rigid body parameters.
 
+import SPECIES_PHYSICS_JSON from '../../../channels/physics/species_physics.json';
+
 export interface CellPhysicsConfig {
   id: string;           // e.g. "self_attn"
   x: number; y: number; // center from bbox
@@ -10,23 +12,17 @@ export interface CellPhysicsConfig {
   mass: number;
   friction: number;
   restitution: number;
+  buoyancy: number;
   pinned: boolean;
 }
 
-// Species → physics property mapping
-// Based on the functional metaphor of each Transformer component
-const SPECIES_PHYSICS: Record<string, { mass: number; friction: number; restitution: number }> = {
-  'cil-eye':         { mass: 120, friction: 0.7, restitution: 0.2 },  // attention: heavy, stable
-  'cil-bolt':        { mass: 60,  friction: 0.3, restitution: 0.5 },  // activation: light, bouncy
-  'cil-vector':      { mass: 80,  friction: 0.5, restitution: 0.3 },  // embedding: medium
-  'cil-plus':        { mass: 100, friction: 0.8, restitution: 0.1 },  // residual: heavy, sticky
-  'cil-arrow-right': { mass: 50,  friction: 0.4, restitution: 0.4 },  // output: light, slippery
-  'cil-filter':      { mass: 90,  friction: 0.6, restitution: 0.2 },  // mask: medium-heavy
-  'cil-layers':      { mass: 110, friction: 0.7, restitution: 0.15 }, // stack: heavy, stable
-};
+// Species → physics property mapping — loaded from channels/physics/species_physics.json
+// so that tuning values live in one place and are shared with the Python pipeline.
+const SPECIES_PHYSICS: Record<string, { mass: number; friction: number; restitution: number; buoyancy: number }> =
+  SPECIES_PHYSICS_JSON as Record<string, { mass: number; friction: number; restitution: number; buoyancy: number }>;
 
 // Fallback physics for unknown species
-const DEFAULT_PHYSICS = { mass: 75, friction: 0.5, restitution: 0.3 };
+const DEFAULT_PHYSICS = { mass: 75, friction: 0.5, restitution: 0.3, buoyancy: 0.5 };
 
 // Ordered species list for stable numeric index mapping.
 // Index 0 is reserved for fluid particles; cell species start at 1.
@@ -39,6 +35,9 @@ const SPECIES_ORDER: string[] = [
   'cil-arrow-right',// 5
   'cil-filter',     // 6
   'cil-layers',     // 7
+  'cil-loop',       // 8
+  'cil-code',       // 9
+  'cil-graph',      // 10
 ];
 
 /**
