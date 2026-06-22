@@ -290,6 +290,14 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <span class="hud-value" id="hud-collisions">—</span>
       </div>
       <div class="hud-row">
+        <span class="hud-label">COL DEPTH</span>
+        <span class="hud-value" id="hud-col-depth">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">COL PAIRS</span>
+        <span class="hud-value" id="hud-col-pairs">—</span>
+      </div>
+      <div class="hud-row">
         <span class="hud-label">PRESSURE IT.</span>
         <span class="hud-value" id="hud-pressure-iters">—</span>
       </div>
@@ -371,6 +379,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   } from '@/lib/sph/at-render-pipeline';
   import type { FlowerEdgeSpline } from '@/lib/sph/at-flower-particle';
   import type { EdgeSpline } from '@/lib/sph/at-spline-particle';
+  import { CollisionWorld } from '@/lib/sph/collision/CollisionWorld';
 
   // ── QoS profiles ────────────────────────────────────────────────────────────
   // Maps QoS levels to AT pipeline configuration overrides.  The AT pipeline
@@ -411,6 +420,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   const hudParticles      = document.getElementById('hud-particles')      as HTMLElement;
   const hudFps            = document.getElementById('hud-fps')            as HTMLElement;
   const hudCollisions     = document.getElementById('hud-collisions')     as HTMLElement;
+  const hudColDepth       = document.getElementById('hud-col-depth')       as HTMLElement;
+  const hudColPairs       = document.getElementById('hud-col-pairs')       as HTMLElement;
   const hudPressureIters  = document.getElementById('hud-pressure-iters') as HTMLElement;
   const hudMemory         = document.getElementById('hud-memory')         as HTMLElement;
   const hudBackend        = document.getElementById('hud-backend')        as HTMLElement;
@@ -754,6 +765,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     // Hide init overlay
     initOverlay.classList.add('hidden');
 
+    // ── Collision world (stepped per-frame for HUD telemetry) ──────────────────
+    const collisionWorld = new CollisionWorld();
+
     // ── Render loop ────────────────────────────────────────────────────────────
     let rafId: number;
     let lastTime = performance.now();
@@ -806,10 +820,27 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       }
 
       // ── HUD updates ──────────────────────────────────────────────────────
+      // Step collision world and export results for HUD
+      collisionWorld.step(dt);
+      const colData = collisionWorld.exportCollisions();
+
       hudParticles.textContent     = String(flowerEdges.length + splineEdges.length);
       hudFps.textContent           = meter.fps.toFixed(1);
-      hudCollisions.textContent    = '—';
+      hudCollisions.textContent    = String(colData.count);
       hudPressureIters.textContent = String(frameCount % 1000);
+
+      // Collision detail: max penetration depth + body pair summary
+      if (colData.count > 0) {
+        const maxDepth = colData.collisions.reduce((m, c) => Math.max(m, c.depth), 0);
+        hudColDepth.textContent = maxDepth.toFixed(4);
+        const pairStrs = colData.collisions
+          .slice(0, 3)
+          .map(c => `${c.bodyA}↔${c.bodyB}`);
+        hudColPairs.textContent = pairStrs.join(' ') + (colData.count > 3 ? ' …' : '');
+      } else {
+        hudColDepth.textContent = '—';
+        hudColPairs.textContent = '—';
+      }
 
       // Memory (Chrome Performance Memory API)
       const perf = performance as any;

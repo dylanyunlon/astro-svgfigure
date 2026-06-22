@@ -145,6 +145,12 @@ export class SPHWorld {
   /** Resolved cell→force entries; empty until loadForceField() completes. */
   private cellForces: CellForce[] = [];
 
+  // ── Collision export (read by HUD) ────────────
+  public lastCollisions: {
+    collisions: Array<{ bodyA: number; bodyB: number; normal: { x: number; y: number }; depth: number }>;
+    count: number;
+  } = { collisions: [], count: 0 };
+
   // ── Loop bookkeeping ─────────────────────────
   private lastTime   = 0;
   private frameCount = 0;
@@ -480,6 +486,9 @@ export class SPHWorld {
 
     // ── 7  Async read-back (positions for next CPU tick) ─
     await this._readbackPositions(n);
+
+    // ── 8  Export collision data for HUD consumption ─
+    this.lastCollisions = this.collisionWorld.exportCollisions();
 
     this.frameCount++;
   }
