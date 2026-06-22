@@ -692,3 +692,13 @@ export type {
   EasingPreset,
   EpochTimelineOptions,
 } from './theatre-epoch-timeline';
+
+// ── M705: curl-particle-field — AT curl.glsl analytic derivatives → cell decor ─
+export {
+  CurlParticleField,
+  attachCurlParticleField,
+} from './curl-particle-field';
+export type {
+  CurlParticleFieldConfig,
+  CellDecorDesc,
+} from './curl-particle-field';
