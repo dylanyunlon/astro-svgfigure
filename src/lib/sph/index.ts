@@ -91,6 +91,9 @@ export { OceanConfig, OceanUniforms, OceanBackground } from './ocean-background'
 export { SimMode, PresetIndex, OceanBridgeOptions, OceanFrameEvent, OceanBridge, createOceanBridge, isWebGPUSupported } from './ocean-bridge';
 // ogl-flowmap-bridge
 export { FlowParticle, SPHFlowmap, SPHFlowmapOptions, createSPHFlowmap } from './ogl-flowmap-bridge';
+// organic-growth-animator (M773)
+export { OrganicGrowthAnimator, GROWTH_PRESETS, getGlobalGrowthAnimator, setGlobalGrowthAnimator } from './organic-growth-animator';
+export type { GrowthPhase, GrowthConfig, BatchGrowthOptions, VeinStrand, GrowthState } from './organic-growth-animator';
 // organic-sdf
 export { Vec2, flowerSDF, kochSDF, juliaSDF, OrganicSdfKind, SpeciesSdfParams, getSpeciesSdfParams, organicOutline /* +3 more */ } from './organic-sdf';
 // particle-compositor
