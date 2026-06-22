@@ -98,6 +98,10 @@ export { Tier, TierConfig, TierChangeHandler, PerformanceBudget, getGlobalBudget
 export { GOLDEN_ANGLE_DEG, GOLDEN_ANGLE_RAD, PhyllotaxisPoint, PhyllotaxisOptions, generatePhyllotaxis, polarAt, cartesianAt, SvgCircleOptions /* +1 more */ } from './phyllotaxis';
 // physarum-sim
 export { PhysarumParams, PhysarumSimulation } from './physarum-sim';
+// physarum-edge-bridge
+export { PhysarumEdgeBridgeConfig, SpeedModulatorFn, DriftVector, PhysarumEdgeBridge, createPhysarumEdgeBridge, PHYSARUM_EDGE_BRIDGE_DEFAULTS } from './physarum-edge-bridge';
+// edge-flow-renderer
+export { FlowPoint, FlowEdge, FlowPhase, FlowParticle, OnArrivalFn, EdgeFlowRendererConfig, EdgeFlowRenderer, createEdgeFlowRenderer, createEdgeFlowForSPH, evalCatmullRom, splineTangent, EDGE_FLOW_DEFAULTS } from './edge-flow-renderer';
 // physics-uniform-bridge
 export { PhysicsUniforms, samplePhysicsForBody, sampleAllBodies } from './physics-uniform-bridge';
 // post-process
