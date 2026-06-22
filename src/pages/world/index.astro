@@ -188,6 +188,88 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
+
+    /* Debug overlay panel */
+    #debug-panel {
+      position: absolute;
+      top: 90px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.55);
+      border: 1px solid #222;
+      border-radius: 4px;
+      padding: 8px 12px;
+      min-width: 148px;
+    }
+
+    #debug-panel .debug-label {
+      color: #888;
+      font-size: 11px;
+      font-family: 'Courier New', Courier, monospace;
+      text-align: right;
+      margin-bottom: 2px;
+      letter-spacing: 0.05em;
+    }
+
+    .debug-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    .debug-row label {
+      color: #888;
+      font-size: 11px;
+      font-family: 'Courier New', Courier, monospace;
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.15s ease;
+    }
+
+    .debug-row input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border: 1px solid #444;
+      border-radius: 2px;
+      background: rgba(0, 0, 0, 0.6);
+      cursor: pointer;
+      flex-shrink: 0;
+      position: relative;
+      transition: all 0.15s ease;
+    }
+
+    .debug-row input[type="checkbox"]:checked {
+      background: rgba(0, 255, 136, 0.15);
+      border-color: #00ff88;
+    }
+
+    .debug-row input[type="checkbox"]:checked::after {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 1px;
+      width: 5px;
+      height: 8px;
+      border: 1.5px solid #00ff88;
+      border-top: none;
+      border-left: none;
+      transform: rotate(45deg);
+    }
+
+    .debug-row:hover label {
+      color: #00ff88;
+    }
+
+    .debug-row input[type="checkbox"]:hover {
+      border-color: #00ff88;
+    }
   </style>
 
   <div id="world-root">
@@ -227,6 +309,27 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       </div>
     </div>
 
+    <!-- Debug overlay panel -->
+    <div id="debug-panel">
+      <div class="debug-label">DEBUG</div>
+      <div class="debug-row">
+        <label for="dbg-aabbs">Show AABBs</label>
+        <input type="checkbox" id="dbg-aabbs" />
+      </div>
+      <div class="debug-row">
+        <label for="dbg-contacts">Show Contacts</label>
+        <input type="checkbox" id="dbg-contacts" />
+      </div>
+      <div class="debug-row">
+        <label for="dbg-bvh">Show BVH</label>
+        <input type="checkbox" id="dbg-bvh" />
+      </div>
+      <div class="debug-row">
+        <label for="dbg-emitters">Show Emitters</label>
+        <input type="checkbox" id="dbg-emitters" />
+      </div>
+    </div>
+
     <!-- SSE connection status -->
     <div id="sse-status">
       <span id="sse-dot"></span>
@@ -247,6 +350,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 </BaseLayout>
 
 <script>
+  import type { DebugRenderOptions } from '@/lib/sph/debug-renderer';
+  import { renderDebugOverlay } from '@/lib/sph/debug-renderer';
+
   // ── QoS profiles ────────────────────────────────────────────────────────────
   const QOS_PROFILES = {
     low:  { particleCount: 4_096,  substeps: 1, smoothingRadius: 0.08, renderScale: 0.5  },
@@ -277,6 +383,12 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   const qosBtns       = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
   const sseStatusEl   = document.getElementById('sse-status')     as HTMLElement;
   const sseLabelEl    = document.getElementById('sse-label')      as HTMLElement;
+
+  // ── Debug overlay checkbox refs ───────────────────────────────────────────────
+  const dbgAABBs    = document.getElementById('dbg-aabbs')    as HTMLInputElement;
+  const dbgContacts = document.getElementById('dbg-contacts') as HTMLInputElement;
+  const dbgBVH      = document.getElementById('dbg-bvh')      as HTMLInputElement;
+  const dbgEmitters = document.getElementById('dbg-emitters') as HTMLInputElement;
 
   // ── Canvas sizing ────────────────────────────────────────────────────────────
   function resizeCanvas(renderScale: number) {
@@ -494,6 +606,40 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       world.step();
       world.render();
       meter.tick();
+
+      // ── Debug overlay ────────────────────────────────────────────────────────
+      const anyDebugActive =
+        dbgAABBs.checked || dbgContacts.checked || dbgBVH.checked || dbgEmitters.checked;
+
+      if (anyDebugActive) {
+        // Obtain a 2D context on the same canvas for the overlay.
+        // SPHWorld renders to WebGPU/WebGL; we draw the debug layer on top via
+        // a 2D context.  getContext is cached by the browser once obtained.
+        const ctx2d = canvas.getContext('2d') as CanvasRenderingContext2D | null;
+        if (ctx2d) {
+          const debugOptions: DebugRenderOptions = {
+            showAABBs:         dbgAABBs.checked,
+            showContacts:      dbgContacts.checked,
+            showContactNormals:dbgContacts.checked,
+            showPenetration:   false,
+            showBVH:           dbgBVH.checked,
+            showEmitters:      dbgEmitters.checked,
+            showStats:         false,
+          };
+
+          // Pull live data from the world if the API exposes it; otherwise
+          // fall back to empty structures so the overlay is safe to call.
+          const physicsWorld = world.getPhysicsWorld?.() ?? {
+            bodies: new Map(),
+            emitters: world.getEmitters?.() ?? [],
+          };
+          const manifolds   = world.getManifolds?.()  ?? [];
+          const debugAABBs  = world.getDebugAABBs?.() ?? [];
+          const bvhNodes    = world.getBVHRoots?.()   ?? [];
+
+          renderDebugOverlay(ctx2d, physicsWorld, manifolds, debugAABBs, bvhNodes, debugOptions);
+        }
+      }
 
       // Update HUD
       hudParticles.textContent = world.particleCount?.toLocaleString() ?? profile.particleCount.toLocaleString();
