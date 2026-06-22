@@ -158,3 +158,6 @@ export type { TransitionDirection, TransitionMode, TransitionPhase, DissolvePart
 // vfx-timeline (M768)
 export { VFXTimelinePlayer, VFXTimelineBuilder, VFX_PRESETS, wireCollisionVFX, CanvasScreenFlash, getGlobalVFXPlayer, setGlobalVFXPlayer } from './vfx-timeline';
 export type { VFXEventKind, ShockwaveParams, BloomSpikeParams, ParticleBurstParams, ScreenFlashParams, CameraShakeParams, CustomVFXParams, VFXEventParams, VFXKeyframe, VFXTimeline, VFXHandler, CollisionVFXWiringConfig } from './vfx-timeline';
+// dynamic-environment (M765)
+export { DynamicEnvironment, DYNAMIC_ENV_PRESETS, createDynamicEnvironment } from './dynamic-environment';
+export type { SkyPhase, Color3 as DynEnvColor3, EnvironmentSnapshot, DynamicEnvironmentConfig } from './dynamic-environment';
