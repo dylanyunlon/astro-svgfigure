@@ -5,4 +5,6 @@ export { SPHGPUOrchestrator } from './SPHGPUOrchestrator';
 export { ParticleRenderer } from './ParticleRenderer';
 export { SPHWorld } from './SPHWorld';
 export { qosToSpatial, interpolateConfigs, QOS_PRESETS, qosSpatial } from './qosSpatial';
+export { BoidsCompute, BOIDS_WORKGROUP, BOIDS_MAX } from './boids-compute';
+export type { BoidsParams, BoidsSnapshot } from './boids-compute';
 export * from './types';
