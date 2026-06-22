@@ -1,252 +1,662 @@
 # src/lib/sph — SPH Physics & Rendering Engine
 
-Real-time 2-D Smoothed Particle Hydrodynamics engine with a full WebGPU rendering
-pipeline.  The system maps Transformer-analogy cell species onto fluid-physical
-bodies, driven by Apollo CyberRT QoS profiles that translate messaging semantics
-(reliability, durability, history depth, message rate) into physical parameters
-(viscosity, boundary friction, trail length, emitter rate).
+Real-time 2-D Smoothed Particle Hydrodynamics engine with a full WebGPU
+rendering pipeline.  The system maps Transformer-analogy cell species onto
+fluid-physical bodies, driven by Apollo CyberRT QoS profiles that translate
+messaging semantics (reliability, durability, history depth, message rate) into
+physical parameters (viscosity, boundary friction, trail length, emitter rate).
+
+**106 TypeScript modules · ~63 300 lines · 32 shader host files · 113 inline WGSL/GLSL shaders**
+
+---
+
+## Table of Contents
+
+1. [Full Module Dependency Graph (ASCII)](#full-module-dependency-graph)
+2. [Per-Frame Data Flow](#per-frame-data-flow)
+3. [Render Compositor — 13-Pass Pipeline](#render-compositor--13-pass-pipeline)
+4. [All 84 sph/ Modules](#all-84-sph-modules)
+5. [All 22 collision/ Modules](#all-22-collision-modules)
+6. [All 32 Shader Host Files](#all-32-shader-host-files)
+7. [QoS → Physics Mapping](#qos--physics-mapping)
+8. [Species Visual DNA](#species-visual-dna)
+9. [Quick Start](#quick-start)
+
+---
+
+## Full Module Dependency Graph
 
 ```
-cell-pubsub-loop  ──  SSE epoch stream
-        │
-        ▼
-┌─────────────────────────────────────────────────────────┐
-│  sph-epoch-bridge          Backend ↔ Frontend sync      │
-│  cell-body-bridge          Cell registry → RigidBody    │
-│  qos-spatial-bridge        QoS profile → SpatialPhysics │
-└────────────┬────────────────────────────────────────────┘
-             ▼
-┌─────────────────────────────────────────────────────────┐
-│  SIMULATION CORE                                        │
-│  world-stepper   ←  dfsph-solver, sph-kernels,         │
-│                     fluid-rigid-coupling, rigid-body,   │
-│                     world-boundary, spatial-hash         │
-│  collision/*     ←  BVH, GJK/EPA, SAT, impulse solver  │
-└────────────┬────────────────────────────────────────────┘
-             ▼
-┌─────────────────────────────────────────────────────────┐
-│  AT RENDER PIPELINE                                     │
-│  at-scene-compositor  (9-pass forward pipeline)         │
-│    ① SPH readback                                       │
-│    ② Navier-Stokes fluid step                           │
-│    ③ Flower + Spline particle compute                   │
-│    ④ Particle sort + composite                          │
-│    ⑤ PBR / Matcap material pass                         │
-│    ⑥ Water surface                                      │
-│    ⑦ Volumetric light (god rays)                        │
-│    ⑧ Bloom post-process                                 │
-│    ⑨ Final composite → canvas                           │
-└────────────┬────────────────────────────────────────────┘
-             ▼
-┌─────────────────────────────────────────────────────────┐
-│  VISUAL IDENTITY                                        │
-│  species-visual-dna     Complete per-cell render config  │
-│  species-shader-registry  SDF + material + pattern stack │
-│  cell-material-system   Per-species PBR/matcap + WGSL   │
-│  cell-visual-identity   Physics → morphology derivation  │
-└─────────────────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────────────────────────────┐
+ │                            EXTERNAL INPUTS                                           │
+ │                                                                                      │
+ │   SSE /api/cell-events          /api/cells           Apollo QoS Profiles             │
+ │         │                          │                        │                        │
+ └─────────┼──────────────────────────┼────────────────────────┼────────────────────────┘
+           │                          │                        │
+           ▼                          ▼                        ▼
+ ┌─────────────────────┐  ┌────────────────────┐  ┌──────────────────────────┐
+ │  sph-epoch-bridge   │  │  cell-body-bridge  │  │  qos-spatial-bridge     │
+ │  (SSE ↔ SPHWorld)   │  │  (cells → rigid)   │  │  (8 Apollo profiles)    │
+ └────────┬────────────┘  └────────┬───────────┘  │  qosSpatial             │
+          │                        │               │  (5 lightweight presets) │
+          │                        │               └────────────┬─────────────┘
+          ▼                        ▼                            │
+ ┌────────────────────────────────────────────────────────────────────────────────────┐
+ │  SIMULATION CORE                                                                   │
+ │                                                                                    │
+ │  ┌──────────────────────────────────────────────────────────────────┐               │
+ │  │  world-stepper  ◄──── Main loop: stepWorld() per substep        │               │
+ │  │       │                                                          │               │
+ │  │       ├── dfsph-solver ◄── sph-kernels                          │               │
+ │  │       ├── fluid-rigid-coupling ◄── rigid-body                   │               │
+ │  │       ├── spatial-hash (CPU neighbour grid)                      │               │
+ │  │       ├── world-boundary (domain walls)                          │               │
+ │  │       └── emitter-strategy ◄── qos-spatial-bridge               │               │
+ │  └───────────────┬──────────────────────────────────────────────────┘               │
+ │                  │                                                                  │
+ │                  ▼                                                                  │
+ │  ┌──────────────────────────────────────────────────────────────────┐               │
+ │  │  collision/ subsystem                                            │               │
+ │  │       │                                                          │               │
+ │  │       ├── collision-world (broad → narrow → solve → correct)     │               │
+ │  │       │       ├── sort-and-sweep (broad phase)                   │               │
+ │  │       │       ├── bvh-tree ◄── aabb-manager                     │               │
+ │  │       │       ├── gjk-epa (narrow: convex detect + penetration)  │               │
+ │  │       │       ├── sat-solver (narrow: OBB overlap)               │               │
+ │  │       │       ├── contact-manifold (contact generation)          │               │
+ │  │       │       ├── impulse-solver ◄── constraints                 │               │
+ │  │       │       └── scene-query (ray-cast, overlap, closest)       │               │
+ │  │       └── CollisionEvents (BEGIN / STAY / END callbacks)         │               │
+ │  └───────────────┬──────────────────────────────────────────────────┘               │
+ │                  │                                                                  │
+ └──────────────────┼──────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────┐
+ │  GPU INFRASTRUCTURE                                                                │
+ │                                                                                    │
+ │  ┌─────────────────────────────────────────────────────────────────────────────┐   │
+ │  │  SPHWorld  (WebGPU buffers + compute pipelines + render passes)             │   │
+ │  │       │                                                                     │   │
+ │  │       ├── SPHGPUOrchestrator (density / force / integrate compute shaders)  │   │
+ │  │       │       └── SpatialHashGrid (GPU neighbour hash)                      │   │
+ │  │       │               └── NeighborListBuilder (CSR neighbour lists)         │   │
+ │  │       ├── BoundaryModel (GPU wall particle buffers)                         │   │
+ │  │       └── ParticleRenderer (instanced circle draw)                          │   │
+ │  └────────────────────────────────────┬────────────────────────────────────────┘   │
+ │                                       │                                            │
+ │  sph-bridge ◄── sph-worker            │   (Comlink Web Worker offload)             │
+ │                                       │                                            │
+ └───────────────────────────────────────┼────────────────────────────────────────────┘
+                                         │
+                                         ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────┐
+ │  AT RENDER PIPELINE  (render-compositor.ts — 13-pass forward pipeline)             │
+ │                                                                                    │
+ │  ┌─ Pass 0 ── environment-fx (brick grid + voronoise + chromatic aberr) ────────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 1 ── at-navier-stokes (splat → advect → vorticity → pressure) ────────┐ │
+ │  │              ◄── interactive-fluid (mouse/touch → splat queue)               │  │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 2 ── at-flower-particle + at-spline-particle (GPGPU lifecycle) ────────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 3 ── cell-material-system (per-cell PBR / Matcap → geoFBO) ───────────┐ │
+ │  │              ◄── species-shader-registry  ◄── at-pbr-material               │  │
+ │  │              ◄── physics-uniform-bridge                                      │  │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 4 ── at-flower-particle .render() (instanced quads) ──────────────────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 5 ── at-spline-particle .render() (instanced quads) ──────────────────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 6 ── particle-compositor (bitonic sort + alpha + glow → sceneFBO) ─────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 7 ── at-water-surface (wave sim + mesh + splash → waterFBO) ───────────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 8 ── at-volumetric-light (occlusion → radial blur → Mie → vlFBO) ─────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 9 ── atmosphere (Rayleigh + Mie + depth fog → atmoFBO) ────────────────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 10 ── at-bloom-postprocess (bright extract → blur → composite) ────────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 11 ── post-process (Kuwahara / Film Grain / Chromatic Aberr) ──────────┐ │
+ │  └──────────────────────────────────────────────────────────────┬───────────────┘  │
+ │                                                                 ▼                  │
+ │  ┌─ Pass 12 ── LUT colour grade (3-D trilinear LUT → swap-chain → canvas) ─────┐ │
+ │  └──────────────────────────────────────────────────────────────────────────────┘  │
+ │                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────┐
+ │  VISUAL IDENTITY STACK                                                             │
+ │                                                                                    │
+ │  species-visual-dna ──┬── species-shader-registry (SDF + material + pattern)       │
+ │                       ├── cell-material-system (5 Transformer species PBR/matcap)  │
+ │                       ├── physics-uniform-bridge (live SPH → shader uniforms)      │
+ │                       ├── uil-species-live (2593+ AT UIL params)                   │
+ │                       └── cell-visual-identity (physics → morphology derivation)   │
+ │                                                                                    │
+ │  organic-sdf ◄── species-shader-registry (flower / koch / julia SDF shapes)       │
+ │  chromatic-adaptation ◄── color-palette ◄── qosSpatial                            │
+ │  lut-generator ◄── qosSpatial (3-D LUT per QoS zone)                             │
+ │  tone-mapping (ACES filmic HDR)                                                    │
+ │                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────┐
+ │  PROCEDURAL PATTERNS & MORPHOGENESIS                                               │
+ │                                                                                    │
+ │  reaction-diffusion (Gray-Scott WebGPU compute)                                    │
+ │  turing-pattern (Gray-Scott species-specific modes)                                │
+ │  morphogenesis (L-system plant growth → Bézier paths)                              │
+ │  differential-growth (organic fractal folds)                                       │
+ │  natural-patterns (Voronoi + Worley noise WebGPU)                                  │
+ │  phyllotaxis (Fibonacci golden-angle spirals)                                      │
+ │  physarum-sim (GPU slime-mould agents) ◄── physarum-edge-bridge                   │
+ │                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────┐
+ │  FLOW FIELDS & FLUID BACKGROUNDS                                                   │
+ │                                                                                    │
+ │  curl-flow-field (WebGPU 3-D curl noise)                                           │
+ │  noise-flow-field (curl + FBM overlay)                                             │
+ │  boids-compute (WebGPU separation + alignment + cohesion)                          │
+ │  flowmap-bridge (SPH velocity → OGL Flowmap texture)                               │
+ │  ogl-flowmap-bridge (pure-TS Flowmap.js port)                                      │
+ │  ocean-background (Gerstner wave mesh) ◄── ocean-bridge                           │
+ │  lattice-boltzmann-bg (LBM macro flow + SPH overlay)                               │
+ │                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────┐
+ │  VISUAL EFFECTS                                                                    │
+ │                                                                                    │
+ │  collision-fx-system ◄── CollisionEvents + at-flower-particle                     │
+ │  contact-sparks ◄── CollisionEvents                                               │
+ │  ripple-effect ◄── CollisionEvents + ParticleRenderer                             │
+ │  water-caustics (CPU caustics port)                                                │
+ │  curl-aura (curl-noise halo WebGL2) ◄── particle-instancing                      │
+ │  screen-space-reflections ◄── cell-material-system + physics-uniform-bridge       │
+ │  environment-fog (depth fog + god rays)                                            │
+ │  environment-fx (bio-lab atmosphere)                                               │
+ │  transition-system (appear / disappear / morph) ◄── cell-visual-identity          │
+ │                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────┐
+ │  UTILITIES & INFRASTRUCTURE                                                        │
+ │                                                                                    │
+ │  types (shared interfaces + constants: MAX_PARTICLES=50000, WORKGROUP_SIZE=256)    │
+ │  performance-budget (4-tier adaptive: ULTRA / HIGH / MEDIUM / LOW)                 │
+ │  audio-physics-bridge (SPH state ↔ audio synthesis)                                │
+ │  world-serializer (binary snapshot: serialize / deserialize)                       │
+ │  world-renderer (Canvas2D debug fallback)                                          │
+ │  debug-renderer (AABB wireframes, contact normals, BVH, force arrows)             │
+ │  integration-test (end-to-end test harness)                                        │
+ │  index (barrel re-export for entire sph/)                                          │
+ │                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Module Catalog (95 files, ~52 700 lines)
+## Per-Frame Data Flow
 
-### Simulation Core
+The complete data flow for a single frame, from epoch SSE event to canvas
+pixel output:
 
-| Module | Description |
-|--------|-------------|
-| `world-stepper.ts` | Main simulation loop — orchestrates DFSPH pressure solve, rigid body integration, fluid-rigid coupling, boundary enforcement, and emitter spawning per substep. Entry point: `createWorld()` → `stepWorld()`. |
-| `dfsph-solver.ts` | Divergence-Free SPH pressure solver. Iterative density/divergence correction (Bender & Koschier 2015) on CPU-side `Particle[]`. |
-| `sph-kernels.ts` | SPH kernel math library — Cubic spline, Spiky gradient, Poly6, viscosity Laplacian. Includes `selfTest()` for kernel normalisation validation. |
-| `spatial-hash.ts` | CPU spatial hash grid for neighbour queries. `buildSpatialHash()` → `queryNeighbors()`. O(1) cell lookup, tuneable cell size. |
-| `rigid-body.ts` | Rigid body state (position, velocity, angle, angular velocity, inverse mass/inertia) with Euler integration, impulse application, and boundary particle sampling. |
-| `fluid-rigid-coupling.ts` | Two-way SPH ↔ rigid body coupling — boundary volume computation, density contribution from rigid walls, pressure/viscosity coupling forces, momentum transfer. |
-| `world-boundary.ts` | Domain boundary definitions (rect, circle, polygon) and enforcement — wall particle generation, clamping, reflection. Configurable `BoundaryShape` union type. |
-| `emitter-strategy.ts` | QoS-driven particle emitter patterns — `ContinuousPattern`, `HighFreqStreamPattern`, `LowFreqPulsePattern`, `ConstantFieldPattern`, `BurstWavePattern`. Maps Apollo QoS profiles to emission behaviour via `patternForProfile()`. |
-| `performance-budget.ts` | 4-tier adaptive performance budget (ULTRA / HIGH / MEDIUM / LOW). Auto-downgrades substeps, particle caps, and render resolution based on measured frame time. |
-| `types.ts` | Shared interfaces — `GPUBufferSet`, `SimParams`, `ParticleData`, `QoSProfile`, `SpatialConfig`, `RigidBody`, `ContactConstraint`. Constants: `MAX_PARTICLES` (50 000), `WORKGROUP_SIZE` (256). |
+```
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  STAGE 1 — Epoch SSE                                               │
+   │                                                                     │
+   │  Server pushes SSE via /api/cell-events:                            │
+   │    epoch_completed  │  cell_params_updated  │  topology_updated     │
+   │                                                                     │
+   │  sph-epoch-bridge.ts receives, parses, exponential backoff reconnect│
+   └───────────────────────────┬─────────────────────────────────────────┘
+                               │ { cellId, species, bbox, qosProfile }
+                               ▼
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  STAGE 2 — Cell Registry                                           │
+   │                                                                     │
+   │  cell-body-bridge.ts maps 7 Transformer cells from /api/cells      │
+   │  into SPH rigid body parameters via species_physics.json:           │
+   │                                                                     │
+   │    cellId ──► species (attention/ffn/layernorm/embedding/softmax)   │
+   │          ──► position, size, mass, inertia, restitution, friction   │
+   │          ──► boundary particle count                                │
+   │                                                                     │
+   │  qos-spatial-bridge.ts resolves Apollo QoS profile:                 │
+   │    reliability → viscosity                                          │
+   │    durability  → boundary friction                                  │
+   │    depth       → trail length                                       │
+   │    mps         → emitter rate                                       │
+   │    priority    → force multiplier                                   │
+   └───────────────────────────┬─────────────────────────────────────────┘
+                               │ RigidBody[] + SpatialConfig
+                               ▼
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  STAGE 3 — Physics World (world-stepper.ts per substep)            │
+   │                                                                     │
+   │  for each substep (1–4, adaptive via performance-budget):           │
+   │                                                                     │
+   │    3a. spatial-hash.buildSpatialHash(particles)                     │
+   │    3b. dfsph-solver: density prediction → pressure correction       │
+   │           └── sph-kernels: cubic spline, spiky grad, poly6         │
+   │    3c. fluid-rigid-coupling: two-way SPH ↔ rigid body forces       │
+   │    3d. emitter-strategy: spawn particles per QoS pattern            │
+   │    3e. rigid-body: Euler integrate position/angle                   │
+   │    3f. world-boundary: clamp/reflect at domain walls               │
+   │                                                                     │
+   │  GPU path (SPHGPUOrchestrator):                                     │
+   │    dispatch density_shader → force_shader → integrate_shader        │
+   │    hash_count → prefix_sum → prefix_sum_add (neighbour rebuild)     │
+   └───────────────────────────┬─────────────────────────────────────────┘
+                               │ Particle[] + RigidBody[] positions/velocities
+                               ▼
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  STAGE 4 — Collision (collision/ subsystem)                        │
+   │                                                                     │
+   │  4a. Broad phase:  sort-and-sweep on AABB x-projections            │
+   │        └── aabb-manager computes per-body AABBs                     │
+   │        └── bvh-tree for spatial acceleration                        │
+   │                                                                     │
+   │  4b. Narrow phase: gjk-epa (convex) or sat-solver (OBB)            │
+   │        └── GJK simplex walk → EPA penetration depth                 │
+   │        └── contact-manifold: Sutherland-Hodgman clipping            │
+   │                                                                     │
+   │  4c. Solve:  impulse-solver (sequential impulse, N iterations)      │
+   │        └── constraints: NonPenetration + Friction + Restitution     │
+   │        └── PositionSolver: Baumgarte position correction            │
+   │                                                                     │
+   │  4d. Events: CollisionEvents dispatches BEGIN / STAY / END          │
+   │        └── collision-fx-system: flower burst at contacts            │
+   │        └── contact-sparks: directional spark particles              │
+   │        └── ripple-effect: WebGPU ping-pong wave at impact           │
+   └───────────────────────────┬─────────────────────────────────────────┘
+                               │ ContactConstraint[] + CollisionEvent[]
+                               ▼
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  STAGE 5 — AT Render (render-compositor.ts 13-pass pipeline)       │
+   │                                                                     │
+   │  Pass  0: environment-fx → envFBO (bio-lab background)              │
+   │  Pass  1: at-navier-stokes → NS textures (vel + dye)               │
+   │  Pass  2: at-flower-particle + at-spline-particle compute           │
+   │  Pass  3: cell-material-system → geoFBO (per-cell PBR/Matcap)      │
+   │  Pass  4: at-flower-particle render (instanced quads)               │
+   │  Pass  5: at-spline-particle render (instanced quads)               │
+   │  Pass  6: particle-compositor → sceneFBO (sort + alpha + glow)      │
+   │  Pass  7: at-water-surface → waterFBO (wave sim + mesh)             │
+   │  Pass  8: at-volumetric-light → vlFBO (god rays)                    │
+   │  Pass  9: atmosphere → atmoFBO (Rayleigh + Mie + depth fog)         │
+   │  Pass 10: at-bloom-postprocess → bloomFBO (extract → blur → add)    │
+   │  Pass 11: post-process → postFBO (Kuwahara / grain / chroma)        │
+   │  Pass 12: LUT colour grade → swap-chain                             │
+   └───────────────────────────┬─────────────────────────────────────────┘
+                               │ FBO chain
+                               ▼
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  STAGE 6 — Composite                                               │
+   │                                                                     │
+   │  render-compositor chains all FBOs through pass-through blits:      │
+   │                                                                     │
+   │    envFBO ──► geoFBO (blend) ──► sceneFBO (particles composited)    │
+   │    ──► waterFBO (overlay) ──► vlFBO (additive god rays)             │
+   │    ──► atmoFBO (atmospheric fog) ──► bloomFBO (additive bloom)      │
+   │    ──► postFBO (artistic style) ──► LUT pass (colour grade)         │
+   │                                                                     │
+   │  Optional overlays composited in parallel:                          │
+   │    screen-space-reflections (SSR: hi-z ray march → resolve)         │
+   │    curl-aura (WebGL2 curl-noise halos)                              │
+   │    particle-instancing (WebGL2 instanced soft particles)            │
+   │    edge-flow-renderer (QoS-tinted spline flow)                      │
+   │    debug-renderer (AABB wireframes, contact normals)                │
+   └───────────────────────────┬─────────────────────────────────────────┘
+                               │ final pixel data
+                               ▼
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  STAGE 7 — Canvas                                                  │
+   │                                                                     │
+   │  ATRenderPipeline.ts: WebGPU swap-chain presentSurface()            │
+   │    fallback: Canvas2D via world-renderer.ts                         │
+   │                                                                     │
+   │  Frame budget managed by performance-budget.ts:                     │
+   │    ULTRA (16ms) → HIGH (20ms) → MEDIUM (28ms) → LOW (40ms)         │
+   │    Auto-downgrades substeps, particle caps, render resolution       │
+   └─────────────────────────────────────────────────────────────────────┘
+```
 
-### Collision Subsystem (`collision/`)
+### Concise one-line summary
 
-| Module | Description |
-|--------|-------------|
-| `collision-world.ts` | Top-level collision world — broad phase (Sort-and-Sweep) → narrow phase (GJK/EPA) → contact generation → impulse solve → position correction. |
-| `sort-and-sweep.ts` | Sweep-and-Prune broad phase on AABB projections. |
-| `aabb-manager.ts` | AABB computation, expansion, merge, area, ray-cast, containment tests. |
-| `bvh-tree.ts` | Bounding Volume Hierarchy for spatial acceleration — surface-area heuristic insertion, refit, ray-cast, overlap queries. |
-| `gjk-epa.ts` | GJK collision detection + EPA penetration depth for convex shapes (`createBoxShape`, `createCircleShape`). |
-| `sat-solver.ts` | Separating Axis Theorem for OBB-OBB overlap tests. |
-| `contact-manifold.ts` | Contact point generation, warm starting, combined friction/restitution coefficients. |
-| `impulse-solver.ts` | Sequential impulse constraint solver — configurable iteration count, Baumgarte stabilisation. |
-| `constraints.ts` | Constraint types — `NonPenetrationConstraint`, `FrictionConstraint`, `RestitutionConstraint`. |
-| `scene-query.ts` | Ray-cast, overlap, and closest-point queries against the collision world. |
-| `CollisionEvents.ts` | Event dispatcher — `BEGIN`, `STAY`, `END` contact phases, pair caching, callback registration. |
-| `ContactSolver.ts` | Class-based impulse contact resolution (PascalCase variant). |
-| `PositionSolver.ts` | Baumgarte position correction pass. |
-| `AABB.ts` | Standalone AABB utilities — overlap, union, perimeter, expand, fromCircle, fromPoints, contains, center. |
-| `CollisionWorld.ts` | Monolithic collision world (PascalCase variant) with `createCircleBody`, `createBoxBody`, `computeContactInfo`. |
-| `BVHTree.ts` | BVH tree (PascalCase variant). |
-| `EPA.ts` | Standalone EPA on raw `Vec2[]` arrays. |
-| `GJK.ts` | Class-based `Circle` / `Polygon` shapes with `collide()`. |
-| `SAT.ts` | SAT (PascalCase variant). |
-| `SceneQuery.ts` | Full-featured scene query with shape union (`CircleShape`, `AABBShape`, `CapsuleShape`, `ConvexPolygonShape`). |
-| `SortAndSweep.ts` | Sort-and-Sweep (PascalCase variant). |
-| `index.ts` | Barrel re-export for the entire collision subsystem. |
-
-### AT Render Pipeline
-
-| Module | Description |
-|--------|-------------|
-| `ATRenderPipeline.ts` | Unified render pipeline facade — probes WebGPU at construction, auto-falls back to Canvas2D. Single API surface (`addFluid`, `addObstacle`, `step`, `render`, `tick`). |
-| `at-render-pipeline.ts` | Pipeline orchestrator — chains all AT rendering modules in a fixed-function forward pipeline, FBO pass-through between stages. |
-| `at-scene-compositor.ts` | 9-pass scene compositor — SPH readback → Navier-Stokes → particle compute → sort/composite → PBR material → water surface → volumetric light → bloom → final composite. Manages per-cell material instances via species-shader-registry + cell-material-system. |
-| `at-flower-particle.ts` | AT FlowerParticleShader WebGPU/WGSL port (M710) — petal-shaped particle lifecycle, edge-route-to-flower-spline conversion. |
-| `at-spline-particle.ts` | AT SplineParticleLife WebGPU/WGSL port (M713) — Bézier spline particle instances, canvas-route-to-edge-spline conversion, lifecycle presets. |
-| `at-navier-stokes.ts` | AT Navier-Stokes fluid compute WGSL port (M715) — grid-based incompressible fluid with mouse/touch splat injection, dye advection. |
-| `at-pbr-material.ts` | AT PBR lighting system WGSL port — Cook-Torrance BRDF (GGX/Smith), matcap Fresnel, uniform packing for per-cell material instances. |
-| `at-bloom-postprocess.ts` | AT UnrealBloom post-process WGSL port (M714) — bright extract → separable Gaussian blur → additive composite. Per-species bloom strength via `createATBloomForSpecies()`. |
-| `at-volumetric-light.ts` | AT VolumetricLight WGSL port (M716) — screen-space god rays via occlusion → radial blur → Mie scatter. |
-| `at-water-surface.ts` | AT WaterCeilingShader WebGPU/WGSL port (M711) — wave simulation, mesh render, water-particle overlay. |
-| `at-shader-utils.ts` | AT shader utility library WGSL port — easing functions, range mapping, blend modes. Provides `WGSL_EASES`, `WGSL_RANGE`, `WGSL_BLEND_MODES` string constants for shader composition. |
-| `particle-compositor.ts` | Unified particle render compositor (M718) — depth-sorts flower + spline particles across all active renderers, draws alpha and additive-glow layers. |
-| `particle-instancing.ts` | GPU instanced particle rendering (M745) — replaces per-particle Canvas2D draw with single-draw-call WebGL2 instanced pipeline. |
-| `post-process.ts` | Full-screen post-process pipeline — three art styles: Kuwahara (oil painting), Film Grain, Chromatic Aberration. Independently stackable. |
-| `atmosphere.ts` | Atmospheric scattering + fog post-process — Rayleigh scattering phase function, depth fog, sky gradient. Includes `ATMOSPHERE_PRESETS`. |
-
-### GPU Infrastructure
-
-| Module | Description |
-|--------|-------------|
-| `SPHWorld.ts` | WebGPU SPH world — manages GPU buffers, compute pipelines, and render passes for the full particle simulation. |
-| `SPHGPUOrchestrator.ts` | GPU compute orchestrator — dispatches density, pressure, force, and integration compute shaders per substep. Manages buffer ping-ponging and readback. |
-| `ParticleRenderer.ts` | GPU particle renderer — instanced circle drawing with per-species colour, glow, and size. |
-| `SpatialHashGrid.ts` | GPU-accelerated spatial hash grid for neighbour search in compute shaders. |
-| `NeighborListBuilder.ts` | Builds CSR (Compressed Sparse Row) neighbour lists from spatial hash results. |
-| `BoundaryModel.ts` | GPU boundary model — wall particle buffers, boundary density contribution in compute shaders. |
-| `sph-bridge.ts` | Comlink Web Worker bridge — `initSPHWorld`, `addFluid`, `addBody`, `stepSPH`, `setQoS`, `raycast`, `terminateSPHWorker`. Offloads simulation to a background thread. |
-| `sph-worker.ts` | Web Worker entry point — receives Comlink-proxied calls, runs the simulation loop off-main-thread. |
-
-### QoS Mapping
-
-| Module | Description |
-|--------|-------------|
-| `qos-spatial-bridge.ts` | Apollo CyberRT QoS → SPH physics mapping. 8 named profiles (DEFAULT, SENSOR_DATA, PARAMETERS, SERVICES_DEFAULT, PARAM_EVENT, SYSTEM_DEFAULT, TF_STATIC, TOPO_CHANGE). Maps reliability → viscosity, durability → boundary friction, history depth → trail length, mps → emitter rate, priority → force multiplier. |
-| `qosSpatial.ts` | Lightweight QoS preset → SpatialConfig mapping. 5 presets (DEFAULT, SENSOR_DATA, PARAMETERS, TF_STATIC, TOPO_CHANGE). Maps reliability → boundary stiffness, mps → viscosity, history depth → persistence, durability → rest density. Also provides `interpolateConfigs()` for smooth QoS transitions. |
-| `qos-spatial-bridge.ts` | Also exports `APOLLO_PROFILES` (all 8 entries) and `PROFILE_DESCRIPTIONS` for UI tooltip/legend rendering. |
-
-### Species Visual DNA
-
-| Module | Description |
-|--------|-------------|
-| `species-visual-dna.ts` | Single-call facade that concatenates shader registry + physics sampling + UIL modulation into one `VisualDNA` struct per cell per frame. The complete render-time visual config — SDF, material, pattern, bloom, physics uniforms, UIL bag — in a single lookup. |
-| `species-shader-registry.ts` | Declarative shader stack registry — per-species `SpeciesShaderConfig` defining SDF shape (flower/koch/julia/supershape/capsule/hexagon/star/roundbox/polygon), material type (matcap/pbr/iridescence), pattern shader, bloom params, and physics bindings. |
-| `cell-material-system.ts` | Per-species material system (M719) — 5 Transformer-analogy species with distinct visual identities: attention → iridescent metallic, ffn → glass refraction, layernorm → matcap marble, embedding → organic membrane, softmax → luminous energy. Each carries PBR/matcap params + WGSL fragment patches + physics modulators. |
-| `cell-visual-identity.ts` | Physics → visual derivation (M731). Maps species → morphology (jellyfish/petal/coral/mycelium/crystal), QoS reliability → border sharpness, QoS mps → internal flow speed, force field → decoration direction, contacts → spark intensity. Output: `VisualProfile` data bag. |
-| `physics-uniform-bridge.ts` | Bridges live SPH world state to per-cell shader uniforms — samples density, velocity, pressure, vorticity, kinetic energy from the SPH neighbourhood around a rigid body. |
-| `uil-species-live.ts` | AT UIL params × SPH physics live interpolation — 2593+ AT scene parameters per species, modulated by physics state in real time. |
-| `organic-sdf.ts` | Inlined SDF primitives for organic cell outlines — `flowerSDF`, `kochSDF`, `juliaSDF`, plus species-parameterised `organicOutline()`. |
-
-### Color & Lighting
-
-| Module | Description |
-|--------|-------------|
-| `chromatic-adaptation.ts` | Chromatic adaptation colour system (M584) — particle colours shift along natural colour gradients based on physics state (density, velocity, temperature). Batch-resolve, CSS/glow string conversion. |
-| `color-palette.ts` | Dynamic colour palette per QoS profile (M566) — lygia blend modes (Screen, Overlay) ported to TypeScript. `resolveParticleColor()`, `rgbaToCss()`, `rgbaToU8()`. |
-| `lut-generator.ts` | 3-D LUT colour grading generator (M624) — generates 17³ cube LUT textures, QoS-zone-weighted tone mapping. `classifyQoSZone()`, `classifyQoSProfileName()`. |
-
-### Procedural Patterns & Morphogenesis
-
-| Module | Description |
-|--------|-------------|
-| `reaction-diffusion.ts` | Gray-Scott reaction-diffusion WebGPU compute pipeline. Per-species feed/kill parameters via `GrayScottSpecies`. |
-| `turing-pattern.ts` | Gray-Scott Turing pattern generator using WebGPU compute. Species-specific pattern modes. |
-| `morphogenesis.ts` | L-system plant-growth morphogenesis — graph edges become living branches via Lindenmayer systems; particles stream along resulting Bézier paths. Named presets via `fromPreset()`. |
-| `differential-growth.ts` | Differential growth simulation — organic fractal folds (coral reefs, cerebral cortex, romanesco). |
-| `natural-patterns.ts` | Natural cell-surface textures via WebGPU compute — Voronoi + Worley noise (lygia port). Per-species FBM parameters. |
-| `phyllotaxis.ts` | Fibonacci golden-angle phyllotaxis spiral — sunflower / pinecone packing pattern generation. |
-| `physarum-sim.ts` | GPU Physarum polycephalum slime-mould simulation (Jones 2010). Agent-based trail deposition on a diffusion grid. |
-
-### Flow Fields & Fluid Backgrounds
-
-| Module | Description |
-|--------|-------------|
-| `curl-flow-field.ts` | WebGPU 3-D curl-noise flow field (M606). |
-| `noise-flow-field.ts` | Curl-noise + FBM flow field overlay for SPH particles (lygia inlined WGSL). |
-| `boids-compute.ts` | WebGPU Boids — separation + alignment + cohesion in 3 compute passes. Host uploads once; GPU advances per `tick()`. |
-| `flowmap-bridge.ts` | SPH velocity field → OGL Flowmap texture bridge (M573) — rasterises particle velocities to a low-res Float32 RG grid with dissipation. |
-| `ogl-flowmap-bridge.ts` | OGL Flowmap bridge (M614) — ports upstream Flowmap.js ping-pong to pure TypeScript/CPU, replaces mouse input with SPH velocity field. |
-| `ocean-background.ts` | Gerstner wave ocean background — 4-wave sum displacement on a subdivided grid mesh. |
-| `ocean-bridge.ts` | WebGPU-Ocean ↔ cell-pubsub-loop bridge (M603) — wraps upstream SPH + MLSMPM simulators and FluidRenderer. |
-| `lattice-boltzmann-bg.ts` | Dual-layer fluid — Lattice Boltzmann Method macro background flow + SPH particle overlay. |
-
-### Visual Effects
-
-| Module | Description |
-|--------|-------------|
-| `collision-fx-system.ts` | Collision FX flower burst (M741) — spawns flower-shaped particle bursts at contact points with impulse-scaled intensity. |
-| `contact-sparks.ts` | Contact spark system (M587) — short-lived directional spark particles at collision contacts. |
-| `ripple-effect.ts` | Ripple collision effect — WebGPU ping-pong wave simulation at impact points. |
-| `water-caustics.ts` | CPU port of WebGL water caustics — drop, stepSimulation, updateNormals (M613). |
-| `environment-fx.ts` | "Bio-laboratory" atmospheric effects — three layered FX for a cyberpunk lab atmosphere. Includes presets. |
-| `debug-renderer.ts` | Collision debug overlay — AABB wireframes, contact normals, BVH hierarchy, force field arrows, easing animations (lygia port). |
-| `world-renderer.ts` | Canvas2D world renderer — species-coloured particles, rigid body outlines, contact points, BVH debug. Used by debug views and the Canvas2D fallback path. |
-
-### Bridges & Integration
-
-| Module | Description |
-|--------|-------------|
-| `sph-epoch-bridge.ts` | Backend epoch loop ↔ frontend SPHWorld bridge (M514). Listens to SSE `/api/cell-events`, syncs rigid bodies on `epoch_completed`, `cell_params_updated`, `topology_updated`. Exponential backoff reconnect. |
-| `cell-body-bridge.ts` | Cell registry → RigidBody bridge. Maps 7 Transformer cells from `/api/cells` into SPH rigid body parameters using `species_physics.json`. |
-| `audio-physics-bridge.ts` | Audio ↔ physics bridge (M748) — bidirectional mapping between SPH state and audio synthesis parameters. |
-
-### Utilities
-
-| Module | Description |
-|--------|-------------|
-| `spline-particle-life.ts` | Spline particle life system — Bézier spline-bound particles with lifecycle phases, edge-route conversion. |
-| `integration-test.ts` | End-to-end integration test harness for the SPH pipeline. |
-| `index.ts` | Barrel re-export for the entire `sph/` module. |
+```
+epoch SSE → sph-epoch-bridge → cell-body-bridge (cell registry) → world-stepper
+(physics world) → collision/ (broad→narrow→solve→events) → render-compositor
+(13 AT passes) → FBO composite chain → LUT grade → canvas swap-chain
+```
 
 ---
 
-## AT Render Pipeline (9-Pass Detail)
+## Render Compositor — 13-Pass Pipeline
 
-The `at-scene-compositor.ts` orchestrates a fixed-function forward pipeline each frame:
+The definitive top-level `render-compositor.ts` (M745) unifies all AT rendering
+modules.  It supersedes both `at-scene-compositor.ts` (M730, 9-pass) and
+`at-render-pipeline.ts` (M720) by combining their responsibilities and adding
+environment FX, atmosphere, artistic post-process, per-pass GPU timing, and
+performance budget.
 
-**Pass 1 — SPH World Readback.** Read particle positions and velocities from
-`SPHWorld` CPU buffers.  Derive per-cell bounding boxes, densities, and flow
-vectors that drive physics-modulated material parameters downstream.
+| Pass | Module | Input | Output | Description |
+|------|--------|-------|--------|-------------|
+| 0 | `environment-fx` | — | envFBO | Bio-lab background: brick grid + voronoise + chromatic aberration |
+| 1 | `at-navier-stokes` | mouse/touch + SPH vel | NS vel/dye tex | Grid fluid: splat → advect → vorticity → divergence → pressure → gradient |
+| 2 | `at-flower-particle` + `at-spline-particle` | tPos0 | tPos1 | GPGPU lifecycle compute: petal spirals + Catmull-Rom splines |
+| 3 | `cell-material-system` | species registry | geoFBO | Per-cell Cook-Torrance PBR or Matcap Fresnel material render |
+| 4 | `at-flower-particle` | tPos1 | geoFBO+ | Instanced quad draw: flower petal particles |
+| 5 | `at-spline-particle` | tPos1 | geoFBO+ | Instanced quad draw: Bézier spline particles |
+| 6 | `particle-compositor` | all particles | sceneFBO | GPU bitonic sort → back-to-front alpha → additive glow halo |
+| 7 | `at-water-surface` | wave state | waterFBO | Wave simulation + Gerstner mesh + water-particle overlay |
+| 8 | `at-volumetric-light` | scene depth | vlFBO | Screen-space god rays: occlusion → radial blur → Mie scatter |
+| 9 | `atmosphere` | scene + depth | atmoFBO | Rayleigh scattering + Mie phase + depth fog + sky gradient |
+| 10 | `at-bloom-postprocess` | scene HDR | bloomFBO | UE5-style: bright extract → separable Gaussian blur → additive |
+| 11 | `post-process` | bloomFBO | postFBO | Artistic styles: Kuwahara oil paint / Film Grain / Chromatic Aberration |
+| 12 | LUT (inline) | postFBO | canvas | 3-D trilinear LUT colour grade → swap-chain surface |
 
-**Pass 2 — Navier-Stokes Fluid.** Advance the `at-navier-stokes` grid by one
-timestep.  Inject mouse/touch splats and cell-centre dye impulses computed from
-SPH velocity field.
+---
 
-**Pass 3 — Particle Compute.** Dispatch `at-flower-particle` and `at-spline-particle`
-lifecycle compute passes.  Both renderers advance their ping-pong position textures
-(`tPos0` ↔ `tPos1`).
+## All 84 sph/ Modules
 
-**Pass 4 — Particle Sort & Composite.** `particle-compositor` depth-sorts all
-active particles from both renderers, then draws alpha-blended and additive-glow
-layers to the intermediate FBO.
+One-line purpose for each of the 84 TypeScript modules in `src/lib/sph/`
+(excluding the 22 `collision/` modules listed separately below).
 
-**Pass 5 — PBR Material.** Per-cell `at-pbr-material` (or `ATMatcapFresnel`) render
-pass.  Species-specific Cook-Torrance BRDF parameters are resolved through
-`cell-material-system` + `species-shader-registry` for each registered cell.
+```
+ATRenderPipeline.ts        Unified render pipeline facade — probes WebGPU, auto-falls back to Canvas2D; single API: addFluid / addObstacle / step / render / tick
+BoundaryModel.ts           GPU boundary model — wall particle buffers, boundary density contribution in compute shaders
+NeighborListBuilder.ts     Builds Compressed Sparse Row (CSR) neighbour lists from SpatialHashGrid results
+ParticleRenderer.ts        GPU particle renderer — instanced circle drawing with per-species colour, glow, and size; hosts SPLAT/COMPOSITE/PARTICLE shaders
+SPHGPUOrchestrator.ts      GPU compute orchestrator — dispatches density, force, integrate, hash, prefix-sum compute shaders per substep with buffer ping-pong
+SPHWorld.ts                WebGPU SPH world — manages GPU buffers, compute pipelines, and render passes for the full particle simulation
+SpatialHashGrid.ts         GPU-accelerated spatial hash grid for neighbour search in compute shaders
+at-bloom-postprocess.ts    AT UnrealBloom WGSL port (M714) — bright extract → separable Gaussian blur → additive composite; per-species bloom via createATBloomForSpecies()
+at-flower-particle.ts      AT FlowerParticleShader WebGPU/WGSL port (M710) — petal-shaped particle lifecycle, edge-route-to-flower-spline conversion; 6 inline shaders
+at-navier-stokes.ts        AT Navier-Stokes fluid compute WGSL port (M715) — grid-based incompressible fluid: splat → advect → vorticity → divergence → pressure → gradient
+at-pbr-material.ts         AT PBR lighting WGSL port — Cook-Torrance BRDF (GGX/Smith), matcap Fresnel, thin-film iridescence, uniform packing for per-cell material instances
+at-render-pipeline.ts      Pipeline orchestrator (M720) — chains AT modules in fixed-function forward pipeline with FBO pass-through; precursor to render-compositor
+at-scene-compositor.ts     9-pass scene compositor (M730) — SPH readback → NS fluid → particle compute → sort/composite → PBR → water → volumetric → bloom → final
+at-shader-utils.ts         AT shader utility library WGSL port — easing functions (30 curves), range remapping, Photoshop blend modes; WGSL_EASES + WGSL_RANGE + WGSL_BLEND_MODES
+at-spline-particle.ts      AT SplineParticleLife WebGPU/WGSL port (M713) — Bézier spline particle instances with lifecycle presets; 6 inline shaders
+at-volumetric-light.ts     AT VolumetricLight WGSL port (M716) — screen-space god rays: occlusion → radial blur → Mie scatter → composite; 7 inline shaders
+at-water-surface.ts        AT WaterCeilingShader WebGPU/WGSL port (M711) — wave simulation, mesh render, water-particle overlay; 9 inline shaders (most of any module)
+atmosphere.ts              Atmospheric scattering + fog post-process — Rayleigh scattering phase function, depth fog, sky gradient; ATMOSPHERE_PRESETS
+audio-physics-bridge.ts    Audio ↔ physics bridge (M748) — bidirectional mapping between SPH state (density, velocity, collisions) and audio synthesis parameters
+boids-compute.ts           WebGPU Boids — separation + alignment + cohesion in 3 compute passes; host uploads once, GPU advances per tick()
+cell-body-bridge.ts        Cell registry → RigidBody bridge — maps 7 Transformer cells from /api/cells into SPH rigid body parameters via species_physics.json
+cell-material-system.ts    Per-species material system (M719) — 5 Transformer species: attention=iridescent, ffn=glass, layernorm=marble, embedding=membrane, softmax=luminous
+cell-visual-identity.ts    Physics → visual derivation (M731) — species → morphology (jellyfish/petal/coral/mycelium/crystal), QoS → border/flow/decoration/sparks
+chromatic-adaptation.ts    Chromatic adaptation colour system (M584) — particle colours shift along natural gradients based on density/velocity/temperature; batch-resolve
+collision-fx-system.ts     Collision FX flower burst (M741) — spawns flower-shaped particle bursts at contact points with impulse-scaled intensity
+color-palette.ts           Dynamic colour palette per QoS profile (M566) — lygia blend modes (Screen, Overlay) ported to TS; resolveParticleColor() + rgbaToCss()
+contact-sparks.ts          Contact spark system (M587) — short-lived directional spark particles at collision contacts
+curl-aura.ts               Curl-noise aura halos (M749) — WebGL2 concentric SDF rings with curl-noise distortion around cell bodies; 2 inline GLSL shaders
+curl-flow-field.ts         WebGPU 3-D curl-noise flow field (M606) — 2 inline WGSL compute shaders for curl advection + SPH injection
+debug-renderer.ts          Collision debug overlay — AABB wireframes, contact normals, BVH hierarchy, force field arrows, easing animations (lygia port)
+dfsph-solver.ts            Divergence-Free SPH pressure solver (Bender & Koschier 2015) — iterative density/divergence correction on CPU Particle[]
+differential-growth.ts     Differential growth simulation — organic fractal folds (coral reefs, cerebral cortex, romanesco broccoli)
+edge-flow-renderer.ts      Edge-flow particle renderer (M742) — dual-mode WebGPU compute + Canvas2D fallback; QoS-driven colour/speed/trail per topology edge; 4 inline shaders
+emitter-strategy.ts        QoS-driven particle emitter patterns — Continuous / HighFreqStream / LowFreqPulse / ConstantField / BurstWave; patternForProfile()
+environment-fog.ts         Environment fog system — depth fog + god rays + Mie scatter composite; 6 inline WGSL shaders; exported as ENVIRONMENT_FOG_WGSL bundle
+environment-fx.ts          "Bio-laboratory" atmospheric effects — brick-tile grid + voronoise scatter + chromatic aberration; 2 inline WGSL shaders
+flowmap-bridge.ts          SPH velocity → OGL Flowmap texture bridge (M573) — rasterises particle velocities to low-res Float32 RG grid with dissipation
+fluid-rigid-coupling.ts    Two-way SPH ↔ rigid body coupling — boundary volume, density contribution, pressure/viscosity forces, momentum transfer
+fluid-surface-mesh.ts      SPH → surface mesh reconstruction (M746) — Marching Squares 2D: scalar field → contour → ear-clipping triangulation
+index.ts                   Barrel re-export for the entire sph/ module — re-exports all 83 sibling modules + collision/ subsystem
+integration-test.ts        End-to-end integration test harness for the SPH pipeline — validates world-stepper + qos-spatial-bridge
+interactive-fluid.ts       Mouse splat → advect → pressure fluid interaction (M743) — wires DOM pointer events to NavierStokesFluid compute pipeline
+lattice-boltzmann-bg.ts    Dual-layer fluid — Lattice Boltzmann Method macro background flow + SPH particle overlay; 2 inline WGSL shaders
+lut-generator.ts           3-D LUT colour grading generator (M624) — generates 17³ cube LUT textures with QoS-zone-weighted tone mapping
+morphogenesis.ts           L-system plant-growth morphogenesis — graph edges become living branches via Lindenmayer systems; Bézier path particles; fromPreset()
+natural-patterns.ts        Natural cell-surface textures via WebGPU compute — Voronoi + Worley noise (lygia port); per-species FBM; 1 inline WGSL shader
+noise-flow-field.ts        Curl-noise + FBM flow field overlay for SPH particles — simplex basis + FBM + curl (lygia-inlined WGSL); 4 inline shaders
+ocean-background.ts        Gerstner wave ocean background — 4-wave sum displacement on subdivided grid mesh + splash compute; 5 inline WGSL shaders
+ocean-bridge.ts            WebGPU-Ocean ↔ cell-pubsub-loop bridge (M603) — wraps upstream SPH + MLSMPM simulators and FluidRenderer
+ogl-flowmap-bridge.ts      OGL Flowmap bridge (M614) — ports Flowmap.js ping-pong to pure TypeScript/CPU, replaces mouse input with SPH velocity field
+organic-sdf.ts             Inlined SDF primitives for organic cell outlines — flowerSDF, kochSDF, juliaSDF + species-parameterised organicOutline()
+particle-compositor.ts     Unified particle render compositor (M718) — depth-sorts flower + spline particles, draws alpha-blended + additive-glow layers; 6 inline shaders
+particle-instancing.ts     GPU instanced particle rendering (M745) — WebGL2 instanced pipeline replacing per-particle Canvas2D draw; 2 inline GLSL shaders
+performance-budget.ts      4-tier adaptive performance budget (ULTRA/HIGH/MEDIUM/LOW) — auto-downgrades substeps, particle caps, render resolution on measured frame time
+phyllotaxis.ts             Fibonacci golden-angle phyllotaxis spiral — sunflower/pinecone packing pattern generation
+physarum-edge-bridge.ts    Physarum ↔ EdgeFlowRenderer bridge (M742) — GPU trail readback → CPU pheromone sampling → particle speed modulation (chemotaxis)
+physarum-sim.ts            GPU Physarum polycephalum slime-mould simulation (Jones 2010) — agent-based trail deposition on diffusion grid; 1 inline WGSL shader
+physics-uniform-bridge.ts  Bridges live SPH world state to per-cell shader uniforms — samples density, velocity, pressure, vorticity, kinetic energy from neighbourhood
+post-process.ts            Full-screen post-process pipeline — Kuwahara (oil painting), Film Grain, Chromatic Aberration; independently stackable; 1 inline WGSL shader
+qos-spatial-bridge.ts      Apollo CyberRT QoS → SPH physics mapping — 8 named profiles; reliability→viscosity, durability→friction, depth→trail, mps→emitter, priority→force
+qosSpatial.ts              Lightweight QoS preset → SpatialConfig — 5 presets; reliability→stiffness, mps→viscosity, depth→persistence, durability→density; interpolateConfigs()
+reaction-diffusion.ts      Gray-Scott reaction-diffusion WebGPU compute pipeline — per-species feed/kill parameters via GrayScottSpecies; 2 inline WGSL shaders
+render-compositor.ts       Definitive 13-pass render compositor (M745) — supersedes at-scene-compositor + at-render-pipeline; adds env FX, atmosphere, post-process, GPU timing
+rigid-body.ts              Rigid body state — position, velocity, angle, angular velocity, inverse mass/inertia; Euler integration, impulse application, boundary particle sampling
+ripple-effect.ts           Ripple collision effect — WebGPU ping-pong wave simulation at impact points; 3 inline WGSL shaders
+screen-space-reflections.ts SSR cell surface reflections (M747) — UE5-style hi-z ray march: depth pyramid → half-res march → temporal resolve → composite; 5 inline WGSL shaders
+spatial-hash.ts            CPU spatial hash grid for neighbour queries — buildSpatialHash() → queryNeighbors(); O(1) cell lookup, tuneable cell size
+species-shader-registry.ts Declarative shader stack registry — per-species SDF (flower/koch/julia/supershape/capsule/hexagon/star/roundbox/polygon), material, pattern, bloom, physics bindings
+species-visual-dna.ts      Single-call facade: shader registry + physics sampling + UIL modulation → one VisualDNA struct per cell per frame
+sph-bridge.ts              Comlink Web Worker bridge — initSPHWorld / addFluid / addBody / stepSPH / setQoS / raycast / terminateSPHWorker; offloads simulation to background thread
+sph-epoch-bridge.ts        Backend epoch loop ↔ frontend SPHWorld bridge (M514) — listens SSE /api/cell-events, syncs rigid bodies, exponential backoff reconnect
+sph-kernels.ts             SPH kernel math — cubic spline, spiky gradient, Poly6, viscosity Laplacian; includes selfTest() for kernel normalisation validation
+sph-worker.ts              Web Worker entry point — receives Comlink-proxied calls, runs simulation loop off-main-thread
+spline-particle-life.ts    Spline particle life system — Bézier spline-bound particles with lifecycle phases (spawn/flow/fade), edge-route conversion
+tone-mapping.ts            ACES filmic HDR tone mapping — RRT + ODT fit matrices (Stephen Hill / Krzysztof Narkowicz); Color3 / Mat3 types
+transition-system.ts       Cell appear/disappear/transform transitions (M748) — scale, dissolve (particle scatter), morph (curl-noise path interpolation); physics-aware timing
+turing-pattern.ts          Gray-Scott Turing pattern generator via WebGPU compute — species-specific pattern modes; 2 inline WGSL shaders
+types.ts                   Shared interfaces — GPUBufferSet, SimParams, ParticleData, QoSProfile, SpatialConfig, RigidBody, ContactConstraint; MAX_PARTICLES=50000, WORKGROUP_SIZE=256
+uil-species-live.ts        AT UIL params × SPH physics live interpolation — 2593+ AT scene parameters per species, modulated by physics state in real time
+water-caustics.ts          CPU port of WebGL water caustics (M613) — drop, stepSimulation, updateNormals
+world-boundary.ts          Domain boundary definitions (rect, circle, polygon) and enforcement — wall particles, clamping, reflection; BoundaryShape union type
+world-renderer.ts          Canvas2D world renderer — species-coloured particles, rigid body outlines, contacts, BVH debug; used by debug views and Canvas2D fallback
+world-serializer.ts        Binary serialization for World snapshots — "SPHW" magic header, particle + rigid body + config; serialize() / deserialize()
+world-stepper.ts           Main simulation loop — orchestrates DFSPH pressure solve, rigid body integration, fluid-rigid coupling, boundary enforcement, emitter spawning per substep
+```
 
-**Pass 6 — Water Surface.** `at-water-surface` wave simulation, mesh render, and
-water-particle overlay composited into the scene.
+---
 
-**Pass 7 — Volumetric Light.** `at-volumetric-light` screen-space god rays:
-occlusion pass → radial blur → Mie scatter composite.
+## All 22 collision/ Modules
 
-**Pass 8 — Bloom Post-Process.** `at-bloom-postprocess` UE5-style pipeline:
-bright extract → separable Gaussian blur → additive composite.  Per-species
-bloom strength set by `species-shader-registry` and modulated by
-`physics-uniform-bridge` density ratio.
+One-line purpose for each module in `src/lib/sph/collision/`:
 
-**Pass 9 — Final Composite.** Bloom output presented to the swap-chain surface
-(canvas).  The `ATRenderPipeline` facade manages WebGPU ↔ Canvas2D fallback
-selection transparently.
+```
+AABB.ts              Standalone AABB utilities — overlap, union, perimeter, expand, fromCircle, fromPoints, contains, center
+BVHTree.ts           Bounding Volume Hierarchy (PascalCase) — surface-area heuristic insertion, refit, ray-cast, overlap queries
+CollisionEvents.ts   Event dispatcher — BEGIN / STAY / END contact phases, pair caching, callback registration
+CollisionWorld.ts    Monolithic collision world (PascalCase) — createCircleBody, createBoxBody, computeContactInfo
+ContactSolver.ts     Class-based impulse contact resolution (PascalCase variant)
+EPA.ts               Standalone Expanding Polytope Algorithm on raw Vec2[] arrays for penetration depth
+GJK.ts               Class-based Circle / Polygon shapes with collide() — GJK simplex walk
+PositionSolver.ts    Baumgarte position correction pass
+SAT.ts               Separating Axis Theorem (PascalCase variant)
+SceneQuery.ts        Full-featured scene query — CircleShape / AABBShape / CapsuleShape / ConvexPolygonShape; ray-cast, overlap, closest-point
+SortAndSweep.ts      Sort-and-Sweep broad phase (PascalCase variant)
+aabb-manager.ts      AABB computation, expansion, merge, area, ray-cast, containment tests
+bvh-tree.ts          BVH for spatial acceleration — surface-area heuristic insertion, refit, ray-cast, overlap
+collision-world.ts   Top-level collision world — broad (Sort-and-Sweep) → narrow (GJK/EPA) → contact → impulse solve → position correct
+constraints.ts       Constraint types — NonPenetrationConstraint, FrictionConstraint, RestitutionConstraint
+contact-manifold.ts  Contact point generation — Sutherland-Hodgman polygon clipping, warm starting, combined friction/restitution
+gjk-epa.ts           GJK collision detection + EPA penetration for convex shapes — createBoxShape, createCircleShape
+impulse-solver.ts    Sequential impulse constraint solver — configurable iterations, Baumgarte stabilisation
+index.ts             Barrel re-export for the entire collision subsystem
+sat-solver.ts        Separating Axis Theorem for OBB-OBB overlap tests
+scene-query.ts       Ray-cast, overlap, and closest-point queries against the collision world
+sort-and-sweep.ts    Sweep-and-Prune broad phase on AABB x-axis projections
+```
+
+---
+
+## All 32 Shader Host Files
+
+Each host `.ts` file contains one or more inline WGSL (or GLSL) shader strings.
+Total: **113 distinct shader constants** across 32 files.
+
+```
+SPHGPUOrchestrator.ts       6 WGSL  DENSITY_SHADER            — SPH density accumulation compute
+                                     FORCE_SHADER              — pressure + viscosity force compute
+                                     INTEGRATE_SHADER          — symplectic Euler position/velocity integration
+                                     HASH_COUNT_SHADER         — spatial hash cell counting
+                                     PREFIX_SUM_SHADER         — parallel prefix sum (Blelloch scan)
+                                     PREFIX_SUM_ADD_SHADER     — prefix sum block-add propagation
+
+ParticleRenderer.ts         3 WGSL  SPLAT_SHADER              — particle-to-density-field splatting
+                                     COMPOSITE_SHADER          — density field → colour composite
+                                     PARTICLE_SHADER           — instanced per-species circle draw
+
+at-navier-stokes.ts         7 WGSL  GRID_UNIFORM_WGSL         — shared grid resolution/dx uniform struct
+                                     SPLAT_WGSL                — Gaussian dye/velocity injection
+                                     ADVECTION_WGSL            — semi-Lagrangian velocity/dye advection
+                                     VORTICITY_WGSL            — vorticity confinement force compute
+                                     DIVERGENCE_WGSL           — velocity divergence field compute
+                                     PRESSURE_WGSL             — Jacobi pressure iteration
+                                     GRADIENT_WGSL             — pressure gradient subtraction (projection)
+
+at-flower-particle.ts       6 WGSL  NOISE_WGSL                — simplex noise for petal turbulence
+                                     UNIFORMS_WGSL             — shared uniform struct (time, bounds, params)
+                                     SPLINE_WGSL               — Catmull-Rom spline evaluation helpers
+                                     COMPUTE_SHADER            — petal lifecycle update compute
+                                     VERTEX_SHADER             — instanced quad vertex transform
+                                     FRAGMENT_SHADER           — petal SDF + colour + alpha fragment
+
+at-spline-particle.ts       6 WGSL  NOISE_WGSL                — simplex noise for spline jitter
+                                     UNIFORMS_WGSL             — shared uniform struct (time, bounds, params)
+                                     SPLINE_WGSL               — Catmull-Rom + Bézier evaluation helpers
+                                     COMPUTE_SHADER            — spline lifecycle update compute
+                                     VERTEX_SHADER             — instanced quad vertex transform
+                                     FRAGMENT_SHADER           — spline particle SDF + glow fragment
+
+at-water-surface.ts         9 WGSL  WGSL_MATH                 — math helpers (PI, clamp01, smoothstep)
+                                     WGSL_UNIFORMS             — water simulation uniform struct
+                                     WGSL_WAVE_STEP            — wave equation propagation compute
+                                     WGSL_WAVE_NORMAL          — normal map computation from height field
+                                     WGSL_WAVE_DROP            — circular wave drop injection compute
+                                     WGSL_WATER_RENDER         — water surface mesh render (reflection + refraction)
+                                     WGSL_WATER_RENDER_FLAT    — flat water fallback render
+                                     WGSL_PARTICLE_UPDATE      — water-particle physics update compute
+                                     WGSL_PARTICLE_RENDER      — water-particle instanced render
+
+at-pbr-material.ts          7 WGSL  WGSL_MATH_HELPERS         — saturate, pow5, PI constants
+                                     WGSL_PBR_BRDF             — Cook-Torrance BRDF: F_Schlick, D_GGX, G_SmithGGX, pbrDirect, pbrAmbientSimple
+                                     WGSL_FRESNEL              — Schlick Fresnel edge light (fresnel_f, fresnelRim)
+                                     WGSL_IRIDESCENCE          — thin-film interference rainbow (iridescence)
+                                     WGSL_MATCAP_FRESNEL_FRAG  — Matcap + Fresnel fragment (simplex noise distort)
+                                     WGSL_PBR_FRAG             — full PBR fragment shader
+                                     WGSL_FULLSCREEN_VS        — full-screen triangle vertex shader
+
+at-bloom-postprocess.ts     5 WGSL  WGSL_BLOOM_UNIFORMS       — bloom parameter uniform struct
+                                     WGSL_LUMINANCE            — Rec.709 luminance helper function
+                                     WGSL_LUMINOSITY           — bright threshold extract vertex+fragment
+                                     WGSL_GAUSSIAN_BLUR        — separable Gaussian blur vertex+fragment
+                                     WGSL_COMPOSITE            — scene + bloom additive composite
+
+at-volumetric-light.ts      7 WGSL  WGSL_VL_UNIFORMS          — volumetric light uniform struct
+                                     WGSL_FULLSCREEN_VERT      — full-screen triangle vertex shader
+                                     WGSL_PERLIN_NOISE         — Perlin turbulence noise helpers
+                                     WGSL_OCCLUSION            — occlusion mask fragment
+                                     WGSL_GOD_RAYS             — radial blur fragment (64-sample march)
+                                     WGSL_MIE_SCATTER          — Mie scattering phase fragment
+                                     WGSL_COMPOSITE            — additive composite fragment
+
+particle-compositor.ts      6 WGSL  KEY_EXTRACT_WGSL          — depth-key extraction compute
+                                     BITONIC_SORT_WGSL         — GPU bitonic merge sort compute
+                                     ALPHA_VERTEX_WGSL         — alpha-blended particle vertex
+                                     ALPHA_FRAGMENT_WGSL       — alpha-blended particle fragment
+                                     GLOW_VERTEX_WGSL          — additive glow particle vertex
+                                     GLOW_FRAGMENT_WGSL        — additive glow particle fragment
+
+environment-fog.ts          6 WGSL  WGSL_UNIFORMS             — EnvFogUniforms struct
+                                     WGSL_FULLSCREEN_VERT      — full-screen triangle vertex
+                                     WGSL_DEPTH_FOG            — depth fog fragment
+                                     WGSL_OCCLUSION            — occlusion extract fragment
+                                     WGSL_GOD_RAYS             — god ray radial blur fragment
+                                     WGSL_COMPOSITE            — fog-rays composite (Mie + ACES)
+
+screen-space-reflections.ts 5 WGSL  WGSL_SSR_MATH             — SSR math helpers (reflection, hash)
+                                     WGSL_HIZ_DOWNSAMPLE       — hi-z depth pyramid downsample compute
+                                     WGSL_SSR_MARCH            — half-res hi-z ray march compute
+                                     WGSL_SSR_RESOLVE          — temporal resolve + Fresnel fade
+                                     WGSL_SSR_COMPOSITE        — energy-conserving reflection composite
+
+ocean-background.ts         5 WGSL  WGSL_SNOISE               — 3D simplex noise helper
+                                     WGSL_GERSTNER             — Gerstner wave displacement function
+                                     OCEAN_MESH_SHADER         — ocean grid vertex + fragment (4-wave sum)
+                                     SPLASH_COMPUTE_SHADER     — splash particle physics compute
+                                     SPLASH_RENDER_SHADER      — splash particle instanced render
+
+cell-material-system.ts     5 WGSL  WGSL_PATCH_ATTENTION      — attention species iridescent metallic fragment patch
+                                     WGSL_PATCH_FFN            — ffn species glass refraction fragment patch
+                                     WGSL_PATCH_LAYERNORM      — layernorm species matcap marble fragment patch
+                                     WGSL_PATCH_EMBEDDING      — embedding species organic membrane fragment patch
+                                     WGSL_PATCH_SOFTMAX        — softmax species luminous energy fragment patch
+
+noise-flow-field.ts         4 WGSL  WGSL_SIMPLEX_BASIS        — simplex noise basis (lygia-inlined)
+                                     WGSL_FBM                  — fractal Brownian motion accumulator
+                                     WGSL_CURL                 — 2D curl operator on noise field
+                                     NOISE_FORCE_SHADER        — particle force injection from curl field
+
+edge-flow-renderer.ts       4 WGSL  GPU_UNIFORMS_WGSL         — edge-flow uniform struct
+                                     GPU_QOS_WGSL              — QoS colour/speed/trail lookup table
+                                     GPU_SPLINE_WGSL           — Catmull-Rom spline evaluation
+                                     GPU_NOISE_WGSL            — simplex noise for flow jitter
+
+at-shader-utils.ts          3 WGSL  WGSL_EASES                — 30 easing functions (quad/cubic/quart/quint/sine/expo/circ/back/elastic/bounce × In/Out/InOut)
+                                     WGSL_RANGE                — range / crange / rangeMirror remapping (float + vec2/3/4)
+                                     WGSL_BLEND_MODES          — 13 Photoshop blend modes (Add/Multiply/Screen/Overlay/SoftLight/…)
+
+boids-compute.ts            3 WGSL  UNIFORMS_WGSL             — boids simulation uniform struct
+                                     INFLUENCE_SHADER          — separation + alignment + cohesion accumulation
+                                     INTEGRATE_SHADER          — velocity/position integration with speed clamping
+
+ripple-effect.ts            3 WGSL  RIPPLE_PROPAGATE_SHADER   — wave equation propagation compute
+                                     RIPPLE_STAMP_SHADER       — circular impulse stamp compute
+                                     RIPPLE_COMPOSITE_SHADER   — ripple overlay composite render
+
+reaction-diffusion.ts       2 WGSL  GS_COMPUTE_SHADER_PER_SPECIES — per-species Gray-Scott reaction-diffusion compute
+                                     GS_COMPUTE_SHADER             — global Gray-Scott reaction-diffusion compute
+
+turing-pattern.ts           2 WGSL  INIT_SHADER_SRC           — random initialisation compute
+                                     STEP_SHADER_SRC           — Gray-Scott timestep compute
+
+lattice-boltzmann-bg.ts     2 WGSL  LBM_SHADER                — D2Q9 Lattice Boltzmann collision + streaming compute
+                                     SPH_LBM_COUPLE_SHADER     — SPH ↔ LBM two-way coupling compute
+
+environment-fx.ts           2 WGSL  WGSL_COMPUTE              — brick-tile grid + voronoise + chroma compute
+                                     WGSL_RENDER               — full-screen render (sample compute output)
+
+curl-flow-field.ts          2 WGSL  WGSL_CURL_COMPUTE         — 3D curl-noise flow field advection compute
+                                     WGSL_SPH_INJECT           — SPH velocity field injection into curl grid
+
+particle-instancing.ts      2 GLSL  VERT_SRC                  — WebGL2 instanced soft-particle vertex shader
+                                     FRAG_SRC                  — WebGL2 instanced soft-particle fragment shader (SDF circle + glow)
+
+curl-aura.ts                2 GLSL  AURA_VERT                 — WebGL2 aura quad vertex (screen-aligned billboard)
+                                     AURA_FRAG                 — WebGL2 aura fragment (concentric SDF rings + curl-noise distortion)
+
+render-compositor.ts        1 WGSL  LUT_PASS_WGSL             — 3-D trilinear LUT colour grade final pass
+at-render-pipeline.ts       1 WGSL  LUT_PASS_WGSL             — 3-D trilinear LUT colour grade (precursor variant)
+post-process.ts             1 WGSL  POST_PROCESS_WGSL         — Kuwahara + Film Grain + Chromatic Aberration full-screen
+atmosphere.ts               1 WGSL  ATMOSPHERE_WGSL           — Rayleigh scattering + Mie phase + depth fog + sky gradient
+natural-patterns.ts         1 WGSL  COMPUTE_SHADER_SRC        — Voronoi + Worley + FBM natural texture compute
+physarum-sim.ts             1 WGSL  WGSL_SIMPLEX2             — 2D simplex noise for Physarum agent heading perturbation
+```
 
 ---
 
@@ -311,7 +721,7 @@ Static, declarative definition of the rendering pipeline per species:
 | Material type | matcap, pbr, iridescence |
 | Pattern shader | Filename reference in `src/lib/shaders/` |
 | Bloom params | strength, radius, threshold, pulse amplitude, pulse frequency |
-| Physics bindings | Maps density/velocity/pressure/vorticity/kinetic energy → visual targets (bloom, SDF distort, material fresnel, pattern speed, etc.) |
+| Physics bindings | Maps density/velocity/pressure/vorticity/kinetic energy → visual targets |
 
 ### Layer 2 — Cell Material System (cell-material-system.ts)
 
@@ -331,9 +741,12 @@ At runtime, `physics-uniform-bridge.ts` samples the SPH neighbourhood around eac
 rigid body, producing density ratio, velocity magnitude, pressure, vorticity, and
 kinetic energy.  These feed into:
 
-- **species-shader-registry** physics bindings → bloom strength, SDF distortion, material fresnel, pattern speed/contrast
-- **uil-species-live** → 2593+ AT UIL scene parameters modulated per-species per-frame
-- **cell-visual-identity** → morphology archetype selection (jellyfish / petal / coral / mycelium / crystal)
+- **species-shader-registry** physics bindings → bloom strength, SDF distortion,
+  material fresnel, pattern speed/contrast
+- **uil-species-live** → 2593+ AT UIL scene parameters modulated per-species
+  per-frame
+- **cell-visual-identity** → morphology archetype selection
+  (jellyfish / petal / coral / mycelium / crystal)
 
 ### Cell Visual Identity Derivation Chain
 
