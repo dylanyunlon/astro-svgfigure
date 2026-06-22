@@ -3,8 +3,18 @@
 // BoundaryModel.ts — Akinci 2012 rigid-body boundary particles
 // Implements volume-weighted boundary particle sampling with Cubic Spline kernel
 // for computing Ψ_b (Akinci et al. 2012, "Versatile Rigid-Fluid Coupling for SPH")
+//
+// M547: extended with configurable boundary shapes (rect / circle / polygon) and
+//       automatic resampling via `resample()` / `resampleWorld()`.
 
 import { ObstacleData } from "./types";
+import {
+  BoundaryShape,
+  createPolygonObstacle,
+  createBoxObstacle,
+  createCircleObstacle,
+  BoundaryParticle as WBParticle,
+} from "./world-boundary";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -21,6 +31,17 @@ export interface BoundaryParticle {
   y: number;
   /** Ψ_b — Akinci volume estimate for the boundary particle */
   volume: number;
+}
+
+// ─── Shape configuration (M547) ───────────────────────────────────────────────
+
+/** Per-entry in the shape registry. */
+interface ShapeEntry {
+  shape:   BoundaryShape;
+  /** First particle index in `this.particles` owned by this entry. */
+  start:   number;
+  /** Exclusive end index. */
+  end:     number;
 }
 
 // ─── Kernel (inlined Cubic Spline, 2-D) ──────────────────────────────────────
@@ -82,6 +103,17 @@ export class BoundaryModel {
   readonly domainW: number;
   readonly domainH: number;
 
+  // ── M547: shape registry ────────────────────────────────────────────────────
+  /** Ordered list of registered shapes; used for automatic resampling. */
+  private _shapes: ShapeEntry[] = [];
+
+  /**
+   * Active world boundary shape.
+   * Set via `configureWorldBoundary()` or `resampleWorld()`.
+   * When null the legacy sampleBox(0,0,domainW,domainH) is used.
+   */
+  private _worldShape: BoundaryShape | null = null;
+
   constructor(
     device: GPUDevice,
     domainW: number,
@@ -94,6 +126,66 @@ export class BoundaryModel {
     this.domainH = domainH;
     this.restDensity = restDensity;
     this.h = h;
+  }
+
+  // ─── M547: Shape configuration ──────────────────────────────────────────────
+
+  /**
+   * Register (or replace) the world boundary shape.
+   *
+   * Replaces any previously configured world boundary in the particle list and
+   * immediately resamples particles for the new shape.  After this call you
+   * must call `getBuffers()` / `uploadToGPU()` to push the change to the GPU.
+   *
+   * @param shape  One of `RectBoundaryShape`, `CircleBoundaryShape`, or `PolygonBoundaryShape`.
+   * @param layers Number of wall particle layers (default 3).
+   */
+  configureWorldBoundary(shape: BoundaryShape, layers = 3): void {
+    this._worldShape = shape;
+    this._resampleWorldShape(shape, layers);
+  }
+
+  /**
+   * Full resample: rebuild ALL boundary particles from the registered shape
+   * registry (world boundary + any obstacles added via `addShape()`).
+   *
+   * Call this after changing `h`, domain size, or any shape parameter.
+   */
+  resample(): void {
+    this.particles = [];
+    this._shapes = [];
+
+    if (this._worldShape !== null) {
+      this._resampleWorldShape(this._worldShape, 3);
+    }
+  }
+
+  /**
+   * Convenience: set a new world boundary shape and immediately resample.
+   * Equivalent to `configureWorldBoundary(shape, layers)` but returns `this`
+   * for chaining.
+   */
+  resampleWorld(shape: BoundaryShape, layers = 3): this {
+    this.configureWorldBoundary(shape, layers);
+    return this;
+  }
+
+  /**
+   * Add an arbitrary shape as an obstacle boundary.
+   * The shape is appended to the registry; calling `resample()` regenerates it.
+   *
+   * @returns The index of the shape in the registry (for later removal).
+   */
+  addShape(shape: BoundaryShape, layers = 1): number {
+    const start = this.particles.length;
+    const pts = this._sampleShape(shape, layers);
+    for (const p of pts) this.particles.push({ x: p.x, y: p.y, volume: 0 });
+    const end = this.particles.length;
+
+    this._shapes.push({ shape, start, end });
+    this._computeVolumes();
+
+    return this._shapes.length - 1;
   }
 
   // ─── Sampling ──────────────────────────────────────────────────────────────
@@ -248,6 +340,66 @@ export class BoundaryModel {
 
   destroy(): void {
     this.gpuBoundaryBuf?.destroy();
+  }
+
+  // ─── Private M547 helpers ──────────────────────────────────────────────────
+
+  /** Sample any BoundaryShape to a flat WBParticle array. */
+  private _sampleShape(shape: BoundaryShape, layers: number): WBParticle[] {
+    const s = this.h * BOUNDARY_SPACING_FACTOR;
+
+    switch (shape.kind) {
+      case 'rect': {
+        // Use the box obstacle helper centred at half-extents
+        const hw = shape.width  / 2;
+        const hh = shape.height / 2;
+        return createBoxObstacle(hw, hh, hw, hh, s, layers);
+      }
+
+      case 'circle': {
+        const cx = shape.cx ?? 0;
+        const cy = shape.cy ?? 0;
+        return createCircleObstacle(cx, cy, shape.radius, s, layers);
+      }
+
+      case 'polygon':
+        return createPolygonObstacle(shape.vertices, s, layers);
+    }
+  }
+
+  /** Resample the world-boundary shape (always at the start of `particles`). */
+  private _resampleWorldShape(shape: BoundaryShape, layers: number): void {
+    // Remove any existing world-boundary particles (always the first entry).
+    const existing = this._shapes.find(e => e === this._shapes[0]);
+    if (existing) {
+      const removed = existing.end - existing.start;
+      this.particles.splice(existing.start, removed);
+      this._shapes.shift();
+      // Shift all subsequent entries
+      for (const entry of this._shapes) {
+        entry.start -= removed;
+        entry.end   -= removed;
+      }
+    }
+
+    // Insert fresh world boundary particles at the front.
+    const pts = this._sampleShape(shape, layers);
+    const newParticles: BoundaryParticle[] = pts.map(p => ({
+      x: p.x, y: p.y, volume: 0,
+    }));
+    this.particles.unshift(...newParticles);
+
+    // Register as first entry.
+    this._shapes.unshift({ shape, start: 0, end: newParticles.length });
+
+    // Shift all subsequent shape entries.
+    for (let i = 1; i < this._shapes.length; i++) {
+      this._shapes[i].start += newParticles.length;
+      this._shapes[i].end   += newParticles.length;
+    }
+
+    // Recompute volumes for all invalidated (volume=0) particles.
+    this._computeVolumes();
   }
 }
 
