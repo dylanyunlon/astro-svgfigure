@@ -1,0 +1,464 @@
+---
+/**
+ * /showcase — Fullscreen SPH Physics World Demo
+ *
+ * A standalone exhibition page that showcases the beauty of the SPH physics
+ * world. No UI panels, no pipeline dependencies — just a fullscreen canvas
+ * auto-running a rich physics simulation:
+ *
+ *   • 7 Transformer cell rigid bodies (from cell-body-bridge species)
+ *   • Dam-break fluid blocks surrounding the cell layout
+ *   • Edge emitters with QoS-aware emission patterns
+ *   • Auto QoS cycling every 10 s across all Apollo profiles
+ *   • Auto camera cruise (smooth pan/zoom drift)
+ *   • Right-bottom HUD: current QoS profile + FPS
+ *   • ESC to exit (navigates back)
+ */
+---
+
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SPH Showcase</title>
+    <style>
+      *, *::before, *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        cursor: none;
+      }
+
+      #showcase-canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        background: #000;
+      }
+
+      /* ── Right-bottom HUD ─────────────────────────────── */
+      #hud {
+        position: fixed;
+        bottom: 20px;
+        right: 24px;
+        z-index: 10;
+        pointer-events: none;
+        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+        text-align: right;
+        line-height: 1.7;
+      }
+
+      #hud-qos {
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        color: rgba(255, 255, 255, 0.35);
+        transition: color 0.8s ease;
+      }
+
+      #hud-fps {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        color: rgba(255, 255, 255, 0.2);
+      }
+
+      #hud-particles {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        color: rgba(255, 255, 255, 0.15);
+      }
+
+      /* ── ESC hint (fades out after 3s) ────────────────── */
+      #esc-hint {
+        position: fixed;
+        top: 20px;
+        right: 24px;
+        z-index: 10;
+        pointer-events: none;
+        font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        color: rgba(255, 255, 255, 0.25);
+        opacity: 1;
+        transition: opacity 1.5s ease;
+      }
+
+      #esc-hint.faded {
+        opacity: 0;
+      }
+
+      /* ── Init overlay ─────────────────────────────────── */
+      #init-overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #000;
+        z-index: 100;
+        transition: opacity 0.6s ease;
+      }
+
+      #init-overlay.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #init-overlay .spinner {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border: 1.5px solid rgba(255, 255, 255, 0.15);
+        border-top-color: rgba(255, 255, 255, 0.5);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        margin-right: 10px;
+      }
+
+      #init-overlay .label {
+        font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+        font-size: 12px;
+        letter-spacing: 0.1em;
+        color: rgba(255, 255, 255, 0.35);
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+
+  <body>
+    <canvas id="showcase-canvas"></canvas>
+
+    <div id="hud">
+      <div id="hud-qos">DEFAULT</div>
+      <div id="hud-fps">— fps</div>
+      <div id="hud-particles">— particles</div>
+    </div>
+
+    <div id="esc-hint">ESC to exit</div>
+
+    <div id="init-overlay">
+      <span class="spinner"></span>
+      <span class="label">initialising…</span>
+    </div>
+
+    <script>
+      import {
+        createWorld,
+        addFluidBlock,
+        addRigidBody,
+        addEmitter,
+        stepWorld,
+        getStats,
+      } from '@/lib/sph/world-stepper';
+      import { renderWorld } from '@/lib/sph/world-renderer';
+      import type { RenderOptions } from '@/lib/sph/world-renderer';
+      import {
+        qosToSpatial,
+        APOLLO_PROFILES,
+        type SpatialPhysics,
+      } from '@/lib/sph/qos-spatial-bridge';
+      import {
+        patternForProfile,
+      } from '@/lib/sph/emitter-strategy';
+
+      // ─── DOM refs ──────────────────────────────────────────────────────────
+      const canvas      = document.getElementById('showcase-canvas') as HTMLCanvasElement;
+      const hudQos      = document.getElementById('hud-qos')         as HTMLElement;
+      const hudFps      = document.getElementById('hud-fps')         as HTMLElement;
+      const hudParts    = document.getElementById('hud-particles')   as HTMLElement;
+      const escHint     = document.getElementById('esc-hint')        as HTMLElement;
+      const initOverlay = document.getElementById('init-overlay')    as HTMLElement;
+
+      // ─── Canvas sizing ─────────────────────────────────────────────────────
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+      function resize() {
+        canvas.width  = Math.floor(window.innerWidth  * dpr);
+        canvas.height = Math.floor(window.innerHeight * dpr);
+        canvas.style.width  = window.innerWidth  + 'px';
+        canvas.style.height = window.innerHeight + 'px';
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      const ctx = canvas.getContext('2d')!;
+
+      // ─── Fade out ESC hint after 3 s ───────────────────────────────────────
+      setTimeout(() => escHint.classList.add('faded'), 3000);
+
+      // ─── ESC to exit showcase ──────────────────────────────────────────────
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          running = false;
+          // Navigate back or to home
+          if (window.history.length > 1) {
+            window.history.back();
+          } else {
+            window.location.href = '/';
+          }
+        }
+      });
+
+      // ─── QoS profile roster for auto-cycling ──────────────────────────────
+      const QOS_CYCLE: Array<{ name: string; profile: typeof APOLLO_PROFILES[string] }> = [
+        { name: 'DEFAULT',       profile: APOLLO_PROFILES.DEFAULT },
+        { name: 'SENSOR_DATA',   profile: APOLLO_PROFILES.SENSOR_DATA },
+        { name: 'PARAMETERS',    profile: APOLLO_PROFILES.PARAMETERS },
+        { name: 'TF_STATIC',     profile: APOLLO_PROFILES.TF_STATIC },
+        { name: 'TOPO_CHANGE',   profile: APOLLO_PROFILES.TOPO_CHANGE },
+        { name: 'SERVICES_DEFAULT', profile: APOLLO_PROFILES.SERVICES_DEFAULT },
+        { name: 'PARAM_EVENT',   profile: APOLLO_PROFILES.PARAM_EVENT },
+        { name: 'SYSTEM_DEFAULT', profile: APOLLO_PROFILES.SYSTEM_DEFAULT },
+      ];
+
+      let qosCycleIndex = 0;
+
+      // ─── Colour themes per QoS (for HUD accent tinting) ───────────────────
+      const QOS_HUD_COLORS: Record<string, string> = {
+        DEFAULT:          'rgba(255, 255, 255, 0.35)',
+        SENSOR_DATA:      'rgba(26, 115, 230, 0.7)',
+        PARAMETERS:       'rgba(255, 160, 0, 0.65)',
+        TF_STATIC:        'rgba(0, 200, 120, 0.6)',
+        TOPO_CHANGE:      'rgba(200, 50, 200, 0.65)',
+        SERVICES_DEFAULT: 'rgba(140, 120, 255, 0.55)',
+        PARAM_EVENT:      'rgba(255, 140, 50, 0.6)',
+        SYSTEM_DEFAULT:   'rgba(180, 180, 180, 0.4)',
+      };
+
+      // ─── 7 Transformer cells (mimics cell_registry layout) ─────────────────
+      // Arranged vertically like a transformer layer diagram.
+      // Species drawn from cell-body-bridge SPECIES_ORDER.
+      interface CellDef {
+        id: string;
+        species: string;
+        /** Normalised x position [0–1] of world width */
+        nx: number;
+        /** Normalised y position [0–1] of world height */
+        ny: number;
+        /** Normalised width */
+        nw: number;
+        /** Normalised height */
+        nh: number;
+      }
+
+      const CELL_DEFS: CellDef[] = [
+        { id: 'embedding',   species: 'cil-layers', nx: 0.50, ny: 0.08, nw: 0.22, nh: 0.06 },
+        { id: 'self_attn',   species: 'cil-eye',    nx: 0.35, ny: 0.24, nw: 0.18, nh: 0.08 },
+        { id: 'cross_attn',  species: 'cil-eye',    nx: 0.65, ny: 0.24, nw: 0.18, nh: 0.08 },
+        { id: 'add_norm_1',  species: 'cil-plus',   nx: 0.50, ny: 0.40, nw: 0.12, nh: 0.05 },
+        { id: 'ffn',         species: 'cil-bolt',   nx: 0.50, ny: 0.55, nw: 0.20, nh: 0.08 },
+        { id: 'add_norm_2',  species: 'cil-plus',   nx: 0.50, ny: 0.70, nw: 0.12, nh: 0.05 },
+        { id: 'output',      species: 'cil-arrow-right', nx: 0.50, ny: 0.85, nw: 0.18, nh: 0.06 },
+      ];
+
+      // ─── Topology edges between cells ──────────────────────────────────────
+      const EDGES = [
+        { source: 'embedding',  target: 'self_attn' },
+        { source: 'embedding',  target: 'cross_attn' },
+        { source: 'self_attn',  target: 'add_norm_1' },
+        { source: 'cross_attn', target: 'add_norm_1' },
+        { source: 'add_norm_1', target: 'ffn' },
+        { source: 'ffn',        target: 'add_norm_2' },
+        { source: 'add_norm_2', target: 'output' },
+        // skip connections
+        { source: 'embedding',  target: 'add_norm_1' },
+        { source: 'add_norm_1', target: 'add_norm_2' },
+      ];
+
+      // ─── Camera cruise state ───────────────────────────────────────────────
+      let camOffsetX  = 0;
+      let camOffsetY  = 0;
+      let camScale    = 1.0;
+      let camTargetX  = 0;
+      let camTargetY  = 0;
+      let camTargetS  = 1.0;
+      let camPhase    = 0;
+
+      function updateCameraCruise(dt: number) {
+        camPhase += dt * 0.15;
+
+        // Gentle wandering target (Lissajous-like)
+        camTargetX = Math.sin(camPhase * 0.7)  * canvas.width  * 0.04;
+        camTargetY = Math.cos(camPhase * 0.53) * canvas.height * 0.03;
+        camTargetS = 1.0 + 0.06 * Math.sin(camPhase * 0.3);
+
+        // Smooth lerp
+        const lerpRate = 1.0 - Math.exp(-1.5 * dt);
+        camOffsetX += (camTargetX - camOffsetX) * lerpRate;
+        camOffsetY += (camTargetY - camOffsetY) * lerpRate;
+        camScale   += (camTargetS - camScale)   * lerpRate;
+      }
+
+      // ─── FPS meter ─────────────────────────────────────────────────────────
+      const fpsSamples: number[] = [];
+      let lastFrameTime = 0;
+
+      function measureFps(now: number) {
+        if (lastFrameTime > 0) {
+          fpsSamples.push(1000 / (now - lastFrameTime));
+          if (fpsSamples.length > 60) fpsSamples.shift();
+        }
+        lastFrameTime = now;
+        if (fpsSamples.length === 0) return 0;
+        return fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length;
+      }
+
+      // ─── Initialise world ──────────────────────────────────────────────────
+      let running = true;
+
+      (async () => {
+        const W = canvas.width;
+        const H = canvas.height;
+
+        // Start with DEFAULT QoS
+        const initialQos = qosToSpatial(APOLLO_PROFILES.DEFAULT);
+        const world = createWorld(W, H, initialQos);
+
+        // ── Place 7 Transformer cell rigid bodies ────────────────────────────
+        const cellMap = new Map<string, { cx: number; cy: number }>();
+
+        for (const cell of CELL_DEFS) {
+          const cx = cell.nx * W;
+          const cy = cell.ny * H;
+          const cw = cell.nw * W;
+          const ch = cell.nh * H;
+
+          addRigidBody(world, cell.id, cx, cy, cw, ch, {
+            isStatic: cell.species === 'cil-plus',  // pinned nodes
+            mass: cw * ch * 0.6,
+            restitution: 0.3,
+            friction: 0.5,
+          });
+
+          cellMap.set(cell.id, { cx, cy });
+        }
+
+        // ── Dam-break fluid blocks ───────────────────────────────────────────
+        // Left column
+        const spacing = Math.max(6, Math.floor(W / 140));
+        addFluidBlock(world, W * 0.02, H * 0.05, W * 0.18, H * 0.55, spacing, 'fluid-a');
+        // Right column
+        addFluidBlock(world, W * 0.82, H * 0.05, W * 0.16, H * 0.55, spacing, 'fluid-b');
+        // Top band
+        addFluidBlock(world, W * 0.25, H * 0.01, W * 0.50, H * 0.04, spacing, 'fluid-c');
+
+        // ── Edge emitters ────────────────────────────────────────────────────
+        const emitSpeed = 60;
+        for (const edge of EDGES) {
+          const src = cellMap.get(edge.source);
+          const tgt = cellMap.get(edge.target);
+          if (!src || !tgt) continue;
+
+          const mx = (src.cx + tgt.cx) / 2;
+          const my = (src.cy + tgt.cy) / 2;
+          const dx = tgt.cx - src.cx;
+          const dy = tgt.cy - src.cy;
+          const len = Math.hypot(dx, dy) || 1;
+
+          addEmitter(world, mx, my, dx / len, dy / len, 12, `emit-${edge.source}`);
+        }
+
+        // ── Boundary emitters (top ingress, bottom egress) ───────────────────
+        addEmitter(world, W * 0.3, 2, 0.1, 1, 8, 'ingress-left');
+        addEmitter(world, W * 0.7, 2, -0.1, 1, 8, 'ingress-right');
+        addEmitter(world, W * 0.5, H - 2, 0, -1, 5, 'egress-center');
+
+        // ── Hide init overlay ────────────────────────────────────────────────
+        initOverlay.classList.add('hidden');
+
+        // ── QoS auto-cycle timer ─────────────────────────────────────────────
+        const QOS_CYCLE_INTERVAL = 10_000; // 10 seconds
+        let lastQosSwitchTime = performance.now();
+
+        function cycleQoS(now: number) {
+          if (now - lastQosSwitchTime < QOS_CYCLE_INTERVAL) return;
+          lastQosSwitchTime = now;
+
+          qosCycleIndex = (qosCycleIndex + 1) % QOS_CYCLE.length;
+          const entry = QOS_CYCLE[qosCycleIndex];
+          const spatial = qosToSpatial(entry.profile);
+
+          // Apply spatial physics to world
+          world.qos = spatial;
+
+          // Update HUD
+          hudQos.textContent = entry.name;
+          hudQos.style.color = QOS_HUD_COLORS[entry.name] || QOS_HUD_COLORS.DEFAULT;
+        }
+
+        // ── Render options (minimal — showcase beauty, not debug) ─────────────
+        const renderOpts: Partial<RenderOptions> = {
+          showTrails:   true,
+          showDensity:  false,
+          showVelocity: false,
+          showGrid:     false,
+          showBoundaryParticles: false,
+          showForces:   false,
+          showContacts: false,
+          showContactNormals: false,
+          showBVH:      false,
+          showDensityHeatmap: false,
+        };
+
+        // ── HUD update throttle ──────────────────────────────────────────────
+        let hudUpdateCounter = 0;
+
+        // ── Main loop ────────────────────────────────────────────────────────
+        function loop(now: number) {
+          if (!running) return;
+
+          const dt = 1 / 60;
+
+          // Physics step
+          stepWorld(world);
+
+          // Camera cruise
+          updateCameraCruise(dt);
+
+          // QoS auto-cycle
+          cycleQoS(now);
+
+          // Render with camera transform
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+          // Apply camera: translate to centre, scale, then offset
+          const cx = canvas.width  / 2;
+          const cy = canvas.height / 2;
+          ctx.translate(cx + camOffsetX, cy + camOffsetY);
+          ctx.scale(camScale, camScale);
+          ctx.translate(-cx, -cy);
+
+          renderWorld(ctx, world, renderOpts);
+          ctx.restore();
+
+          // HUD (every 10 frames to reduce overhead)
+          hudUpdateCounter++;
+          if (hudUpdateCounter >= 10) {
+            hudUpdateCounter = 0;
+            const fps = measureFps(now);
+            hudFps.textContent = `${fps.toFixed(0)} fps`;
+            const stats = getStats(world);
+            hudParts.textContent = `${stats.particleCount} particles`;
+          } else {
+            measureFps(now);
+          }
+
+          requestAnimationFrame(loop);
+        }
+
+        requestAnimationFrame(loop);
+      })();
+    </script>
+  </body>
+</html>
