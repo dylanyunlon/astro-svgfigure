@@ -1,0 +1,380 @@
+# === src/pages/world/index.astro ===
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="SPH World">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #000;
+      overflow: hidden;
+      font-family: 'Courier New', Courier, monospace;
+    }
+
+    #world-root {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #sph-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #000;
+    }
+
+    /* HUD overlay */
+    #hud {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      color: #00ff88;
+      font-size: 13px;
+      line-height: 1.8;
+      pointer-events: none;
+      text-shadow: 0 0 8px #00ff88;
+      z-index: 10;
+    }
+
+    #hud .hud-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    #hud .hud-label {
+      color: #888;
+    }
+
+    #hud .hud-value {
+      color: #00ff88;
+      min-width: 64px;
+    }
+
+    /* QoS controls */
+    #qos-panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 10;
+    }
+
+    #qos-panel .qos-label {
+      color: #888;
+      font-size: 11px;
+      text-align: right;
+      font-family: 'Courier New', Courier, monospace;
+    }
+
+    #qos-panel .qos-btn-group {
+      display: flex;
+      gap: 6px;
+    }
+
+    .qos-btn {
+      padding: 6px 12px;
+      border: 1px solid #333;
+      background: rgba(0, 0, 0, 0.6);
+      color: #888;
+      font-size: 12px;
+      font-family: 'Courier New', Courier, monospace;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: all 0.15s ease;
+    }
+
+    .qos-btn:hover {
+      border-color: #00ff88;
+      color: #00ff88;
+    }
+
+    .qos-btn.active {
+      border-color: #00ff88;
+      color: #00ff88;
+      background: rgba(0, 255, 136, 0.1);
+      box-shadow: 0 0 6px rgba(0, 255, 136, 0.3);
+    }
+
+    /* WebGPU fallback banner */
+    #webgpu-fallback {
+      display: none;
+      position: absolute;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 160, 0, 0.15);
+      border: 1px solid #ffa000;
+      color: #ffa000;
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: 'Courier New', Courier, monospace;
+      text-align: center;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    #webgpu-fallback.visible {
+      display: block;
+    }
+
+    /* Init overlay */
+    #init-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      color: #00ff88;
+      font-size: 15px;
+      font-family: 'Courier New', Courier, monospace;
+      z-index: 30;
+      transition: opacity 0.5s ease;
+    }
+
+    #init-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #00ff8844;
+      border-top-color: #00ff88;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 10px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+
+  <div id="world-root">
+    <canvas id="sph-canvas"></canvas>
+
+    <!-- HUD -->
+    <div id="hud">
+      <div class="hud-row">
+        <span class="hud-label">PARTICLES</span>
+        <span class="hud-value" id="hud-particles">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">FPS</span>
+        <span class="hud-value" id="hud-fps">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">BACKEND</span>
+        <span class="hud-value" id="hud-backend">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">QoS</span>
+        <span class="hud-value" id="hud-qos">HIGH</span>
+      </div>
+    </div>
+
+    <!-- QoS panel -->
+    <div id="qos-panel">
+      <div class="qos-label">QUALITY</div>
+      <div class="qos-btn-group">
+        <button class="qos-btn" data-qos="low">LOW</button>
+        <button class="qos-btn" data-qos="mid">MID</button>
+        <button class="qos-btn active" data-qos="high">HIGH</button>
+      </div>
+    </div>
+
+    <!-- WebGPU fallback notice -->
+    <div id="webgpu-fallback">
+      ⚠ WebGPU unavailable — running on WebGL2 fallback. Performance may be reduced.
+    </div>
+
+    <!-- Init overlay -->
+    <div id="init-overlay">
+      <span class="spinner"></span>
+      Initializing SPH World…
+    </div>
+  </div>
+</BaseLayout>
+
+<script>
+  // ── QoS profiles ────────────────────────────────────────────────────────────
+  const QOS_PROFILES = {
+    low:  { particleCount: 4_096,  substeps: 1, smoothingRadius: 0.08, renderScale: 0.5  },
+    mid:  { particleCount: 16_384, substeps: 2, smoothingRadius: 0.05, renderScale: 0.75 },
+    high: { particleCount: 65_536, substeps: 4, smoothingRadius: 0.03, renderScale: 1.0  },
+  };
+
+  type QoSLevel = keyof typeof QOS_PROFILES;
+
+  // ── SPHWorld import ──────────────────────────────────────────────────────────
+  // Dynamic import so the heavy GPU module is only loaded client-side.
+  async function loadSPHWorld() {
+    // Adjust the import path to match your actual module location.
+    const mod = await import('../../sph/SPHWorld');
+    return mod.SPHWorld ?? mod.default;
+  }
+
+  // ── DOM refs ─────────────────────────────────────────────────────────────────
+  const canvas        = document.getElementById('sph-canvas')     as HTMLCanvasElement;
+  const hudParticles  = document.getElementById('hud-particles')  as HTMLElement;
+  const hudFps        = document.getElementById('hud-fps')        as HTMLElement;
+  const hudBackend    = document.getElementById('hud-backend')    as HTMLElement;
+  const hudQos        = document.getElementById('hud-qos')        as HTMLElement;
+  const fallbackBanner= document.getElementById('webgpu-fallback')as HTMLElement;
+  const initOverlay   = document.getElementById('init-overlay')   as HTMLElement;
+  const qosBtns       = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
+
+  // ── Canvas sizing ────────────────────────────────────────────────────────────
+  function resizeCanvas(renderScale: number) {
+    canvas.width  = Math.floor(window.innerWidth  * renderScale * devicePixelRatio);
+    canvas.height = Math.floor(window.innerHeight * renderScale * devicePixelRatio);
+  }
+
+  // ── WebGPU detection ─────────────────────────────────────────────────────────
+  async function detectBackend(): Promise<'webgpu' | 'webgl2'> {
+    if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+      try {
+        const adapter = await (navigator as any).gpu.requestAdapter();
+        if (adapter) return 'webgpu';
+      } catch (_) { /* fall through */ }
+    }
+    return 'webgl2';
+  }
+
+  // ── FPS meter ────────────────────────────────────────────────────────────────
+  class FPSMeter {
+    private samples: number[] = [];
+    private last = performance.now();
+
+    tick() {
+      const now = performance.now();
+      this.samples.push(1000 / (now - this.last));
+      this.last = now;
+      if (this.samples.length > 60) this.samples.shift();
+    }
+
+    get fps() {
+      if (!this.samples.length) return 0;
+      return this.samples.reduce((a, b) => a + b, 0) / this.samples.length;
+    }
+  }
+
+  // ── Main ─────────────────────────────────────────────────────────────────────
+  (async () => {
+    let currentQoS: QoSLevel = 'high';
+    let world: any = null;
+    const meter = new FPSMeter();
+
+    // Detect backend
+    const backend = await detectBackend();
+    hudBackend.textContent = backend.toUpperCase();
+    if (backend === 'webgl2') {
+      fallbackBanner.classList.add('visible');
+    }
+
+    // Load SPHWorld module
+    const SPHWorld = await loadSPHWorld();
+
+    // Initial resize
+    resizeCanvas(QOS_PROFILES[currentQoS].renderScale);
+
+    // Instantiate world
+    const profile = QOS_PROFILES[currentQoS];
+    world = new SPHWorld(canvas, {
+      backend,
+      particleCount:   profile.particleCount,
+      substeps:        profile.substeps,
+      smoothingRadius: profile.smoothingRadius,
+    });
+
+    await world.init();
+
+    // Initial scene: fluid block + obstacles
+    world.addFluid(0.1, 0.05, 0.3, 0.3, 0.008);
+    world.addObstacle(0.5, 0.5, 0.06);
+    world.addObstacle(0.35, 0.65, 0.04);
+
+    // Hide init overlay
+    initOverlay.classList.add('hidden');
+
+    // ── Render loop ────────────────────────────────────────────────────────────
+    let rafId: number;
+    function loop() {
+      world.step();
+      world.render();
+      meter.tick();
+
+      // Update HUD
+      hudParticles.textContent = world.particleCount?.toLocaleString() ?? profile.particleCount.toLocaleString();
+      hudFps.textContent       = meter.fps.toFixed(1);
+
+      rafId = requestAnimationFrame(loop);
+    }
+    rafId = requestAnimationFrame(loop);
+
+    // ── QoS switching ──────────────────────────────────────────────────────────
+    async function applyQoS(level: QoSLevel) {
+      if (level === currentQoS) return;
+      currentQoS = level;
+
+      // Update button states
+      qosBtns.forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.qos === level);
+      });
+      hudQos.textContent = level.toUpperCase();
+
+      // Pause loop
+      cancelAnimationFrame(rafId);
+
+      const p = QOS_PROFILES[level];
+      resizeCanvas(p.renderScale);
+
+      // Reconfigure or recreate world
+      if (typeof world.setQoS === 'function') {
+        await world.setQoS({
+          particleCount:   p.particleCount,
+          substeps:        p.substeps,
+          smoothingRadius: p.smoothingRadius,
+        });
+      } else {
+        world.destroy?.();
+        world = new SPHWorld(canvas, {
+          backend,
+          particleCount:   p.particleCount,
+          substeps:        p.substeps,
+          smoothingRadius: p.smoothingRadius,
+        });
+        await world.init();
+      }
+
+      // Resume loop
+      rafId = requestAnimationFrame(loop);
+    }
+
+    qosBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        applyQoS(btn.dataset.qos as QoSLevel);
+      });
+    });
+
+    // ── Resize observer ────────────────────────────────────────────────────────
+    window.addEventListener('resize', () => {
+      resizeCanvas(QOS_PROFILES[currentQoS].renderScale);
+      world.resize?.(canvas.width, canvas.height);
+    });
+  })();
+</script>
