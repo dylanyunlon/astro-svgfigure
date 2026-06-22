@@ -1057,7 +1057,7 @@ export class CollisionWorld {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  //  SPH Bridge
+  //  SPH Bridge  (Akinci 2012 bidirectional coupling)
   // ════════════════════════════════════════════════════════════════════════
 
   /**
@@ -1092,21 +1092,103 @@ export class CollisionWorld {
   }
 
   /**
-   * Write simulation results back into SPH boundary bodies
-   * so the fluid solver sees up-to-date boundary velocities/positions.
+   * Write simulation results back into SPH boundary bodies so the fluid
+   * solver sees up-to-date boundary positions, velocities, and orientations.
+   *
+   * Implements the Rigid → Fluid leg of Akinci 2012 bidirectional coupling:
+   * after the rigid-body integration step the updated pose is pushed into the
+   * SPH boundary representation so that:
+   *  • `position` / `angle` reflect the new body pose for boundary particle
+   *    re-sampling (called by `refreshBoundaryState` in fluid-rigid-coupling.ts).
+   *  • `velocity` / `angularVelocity` are available to compute the boundary
+   *    particle velocity  v_b = v_cm + ω × r_b  (Section 3.1 of Akinci 2012)
+   *    inside `computeCouplingForces`, enabling proper viscous drag.
    */
   applyToSPH(sphWorld: SPHWorld): void {
     for (const sphBody of sphWorld.boundaryBodies) {
       const idx = this.bodyIndex.get(sphBody.id);
       if (idx === undefined) continue;
       const simBody = this.bodies[idx];
-      sphBody.position.x = simBody.position.x;
-      sphBody.position.y = simBody.position.y;
-      sphBody.velocity.x = simBody.velocity.x;
-      sphBody.velocity.y = simBody.velocity.y;
-      sphBody.angle = simBody.angle;
-      sphBody.angularVelocity = simBody.angularVelocity;
+      // Pose
+      sphBody.position.x       = simBody.position.x;
+      sphBody.position.y       = simBody.position.y;
+      sphBody.angle            = simBody.angle;
+      // Kinematics — used by boundary-velocity formula in coupling forces
+      sphBody.velocity.x       = simBody.velocity.x;
+      sphBody.velocity.y       = simBody.velocity.y;
+      sphBody.angularVelocity  = simBody.angularVelocity;
     }
+  }
+
+  /**
+   * Apply fluid-pressure forces accumulated in `fluidForces` to the matching
+   * dynamic rigid bodies registered in this CollisionWorld, implementing the
+   * Fluid → Rigid leg of Akinci 2012 bidirectional coupling.
+   *
+   * `fluidForces` maps `body.id` to  { fx, fy, torque }  as computed by
+   * `computeCouplingForces` in fluid-rigid-coupling.ts.  Forces are
+   * converted to velocity impulses via  Δv = F·dt/m,  Δω = τ·dt/I.
+   *
+   * Only dynamic bodies are affected; static and kinematic bodies are skipped.
+   *
+   * @param fluidForces  Per-body force/torque table from the SPH solver.
+   * @param dt           Timestep used to convert force → impulse.
+   */
+  applyFluidForces(
+    fluidForces: Map<number, { fx: number; fy: number; torque: number }>,
+    dt: number,
+  ): void {
+    for (const [bodyId, force] of fluidForces) {
+      const idx = this.bodyIndex.get(bodyId);
+      if (idx === undefined) continue;
+      const body = this.bodies[idx];
+      if (body.type !== 'dynamic' || body.invMass === 0) continue;
+
+      // Δv = F * dt / m  (invMass = 1/m)
+      body.velocity.x       += force.fx     * dt * body.invMass;
+      body.velocity.y       += force.fy     * dt * body.invMass;
+      // Δω = τ * dt / I  (invInertia = 1/I)
+      body.angularVelocity  += force.torque * dt * body.invInertia;
+    }
+  }
+
+  /**
+   * Convenience method that runs one full Akinci 2012 bidirectional coupling
+   * step in the context of an SPHWorld:
+   *
+   *  1. `syncFromSPH`    — register any new obstacles as static bodies.
+   *  2. `step(dt)`       — advance the rigid-body simulation (gravity,
+   *                        contacts, integration).
+   *  3. `applyToSPH`     — push updated pose / kinematics to SPH boundaries
+   *                        so `refreshBoundaryState` sees the new positions.
+   *
+   * Caller is responsible for:
+   *  • calling `stepFluidRigidCoupling` (fluid-rigid-coupling.ts) before this
+   *    to accumulate `fluidForces`, and
+   *  • passing those forces in so they are applied before integration (step 2).
+   *
+   * @param sphWorld     The SPH world describing obstacles and boundary bodies.
+   * @param dt           Timestep in seconds.
+   * @param fluidForces  Optional pre-computed fluid→rigid force table.
+   */
+  stepWithSPH(
+    sphWorld: SPHWorld,
+    dt: number,
+    fluidForces?: Map<number, { fx: number; fy: number; torque: number }>,
+  ): void {
+    // 1. Register any new SPH obstacles as static rigid bodies
+    this.syncFromSPH(sphWorld);
+
+    // 2a. Apply accumulated fluid pressure/viscosity forces before integration
+    if (fluidForces && fluidForces.size > 0) {
+      this.applyFluidForces(fluidForces, dt);
+    }
+
+    // 2b. Advance rigid-body physics (broad/narrow phase, solver, integration)
+    this.step(dt);
+
+    // 3. Push updated pose + kinematics back into SPH boundary body proxies
+    this.applyToSPH(sphWorld);
   }
 
   // ════════════════════════════════════════════════════════════════════════
