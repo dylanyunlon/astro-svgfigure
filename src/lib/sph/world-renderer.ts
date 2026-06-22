@@ -17,6 +17,8 @@ export interface RenderOptions {
   showGrid: boolean;
   showBoundaryParticles: boolean;
   showForces: boolean;
+  showContacts: boolean;
+  showContactNormals: boolean;
 }
 
 export const DEFAULT_OPTIONS: RenderOptions = {
@@ -26,6 +28,8 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   showGrid: true,
   showBoundaryParticles: false,
   showForces: false,
+  showContacts: false,
+  showContactNormals: false,
 };
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -211,6 +215,63 @@ function drawHUD(ctx: CanvasRenderingContext2D, world: World): void {
   ctx.restore();
 }
 
+export interface ContactPoint {
+  x: number;
+  y: number;
+  nx: number;
+  ny: number;
+}
+
+function drawContacts(
+  ctx: CanvasRenderingContext2D,
+  contacts: ContactPoint[],
+  opts: RenderOptions
+): void {
+  if (!contacts.length) return;
+  ctx.save();
+
+  for (const cp of contacts) {
+    if (opts.showContacts) {
+      // Red dot at contact point
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,40,40,0.95)';
+      ctx.fill();
+    }
+
+    if (opts.showContactNormals) {
+      // Yellow arrow from contact point along normal direction
+      const arrowLen = 16;
+      const tx = cp.x + cp.nx * arrowLen;
+      const ty = cp.y + cp.ny * arrowLen;
+
+      // Arrowhead geometry
+      const headLen = 5;
+      const angle = Math.atan2(cp.ny, cp.nx);
+      const al = angle + Math.PI * 0.75;
+      const ar = angle - Math.PI * 0.75;
+
+      ctx.beginPath();
+      ctx.moveTo(cp.x, cp.y);
+      ctx.lineTo(tx, ty);
+      ctx.strokeStyle = 'rgba(255,220,0,0.95)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx + Math.cos(al) * headLen, ty + Math.sin(al) * headLen);
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx + Math.cos(ar) * headLen, ty + Math.sin(ar) * headLen);
+      ctx.strokeStyle = 'rgba(255,220,0,0.95)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
 export function renderWorld(
   ctx: CanvasRenderingContext2D,
   world: World,
@@ -238,6 +299,11 @@ export function renderWorld(
   // 6. Rigid bodies: rounded rect + pin dot + label
   drawRigidBodies(ctx, world.rigidBodies ?? []);
 
-  // 7. HUD overlay
+  // 7. Contact points and normals
+  if (opts.showContacts || opts.showContactNormals) {
+    drawContacts(ctx, (world as { contacts?: ContactPoint[] }).contacts ?? [], opts);
+  }
+
+  // 8. HUD overlay
   drawHUD(ctx, world);
 }
