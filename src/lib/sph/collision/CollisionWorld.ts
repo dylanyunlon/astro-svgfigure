@@ -1119,4 +1119,17 @@ export class CollisionWorld {
   getPositions(): Array<{ id: number; x: number; y: number }> {
     return this.bodies.map((b) => ({ id: b.id, x: b.position.x, y: b.position.y }));
   }
+
+  exportCollisions(): {
+    collisions: Array<{ bodyA: number; bodyB: number; normal: { x: number; y: number }; depth: number }>;
+    count: number;
+  } {
+    const collisions = this.contacts.map((c) => ({
+      bodyA: c.bodyA.id,
+      bodyB: c.bodyB.id,
+      normal: { x: c.contact.normal.x, y: c.contact.normal.y },
+      depth: c.contact.depth,
+    }));
+    return { collisions, count: collisions.length };
+  }
 }
