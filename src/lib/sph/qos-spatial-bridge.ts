@@ -49,80 +49,81 @@ export function qosToSpatial(qos: QoSProfile): SpatialPhysics {
 }
 
 // ---------------------------------------------------------------------------
-// Apollo CyberRT QoS profiles
+// Apollo CyberRT QoS profiles — all 8 entries from upstream source
 // Source: apollo/cyber/transport/qos/qos_profile_conf.cc
 // ---------------------------------------------------------------------------
 export const APOLLO_PROFILES: Record<string, QoSProfile> = {
-  // Default profile — moderate depth, no rate limit
+
+  // DEFAULT: 通用控制消息通道，可靠交付，浅队列（depth 1），无速率限制
   DEFAULT: {
-    reliability:  'RELIABLE',
-    durability:   'VOLATILE',
-    historyDepth: 1,
-    mps:          0,
-    priority:     1,
+    reliability:  'RELIABLE',    // 保证消息不丢失，适合低频控制指令
+    durability:   'VOLATILE',    // 不保留历史，晚加入节点不补发
+    historyDepth: 1,             // 只保留最新 1 条消息
+    mps:          0,             // 0 = 不限速
+    priority:     1,             // 普通优先级
   },
 
-  // High-frequency sensor streams (lidar, camera, radar)
+  // SENSOR_DATA: 高频传感器流（激光雷达/摄像头/毫米波雷达），允许偶发丢包
   SENSOR_DATA: {
-    reliability:  'BEST_EFFORT',
-    durability:   'VOLATILE',
-    historyDepth: 5,
-    mps:          0,
-    priority:     0,
+    reliability:  'BEST_EFFORT', // 尽力而为，丢帧可接受，降低延迟
+    durability:   'VOLATILE',    // 旧帧无意义，不保留历史
+    historyDepth: 5,             // 缓存最近 5 帧以平滑突发
+    mps:          0,             // 不限速，由传感器驱动决定帧率
+    priority:     0,             // 最低优先级，带宽紧张时可被抢占
   },
 
-  // ROS-style parameters — need reliable delivery + late-join history
+  // PARAMETERS: 参数服务器通道，晚加入节点需要获取完整参数历史
   PARAMETERS: {
-    reliability:  'RELIABLE',
-    durability:   'TRANSIENT_LOCAL',
-    historyDepth: 1000,
-    mps:          0,
-    priority:     2,
+    reliability:  'RELIABLE',         // 参数变更不允许丢失
+    durability:   'TRANSIENT_LOCAL',  // 本地持久化，晚加入节点可补发全量历史
+    historyDepth: 1000,               // 保留最近 1000 条参数记录
+    mps:          0,                  // 不限速
+    priority:     2,                  // 较高优先级，确保配置及时下发
   },
 
-  // Service call channels (request-reply pattern)
+  // SERVICES_DEFAULT: RPC 服务调用通道（请求-响应模式）
   SERVICES_DEFAULT: {
-    reliability:  'RELIABLE',
-    durability:   'VOLATILE',
-    historyDepth: 10,
-    mps:          0,
-    priority:     2,
+    reliability:  'RELIABLE',    // 服务调用必须可靠，不允许丢失请求
+    durability:   'VOLATILE',    // 会话外历史无意义，不保留
+    historyDepth: 10,            // 缓冲 10 条并发请求
+    mps:          0,             // 不限速
+    priority:     2,             // 与参数通道同等优先级
   },
 
-  // Parameter events — subset of parameter changes
+  // PARAM_EVENT: 参数变更事件总线，订阅者不应错过任何配置更新
   PARAM_EVENT: {
-    reliability:  'RELIABLE',
-    durability:   'TRANSIENT_LOCAL',
-    historyDepth: 1000,
-    mps:          0,
-    priority:     2,
+    reliability:  'RELIABLE',         // 事件不允许丢失
+    durability:   'TRANSIENT_LOCAL',  // 持久化，晚加入节点可回溯变更历史
+    historyDepth: 1000,               // 保留最近 1000 条事件
+    mps:          0,                  // 不限速
+    priority:     2,                  // 与参数通道同等优先级
   },
 
-  // System-level default (matches ROS 2 /rosout style)
+  // SYSTEM_DEFAULT: 系统级基础设施通道（对标 ROS 2 /rosout 风格）
   SYSTEM_DEFAULT: {
-    reliability:  'RELIABLE',
-    durability:   'VOLATILE',
-    historyDepth: 1,
-    mps:          0,
-    priority:     1,
+    reliability:  'RELIABLE',    // 系统内部消息可靠交付
+    durability:   'VOLATILE',    // 不保留历史，仅关注实时状态
+    historyDepth: 1,             // 极浅队列，只保留最新状态
+    mps:          0,             // 不限速
+    priority:     1,             // 普通优先级，与 DEFAULT 对齐
   },
 
-  // Static transforms — must survive late joiners, keep full history
+  // TF_STATIC: 静态坐标系变换，晚加入节点必须能接收到最新变换
   TF_STATIC: {
-    reliability:  'RELIABLE',
-    durability:   'TRANSIENT_LOCAL',
-    historyDepth: 1,
-    mps:          0,
-    priority:     1,
+    reliability:  'RELIABLE',         // 变换矩阵不允许丢失
+    durability:   'TRANSIENT_LOCAL',  // 持久化，保证晚加入节点收到广播
+    historyDepth: 1,                  // 静态变换只需最新一条即可
+    mps:          0,                  // 不限速
+    priority:     1,                  // 普通优先级
   },
 
-  // Topology / graph change events
+  // TOPO_CHANGE: 图拓扑变更事件（节点/边的增删），最高优先级
   TOPO_CHANGE: {
-    reliability:  'RELIABLE',
-    durability:   'TRANSIENT_LOCAL',
-    historyDepth: 10,
-    mps:          0,
-    priority:     3,
+    reliability:  'RELIABLE',         // 拓扑变更不允许丢失
+    durability:   'TRANSIENT_LOCAL',  // 持久化，晚加入节点可重建当前拓扑
+    historyDepth: 10,                 // 保留最近 10 次拓扑变更
+    mps:          0,                  // 不限速
+    priority:     3,                  // 最高优先级，确保路由信息最先送达
   },
 };
 
