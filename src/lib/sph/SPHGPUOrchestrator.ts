@@ -359,6 +359,145 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 // ---------------------------------------------------------------------------
+// Prefix-Sum shader  (Blelloch exclusive scan — spatial-hash pass 1.5)
+//
+// Converts the raw per-cell particle counts produced by HASH_COUNT_SHADER
+// into exclusive prefix-sum offsets so that pass 2 (scatter) knows where
+// in the sorted-particle array each cell starts.
+//
+// Algorithm: Blelloch work-efficient parallel scan (CUDA "scan" chapter,
+// Harris et al. 2007).  The shader runs a two-phase up-sweep / down-sweep
+// entirely in shared memory for arrays up to SCAN_BLOCK × 2 elements per
+// workgroup invocation.  For larger tables the host chains multiple passes
+// (see `dispatchPrefixSum`).
+//
+// Shared-memory layout (SCAN_BLOCK = 256 → 512 u32 = 2 KiB):
+//   temp[0 .. 2*SCAN_BLOCK-1]  — ping-pong scratch
+// ---------------------------------------------------------------------------
+
+const PREFIX_SUM_SHADER = /* wgsl */`
+// One workgroup processes 2 × SCAN_BLOCK elements of the cellCount array.
+// SCAN_BLOCK must equal the workgroup_size declared below (256).
+const SCAN_BLOCK : u32 = 256u;
+
+struct ScanUniforms {
+  n         : u32,   // total number of elements in the array
+  blockOffset: u32,  // element offset for this dispatch (multi-pass support)
+  _pad0     : u32,
+  _pad1     : u32,
+}
+
+@group(0) @binding(0) var<uniform>            uScan    : ScanUniforms;
+@group(1) @binding(0) var<storage, read_write> data     : array<u32>;
+// blockSum[i] receives the total sum of workgroup i (used in multi-pass)
+@group(2) @binding(0) var<storage, read_write> blockSum : array<u32>;
+
+var<workgroup> temp: array<u32, 512>;   // 2 × SCAN_BLOCK
+
+@compute @workgroup_size(256)
+fn main(
+  @builtin(global_invocation_id) gid : vec3<u32>,
+  @builtin(local_invocation_id)  lid : vec3<u32>,
+  @builtin(workgroup_id)         wid : vec3<u32>,
+) {
+  let thid  = lid.x;                          // thread index within workgroup [0, 255]
+  let base  = uScan.blockOffset + wid.x * (SCAN_BLOCK * 2u);   // global element base
+
+  // ── Load two elements per thread into shared memory ──────────────────────
+  let ai = base + thid;
+  let bi = base + thid + SCAN_BLOCK;
+
+  temp[thid]             = select(0u, data[ai], ai < uScan.n);
+  temp[thid + SCAN_BLOCK] = select(0u, data[bi], bi < uScan.n);
+  workgroupBarrier();
+
+  // ── Up-sweep (reduce) phase ───────────────────────────────────────────────
+  // Build a partial-sum tree in-place.  After k iterations temp[2^(k+1)-1]
+  // holds the partial sum of the first 2^(k+1) elements.
+  var offset = 1u;
+  var d      = SCAN_BLOCK;   // d starts at N/2
+  loop {
+    if (d == 0u) { break; }
+    workgroupBarrier();
+    if (thid < d) {
+      let ai2 = offset * (2u * thid + 1u) - 1u;
+      let bi2 = offset * (2u * thid + 2u) - 1u;
+      temp[bi2] += temp[ai2];
+    }
+    offset *= 2u;
+    d      /= 2u;
+  }
+
+  // ── Store block total, then clear the last element (exclusive scan) ───────
+  if (thid == 0u) {
+    blockSum[wid.x] = temp[SCAN_BLOCK * 2u - 1u];
+    temp[SCAN_BLOCK * 2u - 1u] = 0u;
+  }
+  workgroupBarrier();
+
+  // ── Down-sweep phase ──────────────────────────────────────────────────────
+  // Propagate the zero seed back down the tree to produce the exclusive scan.
+  d      = 1u;
+  offset = SCAN_BLOCK;
+  loop {
+    if (d > SCAN_BLOCK) { break; }
+    offset /= 2u;
+    workgroupBarrier();
+    if (thid < d) {
+      let ai2 = offset * (2u * thid + 1u) - 1u;
+      let bi2 = offset * (2u * thid + 2u) - 1u;
+      let t    = temp[ai2];
+      temp[ai2] = temp[bi2];
+      temp[bi2] += t;
+    }
+    d *= 2u;
+  }
+  workgroupBarrier();
+
+  // ── Write results back to global memory ──────────────────────────────────
+  if (ai < uScan.n) { data[ai] = temp[thid]; }
+  if (bi < uScan.n) { data[bi] = temp[thid + SCAN_BLOCK]; }
+}
+`;
+
+// Shader that adds the per-block totals accumulated in the first pass back
+// into each block's elements so that the final array is a globally-correct
+// exclusive prefix sum (second pass of a two-pass Blelloch scan).
+const PREFIX_SUM_ADD_SHADER = /* wgsl */`
+const SCAN_BLOCK : u32 = 256u;
+
+struct ScanUniforms {
+  n          : u32,
+  blockOffset: u32,
+  _pad0      : u32,
+  _pad1      : u32,
+}
+
+@group(0) @binding(0) var<uniform>            uScan    : ScanUniforms;
+@group(1) @binding(0) var<storage, read_write> data     : array<u32>;
+@group(2) @binding(0) var<storage, read>       blockSum : array<u32>;
+
+@compute @workgroup_size(256)
+fn main(
+  @builtin(global_invocation_id) gid : vec3<u32>,
+  @builtin(local_invocation_id)  lid : vec3<u32>,
+  @builtin(workgroup_id)         wid : vec3<u32>,
+) {
+  // Skip the very first block — its offset is already 0.
+  if (wid.x == 0u) { return; }
+
+  let base = uScan.blockOffset + wid.x * (SCAN_BLOCK * 2u);
+  let add  = blockSum[wid.x];   // exclusive prefix of block totals
+
+  let ai = base + lid.x;
+  let bi = base + lid.x + SCAN_BLOCK;
+
+  if (ai < uScan.n) { data[ai] += add; }
+  if (bi < uScan.n) { data[bi] += add; }
+}
+`;
+
+// ---------------------------------------------------------------------------
 // Types (local aliases)
 // ---------------------------------------------------------------------------
 
@@ -382,6 +521,8 @@ export class SPHGPUOrchestrator {
   private forcePipeline     !: GPUComputePipeline;
   private integratePipeline !: GPUComputePipeline;
   private hashCountPipeline !: GPUComputePipeline;   // spatial-hash pass 1
+  private prefixSumPipeline !: GPUComputePipeline;   // Blelloch scan  (pass 1.5 — local)
+  private prefixSumAddPipeline !: GPUComputePipeline; // Blelloch add   (pass 1.5 — global fixup)
 
   // bind-group layouts (group 0 is uniform, shared)
   private uniformBGL           !: GPUBindGroupLayout;
@@ -393,8 +534,15 @@ export class SPHGPUOrchestrator {
   private hashPosBGL           !: GPUBindGroupLayout; // hash-count: posX/posY
   private hashCountBGL         !: GPUBindGroupLayout; // hash-count: cellCount (atomic)
 
+  // prefix-sum BGLs (group 0 = scan uniforms, group 1 = data, group 2 = blockSum)
+  private scanUniformBGL !: GPUBindGroupLayout;
+  private scanDataBGL    !: GPUBindGroupLayout;
+  private scanBlockBGL   !: GPUBindGroupLayout;
+
   // dedicated uniform buffer for the hash-count pass (32 bytes)
   private hashUniformBuf       !: GPUBuffer;
+  // dedicated uniform buffer for prefix-sum passes (16 bytes)
+  private scanUniformBuf       !: GPUBuffer;
 
   // cached bind groups
   private uniformBG           !: GPUBindGroup;
@@ -409,6 +557,15 @@ export class SPHGPUOrchestrator {
   private hashPosBG           !: GPUBindGroup;
   private hashCountBG         : GPUBindGroup | null = null;
   private lastCellCountBuf    : GPUBuffer    | null = null;
+
+  // prefix-sum bind groups (recreated when the data/blockSum buffers change)
+  private scanUniformBG       !: GPUBindGroup;
+  private scanDataBG          : GPUBindGroup | null = null;
+  private scanBlockSumBG      : GPUBindGroup | null = null;
+  private lastScanDataBuf     : GPUBuffer    | null = null;
+  // internal blockSum scratch buffer (resized on demand)
+  private scanBlockSumBuf     : GPUBuffer    | null = null;
+  private scanBlockSumCapacity: number              = 0;
 
   // last CSR / boundary refs for dirty-checking
   private lastNeighborBuf  : GPUBuffer | null = null;
@@ -434,6 +591,12 @@ export class SPHGPUOrchestrator {
     // ---------- hash-count uniform buffer (32 bytes — 8 × f32/u32) ----------
     this.hashUniformBuf = dev.createBuffer({
       size : 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // ---------- prefix-sum uniform buffer (16 bytes — 4 × u32) ----------
+    this.scanUniformBuf = dev.createBuffer({
+      size : 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -520,6 +683,7 @@ export class SPHGPUOrchestrator {
       [this.uniformBGL, this.integrateParticleBGL]);
 
     this.createHashCountPipeline();
+    this.createPrefixSumPipeline();
 
     // ---------- static bind groups (particle buffers, uniform) ----------
     this.uniformBG = dev.createBindGroup({
@@ -854,18 +1018,220 @@ export class SPHGPUOrchestrator {
   }
 
   // -------------------------------------------------------------------------
+  /**
+   * Build the BGLs and both pipelines needed for the two-phase Blelloch
+   * exclusive prefix-sum (scan) over the cellCount array.
+   *
+   * Layout of bind groups used by both scan shaders:
+   *   group 0 — ScanUniforms  { n, blockOffset, _pad0, _pad1 }  (uniform)
+   *   group 1 — data[]        (read_write u32 — the cellCount array)
+   *   group 2 — blockSum[]    (read_write u32 for pass-1, read for pass-2)
+   */
+  private createPrefixSumPipeline(): void {
+    const dev = this.device;
+
+    // group 0 — scan uniforms
+    this.scanUniformBGL = dev.createBindGroupLayout({
+      label  : "scan-uniform-bgl",
+      entries: [{
+        binding   : 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer    : { type: "uniform" },
+      }],
+    });
+
+    // group 1 — data buffer (read_write)
+    this.scanDataBGL = dev.createBindGroupLayout({
+      label  : "scan-data-bgl",
+      entries: [{
+        binding   : 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer    : { type: "storage" },
+      }],
+    });
+
+    // group 2 — blockSum buffer (read_write for local scan, read for add pass)
+    this.scanBlockBGL = dev.createBindGroupLayout({
+      label  : "scan-block-bgl",
+      entries: [{
+        binding   : 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer    : { type: "storage" },
+      }],
+    });
+
+    const bgls = [this.scanUniformBGL, this.scanDataBGL, this.scanBlockBGL];
+    this.prefixSumPipeline    = this.makePipeline("prefix-sum",     PREFIX_SUM_SHADER,     bgls);
+    this.prefixSumAddPipeline = this.makePipeline("prefix-sum-add", PREFIX_SUM_ADD_SHADER, bgls);
+
+    // Static bind group for the scan uniform buffer
+    this.scanUniformBG = dev.createBindGroup({
+      label  : "scan-uniform-bg",
+      layout : this.scanUniformBGL,
+      entries: [{ binding: 0, resource: { buffer: this.scanUniformBuf } }],
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  /**
+   * Encode a full Blelloch exclusive prefix-sum over `cellCountBuf` in-place.
+   *
+   * This is the GPU-side "pass 1.5" that converts per-cell particle counts
+   * (produced by `dispatchHashCount`) into cell-start offsets ready for the
+   * scatter pass (pass 2).
+   *
+   * The algorithm runs a standard two-phase Blelloch scan:
+   *   Phase A — local scan  : each workgroup independently scans 512 elements
+   *                           and writes its total to `blockSum[wg]`.
+   *   Phase B — block scan  : single-workgroup scan over `blockSum[]` itself.
+   *   Phase C — add pass    : every workgroup adds its block-offset back into
+   *                           its 512-element window of `data[]`.
+   *
+   * The entire sequence is encoded into a **single** GPUCommandEncoder for
+   * maximum efficiency; the caller submits the encoder's result.
+   *
+   * @param n             - number of elements in cellCountBuf (≥ 1)
+   * @param cellCountBuf  - GPU buffer of `n` u32 values to scan in-place
+   * @param encoder       - command encoder to append compute passes into;
+   *                        if omitted a new one is created and submitted
+   */
+  dispatchPrefixSum(
+    n            : number,
+    cellCountBuf : GPUBuffer,
+    encoder?     : GPUCommandEncoder,
+  ): void {
+    const dev          = this.device;
+    const BLOCK_ELEMS  = 512;                              // 2 × SCAN_BLOCK (workgroup)
+    const numBlocks    = Math.ceil(n / BLOCK_ELEMS);       // workgroups for phase A
+    const ownEncoder   = encoder === undefined;
+    const enc          = ownEncoder
+      ? dev.createCommandEncoder({ label: "prefix-sum-frame" })
+      : encoder;
+
+    // ── Lazily resize the blockSum scratch buffer ─────────────────────────
+    const neededBytes = Math.max(numBlocks, 1) * 4;       // u32 per block
+    if (this.scanBlockSumBuf === null || this.scanBlockSumCapacity < neededBytes) {
+      this.scanBlockSumBuf?.destroy();
+      this.scanBlockSumBuf = dev.createBuffer({
+        label : "scan-block-sum",
+        size  : neededBytes,
+        usage : GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      this.scanBlockSumCapacity = neededBytes;
+      this.scanBlockSumBG       = null;   // force BG rebuild below
+      this.scanDataBG           = null;
+    }
+
+    // ── Rebuild data bind group if cellCountBuf changed ───────────────────
+    if (this.scanDataBG === null || cellCountBuf !== this.lastScanDataBuf) {
+      this.scanDataBG = dev.createBindGroup({
+        label  : "scan-data-bg",
+        layout : this.scanDataBGL,
+        entries: [{ binding: 0, resource: { buffer: cellCountBuf } }],
+      });
+      this.lastScanDataBuf = cellCountBuf;
+    }
+
+    // ── Rebuild blockSum bind group if the scratch buffer was reallocated ──
+    if (this.scanBlockSumBG === null) {
+      this.scanBlockSumBG = dev.createBindGroup({
+        label  : "scan-block-sum-bg",
+        layout : this.scanBlockBGL,
+        entries: [{ binding: 0, resource: { buffer: this.scanBlockSumBuf! } }],
+      });
+    }
+
+    // ── Upload ScanUniforms ───────────────────────────────────────────────
+    const uData = new Uint32Array([n, 0, 0, 0]);
+    dev.queue.writeBuffer(this.scanUniformBuf, 0, uData);
+
+    const dataBG      = this.scanDataBG!;
+    const blockSumBG  = this.scanBlockSumBG!;
+
+    // ── Phase A: local Blelloch scan per workgroup ────────────────────────
+    {
+      const pass = enc.beginComputePass({ label: "prefix-sum-local" });
+      pass.setPipeline(this.prefixSumPipeline);
+      pass.setBindGroup(0, this.scanUniformBG);
+      pass.setBindGroup(1, dataBG);
+      pass.setBindGroup(2, blockSumBG);
+      pass.dispatchWorkgroups(numBlocks);
+      pass.end();
+    }
+
+    // ── Phase B: scan the blockSum array (single workgroup, recursive) ────
+    if (numBlocks > 1) {
+      // Re-use the same pipeline but now scanning blockSum[] into itself.
+      // We need a temporary BG that points group-1 at blockSum and group-2 at
+      // a dummy 1-element buffer (the single-block blockSum of blockSum).
+      const blockBlockSumBuf = dev.createBuffer({
+        label : "scan-block-block-sum",
+        size  : 4,
+        usage : GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      const blockBlockSumBG = dev.createBindGroup({
+        label  : "scan-block-block-sum-bg",
+        layout : this.scanBlockBGL,
+        entries: [{ binding: 0, resource: { buffer: blockBlockSumBuf } }],
+      });
+
+      // Re-upload uniforms with n = numBlocks
+      const uData2 = new Uint32Array([numBlocks, 0, 0, 0]);
+      dev.queue.writeBuffer(this.scanUniformBuf, 0, uData2);
+
+      {
+        const pass = enc.beginComputePass({ label: "prefix-sum-block-scan" });
+        pass.setPipeline(this.prefixSumPipeline);
+        pass.setBindGroup(0, this.scanUniformBG);
+        pass.setBindGroup(1, blockSumBG);          // blockSum[] as the data
+        pass.setBindGroup(2, blockBlockSumBG);      // ignored (single block)
+        pass.dispatchWorkgroups(1);
+        pass.end();
+      }
+
+      // Restore uniform n for the add pass
+      dev.queue.writeBuffer(this.scanUniformBuf, 0, uData);
+
+      // ── Phase C: add block offsets back into each window ─────────────────
+      {
+        const pass = enc.beginComputePass({ label: "prefix-sum-add" });
+        pass.setPipeline(this.prefixSumAddPipeline);
+        pass.setBindGroup(0, this.scanUniformBG);
+        pass.setBindGroup(1, dataBG);
+        pass.setBindGroup(2, blockSumBG);
+        pass.dispatchWorkgroups(numBlocks);
+        pass.end();
+      }
+
+      // The temp buffer will be GC'd; schedule a microTask destroy to be safe.
+      // (WebGPU buffers are GC'd automatically, but an explicit destroy is good practice.)
+      Promise.resolve().then(() => blockBlockSumBuf.destroy());
+    }
+
+    if (ownEncoder) {
+      dev.queue.submit([enc.finish()]);
+    }
+  }
+
+  // -------------------------------------------------------------------------
   /** Release GPU resources owned by this orchestrator. */
   destroy(): void {
     this.uniformBuf.destroy();
     this.hashUniformBuf.destroy();
+    this.scanUniformBuf.destroy();
+    this.scanBlockSumBuf?.destroy();
     // GPUComputePipelines and GPUBindGroupLayouts are GC'd by the device;
     // no explicit destroy() method exists for them in the WebGPU spec.
-    this.neighborBG      = null;
-    this.boundaryBG      = null;
-    this.hashCountBG     = null;
-    this.lastNeighborBuf = null;
-    this.lastRowPtrBuf   = null;
-    this.lastBoundaryBuf = null;
+    this.neighborBG       = null;
+    this.boundaryBG       = null;
+    this.hashCountBG      = null;
+    this.scanDataBG       = null;
+    this.scanBlockSumBG   = null;
+    this.scanBlockSumBuf  = null;
+    this.lastNeighborBuf  = null;
+    this.lastRowPtrBuf    = null;
+    this.lastBoundaryBuf  = null;
     this.lastCellCountBuf = null;
+    this.lastScanDataBuf  = null;
   }
 }
