@@ -116,6 +116,43 @@ def _broadcast_cell_loop_finished(final_epoch: int, converged: bool, cells: dict
     })
 
 
+def _broadcast_physics_step(epoch: int, force_field: dict, converged: bool) -> None:
+    """
+    Broadcast physics_step — fired each time the physics engine writes
+    channels/physics/force_field.json (one iteration of the force-directed
+    layout loop).
+
+    Parameters
+    ----------
+    epoch       : current physics epoch index
+    force_field : per-cell {dx, dy, dz} displacement vectors
+    converged   : whether the engine has converged
+    """
+    _sse_broadcast("physics_step", {
+        "epoch": epoch,
+        "force_field": force_field,
+        "converged": converged,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+def _broadcast_physics_collision(collisions: list, count: int) -> None:
+    """
+    Broadcast physics_collision — fired whenever channels/physics/collision.json
+    is updated (a new collision pair is detected or the list is cleared).
+
+    Parameters
+    ----------
+    collisions : list of collision records produced by the physics engine
+    count      : total number of active collisions
+    """
+    _sse_broadcast("physics_collision", {
+        "collisions": collisions,
+        "count": count,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
 def _register_cell_sse_notifier() -> None:
     """
     Register DataNotifier callbacks so that pipeline writes to channel files
@@ -175,9 +212,46 @@ def _register_cell_sse_notifier() -> None:
 
         notifier.add_notifier("skeleton/epoch.json", Notifier(_epoch_cb))
 
+        # ── Physics force_field watcher (physics_step event) ─────────────
+        def _physics_step_cb():
+            ff_path = BASE_DIR / "channels" / "physics" / "force_field.json"
+            conv_path = BASE_DIR / "channels" / "physics" / "converged.json"
+            epoch_path2 = BASE_DIR / "channels" / "skeleton" / "epoch.json"
+            try:
+                force_field = json.loads(ff_path.read_text()) if ff_path.exists() else {}
+            except Exception:
+                force_field = {}
+            try:
+                conv_data = json.loads(conv_path.read_text()) if conv_path.exists() else {}
+                converged = bool(conv_data.get("converged", False))
+            except Exception:
+                converged = False
+            try:
+                ep_data = json.loads(epoch_path2.read_text()) if epoch_path2.exists() else {}
+                epoch_num = ep_data.get("current", -1)
+            except Exception:
+                epoch_num = -1
+            _broadcast_physics_step(epoch_num, force_field, converged)
+
+        notifier.add_notifier("physics/force_field.json", Notifier(_physics_step_cb))
+
+        # ── Physics collision watcher (physics_collision event) ───────────
+        def _physics_collision_cb():
+            coll_path = BASE_DIR / "channels" / "physics" / "collision.json"
+            try:
+                coll_data = json.loads(coll_path.read_text()) if coll_path.exists() else {}
+                collisions = coll_data.get("collisions", [])
+                count = coll_data.get("count", len(collisions))
+            except Exception:
+                collisions = []
+                count = 0
+            _broadcast_physics_collision(collisions, count)
+
+        notifier.add_notifier("physics/collision.json", Notifier(_physics_collision_cb))
+
         logger.info(
             "[cell-sse] DataNotifier callbacks registered for %d cells "
-            "+ topology + epoch watchers",
+            "+ topology + epoch + physics_step + physics_collision watchers",
             len(cell_ids),
         )
     except Exception as exc:
@@ -297,6 +371,11 @@ async def api_cell_events() -> StreamingResponse:
       epoch_completed      — one epoch of the convergence loop finished
       cell_loop_started    — run_loop() begins
       cell_loop_finished   — run_loop() ends (converged or max-epoch)
+      physics_step         — physics engine wrote force_field.json; payload
+                             includes epoch, per-cell {dx,dy,dz} vectors, and
+                             converged flag
+      physics_collision    — physics engine wrote collision.json; payload
+                             includes collisions list and count
 
     A keepalive comment (": ping") is sent every 15 s to prevent proxy
     timeouts and to let the client detect a dropped connection quickly.
@@ -467,6 +546,115 @@ async def api_cell_publish(request_data: dict) -> JSONResponse:
 
     except Exception as e:
         logger.exception("api_cell_publish error")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ============================================================================
+# Physics QoS Endpoint — tune SSE event rate / priority for physics events
+# POST /api/physics/qos lets callers throttle physics_step and
+# physics_collision events so slow clients are not overwhelmed by a high-
+# frequency physics loop.
+# ============================================================================
+
+@app.post("/api/physics/qos")
+async def api_physics_qos(request_data: dict) -> JSONResponse:
+    """
+    POST /api/physics/qos — Configure QoS for physics SSE events.
+
+    Accepts a JSON body and persists it to
+    channels/physics/qos.json so that the physics engine (or any
+    bridge that reads that file) knows the desired delivery policy.
+
+    Request body fields (all optional):
+      step_interval_ms   (int,   default 100)  — minimum ms between
+                         physics_step SSE events; the notifier skips
+                         intermediate force_field writes that arrive
+                         faster than this cadence.
+      collision_min_delta (int,  default 0)   — only broadcast
+                         physics_collision when the collision *count*
+                         changes by at least this amount.
+      max_queue_depth    (int,   default 256)  — per-client SSE queue
+                         ceiling; events that arrive when the queue is
+                         full are dropped (slow-client protection).
+      enabled            (bool,  default true) — master switch; set
+                         false to pause all physics SSE events without
+                         disconnecting clients.
+
+    Returns:
+      {
+        "success": true,
+        "qos": { ...merged config... },
+        "sse_clients": <int>
+      }
+    """
+    try:
+        physics_dir = _CHANNELS_DIR / "physics"
+        physics_dir.mkdir(parents=True, exist_ok=True)
+        qos_path = physics_dir / "qos.json"
+
+        # ── Load existing config (if any) and merge ─────────────────────
+        existing: dict = {}
+        if qos_path.exists():
+            try:
+                existing = json.loads(qos_path.read_text())
+            except Exception:
+                existing = {}
+
+        defaults = {
+            "step_interval_ms": 100,
+            "collision_min_delta": 0,
+            "max_queue_depth": 256,
+            "enabled": True,
+        }
+
+        # Merge: defaults → existing → request overrides
+        merged = {**defaults, **existing}
+        for key in ("step_interval_ms", "collision_min_delta", "max_queue_depth"):
+            if key in request_data:
+                val = request_data[key]
+                if not isinstance(val, int) or val < 0:
+                    return JSONResponse(
+                        {"error": f"{key} must be a non-negative integer"},
+                        status_code=400,
+                    )
+                merged[key] = val
+        if "enabled" in request_data:
+            merged["enabled"] = bool(request_data["enabled"])
+
+        merged["updated_at"] = datetime.now().isoformat()
+
+        # ── Persist ──────────────────────────────────────────────────────
+        qos_path.write_text(json.dumps(merged, indent=2))
+
+        # ── Notify DataNotifier so any watcher picks up the change ───────
+        try:
+            import sys as _sys
+            _channels_str = str(_CHANNELS_DIR)
+            if _channels_str not in _sys.path:
+                _sys.path.insert(0, _channels_str)
+            from channel_runtime import DataNotifier
+            DataNotifier.instance().notify("physics/qos.json")
+        except Exception as _ne:
+            logger.debug("[physics/qos] DataNotifier.notify skipped: %s", _ne)
+
+        logger.info(
+            "[physics/qos] updated: step_interval_ms=%d collision_min_delta=%d "
+            "max_queue_depth=%d enabled=%s sse_clients=%d",
+            merged["step_interval_ms"],
+            merged["collision_min_delta"],
+            merged["max_queue_depth"],
+            merged["enabled"],
+            len(_cell_event_queues),
+        )
+
+        return JSONResponse({
+            "success": True,
+            "qos": merged,
+            "sse_clients": len(_cell_event_queues),
+        })
+
+    except Exception as e:
+        logger.exception("api_physics_qos error")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
