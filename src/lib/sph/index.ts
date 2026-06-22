@@ -1,3 +1,5 @@
+export { SplineParticleLife, edgeRouteToSplineData, createSplineParticleLifeForSPH } from './spline-particle-life';
+export type { EdgeSplineData, SplineParticle, SplineParticleLifeConfig, ParticlePhase, SplinePoint3 } from './spline-particle-life';
 export { SpatialHashGrid } from './SpatialHashGrid';
 export { NeighborListBuilder } from './NeighborListBuilder';
 export { BoundaryModel } from './BoundaryModel';
