@@ -1,4 +1,3 @@
-# === src/pages/world/index.astro ===
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
 ---
@@ -105,6 +104,33 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       box-shadow: 0 0 6px rgba(0, 255, 136, 0.3);
     }
 
+    /* SSE status dot */
+    #sse-status {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-family: 'Courier New', Courier, monospace;
+      color: #555;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    #sse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #333;
+      transition: background 0.3s ease;
+    }
+
+    #sse-status.connected #sse-dot  { background: #00ff88; box-shadow: 0 0 5px #00ff8888; }
+    #sse-status.offline   #sse-dot  { background: #ffa000; }
+    #sse-status.error     #sse-dot  { background: #ff4444; }
+
     /* WebGPU fallback banner */
     #webgpu-fallback {
       display: none;
@@ -185,6 +211,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <span class="hud-label">QoS</span>
         <span class="hud-value" id="hud-qos">HIGH</span>
       </div>
+      <div class="hud-row">
+        <span class="hud-label">SIM</span>
+        <span class="hud-value" id="hud-sim-time">—</span>
+      </div>
     </div>
 
     <!-- QoS panel -->
@@ -195,6 +225,12 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <button class="qos-btn" data-qos="mid">MID</button>
         <button class="qos-btn active" data-qos="high">HIGH</button>
       </div>
+    </div>
+
+    <!-- SSE connection status -->
+    <div id="sse-status">
+      <span id="sse-dot"></span>
+      <span id="sse-label">SSE —</span>
     </div>
 
     <!-- WebGPU fallback notice -->
@@ -222,9 +258,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
   // ── SPHWorld import ──────────────────────────────────────────────────────────
   // Dynamic import so the heavy GPU module is only loaded client-side.
+  // Path is resolved via the @/lib/* alias defined in tsconfig.json.
   async function loadSPHWorld() {
-    // Adjust the import path to match your actual module location.
-    const mod = await import('../../sph/SPHWorld');
+    const mod = await import('@/lib/sph/SPHWorld');
     return mod.SPHWorld ?? mod.default;
   }
 
@@ -235,9 +271,12 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   const hudFps        = document.getElementById('hud-fps')        as HTMLElement;
   const hudBackend    = document.getElementById('hud-backend')    as HTMLElement;
   const hudQos        = document.getElementById('hud-qos')        as HTMLElement;
+  const hudSimTime    = document.getElementById('hud-sim-time')   as HTMLElement;
   const fallbackBanner= document.getElementById('webgpu-fallback')as HTMLElement;
   const initOverlay   = document.getElementById('init-overlay')   as HTMLElement;
   const qosBtns       = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
+  const sseStatusEl   = document.getElementById('sse-status')     as HTMLElement;
+  const sseLabelEl    = document.getElementById('sse-label')      as HTMLElement;
 
   // ── Canvas sizing ────────────────────────────────────────────────────────────
   function resizeCanvas(renderScale: number) {
@@ -274,6 +313,134 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
   }
 
+  // ── SSE EventSource for /api/cell-events ────────────────────────────────────
+  // Listens for `physics_step` events from the Python backend (proxied through
+  // the Astro SSE route) and updates the HUD sim-time counter.
+
+  const SSE_URL = '/api/cell-events';
+  const SSE_BACKOFF_INITIAL_MS = 1_000;
+  const SSE_BACKOFF_MAX_MS     = 30_000;
+  const SSE_ERROR_THRESHOLD    = 3;
+
+  let _es: EventSource | null = null;
+  let _sseErrorCount  = 0;
+  let _sseBackoffMs   = SSE_BACKOFF_INITIAL_MS;
+  let _sseReconnTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function setSseStatus(state: 'connected' | 'offline' | 'error', label: string) {
+    sseStatusEl.className = state;
+    sseLabelEl.textContent = `SSE ${label}`;
+  }
+
+  function openSSE() {
+    if (typeof EventSource === 'undefined') {
+      setSseStatus('offline', 'unavailable');
+      return;
+    }
+
+    const es = new EventSource(SSE_URL);
+    _es = es;
+
+    // ── physics_step: SPH backend tick telemetry ──────────────────────────
+    es.addEventListener('physics_step', (ev: MessageEvent) => {
+      try {
+        const d = JSON.parse(ev.data) as {
+          step?: number;
+          particle_count?: number;
+          kinetic_energy?: number;
+          sim_time_ms?: number;
+          qos?: string;
+          offline?: boolean;
+        };
+
+        if (d.offline) {
+          setSseStatus('offline', 'backend offline');
+          return;
+        }
+
+        // Update HUD sim time
+        if (d.sim_time_ms !== undefined) {
+          hudSimTime.textContent = `${d.sim_time_ms.toFixed(1)} ms`;
+        }
+
+        // If backend reports a QoS level that differs from local, reflect it
+        if (d.qos && d.qos !== currentQoS) {
+          const normalized = d.qos.toLowerCase() as QoSLevel;
+          if (normalized in QOS_PROFILES) {
+            hudQos.textContent = normalized.toUpperCase();
+            qosBtns.forEach(btn => {
+              btn.classList.toggle('active', btn.dataset.qos === normalized);
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[world SSE] physics_step parse error:', e);
+      }
+    });
+
+    // ── cell_update: propagated from Apollo DataNotifier ─────────────────
+    es.addEventListener('cell_update', (ev: MessageEvent) => {
+      try {
+        const d = JSON.parse(ev.data) as { cell_id: string; params: unknown };
+        console.debug('[world SSE] cell_update', d.cell_id);
+      } catch (e) {
+        console.warn('[world SSE] cell_update parse error:', e);
+      }
+    });
+
+    es.onopen = () => {
+      _sseErrorCount = 0;
+      _sseBackoffMs  = SSE_BACKOFF_INITIAL_MS;
+      setSseStatus('connected', 'connected');
+    };
+
+    es.onerror = () => {
+      _sseErrorCount++;
+      setSseStatus('error', `error #${_sseErrorCount}`);
+
+      if (_sseErrorCount >= SSE_ERROR_THRESHOLD) {
+        // Take over from the native reconnect loop to apply exponential backoff.
+        es.close();
+        _es = null;
+        const delay = Math.min(_sseBackoffMs, SSE_BACKOFF_MAX_MS);
+        console.warn(`[world SSE] reconnecting in ${delay}ms`);
+        _sseReconnTimer = setTimeout(() => {
+          _sseBackoffMs = Math.min(_sseBackoffMs * 2, SSE_BACKOFF_MAX_MS);
+          openSSE();
+        }, delay);
+      }
+    };
+  }
+
+  function closeSSE() {
+    if (_sseReconnTimer) { clearTimeout(_sseReconnTimer); _sseReconnTimer = null; }
+    if (_es) { _es.close(); _es = null; }
+  }
+
+  // ── QoS POST to /api/physics/qos ─────────────────────────────────────────────
+  // Fire-and-forget: we update UI immediately and let the backend acknowledge
+  // asynchronously.  The response is logged but not awaited in the hot path.
+
+  async function postQoSToBackend(level: QoSLevel): Promise<void> {
+    try {
+      const res = await fetch('/api/physics/qos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level }),
+      });
+      const data = await res.json();
+      if (data.offline) {
+        console.info('[world QoS] backend offline — QoS applied client-side only.', data);
+      } else if (!res.ok) {
+        console.warn('[world QoS] backend rejected QoS change:', data);
+      } else {
+        console.info('[world QoS] backend acknowledged:', data);
+      }
+    } catch (err) {
+      console.warn('[world QoS] POST /api/physics/qos failed (network):', err);
+    }
+  }
+
   // ── Main ─────────────────────────────────────────────────────────────────────
   (async () => {
     if (!navigator.gpu) {
@@ -291,6 +458,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     if (backend === 'webgl2') {
       fallbackBanner.classList.add('visible');
     }
+
+    // Open SSE connection for physics_step + cell_update events
+    setSseStatus('offline', 'connecting…');
+    openSSE();
 
     // Load SPHWorld module
     const SPHWorld = await loadSPHWorld();
@@ -337,13 +508,16 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       if (level === currentQoS) return;
       currentQoS = level;
 
-      // Update button states
+      // Update button states and HUD immediately (optimistic UI)
       qosBtns.forEach(btn => {
         btn.classList.toggle('active', btn.dataset.qos === level);
       });
       hudQos.textContent = level.toUpperCase();
 
-      // Pause loop
+      // POST the new level to the backend (fire-and-forget)
+      postQoSToBackend(level);
+
+      // Pause render loop while reconfiguring
       cancelAnimationFrame(rafId);
 
       const p = QOS_PROFILES[level];
@@ -383,5 +557,12 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       world?.resize?.(canvas.width, canvas.height);
     });
     resizeObserver.observe(canvas);
+
+    // ── Cleanup on page unload ─────────────────────────────────────────────────
+    window.addEventListener('beforeunload', () => {
+      closeSSE();
+      cancelAnimationFrame(rafId);
+      world?.destroy?.();
+    });
   })();
 </script>
