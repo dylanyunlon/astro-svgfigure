@@ -4,7 +4,7 @@
  * 职责:
  *   - 读 channels/physics/fog_at_params.json (fogDensity → alpha, fogSpeed → speed)
  *   - update(dt) 推进 u_time 驱动云雾流动
- *   - setSpeciesInfluence(cells) 加权平均 species glow 色设 u_fogColor
+ *   - setSpeciesInfluence(cells) 加权平均 species_params.glow_color 设 u_fogColor
  *   - 全屏 WebGL2 <canvas> (zIndex=-1) 渲染 CloudFog
  *
  * 用法:
@@ -20,7 +20,14 @@
  */
 
 import { CloudFog, type CloudFogOptions } from './CloudFog'
-import { getSpeciesPalette } from './color-utils'
+
+// ── species_params.json 结构 ────────────────────────────────────────────────
+
+interface SpeciesParamsEntry {
+  species:    string
+  glow_color: string   // e.g. "#536DFE"
+  [key: string]: unknown
+}
 
 // ── fog_at_params.json 结构 ──────────────────────────────────────────────────
 
@@ -181,6 +188,32 @@ async function loadFogAtParams(url: string | null): Promise<FogAtDefaults> {
   }
 }
 
+// ── 加载 species_params → glow_color 映射 ──────────────────────────────────
+
+const SPECIES_PARAMS_URL = '/channels/rendering/species/params.json'
+
+/** 默认 glow 色 (中性灰)，species 无匹配时使用 */
+const DEFAULT_GLOW_RGB: [number, number, number] = [0.9, 0.9, 0.9]
+
+/**
+ * 加载 species_params.json，构建 species → glow_color RGB [0-1] 映射。
+ * 失败时返回空 Map（setSpeciesInfluence 将 fallback 到默认色）。
+ */
+async function loadSpeciesGlowMap(): Promise<Map<string, [number, number, number]>> {
+  const map = new Map<string, [number, number, number]>()
+  try {
+    const res = await fetch(SPECIES_PARAMS_URL)
+    if (!res.ok) return map
+    const entries: SpeciesParamsEntry[] = await res.json()
+    for (const entry of entries) {
+      if (entry.species && entry.glow_color) {
+        map.set(entry.species, hexToRgb01(entry.glow_color))
+      }
+    }
+  } catch { /* 网络失败 → 空 map，fallback 默认色 */ }
+  return map
+}
+
 // ── mountCloudFogBackground ──────────────────────────────────────────────────
 
 /**
@@ -208,9 +241,10 @@ export async function mountCloudFogBackground(
     ? '/channels/composite_params.json'
     : options.paletteUrl
 
-  const [fogAtDefaults, palette] = await Promise.all([
+  const [fogAtDefaults, palette, speciesGlowMap] = await Promise.all([
     loadFogAtParams(fogParamsUrl),
     loadPalette(paletteUrl),
+    loadSpeciesGlowMap(),
   ])
 
   // fogColor: zenith from palette (lightest tone → most visible as fog tint)
@@ -339,17 +373,17 @@ export async function mountCloudFogBackground(
       if (stopped || !fog || cells.length === 0) return
 
       // 加权平均: 权重 = cell 面积 (w × h), 缺省 1×1
+      // glow_color 来自 species_params.json (speciesGlowMap)
       let totalWeight = 0
       let rAcc = 0, gAcc = 0, bAcc = 0
 
       for (const cell of cells) {
-        const weight  = (cell.w ?? 1) * (cell.h ?? 1)
-        const palette = getSpeciesPalette(cell.species)
-        const glow    = palette.glow
+        const weight = (cell.w ?? 1) * (cell.h ?? 1)
+        const glowRgb = speciesGlowMap.get(cell.species) ?? DEFAULT_GLOW_RGB
 
-        rAcc += glow.r * weight
-        gAcc += glow.g * weight
-        bAcc += glow.b * weight
+        rAcc += glowRgb[0] * weight
+        gAcc += glowRgb[1] * weight
+        bAcc += glowRgb[2] * weight
         totalWeight += weight
       }
 
