@@ -304,11 +304,82 @@ def _all_cell_ids() -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Scene context builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+_NEARBY_THRESHOLD = 200.0  # px — cells whose centres are within this distance
+
+
+def _build_scene_context(
+    cell_id: str,
+    collision_data: dict,
+    cell_registry: dict,
+) -> dict:
+    """
+    Build the scene_context block injected into each cell's dispatch prompt.
+
+    nearby_cells  — other cells whose bbox centres lie within _NEARBY_THRESHOLD
+                    pixels (Euclidean) of this cell's centre, sorted by distance.
+    collision_pairs — entries from collision.json that involve this cell.
+
+    Args:
+        cell_id:        The cell being dispatched.
+        collision_data: Parsed physics/collision.json  {"collisions": [...], "count": N}
+        cell_registry:  Parsed physics/cell_registry.json  {"cells": {...}, "z_layers": {...}}
+
+    Returns:
+        {
+          "nearby_cells":     [{"cell_id": str, "species": str, "distance_px": float,
+                                "center": [cx, cy]}, ...],
+          "collision_pairs":  [{"a": str, "b": str, ...}, ...],   # raw collision entries
+        }
+    """
+    cells = cell_registry.get("cells", {})
+
+    def _center(entry: dict) -> tuple[float, float]:
+        """Return (cx, cy) from a cell_registry entry's bbox."""
+        bb = entry.get("bbox", {})
+        mn = bb.get("min", [0.0, 0.0])
+        mx = bb.get("max", [0.0, 0.0])
+        return ((mn[0] + mx[0]) / 2.0, (mn[1] + mx[1]) / 2.0)
+
+    # ── Nearby cells ──────────────────────────────────────────────────────────
+    nearby: list[dict] = []
+    if cell_id in cells:
+        cx, cy = _center(cells[cell_id])
+        for other_id, other_entry in cells.items():
+            if other_id == cell_id:
+                continue
+            ox, oy = _center(other_entry)
+            dist = math.hypot(ox - cx, oy - cy)
+            if dist <= _NEARBY_THRESHOLD:
+                nearby.append({
+                    "cell_id": other_id,
+                    "species": other_entry.get("species", ""),
+                    "distance_px": round(dist, 1),
+                    "center": [round(ox, 1), round(oy, 1)],
+                })
+        nearby.sort(key=lambda d: d["distance_px"])
+
+    # ── Collision pairs that involve this cell ────────────────────────────────
+    collision_pairs: list[dict] = []
+    for entry in collision_data.get("collisions", []):
+        if entry.get("a") == cell_id or entry.get("b") == cell_id:
+            collision_pairs.append(entry)
+
+    return {
+        "nearby_cells": nearby,
+        "collision_pairs": collision_pairs,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Anthropic API call — mirrors claude_hk_chat.sh dispatch pattern
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _dispatch_via_hk(system_prompt: str, user_message: str,
                      cell_id: str, skeleton: dict,
+                     scene_context: dict | None = None,
                      model: str = "claude-sonnet-4-6",
                      timeout: int = 90) -> dict:
     """
@@ -374,6 +445,10 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
 
     label = skeleton.get("label", cell_id)
 
+    # ── Serialise scene_context for prompt injection ──────────────────────────
+    _sc = scene_context or {"nearby_cells": [], "collision_pairs": []}
+    scene_context_json = json.dumps(_sc, ensure_ascii=False, indent=2)
+
     # ── Step 1: Create conversation ────────────────────────────────────────
     create_data = json.dumps({
         "name": "", "model": model, "is_temporary": False
@@ -389,6 +464,60 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
     # academic visual characteristics for its label, then decides its own
     # species identity (colors, shape, animation, algorithm gene).
 
+    # ── Build scene_context_json from collision.json + force_field.json ──────
+    # Read physics files directly so the sub-Claude sees its spatial context:
+    # - nearby_cells: push-relationship neighbours from force_field.json
+    # - collision_pairs: entries in collision.json involving this cell
+    try:
+        _ff = _read_json("physics/force_field.json")
+    except Exception:
+        _ff = {}
+    try:
+        _coll = _read_json("physics/collision.json")
+    except Exception:
+        _coll = {"collisions": [], "count": 0}
+
+    # nearby_cells: cells that share a push_from relationship with this cell
+    _nearby_from_ff: list[dict] = []
+    _this_force = _ff.get(cell_id, {})
+    _push_from_ids: set[str] = set(_this_force.get("push_from", []))
+    for _other_id, _other_f in _ff.items():
+        if _other_id != cell_id and cell_id in _other_f.get("push_from", []):
+            _push_from_ids.add(_other_id)
+    for _pid in sorted(_push_from_ids):
+        _pf = _ff.get(_pid, {})
+        _nearby_from_ff.append({
+            "cell_id": _pid,
+            "force": {
+                "dx": _pf.get("dx", 0.0),
+                "dy": _pf.get("dy", 0.0),
+                "dz": _pf.get("dz", 0.0),
+            },
+        })
+
+    # collision_pairs from collision.json involving this cell
+    _coll_pairs: list[dict] = [
+        entry for entry in _coll.get("collisions", [])
+        if entry.get("a") == cell_id or entry.get("b") == cell_id
+    ]
+
+    # Merge with scene_context passed in (proximity calc from cell_registry)
+    _sc = scene_context or {}
+    _merged_nearby = _sc.get("nearby_cells", []) or _nearby_from_ff
+    _merged_collisions = _sc.get("collision_pairs", []) or _coll_pairs
+
+    scene_context_json = json.dumps({
+        "nearby_cells": _merged_nearby,
+        "collision_pairs": _merged_collisions,
+        "this_cell_force": {
+            "dx": _this_force.get("dx", 0.0),
+            "dy": _this_force.get("dy", 0.0),
+            "dz": _this_force.get("dz", 0.0),
+            "push_from": _this_force.get("push_from", []),
+            "push_mag": _this_force.get("push_mag", 0.0),
+        },
+    }, indent=2, ensure_ascii=False)
+
     ib = skeleton.get("initial_bbox", {})
     prompt = f"""你是细胞 {cell_id}，功能是 "{label}"。你没有预设物种——你就是自己的 species。
 
@@ -399,6 +528,9 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
 
 ## 上下文
 {user_message}
+
+## 场景空间感知 (Scene Context)
+{scene_context_json}
 
 ## 你的工作流程
 
@@ -456,7 +588,9 @@ print(resp.read().decode())
 - 先 web search 再决定参数，不要猜——你的颜色和形状必须有学术依据
 - 你就是自己的 species，不存在预设物种分类
 - 必须执行上面的 Python 代码把参数 POST 回服务器
-- POST 到 {server_url}/api/cell/publish，不要用 git push"""
+- POST 到 {server_url}/api/cell/publish，不要用 git push
+- 参考 **场景空间感知** 中的 nearby_cells，调整 bbox 避免与邻近细胞重叠
+- 若 collision_pairs 不为空，必须向远离碰撞对象的方向偏移你的位置"""
 
     # ── Step 3: Fire the request (fire and forget) ─────────────────────────
     payload = json.dumps({
@@ -512,11 +646,19 @@ print(resp.read().decode())
 # Prompt construction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_user_message(skeleton: dict, force_field: dict) -> str:
+def _build_user_message(
+    skeleton: dict,
+    force_field: dict,
+    scene_context: dict | None = None,
+) -> str:
     """
     Construct the user-turn message for the sub-Claude cell.
     Includes skeleton identity + force-field displacement so the cell can
     reason about its final position/size.
+
+    If scene_context is provided (from _build_scene_context), the message also
+    includes nearby_cells and collision_pairs so the cell is spatially aware
+    of its neighbours and any overlap constraints.
     """
     cell_id = skeleton["cell_id"]
     force = force_field.get(cell_id, {"dx": 0.0, "dy": 0.0, "dz": 0.0})
@@ -545,12 +687,22 @@ def _build_user_message(skeleton: dict, force_field: dict) -> str:
         },
         "suggested_final_bbox": final_bbox_hint,
         "topology": skeleton.get("topology", {}),
-        "instruction": (
-            "You are this cell. Given the force-field displacement, decide your "
-            "final bbox position and visual parameters. Return ONLY the JSON "
-            "schema specified in your system prompt — no other text."
-        ),
     }
+
+    # ── Spatial awareness: inject scene_context when available ───────────────────
+    if scene_context is not None:
+        msg["scene_context"] = {
+            "nearby_cells": scene_context.get("nearby_cells", []),
+            "collision_pairs": scene_context.get("collision_pairs", []),
+        }
+
+    msg["instruction"] = (
+        "You are this cell. Given the force-field displacement and scene_context, "
+        "decide your final bbox position and visual parameters. Avoid overlapping "
+        "with nearby_cells listed in scene_context. Resolve any collision_pairs by "
+        "adjusting your position away from the colliding neighbour. "
+        "Return ONLY the JSON schema specified in your system prompt — no other text."
+    )
     return json.dumps(msg, indent=2)
 
 
@@ -643,6 +795,17 @@ def dispatch_cell_agent(cell_id: str) -> dict:
     skeleton = _read_json(f"skeleton/cell/{cell_id}.json")
     force_field = _read_json("physics/force_field.json")
 
+    # ── Scene context: collision + spatial awareness ─────────────────────────
+    try:
+        collision_data = _read_json("physics/collision.json")
+    except Exception:
+        collision_data = {"collisions": [], "count": 0}
+    try:
+        cell_registry = _read_json("physics/cell_registry.json")
+    except Exception:
+        cell_registry = {"cells": {}, "z_layers": {}}
+    scene_context = _build_scene_context(cell_id, collision_data, cell_registry)
+
     species = skeleton.get("species", "cil-arrow-right")
     base_prompt = SPECIES_PROMPTS.get(species, _DEFAULT_SPECIES_PROMPT)
 
@@ -661,7 +824,7 @@ def dispatch_cell_agent(cell_id: str) -> dict:
             "No dry_run fallback."
         )
 
-    user_message = _build_user_message(skeleton, force_field)
+    user_message = _build_user_message(skeleton, force_field, scene_context)
 
     print(f"[cell_agent] dispatching cell_id={cell_id} species={species}",
           file=sys.stderr)
@@ -673,6 +836,7 @@ def dispatch_cell_agent(cell_id: str) -> dict:
     raw_output = _dispatch_via_hk(
         system_prompt, user_message,
         cell_id=cell_id, skeleton=skeleton,
+        scene_context=scene_context,
     )
     dispatched = raw_output.get("_dispatched", False)
     if dispatched:
