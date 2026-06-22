@@ -350,7 +350,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
     <!-- WebGPU fallback notice -->
     <div id="webgpu-fallback">
-      ⚠ WebGPU unavailable — running on WebGL2 fallback. Performance may be reduced.
+      ⚠ WebGPU unavailable — running on Canvas2D fallback. Performance may be reduced.
     </div>
 
     <!-- Init overlay -->
@@ -366,6 +366,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   import { renderDebugOverlay } from '@/lib/sph/debug-renderer';
   import { createEdgeEmitters } from '@/lib/sph/emitter-strategy';
   import type { EmitterConfig } from '@/lib/sph/emitter-strategy';
+  import { ATRenderPipeline } from '@/lib/sph/ATRenderPipeline';
+  import type { ATBackend } from '@/lib/sph/ATRenderPipeline';
 
   // ── QoS profiles ────────────────────────────────────────────────────────────
   const QOS_PROFILES = {
@@ -375,14 +377,6 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   };
 
   type QoSLevel = keyof typeof QOS_PROFILES;
-
-  // ── SPHWorld import ──────────────────────────────────────────────────────────
-  // Dynamic import so the heavy GPU module is only loaded client-side.
-  // Path is resolved via the @/lib/* alias defined in tsconfig.json.
-  async function loadSPHWorld() {
-    const mod = await import('@/lib/sph/SPHWorld');
-    return mod.SPHWorld ?? mod.default;
-  }
 
   // ── DOM refs ─────────────────────────────────────────────────────────────────
   const canvas            = document.getElementById('sph-canvas')         as HTMLCanvasElement;
@@ -413,15 +407,17 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     canvas.height = Math.floor(window.innerHeight * renderScale * devicePixelRatio);
   }
 
-  // ── WebGPU detection ─────────────────────────────────────────────────────────
-  async function detectBackend(): Promise<'webgpu' | 'webgl2'> {
+  // ── WebGPU detection (lightweight probe for HUD display) ────────────────────
+  // ATRenderPipeline does the authoritative probe internally; this is a
+  // lightweight pre-check so we can update the HUD before the pipeline is ready.
+  async function detectBackend(): Promise<ATBackend> {
     if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
       try {
         const adapter = await (navigator as any).gpu.requestAdapter();
         if (adapter) return 'webgpu';
       } catch (_) { /* fall through */ }
     }
-    return 'webgl2';
+    return 'canvas2d';
   }
 
   // ── FPS meter ────────────────────────────────────────────────────────────────
@@ -572,10 +568,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
   // ── Edge-emitter topology bootstrap ─────────────────────────────────────────
   // Fetches /api/cells, derives edge emitters via createEdgeEmitters(), and
-  // registers them with the SPH world.  Called once after world.init().
+  // registers them with the ATRenderPipeline.  Called once after pipeline.init().
   // Errors are non-fatal: the world continues without topology-driven emitters.
 
-  async function fetchAndRegisterEdgeEmitters(world: any): Promise<EmitterConfig[]> {
+  async function fetchAndRegisterEdgeEmitters(pipeline: ATRenderPipeline): Promise<EmitterConfig[]> {
     try {
       const res = await fetch('/api/cells');
       if (!res.ok) {
@@ -634,12 +630,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
       const emitters = createEdgeEmitters(cells as any, edges, defaultQos as any);
 
-      // Register emitters with the world if it exposes addEmitter(); otherwise
-      // they are still returned so the caller can store them for the debug overlay.
+      // Register emitters with the ATRenderPipeline.
       for (const cfg of emitters) {
-        if (typeof world.addEmitter === 'function') {
-          world.addEmitter(cfg.x, cfg.y, cfg.dirX, cfg.dirY, cfg.rate, String(cfg.species));
-        }
+        pipeline.addEmitter(cfg.x, cfg.y, cfg.dirX, cfg.dirY, cfg.rate, String(cfg.species));
       }
 
       console.info(`[world] edge emitters registered: ${emitters.length} (from ${edges.length} edges)`);
@@ -652,19 +645,14 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
   // ── Main ─────────────────────────────────────────────────────────────────────
   (async () => {
-    if (!navigator.gpu) {
-      hud.textContent = '你的浏览器不支持 WebGPU。请用 Chrome 113+ 或 Edge 113+';
-      return;
-    }
-
     let currentQoS: QoSLevel = 'high';
-    let world: any = null;
+    let pipeline: ATRenderPipeline | null = null;
     const meter = new FPSMeter();
 
-    // Detect backend
+    // ── Detect backend (for HUD pre-display) ────────────────────────────────
     const backend = await detectBackend();
     hudBackend.textContent = backend.toUpperCase();
-    if (backend === 'webgl2') {
+    if (backend === 'canvas2d') {
       fallbackBanner.classList.add('visible');
     }
 
@@ -672,30 +660,38 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     setSseStatus('offline', 'connecting…');
     openSSE();
 
-    // Load SPHWorld module
-    const SPHWorld = await loadSPHWorld();
-
-    // Initial resize
-    resizeCanvas(QOS_PROFILES[currentQoS].renderScale);
-
-    // Instantiate world
+    // ── Initialise ATRenderPipeline ─────────────────────────────────────────
+    // ATRenderPipeline.create() probes WebGPU internally and falls back to
+    // Canvas2D automatically — no early exit needed here.
     const profile = QOS_PROFILES[currentQoS];
-    world = new SPHWorld(canvas, {
-      backend,
-      particleCount:   profile.particleCount,
-      substeps:        profile.substeps,
-      smoothingRadius: profile.smoothingRadius,
-    });
+    resizeCanvas(profile.renderScale);
 
-    await world.init();
+    try {
+      pipeline = await ATRenderPipeline.create(canvas, {
+        preferredBackend: 'webgpu',
+        particleCount:    profile.particleCount,
+        substeps:         profile.substeps,
+        smoothingRadius:  profile.smoothingRadius,
+      });
+    } catch (err) {
+      console.error('[world] ATRenderPipeline.create failed:', err);
+      initOverlay.textContent = `Init error: ${(err as Error).message}`;
+      return;
+    }
 
-    // Fetch topology edges from /api/cells and seed the world with edge emitters.
-    await fetchAndRegisterEdgeEmitters(world);
+    // Reflect the actual backend chosen by the pipeline in the HUD
+    hudBackend.textContent = pipeline.backend.toUpperCase();
+    if (pipeline.isCanvas2D) {
+      fallbackBanner.classList.add('visible');
+    }
+
+    // Fetch topology edges from /api/cells and seed the pipeline with edge emitters.
+    await fetchAndRegisterEdgeEmitters(pipeline);
 
     // Initial scene: fluid block + obstacles
-    world.addFluid(0.1, 0.05, 0.3, 0.3, 0.008);
-    world.addObstacle(0.5, 0.5, 0.06);
-    world.addObstacle(0.35, 0.65, 0.04);
+    pipeline.addFluid(0.1, 0.05, 0.3, 0.3, 0.008);
+    pipeline.addObstacle(0.5, 0.5, 0.06);
+    pipeline.addObstacle(0.35, 0.65, 0.04);
 
     // Hide init overlay
     initOverlay.classList.add('hidden');
@@ -703,17 +699,18 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     // ── Render loop ────────────────────────────────────────────────────────────
     let rafId: number;
     function loop() {
-      world.step();
-      world.render();
+      if (!pipeline) return;
+      pipeline.step();
+      pipeline.render();
       meter.tick();
 
       // ── Debug overlay ────────────────────────────────────────────────────────
       const anyDebugActive =
         dbgAABBs.checked || dbgContacts.checked || dbgBVH.checked || dbgEmitters.checked;
 
-      if (anyDebugActive) {
+      if (anyDebugActive && pipeline.isWebGPU) {
         // Obtain a 2D context on the same canvas for the overlay.
-        // SPHWorld renders to WebGPU/WebGL; we draw the debug layer on top via
+        // WebGPU renders to the GPU surface; we draw the debug layer on top via
         // a 2D context.  getContext is cached by the browser once obtained.
         const ctx2d = canvas.getContext('2d') as CanvasRenderingContext2D | null;
         if (ctx2d) {
@@ -727,41 +724,33 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             showStats:         false,
           };
 
-          // Pull live data from the world if the API exposes it; otherwise
-          // fall back to empty structures so the overlay is safe to call.
-          const physicsWorld = world.getPhysicsWorld?.() ?? {
+          // Pull live data from the pipeline; falls back to empty structures.
+          const physicsWorld = (pipeline.getPhysicsWorld() as any) ?? {
             bodies: new Map(),
-            emitters: world.getEmitters?.() ?? [],
+            emitters: pipeline.getEmitters(),
           };
-          const manifolds   = world.getManifolds?.()  ?? [];
-          const debugAABBs  = world.getDebugAABBs?.() ?? [];
-          const bvhNodes    = world.getBVHRoots?.()   ?? [];
+          const manifolds  = pipeline.getManifolds();
+          const debugAABBs = pipeline.getDebugAABBs();
+          const bvhNodes   = pipeline.getBVHRoots();
 
           renderDebugOverlay(ctx2d, physicsWorld, manifolds, debugAABBs, bvhNodes, debugOptions);
         }
       }
 
       // Update HUD
-      hudParticles.textContent = world.particleCount?.toLocaleString() ?? profile.particleCount.toLocaleString();
+      hudParticles.textContent = pipeline.particleCount?.toLocaleString() ?? profile.particleCount.toLocaleString();
       hudFps.textContent       = meter.fps.toFixed(1);
 
       // ── Collision pairs ──────────────────────────────────────────────────────
-      // Prefer world.getManifolds() (already queried above for debug overlay),
-      // then a dedicated collisionPairCount accessor, then fall back to '—'.
-      const manifoldsForHUD  = world.getManifolds?.() ?? [];
-      const collisionCount   =
-        typeof world.collisionPairCount === 'number'
-          ? world.collisionPairCount
+      const manifoldsForHUD = pipeline.getManifolds();
+      const collisionCount  =
+        typeof pipeline.collisionPairCount === 'number' && pipeline.collisionPairCount > 0
+          ? pipeline.collisionPairCount
           : manifoldsForHUD.length;
       hudCollisions.textContent = collisionCount.toLocaleString();
 
       // ── Pressure solver iterations ───────────────────────────────────────────
-      // SPHWorld may expose lastPressureIters, pressureIterations, or substepCount.
-      const pressureIters =
-        world.lastPressureIters     ??
-        world.pressureIterations    ??
-        world.lastSubstepIterations ??
-        (world.substeps ?? profile.substeps);
+      const pressureIters = pipeline.lastPressureIters || profile.substeps;
       hudPressureIters.textContent = String(pressureIters);
 
       // ── Memory ───────────────────────────────────────────────────────────────
@@ -798,22 +787,20 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       const p = QOS_PROFILES[level];
       resizeCanvas(p.renderScale);
 
-      // Reconfigure or recreate world
-      if (typeof world.setQoS === 'function') {
-        await world.setQoS({
-          particleCount:   p.particleCount,
-          substeps:        p.substeps,
-          smoothingRadius: p.smoothingRadius,
+      // Recreate pipeline with new QoS profile
+      pipeline?.destroy();
+      try {
+        pipeline = await ATRenderPipeline.create(canvas, {
+          preferredBackend: 'webgpu',
+          particleCount:    p.particleCount,
+          substeps:         p.substeps,
+          smoothingRadius:  p.smoothingRadius,
         });
-      } else {
-        world.destroy?.();
-        world = new SPHWorld(canvas, {
-          backend,
-          particleCount:   p.particleCount,
-          substeps:        p.substeps,
-          smoothingRadius: p.smoothingRadius,
-        });
-        await world.init();
+        pipeline.addFluid(0.1, 0.05, 0.3, 0.3, 0.008);
+        pipeline.addObstacle(0.5, 0.5, 0.06);
+        pipeline.addObstacle(0.35, 0.65, 0.04);
+      } catch (err) {
+        console.error('[world] QoS pipeline recreate failed:', err);
       }
 
       // Resume loop
@@ -829,7 +816,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     // ── Resize observer ────────────────────────────────────────────────────────
     const resizeObserver = new ResizeObserver(() => {
       resizeCanvas(QOS_PROFILES[currentQoS].renderScale);
-      world?.resize?.(canvas.width, canvas.height);
+      pipeline?.resize(canvas.width, canvas.height);
     });
     resizeObserver.observe(canvas);
 
@@ -837,7 +824,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     window.addEventListener('beforeunload', () => {
       closeSSE();
       cancelAnimationFrame(rafId);
-      world?.destroy?.();
+      pipeline?.destroy();
     });
   })();
 </script>
