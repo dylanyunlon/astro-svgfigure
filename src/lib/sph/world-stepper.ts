@@ -27,6 +27,7 @@ import {
 } from "./fluid-rigid-coupling";
 import { SpatialPhysics, QoSBridge, syncQoSParticles } from "./qos-spatial-bridge";
 import { CollisionWorld } from "./collision/collision-world";
+import { PerformanceBudget } from "./performance-budget";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +79,7 @@ export interface World {
   wallParticles: Particle[];
   config: WorldConfig;
   qos: SpatialPhysics;
+  perfBudget: PerformanceBudget;
   frame: number;
   time: number;
   substeps: number;
@@ -119,7 +121,13 @@ export function createWorld(
   height: number,
   qos: SpatialPhysics
 ): World {
-  const config: WorldConfig = { ...DEFAULT_CONFIG, width, height, substeps: 3 };
+  const perfBudget = new PerformanceBudget('HIGH');
+  const config: WorldConfig = {
+    ...DEFAULT_CONFIG,
+    width,
+    height,
+    substeps: perfBudget.config.substeps,
+  };
 
   const solver: DFSPHSolver = {
     iterations: 50,
@@ -133,6 +141,7 @@ export function createWorld(
     wallParticles: [],
     config,
     qos,
+    perfBudget,
     frame: 0,
     time: 0,
     substeps: config.substeps,
@@ -478,7 +487,11 @@ function substep(world: World, dt: number): void {
  * Advances the world by one frame, running `world.substeps` substeps internally.
  */
 export function stepWorld(world: World): void {
-  const { config } = world;
+  const { config, perfBudget } = world;
+
+  // Sync substeps from the current performance-budget tier
+  world.substeps = perfBudget.config.substeps;
+
   const subDt = config.dt / world.substeps;
 
   // Emit new particles before physics
