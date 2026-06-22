@@ -21,6 +21,7 @@ import {
   transferMomentumToRigid,
 } from "./fluid-rigid-coupling";
 import { SpatialPhysics, QoSBridge, syncQoSParticles } from "./qos-spatial-bridge";
+import { CollisionWorld } from "./collision/collision-world";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -79,6 +80,7 @@ export interface World {
   trails: Map<number, Array<{ x: number; y: number }>>;
   _hash: SpatialHash | null;
   _solver: DFSPHSolver;
+  _collisionWorld: CollisionWorld;
   _nextParticleId: number;
   _nextEmitterId: number;
 }
@@ -133,6 +135,7 @@ export function createWorld(
     trails: new Map(),
     _hash: null,
     _solver: solver,
+    _collisionWorld: new CollisionWorld(),
     _nextParticleId: 0,
     _nextEmitterId: 0,
   };
@@ -348,7 +351,10 @@ function substep(world: World, dt: number): void {
     p.ay = 0;
   }
 
-  // 7. Integrate rigid bodies
+  // 7. Collision detection & resolution (before rigid body integration)
+  world._collisionWorld.step(rigidBodies, dt);
+
+  // 8. Integrate rigid bodies
   for (const body of rigidBodies) {
     if (!body.isStatic) {
       integrateRigidBody(body, dt, config.gravity);
