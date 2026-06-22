@@ -1,5 +1,7 @@
 export { SplineParticleLife, edgeRouteToSplineData, createSplineParticleLifeForSPH } from './spline-particle-life';
 export type { EdgeSplineData, SplineParticle, SplineParticleLifeConfig, ParticlePhase, SplinePoint3 } from './spline-particle-life';
+export { AtmospherePass, ATMOSPHERE_PRESETS } from './atmosphere';
+export type { AtmosphereParams } from './atmosphere';
 export { SpatialHashGrid } from './SpatialHashGrid';
 export { NeighborListBuilder } from './NeighborListBuilder';
 export { BoundaryModel } from './BoundaryModel';
