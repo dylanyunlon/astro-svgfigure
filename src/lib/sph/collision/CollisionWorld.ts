@@ -834,6 +834,12 @@ import { SortAndSweep } from './SortAndSweep';
 import { ContactSolver } from './ContactSolver';
 import { PositionSolver } from './PositionSolver';
 import { SceneQuery } from './SceneQuery';
+import {
+  CollisionEventDispatcher,
+  type ActiveContactPair,
+  type CollisionCallback,
+  type CollisionEvent,
+} from './CollisionEvents';
 // computeContactInfo, createCircleBody, createBoxBody inlined above;
 
 export interface CollisionWorldConfig {
@@ -872,6 +878,12 @@ export class CollisionWorld {
 
   // ── Physics config ─────────────────────────────────────────────────────
   private gravity: Vec2;
+
+  // ── Collision event system ─────────────────────────────────────────
+  /** Dispatches onCollisionEnter / Stay / Exit callbacks each step. */
+  readonly events: CollisionEventDispatcher = new CollisionEventDispatcher();
+  /** Monotone simulation time accumulator (seconds). */
+  private _simTime = 0;
 
   constructor(config: CollisionWorldConfig = {}) {
     this.broadPhaseMode = config.broadPhase ?? 'bvh';
@@ -934,6 +946,8 @@ export class CollisionWorld {
     this.bodyIndex.delete(id);
 
     this.sceneQuery.setScene(this.bodies, this.shapes);
+    // Evict from event cache so removed body does not generate spurious Exit events
+    this.events.evictBody(id);
   }
 
   /** Retrieve a body by id. Throws if not found. */
@@ -1005,7 +1019,23 @@ export class CollisionWorld {
       });
     }
 
-    // ── 4. Contact Solver (velocity) ───────────────────────────────────
+    // ── 4. Collision events (Enter / Stay / Exit) ────────────────────
+    this._simTime += dt;
+    {
+      const activePairs: ActiveContactPair[] = this.contacts.map((c) => ({
+        bodyA: c.bodyA.id,
+        bodyB: c.bodyB.id,
+        contact: {
+          normal: { x: c.contact.normal.x, y: c.contact.normal.y },
+          depth:  c.contact.depth,
+          pointA: { x: c.contact.pointA.x, y: c.contact.pointA.y },
+          pointB: { x: c.contact.pointB.x, y: c.contact.pointB.y },
+        },
+      }));
+      this.events.update(activePairs, this._simTime);
+    }
+
+        // ── 4. Contact Solver (velocity) ───────────────────────────────────
     this.contactSolver.solve(this.contacts);
 
     // ── 5. Position Solver (penetration correction) ────────────────────

@@ -6,6 +6,10 @@ import { generateContacts, ContactManifold, ContactPoint } from './contact-gener
 import { warmStart, solveConstraints, ConstraintCache } from './constraint-solver';
 import { SceneQuery, raycast, shapecast, overlapTest } from './scene-query';
 import { RigidBody, BodyHandle, BodyType } from './rigid-body';
+import {
+  CollisionEventDispatcher,
+  type ActiveContactPair,
+} from './CollisionEvents';
 import { Vec3, mat3Transpose, vec3Add, vec3Scale } from './math';
 
 export interface CollisionWorldConfig {
@@ -58,6 +62,11 @@ export class CollisionWorld {
   private bvh: BVHTree;
   private constraintCache: ConstraintCache = new Map();
   private manifolds: ContactManifold[] = [];
+  /** Collision event dispatcher — fires onCollisionEnter/Stay/Exit. */
+  readonly events: CollisionEventDispatcher = new CollisionEventDispatcher();
+  /** Monotone simulation time (seconds). */
+  private _simTime = 0;
+
   private stats: WorldStats = {
     bodyCount: 0,
     broadPairs: 0,
@@ -105,6 +114,8 @@ export class CollisionWorld {
     });
     this.bodies.delete(handle);
     this.stats.bodyCount = this.bodies.size;
+    // Evict from collision event cache
+    this.events.evictBody(Number(handle));
     return true;
   }
 
@@ -187,6 +198,28 @@ export class CollisionWorld {
     this.stats.narrowPhaseTimeMs = performance.now() - narrowStart;
 
     const solverStart = performance.now();
+
+    // Dispatch collision events (Enter / Stay / Exit)
+    this._simTime += dt;
+    {
+      const activePairs: ActiveContactPair[] = [];
+      for (const manifold of newManifolds) {
+        for (const cp of manifold.contacts) {
+          activePairs.push({
+            bodyA: Number(manifold.handleA),
+            bodyB: Number(manifold.handleB),
+            contact: {
+              normal: { x: cp.normal.x, y: cp.normal.y },
+              depth:  cp.penetrationDepth ?? 0,
+              pointA: { x: cp.positionA.x, y: cp.positionA.y },
+              pointB: { x: cp.positionB.x, y: cp.positionB.y },
+            },
+          });
+          break; // one representative pair per manifold is sufficient
+        }
+      }
+      this.events.update(activePairs, this._simTime);
+    }
 
     // Warm start from previous frame's impulse cache
     warmStart(newManifolds, this.constraintCache, this.config.warmStartingFactor);

@@ -84,6 +84,21 @@ export {
   CollisionWorld,
 } from './collision-world';
 
+// ── Collision Event System ───────────────────────────────────────────────────
+export {
+  CollisionEventDispatcher,
+  CollisionCache,
+  EventQueue,
+  makePairKey,
+} from './CollisionEvents';
+export type {
+  CollisionPhase,
+  CollisionContactInfo,
+  CollisionEvent,
+  ActiveContactPair,
+  CollisionCallback,
+} from './CollisionEvents';
+
 // ── PascalCase modules (unique exports only, no name conflicts) ───────────────
 
 // ContactSolver.ts — impulse-based contact resolution class
