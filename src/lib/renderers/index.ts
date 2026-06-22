@@ -702,3 +702,12 @@ export type {
   CurlParticleFieldConfig,
   CellDecorDesc,
 } from './curl-particle-field';
+
+// ── M746: caustics-background — AT caustic_plane analytic Jacobian caustics ──
+export {
+  mountCausticsBackground,
+} from './caustics-background';
+export type {
+  CausticsBackgroundOptions,
+  CausticsBackgroundHandle,
+} from './caustics-background';
