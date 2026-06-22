@@ -10,7 +10,7 @@ import {
   GPUBufferSet, SimParams, ParticleData,
   ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
 } from "./types";
-import { CollisionWorld, createCircleBody } from './collision/CollisionWorld';
+import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
 import { SceneQuery } from './collision/SceneQuery';
 
 // ─────────────────────────────────────────────
@@ -209,6 +209,32 @@ export class SPHWorld {
     );
 
     this.collisionWorld = new CollisionWorld();
+
+    // ── Sync cell_registry.json AABBs → static bodies ────────────────
+    try {
+      const resp = await fetch('/channels/physics/cell_registry.json');
+      if (resp.ok) {
+        const registry = await resp.json() as {
+          cells: Record<string, {
+            bbox: { min: [number, number, number]; max: [number, number, number] };
+          }>;
+        };
+        for (const [, cell] of Object.entries(registry.cells)) {
+          const [minX, minY] = cell.bbox.min;
+          const [maxX, maxY] = cell.bbox.max;
+          const cx    = (minX + maxX) / 2;
+          const cy    = (minY + maxY) / 2;
+          const halfW = (maxX - minX) / 2;
+          const halfH = (maxY - minY) / 2;
+          const { body, shape } = createBoxBody(cx, cy, halfW, halfH, 'static');
+          this.collisionWorld.addBody(body, shape);
+        }
+      } else {
+        console.warn('SPHWorld: could not load cell_registry.json –', resp.status);
+      }
+    } catch (err) {
+      console.warn('SPHWorld: cell_registry fetch failed –', err);
+    }
   }
 
   // ────────────────────────────────────────────
