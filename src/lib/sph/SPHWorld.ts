@@ -14,6 +14,34 @@ import { CollisionWorld, createCircleBody, createBoxBody } from './collision/Col
 import { SceneQuery } from './collision/SceneQuery';
 
 // ─────────────────────────────────────────────
+// Force-field types (channels/physics/force_field.json + cell_registry.json)
+// ─────────────────────────────────────────────
+
+interface ForceVector {
+  dx: number;
+  dy: number;
+  dz: number;
+}
+
+interface CellBBox {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+interface CellEntry {
+  bbox: CellBBox;
+  species: string;
+  z: number;
+}
+
+/** One resolved entry: cell id → bbox (px) + force vector */
+interface CellForce {
+  minX: number; minY: number;
+  maxX: number; maxY: number;
+  fx: number;   fy: number;
+}
+
+// ─────────────────────────────────────────────
 // GPU buffer helpers
 // ─────────────────────────────────────────────
 
@@ -112,6 +140,10 @@ export class SPHWorld {
   private qosProfile:  QoSProfileName  = "DEFAULT";
   private domainW:     number;
   private domainH:     number;
+
+  // ── Force-field (loaded from channels/physics/*.json) ────────────────
+  /** Resolved cell→force entries; empty until loadForceField() completes. */
+  private cellForces: CellForce[] = [];
 
   // ── Loop bookkeeping ─────────────────────────
   private lastTime   = 0;
@@ -235,6 +267,15 @@ export class SPHWorld {
     } catch (err) {
       console.warn('SPHWorld: cell_registry fetch failed –', err);
     }
+
+    // ── Force-field bridge ───────────────────
+    // Non-blocking: simulation starts even if fetch fails.
+    this.loadForceField(
+      '/channels/physics/force_field.json',
+      '/channels/physics/cell_registry.json',
+    ).catch((err) =>
+      console.warn('[SPHWorld] force_field load failed:', err),
+    );
   }
 
   // ────────────────────────────────────────────
@@ -308,6 +349,51 @@ export class SPHWorld {
   // ────────────────────────────────────────────
 
   /**
+   * Fetch and parse force_field.json + cell_registry.json, then build
+   * the internal cellForces lookup table used by tick().
+   *
+   * The bbox values in cell_registry.json are in canvas-pixel space.
+   * We store them as-is and convert particle positions on the fly during
+   * tick() using the current canvas dimensions.
+   *
+   * Safe to call multiple times – each call replaces the previous table.
+   */
+  async loadForceField(
+    forceFieldPath  = '/channels/physics/force_field.json',
+    cellRegistryPath = '/channels/physics/cell_registry.json',
+  ): Promise<void> {
+    const [ffResp, crResp] = await Promise.all([
+      fetch(forceFieldPath),
+      fetch(cellRegistryPath),
+    ]);
+    if (!ffResp.ok)  throw new Error(`fetch ${forceFieldPath}: ${ffResp.status}`);
+    if (!crResp.ok)  throw new Error(`fetch ${cellRegistryPath}: ${crResp.status}`);
+
+    const forceField:    Record<string, ForceVector>           = await ffResp.json();
+    const cellRegistry:  { cells: Record<string, CellEntry> }  = await crResp.json();
+
+    const resolved: CellForce[] = [];
+
+    for (const [cellId, force] of Object.entries(forceField)) {
+      const cell = cellRegistry.cells[cellId];
+      if (!cell) continue; // no bbox → skip
+
+      const { min, max } = cell.bbox;
+      resolved.push({
+        minX: min[0], minY: min[1],
+        maxX: max[0], maxY: max[1],
+        fx:   force.dx,
+        fy:   force.dy,
+      });
+    }
+
+    this.cellForces = resolved;
+    console.info(`[SPHWorld] force_field loaded: ${resolved.length} cells`);
+  }
+
+  // ────────────────────────────────────────────
+
+  /**
    * Advance the simulation by one logical time-step and render.
    *
    * Pipeline:
@@ -340,6 +426,39 @@ export class SPHWorld {
 
     // Upload neighbour lists for GPU passes
     this.orchestrator.uploadNeighborLists(neighborLists, n);
+
+    // ── Force-field injection (CPU) ────────────
+    // Particle positions are in SPH domain units [0, domainW] × [0, domainH].
+    // Cell bboxes are in canvas-pixel space [0, canvasW] × [0, canvasH].
+    // We convert with: px = (pos / domain) * canvas.
+    if (this.cellForces.length > 0) {
+      const cw = this.canvas.width;
+      const ch = this.canvas.height;
+      const scaleX = cw / this.domainW;
+      const scaleY = ch / this.domainH;
+      const { x, y, vx, vy } = this.cpuPos;
+
+      for (let i = 0; i < n; i++) {
+        const px = x[i] * scaleX;
+        const py = y[i] * scaleY;
+
+        for (const cell of this.cellForces) {
+          if (
+            px >= cell.minX && px <= cell.maxX &&
+            py >= cell.minY && py <= cell.maxY
+          ) {
+            // Apply force as a velocity impulse: Δv = F * dt
+            vx[i] += cell.fx * dt;
+            vy[i] += cell.fy * dt;
+            break; // one cell per particle per tick
+          }
+        }
+      }
+
+      // Re-upload velocities with the injected impulses before GPU compute.
+      this.device.queue.writeBuffer(this.gpuBufs.velX, 0, vx, 0, n);
+      this.device.queue.writeBuffer(this.gpuBufs.velY, 0, vy, 0, n);
+    }
 
     // ── Collision world step ───────────────────
     this.collisionWorld.step(dt);
