@@ -332,6 +332,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <span class="hud-label">RENDER</span>
         <span class="hud-value" id="hud-render-mode">SIMPLE</span>
       </div>
+      <div class="hud-row">
+        <span class="hud-label">SPLINE FLOW</span>
+        <span class="hud-value" id="hud-spline-flow">—</span>
+      </div>
     </div>
 
     <!-- QoS panel -->
@@ -410,6 +414,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   import type { FlowerEdgeSpline } from '@/lib/sph/at-flower-particle';
   import type { EdgeSpline } from '@/lib/sph/at-spline-particle';
   import { CollisionWorld } from '@/lib/sph/collision/CollisionWorld';
+  import {
+    SplineParticleLife,
+    type EdgeSplineData,
+  } from '@/lib/sph/spline-particle-life';
 
   // ── QoS profiles ────────────────────────────────────────────────────────────
   // Maps QoS levels to AT pipeline configuration overrides.  The AT pipeline
@@ -458,6 +466,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   const hudQos            = document.getElementById('hud-qos')            as HTMLElement;
   const hudSimTime        = document.getElementById('hud-sim-time')       as HTMLElement;
   const hudRenderMode     = document.getElementById('hud-render-mode')    as HTMLElement;
+  const hudSplineFlow     = document.getElementById('hud-spline-flow')    as HTMLElement;
   const fallbackBanner    = document.getElementById('webgpu-fallback')    as HTMLElement;
   const initOverlay       = document.getElementById('init-overlay')       as HTMLElement;
   const qosBtns           = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
@@ -831,6 +840,42 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     // Hide init overlay
     initOverlay.classList.add('hidden');
 
+    // ── SplineParticleLife (CPU particle flow along topology edges) ────────────
+    // Convert fetched splineEdges (EdgeSpline[]) to EdgeSplineData[] for the CPU
+    // SplineParticleLife system.  Each edge spawns particles that flow along its
+    // Catmull-Rom spline with curl-noise perturbation, modelling data-flow
+    // between cells in the transformer topology.
+    const edgeSplineData: EdgeSplineData[] = splineEdges.map(e => ({
+      edgeId:   e.edgeId,
+      sourceId: e.sourceId,
+      targetId: e.targetId,
+      points:   e.points,
+      weight:   e.weight,
+    }));
+
+    const splineParticleLife = new SplineParticleLife(edgeSplineData, {
+      uSplineSpeed:    [0.82, 1.21],
+      uTimeMultiplier: 0.17,
+      uCurlStrength:   0.04,
+      uCurlNoiseScale: 2.0,
+      uCurlNoiseSpeed: 5.0,
+      uDecayRate:      0.6,
+      particlesPerUnit: 24,
+      onHandoff: (edgeId, targetId, x, y, vx, vy, species) => {
+        console.debug(
+          `[world SPL] handoff edge=${edgeId} → cell=${targetId}`,
+          `pos=(${x.toFixed(3)},${y.toFixed(3)})`,
+          `vel=(${vx.toFixed(3)},${vy.toFixed(3)})`,
+          `species=${species}`,
+        );
+      },
+    });
+
+    console.info(
+      `[world] SplineParticleLife created: ${edgeSplineData.length} edges,`,
+      `${splineParticleLife.totalCount} particles`,
+    );
+
     // ── Collision world (stepped per-frame for HUD telemetry) ──────────────────
     const collisionWorld = new CollisionWorld();
 
@@ -869,6 +914,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
       meter.tick();
 
+      // ── SplineParticleLife update (CPU particle flow along edges) ──────────
+      splineParticleLife.update(dt);
+
       // ── Debug overlay (2D canvas drawn over WebGPU surface) ───────────────
       const anyDebugActive =
         dbgAABBs.checked || dbgContacts.checked || dbgBVH.checked || dbgEmitters.checked;
@@ -902,6 +950,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       hudFps.textContent           = meter.fps.toFixed(1);
       hudCollisions.textContent    = String(colData.count);
       hudPressureIters.textContent = String(frameCount % 1000);
+      hudSplineFlow.textContent    = `${splineParticleLife.activeCount}/${splineParticleLife.totalCount}`;
 
       // Collision detail: max penetration depth + body pair summary
       if (colData.count > 0) {
