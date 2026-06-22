@@ -51,6 +51,8 @@ export { ChromaticMode, ParticlePhysics, ChromaticColor, resolveChromatic, CHROM
 export { RGB, RGBA, ThemePalette, QOS_THEME, ParticleColorInput, resolveParticleColor, rgbaToCss, rgbaToU8 /* +1 more */ } from './color-palette';
 // collision-fx-system
 export { CollisionFXConfig, CollisionFXSystem, estimateFlowerImpulse } from './collision-fx-system';
+// collision-shockwave
+export { ShockwaveConfig, ShockwaveRingGPU, CollisionShockwaveSystem, CollisionShockwavePipeline, estimateShockwaveImpulse } from './collision-shockwave';
 // contact-sparks
 export { Vec2, SparkConfig, ContactSparkSystem, estimateImpulse } from './contact-sparks';
 // curl-aura
