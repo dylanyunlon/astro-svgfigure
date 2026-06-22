@@ -298,6 +298,67 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 // ---------------------------------------------------------------------------
+// Hash-Count shader  (spatial hash pass 1 — Teschner et al. 2003)
+//
+// For each fluid particle i, compute its cell key via the Teschner hash:
+//   key = (ix * p1 XOR iy * p2) mod tableSize
+// where ix/iy are the integer grid cell indices, and p1/p2 are large primes.
+// Then atomically increment cellCount[key] so that a subsequent prefix-scan
+// can convert the counts into start offsets for pass 2 (scatter).
+// ---------------------------------------------------------------------------
+
+const HASH_COUNT_SHADER = /* wgsl */`
+struct HashUniforms {
+  h         : f32,   // smoothing length (= cell size)
+  domainW   : f32,   // simulation domain width
+  domainH   : f32,   // simulation domain height
+  count     : u32,   // number of fluid particles
+  tableSize : u32,   // hash-table length (must be power-of-two or prime)
+  _pad0     : u32,
+  _pad1     : u32,
+  _pad2     : u32,
+}
+
+// group 0 — hash uniforms
+@group(0) @binding(0) var<uniform> uParams : HashUniforms;
+
+// group 1 — particle positions (read-only)
+@group(1) @binding(0) var<storage, read> posX : array<f32>;
+@group(1) @binding(1) var<storage, read> posY : array<f32>;
+
+// group 2 — cell count table (read-write atomics)
+//   cellCount[key] accumulates the number of particles mapping to key
+@group(2) @binding(0) var<storage, read_write> cellCount : array<atomic<u32>>;
+
+// Teschner hash primes (Teschner et al. 2003, "Optimized Spatial Hashing")
+const P1 : u32 = 73856093u;
+const P2 : u32 = 19349663u;
+
+/// Map a particle position to a hash-table bucket index.
+fn teschnerHash(px: f32, py: f32, h: f32, tableSize: u32) -> u32 {
+  // Integer grid coordinates of the cell containing (px, py)
+  let ix = u32(max(floor(px / h), 0.0));
+  let iy = u32(max(floor(py / h), 0.0));
+
+  // Teschner hash: XOR of coordinate-scaled primes, then modulo table size.
+  // The XOR spreads keys uniformly even for spatially coherent input.
+  let raw = (ix * P1) ^ (iy * P2);
+  return raw % tableSize;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= uParams.count) { return; }
+
+  let key = teschnerHash(posX[i], posY[i], uParams.h, uParams.tableSize);
+
+  // Atomic increment: safe when multiple threads hash to the same cell.
+  atomicAdd(&cellCount[key], 1u);
+}
+`;
+
+// ---------------------------------------------------------------------------
 // Types (local aliases)
 // ---------------------------------------------------------------------------
 
@@ -317,25 +378,37 @@ export class SPHGPUOrchestrator {
   private uniformBuf!      : GPUBuffer;
 
   // pipelines
-  private densityPipeline  !: GPUComputePipeline;
-  private forcePipeline    !: GPUComputePipeline;
-  private integratePipeline!: GPUComputePipeline;
+  private densityPipeline   !: GPUComputePipeline;
+  private forcePipeline     !: GPUComputePipeline;
+  private integratePipeline !: GPUComputePipeline;
+  private hashCountPipeline !: GPUComputePipeline;   // spatial-hash pass 1
 
   // bind-group layouts (group 0 is uniform, shared)
-  private uniformBGL       !: GPUBindGroupLayout;
-  private densityParticleBGL  !: GPUBindGroupLayout;
-  private forceParticleBGL    !: GPUBindGroupLayout;
-  private integrateParticleBGL!: GPUBindGroupLayout;
-  private neighborBGL      !: GPUBindGroupLayout;
-  private boundaryBGL      !: GPUBindGroupLayout;
+  private uniformBGL           !: GPUBindGroupLayout;
+  private densityParticleBGL   !: GPUBindGroupLayout;
+  private forceParticleBGL     !: GPUBindGroupLayout;
+  private integrateParticleBGL !: GPUBindGroupLayout;
+  private neighborBGL          !: GPUBindGroupLayout;
+  private boundaryBGL          !: GPUBindGroupLayout;
+  private hashPosBGL           !: GPUBindGroupLayout; // hash-count: posX/posY
+  private hashCountBGL         !: GPUBindGroupLayout; // hash-count: cellCount (atomic)
+
+  // dedicated uniform buffer for the hash-count pass (32 bytes)
+  private hashUniformBuf       !: GPUBuffer;
 
   // cached bind groups
-  private uniformBG        !: GPUBindGroup;
-  private densityParticleBG  !: GPUBindGroup;
-  private forceParticleBG    !: GPUBindGroup;
-  private integrateParticleBG!: GPUBindGroup;
-  private neighborBG       : GPUBindGroup | null = null;
-  private boundaryBG       : GPUBindGroup | null = null;
+  private uniformBG           !: GPUBindGroup;
+  private densityParticleBG   !: GPUBindGroup;
+  private forceParticleBG     !: GPUBindGroup;
+  private integrateParticleBG !: GPUBindGroup;
+  private neighborBG          : GPUBindGroup | null = null;
+  private boundaryBG          : GPUBindGroup | null = null;
+
+  // hash-count bind groups (recreated when the cell-count buffer changes)
+  private hashUniformBG       !: GPUBindGroup;
+  private hashPosBG           !: GPUBindGroup;
+  private hashCountBG         : GPUBindGroup | null = null;
+  private lastCellCountBuf    : GPUBuffer    | null = null;
 
   // last CSR / boundary refs for dirty-checking
   private lastNeighborBuf  : GPUBuffer | null = null;
@@ -355,6 +428,12 @@ export class SPHGPUOrchestrator {
     // ---------- uniform buffer (48 bytes — 12 × f32/u32) ----------
     this.uniformBuf = dev.createBuffer({
       size : 48,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // ---------- hash-count uniform buffer (32 bytes — 8 × f32/u32) ----------
+    this.hashUniformBuf = dev.createBuffer({
+      size : 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -440,6 +519,8 @@ export class SPHGPUOrchestrator {
       INTEGRATE_SHADER,
       [this.uniformBGL, this.integrateParticleBGL]);
 
+    this.createHashCountPipeline();
+
     // ---------- static bind groups (particle buffers, uniform) ----------
     this.uniformBG = dev.createBindGroup({
       label  : "uniform-bg",
@@ -484,6 +565,17 @@ export class SPHGPUOrchestrator {
         { binding: 4, resource: { buffer: bufs.forceX   } },
         { binding: 5, resource: { buffer: bufs.forceY   } },
         { binding: 6, resource: { buffer: bufs.density  } },
+      ],
+    });
+
+    // hash-count particle-position bind group (created after createHashCountPipeline
+    // has set up this.hashPosBGL)
+    this.hashPosBG = dev.createBindGroup({
+      label  : "hash-pos-bg",
+      layout : this.hashPosBGL,
+      entries: [
+        { binding: 0, resource: { buffer: bufs.posX } },
+        { binding: 1, resource: { buffer: bufs.posY } },
       ],
     });
   }
@@ -635,15 +727,145 @@ export class SPHGPUOrchestrator {
   }
 
   // -------------------------------------------------------------------------
+  /**
+   * Build the BGLs and pipeline for the spatial-hash pass-1 (count) shader.
+   * Called once during init(); separated for clarity.
+   */
+  private createHashCountPipeline(): void {
+    const dev = this.device;
+
+    // group 0 — HashUniforms (uniform buffer)
+    const hashUniformBGL = dev.createBindGroupLayout({
+      label  : "hash-uniform-bgl",
+      entries: [{
+        binding   : 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer    : { type: "uniform" },
+      }],
+    });
+
+    // group 1 — posX (r), posY (r)
+    this.hashPosBGL = dev.createBindGroupLayout({
+      label  : "hash-pos-bgl",
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
+    // group 2 — cellCount (rw, atomic<u32>)
+    this.hashCountBGL = dev.createBindGroupLayout({
+      label  : "hash-count-bgl",
+      entries: [{
+        binding   : 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer    : { type: "storage" },   // read_write for atomics
+      }],
+    });
+
+    this.hashCountPipeline = this.makePipeline(
+      "hash-count",
+      HASH_COUNT_SHADER,
+      [hashUniformBGL, this.hashPosBGL, this.hashCountBGL],
+    );
+
+    // The hashUniformBG uses the dedicated hashUniformBuf
+    // (hashPosBG and hashCountBG are created in init() / updateHashCountBG)
+    this.hashUniformBG = dev.createBindGroup({
+      label  : "hash-uniform-bg",
+      layout : hashUniformBGL,
+      entries: [{ binding: 0, resource: { buffer: this.hashUniformBuf } }],
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  /**
+   * Dirty-check the cellCount buffer and rebuild the bind group if needed.
+   */
+  private updateHashCountBG(cellCountBuf: GPUBuffer): void {
+    if (this.hashCountBG !== null && cellCountBuf === this.lastCellCountBuf) { return; }
+
+    this.hashCountBG = this.device.createBindGroup({
+      label  : "hash-count-bg",
+      layout : this.hashCountBGL,
+      entries: [{ binding: 0, resource: { buffer: cellCountBuf } }],
+    });
+    this.lastCellCountBuf = cellCountBuf;
+  }
+
+  // -------------------------------------------------------------------------
+  /**
+   * Encode and submit the spatial-hash pass 1 (count) compute pass.
+   *
+   * Each particle atomically increments `cellCountBuf[hash(particle)]`.
+   * The caller is responsible for:
+   *   - zeroing `cellCountBuf` before calling this (e.g. with copyBufferToBuffer
+   *     from a zeroed source, or a clearBuffer if the device supports it).
+   *   - running a prefix-sum / exclusive scan on `cellCountBuf` afterwards
+   *     to produce start offsets for the scatter pass (pass 2).
+   *
+   * @param count         - number of fluid particles
+   * @param tableSize     - hash-table size (e.g. next power-of-two ≥ 2×count)
+   * @param h             - smoothing length / cell size
+   * @param domainW       - simulation domain width
+   * @param domainH       - simulation domain height
+   * @param cellCountBuf  - GPU buffer of `tableSize` × u32 (atomic, zeroed)
+   */
+  dispatchHashCount(
+    count       : number,
+    tableSize   : number,
+    h           : number,
+    domainW     : number,
+    domainH     : number,
+    cellCountBuf: GPUBuffer,
+  ): void {
+    const dev = this.device;
+
+    // Upload HashUniforms (32 bytes)
+    // Layout: f32 h, f32 domainW, f32 domainH, u32 count, u32 tableSize, u32×3 pad
+    const data = new ArrayBuffer(32);
+    const f    = new Float32Array(data);
+    const u    = new Uint32Array(data);
+    f[0] = h;
+    f[1] = domainW;
+    f[2] = domainH;
+    u[3] = count;
+    u[4] = tableSize;
+    u[5] = 0; u[6] = 0; u[7] = 0;
+    dev.queue.writeBuffer(this.hashUniformBuf, 0, data);
+
+    // Refresh cellCount bind group if the buffer changed
+    this.updateHashCountBG(cellCountBuf);
+
+    const wg      = Math.ceil(count / WORKGROUP_SIZE);
+    const encoder = dev.createCommandEncoder({ label: "hash-count-frame" });
+
+    {
+      const pass = encoder.beginComputePass({ label: "hash-count-pass" });
+      pass.setPipeline(this.hashCountPipeline);
+      pass.setBindGroup(0, this.hashUniformBG);
+      pass.setBindGroup(1, this.hashPosBG);
+      pass.setBindGroup(2, this.hashCountBG!);
+      pass.dispatchWorkgroups(wg);
+      pass.end();
+    }
+
+    dev.queue.submit([encoder.finish()]);
+  }
+
+  // -------------------------------------------------------------------------
   /** Release GPU resources owned by this orchestrator. */
   destroy(): void {
     this.uniformBuf.destroy();
+    this.hashUniformBuf.destroy();
     // GPUComputePipelines and GPUBindGroupLayouts are GC'd by the device;
     // no explicit destroy() method exists for them in the WebGPU spec.
-    this.neighborBG  = null;
-    this.boundaryBG  = null;
+    this.neighborBG      = null;
+    this.boundaryBG      = null;
+    this.hashCountBG     = null;
     this.lastNeighborBuf = null;
     this.lastRowPtrBuf   = null;
     this.lastBoundaryBuf = null;
+    this.lastCellCountBuf = null;
   }
 }
