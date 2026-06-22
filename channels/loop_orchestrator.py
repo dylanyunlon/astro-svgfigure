@@ -1912,6 +1912,53 @@ def physics_engine():
         center_strength=0.05,
     )
 
+    # --- M512: SPH state sync — write sph_state.json + sph_epoch_snapshot.json --
+    # Serialise the post-physics_step bboxes and force_field so downstream
+    # consumers (e.g. cell pub/sub subscribers, epoch diff tools) have a stable
+    # SPH state snapshot at the end of each physics step.
+    #
+    # sph_state.json          — live SPH state: all cell bboxes + force vectors
+    # sph_epoch_snapshot.json — same data wrapped with epoch-level metadata for
+    #                           ring-buffer replay and divergence rollback tooling
+    import time as _time
+    _sph_ts = _time.time()
+
+    # Compute total_force scalar for snapshot metadata (sum of L1 force magnitudes)
+    _sph_total_force = sum(
+        abs(v.get("dx", 0.0)) + abs(v.get("dy", 0.0)) + abs(v.get("dz", 0.0))
+        for v in force_field.values()
+    )
+
+    _sph_state = {
+        "bboxes":      bboxes,
+        "force_field": force_field,
+        "total_force": round(_sph_total_force, 6),
+        "timestamp":   _sph_ts,
+    }
+    write_channel("physics/sph_state.json", _sph_state)
+
+    # Read current epoch from skeleton/epoch.json if available; default to -1
+    _sph_epoch = -1
+    try:
+        _sph_epoch = read_channel("skeleton/epoch.json").get("current", -1)
+    except (OSError, json.JSONDecodeError, KeyError):
+        pass
+
+    _sph_epoch_snapshot = {
+        "epoch":       _sph_epoch,
+        "bboxes":      bboxes,
+        "force_field": force_field,
+        "total_force": round(_sph_total_force, 6),
+        "timestamp":   _sph_ts,
+    }
+    write_channel("physics/sph_epoch_snapshot.json", _sph_epoch_snapshot)
+
+    print(
+        f"[M512] SPH state sync: epoch={_sph_epoch}  "
+        f"cells={len(bboxes)}  total_force={_sph_total_force:.4f}  "
+        f"→ physics/sph_state.json  physics/sph_epoch_snapshot.json"
+    )
+
     # --- 4. Global constraint propagation via distance field --------------------
     # Ported from FAstroGlobalConstraintPropagation::Propagate() (commit 7c6f675).
     # Spreads accumulated collision forces across the scene using distance-field
