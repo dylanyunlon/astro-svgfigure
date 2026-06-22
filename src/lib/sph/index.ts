@@ -153,3 +153,6 @@ export type { EpochSnapshot } from './epoch-physics-recorder';
 // transition-system (M748)
 export { TransitionSystem, TRANSITION_PRESETS, getGlobalTransitionSystem, setGlobalTransitionSystem } from './transition-system';
 export type { TransitionDirection, TransitionMode, TransitionPhase, DissolveParticle, CellShapeSnapshot, TransitionConfig, TransitionState } from './transition-system';
+// vfx-timeline (M768)
+export { VFXTimelinePlayer, VFXTimelineBuilder, VFX_PRESETS, wireCollisionVFX, CanvasScreenFlash, getGlobalVFXPlayer, setGlobalVFXPlayer } from './vfx-timeline';
+export type { VFXEventKind, ShockwaveParams, BloomSpikeParams, ParticleBurstParams, ScreenFlashParams, CameraShakeParams, CustomVFXParams, VFXEventParams, VFXKeyframe, VFXTimeline, VFXHandler, CollisionVFXWiringConfig } from './vfx-timeline';
