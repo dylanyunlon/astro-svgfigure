@@ -711,3 +711,19 @@ export type {
   CausticsBackgroundOptions,
   CausticsBackgroundHandle,
 } from './caustics-background';
+
+// ── M765: cell-label-renderer — MSDF text labels for cell bbox + pubsub bridge ──
+// CellLabelRenderer       — instanced MSDF label 渲染器 (GLText wrapper)
+// createCellLabelRenderer — 一步工厂: init atlas + syncFromCells
+// CellLabelPubSubBridge   — CellEventSource → CellLabelRenderer 自动接线
+// extractLabelsFromTopology — composite_params.json → 带 label 的 CellParamsJson[]
+export {
+  CellLabelRenderer,
+  createCellLabelRenderer,
+  CellLabelPubSubBridge,
+  extractLabelsFromTopology,
+} from './cell-label-renderer';
+export type {
+  CellLabelRendererOptions,
+  CellLabelDrawParams,
+} from './cell-label-renderer';
