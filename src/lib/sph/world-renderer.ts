@@ -10,6 +10,23 @@ export const SPECIES_COLORS: Record<number, string> = {
   6: '#1565C0',
 };
 
+/**
+ * Cell-type → colour palette for transformer layer cells.
+ * Derived from lygia/sdf shape semantics: each cell type maps to
+ * a distinct organic SDF shape and a matching colour identity.
+ *
+ *   attention  → circleSDF   – soft, isotropic (radial attention field)
+ *   ffn        → hexSDF      – hexagonal grid (dense feed-forward tiling)
+ *   layernorm  → rhombSDF    – diamond (normalisation → dual-axis symmetry)
+ *   embedding  → flowerSDF   – n-petal flower (high-dimensional projection)
+ */
+export const CELL_KIND_COLORS: Record<string, string> = {
+  attention:  '#7C4DFF',   // vivid violet  – radial / circular
+  ffn:        '#00BFA5',   // teal          – hexagonal lattice
+  layernorm:  '#F06292',   // rose pink     – diamond / normalise
+  embedding:  '#FFD740',   // amber gold    – floral / multi-dim
+};
+
 export interface RenderOptions {
   showTrails: boolean;
   showDensity: boolean;
@@ -71,6 +88,212 @@ function heatmapColor(t: number): string {
   const g = stops[lo][1] + (stops[hi][1] - stops[lo][1]) * frac;
   const b = stops[lo][2] + (stops[hi][2] - stops[lo][2]) * frac;
   return `rgb(${(r * 255) | 0},${(g * 255) | 0},${(b * 255) | 0})`;
+}
+
+// ---------------------------------------------------------------------------
+// SDF organic shapes (Canvas 2D port of lygia/sdf/*.glsl)
+//
+// Reference implementations:
+//   upstream/lygia/sdf/circleSDF.glsl   – length(p) * 2
+//   upstream/lygia/sdf/hexSDF.glsl      – pointy-top hex: abs(p), dot with hex basis
+//   upstream/lygia/sdf/rhombSDF.glsl    – max(triSDF(p), triSDF(flip-y(p)))
+//   upstream/lygia/sdf/flowerSDF.glsl   – r / (|cos(a*N/2)| * 0.5 + 0.5) − 1
+//
+// Each function returns a signed distance in pixel space:
+//   < 0  → inside the shape
+//   > 0  → outside
+//   = 0  → on the boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * circleSDF – ported from lygia/sdf/circleSDF.glsl
+ *   d = length(p) * 2 − r
+ * Centred at origin; r is the shape radius in pixels.
+ */
+function circleSDF(px: number, py: number, r: number): number {
+  return Math.hypot(px, py) - r;
+}
+
+/**
+ * hexSDF – ported from lygia/sdf/hexSDF.glsl
+ * Flat-top hexagon.  The lygia formula (after centre + normalise):
+ *   p = abs(p * 2 − 1)
+ *   return max(abs(p.y), p.x * 0.866025 + p.y * 0.5)
+ * Re-expressed in pixel-space centred at origin, with half-size `s`:
+ */
+function hexSDF(px: number, py: number, s: number): number {
+  const ax = Math.abs(px) / s;
+  const ay = Math.abs(py) / s;
+  // lygia: max(abs(st.y), st.x*0.866025 + st.y*0.5) where st in [0,1]
+  // pixel equivalent (unit hex with inscribed radius 1):
+  const d = Math.max(ay, ax * 0.866025 + ay * 0.5);
+  return (d - 1.0) * s;
+}
+
+/**
+ * rhombSDF – ported from lygia/sdf/rhombSDF.glsl (via triSDF)
+ * lygia triSDF:  max(|p.x|*0.866025 + p.y*0.5, −p.y*0.5)
+ * rhombSDF:      max(triSDF(p), triSDF(flip-y p))
+ * Centred at origin; `s` is the half-diagonal in pixels.
+ */
+function triSDFUnit(px: number, py: number): number {
+  return Math.max(Math.abs(px) * 0.866025 + py * 0.5, -py * 0.5);
+}
+function rhombSDF(px: number, py: number, s: number): number {
+  // normalise to unit space, apply rhomb, denormalise
+  const nx = px / s;
+  const ny = py / s;
+  const d = Math.max(triSDFUnit(nx, ny), triSDFUnit(nx, -ny));
+  return (d - 1.0) * s;
+}
+
+/**
+ * flowerSDF – ported from lygia/sdf/flowerSDF.glsl
+ *   r = length(p) * 2
+ *   a = atan2(p.y, p.x)
+ *   v = N * 0.5
+ *   return 1 − (|cos(a*v)|*0.5 + 0.5) / r
+ * d < 0 inside, > 0 outside (same sign convention as other lygia SDFs).
+ * `s` is the nominal radius; `n` is the petal count (lygia default: 5).
+ */
+function flowerSDF(px: number, py: number, s: number, n: number): number {
+  const r = Math.hypot(px, py);
+  if (r < 1e-6) return -s;
+  const a = Math.atan2(py, px);
+  const v = n * 0.5;
+  // lygia returns 1 - mask/r; we want signed-distance convention < 0 inside:
+  const mask = Math.abs(Math.cos(a * v)) * 0.5 + 0.5;
+  const boundary = mask * s;   // petal boundary at this angle
+  return r - boundary;
+}
+
+// ---------------------------------------------------------------------------
+// SDF shape path builder
+//
+// Traces a Canvas2D path that approximates the SDF boundary at d = 0.
+// Uses uniform angular sampling; resolution is adaptive to particle size.
+// ---------------------------------------------------------------------------
+
+const SHAPE_SAMPLES = 64; // angular samples for SDF tracing
+
+/**
+ * Build a Canvas2D path from an SDF function sampled on a circle of radius
+ * `probeR` and bisection-refined to find the boundary at d = 0.
+ * Falls back to a plain circle when `sdfFn` is undefined.
+ */
+function traceSDFPath(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  r: number,
+  sdfFn: (px: number, py: number, r: number) => number,
+): void {
+  ctx.beginPath();
+  for (let i = 0; i <= SHAPE_SAMPLES; i++) {
+    const theta = (i / SHAPE_SAMPLES) * Math.PI * 2;
+    const cos = Math.cos(theta);
+    const sin = Math.sin(theta);
+
+    // Binary-search for the zero crossing along this ray
+    let lo = 0, hi = r * 2.2;
+    for (let iter = 0; iter < 8; iter++) {
+      const mid = (lo + hi) * 0.5;
+      if (sdfFn(cos * mid, sin * mid, r) < 0) lo = mid;
+      else hi = mid;
+    }
+    const rx = cx + cos * ((lo + hi) * 0.5);
+    const ry = cy + sin * ((lo + hi) * 0.5);
+
+    if (i === 0) ctx.moveTo(rx, ry);
+    else ctx.lineTo(rx, ry);
+  }
+  ctx.closePath();
+}
+
+// ---------------------------------------------------------------------------
+// Cell-kind SDF dispatch
+//
+// Returns { sdfFn, glowColor, fillColor, strokeColor } for a given species
+// string.  Non-transformer species fall back to the circleSDF.
+// ---------------------------------------------------------------------------
+
+type SDFFn = (px: number, py: number, r: number) => number;
+
+interface CellShapeSpec {
+  sdfFn: SDFFn;
+  glowColor: string;
+  fillColor: string;
+  strokeColor: string;
+}
+
+function getCellShapeSpec(species: string, fallbackColor: string): CellShapeSpec {
+  const s = species.toLowerCase();
+  if (s.includes('attention') || s.includes('attn') || s.includes('self_attn')) {
+    return {
+      sdfFn: (px, py, r) => circleSDF(px, py, r),
+      glowColor:   'rgba(124, 77, 255, 0.55)',   // violet
+      fillColor:   CELL_KIND_COLORS.attention,
+      strokeColor: 'rgba(179, 136, 255, 0.90)',
+    };
+  }
+  if (s.includes('ffn') || s.includes('feed_forward') || s.includes('mlp')) {
+    return {
+      sdfFn: (px, py, r) => hexSDF(px, py, r),
+      glowColor:   'rgba(0, 191, 165, 0.50)',    // teal
+      fillColor:   CELL_KIND_COLORS.ffn,
+      strokeColor: 'rgba(100, 255, 218, 0.88)',
+    };
+  }
+  if (s.includes('layernorm') || s.includes('layer_norm') || s.includes('add_norm') || s.includes('norm')) {
+    return {
+      sdfFn: (px, py, r) => rhombSDF(px, py, r),
+      glowColor:   'rgba(240, 98, 146, 0.52)',   // rose
+      fillColor:   CELL_KIND_COLORS.layernorm,
+      strokeColor: 'rgba(255, 128, 171, 0.88)',
+    };
+  }
+  if (s.includes('embedding') || s.includes('embed') || s.includes('pos_encode') || s.includes('input_embed')) {
+    return {
+      sdfFn: (px, py, r) => flowerSDF(px, py, r, 5),
+      glowColor:   'rgba(255, 215, 64, 0.50)',   // amber
+      fillColor:   CELL_KIND_COLORS.embedding,
+      strokeColor: 'rgba(255, 236, 179, 0.90)',
+    };
+  }
+  // Fallback: circleSDF with the species colour
+  return {
+    sdfFn: (px, py, r) => circleSDF(px, py, r),
+    glowColor:   hexToRgba(fallbackColor, 0.40),
+    fillColor:   fallbackColor,
+    strokeColor: hexToRgba(fallbackColor, 0.85),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Edge glow: drawn as a radial gradient ring just outside the SDF boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * drawEdgeGlow – draw a glowing "corona" around a particle using a radial
+ * gradient.  The gradient extends from `r` (boundary) to `r + glowRadius`.
+ * glowColor should be an rgba() with appropriate alpha.
+ */
+function drawEdgeGlow(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  r: number,
+  glowColor: string,
+  glowRadius: number,
+): void {
+  const grd = ctx.createRadialGradient(cx, cy, r * 0.6, cx, cy, r + glowRadius);
+  grd.addColorStop(0,   glowColor);
+  grd.addColorStop(0.5, glowColor.replace(/[\d.]+\)$/, '0.15)'));
+  grd.addColorStop(1,   glowColor.replace(/[\d.]+\)$/, '0.00)'));
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + glowRadius, 0, Math.PI * 2);
+  ctx.fillStyle = grd;
+  ctx.fill();
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +543,12 @@ function drawTrails(ctx: CanvasRenderingContext2D, particles: Particle[]): void 
 }
 
 // ---------------------------------------------------------------------------
-// Particles
+// Particles — SDF organic shapes (M567)
+//
+// Each particle's `species` string is tested against transformer cell-kind
+// keywords.  Matching particles are drawn with the corresponding lygia-ported
+// SDF shape (circle / hex / rhomb / flower) plus a per-kind edge glow.
+// Non-matching particles use the legacy circular rendering unchanged.
 // ---------------------------------------------------------------------------
 
 function drawParticles(
@@ -353,15 +581,19 @@ function drawParticles(
   for (const p of particles) {
     if (!opts.showBoundaryParticles && p.isBoundary) continue;
 
-    const color  = SPECIES_COLORS[p.species] ?? '#ffffff';
     const speed  = Math.hypot(p.vx ?? 0, p.vy ?? 0);
     const radius = 3 + Math.min(speed * 0.4, 3);
+
+    // Resolve legacy species colour (numeric key fallback)
+    const legacyColor = SPECIES_COLORS[p.species as unknown as number] ?? '#ffffff';
+
+    // Resolve cell-kind shape spec (SDF shape + per-kind colours)
+    const shapeSpec = getCellShapeSpec(p.species ?? '', legacyColor);
 
     // ── Density heatmap overlay ──────────────────────────────────────────
     if (opts.showDensityHeatmap && p.density != null) {
       const t = (p.density - minDensity) / (maxDensity - minDensity);
       const hColor = heatmapColor(t);
-      // Soft disk proportional to smoothing kernel influence
       const hr = radius * 3.2;
       const grd = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, hr);
       grd.addColorStop(0, hColor.replace('rgb(', 'rgba(').replace(')', ',0.55)'));
@@ -375,26 +607,24 @@ function drawParticles(
       const d = Math.min(p.density / 20, 1);
       ctx.beginPath();
       ctx.arc(p.x, p.y, radius * 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = hexToRgba(color, d * 0.15);
+      ctx.fillStyle = hexToRgba(legacyColor, d * 0.15);
       ctx.fill();
     }
 
-    // ── Glow halo ────────────────────────────────────────────────────────
-    const grd = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius * 2);
-    grd.addColorStop(0, hexToRgba(color, 0.6));
-    grd.addColorStop(1, hexToRgba(color, 0.0));
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, radius * 2, 0, Math.PI * 2);
-    ctx.fillStyle = grd;
+    // ── Edge glow (SDF-aware, M567) ───────────────────────────────────────
+    // Drawn before the fill so glow appears underneath the solid shape.
+    drawEdgeGlow(ctx, p.x, p.y, radius, shapeSpec.glowColor, radius * 1.4);
+
+    // ── SDF organic shape fill (M567) ─────────────────────────────────────
+    traceSDFPath(ctx, p.x, p.y, radius, shapeSpec.sdfFn);
+    ctx.fillStyle = shapeSpec.fillColor;
     ctx.fill();
 
-    // ── Solid core ───────────────────────────────────────────────────────
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = opts.showDensityHeatmap && p.density != null
-      ? heatmapColor(Math.min((p.density - minDensity) / (maxDensity - minDensity), 1))
-      : color;
-    ctx.fill();
+    // ── SDF organic shape stroke ──────────────────────────────────────────
+    traceSDFPath(ctx, p.x, p.y, radius, shapeSpec.sdfFn);
+    ctx.strokeStyle = shapeSpec.strokeColor;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
 
     // ── Velocity arrow ───────────────────────────────────────────────────
     if (opts.showVelocity && (p.vx || p.vy)) {
@@ -528,7 +758,7 @@ export function renderWorld(
   // 5. Trails
   if (opts.showTrails) drawTrails(ctx, world.particles ?? []);
 
-  // 6. Particles: density heatmap / legacy halo → glow → core → arrows
+  // 6. Particles: density heatmap / SDF organic shapes → edge glow → core → arrows
   drawParticles(ctx, world.particles ?? [], opts);
 
   // 7. Rigid bodies: rounded rect + pin dot + label
