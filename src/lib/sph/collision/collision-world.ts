@@ -1,10 +1,10 @@
-import { AABB, aabbOverlap, computeAABB } from './aabb';
-import { BVHNode, BVHTree, refitBVH, insertLeaf, removeLeaf } from './bvh';
-import { sortAndSweep, BroadPair } from './broad-phase';
-import { satNarrow, SATResult } from './sat';
+import { AABB, aabbOverlap, computeAABB } from './AABB';
+import { BVHNode, BVHTree, refitBVH, insertLeaf, removeLeaf } from './BVHTree';
+import { sortAndSweep, BroadPair } from './SortAndSweep';
+import { satNarrow, SATResult } from './SAT';
 import { generateContacts, ContactManifold, ContactPoint } from './contact-generator';
-import { warmStart, solveConstraints, ConstraintCache } from './constraint-solver';
-import { SceneQuery, raycast, shapecast, overlapTest } from './scene-query';
+import { warmStart, solveConstraints, ConstraintCache } from './ContactSolver';
+import { SceneQuery, raycast, shapecast, overlapTest } from './SceneQuery';
 import { RigidBody, BodyHandle, BodyType } from './rigid-body';
 import {
   CollisionEventDispatcher,
