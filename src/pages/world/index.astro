@@ -104,6 +104,17 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       box-shadow: 0 0 6px rgba(0, 255, 136, 0.3);
     }
 
+    /* Render mode toggle panel */
+    #render-mode-panel {
+      position: absolute;
+      top: 64px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 10;
+    }
+
     /* SSE status dot */
     #sse-status {
       position: absolute;
@@ -192,7 +203,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     /* Debug overlay panel */
     #debug-panel {
       position: absolute;
-      top: 90px;
+      top: 140px;
       right: 16px;
       display: flex;
       flex-direction: column;
@@ -317,6 +328,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <span class="hud-label">SIM</span>
         <span class="hud-value" id="hud-sim-time">—</span>
       </div>
+      <div class="hud-row">
+        <span class="hud-label">RENDER</span>
+        <span class="hud-value" id="hud-render-mode">SIMPLE</span>
+      </div>
     </div>
 
     <!-- QoS panel -->
@@ -326,6 +341,15 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <button class="qos-btn" data-qos="low">LOW</button>
         <button class="qos-btn" data-qos="mid">MID</button>
         <button class="qos-btn active" data-qos="high">HIGH</button>
+      </div>
+    </div>
+
+    <!-- Render mode toggle -->
+    <div id="render-mode-panel">
+      <div class="qos-label">RENDER MODE</div>
+      <div class="qos-btn-group">
+        <button class="qos-btn active" id="mode-simple">SIMPLE</button>
+        <button class="qos-btn" id="mode-at">AT</button>
       </div>
     </div>
 
@@ -377,6 +401,12 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     type ATRenderPipelineConfig,
     type ATPassFlags,
   } from '@/lib/sph/at-render-pipeline';
+  import {
+    ATSceneCompositor,
+    type ATSceneCompositorConfig,
+    type CellBBox,
+    type SPHWorldView,
+  } from '@/lib/sph/at-scene-compositor';
   import type { FlowerEdgeSpline } from '@/lib/sph/at-flower-particle';
   import type { EdgeSpline } from '@/lib/sph/at-spline-particle';
   import { CollisionWorld } from '@/lib/sph/collision/CollisionWorld';
@@ -427,11 +457,14 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   const hudBackend        = document.getElementById('hud-backend')        as HTMLElement;
   const hudQos            = document.getElementById('hud-qos')            as HTMLElement;
   const hudSimTime        = document.getElementById('hud-sim-time')       as HTMLElement;
+  const hudRenderMode     = document.getElementById('hud-render-mode')    as HTMLElement;
   const fallbackBanner    = document.getElementById('webgpu-fallback')    as HTMLElement;
   const initOverlay       = document.getElementById('init-overlay')       as HTMLElement;
   const qosBtns           = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
   const sseStatusEl       = document.getElementById('sse-status')         as HTMLElement;
   const sseLabelEl        = document.getElementById('sse-label')          as HTMLElement;
+  const modeSimpleBtn     = document.getElementById('mode-simple')        as HTMLButtonElement;
+  const modeATBtn         = document.getElementById('mode-at')            as HTMLButtonElement;
 
   // ── Debug overlay checkbox refs ───────────────────────────────────────────────
   const dbgAABBs    = document.getElementById('dbg-aabbs')    as HTMLInputElement;
@@ -710,6 +743,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   (async () => {
     let currentQoS: QoSLevel = 'high';
     let pipeline: ATRenderPipeline | null = null;
+    let compositor: ATSceneCompositor | null = null;
+    let renderMode: 'simple' | 'at' = 'simple';
     let gpuDevice:  GPUDevice | null = null;
     let gpuContext: GPUCanvasContext | null = null;
     let gpuFormat:  GPUTextureFormat = 'bgra8unorm';
@@ -739,7 +774,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     // ── Fetch topology edges from /api/cells ────────────────────────────────
     const { flowerEdges, splineEdges } = await fetchTopologyEdges();
 
-    // ── Initialise AT Render Pipeline ───────────────────────────────────────
+    // ── Initialise AT Render Pipeline (Simple mode) ─────────────────────────
     // The real AT pipeline chains 6 forward passes: PBR geometry → flower
     // particles → spline particles → water surface → volumetric light → bloom
     // → LUT colour-grade.  It replaces the old SPHWorld / ParticleRenderer.
@@ -762,6 +797,37 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       return;
     }
 
+    // ── Initialise ATSceneCompositor (AT mode) ──────────────────────────────
+    // The ATSceneCompositor is the M730 full-pipeline compositor that wires
+    // PBR materials, particles, water, Navier-Stokes fluid, volumetric light,
+    // bloom, and particle depth-sort into a single per-frame tick.
+    try {
+      compositor = new ATSceneCompositor();
+      await compositor.init(gpuDevice, canvas, {
+        format:      gpuFormat,
+        flowerEdges,
+        splineEdges,
+      } as ATSceneCompositorConfig);
+
+      // Register demo cells so the compositor has something to render.
+      // Use viewport-relative bounding boxes to place them across the scene.
+      const vw = canvas.width;
+      const vh = canvas.height;
+      await compositor.addCell('cell-0', 'attention', { x: 0,        y: 0,        w: vw * 0.5, h: vh * 0.5 });
+      await compositor.addCell('cell-1', 'ffn',       { x: vw * 0.5, y: 0,        w: vw * 0.5, h: vh * 0.5 });
+      await compositor.addCell('cell-2', 'embedding',  { x: 0,        y: vh * 0.5, w: vw * 0.5, h: vh * 0.5 });
+      await compositor.addCell('cell-3', 'softmax',    { x: vw * 0.5, y: vh * 0.5, w: vw * 0.5, h: vh * 0.5 });
+
+      console.info('[world] ATSceneCompositor initialised with', compositor.cellCount, 'cells');
+    } catch (err) {
+      console.warn('[world] ATSceneCompositor init failed — AT mode unavailable:', err);
+      compositor = null;
+      // Disable AT mode button if compositor failed
+      modeATBtn.style.opacity = '0.3';
+      modeATBtn.style.pointerEvents = 'none';
+      modeATBtn.title = 'ATSceneCompositor unavailable';
+    }
+
     // Hide init overlay
     initOverlay.classList.add('hidden');
 
@@ -774,24 +840,32 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     let frameCount = 0;
 
     function loop() {
-      if (!pipeline || !gpuDevice || !gpuContext) return;
+      if (!gpuDevice || !gpuContext) return;
 
       const now = performance.now();
       const dt  = Math.min((now - lastTime) / 1000, 0.05); // cap dt at 50ms
       lastTime  = now;
       frameCount++;
 
-      // Advance animation clocks (PBR iridescence, volumetric light, etc.)
-      pipeline.tick(dt);
+      if (renderMode === 'at' && compositor && compositor.isInitialised) {
+        // ── AT Scene Compositor path ──────────────────────────────────────
+        // The compositor owns its own canvas context and swap-chain, so we
+        // call tick() which handles everything: physics modulation, NS fluid,
+        // particle compute, cell materials, water, volumetric light, bloom,
+        // and final present to canvas.
+        compositor.tick(dt, null);
+      } else if (pipeline) {
+        // ── Simple ATRenderPipeline path ──────────────────────────────────
+        pipeline.tick(dt);
 
-      // Acquire swap-chain texture and record all render passes
-      const swapChainTexture = gpuContext.getCurrentTexture();
-      const dstView = swapChainTexture.createView();
-      const encoder = gpuDevice.createCommandEncoder({ label: 'world-frame' });
+        const swapChainTexture = gpuContext.getCurrentTexture();
+        const dstView = swapChainTexture.createView();
+        const encoder = gpuDevice.createCommandEncoder({ label: 'world-frame' });
 
-      pipeline.render(encoder, dstView);
+        pipeline.render(encoder, dstView);
 
-      gpuDevice.queue.submit([encoder.finish()]);
+        gpuDevice.queue.submit([encoder.finish()]);
+      }
 
       meter.tick();
 
@@ -855,6 +929,33 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
     rafId = requestAnimationFrame(loop);
 
+    // ── Render mode switching ──────────────────────────────────────────────────
+    function applyRenderMode(mode: 'simple' | 'at') {
+      if (mode === renderMode) return;
+
+      // AT mode requires a working compositor
+      if (mode === 'at' && (!compositor || !compositor.isInitialised)) {
+        console.warn('[world] Cannot switch to AT mode — compositor unavailable');
+        return;
+      }
+
+      renderMode = mode;
+      hudRenderMode.textContent = mode.toUpperCase();
+      modeSimpleBtn.classList.toggle('active', mode === 'simple');
+      modeATBtn.classList.toggle('active', mode === 'at');
+
+      // When switching to AT mode, reconfigure the compositor's canvas context
+      // since the simple pipeline may have left it in a different state.
+      if (mode === 'at' && compositor) {
+        compositor.resize(canvas.width, canvas.height);
+      }
+
+      console.info(`[world] render mode → ${mode.toUpperCase()}`);
+    }
+
+    modeSimpleBtn.addEventListener('click', () => applyRenderMode('simple'));
+    modeATBtn.addEventListener('click', () => applyRenderMode('at'));
+
     // ── QoS switching ──────────────────────────────────────────────────────────
     function applyQoS(level: QoSLevel) {
       if (level === currentQoS || !pipeline) return;
@@ -878,6 +979,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       // Resize canvas for the new render scale
       resizeCanvas(p.renderScale);
       pipeline.resize(canvas.width, canvas.height);
+
+      // Also resize compositor if it exists
+      if (compositor && compositor.isInitialised) {
+        compositor.resize(canvas.width, canvas.height);
+      }
     }
 
     qosBtns.forEach(btn => {
@@ -890,6 +996,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     const resizeObserver = new ResizeObserver(() => {
       resizeCanvas(QOS_PROFILES[currentQoS].renderScale);
       pipeline?.resize(canvas.width, canvas.height);
+      if (compositor && compositor.isInitialised) {
+        compositor.resize(canvas.width, canvas.height);
+      }
     });
     resizeObserver.observe(canvas);
 
@@ -897,6 +1006,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     window.addEventListener('beforeunload', () => {
       closeSSE();
       cancelAnimationFrame(rafId);
+      compositor?.destroy();
       pipeline?.destroy();
       gpuDevice?.destroy();
     });
