@@ -358,6 +358,13 @@ const SPECIES_SHADER_REGISTRY: Record<string, SpeciesShaderConfig> = {
   // ── cil-eye — Self-Attention / Query-Key-Value ────────────────────────────
   // Visual concept: iridescent iris, wide bloom halo, voronoi membrane texture.
   // iridescence communicates multi-head attention distributing over the sequence.
+  //
+  // M747: voronoi-membrane now renders soft F2-F1 translucent membranes with
+  //   domain-warped texture, sin(time) breathing pulsation, and collision sparks.
+  //   New uniforms consumed by the pattern shader:
+  //     u_contactCount  — SPH contact count → collision spark brightness
+  //     u_breathRate    — breathing pulsation frequency (rad/s), default 1.2
+  //   These are fed from PhysicsUniforms (u_contactCount) and species config.
   'cil-eye': {
     id:   'cil-eye',
     role: 'Self-Attention (QKV)',

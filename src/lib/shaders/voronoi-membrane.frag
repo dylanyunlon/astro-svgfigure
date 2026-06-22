@@ -1,6 +1,6 @@
 #version 300 es
 // ── voronoi-membrane.frag ──────────────────────────────────────────────────────
-// Voronoi / Worley noise cell-membrane texture.
+// M747: Voronoi cell membrane — soft F2-F1 translucent membrane rendering.
 //
 // Biology model
 // ─────────────
@@ -9,39 +9,45 @@
 // exactly at the equidistant boundary between cell centres.  This shader
 // reconstructs that geometry procedurally:
 //
-//   1. VORONOI STRUCTURE — cellular2D (Worley noise, webgl-noise/Stefan
-//      Gustavson) returns F1 (nearest cell centre) and F2 (second-nearest).
-//      The membrane ridge is the iso-contour F2 − F1 ≈ 0, i.e. points that
-//      are equidistant from two cell centres.
+//   1. VORONOI F2-F1 MEMBRANE — No hard borders.  The membrane is the
+//      Voronoi ridge field F2 − F1, rendered as a semi-transparent band
+//      with smooth falloff on both sides.  The opacity of the membrane is
+//      proportional to exp(−(F2−F1)²/σ²), giving a soft, diffuse wall
+//      that fades to nothing at cell interiors.  σ (membrane width)
+//      breathes with sin(time) to simulate living cell pulsation.
 //
-//   2. ORGANIC DISTORTION — before sampling Voronoi, each UV coordinate is
-//      displaced by a time-varying snoise(vec2) field.  This warps the cell
-//      centres as if the nuclei are drifting, making the membranes irregular
-//      and alive.  The snoise perturbation amplitude is small (≈ 0.1 × cell
-//      scale) so cells stay topologically connected while their shapes become
-//      non-convex / asymmetric.
+//   2. DOMAIN-WARPED MEMBRANE TEXTURE — The membrane surface is not
+//      featureless: a multi-octave snoise warp displaces a secondary
+//      Voronoi lookup to produce an organic lipid-bilayer / endoplasmic
+//      reticulum texture visible only where the membrane is opaque.
+//      This gives each membrane wall a unique veined, fibrous character.
 //
-//   3. MEMBRANE WALL — stroke(F2-F1, 0.0, thickness) paints a band around
-//      the F2=F1 ridge.  Membrane thickness varies with the local pressure
-//      uniform: high pressure squeezes the membrane thinner (Laplace
-//      law T = P·r / 2).  A soft edge (stroke's 4-parameter overload with
-//      edge = 0.015) gives AA without dFdx / dFdy precision concerns.
+//   3. BREATHING PULSATION — The membrane width σ is modulated by
+//      sin(u_time * u_breathRate), so the cell boundary gently expands
+//      and contracts like a breathing diaphragm.  The amplitude is small
+//      (±15% of base width) to keep topology stable.
 //
-//   4. HEX UNDERLAY — hexTile(st) maps the same UV into a flat-topped
+//   4. COLLISION SPARKS — When u_contactCount > 0 (cells are touching),
+//      the membrane brightens at the ridge with a hot highlight flash.
+//      The spark intensity is proportional to contact count and inversely
+//      proportional to F2−F1 (strongest exactly on the boundary).  This
+//      mimics junction potential / membrane depolarisation at contact.
+//
+//   5. HEX UNDERLAY — hexTile(st) maps the same UV into a flat-topped
 //      hexagonal grid.  The distance-to-hex-centre (hexTile.z) becomes a
 //      subtle honeycomb relief underneath the Voronoi membrane, mimicking
 //      the cytoskeleton scaffold that enforces the nearly-hexagonal packing
 //      observed in epithelial sheets.
 //
-//   5. SPECIES PALETTE — u_species selects one of 10 colour palettes that
+//   6. SPECIES PALETTE — u_species selects one of 10 colour palettes that
 //      map to the cell icon species used elsewhere in the project.  Each
 //      palette has an inner fill colour, a membrane colour, and a highlight
 //      tint so the membrane texture stays visually consistent with the
 //      species SDF shapes.
 //
-//   6. PRESSURE PHYSICS — u_pressure (SPH scalar, typically 0–1) drives:
-//       • membrane thinning  → thickness ∝ (1 − 0.6 · pressure)
-//       • membrane opacity   → alpha    ∝ (1 − 0.4 · pressure)
+//   7. PRESSURE PHYSICS — u_pressure (SPH scalar, typically 0–1) drives:
+//       • membrane thinning  → σ ∝ (1 − 0.5 · pressure)
+//       • membrane opacity   → alpha ∝ (1 − 0.3 · pressure)
 //       • hex relief scale   → hexScale ∝ (1 + 0.5 · pressure)
 //      High-pressure cells become thin-membraned and translucent, matching
 //      fluid-dynamics intuition (compressed gas cell, osmotic pressure).
@@ -51,15 +57,16 @@
 //   ../../upstream/webgl-noise/src/cellular2D.glsl  — cellular() / Worley noise
 //   ../../upstream/lygia/generative/snoise.glsl     — snoise(vec2)
 //   ../../upstream/lygia/space/hexTile.glsl         — hexTile(vec2)
-//   ../../upstream/lygia/draw/stroke.glsl           — stroke(x, size, w, edge)
 //
 // Uniforms
 // ────────
 //   u_cellScale         float   Voronoi cell spatial frequency          ≈ 6.0
-//   u_membraneThickness float   Base membrane wall width  [0.01–0.15]   ≈ 0.06
+//   u_membraneThickness float   Base membrane Gaussian σ [0.01–0.20]    ≈ 0.08
 //   u_pressure          float   SPH pressure [0,1]; thins membrane      ≈ 0.0
 //   u_species           int     Species index [0,9]; selects palette
-//   u_time              float   Elapsed seconds; drives snoise drift
+//   u_time              float   Elapsed seconds; drives all animation
+//   u_contactCount      float   SPH contact count [0,N]; collision sparks
+//   u_breathRate        float   Breathing frequency (rad/s)             ≈ 1.2
 //
 // Varyings (from bbox-quad vertex shader)
 //   vUV                 vec2    [0,1]² local bbox coordinates
@@ -69,10 +76,10 @@
 //
 // References
 //   Stefan Gustavson (2011) — Cellular noise in GLSL
-//   Patricio Gonzalez Vivo — lygia.xyz (hexTile, stroke, snoise)
+//   Patricio Gonzalez Vivo — lygia.xyz (hexTile, snoise)
 //   Nienhaus & Koster (2002) — Voronoi tessellation of biological tissues
 //   Farhadifar et al. (2007) — The influence of cell mechanics on epithelium
-//   xiaodi #M612 — cell-pubsub-loop
+//   xiaodi #M747 — voronoi cell membrane
 // ──────────────────────────────────────────────────────────────────────────────
 
 precision highp float;
@@ -86,13 +93,15 @@ out vec4  fragColor;
 // ── Uniforms ──────────────────────────────────────────────────────────────────
 
 uniform float u_cellScale;          // e.g. 6.0  — cells per UV unit
-uniform float u_membraneThickness;  // e.g. 0.06 — base wall width
+uniform float u_membraneThickness;  // e.g. 0.08 — base membrane Gaussian σ
 uniform float u_pressure;           // [0,1]     — SPH pressure
 uniform int   u_species;            // [0,9]     — species palette index
 uniform float u_time;               // seconds
+uniform float u_contactCount;       // [0,N]     — SPH contact count for sparks
+uniform float u_breathRate;         // rad/s     — breathing pulsation speed
 
 // ── Inlined lygia math helpers ────────────────────────────────────────────────
-// Sources: upstream/lygia/math/{mod289,permute,taylorInvSqrt,saturate,aastep}.glsl
+// Sources: upstream/lygia/math/{mod289,permute,taylorInvSqrt,saturate}.glsl
 // License: Patricio Gonzalez Vivo — Prosperity / Patron License (lygia.xyz)
 
 #ifndef FNC_SATURATE
@@ -235,19 +244,6 @@ vec4 hexTile(vec2 st) {
 }
 #endif
 
-// ── #include "../../upstream/lygia/draw/stroke.glsl" ──────────────────────────
-// Inlined: stroke(x, size, w, edge) — anti-aliased band around an SDF value
-// License: Patricio Gonzalez Vivo — Prosperity / Patron
-
-#ifndef FNC_STROKE
-#define FNC_STROKE
-float stroke(float x, float size, float w, float edge) {
-    float d = smoothstep(size - edge, size + edge, x + w * 0.5)
-            - smoothstep(size - edge, size + edge, x - w * 0.5);
-    return saturate(d);
-}
-#endif
-
 // ── Species palette lookup ─────────────────────────────────────────────────────
 // 10 palettes matching the SPECIES_ID set in sdf-cell-renderer.ts
 // Each palette: vec3(innerFill RGB), vec3(membraneRGB), vec3(highlightRGB)
@@ -301,33 +297,64 @@ Palette speciesPalette(int s) {
                             vec3(0.72, 0.97, 1.00));
 }
 
-// ── Voronoi membrane helper ────────────────────────────────────────────────────
-// Returns the membrane mask [0,1] at position p (already scaled by cellScale).
-//
-//   F2 − F1  →  the Voronoi ridge SDF:  = 0 at the membrane,
-//                                        > 0 inside a cell interior
-//
-// stroke(F2-F1, 0.0, thickness, edge) paints a band straddling the ridge.
-
-float membraneMask(vec2 p, float thickness) {
-    vec2 F = cellular(p);
-    float ridge = F.y - F.x;   // 0 on membrane, > 0 inside
-    // soft edge = 0.015 gives smooth anti-aliasing without dFdx overhead
-    return stroke(ridge, 0.0, thickness, 0.015);
-}
-
 // ── Hexagonal cytoskeleton underlay ───────────────────────────────────────────
-// Maps UV into a hex grid and returns a subtle glow near tile boundaries
-// (distance to hex centre < 0.5 → interior; large distance → near edge).
+// Maps UV into a hex grid and returns a subtle glow near tile boundaries.
 
 float hexGlow(vec2 st, float scale) {
     vec4 h = hexTile(st * scale);
-    // h.z = length of the local tile coordinate offset from hex centre
-    // (range 0 at centre → ~0.5 at corner)
     float distToCentre = length(h.xy - 0.5);
-    // Thin ring near edge of hex cell (cytoskeleton scaffold)
     return smoothstep(0.42, 0.38, distToCentre) *
            smoothstep(0.28, 0.34, distToCentre);
+}
+
+// ── Domain warp helper ────────────────────────────────────────────────────────
+// Three-octave domain warp: displaces input coordinates by layered snoise
+// to produce an organic, fibrous distortion field for the membrane texture.
+//
+// Returns the warped coordinate.  Each octave doubles frequency and halves
+// amplitude, with time-dependent phase offsets for slow drift.
+
+vec2 domainWarp(vec2 p, float time) {
+    // Octave 1 — large-scale cell drift
+    vec2 w1 = vec2(
+        snoise(p * 0.55 + vec2( 0.00, time * 0.06)),
+        snoise(p * 0.55 + vec2(17.35, time * 0.06))
+    );
+    // Octave 2 — mid-scale membrane roughness
+    vec2 w2 = vec2(
+        snoise(p * 1.40 + vec2(31.71, time * 0.12) + w1 * 0.4),
+        snoise(p * 1.40 + vec2( 8.44, time * 0.12) + w1 * 0.4)
+    ) * 0.45;
+    // Octave 3 — fine grain fibrillation (visible only on membrane)
+    vec2 w3 = vec2(
+        snoise(p * 3.50 + vec2(53.12, time * 0.18) + w2 * 0.3),
+        snoise(p * 3.50 + vec2(22.78, time * 0.18) + w2 * 0.3)
+    ) * 0.20;
+
+    return p + (w1 + w2 + w3) * 0.12;
+}
+
+// ── Membrane texture ──────────────────────────────────────────────────────────
+// A secondary Voronoi lookup through the domain-warped coordinate space
+// produces a veined, lipid-bilayer-like texture.  This texture is only
+// visible where the membrane opacity is non-zero.
+//
+// Returns a [0,1] greyscale texture value: 0 = vein, 1 = smooth membrane.
+
+float membraneTexture(vec2 p, float time) {
+    // Domain-warp the coordinate before secondary Voronoi lookup
+    vec2 warped = domainWarp(p * 2.8, time);
+    vec2 F = cellular(warped);
+    float ridge = F.y - F.x;
+
+    // Map the secondary F2-F1 into a vein pattern:
+    // thin dark veins where ridge ≈ 0, smooth between.
+    float vein = smoothstep(0.0, 0.12, ridge);
+
+    // Add a subtle granularity from snoise for lipid texture
+    float grain = snoise(warped * 4.0 + vec2(time * 0.05)) * 0.12 + 0.88;
+
+    return vein * grain;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -337,79 +364,108 @@ void main() {
     // ── 1. Fetch species palette ──────────────────────────────────────────────
     Palette pal = speciesPalette(u_species);
 
-    // ── 2. Pressure-derived parameters ───────────────────────────────────────
-    // High pressure → thinner, more transparent membrane (Laplace law).
-    float pClamped    = clamp(u_pressure, 0.0, 1.0);
+    // ── 2. Pressure & breathing parameters ───────────────────────────────────
+    float pClamped = clamp(u_pressure, 0.0, 1.0);
 
-    float thickness   = u_membraneThickness * (1.0 - 0.60 * pClamped);
-    float membraneAlpha = 1.0 - 0.40 * pClamped;
-    float hexScale    = u_cellScale * (1.0 + 0.50 * pClamped);
+    // Breathing: sin(time) modulates membrane width ±15%
+    float breathPhase  = sin(u_time * u_breathRate);
+    float breathFactor = 1.0 + 0.15 * breathPhase;
 
-    // ── 3. snoise-driven UV warp (organic distortion of cell nuclei) ──────────
-    // Displace UV by a slow-drifting simplex noise field before Voronoi lookup.
-    // Amplitude 0.10 keeps cells connected; the two octaves give rich curvature.
+    // Pressure thins the membrane (Laplace law); breathing widens/narrows it.
+    float sigma = u_membraneThickness * (1.0 - 0.50 * pClamped) * breathFactor;
+
+    // Membrane base opacity: pressure reduces, breathing subtly modulates.
+    float membraneBaseAlpha = (1.0 - 0.30 * pClamped) * (0.92 + 0.08 * breathPhase);
+
+    float hexScale = u_cellScale * (1.0 + 0.50 * pClamped);
+
+    // ── 3. Domain-warped UV for primary Voronoi ──────────────────────────────
     vec2 scaledUV = vUV * u_cellScale;
+    vec2 warpedUV = domainWarp(scaledUV, u_time);
 
-    float noiseAmp = 0.10;
-    // Octave 1: low frequency drift
-    vec2 warp1 = vec2(
-        snoise(scaledUV * 0.60 + vec2( 0.00, u_time * 0.07)),
-        snoise(scaledUV * 0.60 + vec2(17.35, u_time * 0.07))
-    );
-    // Octave 2: higher-frequency membrane roughness
-    vec2 warp2 = vec2(
-        snoise(scaledUV * 1.80 + vec2(31.71, u_time * 0.13)),
-        snoise(scaledUV * 1.80 + vec2( 8.44, u_time * 0.13))
-    ) * 0.35;
+    // ── 4. Voronoi F1 / F2 — primary cell structure ─────────────────────────
+    vec2 F = cellular(warpedUV);
+    float f1    = F.x;       // distance to nearest cell centre
+    float f2    = F.y;       // distance to second-nearest
+    float ridge = f2 - f1;   // 0 on the membrane, > 0 inside cell
 
-    vec2 warpedUV = scaledUV + (warp1 + warp2) * noiseAmp;
+    // ── 5. Soft F2-F1 membrane mask (Gaussian-like falloff) ──────────────────
+    // Instead of a hard stroke, the membrane is a smooth Gaussian band
+    // centred on the F2=F1 ridge.  The width σ controls how diffuse the
+    // membrane appears.  The exp(-x²/σ²) shape gives soft edges that fade
+    // naturally — no hard borders.
+    float ridgeNorm = ridge / max(sigma, 0.001);
+    float membraneMask = exp(-ridgeNorm * ridgeNorm);
 
-    // ── 4. Voronoi membrane mask ───────────────────────────────────────────────
-    float membrane = membraneMask(warpedUV, thickness);
+    // Boost the membrane core slightly (the very centre of the ridge is
+    // maximally opaque; edges are translucent).
+    membraneMask = pow(membraneMask, 0.7);
 
-    // ── 5. Hex cytoskeleton underlay ──────────────────────────────────────────
+    // ── 6. Membrane surface texture (domain-warped secondary Voronoi) ────────
+    float memTex = membraneTexture(scaledUV, u_time);
+
+    // ── 7. Collision sparks ──────────────────────────────────────────────────
+    // When u_contactCount > 0, the membrane ridge brightens with a hot flash.
+    // Spark intensity: strongest at the ridge (small F2-F1), fades into interior.
+    // A high-frequency flicker (sin²) adds visual energy to the spark.
+    float contacts = clamp(u_contactCount, 0.0, 8.0);
+    float sparkBase = contacts / 8.0;  // normalised [0, 1]
+    float sparkRidge = exp(-ridge * ridge / (sigma * sigma * 0.25));  // tight Gaussian on ridge
+    float sparkFlicker = 0.7 + 0.3 * sin(u_time * 18.0 + ridge * 40.0);
+    float spark = sparkBase * sparkRidge * sparkFlicker;
+
+    // ── 8. Hex cytoskeleton underlay ─────────────────────────────────────────
     float hex = hexGlow(vUV, hexScale * 0.55);
 
-    // ── 6. Cell interior: F1-based radial gradient ────────────────────────────
-    // F1 = distance to nearest cell centre; use it as a soft fill gradient.
-    vec2  F_raw      = cellular(warpedUV);
-    float cellInterior = smoothstep(0.55, 0.05, F_raw.x);  // 1 at nuclei, 0 near wall
+    // ── 9. Cell interior: F1-based radial gradient ───────────────────────────
+    float cellInterior = smoothstep(0.55, 0.05, f1);
 
-    // ── 7. Colour composition ──────────────────────────────────────────────────
+    // ── 10. Colour composition ───────────────────────────────────────────────
     // Layer order (back to front):
     //   a) dark background
-    //   b) cell interior fill (species colour)
-    //   c) hex cytoskeleton glow (lighter tint)
-    //   d) membrane wall (membrane colour)
-    //   e) specular highlight on membrane ridge (thin bright line)
+    //   b) cell interior fill (species colour, semi-transparent)
+    //   c) hex cytoskeleton glow (lighter tint, subtle)
+    //   d) membrane wall — textured, translucent F2-F1 band
+    //   e) membrane highlight — thin bright inner edge
+    //   f) collision sparks — hot highlight on contact
 
     vec3 col = vec3(0.0);
 
     // (b) interior fill — fades from bright nuclei to dim membrane wall
-    col = mix(col, pal.fill, cellInterior * 0.80);
+    col = mix(col, pal.fill, cellInterior * 0.75);
 
     // (c) hex cytoskeleton — subtle scaffold lines under membrane
-    col = mix(col, pal.fill + 0.15, hex * 0.35);
+    col = mix(col, pal.fill + 0.15, hex * 0.30);
 
-    // (d) membrane wall
-    col = mix(col, pal.membrane, membrane * membraneAlpha);
+    // (d) membrane wall — textured, translucent
+    //     The membrane colour is modulated by the secondary Voronoi texture:
+    //     veins appear as darker channels within the membrane surface.
+    vec3 memCol = pal.membrane * (0.6 + 0.4 * memTex);
+    float memOpacity = membraneMask * membraneBaseAlpha;
+    col = mix(col, memCol, memOpacity);
 
-    // (e) specular highlight: thin bright line along the innermost edge
-    //     of the membrane (F2-F1 slightly > 0, i.e. just inside the cell)
-    float F_ridge  = F_raw.y - F_raw.x;
-    float specLine = stroke(F_ridge, thickness * 0.45, thickness * 0.18, 0.008);
-    col = mix(col, pal.highlight, specLine * 0.70 * membraneAlpha);
+    // (e) membrane highlight — thin bright inner edge (just inside the ridge)
+    //     Uses a tighter Gaussian than the main membrane for a specular-like line.
+    float highlightSigma = sigma * 0.35;
+    float highlightNorm  = (ridge - sigma * 0.3) / max(highlightSigma, 0.001);
+    float highlight      = exp(-highlightNorm * highlightNorm) * 0.65;
+    col = mix(col, pal.highlight, highlight * membraneBaseAlpha);
 
-    // ── 8. Alpha ──────────────────────────────────────────────────────────────
-    // The interior fill is semi-transparent; membranes are mostly opaque.
-    // Pressure makes the whole cell thinner / more see-through.
+    // (f) collision sparks — hot white/highlight flash at contact points
+    vec3 sparkCol = mix(pal.highlight, vec3(1.0), 0.5);  // push toward white
+    col = mix(col, sparkCol, spark * 0.85);
+
+    // ── 11. Alpha ────────────────────────────────────────────────────────────
+    // Cell interior is semi-transparent; membrane is the dominant alpha source.
+    // Sparks add extra opacity.
     float alpha = clamp(
-        cellInterior * 0.45 +
-        hex           * 0.12 +
-        membrane      * membraneAlpha +
-        specLine      * 0.60,
+        cellInterior   * 0.40 +
+        hex            * 0.10 +
+        memOpacity     * 1.00 +
+        highlight      * membraneBaseAlpha * 0.55 +
+        spark          * 0.90,
         0.0, 1.0);
 
-    // ── 9. Premultiplied RGBA output ──────────────────────────────────────────
+    // ── 12. Premultiplied RGBA output ────────────────────────────────────────
     fragColor = vec4(col * alpha, alpha);
 }
