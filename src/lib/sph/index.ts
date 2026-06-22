@@ -48,6 +48,8 @@ export { Morphology, ForceInput, ContactSummary, VisualProfile, CellVisualIdenti
 export { ChromaticMode, ParticlePhysics, ChromaticColor, resolveChromatic, CHROMATIC_STRIDE, batchResolveChromatic, chromaticToCss, chromaticToGlowCss /* +3 more */ } from './chromatic-adaptation';
 // color-palette
 export { RGB, RGBA, ThemePalette, QOS_THEME, ParticleColorInput, resolveParticleColor, rgbaToCss, rgbaToU8 /* +1 more */ } from './color-palette';
+// collision-fx-system
+export { CollisionFXConfig, CollisionFXSystem, estimateFlowerImpulse } from './collision-fx-system';
 // contact-sparks
 export { Vec2, SparkConfig, ContactSparkSystem, estimateImpulse } from './contact-sparks';
 // curl-flow-field
