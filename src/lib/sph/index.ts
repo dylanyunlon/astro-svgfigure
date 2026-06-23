@@ -10,6 +10,7 @@ export * from './at-flower-particle';
 export * from './at-full-pbr-pipeline';
 export * from './at-gem-material';
 export * from './at-geometry-loader';
+export * from './draco-geometry-loader';
 export * from './at-glass-pbr-import';
 export * from './at-glass-reflection-system';
 export * from './at-hydra-bloom-import';
