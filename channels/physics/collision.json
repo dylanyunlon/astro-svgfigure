@@ -1,5 +1,77 @@
 {
-  "collisions": [],
-  "count": 0,
-  "epoch": 2
+  "collisions": [
+    {
+      "a": "input",
+      "b": "input_embed",
+      "overlap": 7200,
+      "z": 5
+    },
+    {
+      "a": "pos_encode",
+      "b": "encoder",
+      "overlap": 6300,
+      "z": 5
+    },
+    {
+      "a": "enc_conv1",
+      "b": "self_attn",
+      "overlap": 4550,
+      "z": 3
+    },
+    {
+      "a": "enc_conv1",
+      "b": "latent",
+      "overlap": 5200,
+      "z": 3
+    },
+    {
+      "a": "self_attn",
+      "b": "latent",
+      "overlap": 5600,
+      "z": 3
+    },
+    {
+      "a": "add_norm1",
+      "b": "decoder",
+      "overlap": 5600,
+      "z": 5
+    },
+    {
+      "a": "enc_conv2",
+      "b": "dec_conv1",
+      "overlap": 3250,
+      "z": 3
+    },
+    {
+      "a": "enc_conv2",
+      "b": "ffn",
+      "overlap": 3250,
+      "z": 3
+    },
+    {
+      "a": "dec_conv1",
+      "b": "ffn",
+      "overlap": 5200,
+      "z": 3
+    },
+    {
+      "a": "bbox_pruning_group",
+      "b": "noise_types",
+      "overlap": 75000,
+      "z": 5
+    },
+    {
+      "a": "dec_conv2",
+      "b": "output",
+      "overlap": 4550,
+      "z": 3
+    }
+  ],
+  "count": 11,
+  "epoch": 3,
+  "sweep_line_pairs": 21,
+  "cell_count": 58,
+  "timestamp": 1782235601,
+  "solver": "FAstroTiledConstraintSolver+FAstroCellSweepLine",
+  "commit": "M972"
 }

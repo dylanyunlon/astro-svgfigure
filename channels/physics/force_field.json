@@ -1,37 +1,292 @@
 {
-  "input_embed": {
-    "dx": 0,
-    "dy": 0,
-    "dz": 0
+  "add_norm2": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
   },
-  "pos_encode": {
-    "dx": 0,
-    "dy": 0,
-    "dz": 0
+  "enc_conv2": {
+    "dx": 0.0,
+    "dy": -35.0,
+    "dz": 0.0
+  },
+  "alignment_group": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
   },
   "self_attn": {
-    "dx": 0,
-    "dy": 0,
-    "dz": 0
+    "dx": 0.0,
+    "dy": 47.5,
+    "dz": 0.0
+  },
+  "empty_elements": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "mllm_code_agent": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "patch_division": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "final_css": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "weight_matrix": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "input_embed": {
+    "dx": 0.0,
+    "dy": -27.5,
+    "dz": 0.0
+  },
+  "enc_conv1": {
+    "dx": 0.0,
+    "dy": 2.5,
+    "dz": 0.0
+  },
+  "integrated_code": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
   },
   "add_norm1": {
-    "dx": 0,
-    "dy": 0,
-    "dz": 0
+    "dx": 0.0,
+    "dy": 25.0,
+    "dz": 0.0
+  },
+  "bbox_pruning_group": {
+    "dx": 0.0,
+    "dy": -80.0,
+    "dz": 0.0
+  },
+  "content_align": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "hidden_elements": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "vit_encoder": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "display_errors": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "mllm_style_agent": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "input_image": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "pos_encode": {
+    "dx": 0.0,
+    "dy": 27.5,
+    "dz": 0.0
+  },
+  "encoder": {
+    "dx": 0.0,
+    "dy": -27.5,
+    "dz": 0.0
+  },
+  "local_images": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "style_align": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "output_group": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "structure_align": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "latent": {
+    "dx": 0.0,
+    "dy": -50.0,
+    "dz": 0.0
+  },
+  "hidden_states": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "ram_resource": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
   },
   "ffn": {
-    "dx": 0,
-    "dy": 0,
-    "dz": 0
+    "dx": 0.0,
+    "dy": -7.5,
+    "dz": 0.0
   },
-  "add_norm2": {
-    "dx": 0,
-    "dy": 0,
-    "dz": 0
+  "code_linking": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "leaf_extraction": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "transformer_decoder": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "input": {
+    "dx": 0.0,
+    "dy": 27.5,
+    "dz": 0.0
+  },
+  "resolution_handling": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "coarse_dom_tree": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
   },
   "output": {
-    "dx": 0,
-    "dy": 0,
-    "dz": 0
+    "dx": 0.0,
+    "dy": 22.5,
+    "dz": 0.0
+  },
+  "dec_upsamp": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "softmax_layer": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "stage1_group": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "json_output": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "dec_conv2": {
+    "dx": 0.0,
+    "dy": -22.5,
+    "dz": 0.0
+  },
+  "noise_types": {
+    "dx": 0.0,
+    "dy": 80.0,
+    "dz": 0.0
+  },
+  "next_token_prediction": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "noise_detection": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "structure_model": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "pruned_dataset": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "enc_pool": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "vision2ui_dataset": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "nonleaf_styling": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "heuristic_rules": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "decoder": {
+    "dx": 0.0,
+    "dy": -25.0,
+    "dz": 0.0
+  },
+  "rendered_webpage": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "dec_conv1": {
+    "dx": 0.0,
+    "dy": 42.5,
+    "dz": 0.0
+  },
+  "final_html": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "stage2_group": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "loss_training": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
+  },
+  "local_code_gen": {
+    "dx": 0.0,
+    "dy": 0.0,
+    "dz": 0.0
   }
 }
