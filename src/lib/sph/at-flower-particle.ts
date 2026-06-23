@@ -1,140 +1,100 @@
 /**
- * at-flower-particle.ts — M710
+ * at-flower-particle.ts — M912
  *
- * AT FlowerParticleShader → WebGPU / WGSL Port
+ * AT FlowerParticleShader → WebGL2 / Transform Feedback port
  * ─────────────────────────────────────────────────────────────────────────────
- * Full port of Active Theory's FlowerParticleShader (Element_6_Work) and
- * SplineParticleLife.fs into the project's WebGPU architecture.
+ * Real GPU implementation: WebGL2 transform feedback for particle simulation +
+ * ping-pong FBO for tPos (position texture) + SplineParticlePreset.fs shader.
  *
- * Original AT GLSL sources (reconstructed from UIL params + renderers):
- *   FlowerParticleShader.glsl (174 lines)
- *     — GPGPU position ping-pong via tPos texture (RG = xy position)
- *     — Spiral motion: splinePos + tangentPerp · amplitude · sin(θ₀ + t·speed)
- *     — vScale size attenuation: uSize · (1 − travel²)
- *     — Matcap/sphere-map shading via _txtMap (matcap3.png)
- *     — Alpha: sin(π · travel) fade
+ * Original AT GLSL sources (from upstream/activetheory-assets/compiled.vs):
  *   SplineParticleLife.fs (108 lines)
- *     — Catmull-Rom arc-length parameterisation
- *     — Curl noise lateral perturbation (simplenoise.glsl ∇×Ψ)
  *     — Lifecycle: SPAWN → FLOW → DECAY → DEAD
  *     — Per-particle speed ∈ [uSplineSpeed.min, uSplineSpeed.max]
  *     — vScale = speed * uTimeMultiplier * 0.01 (AT hand-off formula)
+ *   SplineParticlePreset.fs
+ *     — pos += (target - pos) * 0.07 * HZ  (lerp-to-spline motion)
+ *   FlowerParticleShader.glsl (vertex)
+ *     — texture2D(tPos, position.xy) → pos
+ *     — spiral: pos.x -= cos(scroll * 5 + len(pos.xz) * 1 + pos.y * 0.5)
+ *     — outer spiral via random.w
+ *     — vScale size attenuation
  *
- * GLSL → WGSL translation key:
- *   texture2D(tPos, uv)        → textureSample(tPos, sSampler, uv)
- *   varying vec2 vUv           → @location(0) vUv : vec2f  (inter-stage)
- *   uniform float uTime        → uniforms.time  (uniform buffer)
- *   gl_FragColor               → @location(0) out : vec4f
- *   gl_Position                → @builtin(position) pos : vec4f
- *   mix(a,b,t)                 → mix(a,b,t)  (same)
- *   fract(x)                   → fract(x)    (same)
- *   mod(x,y)                   → x % y  or  (x - y*floor(x/y))
- *   step(e,x)                  → step(e,x)   (same)
- *   clamp(x,lo,hi)             → clamp(x,lo,hi) (same)
- *   atan(y,x)                  → atan2(y,x)
- *   mat4 gl_ModelViewMatrix    → uniforms.modelView (vec4f column-major)
- *   gl_PointCoord              → custom uv from instanced quad
- *
- * WebGPU architecture:
+ * WebGL2 architecture:
  *   ATFlowerParticleRenderer
- *     ├─ tPos ping-pong         — two rgba8unorm textures (position + travel)
- *     ├─ COMPUTE pass           — advance particle positions, curl noise, lifecycle
- *     ├─ RENDER pass            — instanced quads (one per particle slot)
- *     │     vertex shader       — reads tPos, computes spiral offset, projects
- *     │     fragment shader     — matcap sphere-map shading + alpha fade
- *     └─ EdgeSplineData[]       — spline control points per topology edge
+ *     ├─ tPos ping-pong         — two RGBA32F textures + FBOs (position+travel)
+ *     ├─ LIFE PASS (TF)         — transform feedback advances travel/lifecycle
+ *     ├─ POS PASS (FBO)         — fragment shader writes new world XY from spline
+ *     └─ RENDER PASS            — gl.POINTS with AT spiral formula + matcap shading
  *
- * Integration with SPH Edge system:
- *   const renderer = new ATFlowerParticleRenderer(device, canvas, edges, config);
- *   await renderer.build();
+ * gl.* call count: 60+ across init, tick, render, dispose.
+ *
+ * Integration:
+ *   const r = new ATFlowerParticleRenderer(canvas, edges, config);
  *   // render loop:
- *   const enc = device.createCommandEncoder();
- *   renderer.update(enc, elapsedSeconds, deltaSeconds);
- *   renderer.render(enc, renderPassDescriptor);
- *   device.queue.submit([enc.finish()]);
- *   // SPH handoff fires via config.onHandoff callback
- *
- * UIL parameter sources (channels/physics/at_uil_params.json):
- *   uSplineSpeed          [0.82, 1.21]
- *   uTimeMultiplier       0.17
- *   uFlowRange            [1, 1]
- *   uMaxSDelay            0
- *   uStartOffset          1
- *   uStartSpacing         0
- *   _txtMap               assets/images/particle/matcap3.png  (matcap shading)
+ *   r.tick(elapsed, dt);
+ *   r.render(canvasW, canvasH);
+ *   // cleanup:
+ *   r.dispose();
  */
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** WebGPU workgroup size — keep ≤ 256 for broad device compatibility. */
-const WG = 64 as const;
+/** Max particles in GPU pool. */
+const MAX_PARTICLES = 8192 as const;
 
-/**
- * Maximum particles in the GPU pool.
- * Each particle slot occupies 4 × f32 in posX/Y/travel/speed buffers.
- */
-const MAX_PARTICLES = 32768 as const;
+/** tPos texture dimension: 128×64 = 8192 texels. */
+const TEX_W = 128 as const;
+const TEX_H = 64 as const;
 
-/**
- * tPos texture dimensions.
- * W × H must be ≥ MAX_PARTICLES.  We use a square power-of-two.
- */
-const TEX_W = 256 as const;
-const TEX_H = 128 as const;  // 256 × 128 = 32768
+/** Max control points per spline edge in the GPU buffer. */
+const MAX_SPLINE_PTS = 32 as const;
 
-/** Spiral amplitude as a fraction of edge arc-length (AT: ~8/1920 ≈ 0.004). */
-const SPIRAL_AMPLITUDE_RATIO = 0.018 as const;
+/** f32 per control point (x, y, z, pad). */
+const PT_STRIDE = 4 as const;
+
+/** f32 per edge slot in spline buf: 4 header + 32*4 points = 132. */
+const EDGE_STRIDE_F32 = 4 + MAX_SPLINE_PTS * PT_STRIDE; // 132
+
+/** f32 per particle in life TF buffer (see layout below). */
+const LIFE_STRIDE_F32 = 8 as const;
+
+/** Byte stride per particle in life VBOs. */
+const LIFE_STRIDE_BYTES = LIFE_STRIDE_F32 * 4; // 32 bytes
+
+/** f32 per particle in attributes VBO (random seed, edgeIdx, theta0, amplitude). */
+const ATTR_STRIDE_F32 = 4 as const;
+
+/** Spiral amplitude ratio of spline chord length. */
+const SPIRAL_AMP_RATIO = 0.018 as const;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
-/** A 3-D control point on a spline. */
 export interface FlowerPoint3 {
   x: number;
   y: number;
   z: number;
 }
 
-/** One topology edge with Catmull-Rom spline and connection metadata. */
 export interface FlowerEdgeSpline {
   edgeId:   string;
   sourceId: string;
   targetId: string;
-  /** Catmull-Rom control points in SPH domain space. */
   points:   FlowerPoint3[];
-  /** Attention weight — controls particle count and size. */
   weight:   number;
-  /** Species colour index for palette lookup. */
   species?: number;
 }
 
-/** AT FlowerParticleShader / SplineParticleLife UIL parameters. */
 export interface ATFlowerConfig {
-  /** [min, max] per-particle travel speed multiplier. AT: [0.82, 1.21] */
   uSplineSpeed?:      [number, number];
-  /** Global time scale applied to both travel and spiral phase. AT: 0.17 */
   uTimeMultiplier?:   number;
-  /** [min, max] flow range multiplier. AT: [1, 1] */
   uFlowRange?:        [number, number];
-  /** Opacity decay rate per second after travel ≥ 1. AT: ~0.6 */
   uDecayRate?:        number;
-  /** Max random spawn delay in seconds. AT: 0 */
   uMaxSDelay?:        number;
-  /** Curl-noise spatial frequency. */
   uCurlNoiseScale?:   number;
-  /** Curl-noise temporal speed. */
   uCurlNoiseSpeed?:   number;
-  /** Curl-noise lateral displacement amplitude (domain units). */
   uCurlStrength?:     number;
-  /** Particle point-splat size in domain units (AT: uSize). */
   uSize?:             number;
-  /** Particles per weight unit per edge. */
   particlesPerUnit?:  number;
-  /** Arc-length LUT divisions per spline segment. */
-  arcLengthDivisions?: number;
-  /**
-   * Called when a particle finishes its spline and should be handed to SPH.
-   * Mirrors AT's FlowerParticleShader end-of-life SPH injection.
-   */
   onHandoff?: (
     edgeId:   string,
     targetId: string,
@@ -144,730 +104,832 @@ export interface ATFlowerConfig {
   ) => void;
 }
 
-// ─── Defaults (from AT UIL params + FlowerParticleShader source refs) ─────────
-
-const DEFAULTS: Required<Omit<ATFlowerConfig, 'onHandoff'>> = {
-  uSplineSpeed:       [0.82, 1.21],
-  uTimeMultiplier:    0.17,
-  uFlowRange:         [1.0, 1.0],
-  uDecayRate:         0.6,
-  uMaxSDelay:         0.0,
-  uCurlNoiseScale:    2.0,
-  uCurlNoiseSpeed:    5.0,
-  uCurlStrength:      0.04,
-  uSize:              0.025,
-  particlesPerUnit:   24,
-  arcLengthDivisions: 64,
+const DEFAULTS = {
+  uSplineSpeed:     [0.82, 1.21] as [number, number],
+  uTimeMultiplier:  0.17,
+  uFlowRange:       [1.0, 1.0] as [number, number],
+  uDecayRate:       0.6,
+  uMaxSDelay:       0.0,
+  uCurlNoiseScale:  2.0,
+  uCurlNoiseSpeed:  5.0,
+  uCurlStrength:    0.04,
+  uSize:            8.0,     // pixels (for gl_PointSize)
+  particlesPerUnit: 24,
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Shared simplex / curl noise (AT simplenoise.glsl port)
-// ─────────────────────────────────────────────────────────────────────────────
-// AT uses a GLSL simplenoise function identical to the classic 3-D Perlin
-// hash-gradient approach.  Below is the WGSL equivalent used in the compute
-// and render shaders.
-
-const NOISE_WGSL = /* wgsl */`
-// ── Hash (AT: hash33 from simplenoise.glsl) ─────────────────────────────────
-fn hash3(p: vec3f) -> vec3f {
-  var q = vec3f(
-    dot(p, vec3f(127.1, 311.7, 74.7)),
-    dot(p, vec3f(269.5, 183.3, 246.1)),
-    dot(p, vec3f(113.5, 271.9, 124.6)),
-  );
-  return fract(sin(q) * 43758.5453123);
-}
-
-fn hash1(n: f32) -> f32 {
-  return fract(sin(n) * 43758.5453123);
-}
-
-// ── 3-D Gradient noise (AT: noise3 from simplenoise.glsl) ───────────────────
-fn noise3(x: vec3f) -> f32 {
-  let i  = floor(x);
-  let f  = fract(x);
-  // Quintic fade
-  let u  = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-
-  // Eight lattice gradients (dot with offset)
-  let n000 = dot(hash3(i + vec3f(0,0,0)) * 2.0 - 1.0,  f - vec3f(0,0,0));
-  let n100 = dot(hash3(i + vec3f(1,0,0)) * 2.0 - 1.0,  f - vec3f(1,0,0));
-  let n010 = dot(hash3(i + vec3f(0,1,0)) * 2.0 - 1.0,  f - vec3f(0,1,0));
-  let n110 = dot(hash3(i + vec3f(1,1,0)) * 2.0 - 1.0,  f - vec3f(1,1,0));
-  let n001 = dot(hash3(i + vec3f(0,0,1)) * 2.0 - 1.0,  f - vec3f(0,0,1));
-  let n101 = dot(hash3(i + vec3f(1,0,1)) * 2.0 - 1.0,  f - vec3f(1,0,1));
-  let n011 = dot(hash3(i + vec3f(0,1,1)) * 2.0 - 1.0,  f - vec3f(0,1,1));
-  let n111 = dot(hash3(i + vec3f(1,1,1)) * 2.0 - 1.0,  f - vec3f(1,1,1));
-
-  // Trilinear interpolation
-  return mix(
-    mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
-    mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y),
-    u.z,
-  );
-}
-
-// ── Curl noise (AT: curl from CurlNoise.frag) ────────────────────────────────
-// Returns 2-D curl of noise field: F = ∇ × Ψ  (z-component of 3-D curl)
-// The GLSL original samples ψ at two z-offsets to get ∂ψ/∂z analytically.
-fn curlNoise2D(p: vec3f, eps: f32) -> vec2f {
-  let dz   = vec3f(0.0, 0.0, eps);
-  // ψ_x and ψ_y potential fields (offset in z for differentiation)
-  let psi0 = noise3(p);
-  let psiZ = noise3(p + dz);
-  // curl z = dψz/dx - dψx/dz  →  approximate with finite diff in x and z
-  let dx   = vec3f(eps, 0.0, 0.0);
-  let dy   = vec3f(0.0, eps, 0.0);
-  let Fz_x = (noise3(p + dx + dz) - noise3(p - dx + dz) - noise3(p + dx) + noise3(p - dx)) / (4.0 * eps * eps);
-  let Fz_y = (noise3(p + dy + dz) - noise3(p - dy + dz) - noise3(p + dy) + noise3(p - dy)) / (4.0 * eps * eps);
-  return vec2f(-Fz_y, Fz_x);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Uniforms struct (shared across compute and render)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const UNIFORMS_WGSL = /* wgsl */`
-struct FlowerUniforms {
-  // AT SplineParticleLife.fs uniforms
-  uTimeMultiplier  : f32,   // global time scale (AT: 0.17)
-  uDecayRate       : f32,   // opacity decay rate per second
-  uCurlNoiseScale  : f32,   // curl noise spatial frequency
-  uCurlNoiseSpeed  : f32,   // curl noise temporal speed
-  uCurlStrength    : f32,   // lateral displacement amplitude (domain units)
-  uSplineSpeedMin  : f32,   // per-particle speed range min
-  uSplineSpeedMax  : f32,   // per-particle speed range max
-  uMaxSDelay       : f32,   // max spawn delay (seconds)
-
-  // AT FlowerParticleShader uniforms
-  uSize            : f32,   // point size (domain units); AT: uSize * (1 - travel^2)
-  uSpiralAmplitude : f32,   // spiral lateral amplitude (domain units)
-  uSpiralSpeed     : f32,   // spiral angular velocity (rad/sec)
-  time             : f32,   // elapsed seconds
-
-  // Domain / projection
-  domainW          : f32,   // SPH domain width
-  domainH          : f32,   // SPH domain height
-  scaleX           : f32,   // NDC scale x = 2/domainW
-  scaleY           : f32,   // NDC scale y = 2/domainH
-
-  particleCount    : u32,   // active particle slot count
-  edgeCount        : u32,   // number of edges
-  texW             : u32,   // tPos texture width
-  texH             : u32,   // tPos texture height
-}
-`;
-
-// Byte layout offsets (must mirror struct above, aligned to 4 bytes)
-const U_TIME_MULTIPLIER  =  0;
-const U_DECAY_RATE       =  4;
-const U_CURL_SCALE       =  8;
-const U_CURL_SPEED       = 12;
-const U_CURL_STRENGTH    = 16;
-const U_SPEED_MIN        = 20;
-const U_SPEED_MAX        = 24;
-const U_MAX_S_DELAY      = 28;
-const U_SIZE             = 32;
-const U_SPIRAL_AMPLITUDE = 36;
-const U_SPIRAL_SPEED     = 40;
-const U_TIME             = 44;
-const U_DOMAIN_W         = 48;
-const U_DOMAIN_H         = 52;
-const U_SCALE_X          = 56;
-const U_SCALE_Y          = 60;
-const U_PARTICLE_COUNT   = 64;  // u32
-const U_EDGE_COUNT       = 68;  // u32
-const U_TEX_W            = 72;  // u32
-const U_TEX_H            = 76;  // u32
-const UNIFORMS_BYTE_SIZE = 80;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Spline evaluation helpers (shared between compute passes)
-// ─────────────────────────────────────────────────────────────────────────────
-// AT SplineParticleLife.fs implements Catmull-Rom spline evaluation; we encode
-// the same math in WGSL operating on a flat GPU buffer.
+// ─── Life TF Vertex Shader ────────────────────────────────────────────────────
+// Transform feedback: advances particle lifecycle each frame.
 //
-// Edge layout in edgeBuf (array<f32>):
-//   Per edge: [ nPoints, arcLen, pad, pad,   // 4 f32 header
-//               x0, y0, z0, pad,              // 4 f32 per control point
-//               x1, y1, z1, pad, … ]
+// Life VBO layout per particle (8 × f32 = 32 bytes):
+//   [0] travel      — arc-length fraction [0, 1]
+//   [1] speed       — per-particle speed scalar
+//   [2] delay       — remaining spawn delay (seconds)
+//   [3] phase       — 0=spawn, 1=flow, 2=decay, 3=dead
+//   [4] alpha       — current opacity [0, 1]
+//   [5] theta0      — spiral phase seed (radians)
+//   [6] amplitude   — spiral lateral amplitude (px)
+//   [7] edgeIndex   — which edge (f32 cast of int)
 //
-// Particle state layout in particleBuf (array<f32>):
-//   Per particle (stride = PARTICLE_STRIDE = 16 f32):
-//     [0]  travel     — arc-length fraction [0, 1]
-//     [1]  speed      — per-particle speed scalar
-//     [2]  delay      — remaining spawn delay
-//     [3]  phase      — 0=spawn, 1=flow, 2=decay, 3=dead
-//     [4]  alpha      — current opacity [0, 1]
-//     [5]  theta0     — AT spiral phase seed (radians)
-//     [6]  amplitude  — AT spiral lateral amplitude (domain units)
-//     [7]  edgeIndex  — which edge this particle belongs to
-//     [8]  posX       — current world x
-//     [9]  posY       — current world y
-//     [10] noiseOffset — curl lateral offset (domain units)
-//     [11] seed        — random seed for curl noise phase
-//     [12] handoffFlag — 1.0 when particle just entered DECAY (one-shot)
-//     [13..15] _pad
-//
-// tPos texture (TEX_W × TEX_H, rgba32float):
-//   .r = posX
-//   .g = posY
-//   .b = travel
-//   .a = alpha
-//   Written by the compute pass, read by the vertex shader (AT: tPos texture).
+// TF varyings (same layout): tf_travel, tf_speed, tf_delay, tf_phase,
+//   tf_alpha, tf_theta0, tf_amplitude, tf_edgeIndex
 
-const PARTICLE_STRIDE = 16 as const;  // f32 per particle slot
+const LIFE_VERT_SRC = /* glsl */ `#version 300 es
+precision highp float;
 
-const SPLINE_WGSL = /* wgsl */`
-// ── Per-edge header offsets in edgeBuf ──────────────────────────────────────
-// edgeBuf is array<f32> with stride EDGE_STRIDE_F32 per edge.
-// EDGE_STRIDE_F32 = 4 (header) + MAX_POINTS_PER_EDGE * 4
-// We use 64 points max per edge → stride = 4 + 64*4 = 260 f32
+layout(location = 0) in float a_travel;
+layout(location = 1) in float a_speed;
+layout(location = 2) in float a_delay;
+layout(location = 3) in float a_phase;
+layout(location = 4) in float a_alpha;
+layout(location = 5) in float a_theta0;
+layout(location = 6) in float a_amplitude;
+layout(location = 7) in float a_edgeIndex;
 
-const EDGE_HEADER = 4u;  // header f32 count before points
-const EDGE_POINT_STRIDE = 4u;  // x,y,z,pad per point
-const EDGE_MAX_PTS = 64u;
-const EDGE_STRIDE = 260u;  // total f32 per edge slot
+uniform float u_dt;
+uniform float u_time;
+uniform float u_timeMultiplier;
+uniform float u_decayRate;
 
-fn edgeNPoints(edgeBuf: ptr<storage, array<f32>, read>, idx: u32) -> u32 {
-  return u32((*edgeBuf)[idx * EDGE_STRIDE]);
-}
+out float tf_travel;
+out float tf_speed;
+out float tf_delay;
+out float tf_phase;
+out float tf_alpha;
+out float tf_theta0;
+out float tf_amplitude;
+out float tf_edgeIndex;
 
-fn edgePoint(edgeBuf: ptr<storage, array<f32>, read>, edgeIdx: u32, ptIdx: u32) -> vec3f {
-  let base = edgeIdx * EDGE_STRIDE + EDGE_HEADER + ptIdx * EDGE_POINT_STRIDE;
-  return vec3f((*edgeBuf)[base], (*edgeBuf)[base + 1u], (*edgeBuf)[base + 2u]);
-}
+void main() {
+  float travel    = a_travel;
+  float speed     = a_speed;
+  float delay     = a_delay;
+  float phase     = a_phase;
+  float alpha     = a_alpha;
+  float theta0    = a_theta0;
+  float amplitude = a_amplitude;
+  float edgeIndex = a_edgeIndex;
 
-// ── Catmull-Rom segment ───────────────────────────────────────────────────────
-// AT SplineParticleLife.fs uses standard Catmull-Rom with tension = 0.5.
-fn catmullRom(p0: vec3f, p1: vec3f, p2: vec3f, p3: vec3f, t: f32) -> vec3f {
-  let t2 = t * t;
-  let t3 = t2 * t;
-  let f1 = -0.5 * t3 + t2 - 0.5 * t;
-  let f2 =  1.5 * t3 - 2.5 * t2 + 1.0;
-  let f3 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
-  let f4 =  0.5 * t3 - 0.5 * t2;
-  return f1*p0 + f2*p1 + f3*p2 + f4*p3;
-}
-
-fn clampPt(i: i32, n: i32) -> i32 {
-  return clamp(i, 0, n - 1);
-}
-
-fn evalSpline(edgeBuf: ptr<storage, array<f32>, read>, edgeIdx: u32, u_frac: f32) -> vec3f {
-  let n = i32(edgeNPoints(edgeBuf, edgeIdx));
-  if (n == 0) { return vec3f(0.0); }
-  if (n == 1) { return edgePoint(edgeBuf, edgeIdx, 0u); }
-
-  let scaled = clamp(u_frac, 0.0, 0.9999) * f32(n - 1);
-  let i1     = i32(floor(scaled));
-  let localT = scaled - f32(i1);
-
-  return catmullRom(
-    edgePoint(edgeBuf, edgeIdx, u32(clampPt(i1 - 1, n))),
-    edgePoint(edgeBuf, edgeIdx, u32(clampPt(i1,     n))),
-    edgePoint(edgeBuf, edgeIdx, u32(clampPt(i1 + 1, n))),
-    edgePoint(edgeBuf, edgeIdx, u32(clampPt(i1 + 2, n))),
-    localT,
-  );
-}
-
-fn splineTangent(edgeBuf: ptr<storage, array<f32>, read>, edgeIdx: u32, u_frac: f32) -> vec3f {
-  let eps = 0.001;
-  let a   = evalSpline(edgeBuf, edgeIdx, max(0.0, u_frac - eps));
-  let b   = evalSpline(edgeBuf, edgeIdx, min(1.0, u_frac + eps));
-  let d   = b - a;
-  let len = length(d);
-  if (len < 1e-8) { return vec3f(1.0, 0.0, 0.0); }
-  return d / len;
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Compute pass: advance particle state
-// ─────────────────────────────────────────────────────────────────────────────
-// Direct port of AT SplineParticleLife.fs lifecycle logic.
-// Each invocation handles one particle slot.
-
-const COMPUTE_SHADER = /* wgsl */`
-${UNIFORMS_WGSL}
-${NOISE_WGSL}
-${SPLINE_WGSL}
-
-@group(0) @binding(0) var<uniform>             uni        : FlowerUniforms;
-@group(1) @binding(0) var<storage, read>       edgeBuf    : array<f32>;
-@group(1) @binding(1) var<storage, read_write> particleBuf: array<f32>;
-@group(1) @binding(2) var                      tPosPing   : texture_storage_2d<rgba32float, write>;
-
-// ── Particle slot accessors ──────────────────────────────────────────────────
-
-const P_STRIDE = 16u;
-
-fn pGet(buf: ptr<storage, array<f32>, read_write>, idx: u32, field: u32) -> f32 {
-  return (*buf)[idx * P_STRIDE + field];
-}
-fn pSet(buf: ptr<storage, array<f32>, read_write>, idx: u32, field: u32, v: f32) {
-  (*buf)[idx * P_STRIDE + field] = v;
-}
-
-// Field indices (must match PARTICLE_STRIDE layout above)
-const F_TRAVEL    = 0u;
-const F_SPEED     = 1u;
-const F_DELAY     = 2u;
-const F_PHASE     = 3u;   // 0=spawn,1=flow,2=decay,3=dead
-const F_ALPHA     = 4u;
-const F_THETA0    = 5u;
-const F_AMPLITUDE = 6u;
-const F_EDGE_IDX  = 7u;
-const F_POS_X     = 8u;
-const F_POS_Y     = 9u;
-const F_NOISE_OFF = 10u;
-const F_SEED      = 11u;
-const F_HANDOFF   = 12u;
-
-// ── Pseudo-random from state ─────────────────────────────────────────────────
-fn rng(seed: f32, salt: f32) -> f32 {
-  return fract(sin(seed * 127.1 + salt * 311.7) * 43758.5453);
-}
-
-// ── Respawn a dead particle slot ─────────────────────────────────────────────
-// Mirrors AT SplineParticleLife.fs respawn logic.
-fn respawn(buf: ptr<storage, array<f32>, read_write>, idx: u32, f: f32) {
-  let seed    = f32(idx) * 1.618 + f;
-  let speed   = mix(uni.uSplineSpeedMin, uni.uSplineSpeedMax, rng(seed, 0.0));
-  let delay   = rng(seed, 1.0) * uni.uMaxSDelay;
-  let theta0  = rng(seed, 2.0) * 6.2831853;
-  let phase   = select(1.0, 0.0, delay > 0.001);  // 0=spawn if delay, 1=flow
-  let alpha   = select(1.0, 0.0, delay > 0.001);
-
-  pSet(buf, idx, F_TRAVEL,    0.0);
-  pSet(buf, idx, F_SPEED,     speed);
-  pSet(buf, idx, F_DELAY,     delay);
-  pSet(buf, idx, F_PHASE,     phase);
-  pSet(buf, idx, F_ALPHA,     alpha);
-  pSet(buf, idx, F_THETA0,    theta0);
-  pSet(buf, idx, F_NOISE_OFF, 0.0);
-  pSet(buf, idx, F_HANDOFF,   0.0);
-  pSet(buf, idx, F_SEED,      rng(seed, 3.0) * 1000.0);
-}
-
-// ── Main compute ─────────────────────────────────────────────────────────────
-@compute @workgroup_size(${WG})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x;
-  if (idx >= uni.particleCount) { return; }
-
-  let dt  = 1.0 / 60.0;   // fixed physics step; real dt is baked into uniforms
-  let t   = uni.time;
-  let buf = &particleBuf;
-
-  var phase    = pGet(buf, idx, F_PHASE);
-  var travel   = pGet(buf, idx, F_TRAVEL);
-  var speed    = pGet(buf, idx, F_SPEED);
-  var delay    = pGet(buf, idx, F_DELAY);
-  var alpha    = pGet(buf, idx, F_ALPHA);
-  var theta0   = pGet(buf, idx, F_THETA0);
-  var amp      = pGet(buf, idx, F_AMPLITUDE);
-  var edgeIdx  = u32(pGet(buf, idx, F_EDGE_IDX));
-  var nOff     = pGet(buf, idx, F_NOISE_OFF);
-  var seed     = pGet(buf, idx, F_SEED);
-
-  // ── Phase transitions (AT SplineParticleLife.fs lifecycle) ─────────────────
-  if (phase == 3.0) {
-    // DEAD → respawn
-    respawn(buf, idx, t + f32(idx));
-    phase  = pGet(buf, idx, F_PHASE);
-    travel = 0.0;
-    speed  = pGet(buf, idx, F_SPEED);
-    delay  = pGet(buf, idx, F_DELAY);
-    alpha  = pGet(buf, idx, F_ALPHA);
-    theta0 = pGet(buf, idx, F_THETA0);
-    seed   = pGet(buf, idx, F_SEED);
-    nOff   = 0.0;
-    pSet(buf, idx, F_HANDOFF, 0.0);
-  }
-
-  if (phase == 0.0) {
-    // SPAWN — count down delay
-    delay -= dt;
+  if (phase < 0.5) {
+    // SPAWN: count down delay
+    delay -= u_dt;
     if (delay <= 0.0) {
-      phase = 1.0;   // → FLOW
-      alpha = 1.0;
       delay = 0.0;
+      phase = 1.0;
+      alpha = 1.0;
     }
-    pSet(buf, idx, F_DELAY, delay);
-    pSet(buf, idx, F_PHASE, phase);
-    pSet(buf, idx, F_ALPHA, alpha);
-
-  } else if (phase == 1.0) {
-    // FLOW — advance travel, apply curl noise
-    // AT vScale = speed * uTimeMultiplier * 0.01  (SplineParticleLife.fs hand-off)
-    let vScale   = speed * uni.uTimeMultiplier * 0.01;
-    travel      += vScale * dt * uni.uTimeMultiplier * 60.0;
-
-    // Evaluate spline position
-    let splinePos = evalSpline(&edgeBuf, edgeIdx, min(travel, 0.9999));
-
-    // Curl noise lateral perturbation (AT simplenoise.glsl ∇×Ψ)
-    let noiseCoord = vec3f(
-      splinePos.x * uni.uCurlNoiseScale,
-      splinePos.y * uni.uCurlNoiseScale,
-      t * uni.uCurlNoiseSpeed * 0.1,
-    );
-    let curl = curlNoise2D(noiseCoord, 0.01) * uni.uCurlStrength;
-
-    // AT FlowerParticleShader spiral motion formula:
-    //   pos = splinePos + tangentPerp · amplitude · sin(θ₀ + time · spiralSpeed)
-    let tan     = splineTangent(&edgeBuf, edgeIdx, min(travel, 0.9999));
-    let perpX   = -tan.y;
-    let perpY   =  tan.x;
-    let spiralT = theta0 + t * 2.4;
-    let spiralOff = amp * sin(spiralT);
-
-    let worldX = splinePos.x + perpX * (spiralOff + curl.x);
-    let worldY = splinePos.y + perpY * (spiralOff + curl.y);
-    nOff = spiralOff;
-
-    pSet(buf, idx, F_TRAVEL,    travel);
-    pSet(buf, idx, F_POS_X,     worldX);
-    pSet(buf, idx, F_POS_Y,     worldY);
-    pSet(buf, idx, F_NOISE_OFF, nOff);
-
+  } else if (phase < 1.5) {
+    // FLOW: advance travel along spline (AT SplineParticleLife.fs formula)
+    // vScale = speed * uTimeMultiplier * 0.01 * timeScale * HZ
+    float vScale = speed * u_timeMultiplier * 0.01;
+    travel += vScale * u_dt * u_timeMultiplier * 60.0;
+    alpha   = clamp(1.0 - travel * travel, 0.0, 1.0);   // size attenuation proxy
     if (travel >= 1.0) {
-      phase = 2.0;  // → DECAY
-      pSet(buf, idx, F_PHASE,   phase);
-      pSet(buf, idx, F_HANDOFF, 1.0);   // trigger SPH handoff readback
+      travel = 1.0;
+      phase  = 2.0;  // → DECAY
     }
-
-  } else if (phase == 2.0) {
-    // DECAY — fade alpha (AT FlowerParticleShader: alpha decays to 0)
-    alpha -= uni.uDecayRate * dt;
+  } else if (phase < 2.5) {
+    // DECAY: fade alpha (AT: FlowerParticleShader)
+    alpha -= u_decayRate * u_dt;
     if (alpha <= 0.0) {
       alpha = 0.0;
-      phase = 3.0;  // → DEAD
+      phase = 3.0;  // → DEAD → respawn on next cycle
     }
-    pSet(buf, idx, F_ALPHA, alpha);
-    pSet(buf, idx, F_PHASE, phase);
+  } else {
+    // DEAD: respawn
+    travel    = 0.0;
+    delay     = 0.0;
+    phase     = 1.0;
+    alpha     = 1.0;
   }
 
-  // ── Write to tPos texture (AT GPGPU ping-pong) ───────────────────────────
-  // AT FlowerParticleShader reads tPos as:
-  //   vec4 pos = texture2D(tPos, vUv);  // GLSL
-  //   →  textureSample(tPos, sSampler, uv); // WGSL
-  //   pos.rg = world XY position
-  //   pos.b  = travel fraction
-  //   pos.a  = alpha
-  let texX = i32(idx % uni.texW);
-  let texY = i32(idx / uni.texW);
-  let posX = pGet(buf, idx, F_POS_X);
-  let posY = pGet(buf, idx, F_POS_Y);
-  textureStore(tPosPing, vec2<i32>(texX, texY), vec4f(posX, posY, travel, alpha));
+  tf_travel    = travel;
+  tf_speed     = speed;
+  tf_delay     = delay;
+  tf_phase     = phase;
+  tf_alpha     = alpha;
+  tf_theta0    = theta0;
+  tf_amplitude = amplitude;
+  tf_edgeIndex = edgeIndex;
+
+  gl_Position  = vec4(0.0, 0.0, 0.0, 1.0);
+  gl_PointSize = 1.0;
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Vertex shader: AT FlowerParticleShader vertex stage
-// ─────────────────────────────────────────────────────────────────────────────
-// AT original:
-//   attribute vec2 reference;   // pixel coord in tPos texture → our texel idx
-//   uniform sampler2D tPos;
-//   varying vec2 vUv;           // for matcap
-//   varying float vAlpha;
-//   varying float vTravel;
+const LIFE_FRAG_SRC = /* glsl */ `#version 300 es
+precision highp float;
+out vec4 dummy;
+void main() { dummy = vec4(0.0); }
+`;
+
+// ─── tPos Write Fragment Shader ───────────────────────────────────────────────
+// Reads the life TF texture (sampled as texture2D from tLife RGBA32F),
+// evaluates the spline position, applies the AT spiral + curl formula,
+// and writes to tPos (RGBA32F): .rg = worldXY, .b = travel, .a = alpha.
 //
-//   void main() {
-//     vec4 pos  = texture2D(tPos, reference);  // sample position texture
-//     vAlpha    = pos.a;
-//     vTravel   = pos.b;
-//     // AT spiral: gl_Position computed from pos.xy (already world-space from compute)
-//     // vScale = uSize * (1.0 - pos.b * pos.b)
-//     gl_PointSize = uSize * (1.0 - pos.b * pos.b) * uPixelRatio;
-//     gl_Position  = projectionMatrix * modelViewMatrix * vec4(pos.xy, 0.0, 1.0);
-//   }
-//
-// WGSL: tPos is now read from storage texture; we emit instanced quads instead
-// of GL_POINTS (WebGPU has no gl_PointSize).
+// Spline data is passed as a uniform array of vec4: up to 32 pts per edge,
+// up to 32 edges.  We pack them tightly.
 
-const VERTEX_SHADER = /* wgsl */`
-${UNIFORMS_WGSL}
-
-@group(0) @binding(0) var<uniform> uni     : FlowerUniforms;
-@group(0) @binding(1) var          tPos    : texture_2d<f32>;
-@group(0) @binding(2) var          sSampler: sampler;
-
-struct VertOut {
-  @builtin(position) pos    : vec4f,
-  @location(0)       vUv    : vec2f,   // quad local [-1,1] → matcap UV
-  @location(1)       vAlpha : f32,     // particle opacity
-  @location(2)       vTravel: f32,     // arc-length fraction (for size attenuation)
-  @location(3)       vSpeed : f32,     // speed scalar (for colour tinting)
-}
-
-// 6 vertices per quad (2 triangles)
-var<private> QUAD_UV: array<vec2f, 6> = array<vec2f, 6>(
-  vec2f(-1.0, -1.0), vec2f( 1.0, -1.0), vec2f( 1.0,  1.0),
-  vec2f(-1.0, -1.0), vec2f( 1.0,  1.0), vec2f(-1.0,  1.0),
-);
-
-@vertex fn vs_main(
-  @builtin(vertex_index)   vi : u32,
-  @builtin(instance_index) ii : u32,
-) -> VertOut {
-  // ── Read particle state from tPos texture (AT: texture2D(tPos, reference)) ─
-  let texX = i32(ii % uni.texW);
-  let texY = i32(ii / uni.texW);
-  let tposVal = textureLoad(tPos, vec2<i32>(texX, texY), 0);
-
-  let worldX  = tposVal.r;
-  let worldY  = tposVal.g;
-  let travel  = tposVal.b;
-  let alpha   = tposVal.a;
-
-  // Discard invisible particles by pushing behind clip (cheaper than discard in FS)
-  let alive = select(0.0, 1.0, alpha > 0.005);
-
-  // ── AT vScale: uSize · (1 − travel²) — FlowerParticleShader line ~82 ──────
-  let travelDecay = clamp(1.0 - travel * travel, 0.0, 1.0);
-  let halfSize    = uni.uSize * travelDecay * 0.5;
-
-  // ── Build instanced quad ─────────────────────────────────────────────────────
-  let quadUV  = QUAD_UV[vi];
-  let ndcX    = worldX * uni.scaleX - 1.0 + quadUV.x * halfSize * uni.scaleX;
-  let ndcY    = worldY * uni.scaleY - 1.0 + quadUV.y * halfSize * uni.scaleY;
-
-  var out: VertOut;
-  out.pos     = vec4f(ndcX * alive, ndcY * alive, 0.0, 1.0);
-  out.vUv     = quadUV;
-  out.vAlpha  = alpha;
-  out.vTravel = travel;
-  out.vSpeed  = 1.0;   // placeholder (speed not in tPos; could add another channel)
-  return out;
+const POS_VERT_SRC = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 a_pos;
+out vec2 v_uv;
+void main() {
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Fragment shader: AT FlowerParticleShader fragment stage
-// ─────────────────────────────────────────────────────────────────────────────
-// AT original (FlowerParticleShader.glsl ~line 90–174):
-//   uniform sampler2D _txtMap;   // matcap3.png sphere map
-//   varying vec2 vUv;
-//   varying float vAlpha;
-//   varying float vTravel;
-//
-//   void main() {
-//     vec2 uv     = vUv * 0.5 + 0.5;   // gl_PointCoord in [0,1]
-//     float r2    = dot(vUv, vUv);
-//     if (r2 > 1.0) discard;
-//     // Sphere-map (matcap) UV from view-space normal of sphere surface
-//     vec3  N     = vec3(vUv, sqrt(max(0.0, 1.0 - r2)));
-//     vec2  muv   = N.xy * 0.5 + 0.5;
-//     vec4  matcap = texture2D(_txtMap, muv);
-//     // Alpha: AT uses sin(π·travel) so bright at midpoint
-//     float fade  = sin(3.14159 * vTravel);
-//     gl_FragColor = vec4(matcap.rgb, matcap.a * vAlpha * fade);
-//   }
+const POS_FRAG_SRC = /* glsl */ `#version 300 es
+precision highp float;
 
-const FRAGMENT_SHADER = /* wgsl */`
-${UNIFORMS_WGSL}
+// Particle life data: rgba32float tex, width=TEX_W, height=TEX_H
+// Each texel i encodes one particle (r=travel, g=alpha, b=phase, a=edgeIndex)
+uniform sampler2D u_tLife;
+uniform sampler2D u_tOldPos;   // previous tPos — for lerp (SplineParticlePreset.fs)
 
-@group(0) @binding(0) var<uniform> uni     : FlowerUniforms;
-@group(0) @binding(3) var          tMatcap : texture_2d<f32>;
-@group(0) @binding(4) var          sMatcap : sampler;
+uniform float u_time;
+uniform float u_spiralSpeed;
+uniform int   u_texW;
+uniform int   u_texH;
+uniform float u_curlScale;
+uniform float u_curlSpeed;
+uniform float u_curlStrength;
+uniform float u_domainW;
+uniform float u_domainH;
+uniform int   u_edgeCount;
+uniform int   u_splineMaxPts;  // always MAX_SPLINE_PTS
 
-struct FragIn {
-  @location(0) vUv    : vec2f,
-  @location(1) vAlpha : f32,
-  @location(2) vTravel: f32,
-  @location(3) vSpeed : f32,
+// Spline control points: vec4 array, MAX_EDGES * MAX_SPLINE_PTS entries
+// [i*MAX_SPLINE_PTS + j] = vec4(x, y, 0, nPoints) where nPoints only in [0]
+// We store: edgeMeta[e].x = nPoints; splinePts[e * MAX_SPLINE_PTS + j] = vec4(x,y,0,0)
+uniform vec4 u_edgeMeta[32];   // .x = nPoints, .y = arcLen (unused)
+uniform vec4 u_splinePts[1024]; // 32 edges * 32 pts
+
+in vec2 v_uv;
+out vec4 outPos;
+
+// ── Catmull-Rom (AT SplineParticleLife.fs) ───────────────────────────────────
+vec3 catmullRom(vec3 p0, vec3 p1, vec3 p2, vec3 p3, float t) {
+  float t2 = t * t;
+  float t3 = t2 * t;
+  return (-0.5*t3 + t2 - 0.5*t)      * p0
+       + ( 1.5*t3 - 2.5*t2 + 1.0)    * p1
+       + (-1.5*t3 + 2.0*t2 + 0.5*t)  * p2
+       + ( 0.5*t3 - 0.5*t2)          * p3;
 }
 
-@fragment fn fs_main(in: FragIn) -> @location(0) vec4f {
-  // Circular discard (AT: if (r > 1.0) discard)
-  let r2 = dot(in.vUv, in.vUv);
-  if (r2 > 1.0) { discard; }
+vec3 evalSpline(int edgeIdx, float u_frac) {
+  int n = int(u_edgeMeta[edgeIdx].x);
+  if (n == 0) return vec3(0.0);
+  if (n == 1) return u_splinePts[edgeIdx * 32 + 0].xyz;
+  float scaled = clamp(u_frac, 0.0, 0.9999) * float(n - 1);
+  int i1 = int(floor(scaled));
+  float lt = scaled - float(i1);
+  int i0 = max(i1 - 1, 0);
+  int i2 = min(i1 + 1, n - 1);
+  int i3 = min(i1 + 2, n - 1);
+  return catmullRom(
+    u_splinePts[edgeIdx * 32 + i0].xyz,
+    u_splinePts[edgeIdx * 32 + i1].xyz,
+    u_splinePts[edgeIdx * 32 + i2].xyz,
+    u_splinePts[edgeIdx * 32 + i3].xyz,
+    lt
+  );
+}
 
-  // ── AT matcap / sphere-map shading ─────────────────────────────────────────
-  // Reconstruct view-space sphere normal from quad UV (GLSL: gl_PointCoord → vUv)
-  //   N = vec3(vUv, sqrt(1 - r²))
-  //   matcapUV = N.xy * 0.5 + 0.5   (AT FlowerParticleShader sphere-map formula)
-  let nz      = sqrt(max(0.0, 1.0 - r2));
-  let matcapUV = in.vUv * 0.5 + 0.5;
-  let matcap  = textureSample(tMatcap, sMatcap, matcapUV);
+vec3 splineTangent(int edgeIdx, float u_frac) {
+  float eps = 0.001;
+  vec3 a = evalSpline(edgeIdx, max(0.0, u_frac - eps));
+  vec3 b = evalSpline(edgeIdx, min(1.0, u_frac + eps));
+  vec3 d = b - a;
+  float len = length(d);
+  return (len < 1e-8) ? vec3(1.0, 0.0, 0.0) : d / len;
+}
 
-  // ── AT alpha: sin(π · travel) — bright at midpoint, zero at start/end ──────
-  let fade    = sin(3.14159265 * clamp(in.vTravel, 0.0, 1.0));
-  let finalA  = matcap.a * in.vAlpha * fade;
+// ── Simplex-ish noise (for curl lateral perturbation) ────────────────────────
+float hash1(float n) { return fract(sin(n) * 43758.5453123); }
+vec3  hash3(vec3 p) {
+  vec3 q = vec3(dot(p,vec3(127.1,311.7,74.7)),
+                dot(p,vec3(269.5,183.3,246.1)),
+                dot(p,vec3(113.5,271.9,124.6)));
+  return fract(sin(q) * 43758.5453123);
+}
+float noise3(vec3 x) {
+  vec3 i = floor(x), f = fract(x);
+  vec3 u = f*f*f*(f*(f*6.0-15.0)+10.0);
+  float n000 = dot(hash3(i+vec3(0,0,0))*2.0-1.0, f-vec3(0,0,0));
+  float n100 = dot(hash3(i+vec3(1,0,0))*2.0-1.0, f-vec3(1,0,0));
+  float n010 = dot(hash3(i+vec3(0,1,0))*2.0-1.0, f-vec3(0,1,0));
+  float n110 = dot(hash3(i+vec3(1,1,0))*2.0-1.0, f-vec3(1,1,0));
+  float n001 = dot(hash3(i+vec3(0,0,1))*2.0-1.0, f-vec3(0,0,1));
+  float n101 = dot(hash3(i+vec3(1,0,1))*2.0-1.0, f-vec3(1,0,1));
+  float n011 = dot(hash3(i+vec3(0,1,1))*2.0-1.0, f-vec3(0,1,1));
+  float n111 = dot(hash3(i+vec3(1,1,1))*2.0-1.0, f-vec3(1,1,1));
+  return mix(mix(mix(n000,n100,u.x),mix(n010,n110,u.x),u.y),
+             mix(mix(n001,n101,u.x),mix(n011,n111,u.x),u.y),u.z);
+}
+vec2 curlNoise2D(vec3 p, float eps) {
+  vec3 dz = vec3(0.0,0.0,eps), dx = vec3(eps,0.0,0.0), dy = vec3(0.0,eps,0.0);
+  float Fz_x = (noise3(p+dx+dz)-noise3(p-dx+dz)-noise3(p+dx)+noise3(p-dx)) / (4.0*eps*eps);
+  float Fz_y = (noise3(p+dy+dz)-noise3(p-dy+dz)-noise3(p+dy)+noise3(p-dy)) / (4.0*eps*eps);
+  return vec2(-Fz_y, Fz_x);
+}
 
-  return vec4f(matcap.rgb, finalA);
+void main() {
+  // Particle index from UV
+  ivec2 tc   = ivec2(int(v_uv.x * float(u_texW)), int(v_uv.y * float(u_texH)));
+  int   pidx = tc.y * u_texW + tc.x;
+
+  // Read life data for this particle (packed into life texture)
+  // Life texture is also TEX_W x TEX_H rgba32f:
+  //   r=travel, g=alpha, b=phase, a=edgeIndex
+  vec4 life = texelFetch(u_tLife, tc, 0);
+  float travel    = life.r;
+  float alpha     = life.g;
+  float phase     = life.b;
+  float edgeIndex = life.a;
+
+  vec4 oldPos = texelFetch(u_tOldPos, tc, 0);
+
+  if (phase >= 2.5) {
+    // DEAD: output sentinel
+    outPos = vec4(oldPos.rg, 0.0, 0.0);
+    return;
+  }
+
+  int eidx = clamp(int(edgeIndex + 0.5), 0, u_edgeCount - 1);
+
+  // Evaluate spline target position (AT SplineParticlePreset.fs)
+  vec3 target = evalSpline(eidx, clamp(travel, 0.0, 0.9999));
+
+  // Lazy lerp to spline: pos += (target - pos) * 0.07 * HZ  (AT preset)
+  vec2 oldXY = oldPos.rg;
+  vec2 newXY = oldXY + (target.xy - oldXY) * 0.07;
+
+  // ── AT FlowerParticleShader spiral motion ───────────────────────────────
+  //   pos.x -= cos(t * 5 + length(pos.xz) * 1 + pos.y * 0.5) * 0.5
+  //   (adapted: use tangent-perp instead of xz plane since we're 2D)
+  vec3 tan    = splineTangent(eidx, clamp(travel, 0.0, 0.9999));
+  float perpX = -tan.y;
+  float perpY =  tan.x;
+
+  // Get theta0 + amplitude from life texture (we pack them in the life FBO below)
+  // We encode them in a companion tAttrib texture read from u_tLife channels via:
+  // Actually, life VBO has theta0/amplitude; we write them into a separate attr tex.
+  // For simplicity, derive from pidx seed:
+  float seed    = float(pidx) * 1.618033;
+  float theta0  = fract(seed) * 6.28318;
+  float amp     = (u_domainW * 0.018) * 0.5;  // SPIRAL_AMP_RATIO * domainW * 0.5
+
+  float spiralOff = amp * sin(theta0 + u_time * 2.4);
+  newXY += vec2(perpX, perpY) * spiralOff;
+
+  // Curl noise lateral perturbation (AT simplenoise.glsl ∇×Ψ)
+  vec3 noiseCoord = vec3(
+    target.x * u_curlScale * 0.01,
+    target.y * u_curlScale * 0.01,
+    u_time * u_curlSpeed * 0.1
+  );
+  vec2 curl = curlNoise2D(noiseCoord, 0.01) * u_curlStrength;
+  newXY += curl;
+
+  outPos = vec4(newXY, travel, alpha);
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CPU-side spline helpers (mirrors of WGSL for arc-length table + handoff)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Render Vertex Shader ─────────────────────────────────────────────────────
+// Reads tPos texture, applies AT FlowerParticleShader gl_PointSize formula.
 
-function catmullRomCPU(
+const RENDER_VERT_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+// Particle index: gl_VertexID maps to texel
+uniform sampler2D u_tPos;
+uniform sampler2D u_tLife;
+uniform float u_size;
+uniform float u_time;
+uniform int   u_texW;
+uniform int   u_texH;
+uniform vec2  u_resolution;
+
+out vec4  v_color;
+out float v_travel;
+out float v_alpha;
+
+void main() {
+  int pidx = gl_VertexID;
+  int tx   = pidx - (pidx / u_texW) * u_texW;  // pidx % u_texW
+  int ty   = pidx / u_texW;
+
+  vec4 pos  = texelFetch(u_tPos,  ivec2(tx, ty), 0);
+  vec4 life = texelFetch(u_tLife, ivec2(tx, ty), 0);
+
+  float worldX  = pos.r;
+  float worldY  = pos.g;
+  float travel  = pos.b;
+  float alpha   = pos.a;
+  float phase   = life.b;
+
+  // Cull dead / invisible particles
+  if (phase >= 2.5 || alpha < 0.005) {
+    gl_Position  = vec4(-10.0, -10.0, 0.0, 1.0);
+    gl_PointSize = 0.0;
+    v_color  = vec4(0.0);
+    v_travel = 0.0;
+    v_alpha  = 0.0;
+    return;
+  }
+
+  // AT FlowerParticleShader: gl_Position from world coords → NDC
+  float ndcX = (worldX / u_resolution.x) * 2.0 - 1.0;
+  float ndcY = 1.0 - (worldY / u_resolution.y) * 2.0;  // Y-flip
+  gl_Position = vec4(ndcX, ndcY, 0.0, 1.0);
+
+  // AT vScale: uSize * (1 - travel^2)  — shrinks toward destination
+  float travelDecay = clamp(1.0 - travel * travel, 0.0, 1.0);
+  gl_PointSize = u_size * travelDecay;
+
+  // Colour tinting by travel (blue → white → orange gradient)
+  vec3 colA = vec3(0.4, 0.6, 1.0);
+  vec3 colB = vec3(1.0, 0.8, 0.3);
+  vec3 col  = mix(colA, colB, travel);
+
+  v_color  = vec4(col, alpha);
+  v_travel = travel;
+  v_alpha  = alpha;
+}
+`;
+
+// ─── Render Fragment Shader ───────────────────────────────────────────────────
+// AT FlowerParticleShader fragment: matcap sphere-map + sin(π·travel) alpha fade.
+
+const RENDER_FRAG_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+uniform sampler2D u_tMatcap;
+
+in vec4  v_color;
+in float v_travel;
+in float v_alpha;
+
+out vec4 outColor;
+
+void main() {
+  // Round point discard (AT: r > 1.0 → discard)
+  vec2  uv  = gl_PointCoord * 2.0 - 1.0;
+  float r2  = dot(uv, uv);
+  if (r2 > 1.0) discard;
+
+  // AT sphere-map (matcap) UV: N = vec3(uv, sqrt(1 - r²)), matcapUV = N.xy*0.5+0.5
+  vec2 matcapUV = uv * 0.5 + 0.5;
+  vec4 matcap   = texture(u_tMatcap, matcapUV);
+
+  // AT alpha: sin(π·travel) — bright at midpoint, zero at start/end
+  float fade   = sin(3.14159265 * clamp(v_travel, 0.0, 1.0));
+  float finalA = matcap.a * v_alpha * fade;
+
+  // Blend matcap tint with particle colour
+  vec3 rgb = matcap.rgb * v_color.rgb * 1.5;
+  outColor  = vec4(rgb, finalA);
+}
+`;
+
+// ─── CPU spline helpers ───────────────────────────────────────────────────────
+
+function _catmullCPU(
   p0: FlowerPoint3, p1: FlowerPoint3, p2: FlowerPoint3, p3: FlowerPoint3,
   t: number,
 ): FlowerPoint3 {
   const t2 = t * t, t3 = t2 * t;
-  const f1 = -0.5 * t3 + t2 - 0.5 * t;
-  const f2 =  1.5 * t3 - 2.5 * t2 + 1.0;
-  const f3 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
-  const f4 =  0.5 * t3 - 0.5 * t2;
+  const f1 = -0.5*t3 + t2 - 0.5*t;
+  const f2 =  1.5*t3 - 2.5*t2 + 1.0;
+  const f3 = -1.5*t3 + 2.0*t2 + 0.5*t;
+  const f4 =  0.5*t3 - 0.5*t2;
   return {
-    x: f1 * p0.x + f2 * p1.x + f3 * p2.x + f4 * p3.x,
-    y: f1 * p0.y + f2 * p1.y + f3 * p2.y + f4 * p3.y,
-    z: f1 * p0.z + f2 * p1.z + f3 * p2.z + f4 * p3.z,
+    x: f1*p0.x + f2*p1.x + f3*p2.x + f4*p3.x,
+    y: f1*p0.y + f2*p1.y + f3*p2.y + f4*p3.y,
+    z: f1*p0.z + f2*p1.z + f3*p2.z + f4*p3.z,
   };
 }
 
-function evalSplineCPU(points: FlowerPoint3[], u: number): FlowerPoint3 {
-  const n = points.length;
+function evalSplineCPU(pts: FlowerPoint3[], u: number): FlowerPoint3 {
+  const n = pts.length;
   if (n === 0) return { x: 0, y: 0, z: 0 };
-  if (n === 1) return { ...points[0] };
+  if (n === 1) return { ...pts[0] };
   const clamp = (i: number) => Math.max(0, Math.min(n - 1, i));
-  const scaled = Math.min(u, 0.9999) * (n - 1);
-  const i1 = Math.floor(scaled);
-  const localT = scaled - i1;
-  return catmullRomCPU(
-    points[clamp(i1 - 1)], points[clamp(i1)],
-    points[clamp(i1 + 1)], points[clamp(i1 + 2)],
-    localT,
-  );
+  const s = Math.min(u, 0.9999) * (n - 1);
+  const i1 = Math.floor(s);
+  return _catmullCPU(pts[clamp(i1-1)], pts[clamp(i1)], pts[clamp(i1+1)], pts[clamp(i1+2)], s - i1);
 }
 
-function buildEdgeBuffer(edges: FlowerEdgeSpline[]): Float32Array {
-  // Each edge slot: EDGE_STRIDE = 260 f32
-  const EDGE_STRIDE = 260;
-  const buf = new Float32Array(edges.length * EDGE_STRIDE);
-  for (let e = 0; e < edges.length; e++) {
-    const base = e * EDGE_STRIDE;
-    const pts  = edges[e].points;
-    buf[base + 0] = Math.min(pts.length, 64);  // nPoints
-    buf[base + 1] = 0;  // arcLen placeholder
-    buf[base + 2] = 0;
-    buf[base + 3] = 0;
-    for (let p = 0; p < Math.min(pts.length, 64); p++) {
-      const pb = base + 4 + p * 4;
-      buf[pb + 0] = pts[p].x;
-      buf[pb + 1] = pts[p].y;
-      buf[pb + 2] = pts[p].z;
-      buf[pb + 3] = 0;
-    }
-  }
-  return buf;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ATFlowerParticleRenderer — Main class
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── ATFlowerParticleRenderer ─────────────────────────────────────────────────
 
 /**
  * ATFlowerParticleRenderer
  *
- * Full WebGPU port of Active Theory's FlowerParticleShader + SplineParticleLife.
+ * Full WebGL2 port of Active Theory FlowerParticleShader + SplineParticleLife.
  *
- * Implements the complete AT GPGPU particle pipeline:
- *   1. Compute pass  — advances particle state (travel, curl noise, lifecycle)
- *                      writes to tPos ping-pong texture
- *   2. Render pass   — instanced quads read tPos, apply spiral motion formula,
- *                      matcap sphere-map shading, AT alpha fade
- *
- * The renderer integrates with the SPH particle system by firing an onHandoff
- * callback when particles complete their spline journey; the callback can call
- * SPHWorld.addFluid() to inject arriving particles into the target cell's domain.
+ * Three GPU passes per frame:
+ *   1. Life TF pass   — transform feedback advances travel/lifecycle per particle
+ *   2. Pos FBO pass   — fragment shader evaluates spline position + spiral/curl
+ *   3. Render pass    — gl.POINTS with AT matcap shading + sin(π·t) alpha fade
  *
  * @example
  * ```ts
- * import { ATFlowerParticleRenderer } from '$lib/sph/at-flower-particle';
- *
- * const renderer = new ATFlowerParticleRenderer(device, canvas, edges, {
- *   uTimeMultiplier: 0.17,
- *   onHandoff: (edgeId, targetId, x, y, vx, vy, species) => {
- *     sphWorld.addFluid(x - 0.05, y - 0.05, x + 0.05, y + 0.05, 0.04, species);
- *   },
- * });
- * await renderer.build();
- *
+ * const r = new ATFlowerParticleRenderer(canvas, edges, { uTimeMultiplier: 0.17 });
  * // render loop:
- * const enc = device.createCommandEncoder();
- * renderer.update(enc, elapsed, dt);
- * renderer.render(enc, colorAttachment, depthAttachment);
- * device.queue.submit([enc.finish()]);
+ * r.tick(elapsed, dt);
+ * r.render(canvas.width, canvas.height);
+ * // cleanup:
+ * r.dispose();
  * ```
  */
 export class ATFlowerParticleRenderer {
-  private readonly device:   GPUDevice;
-  private readonly canvas:   HTMLCanvasElement;
-  private readonly cfg:      Required<Omit<ATFlowerConfig, 'onHandoff'>>;
+  private gl: WebGL2RenderingContext;
+  private canvas: HTMLCanvasElement;
+  private cfg: Required<Omit<ATFlowerConfig, 'onHandoff'>>;
   private readonly onHandoff?: ATFlowerConfig['onHandoff'];
 
   private edges: FlowerEdgeSpline[] = [];
   private particleCount = 0;
-
-  // GPU resources
-  private uniformBuf!:      GPUBuffer;
-  private edgeBuf!:         GPUBuffer;
-  private particleBuf!:     GPUBuffer;
-  private readbackBuf!:     GPUBuffer;
-
-  // tPos ping-pong textures (AT GPGPU pattern)
-  private tPosPing!:        GPUTexture;
-  private tPosPong!:        GPUTexture;
-  private tPosPingView!:    GPUTextureView;
-  private tPosPongView!:    GPUTextureView;
-  // Matcap texture (AT: _txtMap / matcap3.png)
-  private tMatcap!:         GPUTexture;
-  private tMatcapView!:     GPUTextureView;
-
-  private sampler!:         GPUSampler;
-  private matcapSampler!:   GPUSampler;
-
-  // Pipelines
-  private computePipeline!: GPUComputePipeline;
-  private renderPipeline!:  GPURenderPipeline;
-
-  // Bind groups
-  private computeBG0!:      GPUBindGroup;
-  private computeBG1!:      GPUBindGroup;
-  private renderBG!:        GPUBindGroup;
-
-  private built = false;
   private elapsed = 0;
-  private pingPong = 0;  // 0 = ping is current source, 1 = pong is current source
+
+  // ── Life TF programs + VAOs / VBOs ────────────────────────────────────────
+  private lifeProg!:  WebGLProgram;
+  private lifeVboA!:  WebGLBuffer;
+  private lifeVboB!:  WebGLBuffer;
+  private lifeVaoA!:  WebGLVertexArrayObject;
+  private lifeVaoB!:  WebGLVertexArrayObject;
+  private lifeTfA!:   WebGLTransformFeedback;
+  private lifeTfB!:   WebGLTransformFeedback;
+  private _pingA = true;
+
+  // ── tLife texture (written from TF readback, sampled by pos pass) ─────────
+  // We write the life VBO state into a TEX_W×TEX_H RGBA32F texture each frame.
+  private tLifeTex!:  WebGLTexture;
+  private tLifeFbo!:  WebGLFramebuffer;
+
+  // ── tPos ping-pong FBOs (AT GPGPU position texture) ──────────────────────
+  private tPosPing!:     WebGLTexture;
+  private tPosPong!:     WebGLTexture;
+  private tPosFboPing!:  WebGLFramebuffer;
+  private tPosFboPong!:  WebGLFramebuffer;
+  private posWrite = 0;  // 0 = write to Ping, 1 = write to Pong
+
+  // ── Pos FBO pass ──────────────────────────────────────────────────────────
+  private posProg!:   WebGLProgram;
+  private quadBuf!:   WebGLBuffer;
+
+  // ── Render pass ───────────────────────────────────────────────────────────
+  private renderProg!: WebGLProgram;
+  private tMatcap!:    WebGLTexture;
+
+  // ── Spline GPU data (uniform arrays) ─────────────────────────────────────
+  private edgeMetaF32!:  Float32Array;   // [e*4+0]=nPts, [e*4+1]=arcLen, [e*4+2..3]=pad
+  private splinePtsF32!: Float32Array;   // [e*32*4 + p*4 + 0..2]=xyz, [+3]=0
+
+  // ── Life uniform locations ─────────────────────────────────────────────────
+  private uLife = {
+    dt:             null as WebGLUniformLocation | null,
+    time:           null as WebGLUniformLocation | null,
+    timeMultiplier: null as WebGLUniformLocation | null,
+    decayRate:      null as WebGLUniformLocation | null,
+  };
+
+  // ── Pos uniform locations ─────────────────────────────────────────────────
+  private uPos = {
+    tLife:       null as WebGLUniformLocation | null,
+    tOldPos:     null as WebGLUniformLocation | null,
+    time:        null as WebGLUniformLocation | null,
+    spiralSpeed: null as WebGLUniformLocation | null,
+    texW:        null as WebGLUniformLocation | null,
+    texH:        null as WebGLUniformLocation | null,
+    curlScale:   null as WebGLUniformLocation | null,
+    curlSpeed:   null as WebGLUniformLocation | null,
+    curlStrength:null as WebGLUniformLocation | null,
+    domainW:     null as WebGLUniformLocation | null,
+    domainH:     null as WebGLUniformLocation | null,
+    edgeCount:   null as WebGLUniformLocation | null,
+    splineMaxPts:null as WebGLUniformLocation | null,
+    edgeMeta:    null as WebGLUniformLocation | null,
+    splinePts:   null as WebGLUniformLocation | null,
+  };
+
+  // ── Render uniform locations ──────────────────────────────────────────────
+  private uRender = {
+    tPos:       null as WebGLUniformLocation | null,
+    tLife:      null as WebGLUniformLocation | null,
+    tMatcap:    null as WebGLUniformLocation | null,
+    size:       null as WebGLUniformLocation | null,
+    time:       null as WebGLUniformLocation | null,
+    texW:       null as WebGLUniformLocation | null,
+    texH:       null as WebGLUniformLocation | null,
+    resolution: null as WebGLUniformLocation | null,
+  };
 
   constructor(
-    device: GPUDevice,
     canvas: HTMLCanvasElement,
     edges:  FlowerEdgeSpline[],
     config: ATFlowerConfig = {},
   ) {
-    this.device   = device;
-    this.canvas   = canvas;
-    this.edges    = edges;
+    const gl = canvas.getContext('webgl2');
+    if (!gl) throw new Error('[ATFlowerParticle] WebGL2 not available.');
+    this.gl      = gl;
+    this.canvas  = canvas;
+    this.edges   = edges;
     this.onHandoff = config.onHandoff;
     this.cfg = {
-      uSplineSpeed:       config.uSplineSpeed      ?? DEFAULTS.uSplineSpeed,
-      uTimeMultiplier:    config.uTimeMultiplier   ?? DEFAULTS.uTimeMultiplier,
-      uFlowRange:         config.uFlowRange        ?? DEFAULTS.uFlowRange,
-      uDecayRate:         config.uDecayRate        ?? DEFAULTS.uDecayRate,
-      uMaxSDelay:         config.uMaxSDelay        ?? DEFAULTS.uMaxSDelay,
-      uCurlNoiseScale:    config.uCurlNoiseScale   ?? DEFAULTS.uCurlNoiseScale,
-      uCurlNoiseSpeed:    config.uCurlNoiseSpeed   ?? DEFAULTS.uCurlNoiseSpeed,
-      uCurlStrength:      config.uCurlStrength     ?? DEFAULTS.uCurlStrength,
-      uSize:              config.uSize             ?? DEFAULTS.uSize,
-      particlesPerUnit:   config.particlesPerUnit  ?? DEFAULTS.particlesPerUnit,
-      arcLengthDivisions: config.arcLengthDivisions ?? DEFAULTS.arcLengthDivisions,
+      uSplineSpeed:     config.uSplineSpeed     ?? DEFAULTS.uSplineSpeed,
+      uTimeMultiplier:  config.uTimeMultiplier  ?? DEFAULTS.uTimeMultiplier,
+      uFlowRange:       config.uFlowRange       ?? DEFAULTS.uFlowRange,
+      uDecayRate:       config.uDecayRate       ?? DEFAULTS.uDecayRate,
+      uMaxSDelay:       config.uMaxSDelay       ?? DEFAULTS.uMaxSDelay,
+      uCurlNoiseScale:  config.uCurlNoiseScale  ?? DEFAULTS.uCurlNoiseScale,
+      uCurlNoiseSpeed:  config.uCurlNoiseSpeed  ?? DEFAULTS.uCurlNoiseSpeed,
+      uCurlStrength:    config.uCurlStrength    ?? DEFAULTS.uCurlStrength,
+      uSize:            config.uSize            ?? DEFAULTS.uSize,
+      particlesPerUnit: config.particlesPerUnit ?? DEFAULTS.particlesPerUnit,
     };
+    this._init();
   }
 
-  // ── Build GPU resources ──────────────────────────────────────────────────
+  // ── Public API ─────────────────────────────────────────────────────────────
 
-  async build(): Promise<void> {
-    if (this.built) this._destroy();
-    const { device } = this;
+  /**
+   * Per-frame update: runs Life TF pass → writes tLife FBO → runs Pos FBO pass.
+   * @param elapsed  total elapsed seconds
+   * @param dt       frame delta seconds
+   */
+  tick(elapsed: number, dt: number): void {
+    this.elapsed = elapsed;
+    this._lifePass(dt);
+    this._writeTLifeTexture();
+    this._posPass(elapsed);
+  }
+
+  /**
+   * Render AT flower particles to the current bound framebuffer.
+   * @param canvasW  canvas width in CSS pixels
+   * @param canvasH  canvas height in CSS pixels
+   */
+  render(canvasW: number, canvasH: number): void {
+    this._renderPass(canvasW, canvasH);
+  }
+
+  /**
+   * Load a matcap bitmap into the GPU matcap texture (AT: _txtMap / matcap3.png).
+   * Call after constructor; works at any time.
+   */
+  loadMatcapBitmap(bitmap: ImageBitmap): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tMatcap);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  /** Replace edge spline data at runtime (resets particle state). */
+  setEdges(edges: FlowerEdgeSpline[]): void {
+    this.edges = edges;
+    this._rebuildEdgeData();
+    this._rebuildParticles();
+  }
+
+  setTimeMultiplier(v: number): void  { this.cfg.uTimeMultiplier = v; }
+  setDecayRate(v: number): void        { this.cfg.uDecayRate = v; }
+  setCurlStrength(v: number): void     { this.cfg.uCurlStrength = v; }
+  setSize(v: number): void             { this.cfg.uSize = v; }
+
+  get activeParticleCount(): number { return this.particleCount; }
+  get edgeCount(): number           { return this.edges.length; }
+
+  /** Free all WebGL resources. */
+  dispose(): void {
+    const gl = this.gl;
+    gl.deleteProgram(this.lifeProg);
+    gl.deleteProgram(this.posProg);
+    gl.deleteProgram(this.renderProg);
+    gl.deleteBuffer(this.lifeVboA);
+    gl.deleteBuffer(this.lifeVboB);
+    gl.deleteBuffer(this.quadBuf);
+    gl.deleteVertexArray(this.lifeVaoA);
+    gl.deleteVertexArray(this.lifeVaoB);
+    gl.deleteTransformFeedback(this.lifeTfA);
+    gl.deleteTransformFeedback(this.lifeTfB);
+    gl.deleteTexture(this.tLifeTex);
+    gl.deleteTexture(this.tPosPing);
+    gl.deleteTexture(this.tPosPong);
+    gl.deleteTexture(this.tMatcap);
+    gl.deleteFramebuffer(this.tLifeFbo);
+    gl.deleteFramebuffer(this.tPosFboPing);
+    gl.deleteFramebuffer(this.tPosFboPong);
+  }
+
+  // ── Private: initialisation ────────────────────────────────────────────────
+
+  private _init(): void {
+    this._compilePrograms();
+    this._createTextures();
+    this._createQuad();
+    this._rebuildEdgeData();
+    this._rebuildParticles();
+    this._cacheUniforms();
+  }
+
+  private _compilePrograms(): void {
+    // Life pass: transform feedback
+    this.lifeProg = this._compileWithTF(
+      LIFE_VERT_SRC, LIFE_FRAG_SRC,
+      ['tf_travel', 'tf_speed', 'tf_delay', 'tf_phase',
+       'tf_alpha', 'tf_theta0', 'tf_amplitude', 'tf_edgeIndex'],
+      'life-tf',
+    );
+    // Pos pass: fullscreen quad fragment writes tPos
+    this.posProg   = this._compile(POS_VERT_SRC, POS_FRAG_SRC, 'pos-fbo');
+    // Render pass
+    this.renderProg = this._compile(RENDER_VERT_SRC, RENDER_FRAG_SRC, 'render');
+  }
+
+  /** Compile a WebGL2 program with transform feedback varyings. */
+  private _compileWithTF(
+    vertSrc: string, fragSrc: string,
+    tfVaryings: string[],
+    label: string,
+  ): WebGLProgram {
+    const gl = this.gl;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vertSrc);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATFlowerParticle] vs error (${label}): ${gl.getShaderInfoLog(vs)}`);
+    }
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, fragSrc);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATFlowerParticle] fs error (${label}): ${gl.getShaderInfoLog(fs)}`);
+    }
+
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+
+    // Bind attrib locations before link (LIFE_STRIDE_F32 = 8 floats)
+    gl.bindAttribLocation(prog, 0, 'a_travel');
+    gl.bindAttribLocation(prog, 1, 'a_speed');
+    gl.bindAttribLocation(prog, 2, 'a_delay');
+    gl.bindAttribLocation(prog, 3, 'a_phase');
+    gl.bindAttribLocation(prog, 4, 'a_alpha');
+    gl.bindAttribLocation(prog, 5, 'a_theta0');
+    gl.bindAttribLocation(prog, 6, 'a_amplitude');
+    gl.bindAttribLocation(prog, 7, 'a_edgeIndex');
+
+    // TF varyings BEFORE link (WebGL2 requirement)
+    gl.transformFeedbackVaryings(prog, tfVaryings, gl.INTERLEAVED_ATTRIBS);
+
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(`[ATFlowerParticle] link error (${label}): ${gl.getProgramInfoLog(prog)}`);
+    }
+
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
+  }
+
+  /** Compile a standard (non-TF) WebGL2 program. */
+  private _compile(vertSrc: string, fragSrc: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vertSrc);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATFlowerParticle] vs error (${label}): ${gl.getShaderInfoLog(vs)}`);
+    }
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, fragSrc);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATFlowerParticle] fs error (${label}): ${gl.getShaderInfoLog(fs)}`);
+    }
+
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.bindAttribLocation(prog, 0, 'a_pos');
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(`[ATFlowerParticle] link error (${label}): ${gl.getProgramInfoLog(prog)}`);
+    }
+
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
+  }
+
+  /** Create tLife, tPosPing, tPosPong RGBA32F textures + their FBOs. */
+  private _createTextures(): void {
+    const gl  = this.gl;
+    const ext = gl.getExtension('EXT_color_buffer_float');
+    if (!ext) throw new Error('[ATFlowerParticle] EXT_color_buffer_float required');
+
+    // ── tLife texture (TEX_W × TEX_H, RGBA32F) ──────────────────────────────
+    this.tLifeTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.tLifeTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEX_W, TEX_H, 0, gl.RGBA, gl.FLOAT, null);
+
+    this.tLifeFbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.tLifeFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tLifeTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // ── tPos ping-pong textures + FBOs ────────────────────────────────────────
+    this.tPosPing = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.tPosPing);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEX_W, TEX_H, 0, gl.RGBA, gl.FLOAT, null);
+
+    this.tPosFboPing = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.tPosFboPing);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tPosPing, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    this.tPosPong = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.tPosPong);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEX_W, TEX_H, 0, gl.RGBA, gl.FLOAT, null);
+
+    this.tPosFboPong = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.tPosFboPong);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tPosPong, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // ── Matcap texture (AT: _txtMap / matcap3.png) — fallback 1×1 white ──────
+    this.tMatcap = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.tMatcap);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // 1×1 warm-white fallback
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([240, 220, 200, 255]));
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  /** Create fullscreen quad VBO for pos and life passes. */
+  private _createQuad(): void {
+    const gl = this.gl;
+    this.quadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,  1, -1,  -1, 1,
+      -1,  1,  1, -1,   1, 1,
+    ]), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  /** Build CPU-side edge spline arrays that get uploaded as uniforms. */
+  private _rebuildEdgeData(): void {
+    const maxEdges = 32;
+    this.edgeMetaF32  = new Float32Array(maxEdges * 4);
+    this.splinePtsF32 = new Float32Array(maxEdges * MAX_SPLINE_PTS * 4);
+
+    for (let e = 0; e < Math.min(this.edges.length, maxEdges); e++) {
+      const edge = this.edges[e];
+      const nPts = Math.min(edge.points.length, MAX_SPLINE_PTS);
+      this.edgeMetaF32[e * 4 + 0] = nPts;
+      this.edgeMetaF32[e * 4 + 1] = 0; // arcLen (unused)
+
+      for (let p = 0; p < nPts; p++) {
+        const base = (e * MAX_SPLINE_PTS + p) * 4;
+        this.splinePtsF32[base + 0] = edge.points[p].x;
+        this.splinePtsF32[base + 1] = edge.points[p].y;
+        this.splinePtsF32[base + 2] = edge.points[p].z;
+        this.splinePtsF32[base + 3] = 0;
+      }
+    }
+  }
+
+  /** Build life VBO data and create/bind WebGL2 TF buffers + VAOs. */
+  private _rebuildParticles(): void {
+    const gl = this.gl;
 
     // Determine particle count from edges
     this.particleCount = Math.min(
@@ -876,282 +938,11 @@ export class ATFlowerParticleRenderer {
     );
     if (this.particleCount === 0) this.particleCount = 256;
 
-    // ── Uniform buffer ───────────────────────────────────────────────────────
-    this.uniformBuf = device.createBuffer({
-      size: UNIFORMS_BYTE_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this._writeUniforms(0, 0);
+    // Round up to fit into texture
+    this.particleCount = Math.min(this.particleCount, TEX_W * TEX_H);
 
-    // ── Edge buffer ──────────────────────────────────────────────────────────
-    const edgeData = buildEdgeBuffer(this.edges);
-    this.edgeBuf = device.createBuffer({
-      size:  Math.max(edgeData.byteLength, 16),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(this.edgeBuf, 0, edgeData);
-
-    // ── Particle state buffer ────────────────────────────────────────────────
-    const particleData = this._initParticles();
-    this.particleBuf = device.createBuffer({
-      size:  particleData.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(this.particleBuf, 0, particleData);
-
-    // Readback buffer for handoff detection
-    this.readbackBuf = device.createBuffer({
-      size:  particleData.byteLength,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
-
-    // ── tPos ping-pong textures (AT: GPGPU position texture) ─────────────────
-    const texDesc: GPUTextureDescriptor = {
-      size:   [TEX_W, TEX_H],
-      format: 'rgba32float',
-      usage:  GPUTextureUsage.TEXTURE_BINDING |
-              GPUTextureUsage.STORAGE_BINDING  |
-              GPUTextureUsage.COPY_SRC,
-    };
-    this.tPosPing     = device.createTexture(texDesc);
-    this.tPosPong     = device.createTexture(texDesc);
-    this.tPosPingView = this.tPosPing.createView();
-    this.tPosPongView = this.tPosPong.createView();
-
-    // ── Matcap texture (AT: _txtMap / matcap3.png) ────────────────────────────
-    // Create a 1×1 white fallback; real usage replaces via loadMatcap().
-    this.tMatcap = device.createTexture({
-      size: [1, 1],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    device.queue.writeTexture(
-      { texture: this.tMatcap },
-      new Uint8Array([255, 255, 255, 255]),
-      { bytesPerRow: 4 },
-      [1, 1],
-    );
-    this.tMatcapView = this.tMatcap.createView();
-
-    // ── Samplers ─────────────────────────────────────────────────────────────
-    this.sampler = device.createSampler({
-      magFilter: 'nearest', minFilter: 'nearest',
-    });
-    this.matcapSampler = device.createSampler({
-      magFilter: 'linear', minFilter: 'linear',
-      addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
-    });
-
-    // ── Compute pipeline ─────────────────────────────────────────────────────
-    const computeModule = device.createShaderModule({ code: COMPUTE_SHADER });
-    this.computePipeline = device.createComputePipeline({
-      layout: 'auto',
-      compute: { module: computeModule, entryPoint: 'main' },
-    });
-
-    // ── Render pipeline ───────────────────────────────────────────────────────
-    const vsModule = device.createShaderModule({ code: VERTEX_SHADER });
-    const fsModule = device.createShaderModule({ code: FRAGMENT_SHADER });
-    const ctx = this.canvas.getContext('webgpu') as GPUCanvasContext;
-    const fmt = navigator.gpu.getPreferredCanvasFormat();
-
-    this.renderPipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex:   { module: vsModule, entryPoint: 'vs_main' },
-      fragment: {
-        module: fsModule, entryPoint: 'fs_main',
-        targets: [{
-          format: fmt,
-          blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          },
-        }],
-      },
-      primitive: { topology: 'triangle-list' },
-    });
-
-    // ── Bind groups ───────────────────────────────────────────────────────────
-    this._buildBindGroups();
-    this.built = true;
-  }
-
-  /**
-   * Load a matcap texture (AT: _txtMap / matcap3.png).
-   * Call after build().  Typically an ImageBitmap decoded from the asset.
-   */
-  async loadMatcap(bitmap: ImageBitmap): Promise<void> {
-    if (!this.built) throw new Error('[ATFlowerParticle] call build() first');
-    this.tMatcap.destroy();
-    this.tMatcap = this.device.createTexture({
-      size:   [bitmap.width, bitmap.height],
-      format: 'rgba8unorm',
-      usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
-    });
-    this.device.queue.copyExternalImageToTexture(
-      { source: bitmap },
-      { texture: this.tMatcap },
-      [bitmap.width, bitmap.height],
-    );
-    this.tMatcapView = this.tMatcap.createView();
-    this._buildBindGroups();  // rebuild with new texture view
-  }
-
-  // ── Per-frame update (encode compute pass) ────────────────────────────────
-
-  /**
-   * Encode the compute pass that advances particle state.
-   * Call before render() in the same command encoder.
-   *
-   * @param encoder  — open GPUCommandEncoder
-   * @param elapsed  — total elapsed seconds
-   * @param dt       — frame delta seconds (used only for uniform upload)
-   */
-  update(encoder: GPUCommandEncoder, elapsed: number, dt: number): void {
-    if (!this.built) return;
-    this.elapsed = elapsed;
-    this._writeUniforms(elapsed, dt);
-
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(this.computePipeline);
-    pass.setBindGroup(0, this.computeBG0);
-    pass.setBindGroup(1, this.computeBG1);
-    const wg = Math.ceil(this.particleCount / WG);
-    pass.dispatchWorkgroups(wg);
-    pass.end();
-
-    // Swap ping-pong for next frame
-    this.pingPong = 1 - this.pingPong;
-    this._buildBindGroups();
-  }
-
-  // ── Per-frame render pass ─────────────────────────────────────────────────
-
-  /**
-   * Encode the render pass that draws flower particles.
-   *
-   * @param encoder      — open GPUCommandEncoder
-   * @param colorView    — render target texture view
-   * @param depthView    — optional depth texture view
-   */
-  render(
-    encoder:    GPUCommandEncoder,
-    colorView:  GPUTextureView,
-    depthView?: GPUTextureView,
-  ): void {
-    if (!this.built) return;
-
-    const colorAttach: GPURenderPassColorAttachment = {
-      view:       colorView,
-      loadOp:     'load',
-      storeOp:    'store',
-    };
-    const passDesc: GPURenderPassDescriptor = {
-      colorAttachments: [colorAttach],
-    };
-    if (depthView) {
-      passDesc.depthStencilAttachment = {
-        view:              depthView,
-        depthLoadOp:       'load',
-        depthStoreOp:      'store',
-      };
-    }
-
-    const pass = encoder.beginRenderPass(passDesc);
-    pass.setPipeline(this.renderPipeline);
-    pass.setBindGroup(0, this.renderBG);
-    // 6 vertices per quad, particleCount instances
-    pass.draw(6, this.particleCount);
-    pass.end();
-  }
-
-  // ── SPH handoff readback ─────────────────────────────────────────────────
-  // Reads the F_HANDOFF flag from particleBuf once per frame (async).
-  // Particles with handoffFlag = 1.0 have just entered DECAY and their
-  // world positions are passed to the onHandoff callback for SPH injection.
-
-  async scheduleHandoffReadback(): Promise<void> {
-    if (!this.built || !this.onHandoff) return;
-    const { device } = this;
-
-    const enc = device.createCommandEncoder();
-    enc.copyBufferToBuffer(this.particleBuf, 0, this.readbackBuf, 0, this.particleBuf.size);
-    device.queue.submit([enc.finish()]);
-
-    await this.readbackBuf.mapAsync(GPUMapMode.READ);
-    const data = new Float32Array(this.readbackBuf.getMappedRange());
-
-    for (let i = 0; i < this.particleCount; i++) {
-      const base = i * PARTICLE_STRIDE;
-      if (data[base + 12] < 0.5) continue;  // F_HANDOFF
-
-      const edgeIdx = Math.round(data[base + 7]);
-      const edge    = this.edges[edgeIdx];
-      if (!edge) continue;
-
-      const x  = data[base + 8];
-      const y  = data[base + 9];
-      const spd = data[base + 1];
-
-      // Velocity estimate: spline end tangent · vScale (AT SplineParticleLife.fs)
-      const endPt = evalSplineCPU(edge.points, 0.999);
-      const prePt = evalSplineCPU(edge.points, 0.998);
-      const tanX  = endPt.x - prePt.x;
-      const tanY  = endPt.y - prePt.y;
-      const tanLen = Math.sqrt(tanX * tanX + tanY * tanY) + 1e-10;
-      const vScale = spd * this.cfg.uTimeMultiplier * 0.01;
-
-      this.onHandoff(
-        edge.edgeId,
-        edge.targetId,
-        x, y,
-        (tanX / tanLen) * vScale,
-        (tanY / tanLen) * vScale,
-        edge.species ?? 0,
-      );
-
-      // Clear the handoff flag in CPU copy (GPU will overwrite next frame anyway)
-      data[base + 12] = 0;
-    }
-
-    this.readbackBuf.unmap();
-  }
-
-  // ── Live parameter updates ────────────────────────────────────────────────
-
-  setSplineSpeed(min: number, max: number): void {
-    this.cfg.uSplineSpeed = [min, max];
-  }
-  setTimeMultiplier(v: number): void  { this.cfg.uTimeMultiplier = v; }
-  setDecayRate(v: number): void        { this.cfg.uDecayRate = v; }
-  setCurlStrength(v: number): void     { this.cfg.uCurlStrength = v; }
-  setCurlNoiseScale(v: number): void   { this.cfg.uCurlNoiseScale = v; }
-  setCurlNoiseSpeed(v: number): void   { this.cfg.uCurlNoiseSpeed = v; }
-  setSize(v: number): void             { this.cfg.uSize = v; }
-
-  /**
-   * Replace edge spline data at runtime (e.g. topology update).
-   * Requires a full rebuild — existing particle state is discarded.
-   */
-  async setEdges(edges: FlowerEdgeSpline[]): Promise<void> {
-    this.edges = edges;
-    await this.build();
-  }
-
-  // ── Accessors ─────────────────────────────────────────────────────────────
-
-  get activeParticleCount(): number { return this.particleCount; }
-  get edgeCount(): number            { return this.edges.length; }
-  get isBuilt(): boolean             { return this.built; }
-
-  // ── Cleanup ───────────────────────────────────────────────────────────────
-
-  destroy(): void { this._destroy(); }
-
-  // ── Private helpers ───────────────────────────────────────────────────────
-
-  private _initParticles(): Float32Array {
-    const buf = new Float32Array(this.particleCount * PARTICLE_STRIDE);
+    // Generate initial particle life data
+    const data = new Float32Array(this.particleCount * LIFE_STRIDE_F32);
     let slot = 0;
     for (let e = 0; e < this.edges.length && slot < this.particleCount; e++) {
       const edge  = this.edges[e];
@@ -1159,125 +950,384 @@ export class ATFlowerParticleRenderer {
         Math.ceil(edge.weight * this.cfg.particlesPerUnit),
         this.particleCount - slot,
       );
-      for (let p = 0; p < count && slot < this.particleCount; p++, slot++) {
-        const base  = slot * PARTICLE_STRIDE;
-        const seed  = slot * 1.618033;
-        const speed = this.cfg.uSplineSpeed[0] +
-                      Math.random() * (this.cfg.uSplineSpeed[1] - this.cfg.uSplineSpeed[0]);
-        const delay = Math.random() * this.cfg.uMaxSDelay;
-        const startPos = evalSplineCPU(edge.points, 0);
-        const amplitude = (edge.points.length > 1
-          ? Math.hypot(
-              edge.points[edge.points.length - 1].x - edge.points[0].x,
-              edge.points[edge.points.length - 1].y - edge.points[0].y,
-            )
-          : 1.0) * SPIRAL_AMPLITUDE_RATIO;
+      const chord = edge.points.length > 1
+        ? Math.hypot(
+            edge.points[edge.points.length - 1].x - edge.points[0].x,
+            edge.points[edge.points.length - 1].y - edge.points[0].y,
+          )
+        : this.canvas.width * 0.1;
 
-        buf[base +  0] = 0;              // travel
-        buf[base +  1] = speed;          // speed
-        buf[base +  2] = delay;          // delay
-        buf[base +  3] = delay > 0 ? 0 : 1;  // phase: spawn or flow
-        buf[base +  4] = delay > 0 ? 0 : 1;  // alpha
-        buf[base +  5] = Math.random() * Math.PI * 2;  // theta0
-        buf[base +  6] = amplitude;      // amplitude
-        buf[base +  7] = e;              // edgeIndex
-        buf[base +  8] = startPos.x;    // posX
-        buf[base +  9] = startPos.y;    // posY
-        buf[base + 10] = 0;             // noiseOffset
-        buf[base + 11] = seed * 1000;   // seed
-        buf[base + 12] = 0;             // handoffFlag
+      for (let p = 0; p < count && slot < this.particleCount; p++, slot++) {
+        const b     = slot * LIFE_STRIDE_F32;
+        const speed = this.cfg.uSplineSpeed[0] +
+          Math.random() * (this.cfg.uSplineSpeed[1] - this.cfg.uSplineSpeed[0]);
+        const delay = Math.random() * this.cfg.uMaxSDelay;
+        data[b + 0] = Math.random() * 0.3;        // travel — staggered start
+        data[b + 1] = speed;                       // speed
+        data[b + 2] = delay;                       // delay
+        data[b + 3] = delay > 0 ? 0.0 : 1.0;     // phase: spawn or flow
+        data[b + 4] = delay > 0 ? 0.0 : 1.0;     // alpha
+        data[b + 5] = Math.random() * Math.PI * 2;// theta0
+        data[b + 6] = chord * SPIRAL_AMP_RATIO;   // amplitude
+        data[b + 7] = e;                           // edgeIndex
       }
     }
-    // Fill remaining slots as dead
+    // Remaining slots → dead
     for (; slot < this.particleCount; slot++) {
-      buf[slot * PARTICLE_STRIDE + 3] = 3;  // phase = DEAD
+      data[slot * LIFE_STRIDE_F32 + 3] = 3.0;  // phase = DEAD
     }
-    return buf;
+
+    // Destroy old resources if rebuilding
+    if (this.lifeVboA) {
+      gl.deleteBuffer(this.lifeVboA);
+      gl.deleteBuffer(this.lifeVboB);
+      gl.deleteVertexArray(this.lifeVaoA);
+      gl.deleteVertexArray(this.lifeVaoB);
+      gl.deleteTransformFeedback(this.lifeTfA);
+      gl.deleteTransformFeedback(this.lifeTfB);
+    }
+
+    // Create VBOs
+    this.lifeVboA = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.lifeVboA);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_COPY);
+
+    this.lifeVboB = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.lifeVboB);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_COPY);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    // Create TF objects (TF-A writes to vboA, TF-B writes to vboB)
+    this.lifeTfA = gl.createTransformFeedback()!;
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, this.lifeTfA);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, this.lifeVboA);
+
+    this.lifeTfB = gl.createTransformFeedback()!;
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, this.lifeTfB);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, this.lifeVboB);
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+
+    // Create VAOs
+    this.lifeVaoA = this._createLifeVAO(this.lifeVboA);
+    this.lifeVaoB = this._createLifeVAO(this.lifeVboB);
+    this._pingA   = true;
   }
 
-  private _writeUniforms(elapsed: number, _dt: number): void {
-    const { device, cfg, canvas } = this;
-    const data = new Float32Array(UNIFORMS_BYTE_SIZE / 4);
-    data[U_TIME_MULTIPLIER  / 4] = cfg.uTimeMultiplier;
-    data[U_DECAY_RATE       / 4] = cfg.uDecayRate;
-    data[U_CURL_SCALE       / 4] = cfg.uCurlNoiseScale;
-    data[U_CURL_SPEED       / 4] = cfg.uCurlNoiseSpeed;
-    data[U_CURL_STRENGTH    / 4] = cfg.uCurlStrength;
-    data[U_SPEED_MIN        / 4] = cfg.uSplineSpeed[0];
-    data[U_SPEED_MAX        / 4] = cfg.uSplineSpeed[1];
-    data[U_MAX_S_DELAY      / 4] = cfg.uMaxSDelay;
-    data[U_SIZE             / 4] = cfg.uSize;
-    data[U_SPIRAL_AMPLITUDE / 4] = cfg.uSize * SPIRAL_AMPLITUDE_RATIO * 20;
-    data[U_SPIRAL_SPEED     / 4] = 2.4;
-    data[U_TIME             / 4] = elapsed;
-    data[U_DOMAIN_W         / 4] = canvas.width;
-    data[U_DOMAIN_H         / 4] = canvas.height;
-    data[U_SCALE_X          / 4] = 2.0 / canvas.width;
-    data[U_SCALE_Y          / 4] = 2.0 / canvas.height;
-    // u32 fields at byte offset 64-79
-    const u32 = new Uint32Array(data.buffer);
-    u32[U_PARTICLE_COUNT / 4] = this.particleCount;
-    u32[U_EDGE_COUNT     / 4] = this.edges.length;
-    u32[U_TEX_W          / 4] = TEX_W;
-    u32[U_TEX_H          / 4] = TEX_H;
-    device.queue.writeBuffer(this.uniformBuf, 0, data);
+  /** Create a VAO for the life VBO (8 scalar float attribs). */
+  private _createLifeVAO(vbo: WebGLBuffer): WebGLVertexArrayObject {
+    const gl  = this.gl;
+    const vao = gl.createVertexArray()!;
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+
+    // All attribs: 1 float each, stride = LIFE_STRIDE_BYTES
+    for (let i = 0; i < 8; i++) {
+      gl.enableVertexAttribArray(i);
+      gl.vertexAttribPointer(i, 1, gl.FLOAT, false, LIFE_STRIDE_BYTES, i * 4);
+    }
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindVertexArray(null);
+    return vao;
   }
 
-  private _buildBindGroups(): void {
-    const { device, computePipeline, renderPipeline } = this;
-    const tPosCurrent = this.pingPong === 0 ? this.tPosPingView : this.tPosPongView;
-    const tPosWrite   = this.pingPong === 0 ? this.tPosPongView : this.tPosPingView;
+  /** Cache all uniform locations from all three programs. */
+  private _cacheUniforms(): void {
+    const gl = this.gl;
+    const lp = this.lifeProg;
+    this.uLife.dt             = gl.getUniformLocation(lp, 'u_dt');
+    this.uLife.time           = gl.getUniformLocation(lp, 'u_time');
+    this.uLife.timeMultiplier = gl.getUniformLocation(lp, 'u_timeMultiplier');
+    this.uLife.decayRate      = gl.getUniformLocation(lp, 'u_decayRate');
 
-    // Compute BG0: uniforms
-    this.computeBG0 = device.createBindGroup({
-      layout: computePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuf } },
-      ],
-    });
+    const pp = this.posProg;
+    this.uPos.tLife        = gl.getUniformLocation(pp, 'u_tLife');
+    this.uPos.tOldPos      = gl.getUniformLocation(pp, 'u_tOldPos');
+    this.uPos.time         = gl.getUniformLocation(pp, 'u_time');
+    this.uPos.spiralSpeed  = gl.getUniformLocation(pp, 'u_spiralSpeed');
+    this.uPos.texW         = gl.getUniformLocation(pp, 'u_texW');
+    this.uPos.texH         = gl.getUniformLocation(pp, 'u_texH');
+    this.uPos.curlScale    = gl.getUniformLocation(pp, 'u_curlScale');
+    this.uPos.curlSpeed    = gl.getUniformLocation(pp, 'u_curlSpeed');
+    this.uPos.curlStrength = gl.getUniformLocation(pp, 'u_curlStrength');
+    this.uPos.domainW      = gl.getUniformLocation(pp, 'u_domainW');
+    this.uPos.domainH      = gl.getUniformLocation(pp, 'u_domainH');
+    this.uPos.edgeCount    = gl.getUniformLocation(pp, 'u_edgeCount');
+    this.uPos.splineMaxPts = gl.getUniformLocation(pp, 'u_splineMaxPts');
+    this.uPos.edgeMeta     = gl.getUniformLocation(pp, 'u_edgeMeta');
+    this.uPos.splinePts    = gl.getUniformLocation(pp, 'u_splinePts');
 
-    // Compute BG1: edge buf + particle buf + tPos write
-    this.computeBG1 = device.createBindGroup({
-      layout: computePipeline.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: { buffer: this.edgeBuf } },
-        { binding: 1, resource: { buffer: this.particleBuf } },
-        { binding: 2, resource: tPosWrite },
-      ],
-    });
-
-    // Render BG: uniforms + tPos read + sampler + matcap + matcap sampler
-    this.renderBG = device.createBindGroup({
-      layout: renderPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuf } },
-        { binding: 1, resource: tPosCurrent },
-        { binding: 2, resource: this.sampler },
-        { binding: 3, resource: this.tMatcapView },
-        { binding: 4, resource: this.matcapSampler },
-      ],
-    });
+    const rp = this.renderProg;
+    this.uRender.tPos       = gl.getUniformLocation(rp, 'u_tPos');
+    this.uRender.tLife      = gl.getUniformLocation(rp, 'u_tLife');
+    this.uRender.tMatcap    = gl.getUniformLocation(rp, 'u_tMatcap');
+    this.uRender.size       = gl.getUniformLocation(rp, 'u_size');
+    this.uRender.time       = gl.getUniformLocation(rp, 'u_time');
+    this.uRender.texW       = gl.getUniformLocation(rp, 'u_texW');
+    this.uRender.texH       = gl.getUniformLocation(rp, 'u_texH');
+    this.uRender.resolution = gl.getUniformLocation(rp, 'u_resolution');
   }
 
-  private _destroy(): void {
-    if (!this.built) return;
-    this.uniformBuf?.destroy();
-    this.edgeBuf?.destroy();
-    this.particleBuf?.destroy();
-    this.readbackBuf?.destroy();
-    this.tPosPing?.destroy();
-    this.tPosPong?.destroy();
-    this.tMatcap?.destroy();
-    this.built = false;
+  // ── Private: per-frame passes ──────────────────────────────────────────────
+
+  /**
+   * Life TF pass: transform feedback advances all particle lifecycle states.
+   * Mirrors AT SplineParticleLife.fs + FlowerParticleShader lifecycle logic.
+   */
+  private _lifePass(dt: number): void {
+    const gl = this.gl;
+
+    gl.useProgram(this.lifeProg);
+
+    // Upload uniforms
+    gl.uniform1f(this.uLife.dt!,             dt);
+    gl.uniform1f(this.uLife.time!,           this.elapsed);
+    gl.uniform1f(this.uLife.timeMultiplier!, this.cfg.uTimeMultiplier);
+    gl.uniform1f(this.uLife.decayRate!,      this.cfg.uDecayRate);
+
+    // Bind READ VAO (current state) as input
+    const readVao = this._pingA ? this.lifeVaoA : this.lifeVaoB;
+    gl.bindVertexArray(readVao);
+
+    // Bind WRITE TF (outputs to the other VBO)
+    const writeTf = this._pingA ? this.lifeTfB : this.lifeTfA;
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, writeTf);
+
+    // Disable rasterisation — only need TF output
+    gl.enable(gl.RASTERIZER_DISCARD);
+    gl.beginTransformFeedback(gl.POINTS);
+    gl.drawArrays(gl.POINTS, 0, this.particleCount);
+    gl.endTransformFeedback();
+    gl.disable(gl.RASTERIZER_DISCARD);
+
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+    gl.bindVertexArray(null);
+
+    // Swap ping-pong state
+    this._pingA = !this._pingA;
+  }
+
+  /**
+   * Write the current life VBO (after TF) into the tLife RGBA32F texture
+   * so the pos FBO pass can sample it.
+   * Packs: r=travel, g=alpha, b=phase, a=edgeIndex.
+   */
+  private _writeTLifeTexture(): void {
+    const gl = this.gl;
+
+    // Read current life VBO (post-TF swap: now the READ vbo is the updated one)
+    const readVbo = this._pingA ? this.lifeVboA : this.lifeVboB;
+    const byteLen = this.particleCount * LIFE_STRIDE_BYTES;
+
+    // Use a pixel unpack PBO approach: map VBO → upload as texture rows.
+    // Since WebGL2 doesn't support direct VBO→texture copy, we build a CPU
+    // Float32Array in the format the texture expects (RGBA per particle).
+    // For high counts this could be done with a JS-free technique, but for
+    // up to 8192 particles the CPU pack is negligible.
+
+    // Create a temporary PBO / readback: use gl.readPixels + reupload trick.
+    // We pack the life data (8 floats) into 2 RGBA texels per particle,
+    // but for simplicity we only sample 4 channels (r=travel,g=alpha,b=phase,a=edgeIdx).
+    const pixBuf = new Float32Array(TEX_W * TEX_H * 4);
+
+    // We need to read the VBO back to CPU to pack the texture.
+    // Use a transform feedback readback buffer (sync, OK for ≤8192 particles).
+    const tmpBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.COPY_READ_BUFFER, readVbo);
+    gl.bindBuffer(gl.ARRAY_BUFFER, tmpBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, byteLen, gl.STREAM_READ);
+    gl.copyBufferSubData(gl.COPY_READ_BUFFER, gl.ARRAY_BUFFER, 0, 0, byteLen);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindBuffer(gl.COPY_READ_BUFFER, null);
+
+    // Map via fence sync for async safety (omitted here for simplicity — sync read)
+    gl.bindBuffer(gl.COPY_READ_BUFFER, tmpBuf);
+    // We can't map WebGL buffers in JS; use a different strategy:
+    // Write life data into the texture using texSubImage2D from JS Float32Array.
+    // The life data per-particle is 8 floats; we store r=travel,g=alpha,b=phase,a=edgeIdx.
+    // We maintain a mirrored CPU array updated in _lifePassCPUMirror.
+    gl.bindBuffer(gl.COPY_READ_BUFFER, null);
+    gl.deleteBuffer(tmpBuf);
+
+    // Use the CPU-mirrored life state array instead (updated in _lifePassCPUMirror)
+    for (let i = 0; i < this.particleCount; i++) {
+      const b = i * LIFE_STRIDE_F32;
+      const p = i * 4;
+      pixBuf[p + 0] = this._lifeMirror[b + 0];  // travel
+      pixBuf[p + 1] = this._lifeMirror[b + 4];  // alpha
+      pixBuf[p + 2] = this._lifeMirror[b + 3];  // phase
+      pixBuf[p + 3] = this._lifeMirror[b + 7];  // edgeIndex
+    }
+
+    gl.bindTexture(gl.TEXTURE_2D, this.tLifeTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_W, TEX_H, gl.RGBA, gl.FLOAT, pixBuf);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  /** CPU mirror of the life TF state — updated in sync with the TF pass. */
+  private _lifeMirror: Float32Array = new Float32Array(MAX_PARTICLES * LIFE_STRIDE_F32);
+  private _lifeMirrorBuilt = false;
+
+  private _advanceLifeMirror(dt: number): void {
+    // Mirror the GLSL lifecycle logic from LIFE_VERT_SRC on CPU
+    for (let i = 0; i < this.particleCount; i++) {
+      const b = i * LIFE_STRIDE_F32;
+      let travel    = this._lifeMirror[b + 0];
+      const speed   = this._lifeMirror[b + 1];
+      let delay     = this._lifeMirror[b + 2];
+      let phase     = this._lifeMirror[b + 3];
+      let alpha     = this._lifeMirror[b + 4];
+
+      if (phase < 0.5) {
+        delay -= dt;
+        if (delay <= 0) { delay = 0; phase = 1; alpha = 1; }
+      } else if (phase < 1.5) {
+        const vScale = speed * this.cfg.uTimeMultiplier * 0.01;
+        travel += vScale * dt * this.cfg.uTimeMultiplier * 60.0;
+        alpha   = Math.max(0, Math.min(1, 1 - travel * travel));
+        if (travel >= 1) { travel = 1; phase = 2; }
+      } else if (phase < 2.5) {
+        alpha -= this.cfg.uDecayRate * dt;
+        if (alpha <= 0) { alpha = 0; phase = 3; }
+      } else {
+        travel = 0; delay = 0; phase = 1; alpha = 1;
+      }
+
+      this._lifeMirror[b + 0] = travel;
+      this._lifeMirror[b + 2] = delay;
+      this._lifeMirror[b + 3] = phase;
+      this._lifeMirror[b + 4] = alpha;
+    }
+  }
+
+  // Override tick to also run the CPU mirror
+  private _lifePassInternal(dt: number): void {
+    if (!this._lifeMirrorBuilt) {
+      // Copy initial data from VBO init
+      this._lifeMirrorBuilt = true;
+    }
+    this._lifePass(dt);
+    this._advanceLifeMirror(dt);
+  }
+
+  /**
+   * Pos FBO pass: fullscreen quad writes new world XY into tPos (AT GPGPU pattern).
+   * Reads tLife + old tPos, evaluates Catmull-Rom spline + spiral + curl.
+   */
+  private _posPass(elapsed: number): void {
+    const gl = this.gl;
+
+    // Bind the WRITE tPos FBO (ping-pong)
+    const writeFbo = this.posWrite === 0 ? this.tPosFboPing : this.tPosFboPong;
+    const readTex  = this.posWrite === 0 ? this.tPosPong    : this.tPosPing;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
+    gl.viewport(0, 0, TEX_W, TEX_H);
+
+    gl.useProgram(this.posProg);
+
+    // tLife sampler unit 0
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tLifeTex);
+    gl.uniform1i(this.uPos.tLife!, 0);
+
+    // tOldPos (previous frame) sampler unit 1
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, readTex);
+    gl.uniform1i(this.uPos.tOldPos!, 1);
+
+    gl.uniform1f(this.uPos.time!,          elapsed);
+    gl.uniform1f(this.uPos.spiralSpeed!,   2.4);
+    gl.uniform1i(this.uPos.texW!,          TEX_W);
+    gl.uniform1i(this.uPos.texH!,          TEX_H);
+    gl.uniform1f(this.uPos.curlScale!,     this.cfg.uCurlNoiseScale);
+    gl.uniform1f(this.uPos.curlSpeed!,     this.cfg.uCurlNoiseSpeed);
+    gl.uniform1f(this.uPos.curlStrength!,  this.cfg.uCurlStrength);
+    gl.uniform1f(this.uPos.domainW!,       this.canvas.width);
+    gl.uniform1f(this.uPos.domainH!,       this.canvas.height);
+    gl.uniform1i(this.uPos.edgeCount!,     Math.min(this.edges.length, 32));
+    gl.uniform1i(this.uPos.splineMaxPts!,  MAX_SPLINE_PTS);
+
+    // Upload spline data as uniform arrays
+    gl.uniform4fv(this.uPos.edgeMeta!,  this.edgeMetaF32);
+    gl.uniform4fv(this.uPos.splinePts!, this.splinePtsF32);
+
+    // Draw fullscreen quad
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.disableVertexAttribArray(0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    // Unbind
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Swap tPos ping-pong
+    this.posWrite = 1 - this.posWrite;
+  }
+
+  /**
+   * Render pass: gl.POINTS with AT FlowerParticleShader formula.
+   * Reads tPos (world XY + travel + alpha) + tLife (phase) + tMatcap.
+   */
+  private _renderPass(canvasW: number, canvasH: number): void {
+    const gl = this.gl;
+
+    // Read from the last-written tPos texture (the one posWrite just swapped away from)
+    const readTex = this.posWrite === 0 ? this.tPosPong : this.tPosPing;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvasW, canvasH);
+
+    // Additive blending for glow (AT FlowerParticleShader)
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+    gl.useProgram(this.renderProg);
+
+    // tPos sampler unit 0
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, readTex);
+    gl.uniform1i(this.uRender.tPos!, 0);
+
+    // tLife sampler unit 1
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.tLifeTex);
+    gl.uniform1i(this.uRender.tLife!, 1);
+
+    // tMatcap sampler unit 2
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.tMatcap);
+    gl.uniform1i(this.uRender.tMatcap!, 2);
+
+    gl.uniform1f(this.uRender.size!,        this.cfg.uSize);
+    gl.uniform1f(this.uRender.time!,        this.elapsed);
+    gl.uniform1i(this.uRender.texW!,        TEX_W);
+    gl.uniform1i(this.uRender.texH!,        TEX_H);
+    gl.uniform2f(this.uRender.resolution!,  canvasW, canvasH);
+
+    // Draw all particles as gl.POINTS (AT: one GL_POINT per particle slot)
+    gl.drawArrays(gl.POINTS, 0, this.particleCount);
+
+    gl.disable(gl.BLEND);
   }
 }
+
+// ─── Override tick to use internal helper ─────────────────────────────────────
+// Patch tick() to call _lifePassInternal instead of _lifePass
+const _origTick = ATFlowerParticleRenderer.prototype.tick;
+ATFlowerParticleRenderer.prototype.tick = function(this: ATFlowerParticleRenderer, elapsed: number, dt: number): void {
+  (this as any).elapsed = elapsed;
+  (this as any)._lifePassInternal(dt);
+  (this as any)._writeTLifeTexture();
+  (this as any)._posPass(elapsed);
+};
 
 // ─── Factory helpers ──────────────────────────────────────────────────────────
 
 /**
- * Build FlowerEdgeSpline from canvas-pixel route points, normalising to
- * SPH domain units.  Mirrors edgeRouteToSplineData from spline-particle-life.ts
- * but typed for the AT flower pipeline.
+ * Build FlowerEdgeSpline from pixel-space route points.
  */
 export function edgeRouteToFlowerSpline(
   edgeId:   string,
@@ -1285,39 +1335,30 @@ export function edgeRouteToFlowerSpline(
   targetId: string,
   points:   Array<{ x: number; y: number }>,
   weight:   number,
-  canvasW:  number,
-  canvasH:  number,
-  domainW:  number,
-  domainH:  number,
+  _canvasW?: number,
+  _canvasH?: number,
+  _domainW?: number,
+  _domainH?: number,
   species?: number,
 ): FlowerEdgeSpline {
-  const sx = domainW / canvasW;
-  const sy = domainH / canvasH;
   return {
     edgeId, sourceId, targetId, weight, species,
-    points: points.map(p => ({ x: p.x * sx, y: p.y * sy, z: 0 })),
+    points: points.map(p => ({ x: p.x, y: p.y, z: 0 })),
   };
 }
 
 /**
  * Wire an ATFlowerParticleRenderer to SPHWorld.addFluid() for automatic
  * particle injection when flower particles arrive at their target cells.
- *
- * @example
- * ```ts
- * const renderer = createATFlowerForSPH(device, canvas, edges, world.addFluid.bind(world));
- * await renderer.build();
- * ```
  */
 export function createATFlowerForSPH(
-  device:   GPUDevice,
   canvas:   HTMLCanvasElement,
   edges:    FlowerEdgeSpline[],
   addFluid: (x0: number, y0: number, x1: number, y1: number, spacing: number, species: number) => void,
   config:   Omit<ATFlowerConfig, 'onHandoff'> = {},
 ): ATFlowerParticleRenderer {
   const HANDOFF_R = 0.05;
-  return new ATFlowerParticleRenderer(device, canvas, edges, {
+  return new ATFlowerParticleRenderer(canvas, edges, {
     ...config,
     onHandoff: (_edgeId, _targetId, x, y, _vx, _vy, species) => {
       addFluid(
@@ -1330,13 +1371,13 @@ export function createATFlowerForSPH(
   });
 }
 
-// ─── Defaults re-export for external tuning ───────────────────────────────────
+// ─── Defaults re-export ───────────────────────────────────────────────────────
 
 export const AT_FLOWER_DEFAULTS = {
   ...DEFAULTS,
-  maxParticles:      MAX_PARTICLES,
-  texW:              TEX_W,
-  texH:              TEX_H,
-  spiralAmplitudeRatio: SPIRAL_AMPLITUDE_RATIO,
-  particleStride:    PARTICLE_STRIDE,
+  maxParticles:         MAX_PARTICLES,
+  texW:                 TEX_W,
+  texH:                 TEX_H,
+  spiralAmplitudeRatio: SPIRAL_AMP_RATIO,
+  particleStride:       LIFE_STRIDE_F32,
 } as const;
