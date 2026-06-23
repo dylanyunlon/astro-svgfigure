@@ -1,0 +1,19 @@
+{
+  "jellyfish.bin": "self_attn",
+  "flower_spine-128.bin": "ffn",
+  "cables.bin": "_edges",
+  "structure.bin": "_scene",
+  "forest-128.bin": "_bg",
+  "rock_L.bin": "add_norm1",
+  "rock_R.bin": "add_norm2",
+  "spine.bin": "pos_encode",
+  "AT_logo.bin": "output",
+  "pillars.bin": "input_embed",
+  "hexagon_gem.bin": "_decor",
+  "cube.bin": "_prim",
+  "mask.bin": "_fx",
+  "sand.bin": "_ground",
+  "chainlink.bin": "_edges",
+  "walls.bin": "_boundary",
+  "rocky_soil.bin": "_ground"
+}
