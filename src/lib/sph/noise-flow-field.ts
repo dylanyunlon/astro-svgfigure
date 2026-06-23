@@ -1,13 +1,13 @@
 # === src/lib/sph/noise-flow-field.ts ===
-// noise-flow-field.ts — Curl-noise + FBM flow field for SPH particles
+// noise-flow-field.ts --- Curl-noise + FBM flow field for SPH particles
 //
 // Imports lygia's fbm.wgsl and curl.wgsl concepts and inlines a self-contained
 // WGSL implementation that can be appended into the SPH force shader.
 //
 // Effects achievable via NoiseFlowFieldConfig:
-//   'smoke'  — gentle FBM-modulated curl, low frequency, soft eddies
-//   'aurora' — layered octave FBM, high vertical drift, colour-sweep time warp
-//   'water'  — fast curl, medium frequency, gentle gravity-aligned drift
+//   'smoke'  --- gentle FBM-modulated curl, low frequency, soft eddies
+//   'aurora' --- layered octave FBM, high vertical drift, colour-sweep time warp
+//   'water'  --- fast curl, medium frequency, gentle gravity-aligned drift
 //
 // Integration with SPHGPUOrchestrator:
 //   Call NoiseFlowField.encodeForceOverlay(encoder, n) *after* encodeForces()
@@ -27,7 +27,7 @@ export interface NoiseFlowFieldConfig {
   effect: NoiseEffect;
   /** Global strength multiplier (default 1). */
   strength?: number;
-  /** Simulation time in seconds — drives the noise animation. */
+  /** Simulation time in seconds --- drives the noise animation. */
   time?: number;
 }
 
@@ -42,13 +42,13 @@ const EFFECT_PARAMS: Record<
 };
 
 // ---------------------------------------------------------------------------
-// WGSL: simplex noise basis (based on lygia snoise2 — self-contained)
+// WGSL: simplex noise basis (based on lygia snoise2 --- self-contained)
 // ---------------------------------------------------------------------------
 // Inlined from upstream/lygia/generative/snoise.wgsl + permute helpers so
 // the shader compiles standalone without the lygia preprocessor.
 
 const WGSL_SIMPLEX_BASIS = /* wgsl */`
-// ── Lygia-derived simplex permute helpers ───────────────────────────────────
+// ------ Lygia-derived simplex permute helpers ---------------------------------------------------------------------------------------------------------
 fn sn_mod289_2(x: vec2f) -> vec2f { return x - floor(x / 289.0) * 289.0; }
 fn sn_mod289_3(x: vec3f) -> vec3f { return x - floor(x / 289.0) * 289.0; }
 fn sn_mod289_4(x: vec4f) -> vec4f { return x - floor(x / 289.0) * 289.0; }
@@ -56,7 +56,7 @@ fn sn_permute3(x: vec3f) -> vec3f { return sn_mod289_3((x * 34.0 + 1.0) * x); }
 fn sn_permute4(x: vec4f) -> vec4f { return sn_mod289_4((x * 34.0 + 1.0) * x); }
 fn sn_taylorInvSqrt4(r: vec4f) -> vec4f { return 1.79284291400159 - 0.85373472095314 * r; }
 
-/// 2-D simplex noise in [-1, 1] — direct port of lygia snoise2.
+/// 2-D simplex noise in [-1, 1] --- direct port of lygia snoise2.
 fn snoise2(v: vec2f) -> f32 {
   let C = vec4f( 0.211324865405187,   // (3.0 - sqrt(3.0)) / 6.0
                  0.366025403784439,   // 0.5 * (sqrt(3.0) - 1.0)
@@ -96,11 +96,11 @@ fn snoise2(v: vec2f) -> f32 {
 
 // ---------------------------------------------------------------------------
 // WGSL: FBM over 2-D simplex (lygia fbm.wgsl, translated to WGSL proper)
-// Supports 2–6 octaves via a runtime uniform rather than compile-time const.
+// Supports 2--�6 octaves via a runtime uniform rather than compile-time const.
 // ---------------------------------------------------------------------------
 
 const WGSL_FBM = /* wgsl */`
-// ── Lygia fbm — runtime octave count ────────────────────────────────────────
+// ------ Lygia fbm --- runtime octave count ------------------------------------------------------------------------------------------------------------------------
 fn fbm2(st_in: vec2f, octaves: i32) -> f32 {
   var value: f32    = 0.0;
   var amplitude: f32 = 0.5;
@@ -119,12 +119,12 @@ fn fbm2(st_in: vec2f, octaves: i32) -> f32 {
 // WGSL: 2-D curl noise using FBM potential (lygia curl.wgsl variant)
 //
 // Curl is computed from the numerical gradient of a scalar FBM potential Ψ:
-//   curl(Ψ)(x,y) = (∂Ψ/∂y, −∂Ψ/∂x)
+//   curl(Ψ)(x,y) = (-�-Ψ/-�-y, -��-�-Ψ/-�-x)
 // This guarantees a divergence-free field, perfect for smoke / aurora / water.
 // ---------------------------------------------------------------------------
 
 const WGSL_CURL = /* wgsl */`
-// ── Lygia curl2 — FBM-potential divergence-free field ───────────────────────
+// ------ Lygia curl2 --- FBM-potential divergence-free field ---------------------------------------------------------------------
 fn curlFBM(p: vec2f, octaves: i32) -> vec2f {
   let e = 0.1;
   let dx = vec2f(e, 0.0);
@@ -135,7 +135,7 @@ fn curlFBM(p: vec2f, octaves: i32) -> vec2f {
   let p_y0 = fbm2(p - dy, octaves);
   let p_y1 = fbm2(p + dy, octaves);
 
-  // central-difference gradient → 90° rotation for curl
+  // central-difference gradient -�� 90° rotation for curl
   let gx = (p_x1 - p_x0) / (2.0 * e);
   let gy = (p_y1 - p_y0) / (2.0 * e);
 
@@ -147,15 +147,15 @@ fn curlFBM(p: vec2f, octaves: i32) -> vec2f {
 // ---------------------------------------------------------------------------
 // WGSL: the force-overlay compute shader
 // ---------------------------------------------------------------------------
-// Uniform layout (NoiseUniforms, 32 bytes = 8 × f32):
-//   0  freq        — noise space frequency
-//   1  timeScale   — time warp speed
-//   2  time        — current simulation time (animated)
-//   3  strength    — force magnitude
-//   4  driftX      — constant drift force X
-//   5  driftY      — constant drift force Y
-//   6  count_f     — particle count (as f32 for padding)
-//   7  octaves_f   — FBM octave count (as f32, cast to i32 in shader)
+// Uniform layout (NoiseUniforms, 32 bytes = 8 �- f32):
+//   0  freq        --- noise space frequency
+//   1  timeScale   --- time warp speed
+//   2  time        --- current simulation time (animated)
+//   3  strength    --- force magnitude
+//   4  driftX      --- constant drift force X
+//   5  driftY      --- constant drift force Y
+//   6  count_f     --- particle count (as f32 for padding)
+//   7  octaves_f   --- FBM octave count (as f32, cast to i32 in shader)
 
 const NOISE_FORCE_SHADER = /* wgsl */`
 ${WGSL_SIMPLEX_BASIS}
@@ -194,7 +194,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let curl   = curlFBM(p, octaves);         // divergence-free direction
   let fbmMag = abs(fbm2(p * 0.5, octaves)); // amplitude modulation
 
-  // Compose final force: curl direction × FBM magnitude × strength + drift
+  // Compose final force: curl direction �- FBM magnitude �- strength + drift
   let fx = (curl.x * fbmMag + noiseParams.driftX) * noiseParams.strength;
   let fy = (curl.y * fbmMag + noiseParams.driftY) * noiseParams.strength;
 
@@ -205,7 +205,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 // ---------------------------------------------------------------------------
-// NoiseFlowField — TypeScript class
+// NoiseFlowField --- TypeScript class
 // ---------------------------------------------------------------------------
 
 export class NoiseFlowField {
@@ -241,7 +241,7 @@ export class NoiseFlowField {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // group 0 — NoiseUniforms
+    // group 0 --- NoiseUniforms
     this.noiseUniformBGL = dev.createBindGroupLayout({
       label  : "noise-uniform-bgl",
       entries: [{
@@ -251,7 +251,7 @@ export class NoiseFlowField {
       }],
     });
 
-    // group 1 — posX(r), posY(r), forceX(rw), forceY(rw)
+    // group 1 --- posX(r), posY(r), forceX(rw), forceY(rw)
     this.particleBGL = dev.createBindGroupLayout({
       label  : "noise-particle-bgl",
       entries: [
@@ -278,7 +278,7 @@ export class NoiseFlowField {
       compute: { module, entryPoint: "main" },
     });
 
-    // Bind groups (static — buffers don't change)
+    // Bind groups (static --- buffers don't change)
     this.noiseUniformBG = dev.createBindGroup({
       label  : "noise-uniform-bg",
       layout : this.noiseUniformBGL,
@@ -397,7 +397,7 @@ export class NoiseFlowField {
  *
  * // Inside sim loop:
  * orchestrator.encodeForces(encoder, n);
- * noiseOverlay(encoder, n, dt);            // ← additive noise on top
+ * noiseOverlay(encoder, n, dt);            // -�- additive noise on top
  * orchestrator.encodeIntegrate(encoder, n, dt);
  * ```
  */

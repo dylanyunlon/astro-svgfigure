@@ -1,12 +1,12 @@
 /**
- * GET /api/cells â€” Cell descriptor list
+ * GET /api/cells --- Cell descriptor list
  *
- * ç­–ç•¥ (åŒæ¨¡å¼):
- *   1. å°è¯•ä»£ç†åˆ° Python FastAPI åç«¯ (BACKEND_URL/api/cells)
- *   2. åç«¯ç¦»çº¿æ—¶å›é€€: è¯»å– channels/cell/*/params.json â†’ ç»„è£… CellDescriptor[]
- *      æ‹“æ‰‘ (topology.outgoing_edges) ç”±å›ºå®š Transformer é¡ºåºæ¨æ–­
+ * ç­–ç-¥ (å-æ¨¡å-):
+ *   1. å°-è¯-ä»-ç-†åˆ° Python FastAPI å-ç«¯ (BACKEND_URL/api/cells)
+ *   2. å-ç«¯ç-»çº¿æ-¶å›é--: è¯»å– channels/cell/*/params.json -†’ ç»„è-… CellDescriptor[]
+ *      æ-“æ‰‘ (topology.outgoing_edges) ç-±å›ºå®- Transformer é¡ºåºæ¨æ–­
  *
- * GitHub èƒŒä¹¦: withastro/astro (API Routes), ResearAI/AutoFigure, xiaodi #17
+ * GitHub èƒ-ä¹-: withastro/astro (API Routes), ResearAI/AutoFigure, xiaodi #17
  */
 import type { APIRoute } from 'astro'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
@@ -73,7 +73,7 @@ function readFromCompositeParams(): { cells: unknown[]; edges: unknown[] } | nul
 
   if (!composite.cells || composite.cells.length === 0) return null
 
-  // Build a lookup: cell_id â†’ list of incoming source IDs (derived from edges)
+  // Build a lookup: cell_id -†’ list of incoming source IDs (derived from edges)
   const incomingMap: Record<string, string[]> = {}
   const outgoingMap: Record<string, string[]> = {}
   for (const cell of composite.cells) {
@@ -93,7 +93,7 @@ function readFromCompositeParams(): { cells: unknown[]; edges: unknown[] } | nul
     }
   }
 
-  // Map composite cells â†’ CellDescriptor
+  // Map composite cells -†’ CellDescriptor
   const cells: unknown[] = composite.cells.map((c) => ({
     cell_id: c.cell_id,
     label:   c.label   ?? c.cell_id,
@@ -118,10 +118,10 @@ function readFromCompositeParams(): { cells: unknown[]; edges: unknown[] } | nul
     ...(c.is_translucent !== undefined && { is_translucent: c.is_translucent }),
   }))
 
-  // Sort by bbox.y (topâ†’bottom visual order)
+  // Sort by bbox.y (top-†’bottom visual order)
   cells.sort((a: any, b: any) => (a.bbox?.y ?? 0) - (b.bbox?.y ?? 0))
 
-  // Map composite edges â†’ EdgeDescriptor
+  // Map composite edges -†’ EdgeDescriptor
   const edges: unknown[] = (composite.edges ?? []).map((e) => {
     const edgeId  = e.edge_id ?? e.id ?? 'edge'
     const srcs    = e.sources ?? (e.source ? [e.source] : [])
@@ -161,7 +161,7 @@ function readCellsFromFs(): unknown[] {
       cells.push(raw)
     } catch { /* skip malformed */ }
   }
-  // Sort by bbox.y (topâ†’bottom visual order)
+  // Sort by bbox.y (top-†’bottom visual order)
   cells.sort((a: any, b: any) => (a.bbox?.y ?? 0) - (b.bbox?.y ?? 0))
   return cells
 }
@@ -202,7 +202,7 @@ export const GET: APIRoute = async () => {
   } catch (fetchErr: any) {
     clearTimeout(timeout)
 
-    // â”€â”€ Fallback priority 1: channels/composite_params.json (assemble_final_svg output) â”€â”€
+    // ------ Fallback priority 1: channels/composite_params.json (assemble_final_svg output) ------
     const composite = readFromCompositeParams()
     if (composite) {
       return new Response(JSON.stringify({ cells: composite.cells, edges: composite.edges }), {
@@ -215,7 +215,7 @@ export const GET: APIRoute = async () => {
       })
     }
 
-    // â”€â”€ Fallback priority 2: channels/cell/*/params.json (legacy per-cell files) â”€â”€
+    // ------ Fallback priority 2: channels/cell/*/params.json (legacy per-cell files) ------
     const fsCells = readCellsFromFs()
     if (fsCells.length > 0) {
       return new Response(JSON.stringify(fsCells), {

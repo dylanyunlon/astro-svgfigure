@@ -1,5 +1,5 @@
 # === SPHGPUOrchestrator.ts ===
-// SPHGPUOrchestrator.ts — WebGPU compute pipeline for SPH
+// SPHGPUOrchestrator.ts --- WebGPU compute pipeline for SPH
 
 import { GPUBufferSet, SimParams, WORKGROUP_SIZE } from "./types";
 
@@ -23,20 +23,20 @@ struct SimUniforms {
   _pad1      : u32,
 }
 
-// group 0 — uniforms
+// group 0 --- uniforms
 @group(0) @binding(0) var<uniform> params : SimUniforms;
 
-// group 1 — particle buffers (read-only inputs + rw outputs)
+// group 1 --- particle buffers (read-only inputs + rw outputs)
 @group(1) @binding(0) var<storage, read>       posX    : array<f32>;
 @group(1) @binding(1) var<storage, read>       posY    : array<f32>;
 @group(1) @binding(2) var<storage, read_write> density : array<f32>;
 @group(1) @binding(3) var<storage, read_write> pressure: array<f32>;
 
-// group 2 — neighbor CSR
+// group 2 --- neighbor CSR
 @group(2) @binding(0) var<storage, read> neighborData: array<i32>;
 @group(2) @binding(1) var<storage, read> rowPtr      : array<i32>;
 
-// group 3 — boundary particles
+// group 3 --- boundary particles
 @group(3) @binding(0) var<storage, read> boundaryBuf: array<vec4f>;
 
 fn W_cubic(r: f32, h: f32) -> f32 {
@@ -102,10 +102,10 @@ struct SimUniforms {
   _pad1      : u32,
 }
 
-// group 0 — uniforms
+// group 0 --- uniforms
 @group(0) @binding(0) var<uniform> params : SimUniforms;
 
-// group 1 — particle buffers
+// group 1 --- particle buffers
 @group(1) @binding(0) var<storage, read>       posX    : array<f32>;
 @group(1) @binding(1) var<storage, read>       posY    : array<f32>;
 @group(1) @binding(2) var<storage, read>       velX    : array<f32>;
@@ -115,11 +115,11 @@ struct SimUniforms {
 @group(1) @binding(6) var<storage, read_write> forceX  : array<f32>;
 @group(1) @binding(7) var<storage, read_write> forceY  : array<f32>;
 
-// group 2 — neighbor CSR
+// group 2 --- neighbor CSR
 @group(2) @binding(0) var<storage, read> neighborData: array<i32>;
 @group(2) @binding(1) var<storage, read> rowPtr      : array<i32>;
 
-// group 3 — boundary particles
+// group 3 --- boundary particles
 @group(3) @binding(0) var<storage, read> boundaryBuf: array<vec4f>;
 
 fn W_cubic(r: f32, h: f32) -> f32 {
@@ -231,10 +231,10 @@ struct SimUniforms {
   _pad1      : u32,
 }
 
-// group 0 — uniforms
+// group 0 --- uniforms
 @group(0) @binding(0) var<uniform> params : SimUniforms;
 
-// group 1 — particle buffers (all read-write)
+// group 1 --- particle buffers (all read-write)
 @group(1) @binding(0) var<storage, read_write> posX  : array<f32>;
 @group(1) @binding(1) var<storage, read_write> posY  : array<f32>;
 @group(1) @binding(2) var<storage, read_write> velX  : array<f32>;
@@ -298,7 +298,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 // ---------------------------------------------------------------------------
-// Hash-Count shader  (spatial hash pass 1 — Teschner et al. 2003)
+// Hash-Count shader  (spatial hash pass 1 --- Teschner et al. 2003)
 //
 // For each fluid particle i, compute its cell key via the Teschner hash:
 //   key = (ix * p1 XOR iy * p2) mod tableSize
@@ -319,14 +319,14 @@ struct HashUniforms {
   _pad2     : u32,
 }
 
-// group 0 — hash uniforms
+// group 0 --- hash uniforms
 @group(0) @binding(0) var<uniform> uParams : HashUniforms;
 
-// group 1 — particle positions (read-only)
+// group 1 --- particle positions (read-only)
 @group(1) @binding(0) var<storage, read> posX : array<f32>;
 @group(1) @binding(1) var<storage, read> posY : array<f32>;
 
-// group 2 — cell count table (read-write atomics)
+// group 2 --- cell count table (read-write atomics)
 //   cellCount[key] accumulates the number of particles mapping to key
 @group(2) @binding(0) var<storage, read_write> cellCount : array<atomic<u32>>;
 
@@ -359,7 +359,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 // ---------------------------------------------------------------------------
-// Prefix-Sum shader  (Blelloch exclusive scan — spatial-hash pass 1.5)
+// Prefix-Sum shader  (Blelloch exclusive scan --- spatial-hash pass 1.5)
 //
 // Converts the raw per-cell particle counts produced by HASH_COUNT_SHADER
 // into exclusive prefix-sum offsets so that pass 2 (scatter) knows where
@@ -367,16 +367,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 //
 // Algorithm: Blelloch work-efficient parallel scan (CUDA "scan" chapter,
 // Harris et al. 2007).  The shader runs a two-phase up-sweep / down-sweep
-// entirely in shared memory for arrays up to SCAN_BLOCK × 2 elements per
+// entirely in shared memory for arrays up to SCAN_BLOCK �- 2 elements per
 // workgroup invocation.  For larger tables the host chains multiple passes
 // (see `dispatchPrefixSum`).
 //
-// Shared-memory layout (SCAN_BLOCK = 256 → 512 u32 = 2 KiB):
-//   temp[0 .. 2*SCAN_BLOCK-1]  — ping-pong scratch
+// Shared-memory layout (SCAN_BLOCK = 256 -�� 512 u32 = 2 KiB):
+//   temp[0 .. 2*SCAN_BLOCK-1]  --- ping-pong scratch
 // ---------------------------------------------------------------------------
 
 const PREFIX_SUM_SHADER = /* wgsl */`
-// One workgroup processes 2 × SCAN_BLOCK elements of the cellCount array.
+// One workgroup processes 2 �- SCAN_BLOCK elements of the cellCount array.
 // SCAN_BLOCK must equal the workgroup_size declared below (256).
 const SCAN_BLOCK : u32 = 256u;
 
@@ -392,7 +392,7 @@ struct ScanUniforms {
 // blockSum[i] receives the total sum of workgroup i (used in multi-pass)
 @group(2) @binding(0) var<storage, read_write> blockSum : array<u32>;
 
-var<workgroup> temp: array<u32, 512>;   // 2 × SCAN_BLOCK
+var<workgroup> temp: array<u32, 512>;   // 2 �- SCAN_BLOCK
 
 @compute @workgroup_size(256)
 fn main(
@@ -403,7 +403,7 @@ fn main(
   let thid  = lid.x;                          // thread index within workgroup [0, 255]
   let base  = uScan.blockOffset + wid.x * (SCAN_BLOCK * 2u);   // global element base
 
-  // ── Load two elements per thread into shared memory ──────────────────────
+  // ------ Load two elements per thread into shared memory ------------------------------------------------------------------
   let ai = base + thid;
   let bi = base + thid + SCAN_BLOCK;
 
@@ -411,7 +411,7 @@ fn main(
   temp[thid + SCAN_BLOCK] = select(0u, data[bi], bi < uScan.n);
   workgroupBarrier();
 
-  // ── Up-sweep (reduce) phase ───────────────────────────────────────────────
+  // ------ Up-sweep (reduce) phase ---------------------------------------------------------------------------------------------------------------------------------------------
   // Build a partial-sum tree in-place.  After k iterations temp[2^(k+1)-1]
   // holds the partial sum of the first 2^(k+1) elements.
   var offset = 1u;
@@ -428,14 +428,14 @@ fn main(
     d      /= 2u;
   }
 
-  // ── Store block total, then clear the last element (exclusive scan) ───────
+  // ------ Store block total, then clear the last element (exclusive scan) ---------------------
   if (thid == 0u) {
     blockSum[wid.x] = temp[SCAN_BLOCK * 2u - 1u];
     temp[SCAN_BLOCK * 2u - 1u] = 0u;
   }
   workgroupBarrier();
 
-  // ── Down-sweep phase ──────────────────────────────────────────────────────
+  // ------ Down-sweep phase ------------------------------------------------------------------------------------------------------------------------------------------------------------------
   // Propagate the zero seed back down the tree to produce the exclusive scan.
   d      = 1u;
   offset = SCAN_BLOCK;
@@ -454,7 +454,7 @@ fn main(
   }
   workgroupBarrier();
 
-  // ── Write results back to global memory ──────────────────────────────────
+  // ------ Write results back to global memory ------------------------------------------------------------------------------------------------------
   if (ai < uScan.n) { data[ai] = temp[thid]; }
   if (bi < uScan.n) { data[bi] = temp[thid + SCAN_BLOCK]; }
 }
@@ -483,7 +483,7 @@ fn main(
   @builtin(local_invocation_id)  lid : vec3<u32>,
   @builtin(workgroup_id)         wid : vec3<u32>,
 ) {
-  // Skip the very first block — its offset is already 0.
+  // Skip the very first block --- its offset is already 0.
   if (wid.x == 0u) { return; }
 
   let base = uScan.blockOffset + wid.x * (SCAN_BLOCK * 2u);
@@ -538,8 +538,8 @@ export class SPHGPUOrchestrator {
   private forcePipeline     !: GPUComputePipeline;
   private integratePipeline !: GPUComputePipeline;
   private hashCountPipeline !: GPUComputePipeline;   // spatial-hash pass 1
-  private prefixSumPipeline !: GPUComputePipeline;   // Blelloch scan  (pass 1.5 — local)
-  private prefixSumAddPipeline !: GPUComputePipeline; // Blelloch add   (pass 1.5 — global fixup)
+  private prefixSumPipeline !: GPUComputePipeline;   // Blelloch scan  (pass 1.5 --- local)
+  private prefixSumAddPipeline !: GPUComputePipeline; // Blelloch add   (pass 1.5 --- global fixup)
 
   // bind-group layouts (group 0 is uniform, shared)
   private uniformBGL           !: GPUBindGroupLayout;
@@ -589,7 +589,7 @@ export class SPHGPUOrchestrator {
   private lastRowPtrBuf    : GPUBuffer | null = null;
   private lastBoundaryBuf  : GPUBuffer | null = null;
 
-  // ── GPU timestamp profiling ──────────────────────────────────────────────
+  // ------ GPU timestamp profiling ------------------------------------------------------------------------------------------------------------------------------------------
   // Enabled only when the device was requested with `timestamp-query` feature.
   private readonly tsEnabled : boolean = false;
 
@@ -601,7 +601,7 @@ export class SPHGPUOrchestrator {
   // Map buffer is COPY_DST + MAP_READ so the CPU can read timestamps back.
   private tsMapBuf      : GPUBuffer     | null = null;
 
-  // Number of timestamp slots we allocate (2 per pass × 3 passes).
+  // Number of timestamp slots we allocate (2 per pass �- 3 passes).
   private static readonly TS_SLOTS = 6;
 
   /** Rolling performance log: ring buffer of `perfLog` entries (last 60). */
@@ -646,19 +646,19 @@ export class SPHGPUOrchestrator {
   private init(): void {
     const dev = this.device;
 
-    // ---------- uniform buffer (48 bytes — 12 × f32/u32) ----------
+    // ---------- uniform buffer (48 bytes --- 12 �- f32/u32) ----------
     this.uniformBuf = dev.createBuffer({
       size : 48,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // ---------- hash-count uniform buffer (32 bytes — 8 × f32/u32) ----------
+    // ---------- hash-count uniform buffer (32 bytes --- 8 �- f32/u32) ----------
     this.hashUniformBuf = dev.createBuffer({
       size : 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // ---------- prefix-sum uniform buffer (16 bytes — 4 × u32) ----------
+    // ---------- prefix-sum uniform buffer (16 bytes --- 4 �- u32) ----------
     this.scanUniformBuf = dev.createBuffer({
       size : 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -914,7 +914,7 @@ export class SPHGPUOrchestrator {
     const encoder = dev.createCommandEncoder({ label: "sph-frame" });
 
     // ------------------------------------------------------------------
-    // Pass 1 — density + pressure
+    // Pass 1 --- density + pressure
     // Timestamp slots: begin=0, end=1
     // ------------------------------------------------------------------
     {
@@ -937,7 +937,7 @@ export class SPHGPUOrchestrator {
     }
 
     // ------------------------------------------------------------------
-    // Pass 2 — pressure gradient + viscosity → forceX / forceY
+    // Pass 2 --- pressure gradient + viscosity -�� forceX / forceY
     // Timestamp slots: begin=2, end=3
     // ------------------------------------------------------------------
     {
@@ -960,7 +960,7 @@ export class SPHGPUOrchestrator {
     }
 
     // ------------------------------------------------------------------
-    // Pass 3 — symplectic Euler integration + boundary clamp
+    // Pass 3 --- symplectic Euler integration + boundary clamp
     // Timestamp slots: begin=4, end=5
     // ------------------------------------------------------------------
     {
@@ -981,7 +981,7 @@ export class SPHGPUOrchestrator {
     }
 
     // ------------------------------------------------------------------
-    // Timestamp resolve: copy raw u64 ns values from QuerySet → GPU buffer
+    // Timestamp resolve: copy raw u64 ns values from QuerySet -�� GPU buffer
     // ------------------------------------------------------------------
     if (ts) {
       encoder.resolveQuerySet(
@@ -1012,7 +1012,7 @@ export class SPHGPUOrchestrator {
 
   // -------------------------------------------------------------------------
   /**
-   * Map the timestamp staging buffer, convert raw u64 ns → ms, push a
+   * Map the timestamp staging buffer, convert raw u64 ns -�� ms, push a
    * PerfEntry into `perfLog`, then unmap.
    *
    * Called asynchronously after each tick when timestamp-query is available.
@@ -1025,7 +1025,7 @@ export class SPHGPUOrchestrator {
 
     try {
       const raw = new BigUint64Array(mapBuf.getMappedRange());
-      // Convert nanoseconds (BigInt) → milliseconds (float).
+      // Convert nanoseconds (BigInt) -�� milliseconds (float).
       const densityMs    = Number(raw[1] - raw[0]) / 1_000_000;
       const forceMs      = Number(raw[3] - raw[2]) / 1_000_000;
       const integrateMs  = Number(raw[5] - raw[4]) / 1_000_000;
@@ -1054,14 +1054,14 @@ export class SPHGPUOrchestrator {
     const log = n !== undefined ? this.perfLog.slice(-n) : this.perfLog;
     if (log.length === 0) {
       return this.tsEnabled
-        ? "GPU profiling enabled — no data yet"
+        ? "GPU profiling enabled --- no data yet"
         : "GPU profiling unavailable (timestamp-query feature not present)";
     }
     const avg = (fn: (e: PerfEntry) => number): string =>
       (log.reduce((s, e) => s + fn(e), 0) / log.length).toFixed(3);
 
     return [
-      `[SPH GPU perf — avg over ${log.length} frame(s)]`,
+      `[SPH GPU perf --- avg over ${log.length} frame(s)]`,
       `  density   : ${avg(e => e.densityMs)} ms`,
       `  force     : ${avg(e => e.forceMs)} ms`,
       `  integrate : ${avg(e => e.integrateMs)} ms`,
@@ -1077,7 +1077,7 @@ export class SPHGPUOrchestrator {
   private createHashCountPipeline(): void {
     const dev = this.device;
 
-    // group 0 — HashUniforms (uniform buffer)
+    // group 0 --- HashUniforms (uniform buffer)
     const hashUniformBGL = dev.createBindGroupLayout({
       label  : "hash-uniform-bgl",
       entries: [{
@@ -1087,7 +1087,7 @@ export class SPHGPUOrchestrator {
       }],
     });
 
-    // group 1 — posX (r), posY (r)
+    // group 1 --- posX (r), posY (r)
     this.hashPosBGL = dev.createBindGroupLayout({
       label  : "hash-pos-bgl",
       entries: [
@@ -1096,7 +1096,7 @@ export class SPHGPUOrchestrator {
       ],
     });
 
-    // group 2 — cellCount (rw, atomic<u32>)
+    // group 2 --- cellCount (rw, atomic<u32>)
     this.hashCountBGL = dev.createBindGroupLayout({
       label  : "hash-count-bgl",
       entries: [{
@@ -1148,11 +1148,11 @@ export class SPHGPUOrchestrator {
    *     to produce start offsets for the scatter pass (pass 2).
    *
    * @param count         - number of fluid particles
-   * @param tableSize     - hash-table size (e.g. next power-of-two ≥ 2×count)
+   * @param tableSize     - hash-table size (e.g. next power-of-two -�� 2�-count)
    * @param h             - smoothing length / cell size
    * @param domainW       - simulation domain width
    * @param domainH       - simulation domain height
-   * @param cellCountBuf  - GPU buffer of `tableSize` × u32 (atomic, zeroed)
+   * @param cellCountBuf  - GPU buffer of `tableSize` �- u32 (atomic, zeroed)
    */
   dispatchHashCount(
     count       : number,
@@ -1165,7 +1165,7 @@ export class SPHGPUOrchestrator {
     const dev = this.device;
 
     // Upload HashUniforms (32 bytes)
-    // Layout: f32 h, f32 domainW, f32 domainH, u32 count, u32 tableSize, u32×3 pad
+    // Layout: f32 h, f32 domainW, f32 domainH, u32 count, u32 tableSize, u32�-3 pad
     const data = new ArrayBuffer(32);
     const f    = new Float32Array(data);
     const u    = new Uint32Array(data);
@@ -1202,14 +1202,14 @@ export class SPHGPUOrchestrator {
    * exclusive prefix-sum (scan) over the cellCount array.
    *
    * Layout of bind groups used by both scan shaders:
-   *   group 0 — ScanUniforms  { n, blockOffset, _pad0, _pad1 }  (uniform)
-   *   group 1 — data[]        (read_write u32 — the cellCount array)
-   *   group 2 — blockSum[]    (read_write u32 for pass-1, read for pass-2)
+   *   group 0 --- ScanUniforms  { n, blockOffset, _pad0, _pad1 }  (uniform)
+   *   group 1 --- data[]        (read_write u32 --- the cellCount array)
+   *   group 2 --- blockSum[]    (read_write u32 for pass-1, read for pass-2)
    */
   private createPrefixSumPipeline(): void {
     const dev = this.device;
 
-    // group 0 — scan uniforms
+    // group 0 --- scan uniforms
     this.scanUniformBGL = dev.createBindGroupLayout({
       label  : "scan-uniform-bgl",
       entries: [{
@@ -1219,7 +1219,7 @@ export class SPHGPUOrchestrator {
       }],
     });
 
-    // group 1 — data buffer (read_write)
+    // group 1 --- data buffer (read_write)
     this.scanDataBGL = dev.createBindGroupLayout({
       label  : "scan-data-bgl",
       entries: [{
@@ -1229,7 +1229,7 @@ export class SPHGPUOrchestrator {
       }],
     });
 
-    // group 2 — blockSum buffer (read_write for local scan, read for add pass)
+    // group 2 --- blockSum buffer (read_write for local scan, read for add pass)
     this.scanBlockBGL = dev.createBindGroupLayout({
       label  : "scan-block-bgl",
       entries: [{
@@ -1260,16 +1260,16 @@ export class SPHGPUOrchestrator {
    * scatter pass (pass 2).
    *
    * The algorithm runs a standard two-phase Blelloch scan:
-   *   Phase A — local scan  : each workgroup independently scans 512 elements
+   *   Phase A --- local scan  : each workgroup independently scans 512 elements
    *                           and writes its total to `blockSum[wg]`.
-   *   Phase B — block scan  : single-workgroup scan over `blockSum[]` itself.
-   *   Phase C — add pass    : every workgroup adds its block-offset back into
+   *   Phase B --- block scan  : single-workgroup scan over `blockSum[]` itself.
+   *   Phase C --- add pass    : every workgroup adds its block-offset back into
    *                           its 512-element window of `data[]`.
    *
    * The entire sequence is encoded into a **single** GPUCommandEncoder for
    * maximum efficiency; the caller submits the encoder's result.
    *
-   * @param n             - number of elements in cellCountBuf (≥ 1)
+   * @param n             - number of elements in cellCountBuf (-�� 1)
    * @param cellCountBuf  - GPU buffer of `n` u32 values to scan in-place
    * @param encoder       - command encoder to append compute passes into;
    *                        if omitted a new one is created and submitted
@@ -1280,14 +1280,14 @@ export class SPHGPUOrchestrator {
     encoder?     : GPUCommandEncoder,
   ): void {
     const dev          = this.device;
-    const BLOCK_ELEMS  = 512;                              // 2 × SCAN_BLOCK (workgroup)
+    const BLOCK_ELEMS  = 512;                              // 2 �- SCAN_BLOCK (workgroup)
     const numBlocks    = Math.ceil(n / BLOCK_ELEMS);       // workgroups for phase A
     const ownEncoder   = encoder === undefined;
     const enc          = ownEncoder
       ? dev.createCommandEncoder({ label: "prefix-sum-frame" })
       : encoder;
 
-    // ── Lazily resize the blockSum scratch buffer ─────────────────────────
+    // ------ Lazily resize the blockSum scratch buffer ---------------------------------------------------------------------------
     const neededBytes = Math.max(numBlocks, 1) * 4;       // u32 per block
     if (this.scanBlockSumBuf === null || this.scanBlockSumCapacity < neededBytes) {
       this.scanBlockSumBuf?.destroy();
@@ -1301,7 +1301,7 @@ export class SPHGPUOrchestrator {
       this.scanDataBG           = null;
     }
 
-    // ── Rebuild data bind group if cellCountBuf changed ───────────────────
+    // ------ Rebuild data bind group if cellCountBuf changed ---------------------------------------------------------
     if (this.scanDataBG === null || cellCountBuf !== this.lastScanDataBuf) {
       this.scanDataBG = dev.createBindGroup({
         label  : "scan-data-bg",
@@ -1311,7 +1311,7 @@ export class SPHGPUOrchestrator {
       this.lastScanDataBuf = cellCountBuf;
     }
 
-    // ── Rebuild blockSum bind group if the scratch buffer was reallocated ──
+    // ------ Rebuild blockSum bind group if the scratch buffer was reallocated ------
     if (this.scanBlockSumBG === null) {
       this.scanBlockSumBG = dev.createBindGroup({
         label  : "scan-block-sum-bg",
@@ -1320,14 +1320,14 @@ export class SPHGPUOrchestrator {
       });
     }
 
-    // ── Upload ScanUniforms ───────────────────────────────────────────────
+    // ------ Upload ScanUniforms ---------------------------------------------------------------------------------------------------------------------------------------------
     const uData = new Uint32Array([n, 0, 0, 0]);
     dev.queue.writeBuffer(this.scanUniformBuf, 0, uData);
 
     const dataBG      = this.scanDataBG!;
     const blockSumBG  = this.scanBlockSumBG!;
 
-    // ── Phase A: local Blelloch scan per workgroup ────────────────────────
+    // ------ Phase A: local Blelloch scan per workgroup ------------------------------------------------------------------------
     {
       const pass = enc.beginComputePass({ label: "prefix-sum-local" });
       pass.setPipeline(this.prefixSumPipeline);
@@ -1338,7 +1338,7 @@ export class SPHGPUOrchestrator {
       pass.end();
     }
 
-    // ── Phase B: scan the blockSum array (single workgroup, recursive) ────
+    // ------ Phase B: scan the blockSum array (single workgroup, recursive) ------------
     if (numBlocks > 1) {
       // Re-use the same pipeline but now scanning blockSum[] into itself.
       // We need a temporary BG that points group-1 at blockSum and group-2 at
@@ -1371,7 +1371,7 @@ export class SPHGPUOrchestrator {
       // Restore uniform n for the add pass
       dev.queue.writeBuffer(this.scanUniformBuf, 0, uData);
 
-      // ── Phase C: add block offsets back into each window ─────────────────
+      // ------ Phase C: add block offsets back into each window ---------------------------------------------------
       {
         const pass = enc.beginComputePass({ label: "prefix-sum-add" });
         pass.setPipeline(this.prefixSumAddPipeline);
@@ -1397,13 +1397,13 @@ export class SPHGPUOrchestrator {
   // =========================================================================
 
   /**
-   * Async init shim — the constructor already performs synchronous
+   * Async init shim --- the constructor already performs synchronous
    * initialisation; this exists so callers that `await orchestrator.init()`
    * continue to work after refactors.
    */
   async init(): Promise<void> { /* GPU pipelines already built in constructor */ }
 
-  // ── Neighbor / boundary upload ──────────────────────────────────────────
+  // ------ Neighbor / boundary upload ------------------------------------------------------------------------------------------------------------------------------
 
   /**
    * Upload neighbour CSR lists built on the CPU into GPU storage buffers and
@@ -1453,7 +1453,7 @@ export class SPHGPUOrchestrator {
     Promise.resolve().then(() => { neighborBuf.destroy(); rowPtrBuf.destroy(); });
   }
 
-  // ── Per-pass encode helpers (share an existing GPUCommandEncoder) ────────
+  // ------ Per-pass encode helpers (share an existing GPUCommandEncoder) ------------------------
 
   /**
    * Encode the density + pressure compute pass into `encoder`.
@@ -1501,10 +1501,10 @@ export class SPHGPUOrchestrator {
    *
    * @param encoder - command encoder to append the pass into
    * @param n       - number of fluid particles
-   * @param dt      - current frame Δt (seconds)
+   * @param dt      - current frame �-t (seconds)
    */
   encodeIntegrate(encoder: GPUCommandEncoder, n: number, dt: number): void {
-    // Patch `dt` in the uniform buffer (offset 5 × 4 = byte 20)
+    // Patch `dt` in the uniform buffer (offset 5 �- 4 = byte 20)
     const dtBuf = new Float32Array([dt]);
     this.device.queue.writeBuffer(this.uniformBuf, 20, dtBuf);
 
@@ -1518,7 +1518,7 @@ export class SPHGPUOrchestrator {
     pass.end();
   }
 
-  // ── Internal helpers ─────────────────────────────────────────────────────
+  // ------ Internal helpers ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
   /**
    * Returns a lazily-created empty boundary bind group (zero particles) so

@@ -1,17 +1,17 @@
 /**
- * CellInstanceManager.ts — per-species instanced cell rendering
+ * CellInstanceManager.ts --- per-species instanced cell rendering
  *
  * Species distribution (7 cells, 5 species) from channels/cell/*/params.json:
  *
  *   species          cells                   color
- *   ─────────────────────────────────────────────────
+ *   -----------------------------------------------
  *   cil-plus         add_norm1, add_norm2    #1E88E5
  *   cil-vector       input_embed, pos_encode #2E7D32
  *   cil-bolt         ffn                     #FF6F00
  *   cil-eye          self_attn               #3F51B5
  *   cil-arrow-right  output                  #455A64
  *
- * Each species gets one InstancedMesh → one draw call per frame regardless of
+ * Each species gets one InstancedMesh --- one draw call per frame regardless of
  * how many cells share that species.  Matching AT's instanced rendering pattern
  * where position/color/opacity are the only per-instance varying values.
  *
@@ -27,7 +27,7 @@
 import { InstancedMesh, INSTANCED_VERT, INSTANCED_FRAG } from './InstancedMesh';
 import type { InstanceData } from './InstancedMesh';
 
-// ── Types ────────────────────────────────────────────────────────────────────
+ *   -----------------------------------------------
 
 export interface CellBBox {
   x: number;
@@ -49,9 +49,9 @@ export interface CellParamsJson {
   species_params?: Record<string, unknown>;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+ *   -----------------------------------------------
 
-/** Parse "#RRGGBB" or "#RGB" → [r, g, b] in 0-1 range */
+/** Parse "#RRGGBB" or "#RGB" --- [r, g, b] in 0-1 range */
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace('#', '');
   if (h.length === 3) {
@@ -70,7 +70,7 @@ function hexToRgb(hex: string): [number, number, number] {
 
 /**
  * Build a column-major mat4 that translates to (cx, cy, z) and scales to (w, h).
- * The unit quad in InstancedMesh is 1×1 centred at origin, so we scale by w/h
+ * The unit quad in InstancedMesh is 1--1 centred at origin, so we scale by w/h
  * and translate to the cell centre.
  *
  * Canvas coordinate system: origin top-left, Y down.
@@ -96,7 +96,7 @@ function bboxToModelMatrix(bbox: CellBBox): Float32Array {
   ]);
 }
 
-// ── CellInstanceManager ──────────────────────────────────────────────────────
+ *   -----------------------------------------------
 
 export interface SpeciesGroup {
   species: string;
@@ -106,14 +106,14 @@ export interface SpeciesGroup {
 
 export class CellInstanceManager {
   private gl: WebGL2RenderingContext;
-  /** species → SpeciesGroup */
+  /** species --- SpeciesGroup */
   private groups = new Map<string, SpeciesGroup>();
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
   }
 
-  // ── Data loading ───────────────────────────────────────────────────────────
+ *   -----------------------------------------------
 
   /**
    * Fetch all params.json files from a directory tree structured as:
@@ -139,7 +139,7 @@ export class CellInstanceManager {
 
   /**
    * Build species groups from pre-parsed CellParamsJson descriptors.
-   * Idempotent — disposes existing meshes before rebuilding.
+   * Idempotent --- disposes existing meshes before rebuilding.
    */
   loadFromDescriptors(descriptors: CellParamsJson[]): void {
     this.dispose();
@@ -189,12 +189,12 @@ export class CellInstanceManager {
     console.warn(`CellInstanceManager.updateCell: cell_id "${cellId}" not found`);
   }
 
-  // ── Rendering ──────────────────────────────────────────────────────────────
+ *   -----------------------------------------------
 
   /**
-   * Draw all species groups — one gl.drawElementsInstanced per species.
-   * 5 species → 5 draw calls for all 7 cells (vs 7 without instancing).
-   * At scale (N epochs × 7 cells) the saving is N×7 → N×5 draw calls.
+   * Draw all species groups --- one gl.drawElementsInstanced per species.
+   * 5 species --- 5 draw calls for all 7 cells (vs 7 without instancing).
+   * At scale (N epochs -- 7 cells) the saving is N--7 --- N--5 draw calls.
    */
   draw(
     view?: Float32Array,
@@ -205,7 +205,7 @@ export class CellInstanceManager {
     }
   }
 
-  // ── Introspection ──────────────────────────────────────────────────────────
+ *   -----------------------------------------------
 
   /** Returns a summary suitable for debug overlays */
   stats(): Record<string, number> {
@@ -228,7 +228,7 @@ export class CellInstanceManager {
     return n;
   }
 
-  // ── Lifecycle ──────────────────────────────────────────────────────────────
+ *   -----------------------------------------------
 
   dispose(): void {
     for (const group of this.groups.values()) {
@@ -237,7 +237,7 @@ export class CellInstanceManager {
     this.groups.clear();
   }
 
-  // ── Private ────────────────────────────────────────────────────────────────
+ *   -----------------------------------------------
 
   private _writeCellInstance(mesh: InstancedMesh, i: number, cell: CellParamsJson): void {
     const [r, g, b] = hexToRgb(cell.fill_color);

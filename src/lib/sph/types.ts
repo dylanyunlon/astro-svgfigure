@@ -1,5 +1,5 @@
 # === src/lib/sph/types.ts ===
-// types.ts — shared interfaces
+// types.ts --- shared interfaces
 
 export interface GPUBufferSet {
   posX: GPUBuffer;
@@ -67,7 +67,7 @@ export const MAX_PARTICLES = 50000;
 export const WORKGROUP_SIZE = 256;
 export const MAX_NEIGHBORS = 64;
 
-// ── Rigid body types (used by collision pipeline) ──────────────────
+// ------ Rigid body types (used by collision pipeline) ------------------------------------------------------
 export interface RigidBody {
   x: number; y: number;        // position
   vx: number; vy: number;      // velocity

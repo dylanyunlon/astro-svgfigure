@@ -1,7 +1,7 @@
 /**
- * at-tube-orb-chain.ts — M922
+ * at-tube-orb-chain.ts --- M922
  *
- * ATTubeOrbChain — real WebGL1 GPU instanced tube + orb chain renderer
+ * ATTubeOrbChain --- real WebGL1 GPU instanced tube + orb chain renderer
  *
  * Architecture:
  *   - GPGPU ping-pong FBO: tPos (positions) + tLife (life/length)
@@ -12,15 +12,15 @@
  *   - OES_instanced_arrays for instanced draw calls
  *
  * GLSL shaders extracted from upstream/activetheory-assets/compiled.vs:
- *   ProtonTube.glsl  — per-instance tube vert (angle/tuv/cIndex/cNumber attrs)
- *   TubeOrbShader    — orb billboard vert+frag
- *   TubeShader       — FBR tube frag (range, rgb2hsv, blendmodes)
- *   ChainShader      — chain strip vert+frag (fbr.vs + fbr.fs)
- *   range.glsl       — crange/rangeTransition
- *   rgb2hsv.fs       — rgb2hsv / hsv2rgb
- *   conditionals.glsl— when_eq / when_gt etc.
+ *   ProtonTube.glsl  --- per-instance tube vert (angle/tuv/cIndex/cNumber attrs)
+ *   TubeOrbShader    --- orb billboard vert+frag
+ *   TubeShader       --- FBR tube frag (range, rgb2hsv, blendmodes)
+ *   ChainShader      --- chain strip vert+frag (fbr.vs + fbr.fs)
+ *   range.glsl       --- crange/rangeTransition
+ *   rgb2hsv.fs       --- rgb2hsv / hsv2rgb
+ *   conditionals.glsl--- when_eq / when_gt etc.
  *
- * gl.* call budget: ≥80  (init: createBuffer/Texture/Framebuffer/Program/Shader/
+ * gl.* call budget: ---80  (init: createBuffer/Texture/Framebuffer/Program/Shader/
  *                         render: useProgram/bindFramebuffer/bindTexture/uniform*/
  *                         drawArrays/drawElements; dispose: delete*)
  *
@@ -34,14 +34,14 @@
  *   chain.dispose();
  */
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// --------- Constants ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /** Max nodes / edges that can be stored in tPos textures. */
 const MAX_NODES     = 512  as const;
 const MAX_EDGES     = 1024 as const;
 
-/** tPos texture dims — W × H ≥ MAX_NODES. */
-const POS_TEX_W     = 32   as const;   // 32 × 16 = 512
+/** tPos texture dims --- W -- H --- MAX_NODES. */
+const POS_TEX_W     = 32   as const;   // 32 -- 16 = 512
 const POS_TEX_H     = 16   as const;
 
 /** ProtonTube radial segments per tube cross-section. */
@@ -55,7 +55,7 @@ const CHAIN_LINKS   = 32   as const;
 const GPGPU_TEX_W   = 128  as const;
 const GPGPU_TEX_H   = 128  as const;
 
-// ─── Public types ─────────────────────────────────────────────────────────────
+// --------- Public types ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export interface TubeNode {
   nodeId: string;
@@ -69,7 +69,7 @@ export interface TubeEdge {
   edgeId:   string;
   sourceId: string;
   targetId: string;
-  /** Edge weight [0,1] — controls alpha + chain density. */
+  /** Edge weight [0,1] --- controls alpha + chain density. */
   weight?:  number;
 }
 
@@ -94,7 +94,7 @@ export interface ATTubeOrbChainConfig {
   lifeSpeed?:       number;
 }
 
-// ─── GLSL helpers (inline from compiled.vs) ───────────────────────────────────
+// --------- GLSL helpers (inline from compiled.vs) ---------------------------------------------------------------------------------------------------------
 
 /**
  * range.glsl (compiled.vs line 2129)
@@ -165,7 +165,7 @@ float getIndex(float line, float chain, float lineSegs) {
 }
 `;
 
-// ─── ProtonTube.glsl Vertex Shader ────────────────────────────────────────────
+// --------- ProtonTube.glsl Vertex Shader ------------------------------------------------------------------------------------------------------------------------------------
 // Direct port from compiled.vs line 7977, with WebGL1 uniforms/attributes.
 // Each instance corresponds to one edge; cIndex/cNumber/angle/tuv are per-vertex
 // attributes baked into the tube geometry buffer.
@@ -177,7 +177,7 @@ precision highp float;
 attribute float angle;     // radial angle for this vertex
 attribute vec2  tuv;       // tube UV (u=axial, v=radial)
 attribute float cIndex;    // segment index along the tube axis
-attribute float cNumber;   // instance/line number → written per-instance
+attribute float cNumber;   // instance/line number --- written per-instance
 
 // Per-instance edge data (via OES_instanced_arrays in WebGL1)
 // aInstSrcXYZ: source node world position
@@ -258,7 +258,7 @@ void main() {
 }
 `;
 
-// ─── ProtonTube Fragment Shader ───────────────────────────────────────────────
+// --------- ProtonTube Fragment Shader ---------------------------------------------------------------------------------------------------------------------------------------------
 // Based on TubeShader.glsl (compiled.vs 5233) + ProtonTubesMain fragment.
 
 const PROTON_TUBE_FRAG = /* glsl */`
@@ -327,7 +327,7 @@ void main() {
 }
 `;
 
-// ─── TubeOrb billboard Shaders ────────────────────────────────────────────────
+// --------- TubeOrb billboard Shaders ------------------------------------------------------------------------------------------------------------------------------------------------
 // TubeOrbShader.glsl (compiled.vs line 5204).
 // Each orb is a billboard quad, position/scale fed as instanced attribute.
 
@@ -381,7 +381,7 @@ void main() {
     if (r2 > 1.0) discard;
     float edge = 1.0 - smoothstep(0.5, 1.0, r2);
 
-    // tMap sample (AT: TubeOrbShader — texture2D(tMap, uv))
+    // tMap sample (AT: TubeOrbShader --- texture2D(tMap, uv))
     vec4 mapColor = texture2D(tMap, vUv);
     vec3 color    = mapColor.rgb;
 
@@ -400,7 +400,7 @@ void main() {
 }
 `;
 
-// ─── Chain Strip Shaders ──────────────────────────────────────────────────────
+// --------- Chain Strip Shaders ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // ChainShader.glsl (compiled.vs line 5405).
 // Sinusoidal offset strip along each edge.
 
@@ -487,7 +487,7 @@ void main() {
 }
 `;
 
-// ─── GPGPU position update Shaders ───────────────────────────────────────────
+// --------- GPGPU position update Shaders ---------------------------------------------------------------------------------------------------------------------------------
 // Updates tPos ping-pong FBO each frame (particle-style node position drift).
 
 const GPGPU_VERT = /* glsl */`
@@ -518,7 +518,7 @@ void main() {
 }
 `;
 
-// ─── Life update Shader ───────────────────────────────────────────────────────
+// --------- Life update Shader ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Grows life values per edge, stored in tLife texture.
 
 const LIFE_FRAG = /* glsl */`
@@ -536,7 +536,7 @@ void main() {
 }
 `;
 
-// ─── Display pass (copy FBO to screen) ───────────────────────────────────────
+// --------- Display pass (copy FBO to screen) ---------------------------------------------------------------------------------------------------------------------
 
 const DISPLAY_FRAG = /* glsl */`
 precision highp float;
@@ -549,19 +549,19 @@ void main() {
 }
 `;
 
-// ─── Geometry builders ────────────────────────────────────────────────────────
+// --------- Geometry builders ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /**
  * Build ProtonTube geometry buffer.
  *
  * Layout per vertex: [angle, tuv.x, tuv.y, cIndex, cNumber]
- * One set of vertices for radialSegs × lineSegs rings, used for all instances.
+ * One set of vertices for radialSegs -- lineSegs rings, used for all instances.
  * cNumber is intentionally 0 here; the actual instance index is communicated
  * via the aInstSrc/aInstDst/aInstData instanced attributes.
  */
 function buildTubeGeometry(radialSegs: number, lineSegs: number): Float32Array {
-  // Each axial segment pair produces 2 triangles × 3 verts = 6 verts.
-  // We have (lineSegs - 1) axial segments × radialSegs cross-section quads.
+  // Each axial segment pair produces 2 triangles -- 3 verts = 6 verts.
+  // We have (lineSegs - 1) axial segments -- radialSegs cross-section quads.
   const quadsPerRing = radialSegs;
   const rings        = lineSegs - 1;
   const vertsPerQuad = 6;
@@ -601,8 +601,8 @@ function buildTubeGeometry(radialSegs: number, lineSegs: number): Float32Array {
 }
 
 /**
- * Build chain strip geometry (2 vertices per link side → quad per link).
- * Layout: [t, side] — t = parametric along edge, side = 0 or 1.
+ * Build chain strip geometry (2 vertices per link side --- quad per link).
+ * Layout: [t, side] --- t = parametric along edge, side = 0 or 1.
  */
 function buildChainGeometry(links: number): Float32Array {
   const vertsPerQuad = 6;
@@ -643,7 +643,7 @@ function buildFullscreenQuad(): Float32Array {
   ]);
 }
 
-// ─── ATTubeOrbChain — WebGL1 GPU implementation ───────────────────────────────
+// --------- ATTubeOrbChain --- WebGL1 GPU implementation ---------------------------------------------------------------------------------------------
 
 export class ATTubeOrbChain {
   private gl: WebGLRenderingContext;
@@ -653,7 +653,7 @@ export class ATTubeOrbChain {
   private edges: TubeEdge[]  = [];
   private cfg: Required<ATTubeOrbChainConfig>;
 
-  // ── Compiled shader programs ────────────────────────────────────────────
+  // ------ Compiled shader programs ------------------------------------------------------------------------------------------------------------------------------------
   private tubeProg!:    WebGLProgram;
   private orbProg!:     WebGLProgram;
   private chainProg!:   WebGLProgram;
@@ -661,13 +661,13 @@ export class ATTubeOrbChain {
   private lifeProg!:    WebGLProgram;
   private displayProg!: WebGLProgram;
 
-  // ── Geometry buffers ────────────────────────────────────────────────────
+  // ------ Geometry buffers ------------------------------------------------------------------------------------------------------------------------------------------------------------
   private tubeGeomBuf!:   WebGLBuffer;  // angle/tuv/cIndex/cNumber per vertex
   private chainGeomBuf!:  WebGLBuffer;  // t/side per vertex
   private orbQuadBuf!:    WebGLBuffer;  // orb billboard quad
   private fsQuadBuf!:     WebGLBuffer;  // fullscreen quad for GPGPU
 
-  // ── Instanced attribute buffers ─────────────────────────────────────────
+  // ------ Instanced attribute buffers ---------------------------------------------------------------------------------------------------------------------------
   // One entry per edge (tubes + chains); one entry per node (orbs).
   private tubeInstBufSrc!:  WebGLBuffer;  // vec3 source xyz per edge
   private tubeInstBufDst!:  WebGLBuffer;  // vec3 dest   xyz per edge
@@ -676,20 +676,20 @@ export class ATTubeOrbChain {
   private orbInstBufScale!: WebGLBuffer;  // float scale per node
   private orbInstBufAlpha!: WebGLBuffer;  // float alpha per node
 
-  // ── GPGPU FBOs ──────────────────────────────────────────────────────────
+  // ------ GPGPU FBOs ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   private tPosFBO!:  { fbo: WebGLFramebuffer; tex: WebGLTexture };
   private tPosBack!: { fbo: WebGLFramebuffer; tex: WebGLTexture };  // ping-pong
   private tLifeFBO!: { fbo: WebGLFramebuffer; tex: WebGLTexture };
   private tLifeBack!:{ fbo: WebGLFramebuffer; tex: WebGLTexture };
 
-  // ── Scene render target ─────────────────────────────────────────────────
+  // ------ Scene render target ---------------------------------------------------------------------------------------------------------------------------------------------------
   private sceneFBO!: { fbo: WebGLFramebuffer; tex: WebGLTexture };
 
-  // ── 1×1 placeholder textures ─────────────────────────────────────────────
+  // ------ 1--1 placeholder textures ---------------------------------------------------------------------------------------------------------------------------------------
   private tWhite!:     WebGLTexture;  // tColor/tBaseColor/tMap placeholder
   private tBlueGray!:  WebGLTexture;  // tRefraction placeholder
 
-  // ── CPU-side instance data arrays (rebuilt on topology change) ───────────
+  // ------ CPU-side instance data arrays (rebuilt on topology change) ---------------------------------
   private edgeSrcData!:  Float32Array;  // vec3 per edge
   private edgeDstData!:  Float32Array;
   private edgeInstData!: Float32Array;  // vec4 per edge: life, len, weight, hue
@@ -726,7 +726,7 @@ export class ATTubeOrbChain {
     };
   }
 
-  // ─── init: compile programs, create buffers, FBOs, textures ──────────────
+  // --------- init: compile programs, create buffers, FBOs, textures ------------------------------------------
 
   init(): void {
     const gl = this.gl;
@@ -737,7 +737,7 @@ export class ATTubeOrbChain {
       throw new Error('[ATTubeOrbChain] ANGLE_instanced_arrays not available');
     }
 
-    // ── Compile all shader programs ──────────────────────────────────────
+    // ------ Compile all shader programs ------------------------------------------------------------------------------------------------------------------
     this.tubeProg    = this._compile(PROTON_TUBE_VERT, PROTON_TUBE_FRAG,  'ProtonTube');
     this.orbProg     = this._compile(ORB_VERT,         ORB_FRAG,          'TubeOrb');
     this.chainProg   = this._compile(CHAIN_VERT,       CHAIN_FRAG,        'Chain');
@@ -745,7 +745,7 @@ export class ATTubeOrbChain {
     this.lifeProg    = this._compile(GPGPU_VERT,       LIFE_FRAG,         'Life');
     this.displayProg = this._compile(GPGPU_VERT,       DISPLAY_FRAG,      'Display');
 
-    // ── Create geometry buffers ──────────────────────────────────────────
+    // ------ Create geometry buffers ------------------------------------------------------------------------------------------------------------------------------
     const tubeGeo  = buildTubeGeometry(RADIAL_SEGS, LINE_SEGS);
     this.tubeVertCount = tubeGeo.length / 5;
 
@@ -768,10 +768,10 @@ export class ATTubeOrbChain {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.fsQuadBuf);
     gl.bufferData(gl.ARRAY_BUFFER, buildFullscreenQuad(), gl.STATIC_DRAW);
 
-    // ── Build CPU instance data ──────────────────────────────────────────
+    // ------ Build CPU instance data ------------------------------------------------------------------------------------------------------------------------------
     this._buildInstanceData();
 
-    // ── Create instanced attribute buffers (tube + chain share edge data) ─
+    // ------ Create instanced attribute buffers (tube + chain share edge data) ---
     this.tubeInstBufSrc = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufSrc);
     gl.bufferData(gl.ARRAY_BUFFER, this.edgeSrcData, gl.DYNAMIC_DRAW);
@@ -784,7 +784,7 @@ export class ATTubeOrbChain {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufData);
     gl.bufferData(gl.ARRAY_BUFFER, this.edgeInstData, gl.DYNAMIC_DRAW);
 
-    // ── Orb instanced buffers ────────────────────────────────────────────
+    // ------ Orb instanced buffers ------------------------------------------------------------------------------------------------------------------------------------
     this.orbInstBufXYZ = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufXYZ);
     gl.bufferData(gl.ARRAY_BUFFER, this.nodeXYZData, gl.DYNAMIC_DRAW);
@@ -797,7 +797,7 @@ export class ATTubeOrbChain {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufAlpha);
     gl.bufferData(gl.ARRAY_BUFFER, this.nodeAlphaData, gl.DYNAMIC_DRAW);
 
-    // ── GPGPU FBOs (tPos ping-pong + tLife ping-pong) ────────────────────
+    // ------ GPGPU FBOs (tPos ping-pong + tLife ping-pong) ------------------------------------------------------------
     const gpgpuFmt  = gl.RGBA;
     const gpgpuType = this._getHalfFloat();
 
@@ -812,11 +812,11 @@ export class ATTubeOrbChain {
     // Upload initial life values to tLifeFBO (all start at 0)
     this._uploadInitialLife();
 
-    // ── Scene accumulation FBO (renders tubes+orbs+chains into it) ────────
+    // ------ Scene accumulation FBO (renders tubes+orbs+chains into it) ------------------------
     // Use canvas-size FBO so tRefraction can sample from it.
     this.sceneFBO = this._createFBO(512, 512, gl.RGBA, gl.UNSIGNED_BYTE);
 
-    // ── 1×1 placeholder textures ─────────────────────────────────────────
+    // ------ 1--1 placeholder textures ---------------------------------------------------------------------------------------------------------------------------
     this.tWhite = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.tWhite);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
@@ -838,7 +838,7 @@ export class ATTubeOrbChain {
     this.initialized = true;
   }
 
-  // ─── tick: GPGPU position + life update ──────────────────────────────────
+  // --------- tick: GPGPU position + life update ------------------------------------------------------------------------------------------------------
 
   tick(elapsed: number, dt: number = 1 / 60): void {
     if (!this.initialized) return;
@@ -883,14 +883,14 @@ export class ATTubeOrbChain {
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.edgeInstData);
   }
 
-  // ─── render: ProtonTube instanced + Orb + Chain ───────────────────────────
+  // --------- render: ProtonTube instanced + Orb + Chain ---------------------------------------------------------------------------------
 
   render(canvasW: number, canvasH: number): void {
     if (!this.initialized) return;
     const gl  = this.gl;
     const ext = this.ext!;
 
-    // ── Scene accumulation pass (render to sceneFBO first) ────────────────
+    // ------ Scene accumulation pass (render to sceneFBO first) ------------------------------------------------
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFBO.fbo);
     gl.viewport(0, 0, 512, 512);
     gl.clearColor(0, 0, 0, 0);
@@ -900,7 +900,7 @@ export class ATTubeOrbChain {
 
     const mvp = this._buildMVP(canvasW, canvasH);
 
-    // ── 1. Render ProtonTube instanced (one geometry, N edge instances) ───
+    // ------ 1. Render ProtonTube instanced (one geometry, N edge instances) ---------
     if (this.edges.length > 0) {
       gl.useProgram(this.tubeProg);
 
@@ -927,7 +927,7 @@ export class ATTubeOrbChain {
 
       // Bind tube geometry (per-vertex attributes)
       gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeGeomBuf);
-      const stride = 5 * 4;  // 5 floats × 4 bytes
+      const stride = 5 * 4;  // 5 floats -- 4 bytes
       const aAngle  = gl.getAttribLocation(this.tubeProg, 'angle');
       const aTuv    = gl.getAttribLocation(this.tubeProg, 'tuv');
       const aCIndex = gl.getAttribLocation(this.tubeProg, 'cIndex');
@@ -963,7 +963,7 @@ export class ATTubeOrbChain {
       gl.vertexAttribPointer(aInstData, 4, gl.FLOAT, false, 0, 0);
       ext.vertexAttribDivisorANGLE(aInstData, 1);
 
-      // Instanced draw: tubeVertCount verts × edges.length instances
+      // Instanced draw: tubeVertCount verts -- edges.length instances
       ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, this.tubeVertCount, this.edges.length);
 
       // Reset divisors
@@ -972,7 +972,7 @@ export class ATTubeOrbChain {
       ext.vertexAttribDivisorANGLE(aInstData, 0);
     }
 
-    // ── 2. Render Chain strips (instanced along edges) ────────────────────
+    // ------ 2. Render Chain strips (instanced along edges) ------------------------------------------------------------
     if (this.edges.length > 0) {
       gl.useProgram(this.chainProg);
       gl.uniformMatrix4fv(gl.getUniformLocation(this.chainProg, 'uMVP'),   false, mvp);
@@ -1027,7 +1027,7 @@ export class ATTubeOrbChain {
       ext.vertexAttribDivisorANGLE(cInstData, 0);
     }
 
-    // ── 3. Render TubeOrb billboard orbs (instanced per node) ────────────
+    // ------ 3. Render TubeOrb billboard orbs (instanced per node) ------------------------------------
     if (this.nodes.length > 0) {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE);  // additive for glow
       gl.useProgram(this.orbProg);
@@ -1074,7 +1074,7 @@ export class ATTubeOrbChain {
       ext.vertexAttribDivisorANGLE(aOrbAlpha, 0);
     }
 
-    // ── 4. Display pass — blit sceneFBO to canvas ─────────────────────────
+    // ------ 4. Display pass --- blit sceneFBO to canvas ---------------------------------------------------------------------------
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvasW, canvasH);
     gl.disable(gl.BLEND);
@@ -1090,7 +1090,7 @@ export class ATTubeOrbChain {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   }
 
-  // ─── Live parameter setters ────────────────────────────────────────────────
+  // --------- Live parameter setters ------------------------------------------------------------------------------------------------------------------------------------------------
 
   setScroll(v: number):          void { this.cfg.uScroll          = v; }
   setOrbAlpha(v: number):        void { this.cfg.uOrbAlpha        = v; }
@@ -1139,7 +1139,7 @@ export class ATTubeOrbChain {
   /** Number of active nodes. */
   get nodeCount(): number { return this.nodes.length; }
 
-  // ─── dispose: delete all GPU resources ────────────────────────────────────
+  // --------- dispose: delete all GPU resources ------------------------------------------------------------------------------------------------------------
 
   dispose(): void {
     if (!this.initialized) return;
@@ -1188,9 +1188,9 @@ export class ATTubeOrbChain {
     this.initialized = false;
   }
 
-  // ─── Private helpers ──────────────────────────────────────────────────────
+  // --------- Private helpers ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-  /** Compile vert + frag → WebGLProgram. */
+  /** Compile vert + frag --- WebGLProgram. */
   private _compile(vertSrc: string, fragSrc: string, label: string): WebGLProgram {
     const gl = this.gl;
 
@@ -1358,10 +1358,10 @@ export class ATTubeOrbChain {
    * Matches AT's camera setup: origin at center, Y-up, Z toward viewer.
    */
   private _buildMVP(w: number, h: number): Float32Array {
-    // Simple ortho: [-w/2, w/2] × [-h/2, h/2] → NDC [-1,1]
+    // Simple ortho: [-w/2, w/2] -- [-h/2, h/2] --- NDC [-1,1]
     const scaleX = 2.0 / (w || 1);
     const scaleY = 2.0 / (h || 1);
-    // Column-major 4×4 ortho matrix
+    // Column-major 4--4 ortho matrix
     return new Float32Array([
       scaleX,  0,       0, 0,
       0,       scaleY,  0, 0,
@@ -1371,7 +1371,7 @@ export class ATTubeOrbChain {
   }
 }
 
-// ─── Factory helpers ───────────────────────────────────────────────────────────
+// --------- Factory helpers ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /**
  * Create ATTubeOrbChain from topology data and call init().
@@ -1417,7 +1417,7 @@ export function pixelNodesToTubeNodes(
   }));
 }
 
-// ─── Constants re-export ──────────────────────────────────────────────────────
+// --------- Constants re-export ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export const AT_TUBE_ORB_CHAIN_DEFAULTS = {
   maxNodes:   MAX_NODES,

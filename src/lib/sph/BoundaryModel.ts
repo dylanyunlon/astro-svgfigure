@@ -1,6 +1,6 @@
 # === src/lib/sph/BoundaryModel.ts ===
 
-// BoundaryModel.ts — Akinci 2012 rigid-body boundary particles
+// BoundaryModel.ts --- Akinci 2012 rigid-body boundary particles
 // Implements volume-weighted boundary particle sampling with Cubic Spline kernel
 // for computing Ψ_b (Akinci et al. 2012, "Versatile Rigid-Fluid Coupling for SPH")
 //
@@ -16,7 +16,7 @@ import {
   BoundaryParticle as WBParticle,
 } from "./world-boundary";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// --------- Constants ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /** Spacing factor relative to smoothing length h */
 const BOUNDARY_SPACING_FACTOR = 0.8;
@@ -24,16 +24,16 @@ const BOUNDARY_SPACING_FACTOR = 0.8;
 /** Cubic Spline kernel normalisation constant (2-D) */
 const CS_ALPHA_2D = 10.0 / (7.0 * Math.PI);
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// --------- Types ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export interface BoundaryParticle {
   x: number;
   y: number;
-  /** Ψ_b — Akinci volume estimate for the boundary particle */
+  /** Ψ_b --- Akinci volume estimate for the boundary particle */
   volume: number;
 }
 
-// ─── Shape configuration (M547) ───────────────────────────────────────────────
+// --------- Shape configuration (M547) ---------------------------------------------------------------------------------------------------------------------------------------------
 
 /** Per-entry in the shape registry. */
 interface ShapeEntry {
@@ -44,7 +44,7 @@ interface ShapeEntry {
   end:     number;
 }
 
-// ─── Kernel (inlined Cubic Spline, 2-D) ──────────────────────────────────────
+// --------- Kernel (inlined Cubic Spline, 2-D) ------------------------------------------------------------------------------------------------------------------
 
 /**
  * Cubic Spline kernel value W(r, h).
@@ -69,7 +69,7 @@ function cubicSplineW(r: number, h: number): number {
 }
 
 /**
- * Cubic Spline kernel gradient magnitude  ∂W/∂r  (scalar).
+ * Cubic Spline kernel gradient magnitude  -�-W/-�-r  (scalar).
  * Caller is responsible for multiplying by the unit direction vector.
  *
  * @param r  scalar distance
@@ -88,7 +88,7 @@ function cubicSplinedW_dr(r: number, h: number): number {
   return 0.0;
 }
 
-// ─── BoundaryModel ────────────────────────────────────────────────────────────
+// --------- BoundaryModel ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export class BoundaryModel {
   private device: GPUDevice;
@@ -97,13 +97,13 @@ export class BoundaryModel {
 
   particles: BoundaryParticle[] = [];
 
-  /** GPU storage buffer: [ x, y, volume, pad ]  ×  N  (Float32, stride = 16 B) */
+  /** GPU storage buffer: [ x, y, volume, pad ]  �-  N  (Float32, stride = 16 B) */
   gpuBoundaryBuf!: GPUBuffer;
 
   readonly domainW: number;
   readonly domainH: number;
 
-  // ── M547: shape registry ────────────────────────────────────────────────────
+  // ------ M547: shape registry ------------------------------------------------------------------------------------------------------------------------------------------------------------
   /** Ordered list of registered shapes; used for automatic resampling. */
   private _shapes: ShapeEntry[] = [];
 
@@ -128,7 +128,7 @@ export class BoundaryModel {
     this.h = h;
   }
 
-  // ─── M547: Shape configuration ──────────────────────────────────────────────
+  // --------- M547: Shape configuration ------------------------------------------------------------------------------------------------------------------------------------------
 
   /**
    * Register (or replace) the world boundary shape.
@@ -188,10 +188,10 @@ export class BoundaryModel {
     return this._shapes.length - 1;
   }
 
-  // ─── Sampling ──────────────────────────────────────────────────────────────
+  // --------- Sampling ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
   /**
-   * Sample a filled box [xMin, xMax] × [yMin, yMax] with boundary particles.
+   * Sample a filled box [xMin, xMax] �- [yMin, yMax] with boundary particles.
    * Particles are placed on the perimeter with spacing `h * BOUNDARY_SPACING_FACTOR`.
    * Volumes are initialised via the Akinci Ψ summation approximation.
    */
@@ -238,18 +238,18 @@ export class BoundaryModel {
     this._computeVolumes();
   }
 
-  // ─── Volume initialisation (Akinci Eq. 4) ─────────────────────────────────
+  // --------- Volume initialisation (Akinci Eq. 4) ---------------------------------------------------------------------------------------------------
 
   /**
    * Compute Ψ_b for every boundary particle via:
    *
-   *   Ψ_b(x_b) = ρ₀ / Σ_k W(x_b − x_k, h)
+   *   Ψ_b(x_b) = �---- / �-_k W(x_b -�� x_k, h)
    *
    * Only newly-added particles with volume == 0 are (re)computed;
    * this keeps the cost incremental when obstacles are added at runtime.
    *
-   * Complexity: O(N²) over boundary particles — acceptable because boundary
-   * particle counts are typically O(100–1000).
+   * Complexity: O(N²) over boundary particles --- acceptable because boundary
+   * particle counts are typically O(100--�1000).
    */
   initVolumes(): void {
     this._computeVolumes();
@@ -278,7 +278,7 @@ export class BoundaryModel {
     }
   }
 
-  // ─── GPU upload ────────────────────────────────────────────────────────────
+  // --------- GPU upload ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
   /**
    * (Re)build the GPU storage buffer from the current particle list.
@@ -323,16 +323,16 @@ export class BoundaryModel {
     this.getBuffers();
   }
 
-  // ─── Legacy obstacle helper ────────────────────────────────────────────────
+  // --------- Legacy obstacle helper ------------------------------------------------------------------------------------------------------------------------------------------------
 
   /**
-   * @deprecated  Prefer `sampleCircle(obs)` — identical behaviour, consistent naming.
+   * @deprecated  Prefer `sampleCircle(obs)` --- identical behaviour, consistent naming.
    */
   addCircle(obs: ObstacleData): void {
     this.sampleCircle(obs);
   }
 
-  // ─── Accessors ─────────────────────────────────────────────────────────────
+  // --------- Accessors ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
   get count(): number {
     return this.particles.length;
@@ -342,7 +342,7 @@ export class BoundaryModel {
     this.gpuBoundaryBuf?.destroy();
   }
 
-  // ─── Private M547 helpers ──────────────────────────────────────────────────
+  // --------- Private M547 helpers ------------------------------------------------------------------------------------------------------------------------------------------------------
 
   /** Sample any BoundaryShape to a flat WBParticle array. */
   private _sampleShape(shape: BoundaryShape, layers: number): WBParticle[] {
@@ -403,5 +403,5 @@ export class BoundaryModel {
   }
 }
 
-// ─── Re-export kernel for unit tests / shader parity checks ──────────────────
+// --------- Re-export kernel for unit tests / shader parity checks ------------------------------------------------------
 export { cubicSplineW, cubicSplinedW_dr };

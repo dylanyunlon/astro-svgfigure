@@ -1,24 +1,24 @@
 /**
- * edge-particle-bridge.ts — M057: Edge 粒子流 ↔ route.json 桥接
+ * edge-particle-bridge.ts --- M057: Edge ----- --- route.json --
  *
- * 将 channels/edge/*/route.json 贝塞尔控制点数据注入 EdgeParticleSystem，
- * 并在粒子到达 target cell 时触发 GlowFilter pulse。
+ * - channels/edge/*/route.json ----------------- EdgeParticleSystem---
+ * --------- target cell ------ GlowFilter pulse---
  *
- * 设计意图：
- *   - 每条 edge 的 route.json points 数组 → 三次贝塞尔 P0-P3
- *   - semanticType 决定粒子颜色：data_flow = #64B5F6, skip_connection = #FFB74D
- *   - 粒子到达终点时触发 target cell GlowFilter outerStrength pulse 0→2→0
- *   - epoch 切换时新增 edge 淡入(alpha 0→0.7)，删除 edge 淡出(alpha 0.7→0)
+ * -------
+ *   - ---- edge --- route.json points ---- --- ---------- P0-P3
+ *   - semanticType ------------data_flow = #64B5F6, skip_connection = #FFB74D
+ *   - --------------- target cell GlowFilter outerStrength pulse 0---2---0
+ *   - epoch ------- edge --(alpha 0---0.7)------- edge --(alpha 0.7---0)
  *
- * 对接：
- *   - EdgeParticleSystem (M041) — WebGL2 transform feedback 粒子系统
- *   - pixi-cell-renderer.ts — cell Container 上的 GlowFilter 引用
- *   - theatre-epoch-cell-bridge.ts — epoch 切换通知
+ * -----
+ *   - EdgeParticleSystem (M041) --- WebGL2 transform feedback -----
+ *   - pixi-cell-renderer.ts --- cell Container ---- GlowFilter ------
+ *   - theatre-epoch-cell-bridge.ts --- epoch ------
  */
 
 import type { EdgeRoute, EdgeParticleSystemConfig } from './EdgeParticleSystem';
 
-// ── Route.json → Bezier mapping ─────────────────────────────────────────────
+// ------ Route.json --- Bezier mapping ---------------------------------------------------------------------------------------------------------------------------------------
 
 export interface BezierControlPoints {
   p0: { x: number; y: number };
@@ -58,7 +58,7 @@ export function routeToBezier(route: EdgeRoute): BezierControlPoints {
   return { p0: p, p1: p, p2: p, p3: p };
 }
 
-// ── Semantic type → color ───────────────────────────────────────────────────
+// ------ Semantic type --- color ---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const EDGE_COLORS: Record<string, [number, number, number]> = {
   data_flow:       [0.39, 0.71, 0.96],   // #64B5F6
@@ -71,7 +71,7 @@ export function edgeColor(semanticType?: string): [number, number, number] {
   return EDGE_COLORS[semanticType || 'data_flow'] || EDGE_COLORS.data_flow;
 }
 
-// ── Glow pulse trigger ──────────────────────────────────────────────────────
+// ------ Glow pulse trigger ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export interface GlowPulseTarget {
   /** PixiJS GlowFilter instance on the target cell Container */
@@ -84,7 +84,7 @@ const _activePulses = new Map<string, { target: GlowPulseTarget; startTime: numb
 
 /**
  * Trigger a glow pulse on target cell when particle arrives.
- * outerStrength: baseStrength → baseStrength+2 → baseStrength over 300ms
+ * outerStrength: baseStrength --- baseStrength+2 --- baseStrength over 300ms
  */
 export function triggerGlowPulse(cellId: string, target: GlowPulseTarget): void {
   _activePulses.set(cellId, { target, startTime: performance.now() });
@@ -103,7 +103,7 @@ export function updateGlowPulses(): void {
       pulse.target.glowFilter.outerStrength = pulse.target.baseStrength;
       _activePulses.delete(cellId);
     } else {
-      // Triangle wave: 0→1→0 over DURATION
+      // Triangle wave: 0---1---0 over DURATION
       const t = elapsed / DURATION;
       const intensity = t < 0.5 ? t * 2 : 2 - t * 2;
       pulse.target.glowFilter.outerStrength = pulse.target.baseStrength + intensity * 2;
@@ -111,7 +111,7 @@ export function updateGlowPulses(): void {
   }
 }
 
-// ── Epoch transition ────────────────────────────────────────────────────────
+// ------ Epoch transition ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export interface EdgeTransition {
   added: string[];    // edge_ids appearing in new epoch

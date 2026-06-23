@@ -1,5 +1,5 @@
 # === src/lib/sph/qosSpatial.ts ===
-// qosSpatial.ts â€” QoS preset â†’ physical parameter mapping
+// qosSpatial.ts --- QoS preset -†’ physical parameter mapping
 
 import { QoSProfile, SpatialConfig } from './types';
 

@@ -1,6 +1,6 @@
 /**
- * at-remaining-shaders.ts — M870: Final AT shader sweep
- * ─────────────────────────────────────────────────────────────────
+ * at-remaining-shaders.ts --- M870: Final AT shader sweep
+ * ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  * Remaining 24 shaders from compiled.vs to reach 100% coverage.
  * Includes: Loader BG variants, Nav UI, AR/VR, debug, occlusion,
  * work panel UI, triangle particles, and bloom gaussian.

@@ -1,9 +1,9 @@
 # === SpatialHashGrid.ts ===
 
 // ============================================================
-//  SpatialHashGrid.ts — 2D Spatial Hash for SPH Neighbor Search
+//  SpatialHashGrid.ts --- 2D Spatial Hash for SPH Neighbor Search
 //  Strategy: cell-chaining linked list (zero GC per frame)
-//  All storage: typed arrays only — no Map / Set / object
+//  All storage: typed arrays only --- no Map / Set / object
 // ============================================================
 
 import { MAX_PARTICLES } from "./types";
@@ -50,7 +50,7 @@ export class SpatialHashGrid {
   //  Insert the first n particles into the grid.
   //
   //  cellSize: grid cell edge length.  Set equal to the SPH
-  //  smoothing radius h so each query only visits 3×3 = 9 cells.
+  //  smoothing radius h so each query only visits 3�-3 = 9 cells.
   // ----------------------------------------------------------
   insertAll(
     px: Float32Array,
@@ -126,7 +126,7 @@ export class SpatialHashGrid {
   }
 
   // ----------------------------------------------------------
-  //  Accessors — expose internals for GPU upload / debugging
+  //  Accessors --- expose internals for GPU upload / debugging
   // ----------------------------------------------------------
   getHead():      Int32Array { return this.head; }
   getNext():      Int32Array { return this.next; }
