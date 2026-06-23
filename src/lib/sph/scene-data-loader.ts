@@ -1,23 +1,27 @@
 /**
  * scene-data-loader.ts
- * M886: composite_params.json → GPU CellData[] / EdgeData[]
+ * M964: composite_params.json → GPU CellData[] / EdgeData[]
  *
- * SceneDataLoader reads channels/composite_params.json (and two sibling
- * JSON files) and produces the typed arrays that the GPU render loop
- * expects.  All I/O is async-JSON-fetch so it works in both Node and the
- * browser (Vite will inline the channel assets as static files).
+ * SceneDataLoader reads channels/composite_params.json (and sibling files)
+ * and produces the typed arrays that the GPU render loop expects.
  *
- * Data sources (all relative to the project root / public/ root):
- *   channels/composite_params.json          — cells + edge_routes
- *   channels/physics/edge_routes.json       — authoritative control-points
- *   channels/cell/<id>/bbox.json            — per-cell epoch-9 positions
+ * Data sources (all relative to the project / public root):
+ *   channels/composite_params.json          — cells + edge_routes + species_assignment
+ *   channels/physics/edge_routes.json       — authoritative Bézier control-points
+ *   channels/cell/<id>/bbox.json            — per-cell epoch-9 positions & species
+ *   channels/cell/<id>/params.json          — per-cell human label
+ *
+ * I/O strategy:
+ *   • Browser  → fetch() (Vite dev-server serves channels/ from project root)
+ *   • Node.js  → fs.readFileSync()  (used in REPL validation scripts)
+ *   Both paths are covered in loadScene() via runtime environment detection.
  */
 
-// ─── Re-export shared GPU types ──────────────────────────────────────────────
+// ─── GPU types — aligned with gpu-render-loop.ts ─────────────────────────────
 
 export interface CellData {
   /** Unique cell identifier matching composite_params.cells key */
-  id: string;
+  cell_id: string;
   /** Species tag: cil-eye | cil-bolt | cil-vector | cil-plus | cil-arrow-right … */
   species: string;
   /** Bounding-box (scene coords, pixels) */
@@ -33,13 +37,13 @@ export interface CellData {
   roughness: number;
   /** PBR albedo RGB        [0, 1] each channel */
   albedo: [number, number, number];
-  /** Human-readable label (same as id, kept for debug overlays) */
+  /** Human-readable label from params.json (falls back to cell_id) */
   label: string;
 }
 
 export interface EdgeData {
   /** Unique edge identifier: e1 … e6, skip1, skip2 */
-  id: string;
+  edge_id: string;
   /** Source cell id */
   source: string;
   /** Target cell id */
@@ -52,15 +56,15 @@ export interface EdgeData {
 
 // ─── Species → PBR material & wire-color ─────────────────────────────────────
 //
-// Colors are derived from the species_params.primary_color values baked into
-// composite_params.json and cross-referenced with the AT options table:
+// Derived from species_params.primary_color values in composite_params.json
+// cross-referenced with the AT options table:
 //
-//   cil-eye          #1E88E5  → blue  (self-attention)
+//   cil-eye          #1E88E5  → blue   (self-attention)
 //   cil-bolt         #F57C00  → orange (feed-forward / activation)
 //   cil-vector       #546E7A  → steel-blue (embedding)
-//   cil-plus         #E53935  → red   (add-norm / residual)
-//   cil-arrow-right  #2E7D32  → green (output)
-//   cil-sine         #7E57C2  → purple (positional encoding, alias of cil-vector)
+//   cil-plus         #E53935  → red    (add-norm / residual)
+//   cil-arrow-right  #2E7D32  → green  (output)
+//   cil-sine         #7E57C2  → purple (positional encoding)
 //   (fallback)                → mid-grey
 
 interface SpeciesMaterial {
@@ -71,14 +75,14 @@ interface SpeciesMaterial {
 }
 
 const SPECIES_MATERIAL: Record<string, SpeciesMaterial> = {
-  // attention — vibrant blue, high metallic (looks polished/glassy)
+  // attention — vibrant blue, dielectric (glassy)
   'cil-eye': {
     metallic:  0.04,
     roughness: 0.60,
     albedo:    [0.118, 0.533, 0.898],
     wireColor: [0.118, 0.533, 0.898],
   },
-  // feed-forward bolt — vivid orange, high metallic (energy-like)
+  // feed-forward bolt — vivid orange, high metallic (energetic)
   'cil-bolt': {
     metallic:  0.80,
     roughness: 0.30,
@@ -135,6 +139,7 @@ interface RawBbox {
   h: number;
   z: number;
   species?: string;
+  epoch?: number;
 }
 
 interface RawCellEntry {
@@ -170,6 +175,54 @@ interface RawBboxFile {
   h: number;
   z: number;
   species?: string;
+  epoch?: number;
+}
+
+interface RawParamsFile {
+  cell_id?: string;
+  label?: string;
+  species?: string;
+}
+
+// ─── I/O helpers — browser (fetch) vs Node.js (readFileSync) ─────────────────
+
+/** Detect if running under Node.js (REPL / test) rather than a browser. */
+function isNode(): boolean {
+  return typeof process !== 'undefined'
+    && typeof process.versions !== 'undefined'
+    && typeof process.versions.node !== 'undefined';
+}
+
+/**
+ * Load JSON from a path/URL.
+ * - Browser: uses fetch()
+ * - Node.js: uses fs.readFileSync()
+ *
+ * Returns null (does not throw) on 404 / missing file so callers can
+ * treat absent optional files as graceful fallbacks.
+ */
+async function loadJson<T>(pathOrUrl: string): Promise<T | null> {
+  if (isNode()) {
+    // Node path: synchronous read wrapped in async for uniform interface
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fs = require('fs') as typeof import('fs');
+      // Resolve relative to cwd (matches Node REPL invoked from project root)
+      const raw = fs.readFileSync(pathOrUrl, 'utf8');
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  } else {
+    // Browser path: fetch()
+    try {
+      const res = await fetch(pathOrUrl);
+      if (!res.ok) return null;
+      return (await res.json()) as T;
+    } catch {
+      return null;
+    }
+  }
 }
 
 // ─── SceneDataLoader ─────────────────────────────────────────────────────────
@@ -179,52 +232,72 @@ export class SceneDataLoader {
   // ── public API ──────────────────────────────────────────────────────────────
 
   /**
-   * Parse a fully-loaded composite_params.json object.
+   * High-level convenience entry point.
    *
-   * The loader merges three data sources in priority order:
-   *   1. channels/cell/<id>/bbox.json       (epoch-9, most accurate positions)
-   *   2. composite_params.cells[id].agent_params.bbox  (epoch-2 fallback)
-   *   3. Default bbox {x:0, y:0, w:100, h:50, z:1}   (last resort)
+   * Fetches all required JSON files and returns CellData[] + EdgeData[]
+   * ready to be passed to GPURenderLoop.setScene().
    *
-   * Edge control-points come from channels/physics/edge_routes.json and fall
-   * back to the edge_routes block embedded in composite_params.json.
-   *
-   * Call loadFromFiles() if you want automatic file fetching.
+   * @param baseDir  Path/URL prefix for channel assets.
+   *                 Browser default: '' (Vite serves channels/ from root)
+   *                 Node REPL default: '' (relative to cwd, i.e. project root)
    */
-  loadFromCompositeParams(
-    json: RawCompositeParams,
-    bboxOverrides: Record<string, RawBboxFile> = {},
-    edgeRoutesOverride: Record<string, RawEdgeRoute> | null = null,
-  ): { cells: CellData[]; edges: EdgeData[] } {
+  async loadScene(baseDir = ''): Promise<{ cells: CellData[]; edges: EdgeData[] }> {
+    const sep = baseDir.endsWith('/') ? '' : (baseDir ? '/' : '');
+    const base = baseDir + sep;
 
-    const cells = this._parseCells(json, bboxOverrides);
-    const edges = this._parseEdges(json, edgeRoutesOverride, cells);
+    // ── 1. Load composite_params.json (required) ──────────────────────────
+    const composite = await loadJson<RawCompositeParams>(
+      `${base}channels/composite_params.json`,
+    );
+    if (!composite) {
+      throw new Error('[SceneDataLoader] Failed to load channels/composite_params.json');
+    }
+
+    // ── 2. Load physics/edge_routes.json (authoritative, optional) ────────
+    const physicsRoutes = await loadJson<Record<string, RawEdgeRoute>>(
+      `${base}channels/physics/edge_routes.json`,
+    );
+
+    // ── 3. Load per-cell bbox.json + params.json ──────────────────────────
+    const cellIds = Object.keys(composite.cells ?? {});
+    const [bboxOverrides, labelOverrides] = await this._fetchCellFiles(cellIds, base);
+
+    // ── 4. Build scene data ───────────────────────────────────────────────
+    const cells = this._parseCells(composite, bboxOverrides, labelOverrides);
+    const edges = this._parseEdges(composite, physicsRoutes, cells);
 
     return { cells, edges };
   }
 
   /**
-   * Fetch all three JSON sources and return parsed scene data.
+   * Parse a pre-loaded composite_params JSON object.
    *
-   * @param baseUrl  URL prefix for the channel assets (default: '').
-   *                 In Vite dev-server, '' works because assets live under
-   *                 the project root (imported directly).  For production,
-   *                 set to '/channels' if serving from a static host.
+   * Useful when you already have the JSON in memory (e.g. unit tests,
+   * or when the caller controls the fetch lifecycle).
+   *
+   * Priority order for bbox:
+   *   1. bboxOverrides[id]              (channels/cell/<id>/bbox.json — epoch-9)
+   *   2. composite.cells[id].agent_params.bbox  (epoch-2 fallback)
+   *   3. Default {x:0, y:0, w:100, h:50, z:1}
+   *
+   * Priority order for species:
+   *   1. bboxOverrides[id].species
+   *   2. composite.species_assignment[id].species
+   *   3. 'unknown'
+   *
+   * Priority order for edge control-points:
+   *   1. externalRoutes (channels/physics/edge_routes.json)
+   *   2. composite.edge_routes
    */
-  async loadFromFiles(baseUrl = ''): Promise<{ cells: CellData[]; edges: EdgeData[] }> {
-    const compositeUrl    = `${baseUrl}/channels/composite_params.json`;
-    const edgeRoutesUrl   = `${baseUrl}/channels/physics/edge_routes.json`;
-
-    const [compositeJson, edgeRoutesJson] = await Promise.all([
-      fetchJson<RawCompositeParams>(compositeUrl),
-      fetchJson<Record<string, RawEdgeRoute>>(edgeRoutesUrl).catch(() => null),
-    ]);
-
-    // Fetch per-cell bbox.json files for all cells that appear in composite_params
-    const cellIds = Object.keys(compositeJson.cells ?? {});
-    const bboxOverrides = await this._fetchBboxFiles(cellIds, baseUrl);
-
-    return this.loadFromCompositeParams(compositeJson, bboxOverrides, edgeRoutesJson);
+  loadFromCompositeParams(
+    json: RawCompositeParams,
+    bboxOverrides: Record<string, RawBboxFile> = {},
+    labelOverrides: Record<string, string> = {},
+    externalRoutes: Record<string, RawEdgeRoute> | null = null,
+  ): { cells: CellData[]; edges: EdgeData[] } {
+    const cells = this._parseCells(json, bboxOverrides, labelOverrides);
+    const edges = this._parseEdges(json, externalRoutes, cells);
+    return { cells, edges };
   }
 
   // ── private helpers ─────────────────────────────────────────────────────────
@@ -232,44 +305,48 @@ export class SceneDataLoader {
   private _parseCells(
     json: RawCompositeParams,
     bboxOverrides: Record<string, RawBboxFile>,
+    labelOverrides: Record<string, string>,
   ): CellData[] {
-    const rawCells = json.cells ?? {};
+    const rawCells         = json.cells ?? {};
     const speciesAssignment = json.species_assignment ?? {};
     const cells: CellData[] = [];
 
     for (const [cellId, entry] of Object.entries(rawCells)) {
 
-      // ── Resolve bbox (priority: bbox.json > agent_params.bbox > default) ──
-      const bboxFile   = bboxOverrides[cellId];
-      const agentBbox  = entry.agent_params?.bbox;
+      // ── Resolve bbox ──────────────────────────────────────────────────
+      const bboxFile  = bboxOverrides[cellId];
+      const agentBbox = entry.agent_params?.bbox;
 
-      const bbox: RawBbox = bboxFile
+      const resolvedBbox = bboxFile
         ? { x: bboxFile.x, y: bboxFile.y, w: bboxFile.w, h: bboxFile.h, z: bboxFile.z }
         : agentBbox
         ? { x: agentBbox.x, y: agentBbox.y, w: agentBbox.w, h: agentBbox.h, z: agentBbox.z }
         : { x: 0, y: 0, w: 100, h: 50, z: 1 };
 
-      // ── Resolve species (priority: bbox.json.species > species_assignment > 'unknown') ──
+      // ── Resolve species ───────────────────────────────────────────────
       const species: string =
         bboxFile?.species
         ?? speciesAssignment[cellId]?.species
         ?? 'unknown';
 
-      // ── PBR material from species ──
+      // ── Resolve label ─────────────────────────────────────────────────
+      const label: string = labelOverrides[cellId] ?? cellId;
+
+      // ── PBR material ──────────────────────────────────────────────────
       const mat = speciesMaterial(species);
 
       cells.push({
-        id:        cellId,
+        cell_id:   cellId,
         species,
-        x:         bbox.x,
-        y:         bbox.y,
-        w:         bbox.w,
-        h:         bbox.h,
-        z:         bbox.z,
+        x:         resolvedBbox.x,
+        y:         resolvedBbox.y,
+        w:         resolvedBbox.w,
+        h:         resolvedBbox.h,
+        z:         resolvedBbox.z,
         metallic:  mat.metallic,
         roughness: mat.roughness,
         albedo:    mat.albedo,
-        label:     cellId,
+        label,
       });
     }
 
@@ -281,14 +358,13 @@ export class SceneDataLoader {
     externalRoutes: Record<string, RawEdgeRoute> | null,
     cells: CellData[],
   ): EdgeData[] {
-
-    // Authoritative routes: external file beats embedded edge_routes
+    // Authoritative routes: physics/edge_routes.json beats composite edge_routes
     const routes: Record<string, RawEdgeRoute> =
       externalRoutes ?? json.edge_routes ?? {};
 
-    // Build a quick species lookup by cell id
+    // Quick species lookup by cell_id
     const speciesByCell = new Map<string, string>(
-      cells.map(c => [c.id, c.species])
+      cells.map(c => [c.cell_id, c.species]),
     );
 
     const edges: EdgeData[] = [];
@@ -298,7 +374,7 @@ export class SceneDataLoader {
       const mat        = speciesMaterial(srcSpecies);
 
       edges.push({
-        id:            edgeId,
+        edge_id:       edgeId,
         source:        route.source,
         target:        route.target,
         controlPoints: route.control_points,
@@ -309,34 +385,55 @@ export class SceneDataLoader {
     return edges;
   }
 
-  /** Fetch channels/cell/<id>/bbox.json for every cell id, silently skip 404s */
-  private async _fetchBboxFiles(
+  /**
+   * Load channels/cell/<id>/bbox.json and channels/cell/<id>/params.json
+   * for every cell id in parallel. Missing files are silently skipped.
+   *
+   * Returns [bboxMap, labelMap] where labelMap maps cellId → human label.
+   */
+  private async _fetchCellFiles(
     cellIds: string[],
-    baseUrl: string,
-  ): Promise<Record<string, RawBboxFile>> {
-    const entries = await Promise.all(
+    base: string,
+  ): Promise<[Record<string, RawBboxFile>, Record<string, string>]> {
+    const results = await Promise.all(
       cellIds.map(async (id) => {
-        const url = `${baseUrl}/channels/cell/${id}/bbox.json`;
-        const data = await fetchJson<RawBboxFile>(url).catch(() => null);
-        return [id, data] as const;
-      })
+        const [bbox, params] = await Promise.all([
+          loadJson<RawBboxFile>(`${base}channels/cell/${id}/bbox.json`),
+          loadJson<RawParamsFile>(`${base}channels/cell/${id}/params.json`),
+        ]);
+        return { id, bbox, label: params?.label ?? null };
+      }),
     );
-    const result: Record<string, RawBboxFile> = {};
-    for (const [id, data] of entries) {
-      if (data !== null) result[id] = data;
+
+    const bboxMap: Record<string, RawBboxFile>  = {};
+    const labelMap: Record<string, string>       = {};
+
+    for (const { id, bbox, label } of results) {
+      if (bbox  !== null) bboxMap[id]  = bbox;
+      if (label !== null) labelMap[id] = label;
     }
-    return result;
+
+    return [bboxMap, labelMap];
   }
-}
-
-// ─── Utility ─────────────────────────────────────────────────────────────────
-
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`fetchJson: HTTP ${res.status} for ${url}`);
-  return res.json() as Promise<T>;
 }
 
 // ─── Convenience singleton ───────────────────────────────────────────────────
 
 export const sceneDataLoader = new SceneDataLoader();
+
+/**
+ * Top-level loadScene() shortcut.
+ *
+ * Browser usage:
+ *   import { loadScene } from './scene-data-loader';
+ *   const { cells, edges } = await loadScene();
+ *
+ * Node REPL validation (run from project root):
+ *   const { loadScene } = require('./src/lib/sph/scene-data-loader');
+ *   loadScene().then(({ cells, edges }) => { console.log(cells, edges); });
+ */
+export async function loadScene(
+  baseDir = '',
+): Promise<{ cells: CellData[]; edges: EdgeData[] }> {
+  return sceneDataLoader.loadScene(baseDir);
+}
