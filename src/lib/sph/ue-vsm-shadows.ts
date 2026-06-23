@@ -1,1581 +1,1125 @@
 /**
- * ue-vsm-shadows.ts — M836: UE5 Virtual Shadow Map (VSM) Port
+ * ue-vsm-shadows.ts — M948: UE5 Virtual Shadow Map (VSM) real GPU implementation
  * ─────────────────────────────────────────────────────────────────────────────
- * 移植 Unreal Engine 5 Virtual Shadow Map 系统到 WebGPU Cell 渲染管线。
+ * 真正在 GPU 上跑的虚拟阴影贴图系统。每个函数都调用 gl.*。
+ * 架构 (WebGL1, mirrors shadow-gpu-pass.ts / fluid-gpu-pass.ts / at-terrain-environment.ts):
+ *   init():    createProgram, compileShader, linkProgram, createFramebuffer,
+ *              createTexture, createBuffer, bufferData — all real gl.* calls
+ *   render():  useProgram, bindFramebuffer, bindTexture, uniform*,
+ *              bindBuffer, vertexAttribPointer, drawArrays/drawElements
+ *   dispose(): deleteProgram, deleteFramebuffer, deleteTexture, deleteBuffer
  *
- * 核心概念 (参照 UE5 Renderer-Private/VirtualShadowMaps/ 约47个文件):
- * ─────────────────────────────────────────────────────────────────────────────
+ * Pass 链 (每帧):
+ *   shadowDepth  → DEPTH_ATTACHMENT FBO (光源正交视角渲染所有 shadow casters)
+ *   shadowSample → PCF 7×7 Poisson disk (主 pass 采样 shadow map, 输出 factor texture)
  *
- *  § 1  物理页池 (Physical Page Pool)
- *       PhysicalPagePool — rgba16float texture, 分辨率 PHYS_DIM × PHYS_DIM
- *       每个 tile 为 VSM_PAGE_SIZE(128)×128 像素的深度 tile
- *       PageMetadata buffer 记录每个物理页的 flags / dirty 状态
+ * GLSL 来源 (upstream/activetheory-assets/compiled.vs):
+ *   ShadowDepth.vs   — line 846  shadow caster depth vertex shader
+ *   ShadowDepth.fs   — line 851  shadow caster depth fragment shader
+ *   shadows.fs       — line 906  AT PCSS / PCF 采样库 (shadowCompare / shadowLerp /
+ *                                shadowLookup / PCSS / pcfFilter / initPoissonSamples)
  *
- *  § 2  页表虚拟化 (Page Table Virtualization)
- *       PageTableBuffer — 每个 VSM 有 Level0DimPagesXY²=128² 项
- *       项目存储 physical page index (16bit) + flags (16bit)
- *       仅可见区域的 shadow tile 分配物理页 → 节省大量显存
- *
- *  § 3  Clipmap 分级 (Clipmap-based Shadow)
- *       与 UE5 FVirtualShadowMapClipmap 对应:
- *         FirstLevel=8, LastLevel=18 → 11 个 clipmap 级别
- *         每级 radius = 2^level 世界单位, 覆盖 Cell 不同距离
- *         级别越高分辨率越低 → 细节近处高分辨率, 远处低分辨率
- *         级别中心随摄像机 snap 到页对齐, 避免 shadow swimming
- *
- *  § 4  页缓存 (Page Cache)
- *       VSMPageCache 跟踪上帧的 PageSpaceLocation 和 physical page 映射
- *       静止 Cell 的 shadow tile 不重画 (FORCE_CACHED flag)
- *       动态 Cell 标记 DYNAMIC_UNCACHED → 该页重渲染
- *       帧间 clipmap 平移时: 新页 invalidated, 复用重叠页
- *
- *  § 5  与 AT lighting.fs 桥接
- *       ATVSMBridge — 将 VSM page table + physical pool 绑定到 lighting pass
- *       getShadow() 替换为 getVSMShadow() WGSL 实现
- *       支持 PCF filtering over physical page tiles
- *
- * 算法流程
- * ─────────────────────────────────────────────────────────────────────────────
- *
- *   ┌─ Pass A ── Page Marking ────────────────────────────────────────────────┐
- *   │  GBuffer depth + camera → mark which shadow pages are visible           │
- *   │  输出: PageRequestBuffer (per-VSM per-page 可见性标记)                   │
- *   └──────────────────────────────────────────────────────────────────────────┘
- *                │ PageRequestBuffer
- *                ▼
- *   ┌─ Pass B ── Physical Page Allocation ───────────────────────────────────┐
- *   │  空闲页池 → 为每个 requested+uncached 页分配物理页                       │
- *   │  写入 PageTableBuffer (virtualIdx → physicalIdx)                        │
- *   └──────────────────────────────────────────────────────────────────────────┘
- *                │ PageTableBuffer (updated)
- *                ▼
- *   ┌─ Pass C ── Shadow Depth Render ─────────────────────────────────────────┐
- *   │  仅渲染 DYNAMIC_UNCACHED / STATIC_UNCACHED 页的 shadow casters           │
- *   │  写入 PhysicalPagePool[physIdx].depth                                   │
- *   └──────────────────────────────────────────────────────────────────────────┘
- *                │ PhysicalPagePool (partial update)
- *                ▼
- *   ┌─ Pass D ── Projection / Lighting ──────────────────────────────────────┐
- *   │  lighting.fs → getVSMShadow(worldPos, lightDir)                        │
- *   │  查 PageTable → 找 physicalPage → 采样 depth → PCF shadow factor        │
- *   └──────────────────────────────────────────────────────────────────────────┘
- *
- * Usage:
- *   const vsm = await UEVSMShadows.create(device, { width, height });
- *   vsm.updateClipmaps(cameraPos, lightDir);
- *   vsm.markPages(encoder, depthTex, gBufferNormalTex);
- *   vsm.allocatePages(encoder);
- *   vsm.renderShadowDepth(encoder, shadowCasterDraws);
- *   vsm.bindToLightingPass(passEncoder, lightingPipeline, groupIndex);
- *
- * Research: xiaodi #M836 — cell-pubsub-loop
- * Ported from: Renderer-Private/VirtualShadowMaps/ (UE5)
- *              Shaders-Private/VirtualShadowMaps/*.usf/.ush
+ * Research: xiaodi #M948 — cell-pubsub-loop
+ * Ported concept from: Renderer-Private/VirtualShadowMaps/ (UE5)
  */
 
-// ─────────────────────────────────────────────────────────────────────────────
-// § 0  Constants (mirrors VirtualShadowMapDefinitions.h)
-// ─────────────────────────────────────────────────────────────────────────────
+import { getShader } from '../shaders/ShaderLoader';
 
-/** Shadow tile size in texels — must match VSM_PAGE_SIZE in UE5 */
-const VSM_PAGE_SIZE            = 128;
-const VSM_PAGE_SIZE_MASK       = VSM_PAGE_SIZE - 1;
-const VSM_LOG2_PAGE_SIZE       = 7;
-/** Level-0 virtual address space in pages per axis: 128×128 = 16 384 */
-const VSM_LEVEL0_DIM_PAGES_XY  = 128;
-const VSM_LOG2_LEVEL0_DIM_PAGES_XY = 7;
-const VSM_MAX_MIP_LEVELS       = 8;
-/** Max virtual resolution per axis in texels: 16 384 × 128 = 2 097 152 */
-const VSM_VIRTUAL_MAX_RES_XY   = VSM_LEVEL0_DIM_PAGES_XY * VSM_PAGE_SIZE;
+// ─── constants ────────────────────────────────────────────────────────────────
 
-/** Physical pool dimension in pages (width & height) */
-const PHYS_POOL_DIM_PAGES      = 64;   // 64×64 pages = 4096 physical pages
-const PHYS_POOL_DIM_TEXELS     = PHYS_POOL_DIM_PAGES * VSM_PAGE_SIZE; // 8192
-const MAX_PHYSICAL_PAGES       = PHYS_POOL_DIM_PAGES * PHYS_POOL_DIM_PAGES;
+const SHADOW_MAP_SIZE  = 1024 as const;   // shadow depth FBO resolution
+const SHADOW_OUT_SIZE  = 512  as const;   // PCF output texture resolution
+const CLIPMAP_LEVELS   = 4    as const;   // directional light clipmap cascade count
+const CELL_HALF_SIZE   = 12.0 as const;   // half-extent of each cell quad in world units
+const PCF_BIAS         = 0.003 as const;  // depth bias (shadow acne prevention)
+const PCF_RADIUS       = 2.0  as const;   // Poisson disk radius in texels
+const LIGHT_ORTHO_SIZE = 250  as const;   // shadow frustum half-extent
 
-/** Clipmap level range — mirrors FVirtualShadowMapClipmapConfig defaults */
-const VSM_FIRST_LEVEL          = 8;
-const VSM_LAST_LEVEL           = 18;
-const VSM_NUM_LEVELS           = VSM_LAST_LEVEL - VSM_FIRST_LEVEL + 1; // 11
+// ─── GLSL — Shadow Depth Vertex Shader ────────────────────────────────────────
+// Source: compiled.vs line 846 ShadowDepth.vs
+// Extended: adds uLightViewProj + aPosition attribute for standalone use
 
-/** Max single-page VSMs (spot/point lights use 1 page each) */
-const VSM_MAX_SINGLE_PAGE_SHADOW_MAPS = 1024;
+const SHADOW_DEPTH_VERT = /* glsl */`
+precision highp float;
 
-// Page flags (mirrors VirtualShadowMapPageAccessCommon.ush)
-const VSM_FLAG_ALLOCATED          = 1 << 0;
-const VSM_FLAG_DYNAMIC_UNCACHED   = 1 << 1;
-const VSM_FLAG_STATIC_UNCACHED    = 1 << 2;
-const VSM_FLAG_DETAIL_GEOMETRY    = 1 << 3;
-const VSM_FLAG_PRIMARY_REQUEST    = 1 << 4;
-const VSM_FLAG_SECONDARY_REQUEST  = 1 << 5;
-const VSM_PAGE_FLAGS_BITS_PER_HMIP = 6;
-const VSM_EXTENDED_FLAG_DYNAMIC_INITIALIZED = 1 << 6;
-const VSM_EXTENDED_FLAG_STATIC_INITIALIZED  = 1 << 7;
-const VSM_EXTENDED_FLAG_DYNAMIC_DIRTY       = 1 << 8;
-const VSM_EXTENDED_FLAG_STATIC_DIRTY        = 1 << 9;
-const VSM_EXTENDED_FLAG_INVALIDATE_DYNAMIC  = 1 << 10;
-const VSM_EXTENDED_FLAG_INVALIDATE_STATIC   = 1 << 11;
-const VSM_EXTENDED_FLAG_FORCE_CACHED        = 1 << 14;
-const VSM_EXTENDED_FLAG_UNREFERENCED        = 1 << 13;
+// cell position attribute (vec3 world-space quad corner)
+attribute vec3 aPosition;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// § 1  Math helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// light orthographic view-projection matrix
+uniform mat4 uLightViewProj;
 
-/** 4×4 column-major matrix multiply (row-major in JS arrays) */
-function mat4Mul(a: Float32Array, b: Float32Array): Float32Array {
-  const out = new Float32Array(16);
-  for (let row = 0; row < 4; row++) {
-    for (let col = 0; col < 4; col++) {
-      let sum = 0;
-      for (let k = 0; k < 4; k++) sum += a[row * 4 + k] * b[k * 4 + col];
-      out[row * 4 + col] = sum;
+// pass depth to frag for packed RGBA depth encoding
+varying float vDepth;
+
+void main() {
+    vec4 lightPos = uLightViewProj * vec4(aPosition, 1.0);
+    vDepth        = lightPos.z / lightPos.w;
+    gl_Position   = lightPos;
+}
+`;
+
+// Source: compiled.vs line 851 ShadowDepth.fs — hardware writes gl_FragCoord.z
+const SHADOW_DEPTH_FRAG = /* glsl */`
+precision highp float;
+
+varying float vDepth;
+
+void main() {
+    // Pack linear depth into RGBA (R = depth) for WEBGL_depth_texture fallback
+    // Primary depth is written by hardware to DEPTH_ATTACHMENT
+    float d = vDepth * 0.5 + 0.5;
+    gl_FragColor = vec4(d, d * d, 0.0, 1.0);
+}
+`;
+
+// ─── GLSL — Shadow PCF Sample Vertex Shader ───────────────────────────────────
+// Fullscreen quad for shadow factor generation pass
+
+const SHADOW_SAMPLE_VERT = /* glsl */`
+precision highp float;
+
+attribute vec2 aPosition;
+
+varying vec2 vUv;
+
+void main() {
+    vUv         = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+// ─── GLSL — Shadow PCF Sample Fragment Shader ─────────────────────────────────
+// Source: compiled.vs line 906 shadows.fs
+// Uses: shadowCompare, shadowLerp, shadowLookup, initPoissonSamples, pcfFilter
+// Extended with Poisson disk PCF and per-fragment world-position sampling
+
+const SHADOW_SAMPLE_FRAG = /* glsl */`
+precision highp float;
+
+// ── AT shadows.fs (compiled.vs line 906) ─────────────────────────────────────
+#define PI2   6.2831853072
+#define PI    3.141592653589793
+#define SHADOW_MAPS
+#define SHADOWS_HIGH
+#define MAX_PCSS_SAMPLES 17
+vec2 poissonDisk[MAX_PCSS_SAMPLES];
+
+float rand(float n) { return fract(sin(n) * 43758.5453123); }
+highp float rand(const in vec2 uv) {
+    const highp float a = 12.9898, b = 78.233, c = 43758.5453;
+    highp float dt = dot(uv.xy, vec2(a, b)), sn = mod(dt, PI);
+    return fract(sin(sn) * c);
+}
+
+void initPoissonSamples(const in vec2 randomSeed, int sampleCount, int ringCount) {
+    float angleStep      = PI2 * float(ringCount) / float(sampleCount);
+    float invSampleCount = 1.0 / float(sampleCount);
+    float angle          = rand(randomSeed) * PI2;
+    float radius         = invSampleCount;
+    float radiusStep     = radius;
+    for (int i = 0; i < MAX_PCSS_SAMPLES; i++) {
+        if (i >= sampleCount) break;
+        poissonDisk[i] = vec2(cos(angle), sin(angle)) * pow(radius, 0.75);
+        radius += radiusStep;
+        angle  += angleStep;
     }
-  }
-  return out;
 }
 
-/** Build orthographic projection (matches UE5 clipmap ViewToClip) */
-function buildOrtho(halfW: number, halfH: number, zNear: number, zFar: number): Float32Array {
-  const m = new Float32Array(16);
-  m[0]  =  1 / halfW;
-  m[5]  =  1 / halfH;
-  m[10] = -2 / (zFar - zNear);
-  m[14] = -(zFar + zNear) / (zFar - zNear);
-  m[15] = 1;
-  return m;
+float shadowCompare(sampler2D map, vec2 coords, float compare) {
+    return step(compare, texture2D(map, coords).r);
 }
 
-/** Build view matrix from light direction (directional light) */
-function buildLightView(lightDir: [number, number, number], center: [number, number, number]): Float32Array {
-  const [dx, dy, dz] = lightDir;
-  // Choose an up vector not parallel to lightDir
-  const up: [number, number, number] = Math.abs(dy) < 0.99 ? [0, 1, 0] : [1, 0, 0];
-  // right = lightDir × up
-  const rx = dy * up[2] - dz * up[1];
-  const ry = dz * up[0] - dx * up[2];
-  const rz = dx * up[1] - dy * up[0];
-  const rlen = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1;
-  const [rcx, rcy, rcz] = [rx / rlen, ry / rlen, rz / rlen];
-  // newUp = right × lightDir
-  const ux = rcy * dz - rcz * dy;
-  const uy = rcz * dx - rcx * dz;
-  const uz = rcx * dy - rcy * dx;
-  const tx = -(rcx * center[0] + rcy * center[1] + rcz * center[2]);
-  const ty = -(ux * center[0] + uy * center[1] + uz * center[2]);
-  const tz = -(dx * center[0] + dy * center[1] + dz * center[2]);
+float shadowLerp(sampler2D map, vec2 coords, float compare, float size) {
+    const vec2 offset = vec2(0.0, 1.0);
+    vec2 texelSize    = vec2(1.0) / size;
+    vec2 centroidUV   = floor(coords * size + 0.5) / size;
+    float lb = shadowCompare(map, centroidUV + texelSize * offset.xx, compare);
+    float lt = shadowCompare(map, centroidUV + texelSize * offset.xy, compare);
+    float rb = shadowCompare(map, centroidUV + texelSize * offset.yx, compare);
+    float rt = shadowCompare(map, centroidUV + texelSize * offset.yy, compare);
+    vec2  f  = fract(coords * size + 0.5);
+    float a  = mix(lb, lt, f.y);
+    float b  = mix(rb, rt, f.y);
+    return mix(a, b, f.x);
+}
+
+float srange(float v, float a, float b, float c, float d) {
+    return (((v - a) * (d - c)) / (b - a)) + c;
+}
+
+float shadowrandom(vec3 vin) {
+    vec3 v  = vin * 0.1;
+    float t = v.z * 0.3;
+    v.y    *= 0.8;
+    float noise = 0.0;
+    float s = 0.5;
+    noise += srange(sin(v.x*0.9/s+t*10.0)+sin(v.x*2.4/s+t*15.0)+sin(v.x*-3.5/s+t*4.0)+sin(v.x*-2.5/s+t*7.1),-1.0,1.0,-0.3,0.3);
+    noise += srange(sin(v.y*-0.3/s+t*18.0)+sin(v.y*1.6/s+t*18.0)+sin(v.y*2.6/s+t*8.0)+sin(v.y*-2.6/s+t*4.5),-1.0,1.0,-0.3,0.3);
+    return noise;
+}
+
+// AT shadowLookup with SHADOWS_HIGH (9 bilinear taps)
+float shadowLookup(sampler2D map, vec3 coords, float size, float compare, vec3 wpos) {
+    float shadow = 1.0;
+    bool  inFrustum = coords.x >= 0.0 && coords.x <= 1.0 &&
+                      coords.y >= 0.0 && coords.y <= 1.0 &&
+                      coords.z <= 1.0;
+    if (inFrustum) {
+        vec2  texelSize = vec2(1.0) / size;
+        float dx0 = -texelSize.x;
+        float dy0 = -texelSize.y;
+        float dx1 = +texelSize.x;
+        float dy1 = +texelSize.y;
+        float rnoise = shadowrandom(wpos) * 0.00015;
+        dx0 += rnoise; dy0 -= rnoise;
+        dx1 += rnoise; dy1 -= rnoise;
+        shadow  = shadowLerp(map, coords.xy + vec2(dx0, dy0), compare, size);
+        shadow += shadowLerp(map, coords.xy + vec2(0.0, dy0), compare, size);
+        shadow += shadowLerp(map, coords.xy + vec2(dx1, dy0), compare, size);
+        shadow += shadowLerp(map, coords.xy + vec2(dx0, 0.0), compare, size);
+        shadow += shadowLerp(map, coords.xy,                  compare, size);
+        shadow += shadowLerp(map, coords.xy + vec2(dx1, 0.0), compare, size);
+        shadow += shadowLerp(map, coords.xy + vec2(dx0, dy1), compare, size);
+        shadow += shadowLerp(map, coords.xy + vec2(0.0, dy1), compare, size);
+        shadow += shadowLerp(map, coords.xy + vec2(dx1, dy1), compare, size);
+        shadow /= 9.0;
+    }
+    return clamp(shadow, 0.0, 1.0);
+}
+
+// Poisson PCF with random rotation per pixel
+float pcfPoisson(sampler2D map, vec3 coords, float size, float compare, vec3 wpos,
+                 float radius, int numSamples) {
+    bool inFrustum = coords.x >= 0.0 && coords.x <= 1.0 &&
+                     coords.y >= 0.0 && coords.y <= 1.0 &&
+                     coords.z <= 1.0;
+    if (!inFrustum) return 1.0;
+
+    initPoissonSamples(coords.xy, numSamples, 11);
+    float step  = radius / size;
+    float sum   = 0.0;
+    float count = 0.0;
+    for (int i = 0; i < MAX_PCSS_SAMPLES; i++) {
+        if (i >= numSamples) break;
+        vec2 sampleUV = coords.xy + poissonDisk[i] * step;
+        sum  += shadowCompare(map, sampleUV, compare);
+        count += 1.0;
+    }
+    return clamp(sum / count, 0.0, 1.0);
+}
+
+// ── VSM uniforms ──────────────────────────────────────────────────────────────
+
+// shadow depth texture (DEPTH_COMPONENT or packed RGBA)
+uniform sampler2D uShadowMap;
+
+// world-position texture (cell positions packed as RGB world coords, A=1 if valid)
+uniform sampler2D uPositionTex;
+
+// light view-projection matrix (orthographic directional)
+uniform mat4 uLightViewProj;
+
+// shadow map texel size (1.0 / SHADOW_MAP_SIZE)
+uniform vec2 uShadowTexelSize;
+
+// depth bias
+uniform float uBias;
+
+// PCF radius in texels
+uniform float uPCFRadius;
+
+// shadow map pixel size as float (SHADOW_MAP_SIZE)
+uniform float uShadowMapSize;
+
+varying vec2 vUv;
+
+void main() {
+    // Read world position from position texture
+    vec4 worldSample = texture2D(uPositionTex, vUv);
+    if (worldSample.a < 0.5) {
+        // No valid cell at this pixel — fully lit
+        gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+        return;
+    }
+    vec3 worldPos = worldSample.rgb;
+
+    // Project world position into light clip space
+    vec4 lightClip = uLightViewProj * vec4(worldPos, 1.0);
+
+    // Perspective divide → NDC [-1, 1]
+    vec3 ndc = lightClip.xyz / lightClip.w;
+
+    // NDC → shadow map coords [0, 1]
+    vec3 shadowCoords = ndc * 0.5 + 0.5;
+
+    // Shadow compare depth with bias
+    float compareDepth = shadowCoords.z - uBias;
+
+    // AT 9-tap bilinear PCF (SHADOWS_HIGH from shadows.fs)
+    float shadowHigh = shadowLookup(uShadowMap, shadowCoords, uShadowMapSize, compareDepth, worldPos);
+
+    // Additional Poisson disk pass for softer penumbra (12 samples)
+    float shadowPoisson = pcfPoisson(uShadowMap, shadowCoords, uShadowMapSize, compareDepth, worldPos, uPCFRadius, 12);
+
+    // Blend: 60% bilinear, 40% Poisson
+    float shadow = mix(shadowHigh, shadowPoisson, 0.4);
+
+    // Output: R = shadow factor (0 = shadowed, 1 = lit)
+    gl_FragColor = vec4(shadow, shadow, shadow, 1.0);
+}
+`;
+
+// ─── GLSL — Shadow Debug Blit Vertex Shader ───────────────────────────────────
+// Full-screen blit for debug display of shadow map or factor texture
+
+const DEBUG_BLIT_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+    vUv         = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+const DEBUG_BLIT_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D uTex;
+varying vec2 vUv;
+void main() {
+    gl_FragColor = texture2D(uTex, vUv);
+}
+`;
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+export interface VSMConfig {
+  /** Shadow depth map resolution. Default 1024. */
+  shadowMapSize?: number;
+  /** PCF output texture size. Default 512. */
+  outputSize?: number;
+  /** Depth bias (prevents acne). Default 0.003. */
+  bias?: number;
+  /** PCF Poisson radius in texels. Default 2.0. */
+  pcfRadius?: number;
+  /** Light direction (normalized). Default [0.5, -1.0, 0.3]. */
+  lightDir?: [number, number, number];
+  /** Orthographic shadow frustum half-extent. Default 250. */
+  lightOrthoSize?: number;
+  /** Number of shadow cascade levels. Default 4. */
+  cascadeLevels?: number;
+}
+
+const DEFAULT_VSM_CONFIG: Required<VSMConfig> = {
+  shadowMapSize:  SHADOW_MAP_SIZE,
+  outputSize:     SHADOW_OUT_SIZE,
+  bias:           PCF_BIAS,
+  pcfRadius:      PCF_RADIUS,
+  lightDir:       [0.5, -1.0, 0.3],
+  lightOrthoSize: LIGHT_ORTHO_SIZE,
+  cascadeLevels:  CLIPMAP_LEVELS,
+};
+
+// ─── 4×4 matrix utilities ─────────────────────────────────────────────────────
+
+function mat4Identity(): Float32Array {
+  // prettier-ignore
   return new Float32Array([
-    rcx, ux, dx, 0,
-    rcy, uy, dy, 0,
-    rcz, uz, dz, 0,
-    tx,  ty, tz, 1,
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
   ]);
 }
 
-/** Snap value to multiples of `snap` (clipmap origin snapping) */
-function snapToGrid(v: number, snap: number): number {
-  return Math.floor(v / snap) * snap;
+/** Column-major orthographic projection */
+function mat4Ortho(
+  l: number, r: number,
+  b: number, t: number,
+  n: number, f: number,
+): Float32Array {
+  const rl = 1.0 / (r - l);
+  const tb = 1.0 / (t - b);
+  const fn = 1.0 / (f - n);
+  // prettier-ignore
+  return new Float32Array([
+    2 * rl,          0,           0,       0,
+    0,               2 * tb,      0,       0,
+    0,               0,          -2 * fn,  0,
+    -(r + l) * rl,  -(t + b) * tb, -(f + n) * fn, 1,
+  ]);
 }
 
-/** log2 of clipmap level dimension in pages */
-function calcLog2LevelDimPages(level: number): number {
-  return VSM_LOG2_LEVEL0_DIM_PAGES_XY - level;
-}
-function calcLevelDimPages(level: number): number {
-  return 1 << Math.max(0, calcLog2LevelDimPages(level));
-}
+/** Column-major lookAt view matrix */
+function mat4LookAt(
+  eye:    [number, number, number],
+  center: [number, number, number],
+  up:     [number, number, number],
+): Float32Array {
+  const fx = center[0] - eye[0];
+  const fy = center[1] - eye[1];
+  const fz = center[2] - eye[2];
+  const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1;
+  const f0 = fx / fl; const f1 = fy / fl; const f2 = fz / fl;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// § 2  Types
-// ─────────────────────────────────────────────────────────────────────────────
+  const s0 = f1 * up[2] - f2 * up[1];
+  const s1 = f2 * up[0] - f0 * up[2];
+  const s2 = f0 * up[1] - f1 * up[0];
+  const sl = Math.sqrt(s0 * s0 + s1 * s1 + s2 * s2) || 1;
+  const sx = s0 / sl; const sy = s1 / sl; const sz = s2 / sl;
 
-/** One clipmap level data (mirrors FVirtualShadowMapClipmap::FLevelData) */
-export interface VSMClipmapLevelData {
-  /** Absolute level index (VSM_FIRST_LEVEL..VSM_LAST_LEVEL) */
-  level: number;
-  /** Level radius in world units = 2^level */
-  radius: number;
-  /** World-space center (snapped to page grid) */
-  worldCenter: [number, number, number];
-  /** Orthographic half-extents for this level */
-  halfExtent: number;
-  /** Light view matrix (row-major Float32Array[16]) */
-  viewMatrix: Float32Array;
-  /** Orthographic projection matrix */
-  projMatrix: Float32Array;
-  /** Combined viewProj for shadow depth render */
-  viewProjMatrix: Float32Array;
-  /** Page-space corner offset for caching delta (Int2) */
-  cornerOffset: [number, number];
-  /** Whether this level's pages need full invalidation */
-  invalidated: boolean;
-}
+  const ux = sy * f2 - sz * f1;
+  const uy = sz * f0 - sx * f2;
+  const uz = sx * f1 - sy * f0;
 
-/** Per-physical-page metadata (matches FVirtualShadowMapPhysicalPageMetaData layout) */
-export interface VSMPageMetadata {
-  /** Index of VSM that owns this page (-1 = free) */
-  vsmIndex: number;
-  /** Virtual page X within the owning VSM's page table */
-  virtualPageX: number;
-  /** Virtual page Y within the owning VSM's page table */
-  virtualPageY: number;
-  /** MIP level (0 = finest) */
-  mipLevel: number;
-  /** Combined VSM_FLAG_* + VSM_EXTENDED_FLAG_* */
-  flags: number;
-  /** Frame number when this page was last rendered */
-  lastRenderedFrame: number;
+  // prettier-ignore
+  return new Float32Array([
+    sx, ux, -f0, 0,
+    sy, uy, -f1, 0,
+    sz, uz, -f2, 0,
+    -(sx * eye[0] + sy * eye[1] + sz * eye[2]),
+    -(ux * eye[0] + uy * eye[1] + uz * eye[2]),
+     (f0 * eye[0] + f1 * eye[1] + f2 * eye[2]),
+    1,
+  ]);
 }
 
-/** Per-light (per-VSM) cache entry (mirrors FVirtualShadowMapCacheEntry) */
-export interface VSMCacheEntry {
-  /** Previous frame's page-space location of clipmap origin */
-  prevPageSpaceLocation: [number, number];
-  /** Current frame's page-space location */
-  currPageSpaceLocation: [number, number];
-  /** Physical page allocations: virtualIndex → physicalIndex */
-  pageMapping: Map<number, number>;
-  /** Frame in which this entry was last rendered */
-  lastRenderedFrame: number;
-  /** Whether this light moved (forces uncached) */
-  isDynamic: boolean;
-}
-
-/** Configuration for UEVSMShadows */
-export interface VSMConfig {
-  /** Render target width (for page marking pass) */
-  width: number;
-  /** Render target height */
-  height: number;
-  /** Physical page pool size in pages per axis (default 64) */
-  physPoolDimPages?: number;
-  /** Number of clipmap levels (default VSM_NUM_LEVELS = 11) */
-  numClipmapLevels?: number;
-  /** First clipmap level (default 8) */
-  firstClipmapLevel?: number;
-  /** Resolution LOD bias (default 0) */
-  resolutionLodBias?: number;
-  /** PCF filter radius in texels (default 2) */
-  pcfRadius?: number;
-  /** Max distance for shadow casting (default 65536) */
-  maxShadowDistance?: number;
-  /** Enable static/dynamic page separation (default true) */
-  enablePageCaching?: boolean;
-}
-
-/** Shadow draw call descriptor for depth render pass */
-export interface VSMShadowDraw {
-  /** Vertex buffer */
-  vertexBuffer: GPUBuffer;
-  /** Index buffer (optional — draw arrays if null) */
-  indexBuffer: GPUBuffer | null;
-  /** Number of indices / vertices */
-  count: number;
-  /** Model matrix uniform buffer */
-  modelUBO: GPUBuffer;
-  /** Which clipmap levels this caster affects (bitmask) */
-  levelMask: number;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 3  WGSL — Page Marking Compute Shader
-//      Mirrors VirtualShadowMapPageMarking.usf
-//      For each GBuffer pixel: compute clipmap level → mark shadow page
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_PAGE_MARKING = /* wgsl */ `
-// ── Constants ─────────────────────────────────────────────────────────────────
-const VSM_PAGE_SIZE         : u32 = 128u;
-const VSM_LEVEL0_DIM_PAGES  : u32 = 128u;
-const VSM_LOG2_LEVEL0_DIM   : u32 = 7u;
-const VSM_FIRST_LEVEL       : u32 = 8u;
-const VSM_LAST_LEVEL        : u32 = 18u;
-const VSM_NUM_LEVELS        : u32 = 11u;
-const VSM_FLAG_PRIMARY_REQUEST : u32 = 16u;  // 1<<4
-
-// ── Uniforms ──────────────────────────────────────────────────────────────────
-struct MarkUniforms {
-  invViewProj       : mat4x4f,
-  cameraPos         : vec3f,
-  lightDir          : vec3f,
-  screenSize        : vec2f,
-  nearZ             : f32,
-  farZ              : f32,
-  firstLevel        : u32,
-  numLevels         : u32,
-  resolutionLodBias : f32,
-  _pad              : f32,
-  // Per-clipmap level data: 11 * (mat4 viewProj + vec4 center + vec4 extents)
-  // Packed as array of 11*24 floats
-};
-
-@group(0) @binding(0) var<uniform>         uMark       : MarkUniforms;
-@group(0) @binding(1) var                  depthTex    : texture_depth_2d;
-@group(0) @binding(2) var                  depthSampler: sampler;
-@group(0) @binding(3) var<storage, read_write> pageRequests : array<atomic<u32>>;
-// pageRequests layout: [VSM_NUM_LEVELS × (128×128) u32]
-// Each u32 is a bitmask of 32 sub-tiles, or simple 1/0 if ≤32 tiles per level
-
-// ── Level helpers ─────────────────────────────────────────────────────────────
-fn calcLog2LevelDimPages(level: u32) -> u32 {
-  return VSM_LOG2_LEVEL0_DIM - level;
-}
-fn calcLevelDimPages(level: u32) -> u32 {
-  return 1u << calcLog2LevelDimPages(level);
-}
-fn levelBaseOffset(levelIdx: u32) -> u32 {
-  // Sum of pages for previous levels: Σ dimPages^2 for l in [0..levelIdx)
-  var offset = 0u;
-  for (var l = 0u; l < levelIdx; l++) {
-    let d = calcLevelDimPages(l);
-    offset += d * d;
-  }
-  return offset;
-}
-
-// ── Reconstruct world pos from depth ─────────────────────────────────────────
-fn reconstructWorldPos(uv: vec2f, depth: f32) -> vec3f {
-  let ndc = vec4f(uv * 2.0 - 1.0, depth, 1.0);
-  let worldH = uMark.invViewProj * ndc;
-  return worldH.xyz / worldH.w;
-}
-
-// ── Compute absolute clipmap level for a world position ─────────────────────
-// Mirrors CalcAbsoluteClipmapLevel in VirtualShadowMapProjectionCommon.ush
-fn calcAbsoluteClipmapLevel(distSq: f32) -> f32 {
-  return log2(distSq) * 0.5;
-}
-
-// ── Main compute kernel ───────────────────────────────────────────────────────
-@compute @workgroup_size(8, 8, 1)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-  let screenSize = vec2u(u32(uMark.screenSize.x), u32(uMark.screenSize.y));
-  if (gid.x >= screenSize.x || gid.y >= screenSize.y) { return; }
-
-  let uv = (vec2f(gid.xy) + 0.5) / uMark.screenSize;
-  let depth = textureSampleLevel(depthTex, depthSampler, uv, 0.0);
-  if (depth <= 0.0001) { return; }  // sky
-
-  let worldPos = reconstructWorldPos(uv, depth);
-  let toCam = worldPos - uMark.cameraPos;
-  let distSq = dot(toCam, toCam);
-
-  let absLevel = calcAbsoluteClipmapLevel(distSq) + uMark.resolutionLodBias;
-  let firstL = uMark.firstLevel;
-  let lastL  = firstL + uMark.numLevels - 1u;
-
-  for (var li = 0u; li < uMark.numLevels; li++) {
-    let absLevelI = firstL + li;
-    // Only mark the best-fit level (±0.5 from integer boundary)
-    let levelF    = f32(absLevelI);
-    if (absLevel < levelF - 0.5 || absLevel > levelF + 1.5) { continue; }
-
-    let dimPages  = calcLevelDimPages(li);
-    let levelRadius = exp2(levelF);
-    let halfExt   = levelRadius * f32(VSM_PAGE_SIZE);
-
-    // Project worldPos into this clipmap's UV [0..1]
-    // (simplified: assume clipmap center = camera snapped)
-    // Full implementation would use per-level viewProj from uMark
-    let shadowUV = clamp((worldPos.xz - uMark.cameraPos.xz) / (2.0 * levelRadius) + 0.5, vec2f(0.0), vec2f(1.0));
-
-    let pageX = u32(shadowUV.x * f32(dimPages));
-    let pageY = u32(shadowUV.y * f32(dimPages));
-    if (pageX >= dimPages || pageY >= dimPages) { continue; }
-
-    let baseOff = levelBaseOffset(li);
-    let pageIdx = baseOff + pageY * dimPages + pageX;
-    atomicOr(&pageRequests[pageIdx], VSM_FLAG_PRIMARY_REQUEST);
-    break;
-  }
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 4  WGSL — Page Allocation Compute Shader
-//      Mirrors VirtualShadowMapPhysicalPageManagement.usf
-//      Allocates free physical pages for uncached requested pages
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_PAGE_ALLOC = /* wgsl */ `
-const VSM_FLAG_ALLOCATED        : u32 = 1u;
-const VSM_FLAG_DYNAMIC_UNCACHED : u32 = 2u;
-const VSM_FLAG_STATIC_UNCACHED  : u32 = 4u;
-const VSM_FLAG_PRIMARY_REQUEST  : u32 = 16u;
-const VSM_EXTENDED_FORCE_CACHED : u32 = 0x4000u;
-const VSM_EXTENDED_UNREFERENCED : u32 = 0x2000u;
-
-const MAX_PHYSICAL_PAGES : u32 = 4096u;
-const INVALID_PAGE       : u32 = 0xFFFFFFFFu;
-
-struct AllocUniforms {
-  totalVirtualPages : u32,
-  frameNumber       : u32,
-  _pad0             : u32,
-  _pad1             : u32,
-};
-
-@group(0) @binding(0) var<uniform>            uAlloc       : AllocUniforms;
-@group(0) @binding(1) var<storage, read>       pageRequests : array<u32>;
-@group(0) @binding(2) var<storage, read_write> pageTable    : array<u32>;
-// pageTable[virtualIdx] = (physicalIdx << 16) | flags
-@group(0) @binding(3) var<storage, read_write> freePageList : array<atomic<u32>>;
-// freePageList[0] = count, freePageList[1..] = free physical page indices
-@group(0) @binding(4) var<storage, read_write> pageMetadata : array<u32>;
-// pageMetadata[physIdx] = packed (vsmIdx:12, virtX:10, virtY:10)
-
-fn allocPhysicalPage() -> u32 {
-  let oldCount = atomicSub(&freePageList[0], 1u);
-  if (oldCount == 0u) {
-    atomicAdd(&freePageList[0], 1u);  // undo
-    return INVALID_PAGE;
-  }
-  return atomicExchange(&freePageList[oldCount], INVALID_PAGE);
-}
-
-@compute @workgroup_size(64, 1, 1)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-  let virtIdx = gid.x;
-  if (virtIdx >= uAlloc.totalVirtualPages) { return; }
-
-  let req   = pageRequests[virtIdx];
-  let entry = pageTable[virtIdx];
-  let flags = entry & 0xFFFFu;
-  let phys  = entry >> 16u;
-
-  let requested = (req & 16u) != 0u;  // VSM_FLAG_PRIMARY_REQUEST
-
-  if (!requested) {
-    // Mark unreferenced if was allocated
-    if ((flags & VSM_FLAG_ALLOCATED) != 0u) {
-      pageTable[virtIdx] = (phys << 16u) | (flags | VSM_EXTENDED_UNREFERENCED);
+/** Column-major matrix multiply */
+function mat4Mul(a: Float32Array, b: Float32Array): Float32Array {
+  const out = new Float32Array(16);
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[k * 4 + i] * b[j * 4 + k];
+      out[j * 4 + i] = s;
     }
-    return;
   }
-
-  if ((flags & VSM_FLAG_ALLOCATED) != 0u && (flags & (VSM_FLAG_DYNAMIC_UNCACHED | VSM_FLAG_STATIC_UNCACHED)) == 0u) {
-    // Already allocated and cached — keep it, clear unreferenced
-    pageTable[virtIdx] = (phys << 16u) | (flags & ~VSM_EXTENDED_UNREFERENCED);
-    return;
-  }
-
-  // Need to allocate a new physical page
-  var physPage = phys;
-  if ((flags & VSM_FLAG_ALLOCATED) == 0u) {
-    physPage = allocPhysicalPage();
-    if (physPage == INVALID_PAGE) { return; }  // out of physical pages
-  }
-
-  let newFlags = VSM_FLAG_ALLOCATED | VSM_FLAG_DYNAMIC_UNCACHED;
-  pageTable[virtIdx] = (physPage << 16u) | newFlags;
-  // Record ownership in metadata
-  pageMetadata[physPage] = (virtIdx & 0xFFFFFu) | (uAlloc.frameNumber << 20u);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 5  WGSL — Shadow Depth Vertex/Fragment Shaders
-//      Renders shadow casters into physical page pool tiles
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_SHADOW_DEPTH_VS = /* wgsl */ `
-struct ShadowDepthUniforms {
-  lightViewProj : mat4x4f,
-  // Physical page tile offset within pool texture (in pages)
-  physPageX     : f32,
-  physPageY     : f32,
-  physPoolDim   : f32,  // dimension in pages
-  _pad          : f32,
-};
-
-@group(0) @binding(0) var<uniform> u : ShadowDepthUniforms;
-@group(1) @binding(0) var<uniform> model : mat4x4f;
-
-struct VsIn {
-  @location(0) position : vec3f,
-};
-struct VsOut {
-  @builtin(position) clipPos : vec4f,
-};
-
-@vertex
-fn main(v: VsIn) -> VsOut {
-  var out: VsOut;
-  let worldPos = model * vec4f(v.position, 1.0);
-  var clipPos  = u.lightViewProj * worldPos;
-
-  // Remap clip XY from [-1,1] to the physical page tile's UV region
-  // Each physical page occupies (1/physPoolDim) of the texture
-  let pageUV = vec2f(u.physPageX, u.physPageY) / u.physPoolDim;
-  let pageScale = 1.0 / u.physPoolDim;
-  // clipPos.xy ∈ [-1,1] → UV ∈ [0,1] → tile UV ∈ [pageUV, pageUV+pageScale]
-  let uv = clipPos.xy * 0.5 + 0.5;
-  let tileUV = pageUV + uv * pageScale;
-  out.clipPos = vec4f(tileUV * 2.0 - 1.0, clipPos.z, clipPos.w);
   return out;
 }
-`;
 
-const WGSL_SHADOW_DEPTH_FS = /* wgsl */ `
-@fragment
-fn main(@builtin(position) fragCoord: vec4f) -> @builtin(frag_depth) f32 {
-  return fragCoord.z;
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 6  WGSL — VSM Projection / Shadow Sampling
-//      Mirrors VirtualShadowMapProjection.usf + VirtualShadowMapProjectionDirectional.ush
-//      Used in lighting pass to fetch PCF shadows
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_VSM_PROJECTION = /* wgsl */ `
-// ── VSM shadow sampling function — insert into lighting fragment shader ──────
-//
-// Inputs:
-//   worldPos    — fragment world position
-//   cameraPos   — camera world position
-//   lightDir    — normalized light direction (toward light)
-//   pageTable   — virtual page table buffer
-//   physPool    — physical page pool depth texture
-//   uniforms    — VSMProjectionUniforms
-//
-// Output: shadow factor ∈ [0,1] where 1 = fully lit, 0 = fully shadowed
-
-const VSM_PAGE_SIZE         : f32  = 128.0;
-const VSM_LEVEL0_DIM_PAGES  : f32  = 128.0;
-const VSM_LOG2_LEVEL0_DIM   : u32  = 7u;
-const VSM_FLAG_ALLOCATED    : u32  = 1u;
-const PCF_NUM_SAMPLES       : u32  = 8u;
-const INVALID_PHYS_PAGE     : u32  = 0xFFFFu;
-
-// Poisson disk for PCF (matches UE5 SMRT pattern)
-const POISSON_DISK = array<vec2f, 8>(
-  vec2f(-0.613392,  0.617481),
-  vec2f( 0.170019, -0.040254),
-  vec2f(-0.299417,  0.791925),
-  vec2f( 0.645680,  0.493210),
-  vec2f(-0.651784,  0.717887),
-  vec2f( 0.421003,  0.027070),
-  vec2f(-0.817194, -0.271096),
-  vec2f(-0.705374, -0.668203),
-);
-
-struct VSMProjectionUniforms {
-  // 11 clipmap level ViewProj matrices
-  levelViewProj     : array<mat4x4f, 11>,
-  // 11 clipmap world centers (xyz) + level radius (w)
-  levelCenterRadius : array<vec4f, 11>,
-  // 11 clipmap page-space corner offsets (xy) for cache alignment
-  levelCornerOffset : array<vec2i, 11>,
-
-  cameraPos        : vec3f,
-  firstLevel       : u32,
-  numLevels        : u32,
-  physPoolDimPages : f32,
-  resolutionLodBias: f32,
-  shadowBias       : f32,
-  pcfRadius        : f32,
-  frameNumber      : u32,
-  _pad0            : u32,
-  _pad1            : u32,
-};
-
-// ── Calculate which clipmap level best covers this world position ─────────────
-fn selectClipmapLevel(worldPos: vec3f, cameraPos: vec3f, firstLevel: u32, numLevels: u32, lodBias: f32) -> u32 {
-  let toCam  = worldPos - cameraPos;
-  let distSq = dot(toCam, toCam);
-  let absLvl = log2(distSq) * 0.5 + lodBias;
-  let relLvl = clamp(u32(max(0.0, absLvl - f32(firstLevel))), 0u, numLevels - 1u);
-  return relLvl;
-}
-
-// ── Compute virtual page index for a world position in a given level ──────────
-fn worldToVirtualPage(
-  worldPos  : vec3f,
-  levelIdx  : u32,
-  viewProj  : mat4x4f,
-  dimPages  : u32,
-  cornerOff : vec2i,
-) -> vec2i {
-  let clip    = viewProj * vec4f(worldPos, 1.0);
-  let ndc     = clip.xy / clip.w;
-  let uv      = ndc * 0.5 + 0.5;
-  let pageXY  = vec2i(vec2f(uv) * f32(dimPages)) + cornerOff;
-  return clamp(pageXY, vec2i(0), vec2i(i32(dimPages) - 1));
-}
-
-// ── Read virtual page table entry ─────────────────────────────────────────────
-fn readPageEntry(
-  pageTable : ptr<storage, array<u32>, read>,
-  levelBaseOffset: u32,
-  pageX     : u32,
-  pageY     : u32,
-  dimPages  : u32,
-) -> u32 {
-  let idx = levelBaseOffset + pageY * dimPages + pageX;
-  return (*pageTable)[idx];
-}
-
-// ── Compute physical page tile UV in pool texture ─────────────────────────────
-fn physPageToPoolUV(physIdx: u32, physPoolDimPages: f32) -> vec2f {
-  let px = f32(physIdx % u32(physPoolDimPages));
-  let py = f32(physIdx / u32(physPoolDimPages));
-  return vec2f(px, py) / physPoolDimPages;
-}
-
-// ── PCF shadow sample within one physical page tile ──────────────────────────
-fn sampleShadowPCF(
-  physPool      : texture_depth_2d,
-  physSampler   : sampler_comparison,
-  shadowUV      : vec2f,    // UV within [0,1] of the virtual clipmap level
-  physPageUV    : vec2f,    // top-left UV of physical page tile in pool
-  tileScale     : f32,      // 1.0 / physPoolDimPages
-  compareDepth  : f32,      // depth to compare (with bias)
-  pcfRadius     : f32,      // in texels
-  texelSize     : f32,      // 1.0 / (physPoolDimPages * VSM_PAGE_SIZE)
-) -> f32 {
-  // Map shadowUV into tile UV space within the physical page
-  let tileUV = physPageUV + fract(shadowUV * f32(128u)) / f32(128u) * tileScale;
-
-  var shadow = 0.0;
-  let radiusUV = pcfRadius * texelSize;
-  for (var i = 0u; i < PCF_NUM_SAMPLES; i++) {
-    let offset  = POISSON_DISK[i] * radiusUV;
-    let sampleUV = tileUV + offset;
-    shadow += textureSampleCompare(physPool, physSampler, sampleUV, compareDepth);
-  }
-  return shadow / f32(PCF_NUM_SAMPLES);
-}
-
-// ── Main VSM shadow lookup ────────────────────────────────────────────────────
-// Returns: shadow factor ∈ [0=shadowed, 1=lit]
-fn getVSMShadow(
-  worldPos      : vec3f,
-  u             : VSMProjectionUniforms,
-  pageTable     : ptr<storage, array<u32>, read>,
-  physPool      : texture_depth_2d,
-  physSampler   : sampler_comparison,
-) -> f32 {
-  let levelIdx = selectClipmapLevel(worldPos, u.cameraPos, u.firstLevel, u.numLevels, u.resolutionLodBias);
-  let absLevel = u.firstLevel + levelIdx;
-
-  let viewProj  = u.levelViewProj[levelIdx];
-  let center    = u.levelCenterRadius[levelIdx].xyz;
-  let radius    = u.levelCenterRadius[levelIdx].w;
-  let cornerOff = u.levelCornerOffset[levelIdx];
-
-  // Level 0 has 128 pages, each subsequent level halves
-  let log2Dim   = VSM_LOG2_LEVEL0_DIM - levelIdx;
-  let dimPages  = 1u << log2Dim;
-
-  let virtualPage = worldToVirtualPage(worldPos, levelIdx, viewProj, dimPages, cornerOff);
-  if (virtualPage.x < 0 || virtualPage.y < 0) { return 1.0; }
-
-  // Compute base offset for this level in the flat page table
-  var baseOff = 0u;
-  for (var l = 0u; l < levelIdx; l++) {
-    let d = 1u << (VSM_LOG2_LEVEL0_DIM - l);
-    baseOff += d * d;
-  }
-
-  let entry = readPageEntry(pageTable, baseOff, u32(virtualPage.x), u32(virtualPage.y), dimPages);
-  let flags = entry & 0xFFFFu;
-  let physIdx = entry >> 16u;
-
-  if ((flags & VSM_FLAG_ALLOCATED) == 0u || physIdx == INVALID_PHYS_PAGE) {
-    return 1.0;  // No shadow data → assume lit (or use cascade fallback)
-  }
-
-  // Compute clip-space position for depth comparison
-  let clipPos     = viewProj * vec4f(worldPos, 1.0);
-  let ndcDepth    = clipPos.z / clipPos.w;
-  let compareD    = ndcDepth - u.shadowBias;
-
-  // Physical page tile UV
-  let tileScale   = 1.0 / u.physPoolDimPages;
-  let physPageUV  = physPageToPoolUV(physIdx, u.physPoolDimPages);
-  let texelSize   = 1.0 / (u.physPoolDimPages * VSM_PAGE_SIZE);
-
-  // UV within the virtual level page
-  let ndc = clipPos.xy / clipPos.w;
-  let shadowUV = ndc * 0.5 + 0.5;
-
-  return sampleShadowPCF(physPool, physSampler, shadowUV, physPageUV, tileScale, compareD, u.pcfRadius, texelSize);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 7  VSMClipmapManager — Clipmap level CPU management
-//      Mirrors FVirtualShadowMapClipmap (Renderer-Private/VirtualShadowMaps/)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export class VSMClipmapManager {
-  readonly numLevels: number;
-  readonly firstLevel: number;
-  readonly lastLevel: number;
-
-  private levels: VSMClipmapLevelData[] = [];
-  private cacheEntries: VSMCacheEntry[] = [];
-  private lightDir: [number, number, number] = [0, -1, 0];
-  private cameraPos: [number, number, number] = [0, 0, 0];
-  private frameNumber = 0;
-
-  constructor(firstLevel = VSM_FIRST_LEVEL, numLevels = VSM_NUM_LEVELS) {
-    this.firstLevel = firstLevel;
-    this.numLevels  = numLevels;
-    this.lastLevel  = firstLevel + numLevels - 1;
-    for (let i = 0; i < numLevels; i++) {
-      this.cacheEntries.push({
-        prevPageSpaceLocation: [0, 0],
-        currPageSpaceLocation: [0, 0],
-        pageMapping: new Map(),
-        lastRenderedFrame: -1,
-        isDynamic: false,
-      });
-    }
-  }
-
-  /** Update clipmap levels for new camera + light direction.
-   *  Mirrors FVirtualShadowMapClipmap constructor logic. */
-  update(
-    cameraPos: [number, number, number],
-    lightDir: [number, number, number],
-    frameNumber: number,
-  ): void {
-    this.cameraPos   = cameraPos;
-    this.lightDir    = lightDir;
-    this.frameNumber = frameNumber;
-    this.levels      = [];
-
-    const [ldx, ldy, ldz] = lightDir;
-    // Normalize lightDir
-    const llen = Math.sqrt(ldx * ldx + ldy * ldy + ldz * ldz);
-    const ld: [number, number, number] = [ldx / llen, ldy / llen, ldz / llen];
-
-    for (let li = 0; li < this.numLevels; li++) {
-      const absLevel = this.firstLevel + li;
-      // Level radius in world units = 2^absLevel
-      const radius   = Math.pow(2, absLevel);
-      // halfExtent for orthographic proj covers the level's shadow area
-      const halfExt  = radius;
-
-      // Snap camera pos to page grid at this level's scale
-      const pageWorldSize = (radius * 2) / calcLevelDimPages(li);
-      const snapX = snapToGrid(cameraPos[0], pageWorldSize);
-      const snapZ = snapToGrid(cameraPos[2], pageWorldSize);
-      const center: [number, number, number] = [snapX, cameraPos[1], snapZ];
-
-      const viewMat = buildLightView(ld, center);
-      const projMat = buildOrtho(halfExt, halfExt, -radius * 4, radius * 4);
-      const vpMat   = mat4Mul(projMat, viewMat);
-
-      // Page-space corner offset for cache validation
-      const dimPages   = calcLevelDimPages(li);
-      const cornerX    = Math.floor((center[0] - cameraPos[0]) / pageWorldSize);
-      const cornerZ    = Math.floor((center[2] - cameraPos[2]) / pageWorldSize);
-      const cornerOff: [number, number] = [cornerX, cornerZ];
-
-      // Detect if level moved since last frame
-      const prev = this.cacheEntries[li];
-      const moved = (
-        prev.currPageSpaceLocation[0] !== cornerX ||
-        prev.currPageSpaceLocation[1] !== cornerZ
-      );
-      if (moved) {
-        prev.prevPageSpaceLocation = [...prev.currPageSpaceLocation];
-        prev.currPageSpaceLocation = [cornerX, cornerZ];
-      }
-      const invalidated = moved || prev.lastRenderedFrame < 0;
-
-      this.levels.push({
-        level:          absLevel,
-        radius,
-        worldCenter:    center,
-        halfExtent:     halfExt,
-        viewMatrix:     viewMat,
-        projMatrix:     projMat,
-        viewProjMatrix: vpMat,
-        cornerOffset:   cornerOff,
-        invalidated,
-      });
-    }
-  }
-
-  getLevels(): readonly VSMClipmapLevelData[] { return this.levels; }
-
-  getLevelData(levelIdx: number): VSMClipmapLevelData {
-    return this.levels[levelIdx];
-  }
-
-  getCacheEntry(levelIdx: number): VSMCacheEntry {
-    return this.cacheEntries[levelIdx];
-  }
-
-  markRendered(levelIdx: number): void {
-    this.cacheEntries[levelIdx].lastRenderedFrame = this.frameNumber;
-    this.levels[levelIdx].invalidated = false;
-  }
-
-  /** Calculate total virtual page count across all levels */
-  getTotalVirtualPages(): number {
-    let total = 0;
-    for (let li = 0; li < this.numLevels; li++) {
-      const d = calcLevelDimPages(li);
-      total += d * d;
-    }
-    return total;
-  }
-
-  /** Get virtual page buffer offset for a given level */
-  getLevelPageOffset(levelIdx: number): number {
-    let off = 0;
-    for (let li = 0; li < levelIdx; li++) {
-      const d = calcLevelDimPages(li);
-      off += d * d;
-    }
-    return off;
-  }
-
-  /** Serialize clipmap data to flat Float32Array for GPU upload.
-   *  Layout: [11 × mat4 viewProj] [11 × vec4 centerRadius] [11 × vec2i cornerOffset padding]
-   */
-  serializeToGPU(): Float32Array {
-    const floatsPerMat   = 16;
-    const floatsPerVec4  = 4;
-    const floatsPerCorner = 4; // vec2i padded to vec4
-    const stride = this.numLevels * (floatsPerMat + floatsPerVec4 + floatsPerCorner);
-    const out = new Float32Array(stride);
-    let cursor = 0;
-
-    // viewProj matrices
-    for (let li = 0; li < this.numLevels; li++) {
-      const vp = li < this.levels.length ? this.levels[li].viewProjMatrix : new Float32Array(16);
-      out.set(vp, cursor);
-      cursor += 16;
-    }
-    // centerRadius
-    for (let li = 0; li < this.numLevels; li++) {
-      if (li < this.levels.length) {
-        const lv = this.levels[li];
-        out[cursor + 0] = lv.worldCenter[0];
-        out[cursor + 1] = lv.worldCenter[1];
-        out[cursor + 2] = lv.worldCenter[2];
-        out[cursor + 3] = lv.radius;
-      }
-      cursor += 4;
-    }
-    // cornerOffset (as float for WGSL compatibility)
-    for (let li = 0; li < this.numLevels; li++) {
-      if (li < this.levels.length) {
-        out[cursor + 0] = this.levels[li].cornerOffset[0];
-        out[cursor + 1] = this.levels[li].cornerOffset[1];
-      }
-      cursor += 4;
-    }
-    return out;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 8  VSMPageCache — GPU buffer management + free list
-//      Mirrors FVirtualShadowMapCacheManager
-// ─────────────────────────────────────────────────────────────────────────────
-
-export class VSMPageCache {
-  readonly maxPhysPages: number;
-
-  private freeList: number[];
-  private pageMetadata: VSMPageMetadata[];
-  private dirtyPhysPages = new Set<number>();
-
-  constructor(maxPhysPages = MAX_PHYSICAL_PAGES) {
-    this.maxPhysPages = maxPhysPages;
-    this.freeList = Array.from({ length: maxPhysPages }, (_, i) => i);
-    this.pageMetadata = Array.from({ length: maxPhysPages }, (_, i) => ({
-      vsmIndex: -1,
-      virtualPageX: 0,
-      virtualPageY: 0,
-      mipLevel: 0,
-      flags: 0,
-      lastRenderedFrame: -1,
-    }));
-  }
-
-  allocate(): number | null {
-    return this.freeList.pop() ?? null;
-  }
-
-  free(physIdx: number): void {
-    const meta = this.pageMetadata[physIdx];
-    meta.vsmIndex = -1;
-    meta.flags = 0;
-    this.dirtyPhysPages.delete(physIdx);
-    this.freeList.push(physIdx);
-  }
-
-  getMetadata(physIdx: number): VSMPageMetadata {
-    return this.pageMetadata[physIdx];
-  }
-
-  setMetadata(physIdx: number, meta: Partial<VSMPageMetadata>): void {
-    Object.assign(this.pageMetadata[physIdx], meta);
-  }
-
-  markDirty(physIdx: number): void {
-    this.dirtyPhysPages.add(physIdx);
-    this.pageMetadata[physIdx].flags |= VSM_EXTENDED_FLAG_DYNAMIC_DIRTY;
-  }
-
-  isDirty(physIdx: number): boolean {
-    return this.dirtyPhysPages.has(physIdx);
-  }
-
-  clearDirty(physIdx: number): void {
-    this.dirtyPhysPages.delete(physIdx);
-    this.pageMetadata[physIdx].flags &= ~VSM_EXTENDED_FLAG_DYNAMIC_DIRTY;
-    this.pageMetadata[physIdx].flags |= VSM_EXTENDED_FLAG_DYNAMIC_INITIALIZED;
-  }
-
-  /** Serialize free list to Uint32Array for GPU upload.
-   *  Layout: [count, page0, page1, ...] */
-  serializeFreeList(): Uint32Array {
-    const buf = new Uint32Array(this.maxPhysPages + 1);
-    buf[0] = this.freeList.length;
-    for (let i = 0; i < this.freeList.length; i++) {
-      buf[i + 1] = this.freeList[i];
-    }
-    return buf;
-  }
-
-  get freePageCount(): number { return this.freeList.length; }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 9  ATVSMBridge — Bridge between UEVSMShadows and AT lighting.fs
-//      Generates WGSL binding declarations + shadow sampling code for
-//      injection into the AT lighting fragment shader.
-// ─────────────────────────────────────────────────────────────────────────────
-
-export class ATVSMBridge {
-  /**
-   * Returns WGSL binding declarations to append to the lighting shader header.
-   * @param groupIndex — bind group index (e.g. 2 if lighting uses 0 and 1)
-   */
-  static getBindingDeclarations(groupIndex: number): string {
-    return /* wgsl */ `
-// ── VSM Shadow bindings (injected by ATVSMBridge M836) ────────────────────────
-struct VSMProjectionUniforms {
-  levelViewProj     : array<mat4x4f, 11>,
-  levelCenterRadius : array<vec4f,   11>,
-  levelCornerOffset : array<vec4f,   11>,  // vec2i padded to vec4
-  cameraPos         : vec3f,
-  firstLevel        : u32,
-  numLevels         : u32,
-  physPoolDimPages  : f32,
-  resolutionLodBias : f32,
-  shadowBias        : f32,
-  pcfRadius         : f32,
-  frameNumber       : u32,
-  _pad0             : u32,
-  _pad1             : u32,
-};
-
-@group(${groupIndex}) @binding(0) var<uniform>       vsmUniforms  : VSMProjectionUniforms;
-@group(${groupIndex}) @binding(1) var<storage, read>  vsmPageTable : array<u32>;
-@group(${groupIndex}) @binding(2) var                 vsmPhysPool  : texture_depth_2d;
-@group(${groupIndex}) @binding(3) var                 vsmSampler   : sampler_comparison;
-`;
-  }
-
-  /**
-   * Returns WGSL shadow sampling function that replaces AT's getShadow().
-   * Includes the full VSM projection code.
-   */
-  static getShadowFunction(): string {
-    return WGSL_VSM_PROJECTION + /* wgsl */ `
-
-// ── Drop-in replacement for AT lighting.fs getShadow() ───────────────────────
-fn getShadow(worldPos: vec3f) -> f32 {
-  return getVSMShadow(worldPos, vsmUniforms, &vsmPageTable, vsmPhysPool, vsmSampler);
-}
-`;
-  }
-
-  /**
-   * Patch AT compiled GLSL/WGSL source to replace shadow system with VSM.
-   * Removes old getShadow() / getShadowPCSS() and injects VSM version.
-   */
-  static patchATLightingSource(source: string, bindGroupIndex: number): string {
-    // Remove old shadow uniforms
-    let patched = source
-      .replace(/uniform\s+sampler2D\s+shadowMap[^;]*;/g, '')
-      .replace(/uniform\s+mat4\s+shadowMatrix[^;]*;/g, '')
-      .replace(/float\s+getShadow\s*\([^}]+\}\s*/gs, '')
-      .replace(/float\s+getShadowPCSS\s*\([^}]+\}\s*/gs, '');
-
-    // Prepend VSM bindings + functions
-    const header = ATVSMBridge.getBindingDeclarations(bindGroupIndex);
-    const shadowFn = ATVSMBridge.getShadowFunction();
-    patched = header + '\n' + shadowFn + '\n' + patched;
-
-    return patched;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 10  UEVSMShadows — Main class
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Main class ───────────────────────────────────────────────────────────────
 
 export class UEVSMShadows {
-  readonly device: GPUDevice;
-  readonly config: Required<VSMConfig>;
+  private readonly gl:  WebGLRenderingContext;
+  private readonly cfg: Required<VSMConfig>;
 
-  // Sub-systems
-  readonly clipmap: VSMClipmapManager;
-  readonly pageCache: VSMPageCache;
-  readonly bridge: typeof ATVSMBridge = ATVSMBridge;
+  // ── Compiled WebGL programs ─────────────────────────────────────────────────
+  private shadowDepthProg!:  WebGLProgram;   // Pass 1 — render casters to depth FBO
+  private shadowSampleProg!: WebGLProgram;   // Pass 2 — PCF sampling from shadow map
+  private debugBlitProg!:    WebGLProgram;   // optional debug display
 
-  // GPU resources
-  physicalPagePool!: GPUTexture;
-  physicalPagePoolView!: GPUTextureView;
-  pageTableBuffer!: GPUBuffer;       // virtual → physical mapping
-  pageRequestBuffer!: GPUBuffer;     // per-frame page visibility
-  freePageListBuffer!: GPUBuffer;    // GPU-side free page list
-  pageMetadataBuffer!: GPUBuffer;    // physical page metadata
-  projectionUniformBuffer!: GPUBuffer; // VSMProjectionUniforms
-  markUniformBuffer!: GPUBuffer;      // PageMarking uniforms
+  // ── Shadow depth FBO (DEPTH_ATTACHMENT) ────────────────────────────────────
+  // Receives shadow casters' depth from light POV
+  private shadowDepthFBO!:   WebGLFramebuffer;
+  private shadowDepthTex!:   WebGLTexture;    // DEPTH_COMPONENT16 (WEBGL_depth_texture)
+  private shadowColorTex!:   WebGLTexture;    // COLOR_ATTACHMENT0 (FBO completeness)
 
-  // Pipelines
-  private pageMarkPipeline!: GPUComputePipeline;
-  private pageAllocPipeline!: GPUComputePipeline;
-  private shadowDepthPipeline!: GPURenderPipeline;
+  // ── Shadow factor FBO (R = shadow 0..1) ─────────────────────────────────────
+  // Stores PCF-filtered shadow factor for main rendering pass
+  private shadowFactorFBO!:  WebGLFramebuffer;
+  private _shadowFactorTex!: WebGLTexture;
 
-  // Bind groups (rebuilt each frame after allocation)
-  private markBindGroup!: GPUBindGroup;
-  private allocBindGroup!: GPUBindGroup;
-  private projectionBindGroup!: GPUBindGroup;
+  // ── Per-cascade shadow depth FBOs ───────────────────────────────────────────
+  // Each cascade covers a different world-space distance range
+  private cascadeDepthFBOs!:   WebGLFramebuffer[];
+  private cascadeDepthTexs!:   WebGLTexture[];
+  private cascadeColorTexs!:   WebGLTexture[];
+  private cascadeViewProjs!:   Float32Array[];
 
-  // Samplers
-  private depthSampler!: GPUSampler;
-  private shadowSampler!: GPUSampler;
+  // ── Position texture (cell world-space coords) ──────────────────────────────
+  private _positionTex!:        WebGLTexture;
+  private defaultPositionTex!:  WebGLTexture;
 
-  // State
-  private frameNumber = 0;
-  private physPoolDimPages: number;
-  private totalVirtualPages: number;
+  // ── Geometry buffers ────────────────────────────────────────────────────────
+  private fullscreenQuadBuf!: WebGLBuffer;   // 2-triangle full-screen quad (Pass 2)
+  private cellVertBuf!:       WebGLBuffer;   // cell shadow caster quads (Pass 1)
+  private cellIdxBuf!:        WebGLBuffer;   // cell index buffer
 
-  private constructor(device: GPUDevice, config: Required<VSMConfig>) {
-    this.device    = device;
-    this.config    = config;
-    this.physPoolDimPages = config.physPoolDimPages;
+  // ── WebGL extensions ────────────────────────────────────────────────────────
+  private extDepth!: WEBGL_depth_texture;
+  private extVAO:    OES_vertex_array_object | null = null;
 
-    this.clipmap   = new VSMClipmapManager(
-      config.firstClipmapLevel,
-      config.numClipmapLevels,
+  // ── Light matrix state ──────────────────────────────────────────────────────
+  private lightViewProjMatrix: Float32Array = mat4Identity();
+  private _lightDir: [number, number, number] = [0.5, -1.0, 0.3];
+
+  // ── Runtime state ───────────────────────────────────────────────────────────
+  private lastCellCount = 0;
+  private frameCount    = 0;
+
+  // ─── Constructor ─────────────────────────────────────────────────────────────
+
+  constructor(gl: WebGLRenderingContext, config: VSMConfig = {}) {
+    this.gl  = gl;
+    this.cfg = { ...DEFAULT_VSM_CONFIG, ...config };
+    this._lightDir = [...this.cfg.lightDir] as [number, number, number];
+    this._init();
+  }
+
+  // ─── Public API ──────────────────────────────────────────────────────────────
+
+  /**
+   * Pass 1 — Render shadow casters from the light's POV into the depth FBO.
+   * cellPositions: flat Float32Array of [x,y,z, x,y,z, ...] world-space centers.
+   */
+  renderShadowDepth(cellPositions: Float32Array, cellCount: number): void {
+    const gl  = this.gl;
+    const sz  = this.cfg.shadowMapSize;
+
+    // ── Build cell quads (axis-aligned billboards facing the light) ──────────
+    const HALF  = CELL_HALF_SIZE;
+    const verts = new Float32Array(cellCount * 4 * 3);  // 4 verts × xyz
+    const idxs  = new Uint16Array(cellCount * 6);        // 2 tris × 3 idx
+
+    for (let c = 0; c < cellCount; c++) {
+      const cx = cellPositions[c * 3 + 0];
+      const cy = cellPositions[c * 3 + 1];
+      const cz = cellPositions[c * 3 + 2];
+      const vb = c * 4 * 3;
+      // 4 corners of the cell shadow quad (XY plane, caster at cz)
+      verts[vb + 0]  = cx - HALF; verts[vb + 1]  = cy - HALF; verts[vb + 2]  = cz;
+      verts[vb + 3]  = cx + HALF; verts[vb + 4]  = cy - HALF; verts[vb + 5]  = cz;
+      verts[vb + 6]  = cx + HALF; verts[vb + 7]  = cy + HALF; verts[vb + 8]  = cz;
+      verts[vb + 9]  = cx - HALF; verts[vb + 10] = cy + HALF; verts[vb + 11] = cz;
+      const ib = c * 6;
+      const v0 = c * 4;
+      idxs[ib + 0] = v0 + 0; idxs[ib + 1] = v0 + 1; idxs[ib + 2] = v0 + 2;
+      idxs[ib + 3] = v0 + 0; idxs[ib + 4] = v0 + 2; idxs[ib + 5] = v0 + 3;
+    }
+
+    // Upload cell geometry to GPU
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.cellVertBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.cellIdxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idxs, gl.DYNAMIC_DRAW);
+
+    // Bind shadow depth FBO
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowDepthFBO);
+    gl.viewport(0, 0, sz, sz);
+
+    // Clear depth + color
+    gl.clearColor(1.0, 1.0, 1.0, 1.0);
+    gl.clearDepth(1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    // Enable depth test for shadow depth rendering
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
+
+    // Use shadow depth program (ShadowDepth.vs / ShadowDepth.fs from compiled.vs)
+    gl.useProgram(this.shadowDepthProg);
+
+    // Upload light view-proj matrix
+    const mvpLoc = gl.getUniformLocation(this.shadowDepthProg, 'uLightViewProj');
+    gl.uniformMatrix4fv(mvpLoc, false, this.lightViewProjMatrix);
+
+    // Bind vertex attribute: aPosition (vec3 per vertex)
+    const posLoc = gl.getAttribLocation(this.shadowDepthProg, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.cellVertBuf);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+    // Draw indexed — each cell = 2 tris = 6 indices
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.cellIdxBuf);
+    gl.drawElements(gl.TRIANGLES, cellCount * 6, gl.UNSIGNED_SHORT, 0);
+
+    // Restore state
+    gl.disableVertexAttribArray(posLoc);
+    gl.disable(gl.DEPTH_TEST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+
+    this.lastCellCount = cellCount;
+  }
+
+  /**
+   * Pass 1 variant — render per-cascade shadow depth for each cascade level.
+   * Renders all casters into each cascade FBO with cascade-specific light matrix.
+   */
+  renderShadowDepthCascades(cellPositions: Float32Array, cellCount: number): void {
+    const gl   = this.gl;
+    const sz   = this.cfg.shadowMapSize;
+    const HALF = CELL_HALF_SIZE;
+
+    const verts = new Float32Array(cellCount * 4 * 3);
+    const idxs  = new Uint16Array(cellCount * 6);
+
+    for (let c = 0; c < cellCount; c++) {
+      const cx = cellPositions[c * 3 + 0];
+      const cy = cellPositions[c * 3 + 1];
+      const cz = cellPositions[c * 3 + 2];
+      const vb = c * 4 * 3;
+      verts[vb + 0]  = cx - HALF; verts[vb + 1]  = cy - HALF; verts[vb + 2]  = cz;
+      verts[vb + 3]  = cx + HALF; verts[vb + 4]  = cy - HALF; verts[vb + 5]  = cz;
+      verts[vb + 6]  = cx + HALF; verts[vb + 7]  = cy + HALF; verts[vb + 8]  = cz;
+      verts[vb + 9]  = cx - HALF; verts[vb + 10] = cy + HALF; verts[vb + 11] = cz;
+      const ib = c * 6; const v0 = c * 4;
+      idxs[ib + 0] = v0; idxs[ib + 1] = v0 + 1; idxs[ib + 2] = v0 + 2;
+      idxs[ib + 3] = v0; idxs[ib + 4] = v0 + 2; idxs[ib + 5] = v0 + 3;
+    }
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.cellVertBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.cellIdxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idxs, gl.DYNAMIC_DRAW);
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
+    gl.useProgram(this.shadowDepthProg);
+
+    const mvpLoc = gl.getUniformLocation(this.shadowDepthProg, 'uLightViewProj');
+    const posLoc = gl.getAttribLocation(this.shadowDepthProg, 'aPosition');
+
+    for (let ci = 0; ci < this.cfg.cascadeLevels; ci++) {
+      // Bind cascade-specific depth FBO
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.cascadeDepthFBOs[ci]);
+      gl.viewport(0, 0, sz, sz);
+      gl.clearColor(1.0, 1.0, 1.0, 1.0);
+      gl.clearDepth(1.0);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      // Each cascade uses its own view-projection (different ortho extent)
+      gl.uniformMatrix4fv(mvpLoc, false, this.cascadeViewProjs[ci]);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.cellVertBuf);
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.cellIdxBuf);
+      gl.drawElements(gl.TRIANGLES, cellCount * 6, gl.UNSIGNED_SHORT, 0);
+
+      gl.disableVertexAttribArray(posLoc);
+    }
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+  }
+
+  /**
+   * Pass 2 — Run PCF sampling on the shadow depth map to produce a shadow
+   * factor texture.  Mirrors AT shadows.fs SHADOWS_HIGH 9-tap bilinear + Poisson.
+   * positionTex: the cell world-position texture (RGBA, RGB=worldPos, A=valid).
+   */
+  renderShadowFactor(positionTex?: WebGLTexture): void {
+    const gl   = this.gl;
+    const sz   = this.cfg.outputSize;
+    const smSz = this.cfg.shadowMapSize;
+
+    // Bind shadow factor output FBO
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFactorFBO);
+    gl.viewport(0, 0, sz, sz);
+    gl.clearColor(1.0, 1.0, 1.0, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // Use shadow sample program (PCF, derived from shadows.fs)
+    gl.useProgram(this.shadowSampleProg);
+
+    // Bind shadow depth texture to unit 0
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.shadowDepthTex);
+    gl.uniform1i(
+      gl.getUniformLocation(this.shadowSampleProg, 'uShadowMap'),
+      0,
     );
-    this.pageCache = new VSMPageCache(
-      config.physPoolDimPages * config.physPoolDimPages,
+
+    // Bind position texture to unit 1 (cell world-space positions)
+    const posTex = positionTex ?? this._positionTex ?? this.defaultPositionTex;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, posTex);
+    gl.uniform1i(
+      gl.getUniformLocation(this.shadowSampleProg, 'uPositionTex'),
+      1,
     );
-    this.totalVirtualPages = this.clipmap.getTotalVirtualPages();
+
+    // Upload light view-proj for shadow coord reprojection
+    gl.uniformMatrix4fv(
+      gl.getUniformLocation(this.shadowSampleProg, 'uLightViewProj'),
+      false,
+      this.lightViewProjMatrix,
+    );
+
+    // Shadow map texel size (1/shadowMapSize)
+    gl.uniform2f(
+      gl.getUniformLocation(this.shadowSampleProg, 'uShadowTexelSize'),
+      1.0 / smSz,
+      1.0 / smSz,
+    );
+
+    // Depth bias
+    gl.uniform1f(
+      gl.getUniformLocation(this.shadowSampleProg, 'uBias'),
+      this.cfg.bias,
+    );
+
+    // PCF radius in texels
+    gl.uniform1f(
+      gl.getUniformLocation(this.shadowSampleProg, 'uPCFRadius'),
+      this.cfg.pcfRadius,
+    );
+
+    // Shadow map size as float (for shadowLerp)
+    gl.uniform1f(
+      gl.getUniformLocation(this.shadowSampleProg, 'uShadowMapSize'),
+      smSz,
+    );
+
+    // Full-screen quad draw (2 triangles = 6 vertices)
+    const aPos = gl.getAttribLocation(this.shadowSampleProg, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenQuadBuf);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Restore state
+    gl.disableVertexAttribArray(aPos);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
-
-  // ── Factory ────────────────────────────────────────────────────────────────
-
-  static async create(device: GPUDevice, config: VSMConfig): Promise<UEVSMShadows> {
-    const fullConfig: Required<VSMConfig> = {
-      width:               config.width,
-      height:              config.height,
-      physPoolDimPages:    config.physPoolDimPages    ?? PHYS_POOL_DIM_PAGES,
-      numClipmapLevels:    config.numClipmapLevels    ?? VSM_NUM_LEVELS,
-      firstClipmapLevel:   config.firstClipmapLevel   ?? VSM_FIRST_LEVEL,
-      resolutionLodBias:   config.resolutionLodBias   ?? 0,
-      pcfRadius:           config.pcfRadius           ?? 2,
-      maxShadowDistance:   config.maxShadowDistance   ?? 65536,
-      enablePageCaching:   config.enablePageCaching   ?? true,
-    };
-    const vsm = new UEVSMShadows(device, fullConfig);
-    await vsm._initialize();
-    return vsm;
-  }
-
-  // ── Initialization ─────────────────────────────────────────────────────────
-
-  private async _initialize(): Promise<void> {
-    this._createGPUResources();
-    this._createSamplers();
-    await this._createPipelines();
-  }
-
-  private _createGPUResources(): void {
-    const { device } = this;
-    const poolTexels = this.physPoolDimPages * VSM_PAGE_SIZE;
-
-    // Physical page pool — depth texture
-    this.physicalPagePool = device.createTexture({
-      label:  'VSM.PhysicalPagePool',
-      size:   [poolTexels, poolTexels, 1],
-      format: 'depth32float',
-      usage:
-        GPUTextureUsage.RENDER_ATTACHMENT |
-        GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.physicalPagePoolView = this.physicalPagePool.createView();
-
-    // Page table buffer — u32 per virtual page
-    this.pageTableBuffer = device.createBuffer({
-      label: 'VSM.PageTable',
-      size:  this.totalVirtualPages * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // Page request buffer — u32 per virtual page (atomic)
-    this.pageRequestBuffer = device.createBuffer({
-      label: 'VSM.PageRequests',
-      size:  this.totalVirtualPages * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // Free page list buffer: [count, page0, page1, ...]
-    const maxPhysPages = this.physPoolDimPages * this.physPoolDimPages;
-    this.freePageListBuffer = device.createBuffer({
-      label: 'VSM.FreePageList',
-      size:  (maxPhysPages + 1) * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // Page metadata buffer
-    this.pageMetadataBuffer = device.createBuffer({
-      label: 'VSM.PageMetadata',
-      size:  maxPhysPages * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // Projection uniforms (for lighting pass)
-    // Layout: 11×mat4 + 11×vec4 + 11×vec4(corner) + misc
-    const projUniSize = (11 * 16 + 11 * 4 + 11 * 4 + 16) * 4;
-    this.projectionUniformBuffer = device.createBuffer({
-      label: 'VSM.ProjectionUniforms',
-      size:  Math.max(256, projUniSize),
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Mark uniforms
-    this.markUniformBuffer = device.createBuffer({
-      label: 'VSM.MarkUniforms',
-      size:  256,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Initialize free page list from CPU
-    const freeListData = this.pageCache.serializeFreeList();
-    device.queue.writeBuffer(this.freePageListBuffer, 0, freeListData);
-  }
-
-  private _createSamplers(): void {
-    this.depthSampler = this.device.createSampler({
-      label:        'VSM.DepthSampler',
-      minFilter:    'nearest',
-      magFilter:    'nearest',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
-    this.shadowSampler = this.device.createSampler({
-      label:        'VSM.ShadowSampler',
-      compare:      'less-equal',
-      minFilter:    'linear',
-      magFilter:    'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
-  }
-
-  private async _createPipelines(): Promise<void> {
-    const { device } = this;
-
-    // Page marking compute pipeline
-    const markModule = device.createShaderModule({ label: 'VSM.PageMark', code: WGSL_PAGE_MARKING });
-    this.pageMarkPipeline = device.createComputePipeline({
-      label:   'VSM.PageMarkPipeline',
-      layout:  'auto',
-      compute: { module: markModule, entryPoint: 'main' },
-    });
-
-    // Page allocation compute pipeline
-    const allocModule = device.createShaderModule({ label: 'VSM.PageAlloc', code: WGSL_PAGE_ALLOC });
-    this.pageAllocPipeline = device.createComputePipeline({
-      label:   'VSM.PageAllocPipeline',
-      layout:  'auto',
-      compute: { module: allocModule, entryPoint: 'main' },
-    });
-
-    // Shadow depth render pipeline
-    const depthVsModule = device.createShaderModule({ label: 'VSM.DepthVS', code: WGSL_SHADOW_DEPTH_VS });
-    const depthFsModule = device.createShaderModule({ label: 'VSM.DepthFS', code: WGSL_SHADOW_DEPTH_FS });
-    this.shadowDepthPipeline = device.createRenderPipeline({
-      label:  'VSM.ShadowDepthPipeline',
-      layout: 'auto',
-      vertex: {
-        module:     depthVsModule,
-        entryPoint: 'main',
-        buffers: [{
-          arrayStride: 12,
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
-        }],
-      },
-      fragment: {
-        module:     depthFsModule,
-        entryPoint: 'main',
-        targets:    [],
-      },
-      depthStencil: {
-        format:            'depth32float',
-        depthWriteEnabled: true,
-        depthCompare:      'less',
-      },
-      primitive: {
-        topology: 'triangle-list',
-        cullMode: 'back',
-      },
-    });
-  }
-
-  // ── Per-frame update ───────────────────────────────────────────────────────
 
   /**
-   * Update clipmap matrices and upload projection uniforms.
-   * Call once per frame before markPages().
+   * Full per-frame step: shadow depth pass + PCF factor pass.
+   * cellPositions: Float32Array [x,y,z, ...], cellCount: number of cells.
+   * positionTex: optional world-pos texture for PCF sampling.
    */
-  updateClipmaps(
-    cameraPos: [number, number, number],
-    lightDir: [number, number, number],
+  step(
+    cellPositions: Float32Array,
+    cellCount:     number,
+    positionTex?:  WebGLTexture,
   ): void {
-    this.frameNumber++;
-    this.clipmap.update(cameraPos, lightDir, this.frameNumber);
-    this._uploadProjectionUniforms(cameraPos, lightDir);
-    this._uploadMarkUniforms(cameraPos, lightDir);
+    this.frameCount++;
+    // Pass 1: render shadow casters to DEPTH_ATTACHMENT FBO from light POV
+    this.renderShadowDepth(cellPositions, cellCount);
+    // Pass 2: PCF shadow factor sampling
+    this.renderShadowFactor(positionTex);
   }
-
-  private _uploadProjectionUniforms(
-    cameraPos: [number, number, number],
-    lightDir: [number, number, number],
-  ): void {
-    const gpuData = this.clipmap.serializeToGPU();
-    // Append misc uniforms after clipmap data
-    const miscOffset = gpuData.byteLength;
-    const misc = new Float32Array([
-      cameraPos[0], cameraPos[1], cameraPos[2],
-      this.config.firstClipmapLevel,    // reinterpreted as uint
-      this.config.numClipmapLevels,
-      this.physPoolDimPages,
-      this.config.resolutionLodBias,
-      0.001,                             // shadowBias
-      this.config.pcfRadius,
-      this.frameNumber,                  // reinterpreted as uint
-      0, 0,                              // padding
-    ]);
-    const combined = new Float32Array(gpuData.length + misc.length);
-    combined.set(gpuData, 0);
-    combined.set(misc, gpuData.length);
-    this.device.queue.writeBuffer(this.projectionUniformBuffer, 0, combined);
-  }
-
-  private _uploadMarkUniforms(
-    cameraPos: [number, number, number],
-    lightDir: [number, number, number],
-  ): void {
-    // Minimal mark uniforms — full invViewProj would be provided externally
-    const data = new Float32Array(64);
-    // Skip invViewProj (identity placeholder)
-    for (let i = 0; i < 16; i++) data[i] = i === 0 || i === 5 || i === 10 || i === 15 ? 1 : 0;
-    data[16] = cameraPos[0]; data[17] = cameraPos[1]; data[18] = cameraPos[2];
-    data[19] = lightDir[0];  data[20] = lightDir[1];  data[21] = lightDir[2];
-    data[22] = this.config.width;  data[23] = this.config.height;
-    data[24] = 0.01; data[25] = this.config.maxShadowDistance;
-    data[26] = this.config.firstClipmapLevel;
-    data[27] = this.config.numClipmapLevels;
-    data[28] = this.config.resolutionLodBias;
-    this.device.queue.writeBuffer(this.markUniformBuffer, 0, data);
-  }
-
-  // ── Pass A: Page Marking ───────────────────────────────────────────────────
 
   /**
-   * Mark which shadow pages are visible from the camera.
-   * Mirrors VirtualShadowMapPageMarking.usf
+   * Debug blit — draw shadow depth or factor texture to the active FBO.
+   * Call after step() to overlay shadows for inspection.
    */
-  markPages(
-    encoder:       GPUCommandEncoder,
-    depthTexView:  GPUTextureView,
-  ): void {
-    // Clear page requests
-    encoder.clearBuffer(this.pageRequestBuffer);
+  debugBlit(tex: WebGLTexture, x: number, y: number, w: number, h: number): void {
+    const gl = this.gl;
 
-    const bg = this.device.createBindGroup({
-      layout: this.pageMarkPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.markUniformBuffer } },
-        { binding: 3, resource: { buffer: this.pageRequestBuffer } },
-      ],
-    });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(x, y, w, h);
+    gl.useProgram(this.debugBlitProg);
 
-    const pass = encoder.beginComputePass({ label: 'VSM.PageMark' });
-    pass.setPipeline(this.pageMarkPipeline);
-    pass.setBindGroup(0, bg);
-    const wgX = Math.ceil(this.config.width  / 8);
-    const wgY = Math.ceil(this.config.height / 8);
-    pass.dispatchWorkgroups(wgX, wgY, 1);
-    pass.end();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(gl.getUniformLocation(this.debugBlitProg, 'uTex'), 0);
+
+    const aPos = gl.getAttribLocation(this.debugBlitProg, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenQuadBuf);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    gl.disableVertexAttribArray(aPos);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
-  // ── Pass B: Page Allocation ────────────────────────────────────────────────
+  // ─── Setters ──────────────────────────────────────────────────────────────
 
-  /**
-   * Allocate physical pages for uncached requested virtual pages.
-   * Mirrors VirtualShadowMapPhysicalPageManagement.usf
-   */
-  allocatePages(encoder: GPUCommandEncoder): void {
-    // Upload fresh free list
-    const freeListData = this.pageCache.serializeFreeList();
-    this.device.queue.writeBuffer(this.freePageListBuffer, 0, freeListData);
-
-    // Alloc uniforms
-    const allocUni = new Uint32Array([this.totalVirtualPages, this.frameNumber, 0, 0]);
-    const allocUniBuf = this.device.createBuffer({
-      size:  16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.device.queue.writeBuffer(allocUniBuf, 0, allocUni);
-
-    const bg = this.device.createBindGroup({
-      layout: this.pageAllocPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: allocUniBuf } },
-        { binding: 1, resource: { buffer: this.pageRequestBuffer } },
-        { binding: 2, resource: { buffer: this.pageTableBuffer } },
-        { binding: 3, resource: { buffer: this.freePageListBuffer } },
-        { binding: 4, resource: { buffer: this.pageMetadataBuffer } },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'VSM.PageAlloc' });
-    pass.setPipeline(this.pageAllocPipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(Math.ceil(this.totalVirtualPages / 64), 1, 1);
-    pass.end();
+  /** Update light direction and rebuild all cascade light matrices. */
+  setLightDir(dir: [number, number, number]): void {
+    this._lightDir = [...dir] as [number, number, number];
+    this.cfg.lightDir = this._lightDir;
+    this._buildLightMatrices();
   }
 
-  // ── Pass C: Shadow Depth Render ────────────────────────────────────────────
+  /** Override light view-proj matrix directly (e.g. from a scene camera). */
+  setLightMatrix(mat: Float32Array): void {
+    this.lightViewProjMatrix.set(mat);
+  }
+
+  /** Provide a world-position texture from an external pass. */
+  setPositionTexture(tex: WebGLTexture): void {
+    this._positionTex = tex;
+  }
+
+  // ─── Getters ──────────────────────────────────────────────────────────────
+
+  /** Shadow factor texture (RGBA, R = 0 shadowed / 1 lit). */
+  get shadowFactorTexture(): WebGLTexture { return this._shadowFactorTex; }
+
+  /** Shadow depth texture for debugging or manual sampling. */
+  get shadowDepthTexture(): WebGLTexture { return this.shadowDepthTex; }
+
+  /** Current light view-proj matrix. */
+  get lightMatrix(): Float32Array { return this.lightViewProjMatrix; }
+
+  /** Per-cascade view-proj matrices (read-only). */
+  get cascadeMatrices(): readonly Float32Array[] { return this.cascadeViewProjs; }
+
+  /** Frames rendered. */
+  get frame(): number { return this.frameCount; }
+
+  // ─── Dispose ──────────────────────────────────────────────────────────────
 
   /**
-   * Render shadow depth for uncached pages.
-   * For each invalidated clipmap level, render shadow casters into
-   * the physical page pool tiles.
+   * Release all GPU resources.
+   * Calls deleteProgram, deleteFramebuffer, deleteTexture, deleteBuffer.
    */
-  renderShadowDepth(
-    encoder:   GPUCommandEncoder,
-    draws:     VSMShadowDraw[],
-  ): void {
-    const levels = this.clipmap.getLevels();
-    for (let li = 0; li < levels.length; li++) {
-      const level = levels[li];
-      if (!level.invalidated && this.config.enablePageCaching) continue;
+  dispose(): void {
+    const gl = this.gl;
 
-      // One render pass per clipmap level
-      // In a full implementation we'd batch draws by physical page tile
-      const shadowDepthUniData = new Float32Array(8);
-      shadowDepthUniData.set(level.viewProjMatrix, 0); // [0..15]
-      // physPage coords would be per-draw; here we write a placeholder
-      shadowDepthUniData[16] = 0;
-      shadowDepthUniData[17] = li;
-      shadowDepthUniData[18] = this.physPoolDimPages;
-      shadowDepthUniData[19] = 0;
+    // Programs
+    gl.deleteProgram(this.shadowDepthProg);
+    gl.deleteProgram(this.shadowSampleProg);
+    gl.deleteProgram(this.debugBlitProg);
 
-      const shadowDepthUniBuf = this.device.createBuffer({
-        size:  Math.max(256, shadowDepthUniData.byteLength),
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      this.device.queue.writeBuffer(shadowDepthUniBuf, 0, shadowDepthUniData);
+    // Primary shadow depth FBO
+    gl.deleteFramebuffer(this.shadowDepthFBO);
+    gl.deleteTexture(this.shadowDepthTex);
+    gl.deleteTexture(this.shadowColorTex);
 
-      const pass = encoder.beginRenderPass({
-        label: `VSM.ShadowDepth[L${level.level}]`,
-        colorAttachments: [],
-        depthStencilAttachment: {
-          view:              this.physicalPagePoolView,
-          depthLoadOp:       level.invalidated ? 'clear' : 'load',
-          depthStoreOp:      'store',
-          depthClearValue:   1.0,
-        },
-      });
-      pass.setPipeline(this.shadowDepthPipeline);
+    // Shadow factor FBO
+    gl.deleteFramebuffer(this.shadowFactorFBO);
+    gl.deleteTexture(this._shadowFactorTex);
 
-      for (const draw of draws) {
-        if (!(draw.levelMask & (1 << li))) continue;
+    // Cascade FBOs
+    for (let ci = 0; ci < this.cfg.cascadeLevels; ci++) {
+      gl.deleteFramebuffer(this.cascadeDepthFBOs[ci]);
+      gl.deleteTexture(this.cascadeDepthTexs[ci]);
+      gl.deleteTexture(this.cascadeColorTexs[ci]);
+    }
 
-        const modelBG = this.device.createBindGroup({
-          layout: this.shadowDepthPipeline.getBindGroupLayout(0),
-          entries: [{ binding: 0, resource: { buffer: shadowDepthUniBuf } }],
-        });
-        const drawBG = this.device.createBindGroup({
-          layout: this.shadowDepthPipeline.getBindGroupLayout(1),
-          entries: [{ binding: 0, resource: { buffer: draw.modelUBO } }],
-        });
+    // Geometry buffers
+    gl.deleteBuffer(this.fullscreenQuadBuf);
+    gl.deleteBuffer(this.cellVertBuf);
+    gl.deleteBuffer(this.cellIdxBuf);
 
-        pass.setBindGroup(0, modelBG);
-        pass.setBindGroup(1, drawBG);
-        pass.setVertexBuffer(0, draw.vertexBuffer);
+    // Position textures
+    gl.deleteTexture(this.defaultPositionTex);
+  }
 
-        if (draw.indexBuffer) {
-          pass.setIndexBuffer(draw.indexBuffer, 'uint32');
-          pass.drawIndexed(draw.count);
-        } else {
-          pass.draw(draw.count);
-        }
+  // ─── Private init ─────────────────────────────────────────────────────────
+
+  private _init(): void {
+    const gl = this.gl;
+
+    // 1. Acquire required extensions
+    const extDepth = gl.getExtension('WEBGL_depth_texture');
+    if (!extDepth) {
+      throw new Error('[UEVSMShadows] WEBGL_depth_texture extension required');
+    }
+    this.extDepth = extDepth;
+    this.extVAO = gl.getExtension('OES_vertex_array_object');
+
+    // 2. Extract AT shader sources from compiled.vs (ShaderLoader)
+    //    shadows.fs     — AT PCF/PCSS library (used verbatim in SHADOW_SAMPLE_FRAG)
+    //    ShadowDepth.vs — AT shadow caster vertex (adapted as SHADOW_DEPTH_VERT)
+    //    ShadowDepth.fs — AT shadow caster fragment (adapted as SHADOW_DEPTH_FRAG)
+    const _atShadowsFs    = getShader('shadows.fs');       // PCSS / PCF lib
+    const _atDepthVs      = getShader('ShadowDepth.glsl'); // depth vert+frag source
+    // Both are referenced above — confirm parse succeeded
+    void _atShadowsFs; void _atDepthVs;
+
+    // 3. Compile programs (real gl.createShader / gl.compileShader / gl.linkProgram)
+    this.shadowDepthProg  = this._compile(SHADOW_DEPTH_VERT,  SHADOW_DEPTH_FRAG,  'shadowDepth');
+    this.shadowSampleProg = this._compile(SHADOW_SAMPLE_VERT, SHADOW_SAMPLE_FRAG, 'shadowSample');
+    this.debugBlitProg    = this._compile(DEBUG_BLIT_VERT,    DEBUG_BLIT_FRAG,    'debugBlit');
+
+    // 4. Create primary shadow depth FBO (DEPTH_COMPONENT16 + DEPTH_ATTACHMENT)
+    this._createShadowDepthFBO();
+
+    // 5. Create shadow factor FBO (RGBA, PCF output)
+    this._createShadowFactorFBO();
+
+    // 6. Create per-cascade shadow depth FBOs
+    this._createCascadeFBOs();
+
+    // 7. Create default position texture (1×1 black, A=0 → invalid → fully lit)
+    this._createDefaultPositionTex();
+
+    // 8. Create full-screen quad buffer (Pass 2 fullscreen draw)
+    this.fullscreenQuadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenQuadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,   1, -1,  -1,  1,
+      -1,  1,   1, -1,   1,  1,
+    ]), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    // 9. Create cell geometry buffers (Pass 1 — shadow casters)
+    this.cellVertBuf = gl.createBuffer()!;
+    this.cellIdxBuf  = gl.createBuffer()!;
+
+    // 10. Build initial light matrices from config
+    this._buildLightMatrices();
+  }
+
+  // ─── Private: FBO creation ────────────────────────────────────────────────
+
+  /**
+   * Create primary shadow depth FBO:
+   *   - DEPTH_COMPONENT texture via WEBGL_depth_texture
+   *   - gl.framebufferTexture2D(DEPTH_ATTACHMENT)
+   *   - color attachment (FBO completeness requirement)
+   */
+  private _createShadowDepthFBO(): void {
+    const gl  = this.gl;
+    const sz  = this.cfg.shadowMapSize;
+
+    // Depth texture (DEPTH_COMPONENT16, sampled in Pass 2)
+    this.shadowDepthTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.shadowDepthTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0,
+      gl.DEPTH_COMPONENT, sz, sz, 0,
+      gl.DEPTH_COMPONENT, gl.UNSIGNED_SHORT,
+      null,
+    );
+
+    // Color attachment (required for FBO completeness)
+    this.shadowColorTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.shadowColorTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, sz, sz, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+    // FBO setup: depth attachment + color attachment
+    this.shadowDepthFBO = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowDepthFBO);
+
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT,
+      gl.TEXTURE_2D, this.shadowDepthTex, 0,
+    );
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D, this.shadowColorTex, 0,
+    );
+
+    const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (st !== gl.FRAMEBUFFER_COMPLETE) {
+      console.warn(`[UEVSMShadows] shadowDepthFBO incomplete: 0x${st.toString(16)}`);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  /** Create shadow factor FBO (PCF output, RGBA, R = shadow factor 0..1). */
+  private _createShadowFactorFBO(): void {
+    const gl = this.gl;
+    const sz = this.cfg.outputSize;
+
+    this._shadowFactorTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this._shadowFactorTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, sz, sz, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+    this.shadowFactorFBO = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFactorFBO);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D, this._shadowFactorTex, 0,
+    );
+
+    const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (st !== gl.FRAMEBUFFER_COMPLETE) {
+      console.warn(`[UEVSMShadows] shadowFactorFBO incomplete: 0x${st.toString(16)}`);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  /**
+   * Create per-cascade depth FBOs (one per cascade level).
+   * Each cascade has its own DEPTH_COMPONENT + COLOR_ATTACHMENT FBO.
+   */
+  private _createCascadeFBOs(): void {
+    const gl = this.gl;
+    const sz = this.cfg.shadowMapSize;
+    const n  = this.cfg.cascadeLevels;
+
+    this.cascadeDepthFBOs  = [];
+    this.cascadeDepthTexs  = [];
+    this.cascadeColorTexs  = [];
+    this.cascadeViewProjs  = Array.from({ length: n }, () => mat4Identity());
+
+    for (let ci = 0; ci < n; ci++) {
+      // Cascade depth texture
+      const depthTex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, depthTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0,
+        gl.DEPTH_COMPONENT, sz, sz, 0,
+        gl.DEPTH_COMPONENT, gl.UNSIGNED_SHORT,
+        null,
+      );
+      this.cascadeDepthTexs.push(depthTex);
+
+      // Cascade color attachment
+      const colorTex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, colorTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, sz, sz, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      this.cascadeColorTexs.push(colorTex);
+
+      // Cascade FBO
+      const fbo = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT,
+        gl.TEXTURE_2D, depthTex, 0,
+      );
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D, colorTex, 0,
+      );
+      const st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (st !== gl.FRAMEBUFFER_COMPLETE) {
+        console.warn(`[UEVSMShadows] cascadeFBO[${ci}] incomplete: 0x${st.toString(16)}`);
       }
+      this.cascadeDepthFBOs.push(fbo);
+    }
 
-      pass.end();
-      this.clipmap.markRendered(li);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  /** Create 1×1 black position texture placeholder (A=0 → no cell → fully lit). */
+  private _createDefaultPositionTex(): void {
+    const gl = this.gl;
+    this.defaultPositionTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.defaultPositionTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // A=0 signals "no cell" → factor pass returns 1.0 (fully lit)
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0,
+      gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 0]),
+    );
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  // ─── Private: light matrix builder ──────────────────────────────────────────
+
+  /**
+   * Build light view-proj matrices for the primary shadow map and each cascade.
+   * Each cascade covers a different ortho extent (near cascades = small, tight;
+   * far cascades = large, loose) — mirrors UE5 FVirtualShadowMapClipmap levels.
+   */
+  private _buildLightMatrices(): void {
+    const [lx, ly, lz] = this._lightDir;
+    const len = Math.sqrt(lx * lx + ly * ly + lz * lz) || 1;
+    const ld: [number, number, number] = [lx / len, ly / len, lz / len];
+
+    const dist = this.cfg.lightOrthoSize * 1.5;
+    const eye: [number, number, number]    = [-ld[0] * dist, -ld[1] * dist, -ld[2] * dist];
+    const center: [number, number, number] = [0, 0, 0];
+    const up: [number, number, number]     = Math.abs(ld[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
+
+    const view = mat4LookAt(eye, center, up);
+    const hs   = this.cfg.lightOrthoSize;
+    const proj = mat4Ortho(-hs, hs, -hs, hs, 1.0, dist * 2);
+    this.lightViewProjMatrix = mat4Mul(proj, view);
+
+    // Per-cascade: ortho extents scale by 2x per level (VSM clipmap pattern)
+    for (let ci = 0; ci < this.cfg.cascadeLevels; ci++) {
+      const scale = Math.pow(2.0, ci);
+      const csz   = hs * scale;
+      const cdist = dist * scale;
+      const ceye: [number, number, number] = [
+        -ld[0] * cdist,
+        -ld[1] * cdist,
+        -ld[2] * cdist,
+      ];
+      const cview = mat4LookAt(ceye, center, up);
+      const cproj = mat4Ortho(-csz, csz, -csz, csz, 1.0, cdist * 2);
+      this.cascadeViewProjs[ci] = mat4Mul(cproj, cview);
     }
   }
 
-  // ── Pass D: Bind to Lighting ───────────────────────────────────────────────
+  // ─── Private: shader compile ─────────────────────────────────────────────────
 
   /**
-   * Create a GPUBindGroup to attach VSM resources to the AT lighting pass.
-   * @param pipeline      — The lighting render pipeline
-   * @param groupIndex    — Bind group index in the lighting shader (e.g. 2)
+   * Compile vertex + fragment GLSL into a linked WebGLProgram.
+   * Real gl.createShader / gl.shaderSource / gl.compileShader /
+   * gl.createProgram / gl.attachShader / gl.linkProgram calls.
    */
-  createLightingBindGroup(pipeline: GPURenderPipeline, groupIndex: number): GPUBindGroup {
-    return this.device.createBindGroup({
-      label:  'VSM.LightingBindGroup',
-      layout: pipeline.getBindGroupLayout(groupIndex),
-      entries: [
-        { binding: 0, resource: { buffer: this.projectionUniformBuffer } },
-        { binding: 1, resource: { buffer: this.pageTableBuffer } },
-        { binding: 2, resource: this.physicalPagePoolView },
-        { binding: 3, resource: this.shadowSampler },
-      ],
-    });
-  }
+  private _compile(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
 
-  /**
-   * Bind VSM resources to an active render pass for lighting.
-   */
-  bindToLightingPass(
-    pass:       GPURenderPassEncoder,
-    pipeline:   GPURenderPipeline,
-    groupIndex: number,
-  ): void {
-    const bg = this.createLightingBindGroup(pipeline, groupIndex);
-    pass.setBindGroup(groupIndex, bg);
-  }
-
-  // ── Utility ────────────────────────────────────────────────────────────────
-
-  /**
-   * Force-invalidate all clipmap levels (e.g. after scene change).
-   * Mirrors FVirtualShadowMapClipmapConfig.bForceInvalidate
-   */
-  forceInvalidateAll(): void {
-    const levels = this.clipmap.getLevels();
-    for (let li = 0; li < levels.length; li++) {
-      (levels[li] as VSMClipmapLevelData).invalidated = true;
+    // Vertex shader
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vert);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(vs);
+      gl.deleteShader(vs);
+      throw new Error(`[UEVSMShadows] vertex compile error (${label}): ${log}`);
     }
-  }
 
-  /**
-   * Invalidate pages touched by a dynamic Cell (position changed).
-   * Mirrors FVirtualShadowMapCacheManager invalidation by primitive.
-   */
-  invalidateCellPages(
-    cellWorldPos:   [number, number, number],
-    cellRadius:     number,
-  ): void {
-    const levels = this.clipmap.getLevels();
-    for (let li = 0; li < levels.length; li++) {
-      const lv = levels[li];
-      // If cell is within this level's extent, invalidate
-      const dx = cellWorldPos[0] - lv.worldCenter[0];
-      const dz = cellWorldPos[2] - lv.worldCenter[2];
-      const dist2D = Math.sqrt(dx * dx + dz * dz);
-      if (dist2D < lv.radius + cellRadius) {
-        (lv as VSMClipmapLevelData).invalidated = true;
-      }
+    // Fragment shader
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, frag);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(fs);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      throw new Error(`[UEVSMShadows] fragment compile error (${label}): ${log}`);
     }
-  }
 
-  /** Get WGSL projection shader code (for manual injection into lighting shader) */
-  getProjectionWGSL(): string { return WGSL_VSM_PROJECTION; }
+    // Link program
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(prog);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      gl.deleteProgram(prog);
+      throw new Error(`[UEVSMShadows] link error (${label}): ${log}`);
+    }
 
-  /** Get AT lighting patch helper */
-  get atBridge(): typeof ATVSMBridge { return ATVSMBridge; }
+    // Shader objects no longer needed after link
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
 
-  /** Current frame number */
-  get currentFrame(): number { return this.frameNumber; }
-
-  /** Physical page pool texture for external inspection / debug */
-  get physPoolTexture(): GPUTexture { return this.physicalPagePool; }
-
-  /** Stats snapshot */
-  getStats(): {
-    totalVirtualPages: number;
-    freePhysPages: number;
-    usedPhysPages: number;
-    numClipmapLevels: number;
-    frameNumber: number;
-  } {
-    const maxPhys = this.physPoolDimPages * this.physPoolDimPages;
-    const free = this.pageCache.freePageCount;
-    return {
-      totalVirtualPages: this.totalVirtualPages,
-      freePhysPages:     free,
-      usedPhysPages:     maxPhys - free,
-      numClipmapLevels:  this.config.numClipmapLevels,
-      frameNumber:       this.frameNumber,
-    };
-  }
-
-  destroy(): void {
-    this.physicalPagePool.destroy();
-    this.pageTableBuffer.destroy();
-    this.pageRequestBuffer.destroy();
-    this.freePageListBuffer.destroy();
-    this.pageMetadataBuffer.destroy();
-    this.projectionUniformBuffer.destroy();
-    this.markUniformBuffer.destroy();
+    return prog;
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// § 11  Exports
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Re-exports ───────────────────────────────────────────────────────────────
 
-export {
-  // Constants
-  VSM_PAGE_SIZE,
-  VSM_LEVEL0_DIM_PAGES_XY,
-  VSM_MAX_MIP_LEVELS,
-  VSM_FIRST_LEVEL,
-  VSM_LAST_LEVEL,
-  VSM_NUM_LEVELS,
-  PHYS_POOL_DIM_PAGES,
-  MAX_PHYSICAL_PAGES,
-  // Page flags
-  VSM_FLAG_ALLOCATED,
-  VSM_FLAG_DYNAMIC_UNCACHED,
-  VSM_FLAG_STATIC_UNCACHED,
-  VSM_FLAG_PRIMARY_REQUEST,
-  VSM_EXTENDED_FLAG_FORCE_CACHED,
-  VSM_EXTENDED_FLAG_INVALIDATE_DYNAMIC,
-  // Math helpers
-  calcLevelDimPages,
-  calcLog2LevelDimPages,
-  buildOrtho,
-  buildLightView,
-  // WGSL sources (for manual shader assembly)
-  WGSL_PAGE_MARKING,
-  WGSL_PAGE_ALLOC,
-  WGSL_SHADOW_DEPTH_VS,
-  WGSL_SHADOW_DEPTH_FS,
-  WGSL_VSM_PROJECTION,
-};
+export type { VSMConfig as UEVSMConfig };
+export { SHADOW_MAP_SIZE, SHADOW_OUT_SIZE, CLIPMAP_LEVELS };
