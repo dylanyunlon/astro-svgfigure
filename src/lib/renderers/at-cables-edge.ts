@@ -100,6 +100,21 @@
  *   ATCablesEdgeRenderer subscribes to CellEventSource for live species-palette
  *   updates — cable tint and pulse colour refresh without re-allocation.
  *
+ * M893: composite_params edge rendering integration
+ *   Pass `compositeEdgeParams` (keyed by edge_id, values from
+ *   composite_params.json edges[*].rendering) into CableEdgeConfig.
+ *   The renderer reads:
+ *     spline_params  → thickness, color, glow_width/color/intensity,
+ *                      noise_amplitude/frequency, flow_speed, dash_pattern
+ *                      → wired into _drawCable() stroke + halo passes AND
+ *                        getEdgeSplineUniforms() for the GPU shader
+ *     particle_params → count, speed, size, color, opacity, trail_length
+ *                      → exposed via getParticleParams() for particle systems
+ *     pixi_filters   → glow (distance, outerStrength, color) + blur (strength)
+ *                      → applied as Graphics.filters on the cable container
+ *     render_params  → z_index, blend_mode, arrow_size/fill
+ *                      → applied as Graphics.zIndex / blendMode
+ *
  * References:
  *   upstream/activetheory-assets/geometry/cables.bin        — cable tube geometry
  *   upstream/activetheory-assets/textures/CABLES___*.ktx2   — PBR texture suite
@@ -112,9 +127,96 @@
  *   channels/rendering/constants.py                         — _F0_TABLE species Fresnel
  */
 
-import { Container, Graphics, Mesh, MeshGeometry, MeshMaterial } from 'pixi.js';
+import { Container, Graphics, Mesh, MeshGeometry, MeshMaterial, BLEND_MODES } from 'pixi.js';
 import type { CellEventSource } from '../CellEventSource';
 import { getSpeciesColors } from './cell-color-palette';
+import { GlowFilter, KawaseBlurFilter } from './pixi-filters-registry';
+
+// ── M893: composite_params.json edge rendering types ─────────────────────────
+
+/**
+ * Shape of composite_params.json → edges[edgeId].rendering.spline_params
+ */
+export interface CompositeSplineParams {
+  thickness:       number;
+  color:           string;
+  dash_pattern:    { dash: number; gap: number };
+  glow_width:      number;
+  glow_color:      string;
+  glow_intensity:  number;
+  noise_amplitude: number;
+  noise_frequency: number;
+  flow_speed:      number;
+}
+
+/**
+ * Shape of composite_params.json → edges[edgeId].rendering.particle_params
+ */
+export interface CompositeParticleParams {
+  count:        number;
+  size:         number;
+  speed:        number;
+  color:        string;
+  opacity:      number;
+  trail_length: number;
+}
+
+/**
+ * Shape of composite_params.json → edges[edgeId].rendering.pixi_filters
+ */
+export interface CompositePixiFilters {
+  glow?: {
+    distance:      number;
+    outerStrength: number;
+    color:         string; // "0xRRGGBB"
+  };
+  blur?: {
+    strength: number;
+  };
+}
+
+/**
+ * Shape of composite_params.json → edges[edgeId].rendering.render_params
+ */
+export interface CompositeRenderParams {
+  z_index:    number;
+  blend_mode: string;
+  arrow_size: number;
+  arrow_fill: string;
+}
+
+/**
+ * Full rendering block for one edge from composite_params.json edges[id].rendering.
+ */
+export interface CompositeEdgeRendering {
+  spline_params:   CompositeSplineParams;
+  particle_params: CompositeParticleParams;
+  pixi_filters:    CompositePixiFilters;
+  render_params:   CompositeRenderParams;
+}
+
+/**
+ * Helper: parse "#RRGGBB" or "0xRRGGBB" to a numeric colour.
+ */
+function parseCompositeColor(c: string): number {
+  if (!c) return 0xFFFFFF;
+  if (c.startsWith('#'))  return parseInt(c.slice(1), 16);
+  if (c.startsWith('0x') || c.startsWith('0X')) return parseInt(c.slice(2), 16);
+  return parseInt(c, 16);
+}
+
+/**
+ * Map composite_params blend_mode string to PixiJS BLEND_MODES constant.
+ */
+function resolveBlendMode(mode: string): number {
+  switch ((mode ?? '').toLowerCase()) {
+    case 'add':       return BLEND_MODES.ADD;
+    case 'multiply':  return BLEND_MODES.MULTIPLY;
+    case 'screen':    return BLEND_MODES.SCREEN;
+    case 'overlay':   return BLEND_MODES.OVERLAY;
+    default:          return BLEND_MODES.NORMAL;
+  }
+}
 
 // ── Asset paths (AT upstream convention) ─────────────────────────────────────
 
@@ -436,6 +538,24 @@ interface CableState {
 
   /** Sag factor used for this cable. */
   sagFactor:    number;
+
+  /**
+   * M893: resolved composite_params rendering block for this cable (may be
+   * undefined if no composite_params entry was provided for this edge_id).
+   */
+  compositeRendering: CompositeEdgeRendering | undefined;
+
+  /**
+   * M893: live PixiJS GlowFilter instance built from pixi_filters.glow params.
+   * Null if pixi_filters.glow was absent or outerStrength === 0.
+   */
+  pixiGlowFilter: GlowFilter | null;
+
+  /**
+   * M893: live PixiJS KawaseBlurFilter instance built from pixi_filters.blur.
+   * Null if pixi_filters.blur was absent or strength === 0.
+   */
+  pixiBlurFilter: KawaseBlurFilter | null;
 }
 
 // ── Public configuration ─────────────────────────────────────────────────────
@@ -459,6 +579,13 @@ export interface CableEdgeConfig {
   pbrOverride?:      Partial<typeof CABLE_PBR_DEFAULTS>;
   /** Callback when a pulse arrives at target endpoint. */
   onPulseArrival?:   (edgeId: string, targetId: string, x: number, y: number) => void;
+  /**
+   * M893: per-edge rendering params from composite_params.json edges[id].rendering.
+   * Keys are edge_id strings (e.g. "e1", "skip1").  When present, these params
+   * override the defaults for spline visuals, particle behaviour, PixiJS filters,
+   * and z-ordering for the matching cable.
+   */
+  compositeEdgeParams?: Record<string, CompositeEdgeRendering>;
 }
 
 // ── ATCablesEdgeRenderer ─────────────────────────────────────────────────────
@@ -531,6 +658,7 @@ export class ATCablesEdgeRenderer {
 
     const globalSag     = config.sagFactor ?? DEFAULT_SAG_FACTOR;
     const pbrOverride   = config.pbrOverride ?? {};
+    const compositeMap  = config.compositeEdgeParams ?? {};
 
     // ── Build cable states from routes ───────────────────────────────────
     const routes = config.routes;
@@ -559,8 +687,15 @@ export class ATCablesEdgeRenderer {
       const basePBR = isSkip ? SKIP_CABLE_PBR : CABLE_PBR_DEFAULTS;
       const pbr = { ...basePBR, ...pbrOverride };
 
-      // Colours
-      const tintHex  = cableTintForSemantic(semanticType);
+      // M893: resolve composite rendering params for this edge_id
+      const compositeRendering: CompositeEdgeRendering | undefined = compositeMap[route.edge_id];
+
+      // Colours — composite spline_params.color takes priority over semantic tint
+      const semanticTint = cableTintForSemantic(semanticType);
+      const tintHex = compositeRendering
+        ? parseCompositeColor(compositeRendering.spline_params.color)
+        : semanticTint;
+
       const species  = cellMap.get(sourceId)?.species ?? '';
       let pulseHex = tintHex;
       try {
@@ -568,13 +703,47 @@ export class ATCablesEdgeRenderer {
         pulseHex = specCol.fill.toNumber() & 0xFFFFFF;
       } catch { /* keep tint */ }
 
-      // Tube radius
-      const radius = CABLE_TUBE_RADIUS * (isSkip ? SKIP_RADIUS_MULTIPLIER : 1.0);
+      // Tube radius — composite thickness overrides default
+      const baseRadius = CABLE_TUBE_RADIUS * (isSkip ? SKIP_RADIUS_MULTIPLIER : 1.0);
+      const radius = compositeRendering
+        ? compositeRendering.spline_params.thickness
+        : baseRadius;
 
       // Pulse ring buffer
       const pulses: CablePulse[] = Array.from({ length: MAX_PULSES_PER_CABLE }, () => ({
         travel: 0, alive: false, intensity: 1.0,
       }));
+
+      // M893: flow_speed from composite spline_params drives pulse travel speed per-cable.
+      // Stored in autoCadence-adjacent field; per-cable speed applied in update().
+      const perCableFlowSpeed = compositeRendering
+        ? compositeRendering.spline_params.flow_speed
+        : undefined;
+
+      // M893: build PixiJS GlowFilter from pixi_filters.glow
+      let pixiGlowFilter: GlowFilter | null = null;
+      if (compositeRendering?.pixi_filters?.glow) {
+        const gp = compositeRendering.pixi_filters.glow;
+        const glowColorNum = parseCompositeColor(gp.color);
+        pixiGlowFilter = new GlowFilter({
+          distance:      gp.distance,
+          outerStrength: gp.outerStrength,
+          innerStrength: 0,
+          color:         glowColorNum,
+          alpha:         0.85,
+          quality:       0.15,
+          knockout:      false,
+        });
+      }
+
+      // M893: build PixiJS KawaseBlurFilter from pixi_filters.blur
+      let pixiBlurFilter: KawaseBlurFilter | null = null;
+      if (compositeRendering?.pixi_filters?.blur) {
+        const bp = compositeRendering.pixi_filters.blur;
+        if (bp.strength > 0) {
+          pixiBlurFilter = new KawaseBlurFilter({ strength: bp.strength, quality: 3 });
+        }
+      }
 
       const cable: CableState = {
         edgeId: route.edge_id,
@@ -595,6 +764,9 @@ export class ATCablesEdgeRenderer {
         autoCadence: isSkip ? SKIP_AUTO_PULSE_CADENCE : AUTO_PULSE_CADENCE,
         radius,
         sagFactor,
+        compositeRendering,
+        pixiGlowFilter,
+        pixiBlurFilter,
       };
 
       this.cables.push(cable);
@@ -602,8 +774,31 @@ export class ATCablesEdgeRenderer {
 
       // Graphics object for this cable
       const gfx = new Graphics();
+
+      // M893: apply render_params z_index and blend_mode from composite params
+      if (compositeRendering?.render_params) {
+        const rp = compositeRendering.render_params;
+        gfx.zIndex     = rp.z_index;
+        gfx.blendMode  = resolveBlendMode(rp.blend_mode);
+      }
+
+      // M893: attach PixiJS filter chain (glow + blur) to the cable's Graphics
+      {
+        const filterChain = [
+          ...(pixiGlowFilter ? [pixiGlowFilter] : []),
+          ...(pixiBlurFilter ? [pixiBlurFilter] : []),
+        ];
+        if (filterChain.length > 0) {
+          (gfx as unknown as { filters: unknown[] }).filters = filterChain;
+        }
+      }
+
       stage.addChild(gfx);
       this.gfxList.push(gfx);
+
+      // Suppress unused-variable warning for perCableFlowSpeed — it is read in
+      // _drawCable() via cable.compositeRendering.spline_params.flow_speed.
+      void perCableFlowSpeed;
     }
 
     // ── Subscribe to live species changes ────────────────────────────────
@@ -760,8 +955,27 @@ export class ATCablesEdgeRenderer {
    * value noise keyed on (arcFraction, elapsed), creating subtle wind motion.
    */
   private _drawCable(gfx: Graphics, cable: CableState, elapsed: number): void {
-    const { samples, tangents, arcLUT, arcLength, radius, tintHex, pulseHex, isSkip } = cable;
+    const { samples, tangents, arcLUT, radius, tintHex, pulseHex } = cable;
     const n = samples.length;
+
+    // M893: resolve per-edge spline params from composite_params (fall back to defaults)
+    const sp = cable.compositeRendering?.spline_params;
+
+    // noise_amplitude / noise_frequency from composite_params drive sway magnitude
+    const swayAmplitude = sp ? sp.noise_amplitude * MICRO_SWAY_AMPLITUDE / 0.3 : MICRO_SWAY_AMPLITUDE;
+    const swayFreq      = sp ? sp.noise_frequency * MICRO_SWAY_FREQ    / 2.0  : MICRO_SWAY_FREQ;
+
+    // flow_speed from composite_params: drives animated dash travel
+    const flowSpeed = sp?.flow_speed ?? 1.0;
+
+    // Per-edge glow visual params from spline_params
+    const glowWidth     = sp ? sp.glow_width     : 0;
+    const glowColorHex  = sp ? parseCompositeColor(sp.glow_color) : pulseHex;
+    const glowIntensity = sp ? sp.glow_intensity  : 0;
+
+    // dash_pattern from composite spline_params
+    const dashOn  = sp?.dash_pattern?.dash ?? 0;
+    const dashGap = sp?.dash_pattern?.gap  ?? 0;
 
     for (let i = 0; i < n - 1; i++) {
       let s0 = samples[i];
@@ -772,8 +986,8 @@ export class ATCablesEdgeRenderer {
         const arcFrac0 = arcLUT[i];
         const arcFrac1 = arcLUT[i + 1];
 
-        const sway0 = (valueNoise2D(arcFrac0 * 4.0, elapsed * MICRO_SWAY_FREQ) - 0.5) * 2.0 * MICRO_SWAY_AMPLITUDE;
-        const sway1 = (valueNoise2D(arcFrac1 * 4.0, elapsed * MICRO_SWAY_FREQ) - 0.5) * 2.0 * MICRO_SWAY_AMPLITUDE;
+        const sway0 = (valueNoise2D(arcFrac0 * 4.0, elapsed * swayFreq) - 0.5) * 2.0 * swayAmplitude;
+        const sway1 = (valueNoise2D(arcFrac1 * 4.0, elapsed * swayFreq) - 0.5) * 2.0 * swayAmplitude;
 
         const perp0 = perpendicular(tangents[i]);
         const perp1 = perpendicular(tangents[i + 1]);
@@ -788,40 +1002,51 @@ export class ATCablesEdgeRenderer {
 
       // ── Pulse intensity at segment midpoint ─────────────────────────
       const midArcFrac = (arcLUT[i] + arcLUT[i + 1]) * 0.5;
-      const pulseI = this._computePulseIntensity(midArcFrac, cable);
+      // flow_speed shifts the animated arc fraction for the pulse band
+      const animatedFrac = ((midArcFrac - elapsed * flowSpeed * 0.1) % 1.0 + 1.0) % 1.0;
+      const pulseI = this._computePulseIntensity(animatedFrac, cable);
+
+      // ── Dash mask (composite dash_pattern) ──────────────────────────
+      let dashAlpha = 1.0;
+      if (dashOn > 0) {
+        const arcPx     = midArcFrac * (cable.arcLength || 1);
+        const period    = dashOn + dashGap;
+        const dashPhase = ((arcPx - elapsed * flowSpeed * 50.0) % period + period) % period;
+        dashAlpha = dashPhase < dashOn ? 1.0 : 0.0;
+      }
+      if (dashAlpha < 0.01) continue;
 
       // ── Total alpha: base emissive + pulse contribution ─────────────
-      const totalAlpha = Math.min(1.0, (BASE_EMISSIVE_ALPHA + pulseI * PULSE_PEAK_BRIGHTNESS) * this.brightness);
+      const totalAlpha = Math.min(1.0, (BASE_EMISSIVE_ALPHA + pulseI * PULSE_PEAK_BRIGHTNESS) * this.brightness * dashAlpha);
       if (totalAlpha < 0.003) continue;
 
       // ── Fresnel rim brightening (AT PBR-inspired) ───────────────────
-      // Edges of the cable appear brighter (Schlick approximation at grazing).
-      // Here we approximate view-dependent Fresnel as a function of arc position:
-      // endpoints (where cable angles away) get slight rim boost.
       const f0 = cable.pbr.f0;
       const fresnelBoost = f0 + (1.0 - f0) * Math.pow(1.0 - Math.abs(midArcFrac - 0.5) * 2.0, 2.0);
       const fresnelAlpha = totalAlpha * (1.0 + fresnelBoost * 0.3);
 
       // ── Segment width: fatten at pulse peaks ────────────────────────
+      // M893: cable.radius is already set from composite spline_params.thickness
       const segWidth = radius * 2.0 * (1.0 + pulseI * 1.5);
 
-      // ── PBR roughness → stroke softness ─────────────────────────────
-      // Higher roughness = softer edge (via Graphics line cap = 'round')
-      // Lower roughness = crisper stroke
-
-      // ── Pass 1: outer glow halo ─────────────────────────────────────
-      if (pulseI > 0.1) {
+      // ── Pass 1: outer glow halo (composite glow_width / glow_intensity) ──
+      if (glowWidth > 0 && (glowIntensity > 0 || pulseI > 0.05)) {
+        const haloAlpha = (glowIntensity * 0.4 + pulseI * 0.20) * this.brightness * dashAlpha;
+        const haloWidth = segWidth + glowWidth;
+        gfx.moveTo(s0.x, s0.y);
+        gfx.lineTo(s1.x, s1.y);
+        gfx.stroke({ width: haloWidth, color: glowColorHex, alpha: haloAlpha, cap: 'round' });
+      } else if (pulseI > 0.1) {
+        // Fallback halo when no composite glow
         const haloAlpha = pulseI * 0.20 * this.brightness;
         const haloWidth = segWidth * 3.0;
-
         gfx.moveTo(s0.x, s0.y);
         gfx.lineTo(s1.x, s1.y);
         gfx.stroke({ width: haloWidth, color: pulseHex, alpha: haloAlpha, cap: 'round' });
       }
 
       // ── Pass 2: core cable stroke ───────────────────────────────────
-      // Colour blends tint → pulse colour at pulse peaks
-      const blendT = pulseI * pulseI;  // Non-linear: highlight only at peaks
+      const blendT    = pulseI * pulseI;
       const coreColor = blendT > 0.01 ? pulseHex : tintHex;
       const coreAlpha = Math.min(1.0, fresnelAlpha);
 
@@ -829,11 +1054,10 @@ export class ATCablesEdgeRenderer {
       gfx.lineTo(s1.x, s1.y);
       gfx.stroke({ width: segWidth, color: coreColor, alpha: coreAlpha, cap: 'round' });
 
-      // ── Pass 3: specular highlight (thin bright line at cable centre) ─
+      // ── Pass 3: specular highlight ───────────────────────────────────
       if (cable.pbr.metallic > 0.1 || pulseI > 0.3) {
         const specAlpha = (cable.pbr.metallic * 0.3 + pulseI * 0.4) * this.brightness;
         const specWidth = Math.max(1.0, segWidth * 0.25);
-
         gfx.moveTo(s0.x, s0.y);
         gfx.lineTo(s1.x, s1.y);
         gfx.stroke({ width: specWidth, color: 0xFFFFFF, alpha: specAlpha, cap: 'round' });
@@ -1067,9 +1291,190 @@ export class ATCablesEdgeRenderer {
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   /** Remove all graphics from stage and detach event listeners. */
+  // ── M893: edge-spline shader uniform export ────────────────────────────
+
+  /**
+   * Export per-cable uniform data for the edge-spline.frag / edge-spline.vert
+   * GPU shader, incorporating all composite_params rendering fields.
+   *
+   * Returned map: edgeId → complete uniform block ready to be passed to a
+   * WebGL2 draw call using the edge-spline shader.
+   *
+   * Uniform names match edge-spline.frag declarations:
+   *   uColor        — spline_params.color as [r,g,b]
+   *   uAlpha        — master opacity
+   *   uLineWidth    — spline_params.thickness * 2
+   *   uDashLength   — spline_params.dash_pattern.dash
+   *   uGapLength    — spline_params.dash_pattern.gap
+   *   uGlowColor    — spline_params.glow_color as [r,g,b]
+   *   uGlowRadius   — spline_params.glow_width
+   *   uGlowAlpha    — spline_params.glow_intensity
+   *   u_flowSpeed   — spline_params.flow_speed
+   *   u_thickness   — spline_params.thickness
+   *   u_sourceColor — source node colour [r,g,b]
+   *   u_targetColor — target node colour [r,g,b]
+   *   uArcLength    — cable arc length in px
+   *   uCurvature    — skip = 1, sequential = 0
+   */
+  getEdgeSplineUniforms(): Map<string, {
+    uColor:        [number, number, number];
+    uAlpha:        number;
+    uLineWidth:    number;
+    uDashLength:   number;
+    uGapLength:    number;
+    uGlowColor:    [number, number, number];
+    uGlowRadius:   number;
+    uGlowAlpha:    number;
+    u_flowSpeed:   number;
+    u_thickness:   number;
+    u_sourceColor: [number, number, number];
+    u_targetColor: [number, number, number];
+    uArcLength:    number;
+    uCurvature:    number;
+  }> {
+    const out = new Map<string, {
+      uColor:        [number, number, number];
+      uAlpha:        number;
+      uLineWidth:    number;
+      uDashLength:   number;
+      uGapLength:    number;
+      uGlowColor:    [number, number, number];
+      uGlowRadius:   number;
+      uGlowAlpha:    number;
+      u_flowSpeed:   number;
+      u_thickness:   number;
+      u_sourceColor: [number, number, number];
+      u_targetColor: [number, number, number];
+      uArcLength:    number;
+      uCurvature:    number;
+    }>();
+
+    for (const cable of this.cables) {
+      const sp = cable.compositeRendering?.spline_params;
+
+      // Resolve spline colour
+      const colorHex = sp ? parseCompositeColor(sp.color) : cable.tintHex;
+      const cR = ((colorHex >> 16) & 0xFF) / 255;
+      const cG = ((colorHex >> 8)  & 0xFF) / 255;
+      const cB = (colorHex & 0xFF) / 255;
+
+      // Resolve glow colour
+      const glowHex = sp ? parseCompositeColor(sp.glow_color) : cable.tintHex;
+      const gR = ((glowHex >> 16) & 0xFF) / 255;
+      const gG = ((glowHex >> 8)  & 0xFF) / 255;
+      const gB = (glowHex & 0xFF) / 255;
+
+      // Source / target colours for gradient
+      const sR = ((cable.tintHex >> 16) & 0xFF) / 255;
+      const sG = ((cable.tintHex >> 8)  & 0xFF) / 255;
+      const sB = (cable.tintHex & 0xFF) / 255;
+      const tR = ((cable.pulseHex >> 16) & 0xFF) / 255;
+      const tG = ((cable.pulseHex >> 8)  & 0xFF) / 255;
+      const tB = (cable.pulseHex & 0xFF) / 255;
+
+      out.set(cable.edgeId, {
+        uColor:        [cR, cG, cB],
+        uAlpha:        this.brightness,
+        uLineWidth:    (sp?.thickness ?? cable.radius) * 2.0,
+        uDashLength:   sp?.dash_pattern?.dash ?? 0,
+        uGapLength:    sp?.dash_pattern?.gap  ?? 0,
+        uGlowColor:    [gR, gG, gB],
+        uGlowRadius:   sp?.glow_width ?? 0,
+        uGlowAlpha:    sp?.glow_intensity ?? 0,
+        u_flowSpeed:   sp?.flow_speed ?? this.pulseSpeed,
+        u_thickness:   sp?.thickness ?? cable.radius,
+        u_sourceColor: [sR, sG, sB],
+        u_targetColor: [tR, tG, tB],
+        uArcLength:    cable.arcLength,
+        uCurvature:    cable.isSkip ? 1.0 : 0.0,
+      });
+    }
+
+    return out;
+  }
+
+  /**
+   * M893: Return per-cable particle_params from composite_params.
+   *
+   * Particle systems (e.g. edge-particle-bridge.ts, proton-particles.ts) can
+   * call this to read count/speed/size/color/opacity/trail_length per edge
+   * instead of using hard-coded defaults.
+   */
+  getParticleParams(): Map<string, CompositeParticleParams> {
+    const out = new Map<string, CompositeParticleParams>();
+    for (const cable of this.cables) {
+      if (cable.compositeRendering?.particle_params) {
+        out.set(cable.edgeId, cable.compositeRendering.particle_params);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * M893: Update GlowFilter / KawaseBlurFilter params at runtime for a cable.
+   * Useful when composite_params are hot-reloaded (e.g. HMR / live preview).
+   */
+  updateEdgeFilters(edgeId: string, pixi_filters: CompositePixiFilters): void {
+    const cable = this.cableMap.get(edgeId);
+    const idx   = this.cables.indexOf(cable!);
+    if (!cable || idx < 0) return;
+
+    const gfx = this.gfxList[idx];
+
+    // Rebuild GlowFilter
+    if (cable.pixiGlowFilter) {
+      cable.pixiGlowFilter.destroy();
+      cable.pixiGlowFilter = null;
+    }
+    if (pixi_filters.glow) {
+      const gp = pixi_filters.glow;
+      cable.pixiGlowFilter = new GlowFilter({
+        distance:      gp.distance,
+        outerStrength: gp.outerStrength,
+        innerStrength: 0,
+        color:         parseCompositeColor(gp.color),
+        alpha:         0.85,
+        quality:       0.15,
+        knockout:      false,
+      });
+    }
+
+    // Rebuild KawaseBlurFilter
+    if (cable.pixiBlurFilter) {
+      cable.pixiBlurFilter.destroy();
+      cable.pixiBlurFilter = null;
+    }
+    if (pixi_filters.blur && pixi_filters.blur.strength > 0) {
+      cable.pixiBlurFilter = new KawaseBlurFilter({
+        strength: pixi_filters.blur.strength,
+        quality:  3,
+      });
+    }
+
+    // Re-apply filter chain
+    const filterChain = [
+      ...(cable.pixiGlowFilter ? [cable.pixiGlowFilter] : []),
+      ...(cable.pixiBlurFilter ? [cable.pixiBlurFilter] : []),
+    ];
+    (gfx as unknown as { filters: unknown[] }).filters = filterChain.length > 0 ? filterChain : [];
+
+    // Update compositeRendering snapshot
+    if (cable.compositeRendering) {
+      cable.compositeRendering.pixi_filters = pixi_filters;
+    }
+  }
+
   destroy(): void {
     this._unsubscribe?.();
     this._unsubscribe = null;
+
+    // M893: destroy PixiJS filter instances before removing graphics
+    for (const cable of this.cables) {
+      cable.pixiGlowFilter?.destroy();
+      cable.pixiBlurFilter?.destroy();
+      cable.pixiGlowFilter = null;
+      cable.pixiBlurFilter = null;
+    }
 
     for (const gfx of this.gfxList) {
       this.stage.removeChild(gfx);
