@@ -1,0 +1,44 @@
+{
+  "input_embed": {
+    "conv_id": "cdac3c19-bd81-4280-a3be-05f43d84ff82",
+    "milestone": "M830",
+    "status": "dispatched (sse timeout ok)",
+    "url": "https://claude.hk.cn/chat/cdac3c19-bd81-4280-a3be-05f43d84ff82"
+  },
+  "pos_encode": {
+    "conv_id": "28353727-b96f-49ea-b9ae-e7d285cd4b72",
+    "milestone": "M831",
+    "status": "dispatched (sse timeout ok)",
+    "url": "https://claude.hk.cn/chat/28353727-b96f-49ea-b9ae-e7d285cd4b72"
+  },
+  "self_attn": {
+    "conv_id": "b2c68f4b-90b1-4063-9880-bb7b3274768b",
+    "milestone": "M832",
+    "status": "dispatched (sse timeout ok)",
+    "url": "https://claude.hk.cn/chat/b2c68f4b-90b1-4063-9880-bb7b3274768b"
+  },
+  "add_norm1": {
+    "conv_id": "254c90f3-fbc8-4a9f-980f-60b81aeed831",
+    "milestone": "M833",
+    "status": "dispatched (sse timeout ok)",
+    "url": "https://claude.hk.cn/chat/254c90f3-fbc8-4a9f-980f-60b81aeed831"
+  },
+  "ffn": {
+    "conv_id": "819bc629-b5db-44d7-ae88-016ec7147a76",
+    "milestone": "M834",
+    "status": "dispatched (sse timeout ok)",
+    "url": "https://claude.hk.cn/chat/819bc629-b5db-44d7-ae88-016ec7147a76"
+  },
+  "add_norm2": {
+    "conv_id": "99f5c93b-54e2-4f98-aef4-897930b91247",
+    "milestone": "M835",
+    "status": "dispatched (sse timeout ok)",
+    "url": "https://claude.hk.cn/chat/99f5c93b-54e2-4f98-aef4-897930b91247"
+  },
+  "output": {
+    "conv_id": "fb2112e8-cb48-49db-9ab8-46e27f1bafaf",
+    "milestone": "M836",
+    "status": "dispatched (sse timeout ok)",
+    "url": "https://claude.hk.cn/chat/fb2112e8-cb48-49db-9ab8-46e27f1bafaf"
+  }
+}
