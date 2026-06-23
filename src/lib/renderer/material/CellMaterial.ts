@@ -18,9 +18,9 @@
  * 渲染分支。
  */
 
-import { Material } from './Material.js';
-import { PBRMaterial, hexToRGB } from './PBRMaterial.js';
-import type { UniformValue } from './Material.js';
+import { Material } from './Material';
+import { PBRMaterial, hexToRGB } from './PBRMaterial';
+import type { UniformValue } from './Material';
 
 // ── Species type (从 xiaodi_options_table.json keys 提取) ─────────────────────
 

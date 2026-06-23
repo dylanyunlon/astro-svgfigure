@@ -43,7 +43,7 @@
  *   src/lib/renderers/sdf-species-filter.ts     — CilEye/Bolt/Vector/Plus/ArrowRight SDFFilter
  */
 
-import type { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
+import type { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

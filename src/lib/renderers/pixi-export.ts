@@ -12,7 +12,7 @@
  *   src/lib/renderers/pixi-cell-renderer.ts  (renderCellGraph / CellDescriptor / EdgeDescriptor)
  */
 
-import { Application } from '../../upstream/pixijs-engine/src/app/Application';
+import { Application } from '../../../upstream/pixijs-engine/src/app/Application';
 import {
   renderCellGraph,
   type CellDescriptor,

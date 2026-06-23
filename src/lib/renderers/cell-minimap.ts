@@ -13,8 +13,8 @@
  *   - cell 世界坐标按 (tw, th) → (mapW, mapH) 缩放
  */
 
-import { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
-import { Graphics }  from '../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
+import { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
+import { Graphics }  from '../../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
 
 // ── Species dot colours (matches pixi-cell-renderer SPECIES_COLOURS) ────────
 

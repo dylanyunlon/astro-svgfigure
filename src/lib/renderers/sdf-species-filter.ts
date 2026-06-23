@@ -42,7 +42,7 @@ import {
   type RenderSurface,
   type Texture,
 } from 'pixi.js';
-import { vertex, wgslVertex } from '../../upstream/pixijs-filters/src/defaults';
+import { vertex, wgslVertex } from '../../../upstream/pixijs-filters/src/defaults';
 
 // ── Fragment shader — adapted cil-bolt.frag for PixiJS Filter ───────────────
 //

@@ -48,7 +48,7 @@
  *   - compileParticleShader() — 将 behavior code blocks 编译为完整 GLSL, 含 #require 替换
  */
 
-import { CURL_NOISE_GLSL } from './CurlNoise.js';
+import { CURL_NOISE_GLSL } from './CurlNoise';
 
 // ── AT Uniform value types ────────────────────────────────────────────────────
 

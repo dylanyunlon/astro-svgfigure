@@ -18,8 +18,8 @@
  *   mat4       → 64 bytes (4×vec4)
  */
 
-import { AstroRenderer, WEBGL2 } from './AstroRenderer.js';
-import type { AstroProgram } from './AstroProgram.js';
+import { AstroRenderer, WEBGL2 } from './AstroRenderer';
+import type { AstroProgram } from './AstroProgram';
 
 // ── UBO 布局描述 ──────────────────────────────────────────────────────────────
 

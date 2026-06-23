@@ -29,15 +29,15 @@
  *   All colour/shape data flows as JSON params.  GPU draws everything.
  */
 
-import { Container }     from '../../upstream/pixijs-engine/src/scene/container/Container';
-import { Graphics }      from '../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
-import { Sprite }        from '../../upstream/pixijs-engine/src/scene/sprite/Sprite';
-import { RenderTexture } from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/RenderTexture';
-import { Texture }       from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
-import { ParticleContainer } from '../../upstream/pixijs-engine/src/scene/particle-container/shared/ParticleContainer';
-import { Particle }          from '../../upstream/pixijs-engine/src/scene/particle-container/shared/Particle';
+import { Container }     from '../../../upstream/pixijs-engine/src/scene/container/Container';
+import { Graphics }      from '../../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
+import { Sprite }        from '../../../upstream/pixijs-engine/src/scene/sprite/Sprite';
+import { RenderTexture } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/RenderTexture';
+import { Texture }       from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
+import { ParticleContainer } from '../../../upstream/pixijs-engine/src/scene/particle-container/shared/ParticleContainer';
+import { Particle }          from '../../../upstream/pixijs-engine/src/scene/particle-container/shared/Particle';
 
-import type { Application } from '../../upstream/pixijs-engine/src/app/Application';
+import type { Application } from '../../../upstream/pixijs-engine/src/app/Application';
 import type { CellDescriptor } from './pixi-cell-renderer';
 
 // ─── Species colour palette (mirrors pixi-cell-renderer.ts) ─────────────────

@@ -13,7 +13,7 @@
  * 参数均由此基类统一管理。
  */
 
-import type { AstroProgram } from '../AstroProgram.js';
+import type { AstroProgram } from '../AstroProgram';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

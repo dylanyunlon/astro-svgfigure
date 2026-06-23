@@ -26,15 +26,15 @@
  */
 
 // ── PixiJS v8 渲染原语 ──────────────────────────────────────────────────────
-import type { Renderer }        from '../../upstream/pixijs-engine/src/rendering/renderers/types';
+import type { Renderer }        from '../../../upstream/pixijs-engine/src/rendering/renderers/types';
 import type { RenderTarget as PixiRTBase }
-  from '../../upstream/pixijs-engine/src/rendering/renderers/shared/renderTarget/RenderTarget';
+  from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/renderTarget/RenderTarget';
 import type {
   RenderSurface,
-} from '../../upstream/pixijs-engine/src/rendering/renderers/shared/renderTarget/RenderTargetSystem';
-import { Texture } from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
+} from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/renderTarget/RenderTargetSystem';
+import { Texture } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
 import { TextureSource }
-  from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
+  from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
 
 // ── pixi-filters-registry 对接 ─────────────────────────────────────────────
 import {

@@ -23,7 +23,7 @@
  *   upstream/active-theory/hydra/SceneLayout.glsl
  */
 
-import { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
+import { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 

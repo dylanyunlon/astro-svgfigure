@@ -62,9 +62,9 @@
  *   src/lib/renderers/pixi-cell-renderer.ts         — buildCellContainer / __bloomFilter
  */
 
-import type { Application } from '../../upstream/pixijs-engine/src/app/Application'
-import type { Container }   from '../../upstream/pixijs-engine/src/scene/container/Container'
-import { Ticker }           from '../../upstream/pixijs-engine/src/ticker/Ticker'
+import type { Application } from '../../../upstream/pixijs-engine/src/app/Application'
+import type { Container }   from '../../../upstream/pixijs-engine/src/scene/container/Container'
+import { Ticker }           from '../../../upstream/pixijs-engine/src/ticker/Ticker'
 
 import {
   createEpochTimeline,

@@ -10,8 +10,8 @@
  *   - dispose() — cleanup all GPU resources
  */
 
-import { AstroRenderer, WEBGL1 } from './AstroRenderer.js';
-import { AstroProgram }           from './AstroProgram.js';
+import { AstroRenderer, WEBGL1 } from './AstroRenderer';
+import { AstroProgram }           from './AstroProgram';
 
 // ── AttributeDescriptor ──────────────────────────────────────────────────────
 

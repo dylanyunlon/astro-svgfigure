@@ -41,11 +41,11 @@
 import '../../upstream/pixijs-engine/src/prepare/init';
 
 import { Assets } from 'pixi.js';
-import { PrepareSystem } from '../../upstream/pixijs-engine/src/prepare/PrepareSystem';
-import { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
+import { PrepareSystem } from '../../../upstream/pixijs-engine/src/prepare/PrepareSystem';
+import { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
 
-import type { Application } from '../../upstream/pixijs-engine/src/app/Application';
-import type { Texture } from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
+import type { Application } from '../../../upstream/pixijs-engine/src/app/Application';
+import type { Texture } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
 import type { SpeciesAssets } from './cell-asset-loader';
 import type { CellDescriptor } from './pixi-cell-renderer';
 

@@ -7,11 +7,11 @@
  *   CellMaterial  Cell 专用材质 (species 驱动 shader 选择, xiaodi_options_table 参数)
  */
 
-export { Material } from './Material.js';
-export type { BlendingMode, SideMode, UniformValue, TextureDescriptor } from './Material.js';
+export { Material } from './Material';
+export type { BlendingMode, SideMode, UniformValue, TextureDescriptor } from './Material';
 
-export { PBRMaterial, PBR_VERT_SRC, PBR_FRAG_SRC, hexToRGB } from './PBRMaterial.js';
-export type { PBRMaterialOptions } from './PBRMaterial.js';
+export { PBRMaterial, PBR_VERT_SRC, PBR_FRAG_SRC, hexToRGB } from './PBRMaterial';
+export type { PBRMaterialOptions } from './PBRMaterial';
 
 export {
   CellMaterial,
@@ -24,4 +24,4 @@ export {
   FRAG_CIL_VECTOR,
   FRAG_DEFAULT,
 } from './CellMaterial.js';
-export type { CellSpecies, CellMaterialUniforms } from './CellMaterial.js';
+export type { CellSpecies, CellMaterialUniforms } from './CellMaterial';

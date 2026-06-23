@@ -84,12 +84,12 @@
  *   skills/pixijs/pixijs-graphics/SKILL.md
  */
 
-import { Application } from '../../upstream/pixijs-engine/src/app/Application';
-import { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
-import { Graphics } from '../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
-import { Text } from '../../upstream/pixijs-engine/src/scene/text/Text';
-import { TextStyle } from '../../upstream/pixijs-engine/src/scene/text/TextStyle';
-import { Ticker } from '../../upstream/pixijs-engine/src/ticker/Ticker';
+import { Application } from '../../../upstream/pixijs-engine/src/app/Application';
+import { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
+import { Graphics } from '../../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
+import { Text } from '../../../upstream/pixijs-engine/src/scene/text/Text';
+import { TextStyle } from '../../../upstream/pixijs-engine/src/scene/text/TextStyle';
+import { Ticker } from '../../../upstream/pixijs-engine/src/ticker/Ticker';
 import { AdvancedBloomFilter } from '../../../upstream/pixijs-filters/src/advanced-bloom';
 import { DropShadowFilter } from '../../../upstream/pixijs-filters/src/drop-shadow';
 import { GodrayFilter } from '../../../upstream/pixijs-filters/src/godray';

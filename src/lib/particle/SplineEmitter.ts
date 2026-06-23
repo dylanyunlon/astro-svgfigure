@@ -30,7 +30,7 @@
  *   upstream/RESEARCH_122_webgl2_particles_clean.md — TF ping-pong 机制
  */
 
-import { ParticleSystem } from './ParticleSystem.js';
+import { ParticleSystem } from './ParticleSystem';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

@@ -24,12 +24,12 @@
  * Reference: pixi-filters-registry.ts (pattern for how filters integrate into this project)
  */
 
-import { BlurFilter }     from '../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilter';
-import { BlurFilterPass } from '../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilterPass';
+import { BlurFilter }     from '../../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilter';
+import { BlurFilterPass } from '../../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilterPass';
 
-import type { BlurFilterOptions }     from '../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilter';
-import type { BlurFilterPassOptions } from '../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilterPass';
-import type { Container }             from '../../upstream/pixijs-engine/src/scene/container/Container';
+import type { BlurFilterOptions }     from '../../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilter';
+import type { BlurFilterPassOptions } from '../../../upstream/pixijs-engine/src/filters/defaults/blur/BlurFilterPass';
+import type { Container }             from '../../../upstream/pixijs-engine/src/scene/container/Container';
 
 // ─── Re-export upstream primitives ───────────────────────────────────────────
 // pixi-cell-renderer may want direct access to the raw PixiJS blur classes.

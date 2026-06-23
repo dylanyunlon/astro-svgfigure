@@ -20,8 +20,8 @@
  * BRDF: Cook-Torrance (GGX NDF + Smith G + Schlick F)，与 AT 的 PBR 核心对齐。
  */
 
-import { Material } from './Material.js';
-import type { AstroProgram } from '../AstroProgram.js';
+import { Material } from './Material';
+import type { AstroProgram } from '../AstroProgram';
 
 // ── GLSL sources ─────────────────────────────────────────────────────────────
 

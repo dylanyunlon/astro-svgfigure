@@ -39,7 +39,7 @@
  *   uDPR          — device pixel ratio for gl_PointSize
  */
 
-import { CURL_NOISE_GLSL } from './CurlNoise.js';
+import { CURL_NOISE_GLSL } from './CurlNoise';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

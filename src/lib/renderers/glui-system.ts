@@ -26,11 +26,11 @@
  * Author: dylanyunlon <dogechat@163.com>
  */
 
-import { Container }             from '../../upstream/pixijs-engine/src/scene/container/Container';
-import { Graphics }              from '../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
-import { Text }                  from '../../upstream/pixijs-engine/src/scene/text/Text';
-import { TextStyle }             from '../../upstream/pixijs-engine/src/scene/text/TextStyle';
-import type { FederatedPointerEvent } from '../../upstream/pixijs-engine/src/events/FederatedPointerEvent';
+import { Container }             from '../../../upstream/pixijs-engine/src/scene/container/Container';
+import { Graphics }              from '../../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
+import { Text }                  from '../../../upstream/pixijs-engine/src/scene/text/Text';
+import { TextStyle }             from '../../../upstream/pixijs-engine/src/scene/text/TextStyle';
+import type { FederatedPointerEvent } from '../../../upstream/pixijs-engine/src/events/FederatedPointerEvent';
 
 // ── 公共类型 ──────────────────────────────────────────────────────────────────
 

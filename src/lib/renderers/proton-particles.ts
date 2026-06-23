@@ -26,8 +26,8 @@
  * Author: dylanyunlon <dogechat@163.com>
  */
 
-import { Application } from '../../upstream/pixijs-engine/src/app/Application';
-import { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
+import { Application } from '../../../upstream/pixijs-engine/src/app/Application';
+import { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
 
 // ── Lightweight PixiJS surface-level imports (resolved via tsconfig paths) ──
 // We use the pixi.js barrel rather than deep upstream paths for the types that

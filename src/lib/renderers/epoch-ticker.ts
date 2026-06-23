@@ -43,12 +43,12 @@
  *   skills/pixijs/pixijs-ticker/SKILL.md
  */
 
-import { Ticker }           from '../../upstream/pixijs-engine/src/ticker/Ticker'
-import { UPDATE_PRIORITY }  from '../../upstream/pixijs-engine/src/ticker/const'
+import { Ticker }           from '../../../upstream/pixijs-engine/src/ticker/Ticker'
+import { UPDATE_PRIORITY }  from '../../../upstream/pixijs-engine/src/ticker/const'
 
 // ─── Re-export so consumers don't need a direct upstream import ───────────────
 export { Ticker, UPDATE_PRIORITY }
-export type { TickerCallback } from '../../upstream/pixijs-engine/src/ticker/Ticker'
+export type { TickerCallback } from '../../../upstream/pixijs-engine/src/ticker/Ticker'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 

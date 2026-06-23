@@ -39,8 +39,8 @@
  * [ASTRO-CELL-A11Y] debug prefix.
  */
 
-import { Application } from '../../upstream/pixijs-engine/src/app/Application';
-import { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
+import { Application } from '../../../upstream/pixijs-engine/src/app/Application';
+import { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
 
 import type { CellMeta } from './cell-event-system';
 import type { CellDescriptor } from './pixi-cell-renderer';

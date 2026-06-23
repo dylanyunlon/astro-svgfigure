@@ -10,8 +10,8 @@
  * AT bundle: uniformMatrix 调用 10 次, gl.createProgram 3 次 → 我们精确对齐。
  */
 
-import { AstroRenderer, WEBGL2 } from './AstroRenderer.js';
-import type { UniformBuffer } from './UniformBuffer.js';
+import { AstroRenderer, WEBGL2 } from './AstroRenderer';
+import type { UniformBuffer } from './UniformBuffer';
 
 // ── AstroProgram ──────────────────────────────────────────────────────────────
 

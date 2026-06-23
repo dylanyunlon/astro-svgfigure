@@ -39,11 +39,11 @@
  *   ps.render(projection, modelView);
  */
 
-export { ParticleSystem }    from './ParticleSystem.js';
-export type { ParticleSystemConfig, ParticleSystemUniforms, GPGPURenderTexture } from './ParticleSystem.js';
+export { ParticleSystem }    from './ParticleSystem';
+export type { ParticleSystemConfig, ParticleSystemUniforms, GPGPURenderTexture } from './ParticleSystem';
 
-export { SplineEmitter }     from './SplineEmitter.js';
-export type { SplineEmitterConfig, SplinePoint, SplineJSON, SplineParticleState } from './SplineEmitter.js';
+export { SplineEmitter }     from './SplineEmitter';
+export type { SplineEmitterConfig, SplinePoint, SplineJSON, SplineParticleState } from './SplineEmitter';
 
-export { EdgeParticleSystem, createEdgeParticleSystem } from './EdgeParticleSystem.js';
-export type { EdgeParticleSystemConfig, EdgeRoute as EdgeParticleRoute } from './EdgeParticleSystem.js';
+export { EdgeParticleSystem, createEdgeParticleSystem } from './EdgeParticleSystem';
+export type { EdgeParticleSystemConfig, EdgeRoute as EdgeParticleRoute } from './EdgeParticleSystem';

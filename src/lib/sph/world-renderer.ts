@@ -1,4 +1,5 @@
-import { World, Particle, RigidBody } from './world';
+import { World, Particle } from './world-stepper';
+import type { RigidBody } from './types';
 
 export const SPECIES_COLORS: Record<number, string> = {
   0: '#3F51B5',

@@ -1,5 +1,5 @@
-import { Graphics }  from '../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
-import type { Container } from '../../upstream/pixijs-engine/src/scene/container/Container';
+import { Graphics }  from '../../../upstream/pixijs-engine/src/scene/graphics/shared/Graphics';
+import type { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
 
 export function createDebugOverlay(
   stage: Container,

@@ -50,18 +50,18 @@
 
 // ── PixiJS upstream types ────────────────────────────────────────────────────
 import { CompressedSource }
-  from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/CompressedSource';
+  from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/CompressedSource';
 import { TextureSource }
-  from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
+  from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
 import { Texture }
-  from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
+  from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
 
 import type { TEXTURE_FORMATS }
-  from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/const';
+  from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/const';
 import type { TextureSourceOptions }
-  from '../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
+  from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
 import type { Renderer }
-  from '../../upstream/pixijs-engine/src/rendering/renderers/types';
+  from '../../../upstream/pixijs-engine/src/rendering/renderers/types';
 
 // ── KTX2 container parser (npm: ktx-parse ^1.1.0) ────────────────────────────
 import { read as readKTX2 } from 'ktx-parse';
