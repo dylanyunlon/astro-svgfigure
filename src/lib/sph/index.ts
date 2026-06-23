@@ -166,3 +166,6 @@ export type { VFXEventKind, ShockwaveParams, BloomSpikeParams, ParticleBurstPara
 // dynamic-environment (M765)
 export { DynamicEnvironment, DYNAMIC_ENV_PRESETS, createDynamicEnvironment } from './dynamic-environment';
 export type { SkyPhase, Color3 as DynEnvColor3, EnvironmentSnapshot, DynamicEnvironmentConfig } from './dynamic-environment';
+// magnetic-field-lines (M782)
+export { MagneticFieldLines, evaluateField, fieldMagnitude, traceStreamline, generateSeeds, subdivideStreamline, computeArcLengths, catmullRom, SPECIES_CHARGE_SIGN, QOS_FIELD_STYLES } from './magnetic-field-lines';
+export type { FieldCharge, FieldCellInput, MagneticFieldLinesConfig, FieldLineStyle, StreamPoint, Streamline, FieldVec2 } from './magnetic-field-lines';
