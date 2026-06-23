@@ -1,1002 +1,644 @@
 {
   "cells": {
     "input_embed": {
-      "bbox": {
-        "x": 320.0,
-        "y": 50.0,
-        "w": 160,
-        "h": 55,
-        "z": 1
+      "agent_params": {
+        "bbox": {
+          "x": 320.0,
+          "y": 50.0,
+          "w": 160,
+          "h": 55,
+          "z": 1
+        },
+        "opacity": 0.92,
+        "species_params": {
+          "primary_color": "#546E7A",
+          "glow_color": "#78909C",
+          "algorithm_gene": "token_to_vector_heatmap",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 0.6,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.15,
+          "internal_pattern": "one_dimensional_heatmap_bars",
+          "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
+        }
       },
-      "opacity": 0.92,
-      "species_params": {
-        "primary_color": "#546E7A",
+      "at_params": {
+        "cell_id": "input_embed",
+        "at_material": "FloorShader",
+        "role": "foundation_input",
+        "species_color": "#546E7A",
         "glow_color": "#78909C",
-        "algorithm_gene": "token_to_vector_heatmap",
-        "sdf_shape": "rounded_rect",
-        "animation_speed": 0.6,
-        "num_rays": 0,
-        "focal_intensity": 0.0,
-        "halo_radius": 0.15,
-        "internal_pattern": "one_dimensional_heatmap_bars",
-        "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
-      },
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.08,
-          "glow_intensity": 0.55,
-          "glow_color": [
-            0.47,
-            0.56,
-            0.61
-          ],
-          "fresnel_power": 2.5,
-          "noise_scale": 0.18,
-          "noise_speed": 0.12,
-          "edge_softness": 0.04
+        "bloom": {
+          "threshold": 0.6,
+          "intensity": 0.4,
+          "radius": 8
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.6,
-            "bloomScale": 0.4,
-            "brightness": 1.05
-          },
-          "glow": {
-            "distance": 10,
-            "outerStrength": 0.75,
-            "innerStrength": 0.2,
-            "color": "0x78909C"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 6,
-            "alpha": 0.28,
-            "color": "0x1C2C35"
-          }
-        },
-        "render_params": {
-          "z_index": 1,
+        "pixi_filters": [
+          "AdvancedBloomFilter",
+          "GlowFilter",
+          "DropShadowFilter"
+        ],
+        "render": {
           "blend_mode": "normal",
-          "corner_radius": 8,
-          "border_width": 1,
-          "border_color": "#78909C",
-          "background_opacity": 0.88,
-          "label_font_size": 11,
-          "icon_scale": 0.85
+          "z_layer": 1,
+          "opacity": 0.92
+        },
+        "uil_param_count": 29,
+        "uil_sample": {
+          "FloorShader/FloorShader/Element_0_CleanRoom/uColor": "#454545",
+          "FloorShader/FloorShader/Element_0_CleanRoom/uDistortStrength": 0.44,
+          "FloorShader/FloorShader/Element_0_CleanRoom/uLight": [
+            0,
+            1,
+            -5.57,
+            0.48
+          ],
+          "FloorShader/FloorShader/Element_0_CleanRoom/uMirrorStrength": 0.55,
+          "FloorShader/FloorShader/Element_0_CleanRoom/uNormalStrength": 1
         }
       }
     },
     "pos_encode": {
-      "bbox": {
-        "x": 320.0,
-        "y": 135.0,
-        "w": 160,
-        "h": 55,
-        "z": 1
+      "agent_params": {
+        "bbox": {
+          "x": 320.0,
+          "y": 135.0,
+          "w": 160,
+          "h": 55,
+          "z": 1
+        },
+        "opacity": 0.88,
+        "species_params": {
+          "primary_color": "#7E57C2",
+          "glow_color": "#B39DDB",
+          "algorithm_gene": "sinusoidal_wave_pattern",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 1.2,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.2,
+          "internal_pattern": "sine_cosine_alternating_bands",
+          "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies"
+        }
       },
-      "opacity": 0.88,
-      "species_params": {
-        "primary_color": "#7E57C2",
+      "at_params": {
+        "cell_id": "pos_encode",
+        "at_material": "FloorShader",
+        "role": "positional_sine",
+        "species_color": "#7E57C2",
         "glow_color": "#B39DDB",
-        "algorithm_gene": "sinusoidal_wave_pattern",
-        "sdf_shape": "rounded_rect",
-        "animation_speed": 1.2,
-        "num_rays": 0,
-        "focal_intensity": 0.0,
-        "halo_radius": 0.2,
-        "internal_pattern": "sine_cosine_alternating_bands",
-        "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies"
-      },
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundedBox",
-          "sdf_radius": 8.0,
-          "glow_intensity": 0.55,
-          "glow_color": [
-            0.702,
-            0.616,
-            0.859
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 3.5,
-          "noise_speed": 0.35,
-          "edge_softness": 0.06
+        "bloom": {
+          "threshold": 0.6,
+          "intensity": 0.5,
+          "radius": 8
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.72,
-            "bloomScale": 0.4,
-            "brightness": 1.05
-          },
-          "glow": {
-            "distance": 10,
-            "outerStrength": 1.4,
-            "innerStrength": 0.3,
-            "color": "0xB39DDB"
-          },
-          "drop_shadow": {
-            "offset": [
-              0,
-              2
-            ],
-            "blur": 4,
-            "alpha": 0.22,
-            "color": "0x4527A0"
-          }
-        },
-        "render_params": {
-          "z_index": 1,
+        "pixi_filters": [
+          "AdvancedBloomFilter",
+          "GlowFilter",
+          "DropShadowFilter"
+        ],
+        "render": {
           "blend_mode": "normal",
-          "corner_radius": 8,
-          "border_width": 1,
-          "border_color": "#7E57C2",
-          "background_opacity": 0.88,
-          "label_font_size": 11,
-          "icon_scale": 1.0
+          "z_layer": 1,
+          "opacity": 0.88
+        },
+        "uil_param_count": 29,
+        "uil_sample": {
+          "FloorShader/FloorShader/Element_0_CleanRoom/uColor": "#454545",
+          "FloorShader/FloorShader/Element_0_CleanRoom/uDistortStrength": 0.44,
+          "FloorShader/FloorShader/Element_0_CleanRoom/uLight": [
+            0,
+            1,
+            -5.57,
+            0.48
+          ],
+          "FloorShader/FloorShader/Element_0_CleanRoom/uMirrorStrength": 0.55,
+          "FloorShader/FloorShader/Element_0_CleanRoom/uNormalStrength": 1
         }
       }
     },
     "self_attn": {
-      "bbox": {
-        "x": 320.0,
-        "y": 220.0,
-        "w": 180,
-        "h": 65,
-        "z": 3
+      "agent_params": {
+        "bbox": {
+          "x": 320.0,
+          "y": 220.0,
+          "w": 180,
+          "h": 65,
+          "z": 3
+        },
+        "opacity": 0.95,
+        "species_params": {
+          "primary_color": "#1E88E5",
+          "glow_color": "#64B5F6",
+          "algorithm_gene": "radial_qkv_heatmap",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 0.8,
+          "num_rays": 8,
+          "focal_intensity": 0.75,
+          "halo_radius": 0.35,
+          "internal_pattern": "multi_head_attention_grid",
+          "academic_source": "InTraVisTo: green=attention flow; Transformer Explainer: QKV branching Sankey"
+        }
       },
-      "opacity": 0.95,
-      "species_params": {
-        "primary_color": "#1E88E5",
-        "glow_color": "#64B5F6",
-        "algorithm_gene": "radial_qkv_heatmap",
-        "sdf_shape": "rounded_rect",
-        "animation_speed": 0.8,
-        "num_rays": 8,
-        "focal_intensity": 0.75,
-        "halo_radius": 0.35,
-        "internal_pattern": "multi_head_attention_grid",
-        "academic_source": "InTraVisTo: green=attention flow; Transformer Explainer: QKV branching Sankey"
-      },
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdEllipse",
-          "sdf_radius": 0.42,
-          "glow_intensity": 0.72,
-          "glow_color": [
-            0.392,
-            0.714,
-            0.965
+      "at_params": {
+        "_meta": {
+          "source": "channels/physics/xiaodi_options_table.json[\"cil-eye\"]",
+          "target": "src/lib/shaders/cil-eye.frag",
+          "applied_by": "xiaodi #61",
+          "task": "Apply AT UIL params to cil-eye species shader"
+        },
+        "bloom": {
+          "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength": 1.2,
+          "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomRadius": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomTintColor": "#ffffff",
+          "UnrealBloomComposite_shaderVariants_homebloomStrength": 0.6,
+          "UnrealBloomComposite_shaderVariants_homebloomRadius": 0.8,
+          "UnrealBloomLuminosity/UnrealBloomLuminosity/homebloom/luminosityThreshold": 0
+        },
+        "lighting": {
+          "HomeAlleyShader/HomeAlleyShader/Element_4_home_scene/uLight": [
+            2.61,
+            0.29,
+            0.57,
+            0
           ],
-          "fresnel_power": 2.8,
-          "noise_scale": 0.18,
-          "noise_speed": 0.35,
-          "edge_softness": 0.06
+          "HomeAlleyShader/HomeAlleyShader/Element_4_home_scene/uPhong": [
+            1.82,
+            0.71
+          ],
+          "HomeAlleyShader/HomeAlleyShader/Element_4_home_scene/uPhongColor": "#d600ff",
+          "L_Element_11_home_sceneintensity": 3.44,
+          "L_Element_11_home_scenecolor": "#0bed90",
+          "L_Element_10_home_sceneintensity": 2.19,
+          "VolumetricLight_home_fExposure": 0.86,
+          "VolumetricLight_home_fDensity": 0.22,
+          "VolumetricLight_home_fDecay": 0.8,
+          "VolumetricLight_home_fWeight": 0.34
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.55,
-            "bloomScale": 1.2,
-            "brightness": 1.05
+        "shadow": {
+          "SHADOW_Element_9_home_scenefar": 40,
+          "SHADOW_Element_9_home_scenesize": 1024,
+          "SHADOW_Element_9_home_scenestatic": true,
+          "SHADOW_Element_9_home_sceneposition": [
+            0,
+            6.51,
+            0
+          ],
+          "SHADOW_Element_9_home_scenetarget": [
+            0,
+            0,
+            0
+          ]
+        },
+        "shader_uniform_mapping": {
+          "u_bloomStrength": {
+            "key": "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength",
+            "value": 1.2
           },
-          "glow": {
-            "distance": 14,
-            "outerStrength": 1.8,
-            "innerStrength": 0.6,
-            "color": "0x64B5F6"
+          "u_bloomRadius": {
+            "key": "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomRadius",
+            "value": 1.0
           },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 8,
-            "alpha": 0.28,
-            "color": "0x1A237E"
+          "u_ambientIntensity": {
+            "key": "L_Element_11_home_sceneintensity",
+            "value": 3.44
+          },
+          "u_ambientColor": {
+            "key": "L_Element_11_home_scenecolor",
+            "value": "#0bed90",
+            "rgb": [
+              0.047,
+              0.929,
+              0.565
+            ]
+          },
+          "u_lightExposure": {
+            "key": "VolumetricLight_home_fExposure",
+            "value": 0.86
+          },
+          "u_shadowFar": {
+            "key": "SHADOW_Element_9_home_scenefar",
+            "value": 40.0
+          },
+          "u_shadowBias": {
+            "key": "SHADOW_Element_9_home_scenesize",
+            "note": "derived: 1/1024 ≈ 0.001",
+            "value": 0.001
           }
-        },
-        "render_params": {
-          "z_index": 3,
-          "blend_mode": "normal",
-          "corner_radius": 20,
-          "border_width": 1.5,
-          "border_color": "#5C6BC0",
-          "background_opacity": 0.88,
-          "label_font_size": 11,
-          "icon_scale": 0.9
         }
       }
     },
     "add_norm1": {
-      "bbox": {
-        "x": 320.0,
-        "y": 315.0,
-        "w": 140,
-        "h": 40,
-        "z": 2
+      "agent_params": {
+        "bbox": {
+          "x": 320.0,
+          "y": 315.0,
+          "w": 140,
+          "h": 40,
+          "z": 2
+        },
+        "opacity": 0.82,
+        "species_params": {
+          "primary_color": "#E53935",
+          "glow_color": "#EF9A9A",
+          "algorithm_gene": "residual_merge_crosshair",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 0.4,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.12,
+          "internal_pattern": "plus_sign_merge_indicator",
+          "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
+        }
       },
-      "opacity": 0.82,
-      "species_params": {
-        "primary_color": "#E53935",
+      "at_params": {
+        "cell_id": "add_norm1",
+        "at_material": "HomeColumnShader",
+        "role": "residual_pillar",
+        "species_color": "#E53935",
         "glow_color": "#EF9A9A",
-        "algorithm_gene": "residual_merge_crosshair",
-        "sdf_shape": "rounded_rect",
-        "animation_speed": 0.4,
-        "num_rays": 0,
-        "focal_intensity": 0.0,
-        "halo_radius": 0.12,
-        "internal_pattern": "plus_sign_merge_indicator",
-        "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
-      },
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "cil-plus",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.6,
-          "glow_color": [
-            198,
-            40,
-            40
-          ],
-          "fresnel_power": 2.0,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.15
+        "bloom": {
+          "threshold": 0.6,
+          "intensity": 0.3,
+          "radius": 8
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.5,
-            "bloomScale": 0.8,
-            "brightness": 1.2
-          },
-          "glow": {
-            "distance": 15,
-            "outerStrength": 2.0,
-            "innerStrength": 1.0,
-            "color": "0xC62828"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 6,
-            "alpha": 0.3,
-            "color": "0x000000"
-          }
-        },
-        "render_params": {
-          "z_index": 2,
+        "pixi_filters": [
+          "AdvancedBloomFilter",
+          "GlowFilter",
+          "DropShadowFilter"
+        ],
+        "render": {
           "blend_mode": "normal",
-          "corner_radius": 8,
-          "border_width": 1.5,
-          "border_color": "#C62828",
-          "background_opacity": 0.85,
-          "label_font_size": 12,
-          "icon_scale": 1.0
+          "z_layer": 2,
+          "opacity": 0.82
+        },
+        "uil_param_count": 6,
+        "uil_sample": {
+          "HomeColumnShader/HomeColumnShader/Element_10_ParticleTest/_tx_tRefraction": {
+            "hotreload": true,
+            "src": "assets/images/room/matcap-test.jpg?1704406116063-compressedKtx2"
+          },
+          "HomeColumnShader/HomeColumnShader/Element_10_ParticleTest/_txtRefraction": {
+            "compressed": false,
+            "filename": "matcap-test.jpg",
+            "prefix": "assets/images",
+            "relative": "assets/images",
+            "src": "assets/images/room/matcap-test.jpg",
+            "useCompressed": false
+          },
+          "HomeColumnShader/HomeColumnShader/Element_10_ParticleTest/uOffset": 3,
+          "HomeColumnShader/HomeColumnShader/Element_9_ParticleTest/_tx_tRefraction": {
+            "hotreload": true,
+            "src": "assets/images/room/matcap-test.jpg?1704406116063-compressedKtx2"
+          },
+          "HomeColumnShader/HomeColumnShader/Element_9_ParticleTest/_txtRefraction": {
+            "compressed": false,
+            "filename": "matcap-test.jpg",
+            "prefix": "assets/images",
+            "relative": "assets/images",
+            "src": "assets/images/room/matcap-test.jpg",
+            "useCompressed": false
+          }
         }
       }
     },
     "ffn": {
-      "bbox": {
-        "x": 320.0,
-        "y": 385.0,
-        "w": 160,
-        "h": 55,
-        "z": 2
+      "agent_params": {
+        "bbox": {
+          "x": 320.0,
+          "y": 385.0,
+          "w": 160,
+          "h": 55,
+          "z": 2
+        },
+        "opacity": 0.9,
+        "species_params": {
+          "primary_color": "#F57C00",
+          "glow_color": "#FFB74D",
+          "algorithm_gene": "zigzag_relu_activation",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 1.0,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.22,
+          "internal_pattern": "expand_contract_bottleneck",
+          "academic_source": "InTraVisTo: pink=FF layers; standard: wide→narrow→wide MLP bottleneck shape"
+        }
       },
-      "opacity": 0.9,
-      "species_params": {
-        "primary_color": "#F57C00",
-        "glow_color": "#FFB74D",
-        "algorithm_gene": "zigzag_relu_activation",
-        "sdf_shape": "rounded_rect",
-        "animation_speed": 1.0,
-        "num_rays": 0,
-        "focal_intensity": 0.0,
-        "halo_radius": 0.22,
-        "internal_pattern": "expand_contract_bottleneck",
-        "academic_source": "InTraVisTo: pink=FF layers; standard: wide→narrow→wide MLP bottleneck shape"
-      },
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "polySDF",
-          "sdf_radius": 0.38,
-          "glow_intensity": 0.85,
-          "glow_color": [
-            1.0,
-            0.435,
-            0.0
+      "at_params": {
+        "task": "apply AT UIL params to cil-bolt species shader",
+        "author": "xiaodi #62",
+        "branch": "cell-pubsub-loop",
+        "source_file": "channels/physics/xiaodi_options_table.json",
+        "source_key": "cil-bolt",
+        "target_shader": "src/lib/shaders/cil-bolt.frag",
+        "applied_params": {
+          "CAMERA_Element_1_WorkDetaillerpSpeed": 0.07,
+          "CAMERA_Element_2_WorklerpSpeed": 0.07,
+          "CAMERA_Element_2_WorklerpSpeed2": 1,
+          "INPUT_Element_1_work_scenewiggle_speed": "0.7",
+          "SpineShader/SpineShader/Element_5_Work/uLight": [
+            1,
+            1,
+            1,
+            0.4
           ],
-          "fresnel_power": 3.5,
-          "noise_scale": 0.7,
-          "noise_speed": 0.45,
-          "edge_softness": 0.12
+          "WorkGlassCubeShader/WorkGlassCubeShader/uLightDir": [
+            0,
+            0,
+            1
+          ],
+          "WorkGlassShader/WorkGlassShader/uLightDir": [
+            0,
+            -1.12,
+            4.6899999999999995
+          ],
+          "WorkSceneBackground/WorkSceneBackground/uLightPos": [
+            2.7400000000000007,
+            -1,
+            -9.820000000000002
+          ],
+          "UnrealBloomComposite/UnrealBloomComposite/workbloom/bloomStrength": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/workbloom/bloomRadius": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/work/bloomRadius": 1,
+          "UnrealBloomComposite_shaderVariants_workbloomStrength": 0.5,
+          "UnrealBloomComposite_shaderVariants_workbloomRadius": 0.5,
+          "UnrealBloomLuminosity/UnrealBloomLuminosity/workbloom/luminosityThreshold": 0,
+          "am_SplineParticleLife_Element_0_WorkDetailParticlesuSplineSpeed": [
+            0.82,
+            1.21
+          ],
+          "am_ProtonAntimatter_P_Element_0_WorkDetailParticlesuSCurlNoiseSpeed": 5,
+          "am_ProtonAntimatter_P_Element_0_WorkDetailParticlesuThicknessSpeed": 1,
+          "am_ProtonAntimatter_P_Element_4_work_pageuCurlNoiseSpeed": 10,
+          "BloomLuminosityPass/BloomLuminosityPass/luminosityThreshold": 0,
+          "INPUT_HydraBloom_Bloom_Intensity": "1",
+          "INPUT_HydraBloom_Bloom_Radius": "1",
+          "INPUT_HydraBloom_Bloom_Tint": "#ffffff",
+          "UnrealBloomComposite/UnrealBloomComposite/cleanroom/bloomStrength": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/cleanroom/bloomRadius": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/cleanroom/bloomTintColor": "#ffffff",
+          "UnrealBloomComposite/UnrealBloomComposite/bloomRadius": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/bloomStrength": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomRadius": 0.2,
+          "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomStrength": 0.3,
+          "UnrealBloomComposite/UnrealBloomComposite/home/bloomRadius": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/home/bloomStrength": 3.8200000000000003,
+          "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength": 1.2,
+          "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomRadius": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomTintColor": "#ffffff",
+          "UnrealBloomComposite/UnrealBloomComposite/treescene/bloomStrength": 1,
+          "UnrealBloomComposite/UnrealBloomComposite/treescene/bloomRadius": 1,
+          "UnrealBloomComposite_shaderVariants_contactbloomStrength": 0.8,
+          "UnrealBloomComposite_shaderVariants_contactbloomRadius": 0.5,
+          "UnrealBloomComposite_shaderVariants_contactbloomTintColor": "#ffffff",
+          "UnrealBloomComposite_shaderVariants_aboutbloomRadius": 1,
+          "UnrealBloomComposite_shaderVariants_aboutbloomStrength": 1,
+          "UnrealBloomComposite_shaderVariants_footerbloomRadius": 0.5,
+          "UnrealBloomComposite_shaderVariants_footerbloomStrength": 0.7,
+          "UnrealBloomComposite_shaderVariants_footerbloomTintColor": "#ffffff",
+          "UnrealBloomComposite_shaderVariants_homebloomStrength": 0.6,
+          "UnrealBloomComposite_shaderVariants_homebloomRadius": 0.8,
+          "UnrealBloomComposite_shaderVariants_treebloomStrength": 0.8,
+          "UnrealBloomComposite_shaderVariants_treebloomRadius": 0.7,
+          "UnrealBloomLuminosity/UnrealBloomLuminosity/treescene/luminosityThreshold": 0,
+          "UnrealBloomLuminosity/UnrealBloomLuminosity/cleanroom/luminosityThreshold": 0.2,
+          "UnrealBloomLuminosity/UnrealBloomLuminosity/globalbloom/luminosityThreshold": 0,
+          "UnrealBloomLuminosity/UnrealBloomLuminosity/home/luminosityThreshold": 0,
+          "UnrealBloomLuminosity/UnrealBloomLuminosity/homebloom/luminosityThreshold": 0,
+          "UnrealBloomLuminosity/UnrealBloomLuminosity/luminosityThreshold": 0,
+          "CAMERA_Element_10_CleanRoomlerpSpeed": 0.08,
+          "CAMERA_Element_1_HomelerpSpeed": 0.1,
+          "CAMERA_Element_1_HomelerpSpeed2": 1,
+          "L_Element_18_CleanRoomintensity": 1,
+          "L_Element_10_home_sceneintensity": 2.1900000000000004,
+          "L_Element_11_home_sceneintensity": 3.44,
+          "SHADOW_Element_1_ParticleTesttarget": [
+            1.45,
+            -0.32,
+            19.36
+          ],
+          "SHADOW_Element_1_ParticleTestfar": 400,
+          "SHADOW_Element_1_ParticleTestfov": 120,
+          "SHADOW_Element_1_ParticleTestposition": [
+            -1.85,
+            5.61,
+            -13.5
+          ],
+          "SHADOW_Element_1_ParticleTestsize": 2048,
+          "SHADOW_Element_9_home_scenefar": 40,
+          "SHADOW_Element_9_home_scenesize": 1024,
+          "SHADOW_Element_9_home_scenestatic": true,
+          "SHADOW_Element_9_home_sceneposition": [
+            0,
+            6.51,
+            0
+          ],
+          "SHADOW_Element_9_home_scenetarget": [
+            0,
+            0,
+            0
+          ]
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.4,
-            "bloomScale": 1.0,
-            "brightness": 1.3
+        "shader_mapping": {
+          "AT_BLOOM_INTENSITY": {
+            "source_key": "INPUT_HydraBloom_Bloom_Intensity",
+            "value": 1.0,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_BLOOM_INTENSITY"
           },
-          "glow": {
-            "distance": 18,
-            "outerStrength": 2.5,
-            "innerStrength": 1.2,
-            "color": "0xFF6F00"
+          "AT_BLOOM_RADIUS": {
+            "source_key": "INPUT_HydraBloom_Bloom_Radius",
+            "value": 1.0,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_BLOOM_RADIUS"
           },
-          "drop_shadow": {
-            "offset": [
-              2,
-              5
-            ],
-            "blur": 7,
-            "alpha": 0.35,
-            "color": "0x000000"
+          "AT_GLOBAL_BLOOM_STRENGTH": {
+            "source_key": "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomStrength",
+            "value": 0.3,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_GLOBAL_BLOOM_STRENGTH"
+          },
+          "AT_GLOBAL_BLOOM_RADIUS": {
+            "source_key": "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomRadius",
+            "value": 0.2,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_GLOBAL_BLOOM_RADIUS"
+          },
+          "AT_HOME_BLOOM_STRENGTH": {
+            "source_key": "UnrealBloomComposite_shaderVariants_homebloomStrength",
+            "value": 0.6,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_HOME_BLOOM_STRENGTH"
+          },
+          "AT_HOME_BLOOM_RADIUS": {
+            "source_key": "UnrealBloomComposite_shaderVariants_homebloomRadius",
+            "value": 0.8,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_HOME_BLOOM_RADIUS"
+          },
+          "AT_LIGHT_INTENSITY": {
+            "source_key": "L_Element_10_home_sceneintensity",
+            "value": 2.19,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_LIGHT_INTENSITY"
+          },
+          "AT_WIGGLE_SPEED": {
+            "source_key": "INPUT_Element_1_work_scenewiggle_speed",
+            "value": 0.7,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_WIGGLE_SPEED"
+          },
+          "AT_LUMINOSITY_THRESHOLD": {
+            "source_key": "BloomLuminosityPass/BloomLuminosityPass/luminosityThreshold",
+            "value": 0.0,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_LUMINOSITY_THRESHOLD"
+          },
+          "AT_LERP_SPEED": {
+            "source_key": "CAMERA_Element_1_HomelerpSpeed",
+            "value": 0.1,
+            "uniform_or_const": "const",
+            "glsl_name": "AT_LERP_SPEED"
           }
-        },
-        "render_params": {
-          "z_index": 5,
-          "blend_mode": "normal",
-          "corner_radius": 8,
-          "border_width": 1.5,
-          "border_color": "#FF6F00",
-          "background_opacity": 0.88,
-          "label_font_size": 12,
-          "icon_scale": 1.05
         }
       }
     },
     "add_norm2": {
-      "bbox": {
-        "x": 320.0,
-        "y": 470.0,
-        "w": 140,
-        "h": 40,
-        "z": 2
+      "agent_params": {
+        "bbox": {
+          "x": 320.0,
+          "y": 470.0,
+          "w": 140,
+          "h": 40,
+          "z": 2
+        },
+        "opacity": 0.82,
+        "species_params": {
+          "primary_color": "#C62828",
+          "glow_color": "#EF5350",
+          "algorithm_gene": "residual_merge_crosshair",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 0.4,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.12,
+          "internal_pattern": "plus_sign_merge_indicator",
+          "academic_source": "Same residual convention as add_norm1; paired visually"
+        }
       },
-      "opacity": 0.82,
-      "species_params": {
-        "primary_color": "#C62828",
+      "at_params": {
+        "cell_id": "add_norm2",
+        "at_material": "WallShader",
+        "role": "residual_pillar",
+        "species_color": "#C62828",
         "glow_color": "#EF5350",
-        "algorithm_gene": "residual_merge_crosshair",
-        "sdf_shape": "rounded_rect",
-        "animation_speed": 0.4,
-        "num_rays": 0,
-        "focal_intensity": 0.0,
-        "halo_radius": 0.12,
-        "internal_pattern": "plus_sign_merge_indicator",
-        "academic_source": "Same residual convention as add_norm1; paired visually"
-      },
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "crossSDF",
-          "sdf_radius": 0.3,
-          "glow_intensity": 0.5,
-          "glow_color": [
-            0.776,
-            0.157,
-            0.157
-          ],
-          "fresnel_power": 2.0,
-          "noise_scale": 0.3,
-          "noise_speed": 0.2,
-          "edge_softness": 0.18
+        "bloom": {
+          "threshold": 0.6,
+          "intensity": 0.3,
+          "radius": 8
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.55,
-            "bloomScale": 0.7,
-            "brightness": 1.1
-          },
-          "glow": {
-            "distance": 12,
-            "outerStrength": 1.8,
-            "innerStrength": 0.8,
-            "color": "0xC62828"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 5,
-            "alpha": 0.25,
-            "color": "0x000000"
-          }
-        },
-        "render_params": {
-          "z_index": 6,
+        "pixi_filters": [
+          "AdvancedBloomFilter",
+          "GlowFilter",
+          "DropShadowFilter"
+        ],
+        "render": {
           "blend_mode": "normal",
-          "corner_radius": 8,
-          "border_width": 1.5,
-          "border_color": "#C62828",
-          "background_opacity": 0.82,
-          "label_font_size": 12,
-          "icon_scale": 1.0
+          "z_layer": 2,
+          "opacity": 0.82
+        },
+        "uil_param_count": 23,
+        "uil_sample": {
+          "GlassWallShader/GlassWallShader/Element_18_home_scene/uAlpha": 0.22999999999999998,
+          "GlassWallShader/GlassWallShader/Element_18_home_scene/uGradient": 0.63,
+          "WorkGlassWallShader/WorkGlassWallShader/uAlpha": 0.2,
+          "WorkGlassWallShader/WorkGlassWallShader/uGradient": 1,
+          "WorkGlassWallShader/WorkGlassWallShader/uReflectionAmount": 0.1
         }
       }
     },
     "output": {
-      "bbox": {
-        "x": 320.0,
-        "y": 545.0,
-        "w": 160,
-        "h": 50,
-        "z": 1
+      "agent_params": {
+        "bbox": {
+          "x": 320.0,
+          "y": 545.0,
+          "w": 160,
+          "h": 50,
+          "z": 1
+        },
+        "opacity": 0.93,
+        "species_params": {
+          "primary_color": "#2E7D32",
+          "glow_color": "#66BB6A",
+          "algorithm_gene": "directed_arrow_flow_terminal",
+          "sdf_shape": "capsule",
+          "animation_speed": 0.5,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.18,
+          "internal_pattern": "probability_distribution_bars",
+          "academic_source": "Transformer Explainer: output probabilities as bar chart; green for output/result"
+        }
       },
-      "opacity": 0.93,
-      "species_params": {
-        "primary_color": "#2E7D32",
+      "at_params": {
+        "cell_id": "output",
+        "at_material": "HomeLogoShader",
+        "role": "terminal_output",
+        "species_color": "#2E7D32",
         "glow_color": "#66BB6A",
-        "algorithm_gene": "directed_arrow_flow_terminal",
-        "sdf_shape": "capsule",
-        "animation_speed": 0.5,
-        "num_rays": 0,
-        "focal_intensity": 0.0,
-        "halo_radius": 0.18,
-        "internal_pattern": "probability_distribution_bars",
-        "academic_source": "Transformer Explainer: output probabilities as bar chart; green for output/result"
-      },
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdArrow",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.6,
-          "glow_color": [
-            0.271,
-            0.353,
-            0.392
-          ],
-          "fresnel_power": 2.0,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.15
+        "bloom": {
+          "threshold": 0.6,
+          "intensity": 0.6,
+          "radius": 8
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.5,
-            "bloomScale": 0.8,
-            "brightness": 1.2
-          },
-          "glow": {
-            "distance": 15,
-            "outerStrength": 2.0,
-            "innerStrength": 1.0,
-            "color": "0x455A64"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 6,
-            "alpha": 0.3,
-            "color": "0x000000"
-          }
-        },
-        "render_params": {
-          "z_index": 7,
+        "pixi_filters": [
+          "AdvancedBloomFilter",
+          "GlowFilter",
+          "DropShadowFilter"
+        ],
+        "render": {
           "blend_mode": "normal",
-          "corner_radius": 8,
-          "border_width": 1.5,
-          "border_color": "#455A64",
-          "background_opacity": 0.85,
-          "label_font_size": 12,
-          "icon_scale": 1.0
+          "z_layer": 1,
+          "opacity": 0.93
+        },
+        "uil_param_count": 19,
+        "uil_sample": {
+          "HomeLogoShader/HomeLogoShader/Element_8_ParticleTest/uAlpha": 1,
+          "HomeLogoShader/HomeLogoShader/Element_8_ParticleTest/_txtMap": {
+            "compressed": false,
+            "filename": "matcap-test.jpg",
+            "prefix": "assets/images",
+            "relative": "assets/images",
+            "src": "assets/images/room/matcap-test.jpg",
+            "useCompressed": false
+          },
+          "HomeLogoShader/HomeLogoShader/Element_8_ParticleTest/_txtNormal": {
+            "compressed": false,
+            "filename": "alien_cracked_2_normal.png",
+            "prefix": "assets/images",
+            "relative": "assets/images",
+            "src": "assets/images/pbr/alien_cracked_2_normal.png",
+            "useCompressed": false
+          },
+          "HomeLogoShader/HomeLogoShader/Element_8_ParticleTest/_tx_tMap": {
+            "hotreload": true,
+            "src": "assets/images/room/matcap-test.jpg?1704406116063-compressedKtx2"
+          },
+          "HomeLogoShader/HomeLogoShader/Element_8_ParticleTest/_tx_tNormal": {
+            "compressed": false,
+            "filename": "alien_cracked_2_normal.png",
+            "prefix": "assets/images",
+            "relative": "assets/images",
+            "src": "assets/images/pbr/alien_cracked_2_normal.png",
+            "useCompressed": false
+          }
         }
       }
     }
   },
-  "edges": {
-    "e1": {
-      "source": "input_embed",
-      "target": "pos_encode",
-      "type": "sequential",
-      "control_points": [
-        [
-          400.0,
-          105.0
-        ],
-        [
-          400.0,
-          120.0
-        ],
-        [
-          400.0,
-          120.0
-        ],
-        [
-          400.0,
-          135.0
-        ]
-      ],
-      "rendering": {
-        "spline_params": {
-          "thickness": 2.0,
-          "color": "#7EC8E3",
-          "dash_pattern": {
-            "dash": 0,
-            "gap": 0
-          },
-          "glow_width": 4.0,
-          "glow_color": "#A8D8EA",
-          "glow_intensity": 0.5,
-          "noise_amplitude": 0.3,
-          "noise_frequency": 2.0,
-          "flow_speed": 0.8
-        },
-        "particle_params": {
-          "count": 12,
-          "size": 3.0,
-          "speed": 1.0,
-          "color": "#B8E0F7",
-          "opacity": 0.7,
-          "trail_length": 5
-        },
-        "pixi_filters": {
-          "glow": {
-            "distance": 8,
-            "outerStrength": 1.5,
-            "color": "0x7EC8E3"
-          },
-          "blur": {
-            "strength": 0.5
-          }
-        },
-        "render_params": {
-          "z_index": 2,
-          "blend_mode": "normal",
-          "arrow_size": 6,
-          "arrow_fill": "#7EC8E3"
-        }
-      }
-    },
-    "e2": {
-      "source": "pos_encode",
-      "target": "self_attn",
-      "type": "sequential",
-      "control_points": [
-        [
-          400.0,
-          190.0
-        ],
-        [
-          400.0,
-          205.0
-        ],
-        [
-          410.0,
-          205.0
-        ],
-        [
-          410.0,
-          220.0
-        ]
-      ],
-      "rendering": {
-        "spline_params": {
-          "thickness": 2.0,
-          "color": "#4FC3F7",
-          "dash_pattern": {
-            "dash": 0,
-            "gap": 0
-          },
-          "glow_width": 4.0,
-          "glow_color": "#0288D1",
-          "glow_intensity": 0.5,
-          "noise_amplitude": 0.3,
-          "noise_frequency": 2.0,
-          "flow_speed": 0.8
-        },
-        "particle_params": {
-          "count": 12,
-          "size": 3.0,
-          "speed": 1.0,
-          "color": "#81D4FA",
-          "opacity": 0.7,
-          "trail_length": 5
-        },
-        "pixi_filters": {
-          "glow": {
-            "distance": 8,
-            "outerStrength": 1.5,
-            "color": "0x4FC3F7"
-          },
-          "blur": {
-            "strength": 0.5
-          }
-        },
-        "render_params": {
-          "z_index": 2,
-          "blend_mode": "normal",
-          "arrow_size": 6,
-          "arrow_fill": "#4FC3F7"
-        }
-      }
-    },
-    "e3": {
-      "source": "self_attn",
-      "target": "add_norm1",
-      "type": "sequential",
-      "control_points": [
-        [
-          410.0,
-          285.0
-        ],
-        [
-          410.0,
-          300.0
-        ],
-        [
-          390.0,
-          300.0
-        ],
-        [
-          390.0,
-          315.0
-        ]
-      ],
-      "rendering": {
-        "spline_params": {
-          "thickness": 1.5,
-          "color": "#78909C",
-          "dash_pattern": {
-            "dash": 0,
-            "gap": 0
-          },
-          "glow_width": 3.0,
-          "glow_color": "#90A4AE",
-          "glow_intensity": 0.4,
-          "noise_amplitude": 0.2,
-          "noise_frequency": 1.5,
-          "flow_speed": 0.8
-        },
-        "particle_params": {
-          "count": 10,
-          "size": 2.5,
-          "speed": 1.0,
-          "color": "#B0BEC5",
-          "opacity": 0.6,
-          "trail_length": 4
-        },
-        "pixi_filters": {
-          "glow": {
-            "distance": 6,
-            "outerStrength": 1.2,
-            "color": "0x78909C"
-          },
-          "blur": {
-            "strength": 0.3
-          }
-        },
-        "render_params": {
-          "z_index": 1,
-          "blend_mode": "normal",
-          "arrow_size": 5,
-          "arrow_fill": "#546E7A"
-        }
-      }
-    },
-    "e4": {
-      "source": "add_norm1",
-      "target": "ffn",
-      "type": "sequential",
-      "control_points": [
-        [
-          390.0,
-          355.0
-        ],
-        [
-          390.0,
-          370.0
-        ],
-        [
-          400.0,
-          370.0
-        ],
-        [
-          400.0,
-          385.0
-        ]
-      ],
-      "rendering": {
-        "spline_params": {
-          "thickness": 1.5,
-          "color": "#78909C",
-          "dash_pattern": {
-            "dash": 0,
-            "gap": 0
-          },
-          "glow_width": 3.0,
-          "glow_color": "#90A4AE",
-          "glow_intensity": 0.4,
-          "noise_amplitude": 0.2,
-          "noise_frequency": 1.5,
-          "flow_speed": 0.8
-        },
-        "particle_params": {
-          "count": 10,
-          "size": 2.5,
-          "speed": 1.0,
-          "color": "#B0BEC5",
-          "opacity": 0.6,
-          "trail_length": 4
-        },
-        "pixi_filters": {
-          "glow": {
-            "distance": 6,
-            "outerStrength": 1.2,
-            "color": "0x78909C"
-          },
-          "blur": {
-            "strength": 0.3
-          }
-        },
-        "render_params": {
-          "z_index": 1,
-          "blend_mode": "normal",
-          "arrow_size": 5,
-          "arrow_fill": "#546E7A"
-        }
-      }
-    },
-    "e5": {
-      "source": "ffn",
-      "target": "add_norm2",
-      "type": "sequential",
-      "control_points": [
-        [
-          400.0,
-          440.0
-        ],
-        [
-          400.0,
-          455.0
-        ],
-        [
-          390.0,
-          455.0
-        ],
-        [
-          390.0,
-          470.0
-        ]
-      ],
-      "rendering": {
-        "spline_params": {
-          "thickness": 1.5,
-          "color": "#78909C",
-          "dash_pattern": {
-            "dash": 0,
-            "gap": 0
-          },
-          "glow_width": 3.0,
-          "glow_color": "#90A4AE",
-          "glow_intensity": 0.4,
-          "noise_amplitude": 0.2,
-          "noise_frequency": 1.5,
-          "flow_speed": 0.8
-        },
-        "particle_params": {
-          "count": 10,
-          "size": 2.5,
-          "speed": 1.0,
-          "color": "#B0BEC5",
-          "opacity": 0.6,
-          "trail_length": 4
-        },
-        "pixi_filters": {
-          "glow": {
-            "distance": 6,
-            "outerStrength": 1.2,
-            "color": "0x78909C"
-          },
-          "blur": {
-            "strength": 0.3
-          }
-        },
-        "render_params": {
-          "z_index": 1,
-          "blend_mode": "normal",
-          "arrow_size": 5,
-          "arrow_fill": "#546E7A"
-        }
-      }
-    },
-    "e6": {
-      "source": "add_norm2",
-      "target": "output",
-      "type": "sequential",
-      "control_points": [
-        [
-          390.0,
-          510.0
-        ],
-        [
-          390.0,
-          527.5
-        ],
-        [
-          400.0,
-          527.5
-        ],
-        [
-          400.0,
-          545.0
-        ]
-      ],
-      "rendering": {
-        "spline_params": {
-          "thickness": 1.5,
-          "color": "#78909C",
-          "dash_pattern": {
-            "dash": 0,
-            "gap": 0
-          },
-          "glow_width": 3.0,
-          "glow_color": "#90A4AE",
-          "glow_intensity": 0.4,
-          "noise_amplitude": 0.2,
-          "noise_frequency": 1.5,
-          "flow_speed": 0.8
-        },
-        "particle_params": {
-          "count": 10,
-          "size": 2.5,
-          "speed": 1.0,
-          "color": "#B0BEC5",
-          "opacity": 0.6,
-          "trail_length": 4
-        },
-        "pixi_filters": {
-          "glow": {
-            "distance": 6,
-            "outerStrength": 1.2,
-            "color": "0x78909C"
-          },
-          "blur": {
-            "strength": 0.3
-          }
-        },
-        "render_params": {
-          "z_index": 1,
-          "blend_mode": "normal",
-          "arrow_size": 5,
-          "arrow_fill": "#546E7A"
-        }
-      }
-    },
-    "skip1": {
-      "source": "pos_encode",
-      "target": "add_norm1",
-      "type": "skip",
-      "control_points": [
-        [
-          400.0,
-          190.0
-        ],
-        [
-          520.0,
-          210.0
-        ],
-        [
-          510.0,
-          295.0
-        ],
-        [
-          390.0,
-          315.0
-        ]
-      ],
-      "rendering": {
-        "spline_params": {
-          "thickness": 2.0,
-          "color": "#A78BFA",
-          "dash_pattern": {
-            "dash": 8,
-            "gap": 4
-          },
-          "glow_width": 4.0,
-          "glow_color": "#7C3AED",
-          "glow_intensity": 0.5,
-          "noise_amplitude": 0.3,
-          "noise_frequency": 2.0,
-          "flow_speed": 0.8
-        },
-        "particle_params": {
-          "count": 12,
-          "size": 3.0,
-          "speed": 1.0,
-          "color": "#C4B5FD",
-          "opacity": 0.7,
-          "trail_length": 5
-        },
-        "pixi_filters": {
-          "glow": {
-            "distance": 8,
-            "outerStrength": 1.5,
-            "color": "0x7C3AED"
-          },
-          "blur": {
-            "strength": 0.5
-          }
-        },
-        "render_params": {
-          "z_index": 2,
-          "blend_mode": "add",
-          "arrow_size": 6,
-          "arrow_fill": "#A78BFA"
-        }
-      }
-    },
-    "skip2": {
-      "source": "add_norm1",
-      "target": "add_norm2",
-      "type": "skip",
-      "control_points": [
-        [
-          390.0,
-          355.0
-        ],
-        [
-          510.0,
-          375.0
-        ],
-        [
-          510.0,
-          450.0
-        ],
-        [
-          390.0,
-          470.0
-        ]
-      ],
-      "rendering": {
-        "spline_params": {
-          "thickness": 1.2,
-          "color": "#E65100",
-          "dash_pattern": {
-            "dash": 8,
-            "gap": 4
-          },
-          "glow_width": 3.5,
-          "glow_color": "#FF6D00",
-          "glow_intensity": 0.5,
-          "noise_amplitude": 0.25,
-          "noise_frequency": 2.0,
-          "flow_speed": 1.0
-        },
-        "particle_params": {
-          "count": 8,
-          "size": 2.0,
-          "speed": 1.2,
-          "color": "#FF9100",
-          "opacity": 0.65,
-          "trail_length": 5
-        },
-        "pixi_filters": {
-          "glow": {
-            "distance": 8,
-            "outerStrength": 1.5,
-            "color": "0xE65100"
-          },
-          "blur": {
-            "strength": 0.4
-          }
-        },
-        "render_params": {
-          "z_index": 0,
-          "blend_mode": "add",
-          "arrow_size": 5,
-          "arrow_fill": "#BF360C"
-        }
-      }
-    }
-  },
+  "edges": {},
   "camera": {
     "position": {
       "x": 410.0,
@@ -1020,7 +662,300 @@
     },
     "padding": 50
   },
-  "bloom": {
+  "bloom": {},
+  "z_order": [],
+  "species": {},
+  "convergence": {
+    "epoch": 2,
+    "converged": true,
+    "max_delta": 0.0,
+    "cell_deltas": {
+      "add_norm1": 0.0,
+      "add_norm2": 0.0,
+      "ffn": 0.0,
+      "input_embed": 0.0,
+      "output": 0.0,
+      "pos_encode": 0.0,
+      "self_attn": 0.0
+    },
+    "diverged": false,
+    "threshold": 0.5,
+    "verified_by": "M879",
+    "source_epoch": 10,
+    "note": "Epoch 2 convergence check: re-read all cell bboxes, re-ran AABB collision detection. 0 collisions detected across all z-layers. force_field residuals zeroed. Confirmed converged state from epoch 10."
+  },
+  "at_materials": {},
+  "session_stats": {
+    "at_ts_modules": 42,
+    "ue_ts_modules": 8,
+    "rendering_py_files": 86,
+    "rendering_dirs": 29,
+    "total_shaders_extracted": 172,
+    "shader_coverage_pct": 100,
+    "cells_with_at_params": 7
+  },
+  "edge_routes": {
+    "e1": {
+      "source": "input_embed",
+      "target": "pos_encode",
+      "type": "sequential",
+      "control_points": [
+        [
+          400.0,
+          105.0
+        ],
+        [
+          400.0,
+          120.0
+        ],
+        [
+          400.0,
+          120.0
+        ],
+        [
+          400.0,
+          135.0
+        ]
+      ]
+    },
+    "e2": {
+      "source": "pos_encode",
+      "target": "self_attn",
+      "type": "sequential",
+      "control_points": [
+        [
+          400.0,
+          190.0
+        ],
+        [
+          400.0,
+          205.0
+        ],
+        [
+          410.0,
+          205.0
+        ],
+        [
+          410.0,
+          220.0
+        ]
+      ]
+    },
+    "e3": {
+      "source": "self_attn",
+      "target": "add_norm1",
+      "type": "sequential",
+      "control_points": [
+        [
+          410.0,
+          285.0
+        ],
+        [
+          410.0,
+          300.0
+        ],
+        [
+          390.0,
+          300.0
+        ],
+        [
+          390.0,
+          315.0
+        ]
+      ]
+    },
+    "e4": {
+      "source": "add_norm1",
+      "target": "ffn",
+      "type": "sequential",
+      "control_points": [
+        [
+          390.0,
+          355.0
+        ],
+        [
+          390.0,
+          370.0
+        ],
+        [
+          400.0,
+          370.0
+        ],
+        [
+          400.0,
+          385.0
+        ]
+      ]
+    },
+    "e5": {
+      "source": "ffn",
+      "target": "add_norm2",
+      "type": "sequential",
+      "control_points": [
+        [
+          400.0,
+          440.0
+        ],
+        [
+          400.0,
+          455.0
+        ],
+        [
+          390.0,
+          455.0
+        ],
+        [
+          390.0,
+          470.0
+        ]
+      ]
+    },
+    "e6": {
+      "source": "add_norm2",
+      "target": "output",
+      "type": "sequential",
+      "control_points": [
+        [
+          390.0,
+          510.0
+        ],
+        [
+          390.0,
+          527.5
+        ],
+        [
+          400.0,
+          527.5
+        ],
+        [
+          400.0,
+          545.0
+        ]
+      ]
+    },
+    "skip1": {
+      "source": "pos_encode",
+      "target": "add_norm1",
+      "type": "skip",
+      "control_points": [
+        [
+          400.0,
+          190.0
+        ],
+        [
+          520.0,
+          210.0
+        ],
+        [
+          510.0,
+          295.0
+        ],
+        [
+          390.0,
+          315.0
+        ]
+      ]
+    },
+    "skip2": {
+      "source": "add_norm1",
+      "target": "add_norm2",
+      "type": "skip",
+      "control_points": [
+        [
+          390.0,
+          355.0
+        ],
+        [
+          510.0,
+          375.0
+        ],
+        [
+          510.0,
+          450.0
+        ],
+        [
+          390.0,
+          470.0
+        ]
+      ]
+    }
+  },
+  "force_field": {
+    "input_embed": {
+      "dx": 0.0,
+      "dy": 0.0,
+      "dz": 0.0,
+      "push_from": [
+        "pos_encode"
+      ],
+      "push_mag": 0.0
+    },
+    "pos_encode": {
+      "dx": 0.0,
+      "dy": 0.0,
+      "dz": 0.0,
+      "push_from": [
+        "input_embed",
+        "self_attn"
+      ],
+      "push_mag": 0.0
+    },
+    "self_attn": {
+      "dx": 0.0,
+      "dy": 0.0,
+      "dz": 0.0,
+      "push_from": [
+        "pos_encode",
+        "add_norm1"
+      ],
+      "push_mag": 0.0
+    },
+    "add_norm1": {
+      "dx": 0.0,
+      "dy": 0.0,
+      "dz": 0.0,
+      "push_from": [
+        "self_attn",
+        "ffn"
+      ],
+      "push_mag": 0.0
+    },
+    "ffn": {
+      "dx": 0.0,
+      "dy": 0.0,
+      "dz": 0.0,
+      "push_from": [
+        "add_norm1",
+        "add_norm2"
+      ],
+      "push_mag": 0.0
+    },
+    "add_norm2": {
+      "dx": 0.0,
+      "dy": 0.0,
+      "dz": 0.0,
+      "push_from": [
+        "ffn",
+        "output"
+      ],
+      "push_mag": 0.0
+    },
+    "output": {
+      "dx": 0.0,
+      "dy": 0.0,
+      "dz": 0.0,
+      "push_from": [
+        "add_norm2"
+      ],
+      "push_mag": 0.0
+    }
+  },
+  "collision": {
+    "collisions": [],
+    "count": 0,
+    "epoch": 2
+  },
+  "bloom_variants": {
     "input_embed": {
       "color": "#546E7A",
       "glow_color": "#78909C",
@@ -1078,16 +1013,42 @@
       "glow_strength": 0.8999999999999999
     }
   },
-  "z_order": [
-    "input_embed",
-    "output",
-    "pos_encode",
-    "add_norm1",
-    "add_norm2",
-    "ffn",
-    "self_attn"
-  ],
-  "species": {
+  "z_layers": {
+    "layers": [
+      {
+        "z": 1,
+        "cells": [
+          "input_embed",
+          "output",
+          "pos_encode"
+        ]
+      },
+      {
+        "z": 2,
+        "cells": [
+          "add_norm1",
+          "add_norm2",
+          "ffn"
+        ]
+      },
+      {
+        "z": 3,
+        "cells": [
+          "self_attn"
+        ]
+      }
+    ],
+    "render_order": [
+      "input_embed",
+      "output",
+      "pos_encode",
+      "add_norm1",
+      "add_norm2",
+      "ffn",
+      "self_attn"
+    ]
+  },
+  "species_assignment": {
     "input_embed": {
       "species": "cil-vector",
       "gene_traits": {
@@ -1215,20 +1176,676 @@
       }
     }
   },
-  "convergence": {
-    "epoch": 10,
-    "converged": true,
-    "max_delta": 0.0,
-    "cell_deltas": {
-      "add_norm1": 0.0,
-      "add_norm2": 0.0,
-      "ffn": 0.0,
-      "input_embed": 0.0,
-      "output": 0.0,
-      "pos_encode": 0.0,
-      "self_attn": 0.0
+  "species_visual_traits": {
+    "input_embed": {
+      "display_color": "#546E7A",
+      "neighbor_influence_color": "#7889a0",
+      "neighbors": [
+        "pos_encode"
+      ],
+      "influence_strength": 0.12,
+      "shader_params": {
+        "sdf_type": "sdRoundBox",
+        "sdf_radius": 0.08,
+        "glow_intensity": 0.55,
+        "glow_color": [
+          0.47,
+          0.56,
+          0.61
+        ],
+        "fresnel_power": 2.5,
+        "noise_scale": 0.18,
+        "noise_speed": 0.12,
+        "edge_softness": 0.04
+      },
+      "pixi_filters": {
+        "bloom": {
+          "threshold": 0.6,
+          "bloomScale": 0.4,
+          "brightness": 1.05
+        },
+        "glow": {
+          "distance": 10,
+          "outerStrength": 0.75,
+          "innerStrength": 0.2,
+          "color": "0x78909C"
+        },
+        "drop_shadow": {
+          "offset": [
+            2,
+            3
+          ],
+          "blur": 6,
+          "alpha": 0.28,
+          "color": "0x1C2C35"
+        }
+      }
     },
-    "diverged": false,
-    "threshold": 0.5
+    "pos_encode": {
+      "display_color": "#7E57C2",
+      "neighbor_influence_color": "#9e8abd",
+      "neighbors": [
+        "self_attn",
+        "add_norm1",
+        "input_embed"
+      ],
+      "influence_strength": 0.36,
+      "shader_params": {
+        "sdf_type": "sdRoundedBox",
+        "sdf_radius": 8.0,
+        "glow_intensity": 0.55,
+        "glow_color": [
+          0.702,
+          0.616,
+          0.859
+        ],
+        "fresnel_power": 2.2,
+        "noise_scale": 3.5,
+        "noise_speed": 0.35,
+        "edge_softness": 0.06
+      },
+      "pixi_filters": {
+        "bloom": {
+          "threshold": 0.72,
+          "bloomScale": 0.4,
+          "brightness": 1.05
+        },
+        "glow": {
+          "distance": 10,
+          "outerStrength": 1.4,
+          "innerStrength": 0.3,
+          "color": "0xB39DDB"
+        },
+        "drop_shadow": {
+          "offset": [
+            0,
+            2
+          ],
+          "blur": 4,
+          "alpha": 0.22,
+          "color": "0x4527A0"
+        }
+      }
+    },
+    "self_attn": {
+      "display_color": "#1E88E5",
+      "neighbor_influence_color": "#769bd8",
+      "neighbors": [
+        "pos_encode",
+        "add_norm1"
+      ],
+      "influence_strength": 0.24,
+      "shader_params": {
+        "sdf_type": "sdEllipse",
+        "sdf_radius": 0.42,
+        "glow_intensity": 0.72,
+        "glow_color": [
+          0.392,
+          0.714,
+          0.965
+        ],
+        "fresnel_power": 2.8,
+        "noise_scale": 0.18,
+        "noise_speed": 0.35,
+        "edge_softness": 0.06
+      },
+      "pixi_filters": {
+        "bloom": {
+          "threshold": 0.55,
+          "bloomScale": 1.2,
+          "brightness": 1.05
+        },
+        "glow": {
+          "distance": 14,
+          "outerStrength": 1.8,
+          "innerStrength": 0.6,
+          "color": "0x64B5F6"
+        },
+        "drop_shadow": {
+          "offset": [
+            2,
+            3
+          ],
+          "blur": 8,
+          "alpha": 0.28,
+          "color": "0x1A237E"
+        }
+      }
+    },
+    "add_norm1": {
+      "display_color": "#E53935",
+      "neighbor_influence_color": "#cc7f87",
+      "neighbors": [
+        "self_attn",
+        "ffn",
+        "pos_encode",
+        "add_norm2"
+      ],
+      "influence_strength": 0.48,
+      "shader_params": {
+        "sdf_type": "cil-plus",
+        "sdf_radius": 0.35,
+        "glow_intensity": 0.6,
+        "glow_color": [
+          198,
+          40,
+          40
+        ],
+        "fresnel_power": 2.0,
+        "noise_scale": 0.5,
+        "noise_speed": 0.3,
+        "edge_softness": 0.15
+      },
+      "pixi_filters": {
+        "bloom": {
+          "threshold": 0.5,
+          "bloomScale": 0.8,
+          "brightness": 1.2
+        },
+        "glow": {
+          "distance": 15,
+          "outerStrength": 2.0,
+          "innerStrength": 1.0,
+          "color": "0xC62828"
+        },
+        "drop_shadow": {
+          "offset": [
+            2,
+            4
+          ],
+          "blur": 6,
+          "alpha": 0.3,
+          "color": "0x000000"
+        }
+      }
+    },
+    "ffn": {
+      "display_color": "#F57C00",
+      "neighbor_influence_color": "#f49745",
+      "neighbors": [
+        "add_norm1",
+        "add_norm2"
+      ],
+      "influence_strength": 0.24,
+      "shader_params": {
+        "sdf_type": "polySDF",
+        "sdf_radius": 0.38,
+        "glow_intensity": 0.85,
+        "glow_color": [
+          1.0,
+          0.435,
+          0.0
+        ],
+        "fresnel_power": 3.5,
+        "noise_scale": 0.7,
+        "noise_speed": 0.45,
+        "edge_softness": 0.12
+      },
+      "pixi_filters": {
+        "bloom": {
+          "threshold": 0.4,
+          "bloomScale": 1.0,
+          "brightness": 1.3
+        },
+        "glow": {
+          "distance": 18,
+          "outerStrength": 2.5,
+          "innerStrength": 1.2,
+          "color": "0xFF6F00"
+        },
+        "drop_shadow": {
+          "offset": [
+            2,
+            5
+          ],
+          "blur": 7,
+          "alpha": 0.35,
+          "color": "0x000000"
+        }
+      }
+    },
+    "add_norm2": {
+      "display_color": "#C62828",
+      "neighbor_influence_color": "#d65840",
+      "neighbors": [
+        "ffn",
+        "add_norm1",
+        "output"
+      ],
+      "influence_strength": 0.36,
+      "shader_params": {
+        "sdf_type": "crossSDF",
+        "sdf_radius": 0.3,
+        "glow_intensity": 0.5,
+        "glow_color": [
+          0.776,
+          0.157,
+          0.157
+        ],
+        "fresnel_power": 2.0,
+        "noise_scale": 0.3,
+        "noise_speed": 0.2,
+        "edge_softness": 0.18
+      },
+      "pixi_filters": {
+        "bloom": {
+          "threshold": 0.55,
+          "bloomScale": 0.7,
+          "brightness": 1.1
+        },
+        "glow": {
+          "distance": 12,
+          "outerStrength": 1.8,
+          "innerStrength": 0.8,
+          "color": "0xC62828"
+        },
+        "drop_shadow": {
+          "offset": [
+            2,
+            3
+          ],
+          "blur": 5,
+          "alpha": 0.25,
+          "color": "0x000000"
+        }
+      }
+    },
+    "output": {
+      "display_color": "#2E7D32",
+      "neighbor_influence_color": "#71a962",
+      "neighbors": [
+        "add_norm2"
+      ],
+      "influence_strength": 0.12,
+      "shader_params": {
+        "sdf_type": "sdArrow",
+        "sdf_radius": 0.35,
+        "glow_intensity": 0.6,
+        "glow_color": [
+          0.271,
+          0.353,
+          0.392
+        ],
+        "fresnel_power": 2.0,
+        "noise_scale": 0.5,
+        "noise_speed": 0.3,
+        "edge_softness": 0.15
+      },
+      "pixi_filters": {
+        "bloom": {
+          "threshold": 0.5,
+          "bloomScale": 0.8,
+          "brightness": 1.2
+        },
+        "glow": {
+          "distance": 15,
+          "outerStrength": 2.0,
+          "innerStrength": 1.0,
+          "color": "0x455A64"
+        },
+        "drop_shadow": {
+          "offset": [
+            2,
+            4
+          ],
+          "blur": 6,
+          "alpha": 0.3,
+          "color": "0x000000"
+        }
+      }
+    }
+  },
+  "at_uil_categorized": {
+    "self_attn": {
+      "at_material": "JellyShader",
+      "param_count": 29
+    },
+    "ffn": {
+      "at_material": "SpineShader",
+      "param_count": 12
+    },
+    "input_embed": {
+      "at_material": "FloorShader",
+      "param_count": 29
+    },
+    "pos_encode": {
+      "at_material": "FloorShader",
+      "param_count": 29
+    },
+    "add_norm1": {
+      "at_material": "ColumnShader",
+      "param_count": 6
+    },
+    "add_norm2": {
+      "at_material": "WallShader",
+      "param_count": 23
+    },
+    "output": {
+      "at_material": "LogoShader",
+      "param_count": 59
+    }
+  },
+  "at_geometry_cell_mapping": {
+    "jellyfish.bin": "self_attn",
+    "flower_spine-128.bin": "ffn",
+    "cables.bin": "_edges",
+    "structure.bin": "_scene",
+    "forest-128.bin": "_bg",
+    "rock_L.bin": "add_norm1",
+    "rock_R.bin": "add_norm2",
+    "spine.bin": "pos_encode",
+    "AT_logo.bin": "output",
+    "pillars.bin": "input_embed",
+    "hexagon_gem.bin": "_decor",
+    "cube.bin": "_prim",
+    "mask.bin": "_fx",
+    "sand.bin": "_ground",
+    "chainlink.bin": "_edges",
+    "walls.bin": "_boundary",
+    "rocky_soil.bin": "_ground"
+  },
+  "at_texture_manifest": {
+    "_meta": {
+      "task": "M878",
+      "description": "AT texture manifest — 33 PBR textures mapped to cell/scene elements",
+      "source_dir": "upstream/activetheory-assets/textures/",
+      "format": "ktx2",
+      "generated": "2026-06-23",
+      "total_textures": 33,
+      "pbr_sets": 8,
+      "pbr_channel_groups": [
+        "baseColor",
+        "Normal",
+        "MRO"
+      ]
+    },
+    "pbr_textures": {
+      "CABLES": {
+        "cell": "_edges",
+        "scene_element": "cables",
+        "geometry_bin": "cables.bin",
+        "baseColor": "CABLES___CyclesBake_COMBINED.ktx2",
+        "Normal": "CABLES___PBR_Normal.ktx2",
+        "MRO": "CABLES___PBR_AT_MRO.ktx2",
+        "size_bytes": {
+          "CABLES___CyclesBake_COMBINED.ktx2": 100626,
+          "CABLES___PBR_Normal.ktx2": 131543,
+          "CABLES___PBR_AT_MRO.ktx2": 28218
+        }
+      },
+      "PILLARS": {
+        "cell": "input_embed",
+        "scene_element": "pillars",
+        "geometry_bin": "pillars.bin",
+        "baseColor": "PILLARS___CyclesBake_COMBINED.ktx2",
+        "Normal": "PILLARS___PBR_Normal.ktx2",
+        "MRO": "PILLARS___PBR_AT_MRO.ktx2",
+        "size_bytes": {
+          "PILLARS___CyclesBake_COMBINED.ktx2": 48879,
+          "PILLARS___PBR_Normal.ktx2": 79488,
+          "PILLARS___PBR_AT_MRO.ktx2": 67994
+        }
+      },
+      "ROCKY_SOIL": {
+        "cell": "_ground",
+        "scene_element": "rocky_soil",
+        "geometry_bin": "rocky_soil.bin",
+        "baseColor": "ROCKY_SOIL___CyclesBake_COMBINED.ktx2",
+        "Normal": "ROCKY_SOIL___PBR_Normal.ktx2",
+        "MRO": "ROCKY_SOIL___PBR_AT_MRO.ktx2",
+        "size_bytes": {
+          "ROCKY_SOIL___CyclesBake_COMBINED.ktx2": 38157,
+          "ROCKY_SOIL___PBR_Normal.ktx2": 174547,
+          "ROCKY_SOIL___PBR_AT_MRO.ktx2": 62877
+        }
+      },
+      "ROCK_L": {
+        "cell": "add_norm1",
+        "scene_element": "rock_left",
+        "geometry_bin": "rock_L.bin",
+        "baseColor": "ROCK_L___CyclesBake_COMBINED.ktx2",
+        "Normal": "ROCK_L___PBR_Normal.ktx2",
+        "MRO": "ROCK_L___PBR_AT_MRO.ktx2",
+        "size_bytes": {
+          "ROCK_L___CyclesBake_COMBINED.ktx2": 27408,
+          "ROCK_L___PBR_Normal.ktx2": 138030,
+          "ROCK_L___PBR_AT_MRO.ktx2": 48823
+        }
+      },
+      "ROCK_R": {
+        "cell": "add_norm2",
+        "scene_element": "rock_right",
+        "geometry_bin": "rock_R.bin",
+        "baseColor": "ROCK_R___CyclesBake_COMBINED.ktx2",
+        "Normal": "ROCK_R___PBR_Normal.ktx2",
+        "MRO": "ROCK_R___PBR_AT_MRO.ktx2",
+        "size_bytes": {
+          "ROCK_R___CyclesBake_COMBINED.ktx2": 50354,
+          "ROCK_R___PBR_Normal.ktx2": 162237,
+          "ROCK_R___PBR_AT_MRO.ktx2": 44004
+        }
+      },
+      "SAND": {
+        "cell": "_ground",
+        "scene_element": "sand",
+        "geometry_bin": "sand.bin",
+        "baseColor": "SAND___CyclesBake_COMBINED.ktx2",
+        "Normal": "SAND___PBR_Normal.ktx2",
+        "MRO": "SAND___PBR_AT_MRO.ktx2",
+        "size_bytes": {
+          "SAND___CyclesBake_COMBINED.ktx2": 48609,
+          "SAND___PBR_Normal.ktx2": 126734,
+          "SAND___PBR_AT_MRO.ktx2": 19974
+        }
+      },
+      "STRUCTURE": {
+        "cell": "_scene",
+        "scene_element": "structure",
+        "geometry_bin": "structure.bin",
+        "baseColor": "STRUCTURE___CyclesBake_COMBINED.ktx2",
+        "Normal": "STRUCTURE___PBR_Normal.ktx2",
+        "MRO": "STRUCTURE___PBR_AT_MRO.ktx2",
+        "size_bytes": {
+          "STRUCTURE___CyclesBake_COMBINED.ktx2": 128224,
+          "STRUCTURE___PBR_Normal.ktx2": 45357,
+          "STRUCTURE___PBR_AT_MRO.ktx2": 106212
+        }
+      },
+      "WALLS_CEILING": {
+        "cell": "_boundary",
+        "scene_element": "walls",
+        "geometry_bin": "walls.bin",
+        "baseColor": "WALLS_CEILING___CyclesBake_COMBINED.ktx2",
+        "Normal": "WALLS_CEILING___PBR_Normal.ktx2",
+        "MRO": "WALLS_CEILING___PBR_AT_MRO.ktx2",
+        "size_bytes": {
+          "WALLS_CEILING___CyclesBake_COMBINED.ktx2": 57497,
+          "WALLS_CEILING___PBR_Normal.ktx2": 32846,
+          "WALLS_CEILING___PBR_AT_MRO.ktx2": 2578
+        }
+      }
+    },
+    "standalone_textures": {
+      "alien_cracked_2_basecolor.ktx2": {
+        "cell": "self_attn",
+        "scene_element": "jellyfish_surface",
+        "pbr_channel": "baseColor",
+        "notes": "alien cracked surface — jellyfish/self-attention geometry overlay",
+        "size_bytes": 55172
+      },
+      "cracked_ice_basecolor.ktx2": {
+        "cell": "pos_encode",
+        "scene_element": "spine_surface",
+        "pbr_channel": "baseColor",
+        "notes": "cracked ice surface — spine/positional-encoding geometry overlay",
+        "size_bytes": 51750
+      },
+      "cliffs_MRO.ktx2": {
+        "cell": "_ground",
+        "scene_element": "terrain_cliffs",
+        "pbr_channel": "MRO",
+        "notes": "cliff terrain MRO — ground-layer supplement",
+        "size_bytes": 40978
+      },
+      "woodplanks_normal.ktx2": {
+        "cell": "_scene",
+        "scene_element": "floor_detail",
+        "pbr_channel": "Normal",
+        "notes": "wood plank normal — floor/structure detail layer",
+        "size_bytes": 39899
+      },
+      "env1.ktx2": {
+        "cell": "_bg",
+        "scene_element": "environment_ibl",
+        "pbr_channel": "envmap",
+        "notes": "IBL environment map — scene background lighting",
+        "size_bytes": 21416
+      },
+      "matcap-test.ktx2": {
+        "cell": "_fx",
+        "scene_element": "matcap_fx",
+        "pbr_channel": "matcap",
+        "notes": "matcap test — fx/post layer material capture",
+        "size_bytes": 44610
+      },
+      "matcap3.ktx2": {
+        "cell": "output",
+        "scene_element": "AT_logo_matcap",
+        "pbr_channel": "matcap",
+        "notes": "matcap3 — output/AT_logo material capture",
+        "size_bytes": 1951
+      },
+      "empty_normal.ktx2": {
+        "cell": "_prim",
+        "scene_element": "fallback_normal",
+        "pbr_channel": "Normal",
+        "notes": "1×1 flat normal fallback for unassigned primitives",
+        "size_bytes": 493
+      },
+      "empty_mro.ktx2": {
+        "cell": "_prim",
+        "scene_element": "fallback_mro",
+        "pbr_channel": "MRO",
+        "notes": "1×1 neutral MRO fallback for unassigned primitives",
+        "size_bytes": 492
+      }
+    },
+    "index_by_cell": {
+      "self_attn": [
+        "ROCK_R___CyclesBake_COMBINED.ktx2",
+        "ROCK_R___PBR_Normal.ktx2",
+        "ROCK_R___PBR_AT_MRO.ktx2",
+        "alien_cracked_2_basecolor.ktx2"
+      ],
+      "add_norm1": [
+        "ROCK_L___CyclesBake_COMBINED.ktx2",
+        "ROCK_L___PBR_Normal.ktx2",
+        "ROCK_L___PBR_AT_MRO.ktx2"
+      ],
+      "add_norm2": [
+        "ROCK_R___CyclesBake_COMBINED.ktx2",
+        "ROCK_R___PBR_Normal.ktx2",
+        "ROCK_R___PBR_AT_MRO.ktx2"
+      ],
+      "ffn": [
+        "STRUCTURE___CyclesBake_COMBINED.ktx2",
+        "STRUCTURE___PBR_Normal.ktx2",
+        "STRUCTURE___PBR_AT_MRO.ktx2"
+      ],
+      "input_embed": [
+        "PILLARS___CyclesBake_COMBINED.ktx2",
+        "PILLARS___PBR_Normal.ktx2",
+        "PILLARS___PBR_AT_MRO.ktx2"
+      ],
+      "pos_encode": [
+        "ROCKY_SOIL___CyclesBake_COMBINED.ktx2",
+        "ROCKY_SOIL___PBR_Normal.ktx2",
+        "ROCKY_SOIL___PBR_AT_MRO.ktx2",
+        "cracked_ice_basecolor.ktx2"
+      ],
+      "output": [
+        "matcap3.ktx2"
+      ],
+      "_edges": [
+        "CABLES___CyclesBake_COMBINED.ktx2",
+        "CABLES___PBR_Normal.ktx2",
+        "CABLES___PBR_AT_MRO.ktx2"
+      ],
+      "_ground": [
+        "SAND___CyclesBake_COMBINED.ktx2",
+        "SAND___PBR_Normal.ktx2",
+        "SAND___PBR_AT_MRO.ktx2",
+        "ROCKY_SOIL___CyclesBake_COMBINED.ktx2",
+        "ROCKY_SOIL___PBR_Normal.ktx2",
+        "ROCKY_SOIL___PBR_AT_MRO.ktx2",
+        "cliffs_MRO.ktx2"
+      ],
+      "_boundary": [
+        "WALLS_CEILING___CyclesBake_COMBINED.ktx2",
+        "WALLS_CEILING___PBR_Normal.ktx2",
+        "WALLS_CEILING___PBR_AT_MRO.ktx2"
+      ],
+      "_scene": [
+        "STRUCTURE___CyclesBake_COMBINED.ktx2",
+        "STRUCTURE___PBR_Normal.ktx2",
+        "STRUCTURE___PBR_AT_MRO.ktx2",
+        "woodplanks_normal.ktx2"
+      ],
+      "_bg": [
+        "env1.ktx2"
+      ],
+      "_fx": [
+        "matcap-test.ktx2"
+      ],
+      "_prim": [
+        "empty_normal.ktx2",
+        "empty_mro.ktx2"
+      ]
+    },
+    "index_by_pbr_channel": {
+      "baseColor": [
+        "CABLES___CyclesBake_COMBINED.ktx2",
+        "PILLARS___CyclesBake_COMBINED.ktx2",
+        "ROCKY_SOIL___CyclesBake_COMBINED.ktx2",
+        "ROCK_L___CyclesBake_COMBINED.ktx2",
+        "ROCK_R___CyclesBake_COMBINED.ktx2",
+        "SAND___CyclesBake_COMBINED.ktx2",
+        "STRUCTURE___CyclesBake_COMBINED.ktx2",
+        "WALLS_CEILING___CyclesBake_COMBINED.ktx2",
+        "alien_cracked_2_basecolor.ktx2",
+        "cracked_ice_basecolor.ktx2"
+      ],
+      "Normal": [
+        "CABLES___PBR_Normal.ktx2",
+        "PILLARS___PBR_Normal.ktx2",
+        "ROCKY_SOIL___PBR_Normal.ktx2",
+        "ROCK_L___PBR_Normal.ktx2",
+        "ROCK_R___PBR_Normal.ktx2",
+        "SAND___PBR_Normal.ktx2",
+        "STRUCTURE___PBR_Normal.ktx2",
+        "WALLS_CEILING___PBR_Normal.ktx2",
+        "woodplanks_normal.ktx2",
+        "empty_normal.ktx2"
+      ],
+      "MRO": [
+        "CABLES___PBR_AT_MRO.ktx2",
+        "PILLARS___PBR_AT_MRO.ktx2",
+        "ROCKY_SOIL___PBR_AT_MRO.ktx2",
+        "ROCK_L___PBR_AT_MRO.ktx2",
+        "ROCK_R___PBR_AT_MRO.ktx2",
+        "SAND___PBR_AT_MRO.ktx2",
+        "STRUCTURE___PBR_AT_MRO.ktx2",
+        "WALLS_CEILING___PBR_AT_MRO.ktx2",
+        "cliffs_MRO.ktx2",
+        "empty_mro.ktx2"
+      ],
+      "matcap": [
+        "matcap-test.ktx2",
+        "matcap3.ktx2"
+      ],
+      "envmap": [
+        "env1.ktx2"
+      ]
+    }
   }
 }
