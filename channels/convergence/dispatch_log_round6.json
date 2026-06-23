@@ -1,0 +1,50 @@
+{
+  "e1": {
+    "conv_id": "e2f6d63a-448c-4804-8d78-fc6718f83913",
+    "milestone": "M860",
+    "url": "https://claude.hk.cn/chat/e2f6d63a-448c-4804-8d78-fc6718f83913",
+    "status": "dispatched"
+  },
+  "e2": {
+    "conv_id": "a4d9a22c-5880-4b22-8429-1d873c478fb4",
+    "milestone": "M861",
+    "url": "https://claude.hk.cn/chat/a4d9a22c-5880-4b22-8429-1d873c478fb4",
+    "status": "dispatched"
+  },
+  "e3": {
+    "conv_id": "f63df590-bf84-4b91-99cf-a206bdf01a4c",
+    "milestone": "M862",
+    "url": "https://claude.hk.cn/chat/f63df590-bf84-4b91-99cf-a206bdf01a4c",
+    "status": "dispatched"
+  },
+  "e4": {
+    "conv_id": "de1fcd26-a119-4f31-b019-1869baf8ef41",
+    "milestone": "M863",
+    "url": "https://claude.hk.cn/chat/de1fcd26-a119-4f31-b019-1869baf8ef41",
+    "status": "dispatched"
+  },
+  "e5": {
+    "conv_id": "bdc7bda4-fe20-4f88-a25a-8b6dc41aeda0",
+    "milestone": "M864",
+    "url": "https://claude.hk.cn/chat/bdc7bda4-fe20-4f88-a25a-8b6dc41aeda0",
+    "status": "dispatched"
+  },
+  "e6": {
+    "conv_id": "871e5e93-009b-4d2d-80a3-ca5b82b45c0d",
+    "milestone": "M865",
+    "url": "https://claude.hk.cn/chat/871e5e93-009b-4d2d-80a3-ca5b82b45c0d",
+    "status": "dispatched"
+  },
+  "skip1": {
+    "conv_id": "f6b685f0-0646-4208-bc93-fed693527061",
+    "milestone": "M866",
+    "url": "https://claude.hk.cn/chat/f6b685f0-0646-4208-bc93-fed693527061",
+    "status": "dispatched"
+  },
+  "skip2": {
+    "conv_id": "a1fdcc98-96fd-43d1-9684-590b7cbe13a2",
+    "milestone": "M867",
+    "url": "https://claude.hk.cn/chat/a1fdcc98-96fd-43d1-9684-590b7cbe13a2",
+    "status": "dispatched"
+  }
+}
