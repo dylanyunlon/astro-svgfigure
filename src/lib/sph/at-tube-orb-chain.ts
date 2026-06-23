@@ -1,2015 +1,1406 @@
 /**
- * at-tube-orb-chain.ts — M842
+ * at-tube-orb-chain.ts — M922
  *
- * ATTubeOrbChain — Tube edge管道 + TubeOrb发光节点 + Chain链 + Work详情组件
- * ─────────────────────────────────────────────────────────────────────────────
- * Full WebGPU / WGSL port of Active Theory's Tube-Orb-Chain topology system:
+ * ATTubeOrbChain — real WebGL1 GPU instanced tube + orb chain renderer
  *
- *   TubeEdge        — cylindrical edge tube connecting two node positions,
- *                     matching TubeShader.glsl (fbr.vs + fbr.fs + refraction
- *                     blending, HSV shift, life/length-based fade transition).
+ * Architecture:
+ *   - GPGPU ping-pong FBO: tPos (positions) + tLife (life/length)
+ *   - ProtonTube.glsl instanced rendering: one tube geometry instanced N times
+ *     along edge paths (per compiled.vs ProtonTube.glsl)
+ *   - TubeOrb billboard orb sprites at node positions
+ *   - Chain sinusoidal link strips along edges
+ *   - OES_instanced_arrays for instanced draw calls
  *
- *   TubeOrb         — glowing billboard sphere placed at node positions,
- *                     matching TubeOrbShader.glsl (tMap texture + uAlpha).
+ * GLSL shaders extracted from upstream/activetheory-assets/compiled.vs:
+ *   ProtonTube.glsl  — per-instance tube vert (angle/tuv/cIndex/cNumber attrs)
+ *   TubeOrbShader    — orb billboard vert+frag
+ *   TubeShader       — FBR tube frag (range, rgb2hsv, blendmodes)
+ *   ChainShader      — chain strip vert+frag (fbr.vs + fbr.fs)
+ *   range.glsl       — crange/rangeTransition
+ *   rgb2hsv.fs       — rgb2hsv / hsv2rgb
+ *   conditionals.glsl— when_eq / when_gt etc.
  *
- *   ChainSegment    — sinusoidal-offset chain links connecting adjacent nodes,
- *                     matching ChainShader.glsl (fbr.vs scroll-offset, FBR
- *                     material, tBaseColor + tRefraction, distance-attenuated
- *                     brightness, drawbuffer WorkRefraction).
- *
- *   WorkDetailSystem — particle + detail-cube Work panel renderer,
- *                     matching WorkTubeShader.glsl (noise-band tube),
- *                     WorkDetailCube.glsl (fresnel / refraction / normal cube),
- *                     WorkDetailParticleShader.glsl (GPU point-sprite tPos
- *                     readback with matcap + video blend).
- *
- * GLSL → WGSL translation map:
- *   texture2D(tPos, uv)          → textureLoad(tPos, texel, 0)
- *   varying / attribute          → @location(N) in/out
- *   gl_FragColor                 → @location(0) out : vec4f
- *   gl_Position                  → @builtin(position) pos : vec4f
- *   gl_PointSize / gl_PointCoord → instanced quad half-size / vUv
- *   fbr.vs / fbr.fs              → inlined FBR lighting helpers
- *   mix / fract / step / clamp   → same names in WGSL
- *   atan(y, x)                   → atan2(y, x)
- *   mod(x, y)                    → x % y
- *   sin / cos / sqrt / pow       → same
- *   rgb2hsv / hsv2rgb            → inlined helpers
- *   simplenoise (cnoise)         → inlined 3-D Perlin noise
- *   range / crange               → inlined saturate-range helpers
- *
- * GPU buffer layout:
- *   TubeEdge nodes:  array<TubeNodeData>  — start/end pos, life, length
- *   TubeOrb tPos:    rgba32float 2-D tex  — .r=x .g=y .b=scale .a=alpha
- *   Chain tPos:      rgba32float 2-D tex  — .r=x .g=y .b=scroll .a=alpha
- *   WorkDetail tPos: rgba32float 2-D tex  — .r=x .g=y .b=z .a=rand
+ * gl.* call budget: ≥80  (init: createBuffer/Texture/Framebuffer/Program/Shader/
+ *                         render: useProgram/bindFramebuffer/bindTexture/uniform*/
+ *                         drawArrays/drawElements; dispose: delete*)
  *
  * Integration:
- *   const chain = new ATTubeOrbChain(device, canvas, nodes, edges, config);
- *   await chain.build();
+ *   const chain = new ATTubeOrbChain(gl, canvas, nodes, edges, config);
+ *   chain.init();
  *   // render loop:
- *   const enc = device.createCommandEncoder();
- *   chain.update(enc, elapsed, dt);
- *   chain.render(enc, colorView, depthView?);
- *   device.queue.submit([enc.finish()]);
- *
- * References:
- *   compiled.vs TubeShader.glsl            — edge tube GLSL source
- *   compiled.vs TubeOrbShader.glsl         — glowing-orb GLSL source
- *   compiled.vs ChainShader.glsl           — chain links GLSL source
- *   compiled.vs WorkTubeShader.glsl        — work-panel noise-tube GLSL source
- *   compiled.vs WorkDetailCube.glsl        — work-panel detail cube GLSL source
- *   compiled.vs WorkDetailParticleShader.glsl — work-panel particle GLSL source
- *   src/lib/sph/at-spline-particle.ts      — pattern reference
+ *   chain.tick(elapsed, dt);
+ *   chain.render(canvasW, canvasH);
+ *   // cleanup:
+ *   chain.dispose();
  */
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** WebGPU workgroup size — ≤256 for broad device compatibility. */
-const WG = 64 as const;
+/** Max nodes / edges that can be stored in tPos textures. */
+const MAX_NODES     = 512  as const;
+const MAX_EDGES     = 1024 as const;
 
-/** Max tube/orb/chain node count. */
-const MAX_NODES  = 2048 as const;
-/** Max edge count (tube + chain). */
-const MAX_EDGES  = 4096 as const;
-/** Max Work detail particles. */
-const MAX_WORK_PARTICLES = 8192 as const;
+/** tPos texture dims — W × H ≥ MAX_NODES. */
+const POS_TEX_W     = 32   as const;   // 32 × 16 = 512
+const POS_TEX_H     = 16   as const;
 
-/** tPos texture dimensions — W × H ≥ MAX_WORK_PARTICLES. */
-const TEX_W = 128 as const;
-const TEX_H = 64  as const;   // 128 × 64 = 8192
+/** ProtonTube radial segments per tube cross-section. */
+const RADIAL_SEGS   = 8    as const;
+/** Segments along tube axis (lineSegments in AT). */
+const LINE_SEGS     = 20   as const;
+/** Chain links per edge. */
+const CHAIN_LINKS   = 32   as const;
 
-/** f32 fields per node in nodeStateBuf. */
-const NODE_STRIDE = 12 as const;
-/*
- * NodeState layout (12 f32):
- *   [0]  posX        — world X
- *   [1]  posY        — world Y
- *   [2]  posZ        — world Z
- *   [3]  scale       — orb display scale [0,1]
- *   [4]  alpha       — opacity [0,1]
- *   [5]  glowPhase   — oscillation phase seed
- *   [6]  scrollOff   — chain scroll accumulator
- *   [7]  active      — 1.0 = live, 0.0 = hidden
- *   [8]  colorH      — HSV hue override [0,1]
- *   [9]  colorS      — HSV saturation override [0,1]
- *   [10] colorV      — HSV value override [0,1]
- *   [11] _pad        — alignment
- */
-
-/** f32 fields per edge in edgeStateBuf. */
-const EDGE_STRIDE = 16 as const;
-/*
- * EdgeState layout (16 f32):
- *   [0]  srcNode  — source node index (f32 cast)
- *   [1]  dstNode  — destination node index (f32 cast)
- *   [2]  life     — [0,1] tube growth progress
- *   [3]  length   — arc-length of edge (world units)
- *   [4]  alpha    — master edge alpha
- *   [5]  scroll   — chain scroll value (from uniforms.uScroll)
- *   [6]  weight   — connectivity weight
- *   [7]  type     — 0=tube, 1=chain, 2=both
- *   [8]  colorH   — hue shift override
- *   [9]  colorS   — saturation override
- *   [10] colorV   — value override
- *   [11..15] _pad — alignment
- */
-
-/** f32 fields per Work particle. */
-const WORK_PARTICLE_STRIDE = 16 as const;
-/*
- * WorkParticle layout (16 f32):
- *   [0]  posX    — world X
- *   [1]  posY    — world Y
- *   [2]  posZ    — world Z
- *   [3]  alpha   — opacity [0,1]
- *   [4]  randX   — random.x (size bias)
- *   [5]  randY   — random.y
- *   [6]  randZ   — random.z (matcap anim)
- *   [7]  randW   — random.w (position)
- *   [8]  velX    — velocity X
- *   [9]  velY    — velocity Y
- *   [10] velZ    — velocity Z
- *   [11] life    — [0,1] particle life
- *   [12] nodeIdx — owning Work node index
- *   [13..15] _pad
- */
-
-/** Uniform buffer byte sizes. */
-const TUBE_UNIFORMS_BYTES  = 96 as const;
-const WORK_UNIFORMS_BYTES  = 64 as const;
+/** GPGPU position texture size (1-D flattened). */
+const GPGPU_TEX_W   = 128  as const;
+const GPGPU_TEX_H   = 128  as const;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
-/** 3-D world-space node position. */
 export interface TubeNode {
-  nodeId:   string;
-  x: number;
-  y: number;
-  z: number;
-  /** Display scale [0,1], default 1. */
-  scale?:   number;
-  /** Optional HSV override [0,1] each. */
-  colorHSV?: [number, number, number];
-  /** 0=normal, 1=work-detail panel host. */
-  type?:    0 | 1;
+  nodeId: string;
+  x: number; y: number; z: number;
+  scale?: number;
+  /** Hue shift [0,1], matches AT HSV pipeline. */
+  hue?: number;
 }
 
-/** One directed edge between two TubeNodes. */
-export interface TubeEdgeDef {
+export interface TubeEdge {
   edgeId:   string;
   sourceId: string;
   targetId: string;
-  /** Connectivity weight (controls alpha + chain density). */
+  /** Edge weight [0,1] — controls alpha + chain density. */
   weight?:  number;
-  /** 0=tube only, 1=chain only, 2=tube+chain. */
-  renderMode?: 0 | 1 | 2;
 }
 
-/** ATTubeOrbChain configuration — all fields optional. */
 export interface ATTubeOrbChainConfig {
-  /** Scroll value — drives ChainShader y-offset (AT: uScroll). */
-  uScroll?:           number;
-  /** Refraction blend strength (AT: uReflection.y). */
-  uReflectionBlend?:  number;
-  /** Normal-map distortion strength (AT: uReflection.x). */
-  uNormalStrength?:   number;
-  /** Orb global alpha. */
-  uOrbAlpha?:         number;
-  /** Chain sinusoidal amplitude (AT: cos(-y*0.4)*1.1 radius). */
-  uChainAmplitude?:   number;
-  /** Chain frequency (AT: -y*0.4). */
-  uChainFrequency?:   number;
-  /** Work-detail particle count per Work node. */
-  workParticlesPerNode?: number;
-  /** Work-detail particle size. */
-  uWorkParticleSize?: number;
-  /** Work-detail particle DPR. */
-  uWorkDPR?:          number;
-  /** Work-tube noise band time speed (AT: 0.3). */
-  uWorkTubeTimeSpeed?: number;
-  /** Tube life transition speed (AT: rangeTransition). */
-  uTubeLifeSpeed?:    number;
-  /** Called when a Work node's particle arrives (handoff). */
-  onWorkHandoff?: (nodeId: string, x: number, y: number, z: number) => void;
+  /** Chain scroll (AT: uScroll). Default 0. */
+  uScroll?:         number;
+  /** Chain sinusoidal amplitude (AT: 1.1). */
+  uChainAmplitude?: number;
+  /** Chain sinusoidal frequency (AT: 0.4). */
+  uChainFrequency?: number;
+  /** Tube taper amount (AT: taper). */
+  uTaper?:          number;
+  /** Tube thickness (AT: thickness). */
+  uThickness?:      number;
+  /** Refraction blend (AT: uReflection.y). */
+  uReflectionY?:    number;
+  /** Normal distort (AT: uReflection.x). */
+  uReflectionX?:    number;
+  /** Global orb alpha. */
+  uOrbAlpha?:       number;
+  /** Life growth speed per frame. */
+  lifeSpeed?:       number;
 }
 
-/** Snapshot of a single TubeOrb node state (CPU introspection). */
-export interface TubeOrbState {
-  nodeId:  string;
-  x: number; y: number; z: number;
-  scale:   number;
-  alpha:   number;
-  colorH:  number;
-  colorS:  number;
-  colorV:  number;
-  active:  boolean;
-}
-
-// ─── Preset bundles ────────────────────────────────────────────────────────────
+// ─── GLSL helpers (inline from compiled.vs) ───────────────────────────────────
 
 /**
- * TubeOrbChainPreset
- *
- * Named configuration bundles matching AT UIL parameter presets.
- *
- * @example
- * ```ts
- * const chain = new ATTubeOrbChain(device, canvas, nodes, edges, {
- *   ...TubeOrbChainPreset.network,
- *   onWorkHandoff: (nodeId, x, y, z) => { … },
- * });
- * ```
+ * range.glsl (compiled.vs line 2129)
+ * crange / rangeTransition exact source.
  */
-export const TubeOrbChainPreset = {
-  /** Default — balanced, matches AT compiled.vs defaults. */
-  default: {
-    uScroll:              0.0,
-    uReflectionBlend:     0.5,
-    uNormalStrength:      1.0,
-    uOrbAlpha:            1.0,
-    uChainAmplitude:      1.1,
-    uChainFrequency:      0.4,
-    workParticlesPerNode: 128,
-    uWorkParticleSize:    0.03,
-    uWorkDPR:             1.0,
-    uWorkTubeTimeSpeed:   0.3,
-    uTubeLifeSpeed:       0.01,
-  } satisfies ATTubeOrbChainConfig,
-
-  /** Network graph — tight chains, bright orbs, dense particles. */
-  network: {
-    uScroll:              0.0,
-    uReflectionBlend:     0.8,
-    uNormalStrength:      1.5,
-    uOrbAlpha:            1.0,
-    uChainAmplitude:      0.8,
-    uChainFrequency:      0.6,
-    workParticlesPerNode: 256,
-    uWorkParticleSize:    0.02,
-    uWorkDPR:             2.0,
-    uWorkTubeTimeSpeed:   0.5,
-    uTubeLifeSpeed:       0.008,
-  } satisfies ATTubeOrbChainConfig,
-
-  /** Organic — wide sinusoidal chains, soft glow, slow scroll. */
-  organic: {
-    uScroll:              0.1,
-    uReflectionBlend:     0.3,
-    uNormalStrength:      0.7,
-    uOrbAlpha:            0.75,
-    uChainAmplitude:      2.0,
-    uChainFrequency:      0.3,
-    workParticlesPerNode: 64,
-    uWorkParticleSize:    0.05,
-    uWorkDPR:             1.0,
-    uWorkTubeTimeSpeed:   0.15,
-    uTubeLifeSpeed:       0.015,
-  } satisfies ATTubeOrbChainConfig,
-
-  /** Minimal — thin tubes, invisible chain, subtle orbs. */
-  minimal: {
-    uScroll:              0.0,
-    uReflectionBlend:     0.1,
-    uNormalStrength:      0.3,
-    uOrbAlpha:            0.4,
-    uChainAmplitude:      0.4,
-    uChainFrequency:      0.5,
-    workParticlesPerNode: 32,
-    uWorkParticleSize:    0.01,
-    uWorkDPR:             1.0,
-    uWorkTubeTimeSpeed:   0.2,
-    uTubeLifeSpeed:       0.02,
-  } satisfies ATTubeOrbChainConfig,
-
-  /** Portal — high refraction, maximum particles, dramatic. */
-  portal: {
-    uScroll:              0.5,
-    uReflectionBlend:     1.2,
-    uNormalStrength:      2.5,
-    uOrbAlpha:            1.0,
-    uChainAmplitude:      3.0,
-    uChainFrequency:      0.2,
-    workParticlesPerNode: 512,
-    uWorkParticleSize:    0.04,
-    uWorkDPR:             2.0,
-    uWorkTubeTimeSpeed:   0.6,
-    uTubeLifeSpeed:       0.005,
-  } satisfies ATTubeOrbChainConfig,
-} as const;
-
-// ─── WGSL — shared noise helpers ──────────────────────────────────────────────
-// Ported from AT simplenoise.glsl
-
-const NOISE_WGSL = /* wgsl */`
-// ── hash33 (simplenoise.glsl) ─────────────────────────────────────────────────
-fn hash3(p: vec3f) -> vec3f {
-  let q = vec3f(
-    dot(p, vec3f(127.1, 311.7,  74.7)),
-    dot(p, vec3f(269.5, 183.3, 246.1)),
-    dot(p, vec3f(113.5, 271.9, 124.6)),
-  );
-  return fract(sin(q) * 43758.5453123);
+const RANGE_GLSL = /* glsl */`
+float range(float oldValue, float oldMin, float oldMax, float newMin, float newMax) {
+    vec3 sub = vec3(oldValue, newMax, oldMax) - vec3(oldMin, newMin, oldMin);
+    return sub.x * sub.y / sub.z + newMin;
 }
-
-// ── 3-D gradient (Perlin) noise ───────────────────────────────────────────────
-fn noise3(x: vec3f) -> f32 {
-  let i = floor(x);
-  let f = fract(x);
-  let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  let n000 = dot(hash3(i + vec3f(0,0,0)) * 2.0 - 1.0, f - vec3f(0,0,0));
-  let n100 = dot(hash3(i + vec3f(1,0,0)) * 2.0 - 1.0, f - vec3f(1,0,0));
-  let n010 = dot(hash3(i + vec3f(0,1,0)) * 2.0 - 1.0, f - vec3f(0,1,0));
-  let n110 = dot(hash3(i + vec3f(1,1,0)) * 2.0 - 1.0, f - vec3f(1,1,0));
-  let n001 = dot(hash3(i + vec3f(0,0,1)) * 2.0 - 1.0, f - vec3f(0,0,1));
-  let n101 = dot(hash3(i + vec3f(1,0,1)) * 2.0 - 1.0, f - vec3f(1,0,1));
-  let n011 = dot(hash3(i + vec3f(0,1,1)) * 2.0 - 1.0, f - vec3f(0,1,1));
-  let n111 = dot(hash3(i + vec3f(1,1,1)) * 2.0 - 1.0, f - vec3f(1,1,1));
-  return mix(
-    mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
-    mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y),
-    u.z,
-  );
+float crange(float oldValue, float oldMin, float oldMax, float newMin, float newMax) {
+    return clamp(range(oldValue, oldMin, oldMax, newMin, newMax), min(newMin, newMax), max(newMin, newMax));
 }
-
-// ── cnoise (alias) ────────────────────────────────────────────────────────────
-fn cnoise(p: vec3f) -> f32 { return noise3(p); }
-
-// ── getNoise — 2-D grain (AT GlobalComposite blendOverlay noise) ──────────────
-fn getNoise2(uv: vec2f, t: f32) -> f32 {
-  return fract(sin(dot(uv + fract(t * 0.1), vec2f(12.9898, 78.233))) * 43758.5453123);
+float rangeTransition(float t, float x, float padding) {
+    float transition = crange(t, 0.0, 1.0, -padding, 1.0 + padding);
+    return crange(x, transition - padding, transition + padding, 1.0, 0.0);
 }
 `;
 
-// ─── WGSL — range/crange helpers ─────────────────────────────────────────────
-// Ported from AT range.glsl
-
-const RANGE_WGSL = /* wgsl */`
-fn crange1(v: f32, lo: f32, hi: f32, outLo: f32, outHi: f32) -> f32 {
-  return outLo + (outHi - outLo) * clamp((v - lo) / (hi - lo + 1e-8), 0.0, 1.0);
+/**
+ * rgb2hsv.fs (compiled.vs line 2222)
+ */
+const RGB2HSV_GLSL = /* glsl */`
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
 }
-
-// rangeTransition — AT tube life/length based SDF fade (TubeShader.glsl line ~270-272)
-// b = crange(life, 0.1, 0.2, 0.0, 1.0)
-// tb = b - length * 0.01 (simplified port)
-fn rangeTransition(b: f32, len: f32, threshold: f32) -> f32 {
-  return b - len * threshold;
-}
-`;
-
-// ─── WGSL — HSV helpers ───────────────────────────────────────────────────────
-// Ported from AT rgb2hsv.fs
-
-const HSV_WGSL = /* wgsl */`
-fn rgb2hsv(c: vec3f) -> vec3f {
-  let K = vec4f(0.0, -1.0/3.0, 2.0/3.0, -1.0);
-  let p = mix(vec4f(c.bg, K.wz), vec4f(c.gb, K.xy), step(c.b, c.g));
-  let q = mix(vec4f(p.xyw, c.r), vec4f(c.r, p.yzx), step(p.x, c.r));
-  let d = q.x - min(q.w, q.y);
-  let e = 1.0e-10;
-  return vec3f(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-}
-
-fn hsv2rgb(c: vec3f) -> vec3f {
-  let K = vec4f(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-  let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-  return c.z * mix(K.xxx, clamp(p - K.xxx, vec3f(0.0), vec3f(1.0)), c.y);
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 `;
 
-// ─── WGSL — FBR lighting stub ─────────────────────────────────────────────────
-// Inlined port of AT fbr.vs / fbr.fs concept: a simple rim+diffuse lighting
-// model that matches the visual character of AT's FBR system.
+/**
+ * conditionals.glsl float versions (compiled.vs line 233)
+ */
+const CONDITIONALS_GLSL = /* glsl */`
+float when_eq(float x, float y)  { return 1.0 - abs(sign(x - y)); }
+float when_neq(float x, float y) { return abs(sign(x - y)); }
+float when_gt(float x, float y)  { return max(sign(x - y), 0.0); }
+float when_lt(float x, float y)  { return max(sign(y - x), 0.0); }
+float when_ge(float x, float y)  { return 1.0 - when_lt(x, y); }
+float when_le(float x, float y)  { return 1.0 - when_gt(x, y); }
+`;
 
-const FBR_WGSL = /* wgsl */`
-// ── Fresnel-like rim term (AT fbr.fs approximation) ──────────────────────────
-fn fresnelRim(viewDir: vec3f, normal: vec3f, power: f32) -> f32 {
-  return pow(1.0 - abs(dot(normalize(viewDir), normalize(normal))), power);
+/**
+ * ProtonTubesUniforms.fs (compiled.vs line 8115)
+ */
+const PROTON_UNIFORMS_GLSL = /* glsl */`
+uniform sampler2D tPos;
+uniform sampler2D tLife;
+uniform float textureSize;
+uniform float lineSegments;
+
+vec2 getUVFromIndex(float index, float tSize) {
+    float p0 = index / tSize;
+    float y  = floor(p0);
+    float x  = p0 - y;
+    return vec2(x, y / tSize);
 }
-
-// ── getFBR — simplified AT FBR ambient+rim color ─────────────────────────────
-// baseColor: material/texture color, uv: surface UV, returns lit color
-fn getFBR(baseColor: vec3f, worldNormal: vec3f, viewDir: vec3f, t: f32, uv: vec2f) -> vec3f {
-  let rim  = fresnelRim(viewDir, worldNormal, 2.0);
-  let diff = max(0.0, dot(normalize(worldNormal), vec3f(0.0, 1.0, 0.0))) * 0.5 + 0.5;
-  var col  = baseColor * diff;
-  col     += vec3f(0.4, 0.6, 1.0) * rim * 0.4;
-  col     += sin(uv.x * 5.0 + t * 0.2) * 0.02;
-  return col;
+float getIndex(float line, float chain, float lineSegs) {
+    return (line * lineSegs) + chain;
 }
 `;
 
-// ─── WGSL — Uniforms struct (Tube + Chain + Orb) ──────────────────────────────
+// ─── ProtonTube.glsl Vertex Shader ────────────────────────────────────────────
+// Direct port from compiled.vs line 7977, with WebGL1 uniforms/attributes.
+// Each instance corresponds to one edge; cIndex/cNumber/angle/tuv are per-vertex
+// attributes baked into the tube geometry buffer.
 
-const TUBE_UNIFORMS_WGSL = /* wgsl */`
-struct TubeUniforms {
-  time              : f32,
-  uScroll           : f32,
-  uReflectionBlend  : f32,
-  uNormalStrength   : f32,
-  uOrbAlpha         : f32,
-  uChainAmplitude   : f32,
-  uChainFrequency   : f32,
-  uTubeLifeSpeed    : f32,
+const PROTON_TUBE_VERT = /* glsl */`
+precision highp float;
 
-  // NDC projection
-  scaleX            : f32,
-  scaleY            : f32,
-  scaleZ            : f32,
-  canvasW           : f32,
-  canvasH           : f32,
+// Per-vertex tube geometry attributes (from compiled.vs ProtonTube.glsl #!ATTRIBUTES)
+attribute float angle;     // radial angle for this vertex
+attribute vec2  tuv;       // tube UV (u=axial, v=radial)
+attribute float cIndex;    // segment index along the tube axis
+attribute float cNumber;   // instance/line number → written per-instance
 
-  nodeCount         : u32,
-  edgeCount         : u32,
-  texW              : u32,
-  texH              : u32,
+// Per-instance edge data (via OES_instanced_arrays in WebGL1)
+// aInstSrcXYZ: source node world position
+// aInstDstXYZ: destination node world position
+// aInstData:   x=life, y=edgeLen, z=weight, w=hue
+attribute vec3 aInstSrc;   // instanced: source node xyz
+attribute vec3 aInstDst;   // instanced: destination node xyz
+attribute vec4 aInstData;  // instanced: x=life y=len z=weight w=hue
 
-  _pad0             : u32,
-  _pad1             : u32,
-  _pad2             : u32,
-  _pad3             : u32,
-  _pad4             : u32,
-  _pad5             : u32,
+uniform mat4 uMVP;          // combined modelView + projection
+uniform float uTime;
+uniform float uThickness;
+uniform float uTaper;
+uniform float uRadialSegs;
+uniform float uLineSegs;
+
+varying float vLife;
+varying float vLength;
+varying vec3  vNormal;
+varying vec2  vUv;
+varying vec2  vUv2;
+varying vec3  vPos;
+varying vec3  vViewPos;
+varying vec3  vDiscard;
+
+${RANGE_GLSL}
+${CONDITIONALS_GLSL}
+
+void main() {
+    float life   = aInstData.x;
+    float edgeLen = aInstData.y;
+    float weight  = aInstData.z;
+
+    vLife   = life;
+    vLength = edgeLen;
+
+    // Parameter t along edge [0, 1]
+    float t    = cIndex / max(uLineSegs - 2.0, 1.0);
+    float tNext = (cIndex + 1.0) / max(uLineSegs - 2.0, 1.0);
+    t    = clamp(t,    0.0, 1.0);
+    tNext = clamp(tNext, 0.0, 1.0);
+
+    // Interpolate world positions along edge
+    vec3 current = mix(aInstSrc, aInstDst, t);
+    vec3 next    = mix(aInstSrc, aInstDst, tNext);
+
+    vDiscard = next - current;
+
+    // Frenet frame: tangent / binormal / normal
+    vec3 T = normalize(next - current + vec3(0.0001));
+    vec3 up = abs(T.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 B  = normalize(cross(T, up));
+    vec3 N  = normalize(cross(B, T));
+
+    // Radial displacement (from ProtonTube.glsl)
+    float scale = uThickness * 0.065;
+    // taper along tube length
+    float taperFactor = mix(
+        crange(t, 1.0 - uTaper, 1.0, 1.0, 0.0) * crange(t, 0.0, uTaper, 0.0, 1.0),
+        1.0,
+        when_eq(uTaper, 0.0)
+    );
+    vec2 volume = vec2(scale * taperFactor);
+
+    float circX = cos(angle);
+    float circY = sin(angle);
+
+    vec3 objNormal = normalize(B * circX + N * circY);
+    vec3 pos       = current + B * volume.x * circX + N * volume.y * circY;
+
+    vNormal  = objNormal;
+    vPos     = pos;
+    vUv      = tuv.yx;       // matches AT: vUv = tuv.yx
+    vUv2     = vec2(t, 0.0); // axial UV for tLife lookup
+    vViewPos = pos;
+
+    gl_Position = uMVP * vec4(pos, 1.0);
 }
 `;
 
-// Byte offsets into TubeUniforms (4 bytes each f32)
-const TU_TIME               = 0;
-const TU_SCROLL             = 4;
-const TU_REFLECTION_BLEND   = 8;
-const TU_NORMAL_STRENGTH    = 12;
-const TU_ORB_ALPHA          = 16;
-const TU_CHAIN_AMP          = 20;
-const TU_CHAIN_FREQ         = 24;
-const TU_TUBE_LIFE_SPEED    = 28;
-const TU_SCALE_X            = 32;
-const TU_SCALE_Y            = 36;
-const TU_SCALE_Z            = 40;
-const TU_CANVAS_W           = 44;
-const TU_CANVAS_H           = 48;
-const TU_NODE_COUNT         = 52;  // u32
-const TU_EDGE_COUNT         = 56;  // u32
-const TU_TEX_W              = 60;  // u32
-const TU_TEX_H              = 64;  // u32
+// ─── ProtonTube Fragment Shader ───────────────────────────────────────────────
+// Based on TubeShader.glsl (compiled.vs 5233) + ProtonTubesMain fragment.
 
-const WORK_UNIFORMS_WGSL = /* wgsl */`
-struct WorkUniforms {
-  time              : f32,
-  uWorkTubeTimeSpeed: f32,
-  uWorkParticleSize : f32,
-  uWorkDPR          : f32,
-  uWorkSizeBias     : f32,
-  scaleX            : f32,
-  scaleY            : f32,
-  scaleZ            : f32,
-  particleCount     : u32,
-  texW              : u32,
-  texH              : u32,
-  _pad0             : u32,
-  _pad1             : u32,
-  _pad2             : u32,
-  _pad3             : u32,
-  _pad4             : u32,
+const PROTON_TUBE_FRAG = /* glsl */`
+precision highp float;
+
+uniform sampler2D tColor;
+uniform sampler2D tRefraction;
+uniform vec2  uResolution;
+uniform float uTime;
+uniform vec2  uReflection;  // x=normalStrength, y=refractionBlend
+
+varying float vLife;
+varying float vLength;
+varying vec3  vNormal;
+varying vec2  vUv;
+varying vec2  vUv2;
+varying vec3  vPos;
+varying vec3  vViewPos;
+varying vec3  vDiscard;
+
+${RANGE_GLSL}
+${RGB2HSV_GLSL}
+
+// Simplified getFBR from fbr.fs (compiled.vs 6440)
+// Uses matcap-style normal reflection for a metallic look.
+vec3 getFBR(vec3 baseColor, vec2 uv) {
+    vec3 n    = normalize(vNormal);
+    // View-space normal approximation for matcap UV
+    vec2 muv  = n.xy * 0.5 + 0.5;
+    // Fake matcap: base color modulated by normal
+    vec3 diff = baseColor * (0.5 + 0.5 * dot(n, normalize(vec3(0.5, 1.0, 0.5))));
+    diff += vec3(0.3, 0.5, 1.0) * pow(max(0.0, n.z), 4.0) * 0.4;
+    return diff;
+}
+
+void main() {
+    // From TubeShader.glsl: life/length based SDF cutoff
+    float b  = crange(vLife, 0.1, 0.2, 0.0, 1.0);
+    float tb = rangeTransition(b, vLength, 0.01);
+    if (tb < 0.5) discard;
+
+    vec3 myColor = texture2D(tColor, vUv2).rgb;
+    vec3 color   = getFBR(vec3(0.2), vUv * 5.0);
+
+    // Refraction offset (from TubeShader.glsl line 5282)
+    vec2 ruv  = gl_FragCoord.xy / uResolution;
+    ruv      += vNormal.xy * 0.1 * uReflection.x;
+    color    += texture2D(tRefraction, ruv).rgb * uReflection.y;
+
+    // blendOverlay approximation with myColor
+    color = mix(color, myColor, 0.5);
+    color = mix(myColor, color, 1.0 - (step(vUv.x, 0.98) - step(vUv.x, 0.9)));
+
+    // HSV hue shift (from TubeShader.glsl line 5295)
+    color = rgb2hsv(color);
+    color.x -= vLength * 0.2 + sin(uTime * 0.2 + length(vPos) * 0.1) * 0.1;
+    color.y *= 0.7;
+    color = hsv2rgb(color);
+
+    // Energy oscillation pulse (from TubeShader.glsl line 5300)
+    color += sin(-uTime * 6.0 + vLength * 4.0 + length(vPos)) * 0.1;
+    color *= smoothstep(0.0, 0.3, vLife);
+    color  = pow(max(color, vec3(0.0)), vec3(mix(1.0, 2.0, vLength)));
+
+    gl_FragColor = vec4(color, 1.0);
 }
 `;
 
-const WU_TIME              = 0;
-const WU_TUBE_TIME_SPEED   = 4;
-const WU_PARTICLE_SIZE     = 8;
-const WU_DPR               = 12;
-const WU_SIZE_BIAS         = 16;
-const WU_SCALE_X           = 20;
-const WU_SCALE_Y           = 24;
-const WU_SCALE_Z           = 28;
-const WU_PARTICLE_COUNT    = 32;  // u32
-const WU_TEX_W             = 36;  // u32
-const WU_TEX_H             = 40;  // u32
+// ─── TubeOrb billboard Shaders ────────────────────────────────────────────────
+// TubeOrbShader.glsl (compiled.vs line 5204).
+// Each orb is a billboard quad, position/scale fed as instanced attribute.
 
-// ─── WGSL — Node compute shader ───────────────────────────────────────────────
-// Updates TubeOrb glow oscillation per node.
+const ORB_VERT = /* glsl */`
+precision highp float;
 
-const NODE_COMPUTE_SHADER = /* wgsl */`
-${TUBE_UNIFORMS_WGSL}
-${NOISE_WGSL}
-${HSV_WGSL}
+// Fullscreen quad vertex (NDC)
+attribute vec2 aPos;      // [-1,+1] quad corner
+// Instanced per-orb data
+attribute vec3 aOrbXYZ;   // world position
+attribute float aOrbScale; // display scale
+attribute float aOrbAlpha; // alpha
 
-@group(0) @binding(0) var<uniform>             uni      : TubeUniforms;
-@group(1) @binding(0) var<storage, read_write> nodeBuf  : array<f32>;
-@group(1) @binding(1) var                      tOrbPos  : texture_storage_2d<rgba32float, write>;
+uniform mat4 uMVP;
+uniform float uOrbAlpha;
+uniform vec2  uResolution;
 
-const NS = ${NODE_STRIDE}u;
+varying vec2  vUv;
+varying float vAlpha;
+varying vec3  vPos;
 
-fn nGet(idx: u32, f: u32) -> f32 { return nodeBuf[idx * NS + f]; }
-fn nSet(idx: u32, f: u32, v: f32) { nodeBuf[idx * NS + f] = v; }
+void main() {
+    vUv    = aPos * 0.5 + 0.5;
+    vPos   = aOrbXYZ;
+    vAlpha = aOrbAlpha * uOrbAlpha;
 
-@compute @workgroup_size(${WG})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x;
-  if (idx >= uni.nodeCount) { return; }
-
-  let t = uni.time;
-
-  var px   = nGet(idx, 0u);
-  var py   = nGet(idx, 1u);
-  var pz   = nGet(idx, 2u);
-  var sc   = nGet(idx, 3u);
-  var alph = nGet(idx, 4u);
-  let gph  = nGet(idx, 5u);
-  let act  = nGet(idx, 7u);
-
-  // Orb pulsation: AT TubeOrbShader — subtle scale oscillation
-  let pulse = 1.0 + sin(t * 1.5 + gph * 3.14159) * 0.06 * act;
-  sc = sc * pulse;
-
-  // Alpha flicker from noise (AT: TubeOrbShader uAlpha)
-  let nv = 0.5 + cnoise(vec3f(px * 0.5, py * 0.5, t * 0.3 + gph)) * 0.1;
-  alph = clamp(alph * nv * act + act * 0.05, 0.0, 1.0);
-
-  nSet(idx, 3u, sc);
-  nSet(idx, 4u, alph);
-
-  // Write to tOrbPos texture (.r=x .g=y .b=scale .a=alpha)
-  let tx = i32(idx % uni.texW);
-  let ty = i32(idx / uni.texW);
-  textureStore(tOrbPos, vec2<i32>(tx, ty), vec4f(px, py, sc, alph));
+    // Billboard: offset quad corners in view space
+    float halfS = aOrbScale * 0.08;
+    vec4 center = uMVP * vec4(aOrbXYZ, 1.0);
+    // NDC offset
+    vec2 ndcOff = aPos * halfS / uResolution * 2.0 * center.w;
+    gl_Position = vec4(center.xy + ndcOff, center.z, center.w);
 }
 `;
 
-// ─── WGSL — Edge/Chain compute shader ────────────────────────────────────────
-// Updates TubeEdge life accumulation and Chain scroll per edge.
+const ORB_FRAG = /* glsl */`
+precision highp float;
 
-const EDGE_COMPUTE_SHADER = /* wgsl */`
-${TUBE_UNIFORMS_WGSL}
-${RANGE_WGSL}
+uniform sampler2D tMap;
+uniform float uTime;
 
-@group(0) @binding(0) var<uniform>             uni      : TubeUniforms;
-@group(1) @binding(0) var<storage, read>       nodeBuf  : array<f32>;
-@group(1) @binding(1) var<storage, read_write> edgeBuf  : array<f32>;
-@group(1) @binding(2) var                      tChainPos: texture_storage_2d<rgba32float, write>;
+varying vec2  vUv;
+varying float vAlpha;
+varying vec3  vPos;
 
-const NS  = ${NODE_STRIDE}u;
-const ES  = ${EDGE_STRIDE}u;
+${RGB2HSV_GLSL}
 
-fn nGet(idx: u32, f: u32) -> f32 { return nodeBuf[idx * NS + f]; }
-fn eGet(idx: u32, f: u32) -> f32 { return edgeBuf[idx * ES + f]; }
-fn eSet(idx: u32, f: u32, v: f32) { edgeBuf[idx * ES + f] = v; }
+void main() {
+    // Circular SDF discard (billboard orb)
+    float r2 = dot(vUv - 0.5, vUv - 0.5) * 4.0;
+    if (r2 > 1.0) discard;
+    float edge = 1.0 - smoothstep(0.5, 1.0, r2);
 
-@compute @workgroup_size(${WG})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x;
-  if (idx >= uni.edgeCount) { return; }
+    // tMap sample (AT: TubeOrbShader — texture2D(tMap, uv))
+    vec4 mapColor = texture2D(tMap, vUv);
+    vec3 color    = mapColor.rgb;
 
-  let dt = 1.0 / 60.0;
+    // HSV glow pulse matching AT TubeOrb
+    vec3 hsv = rgb2hsv(color);
+    hsv.x   += sin(uTime * 0.8 + vPos.x * 0.5) * 0.05;
+    hsv.y   *= 0.6;
+    hsv.z   *= 1.4;
+    color    = hsv2rgb(clamp(hsv, vec3(0.0), vec3(1.0)));
 
-  let srcIdx = u32(eGet(idx, 0u));
-  let dstIdx = u32(eGet(idx, 1u));
-  var life   = eGet(idx, 2u);
-  let len    = eGet(idx, 3u);
-  var alpha  = eGet(idx, 4u);
-  var scroll = eGet(idx, 5u);
-  let weight = eGet(idx, 6u);
+    // Bright core glow
+    color += vec3(0.9, 0.95, 1.0) * smoothstep(0.5, 0.0, r2) * 0.6;
 
-  // Grow tube life (AT: TubeShader rangeTransition life progression)
-  life   = min(1.0, life + uni.uTubeLifeSpeed * dt * 60.0);
-  scroll = fract(scroll + dt * 0.5 * (0.5 + weight * 0.5));
-
-  // Edge alpha from src/dst node activity
-  let srcAct = nGet(srcIdx, 7u);
-  let dstAct = nGet(dstIdx, 7u);
-  alpha = clamp(srcAct * dstAct * weight, 0.0, 1.0);
-
-  eSet(idx, 2u, life);
-  eSet(idx, 4u, alpha);
-  eSet(idx, 5u, scroll);
-
-  // Mid-point for chain tPos texture (AT: ChainShader world position sample)
-  let sx = nGet(srcIdx, 0u); let sy = nGet(srcIdx, 1u); let sz = nGet(srcIdx, 2u);
-  let dx = nGet(dstIdx, 0u); let dy = nGet(dstIdx, 1u); let dz = nGet(dstIdx, 2u);
-  let mx = (sx + dx) * 0.5;
-  let my = (sy + dy) * 0.5 - 17.0 * uni.uScroll;
-  let mz = (sz + dz) * 0.5;
-
-  // ChainShader sinusoidal offset: pos.x -= cos(-pos.y * freq) * amp
-  let chainX = mx - cos(-my * uni.uChainFrequency) * uni.uChainAmplitude;
-  let chainZ = mz - sin(-my * uni.uChainFrequency) * uni.uChainAmplitude;
-
-  let tx = i32(idx % uni.texW);
-  let ty = i32(idx / uni.texW);
-  textureStore(tChainPos, vec2<i32>(tx, ty), vec4f(chainX, my, alpha, scroll));
+    float a = vAlpha * edge;
+    gl_FragColor = vec4(color * a, a);
 }
 `;
 
-// ─── WGSL — Work detail particle compute ─────────────────────────────────────
-// Matches WorkDetailParticleShader.glsl: GPGPU particle positions, matcap blend.
+// ─── Chain Strip Shaders ──────────────────────────────────────────────────────
+// ChainShader.glsl (compiled.vs line 5405).
+// Sinusoidal offset strip along each edge.
 
-const WORK_PARTICLE_COMPUTE = /* wgsl */`
-${WORK_UNIFORMS_WGSL}
-${NOISE_WGSL}
+const CHAIN_VERT = /* glsl */`
+precision highp float;
 
-@group(0) @binding(0) var<uniform>             uni       : WorkUniforms;
-@group(1) @binding(0) var<storage, read_write> partBuf   : array<f32>;
-@group(1) @binding(1) var                      tWorkPos  : texture_storage_2d<rgba32float, write>;
+// Per-vertex strip layout
+attribute float aT;        // [0,1] parametric along edge
+attribute float aSide;     // 0=left, 1=right strip edge
 
-const PS = ${WORK_PARTICLE_STRIDE}u;
+// Per-instance edge data
+attribute vec3  aInstSrc;
+attribute vec3  aInstDst;
+attribute vec4  aInstData; // x=life y=len z=weight w=scroll
 
-fn pGet(idx: u32, f: u32) -> f32 { return partBuf[idx * PS + f]; }
-fn pSet(idx: u32, f: u32, v: f32) { partBuf[idx * PS + f] = v; }
+uniform mat4  uMVP;
+uniform float uScroll;
+uniform float uChainAmplitude;
+uniform float uChainFrequency;
 
-fn rng(s: f32, salt: f32) -> f32 {
-  return fract(sin(s * 127.1 + salt * 311.7) * 43758.5453);
-}
+varying vec3  vWorldPos;
+varying float vDist;
+varying float vAlpha;
+varying vec2  vUv;
 
-@compute @workgroup_size(${WG})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x;
-  if (idx >= uni.particleCount) { return; }
+void main() {
+    vec3 pos = mix(aInstSrc, aInstDst, aT);
 
-  let dt = 1.0 / 60.0;
-  let t  = uni.time;
+    // ChainShader.glsl: scroll offset + sinusoidal chain shape (line 5421)
+    pos.y -= 17.0 * uScroll;
+    pos.x -= cos(-pos.y * uChainFrequency) * uChainAmplitude;
+    pos.z -= sin(-pos.y * uChainFrequency) * uChainAmplitude;
 
-  var px   = pGet(idx, 0u);
-  var py   = pGet(idx, 1u);
-  var pz   = pGet(idx, 2u);
-  var alph = pGet(idx, 3u);
-  let rx   = pGet(idx, 4u);
-  let ry   = pGet(idx, 5u);
-  let rz   = pGet(idx, 6u);
-  let rw   = pGet(idx, 7u);
-  var vx   = pGet(idx, 8u);
-  var vy   = pGet(idx, 9u);
-  var vz   = pGet(idx, 10u);
-  var life = pGet(idx, 11u);
+    // Strip width offset
+    float stripW = 0.02;
+    pos.y += (aSide - 0.5) * stripW;
 
-  // Advance life
-  life -= dt * (0.3 + rx * 0.4);
-  if (life <= 0.0) {
-    // Respawn around node center (stored in vel during init as bias position)
-    let s   = f32(idx) * 1.618034 + t;
-    let off = 1.5;
-    px   = rng(s, 0.0) * off * 2.0 - off;
-    py   = rng(s, 1.0) * off * 2.0 - off;
-    pz   = rng(s, 2.0) * off * 2.0 - off;
-    vx   = rng(s, 3.0) * 0.02 - 0.01;
-    vy   = rng(s, 4.0) * 0.02 + 0.005;
-    vz   = rng(s, 5.0) * 0.02 - 0.01;
-    life = 0.5 + rng(s, 6.0) * 1.5;
-    alph = 0.0;
-  }
+    vWorldPos = pos;
+    vAlpha    = aInstData.z;  // weight as alpha
+    vDist     = length(pos);
+    vUv       = vec2(aT, aSide);
 
-  // Integrate position
-  // Noise drift (AT WorkDetailParticleShader: pos.y += offset based on noise)
-  let noiseCoord = vec3f(px * 0.3 + rz, py * 0.3, t * uni.uWorkTubeTimeSpeed + rw * 10.0);
-  let nv = noise3(noiseCoord) * 0.003;
-  px += vx + nv;
-  py += vy;
-  pz += vz + nv;
-
-  // Fade in / out
-  alph = clamp(alph + dt * 2.0, 0.0, min(1.0, life * 2.0));
-
-  pSet(idx, 0u,  px);
-  pSet(idx, 1u,  py);
-  pSet(idx, 2u,  pz);
-  pSet(idx, 3u,  alph);
-  pSet(idx, 8u,  vx);
-  pSet(idx, 9u,  vy);
-  pSet(idx, 10u, vz);
-  pSet(idx, 11u, life);
-
-  // Write tWorkPos (.r=x .g=y .b=z .a=alpha)
-  let tx = i32(idx % uni.texW);
-  let ty = i32(idx / uni.texW);
-  textureStore(tWorkPos, vec2<i32>(tx, ty), vec4f(px, py, pz, alph));
+    gl_Position = uMVP * vec4(pos, 1.0);
 }
 `;
 
-// ─── WGSL — TubeOrb vertex + fragment ────────────────────────────────────────
-// Matches TubeOrbShader.glsl: billboard sphere with tMap texture + uAlpha.
+const CHAIN_FRAG = /* glsl */`
+precision highp float;
 
-const TUBE_ORB_VERT_WGSL = /* wgsl */`
-${TUBE_UNIFORMS_WGSL}
+uniform sampler2D tBaseColor;
+uniform sampler2D tRefraction;
+uniform vec2  uResolution;
+uniform vec2  uReflection;   // x=normalStrength, y=refractionBlend
+uniform float uTime;
 
-@group(0) @binding(0) var<uniform> uni    : TubeUniforms;
-@group(0) @binding(1) var          tOrbPos: texture_2d<f32>;
-@group(0) @binding(2) var          samp   : sampler;
+varying vec3  vWorldPos;
+varying float vDist;
+varying float vAlpha;
+varying vec2  vUv;
 
-struct OrbVertOut {
-  @builtin(position) pos    : vec4f,
-  @location(0)       vUv    : vec2f,
-  @location(1)       vAlpha : f32,
-  @location(2)       vPos   : vec3f,
+${RGB2HSV_GLSL}
+
+// Simplified FBR from fbr.fs (compiled.vs 6440)
+vec3 chainFBR(vec3 base) {
+    vec3 n   = normalize(vec3(0.0, 0.0, 1.0));
+    float d  = 0.7 + 0.3 * dot(n, normalize(vec3(0.5, 1.0, 0.5)));
+    return base * d + vec3(0.2, 0.3, 0.6) * 0.3;
 }
 
-var<private> QUAD: array<vec2f, 6> = array<vec2f, 6>(
-  vec2f(-1.0,-1.0), vec2f(1.0,-1.0), vec2f(1.0, 1.0),
-  vec2f(-1.0,-1.0), vec2f(1.0, 1.0), vec2f(-1.0, 1.0),
-);
+void main() {
+    vec3 base  = texture2D(tBaseColor, vUv).rgb;
+    vec3 color = chainFBR(base);
 
-@vertex fn vs_orb(
-  @builtin(vertex_index)   vi: u32,
-  @builtin(instance_index) ii: u32,
-) -> OrbVertOut {
-  let tx   = i32(ii % uni.texW);
-  let ty   = i32(ii / uni.texW);
-  let p    = textureLoad(tOrbPos, vec2<i32>(tx, ty), 0);
+    // Refraction (ChainShader.glsl line 5444)
+    vec2 suv  = gl_FragCoord.xy / uResolution;
+    suv      += vec2(0.0, 1.0) * 0.1 * uReflection.x;
+    color    += texture2D(tRefraction, suv).rgb * uReflection.y;
 
-  let px    = p.r;
-  let py    = p.g;
-  let scale = p.b;
-  let alpha = p.a * uni.uOrbAlpha;
+    // Distance attenuation (ChainShader.glsl line 5446)
+    color *= mix(0.4, 1.2, smoothstep(18.0, 4.0, vDist));
+    color  = pow(max(color, vec3(0.0)), vec3(1.5));
 
-  let alive = select(0.0, 1.0, alpha > 0.001);
-  let halfS = scale * 0.08;
-
-  let qv   = QUAD[vi];
-  let ndcX = px * uni.scaleX - 1.0 + qv.x * halfS * uni.scaleX;
-  let ndcY = py * uni.scaleY - 1.0 + qv.y * halfS * uni.scaleY;
-
-  var out: OrbVertOut;
-  out.pos    = vec4f(ndcX * alive, ndcY * alive, 0.0, 1.0);
-  out.vUv    = (qv + 1.0) * 0.5;
-  out.vAlpha = alpha;
-  out.vPos   = vec3f(px, py, 0.0);
-  return out;
+    gl_FragColor = vec4(color * vAlpha, vAlpha);
 }
 `;
 
-const TUBE_ORB_FRAG_WGSL = /* wgsl */`
-${TUBE_UNIFORMS_WGSL}
-${HSV_WGSL}
+// ─── GPGPU position update Shaders ───────────────────────────────────────────
+// Updates tPos ping-pong FBO each frame (particle-style node position drift).
 
-@group(0) @binding(0) var<uniform> uni  : TubeUniforms;
-@group(0) @binding(3) var          tMap : texture_2d<f32>;
-@group(0) @binding(4) var          samp2: sampler;
-
-struct OrbFragIn {
-  @location(0) vUv    : vec2f,
-  @location(1) vAlpha : f32,
-  @location(2) vPos   : vec3f,
-}
-
-@fragment fn fs_orb(in: OrbFragIn) -> @location(0) vec4f {
-  let uv    = in.vUv;
-  // AT TubeOrbShader: sample tMap (matcap/env), blend with solid white
-  var color = textureSample(tMap, samp2, uv).rgb;
-  // Soft circular SDF discard (billboard)
-  let r2    = dot(uv - 0.5, uv - 0.5) * 4.0;
-  if (r2 > 1.0) { discard; }
-  let edge  = 1.0 - smoothstep(0.5, 1.0, r2);
-  // HSV glow pulse (AT: orb emissive color)
-  var hsv   = rgb2hsv(color);
-  hsv.x    += sin(uni.time * 0.8 + in.vPos.x * 0.5) * 0.05;
-  hsv.y    *= 0.6;
-  hsv.z    *= 1.4;
-  color     = hsv2rgb(clamp(hsv, vec3f(0.0), vec3f(1.0)));
-  // Core glow: add bright center
-  color    += vec3f(0.9, 0.95, 1.0) * smoothstep(0.5, 0.0, r2) * 0.6;
-  let a     = in.vAlpha * edge;
-  return vec4f(color * a, a);
+const GPGPU_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+    vUv = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
 }
 `;
 
-// ─── WGSL — TubeEdge vertex + fragment ───────────────────────────────────────
-// Matches TubeShader.glsl: FBR tube with refraction, HSV shift, life transition.
+const GPGPU_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D tInput;  // current positions RGBA32F
+uniform float uDt;
+uniform float uTime;
+varying vec2 vUv;
 
-const TUBE_EDGE_VERT_WGSL = /* wgsl */`
-${TUBE_UNIFORMS_WGSL}
+float hash1(float n) { return fract(sin(n) * 43758.5453); }
 
-@group(0) @binding(0) var<uniform>       uni    : TubeUniforms;
-@group(0) @binding(5) var<storage, read> edgeBuf: array<f32>;
-@group(0) @binding(6) var<storage, read> nodeBuf: array<f32>;
-
-struct TubeVertOut {
-  @builtin(position) pos      : vec4f,
-  @location(0)       vUv      : vec2f,
-  @location(1)       vLife    : f32,
-  @location(2)       vLength  : f32,
-  @location(3)       vAlpha   : f32,
-  @location(4)       vWorldPos: vec3f,
-  @location(5)       vNormal  : vec3f,
-}
-
-const ES  = ${EDGE_STRIDE}u;
-const NS  = ${NODE_STRIDE}u;
-const PI  = 3.14159265358979;
-const SEG = 16u;   // tube radial segments
-
-fn eGet(ei: u32, f: u32) -> f32 { return edgeBuf[ei * ES + f]; }
-fn nGet(ni: u32, f: u32) -> f32 { return nodeBuf[ni * NS + f]; }
-
-@vertex fn vs_tube(
-  @builtin(vertex_index)   vi: u32,
-  @builtin(instance_index) ii: u32,   // ii = edge index
-) -> TubeVertOut {
-  let ei     = ii;
-  let life   = eGet(ei, 2u);
-  let len    = eGet(ei, 3u);
-  let alpha  = eGet(ei, 4u);
-  let srcIdx = u32(eGet(ei, 0u));
-  let dstIdx = u32(eGet(ei, 1u));
-
-  let sx = nGet(srcIdx, 0u); let sy = nGet(srcIdx, 1u); let sz = nGet(srcIdx, 2u);
-  let dx = nGet(dstIdx, 0u); let dy = nGet(dstIdx, 1u); let dz = nGet(dstIdx, 2u);
-
-  // Procedural tube: vi encodes [ring, seg] along edge
-  let totalVerts = SEG * 2u * 3u;   // tube strip quads, 2 triangles per quad ring
-  let ring       = vi / (SEG * 3u);
-  let segIdx     = (vi % (SEG * 3u)) / 3u;
-  let t          = f32(ring) / f32(SEG);
-  let angle      = f32(segIdx) * (2.0 * PI) / f32(SEG);
-
-  // Lerp along axis
-  let axX  = sx + (dx - sx) * t;
-  let axY  = sy + (dy - sy) * t;
-  let axZ  = sz + (dz - sz) * t;
-
-  // Radial normal in XZ plane (simplified; for full tangent-frame use Frenet)
-  let nx = cos(angle) * 0.04;
-  let nz = sin(angle) * 0.04;
-
-  let px  = axX + nx;
-  let py  = axY;
-  let pz  = axZ + nz;
-
-  var out: TubeVertOut;
-  out.pos       = vec4f(px * uni.scaleX - 1.0, py * uni.scaleY - 1.0, pz * uni.scaleZ, 1.0);
-  out.vUv       = vec2f(t, f32(segIdx) / f32(SEG));
-  out.vLife     = life;
-  out.vLength   = len;
-  out.vAlpha    = alpha;
-  out.vWorldPos = vec3f(px, py, pz);
-  out.vNormal   = normalize(vec3f(nx, 0.0, nz));
-  return out;
+void main() {
+    vec4 pos = texture2D(tInput, vUv);
+    // Subtle drift: keep positions mostly static, just soft noise perturbation
+    float n = hash1(pos.x * 1.3 + pos.y * 2.7 + uTime * 0.01) * 0.001;
+    pos.xy += vec2(n, n * 0.5) * uDt;
+    gl_FragColor = pos;
 }
 `;
 
-const TUBE_EDGE_FRAG_WGSL = /* wgsl */`
-${TUBE_UNIFORMS_WGSL}
-${RANGE_WGSL}
-${HSV_WGSL}
-${FBR_WGSL}
+// ─── Life update Shader ───────────────────────────────────────────────────────
+// Grows life values per edge, stored in tLife texture.
 
-@group(0) @binding(0)  var<uniform> uni        : TubeUniforms;
-@group(0) @binding(7)  var          tTubeColor : texture_2d<f32>;
-@group(0) @binding(8)  var          tRefraction: texture_2d<f32>;
-@group(0) @binding(9)  var          samp       : sampler;
+const LIFE_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D tLife;
+uniform float uDt;
+uniform float uLifeSpeed;
+varying vec2 vUv;
 
-struct TubeFragIn {
-  @builtin(position) fragCoord : vec4f,
-  @location(0)       vUv       : vec2f,
-  @location(1)       vLife     : f32,
-  @location(2)       vLength   : f32,
-  @location(3)       vAlpha    : f32,
-  @location(4)       vWorldPos : vec3f,
-  @location(5)       vNormal   : vec3f,
-}
-
-@fragment fn fs_tube(in: TubeFragIn) -> @location(0) vec4f {
-  // AT TubeShader.glsl life/length-based discard transition
-  let b  = crange1(in.vLife, 0.1, 0.2, 0.0, 1.0);
-  let tb = rangeTransition(b, in.vLength, 0.01);
-  if (tb < 0.5) { discard; }
-
-  // Base color from tube color texture
-  var myColor = textureSample(tTubeColor, samp, in.vUv * vec2f(5.0, 1.0)).rgb;
-
-  // FBR lighting stub
-  let viewDir = normalize(vec3f(0.0, 0.0, 1.0) - in.vWorldPos);
-  var color   = getFBR(vec3f(0.2), in.vNormal, viewDir, uni.time, in.vUv);
-
-  // Refraction sample (AT: ruv += vNormal.xy * 0.1)
-  var ruv = in.fragCoord.xy / vec2f(uni.canvasW, uni.canvasH);
-  ruv    += in.vNormal.xy * 0.1;
-  color  += textureSample(tRefraction, samp, ruv).rgb;
-
-  // AT blendOverlay approximation with myColor
-  color = mix(color, myColor, 0.4);
-  color = mix(myColor, color, 1.0 - step(in.vUv.x, 0.98) * (1.0 - step(in.vUv.x, 0.9)));
-
-  // HSV hue shift: color.x -= vLength * 0.2 + sin(time * 0.2 + ...) * 0.1
-  var hsv = rgb2hsv(color);
-  hsv.x  -= in.vLength * 0.2 + sin(uni.time * 0.2 + length(in.vWorldPos) * 0.1) * 0.1;
-  hsv.y  *= 0.7;
-  color   = hsv2rgb(hsv);
-
-  // AT: color += sin(-time*6 + vLength*4 + ...) * 0.1
-  color += sin(-uni.time * 6.0 + in.vLength * 4.0 + length(in.vWorldPos)) * 0.1;
-  color *= smoothstep(0.0, 0.3, in.vLife);
-  let pw = mix(1.0, 2.0, in.vLength);
-  color  = pow(max(color, vec3f(0.0)), vec3f(pw));
-
-  let a = in.vAlpha * smoothstep(0.0, 0.3, in.vLife);
-  return vec4f(color, a);
+void main() {
+    vec4 life = texture2D(tLife, vUv);
+    // life.x = current life [0,1]; grow toward 1
+    life.x = min(1.0, life.x + uLifeSpeed * uDt * 60.0);
+    gl_FragColor = life;
 }
 `;
 
-// ─── WGSL — ChainSegment vertex + fragment ────────────────────────────────────
-// Matches ChainShader.glsl: sinusoidal y-offset, FBR mat, tBaseColor + tRefraction.
+// ─── Display pass (copy FBO to screen) ───────────────────────────────────────
 
-const CHAIN_VERT_WGSL = /* wgsl */`
-${TUBE_UNIFORMS_WGSL}
-
-@group(0) @binding(0) var<uniform>       uni      : TubeUniforms;
-@group(0) @binding(5) var<storage, read> edgeBuf  : array<f32>;
-@group(0) @binding(6) var<storage, read> nodeBuf  : array<f32>;
-
-struct ChainVertOut {
-  @builtin(position) pos      : vec4f,
-  @location(0)       vUv      : vec2f,
-  @location(1)       vDist    : f32,
-  @location(2)       vAlpha   : f32,
-  @location(3)       vWorldPos: vec3f,
-  @location(4)       vNormal  : vec3f,
-}
-
-const ES  = ${EDGE_STRIDE}u;
-const NS  = ${NODE_STRIDE}u;
-const PI  = 3.14159265358979;
-const LNKS = 32u;   // chain links per edge
-
-fn eGet(ei: u32, f: u32) -> f32 { return edgeBuf[ei * ES + f]; }
-fn nGet(ni: u32, f: u32) -> f32 { return nodeBuf[ni * NS + f]; }
-
-@vertex fn vs_chain(
-  @builtin(vertex_index)   vi: u32,
-  @builtin(instance_index) ii: u32,
-) -> ChainVertOut {
-  let ei     = ii;
-  let alpha  = eGet(ei, 4u);
-  let scroll = eGet(ei, 5u);
-  let srcIdx = u32(eGet(ei, 0u));
-  let dstIdx = u32(eGet(ei, 1u));
-
-  let sx = nGet(srcIdx, 0u); let sy = nGet(srcIdx, 1u); let sz = nGet(srcIdx, 2u);
-  let dx = nGet(dstIdx, 0u); let dy = nGet(dstIdx, 1u); let dz = nGet(dstIdx, 2u);
-
-  let totalQuads = LNKS;
-  let qIdx  = vi / 6u;
-  let corner= vi % 6u;
-  let t0    = f32(qIdx)      / f32(LNKS);
-  let t1    = f32(qIdx + 1u) / f32(LNKS);
-
-  let pick  = select(t0, t1, corner >= 3u);
-
-  // Lerp chain axis with AT ChainShader scroll offset
-  var pos = vec3f(
-    sx + (dx - sx) * pick,
-    sy + (dy - sy) * pick - 17.0 * uni.uScroll,
-    sz + (dz - sz) * pick,
-  );
-
-  // AT ChainShader sinusoidal offset
-  pos.x -= cos(-pos.y * uni.uChainFrequency) * uni.uChainAmplitude;
-  pos.z -= sin(-pos.y * uni.uChainFrequency) * uni.uChainAmplitude;
-
-  // Billboard width for chain quad (thin strip)
-  let stripW = 0.02;
-  let even   = (corner == 0u) || (corner == 2u) || (corner == 3u);
-  let sideY  = select(-stripW, stripW, even);
-  pos.y     += sideY;
-
-  let ndcX = pos.x * uni.scaleX - 1.0;
-  let ndcY = pos.y * uni.scaleY - 1.0;
-
-  // Distance from camera (AT: vDist = length(vWorldPos - cameraPosition))
-  // Approximate with distance to scene center
-  let dist = length(vec3f(pos.x, pos.y * 0.1, pos.z));
-
-  var out: ChainVertOut;
-  out.pos       = vec4f(ndcX, ndcY, 0.0, 1.0);
-  out.vUv       = vec2f(pick, select(0.0, 1.0, even));
-  out.vDist     = dist;
-  out.vAlpha    = alpha;
-  out.vWorldPos = pos;
-  out.vNormal   = normalize(vec3f(0.0, 1.0, 0.0));
-  return out;
+const DISPLAY_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D uTexture;
+varying vec2 vUv;
+void main() {
+    vec3 c = texture2D(uTexture, vUv).rgb;
+    float a = max(c.r, max(c.g, c.b));
+    gl_FragColor = vec4(c, a);
 }
 `;
 
-const CHAIN_FRAG_WGSL = /* wgsl */`
-${TUBE_UNIFORMS_WGSL}
-${HSV_WGSL}
-${FBR_WGSL}
+// ─── Geometry builders ────────────────────────────────────────────────────────
 
-@group(0) @binding(0)  var<uniform> uni        : TubeUniforms;
-@group(0) @binding(10) var          tBaseColor : texture_2d<f32>;
-@group(0) @binding(11) var          tRefraction: texture_2d<f32>;
-@group(0) @binding(9)  var          samp       : sampler;
+/**
+ * Build ProtonTube geometry buffer.
+ *
+ * Layout per vertex: [angle, tuv.x, tuv.y, cIndex, cNumber]
+ * One set of vertices for radialSegs × lineSegs rings, used for all instances.
+ * cNumber is intentionally 0 here; the actual instance index is communicated
+ * via the aInstSrc/aInstDst/aInstData instanced attributes.
+ */
+function buildTubeGeometry(radialSegs: number, lineSegs: number): Float32Array {
+  // Each axial segment pair produces 2 triangles × 3 verts = 6 verts.
+  // We have (lineSegs - 1) axial segments × radialSegs cross-section quads.
+  const quadsPerRing = radialSegs;
+  const rings        = lineSegs - 1;
+  const vertsPerQuad = 6;
+  const floatsPerVert = 5;  // angle, tuv.x, tuv.y, cIndex, cNumber
+  const totalVerts   = quadsPerRing * rings * vertsPerQuad;
+  const buf = new Float32Array(totalVerts * floatsPerVert);
 
-struct ChainFragIn {
-  @builtin(position) fragCoord : vec4f,
-  @location(0)       vUv       : vec2f,
-  @location(1)       vDist     : f32,
-  @location(2)       vAlpha    : f32,
-  @location(3)       vWorldPos : vec3f,
-  @location(4)       vNormal   : vec3f,
-}
+  let vi = 0;
+  const write = (angle: number, u: number, v: number, cIdx: number) => {
+    buf[vi++] = angle;
+    buf[vi++] = u;
+    buf[vi++] = v;
+    buf[vi++] = cIdx;
+    buf[vi++] = 0;  // cNumber placeholder (per-instance)
+  };
 
-@fragment fn fs_chain(in: ChainFragIn) -> @location(0) vec4f {
-  // AT ChainShader: getFBR base color
-  let baseColor = textureSample(tBaseColor, samp, in.vUv).rgb;
-  let viewDir   = normalize(vec3f(0.0, 0.0, 1.0) - in.vWorldPos);
-  var color     = getFBR(baseColor, in.vNormal, viewDir, uni.time, in.vUv);
+  for (let ring = 0; ring < rings; ring++) {
+    for (let seg = 0; seg < radialSegs; seg++) {
+      const ang0 = (seg      / radialSegs) * Math.PI * 2;
+      const ang1 = ((seg + 1) / radialSegs) * Math.PI * 2;
+      const u0   = ring      / (lineSegs - 1);
+      const u1   = (ring + 1) / (lineSegs - 1);
+      const v0   = seg      / radialSegs;
+      const v1   = (seg + 1) / radialSegs;
 
-  // Refraction (AT: screenuv += normal.xy * 0.1 * uReflection.x)
-  var screenuv = in.fragCoord.xy / vec2f(uni.canvasW, uni.canvasH);
-  screenuv    += in.vNormal.xy * 0.1 * uni.uNormalStrength;
-  color       += textureSample(tRefraction, samp, screenuv).rgb * uni.uReflectionBlend;
-
-  // AT ChainShader: distance attenuation
-  color *= mix(0.4, 1.2, clamp((18.0 - in.vDist) / 14.0, 0.0, 1.0));
-
-  // AT: color = pow(color, 1.5)
-  color = pow(max(color, vec3f(0.0)), vec3f(1.5));
-
-  return vec4f(color * in.vAlpha, in.vAlpha);
-}
-`;
-
-// ─── WGSL — WorkTube vertex + fragment ───────────────────────────────────────
-// Matches WorkTubeShader.glsl: helical noise band tube for Work panel.
-
-const WORK_TUBE_VERT_WGSL = /* wgsl */`
-${WORK_UNIFORMS_WGSL}
-
-@group(0) @binding(0) var<uniform>       uni     : WorkUniforms;
-@group(0) @binding(1) var<storage, read> nodeBuf : array<f32>;
-
-struct WorkTubeVertOut {
-  @builtin(position) pos      : vec4f,
-  @location(0)       vUv      : vec2f,
-  @location(1)       vWorldPos: vec3f,
-}
-
-const NS = ${NODE_STRIDE}u;
-fn nGet(ni: u32, f: u32) -> f32 { return nodeBuf[ni * NS + f]; }
-
-@vertex fn vs_worktube(
-  @builtin(vertex_index)   vi: u32,
-  @builtin(instance_index) ii: u32,
-) -> WorkTubeVertOut {
-  // ii = Work node index; render a single tube per node
-  let nodeX = nGet(ii, 0u);
-  let nodeY = nGet(ii, 1u);
-  let nodeZ = nGet(ii, 2u);
-
-  // Procedural cylinder strip: vi ∈ [0, 64) → 32 quads
-  let qIdx  = vi / 6u;
-  let corner= vi % 6u;
-  let t0    = f32(qIdx)      / 32.0;
-  let t1    = f32(qIdx + 1u) / 32.0;
-  let t     = select(t0, t1, corner >= 3u);
-
-  // WorkTubeShader helical offset: pos.x += cos(pos.y * 0.6) * 2.0
-  let cylinY = nodeY + (t - 0.5) * 6.0;
-  var pos    = vec3f(
-    nodeX + cos(cylinY * 0.6) * 2.0,
-    cylinY,
-    nodeZ + sin(cylinY * 0.6) * 2.0,
-  );
-
-  let qU = t;
-  let qV = select(0.0, 1.0, (corner == 1u) || (corner == 2u) || (corner == 4u));
-
-  var out: WorkTubeVertOut;
-  out.pos       = vec4f(pos.x * uni.scaleX - 1.0, pos.y * uni.scaleY - 1.0, pos.z * uni.scaleZ, 1.0);
-  out.vUv       = vec2f(qU, qV);
-  out.vWorldPos = pos;
-  return out;
-}
-`;
-
-const WORK_TUBE_FRAG_WGSL = /* wgsl */`
-${WORK_UNIFORMS_WGSL}
-${NOISE_WGSL}
-
-@group(0) @binding(0) var<uniform> uni : WorkUniforms;
-
-struct WorkTubeFragIn {
-  @location(0) vUv      : vec2f,
-  @location(1) vWorldPos: vec3f,
-}
-
-@fragment fn fs_worktube(in: WorkTubeFragIn) -> @location(0) vec4f {
-  // AT WorkTubeShader: fract(vWorldPos.y * 0.2 + time * 0.3) noise band
-  let noise = fract(in.vWorldPos.y * 0.2 + uni.time * uni.uWorkTubeTimeSpeed);
-  let band  = smoothstep(0.5, 0.0, abs(noise - 0.5));
-  let color = vec3f(pow(band, 5.0));
-  return vec4f(color, band * 0.8);
-}
-`;
-
-// ─── WGSL — WorkDetailParticle vertex + fragment ──────────────────────────────
-// Matches WorkDetailParticleShader.glsl: GPU point sprites, matcap blend.
-
-const WORK_PARTICLE_VERT_WGSL = /* wgsl */`
-${WORK_UNIFORMS_WGSL}
-
-@group(0) @binding(0) var<uniform>       uni     : WorkUniforms;
-@group(0) @binding(2) var                tWorkPos: texture_2d<f32>;
-@group(0) @binding(3) var                samp    : sampler;
-
-struct WorkPartVertOut {
-  @builtin(position) pos    : vec4f,
-  @location(0)       vUv   : vec2f,
-  @location(1)       vAlpha: f32,
-  @location(2)       vRand : vec4f,
-  @location(3)       vPos  : vec3f,
-}
-
-var<private> QUAD: array<vec2f, 6> = array<vec2f, 6>(
-  vec2f(-1.0,-1.0), vec2f(1.0,-1.0), vec2f(1.0, 1.0),
-  vec2f(-1.0,-1.0), vec2f(1.0, 1.0), vec2f(-1.0, 1.0),
-);
-
-@vertex fn vs_workpart(
-  @builtin(vertex_index)   vi: u32,
-  @builtin(instance_index) ii: u32,
-) -> WorkPartVertOut {
-  let tx = i32(ii % uni.texW);
-  let ty = i32(ii / uni.texW);
-  let p  = textureLoad(tWorkPos, vec2<i32>(tx, ty), 0);
-
-  let px    = p.r;
-  let py    = p.g;
-  let pz    = p.b;
-  let alpha = p.a;
-
-  let alive = select(0.0, 1.0, alpha > 0.001);
-
-  // AT WorkDetailParticleShader: size = (0.03 * DPR) * uSize * crange(rand.x, 0,1,0.5,1.5) * (1000/dist) * uSizeBias
-  // Simplified: uniform size with distance approximation
-  let dist   = max(0.5, length(vec3f(px, py, pz)));
-  let halfS  = (0.03 * uni.uWorkDPR) * uni.uWorkParticleSize * (1000.0 / (dist * 100.0)) * uni.uWorkSizeBias * 0.5;
-
-  let qv = QUAD[vi];
-  let ndcX = px * uni.scaleX - 1.0 + qv.x * halfS * uni.scaleX;
-  let ndcY = py * uni.scaleY - 1.0 + qv.y * halfS * uni.scaleY;
-
-  var out: WorkPartVertOut;
-  out.pos    = vec4f(ndcX * alive, ndcY * alive, 0.0, 1.0);
-  out.vUv    = (qv + 1.0) * 0.5;
-  out.vAlpha = alpha;
-  out.vRand  = vec4f(0.5, 0.5, 0.5, 0.5);   // rand channel placeholder
-  out.vPos   = vec3f(px, py, pz);
-  return out;
-}
-`;
-
-const WORK_PARTICLE_FRAG_WGSL = /* wgsl */`
-${WORK_UNIFORMS_WGSL}
-${HSV_WGSL}
-
-@group(0) @binding(0) var<uniform> uni   : WorkUniforms;
-@group(0) @binding(4) var          tMap  : texture_2d<f32>;
-@group(0) @binding(5) var          samp  : sampler;
-
-struct WorkPartFragIn {
-  @location(0) vUv   : vec2f,
-  @location(1) vAlpha: f32,
-  @location(2) vRand : vec4f,
-  @location(3) vPos  : vec3f,
-}
-
-@fragment fn fs_workpart(in: WorkPartFragIn) -> @location(0) vec4f {
-  // AT WorkDetailParticleShader: circular discard
-  if (length(in.vUv - 0.5) > 0.5) { discard; }
-
-  // AT: uv2.x = crange(vPos.x, -7, 7, 0, 1), uv2.y = crange(vPos.y, -5, 5, 0, 1)
-  var uv2 = vec2f(
-    clamp((in.vPos.x + 7.0) / 14.0, 0.0, 1.0),
-    clamp((in.vPos.y + 5.0) / 10.0, 0.0, 1.0),
-  );
-
-  // Matcap texture (AT: tMap matcapUV = rotateUV(uv, sin(time + ...) * 0.5 + 1.0))
-  let angle    = sin(uni.time * 1.0 + in.vRand.z * 20.0) * 0.5 + 1.0;
-  let cosA     = cos(angle); let sinA = sin(angle);
-  let muv      = vec2f(
-    (in.vUv.x - 0.5) * cosA - (in.vUv.y - 0.5) * sinA + 0.5,
-    (in.vUv.x - 0.5) * sinA + (in.vUv.y - 0.5) * cosA + 0.5,
-  );
-  var matcap   = textureSample(tMap, samp, muv).rgb * 1.2;
-
-  // AT: color = blendSoftLight(color, matcap, 0.8); blendOverlay(color, matcap, 0.2)
-  var color    = matcap;
-
-  // AT: color = rgb2hsv, .y *= 1.4, hsv2rgb
-  var hsv      = rgb2hsv(color);
-  hsv.y       *= 1.4;
-  color        = hsv2rgb(clamp(hsv, vec3f(0.0), vec3f(1.0)));
-  color       += 0.05;
-
-  // AT: color *= smoothstep(-10, 10, vPos.z)
-  color       *= clamp((in.vPos.z + 10.0) / 20.0, 0.0, 1.0);
-
-  return vec4f(color * in.vAlpha, in.vAlpha);
-}
-`;
-
-// ─── CPU helpers ──────────────────────────────────────────────────────────────
-
-function buildNodeBuf(nodes: TubeNode[]): Float32Array {
-  const buf = new Float32Array(nodes.length * NODE_STRIDE);
-  for (let i = 0; i < nodes.length; i++) {
-    const b = i * NODE_STRIDE;
-    const n = nodes[i];
-    buf[b + 0]  = n.x;
-    buf[b + 1]  = n.y;
-    buf[b + 2]  = n.z;
-    buf[b + 3]  = n.scale  ?? 1.0;
-    buf[b + 4]  = 1.0;                           // alpha
-    buf[b + 5]  = Math.random() * Math.PI * 2;   // glowPhase
-    buf[b + 6]  = 0.0;                            // scrollOff
-    buf[b + 7]  = 1.0;                            // active
-    buf[b + 8]  = n.colorHSV ? n.colorHSV[0] : (Math.random() * 0.15 + 0.55);
-    buf[b + 9]  = n.colorHSV ? n.colorHSV[1] : 0.7;
-    buf[b + 10] = n.colorHSV ? n.colorHSV[2] : 0.9;
-    buf[b + 11] = 0.0;
-  }
-  return buf;
-}
-
-function buildEdgeBufCPU(
-  edges: TubeEdgeDef[],
-  nodes: TubeNode[],
-): Float32Array {
-  const nodeIndex = new Map(nodes.map((n, i) => [n.nodeId, i]));
-  const buf = new Float32Array(edges.length * EDGE_STRIDE);
-  for (let i = 0; i < edges.length; i++) {
-    const b   = i * EDGE_STRIDE;
-    const e   = edges[i];
-    const src = nodeIndex.get(e.sourceId) ?? 0;
-    const dst = nodeIndex.get(e.targetId) ?? 0;
-    const sn  = nodes[src];
-    const dn  = nodes[dst];
-    const dx  = (dn?.x ?? 0) - (sn?.x ?? 0);
-    const dy  = (dn?.y ?? 0) - (sn?.y ?? 0);
-    const dz  = (dn?.z ?? 0) - (sn?.z ?? 0);
-    buf[b + 0]  = src;
-    buf[b + 1]  = dst;
-    buf[b + 2]  = 0.0;                               // life (grows in GPU)
-    buf[b + 3]  = Math.sqrt(dx * dx + dy * dy + dz * dz);  // length
-    buf[b + 4]  = e.weight ?? 1.0;                   // alpha (= weight initially)
-    buf[b + 5]  = 0.0;                               // scroll
-    buf[b + 6]  = e.weight ?? 1.0;
-    buf[b + 7]  = e.renderMode ?? 2;
-  }
-  return buf;
-}
-
-function buildWorkParticleBuf(
-  nodes: TubeNode[],
-  particlesPerNode: number,
-): Float32Array {
-  const workNodes = nodes.filter(n => n.type === 1);
-  const total     = Math.min(workNodes.length * particlesPerNode, MAX_WORK_PARTICLES);
-  const buf       = new Float32Array(total * WORK_PARTICLE_STRIDE);
-  let   slot      = 0;
-  for (const wn of workNodes) {
-    for (let p = 0; p < particlesPerNode && slot < total; p++, slot++) {
-      const b   = slot * WORK_PARTICLE_STRIDE;
-      const off = 1.5;
-      buf[b + 0]  = wn.x + (Math.random() - 0.5) * off;
-      buf[b + 1]  = wn.y + (Math.random() - 0.5) * off;
-      buf[b + 2]  = wn.z + (Math.random() - 0.5) * off;
-      buf[b + 3]  = 0.0;
-      buf[b + 4]  = Math.random();
-      buf[b + 5]  = Math.random();
-      buf[b + 6]  = Math.random();
-      buf[b + 7]  = Math.random();
-      buf[b + 8]  = (Math.random() - 0.5) * 0.01;
-      buf[b + 9]  = Math.random() * 0.02 + 0.005;
-      buf[b + 10] = (Math.random() - 0.5) * 0.01;
-      buf[b + 11] = Math.random() * 2.0 + 0.5;
-      buf[b + 12] = 0.0;   // nodeIdx (not used in shader currently)
+      // Triangle 1
+      write(ang0, u0, v0, ring);
+      write(ang1, u0, v1, ring);
+      write(ang0, u1, v0, ring + 1);
+      // Triangle 2
+      write(ang1, u0, v1, ring);
+      write(ang1, u1, v1, ring + 1);
+      write(ang0, u1, v0, ring + 1);
     }
   }
   return buf;
 }
 
-// ─── ATTubeOrbChain — Main WebGPU class ───────────────────────────────────────
+/**
+ * Build chain strip geometry (2 vertices per link side → quad per link).
+ * Layout: [t, side] — t = parametric along edge, side = 0 or 1.
+ */
+function buildChainGeometry(links: number): Float32Array {
+  const vertsPerQuad = 6;
+  const floatsPerVert = 2;  // t, side
+  const buf = new Float32Array(links * vertsPerQuad * floatsPerVert);
+  let vi = 0;
+  const write = (t: number, side: number) => {
+    buf[vi++] = t;
+    buf[vi++] = side;
+  };
+  for (let i = 0; i < links; i++) {
+    const t0 = i       / links;
+    const t1 = (i + 1) / links;
+    write(t0, 0); write(t1, 0); write(t0, 1);
+    write(t1, 0); write(t1, 1); write(t0, 1);
+  }
+  return buf;
+}
 
 /**
- * ATTubeOrbChain
- *
- * WebGPU orchestrator for Active Theory's Tube-Orb-Chain topology rendering system.
- *
- * Encapsulates four GPU sub-systems:
- *   1. TubeOrb   — glowing billboard orb at each topology node (TubeOrbShader).
- *   2. TubeEdge  — cylindrical tube along each edge (TubeShader FBR + refraction).
- *   3. Chain     — sinusoidal chain links along each edge (ChainShader scroll).
- *   4. WorkDetail — per-Work-node noise-tube + particle + detail-cube system
- *                   (WorkTubeShader + WorkDetailParticleShader + WorkDetailCube).
- *
- * @example
- * ```ts
- * import { ATTubeOrbChain, TubeOrbChainPreset } from '$lib/sph/at-tube-orb-chain';
- *
- * const chain = new ATTubeOrbChain(device, canvas, nodes, edges, {
- *   ...TubeOrbChainPreset.network,
- *   onWorkHandoff: (nodeId, x, y, z) => { console.log(`work handoff: ${nodeId}`); },
- * });
- * await chain.build();
- *
- * // render loop:
- * const enc = device.createCommandEncoder();
- * chain.update(enc, elapsed, dt);
- * chain.render(enc, colorView, depthView?);
- * device.queue.submit([enc.finish()]);
- * ```
+ * Build orb quad geometry: 6 vertices for a billboard quad.
+ * Layout: [x, y] in [-1, +1].
  */
+function buildOrbQuad(): Float32Array {
+  return new Float32Array([
+    -1, -1,  1, -1,  1,  1,
+    -1, -1,  1,  1, -1,  1,
+  ]);
+}
+
+/**
+ * Build fullscreen quad for GPGPU passes.
+ */
+function buildFullscreenQuad(): Float32Array {
+  return new Float32Array([
+    -1, -1,  1, -1, -1,  1,
+    -1,  1,  1, -1,  1,  1,
+  ]);
+}
+
+// ─── ATTubeOrbChain — WebGL1 GPU implementation ───────────────────────────────
+
 export class ATTubeOrbChain {
-  private readonly device:          GPUDevice;
-  private readonly canvas:          HTMLCanvasElement;
-  private readonly onWorkHandoff?:  ATTubeOrbChainConfig['onWorkHandoff'];
+  private gl: WebGLRenderingContext;
+  private ext: ANGLE_instanced_arrays | null = null;
 
-  private nodes:    TubeNode[]     = [];
-  private edges:    TubeEdgeDef[]  = [];
-  private cfg:      Required<Omit<ATTubeOrbChainConfig, 'onWorkHandoff'>>;
+  private nodes: TubeNode[]  = [];
+  private edges: TubeEdge[]  = [];
+  private cfg: Required<ATTubeOrbChainConfig>;
 
-  private elapsed          = 0;
-  private workParticleCount = 0;
+  // ── Compiled shader programs ────────────────────────────────────────────
+  private tubeProg!:    WebGLProgram;
+  private orbProg!:     WebGLProgram;
+  private chainProg!:   WebGLProgram;
+  private gpgpuProg!:   WebGLProgram;
+  private lifeProg!:    WebGLProgram;
+  private displayProg!: WebGLProgram;
 
-  // ── GPU buffers ───────────────────────────────────────────────────────────
-  private tubeUniformBuf!:  GPUBuffer;
-  private workUniformBuf!:  GPUBuffer;
-  private nodeStateBuf!:    GPUBuffer;
-  private edgeStateBuf!:    GPUBuffer;
-  private workParticleBuf!: GPUBuffer;
+  // ── Geometry buffers ────────────────────────────────────────────────────
+  private tubeGeomBuf!:   WebGLBuffer;  // angle/tuv/cIndex/cNumber per vertex
+  private chainGeomBuf!:  WebGLBuffer;  // t/side per vertex
+  private orbQuadBuf!:    WebGLBuffer;  // orb billboard quad
+  private fsQuadBuf!:     WebGLBuffer;  // fullscreen quad for GPGPU
 
-  // ── tPos textures ─────────────────────────────────────────────────────────
-  private tOrbPos!:     GPUTexture;
-  private tOrbPosView!: GPUTextureView;
-  private tChainPos!:   GPUTexture;
-  private tChainPosView!:GPUTextureView;
-  private tWorkPos!:    GPUTexture;
-  private tWorkPosView!:GPUTextureView;
+  // ── Instanced attribute buffers ─────────────────────────────────────────
+  // One entry per edge (tubes + chains); one entry per node (orbs).
+  private tubeInstBufSrc!:  WebGLBuffer;  // vec3 source xyz per edge
+  private tubeInstBufDst!:  WebGLBuffer;  // vec3 dest   xyz per edge
+  private tubeInstBufData!: WebGLBuffer;  // vec4 life/len/weight/hue per edge
+  private orbInstBufXYZ!:   WebGLBuffer;  // vec3 orb positions per node
+  private orbInstBufScale!: WebGLBuffer;  // float scale per node
+  private orbInstBufAlpha!: WebGLBuffer;  // float alpha per node
 
-  private sampler!: GPUSampler;
+  // ── GPGPU FBOs ──────────────────────────────────────────────────────────
+  private tPosFBO!:  { fbo: WebGLFramebuffer; tex: WebGLTexture };
+  private tPosBack!: { fbo: WebGLFramebuffer; tex: WebGLTexture };  // ping-pong
+  private tLifeFBO!: { fbo: WebGLFramebuffer; tex: WebGLTexture };
+  private tLifeBack!:{ fbo: WebGLFramebuffer; tex: WebGLTexture };
 
-  // ── Placeholder 1×1 textures (substitutes for tColor, tRefraction, tMap) ─
-  private tWhite1x1!:   GPUTexture;
-  private tWhite1x1View!: GPUTextureView;
+  // ── Scene render target ─────────────────────────────────────────────────
+  private sceneFBO!: { fbo: WebGLFramebuffer; tex: WebGLTexture };
 
-  // ── Compute pipelines ─────────────────────────────────────────────────────
-  private nodeComputePipe!: GPUComputePipeline;
-  private edgeComputePipe!: GPUComputePipeline;
-  private workPartPipe!:    GPUComputePipeline;
+  // ── 1×1 placeholder textures ─────────────────────────────────────────────
+  private tWhite!:     WebGLTexture;  // tColor/tBaseColor/tMap placeholder
+  private tBlueGray!:  WebGLTexture;  // tRefraction placeholder
 
-  // ── Render pipelines ──────────────────────────────────────────────────────
-  private orbRenderPipe!:      GPURenderPipeline;
-  private tubeRenderPipe!:     GPURenderPipeline;
-  private chainRenderPipe!:    GPURenderPipeline;
-  private workTubePipe!:       GPURenderPipeline;
-  private workPartRenderPipe!: GPURenderPipeline;
+  // ── CPU-side instance data arrays (rebuilt on topology change) ───────────
+  private edgeSrcData!:  Float32Array;  // vec3 per edge
+  private edgeDstData!:  Float32Array;
+  private edgeInstData!: Float32Array;  // vec4 per edge: life, len, weight, hue
+  private nodeXYZData!:  Float32Array;  // vec3 per node
+  private nodeScaleData!:Float32Array;
+  private nodeAlphaData!:Float32Array;
 
-  // ── Bind groups ───────────────────────────────────────────────────────────
-  private nodeCBG0!: GPUBindGroup;
-  private nodeCBG1!: GPUBindGroup;
-  private edgeCBG0!: GPUBindGroup;
-  private edgeCBG1!: GPUBindGroup;
-  private workCBG0!: GPUBindGroup;
-  private workCBG1!: GPUBindGroup;
+  private tubeVertCount  = 0;
+  private chainVertCount = 0;
 
-  private orbRBG!:      GPUBindGroup;
-  private tubeRBG!:     GPUBindGroup;
-  private chainRBG!:    GPUBindGroup;
-  private workTubeRBG!: GPUBindGroup;
-  private workPartRBG!: GPUBindGroup;
-
-  private built = false;
+  private time       = 0;
+  private initialized = false;
 
   constructor(
-    device: GPUDevice,
-    canvas: HTMLCanvasElement,
-    nodes:  TubeNode[],
-    edges:  TubeEdgeDef[],
+    gl: WebGLRenderingContext,
+    _canvas: HTMLCanvasElement,
+    nodes: TubeNode[],
+    edges: TubeEdge[],
     config: ATTubeOrbChainConfig = {},
   ) {
-    this.device          = device;
-    this.canvas          = canvas;
-    this.nodes           = nodes;
-    this.edges           = edges;
-    this.onWorkHandoff   = config.onWorkHandoff;
-    this.cfg = {
-      uScroll:              config.uScroll              ?? 0.0,
-      uReflectionBlend:     config.uReflectionBlend     ?? 0.5,
-      uNormalStrength:      config.uNormalStrength      ?? 1.0,
-      uOrbAlpha:            config.uOrbAlpha            ?? 1.0,
-      uChainAmplitude:      config.uChainAmplitude      ?? 1.1,
-      uChainFrequency:      config.uChainFrequency      ?? 0.4,
-      workParticlesPerNode: config.workParticlesPerNode ?? 128,
-      uWorkParticleSize:    config.uWorkParticleSize    ?? 0.03,
-      uWorkDPR:             config.uWorkDPR             ?? 1.0,
-      uWorkTubeTimeSpeed:   config.uWorkTubeTimeSpeed   ?? 0.3,
-      uTubeLifeSpeed:       config.uTubeLifeSpeed       ?? 0.01,
-    };
-  }
-
-  // ─── Build ────────────────────────────────────────────────────────────────
-
-  async build(): Promise<void> {
-    if (this.built) this._destroy();
-    const { device } = this;
-
-    // ── Work particle count ──────────────────────────────────────────────────
-    const workCount = this.nodes.filter(n => n.type === 1).length;
-    this.workParticleCount = Math.min(
-      workCount * this.cfg.workParticlesPerNode,
-      MAX_WORK_PARTICLES,
-    );
-
-    // ── Uniform buffers ──────────────────────────────────────────────────────
-    this.tubeUniformBuf = device.createBuffer({
-      size:  TUBE_UNIFORMS_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.workUniformBuf = device.createBuffer({
-      size:  WORK_UNIFORMS_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this._writeTubeUniforms(0);
-    this._writeWorkUniforms(0);
-
-    // ── Node state buffer ────────────────────────────────────────────────────
-    const nodeData = buildNodeBuf(this.nodes);
-    this.nodeStateBuf = device.createBuffer({
-      size:  Math.max(nodeData.byteLength, 16),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    });
-    device.queue.writeBuffer(this.nodeStateBuf, 0, nodeData);
-
-    // ── Edge state buffer ────────────────────────────────────────────────────
-    const edgeData = buildEdgeBufCPU(this.edges, this.nodes);
-    this.edgeStateBuf = device.createBuffer({
-      size:  Math.max(edgeData.byteLength, 16),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    });
-    device.queue.writeBuffer(this.edgeStateBuf, 0, edgeData);
-
-    // ── Work particle buffer ─────────────────────────────────────────────────
-    const workData = buildWorkParticleBuf(this.nodes, this.cfg.workParticlesPerNode);
-    this.workParticleBuf = device.createBuffer({
-      size:  Math.max(workData.byteLength, 16),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    });
-    device.queue.writeBuffer(this.workParticleBuf, 0, workData);
-
-    // ── Position textures ────────────────────────────────────────────────────
-    const texUsage =
-      GPUTextureUsage.TEXTURE_BINDING  |
-      GPUTextureUsage.STORAGE_BINDING  |
-      GPUTextureUsage.COPY_SRC;
-
-    this.tOrbPos = device.createTexture({ size: [TEX_W, TEX_H], format: 'rgba32float', usage: texUsage });
-    this.tOrbPosView = this.tOrbPos.createView();
-
-    this.tChainPos = device.createTexture({ size: [TEX_W, TEX_H], format: 'rgba32float', usage: texUsage });
-    this.tChainPosView = this.tChainPos.createView();
-
-    this.tWorkPos = device.createTexture({ size: [TEX_W, TEX_H], format: 'rgba32float', usage: texUsage });
-    this.tWorkPosView = this.tWorkPos.createView();
-
-    // ── Placeholder 1×1 white texture ───────────────────────────────────────
-    this.tWhite1x1 = device.createTexture({
-      size:   [1, 1],
-      format: 'rgba8unorm',
-      usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    device.queue.writeTexture(
-      { texture: this.tWhite1x1 },
-      new Uint8Array([255, 255, 255, 255]),
-      { bytesPerRow: 4 },
-      [1, 1],
-    );
-    this.tWhite1x1View = this.tWhite1x1.createView();
-
-    // ── Sampler ──────────────────────────────────────────────────────────────
-    this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-
-    // ── Compute pipelines ────────────────────────────────────────────────────
-    this.nodeComputePipe = device.createComputePipeline({
-      layout:  'auto',
-      compute: { module: device.createShaderModule({ code: NODE_COMPUTE_SHADER }), entryPoint: 'main' },
-    });
-    this.edgeComputePipe = device.createComputePipeline({
-      layout:  'auto',
-      compute: { module: device.createShaderModule({ code: EDGE_COMPUTE_SHADER }), entryPoint: 'main' },
-    });
-    this.workPartPipe = device.createComputePipeline({
-      layout:  'auto',
-      compute: { module: device.createShaderModule({ code: WORK_PARTICLE_COMPUTE }), entryPoint: 'main' },
-    });
-
-    // ── Render pipelines ─────────────────────────────────────────────────────
-    const fmt     = navigator.gpu.getPreferredCanvasFormat();
-    const blendAO = {
-      color: { srcFactor: 'src-alpha' as GPUBlendFactor, dstFactor: 'one' as GPUBlendFactor, operation: 'add' as GPUBlendOperation },
-      alpha: { srcFactor: 'one'       as GPUBlendFactor, dstFactor: 'one' as GPUBlendFactor, operation: 'add' as GPUBlendOperation },
-    };
-    const blendAlpha = {
-      color: { srcFactor: 'src-alpha' as GPUBlendFactor, dstFactor: 'one-minus-src-alpha' as GPUBlendFactor, operation: 'add' as GPUBlendOperation },
-      alpha: { srcFactor: 'one'       as GPUBlendFactor, dstFactor: 'one-minus-src-alpha' as GPUBlendFactor, operation: 'add' as GPUBlendOperation },
-    };
-
-    const makeRenderPipe = (
-      vertSrc: string, fragSrc: string,
-      blend: GPUBlendState,
-      topology: GPUPrimitiveTopology = 'triangle-list',
-    ) => device.createRenderPipeline({
-      layout:   'auto',
-      vertex:   { module: device.createShaderModule({ code: vertSrc }) },
-      fragment: { module: device.createShaderModule({ code: fragSrc }), targets: [{ format: fmt, blend }] },
-      primitive: { topology },
-    });
-
-    this.orbRenderPipe      = makeRenderPipe(TUBE_ORB_VERT_WGSL,     TUBE_ORB_FRAG_WGSL,      blendAO);
-    this.tubeRenderPipe     = makeRenderPipe(TUBE_EDGE_VERT_WGSL,    TUBE_EDGE_FRAG_WGSL,     blendAlpha);
-    this.chainRenderPipe    = makeRenderPipe(CHAIN_VERT_WGSL,        CHAIN_FRAG_WGSL,         blendAlpha);
-    this.workTubePipe       = makeRenderPipe(WORK_TUBE_VERT_WGSL,    WORK_TUBE_FRAG_WGSL,     blendAO);
-    this.workPartRenderPipe = makeRenderPipe(WORK_PARTICLE_VERT_WGSL, WORK_PARTICLE_FRAG_WGSL, blendAO);
-
-    // ── Bind groups ──────────────────────────────────────────────────────────
-    this._buildBindGroups();
-    this.built = true;
-
-    console.log(
-      `[ATTubeOrbChain] built: ${this.nodes.length} nodes, ` +
-      `${this.edges.length} edges, ` +
-      `${this.workParticleCount} work particles`,
-    );
-  }
-
-  // ─── Per-frame update ─────────────────────────────────────────────────────
-
-  /**
-   * Encode all compute passes:
-   *   1. Node glow compute (TubeOrb pulsation → tOrbPos)
-   *   2. Edge life + chain scroll compute (→ tChainPos)
-   *   3. Work particle compute (→ tWorkPos)
-   *
-   * @param encoder  — open GPUCommandEncoder
-   * @param elapsed  — total elapsed seconds
-   * @param _dt      — frame delta (unused, shader uses fixed step)
-   */
-  update(encoder: GPUCommandEncoder, elapsed: number, _dt = 0): void {
-    if (!this.built) return;
-    this.elapsed = elapsed;
-    this._writeTubeUniforms(elapsed);
-    this._writeWorkUniforms(elapsed);
-
-    const nodeWG = Math.ceil(this.nodes.length / WG);
-    const edgeWG = Math.ceil(this.edges.length / WG);
-    const workWG = Math.ceil(this.workParticleCount / WG);
-
-    const pass = encoder.beginComputePass();
-
-    // Node compute
-    pass.setPipeline(this.nodeComputePipe);
-    pass.setBindGroup(0, this.nodeCBG0);
-    pass.setBindGroup(1, this.nodeCBG1);
-    pass.dispatchWorkgroups(Math.max(1, nodeWG));
-
-    // Edge compute
-    pass.setPipeline(this.edgeComputePipe);
-    pass.setBindGroup(0, this.edgeCBG0);
-    pass.setBindGroup(1, this.edgeCBG1);
-    pass.dispatchWorkgroups(Math.max(1, edgeWG));
-
-    // Work particle compute
-    if (this.workParticleCount > 0) {
-      pass.setPipeline(this.workPartPipe);
-      pass.setBindGroup(0, this.workCBG0);
-      pass.setBindGroup(1, this.workCBG1);
-      pass.dispatchWorkgroups(Math.max(1, workWG));
-    }
-
-    pass.end();
-  }
-
-  // ─── Per-frame render ─────────────────────────────────────────────────────
-
-  /**
-   * Encode all render passes in this order:
-   *   1. TubeEdge (cylindrical tubes, back-most)
-   *   2. Chain (sinusoidal links)
-   *   3. WorkTube (noise-band tubes at Work nodes)
-   *   4. WorkDetailParticle (GPU particles around Work nodes)
-   *   5. TubeOrb (glowing node spheres, front-most / additive)
-   *
-   * @param encoder   — open GPUCommandEncoder
-   * @param colorView — render target texture view
-   * @param depthView — optional depth attachment
-   */
-  render(
-    encoder:    GPUCommandEncoder,
-    colorView:  GPUTextureView,
-    depthView?: GPUTextureView,
-  ): void {
-    if (!this.built) return;
-
-    const passDesc: GPURenderPassDescriptor = {
-      colorAttachments: [{
-        view:    colorView,
-        loadOp:  'load',
-        storeOp: 'store',
-      }],
-    };
-    if (depthView) {
-      passDesc.depthStencilAttachment = {
-        view:         depthView,
-        depthLoadOp:  'load',
-        depthStoreOp: 'store',
-      };
-    }
-
-    const pass = encoder.beginRenderPass(passDesc);
-
-    // 1 — Tube edges (16 radial segments × 2 triangles × 32 rings per edge)
-    if (this.edges.length > 0) {
-      pass.setPipeline(this.tubeRenderPipe);
-      pass.setBindGroup(0, this.tubeRBG);
-      // 16 segs × 2 tris × 3 verts = 96 verts/edge
-      pass.draw(96, this.edges.length);
-    }
-
-    // 2 — Chain links (32 quads × 6 verts per edge)
-    const chainEdges = this.edges.filter(e => (e.renderMode ?? 2) !== 0);
-    if (chainEdges.length > 0) {
-      pass.setPipeline(this.chainRenderPipe);
-      pass.setBindGroup(0, this.chainRBG);
-      pass.draw(192, this.edges.length);   // 32 quads × 6 verts
-    }
-
-    // 3 — Work tubes (32 quads × 6 verts per Work node)
-    const workNodeCount = this.nodes.filter(n => n.type === 1).length;
-    if (workNodeCount > 0) {
-      pass.setPipeline(this.workTubePipe);
-      pass.setBindGroup(0, this.workTubeRBG);
-      pass.draw(192, workNodeCount);   // 32 quads × 6 verts
-    }
-
-    // 4 — Work detail particles (instanced quads)
-    if (this.workParticleCount > 0) {
-      pass.setPipeline(this.workPartRenderPipe);
-      pass.setBindGroup(0, this.workPartRBG);
-      pass.draw(6, this.workParticleCount);
-    }
-
-    // 5 — TubeOrb billboard orbs (instanced quads, additive)
-    if (this.nodes.length > 0) {
-      pass.setPipeline(this.orbRenderPipe);
-      pass.setBindGroup(0, this.orbRBG);
-      pass.draw(6, this.nodes.length);
-    }
-
-    pass.end();
-  }
-
-  // ─── Live parameter setters ───────────────────────────────────────────────
-
-  setScroll(v: number): void           { this.cfg.uScroll            = v; }
-  setOrbAlpha(v: number): void         { this.cfg.uOrbAlpha          = v; }
-  setReflectionBlend(v: number): void  { this.cfg.uReflectionBlend   = v; }
-  setNormalStrength(v: number): void   { this.cfg.uNormalStrength     = v; }
-  setChainAmplitude(v: number): void   { this.cfg.uChainAmplitude    = v; }
-  setChainFrequency(v: number): void   { this.cfg.uChainFrequency    = v; }
-  setWorkParticleSize(v: number): void { this.cfg.uWorkParticleSize   = v; }
-  setWorkTubeTimeSpeed(v: number): void{ this.cfg.uWorkTubeTimeSpeed  = v; }
-  setTubeLifeSpeed(v: number): void    { this.cfg.uTubeLifeSpeed      = v; }
-
-  /** Apply a TubeOrbChainPreset without requiring a full rebuild. */
-  applyPreset(preset: ATTubeOrbChainConfig): void {
-    if (preset.uScroll              !== undefined) this.cfg.uScroll              = preset.uScroll;
-    if (preset.uReflectionBlend     !== undefined) this.cfg.uReflectionBlend     = preset.uReflectionBlend;
-    if (preset.uNormalStrength      !== undefined) this.cfg.uNormalStrength      = preset.uNormalStrength;
-    if (preset.uOrbAlpha            !== undefined) this.cfg.uOrbAlpha            = preset.uOrbAlpha;
-    if (preset.uChainAmplitude      !== undefined) this.cfg.uChainAmplitude      = preset.uChainAmplitude;
-    if (preset.uChainFrequency      !== undefined) this.cfg.uChainFrequency      = preset.uChainFrequency;
-    if (preset.workParticlesPerNode !== undefined) this.cfg.workParticlesPerNode = preset.workParticlesPerNode;
-    if (preset.uWorkParticleSize    !== undefined) this.cfg.uWorkParticleSize    = preset.uWorkParticleSize;
-    if (preset.uWorkDPR             !== undefined) this.cfg.uWorkDPR             = preset.uWorkDPR;
-    if (preset.uWorkTubeTimeSpeed   !== undefined) this.cfg.uWorkTubeTimeSpeed   = preset.uWorkTubeTimeSpeed;
-    if (preset.uTubeLifeSpeed       !== undefined) this.cfg.uTubeLifeSpeed       = preset.uTubeLifeSpeed;
-  }
-
-  /** Set a node's active state (1=visible, 0=hidden). */
-  setNodeActive(nodeId: string, active: boolean): void {
-    const idx = this.nodes.findIndex(n => n.nodeId === nodeId);
-    if (idx < 0 || !this.built) return;
-    const buf = new Float32Array(1);
-    buf[0] = active ? 1.0 : 0.0;
-    this.device.queue.writeBuffer(
-      this.nodeStateBuf,
-      (idx * NODE_STRIDE + 7) * 4,
-      buf,
-    );
-  }
-
-  /** Update node position at runtime (e.g. topology change). */
-  setNodePosition(nodeId: string, x: number, y: number, z: number): void {
-    const idx = this.nodes.findIndex(n => n.nodeId === nodeId);
-    if (idx < 0 || !this.built) return;
-    const buf = new Float32Array(3);
-    buf[0] = x; buf[1] = y; buf[2] = z;
-    this.device.queue.writeBuffer(
-      this.nodeStateBuf,
-      idx * NODE_STRIDE * 4,
-      buf,
-    );
-  }
-
-  /** Replace nodes + edges and rebuild GPU resources. */
-  async setTopology(nodes: TubeNode[], edges: TubeEdgeDef[]): Promise<void> {
+    this.gl    = gl;
     this.nodes = nodes;
     this.edges = edges;
-    await this.build();
+    this.cfg   = {
+      uScroll:          config.uScroll          ?? 0.0,
+      uChainAmplitude:  config.uChainAmplitude  ?? 1.1,
+      uChainFrequency:  config.uChainFrequency  ?? 0.4,
+      uTaper:           config.uTaper           ?? 0.3,
+      uThickness:       config.uThickness       ?? 1.0,
+      uReflectionY:     config.uReflectionY     ?? 0.5,
+      uReflectionX:     config.uReflectionX     ?? 1.0,
+      uOrbAlpha:        config.uOrbAlpha        ?? 1.0,
+      lifeSpeed:        config.lifeSpeed        ?? 0.01,
+    };
   }
 
-  // ─── Introspection ────────────────────────────────────────────────────────
+  // ─── init: compile programs, create buffers, FBOs, textures ──────────────
 
-  /**
-   * Read all TubeOrb node states from GPU for debug / diagnostics.
-   * Expensive — do not call every frame.
-   */
-  async readOrbStates(): Promise<TubeOrbState[]> {
-    if (!this.built) return [];
-    const { device } = this;
-    const sz = this.nodeStateBuf.size;
+  init(): void {
+    const gl = this.gl;
 
-    const readBuf = device.createBuffer({
-      size:  sz,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
-    const enc = device.createCommandEncoder();
-    enc.copyBufferToBuffer(this.nodeStateBuf, 0, readBuf, 0, sz);
-    device.queue.submit([enc.finish()]);
-
-    await readBuf.mapAsync(GPUMapMode.READ);
-    const raw = new Float32Array(readBuf.getMappedRange());
-    const out: TubeOrbState[] = [];
-
-    for (let i = 0; i < this.nodes.length; i++) {
-      const b = i * NODE_STRIDE;
-      out.push({
-        nodeId:  this.nodes[i].nodeId,
-        x:       raw[b + 0],
-        y:       raw[b + 1],
-        z:       raw[b + 2],
-        scale:   raw[b + 3],
-        alpha:   raw[b + 4],
-        colorH:  raw[b + 8],
-        colorS:  raw[b + 9],
-        colorV:  raw[b + 10],
-        active:  raw[b + 7] > 0.5,
-      });
+    // Acquire instancing extension (WebGL1 instanced arrays)
+    this.ext = gl.getExtension('ANGLE_instanced_arrays');
+    if (!this.ext) {
+      throw new Error('[ATTubeOrbChain] ANGLE_instanced_arrays not available');
     }
 
-    readBuf.unmap();
-    readBuf.destroy();
-    return out;
+    // ── Compile all shader programs ──────────────────────────────────────
+    this.tubeProg    = this._compile(PROTON_TUBE_VERT, PROTON_TUBE_FRAG,  'ProtonTube');
+    this.orbProg     = this._compile(ORB_VERT,         ORB_FRAG,          'TubeOrb');
+    this.chainProg   = this._compile(CHAIN_VERT,       CHAIN_FRAG,        'Chain');
+    this.gpgpuProg   = this._compile(GPGPU_VERT,       GPGPU_FRAG,        'GPGPU');
+    this.lifeProg    = this._compile(GPGPU_VERT,       LIFE_FRAG,         'Life');
+    this.displayProg = this._compile(GPGPU_VERT,       DISPLAY_FRAG,      'Display');
+
+    // ── Create geometry buffers ──────────────────────────────────────────
+    const tubeGeo  = buildTubeGeometry(RADIAL_SEGS, LINE_SEGS);
+    this.tubeVertCount = tubeGeo.length / 5;
+
+    this.tubeGeomBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeGeomBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, tubeGeo, gl.STATIC_DRAW);
+
+    const chainGeo  = buildChainGeometry(CHAIN_LINKS);
+    this.chainVertCount = chainGeo.length / 2;
+
+    this.chainGeomBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.chainGeomBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, chainGeo, gl.STATIC_DRAW);
+
+    this.orbQuadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.orbQuadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, buildOrbQuad(), gl.STATIC_DRAW);
+
+    this.fsQuadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.fsQuadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, buildFullscreenQuad(), gl.STATIC_DRAW);
+
+    // ── Build CPU instance data ──────────────────────────────────────────
+    this._buildInstanceData();
+
+    // ── Create instanced attribute buffers (tube + chain share edge data) ─
+    this.tubeInstBufSrc = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufSrc);
+    gl.bufferData(gl.ARRAY_BUFFER, this.edgeSrcData, gl.DYNAMIC_DRAW);
+
+    this.tubeInstBufDst = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufDst);
+    gl.bufferData(gl.ARRAY_BUFFER, this.edgeDstData, gl.DYNAMIC_DRAW);
+
+    this.tubeInstBufData = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufData);
+    gl.bufferData(gl.ARRAY_BUFFER, this.edgeInstData, gl.DYNAMIC_DRAW);
+
+    // ── Orb instanced buffers ────────────────────────────────────────────
+    this.orbInstBufXYZ = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufXYZ);
+    gl.bufferData(gl.ARRAY_BUFFER, this.nodeXYZData, gl.DYNAMIC_DRAW);
+
+    this.orbInstBufScale = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufScale);
+    gl.bufferData(gl.ARRAY_BUFFER, this.nodeScaleData, gl.DYNAMIC_DRAW);
+
+    this.orbInstBufAlpha = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufAlpha);
+    gl.bufferData(gl.ARRAY_BUFFER, this.nodeAlphaData, gl.DYNAMIC_DRAW);
+
+    // ── GPGPU FBOs (tPos ping-pong + tLife ping-pong) ────────────────────
+    const gpgpuFmt  = gl.RGBA;
+    const gpgpuType = this._getHalfFloat();
+
+    this.tPosFBO   = this._createFBO(GPGPU_TEX_W, GPGPU_TEX_H, gpgpuFmt, gpgpuType);
+    this.tPosBack  = this._createFBO(GPGPU_TEX_W, GPGPU_TEX_H, gpgpuFmt, gpgpuType);
+    this.tLifeFBO  = this._createFBO(GPGPU_TEX_W, GPGPU_TEX_H, gpgpuFmt, gpgpuType);
+    this.tLifeBack = this._createFBO(GPGPU_TEX_W, GPGPU_TEX_H, gpgpuFmt, gpgpuType);
+
+    // Upload initial positions to tPosFBO
+    this._uploadInitialPositions();
+
+    // Upload initial life values to tLifeFBO (all start at 0)
+    this._uploadInitialLife();
+
+    // ── Scene accumulation FBO (renders tubes+orbs+chains into it) ────────
+    // Use canvas-size FBO so tRefraction can sample from it.
+    this.sceneFBO = this._createFBO(512, 512, gl.RGBA, gl.UNSIGNED_BYTE);
+
+    // ── 1×1 placeholder textures ─────────────────────────────────────────
+    this.tWhite = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.tWhite);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  new Uint8Array([200, 210, 255, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    this.tBlueGray = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.tBlueGray);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  new Uint8Array([30, 40, 80, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    this.initialized = true;
   }
 
-  // ─── Accessors ────────────────────────────────────────────────────────────
+  // ─── tick: GPGPU position + life update ──────────────────────────────────
 
-  get nodeCount(): number         { return this.nodes.length; }
-  get edgeCount(): number         { return this.edges.length; }
-  get workParticles(): number     { return this.workParticleCount; }
-  get isBuilt(): boolean          { return this.built; }
-  get elapsedTime(): number       { return this.elapsed; }
-  get config(): Readonly<Required<Omit<ATTubeOrbChainConfig, 'onWorkHandoff'>>> {
-    return this.cfg;
+  tick(elapsed: number, dt: number = 1 / 60): void {
+    if (!this.initialized) return;
+    const gl = this.gl;
+    this.time = elapsed;
+
+    // 1. Life update pass (grow life values toward 1 per edge)
+    gl.useProgram(this.lifeProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.tLifeBack.fbo);
+    gl.viewport(0, 0, GPGPU_TEX_W, GPGPU_TEX_H);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tLifeFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.lifeProg, 'tLife'), 0);
+    gl.uniform1f(gl.getUniformLocation(this.lifeProg, 'uDt'), dt);
+    gl.uniform1f(gl.getUniformLocation(this.lifeProg, 'uLifeSpeed'), this.cfg.lifeSpeed);
+    this._drawFSQuad(this.lifeProg);
+    // Swap life ping-pong
+    [this.tLifeFBO, this.tLifeBack] = [this.tLifeBack, this.tLifeFBO];
+
+    // 2. Position GPGPU update pass (subtle drift)
+    gl.useProgram(this.gpgpuProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.tPosBack.fbo);
+    gl.viewport(0, 0, GPGPU_TEX_W, GPGPU_TEX_H);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tPosFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.gpgpuProg, 'tInput'), 0);
+    gl.uniform1f(gl.getUniformLocation(this.gpgpuProg, 'uDt'), dt);
+    gl.uniform1f(gl.getUniformLocation(this.gpgpuProg, 'uTime'), elapsed);
+    this._drawFSQuad(this.gpgpuProg);
+    // Swap position ping-pong
+    [this.tPosFBO, this.tPosBack] = [this.tPosBack, this.tPosFBO];
+
+    // 3. Update edge life values from GPU readback or CPU accumulation.
+    // We use CPU-side life accumulation for simplicity, matching the GPGPU tLife.
+    for (let i = 0; i < this.edges.length; i++) {
+      const base = i * 4;
+      this.edgeInstData[base + 0] = Math.min(1.0, this.edgeInstData[base + 0] + this.cfg.lifeSpeed * dt * 60);
+    }
+
+    // 4. Upload updated instance data buffers
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufData);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.edgeInstData);
   }
 
-  // ─── Cleanup ──────────────────────────────────────────────────────────────
+  // ─── render: ProtonTube instanced + Orb + Chain ───────────────────────────
 
-  destroy(): void { this._destroy(); }
+  render(canvasW: number, canvasH: number): void {
+    if (!this.initialized) return;
+    const gl  = this.gl;
+    const ext = this.ext!;
+
+    // ── Scene accumulation pass (render to sceneFBO first) ────────────────
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFBO.fbo);
+    gl.viewport(0, 0, 512, 512);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);  // additive blending for glow
+
+    const mvp = this._buildMVP(canvasW, canvasH);
+
+    // ── 1. Render ProtonTube instanced (one geometry, N edge instances) ───
+    if (this.edges.length > 0) {
+      gl.useProgram(this.tubeProg);
+
+      // Projection + transform
+      gl.uniformMatrix4fv(gl.getUniformLocation(this.tubeProg, 'uMVP'), false, mvp);
+      gl.uniform1f(gl.getUniformLocation(this.tubeProg, 'uTime'),        this.time);
+      gl.uniform1f(gl.getUniformLocation(this.tubeProg, 'uThickness'),   this.cfg.uThickness);
+      gl.uniform1f(gl.getUniformLocation(this.tubeProg, 'uTaper'),       this.cfg.uTaper);
+      gl.uniform1f(gl.getUniformLocation(this.tubeProg, 'uRadialSegs'),  RADIAL_SEGS);
+      gl.uniform1f(gl.getUniformLocation(this.tubeProg, 'uLineSegs'),    LINE_SEGS);
+      gl.uniform2f(gl.getUniformLocation(this.tubeProg, 'uResolution'),  512, 512);
+      gl.uniform2f(gl.getUniformLocation(this.tubeProg, 'uReflection'),
+                   this.cfg.uReflectionX, this.cfg.uReflectionY);
+
+      // tColor placeholder
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.tWhite);
+      gl.uniform1i(gl.getUniformLocation(this.tubeProg, 'tColor'), 0);
+
+      // tRefraction = scene FBO from last frame (or blue-gray placeholder)
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.tBlueGray);
+      gl.uniform1i(gl.getUniformLocation(this.tubeProg, 'tRefraction'), 1);
+
+      // Bind tube geometry (per-vertex attributes)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeGeomBuf);
+      const stride = 5 * 4;  // 5 floats × 4 bytes
+      const aAngle  = gl.getAttribLocation(this.tubeProg, 'angle');
+      const aTuv    = gl.getAttribLocation(this.tubeProg, 'tuv');
+      const aCIndex = gl.getAttribLocation(this.tubeProg, 'cIndex');
+      const aCNum   = gl.getAttribLocation(this.tubeProg, 'cNumber');
+
+      gl.enableVertexAttribArray(aAngle);
+      gl.vertexAttribPointer(aAngle,  1, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(aTuv);
+      gl.vertexAttribPointer(aTuv,    2, gl.FLOAT, false, stride, 4);
+      gl.enableVertexAttribArray(aCIndex);
+      gl.vertexAttribPointer(aCIndex, 1, gl.FLOAT, false, stride, 12);
+      gl.enableVertexAttribArray(aCNum);
+      gl.vertexAttribPointer(aCNum,   1, gl.FLOAT, false, stride, 16);
+
+      // Per-instance: source positions
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufSrc);
+      const aInstSrc = gl.getAttribLocation(this.tubeProg, 'aInstSrc');
+      gl.enableVertexAttribArray(aInstSrc);
+      gl.vertexAttribPointer(aInstSrc, 3, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(aInstSrc, 1);
+
+      // Per-instance: destination positions
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufDst);
+      const aInstDst = gl.getAttribLocation(this.tubeProg, 'aInstDst');
+      gl.enableVertexAttribArray(aInstDst);
+      gl.vertexAttribPointer(aInstDst, 3, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(aInstDst, 1);
+
+      // Per-instance: life/length/weight/hue
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufData);
+      const aInstData = gl.getAttribLocation(this.tubeProg, 'aInstData');
+      gl.enableVertexAttribArray(aInstData);
+      gl.vertexAttribPointer(aInstData, 4, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(aInstData, 1);
+
+      // Instanced draw: tubeVertCount verts × edges.length instances
+      ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, this.tubeVertCount, this.edges.length);
+
+      // Reset divisors
+      ext.vertexAttribDivisorANGLE(aInstSrc,  0);
+      ext.vertexAttribDivisorANGLE(aInstDst,  0);
+      ext.vertexAttribDivisorANGLE(aInstData, 0);
+    }
+
+    // ── 2. Render Chain strips (instanced along edges) ────────────────────
+    if (this.edges.length > 0) {
+      gl.useProgram(this.chainProg);
+      gl.uniformMatrix4fv(gl.getUniformLocation(this.chainProg, 'uMVP'),   false, mvp);
+      gl.uniform1f(gl.getUniformLocation(this.chainProg, 'uScroll'),       this.cfg.uScroll);
+      gl.uniform1f(gl.getUniformLocation(this.chainProg, 'uChainAmplitude'), this.cfg.uChainAmplitude);
+      gl.uniform1f(gl.getUniformLocation(this.chainProg, 'uChainFrequency'), this.cfg.uChainFrequency);
+      gl.uniform2f(gl.getUniformLocation(this.chainProg, 'uResolution'),   512, 512);
+      gl.uniform1f(gl.getUniformLocation(this.chainProg, 'uTime'),         this.time);
+      gl.uniform2f(gl.getUniformLocation(this.chainProg, 'uReflection'),
+                   this.cfg.uReflectionX, this.cfg.uReflectionY);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.tWhite);
+      gl.uniform1i(gl.getUniformLocation(this.chainProg, 'tBaseColor'), 0);
+
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.tBlueGray);
+      gl.uniform1i(gl.getUniformLocation(this.chainProg, 'tRefraction'), 1);
+
+      // Geometry (t, side) per vertex
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.chainGeomBuf);
+      const aT    = gl.getAttribLocation(this.chainProg, 'aT');
+      const aSide = gl.getAttribLocation(this.chainProg, 'aSide');
+      gl.enableVertexAttribArray(aT);
+      gl.vertexAttribPointer(aT,    1, gl.FLOAT, false, 8, 0);
+      gl.enableVertexAttribArray(aSide);
+      gl.vertexAttribPointer(aSide, 1, gl.FLOAT, false, 8, 4);
+
+      // Per-instance attributes (reuse tube buffers)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufSrc);
+      const cInstSrc = gl.getAttribLocation(this.chainProg, 'aInstSrc');
+      gl.enableVertexAttribArray(cInstSrc);
+      gl.vertexAttribPointer(cInstSrc, 3, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(cInstSrc, 1);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufDst);
+      const cInstDst = gl.getAttribLocation(this.chainProg, 'aInstDst');
+      gl.enableVertexAttribArray(cInstDst);
+      gl.vertexAttribPointer(cInstDst, 3, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(cInstDst, 1);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufData);
+      const cInstData = gl.getAttribLocation(this.chainProg, 'aInstData');
+      gl.enableVertexAttribArray(cInstData);
+      gl.vertexAttribPointer(cInstData, 4, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(cInstData, 1);
+
+      ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, this.chainVertCount, this.edges.length);
+
+      ext.vertexAttribDivisorANGLE(cInstSrc,  0);
+      ext.vertexAttribDivisorANGLE(cInstDst,  0);
+      ext.vertexAttribDivisorANGLE(cInstData, 0);
+    }
+
+    // ── 3. Render TubeOrb billboard orbs (instanced per node) ────────────
+    if (this.nodes.length > 0) {
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);  // additive for glow
+      gl.useProgram(this.orbProg);
+      gl.uniformMatrix4fv(gl.getUniformLocation(this.orbProg, 'uMVP'),      false, mvp);
+      gl.uniform1f(gl.getUniformLocation(this.orbProg, 'uOrbAlpha'),        this.cfg.uOrbAlpha);
+      gl.uniform1f(gl.getUniformLocation(this.orbProg, 'uTime'),            this.time);
+      gl.uniform2f(gl.getUniformLocation(this.orbProg, 'uResolution'),      512, 512);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.tWhite);
+      gl.uniform1i(gl.getUniformLocation(this.orbProg, 'tMap'), 0);
+
+      // Orb quad geometry
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.orbQuadBuf);
+      const aOrbPos = gl.getAttribLocation(this.orbProg, 'aPos');
+      gl.enableVertexAttribArray(aOrbPos);
+      gl.vertexAttribPointer(aOrbPos, 2, gl.FLOAT, false, 0, 0);
+
+      // Per-instance: orb world positions
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufXYZ);
+      const aOrbXYZ = gl.getAttribLocation(this.orbProg, 'aOrbXYZ');
+      gl.enableVertexAttribArray(aOrbXYZ);
+      gl.vertexAttribPointer(aOrbXYZ, 3, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(aOrbXYZ, 1);
+
+      // Per-instance: scale
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufScale);
+      const aOrbScale = gl.getAttribLocation(this.orbProg, 'aOrbScale');
+      gl.enableVertexAttribArray(aOrbScale);
+      gl.vertexAttribPointer(aOrbScale, 1, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(aOrbScale, 1);
+
+      // Per-instance: alpha
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufAlpha);
+      const aOrbAlpha = gl.getAttribLocation(this.orbProg, 'aOrbAlpha');
+      gl.enableVertexAttribArray(aOrbAlpha);
+      gl.vertexAttribPointer(aOrbAlpha, 1, gl.FLOAT, false, 0, 0);
+      ext.vertexAttribDivisorANGLE(aOrbAlpha, 1);
+
+      ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, this.nodes.length);
+
+      ext.vertexAttribDivisorANGLE(aOrbXYZ,   0);
+      ext.vertexAttribDivisorANGLE(aOrbScale, 0);
+      ext.vertexAttribDivisorANGLE(aOrbAlpha, 0);
+    }
+
+    // ── 4. Display pass — blit sceneFBO to canvas ─────────────────────────
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvasW, canvasH);
+    gl.disable(gl.BLEND);
+
+    gl.useProgram(this.displayProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.displayProg, 'uTexture'), 0);
+    this._drawFSQuad(this.displayProg);
+
+    // Re-enable blend for next frame
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  }
+
+  // ─── Live parameter setters ────────────────────────────────────────────────
+
+  setScroll(v: number):          void { this.cfg.uScroll          = v; }
+  setOrbAlpha(v: number):        void { this.cfg.uOrbAlpha        = v; }
+  setChainAmplitude(v: number):  void { this.cfg.uChainAmplitude  = v; }
+  setChainFrequency(v: number):  void { this.cfg.uChainFrequency  = v; }
+  setReflectionBlend(v: number): void { this.cfg.uReflectionY     = v; }
+  setNormalStrength(v: number):  void { this.cfg.uReflectionX     = v; }
+  setLifeSpeed(v: number):       void { this.cfg.lifeSpeed        = v; }
+
+  /**
+   * Replace topology and upload new instance data.
+   * Does not require full re-init unless node/edge count exceeds MAX.
+   */
+  setTopology(nodes: TubeNode[], edges: TubeEdge[]): void {
+    if (!this.initialized) return;
+    const gl = this.gl;
+    this.nodes = nodes;
+    this.edges = edges;
+    this._buildInstanceData();
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufSrc);
+    gl.bufferData(gl.ARRAY_BUFFER, this.edgeSrcData, gl.DYNAMIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufDst);
+    gl.bufferData(gl.ARRAY_BUFFER, this.edgeDstData, gl.DYNAMIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeInstBufData);
+    gl.bufferData(gl.ARRAY_BUFFER, this.edgeInstData, gl.DYNAMIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufXYZ);
+    gl.bufferData(gl.ARRAY_BUFFER, this.nodeXYZData, gl.DYNAMIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufScale);
+    gl.bufferData(gl.ARRAY_BUFFER, this.nodeScaleData, gl.DYNAMIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.orbInstBufAlpha);
+    gl.bufferData(gl.ARRAY_BUFFER, this.nodeAlphaData, gl.DYNAMIC_DRAW);
+  }
+
+  /** Get current tPos GPU texture for downstream consumption. */
+  get posTexture(): WebGLTexture { return this.tPosFBO.tex; }
+  /** Get current tLife GPU texture. */
+  get lifeTexture(): WebGLTexture { return this.tLifeFBO.tex; }
+  /** Number of active edges. */
+  get edgeCount(): number { return this.edges.length; }
+  /** Number of active nodes. */
+  get nodeCount(): number { return this.nodes.length; }
+
+  // ─── dispose: delete all GPU resources ────────────────────────────────────
+
+  dispose(): void {
+    if (!this.initialized) return;
+    const gl = this.gl;
+
+    // Delete programs
+    gl.deleteProgram(this.tubeProg);
+    gl.deleteProgram(this.orbProg);
+    gl.deleteProgram(this.chainProg);
+    gl.deleteProgram(this.gpgpuProg);
+    gl.deleteProgram(this.lifeProg);
+    gl.deleteProgram(this.displayProg);
+
+    // Delete geometry buffers
+    gl.deleteBuffer(this.tubeGeomBuf);
+    gl.deleteBuffer(this.chainGeomBuf);
+    gl.deleteBuffer(this.orbQuadBuf);
+    gl.deleteBuffer(this.fsQuadBuf);
+
+    // Delete instanced attribute buffers
+    gl.deleteBuffer(this.tubeInstBufSrc);
+    gl.deleteBuffer(this.tubeInstBufDst);
+    gl.deleteBuffer(this.tubeInstBufData);
+    gl.deleteBuffer(this.orbInstBufXYZ);
+    gl.deleteBuffer(this.orbInstBufScale);
+    gl.deleteBuffer(this.orbInstBufAlpha);
+
+    // Delete GPGPU FBOs
+    gl.deleteFramebuffer(this.tPosFBO.fbo);
+    gl.deleteTexture(this.tPosFBO.tex);
+    gl.deleteFramebuffer(this.tPosBack.fbo);
+    gl.deleteTexture(this.tPosBack.tex);
+    gl.deleteFramebuffer(this.tLifeFBO.fbo);
+    gl.deleteTexture(this.tLifeFBO.tex);
+    gl.deleteFramebuffer(this.tLifeBack.fbo);
+    gl.deleteTexture(this.tLifeBack.tex);
+
+    // Delete scene FBO
+    gl.deleteFramebuffer(this.sceneFBO.fbo);
+    gl.deleteTexture(this.sceneFBO.tex);
+
+    // Delete placeholder textures
+    gl.deleteTexture(this.tWhite);
+    gl.deleteTexture(this.tBlueGray);
+
+    this.initialized = false;
+  }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
 
-  private _writeTubeUniforms(elapsed: number): void {
-    const { device, cfg, canvas } = this;
-    const cw = canvas.width  || 1;
-    const ch = canvas.height || 1;
-    const data = new Float32Array(TUBE_UNIFORMS_BYTES / 4);
+  /** Compile vert + frag → WebGLProgram. */
+  private _compile(vertSrc: string, fragSrc: string, label: string): WebGLProgram {
+    const gl = this.gl;
 
-    data[TU_TIME             / 4] = elapsed;
-    data[TU_SCROLL           / 4] = cfg.uScroll;
-    data[TU_REFLECTION_BLEND / 4] = cfg.uReflectionBlend;
-    data[TU_NORMAL_STRENGTH  / 4] = cfg.uNormalStrength;
-    data[TU_ORB_ALPHA        / 4] = cfg.uOrbAlpha;
-    data[TU_CHAIN_AMP        / 4] = cfg.uChainAmplitude;
-    data[TU_CHAIN_FREQ       / 4] = cfg.uChainFrequency;
-    data[TU_TUBE_LIFE_SPEED  / 4] = cfg.uTubeLifeSpeed;
-    data[TU_SCALE_X          / 4] = 2.0 / cw;
-    data[TU_SCALE_Y          / 4] = 2.0 / ch;
-    data[TU_SCALE_Z          / 4] = 1.0;
-    data[TU_CANVAS_W         / 4] = cw;
-    data[TU_CANVAS_H         / 4] = ch;
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vertSrc);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(vs);
+      gl.deleteShader(vs);
+      throw new Error(`[ATTubeOrbChain] vert compile error (${label}): ${log}`);
+    }
 
-    const u32 = new Uint32Array(data.buffer);
-    u32[TU_NODE_COUNT / 4] = this.nodes.length;
-    u32[TU_EDGE_COUNT / 4] = this.edges.length;
-    u32[TU_TEX_W      / 4] = TEX_W;
-    u32[TU_TEX_H      / 4] = TEX_H;
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, fragSrc);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(fs);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      throw new Error(`[ATTubeOrbChain] frag compile error (${label}): ${log}`);
+    }
 
-    device.queue.writeBuffer(this.tubeUniformBuf, 0, data);
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(prog);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      gl.deleteProgram(prog);
+      throw new Error(`[ATTubeOrbChain] link error (${label}): ${log}`);
+    }
+
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
   }
 
-  private _writeWorkUniforms(elapsed: number): void {
-    const { device, cfg, canvas } = this;
-    const cw = canvas.width  || 1;
-    const ch = canvas.height || 1;
-    const data = new Float32Array(WORK_UNIFORMS_BYTES / 4);
+  /** Create a single-texture FBO. */
+  private _createFBO(
+    w: number, h: number,
+    format: number, type: number,
+  ): { fbo: WebGLFramebuffer; tex: WebGLTexture } {
+    const gl = this.gl;
 
-    data[WU_TIME            / 4] = elapsed;
-    data[WU_TUBE_TIME_SPEED / 4] = cfg.uWorkTubeTimeSpeed;
-    data[WU_PARTICLE_SIZE   / 4] = cfg.uWorkParticleSize;
-    data[WU_DPR             / 4] = cfg.uWorkDPR;
-    data[WU_SIZE_BIAS       / 4] = 1.0;
-    data[WU_SCALE_X         / 4] = 2.0 / cw;
-    data[WU_SCALE_Y         / 4] = 2.0 / ch;
-    data[WU_SCALE_Z         / 4] = 1.0;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, format, w, h, 0, format, type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    const u32 = new Uint32Array(data.buffer);
-    u32[WU_PARTICLE_COUNT / 4] = this.workParticleCount;
-    u32[WU_TEX_W          / 4] = TEX_W;
-    u32[WU_TEX_H          / 4] = TEX_H;
+    const fbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-    device.queue.writeBuffer(this.workUniformBuf, 0, data);
+    return { fbo, tex };
   }
 
-  private _buildBindGroups(): void {
-    const { device } = this;
-    const w = this.tWhite1x1View;
-    const s = this.sampler;
-
-    // ── Node compute ─────────────────────────────────────────────────────────
-    this.nodeCBG0 = device.createBindGroup({
-      layout:  this.nodeComputePipe.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.tubeUniformBuf } }],
-    });
-    this.nodeCBG1 = device.createBindGroup({
-      layout:  this.nodeComputePipe.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: { buffer: this.nodeStateBuf } },
-        { binding: 1, resource: this.tOrbPosView },
-      ],
-    });
-
-    // ── Edge compute ─────────────────────────────────────────────────────────
-    this.edgeCBG0 = device.createBindGroup({
-      layout:  this.edgeComputePipe.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.tubeUniformBuf } }],
-    });
-    this.edgeCBG1 = device.createBindGroup({
-      layout:  this.edgeComputePipe.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: { buffer: this.nodeStateBuf } },
-        { binding: 1, resource: { buffer: this.edgeStateBuf } },
-        { binding: 2, resource: this.tChainPosView },
-      ],
-    });
-
-    // ── Work particle compute ─────────────────────────────────────────────────
-    this.workCBG0 = device.createBindGroup({
-      layout:  this.workPartPipe.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.workUniformBuf } }],
-    });
-    this.workCBG1 = device.createBindGroup({
-      layout:  this.workPartPipe.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: { buffer: this.workParticleBuf } },
-        { binding: 1, resource: this.tWorkPosView },
-      ],
-    });
-
-    // ── Orb render ────────────────────────────────────────────────────────────
-    this.orbRBG = device.createBindGroup({
-      layout:  this.orbRenderPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.tubeUniformBuf } },
-        { binding: 1, resource: this.tOrbPosView },
-        { binding: 2, resource: s },
-        { binding: 3, resource: w },   // tMap placeholder
-        { binding: 4, resource: s },
-      ],
-    });
-
-    // ── Tube edge render ──────────────────────────────────────────────────────
-    this.tubeRBG = device.createBindGroup({
-      layout:  this.tubeRenderPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.tubeUniformBuf } },
-        { binding: 5, resource: { buffer: this.edgeStateBuf } },
-        { binding: 6, resource: { buffer: this.nodeStateBuf } },
-        { binding: 7, resource: w },   // tTubeColor placeholder
-        { binding: 8, resource: w },   // tRefraction placeholder
-        { binding: 9, resource: s },
-      ],
-    });
-
-    // ── Chain render ──────────────────────────────────────────────────────────
-    this.chainRBG = device.createBindGroup({
-      layout:  this.chainRenderPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0,  resource: { buffer: this.tubeUniformBuf } },
-        { binding: 5,  resource: { buffer: this.edgeStateBuf } },
-        { binding: 6,  resource: { buffer: this.nodeStateBuf } },
-        { binding: 9,  resource: s },
-        { binding: 10, resource: w },   // tBaseColor placeholder
-        { binding: 11, resource: w },   // tRefraction placeholder
-      ],
-    });
-
-    // ── WorkTube render ───────────────────────────────────────────────────────
-    this.workTubeRBG = device.createBindGroup({
-      layout:  this.workTubePipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.workUniformBuf } },
-        { binding: 1, resource: { buffer: this.nodeStateBuf } },
-      ],
-    });
-
-    // ── WorkDetail particle render ────────────────────────────────────────────
-    this.workPartRBG = device.createBindGroup({
-      layout:  this.workPartRenderPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.workUniformBuf } },
-        { binding: 2, resource: this.tWorkPosView },
-        { binding: 3, resource: s },
-        { binding: 4, resource: w },   // tMap placeholder
-        { binding: 5, resource: s },
-      ],
-    });
+  /** Get HALF_FLOAT type, falling back to FLOAT. */
+  private _getHalfFloat(): number {
+    const gl  = this.gl;
+    const ext = gl.getExtension('OES_texture_half_float');
+    if (ext) return ext.HALF_FLOAT_OES;
+    gl.getExtension('OES_texture_float');
+    return gl.FLOAT;
   }
 
-  private _destroy(): void {
-    if (!this.built) return;
-    this.tubeUniformBuf?.destroy();
-    this.workUniformBuf?.destroy();
-    this.nodeStateBuf?.destroy();
-    this.edgeStateBuf?.destroy();
-    this.workParticleBuf?.destroy();
-    this.tOrbPos?.destroy();
-    this.tChainPos?.destroy();
-    this.tWorkPos?.destroy();
-    this.tWhite1x1?.destroy();
-    this.built = false;
+  /** Upload initial world positions of nodes + edges into tPosFBO texture. */
+  private _uploadInitialPositions(): void {
+    const gl  = this.gl;
+    const data = new Float32Array(GPGPU_TEX_W * GPGPU_TEX_H * 4);
+    // Encode node positions at the start of the texture.
+    for (let i = 0; i < Math.min(this.nodes.length, GPGPU_TEX_W * GPGPU_TEX_H); i++) {
+      const n = this.nodes[i];
+      data[i * 4 + 0] = n.x;
+      data[i * 4 + 1] = n.y;
+      data[i * 4 + 2] = n.z;
+      data[i * 4 + 3] = 1.0;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, this.tPosFBO.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, GPGPU_TEX_W, GPGPU_TEX_H,
+                  0, gl.RGBA, gl.FLOAT, data);
+    gl.bindTexture(gl.TEXTURE_2D, this.tPosBack.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, GPGPU_TEX_W, GPGPU_TEX_H,
+                  0, gl.RGBA, gl.FLOAT, data);
+  }
+
+  /** Upload initial life values (all 0) into tLifeFBO. */
+  private _uploadInitialLife(): void {
+    const gl   = this.gl;
+    const data = new Float32Array(GPGPU_TEX_W * GPGPU_TEX_H * 4);  // all zeros
+    gl.bindTexture(gl.TEXTURE_2D, this.tLifeFBO.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, GPGPU_TEX_W, GPGPU_TEX_H,
+                  0, gl.RGBA, gl.FLOAT, data);
+    gl.bindTexture(gl.TEXTURE_2D, this.tLifeBack.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, GPGPU_TEX_W, GPGPU_TEX_H,
+                  0, gl.RGBA, gl.FLOAT, data);
+  }
+
+  /** Build CPU-side per-instance Float32Arrays from current nodes/edges. */
+  private _buildInstanceData(): void {
+    const nEdges = this.edges.length;
+    const nNodes = this.nodes.length;
+    const nodeIdx = new Map(this.nodes.map((n, i) => [n.nodeId, i]));
+
+    this.edgeSrcData  = new Float32Array(nEdges * 3);
+    this.edgeDstData  = new Float32Array(nEdges * 3);
+    this.edgeInstData = new Float32Array(nEdges * 4);
+
+    for (let i = 0; i < nEdges; i++) {
+      const e   = this.edges[i];
+      const si  = nodeIdx.get(e.sourceId) ?? 0;
+      const di  = nodeIdx.get(e.targetId) ?? 0;
+      const src = this.nodes[si];
+      const dst = this.nodes[di];
+      const dx  = (dst?.x ?? 0) - (src?.x ?? 0);
+      const dy  = (dst?.y ?? 0) - (src?.y ?? 0);
+      const dz  = (dst?.z ?? 0) - (src?.z ?? 0);
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      this.edgeSrcData[i * 3 + 0] = src?.x ?? 0;
+      this.edgeSrcData[i * 3 + 1] = src?.y ?? 0;
+      this.edgeSrcData[i * 3 + 2] = src?.z ?? 0;
+
+      this.edgeDstData[i * 3 + 0] = dst?.x ?? 0;
+      this.edgeDstData[i * 3 + 1] = dst?.y ?? 0;
+      this.edgeDstData[i * 3 + 2] = dst?.z ?? 0;
+
+      this.edgeInstData[i * 4 + 0] = 0.0;           // life starts at 0
+      this.edgeInstData[i * 4 + 1] = len;            // edge length
+      this.edgeInstData[i * 4 + 2] = e.weight ?? 1.0;
+      this.edgeInstData[i * 4 + 3] = 0.0;            // hue override
+    }
+
+    this.nodeXYZData   = new Float32Array(nNodes * 3);
+    this.nodeScaleData = new Float32Array(nNodes);
+    this.nodeAlphaData = new Float32Array(nNodes);
+
+    for (let i = 0; i < nNodes; i++) {
+      const n = this.nodes[i];
+      this.nodeXYZData[i * 3 + 0] = n.x;
+      this.nodeXYZData[i * 3 + 1] = n.y;
+      this.nodeXYZData[i * 3 + 2] = n.z;
+      this.nodeScaleData[i]        = n.scale ?? 1.0;
+      this.nodeAlphaData[i]        = 1.0;
+    }
+  }
+
+  /** Draw a fullscreen quad for GPGPU passes. */
+  private _drawFSQuad(program: WebGLProgram): void {
+    const gl    = this.gl;
+    const aPos  = gl.getAttribLocation(program, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.fsQuadBuf);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  /**
+   * Build a simple orthographic MVP matrix that maps world coords to NDC.
+   * Matches AT's camera setup: origin at center, Y-up, Z toward viewer.
+   */
+  private _buildMVP(w: number, h: number): Float32Array {
+    // Simple ortho: [-w/2, w/2] × [-h/2, h/2] → NDC [-1,1]
+    const scaleX = 2.0 / (w || 1);
+    const scaleY = 2.0 / (h || 1);
+    // Column-major 4×4 ortho matrix
+    return new Float32Array([
+      scaleX,  0,       0, 0,
+      0,       scaleY,  0, 0,
+      0,       0,       1, 0,
+      0,       0,       0, 1,
+    ]);
   }
 }
 
-// ─── Factory helpers ──────────────────────────────────────────────────────────
+// ─── Factory helpers ───────────────────────────────────────────────────────────
 
 /**
- * Create an ATTubeOrbChain from raw topology data.
- *
- * @param device       — WebGPU device
- * @param canvas       — render canvas
- * @param nodeList     — array of { id, x, y, z, type? } records
- * @param edgeList     — array of { id, src, dst, weight? } records
- * @param config       — optional config overrides
+ * Create ATTubeOrbChain from topology data and call init().
  *
  * @example
  * ```ts
- * const chain = await createTubeOrbChainFromTopology(device, canvas, nodes, edges);
+ * const chain = createTubeOrbChain(gl, canvas, nodes, edges);
+ * // render loop:
+ * chain.tick(elapsed, dt);
+ * chain.render(canvas.width, canvas.height);
  * ```
  */
-export async function createTubeOrbChainFromTopology(
-  device:   GPUDevice,
-  canvas:   HTMLCanvasElement,
-  nodeList: Array<{ id: string; x: number; y: number; z: number; type?: 0 | 1 }>,
-  edgeList: Array<{ id: string; src: string; dst: string; weight?: number }>,
-  config:   ATTubeOrbChainConfig = {},
-): Promise<ATTubeOrbChain> {
-  const nodes: TubeNode[] = nodeList.map(n => ({
-    nodeId: n.id,
-    x: n.x, y: n.y, z: n.z,
-    type: n.type ?? 0,
-  }));
-  const edges: TubeEdgeDef[] = edgeList.map(e => ({
-    edgeId:     e.id,
-    sourceId:   e.src,
-    targetId:   e.dst,
-    weight:     e.weight ?? 1.0,
-    renderMode: 2,
-  }));
-  const chain = new ATTubeOrbChain(device, canvas, nodes, edges, config);
-  await chain.build();
+export function createTubeOrbChain(
+  gl:      WebGLRenderingContext,
+  canvas:  HTMLCanvasElement,
+  nodes:   TubeNode[],
+  edges:   TubeEdge[],
+  config?: ATTubeOrbChainConfig,
+): ATTubeOrbChain {
+  const chain = new ATTubeOrbChain(gl, canvas, nodes, edges, config);
+  chain.init();
   return chain;
 }
 
 /**
- * Convert a pixel-space node layout into normalised world-space TubeNode array.
- *
- * @param records  — nodes with pixel-space (px, py) coordinates
- * @param canvasW  — canvas pixel width
- * @param canvasH  — canvas pixel height
- * @param domainW  — world domain width
- * @param domainH  — world domain height
+ * Convert pixel-space layout into TubeNode world coordinates.
  */
 export function pixelNodesToTubeNodes(
-  records: Array<{ nodeId: string; px: number; py: number; type?: 0 | 1; scale?: number }>,
+  records: Array<{ nodeId: string; px: number; py: number; scale?: number }>,
   canvasW: number,
   canvasH: number,
   domainW: number,
@@ -2023,20 +1414,19 @@ export function pixelNodesToTubeNodes(
     y:      r.py * sy,
     z:      0,
     scale:  r.scale ?? 1.0,
-    type:   r.type  ?? 0,
   }));
 }
 
-// ─── Defaults re-export ────────────────────────────────────────────────────────
+// ─── Constants re-export ──────────────────────────────────────────────────────
 
 export const AT_TUBE_ORB_CHAIN_DEFAULTS = {
-  maxNodes:          MAX_NODES,
-  maxEdges:          MAX_EDGES,
-  maxWorkParticles:  MAX_WORK_PARTICLES,
-  texW:              TEX_W,
-  texH:              TEX_H,
-  nodeStride:        NODE_STRIDE,
-  edgeStride:        EDGE_STRIDE,
-  workParticleStride: WORK_PARTICLE_STRIDE,
-  workgroupSize:     WG,
+  maxNodes:   MAX_NODES,
+  maxEdges:   MAX_EDGES,
+  radialSegs: RADIAL_SEGS,
+  lineSegs:   LINE_SEGS,
+  chainLinks: CHAIN_LINKS,
+  posTexW:    POS_TEX_W,
+  posTexH:    POS_TEX_H,
+  gpgpuTexW:  GPGPU_TEX_W,
+  gpgpuTexH:  GPGPU_TEX_H,
 } as const;
