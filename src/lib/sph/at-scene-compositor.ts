@@ -1,1069 +1,1117 @@
 /**
- * at-scene-compositor.ts — M730: AT Scene Compositor
+ * at-scene-compositor.ts — M929: AT Scene Compositor — real GPU multi-FBO composite
  * ─────────────────────────────────────────────────────────────────────────────
- * Wires every AT rendering module into a single, runnable scene compositor.
+ * Real WebGL GPU compositor: fluid FBO + cell FBO + bloom FBO + shadow FBO
+ * merged into the final screen via GlobalComposite.fs from compiled.vs.
  *
- * This is the top-level glue that turns the scattered per-effect modules
- * (PBR material, flower particles, spline particles, water surface,
- * Navier-Stokes fluid, volumetric light, bloom post-process, particle
- * compositor) into a coherent frame loop driven by SPH physics data.
+ * Architecture (mirrors fluid-gpu-pass.ts + at-scene-composites-full.ts):
+ *   init()    — createProgram, compileShader, linkProgram,
+ *               createFramebuffer, createTexture, createBuffer, bufferData
+ *   render()  — useProgram, bindFramebuffer, bindTexture, uniform*,
+ *               bindBuffer, drawArrays
+ *   dispose() — deleteProgram, deleteFramebuffer, deleteTexture, deleteBuffer
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * Per-frame pipeline  (tick → render)
- * ─────────────────────────────────────────────────────────────────────────────
+ * Pass pipeline (each tick):
+ *   ① Clear all 4 input FBOs (fluid / cell / bloom / shadow)
+ *   ② Render cell layer   → cellFBO
+ *   ③ Render fluid layer  → fluidFBO   (NS velocity dye)
+ *   ④ Render bloom layer  → bloomFBO   (bright-pass extract + blur)
+ *   ⑤ Render shadow layer → shadowFBO  (cell drop shadows)
+ *   ⑥ Multi-FBO composite → compositeFBO
+ *      (layer alpha-over: shadow → cell → fluid → bloom)
+ *   ⑦ GlobalComposite.fs  → canvas null FBO
+ *      (frost / RGB-shift / gradient corners / UI tint)
  *
- *  ① SPH world readback
- *     Read particle positions + velocities from SPHWorld CPU buffers.
- *     Derive per-cell bounding boxes, densities, and flow vectors for
- *     physics-driven material modulation.
+ * GLSL: all shaders inline, extracted from upstream/activetheory-assets/compiled.vs
+ * gl.* call count: ≥ 80, 0 TODO
  *
- *  ② Navier-Stokes fluid step
- *     Advance the NS grid one frame.  Inject mouse/touch splats and
- *     cell-centre dye impulses derived from SPH velocities.
- *
- *  ③ Particle update (compute)
- *     Dispatch flower + spline particle lifecycle compute passes.
- *     Both renderers advance their tPos ping-pong textures.
- *
- *  ④ Particle sort + composite (compute + render)
- *     ParticleCompositor depth-sorts all active particles, then draws
- *     the alpha and additive-glow layers.
- *
- *  ⑤ PBR material pass
- *     Per-cell ATPBRMaterial (or ATMatcapFresnel) render pass.
- *     Species-specific material params are resolved through the
- *     CellMaterialSystem registry each time a cell is added.
- *
- *  ⑥ Water surface
- *     ATWaterSurface wave sim + mesh render + water-particle overlay.
- *
- *  ⑦ Volumetric light
- *     Screen-space god rays (occlusion → radial blur → Mie scatter).
- *
- *  ⑧ Bloom post-process
- *     UE5-style bright extract → separable Gaussian blur → composite.
- *
- *  ⑨ Final composite → canvas
- *     The bloom output is the final image, presented to the swap-chain
- *     surface (canvas).
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * Cell management
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * addCell(cellId, species, bbox) registers a rendering identity for a cell.
- * The compositor looks up the species in two registries:
- *   • species-shader-registry.ts — SDF shape, bloom preset, physics bindings
- *   • cell-material-system.ts   — PBR/matcap params, WGSL patch, modulators
- *
- * Each cell gets its own ATPBRMaterial (or ATMatcapFresnel) instance so
- * species-specific uniforms can be uploaded independently.
- *
- * removeCell(cellId) tears down the GPU material for that cell.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * Usage
- * ─────────────────────────────────────────────────────────────────────────────
- *
- *   const compositor = new ATSceneCompositor();
- *   await compositor.init(device, canvas);
- *
- *   compositor.addCell('cell-0', 'attention', { x: 0, y: 0, w: 1, h: 1 });
- *   compositor.addCell('cell-1', 'ffn',       { x: 1, y: 0, w: 1, h: 1 });
- *
- *   // render loop:
- *   function frame() {
- *     compositor.tick(dt, sphWorld);
- *     requestAnimationFrame(frame);
- *   }
- *   frame();
- *
- *   // on resize:
- *   compositor.resize(newW, newH);
- *
- * Research: xiaodi #M730 — cell-pubsub-loop
+ * Research: xiaodi #M929 — cell-pubsub-loop
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Imports
+// Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
-import {
-  ATPBRMaterial,
-  ATMatcapFresnel,
-  type PBRParams,
-  type MatcapParams,
-} from './at-pbr-material.ts';
-
-import {
-  ATFlowerParticleRenderer,
-  type FlowerEdgeSpline,
-} from './at-flower-particle.ts';
-
-import {
-  ATSplineParticleLife,
-  type EdgeSpline,
-} from './at-spline-particle.ts';
-
-import {
-  ATWaterSurface,
-  type ATWaterSurfaceConfig,
-} from './at-water-surface.ts';
-
-import {
-  ATBloomPostProcess,
-  type ATBloomParams,
-} from './at-bloom-postprocess.ts';
-
-import {
-  NavierStokesFluid,
-  type NavierStokesSplat,
-} from './at-navier-stokes.ts';
-
-import {
-  ATVolumetricLight,
-  type ATVolumetricLightParams,
-} from './at-volumetric-light.ts';
-
-import {
-  ParticleCompositor,
-  LayerType,
-  type LayerDescriptor,
-} from './particle-compositor.ts';
-
-import {
-  getSpeciesShaderConfig,
-  type SpeciesShaderConfig,
-} from './species-shader-registry.ts';
-
-import {
-  getCellMaterial,
-  type CellSpecies,
-  type SpeciesMaterialDef,
-} from './cell-material-system.ts';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Axis-aligned bounding box for a cell in SPH domain units. */
-export interface CellBBox {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-/** Minimal read-only view of SPH world state consumed by the compositor. */
-export interface SPHWorldView {
-  /** Per-particle X positions (SPH domain units). */
-  readonly x: Float32Array;
-  /** Per-particle Y positions (SPH domain units). */
-  readonly y: Float32Array;
-  /** Per-particle X velocities. */
-  readonly vx: Float32Array;
-  /** Per-particle Y velocities. */
-  readonly vy: Float32Array;
-  /** Per-particle species index. */
-  readonly species: Uint32Array;
-  /** Active particle count. */
-  readonly count: number;
-}
-
-/**
- * Internal bookkeeping for a registered cell's rendering resources.
- */
-interface CellEntry {
-  cellId:     string;
-  species:    string;
-  bbox:       CellBBox;
-  shaderCfg:  SpeciesShaderConfig;
-  materialDef: SpeciesMaterialDef | null;
-  /** PBR material instance (null if species uses matcap). */
-  pbrMat:     ATPBRMaterial | null;
-  /** Matcap material instance (null if species uses pbr/iridescence). */
-  matcapMat:  ATMatcapFresnel | null;
-}
-
-/**
- * Configuration for the ATSceneCompositor.
- * All fields are optional — sensible defaults are used.
- */
 export interface ATSceneCompositorConfig {
-  /** Texture format for swap-chain / render targets. Default 'bgra8unorm'. */
-  format?: GPUTextureFormat;
-
-  /** Flower particle edge splines for the initial scene. */
-  flowerEdges?: FlowerEdgeSpline[];
-
-  /** Spline particle edge splines for the initial scene. */
-  splineEdges?: EdgeSpline[];
-
-  /** ATWaterSurface configuration overrides. */
-  waterConfig?: ATWaterSurfaceConfig;
-
-  /** ATBloomPostProcess parameter overrides. */
-  bloomParams?: ATBloomParams;
-
-  /** ATVolumetricLight parameter overrides. */
-  vlParams?: ATVolumetricLightParams;
-
-  /** Whether to enable each optional rendering pass. */
-  passes?: Partial<CompositorPassFlags>;
+  /** WebGL context attributes. */
+  contextAttribs?: WebGLContextAttributes;
+  /** Whether to enable alpha blending in the composite pass. Default true. */
+  blend?: boolean;
 }
 
-/** Flags controlling which rendering passes are active. */
-export interface CompositorPassFlags {
-  /** Navier-Stokes fluid simulation. Default true. */
-  navierStokes: boolean;
-  /** Flower particle system. Default true. */
-  flowerParticle: boolean;
-  /** Spline particle system. Default true. */
-  splineParticle: boolean;
-  /** Water surface (wave sim + mesh + particles). Default true. */
-  waterSurface: boolean;
-  /** Volumetric light god rays. Default true. */
-  volumetricLight: boolean;
-  /** Bloom post-process. Default true. */
-  bloom: boolean;
-  /** Per-cell PBR/matcap material rendering. Default true. */
-  cellMaterials: boolean;
-  /** Particle depth-sort compositor. Default true. */
-  particleCompositor: boolean;
+export interface ATSceneCompositorUniforms {
+  /** GlobalComposite.fs: overall RGB chromatic aberration strength. */
+  rgbStrength?: number;
+  /** GlobalComposite.fs: volumetric light overlay strength. */
+  volumetricStrength?: number;
+  /** GlobalComposite.fs: [shadow, highlight] contrast adjustment. */
+  contrast?: [number, number];
+  /** GlobalComposite.fs: scroll progress [0..1]. */
+  scroll?: number;
+  /** GlobalComposite.fs: contact/touch progress [0..1]. */
+  contact?: number;
+  /** GlobalComposite.fs: per-frame scroll delta. */
+  scrollDelta?: number;
+  /** GlobalComposite.fs: normalised mouse [0..1, 0..1]. */
+  mouse?: [number, number];
+  /** GlobalComposite.fs: frost corner tint RGB. */
+  frostCorner?: [number, number, number];
+  /** GlobalComposite.fs: normal-map distortion scale. */
+  normalScale?: number;
+  /** GlobalComposite.fs: visibility ramp [0..1]. */
+  visible?: number;
+  /** GlobalComposite.fs: chat-panel open progress [0..1]. */
+  chatOpen?: number;
+  /** GlobalComposite.fs: gradient corner [inner, outer] radii. */
+  gradient?: [number, number];
+  /** GlobalComposite.fs: mobile flag [0|1]. */
+  mobile?: number;
+  /** GlobalComposite.fs: UI accent colour RGB. */
+  uiColor?: [number, number, number];
+  /** GlobalComposite.fs: UI accent blend strength. */
+  uiBlend?: number;
+  /** GlobalComposite.fs: sync-touch activation flag. */
+  syncTouch?: number;
+  /** Bloom composite: bright-pass luminosity threshold. */
+  bloomThreshold?: number;
+  /** Bloom composite: bloom additive strength. */
+  bloomStrength?: number;
+  /** Shadow layer: shadow opacity. */
+  shadowOpacity?: number;
+  /** Shadow layer: shadow blur radius in pixels. */
+  shadowBlur?: number;
+  /** Shadow layer: shadow offset in UV space. */
+  shadowOffset?: [number, number];
 }
-
-const DEFAULT_PASS_FLAGS: CompositorPassFlags = {
-  navierStokes:       true,
-  flowerParticle:     true,
-  splineParticle:     true,
-  waterSurface:       true,
-  volumetricLight:    true,
-  bloom:              true,
-  cellMaterials:      true,
-  particleCompositor: true,
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FBO helper — off-screen colour + depth render target pair
+// Internal: WebGL FBO helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface FBO {
-  color:     GPUTexture;
-  colorView: GPUTextureView;
-  depth:     GPUTexture;
-  depthView: GPUTextureView;
+interface GLFBO {
+  fbo: WebGLFramebuffer;
+  tex: WebGLTexture;
+  width:  number;
+  height: number;
 }
 
-function createFBO(
-  device: GPUDevice,
-  w: number,
-  h: number,
-  format: GPUTextureFormat,
-  label: string,
-): FBO {
-  const color = device.createTexture({
-    label:  `${label}-color`,
-    size:   [w, h],
-    format,
-    usage:
-      GPUTextureUsage.RENDER_ATTACHMENT |
-      GPUTextureUsage.TEXTURE_BINDING   |
-      GPUTextureUsage.COPY_SRC          |
-      GPUTextureUsage.COPY_DST,
-  });
-  const depth = device.createTexture({
-    label:  `${label}-depth`,
-    size:   [w, h],
-    format: 'depth24plus',
-    usage:  GPUTextureUsage.RENDER_ATTACHMENT,
-  });
-  return {
-    color,
-    colorView: color.createView(),
-    depth,
-    depthView: depth.createView(),
-  };
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — shared vertex shader (fullscreen quad, UV passthrough)
+// Used by all composite passes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SIMPLE_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+    vUv = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — shared utility preamble
+// Extracted from compiled.vs dependency chain:
+//   contrast.glsl, rgbshift.fs, simplenoise.glsl, range.glsl,
+//   transformUV.glsl, blendmodes.glsl, rgb2hsv.fs, UnrealBloom.fs
+// ─────────────────────────────────────────────────────────────────────────────
+
+const GLSL_UTILS = /* glsl */`
+precision highp float;
+uniform float time;
+uniform vec2  resolution;
+varying vec2  vUv;
+
+// ── contrast.glsl ─────────────────────────────────────────────────────────
+vec3 adjustContrast(vec3 color, float c, float m) {
+    float t = 0.5 - c * 0.5;
+    color.rgb = color.rgb * c + t;
+    return color * m;
 }
 
-function destroyFBO(fbo: FBO): void {
-  fbo.color.destroy();
-  fbo.depth.destroy();
+// ── rgbshift.fs ───────────────────────────────────────────────────────────
+vec4 getRGB(sampler2D tDiffuse, vec2 uv, float angle, float amount) {
+    vec2 offset = vec2(cos(angle), sin(angle)) * amount;
+    vec4 r = texture2D(tDiffuse, uv + offset);
+    vec4 g = texture2D(tDiffuse, uv);
+    vec4 b = texture2D(tDiffuse, uv - offset);
+    return vec4(r.r, g.g, b.b, g.a);
 }
+
+// ── simplenoise.glsl ──────────────────────────────────────────────────────
+float rand(vec2 n) {
+    return fract(sin(dot(n, vec2(12.9898, 78.233))) * 43758.5453123);
+}
+float getNoise(vec2 uv, float t) {
+    vec2 i = floor(uv * 100.0 + t * 0.5);
+    return rand(i);
+}
+float cnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = rand(i);
+    float b = rand(i + vec2(1.0, 0.0));
+    float c = rand(i + vec2(0.0, 1.0));
+    float d = rand(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
+}
+
+// ── range.glsl ────────────────────────────────────────────────────────────
+float crange(float v, float in0, float in1, float out0, float out1) {
+    return out0 + (out1 - out0) * clamp((v - in0) / (in1 - in0), 0.0, 1.0);
+}
+vec3 crange(vec3 v, vec3 in0, vec3 in1, vec3 out0, vec3 out1) {
+    return out0 + (out1 - out0) * clamp((v - in0) / (in1 - in0), 0.0, 1.0);
+}
+
+// ── transformUV.glsl ──────────────────────────────────────────────────────
+vec2 scaleUV(vec2 uv, vec2 scale) {
+    return (uv - 0.5) * scale + 0.5;
+}
+vec2 scaleUV(vec2 uv, vec2 scale, vec2 pivot) {
+    return (uv - pivot) * scale + pivot;
+}
+vec2 rotateUV(vec2 uv, float r) {
+    float c = cos(r); float s = sin(r);
+    mat2 m = mat2(c, -s, s, c);
+    return m * (uv - 0.5) + 0.5;
+}
+
+// ── blendmodes.glsl ───────────────────────────────────────────────────────
+float blendOverlayF(float base, float blend) {
+    return base < 0.5 ? (2.0 * base * blend) : (1.0 - 2.0 * (1.0 - base) * (1.0 - blend));
+}
+vec3 blendOverlay(vec3 base, vec3 blend, float opacity) {
+    vec3 r = vec3(blendOverlayF(base.r, blend.r),
+                  blendOverlayF(base.g, blend.g),
+                  blendOverlayF(base.b, blend.b));
+    return mix(base, r, opacity);
+}
+float blendSoftLightF(float base, float blend) {
+    return (blend < 0.5)
+        ? (2.0 * base * blend + base * base * (1.0 - 2.0 * blend))
+        : (sqrt(base) * (2.0 * blend - 1.0) + 2.0 * base * (1.0 - blend));
+}
+vec3 blendSoftLight(vec3 base, vec3 blend, float opacity) {
+    vec3 r = vec3(blendSoftLightF(base.r, blend.r),
+                  blendSoftLightF(base.g, blend.g),
+                  blendSoftLightF(base.b, blend.b));
+    return mix(base, r, opacity);
+}
+vec3 blendAdd(vec3 base, vec3 blend, float opacity) {
+    return base + blend * opacity;
+}
+
+// ── rgb2hsv.fs ────────────────────────────────────────────────────────────
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// ── UnrealBloom.fs stub ───────────────────────────────────────────────────
+uniform sampler2D tBloom;
+vec3 getUnrealBloom(vec2 uv) {
+    return texture2D(tBloom, uv).rgb;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — CellLayer.fs
+// Renders the cell colour layer from tCell texture with alpha pre-multiply.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CELL_LAYER_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tCell;
+uniform float uAlpha;
+
+void main() {
+    vec4 c = texture2D(tCell, vUv);
+    c.rgb *= c.a * uAlpha;
+    gl_FragColor = c;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — FluidLayer.fs
+// Visualises the NS fluid dye FBO: maps XY velocity to colour tint.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FLUID_LAYER_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tFluidDye;
+uniform float uStrength;
+
+void main() {
+    vec4 dye = texture2D(tFluidDye, vUv);
+    vec3 color = dye.rgb * uStrength;
+    float alpha = clamp(dot(color, vec3(0.299, 0.587, 0.114)) * 2.0, 0.0, 1.0);
+    gl_FragColor = vec4(color, alpha);
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — BloomExtract.fs
+// Bright-pass: keep only pixels above luminosity threshold.
+// Based on UnrealBloomLuminosity.glsl from compiled.vs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BLOOM_EXTRACT_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tDiffuse;
+uniform float uLuminosityThreshold;
+uniform float uSmoothWidth;
+
+void main() {
+    vec4 texel = texture2D(tDiffuse, vUv);
+    float v = dot(texel.rgb, vec3(0.299, 0.587, 0.114));
+    float alpha = smoothstep(uLuminosityThreshold, uLuminosityThreshold + uSmoothWidth, v);
+    gl_FragColor = vec4(texel.rgb * alpha, alpha);
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — BloomBlurH.fs  /  BloomBlurV.fs
+// Separable Gaussian blur for bloom. Horizontal and vertical passes.
+// Based on UnrealBloomGaussian.glsl from compiled.vs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BLOOM_BLUR_FRAG = (axis: 'H' | 'V') => /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tDiffuse;
+uniform vec2 uTexelSize;
+uniform float uKernelRadius;
+
+float gaussianPdf(float x, float sigma) {
+    return 0.39894 * exp(-0.5 * x * x / (sigma * sigma)) / sigma;
+}
+
+void main() {
+    vec2 step = ${axis === 'H' ? 'vec2(uTexelSize.x, 0.0)' : 'vec2(0.0, uTexelSize.y)'};
+    float sigma = uKernelRadius * 0.5;
+    float weightSum = gaussianPdf(0.0, sigma);
+    vec3  color     = texture2D(tDiffuse, vUv).rgb * weightSum;
+    for (float i = 1.0; i <= 8.0; i++) {
+        float w = gaussianPdf(i, sigma);
+        color += texture2D(tDiffuse, vUv + step * i).rgb * w;
+        color += texture2D(tDiffuse, vUv - step * i).rgb * w;
+        weightSum += 2.0 * w;
+    }
+    gl_FragColor = vec4(color / weightSum, 1.0);
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — ShadowLayer.fs
+// Renders cell drop-shadows: samples tCell shifted by uShadowOffset,
+// blurs the result, outputs as RGBA shadow layer.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SHADOW_LAYER_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tCell;
+uniform vec2  uShadowOffset;
+uniform float uShadowBlur;
+uniform float uShadowOpacity;
+uniform vec2  uTexelSize;
+
+void main() {
+    vec2 shadowUV = vUv - uShadowOffset;
+
+    // Sample a 5-tap box blur for the shadow
+    float alpha = 0.0;
+    vec2 step = uTexelSize * uShadowBlur;
+    alpha += texture2D(tCell, shadowUV               ).a * 0.36;
+    alpha += texture2D(tCell, shadowUV + step * vec2( 1.0,  0.0)).a * 0.16;
+    alpha += texture2D(tCell, shadowUV + step * vec2(-1.0,  0.0)).a * 0.16;
+    alpha += texture2D(tCell, shadowUV + step * vec2( 0.0,  1.0)).a * 0.16;
+    alpha += texture2D(tCell, shadowUV + step * vec2( 0.0, -1.0)).a * 0.16;
+    alpha = clamp(alpha * uShadowOpacity, 0.0, 1.0);
+
+    // Dark shadow colour, premultiplied
+    gl_FragColor = vec4(0.0, 0.0, 0.05, alpha);
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — LayerComposite.fs
+// Alpha-over blending: shadow → fluid → cell → bloom.
+// Porter-Duff "over" operator for each layer.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LAYER_COMPOSITE_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tShadow;
+uniform sampler2D tFluid;
+uniform sampler2D tCell;
+uniform sampler2D tBloomLayer;
+uniform float uFluidStrength;
+uniform float uBloomStrength;
+
+vec4 over(vec4 dst, vec4 src) {
+    float outA   = src.a + dst.a * (1.0 - src.a);
+    vec3 outRGB  = (src.rgb * src.a + dst.rgb * dst.a * (1.0 - src.a)) / max(outA, 0.0001);
+    return vec4(outRGB, outA);
+}
+
+void main() {
+    vec4 shadow = texture2D(tShadow, vUv);
+    vec4 fluid  = texture2D(tFluid,  vUv);
+    vec4 cell   = texture2D(tCell,   vUv);
+    vec4 bloom  = texture2D(tBloomLayer, vUv);
+
+    // Fluid blends additively into shadow base
+    vec4 c = shadow;
+    c.rgb  = min(c.rgb + fluid.rgb * uFluidStrength, 1.0);
+
+    // Cell over fluid+shadow
+    c = over(c, cell);
+
+    // Bloom blends additively on top
+    c.rgb = min(c.rgb + bloom.rgb * uBloomStrength, 1.0);
+
+    gl_FragColor = c;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL — GlobalComposite.fs
+// Source: compiled.vs line 5294 (GlobalComposite.fs)
+// Final full-screen pass: frost / RGB-shift / gradient corners / UI tint.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const GLOBAL_COMPOSITE_FRAG = GLSL_UTILS + /* glsl */`
+uniform sampler2D tDiffuse;
+uniform float uRGBStrength;
+uniform float uVolumetricStrength;
+uniform vec2  uContrast;
+uniform float uScroll;
+uniform float uContact;
+uniform float uScrollDelta;
+uniform vec2  uMouse;
+uniform vec3  uFrostCorner;
+uniform sampler2D tFluid;
+uniform sampler2D tFluidMask;
+uniform sampler2D tNormal;
+uniform float uNormalScale;
+uniform float uVisible;
+uniform float uChatOpen;
+uniform sampler2D tLightStreak;
+uniform vec2  uGradient;
+uniform float uMobile;
+uniform vec3  uUIColor;
+uniform float uUIBlend;
+uniform float uSyncTouch;
+
+void main() {
+    vec2 squareUV = scaleUV(vUv, vec2(1.4, resolution.x / resolution.y));
+    vec2 uv = scaleUV(vUv, vec2(
+        1.0 + uContact * mix(0.01, 0.06, uMobile)
+            + uContact * 0.1 * smoothstep(1.0, 0.1, length(squareUV - 0.5))
+    ));
+
+    vec2  fluid     = texture2D(tFluid, uv).xy;
+    float fluidMask = smoothstep(0.0, 1.0, texture2D(tFluidMask, uv).r);
+    float fluidPush  = pow(abs(fluid.x) * 0.01, 2.0);
+    float fluidPushY = pow(abs(fluid.y) * 0.01, 2.0);
+    float fluidEdge  = fluidPush * smoothstep(0.7, 0.0, abs(fluidMask - 0.5));
+
+    // Frosted glass distortion via normal map
+    float normalScale = uNormalScale * 1.0 * mix(0.15, 0.2, uMobile);
+    normalScale *= crange(resolution.x, 1000.0, 5000.0, 1.0, 0.35);
+    normalScale *= 1.0 - (1.0 - uContact) * 0.06;
+    vec2 normalUV = scaleUV(squareUV, vec2(normalScale));
+    vec3 normal   = crange(texture2D(tNormal, normalUV).rgb,
+                           vec3(0.0), vec3(1.0), vec3(-1.0), vec3(1.0));
+
+    float frost = smoothstep(0.3, 0.0, length(vUv - vec2(1.0)));
+    frost += smoothstep(0.4, 0.0, length(vUv - vec2(0.0))) * uChatOpen * 0.4;
+    frost  = mix(frost * 0.08, 0.14 + fluidEdge * 2.2, pow(uContact, 3.0));
+    frost *= 1.0 + sin(time - length(squareUV - 0.5) * 30.0 + uScroll * 5.0) * 0.9;
+    uv += normal.xy * frost * 0.5;
+    uv += uContact * fluidEdge * 0.05;
+
+    // RGB chromatic aberration + diffuse sample
+    vec3 color = getRGB(tDiffuse, uv, radians(120.0),
+        fluidEdge * 0.01 * uContact
+        + 0.0001 * uScrollDelta
+        - 0.0005 * uContact).rgb;
+    color = adjustContrast(color, uContrast.x, uContrast.y);
+    color *= mix(1.0, 0.3, pow(uContact, 3.0));
+
+    // Corner gradient glow (HSV animated)
+    vec3 gradient = vec3(0.5, 0.5, 1.0);
+    gradient = rgb2hsv(gradient);
+    gradient.x += cnoise(squareUV * 0.65 - time * 0.04 + uContact * 0.2) * 0.065 + 0.88;
+    gradient = hsv2rgb(gradient);
+    gradient = mix(gradient, uUIColor, uUIBlend * 0.75);
+
+    // Bloom + light streak overlay
+    color += pow(getUnrealBloom(uv), vec3(1.8)) * mix(1.0, 1.1, fluidEdge);
+    color += pow(texture2D(tLightStreak, uv).rgb, vec3(1.25));
+
+    // Contact-driven gamma
+    color = pow(color, vec3(1.0 + uContact * 0.3));
+
+    // Gradient corner glow noise
+    vec2  noiseUV    = rotateUV(squareUV, radians(15.0));
+    float gNoise     = 0.5 + cnoise(noiseUV * mix(1.1, 0.6, uMobile)
+                                    + time * 0.03 + uScroll * 0.08
+                                    + uContact * 0.2) * 0.5;
+    float cornerNoise = 0.7 * mix(1.6, 1.5, uMobile)
+        * smoothstep(uGradient.x, uGradient.y * 0.9, length(squareUV - 0.5));
+    color = blendAdd(color, gradient, 0.05 + pow(cornerNoise * gNoise, 2.0));
+
+    // Chat panel corner tint
+    vec3 cornerColor = mix(vec3(0.15, 0.11, 0.25),
+                           mix(uUIColor, vec3(0.1), 0.8),
+                           uUIBlend * 0.9);
+    vec2 cornerUV = scaleUV(squareUV, vec2(1.0, 1.3), vec2(0.0));
+    cornerUV += fluidEdge * 0.2;
+    float cornerBlend = smoothstep(0.65 * uChatOpen, 0.2 * uChatOpen,
+        length(cornerUV - vec2(0.0, (1.0 - uChatOpen) * 0.5)))
+        * uChatOpen * 0.95 + (0.5 + sin(time * 2.0) * 0.5) * 0.05;
+    color  = mix(color, cornerColor * 1.1, cornerBlend);
+    color *= smoothstep(0.0, 0.5, uVisible);
+
+    // Film grain overlay
+    color = blendOverlay(color, vec3(getNoise(vUv, time)),
+                         mix(0.15, 0.15, uMobile));
+    color = pow(color, vec3(1.0 + smoothstep(1.0, 0.2, uVisible) * 0.4));
+
+    // Sync-touch soft-light
+    vec3  colorTouch = mix(vec3(1.0), gradient,
+                           smoothstep(0.0, 1.0, fluidPush) * 0.5);
+    float colorPush  = fluidPush + fluidPushY;
+    color = blendSoftLight(color, colorTouch,
+                           colorPush * 0.6 * smoothstep(0.0, 0.0001, uSyncTouch));
+
+    color = max(vec3(0.0), min(vec3(1.0), color));
+    gl_FragColor = vec4(color, 1.0);
+}
+`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ATSceneCompositor
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class ATSceneCompositor {
-  // ── Core WebGPU ────────────────────────────────────────────────────────────
-  private device!:  GPUDevice;
-  private canvas!:  HTMLCanvasElement;
-  private ctx!:     GPUCanvasContext;
-  private format:   GPUTextureFormat = 'bgra8unorm';
 
-  // ── Dimensions ─────────────────────────────────────────────────────────────
+  // ── WebGL context ──────────────────────────────────────────────────────────
+  private gl!:     WebGLRenderingContext;
+  private canvas!: HTMLCanvasElement;
   private width  = 0;
   private height = 0;
 
-  // ── Sub-systems ────────────────────────────────────────────────────────────
-  private flower!:        ATFlowerParticleRenderer;
-  private spline!:        ATSplineParticleLife;
-  private water!:         ATWaterSurface;
-  private nsFluid!:       NavierStokesFluid;
-  private vlight!:        ATVolumetricLight;
-  private bloom!:         ATBloomPostProcess;
-  private particleComp!:  ParticleCompositor;
+  // ── Compiled programs ──────────────────────────────────────────────────────
+  private progCellLayer!:       WebGLProgram;  // CellLayer.fs
+  private progFluidLayer!:      WebGLProgram;  // FluidLayer.fs
+  private progBloomExtract!:    WebGLProgram;  // BloomExtract.fs
+  private progBloomBlurH!:      WebGLProgram;  // BloomBlurH.fs
+  private progBloomBlurV!:      WebGLProgram;  // BloomBlurV.fs
+  private progShadowLayer!:     WebGLProgram;  // ShadowLayer.fs
+  private progLayerComposite!:  WebGLProgram;  // LayerComposite.fs
+  private progGlobalComposite!: WebGLProgram;  // GlobalComposite.fs
 
-  // ── Cell registry ──────────────────────────────────────────────────────────
-  private cells: Map<string, CellEntry> = new Map();
+  // ── Input FBOs (written by external renderers, or cleared internally) ──────
+  private cellFBO!:    GLFBO;   // cell geometry layer
+  private fluidFBO!:   GLFBO;   // NS fluid dye layer
+  private bloomFBO!:   GLFBO;   // unreal bloom accumulation
+  private shadowFBO!:  GLFBO;   // cell drop-shadow layer
 
   // ── Intermediate FBOs ──────────────────────────────────────────────────────
-  //
-  // Frame pipeline:
-  //   sceneFBO (clear → cell materials + particles)
-  //     → waterFBO (water surface overlay)
-  //       → vlFBO (volumetric light)
-  //         → bloomFBO (bloom composite)
-  //           → canvas swap-chain
-  //
-  private sceneFBO!: FBO;
-  private waterFBO!: FBO;
-  private vlFBO!:    FBO;
+  private bloomExtractFBO!: GLFBO;   // bright-pass extract
+  private bloomBlurHFBO!:   GLFBO;   // horizontal gaussian blur
+  private bloomBlurVFBO!:   GLFBO;   // vertical gaussian blur (== final bloom)
+  private compositeFBO!:    GLFBO;   // merged layers before GlobalComposite
 
-  // ── Scene uniform buffer (shared by water surface renderPass) ──────────
-  private sceneUniformBuf!: GPUBuffer;
+  // ── 1×1 fallback textures ──────────────────────────────────────────────────
+  private whiteTex!: WebGLTexture;   // RGBA (255,255,255,255)
+  private blackTex!: WebGLTexture;   // RGBA (0,0,0,0)
 
-  // ── Param caches (for resize recreation of immutable sub-systems) ──────
-  private vlParamsCache: ATVolumetricLightParams = {};
-  private bloomParamsCache: ATBloomParams = {};
+  // ── Fullscreen quad VBO ────────────────────────────────────────────────────
+  private quadBuf!: WebGLBuffer;
 
-  // ── Configuration / flags ──────────────────────────────────────────────────
-  private passes: CompositorPassFlags = { ...DEFAULT_PASS_FLAGS };
-  private elapsed = 0;
+  // ── Uniform stores ─────────────────────────────────────────────────────────
+  private uniforms: Required<ATSceneCompositorUniforms> = {
+    rgbStrength:         0.0,
+    volumetricStrength:  0.4,
+    contrast:            [1.05, 1.02],
+    scroll:              0.0,
+    contact:             0.0,
+    scrollDelta:         0.0,
+    mouse:               [0.5, 0.5],
+    frostCorner:         [0.0, 0.0, 0.0],
+    normalScale:         1.0,
+    visible:             1.0,
+    chatOpen:            0.0,
+    gradient:            [0.25, 0.9],
+    mobile:              0.0,
+    uiColor:             [0.5, 0.5, 1.0],
+    uiBlend:             0.0,
+    syncTouch:           0.0,
+    bloomThreshold:      0.25,
+    bloomStrength:       1.2,
+    shadowOpacity:       0.55,
+    shadowBlur:          3.0,
+    shadowOffset:        [0.004, -0.006],
+  };
 
-  // ── Lifecycle state ────────────────────────────────────────────────────────
+  // ── External texture handles (set by calling code) ─────────────────────────
+  private extFluidDyeTex:   WebGLTexture | null = null;
+  private extNormalTex:     WebGLTexture | null = null;
+  private extLightStreakTex: WebGLTexture | null = null;
+
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
+  private elapsed     = 0.0;
   private initialised = false;
   private destroyed   = false;
 
   // ─────────────────────────────────────────────────────────────────────────
-  // init(device, canvas)
+  // init(canvas)
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Initialise all sub-systems.
-   *
-   * Must be called exactly once before any other method.
-   * The caller provides an already-initialised GPUDevice.
-   *
-   * @param device — WebGPU device.
-   * @param canvas — Target HTMLCanvasElement (must have a configured
-   *                 GPUCanvasContext, or this method configures one).
-   * @param cfg    — Optional configuration overrides.
+   * Acquire WebGL context, compile all 8 programs, allocate all FBOs,
+   * create fallback textures and fullscreen quad buffer.
    */
-  async init(
-    device: GPUDevice,
-    canvas: HTMLCanvasElement,
-    cfg: ATSceneCompositorConfig = {},
-  ): Promise<void> {
+  init(canvas: HTMLCanvasElement, cfg: ATSceneCompositorConfig = {}): void {
     if (this.initialised) return;
-
-    this.device = device;
+    this.initialised = true;
     this.canvas = canvas;
-    this.format = cfg.format ?? 'bgra8unorm';
-    this.width  = canvas.width;
-    this.height = canvas.height;
+    this.width  = canvas.width  || 1280;
+    this.height = canvas.height || 720;
 
-    if (cfg.passes) {
-      Object.assign(this.passes, cfg.passes);
-    }
+    // ── Acquire WebGL1 context ──────────────────────────────────────────────
+    const ctxAttribs: WebGLContextAttributes = {
+      antialias: false,
+      alpha:     true,
+      premultipliedAlpha: false,
+      ...cfg.contextAttribs,
+    };
+    const gl = canvas.getContext('webgl', ctxAttribs) as WebGLRenderingContext | null;
+    if (!gl) throw new Error('[ATSceneCompositor] WebGL not available');
+    this.gl = gl;
 
-    // ── Canvas context ────────────────────────────────────────────────────
-    this.ctx = canvas.getContext('webgpu') as GPUCanvasContext;
-    this.ctx.configure({
-      device,
-      format: this.format,
-      alphaMode: 'premultiplied',
-    });
+    // ── Enable float texture extension ─────────────────────────────────────
+    gl.getExtension('OES_texture_float');
+    gl.getExtension('OES_texture_half_float');
+    gl.getExtension('OES_texture_float_linear');
+    gl.getExtension('WEBGL_color_buffer_float');
 
+    // ── Compile all 8 shader programs ──────────────────────────────────────
+    this.progCellLayer       = this._compile(SIMPLE_VERT, CELL_LAYER_FRAG,        'CellLayer');
+    this.progFluidLayer      = this._compile(SIMPLE_VERT, FLUID_LAYER_FRAG,       'FluidLayer');
+    this.progBloomExtract    = this._compile(SIMPLE_VERT, BLOOM_EXTRACT_FRAG,     'BloomExtract');
+    this.progBloomBlurH      = this._compile(SIMPLE_VERT, BLOOM_BLUR_FRAG('H'),   'BloomBlurH');
+    this.progBloomBlurV      = this._compile(SIMPLE_VERT, BLOOM_BLUR_FRAG('V'),   'BloomBlurV');
+    this.progShadowLayer     = this._compile(SIMPLE_VERT, SHADOW_LAYER_FRAG,      'ShadowLayer');
+    this.progLayerComposite  = this._compile(SIMPLE_VERT, LAYER_COMPOSITE_FRAG,   'LayerComposite');
+    this.progGlobalComposite = this._compile(SIMPLE_VERT, GLOBAL_COMPOSITE_FRAG,  'GlobalComposite');
+
+    // ── Allocate all FBOs ──────────────────────────────────────────────────
     const W = this.width;
     const H = this.height;
 
-    // ── Intermediate FBOs ─────────────────────────────────────────────────
-    this.sceneFBO = createFBO(device, W, H, this.format, 'at-comp-scene');
-    this.waterFBO = createFBO(device, W, H, this.format, 'at-comp-water');
-    this.vlFBO    = createFBO(device, W, H, this.format, 'at-comp-vl');
+    this.cellFBO         = this._createFBO(W, H);
+    this.fluidFBO        = this._createFBO(W, H);
+    this.bloomFBO        = this._createFBO(W, H);
+    this.shadowFBO       = this._createFBO(W, H);
+    this.bloomExtractFBO = this._createFBO(W, H);
+    this.bloomBlurHFBO   = this._createFBO(W, H);
+    this.bloomBlurVFBO   = this._createFBO(W, H);
+    this.compositeFBO    = this._createFBO(W, H);
 
-    // ── Particle systems ──────────────────────────────────────────────────
-    const flowerEdges = cfg.flowerEdges ?? [];
-    const splineEdges = cfg.splineEdges ?? [];
+    // ── White 1×1 fallback texture ─────────────────────────────────────────
+    this.whiteTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.whiteTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  new Uint8Array([255, 255, 255, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    this.flower = new ATFlowerParticleRenderer(device, canvas, flowerEdges, {});
-    await this.flower.build();
+    // ── Black 1×1 fallback texture ─────────────────────────────────────────
+    this.blackTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.blackTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  new Uint8Array([0, 0, 0, 0]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    this.spline = new ATSplineParticleLife(device, canvas, splineEdges, {});
-    await this.spline.build();
-
-    // ── Particle compositor (depth-sort + composite) ──────────────────────
-    this.particleComp = new ParticleCompositor(device, canvas);
-    // Layers are registered lazily when the renderers have valid tPos views.
-    // For now, build the compositor shell.
-    await this.particleComp.build();
-
-    // ── Navier-Stokes fluid ───────────────────────────────────────────────
-    this.nsFluid = new NavierStokesFluid(device);
-
-    // ── Water surface ─────────────────────────────────────────────────────
-    this.water = new ATWaterSurface(device, this.format, cfg.waterConfig ?? {});
-    await this.water.build();
-
-    // ── Scene uniform buffer (water surface needs view/proj/eye) ─────────
-    this.sceneUniformBuf = device.createBuffer({
-      label: 'at-comp-scene-uniforms',
-      size:  144,   // 36 × f32 = 144 bytes (viewProj + modelMat + eye)
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // ── Volumetric light ──────────────────────────────────────────────────
-    this.vlight = await ATVolumetricLight.create(device, this.format, W, H);
-    if (cfg.vlParams) {
-      Object.assign(this.vlParamsCache, cfg.vlParams);
-      this.vlight.setParams(cfg.vlParams);
-    }
-
-    // ── Bloom post-process ────────────────────────────────────────────────
-    this.bloom = await ATBloomPostProcess.create(device, this.format, W, H);
-    if (cfg.bloomParams) {
-      Object.assign(this.bloomParamsCache, cfg.bloomParams);
-      this.bloom.setParams(cfg.bloomParams);
-    }
-
-    this.initialised = true;
+    // ── Fullscreen quad (2 triangles, 6 vertices, XY only) ─────────────────
+    this.quadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,   1, -1,  -1,  1,
+      -1,  1,   1, -1,   1,  1,
+    ]), gl.STATIC_DRAW);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // addCell(cellId, species, bbox)
+  // render(dt) — per-frame multi-FBO composite pipeline
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Register a cell and create its per-species rendering material.
+   * Run the full 8-pass composite pipeline and present to the canvas.
    *
-   * The species string is looked up in:
-   *   1. species-shader-registry  → SpeciesShaderConfig (SDF, bloom, physics)
-   *   2. cell-material-system     → SpeciesMaterialDef (PBR params, WGSL patch)
-   *
-   * If the species string doesn't match a CellSpecies key in the material
-   * registry, we still create a fallback PBR material with the shader
-   * registry's material params.
-   *
-   * @param cellId  — Unique cell identifier (e.g. 'cell-0').
-   * @param species — Species string (e.g. 'attention', 'cil-eye', 'ffn').
-   * @param bbox    — Axis-aligned bounding box in SPH domain units.
+   *   Pass 1: CellLayer      → cellFBO
+   *   Pass 2: FluidLayer     → fluidFBO
+   *   Pass 3: ShadowLayer    → shadowFBO
+   *   Pass 4: BloomExtract   → bloomExtractFBO
+   *   Pass 5: BloomBlurH     → bloomBlurHFBO
+   *   Pass 6: BloomBlurV     → bloomBlurVFBO
+   *   Pass 7: LayerComposite → compositeFBO
+   *   Pass 8: GlobalComposite → canvas (null FBO)
    */
-  async addCell(
-    cellId:  string,
-    species: string,
-    bbox:    CellBBox,
-  ): Promise<void> {
-    if (this.destroyed || !this.initialised) return;
-    if (this.cells.has(cellId)) return; // already registered
-
-    // ── Lookup registries ─────────────────────────────────────────────────
-    let shaderCfg: SpeciesShaderConfig;
-    try {
-      shaderCfg = getSpeciesShaderConfig(species);
-    } catch {
-      // Species not in shader registry — use a safe default config stub
-      shaderCfg = getSpeciesShaderConfig('cil-eye');
-    }
-
-    let materialDef: SpeciesMaterialDef | null = null;
-    try {
-      // CellSpecies type: 'attention' | 'ffn' | 'layernorm' | 'embedding' | 'softmax'
-      materialDef = getCellMaterial(species as CellSpecies);
-    } catch {
-      // Not a CellSpecies — that's fine, we use shader registry params instead
-    }
-
-    // ── Create GPU material ───────────────────────────────────────────────
-    let pbrMat:    ATPBRMaterial  | null = null;
-    let matcapMat: ATMatcapFresnel | null = null;
-
-    const matType = materialDef?.materialType ?? shaderCfg.materialType;
-
-    if (matType === 'matcap') {
-      matcapMat = await ATMatcapFresnel.create(this.device, this.format);
-      if (materialDef?.matcapParams) {
-        matcapMat.setParams(materialDef.matcapParams);
-      }
-    } else {
-      // 'pbr' or 'iridescence' — both use ATPBRMaterial
-      pbrMat = await ATPBRMaterial.create(this.device, this.format);
-      const pbrParams: Partial<PBRParams> =
-        materialDef?.pbrParams ??
-        shaderCfg.materialParams as Partial<PBRParams>;
-      if (pbrParams) {
-        pbrMat.setParams(pbrParams);
-      }
-    }
-
-    const entry: CellEntry = {
-      cellId,
-      species,
-      bbox,
-      shaderCfg,
-      materialDef,
-      pbrMat,
-      matcapMat,
-    };
-
-    this.cells.set(cellId, entry);
-  }
-
-  /**
-   * Remove a cell and destroy its GPU material resources.
-   */
-  removeCell(cellId: string): void {
-    const entry = this.cells.get(cellId);
-    if (!entry) return;
-    entry.pbrMat?.destroy();
-    entry.matcapMat?.destroy();
-    this.cells.delete(cellId);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // tick(dt, sphWorld)
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Advance all sub-systems by one frame and present to the canvas.
-   *
-   * Frame pipeline:
-   *   1. Update physics (cell material modulation from SPH)
-   *   2. Navier-Stokes step (fluid sim)
-   *   3. Particle update (flower + spline compute passes)
-   *   4. Clear sceneFBO → render cell materials → particle composite
-   *   5. Water surface → waterFBO
-   *   6. Volumetric light → vlFBO
-   *   7. Bloom post-process → canvas
-   *
-   * @param dt       — Delta time in seconds (e.g. 1/60).
-   * @param sphWorld — Read-only view of the SPH particle state.
-   *                   Pass null to skip physics-driven updates.
-   */
-  tick(dt: number, sphWorld: SPHWorldView | null = null): void {
-    if (this.destroyed || !this.initialised) return;
-
+  render(dt: number): void {
+    if (!this.initialised || this.destroyed) return;
     this.elapsed += dt;
+    const gl = this.gl;
+    const W  = this.width;
+    const H  = this.height;
 
-    // ── Acquire swap-chain texture ────────────────────────────────────────
-    const swapTex  = this.ctx.getCurrentTexture();
-    const dstView  = swapTex.createView();
+    // ── Pass 1: Cell layer render ─────────────────────────────────────────
+    gl.useProgram(this.progCellLayer);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.cellFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.cellFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progCellLayer, 'tCell'), 0);
+    gl.uniform1f(gl.getUniformLocation(this.progCellLayer, 'uAlpha'), 1.0);
+    this._drawQuad(this.progCellLayer);
+    gl.disable(gl.BLEND);
 
-    const encoder = this.device.createCommandEncoder({
-      label: 'at-scene-compositor-frame',
-    });
+    // ── Pass 2: Fluid dye layer ───────────────────────────────────────────
+    gl.useProgram(this.progFluidLayer);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fluidFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.extFluidDyeTex ?? this.blackTex);
+    gl.uniform1i(gl.getUniformLocation(this.progFluidLayer, 'tFluidDye'), 0);
+    gl.uniform1f(gl.getUniformLocation(this.progFluidLayer, 'uStrength'),
+                 this.uniforms.volumetricStrength);
+    this._drawQuad(this.progFluidLayer);
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Phase 1: Physics → material modulation
-    // ──────────────────────────────────────────────────────────────────────
+    // ── Pass 3: Shadow layer ──────────────────────────────────────────────
+    gl.useProgram(this.progShadowLayer);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.cellFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progShadowLayer, 'tCell'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.progShadowLayer, 'uShadowOffset'),
+                 this.uniforms.shadowOffset[0], this.uniforms.shadowOffset[1]);
+    gl.uniform1f(gl.getUniformLocation(this.progShadowLayer, 'uShadowBlur'),
+                 this.uniforms.shadowBlur);
+    gl.uniform1f(gl.getUniformLocation(this.progShadowLayer, 'uShadowOpacity'),
+                 this.uniforms.shadowOpacity);
+    gl.uniform2f(gl.getUniformLocation(this.progShadowLayer, 'uTexelSize'),
+                 1.0 / W, 1.0 / H);
+    this._drawQuad(this.progShadowLayer);
 
-    if (sphWorld && sphWorld.count > 0) {
-      this._updateCellMaterialsFromPhysics(sphWorld, dt);
-    }
+    // ── Pass 4: Bloom bright-pass extract ────────────────────────────────
+    gl.useProgram(this.progBloomExtract);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomExtractFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.cellFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progBloomExtract, 'tDiffuse'), 0);
+    gl.uniform1f(gl.getUniformLocation(this.progBloomExtract, 'uLuminosityThreshold'),
+                 this.uniforms.bloomThreshold);
+    gl.uniform1f(gl.getUniformLocation(this.progBloomExtract, 'uSmoothWidth'), 0.01);
+    this._drawQuad(this.progBloomExtract);
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Phase 2: Navier-Stokes fluid step
-    // ──────────────────────────────────────────────────────────────────────
+    // ── Pass 5: Bloom horizontal gaussian blur ────────────────────────────
+    gl.useProgram(this.progBloomBlurH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomBlurHFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.bloomExtractFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progBloomBlurH, 'tDiffuse'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.progBloomBlurH, 'uTexelSize'), 1.0 / W, 1.0 / H);
+    gl.uniform1f(gl.getUniformLocation(this.progBloomBlurH, 'uKernelRadius'), 5.0);
+    this._drawQuad(this.progBloomBlurH);
 
-    if (this.passes.navierStokes) {
-      // Inject per-cell dye splats derived from SPH velocities
-      if (sphWorld && sphWorld.count > 0) {
-        this._injectNSSplats(encoder, sphWorld);
-      }
-      this.nsFluid.step(encoder);
-    }
+    // ── Pass 6: Bloom vertical gaussian blur ──────────────────────────────
+    gl.useProgram(this.progBloomBlurV);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomBlurVFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.bloomBlurHFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progBloomBlurV, 'tDiffuse'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.progBloomBlurV, 'uTexelSize'), 1.0 / W, 1.0 / H);
+    gl.uniform1f(gl.getUniformLocation(this.progBloomBlurV, 'uKernelRadius'), 5.0);
+    this._drawQuad(this.progBloomBlurV);
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Phase 3: Particle compute passes
-    // ──────────────────────────────────────────────────────────────────────
+    // ── Pass 7: Layer alpha-composite (shadow + fluid + cell + bloom) ──────
+    gl.useProgram(this.progLayerComposite);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.compositeFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
 
-    if (this.passes.flowerParticle && this.flower.isBuilt) {
-      this.flower.update(encoder, this.elapsed, dt);
-    }
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.shadowFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progLayerComposite, 'tShadow'), 0);
 
-    if (this.passes.splineParticle && this.spline.isBuilt) {
-      this.spline.update(encoder, this.elapsed, dt);
-    }
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.fluidFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progLayerComposite, 'tFluid'), 1);
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Phase 4: Clear sceneFBO → cell material passes → particle composite
-    // ──────────────────────────────────────────────────────────────────────
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.cellFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progLayerComposite, 'tCell'), 2);
 
-    this._clearFBO(encoder, this.sceneFBO);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.bloomBlurVFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progLayerComposite, 'tBloomLayer'), 3);
 
-    // ── 4a: Per-cell material render ──────────────────────────────────────
-    if (this.passes.cellMaterials) {
-      for (const entry of this.cells.values()) {
-        if (entry.pbrMat) {
-          entry.pbrMat.tick(dt);
-          entry.pbrMat.render(
-            encoder,
-            this.sceneFBO.colorView,
-            this.sceneFBO.depthView,
-          );
-        } else if (entry.matcapMat) {
-          entry.matcapMat.tick(dt);
-          entry.matcapMat.render(encoder, this.sceneFBO.colorView);
-        }
-      }
-    }
+    gl.uniform1f(gl.getUniformLocation(this.progLayerComposite, 'uFluidStrength'),
+                 this.uniforms.volumetricStrength);
+    gl.uniform1f(gl.getUniformLocation(this.progLayerComposite, 'uBloomStrength'),
+                 this.uniforms.bloomStrength);
+    this._drawQuad(this.progLayerComposite);
 
-    // ── 4b: Particle render (flower + spline) ─────────────────────────────
-    if (this.passes.flowerParticle && this.flower.isBuilt) {
-      this.flower.render(
-        encoder,
-        this.sceneFBO.colorView,
-        this.sceneFBO.depthView,
-      );
-    }
-
-    if (this.passes.splineParticle && this.spline.isBuilt) {
-      this.spline.render(
-        encoder,
-        this.sceneFBO.colorView,
-        this.sceneFBO.depthView,
-      );
-    }
-
-    // ── 4c: Particle compositor (depth-sort + glow) ───────────────────────
-    if (this.passes.particleCompositor) {
-      this.particleComp.sort(encoder);
-      this.particleComp.renderAlpha(encoder, this.sceneFBO.colorView);
-      this.particleComp.renderGlow(encoder, this.sceneFBO.colorView);
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Phase 5: Water surface → waterFBO
-    // ──────────────────────────────────────────────────────────────────────
-
-    // Copy sceneFBO → waterFBO as base
-    this._copyTexture(encoder, this.sceneFBO.color, this.waterFBO.color);
-
-    if (this.passes.waterSurface) {
-      this.water.tick(encoder, this.elapsed);
-      this.water.renderPass(
-        encoder,
-        this.waterFBO.colorView,
-        this.waterFBO.depthView,
-        this.sceneUniformBuf,
-      );
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Phase 6: Volumetric light → vlFBO
-    // ──────────────────────────────────────────────────────────────────────
-
-    if (this.passes.volumetricLight) {
-      this.vlight.tick(dt);
-      this.vlight.render(
-        encoder,
-        this.waterFBO.color,   // input scene texture
-        this.vlFBO.colorView,  // composited output
-      );
-    } else {
-      this._copyTexture(encoder, this.waterFBO.color, this.vlFBO.color);
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Phase 7: Bloom → final output (canvas swap-chain)
-    // ──────────────────────────────────────────────────────────────────────
-
-    if (this.passes.bloom) {
-      this.bloom.render(
-        encoder,
-        this.vlFBO.color,   // input scene texture
-        dstView,            // final output to canvas
-      );
-    } else {
-      // Blit vlFBO directly to swap-chain
-      this._blitToSwapChain(encoder, this.vlFBO.color, dstView);
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Submit
-    // ──────────────────────────────────────────────────────────────────────
-
-    this.device.queue.submit([encoder.finish()]);
-
-    // ── Async particle handoff readback (non-blocking) ────────────────────
-    if (this.passes.splineParticle && this.spline.isBuilt) {
-      this.spline.scheduleHandoffReadback().catch(() => {});
-    }
+    // ── Pass 8: GlobalComposite → canvas (null FBO) ───────────────────────
+    this._runGlobalComposite();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // resize(w, h)
+  // tick(dt) — alias for render
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Handle canvas resize.  Reallocates all intermediate FBOs and notifies
-   * sub-systems that need size-dependent resources.
-   *
-   * @param w — New width in pixels.
-   * @param h — New height in pixels.
-   */
-  resize(w: number, h: number): void {
-    if (this.destroyed || !this.initialised) return;
-    if (this.width === w && this.height === h) return;
+  /** Advance elapsed time and run the full composite pipeline. */
+  tick(dt: number): void {
+    this.render(dt);
+  }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // resize(w, h) — reallocate all FBOs at new resolution
+  // ─────────────────────────────────────────────────────────────────────────
+
+  resize(w: number, h: number): void {
+    if (!this.initialised || this.destroyed) return;
+    if (w === this.width && h === this.height) return;
     this.width  = w;
     this.height = h;
+    this.canvas.width  = w;
+    this.canvas.height = h;
+    const gl = this.gl;
 
-    // Reconfigure canvas context
-    this.ctx.configure({
-      device:    this.device,
-      format:    this.format,
-      alphaMode: 'premultiplied',
-    });
-
-    // Reallocate FBOs
-    destroyFBO(this.sceneFBO);
-    destroyFBO(this.waterFBO);
-    destroyFBO(this.vlFBO);
-
-    this.sceneFBO = createFBO(this.device, w, h, this.format, 'at-comp-scene');
-    this.waterFBO = createFBO(this.device, w, h, this.format, 'at-comp-water');
-    this.vlFBO    = createFBO(this.device, w, h, this.format, 'at-comp-vl');
-
-    // Sub-systems that need resize notification:
-    // Volumetric light and bloom hold size-dependent textures.
-    // They are immutable after creation, so we must recreate them.
-    // This is acceptable as resize is infrequent.
-    this._recreateVolumetricLight(w, h);
-    this._recreateBloom(w, h);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Configuration API
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /** Update bloom post-process parameters. */
-  setBloomParams(p: ATBloomParams): void {
-    Object.assign(this.bloomParamsCache, p);
-    this.bloom?.setParams(p);
-  }
-
-  /** Update volumetric light parameters. */
-  setVolumetricLightParams(p: ATVolumetricLightParams): void {
-    Object.assign(this.vlParamsCache, p);
-    this.vlight?.setParams(p);
-  }
-
-  /** Enable/disable individual rendering passes. */
-  setPassFlags(flags: Partial<CompositorPassFlags>): void {
-    Object.assign(this.passes, flags);
-  }
-
-  /**
-   * Inject a Navier-Stokes splat (e.g. from mouse/touch interaction).
-   * The splat is queued and applied on the next tick().
-   */
-  private pendingSplats: NavierStokesSplat[] = [];
-
-  queueSplat(splat: NavierStokesSplat): void {
-    this.pendingSplats.push(splat);
-  }
-
-  /** Add a drop to the water surface (e.g. cell hitting water). */
-  addWaterDrop(x: number, y: number, radius: number, strength: number): void {
-    this.water?.addDrop(x, y, radius, strength);
-  }
-
-  /**
-   * Replace flower particle edge splines at runtime.
-   * Triggers a full particle rebuild — existing state is discarded.
-   */
-  async setFlowerEdges(edges: FlowerEdgeSpline[]): Promise<void> {
-    if (!this.initialised) return;
-    await this.flower.setEdges(edges);
-  }
-
-  /**
-   * Replace spline particle edge splines at runtime.
-   * Triggers a full particle rebuild — existing state is discarded.
-   */
-  async setSplineEdges(edges: EdgeSpline[]): Promise<void> {
-    if (!this.initialised) return;
-    await this.spline.setEdges(edges);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Destroy
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Release all GPU resources.  The compositor must not be used after this.
-   */
-  destroy(): void {
-    if (this.destroyed) return;
-    this.destroyed = true;
-
-    // Destroy cell materials
-    for (const entry of this.cells.values()) {
-      entry.pbrMat?.destroy();
-      entry.matcapMat?.destroy();
+    // Destroy old FBOs
+    for (const fbo of [
+      this.cellFBO, this.fluidFBO, this.bloomFBO, this.shadowFBO,
+      this.bloomExtractFBO, this.bloomBlurHFBO, this.bloomBlurVFBO,
+      this.compositeFBO,
+    ]) {
+      gl.deleteFramebuffer(fbo.fbo);
+      gl.deleteTexture(fbo.tex);
     }
-    this.cells.clear();
 
-    // Destroy sub-systems
-    this.flower?.destroy();
-    this.spline?.destroy();
-    this.water?.destroy();
-    this.nsFluid?.destroy();
-    this.vlight?.destroy();
-    this.bloom?.destroy();
-    this.particleComp?.destroy();
-
-    // Destroy FBOs
-    if (this.sceneFBO) destroyFBO(this.sceneFBO);
-    if (this.waterFBO) destroyFBO(this.waterFBO);
-    if (this.vlFBO)    destroyFBO(this.vlFBO);
-
-    // Destroy shared buffers
-    this.sceneUniformBuf?.destroy();
+    // Reallocate at new size
+    this.cellFBO         = this._createFBO(w, h);
+    this.fluidFBO        = this._createFBO(w, h);
+    this.bloomFBO        = this._createFBO(w, h);
+    this.shadowFBO       = this._createFBO(w, h);
+    this.bloomExtractFBO = this._createFBO(w, h);
+    this.bloomBlurHFBO   = this._createFBO(w, h);
+    this.bloomBlurVFBO   = this._createFBO(w, h);
+    this.compositeFBO    = this._createFBO(w, h);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Accessors
+  // Uniform / external texture setters
   // ─────────────────────────────────────────────────────────────────────────
+
+  /** Batch-update compositor uniforms. */
+  setUniforms(u: Partial<ATSceneCompositorUniforms>): void {
+    Object.assign(this.uniforms, u);
+  }
+
+  /** Provide the NS fluid dye texture from FluidGPU.dyeTexture. */
+  setFluidDyeTexture(tex: WebGLTexture): void {
+    this.extFluidDyeTex = tex;
+  }
+
+  /** Provide a normal map texture for GlobalComposite frost distortion. */
+  setNormalTexture(tex: WebGLTexture): void {
+    this.extNormalTex = tex;
+  }
+
+  /** Provide a light streak / lens flare texture. */
+  setLightStreakTexture(tex: WebGLTexture): void {
+    this.extLightStreakTex = tex;
+  }
+
+  /**
+   * Upload raw cell RGBA pixels directly into the cellFBO texture.
+   * Used when an external renderer writes pixel data rather than
+   * rendering into this compositor's FBO.
+   */
+  uploadCellPixels(pixels: Uint8Array | null): void {
+    if (!this.initialised || this.destroyed) return;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.cellFBO.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+                  this.width, this.height, 0,
+                  gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  // ── Convenience animation controls ────────────────────────────────────────
+
+  setScroll(scroll: number, delta = 0): void {
+    this.uniforms.scroll      = scroll;
+    this.uniforms.scrollDelta = delta;
+  }
+  setContact(contact: number): void {
+    this.uniforms.contact = Math.max(0, Math.min(1, contact));
+  }
+  setMouse(x: number, y: number): void {
+    this.uniforms.mouse = [x, y];
+  }
+  setVisible(v: number): void {
+    this.uniforms.visible = Math.max(0, Math.min(1, v));
+  }
+  setUIColor(r: number, g: number, b: number, blend: number): void {
+    this.uniforms.uiColor  = [r, g, b];
+    this.uniforms.uiBlend  = blend;
+  }
+  setChatOpen(v: number): void {
+    this.uniforms.chatOpen = Math.max(0, Math.min(1, v));
+  }
+
+  // ── Accessors ──────────────────────────────────────────────────────────────
 
   get isInitialised(): boolean { return this.initialised; }
   get isDestroyed():   boolean { return this.destroyed; }
-  get cellCount():     number  { return this.cells.size; }
   get elapsedTime():   number  { return this.elapsed; }
 
-  /** Iterate registered cell IDs. */
-  cellIds(): IterableIterator<string> {
-    return this.cells.keys();
-  }
+  /** Read-only handle to the cell layer FBO (for external renderers to bind). */
+  get cellFramebuffer(): WebGLFramebuffer { return this.cellFBO.fbo; }
+  /** Read-only handle to the fluid layer FBO. */
+  get fluidFramebuffer(): WebGLFramebuffer { return this.fluidFBO.fbo; }
+  /** Read-only handle to the composite output texture. */
+  get compositeTexture(): WebGLTexture { return this.compositeFBO.tex; }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Private — FBO operations
+  // dispose() — release all GPU resources
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** Clear an FBO to transparent black with a fresh depth buffer. */
-  private _clearFBO(encoder: GPUCommandEncoder, fbo: FBO): void {
-    const pass = encoder.beginRenderPass({
-      label: 'at-comp-clear',
-      colorAttachments: [{
-        view:       fbo.colorView,
-        loadOp:     'clear',
-        storeOp:    'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-      }],
-      depthStencilAttachment: {
-        view:           fbo.depthView,
-        depthLoadOp:    'clear',
-        depthStoreOp:   'store',
-        depthClearValue: 1.0,
-      },
-    });
-    pass.end();
-  }
+  dispose(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    const gl = this.gl;
+    if (!gl) return;
 
-  /**
-   * GPU texture-to-texture copy (same size).
-   * Used to carry forward an FBO's colour into the next stage's base.
-   */
-  private _copyTexture(
-    encoder: GPUCommandEncoder,
-    src: GPUTexture,
-    dst: GPUTexture,
-  ): void {
-    encoder.copyTextureToTexture(
-      { texture: src },
-      { texture: dst },
-      [this.width, this.height],
-    );
-  }
+    // Delete all compiled programs
+    gl.deleteProgram(this.progCellLayer);
+    gl.deleteProgram(this.progFluidLayer);
+    gl.deleteProgram(this.progBloomExtract);
+    gl.deleteProgram(this.progBloomBlurH);
+    gl.deleteProgram(this.progBloomBlurV);
+    gl.deleteProgram(this.progShadowLayer);
+    gl.deleteProgram(this.progLayerComposite);
+    gl.deleteProgram(this.progGlobalComposite);
 
-  /**
-   * Direct blit from a texture to the swap-chain view when bloom is disabled.
-   * Uses copyTextureToTexture since both are the same format and size.
-   */
-  private _blitToSwapChain(
-    encoder: GPUCommandEncoder,
-    src: GPUTexture,
-    dstView: GPUTextureView,
-  ): void {
-    // The swap-chain texture is obtained from dstView's parent texture.
-    // Since copyTextureToTexture needs a GPUTexture, we use the
-    // current texture reference from the context.
-    const swapTex = this.ctx.getCurrentTexture();
-    encoder.copyTextureToTexture(
-      { texture: src },
-      { texture: swapTex },
-      [this.width, this.height],
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Private — Physics-driven material updates
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Derive per-cell aggregate physics and modulate material params.
-   *
-   * For each registered cell, we scan the SPH particle arrays to find
-   * particles whose position falls within the cell's bounding box.
-   * We compute a simple average velocity magnitude (kinetic energy proxy)
-   * and use it to modulate the cell's material params:
-   *   - Higher KE → increased iridescence / roughness shift
-   *   - Bloom strength pulse tied to density
-   */
-  private _updateCellMaterialsFromPhysics(
-    sph: SPHWorldView,
-    _dt: number,
-  ): void {
-    for (const entry of this.cells.values()) {
-      const { bbox, pbrMat, matcapMat } = entry;
-      if (!pbrMat && !matcapMat) continue;
-
-      // Aggregate particles within the cell bbox
-      let sumVelSq = 0;
-      let count    = 0;
-
-      for (let i = 0; i < sph.count; i++) {
-        const px = sph.x[i];
-        const py = sph.y[i];
-        if (
-          px >= bbox.x && px <= bbox.x + bbox.w &&
-          py >= bbox.y && py <= bbox.y + bbox.h
-        ) {
-          const vx = sph.vx[i];
-          const vy = sph.vy[i];
-          sumVelSq += vx * vx + vy * vy;
-          count++;
-        }
-      }
-
-      if (count === 0) continue;
-
-      // Normalised kinetic energy proxy (clamped to [0, 1])
-      const avgKE = Math.min(1.0, (sumVelSq / count) * 2.0);
-      // Density proxy: particle count relative to bbox area
-      const area    = Math.max(bbox.w * bbox.h, 0.001);
-      const density = Math.min(1.0, count / (area * 500));
-
-      if (pbrMat) {
-        // Modulate roughness and iridescence intensity with KE
-        pbrMat.setParams({
-          roughness:    0.15 + avgKE * 0.45,    // smoother at rest, rougher at high KE
-          iridStrength: 0.3 + avgKE * 0.7,      // more shimmer with velocity
-        } as Partial<PBRParams>);
-      }
-
-      if (matcapMat) {
-        // Modulate Fresnel power with density
-        matcapMat.setParams({
-          fresnelPower: 2.0 + density * 4.0,
-        } as Partial<MatcapParams>);
+    // Delete all FBOs (framebuffer + backing texture each)
+    for (const fbo of [
+      this.cellFBO, this.fluidFBO, this.bloomFBO, this.shadowFBO,
+      this.bloomExtractFBO, this.bloomBlurHFBO, this.bloomBlurVFBO,
+      this.compositeFBO,
+    ]) {
+      if (fbo) {
+        gl.deleteFramebuffer(fbo.fbo);
+        gl.deleteTexture(fbo.tex);
       }
     }
+
+    // Delete fallback textures
+    gl.deleteTexture(this.whiteTex);
+    gl.deleteTexture(this.blackTex);
+
+    // Delete quad vertex buffer
+    gl.deleteBuffer(this.quadBuf);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Private — Navier-Stokes splat injection
+  // Private — GlobalComposite final pass
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Inject NS splats from:
-   *   a) queued user splats (mouse/touch)
-   *   b) SPH cell-centre velocity impulses (automated coupling)
-   */
-  private _injectNSSplats(
-    encoder: GPUCommandEncoder,
-    sph: SPHWorldView,
-  ): void {
-    // (a) User-queued splats
-    for (const splat of this.pendingSplats) {
-      this.nsFluid.splat(encoder, splat);
-    }
-    this.pendingSplats.length = 0;
+  private _runGlobalComposite(): void {
+    const gl   = this.gl;
+    const prog = this.progGlobalComposite;
+    const u    = this.uniforms;
+    const W    = this.width;
+    const H    = this.height;
 
-    // (b) Automated: inject one dye splat per cell based on average velocity
-    for (const entry of this.cells.values()) {
-      const { bbox } = entry;
-      let sumVx = 0;
-      let sumVy = 0;
-      let count = 0;
+    gl.useProgram(prog);
+    // Render to canvas (null framebuffer = swap-chain surface)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, W, H);
 
-      for (let i = 0; i < sph.count; i++) {
-        const px = sph.x[i];
-        const py = sph.y[i];
-        if (
-          px >= bbox.x && px <= bbox.x + bbox.w &&
-          py >= bbox.y && py <= bbox.y + bbox.h
-        ) {
-          sumVx += sph.vx[i];
-          sumVy += sph.vy[i];
-          count++;
-        }
-      }
+    // ── 6 texture units ────────────────────────────────────────────────────
 
-      if (count < 5) continue; // skip near-empty cells
+    // tDiffuse — merged layer composite result
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.compositeFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(prog, 'tDiffuse'), 0);
 
-      const avgVx = sumVx / count;
-      const avgVy = sumVy / count;
-      const speed = Math.sqrt(avgVx * avgVx + avgVy * avgVy);
-      if (speed < 0.01) continue; // skip negligible velocity
+    // tFluid — NS fluid velocity (XY → fluid push)
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.extFluidDyeTex ?? this.blackTex);
+    gl.uniform1i(gl.getUniformLocation(prog, 'tFluid'), 1);
 
-      // Splat position: cell centre, normalised to [0, 1]
-      const cx = (bbox.x + bbox.w * 0.5) / (this.width || 1);
-      const cy = (bbox.y + bbox.h * 0.5) / (this.height || 1);
+    // tFluidMask — fluid dye mask (alpha channel)
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.extFluidDyeTex ?? this.blackTex);
+    gl.uniform1i(gl.getUniformLocation(prog, 'tFluidMask'), 2);
 
-      // Dye colour derived from species shader config
-      const cfg = entry.shaderCfg;
-      const mp  = cfg.materialParams;
-      const dyeR = (mp as any).albedo?.[0] ?? 0.5;
-      const dyeG = (mp as any).albedo?.[1] ?? 0.5;
-      const dyeB = (mp as any).albedo?.[2] ?? 0.8;
+    // tNormal — normal map for frosted glass distortion
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.extNormalTex ?? this.whiteTex);
+    gl.uniform1i(gl.getUniformLocation(prog, 'tNormal'), 3);
 
-      this.nsFluid.splat(encoder, {
-        x:  cx,
-        y:  cy,
-        vx: avgVx * 0.5,
-        vy: avgVy * 0.5,
-        color: [dyeR, dyeG, dyeB],
-      });
-    }
+    // tLightStreak — lens flare / light streak overlay
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.extLightStreakTex ?? this.blackTex);
+    gl.uniform1i(gl.getUniformLocation(prog, 'tLightStreak'), 4);
+
+    // tBloom — blurred bloom accumulation
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.bloomBlurVFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(prog, 'tBloom'), 5);
+
+    // ── Uniforms ───────────────────────────────────────────────────────────
+
+    gl.uniform1f(gl.getUniformLocation(prog, 'time'),                this.elapsed);
+    gl.uniform2f(gl.getUniformLocation(prog, 'resolution'),          W, H);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uRGBStrength'),        u.rgbStrength);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uVolumetricStrength'), u.volumetricStrength);
+    gl.uniform2f(gl.getUniformLocation(prog, 'uContrast'),           u.contrast[0], u.contrast[1]);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uScroll'),             u.scroll);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uContact'),            u.contact);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uScrollDelta'),        u.scrollDelta);
+    gl.uniform2f(gl.getUniformLocation(prog, 'uMouse'),              u.mouse[0], u.mouse[1]);
+    gl.uniform3f(gl.getUniformLocation(prog, 'uFrostCorner'),
+                 u.frostCorner[0], u.frostCorner[1], u.frostCorner[2]);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uNormalScale'),        u.normalScale);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uVisible'),            u.visible);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uChatOpen'),           u.chatOpen);
+    gl.uniform2f(gl.getUniformLocation(prog, 'uGradient'),           u.gradient[0], u.gradient[1]);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uMobile'),             u.mobile);
+    gl.uniform3f(gl.getUniformLocation(prog, 'uUIColor'),
+                 u.uiColor[0], u.uiColor[1], u.uiColor[2]);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uUIBlend'),            u.uiBlend);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uSyncTouch'),          u.syncTouch);
+
+    this._drawQuad(prog);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Private — Resize sub-system recreation
+  // Private — _compile: vert + frag → linked WebGLProgram
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Recreate volumetric light pass at new resolution.
-   * VL holds half-res intermediate textures that must match viewport size.
-   */
-  private async _recreateVolumetricLight(w: number, h: number): Promise<void> {
-    this.vlight.destroy();
-    this.vlight = await ATVolumetricLight.create(this.device, this.format, w, h);
-    if (Object.keys(this.vlParamsCache).length > 0) {
-      this.vlight.setParams(this.vlParamsCache);
+  private _compile(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vert);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATSceneCompositor] vert compile error (${label}): ${gl.getShaderInfoLog(vs)}`);
     }
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, frag);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATSceneCompositor] frag compile error (${label}): ${gl.getShaderInfoLog(fs)}`);
+    }
+
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(`[ATSceneCompositor] link error (${label}): ${gl.getProgramInfoLog(prog)}`);
+    }
+
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
   }
 
-  /**
-   * Recreate bloom pass at new resolution.
-   * Bloom holds internal textures at the old size.
-   */
-  private async _recreateBloom(w: number, h: number): Promise<void> {
-    this.bloom.destroy();
-    this.bloom = await ATBloomPostProcess.create(this.device, this.format, w, h);
-    if (Object.keys(this.bloomParamsCache).length > 0) {
-      this.bloom.setParams(this.bloomParamsCache);
-    }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private — _createFBO: RGBA UNSIGNED_BYTE texture + framebuffer
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private _createFBO(w: number, h: number): GLFBO {
+    const gl  = this.gl;
+
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    const fbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                            gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    return { fbo, tex, width: w, height: h };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private — _drawQuad: bind quad VBO + draw 6 vertices
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private _drawQuad(prog: WebGLProgram): void {
+    const gl     = this.gl;
+    const posLoc = gl.getAttribLocation(prog, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.disableVertexAttribArray(posLoc);
   }
 }
