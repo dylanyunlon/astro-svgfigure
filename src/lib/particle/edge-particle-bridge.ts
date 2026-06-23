@@ -1,7 +1,7 @@
 /**
  * edge-particle-bridge.ts --- M057: Edge ----- --- route.json --
  *
- * - channels/edge/*/route.json ----------------- EdgeParticleSystem---
+ * - channels/edge/{star}/route.json ----------------- EdgeParticleSystem---
  * --------- target cell ------ GlowFilter pulse---
  *
  * -------
