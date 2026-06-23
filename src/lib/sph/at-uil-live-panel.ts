@@ -1,0 +1,1253 @@
+/**
+ * at-uil-live-panel.ts — M828: AT UIL Live Panel
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Realtime HTML control panel that exposes the full AT UIL parameter set
+ * (upstream/activetheory-assets/uil-params.json, 2593 entries) for live
+ * inspection and tweaking during development.
+ *
+ * Architecture
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  1. Load uil-params.json and classify every entry by prefix into named
+ *     sections:  CAMERA · POST_PROCESS · VOLUMETRIC_LIGHT · LIGHTS · SHADERS ·
+ *                PARTICLES · SHADOWS · MESH · MISC
+ *
+ *  2. For each live-controllable entry (numeric scalar, numeric vec2/3/4,
+ *     hex colour, boolean) render the appropriate UIL-inspired widget:
+ *       • number  → range slider + numeric text input (two-way)
+ *       • vec2/3/4 → N linked numeric inputs
+ *       • color   → <input type="color"> swatch
+ *       • bool    → checkbox toggle
+ *
+ *  3. Two-way binding:
+ *       panel → params: onChange fires an `ATUILParamChange` CustomEvent
+ *                       carrying { key, value, section }
+ *       params → panel: ATUILLivePanel.set(key, value) updates the widget DOM
+ *                       without triggering a change event (prevents loops).
+ *
+ *  4. Preset save / load:
+ *       savePreset(name)  → serialises current param snapshot to
+ *                           localStorage key `at-uil-preset:<name>`
+ *       loadPreset(name)  → restores values + refreshes all widgets
+ *       listPresets()     → string[] of stored preset names
+ *       exportPreset(name)→ downloads a JSON file via anchor click
+ *       importPreset(json)→ parses JSON string and loads preset
+ *
+ *  5. Section filtering:
+ *       showSection(name) / hideSection(name)
+ *       filterByKey(query) — real-time substring search across all keys
+ *
+ *  6. Panel lifecycle:
+ *       mount(container)  → injects DOM into a container element
+ *       unmount()         → removes DOM and all event listeners
+ *       toggle()          → show/hide the entire panel
+ *
+ * Usage
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   import { ATUILLivePanel } from './at-uil-live-panel';
+ *
+ *   const panel = new ATUILLivePanel();
+ *   await panel.init('/assets/uil-params.json');  // or pass params directly
+ *   panel.mount(document.body);
+ *
+ *   // listen for changes
+ *   panel.on('change', ({ key, value }) => {
+ *     myRenderer.setUniform(key, value);
+ *   });
+ *
+ *   // push programmatic update (e.g. from physics sim)
+ *   panel.set('VolumetricLight_home_fExposure', 1.2);
+ *
+ *   // save the current state
+ *   panel.savePreset('night-mode');
+ *   panel.loadPreset('night-mode');
+ *
+ * Research: xiaodi #M828 — cell-pubsub-loop
+ */
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Raw value types that can appear in uil-params.json. */
+export type RawValue = number | boolean | string | number[];
+
+/** Value types the live panel can control (texture dicts and str lists excluded). */
+export type LiveValue = number | boolean | string | number[];
+
+/** Control widget type inferred from value shape. */
+export type WidgetType = 'slide' | 'vec' | 'color' | 'bool';
+
+/** One classified param entry. */
+export interface UILParamEntry {
+  key: string;
+  section: PanelSection;
+  widgetType: WidgetType;
+  value: LiveValue;
+  /** For vec widgets: dimensionality (2–4). */
+  vecLen?: number;
+  /** Minimum/maximum hints (auto-derived or user-supplied). */
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+/** Named panel sections — maps to top-level grouping in the DOM. */
+export type PanelSection =
+  | 'CAMERA'
+  | 'POST_PROCESS'
+  | 'VOLUMETRIC_LIGHT'
+  | 'LIGHTS'
+  | 'SHADERS'
+  | 'PARTICLES'
+  | 'SHADOWS'
+  | 'MESH'
+  | 'MISC';
+
+/** Payload emitted on every widget interaction. */
+export interface ParamChangeEvent {
+  key: string;
+  value: LiveValue;
+  section: PanelSection;
+  /** Previous value before this change. */
+  prev: LiveValue;
+}
+
+/** Serialised preset snapshot (key → value). */
+export type PresetSnapshot = Record<string, LiveValue>;
+
+/** Event handler for param changes. */
+export type ChangeHandler = (evt: ParamChangeEvent) => void;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SECTION_ORDER: PanelSection[] = [
+  'CAMERA',
+  'POST_PROCESS',
+  'VOLUMETRIC_LIGHT',
+  'LIGHTS',
+  'SHADERS',
+  'PARTICLES',
+  'SHADOWS',
+  'MESH',
+  'MISC',
+];
+
+const SECTION_LABELS: Record<PanelSection, string> = {
+  CAMERA:           '📷 Camera',
+  POST_PROCESS:     '✨ Post Process',
+  VOLUMETRIC_LIGHT: '💡 Volumetric Light',
+  LIGHTS:           '🔆 Lights',
+  SHADERS:          '🎨 Shaders',
+  PARTICLES:        '🌊 Particles',
+  SHADOWS:          '🌑 Shadows',
+  MESH:             '🧊 Mesh',
+  MISC:             '⚙️ Misc',
+};
+
+const PRESET_STORAGE_PREFIX = 'at-uil-preset:';
+
+/**
+ * Sensible default slider ranges by last token in key name.
+ * Pairs are [min, max, step].
+ */
+const RANGE_HINTS: Record<string, [number, number, number]> = {
+  fov:              [10,  120, 0.5],
+  intensity:        [0,   5,   0.01],
+  exposure:         [0,   3,   0.01],
+  density:          [0,   2,   0.01],
+  decay:            [0.5, 1,   0.001],
+  strength:         [0,   3,   0.01],
+  scale:            [0,   10,  0.05],
+  speed:            [0,   10,  0.01],
+  threshold:        [0,   1,   0.01],
+  radius:           [0,   5,   0.01],
+  roughness:        [0,   1,   0.01],
+  metallic:         [0,   1,   0.01],
+  alpha:            [0,   1,   0.01],
+  opacity:          [0,   1,   0.01],
+  contrast:         [0,   2,   0.01],
+  brightness:       [0,   2,   0.01],
+  lerpSpeed:        [0,   1,   0.001],
+  lerpSpeed2:       [0,   2,   0.01],
+  wobbleStrength:   [0,   1,   0.001],
+  deltaRotate:      [-180, 180, 0.5],
+  distance:         [0,   200, 0.1],
+  far:              [0,   2000, 1],
+  near:             [0,   10,  0.01],
+  bounce:           [0,   1,   0.01],
+  weight:           [0,   2,   0.01],
+  uPointSize:       [0,   10,  0.1],
+  uNormalStrength:  [0,   3,   0.01],
+  uAlpha:           [0,   1,   0.01],
+  uFresnelPow:      [0,   8,   0.01],
+  uShininess:       [0,   200, 0.5],
+  uEnvBlend:        [0,   1,   0.01],
+  uDistortStrength: [0,   2,   0.01],
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Decide which section a param key belongs to. */
+function classifySection(key: string): PanelSection {
+  if (key.startsWith('CAMERA_'))                                  return 'CAMERA';
+  if (key.startsWith('VolumetricLight'))                          return 'VOLUMETRIC_LIGHT';
+  if (/Bloom|Composite|Luminosity/i.test(key))                    return 'POST_PROCESS';
+  if (key.startsWith('L_'))                                       return 'LIGHTS';
+  if (key.startsWith('SHADOW_'))                                  return 'SHADOWS';
+  if (key.startsWith('MESH_'))                                    return 'MESH';
+  if (key.startsWith('am_') || key.startsWith('homeParticle'))    return 'PARTICLES';
+  if (key.includes('Shader') || key.includes('PBR'))              return 'SHADERS';
+  return 'MISC';
+}
+
+/** Decide the widget type from a value. */
+function classifyWidget(value: RawValue): WidgetType | null {
+  if (typeof value === 'boolean')                           return 'bool';
+  if (typeof value === 'string' && value.startsWith('#'))  return 'color';
+  if (typeof value === 'number')                           return 'slide';
+  if (Array.isArray(value) && value.length >= 2 && value.length <= 4
+      && value.every(x => typeof x === 'number'))          return 'vec';
+  return null; // not live-controllable (dict/string list)
+}
+
+/** Infer slider range from the last meaningful token of a param key. */
+function inferRange(key: string): [number, number, number] {
+  const tokens = key.replace(/[/_]/g, ' ').split(' ');
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i];
+    if (RANGE_HINTS[t]) return RANGE_HINTS[t];
+    // partial suffix match
+    for (const hint of Object.keys(RANGE_HINTS)) {
+      if (t.toLowerCase().endsWith(hint.toLowerCase())) return RANGE_HINTS[hint];
+    }
+  }
+  return [-10, 10, 0.01]; // safe default
+}
+
+/** Round a number to `digits` decimal places. */
+function round(n: number, digits = 4): number {
+  const f = 10 ** digits;
+  return Math.round(n * f) / f;
+}
+
+/** Deep-clone a LiveValue (handles array case). */
+function cloneValue(v: LiveValue): LiveValue {
+  return Array.isArray(v) ? [...v] : v;
+}
+
+/** CSS for the entire panel, injected once as a <style> tag. */
+const PANEL_CSS = `
+.at-uil-panel {
+  position: fixed; top: 10px; right: 10px; z-index: 99999;
+  width: 320px; max-height: calc(100vh - 20px);
+  background: #0d0d0f; color: #c8c8d0;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px; border: 1px solid #2a2a38;
+  border-radius: 6px; box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+  display: flex; flex-direction: column; overflow: hidden;
+  user-select: none;
+}
+.at-uil-panel.hidden { display: none; }
+
+.at-uil-panel-header {
+  padding: 8px 10px; background: #13131a;
+  border-bottom: 1px solid #2a2a38;
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.at-uil-panel-title {
+  flex: 1; font-size: 12px; font-weight: 700; color: #9090ff;
+  letter-spacing: 0.05em;
+}
+.at-uil-panel-toggle-btn {
+  background: #222230; border: 1px solid #333348; color: #9090ff;
+  border-radius: 3px; padding: 2px 7px; cursor: pointer; font-size: 10px;
+}
+.at-uil-panel-toggle-btn:hover { background: #2a2a45; }
+
+.at-uil-toolbar {
+  padding: 5px 8px; background: #101016;
+  border-bottom: 1px solid #1e1e2a;
+  display: flex; gap: 5px; flex-wrap: wrap; flex-shrink: 0;
+}
+.at-uil-toolbar input[type=text] {
+  flex: 1; background: #1a1a24; border: 1px solid #2a2a38;
+  color: #c8c8d0; border-radius: 3px; padding: 3px 6px; font-size: 10px;
+  outline: none;
+}
+.at-uil-toolbar input[type=text]:focus { border-color: #6060cc; }
+.at-uil-btn {
+  background: #1a1a26; border: 1px solid #2d2d44; color: #9090cc;
+  border-radius: 3px; padding: 3px 7px; cursor: pointer; font-size: 10px;
+  transition: background 0.1s;
+}
+.at-uil-btn:hover { background: #252536; color: #b0b0ff; }
+
+.at-uil-preset-row {
+  padding: 4px 8px; background: #0e0e18;
+  border-bottom: 1px solid #1e1e2a;
+  display: flex; gap: 4px; align-items: center; flex-shrink: 0;
+}
+.at-uil-preset-row select {
+  flex: 1; background: #1a1a24; border: 1px solid #2a2a38;
+  color: #c8c8d0; border-radius: 3px; padding: 3px 4px; font-size: 10px;
+  outline: none;
+}
+
+.at-uil-scroll {
+  overflow-y: auto; flex: 1;
+  scrollbar-width: thin; scrollbar-color: #2a2a48 #0d0d0f;
+}
+.at-uil-scroll::-webkit-scrollbar { width: 5px; }
+.at-uil-scroll::-webkit-scrollbar-thumb { background: #2a2a48; border-radius: 3px; }
+
+.at-uil-section { margin-bottom: 1px; }
+
+.at-uil-section-header {
+  padding: 5px 8px; background: #16161f;
+  border-top: 1px solid #202030; border-bottom: 1px solid #202030;
+  cursor: pointer; display: flex; align-items: center; gap: 6px;
+  color: #7878c8; font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.at-uil-section-header:hover { background: #1c1c28; }
+.at-uil-section-arrow { transition: transform 0.15s; color: #4444aa; }
+.at-uil-section-header.collapsed .at-uil-section-arrow { transform: rotate(-90deg); }
+.at-uil-section-count {
+  margin-left: auto; font-size: 9px; color: #4444aa; font-weight: 400;
+}
+
+.at-uil-section-body { padding: 0; }
+.at-uil-section-body.collapsed { display: none; }
+
+.at-uil-row {
+  padding: 3px 8px 3px 10px; border-bottom: 1px solid #141420;
+  display: flex; align-items: center; gap: 5px;
+  transition: background 0.05s;
+}
+.at-uil-row:hover { background: #131320; }
+.at-uil-row.hidden { display: none; }
+
+.at-uil-label {
+  width: 130px; flex-shrink: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  color: #808098; font-size: 10px; cursor: default;
+}
+.at-uil-label:hover { color: #a0a0c0; }
+
+.at-uil-widget { flex: 1; display: flex; align-items: center; gap: 3px; }
+
+/* Slide (range) */
+.at-uil-slide { flex: 1; display: flex; align-items: center; gap: 3px; }
+.at-uil-slide input[type=range] {
+  flex: 1; height: 3px; cursor: pointer; accent-color: #6060cc;
+  background: #2a2a40; border-radius: 2px;
+  -webkit-appearance: none; appearance: none; outline: none;
+}
+.at-uil-slide input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 8px; height: 8px;
+  border-radius: 50%; background: #8080dd; cursor: pointer;
+}
+.at-uil-num-input {
+  width: 48px; background: #1a1a28; border: 1px solid #282840;
+  color: #b0b0d0; border-radius: 2px; padding: 1px 3px;
+  font-size: 10px; font-family: inherit; text-align: right; outline: none;
+}
+.at-uil-num-input:focus { border-color: #5050aa; }
+
+/* Vec */
+.at-uil-vec { display: flex; gap: 3px; flex-wrap: wrap; }
+.at-uil-vec .at-uil-num-input { width: 56px; }
+
+/* Color */
+.at-uil-color { display: flex; align-items: center; gap: 5px; }
+.at-uil-color input[type=color] {
+  width: 22px; height: 22px; padding: 0; border: none;
+  background: none; cursor: pointer; border-radius: 3px;
+}
+.at-uil-color-hex {
+  flex: 1; background: #1a1a28; border: 1px solid #282840;
+  color: #b0b0d0; border-radius: 2px; padding: 1px 4px;
+  font-size: 10px; font-family: inherit; outline: none;
+}
+.at-uil-color-hex:focus { border-color: #5050aa; }
+
+/* Bool */
+.at-uil-bool input[type=checkbox] { accent-color: #6060cc; cursor: pointer; }
+
+.at-uil-status {
+  padding: 3px 8px; font-size: 9px; color: #4444aa;
+  border-top: 1px solid #1e1e2a; text-align: right; flex-shrink: 0;
+  background: #0a0a12;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATUILLivePanel
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class ATUILLivePanel {
+
+  // ── Public state ───────────────────────────────────────────────────────────
+
+  /** All classified entries, keyed by UIL param key. */
+  public params: Map<string, UILParamEntry> = new Map();
+
+  /** Current live values (starts as a copy of the parsed defaults). */
+  public values: Map<string, LiveValue> = new Map();
+
+  // ── Private state ──────────────────────────────────────────────────────────
+
+  private _root: HTMLElement | null = null;
+  private _mounted = false;
+  private _visible = true;
+  private _filterQuery = '';
+
+  /** section → collapsed state */
+  private _collapsed: Map<PanelSection, boolean> = new Map();
+
+  /** widget element references: key → { root, inputs[], etc. } */
+  private _widgets: Map<string, WidgetRefs> = new Map();
+
+  /** Registered change handlers. */
+  private _handlers: Set<ChangeHandler> = new Set();
+
+  /** Status bar element. */
+  private _statusEl: HTMLElement | null = null;
+
+  /** Preset select element. */
+  private _presetSelect: HTMLSelectElement | null = null;
+
+  /** Internal flag to suppress change events during programmatic set(). */
+  private _suppressEvents = false;
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Initialise the panel from a URL or a pre-loaded params object.
+   *
+   * @param source URL string → fetch + parse JSON  |  plain object → use directly
+   */
+  async init(source: string | Record<string, RawValue>): Promise<void> {
+    let raw: Record<string, RawValue>;
+    if (typeof source === 'string') {
+      const res = await fetch(source);
+      raw = await res.json();
+    } else {
+      raw = source;
+    }
+    this._classifyParams(raw);
+    if (this._mounted && this._root) {
+      // Re-render if already mounted
+      this._renderPanelBody();
+    }
+  }
+
+  /**
+   * Classify all raw params into UILParamEntry records.
+   */
+  private _classifyParams(raw: Record<string, RawValue>): void {
+    this.params.clear();
+    this.values.clear();
+
+    for (const [key, rawValue] of Object.entries(raw)) {
+      const wt = classifyWidget(rawValue);
+      if (wt === null) continue; // skip textures, string lists, dicts
+
+      const section = classifySection(key);
+      const [min, max, step] = inferRange(key);
+      const vecLen = (wt === 'vec') ? (rawValue as number[]).length : undefined;
+
+      const entry: UILParamEntry = {
+        key,
+        section,
+        widgetType: wt,
+        value: rawValue as LiveValue,
+        min,
+        max,
+        step,
+        vecLen,
+      };
+      this.params.set(key, entry);
+      this.values.set(key, cloneValue(rawValue as LiveValue));
+    }
+  }
+
+  // ── Mount / Unmount ────────────────────────────────────────────────────────
+
+  /**
+   * Inject the panel DOM into `container`.  Can be called before `init()`;
+   * the body will be populated once params are available.
+   */
+  mount(container: HTMLElement = document.body): void {
+    if (this._mounted) return;
+
+    // Inject CSS once
+    if (!document.getElementById('at-uil-panel-style')) {
+      const style = document.createElement('style');
+      style.id = 'at-uil-panel-style';
+      style.textContent = PANEL_CSS;
+      document.head.appendChild(style);
+    }
+
+    this._root = this._buildShell();
+    container.appendChild(this._root);
+    this._mounted = true;
+
+    if (this.params.size > 0) {
+      this._renderPanelBody();
+    }
+  }
+
+  /** Remove the panel from the DOM and clean up. */
+  unmount(): void {
+    if (!this._mounted || !this._root) return;
+    this._root.remove();
+    this._root = null;
+    this._mounted = false;
+    this._widgets.clear();
+    this._statusEl = null;
+    this._presetSelect = null;
+  }
+
+  // ── Visibility ─────────────────────────────────────────────────────────────
+
+  toggle(): void {
+    this._visible = !this._visible;
+    if (this._root) {
+      this._root.classList.toggle('hidden', !this._visible);
+    }
+  }
+
+  show(): void {
+    this._visible = true;
+    this._root?.classList.remove('hidden');
+  }
+
+  hide(): void {
+    this._visible = false;
+    this._root?.classList.add('hidden');
+  }
+
+  // ── Two-way binding ────────────────────────────────────────────────────────
+
+  /**
+   * Programmatically update a param value and refresh its widget.
+   * Does NOT fire a change event.
+   */
+  set(key: string, value: LiveValue): void {
+    const entry = this.params.get(key);
+    if (!entry) return;
+
+    this._suppressEvents = true;
+    this.values.set(key, cloneValue(value));
+    this._refreshWidget(key, value);
+    this._suppressEvents = false;
+  }
+
+  /**
+   * Read the current live value of a param.
+   */
+  get(key: string): LiveValue | undefined {
+    return this.values.get(key);
+  }
+
+  /**
+   * Batch-set many values at once.  Triggers one refresh cycle but no
+   * individual change events.
+   */
+  setBatch(updates: Record<string, LiveValue>): void {
+    this._suppressEvents = true;
+    for (const [key, val] of Object.entries(updates)) {
+      this.values.set(key, cloneValue(val));
+      this._refreshWidget(key, val);
+    }
+    this._suppressEvents = false;
+  }
+
+  // ── Events ─────────────────────────────────────────────────────────────────
+
+  /** Register a change handler.  Returns an unsubscribe function. */
+  on(event: 'change', handler: ChangeHandler): () => void {
+    this._handlers.add(handler);
+    return () => this._handlers.delete(handler);
+  }
+
+  /** Remove a previously registered handler. */
+  off(_event: 'change', handler: ChangeHandler): void {
+    this._handlers.delete(handler);
+  }
+
+  private _emit(evt: ParamChangeEvent): void {
+    if (this._suppressEvents) return;
+    for (const h of this._handlers) {
+      try { h(evt); } catch { /* handler errors must not break the panel */ }
+    }
+    // Also dispatch a DOM CustomEvent for non-module consumers
+    if (this._root) {
+      this._root.dispatchEvent(new CustomEvent('ATUILParamChange', {
+        bubbles: true,
+        detail: evt,
+      }));
+    }
+  }
+
+  // ── Sections ───────────────────────────────────────────────────────────────
+
+  showSection(name: PanelSection): void {
+    this._collapsed.set(name, false);
+    this._applyCollapseState(name);
+  }
+
+  hideSection(name: PanelSection): void {
+    this._collapsed.set(name, true);
+    this._applyCollapseState(name);
+  }
+
+  collapseAll(): void {
+    for (const s of SECTION_ORDER) this._collapsed.set(s, true);
+    for (const s of SECTION_ORDER) this._applyCollapseState(s);
+  }
+
+  expandAll(): void {
+    for (const s of SECTION_ORDER) this._collapsed.set(s, false);
+    for (const s of SECTION_ORDER) this._applyCollapseState(s);
+  }
+
+  private _applyCollapseState(section: PanelSection): void {
+    if (!this._root) return;
+    const body = this._root.querySelector<HTMLElement>(`[data-section-body="${section}"]`);
+    const header = this._root.querySelector<HTMLElement>(`[data-section-header="${section}"]`);
+    const collapsed = this._collapsed.get(section) ?? false;
+    body?.classList.toggle('collapsed', collapsed);
+    header?.classList.toggle('collapsed', collapsed);
+  }
+
+  // ── Search / filter ────────────────────────────────────────────────────────
+
+  filterByKey(query: string): void {
+    this._filterQuery = query.toLowerCase();
+    this._applyFilter();
+  }
+
+  private _applyFilter(): void {
+    if (!this._root) return;
+    const q = this._filterQuery;
+    let visible = 0;
+    for (const [key, refs] of this._widgets) {
+      const show = q === '' || key.toLowerCase().includes(q);
+      refs.rowEl.classList.toggle('hidden', !show);
+      if (show) visible++;
+    }
+    if (this._statusEl) {
+      this._statusEl.textContent = q
+        ? `Showing ${visible} / ${this.params.size} params matching "${q}"`
+        : `${this.params.size} params across ${SECTION_ORDER.length} sections`;
+    }
+    // Also ensure section headers are visible if any child is visible
+    for (const section of SECTION_ORDER) {
+      const body = this._root.querySelector<HTMLElement>(`[data-section-body="${section}"]`);
+      if (!body) continue;
+      const anyVisible = Array.from(body.querySelectorAll('.at-uil-row'))
+        .some(r => !r.classList.contains('hidden'));
+      const sectionEl = body.closest('.at-uil-section') as HTMLElement | null;
+      if (sectionEl) sectionEl.style.display = anyVisible || q === '' ? '' : 'none';
+    }
+  }
+
+  // ── Presets ────────────────────────────────────────────────────────────────
+
+  /**
+   * Save current values as a named preset in localStorage.
+   */
+  savePreset(name: string): void {
+    if (!name.trim()) return;
+    const snapshot: PresetSnapshot = {};
+    for (const [key, val] of this.values) {
+      snapshot[key] = cloneValue(val);
+    }
+    localStorage.setItem(PRESET_STORAGE_PREFIX + name, JSON.stringify(snapshot));
+    this._refreshPresetList();
+    this._setStatus(`Preset "${name}" saved  (${Object.keys(snapshot).length} params)`);
+  }
+
+  /**
+   * Load a named preset from localStorage and apply it to the panel.
+   */
+  loadPreset(name: string): boolean {
+    const raw = localStorage.getItem(PRESET_STORAGE_PREFIX + name);
+    if (!raw) {
+      this._setStatus(`Preset "${name}" not found`);
+      return false;
+    }
+    try {
+      const snap: PresetSnapshot = JSON.parse(raw);
+      this.setBatch(snap);
+      this._setStatus(`Preset "${name}" loaded`);
+      return true;
+    } catch {
+      this._setStatus(`Preset "${name}" parse error`);
+      return false;
+    }
+  }
+
+  /**
+   * Delete a preset from localStorage.
+   */
+  deletePreset(name: string): void {
+    localStorage.removeItem(PRESET_STORAGE_PREFIX + name);
+    this._refreshPresetList();
+    this._setStatus(`Preset "${name}" deleted`);
+  }
+
+  /** Return all stored preset names. */
+  listPresets(): string[] {
+    const names: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(PRESET_STORAGE_PREFIX)) {
+        names.push(k.slice(PRESET_STORAGE_PREFIX.length));
+      }
+    }
+    return names.sort();
+  }
+
+  /**
+   * Export the current values (or a named preset) as a downloadable JSON file.
+   */
+  exportPreset(name = 'at-uil-export'): void {
+    const snapshot: PresetSnapshot = {};
+    for (const [key, val] of this.values) snapshot[key] = cloneValue(val);
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${name}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    this._setStatus(`Exported "${name}.json"  (${Object.keys(snapshot).length} params)`);
+  }
+
+  /**
+   * Import a preset from a JSON string.
+   */
+  importPreset(jsonStr: string, saveName?: string): boolean {
+    try {
+      const snap: PresetSnapshot = JSON.parse(jsonStr);
+      this.setBatch(snap);
+      if (saveName) {
+        localStorage.setItem(PRESET_STORAGE_PREFIX + saveName, jsonStr);
+        this._refreshPresetList();
+      }
+      this._setStatus(`Imported ${Object.keys(snap).length} params`);
+      return true;
+    } catch {
+      this._setStatus('Import failed — invalid JSON');
+      return false;
+    }
+  }
+
+  /**
+   * Reset all values to their defaults from the original uil-params.json.
+   */
+  resetToDefaults(): void {
+    this._suppressEvents = true;
+    for (const [key, entry] of this.params) {
+      const def = cloneValue(entry.value);
+      this.values.set(key, def);
+      this._refreshWidget(key, def);
+    }
+    this._suppressEvents = false;
+    this._setStatus('Reset to defaults');
+  }
+
+  // ── DOM building ───────────────────────────────────────────────────────────
+
+  private _buildShell(): HTMLElement {
+    const panel = document.createElement('div');
+    panel.className = 'at-uil-panel';
+
+    // ── Header ───────────────────────────────────────────────────────────────
+    const header = document.createElement('div');
+    header.className = 'at-uil-panel-header';
+
+    const title = document.createElement('span');
+    title.className = 'at-uil-panel-title';
+    title.textContent = 'AT UIL LIVE PANEL';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'at-uil-panel-toggle-btn';
+    toggleBtn.textContent = '▼';
+    toggleBtn.addEventListener('click', () => {
+      const scroll = panel.querySelector('.at-uil-scroll') as HTMLElement | null;
+      if (!scroll) return;
+      const hidden = scroll.style.display === 'none';
+      scroll.style.display = hidden ? '' : 'none';
+      toggleBtn.textContent = hidden ? '▼' : '▶';
+    });
+
+    header.append(title, toggleBtn);
+    panel.appendChild(header);
+
+    // ── Toolbar ───────────────────────────────────────────────────────────────
+    const toolbar = document.createElement('div');
+    toolbar.className = 'at-uil-toolbar';
+
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.placeholder = 'filter params…';
+    searchInput.addEventListener('input', () => this.filterByKey(searchInput.value));
+
+    const collapseAllBtn = document.createElement('button');
+    collapseAllBtn.className = 'at-uil-btn';
+    collapseAllBtn.textContent = '⊟';
+    collapseAllBtn.title = 'Collapse all';
+    collapseAllBtn.addEventListener('click', () => this.collapseAll());
+
+    const expandAllBtn = document.createElement('button');
+    expandAllBtn.className = 'at-uil-btn';
+    expandAllBtn.textContent = '⊞';
+    expandAllBtn.title = 'Expand all';
+    expandAllBtn.addEventListener('click', () => this.expandAll());
+
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'at-uil-btn';
+    resetBtn.textContent = '↺';
+    resetBtn.title = 'Reset to defaults';
+    resetBtn.addEventListener('click', () => this.resetToDefaults());
+
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'at-uil-btn';
+    exportBtn.textContent = '⬇';
+    exportBtn.title = 'Export preset JSON';
+    exportBtn.addEventListener('click', () => this.exportPreset());
+
+    toolbar.append(searchInput, collapseAllBtn, expandAllBtn, resetBtn, exportBtn);
+    panel.appendChild(toolbar);
+
+    // ── Preset row ────────────────────────────────────────────────────────────
+    const presetRow = document.createElement('div');
+    presetRow.className = 'at-uil-preset-row';
+
+    const presetSelect = document.createElement('select');
+    presetSelect.title = 'Saved presets';
+    this._presetSelect = presetSelect;
+    this._refreshPresetList();
+
+    const savePresetBtn = document.createElement('button');
+    savePresetBtn.className = 'at-uil-btn';
+    savePresetBtn.textContent = 'Save';
+    savePresetBtn.title = 'Save current preset';
+    savePresetBtn.addEventListener('click', () => {
+      const name = prompt('Preset name:', 'my-preset');
+      if (name) this.savePreset(name);
+    });
+
+    const loadPresetBtn = document.createElement('button');
+    loadPresetBtn.className = 'at-uil-btn';
+    loadPresetBtn.textContent = 'Load';
+    loadPresetBtn.title = 'Load selected preset';
+    loadPresetBtn.addEventListener('click', () => {
+      const name = presetSelect.value;
+      if (name) this.loadPreset(name);
+    });
+
+    const delPresetBtn = document.createElement('button');
+    delPresetBtn.className = 'at-uil-btn';
+    delPresetBtn.textContent = '✕';
+    delPresetBtn.title = 'Delete selected preset';
+    delPresetBtn.addEventListener('click', () => {
+      const name = presetSelect.value;
+      if (name && confirm(`Delete preset "${name}"?`)) this.deletePreset(name);
+    });
+
+    presetRow.append(presetSelect, savePresetBtn, loadPresetBtn, delPresetBtn);
+    panel.appendChild(presetRow);
+
+    // ── Scroll area (populated later) ─────────────────────────────────────────
+    const scroll = document.createElement('div');
+    scroll.className = 'at-uil-scroll';
+    scroll.id = 'at-uil-scroll';
+    panel.appendChild(scroll);
+
+    // ── Status bar ────────────────────────────────────────────────────────────
+    const status = document.createElement('div');
+    status.className = 'at-uil-status';
+    status.textContent = 'Initialising…';
+    this._statusEl = status;
+    panel.appendChild(status);
+
+    return panel;
+  }
+
+  /** (Re)render the scrollable section body after params are classified. */
+  private _renderPanelBody(): void {
+    if (!this._root) return;
+    const scroll = this._root.querySelector('#at-uil-scroll') as HTMLElement;
+    scroll.innerHTML = '';
+    this._widgets.clear();
+
+    // Group entries by section
+    const bySection = new Map<PanelSection, UILParamEntry[]>();
+    for (const s of SECTION_ORDER) bySection.set(s, []);
+
+    for (const entry of this.params.values()) {
+      bySection.get(entry.section)!.push(entry);
+    }
+
+    for (const section of SECTION_ORDER) {
+      const entries = bySection.get(section)!;
+      if (entries.length === 0) continue;
+
+      const sectionEl = this._buildSection(section, entries);
+      scroll.appendChild(sectionEl);
+    }
+
+    this._setStatus(`${this.params.size} params across ${SECTION_ORDER.length} sections`);
+  }
+
+  private _buildSection(section: PanelSection, entries: UILParamEntry[]): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'at-uil-section';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'at-uil-section-header';
+    header.dataset.sectionHeader = section;
+
+    const arrow = document.createElement('span');
+    arrow.className = 'at-uil-section-arrow';
+    arrow.textContent = '▾';
+
+    const label = document.createElement('span');
+    label.textContent = SECTION_LABELS[section];
+
+    const count = document.createElement('span');
+    count.className = 'at-uil-section-count';
+    count.textContent = `${entries.length}`;
+
+    header.append(arrow, label, count);
+    header.addEventListener('click', () => {
+      const col = this._collapsed.get(section) ?? false;
+      this._collapsed.set(section, !col);
+      this._applyCollapseState(section);
+    });
+    wrap.appendChild(header);
+
+    // Body
+    const body = document.createElement('div');
+    body.className = 'at-uil-section-body';
+    body.dataset.sectionBody = section;
+
+    // Sort entries alphabetically
+    entries.sort((a, b) => a.key.localeCompare(b.key));
+
+    for (const entry of entries) {
+      const row = this._buildRow(entry);
+      body.appendChild(row);
+    }
+
+    wrap.appendChild(body);
+    return wrap;
+  }
+
+  private _buildRow(entry: UILParamEntry): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'at-uil-row';
+    row.dataset.paramKey = entry.key;
+
+    // Short label: last 2 tokens
+    const labelText = entry.key.split(/[_/]/).slice(-2).join('_');
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'at-uil-label';
+    labelEl.textContent = labelText;
+    labelEl.title = entry.key;
+    row.appendChild(labelEl);
+
+    const widget = document.createElement('div');
+    widget.className = 'at-uil-widget';
+
+    const currentVal = this.values.get(entry.key) ?? entry.value;
+    const refs: WidgetRefs = { rowEl: row, inputs: [] };
+
+    switch (entry.widgetType) {
+      case 'slide':
+        this._buildSlideWidget(entry, widget, currentVal as number, refs);
+        break;
+      case 'vec':
+        this._buildVecWidget(entry, widget, currentVal as number[], refs);
+        break;
+      case 'color':
+        this._buildColorWidget(entry, widget, currentVal as string, refs);
+        break;
+      case 'bool':
+        this._buildBoolWidget(entry, widget, currentVal as boolean, refs);
+        break;
+    }
+
+    row.appendChild(widget);
+    this._widgets.set(entry.key, refs);
+    return row;
+  }
+
+  // ── Widget builders ────────────────────────────────────────────────────────
+
+  private _buildSlideWidget(
+    entry: UILParamEntry,
+    container: HTMLElement,
+    value: number,
+    refs: WidgetRefs,
+  ): void {
+    const wrap = document.createElement('div');
+    wrap.className = 'at-uil-slide';
+
+    const min = entry.min ?? -10;
+    const max = entry.max ?? 10;
+    const step = entry.step ?? 0.01;
+
+    const clampedVal = Math.min(max, Math.max(min, value));
+
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = String(min);
+    range.max = String(max);
+    range.step = String(step);
+    range.value = String(clampedVal);
+
+    const num = document.createElement('input');
+    num.type = 'number';
+    num.className = 'at-uil-num-input';
+    num.step = String(step);
+    num.value = String(round(value));
+
+    range.addEventListener('input', () => {
+      const v = parseFloat(range.value);
+      num.value = String(round(v));
+      this._onWidgetChange(entry.key, v);
+    });
+
+    num.addEventListener('change', () => {
+      const v = parseFloat(num.value);
+      if (!isNaN(v)) {
+        const clamped = Math.min(max, Math.max(min, v));
+        range.value = String(clamped);
+        num.value = String(round(v));
+        this._onWidgetChange(entry.key, v);
+      }
+    });
+
+    refs.inputs = [range, num];
+
+    wrap.append(range, num);
+    container.appendChild(wrap);
+  }
+
+  private _buildVecWidget(
+    entry: UILParamEntry,
+    container: HTMLElement,
+    value: number[],
+    refs: WidgetRefs,
+  ): void {
+    const wrap = document.createElement('div');
+    wrap.className = 'at-uil-vec';
+    const inputs: HTMLInputElement[] = [];
+
+    for (let i = 0; i < value.length; i++) {
+      const num = document.createElement('input');
+      num.type = 'number';
+      num.className = 'at-uil-num-input';
+      num.step = String(entry.step ?? 0.01);
+      num.value = String(round(value[i]));
+      num.placeholder = ['x', 'y', 'z', 'w'][i] ?? String(i);
+
+      num.addEventListener('change', () => {
+        const current = (this.values.get(entry.key) as number[]).slice();
+        const v = parseFloat(num.value);
+        if (!isNaN(v)) current[i] = v;
+        this._onWidgetChange(entry.key, current);
+      });
+
+      inputs.push(num);
+      wrap.appendChild(num);
+    }
+
+    refs.inputs = inputs;
+    container.appendChild(wrap);
+  }
+
+  private _buildColorWidget(
+    entry: UILParamEntry,
+    container: HTMLElement,
+    value: string,
+    refs: WidgetRefs,
+  ): void {
+    const wrap = document.createElement('div');
+    wrap.className = 'at-uil-color';
+
+    const swatch = document.createElement('input');
+    swatch.type = 'color';
+    swatch.value = value.length === 7 ? value : '#ffffff';
+
+    const hexInput = document.createElement('input');
+    hexInput.type = 'text';
+    hexInput.className = 'at-uil-color-hex';
+    hexInput.value = value;
+    hexInput.maxLength = 7;
+
+    swatch.addEventListener('input', () => {
+      hexInput.value = swatch.value;
+      this._onWidgetChange(entry.key, swatch.value);
+    });
+
+    hexInput.addEventListener('change', () => {
+      const v = hexInput.value;
+      if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+        swatch.value = v;
+        this._onWidgetChange(entry.key, v);
+      }
+    });
+
+    refs.inputs = [swatch, hexInput];
+    wrap.append(swatch, hexInput);
+    container.appendChild(wrap);
+  }
+
+  private _buildBoolWidget(
+    entry: UILParamEntry,
+    container: HTMLElement,
+    value: boolean,
+    refs: WidgetRefs,
+  ): void {
+    const wrap = document.createElement('div');
+    wrap.className = 'at-uil-bool';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = value;
+
+    cb.addEventListener('change', () => {
+      this._onWidgetChange(entry.key, cb.checked);
+    });
+
+    refs.inputs = [cb];
+    wrap.appendChild(cb);
+    container.appendChild(wrap);
+  }
+
+  // ── Widget refresh (programmatic set) ─────────────────────────────────────
+
+  private _refreshWidget(key: string, value: LiveValue): void {
+    const refs = this._widgets.get(key);
+    const entry = this.params.get(key);
+    if (!refs || !entry) return;
+
+    switch (entry.widgetType) {
+      case 'slide': {
+        const v = value as number;
+        const [range, num] = refs.inputs as HTMLInputElement[];
+        if (range) range.value = String(v);
+        if (num) num.value = String(round(v));
+        break;
+      }
+      case 'vec': {
+        const arr = value as number[];
+        for (let i = 0; i < arr.length; i++) {
+          const inp = refs.inputs[i] as HTMLInputElement | undefined;
+          if (inp) inp.value = String(round(arr[i]));
+        }
+        break;
+      }
+      case 'color': {
+        const hex = value as string;
+        const [swatch, hexInput] = refs.inputs as HTMLInputElement[];
+        if (swatch && /^#[0-9a-fA-F]{6}$/.test(hex)) swatch.value = hex;
+        if (hexInput) hexInput.value = hex;
+        break;
+      }
+      case 'bool': {
+        const cb = refs.inputs[0] as HTMLInputElement | undefined;
+        if (cb) cb.checked = value as boolean;
+        break;
+      }
+    }
+  }
+
+  // ── Change dispatch ────────────────────────────────────────────────────────
+
+  private _onWidgetChange(key: string, newValue: LiveValue): void {
+    const prev = cloneValue(this.values.get(key) ?? (this.params.get(key)?.value ?? 0));
+    this.values.set(key, cloneValue(newValue));
+    const section = this.params.get(key)?.section ?? 'MISC';
+    this._emit({ key, value: newValue, section, prev });
+    this._setStatus(`${key.split(/[_/]/).slice(-2).join('/')} → ${_valueToString(newValue)}`);
+  }
+
+  // ── Preset list refresh ────────────────────────────────────────────────────
+
+  private _refreshPresetList(): void {
+    if (!this._presetSelect) return;
+    const names = this.listPresets();
+    this._presetSelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = names.length ? '— select preset —' : '(no presets)';
+    this._presetSelect.appendChild(placeholder);
+    for (const name of names) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      this._presetSelect.appendChild(opt);
+    }
+  }
+
+  // ── Status bar ─────────────────────────────────────────────────────────────
+
+  private _setStatus(msg: string): void {
+    if (this._statusEl) this._statusEl.textContent = msg;
+  }
+
+  // ── Snapshot utils ─────────────────────────────────────────────────────────
+
+  /** Return a plain snapshot of all current values. */
+  snapshot(): PresetSnapshot {
+    const out: PresetSnapshot = {};
+    for (const [k, v] of this.values) out[k] = cloneValue(v);
+    return out;
+  }
+
+  /** Return only the params belonging to a given section. */
+  sectionSnapshot(section: PanelSection): PresetSnapshot {
+    const out: PresetSnapshot = {};
+    for (const [k, entry] of this.params) {
+      if (entry.section === section) out[k] = cloneValue(this.values.get(k) ?? entry.value);
+    }
+    return out;
+  }
+
+  /** Return params matching a substring query. */
+  searchParams(query: string): UILParamEntry[] {
+    const q = query.toLowerCase();
+    return Array.from(this.params.values()).filter(e => e.key.toLowerCase().includes(q));
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Refs to DOM nodes for a single param row. */
+interface WidgetRefs {
+  rowEl: HTMLElement;
+  inputs: (HTMLInputElement | HTMLElement)[];
+}
+
+/** Compact string representation for status bar display. */
+function _valueToString(v: LiveValue): string {
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (typeof v === 'string')  return v;
+  if (typeof v === 'number')  return round(v, 3).toString();
+  return `[${(v as number[]).map(n => round(n, 3)).join(', ')}]`;
+}
