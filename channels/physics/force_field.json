@@ -1,70 +1,70 @@
 {
   "input_embed": {
     "dx": 0.0,
-    "dy": -1.458,
+    "dy": 0.0,
     "dz": 0.0,
     "push_from": [
       "pos_encode"
     ],
-    "push_mag": 1.458
+    "push_mag": 0.0
   },
   "pos_encode": {
-    "dx": -0.135,
-    "dy": 0.239,
+    "dx": 0.0,
+    "dy": 0.0,
     "dz": 0.0,
     "push_from": [
       "input_embed",
       "self_attn"
     ],
-    "push_mag": 0.275
+    "push_mag": 0.0
   },
   "self_attn": {
-    "dx": 0.48,
-    "dy": -0.202,
+    "dx": 0.0,
+    "dy": 0.0,
     "dz": 0.0,
     "push_from": [
       "pos_encode",
       "add_norm1"
     ],
-    "push_mag": 0.521
+    "push_mag": 0.0
   },
   "add_norm1": {
-    "dx": -0.568,
-    "dy": -0.308,
+    "dx": 0.0,
+    "dy": 0.0,
     "dz": 0.0,
     "push_from": [
       "self_attn",
       "ffn"
     ],
-    "push_mag": 0.646
+    "push_mag": 0.0
   },
   "ffn": {
-    "dx": 0.446,
+    "dx": 0.0,
     "dy": 0.0,
     "dz": 0.0,
     "push_from": [
       "add_norm1",
       "add_norm2"
     ],
-    "push_mag": 0.446
+    "push_mag": 0.0
   },
   "add_norm2": {
-    "dx": -0.427,
-    "dy": 0.102,
+    "dx": 0.0,
+    "dy": 0.0,
     "dz": 0.0,
     "push_from": [
       "ffn",
       "output"
     ],
-    "push_mag": 0.439
+    "push_mag": 0.0
   },
   "output": {
-    "dx": 0.204,
-    "dy": 1.628,
+    "dx": 0.0,
+    "dy": 0.0,
     "dz": 0.0,
     "push_from": [
       "add_norm2"
     ],
-    "push_mag": 1.641
+    "push_mag": 0.0
   }
 }

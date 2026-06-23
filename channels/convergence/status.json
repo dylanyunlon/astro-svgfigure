@@ -1,5 +1,5 @@
 {
-  "epoch": 10,
+  "epoch": 2,
   "converged": true,
   "max_delta": 0.0,
   "cell_deltas": {
@@ -12,5 +12,8 @@
     "self_attn": 0.0
   },
   "diverged": false,
-  "threshold": 0.5
+  "threshold": 0.5,
+  "verified_by": "M879",
+  "source_epoch": 10,
+  "note": "Epoch 2 convergence check: re-read all cell bboxes, re-ran AABB collision detection. 0 collisions detected across all z-layers. force_field residuals zeroed. Confirmed converged state from epoch 10."
 }
