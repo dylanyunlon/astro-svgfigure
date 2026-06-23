@@ -205,3 +205,198 @@ export type { WeatherKind, WeatherMode, RainSnowConfig, WeatherSnapshot } from '
 // holographic-display (M798)
 export { HolographicDisplay, HOLO_PRESETS, HOLOGRAPHIC_DEFAULTS, HOLOGRAPHIC_WGSL, createHolographicDisplay, createDebugHolographic, createSubtleHolographic, selfTest as holographicDisplaySelfTest } from './holographic-display';
 export type { HoloCellEntry, HoloFrameData, HoloPresetName, RGBA as HoloRGBA, HoloPalette, HolographicDisplayOptions } from './holographic-display';
+
+// ─── M813: barrel exports 100% ──────────────────────────────────────────────
+
+// adaptive-lod
+export { AdaptiveLOD, getGlobalLOD, setGlobalLOD } from './adaptive-lod';
+export type { CellRenderHint, CellLODAssignment, LODCamera, LODCellInput, AdaptiveLODConfig, AdaptiveLODSnapshot } from './adaptive-lod';
+
+// ambient-occlusion
+export { DEFAULT_SSAO_PARAMS, DEFAULT_BLUR_PARAMS, DEFAULT_COMPOSITE_PARAMS, generateSSAOKernel, generateNoiseTexture, packSSAOUniforms, packBlurUniforms, packCompositeUniforms, SSAOPass, SSAO_WGSL, _selfTest as ssaoSelfTest } from './ambient-occlusion';
+export type { SSAOParams, BlurParams, CompositeParams, SSAOConfig } from './ambient-occlusion';
+
+// at-geometry-loader
+export { ATGeometryLoader } from './at-geometry-loader';
+export type { ATGeometry, ATGeometryName, ATGeometryLoaderOptions } from './at-geometry-loader';
+
+// at-jellyfish-cell
+export { ATJellyfishCell, createATJellyfishCell } from './at-jellyfish-cell';
+export type { JellyfishVariantConfig, JellyfishInstance } from './at-jellyfish-cell';
+
+// at-lighting-import
+export { ATLightingImport, createDirectionalLight, createPointLight, createConeLight, createAreaLight } from './at-lighting-import';
+export type { ATUniformInfo, ATLight, ATShadowConfig as ATLightingShadowConfig, ATPBRTextures, ATLightingConfig } from './at-lighting-import';
+
+// at-postprocess-import
+export { AT_FXAA_VERT, AT_FXAA_FRAG, AT_LENS_PREFILTER_FRAG, AT_LENS_DOWN_FRAG, AT_LENS_UP_FRAG, AT_COMPOSITE_FRAG, AT_FULLSCREEN_VERT, AT_LIGHT_VOLUME_VERT, AT_LIGHT_VOLUME_FRAG, ATPostProcessPipeline } from './at-postprocess-import';
+export type { ATPostProcessParams } from './at-postprocess-import';
+
+// at-shader-loader
+export { ATShaderLoader } from './at-shader-loader';
+
+// at-shadow-import
+export { ATShadowSystem, computeCascadeSplits, mat4LookAt, mat4Ortho, mat4Multiply, mat4Identity, DEPTH_VERTEX_SHADER, DEPTH_FRAGMENT_STANDARD, DEPTH_FRAGMENT_VSM, VSM_BLUR_FRAGMENT, FULLSCREEN_QUAD_VERTEX, POISSON_DISK_25, POISSON_DISK_16, MAX_CASCADES, CASCADE_SPLIT_LAMBDA, DEFAULT_RESOLUTION } from './at-shadow-import';
+export type { ShadowMode, ATShadowConfig as ATShadowImportConfig, DepthShaderSource, ShadowMapResource } from './at-shadow-import';
+
+// audio-physics-bridge
+export { AudioPhysicsBridge } from './audio-physics-bridge';
+
+// audio-reactive-visuals
+export { AudioReactiveVisuals, applyBreathToInstanceBuffer, applyBreathWaveToInstanceBuffer, updateAudioReactiveFrame } from './audio-reactive-visuals';
+export type { AudioReactiveSnapshot, AudioReactiveConfig } from './audio-reactive-visuals';
+
+// cell-aura
+export { AURA_FLOATS_PER_CELL, CellAuraSystem, CellAuraPass, sdfShapeToKind } from './cell-aura';
+export type { CellAuraState, CellAuraInput, PackedAuraBuffer, CellAuraPassOptions } from './cell-aura';
+
+// cinematic-camera
+export { CinematicCamera, pathPoint, CINEMATIC_PRESETS } from './cinematic-camera';
+export type { CameraMode, ShakeProfile, PathLoopMode, FollowConfig, OrbitConfig, DollyZoomConfig, ShakeEvent, PathPoint, AutoFrameConfig, CameraSnapshot, CameraTransition } from './cinematic-camera';
+
+// dof-bokeh
+export { DOFBokehPipeline, DOFBokehPresets, createDOFBokehForScene, DOF_COC_WGSL, DOF_HEX_BLUR_A_WGSL, DOF_HEX_BLUR_B_WGSL, DOF_COMPOSITE_WGSL, DOF_UNIFORMS_WGSL } from './dof-bokeh';
+export type { DOFBokehParams } from './dof-bokeh';
+
+// domain
+export { clampToDomain } from './domain';
+
+// edge-data-flow-viz
+export { EdgeDataFlowViz, createEdgeDataFlowViz, EDGE_DATA_FLOW_DEFAULTS } from './edge-data-flow-viz';
+export type { PulseStyle, VizPoint, VizEdge, EdgeDataFlowVizConfig } from './edge-data-flow-viz';
+
+// edge-energy-flow
+export { EdgeEnergyFlow, createEdgeEnergyFlowWithBus, EDGE_ENERGY_FLOW_DEFAULTS, FLUID_PROFILES } from './edge-energy-flow';
+export type { FluidProfile, EnergyPoint, EnergyEdge, TrafficMetric, EdgeEnergyFlowConfig } from './edge-energy-flow';
+
+// environment-fog
+export { EnvironmentFog, createEnvironmentFogForSpecies, EnvironmentFogPresets, ENVIRONMENT_FOG_WGSL } from './environment-fog';
+export type { FogMode, EnvironmentFogParams } from './environment-fog';
+
+// epoch-visual-sync
+export { EpochVisualSync, diffEpochSnapshots, qualityToRenderConfig } from './epoch-visual-sync';
+export type { VisualBbox, CellVisualSnapshot, EpochSnapshot as VisualEpochSnapshot, QualityState, BboxMorphTarget, TimelineState, EpochCompletedPayload, CellParamsPayload, RollbackPayload, CellApiDescriptor, OnSpeciesTransition, OnBboxMorph, OnQualityChange, OnTimelineProgress, OnRollback, OnEpochSnapshot, OnCellEnter, OnCellExit, EpochVisualSyncOptions, EpochVisualDiff, RenderQualityConfig } from './epoch-visual-sync';
+
+// god-rays
+export { GodRaysCompute, createGodRaysForSpecies, GOD_RAYS_WGSL, GOD_RAYS_MAX_LIGHTS } from './god-rays';
+export type { GodRayLight, GodRaysParams } from './god-rays';
+
+// gpu-culling
+export { extractFrustumPlanes, buildViewProjFromCamera, cellBBoxToAABB, GPUCullingPipeline, prepareCellCullDispatch } from './gpu-culling';
+export type { FrustumPlane, CullAABB, GPUCullingConfig } from './gpu-culling';
+
+// gpu-particle-sort
+export { GPUParticleRadixSort, RADIX_SORT_CONSTANTS } from './gpu-particle-sort';
+export type { SortKeyMode, RadixSortConfig, RadixSortMetrics } from './gpu-particle-sort';
+
+// heat-distortion
+export { HeatDistortionSystem, HeatDistortionPipeline, evaluateEnergyField, nearestEmitter } from './heat-distortion';
+export type { HeatEmitter, HeatEmitterGPU, HeatDistortionConfig } from './heat-distortion';
+
+// instanced-cell-renderer
+export { FLOATS_PER_CELL, CELL_INSTANCED_VERT, CELL_INSTANCED_FRAG, hexToLinearRGBA, InstancedCellRenderer, createInstancedCellRenderer, visualProfilesToDescriptors, computeRDGridAssignment } from './instanced-cell-renderer';
+export type { CellBBox as InstancedCellBBox, CellInstanceDescriptor } from './instanced-cell-renderer';
+
+// integration-test — no public exports (side-effect test runner)
+
+// interactive-fluid
+export { InteractiveFluid, createInteractiveFluid } from './interactive-fluid';
+export type { FluidRenderCallback, InteractiveFluidOptions } from './interactive-fluid';
+
+// lens-flare
+export { LensFlareCompute, createLensFlareForSpecies, LENS_FLARE_WGSL, MAX_FLARE_LIGHTS, MAX_GHOST_LAYERS, LENS_FLARE_DEFAULTS } from './lens-flare';
+export type { FlareLightSource, GhostLayerConfig, LensFlareParams } from './lens-flare';
+
+// minimap-renderer
+export { defaultMinimapConfig, renderMinimap } from './minimap-renderer';
+export type { MinimapConfig } from './minimap-renderer';
+
+// nature-texture-manager
+export { NatureTextureManager } from './nature-texture-manager';
+export type { NatureTextureKind, NatureTextureInstance, NatureTextureConfigMap, PhysarumCreateConfig, NatureTextureInstanceMap, GeneratorEntry } from './nature-texture-manager';
+
+// neural-pathway-renderer
+export { NeuralPathwayRenderer, createNeuralPathwayRenderer, createNeuralPathwayForSPH, NEURAL_PATHWAY_DEFAULTS } from './neural-pathway-renderer';
+export type { NeuralStyle, NeuralPoint, NeuralEdge, OnVesicleArrivalFn, OnPulseArrivalFn, NeuralPathwayConfig } from './neural-pathway-renderer';
+
+// particle-instancing
+export { INSTANCE_STRIDE, ParticleInstancer, packParticleData, packParticleDataSOA, ortho } from './particle-instancing';
+export type { ParticleInstancerOptions, PackedParticleResult } from './particle-instancing';
+
+// particle-life-color
+export { getLifecyclePhase, SPECIES_BASE_COLOR, resolveLifecycleColor, lifecycleColorToCss, lifecycleColorToU8, speciesIndexToId, batchResolveLifecycleColors, batchResolveLifecycleColorsIndexed, generateLifecycleRamp, generateLifecycleLUT } from './particle-life-color';
+export type { LifecyclePhase, SpeciesBaseColor, LifecycleColorInput, LifecycleColor } from './particle-life-color';
+
+// portal-effect
+export { PortalEffectSystem, createPortalEffectRenderer, shouldRenderPortal, PORTAL_DEFAULTS, QOS_PORTAL_STYLE } from './portal-effect';
+export type { PortalStyle, PortalPoint, PortalFlowPoint, PortalEdge, PortalEffectConfig } from './portal-effect';
+
+// procedural-texture-atlas
+export { speciesTextureKind, buildAtlasConfig, speciesAtlasUV, ATLAS_UV_WGSL, ProceduralTextureAtlas, PROCEDURAL_ATLAS_WGSL } from './procedural-texture-atlas';
+export type { ProceduralTextureKind, TileParams, AtlasConfig } from './procedural-texture-atlas';
+
+// reaction-diffusion-surface
+export { CELL_RD_SIZE, CELL_RD_DEFAULT_SUBSTEPS, CELL_RD_MAX_CELLS, CellRDSurface, CellRDSurfaceManager, registerCellSurfaces } from './reaction-diffusion-surface';
+export type { CellRDSurfaceConfig, CellRDManagerConfig, CellRDSnapshot } from './reaction-diffusion-surface';
+
+// render-compositor
+export { RenderCompositor, createRenderCompositor } from './render-compositor';
+export type { CellBBox as CompositorCellBBox, SPHWorldView as CompositorSPHWorldView, SceneMatrices as CompositorSceneMatrices, RenderPassFlags, RenderCompositorConfig, FrameTimings } from './render-compositor';
+
+// screen-space-reflection
+export { DEFAULT_SSR_REFLECTION_PARAMS, SPECIES_REFLECTION_PROFILES, SSRReflectionPass, modulateSSRReflectionFromPhysics, selectSSRTier } from './screen-space-reflection';
+export type { SSRReflectionParams, SpeciesReflectionProfile } from './screen-space-reflection';
+
+// screen-space-reflections
+export { DEFAULT_SSR_PARAMS, SPECIES_SSR_PROFILES, ScreenSpaceReflections, modulateSSRFromPhysics } from './screen-space-reflections';
+export type { SSRParams, SpeciesSSRProfile } from './screen-space-reflections';
+
+// shader-tuning-presets
+export { SPECIES_TO_CIL, SHADER_PRESETS, getShaderPreset, getCilSpecies, SPECIES_PIPELINE_ORDER, lerpPreset } from './shader-tuning-presets';
+export type { ShaderPreset, TransformerSpecies } from './shader-tuning-presets';
+
+// shadow-map
+export { ShadowMap } from './shadow-map';
+export type { CellCaster, ShadowMapConfig } from './shadow-map';
+
+// shadow-system
+export { ShadowSystem } from './shadow-system';
+export type { ShadowConfig } from './shadow-system';
+
+// subsurface-scattering
+export { SSS_PROFILE_REGISTRY, DEFAULT_SSS_PARAMS, SPECIES_LUT_ORDER, buildSpeciesLUTData, buildGaussianKernel, SSSPass, modulateSSSByPhysics, cpuSubsurfaceScatter, getSSSProfile, getTranslucentSpecies, speciesNeedsSSS } from './subsurface-scattering';
+export type { SSSProfile, SSSParams, ModulatedSSS } from './subsurface-scattering';
+
+// temporal-reprojection
+export { TemporalReprojection, applyJitterToProjection, TAAPresets } from './temporal-reprojection';
+export type { TAAParams } from './temporal-reprojection';
+
+// test-scenes
+export { createTestWorld, TEST_SCENES, runAllTestScenes } from './test-scenes';
+export type { TestWorld, TestScene } from './test-scenes';
+
+// tone-mapping
+export { ACESInputMat, ACESOutputMat, acesFilm, acesNarkowicz, acesNarkowiczColor, expose } from './tone-mapping';
+export type { Color3 as ToneMappingColor3, Mat3 } from './tone-mapping';
+
+// topology-physics-sync
+export { TopologyPhysicsSync, buildEdgeEmitters } from './topology-physics-sync';
+export type { TopoNode, TopoEdge, TopologyPayload as TopoPhysicsPayload, EdgeRoute, TopologyPhysicsSyncOptions, PhysicsWorldDelegate, EdgeFlowDelegate, OnSyncCallback, SyncStats } from './topology-physics-sync';
+
+// topology-transition-fx
+export { TopologyTransitionFX, createTopologyTransitionFX, wireTopologyTransitionFX } from './topology-transition-fx';
+export type { SplinePoint as TopoSplinePoint, EdgeCreatedOptions, EdgeRemovedOptions, CellCreatedOptions, CellRemovedOptions, TopologyTransitionFXConfig, TopologyFXEvent, OnTopologyFXCallback } from './topology-transition-fx';
+
+// trails
+export { updateTrails } from './trails';
+
+// webgpu-sph-compute
+export { WebGPUSPHCompute } from './webgpu-sph-compute';
+
+// world-orchestrator
+export { WorldOrchestrator } from './world-orchestrator';
+export type { OrchestratorStats, WorldOrchestratorConfig } from './world-orchestrator';
+
+// world-preset-scenes
+export { PRESET_SCENES, getPresetNames, setupPreset } from './world-preset-scenes';
+export type { PresetScene } from './world-preset-scenes';
