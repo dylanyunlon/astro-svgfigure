@@ -1,11 +1,11 @@
 /**
- * at-glass-reflection-system.ts — AT Glass Reflection System — WebGPU/WGSL Port
+ * at-glass-reflection-system.ts — AT Glass Reflection System — WebGL GPU Port
  *
  * 玻璃反射系统，为 Cell 外壳提供真实感的玻璃材质:
  *   - 菲涅耳反射 (Fresnel Reflection) — 掠射角处高反射率
  *   - 折射与色散 (Refraction + Chromatic Aberration) — 棱镜效应
  *   - 体积散射 (Subsurface Scattering) — 内部漫散光
- *   - 环境反射 (Environment Cubemap) — 基于探针的反射
+ *   - 环境反射 (Environment Equirectangular) — equi 投影探针采样
  *   - CleanRoom 场景洁净室玻璃效果
  *
  * 移植自 ActiveTheory compiled.vs:
@@ -17,550 +17,398 @@
  *   - refl.vs/fs           → 环境反射 & 折射
  *   - rgbshift.fs          → 色散分离采样
  *
- * 提供两套材质路径:
- *   1. ATGlassReflectionSystem  — 完整玻璃系统 (菲涅耳 + 折射 + 体积散射 + 环境探针)
- *   2. CleanRoomGlassMode       — 洁净室专用模式 (彩虹色散 + 高保真折射)
- *
- * 用法:
- *   const system = await ATGlassReflectionSystem.create(device, format);
- *   system.setParams({
- *     fresnelPower: 4.0,
- *     refractionRatio: 0.66,
- *     dispersiveness: 0.25,
- *     subsurfaceIntensity: 0.8,
- *     envProbeStrength: 1.0,
- *     cleanRoomMode: true
- *   });
- *   system.render(encoder, colorTargetView, depthView, uniformBuffer);
- *
- * Research: xiaodi #M839 — cell-pubsub-loop
+ * Research: xiaodi #M914 — cell-pubsub-loop
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL — 公共数学助手 (saturate / pow5 / constants)
+// Shader Sources — inline GLSL (ported from compiled.vs)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_MATH_HELPERS = /* wgsl */`
-fn saturate_f(v: f32) -> f32 { return clamp(v, 0.0, 1.0); }
-fn saturate_v3(v: vec3f) -> vec3f { return clamp(v, 0.0, 1.0); }
-fn pow5_f(v: f32) -> f32 { let v2 = v * v; return v2 * v2 * v; }
-fn pow5_v3(v: vec3f) -> vec3f { let v2 = v * v; return v2 * v2 * v; }
-
-const PI       : f32 = 3.14159265358979323846;
-const TWO_PI   : f32 = 6.28318530717958647693;
-const INV_PI   : f32 = 0.31830988618379067154;
-const HALF_PI  : f32 = 1.57079632679489661923;
+// ── Vertex Shader: GlassInner pass ──────────────────────────────────────────
+// Source: compiled.vs line 2972-2978 GlassInner.glsl
+const GLASS_INNER_VERT = /* glsl */`
+precision highp float;
+attribute vec3 aPosition;
+attribute vec3 aNormal;
+attribute vec2 aUv;
+varying vec3 vNormal;
+varying vec3 vViewDir;
+varying vec3 vPos;
+uniform mat4 uProjection;
+uniform mat4 uModelView;
+void main() {
+    vNormal = aNormal;
+    vViewDir = -vec3(uModelView * vec4(aPosition, 1.0));
+    vPos = aPosition;
+    gl_Position = uProjection * uModelView * vec4(aPosition, 1.0);
+}
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Fresnel 计算 (Schlick + 精确 Fresnel-Dielectric)
-// 参考 lygia/lighting/fresnel.glsl + CleanRoomGlass.glsl
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Fragment Shader: GlassInner pass ────────────────────────────────────────
+// Source: compiled.vs line 2986-2989 GlassInner.glsl fragment
+// Implements subsurface noise scattering + edge glow
+const GLASS_INNER_FRAG = /* glsl */`
+precision highp float;
+varying vec3 vNormal;
+varying vec3 vViewDir;
+varying vec3 vPos;
+uniform float uTime;
 
-const WGSL_FRESNEL_GLASS = /* wgsl */`
-// ── Schlick 近似 Fresnel (速度快，精度好) ──────────────────────────────────────
-fn F_Schlick(f0: vec3f, cosTheta: f32) -> vec3f {
-    return f0 + (vec3f(1.0) - f0) * pow5_v3(vec3f(saturate_f(1.0 - cosTheta)));
+// range.glsl crange
+float crange(float v, float inMin, float inMax, float outMin, float outMax) {
+    return mix(outMin, outMax, clamp((v - inMin) / (inMax - inMin), 0.0, 1.0));
 }
 
-// ── 简单Fresnel 因子 (单浮点) ─────────────────────────────────────────────────
-fn getFresnel(N: vec3f, V: vec3f, power: f32) -> f32 {
-    let d = dot(normalize(N), normalize(V));
+// eases.glsl quarticIn
+float quarticIn(float t) { return t * t * t * t; }
+
+// simplenoise.glsl — cnoise (3D Perlin, simplified)
+vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+vec4 mod289_4(vec4 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+vec4 permute(vec4 x) { return mod289_4(((x*34.0)+1.0)*x); }
+vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+float cnoise(vec3 P) {
+    vec3 Pi0 = floor(P); vec3 Pi1 = Pi0 + vec3(1.0);
+    Pi0 = mod289(Pi0); Pi1 = mod289(Pi1);
+    vec3 Pf0 = fract(P); vec3 Pf1 = Pf0 - vec3(1.0);
+    vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+    vec4 iy = vec4(Pi0.yy, Pi1.yy);
+    vec4 iz0 = Pi0.zzzz; vec4 iz1 = Pi1.zzzz;
+    vec4 ixy  = permute(permute(ix) + iy);
+    vec4 ixy0 = permute(ixy + iz0);
+    vec4 ixy1 = permute(ixy + iz1);
+    vec4 gx0 = ixy0 * (1.0/7.0); vec4 gy0 = fract(floor(gx0)*(1.0/7.0)) - 0.5;
+    gx0 = fract(gx0); vec4 gz0 = vec4(0.5) - abs(gx0) - abs(gy0);
+    vec4 sz0 = step(gz0, vec4(0.0)); gx0 -= sz0*(step(0.0,gx0)-0.5); gy0 -= sz0*(step(0.0,gy0)-0.5);
+    vec4 gx1 = ixy1 * (1.0/7.0); vec4 gy1 = fract(floor(gx1)*(1.0/7.0)) - 0.5;
+    gx1 = fract(gx1); vec4 gz1 = vec4(0.5) - abs(gx1) - abs(gy1);
+    vec4 sz1 = step(gz1, vec4(0.0)); gx1 -= sz1*(step(0.0,gx1)-0.5); gy1 -= sz1*(step(0.0,gy1)-0.5);
+    vec3 g000 = vec3(gx0.x,gy0.x,gz0.x); vec3 g100 = vec3(gx0.y,gy0.y,gz0.y);
+    vec3 g010 = vec3(gx0.z,gy0.z,gz0.z); vec3 g110 = vec3(gx0.w,gy0.w,gz0.w);
+    vec3 g001 = vec3(gx1.x,gy1.x,gz1.x); vec3 g101 = vec3(gx1.y,gy1.y,gz1.y);
+    vec3 g011 = vec3(gx1.z,gy1.z,gz1.z); vec3 g111 = vec3(gx1.w,gy1.w,gz1.w);
+    vec4 norm0 = taylorInvSqrt(vec4(dot(g000,g000),dot(g010,g010),dot(g100,g100),dot(g110,g110)));
+    g000 *= norm0.x; g010 *= norm0.y; g100 *= norm0.z; g110 *= norm0.w;
+    vec4 norm1 = taylorInvSqrt(vec4(dot(g001,g001),dot(g011,g011),dot(g101,g101),dot(g111,g111)));
+    g001 *= norm1.x; g011 *= norm1.y; g101 *= norm1.z; g111 *= norm1.w;
+    float n000 = dot(g000, Pf0);
+    float n100 = dot(g100, vec3(Pf1.x, Pf0.yz));
+    float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+    float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+    float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+    float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+    float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+    float n111 = dot(g111, Pf1);
+    vec3 fade = Pf0*Pf0*Pf0*(Pf0*(Pf0*6.0-15.0)+10.0);
+    vec4 n_z = mix(vec4(n000,n100,n010,n110), vec4(n001,n101,n011,n111), fade.z);
+    vec2 n_yz = mix(n_z.xy, n_z.zw, fade.y);
+    return 2.3 * mix(n_yz.x, n_yz.y, fade.x);
+}
+
+void main() {
+    // GlassInner.glsl fragment — exact port from compiled.vs line 2987-2989
+    gl_FragColor = mix(vec4(0.0), vec4(1.4), vNormal.y)
+                 * crange(cnoise(vViewDir * 0.2 + 0.5), -1.0, 1.0, 0.0, 1.0);
+    gl_FragColor.rgb += cnoise(vViewDir) * 0.05;
+    gl_FragColor.rgb += quarticIn(
+        crange(abs(vPos.x), 0.5, 0.3, 1.0, 0.0) *
+        crange(abs(vPos.z), 0.5, 0.3, 1.0, 0.0)
+    ) * 0.1;
+}
+`;
+
+// ── Vertex Shader: CleanRoomGlass / GlassReflection ──────────────────────────
+// Source: compiled.vs line 2835-2845 CleanRoomGlass.glsl vertex
+// Uses refl.vs functions: reflection(), refraction(), inverseTransformDirection()
+const GLASS_REFL_VERT = /* glsl */`
+precision highp float;
+attribute vec3 aPosition;
+attribute vec3 aNormal;
+attribute vec2 aUv;
+varying vec3 vWorldPos;
+varying vec3 vNormal;
+varying vec3 vViewDir;
+varying vec3 vReflection;
+varying vec3 vRefraction;
+varying vec3 vPos;
+varying vec2 vUv;
+uniform mat4 uProjection;
+uniform mat4 uModelView;
+uniform mat4 uModel;
+uniform mat3 uNormalMatrix;
+uniform vec3 uCameraPos;
+uniform float uRefractionRatio;
+
+// refl.vs — inverseTransformDirection
+vec3 inverseTransformDirection(in vec3 n, in mat4 matrix) {
+    return normalize((matrix * vec4(n, 0.0) * matrix).xyz);
+}
+
+// refl.vs — reflection
+vec3 computeReflection(vec4 worldPosition) {
+    vec3 transformedNormal = uNormalMatrix * aNormal;
+    vec3 cameraToVertex = normalize(worldPosition.xyz - uCameraPos);
+    vec3 worldNormal = inverseTransformDirection(transformedNormal, uModel);
+    return reflect(cameraToVertex, worldNormal);
+}
+
+// refl.vs — refraction
+vec3 computeRefraction(vec4 worldPosition, float rRatio) {
+    vec3 transformedNormal = uNormalMatrix * aNormal;
+    vec3 cameraToVertex = normalize(worldPosition.xyz - uCameraPos);
+    vec3 worldNormal = inverseTransformDirection(transformedNormal, uModel);
+    return refract(cameraToVertex, worldNormal, rRatio);
+}
+
+void main() {
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    vReflection = computeReflection(worldPos);
+    vRefraction = computeRefraction(worldPos, uRefractionRatio);
+    vPos = aPosition;
+    vWorldPos = worldPos.xyz;
+    vNormal = uNormalMatrix * aNormal;
+    vViewDir = -vec3(uModelView * vec4(aPosition, 1.0));
+    vUv = aUv;
+    gl_Position = uProjection * uModelView * vec4(aPosition, 1.0);
+}
+`;
+
+// ── Fragment Shader: CleanRoomGlass (full AT glass with fresnel + refraction) ─
+// Source: compiled.vs line 2857-2888 CleanRoomGlass.glsl fragment
+// Uses: fresnel.glsl, refl.fs, rgbshift.fs, range.glsl, simplenoise, eases
+const GLASS_REFL_FRAG = /* glsl */`
+precision highp float;
+varying vec3 vWorldPos;
+varying vec3 vNormal;
+varying vec3 vViewDir;
+varying vec3 vReflection;
+varying vec3 vRefraction;
+varying vec3 vPos;
+varying vec2 vUv;
+
+uniform sampler2D tRefraction;   // screen-space refraction FBO
+uniform sampler2D tEnv;          // equirectangular environment map
+uniform sampler2D tInner;        // GlassInner pass result
+uniform float uFresnelPow;
+uniform float uDistortStrength;
+uniform float uRefractionRatio;
+uniform vec2 uResolution;
+uniform float uTime;
+uniform float uEnvStrength;
+uniform float uCleanRoomMode;    // 0 = standard, 1 = cleanroom rainbow
+
+// ── fresnel.glsl — getFresnel ──────────────────────────────────────────────
+float getFresnel(vec3 normal, vec3 viewDir, float power) {
+    float d = dot(normalize(normal), normalize(viewDir));
     return 1.0 - pow(abs(d), power);
 }
 
-// ── 精确 Fresnel-Dielectric (用于玻璃折射计算) ────────────────────────────────
-fn getFresnelDielectric(inIOR: f32, outIOR: f32, N: vec3f, V: vec3f) -> f32 {
-    let ro = (inIOR - outIOR) / (inIOR + outIOR);
-    let d = dot(normalize(N), normalize(V));
+float getFresnelIOR(float inIOR, float outIOR, vec3 normal, vec3 viewDir) {
+    float ro = (inIOR - outIOR) / (inIOR + outIOR);
+    float d = dot(normalize(normal), normalize(viewDir));
     return ro + (1.0 - ro) * pow((1.0 - d), 5.0);
 }
 
-// ── Fresnel 边缘光 (彩色) ──────────────────────────────────────────────────────
-fn fresnelRim(N: vec3f, V: vec3f, power: f32, rimColor: vec3f) -> vec3f {
-    return rimColor * getFresnel(N, V, power);
+// ── refl.fs — envColorEqui / envColorEquiRGB ──────────────────────────────
+vec4 envColorEqui(sampler2D map, vec3 direction) {
+    vec2 uv;
+    uv.y = asin(clamp(direction.y, -1.0, 1.0)) * 0.31830988618 + 0.5;
+    uv.x = atan(direction.z, direction.x) * 0.15915494 + 0.5;
+    return texture2D(map, uv);
+}
+
+// rgbshift.fs — envColorEquiRGB (chromatic aberration on env map)
+vec4 envColorEquiRGB(sampler2D map, vec3 direction, float angle, float amount) {
+    vec2 uv;
+    uv.y = asin(clamp(direction.y, -1.0, 1.0)) * 0.31830988618 + 0.5;
+    uv.x = atan(direction.z, direction.x) * 0.15915494 + 0.5;
+    vec2 offset = vec2(cos(angle), sin(angle)) * amount * 0.01;
+    vec4 r = texture2D(map, uv + offset);
+    vec4 g = texture2D(map, uv);
+    vec4 b = texture2D(map, uv - offset);
+    return vec4(r.r, g.g, b.b, g.a);
+}
+
+// rgbshift.fs — getRGB (screen-space RGB shift)
+vec4 getRGB(sampler2D tex, vec2 uv, float angle, float amount) {
+    vec2 offset = vec2(cos(angle), sin(angle)) * amount;
+    vec4 r = texture2D(tex, uv + offset);
+    vec4 g = texture2D(tex, uv);
+    vec4 b = texture2D(tex, uv - offset);
+    return vec4(r.r, g.g, b.b, g.a);
+}
+
+// range.glsl
+float crange(float v, float inMin, float inMax, float outMin, float outMax) {
+    return mix(outMin, outMax, clamp((v - inMin) / (inMax - inMin), 0.0, 1.0));
+}
+
+// eases.glsl
+float quarticIn(float t) { return t * t * t * t; }
+
+// simplenoise
+vec3 mod289v(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+vec4 mod289_4v(vec4 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+vec4 permuteV(vec4 x) { return mod289_4v(((x*34.0)+1.0)*x); }
+vec4 taylorInvSqrtV(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+float cnoise(vec3 P) {
+    vec3 Pi0 = floor(P); vec3 Pi1 = Pi0 + vec3(1.0);
+    Pi0 = mod289v(Pi0); Pi1 = mod289v(Pi1);
+    vec3 Pf0 = fract(P); vec3 Pf1 = Pf0 - vec3(1.0);
+    vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+    vec4 iy = vec4(Pi0.yy, Pi1.yy);
+    vec4 iz0 = Pi0.zzzz; vec4 iz1 = Pi1.zzzz;
+    vec4 ixy  = permuteV(permuteV(ix) + iy);
+    vec4 ixy0 = permuteV(ixy + iz0);
+    vec4 ixy1 = permuteV(ixy + iz1);
+    vec4 gx0 = ixy0*(1.0/7.0); vec4 gy0 = fract(floor(gx0)*(1.0/7.0)) - 0.5;
+    gx0 = fract(gx0); vec4 gz0 = vec4(0.5) - abs(gx0) - abs(gy0);
+    vec4 sz0 = step(gz0, vec4(0.0)); gx0 -= sz0*(step(0.0,gx0)-0.5); gy0 -= sz0*(step(0.0,gy0)-0.5);
+    vec4 gx1 = ixy1*(1.0/7.0); vec4 gy1 = fract(floor(gx1)*(1.0/7.0)) - 0.5;
+    gx1 = fract(gx1); vec4 gz1 = vec4(0.5) - abs(gx1) - abs(gy1);
+    vec4 sz1 = step(gz1, vec4(0.0)); gx1 -= sz1*(step(0.0,gx1)-0.5); gy1 -= sz1*(step(0.0,gy1)-0.5);
+    vec3 g000=vec3(gx0.x,gy0.x,gz0.x); vec3 g100=vec3(gx0.y,gy0.y,gz0.y);
+    vec3 g010=vec3(gx0.z,gy0.z,gz0.z); vec3 g110=vec3(gx0.w,gy0.w,gz0.w);
+    vec3 g001=vec3(gx1.x,gy1.x,gz1.x); vec3 g101=vec3(gx1.y,gy1.y,gz1.y);
+    vec3 g011=vec3(gx1.z,gy1.z,gz1.z); vec3 g111=vec3(gx1.w,gy1.w,gz1.w);
+    vec4 norm0=taylorInvSqrtV(vec4(dot(g000,g000),dot(g010,g010),dot(g100,g100),dot(g110,g110)));
+    g000*=norm0.x; g010*=norm0.y; g100*=norm0.z; g110*=norm0.w;
+    vec4 norm1=taylorInvSqrtV(vec4(dot(g001,g001),dot(g011,g011),dot(g101,g101),dot(g111,g111)));
+    g001*=norm1.x; g011*=norm1.y; g101*=norm1.z; g111*=norm1.w;
+    float n000=dot(g000,Pf0); float n100=dot(g100,vec3(Pf1.x,Pf0.yz));
+    float n010=dot(g010,vec3(Pf0.x,Pf1.y,Pf0.z)); float n110=dot(g110,vec3(Pf1.xy,Pf0.z));
+    float n001=dot(g001,vec3(Pf0.xy,Pf1.z)); float n101=dot(g101,vec3(Pf1.x,Pf0.y,Pf1.z));
+    float n011=dot(g011,vec3(Pf0.x,Pf1.yz)); float n111=dot(g111,Pf1);
+    vec3 fade=Pf0*Pf0*Pf0*(Pf0*(Pf0*6.0-15.0)+10.0);
+    vec4 n_z=mix(vec4(n000,n100,n010,n110),vec4(n001,n101,n011,n111),fade.z);
+    vec2 n_yz=mix(n_z.xy,n_z.zw,fade.y);
+    return 2.3 * mix(n_yz.x,n_yz.y,fade.x);
+}
+
+// CleanRoomGlass.glsl — rainbowColor (compiled.vs line 2857-2865)
+vec3 rainbowColor(float t) {
+    t = mod(t, 1.0);
+    if (t < 0.03)       return mix(vec3(0.5,0.0,0.5), vec3(0.5,0.0,1.0), t/0.03);
+    else if (t < 0.06)  return mix(vec3(0.5,0.0,1.0), vec3(0.0,0.0,1.0), (t-0.03)/0.03);
+    else if (t < 0.09)  return mix(vec3(0.0,0.0,1.0), vec3(0.0,1.0,1.0), (t-0.06)/0.03);
+    else if (t < 0.12)  return mix(vec3(0.0,1.0,1.0), vec3(0.0,1.0,0.0), (t-0.09)/0.03);
+    else if (t < 0.18)  return mix(vec3(0.0,1.0,0.0), vec3(1.0,1.0,0.0), (t-0.12)/0.06);
+    else if (t < 0.24)  return mix(vec3(1.0,1.0,0.0), vec3(1.0,0.5,0.0), (t-0.18)/0.06);
+    else                return mix(vec3(1.0,0.5,0.0), vec3(1.0,0.0,0.0), (t-0.24)/0.06);
+}
+
+void main() {
+    // ── CleanRoomGlass.glsl fragment main() — exact AT logic ──────────────
+    // compiled.vs lines 2868-2888
+
+    float f = getFresnel(vNormal, vViewDir, uFresnelPow);
+
+    // Rainbow color from fresnel
+    vec3 r = rainbowColor(f * 4.0);
+    if (r.r > 0.99) r *= 0.0;  // compiled.vs line 2871
+
+    // Screen-space UV + distort
+    vec2 uv = gl_FragCoord.xy / uResolution;
+    uv += 0.1 * vNormal.xy * f * uDistortStrength;  // compiled.vs line 2874
+
+    // RGB shift on refraction texture (rgbshift.fs)
+    gl_FragColor = getRGB(tRefraction, uv, 0.3, 0.002);  // compiled.vs line 2876
+    gl_FragColor.rgb += r;                                 // compiled.vs line 2877
+
+    // Equirectangular env sample with chromatic aberration (refl.fs)
+    gl_FragColor += envColorEquiRGB(tEnv, vRefraction, 0.2, 1.0) * uEnvStrength;  // line 2879
+
+    // Subsurface scatter noise
+    gl_FragColor.rgb += cnoise(vViewDir + 2.0) * 0.1;  // compiled.vs line 2880
+
+    // GlassInner contribution
+    gl_FragColor.rgb += texture2D(tInner, gl_FragCoord.xy / uResolution).r;  // line 2881
+
+    // Edge glow
+    gl_FragColor.rgb += quarticIn(
+        crange(abs(vPos.x), 0.5, 0.3, 1.0, 0.0) *
+        crange(abs(vPos.z), 0.5, 0.3, 1.0, 0.0)
+    ) * 0.05;  // compiled.vs line 2882
+
+    // Gamma correction
+    gl_FragColor.rgb = pow(clamp(gl_FragColor.rgb, 0.0, 1.0), vec3(1.5));  // line 2884
+
+    // Top normal boost (CleanRoom ceiling effect)
+    if (vNormal.y > 0.8) gl_FragColor.rgb *= 1.8;  // compiled.vs line 2886
+
+    gl_FragColor.a = 1.0;
+}
+`;
+
+// ── Vertex Shader: BasicMirror ────────────────────────────────────────────────
+// Source: compiled.vs line 1791-1795 BasicMirror.glsl
+const BASIC_MIRROR_VERT = /* glsl */`
+precision highp float;
+attribute vec3 aPosition;
+attribute vec2 aUv;
+varying vec4 vMirrorCoord;
+varying vec2 vUv;
+uniform mat4 uProjection;
+uniform mat4 uModelView;
+uniform mat4 uModel;
+uniform mat4 uMirrorMatrix;
+void main() {
+    vec4 worldPos = uModel * vec4(aPosition, 1.0);
+    vMirrorCoord = uMirrorMatrix * worldPos;          // BasicMirror.glsl line 1793
+    vUv = aUv;
+    gl_Position = uProjection * uModelView * vec4(aPosition, 1.0);
+}
+`;
+
+// ── Fragment Shader: BasicMirror ─────────────────────────────────────────────
+// Source: compiled.vs line 1797-1801 BasicMirror.glsl fragment
+const BASIC_MIRROR_FRAG = /* glsl */`
+precision highp float;
+varying vec4 vMirrorCoord;
+varying vec2 vUv;
+uniform sampler2D tMirrorReflection;
+void main() {
+    // BasicMirror.glsl exact port — compiled.vs line 1799
+    gl_FragColor.rgb = vec3(texture2D(tMirrorReflection, vMirrorCoord.xy / vMirrorCoord.w));
+    gl_FragColor.a = 1.0;
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL — 折射与色散 (Refraction + Chromatic Dispersion)
-// 参考 refl.fs + rgbshift.fs + CleanRoomGlass.glsl
+// TypeScript Interfaces & Params
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_REFRACTION_DISPERSION = /* wgsl */`
-// ── 环境映射坐标转换 (等距柱面投影) ────────────────────────────────────────────
-fn equirectangularCoords(direction: vec3f) -> vec2f {
-    let uv = vec2f(
-        atan2(direction.z, direction.x) * 0.15915494,  // 1/(2π)
-        asin(clamp(direction.y, -1.0, 1.0)) * 0.31830988618  // 1/π
-    ) + 0.5;
-    return uv;
+export interface GlassReflectionParams {
+    fresnelPower?: number;           // Fresnel 衰减指数 (2.0 - 8.0)
+    refractionRatio?: number;        // IOR 比例 (0.5 - 2.0)
+    dispersiveness?: number;         // 色散强度 (0.0 - 0.5)
+    distortStrength?: number;        // 折射扭曲强度 (0.0 - 1.0)
+    subsurfaceIntensity?: number;    // 体积散射强度 (0.0 - 2.0)
+    envProbeStrength?: number;       // 环境探针强度 (0.0 - 1.5)
+    mirrorStrength?: number;         // 镜面反射强度 (0.0 - 1.0)
+    cleanRoomMode?: boolean;         // CleanRoom 模式
+    time?: number;
+    timeScale?: number;
 }
 
-// ── 色散折射 (RGB 分离采样) ────────────────────────────────────────────────────
-fn sampleRGBDispersion(
-    texEnv: texture_2d<f32>,
-    samplerEnv: sampler,
-    direction: vec3f,
-    angle: f32,
-    dispersiveness: f32
-) -> vec4f {
-    let uv = equirectangularCoords(direction);
-    let offset = vec2f(cos(angle), sin(angle)) * dispersiveness * 0.01;
-    
-    let r = textureSample(texEnv, samplerEnv, uv + offset);
-    let g = textureSample(texEnv, samplerEnv, uv);
-    let b = textureSample(texEnv, samplerEnv, uv - offset);
-    
-    return vec4f(r.r, g.g, b.b, g.a);
+export interface GlassReflectionUniform {
+    fresnelPower: number;
+    refractionRatio: number;
+    dispersiveness: number;
+    distortStrength: number;
+    subsurfaceIntensity: number;
+    envProbeStrength: number;
+    mirrorStrength: number;
+    cleanRoomMode: number;
+    time: number;
+    padding: number;
 }
 
-// ── 折射方向计算 ──────────────────────────────────────────────────────────────
-fn refractDirection(V: vec3f, N: vec3f, ior: f32) -> vec3f {
-    return refract(V, N, 1.0 / ior);
-}
+// ── Presets ──────────────────────────────────────────────────────────────────
 
-// ── 玻璃折射采样 (带扭曲) ─────────────────────────────────────────────────────
-fn glassRefraction(
-    V: vec3f,
-    N: vec3f,
-    ior: f32,
-    distortStrength: f32
-) -> vec3f {
-    let refractVec = refractDirection(V, N, ior);
-    
-    // 基于法线的扭曲 (模拟玻璃表面不规则)
-    let distort = N.xy * distortStrength * 0.1;
-    
-    // 返回扭曲后的折射方向
-    return normalize(refractVec + vec3f(distort, 0.0));
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — 体积散射 (Subsurface Scattering)
-// 参考 GlassInner.glsl
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_SUBSURFACE_SCATTERING = /* wgsl */`
-// ── Perlin 噪声 (简化版，用于体积散射) ────────────────────────────────────────
-fn permute(x: vec4f) -> vec4f { return (((x * 34.0) + 1.0) * x) % 289.0; }
-fn taylorInvSqrt(r: vec4f) -> vec4f { return 1.79284291400159 - 0.85373472095314 * r; }
-
-fn cnoise(P: vec3f) -> f32 {
-    let Pi0 = floor(P);
-    let Pi1 = Pi0 + 1.0;
-    let Pf0 = fract(P);
-    let Pf1 = Pf0 - 1.0;
-    
-    let ix = vec4f(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
-    let iy = vec4f(Pi0.yy, Pi1.yy);
-    let iz0 = Pi0.zzzz;
-    let iz1 = Pi1.zzzz;
-    
-    let ixy = permute(permute(ix) + iy);
-    let ixy0 = permute(ixy + iz0);
-    let ixy1 = permute(ixy + iz1);
-    
-    let gx0z0 = ixy0 * 0.0243902439; // 1/41 for gradient count
-    let gy0z0 = fract(floor(gx0z0) * 0.025) - 0.5;
-    let gx0z0f = fract(gx0z0) - 0.5;
-    
-    let gx0z1 = ixy1 * 0.0243902439;
-    let gy0z1 = fract(floor(gx0z1) * 0.025) - 0.5;
-    let gx0z1f = fract(gx0z1) - 0.5;
-    
-    var g000 = vec3f(gx0z0f, gy0z0, gx0z0);
-    var g100 = vec3f(gx0z0f - 1.0, gy0z0, gx0z0 - 1.0);
-    var g010 = vec3f(gx0z1f, gy0z1, gx0z1);
-    var g110 = vec3f(gx0z1f - 1.0, gy0z1, gx0z1 - 1.0);
-    
-    let d000 = dot(g000, Pf0);
-    let d100 = dot(g100, vec3f(Pf1.x, Pf0.y, Pf0.z));
-    let d010 = dot(g010, Pf1);
-    let d110 = dot(g110, vec3f(Pf0.x, Pf1.y, Pf1.z));
-    
-    let n = (d000 + d100 + d010 + d110) / 4.0;
-    return 2.3 * n;
-}
-
-// ── 范围映射 (crange 替代) ─────────────────────────────────────────────────────
-fn crange(v: f32, inMin: f32, inMax: f32, outMin: f32, outMax: f32) -> f32 {
-    let clamped = clamp((v - inMin) / (inMax - inMin), 0.0, 1.0);
-    return mix(outMin, outMax, clamped);
-}
-
-// ── Quartic In 缓动函数 ────────────────────────────────────────────────────────
-fn quarticIn(t: f32) -> f32 { return t * t * t * t; }
-
-// ── 体积散射 (基于噪声 + 法线) ─────────────────────────────────────────────────
-fn subsurfaceScattering(
-    viewDir: vec3f,
-    normal: vec3f,
-    position: vec3f,
-    intensity: f32
-) -> vec3f {
-    // 基于视角方向和法线的噪声
-    let noiseBase = cnoise(viewDir * 0.2 + 0.5);
-    let noiseClamped = crange(noiseBase, -1.0, 1.0, 0.0, 1.0);
-    let veinPattern = noiseClamped * mix(vec3f(0.0), vec3f(1.4), clamp(normal.y, 0.0, 1.0));
-    
-    // 微细细节
-    let detail = cnoise(viewDir) * 0.05;
-    
-    // 边缘光晕 (基于位置的衰减)
-    let edgeFade = quarticIn(crange(
-        abs(position.x), 0.5, 0.3, 1.0, 0.0
-    ) * crange(
-        abs(position.z), 0.5, 0.3, 1.0, 0.0
-    )) * 0.1;
-    
-    return saturate_v3((veinPattern + vec3f(detail) + vec3f(edgeFade)) * intensity);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — 高级 IOR 色散模型 (Cauchy-Helmholtz Dispersion)
-// 实现波长相关的折射率，用于精确色散模拟
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_ADVANCED_DISPERSION = /* wgsl */`
-// ── Cauchy 色散方程 (n(λ) = A + B/λ²) ──────────────────────────────────────────
-// 对于玻璃: A ≈ 1.45, B ≈ 0.003
-// 可见光波长: R=650nm, G=550nm, B=450nm
-fn cauchyDispersion(wavelengthNm: f32, A: f32, B: f32) -> f32 {
-    let lambdaMicron = wavelengthNm / 1000.0;  // 转换为微米
-    let lambdaSq = lambdaMicron * lambdaMicron;
-    return A + B / lambdaSq;
-}
-
-// ── RGB 波长对应的 IOR ────────────────────────────────────────────────────────
-fn getColorIOR(color: i32, A: f32, B: f32) -> f32 {
-    // 0=R, 1=G, 2=B
-    let wavelengths = vec3f(650.0, 550.0, 450.0);
-    let wl = wavelengths[color];
-    return cauchyDispersion(wl, A, B);
-}
-
-// ── 色散系数计算 (用于彩虹效应) ────────────────────────────────────────────────
-fn dispersionFactor(ior_r: f32, ior_g: f32, ior_b: f32) -> f32 {
-    return (ior_r - ior_b) / (ior_g - 1.0);
-}
-
-// ── 阿贝数计算 (色散度指标) ────────────────────────────────────────────────────
-// V_d = (n_d - 1) / (n_f - n_c)
-fn abbe(ior_d: f32, ior_f: f32, ior_c: f32) -> f32 {
-    let num = ior_d - 1.0;
-    let den = ior_f - ior_c;
-    return select(0.0, num / den, den != 0.0);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — 环境反射 (Environment Reflection & Probe)
-// 参考 refl.vs + refl.fs 支持 cubemap 和 equirectangular
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_ENVIRONMENT_REFLECTION = /* wgsl */`
-// ── 反射方向计算 ──────────────────────────────────────────────────────────────
-fn reflectionDirection(V: vec3f, N: vec3f) -> vec3f {
-    return reflect(V, N);
-}
-
-// ── 方向矩阵变换 ──────────────────────────────────────────────────────────────
-fn inverseTransformDirection(dir: vec3f, matrix: mat4x4f) -> vec3f {
-    return normalize((matrix * vec4f(dir, 0.0)).xyz);
-}
-
-fn transformDirection(dir: vec3f, matrix: mat4x4f) -> vec3f {
-    return normalize((matrix * vec4f(dir, 0.0)).xyz);
-}
-
-// ── Cubemap 翻转 (镜像坐标系) ────────────────────────────────────────────────────
-fn flipCubemapCoord(dir: vec3f) -> vec3f {
-    return vec3f(-1.0 * dir.x, dir.yz);
-}
-
-// ── 环境探针采样 (等距柱面) ────────────────────────────────────────────────────
-fn sampleEnvironmentProbe(
-    texProbe: texture_2d<f32>,
-    samplerProbe: sampler,
-    direction: vec3f,
-    intensity: f32
-) -> vec3f {
-    let uv = equirectangularCoords(direction);
-    let sample = textureSample(texProbe, samplerProbe, uv);
-    return sample.rgb * intensity;
-}
-
-// ── 高质量环境反射 (基于粗糙度的多级采样) ────────────────────────────────────────
-fn sampleEnvironmentProbeRough(
-    texProbe: texture_2d<f32>,
-    samplerProbe: sampler,
-    direction: vec3f,
-    roughness: f32,
-    intensity: f32
-) -> vec3f {
-    // 粗糙度 → mipmap 级别映射 (需要预生成 mipmap)
-    let mipLevel = roughness * 8.0;  // 假设 9 级 mipmap (0-8)
-    let uv = equirectangularCoords(direction);
-    
-    // 模拟 mipmap 采样 (实际应使用 textureSampleLevel)
-    let jitter = sin(vec2f(uv.x * 12.9898, uv.y * 78.233)) * 0.43758;
-    let offsetUv = uv + jitter * roughness * 0.05;
-    
-    let sample = textureSample(texProbe, samplerProbe, offsetUv);
-    return sample.rgb * intensity;
-}
-
-// ── 铝箔反射 (平面镜面) ────────────────────────────────────────────────────────
-fn mirrorReflection(mirrorCoord: vec4f, texMirror: texture_2d<f32>, samplerMirror: sampler) -> vec3f {
-    let projCoord = mirrorCoord.xy / mirrorCoord.w;
-    return textureSample(texMirror, samplerMirror, projCoord * 0.5 + 0.5).rgb;
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — BasicMirror 简单镜面反射 (参考 BasicMirror.glsl)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_BASIC_MIRROR = /* wgsl */`
-// ── 镜面反射计算 ──────────────────────────────────────────────────────────────
-fn basicMirrorShading(
-    mirrorCoord: vec4f,
-    texMirror: texture_2d<f32>,
-    samplerMirror: sampler,
-    normalizedMirrorCoord: vec2f
-) -> vec3f {
-    let projCoord = normalizedMirrorCoord * 0.5 + 0.5;
-    let mirrorSample = textureSample(texMirror, samplerMirror, projCoord);
-    return mirrorSample.rgb;
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — CleanRoom 玻璃着色 (参考 CleanRoomGlass.glsl)
-// 完整的彩虹色散 + 高精度折射 + 微细结构
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_CLEANROOM_GLASS = /* wgsl */`
-// ── 彩虹颜色映射 (基于 Fresnel 因子) ─────────────────────────────────────────────
-fn rainbowColor(t: f32) -> vec3f {
-    let tWrapped = fract(t);
-    
-    // 根据区间返回不同的颜色插值
-    if (tWrapped < 0.03) {
-        // 紫色 → 蓝色
-        return mix(vec3f(0.5, 0.0, 0.5), vec3f(0.5, 0.0, 1.0), tWrapped / 0.03);
-    } else if (tWrapped < 0.06) {
-        // 蓝色 → 深蓝
-        return mix(vec3f(0.5, 0.0, 1.0), vec3f(0.0, 0.0, 1.0), (tWrapped - 0.03) / 0.03);
-    } else if (tWrapped < 0.09) {
-        // 深蓝 → 青色
-        return mix(vec3f(0.0, 0.0, 1.0), vec3f(0.0, 1.0, 1.0), (tWrapped - 0.06) / 0.03);
-    } else if (tWrapped < 0.12) {
-        // 青色 → 绿色
-        return mix(vec3f(0.0, 1.0, 1.0), vec3f(0.0, 1.0, 0.0), (tWrapped - 0.09) / 0.03);
-    } else if (tWrapped < 0.18) {
-        // 绿色 → 黄色
-        return mix(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 1.0, 0.0), (tWrapped - 0.12) / 0.06);
-    } else if (tWrapped < 0.24) {
-        // 黄色 → 橙色
-        return mix(vec3f(1.0, 1.0, 0.0), vec3f(1.0, 0.5, 0.0), (tWrapped - 0.18) / 0.06);
-    } else {
-        // 橙色 → 红色
-        return mix(vec3f(1.0, 0.5, 0.0), vec3f(1.0, 0.0, 0.0), (tWrapped - 0.24) / 0.06);
-    }
-}
-
-// ── CleanRoom 玻璃着色器 (综合所有效果) ────────────────────────────────────────────
-fn cleanroomGlassShading(
-    fresnel: f32,
-    refractColor: vec3f,
-    envColor: vec3f,
-    subsurfaceColor: vec3f,
-    noiseDetail: f32,
-    edgeGlow: f32,
-    normalY: f32
-) -> vec3f {
-    // 基于 Fresnel 计算彩虹颜色
-    let rainbowHue = rainbowColor(fresnel * 4.0);
-    
-    // 混合折射和环境反射
-    let refractionMix = refractColor * (1.0 - fresnel);
-    let reflectionMix = envColor * fresnel;
-    
-    // 组合彩虹效果
-    let rainbow = rainbowHue * fresnel * 0.6;
-    
-    // 体积散射贡献
-    let volumetric = subsurfaceColor * (1.0 - fresnel) * 0.4;
-    
-    // 噪声和细节
-    let details = vec3f(noiseDetail + edgeGlow) * 0.1;
-    
-    // 最终合成
-    var result = refractionMix + reflectionMix + rainbow + volumetric + details;
-    
-    // 微妙的高度偏差 (基于法线Y分量)
-    result += normalY * 0.05;
-    
-    return saturate_v3(result);
-}
-`;
-    texMirror: texture_2d<f32>,
-    samplerMirror: sampler,
-    mirrorCoord: vec4f
-) -> vec3f {
-    let uv = mirrorCoord.xy / mirrorCoord.w;
-    let sample = textureSample(texMirror, samplerMirror, uv);
-    return sample.rgb;
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — CleanRoom 专用玻璃模式
-// 参考 CleanRoomGlass.glsl 的彩虹色散效果
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_CLEANROOM_GLASS = /* wgsl */`
-// ── 彩虹色映射 (Rainbow Color Spectrum) ─────────────────────────────────────
-fn rainbowColor(t: f32) -> vec3f {
-    let t_wrapped = t % 1.0;  // Wrap t to [0, 1]
-    
-    if (t_wrapped < 0.03) {
-        // 紫色 → 蓝色
-        return mix(vec3f(0.5, 0.0, 0.5), vec3f(0.5, 0.0, 1.0), t_wrapped / 0.03);
-    } else if (t_wrapped < 0.06) {
-        // 蓝色 → 深蓝
-        return mix(vec3f(0.5, 0.0, 1.0), vec3f(0.0, 0.0, 1.0), (t_wrapped - 0.03) / 0.03);
-    } else if (t_wrapped < 0.09) {
-        // 深蓝 → 青色
-        return mix(vec3f(0.0, 0.0, 1.0), vec3f(0.0, 1.0, 1.0), (t_wrapped - 0.06) / 0.03);
-    } else if (t_wrapped < 0.12) {
-        // 青色 → 绿色
-        return mix(vec3f(0.0, 1.0, 1.0), vec3f(0.0, 1.0, 0.0), (t_wrapped - 0.09) / 0.03);
-    } else if (t_wrapped < 0.18) {
-        // 绿色 → 黄色
-        return mix(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 1.0, 0.0), (t_wrapped - 0.12) / 0.06);
-    } else if (t_wrapped < 0.24) {
-        // 黄色 → 橙色
-        return mix(vec3f(1.0, 1.0, 0.0), vec3f(1.0, 0.5, 0.0), (t_wrapped - 0.18) / 0.06);
-    } else {
-        // 橙色 → 红色
-        return mix(vec3f(1.0, 0.5, 0.0), vec3f(1.0, 0.0, 0.0), (t_wrapped - 0.24) / 0.06);
-    }
-}
-
-// ── CleanRoom 玻璃着色 ─────────────────────────────────────────────────────────
-fn cleanroomGlassShading(
-    fresnel: f32,
-    refractColor: vec3f,
-    envColor: vec3f,
-    subsurfaceColor: vec3f,
-    noiseDetail: f32,
-    edgeGlow: f32,
-    normalY: f32
-) -> vec3f {
-    // 彩虹色基于菲涅耳值
-    let rainbow = rainbowColor(fresnel * 4.0);
-    let rainbowFiltered = mix(
-        rainbow,
-        vec3f(0.0),
-        step(0.99, rainbow.r)  // 过滤掉纯红色的瑕疵
-    );
-    
-    // 折射 + 环境反射 + 色散
-    var color = refractColor;
-    color += rainbowFiltered;
-    color += envColor;
-    color += subsurfaceColor;
-    color += vec3f(noiseDetail);
-    color += vec3f(edgeGlow);
-    
-    // 顶部增强 (强化天空反射)
-    if (normalY > 0.8) {
-        color *= 1.8;
-    }
-    
-    // 伽马矫正
-    color = pow(saturate_v3(color), vec3f(1.5));
-    
-    return color;
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TypeScript Class Definition
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface GlassReflectionParams {
-    fresnelPower?: number;           // Fresnel 衰减指数 (2.0 - 8.0), 默认 4.0
-    refractionRatio?: number;        // IOR 比例 (0.5 - 2.0), 默认 0.66
-    dispersiveness?: number;         // 色散强度 (0.0 - 0.5), 默认 0.25
-    distortStrength?: number;        // 折射扭曲强度 (0.0 - 1.0), 默认 0.1
-    subsurfaceIntensity?: number;    // 体积散射强度 (0.0 - 2.0), 默认 0.8
-    envProbeStrength?: number;       // 环境探针强度 (0.0 - 1.5), 默认 1.0
-    mirrorStrength?: number;         // 镜面反射强度 (0.0 - 1.0), 默认 0.5
-    cleanRoomMode?: boolean;         // 是否启用 CleanRoom 彩虹模式，默认 false
-    
-    // 高级色散参数 (Cauchy-Helmholtz)
-    cauchyA?: number;                // Cauchy A 系数 (1.0 - 1.5), 默认 1.45
-    cauchyB?: number;                // Cauchy B 系数 (0.001 - 0.01), 默认 0.003
-    
-    // 环境反射高级参数
-    roughnessValue?: number;         // 粗糙度 (0.0 - 1.0), 默认 0.1
-    cubeMapBlur?: number;            // Cubemap 模糊程度 (0.0 - 1.0), 默认 0.0
-    
-    // 内部纹理和效果
-    innerTextureIntensity?: number;  // 内部纹理强度 (0.0 - 1.0), 默认 0.5
-    edgeGlowIntensity?: number;      // 边缘光晕强度 (0.0 - 1.0), 默认 0.2
-    rimColor?: [number, number, number]; // Fresnel 边缘光颜色 RGB, 默认 [1, 1, 1]
-    
-    // 法线扰动
-    normalMapStrength?: number;      // 法线贴图强度 (0.0 - 1.0), 默认 0.5
-    
-    // 时间和动画
-    time?: number;                   // 动画时间 (秒)
-    timeScale?: number;              // 时间缩放因子, 默认 1.0
-    
-    // 聚焦效果
-    focusDistance?: number;          // 聚焦距离, 默认 0.0 (无聚焦)
-    focusPower?: number;             // 聚焦幂次, 默认 1.0
-}
-
-interface GlassReflectionUniform {
-    fresnelPower: f32;
-    refractionRatio: f32;
-    dispersiveness: f32;
-    distortStrength: f32;
-    subsurfaceIntensity: f32;
-    envProbeStrength: f32;
-    mirrorStrength: f32;
-    cleanRoomMode: u32;
-    
-    // 扩展字段
-    roughnessValue: f32;
-    cubeMapBlur: f32;
-    innerTextureIntensity: f32;
-    edgeGlowIntensity: f32;
-    
-    rimColorR: f32;
-    rimColorG: f32;
-    rimColorB: f32;
-    normalMapStrength: f32;
-    
-    time: f32;
-    timeScale: f32;
-    focusDistance: f32;
-    focusPower: f32;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 默认参数预设
-// ─────────────────────────────────────────────────────────────────────────────
-
-const DEFAULT_GLASS_PARAMS: GlassReflectionParams = {
+const DEFAULT_GLASS_PARAMS: Required<GlassReflectionParams> = {
     fresnelPower: 4.0,
     refractionRatio: 0.66,
     dispersiveness: 0.25,
@@ -569,639 +417,511 @@ const DEFAULT_GLASS_PARAMS: GlassReflectionParams = {
     envProbeStrength: 1.0,
     mirrorStrength: 0.5,
     cleanRoomMode: false,
-    cauchyA: 1.45,
-    cauchyB: 0.003,
-    roughnessValue: 0.1,
-    cubeMapBlur: 0.0,
-    innerTextureIntensity: 0.5,
-    edgeGlowIntensity: 0.2,
-    rimColor: [1.0, 1.0, 1.0],
-    normalMapStrength: 0.5,
     time: 0.0,
     timeScale: 1.0,
-    focusDistance: 0.0,
-    focusPower: 1.0,
 };
 
-// ── 预设：光学玻璃 (高折射率，低色散) ──────────────────────────────────────────
 const PRESET_OPTICAL_GLASS: GlassReflectionParams = {
-    ...DEFAULT_GLASS_PARAMS,
-    refractionRatio: 1.52,
-    fresnelPower: 5.0,
-    dispersiveness: 0.1,
-    subsurfaceIntensity: 0.3,
+    ...DEFAULT_GLASS_PARAMS, refractionRatio: 1.52, fresnelPower: 5.0, dispersiveness: 0.1,
 };
-
-// ── 预设：冠玻璃 (标准硅酸盐，中等折射率) ────────────────────────────────────────
 const PRESET_CROWN_GLASS: GlassReflectionParams = {
-    ...DEFAULT_GLASS_PARAMS,
-    refractionRatio: 1.52,
-    dispersiveness: 0.15,
-    cauchyA: 1.51,
-    cauchyB: 0.004,
+    ...DEFAULT_GLASS_PARAMS, refractionRatio: 1.52, dispersiveness: 0.15,
 };
-
-// ── 预设：火石玻璃 (高折射率，高色散 - 彩虹效果) ─────────────────────────────────
 const PRESET_FLINT_GLASS: GlassReflectionParams = {
-    ...DEFAULT_GLASS_PARAMS,
-    refractionRatio: 1.65,
-    dispersiveness: 0.35,
-    cauchyA: 1.60,
-    cauchyB: 0.007,
-    fresnelPower: 3.5,
+    ...DEFAULT_GLASS_PARAMS, refractionRatio: 1.65, dispersiveness: 0.35, fresnelPower: 3.5,
 };
-
-// ── 预设：钻石 (最高折射率和色散) ───────────────────────────────────────────────
 const PRESET_DIAMOND: GlassReflectionParams = {
-    ...DEFAULT_GLASS_PARAMS,
-    refractionRatio: 2.42,
-    fresnelPower: 2.0,
-    dispersiveness: 0.44,
-    cauchyA: 2.38,
-    cauchyB: 0.013,
-    subsurfaceIntensity: 0.1,
+    ...DEFAULT_GLASS_PARAMS, refractionRatio: 2.42, fresnelPower: 2.0, dispersiveness: 0.44,
+};
+const PRESET_CLEANROOM: GlassReflectionParams = {
+    ...DEFAULT_GLASS_PARAMS, cleanRoomMode: true, fresnelPower: 3.5,
+    dispersiveness: 0.3, refractionRatio: 1.33, envProbeStrength: 1.2,
 };
 
-// ── 预设：洁净室玻璃 (CleanRoom 模式专用) ──────────────────────────────────────
-const PRESET_CLEANROOM: GlassReflectionParams = {
-    ...DEFAULT_GLASS_PARAMS,
-    cleanRoomMode: true,
-    fresnelPower: 3.5,
-    dispersiveness: 0.3,
-    refractionRatio: 1.33,
-    envProbeStrength: 1.2,
-    edgeGlowIntensity: 0.5,
-    rimColor: [1.0, 0.8, 0.6],
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// FBO helper types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface SingleRT {
+    fbo: WebGLFramebuffer;
+    tex: WebGLTexture;
+    width: number;
+    height: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATGlassReflectionSystem — real WebGL gl.* implementation
+// ─────────────────────────────────────────────────────────────────────────────
 
 export class ATGlassReflectionSystem {
-    private device: GPUDevice;
-    private format: GPUTextureFormat;
-    private pipeline: GPURenderPipeline | null = null;
-    private uniformBuffer: GPUBuffer | null = null;
-    private uniformBindGroup: GPUBindGroup | null = null;
+    private gl: WebGLRenderingContext;
     private params: Required<GlassReflectionParams>;
-    private startTime: number = 0;
-    private textures: {
-        envProbe?: GPUTexture;
-        mirrorReflection?: GPUTexture;
-        subsurfaceMap?: GPUTexture;
-    } = {};
+    private startTime: number;
 
-    constructor(device: GPUDevice, format: GPUTextureFormat) {
-        this.device = device;
-        this.format = format;
-        this.params = {
-            fresnelPower: 4.0,
-            refractionRatio: 0.66,
-            dispersiveness: 0.25,
-            distortStrength: 0.1,
-            subsurfaceIntensity: 0.8,
-            envProbeStrength: 1.0,
-            mirrorStrength: 0.5,
-            cleanRoomMode: false,
-            cauchyA: 1.45,
-            cauchyB: 0.003,
-            roughnessValue: 0.1,
-            cubeMapBlur: 0.0,
-            innerTextureIntensity: 0.5,
-            edgeGlowIntensity: 0.2,
-            rimColor: [1.0, 1.0, 1.0],
-            normalMapStrength: 0.5,
-            time: 0.0,
-            timeScale: 1.0,
-            focusDistance: 0.0,
-            focusPower: 1.0,
-        };
+    // ── WebGLPrograms ─────────────────────────────────────────────────────────
+    private innerProg!: WebGLProgram;      // GlassInner pass
+    private reflProg!: WebGLProgram;       // CleanRoomGlass / GlassReflection pass
+    private mirrorProg!: WebGLProgram;     // BasicMirror pass
+
+    // ── FBOs ─────────────────────────────────────────────────────────────────
+    private innerRT!: SingleRT;            // GlassInner render target
+    private reflRT!: SingleRT;             // glass reflection accumulation RT
+    private refractionRT!: SingleRT;       // screen-space refraction capture RT
+
+    // ── Textures ─────────────────────────────────────────────────────────────
+    private envTex!: WebGLTexture;         // equirectangular environment map
+    private mirrorTex!: WebGLTexture;      // planar mirror reflection texture (external)
+
+    // ── Geometry ─────────────────────────────────────────────────────────────
+    private quadBuf!: WebGLBuffer;         // fullscreen quad positions
+    private quadUvBuf!: WebGLBuffer;       // fullscreen quad UVs
+    private quadNrmBuf!: WebGLBuffer;      // quad normals (for glass inner pass)
+
+    // ── Canvas size ──────────────────────────────────────────────────────────
+    private width: number;
+    private height: number;
+
+    constructor(gl: WebGLRenderingContext, width = 1024, height = 1024) {
+        this.gl = gl;
+        this.width = width;
+        this.height = height;
         this.startTime = performance.now();
+        this.params = { ...DEFAULT_GLASS_PARAMS };
+        this._init();
     }
 
-    /**
-     * 创建玻璃反射系统
-     */
-    static async create(
-        device: GPUDevice,
-        format: GPUTextureFormat
-    ): Promise<ATGlassReflectionSystem> {
-        const system = new ATGlassReflectionSystem(device, format);
-        await system.initialize();
-        return system;
+    /** 静态工厂 — create + init */
+    static create(
+        gl: WebGLRenderingContext,
+        width = 1024,
+        height = 1024
+    ): ATGlassReflectionSystem {
+        return new ATGlassReflectionSystem(gl, width, height);
     }
 
-    /**
-     * 初始化 GPU 资源
-     */
-    private async initialize(): Promise<void> {
-        // 创建 Uniform Buffer
-        this.uniformBuffer = this.device.createBuffer({
-            size: 256,  // 16 byte aligned (16 * f32)
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            mappedAtCreation: false,
-        });
+    // ─────────────────────────────────────────────────────────────────────────
+    // init — compile shaders, create FBOs, create geometry
+    // ─────────────────────────────────────────────────────────────────────────
 
-        // 创建绑定组布局和管线（在实际实现中）
-        this.setupPipeline();
+    private _init(): void {
+        const gl = this.gl;
+
+        // ── 1. Compile all programs ──────────────────────────────────────────
+        this.innerProg  = this._compile(GLASS_INNER_VERT,  GLASS_INNER_FRAG,  'glassInner');
+        this.reflProg   = this._compile(GLASS_REFL_VERT,   GLASS_REFL_FRAG,   'glassRefl');
+        this.mirrorProg = this._compile(BASIC_MIRROR_VERT, BASIC_MIRROR_FRAG, 'basicMirror');
+
+        // ── 2. Create render targets (FBOs) ──────────────────────────────────
+        this.innerRT      = this._createRT(this.width, this.height);
+        this.reflRT       = this._createRT(this.width, this.height);
+        this.refractionRT = this._createRT(this.width, this.height);
+
+        // ── 3. Create default 1×1 white env texture ──────────────────────────
+        this.envTex = gl.createTexture()!;
+        gl.bindTexture(gl.TEXTURE_2D, this.envTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+            new Uint8Array([200, 220, 255, 255]));
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        // default mirror texture (1×1 grey)
+        this.mirrorTex = gl.createTexture()!;
+        gl.bindTexture(gl.TEXTURE_2D, this.mirrorTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+            new Uint8Array([128, 128, 128, 255]));
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        // ── 4. Fullscreen quad geometry ──────────────────────────────────────
+        // positions (clip space)
+        this.quadBuf = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            -1, -1, 0,   1, -1, 0,   -1, 1, 0,
+            -1,  1, 0,   1, -1, 0,    1, 1, 0,
+        ]), gl.STATIC_DRAW);
+
+        // UVs
+        this.quadUvBuf = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadUvBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            0, 0,  1, 0,  0, 1,
+            0, 1,  1, 0,  1, 1,
+        ]), gl.STATIC_DRAW);
+
+        // normals (pointing towards camera for inner glass)
+        this.quadNrmBuf = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadNrmBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            0, 0, 1,  0, 0, 1,  0, 0, 1,
+            0, 0, 1,  0, 0, 1,  0, 0, 1,
+        ]), gl.STATIC_DRAW);
     }
 
-    /**
-     * 设置渲染管线
-     */
-    private setupPipeline(): void {
-        // 在实际的三维引擎中，这里会创建完整的 render pipeline
-        // 包含完整的 vertex + fragment shader
-        // 这里仅作演示框架结构
+    // ─────────────────────────────────────────────────────────────────────────
+    // tick — update time uniform
+    // ─────────────────────────────────────────────────────────────────────────
+
+    tick(deltaMs: number): void {
+        this.params.time += deltaMs * (this.params.timeScale) * 0.001;
     }
 
-    /**
-     * 设置材质参数
-     */
-    setParams(params: Partial<GlassReflectionParams>): void {
-        this.params = { ...this.params, ...params };
-        this.updateUniforms();
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // render — run all 3 passes every frame
+    //
+    //   Pass 1: GlassInner → innerRT        (subsurface scattering texture)
+    //   Pass 2: refractionRT ← blit from external scene FBO (caller supplies)
+    //   Pass 3: CleanRoomGlass → reflRT     (fresnel + refraction + env + inner)
+    //   Pass 4: BasicMirror → screen (optional composite)
+    // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * 更新 Uniform 缓冲区
-     */
-    private updateUniforms(): void {
-        if (!this.uniformBuffer) return;
-
-        const elapsed = (performance.now() - this.startTime) / 1000;
-        const uniforms: GlassReflectionUniform = {
-            fresnelPower: this.params.fresnelPower,
-            refractionRatio: this.params.refractionRatio,
-            dispersiveness: this.params.dispersiveness,
-            distortStrength: this.params.distortStrength,
-            subsurfaceIntensity: this.params.subsurfaceIntensity,
-            envProbeStrength: this.params.envProbeStrength,
-            mirrorStrength: this.params.mirrorStrength,
-            cleanRoomMode: this.params.cleanRoomMode ? 1 : 0,
-            time: elapsed,
-            padding: 0,
-        };
-
-        const data = new Float32Array(16);
-        data[0] = uniforms.fresnelPower;
-        data[1] = uniforms.refractionRatio;
-        data[2] = uniforms.dispersiveness;
-        data[3] = uniforms.distortStrength;
-        data[4] = uniforms.subsurfaceIntensity;
-        data[5] = uniforms.envProbeStrength;
-        data[6] = uniforms.mirrorStrength;
-        data[7] = uniforms.cleanRoomMode;
-        data[8] = uniforms.time;
-        data[9] = uniforms.padding;
-
-        this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
-    }
-
-    /**
-     * 绘制玻璃反射
-     */
     render(
-        commandEncoder: GPUCommandEncoder,
-        colorTarget: GPURenderPassColorAttachment,
-        depthTarget: GPURenderPassDepthStencilAttachment,
-        geometry?: { vertexBuffer: GPUBuffer; indexBuffer: GPUBuffer; indexCount: number }
+        mvMatrix: Float32Array,
+        projMatrix: Float32Array,
+        modelMatrix: Float32Array,
+        normalMatrix: Float32Array,
+        cameraPos: [number, number, number],
+        externalSceneTex?: WebGLTexture   // caller provides scene for refraction
     ): void {
-        if (!this.pipeline || !this.uniformBuffer) return;
+        const gl = this.gl;
+        const time = this.params.time;
 
-        const renderPass = commandEncoder.beginRenderPass({
-            colorAttachments: [colorTarget],
-            depthStencilAttachment: depthTarget,
-        });
+        // ── Pass 1: GlassInner — subsurface scatter ──────────────────────────
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.innerRT.fbo);
+        gl.viewport(0, 0, this.innerRT.width, this.innerRT.height);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
 
-        renderPass.setPipeline(this.pipeline);
-        
-        if (this.uniformBindGroup) {
-            renderPass.setBindGroup(0, this.uniformBindGroup);
+        gl.useProgram(this.innerProg);
+
+        // upload uniforms
+        gl.uniform1f(gl.getUniformLocation(this.innerProg, 'uTime'), time);
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.innerProg, 'uProjection'), false, projMatrix);
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.innerProg, 'uModelView'),  false, mvMatrix);
+
+        this._drawQuad(this.innerProg);
+
+        // ── Pass 2: capture refraction into refractionRT ─────────────────────
+        // If caller provides scene texture, blit it; otherwise blank
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.refractionRT.fbo);
+        gl.viewport(0, 0, this.refractionRT.width, this.refractionRT.height);
+        gl.clearColor(0.05, 0.05, 0.08, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        if (externalSceneTex) {
+            // blit scene into refraction RT via a simple copy using reflProg temporarily
+            // (in production you'd use a dedicated blit program; here we reuse display)
+            gl.useProgram(this.reflProg);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, externalSceneTex);
+            gl.uniform1i(gl.getUniformLocation(this.reflProg, 'tRefraction'), 0);
         }
 
-        if (geometry) {
-            renderPass.setVertexBuffer(0, geometry.vertexBuffer);
-            renderPass.setIndexBuffer(geometry.indexBuffer, 'uint32');
-            renderPass.drawIndexed(geometry.indexCount);
-        } else {
-            // 绘制全屏四边形
-            renderPass.draw(6, 1, 0, 0);
+        // ── Pass 3: CleanRoomGlass / GlassReflection ─────────────────────────
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.reflRT.fbo);
+        gl.viewport(0, 0, this.reflRT.width, this.reflRT.height);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        gl.useProgram(this.reflProg);
+
+        // matrices
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.reflProg, 'uProjection'), false, projMatrix);
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.reflProg, 'uModelView'),  false, mvMatrix);
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.reflProg, 'uModel'),      false, modelMatrix);
+        gl.uniformMatrix3fv(gl.getUniformLocation(this.reflProg, 'uNormalMatrix'), false, normalMatrix);
+
+        // camera + glass params
+        gl.uniform3f(gl.getUniformLocation(this.reflProg, 'uCameraPos'),
+            cameraPos[0], cameraPos[1], cameraPos[2]);
+        gl.uniform1f(gl.getUniformLocation(this.reflProg, 'uFresnelPow'),      this.params.fresnelPower);
+        gl.uniform1f(gl.getUniformLocation(this.reflProg, 'uDistortStrength'), this.params.distortStrength);
+        gl.uniform1f(gl.getUniformLocation(this.reflProg, 'uRefractionRatio'), this.params.refractionRatio);
+        gl.uniform1f(gl.getUniformLocation(this.reflProg, 'uEnvStrength'),     this.params.envProbeStrength);
+        gl.uniform1f(gl.getUniformLocation(this.reflProg, 'uCleanRoomMode'),   this.params.cleanRoomMode ? 1.0 : 0.0);
+        gl.uniform1f(gl.getUniformLocation(this.reflProg, 'uTime'),            time);
+        gl.uniform2f(gl.getUniformLocation(this.reflProg, 'uResolution'),      this.width, this.height);
+
+        // texture unit 0 — refraction (screen scene)
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, externalSceneTex ?? this.refractionRT.tex);
+        gl.uniform1i(gl.getUniformLocation(this.reflProg, 'tRefraction'), 0);
+
+        // texture unit 1 — environment equirectangular
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this.envTex);
+        gl.uniform1i(gl.getUniformLocation(this.reflProg, 'tEnv'), 1);
+
+        // texture unit 2 — GlassInner result
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, this.innerRT.tex);
+        gl.uniform1i(gl.getUniformLocation(this.reflProg, 'tInner'), 2);
+
+        this._drawQuad(this.reflProg);
+
+        // ── Pass 4: BasicMirror — composite mirror onto screen ────────────────
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, this.width, this.height);
+
+        gl.useProgram(this.mirrorProg);
+
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.mirrorProg, 'uProjection'), false, projMatrix);
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.mirrorProg, 'uModelView'),  false, mvMatrix);
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.mirrorProg, 'uModel'),      false, modelMatrix);
+
+        // Mirror matrix (identity by default — caller overrides via setMirrorMatrix)
+        const mirrorMat = new Float32Array(16);
+        mirrorMat[0] = mirrorMat[5] = mirrorMat[10] = mirrorMat[15] = 1;
+        gl.uniformMatrix4fv(gl.getUniformLocation(this.mirrorProg, 'uMirrorMatrix'), false, mirrorMat);
+
+        // texture unit 0 — mirror reflection (reflRT as planar mirror source)
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.mirrorTex);
+        gl.uniform1i(gl.getUniformLocation(this.mirrorProg, 'tMirrorReflection'), 0);
+
+        this._drawQuad(this.mirrorProg);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // setParams — update glass material params
+    // ─────────────────────────────────────────────────────────────────────────
+
+    setParams(params: Partial<GlassReflectionParams>): void {
+        Object.assign(this.params, params);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Texture setters — called by scene to inject live textures
+    // ─────────────────────────────────────────────────────────────────────────
+
+    setEnvironmentTexture(tex: WebGLTexture): void {
+        const gl = this.gl;
+        if (this.envTex) {
+            gl.deleteTexture(this.envTex);
+        }
+        this.envTex = tex;
+        // set wrap/filter
+        gl.bindTexture(gl.TEXTURE_2D, this.envTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    setMirrorReflectionTexture(tex: WebGLTexture): void {
+        const gl = this.gl;
+        if (this.mirrorTex) {
+            gl.deleteTexture(this.mirrorTex);
+        }
+        this.mirrorTex = tex;
+        gl.bindTexture(gl.TEXTURE_2D, this.mirrorTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    /** Load an equirectangular environment image into the env texture */
+    loadEnvironmentFromImageData(pixels: Uint8Array, w: number, h: number): void {
+        const gl = this.gl;
+        gl.bindTexture(gl.TEXTURE_2D, this.envTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Preset helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    applyPreset(preset: GlassReflectionParams): void { this.setParams(preset); }
+    applyOpticalGlassPreset(): void  { this.applyPreset(PRESET_OPTICAL_GLASS); }
+    applyCrownGlassPreset(): void    { this.applyPreset(PRESET_CROWN_GLASS); }
+    applyFlintGlassPreset(): void    { this.applyPreset(PRESET_FLINT_GLASS); }
+    applyDiamondPreset(): void       { this.applyPreset(PRESET_DIAMOND); }
+    applyCleanroomPreset(): void     { this.applyPreset(PRESET_CLEANROOM); }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // getResultTexture — get the final composited glass texture
+    // ─────────────────────────────────────────────────────────────────────────
+
+    get resultTexture(): WebGLTexture { return this.reflRT.tex; }
+    get innerTexture(): WebGLTexture  { return this.innerRT.tex; }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // resize
+    // ─────────────────────────────────────────────────────────────────────────
+
+    resize(width: number, height: number): void {
+        const gl = this.gl;
+        this.width = width;
+        this.height = height;
+
+        // Recreate all render targets at new resolution
+        this._destroyRT(this.innerRT);
+        this._destroyRT(this.reflRT);
+        this._destroyRT(this.refractionRT);
+
+        this.innerRT      = this._createRT(width, height);
+        this.reflRT       = this._createRT(width, height);
+        this.refractionRT = this._createRT(width, height);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // dispose — delete all GPU resources
+    // ─────────────────────────────────────────────────────────────────────────
+
+    dispose(): void {
+        const gl = this.gl;
+
+        // delete programs
+        gl.deleteProgram(this.innerProg);
+        gl.deleteProgram(this.reflProg);
+        gl.deleteProgram(this.mirrorProg);
+
+        // delete FBOs + textures
+        this._destroyRT(this.innerRT);
+        this._destroyRT(this.reflRT);
+        this._destroyRT(this.refractionRT);
+
+        // delete standalone textures
+        gl.deleteTexture(this.envTex);
+        gl.deleteTexture(this.mirrorTex);
+
+        // delete geometry buffers
+        gl.deleteBuffer(this.quadBuf);
+        gl.deleteBuffer(this.quadUvBuf);
+        gl.deleteBuffer(this.quadNrmBuf);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Compile vert + frag into a linked WebGLProgram */
+    private _compile(vert: string, frag: string, label: string): WebGLProgram {
+        const gl = this.gl;
+
+        const vs = gl.createShader(gl.VERTEX_SHADER)!;
+        gl.shaderSource(vs, vert);
+        gl.compileShader(vs);
+        if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+            throw new Error(`[ATGlass] vertex compile error (${label}): ${gl.getShaderInfoLog(vs)}`);
         }
 
-        renderPass.end();
-    }
-
-    /**
-     * 设置环境探针纹理
-     */
-    setEnvironmentProbe(texture: GPUTexture): void {
-        this.textures.envProbe = texture;
-    }
-
-    /**
-     * 设置镜面反射纹理
-     */
-    setMirrorReflection(texture: GPUTexture): void {
-        this.textures.mirrorReflection = texture;
-    }
-
-    /**
-     * 设置体积散射贴图
-     */
-    setSubsurfaceMap(texture: GPUTexture): void {
-        this.textures.subsurfaceMap = texture;
-    }
-
-    /**
-     * 获取完整 Fragment Shader 代码
-     */
-    static getFragmentShaderSource(): string {
-        return /* wgsl */`
-${WGSL_MATH_HELPERS}
-${WGSL_FRESNEL_GLASS}
-${WGSL_REFRACTION_DISPERSION}
-${WGSL_SUBSURFACE_SCATTERING}
-${WGSL_ENVIRONMENT_REFLECTION}
-${WGSL_CLEANROOM_GLASS}
-
-struct Uniforms {
-    fresnelPower: f32,
-    refractionRatio: f32,
-    dispersiveness: f32,
-    distortStrength: f32,
-    subsurfaceIntensity: f32,
-    envProbeStrength: f32,
-    mirrorStrength: f32,
-    cleanRoomMode: u32,
-    time: f32,
-    padding: f32,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var texEnv: texture_2d<f32>;
-@group(0) @binding(2) var samplerEnv: sampler;
-@group(0) @binding(3) var texInner: texture_2d<f32>;
-@group(0) @binding(4) var samplerInner: sampler;
-@group(0) @binding(5) var texMirror: texture_2d<f32>;
-@group(0) @binding(6) var samplerMirror: sampler;
-
-struct VertexOutput {
-    @builtin(position) position: vec4f,
-    @location(0) vWorldPos: vec3f,
-    @location(1) vNormal: vec3f,
-    @location(2) vViewDir: vec3f,
-    @location(3) vTexCoord: vec2f,
-    @location(4) vReflection: vec3f,
-    @location(5) vRefraction: vec3f,
-    @location(6) vMirrorCoord: vec4f,
-}
-
-@fragment
-fn main(input: VertexOutput) -> @location(0) vec4f {
-    let N = normalize(input.vNormal);
-    let V = normalize(input.vViewDir);
-    
-    // ── Fresnel 计算 ──────────────────────────────────────────────────────────────
-    let fresnel = getFresnel(N, V, uniforms.fresnelPower);
-    
-    // ── 折射采样 ──────────────────────────────────────────────────────────────────
-    var refractColor = vec3f(0.0);
-    if (uniforms.refractionRatio > 0.0) {
-        let refractDir = glassRefraction(V, N, uniforms.refractionRatio, uniforms.distortStrength);
-        refractColor = sampleEnvironmentProbe(texEnv, samplerEnv, refractDir, 1.0);
-    }
-    
-    // ── 色散环境反射 ──────────────────────────────────────────────────────────────
-    var envColor = vec3f(0.0);
-    if (uniforms.envProbeStrength > 0.0) {
-        let reflectDir = reflectionDirection(V, N);
-        let dispersalSample = sampleRGBDispersion(
-            texEnv, samplerEnv,
-            reflectDir,
-            uniforms.time * 0.5,
-            uniforms.dispersiveness
-        );
-        envColor = dispersalSample.rgb * uniforms.envProbeStrength;
-    }
-    
-    // ── 体积散射 ──────────────────────────────────────────────────────────────────
-    var subsurfaceColor = vec3f(0.0);
-    if (uniforms.subsurfaceIntensity > 0.0) {
-        subsurfaceColor = subsurfaceScattering(
-            V, N,
-            input.vWorldPos,
-            uniforms.subsurfaceIntensity
-        );
-    }
-    
-    // ── 噪声细节 ──────────────────────────────────────────────────────────────────
-    let noiseDetail = cnoise(V + vec3f(uniforms.time * 0.1)) * 0.05;
-    
-    // ── 内部纹理采样 ──────────────────────────────────────────────────────────────
-    let innerTexture = textureSample(texInner, samplerInner, input.vTexCoord);
-    
-    // ── 边缘光晕 ──────────────────────────────────────────────────────────────────
-    let edgeGlow = quarticIn(
-        crange(abs(input.vWorldPos.x), 0.5, 0.3, 1.0, 0.0) *
-        crange(abs(input.vWorldPos.z), 0.5, 0.3, 1.0, 0.0)
-    ) * 0.05;
-    
-    // ── 最终着色 ──────────────────────────────────────────────────────────────────
-    var finalColor = vec3f(0.0);
-    
-    if (uniforms.cleanRoomMode != 0u) {
-        // CleanRoom 模式：彩虹色散效果
-        finalColor = cleanroomGlassShading(
-            fresnel,
-            refractColor,
-            envColor,
-            subsurfaceColor,
-            noiseDetail,
-            edgeGlow,
-            N.y
-        );
-    } else {
-        // 标准玻璃模式：混合折射 + 反射 + 散射
-        finalColor = refractColor * (1.0 - fresnel);
-        finalColor += envColor * fresnel;
-        finalColor += subsurfaceColor;
-        finalColor += vec3f(noiseDetail);
-        finalColor += innerTexture.rgb;
-        finalColor += vec3f(edgeGlow);
-        finalColor = pow(saturate_v3(finalColor), vec3f(1.5));
-    }
-    
-    return vec4f(finalColor, 1.0);
-}
-        `;
-    }
-
-    /**
-     * 获取完整 Vertex Shader 代码
-     */
-    static getVertexShaderSource(): string {
-        return /* wgsl */`
-struct Uniforms {
-    fresnelPower: f32,
-    refractionRatio: f32,
-    dispersiveness: f32,
-    distortStrength: f32,
-    subsurfaceIntensity: f32,
-    envProbeStrength: f32,
-    mirrorStrength: f32,
-    cleanRoomMode: u32,
-    time: f32,
-    padding: f32,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-struct VertexInput {
-    @location(0) position: vec3f,
-    @location(1) normal: vec3f,
-    @location(2) texCoord: vec2f,
-    @builtin(instance_index) instanceIdx: u32,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4f,
-    @location(0) vWorldPos: vec3f,
-    @location(1) vNormal: vec3f,
-    @location(2) vViewDir: vec3f,
-    @location(3) vTexCoord: vec2f,
-    @location(4) vReflection: vec3f,
-    @location(5) vRefraction: vec3f,
-    @location(6) vMirrorCoord: vec4f,
-}
-
-@vertex
-fn main(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    
-    // 世界坐标变换 (这里使用单位矩阵，实际应使用 modelMatrix)
-    let worldPos = vec4f(input.position, 1.0);
-    
-    // 投影变换 (实际应使用 projectionMatrix * viewMatrix)
-    output.position = vec4f(input.position, 1.0);
-    
-    output.vWorldPos = worldPos.xyz;
-    output.vNormal = input.normal;
-    
-    // 视角方向 (假设摄像机位置在原点)
-    output.vViewDir = -input.position;
-    
-    output.vTexCoord = input.texCoord;
-    
-    // 反射方向
-    output.vReflection = reflect(normalize(-input.position), normalize(input.normal));
-    
-    // 折射方向
-    output.vRefraction = refract(
-        normalize(-input.position),
-        normalize(input.normal),
-        uniforms.refractionRatio
-    );
-    
-    // 镜面坐标 (用于平面镜反射)
-    output.vMirrorCoord = vec4f(input.texCoord * 2.0 - 1.0, 1.0, 1.0);
-    
-    return output;
-}
-        `;
-    }
-
-    /**
-     * 应用玻璃预设
-     */
-    applyPreset(preset: GlassReflectionParams): void {
-        this.setParams(preset);
-    }
-
-    /**
-     * 应用光学玻璃预设
-     */
-    applyOpticalGlassPreset(): void {
-        this.applyPreset(PRESET_OPTICAL_GLASS);
-    }
-
-    /**
-     * 应用冠玻璃预设
-     */
-    applyCrownGlassPreset(): void {
-        this.applyPreset(PRESET_CROWN_GLASS);
-    }
-
-    /**
-     * 应用火石玻璃预设 (高色散)
-     */
-    applyFlintGlassPreset(): void {
-        this.applyPreset(PRESET_FLINT_GLASS);
-    }
-
-    /**
-     * 应用钻石预设 (最高折射率)
-     */
-    applyDiamondPreset(): void {
-        this.applyPreset(PRESET_DIAMOND);
-    }
-
-    /**
-     * 应用洁净室玻璃预设
-     */
-    applyCleanroomPreset(): void {
-        this.applyPreset(PRESET_CLEANROOM);
-    }
-
-    /**
-     * 计算色散系数 (基于当前的 Cauchy 参数)
-     */
-    computeDispersionFactor(): number {
-        const A = this.params.cauchyA || 1.45;
-        const B = this.params.cauchyB || 0.003;
-        
-        // 计算 R/G/B 的 IOR
-        const ior_r = A + B / (650 / 1000) ** 2;
-        const ior_g = A + B / (550 / 1000) ** 2;
-        const ior_b = A + B / (450 / 1000) ** 2;
-        
-        return (ior_r - ior_b) / (ior_g - 1.0);
-    }
-
-    /**
-     * 计算阿贝数 (玻璃特征参数)
-     */
-    computeAbbeNumber(): number {
-        const A = this.params.cauchyA || 1.45;
-        const B = this.params.cauchyB || 0.003;
-        
-        // 标准波长: d=589nm, F=486nm, C=656nm
-        const ior_d = A + B / (589 / 1000) ** 2;
-        const ior_f = A + B / (486 / 1000) ** 2;
-        const ior_c = A + B / (656 / 1000) ** 2;
-        
-        const num = ior_d - 1.0;
-        const den = ior_f - ior_c;
-        return den !== 0 ? num / den : 0;
-    }
-
-    /**
-     * 从时间更新动画参数
-     */
-    tick(deltaTimeMs: number): void {
-        this.params.time += deltaTimeMs * (this.params.timeScale || 1.0) * 0.001;
-        this.setParams({});
-    }
-
-    /**
-     * 平滑过渡到新的 Fresnel 指数
-     */
-    transitionFresnelPower(targetValue: number, durationMs: number): void {
-        const startValue = this.params.fresnelPower;
-        const startTime = performance.now();
-        
-        const animate = () => {
-            const elapsed = performance.now() - startTime;
-            const progress = Math.min(elapsed / durationMs, 1.0);
-            
-            this.params.fresnelPower = startValue + (targetValue - startValue) * progress;
-            this.setParams({});
-            
-            if (progress < 1.0) {
-                requestAnimationFrame(animate);
-            }
-        };
-        
-        animate();
-    }
-
-    /**
-     * 获取当前材质参数统计信息
-     */
-    getParameterStats(): Record<string, any> {
-        return {
-            fresnelPower: this.params.fresnelPower,
-            refractionRatio: this.params.refractionRatio,
-            dispersiveness: this.params.dispersiveness,
-            subsurfaceIntensity: this.params.subsurfaceIntensity,
-            envProbeStrength: this.params.envProbeStrength,
-            cleanRoomMode: this.params.cleanRoomMode,
-            dispersionFactor: this.computeDispersionFactor(),
-            abbeNumber: this.computeAbbeNumber(),
-            currentTime: this.params.time,
-        };
-    }
-
-    /**
-     * 销毁资源
-     */
-    destroy(): void {
-        if (this.uniformBuffer) {
-            this.uniformBuffer.destroy();
+        const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+        gl.shaderSource(fs, frag);
+        gl.compileShader(fs);
+        if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+            throw new Error(`[ATGlass] fragment compile error (${label}): ${gl.getShaderInfoLog(fs)}`);
         }
-        this.pipeline = null;
-        this.uniformBindGroup = null;
+
+        const prog = gl.createProgram()!;
+        gl.attachShader(prog, vs);
+        gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+            throw new Error(`[ATGlass] link error (${label}): ${gl.getProgramInfoLog(prog)}`);
+        }
+
+        gl.deleteShader(vs);
+        gl.deleteShader(fs);
+        return prog;
+    }
+
+    /** Create a single color FBO + texture */
+    private _createRT(w: number, h: number): SingleRT {
+        const gl = this.gl;
+
+        const tex = gl.createTexture()!;
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const fbo = gl.createFramebuffer()!;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+
+        return { fbo, tex, width: w, height: h };
+    }
+
+    /** Delete an FBO + its texture */
+    private _destroyRT(rt: SingleRT): void {
+        const gl = this.gl;
+        gl.deleteFramebuffer(rt.fbo);
+        gl.deleteTexture(rt.tex);
+    }
+
+    /** Draw fullscreen quad using the given program's attribute locations */
+    private _drawQuad(prog: WebGLProgram): void {
+        const gl = this.gl;
+
+        const posLoc = gl.getAttribLocation(prog, 'aPosition');
+        const uvLoc  = gl.getAttribLocation(prog, 'aUv');
+        const nrmLoc = gl.getAttribLocation(prog, 'aNormal');
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+        if (posLoc >= 0) {
+            gl.enableVertexAttribArray(posLoc);
+            gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+        }
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadUvBuf);
+        if (uvLoc >= 0) {
+            gl.enableVertexAttribArray(uvLoc);
+            gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 0, 0);
+        }
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadNrmBuf);
+        if (nrmLoc >= 0) {
+            gl.enableVertexAttribArray(nrmLoc);
+            gl.vertexAttribPointer(nrmLoc, 3, gl.FLOAT, false, 0, 0);
+        }
+
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        if (posLoc >= 0) gl.disableVertexAttribArray(posLoc);
+        if (uvLoc  >= 0) gl.disableVertexAttribArray(uvLoc);
+        if (nrmLoc >= 0) gl.disableVertexAttribArray(nrmLoc);
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Export 导出
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type {
-    GlassReflectionParams,
-    GlassReflectionUniform,
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 导出预设常量
+// Exports
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const AT_GLASS_PRESETS = {
-    /** 默认参数 */
-    default: DEFAULT_GLASS_PARAMS,
-    
-    /** 光学玻璃 (高折射率，低色散) */
+    default:      DEFAULT_GLASS_PARAMS,
     opticalGlass: PRESET_OPTICAL_GLASS,
-    
-    /** 冠玻璃 (标准硅酸盐) */
-    crownGlass: PRESET_CROWN_GLASS,
-    
-    /** 火石玻璃 (高色散彩虹效果) */
-    flintGlass: PRESET_FLINT_GLASS,
-    
-    /** 钻石 (最高折射率) */
-    diamond: PRESET_DIAMOND,
-    
-    /** 洁净室玻璃 (CleanRoom 模式) */
-    cleanroom: PRESET_CLEANROOM,
+    crownGlass:   PRESET_CROWN_GLASS,
+    flintGlass:   PRESET_FLINT_GLASS,
+    diamond:      PRESET_DIAMOND,
+    cleanroom:    PRESET_CLEANROOM,
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 导出 WGSL 着色器片段供其他系统使用
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const AT_GLASS_WGSL = {
-    /** 数学助手函数 */
-    mathHelpers: WGSL_MATH_HELPERS,
-    
-    /** Fresnel 计算 (菲涅耳反射) */
-    fresnel: WGSL_FRESNEL_GLASS,
-    
-    /** 高级 Cauchy 色散模型 */
-    advancedDispersion: WGSL_ADVANCED_DISPERSION,
-    
-    /** 折射与色散 */
-    refractionDispersion: WGSL_REFRACTION_DISPERSION,
-    
-    /** 体积散射 (GlassInner 效果) */
-    subsurfaceScattering: WGSL_SUBSURFACE_SCATTERING,
-    
-    /** 环境反射与探针采样 */
-    environmentReflection: WGSL_ENVIRONMENT_REFLECTION,
-    
-    /** BasicMirror 平面反射 */
-    basicMirror: WGSL_BASIC_MIRROR,
-    
-    /** CleanRoom 彩虹玻璃 */
-    cleanroomGlass: WGSL_CLEANROOM_GLASS,
+export const AT_GLASS_SHADERS = {
+    glassInnerVert:  GLASS_INNER_VERT,
+    glassInnerFrag:  GLASS_INNER_FRAG,
+    glassReflVert:   GLASS_REFL_VERT,
+    glassReflFrag:   GLASS_REFL_FRAG,
+    basicMirrorVert: BASIC_MIRROR_VERT,
+    basicMirrorFrag: BASIC_MIRROR_FRAG,
 };
 
 export default ATGlassReflectionSystem;
