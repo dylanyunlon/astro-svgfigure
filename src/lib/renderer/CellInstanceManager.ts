@@ -1,10 +1,9 @@
 /**
  * CellInstanceManager.ts --- per-species instanced cell rendering
  *
- * Species distribution (7 cells, 5 species) from channels/cell/*/params.json:
+ * Species distribution (7 cells, 5 species) from channels/cell/{cellId}/params.json:
  *
  *   species          cells                   color
- *   -----------------------------------------------
  *   cil-plus         add_norm1, add_norm2    #1E88E5
  *   cil-vector       input_embed, pos_encode #2E7D32
  *   cil-bolt         ffn                     #FF6F00
@@ -27,7 +26,6 @@
 import { InstancedMesh, INSTANCED_VERT, INSTANCED_FRAG } from './InstancedMesh';
 import type { InstanceData } from './InstancedMesh';
 
- *   -----------------------------------------------
 
 export interface CellBBox {
   x: number;
@@ -49,7 +47,6 @@ export interface CellParamsJson {
   species_params?: Record<string, unknown>;
 }
 
- *   -----------------------------------------------
 
 /** Parse "#RRGGBB" or "#RGB" --- [r, g, b] in 0-1 range */
 function hexToRgb(hex: string): [number, number, number] {
@@ -96,7 +93,6 @@ function bboxToModelMatrix(bbox: CellBBox): Float32Array {
   ]);
 }
 
- *   -----------------------------------------------
 
 export interface SpeciesGroup {
   species: string;
@@ -113,7 +109,6 @@ export class CellInstanceManager {
     this.gl = gl;
   }
 
- *   -----------------------------------------------
 
   /**
    * Fetch all params.json files from a directory tree structured as:
@@ -189,7 +184,6 @@ export class CellInstanceManager {
     console.warn(`CellInstanceManager.updateCell: cell_id "${cellId}" not found`);
   }
 
- *   -----------------------------------------------
 
   /**
    * Draw all species groups --- one gl.drawElementsInstanced per species.
@@ -205,7 +199,6 @@ export class CellInstanceManager {
     }
   }
 
- *   -----------------------------------------------
 
   /** Returns a summary suitable for debug overlays */
   stats(): Record<string, number> {
@@ -228,7 +221,6 @@ export class CellInstanceManager {
     return n;
   }
 
- *   -----------------------------------------------
 
   dispose(): void {
     for (const group of this.groups.values()) {
@@ -237,7 +229,6 @@ export class CellInstanceManager {
     this.groups.clear();
   }
 
- *   -----------------------------------------------
 
   private _writeCellInstance(mesh: InstancedMesh, i: number, cell: CellParamsJson): void {
     const [r, g, b] = hexToRgb(cell.fill_color);

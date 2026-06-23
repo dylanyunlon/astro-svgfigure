@@ -1,4 +1,4 @@
-# === ParticleRenderer.ts ===
+// === ParticleRenderer.ts ===
 // ParticleRenderer.ts --- WebGPU render pipeline
 // Two-mode rendering:
 //   1. PARTICLES  --- instanced quads, velocity-coloured discs (original)
@@ -10,14 +10,14 @@
 // Each particle splats a smooth radial field value into the accumulation texture.
 // We draw instanced quads exactly as before, but the fragment writes field
 // strength (scalar) rather than colour.  The quad radius is enlarged so we
-// capture the full metaball falloff kernel (2Ã- smoothing length).
+// capture the full metaball falloff kernel (2-- smoothing length).
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const SPLAT_SHADER = /* wgsl */`
 struct Camera {
   pointSize  : f32,   // particle diameter in domain units
   maxSpeed   : f32,
   domainScale: f32,
-  splatRadius: f32,   // splat quad half-size in domain units (-‰¥ 2Ã-pointSize)
+  splatRadius: f32,   // splat quad half-size in domain units (--- 2--pointSize)
   scaleX     : f32,
   scaleY     : f32,
   offsetX    : f32,
@@ -63,9 +63,9 @@ struct SplatVert {
   return out;
 }
 
-// Metaball kernel: cubic falloff from MÃ-ller et al. 2003 (Poly6)
+// Metaball kernel: cubic falloff from M--ller et al. 2003 (Poly6)
 //   W(r,h) = max(0, (1 - (r/h)^2)^3)
-// We pass rÂ² in [0, 1] range (uv is already normalised to that square).
+// We pass r- in [0, 1] range (uv is already normalised to that square).
 fn metaballKernel(r2: f32) -> f32 {
   let t = clamp(1.0 - r2, 0.0, 1.0);
   return t * t * t;
@@ -76,14 +76,14 @@ struct SplatFrag {
 }
 
 @fragment fn fs_splat(in: SplatVert) -> SplatFrag {
-  // rÂ² in [0, 1] where 1 = quad corner
+  // r- in [0, 1] where 1 = quad corner
   let r2     = dot(in.uv, in.uv);
   if (r2 > 1.0) { discard; }  // discard outside unit circle
 
   let field  = metaballKernel(r2);
   let t      = clamp(in.speed / cam.maxSpeed, 0.0, 1.0);
 
-  // Pack: .r = field value, .g = speedÂ·field (for weighted colour blend)
+  // Pack: .r = field value, .g = speed-field (for weighted colour blend)
   return SplatFrag(vec4f(field, t * field, 0.0, field));
 }
 `;
@@ -92,16 +92,16 @@ struct SplatFrag {
 // Pass B --- Metaball composite / surface-extraction fragment shader
 //
 // This full-screen pass reads the accumulated field texture and performs:
-//   1. Iso-surface test  : field -‰¥ threshold -†’ inside fluid
+//   1. Iso-surface test  : field --- threshold --- inside fluid
 //   2. Screen-space normal: finite differences on the field gradient
 //   3. PBR shading        : Cook-Torrance BRDF (dielectric, roughness 0.05)
 //   4. Refraction hint    : subsurface tint based on depth proxy (field value)
 //   5. Specular highlight : sharp directional + environment rim
-//   6. Edge foam          : field near threshold -†’ white specular streak
+//   6. Edge foam          : field near threshold --- white specular streak
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const COMPOSITE_SHADER = /* wgsl */`
 struct CompositeUniforms {
-  threshold    : f32,   // iso-value (0.25--“0.55 works well)
+  threshold    : f32,   // iso-value (0.25---0.55 works well)
   normalStrength: f32,  // gradient amplification for normals
   roughness    : f32,   // PBR roughness (0 = mirror, 1 = diffuse)
   fresnelBase  : f32,   // F0 for Schlick approximation
@@ -343,7 +343,7 @@ export interface CameraUniforms {
   maxSpeed    : number;
   /** domain width (used to convert pointSize to NDC) */
   domainScale : number;
-  /** metaball splat quad radius in domain units (default 3Ã- pointSize) */
+  /** metaball splat quad radius in domain units (default 3-- pointSize) */
   splatRadius?: number;
   scaleX      : number;
   scaleY      : number;
@@ -358,7 +358,7 @@ export interface MetaballUniforms {
   normalStrength: number;
   /** PBR roughness 0 (mirror) --- 1 (diffuse) */
   roughness     : number;
-  /** Schlick F0 (water -‰ˆ 0.02, glass -‰ˆ 0.04) */
+  /** Schlick F0 (water --- 0.02, glass --- 0.04) */
   fresnelBase   : number;
   /** Directional light vector (screen-space) */
   light         : [number, number, number];
@@ -494,7 +494,7 @@ export class ParticleRenderer {
       primitive: { topology: "triangle-list" },
     });
 
-    // Shared camera uniform buffer (32 bytes, 8 Ã- f32)
+    // Shared camera uniform buffer (32 bytes, 8 -- f32)
     this.camBuffer = d.createBuffer({
       label: "cam-uniform",
       size : 32,
@@ -573,7 +573,7 @@ export class ParticleRenderer {
       primitive: { topology: "triangle-list" },
     });
 
-    // Composite uniform buffer (80 bytes: 4Ã-f32 scalars + light(3f+pad) + 3Ã-vec4f)
+    // Composite uniform buffer (80 bytes: 4--f32 scalars + light(3f+pad) + 3--vec4f)
     this.compUniBuf = d.createBuffer({
       label: "comp-uniform",
       size : 96,
@@ -642,7 +642,7 @@ export class ParticleRenderer {
 
   private _uploadMetaballUniforms(): void {
     const m = this.metaUniforms;
-    // Layout (96 bytes = 24 Ã- f32):
+    // Layout (96 bytes = 24 -- f32):
     //  [0]  threshold       [1]  normalStrength  [2]  roughness   [3]  fresnelBase
     //  [4]  lightX          [5]  lightY          [6]  lightZ      [7]  _pad
     //  [8..11]  deepColor   (vec4f)
@@ -787,7 +787,7 @@ export class ParticleRenderer {
       });
       splatPass.setPipeline(this.splatPipeline);
       splatPass.setBindGroup(0, this.splatBG);
-      splatPass.draw(6, count);       // 6 verts Ã- count instances
+      splatPass.draw(6, count);       // 6 verts -- count instances
       splatPass.end();
     }
 

@@ -1,4 +1,4 @@
-# === src/lib/sph/types.ts ===
+// === src/lib/sph/types.ts ===
 // types.ts --- shared interfaces
 
 export interface GPUBufferSet {

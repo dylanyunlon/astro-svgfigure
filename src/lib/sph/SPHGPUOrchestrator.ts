@@ -1,4 +1,4 @@
-# === SPHGPUOrchestrator.ts ===
+// === SPHGPUOrchestrator.ts ===
 // SPHGPUOrchestrator.ts --- WebGPU compute pipeline for SPH
 
 import { GPUBufferSet, SimParams, WORKGROUP_SIZE } from "./types";
@@ -367,16 +367,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 //
 // Algorithm: Blelloch work-efficient parallel scan (CUDA "scan" chapter,
 // Harris et al. 2007).  The shader runs a two-phase up-sweep / down-sweep
-// entirely in shared memory for arrays up to SCAN_BLOCK Ã- 2 elements per
+// entirely in shared memory for arrays up to SCAN_BLOCK -- 2 elements per
 // workgroup invocation.  For larger tables the host chains multiple passes
 // (see `dispatchPrefixSum`).
 //
-// Shared-memory layout (SCAN_BLOCK = 256 -†’ 512 u32 = 2 KiB):
+// Shared-memory layout (SCAN_BLOCK = 256 --- 512 u32 = 2 KiB):
 //   temp[0 .. 2*SCAN_BLOCK-1]  --- ping-pong scratch
 // ---------------------------------------------------------------------------
 
 const PREFIX_SUM_SHADER = /* wgsl */`
-// One workgroup processes 2 Ã- SCAN_BLOCK elements of the cellCount array.
+// One workgroup processes 2 -- SCAN_BLOCK elements of the cellCount array.
 // SCAN_BLOCK must equal the workgroup_size declared below (256).
 const SCAN_BLOCK : u32 = 256u;
 
@@ -392,7 +392,7 @@ struct ScanUniforms {
 // blockSum[i] receives the total sum of workgroup i (used in multi-pass)
 @group(2) @binding(0) var<storage, read_write> blockSum : array<u32>;
 
-var<workgroup> temp: array<u32, 512>;   // 2 Ã- SCAN_BLOCK
+var<workgroup> temp: array<u32, 512>;   // 2 -- SCAN_BLOCK
 
 @compute @workgroup_size(256)
 fn main(
@@ -601,7 +601,7 @@ export class SPHGPUOrchestrator {
   // Map buffer is COPY_DST + MAP_READ so the CPU can read timestamps back.
   private tsMapBuf      : GPUBuffer     | null = null;
 
-  // Number of timestamp slots we allocate (2 per pass Ã- 3 passes).
+  // Number of timestamp slots we allocate (2 per pass -- 3 passes).
   private static readonly TS_SLOTS = 6;
 
   /** Rolling performance log: ring buffer of `perfLog` entries (last 60). */
@@ -646,19 +646,19 @@ export class SPHGPUOrchestrator {
   private init(): void {
     const dev = this.device;
 
-    // ---------- uniform buffer (48 bytes --- 12 Ã- f32/u32) ----------
+    // ---------- uniform buffer (48 bytes --- 12 -- f32/u32) ----------
     this.uniformBuf = dev.createBuffer({
       size : 48,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // ---------- hash-count uniform buffer (32 bytes --- 8 Ã- f32/u32) ----------
+    // ---------- hash-count uniform buffer (32 bytes --- 8 -- f32/u32) ----------
     this.hashUniformBuf = dev.createBuffer({
       size : 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // ---------- prefix-sum uniform buffer (16 bytes --- 4 Ã- u32) ----------
+    // ---------- prefix-sum uniform buffer (16 bytes --- 4 -- u32) ----------
     this.scanUniformBuf = dev.createBuffer({
       size : 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -937,7 +937,7 @@ export class SPHGPUOrchestrator {
     }
 
     // ------------------------------------------------------------------
-    // Pass 2 --- pressure gradient + viscosity -†’ forceX / forceY
+    // Pass 2 --- pressure gradient + viscosity --- forceX / forceY
     // Timestamp slots: begin=2, end=3
     // ------------------------------------------------------------------
     {
@@ -981,7 +981,7 @@ export class SPHGPUOrchestrator {
     }
 
     // ------------------------------------------------------------------
-    // Timestamp resolve: copy raw u64 ns values from QuerySet -†’ GPU buffer
+    // Timestamp resolve: copy raw u64 ns values from QuerySet --- GPU buffer
     // ------------------------------------------------------------------
     if (ts) {
       encoder.resolveQuerySet(
@@ -1012,7 +1012,7 @@ export class SPHGPUOrchestrator {
 
   // -------------------------------------------------------------------------
   /**
-   * Map the timestamp staging buffer, convert raw u64 ns -†’ ms, push a
+   * Map the timestamp staging buffer, convert raw u64 ns --- ms, push a
    * PerfEntry into `perfLog`, then unmap.
    *
    * Called asynchronously after each tick when timestamp-query is available.
@@ -1025,7 +1025,7 @@ export class SPHGPUOrchestrator {
 
     try {
       const raw = new BigUint64Array(mapBuf.getMappedRange());
-      // Convert nanoseconds (BigInt) -†’ milliseconds (float).
+      // Convert nanoseconds (BigInt) --- milliseconds (float).
       const densityMs    = Number(raw[1] - raw[0]) / 1_000_000;
       const forceMs      = Number(raw[3] - raw[2]) / 1_000_000;
       const integrateMs  = Number(raw[5] - raw[4]) / 1_000_000;
@@ -1148,11 +1148,11 @@ export class SPHGPUOrchestrator {
    *     to produce start offsets for the scatter pass (pass 2).
    *
    * @param count         - number of fluid particles
-   * @param tableSize     - hash-table size (e.g. next power-of-two -‰¥ 2Ã-count)
+   * @param tableSize     - hash-table size (e.g. next power-of-two --- 2--count)
    * @param h             - smoothing length / cell size
    * @param domainW       - simulation domain width
    * @param domainH       - simulation domain height
-   * @param cellCountBuf  - GPU buffer of `tableSize` Ã- u32 (atomic, zeroed)
+   * @param cellCountBuf  - GPU buffer of `tableSize` -- u32 (atomic, zeroed)
    */
   dispatchHashCount(
     count       : number,
@@ -1165,7 +1165,7 @@ export class SPHGPUOrchestrator {
     const dev = this.device;
 
     // Upload HashUniforms (32 bytes)
-    // Layout: f32 h, f32 domainW, f32 domainH, u32 count, u32 tableSize, u32Ã-3 pad
+    // Layout: f32 h, f32 domainW, f32 domainH, u32 count, u32 tableSize, u32--3 pad
     const data = new ArrayBuffer(32);
     const f    = new Float32Array(data);
     const u    = new Uint32Array(data);
@@ -1269,7 +1269,7 @@ export class SPHGPUOrchestrator {
    * The entire sequence is encoded into a **single** GPUCommandEncoder for
    * maximum efficiency; the caller submits the encoder's result.
    *
-   * @param n             - number of elements in cellCountBuf (-‰¥ 1)
+   * @param n             - number of elements in cellCountBuf (--- 1)
    * @param cellCountBuf  - GPU buffer of `n` u32 values to scan in-place
    * @param encoder       - command encoder to append compute passes into;
    *                        if omitted a new one is created and submitted
@@ -1280,7 +1280,7 @@ export class SPHGPUOrchestrator {
     encoder?     : GPUCommandEncoder,
   ): void {
     const dev          = this.device;
-    const BLOCK_ELEMS  = 512;                              // 2 Ã- SCAN_BLOCK (workgroup)
+    const BLOCK_ELEMS  = 512;                              // 2 -- SCAN_BLOCK (workgroup)
     const numBlocks    = Math.ceil(n / BLOCK_ELEMS);       // workgroups for phase A
     const ownEncoder   = encoder === undefined;
     const enc          = ownEncoder
@@ -1501,10 +1501,10 @@ export class SPHGPUOrchestrator {
    *
    * @param encoder - command encoder to append the pass into
    * @param n       - number of fluid particles
-   * @param dt      - current frame Î-t (seconds)
+   * @param dt      - current frame --t (seconds)
    */
   encodeIntegrate(encoder: GPUCommandEncoder, n: number, dt: number): void {
-    // Patch `dt` in the uniform buffer (offset 5 Ã- 4 = byte 20)
+    // Patch `dt` in the uniform buffer (offset 5 -- 4 = byte 20)
     const dtBuf = new Float32Array([dt]);
     this.device.queue.writeBuffer(this.uniformBuf, 20, dtBuf);
 

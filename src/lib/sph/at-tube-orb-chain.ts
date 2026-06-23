@@ -21,18 +21,18 @@
  *   conditionals.glsl--- when_eq / when_gt etc.
  *
  * gl.* call budget: ---80  (init: createBuffer/Texture/Framebuffer/Program/Shader/
- *                         render: useProgram/bindFramebuffer/bindTexture/uniform*/
- *                         drawArrays/drawElements; dispose: delete*)
- *
- * Integration:
- *   const chain = new ATTubeOrbChain(gl, canvas, nodes, edges, config);
- *   chain.init();
- *   // render loop:
- *   chain.tick(elapsed, dt);
- *   chain.render(canvasW, canvasH);
- *   // cleanup:
- *   chain.dispose();
- */
+ //                         render: useProgram/bindFramebuffer/bindTexture/uniform*/
+//                         drawArrays/drawElements; dispose: delete*)
+ //
+// Integration:
+//   const chain = new ATTubeOrbChain(gl, canvas, nodes, edges, config);
+//   chain.init();
+//   // render loop:
+//   chain.tick(elapsed, dt);
+//   chain.render(canvasW, canvasH);
+//   // cleanup:
+//   chain.dispose();
+// end comment
 
 // --------- Constants ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-# === src/lib/sph/noise-flow-field.ts ===
+// === src/lib/sph/noise-flow-field.ts ===
 // noise-flow-field.ts --- Curl-noise + FBM flow field for SPH particles
 //
 // Imports lygia's fbm.wgsl and curl.wgsl concepts and inlines a self-contained
@@ -96,7 +96,7 @@ fn snoise2(v: vec2f) -> f32 {
 
 // ---------------------------------------------------------------------------
 // WGSL: FBM over 2-D simplex (lygia fbm.wgsl, translated to WGSL proper)
-// Supports 2--“6 octaves via a runtime uniform rather than compile-time const.
+// Supports 2---6 octaves via a runtime uniform rather than compile-time const.
 // ---------------------------------------------------------------------------
 
 const WGSL_FBM = /* wgsl */`
@@ -118,8 +118,8 @@ fn fbm2(st_in: vec2f, octaves: i32) -> f32 {
 // ---------------------------------------------------------------------------
 // WGSL: 2-D curl noise using FBM potential (lygia curl.wgsl variant)
 //
-// Curl is computed from the numerical gradient of a scalar FBM potential Î¨:
-//   curl(Î¨)(x,y) = (-ˆ-Î¨/-ˆ-y, -ˆ’-ˆ-Î¨/-ˆ-x)
+// Curl is computed from the numerical gradient of a scalar FBM potential -:
+//   curl(-)(x,y) = (----/---y, -------/---x)
 // This guarantees a divergence-free field, perfect for smoke / aurora / water.
 // ---------------------------------------------------------------------------
 
@@ -135,11 +135,11 @@ fn curlFBM(p: vec2f, octaves: i32) -> vec2f {
   let p_y0 = fbm2(p - dy, octaves);
   let p_y1 = fbm2(p + dy, octaves);
 
-  // central-difference gradient -†’ 90Â° rotation for curl
+  // central-difference gradient --- 90- rotation for curl
   let gx = (p_x1 - p_x0) / (2.0 * e);
   let gy = (p_y1 - p_y0) / (2.0 * e);
 
-  // curl of scalar field: rotate gradient 90Â°
+  // curl of scalar field: rotate gradient 90-
   return vec2f(gy, -gx);
 }
 `;
@@ -147,7 +147,7 @@ fn curlFBM(p: vec2f, octaves: i32) -> vec2f {
 // ---------------------------------------------------------------------------
 // WGSL: the force-overlay compute shader
 // ---------------------------------------------------------------------------
-// Uniform layout (NoiseUniforms, 32 bytes = 8 Ã- f32):
+// Uniform layout (NoiseUniforms, 32 bytes = 8 -- f32):
 //   0  freq        --- noise space frequency
 //   1  timeScale   --- time warp speed
 //   2  time        --- current simulation time (animated)
@@ -194,7 +194,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let curl   = curlFBM(p, octaves);         // divergence-free direction
   let fbmMag = abs(fbm2(p * 0.5, octaves)); // amplitude modulation
 
-  // Compose final force: curl direction Ã- FBM magnitude Ã- strength + drift
+  // Compose final force: curl direction -- FBM magnitude -- strength + drift
   let fx = (curl.x * fbmMag + noiseParams.driftX) * noiseParams.strength;
   let fy = (curl.y * fbmMag + noiseParams.driftY) * noiseParams.strength;
 
@@ -397,7 +397,7 @@ export class NoiseFlowField {
  *
  * // Inside sim loop:
  * orchestrator.encodeForces(encoder, n);
- * noiseOverlay(encoder, n, dt);            // -†- additive noise on top
+ * noiseOverlay(encoder, n, dt);            // --- additive noise on top
  * orchestrator.encodeIntegrate(encoder, n, dt);
  * ```
  */

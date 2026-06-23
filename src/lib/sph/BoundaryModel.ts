@@ -1,8 +1,8 @@
-# === src/lib/sph/BoundaryModel.ts ===
+// === src/lib/sph/BoundaryModel.ts ===
 
 // BoundaryModel.ts --- Akinci 2012 rigid-body boundary particles
 // Implements volume-weighted boundary particle sampling with Cubic Spline kernel
-// for computing Î¨_b (Akinci et al. 2012, "Versatile Rigid-Fluid Coupling for SPH")
+// for computing -_b (Akinci et al. 2012, "Versatile Rigid-Fluid Coupling for SPH")
 //
 // M547: extended with configurable boundary shapes (rect / circle / polygon) and
 //       automatic resampling via `resample()` / `resampleWorld()`.
@@ -29,7 +29,7 @@ const CS_ALPHA_2D = 10.0 / (7.0 * Math.PI);
 export interface BoundaryParticle {
   x: number;
   y: number;
-  /** Î¨_b --- Akinci volume estimate for the boundary particle */
+  /** -_b --- Akinci volume estimate for the boundary particle */
   volume: number;
 }
 
@@ -69,7 +69,7 @@ function cubicSplineW(r: number, h: number): number {
 }
 
 /**
- * Cubic Spline kernel gradient magnitude  -ˆ-W/-ˆ-r  (scalar).
+ * Cubic Spline kernel gradient magnitude  ---W/---r  (scalar).
  * Caller is responsible for multiplying by the unit direction vector.
  *
  * @param r  scalar distance
@@ -97,7 +97,7 @@ export class BoundaryModel {
 
   particles: BoundaryParticle[] = [];
 
-  /** GPU storage buffer: [ x, y, volume, pad ]  Ã-  N  (Float32, stride = 16 B) */
+  /** GPU storage buffer: [ x, y, volume, pad ]  --  N  (Float32, stride = 16 B) */
   gpuBoundaryBuf!: GPUBuffer;
 
   readonly domainW: number;
@@ -191,9 +191,9 @@ export class BoundaryModel {
   // --------- Sampling ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
   /**
-   * Sample a filled box [xMin, xMax] Ã- [yMin, yMax] with boundary particles.
+   * Sample a filled box [xMin, xMax] -- [yMin, yMax] with boundary particles.
    * Particles are placed on the perimeter with spacing `h * BOUNDARY_SPACING_FACTOR`.
-   * Volumes are initialised via the Akinci Î¨ summation approximation.
+   * Volumes are initialised via the Akinci - summation approximation.
    */
   sampleBox(
     xMin: number,
@@ -220,7 +220,7 @@ export class BoundaryModel {
   /**
    * Sample a circular obstacle with boundary particles placed on its circumference.
    * `obs.r` is the radius; particles are evenly distributed along the arc.
-   * Volumes are initialised via the Akinci Î¨ summation approximation.
+   * Volumes are initialised via the Akinci - summation approximation.
    */
   sampleCircle(obs: ObstacleData): void {
     const spacing = this.h * BOUNDARY_SPACING_FACTOR;
@@ -241,15 +241,15 @@ export class BoundaryModel {
   // --------- Volume initialisation (Akinci Eq. 4) ---------------------------------------------------------------------------------------------------
 
   /**
-   * Compute Î¨_b for every boundary particle via:
+   * Compute -_b for every boundary particle via:
    *
-   *   Î¨_b(x_b) = Ï---- / Î-_k W(x_b -ˆ’ x_k, h)
+   *   -_b(x_b) = ----- / --_k W(x_b --- x_k, h)
    *
    * Only newly-added particles with volume == 0 are (re)computed;
    * this keeps the cost incremental when obstacles are added at runtime.
    *
-   * Complexity: O(NÂ²) over boundary particles --- acceptable because boundary
-   * particle counts are typically O(100--“1000).
+   * Complexity: O(N-) over boundary particles --- acceptable because boundary
+   * particle counts are typically O(100---1000).
    */
   initVolumes(): void {
     this._computeVolumes();

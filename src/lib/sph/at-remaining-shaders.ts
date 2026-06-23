@@ -306,7 +306,7 @@ float drawLine(vec2 uv, float offset) {
     // vector from the circle origin to the middle of the arc
     vec2 up = vec2(cos(1.0*t + offset), sin(-1.0*t + offset));
         
-    // cos(angle/2.0), where `angle` is the full arc length
+    // cos(angle/2.0), where 'angle' is the full arc length
     float c = cos(a*3.1416/180.0); 
     // in particular:
     // c =  1.0 gives a 0 degree arc, 
@@ -317,12 +317,12 @@ float drawLine(vec2 uv, float offset) {
     
     // smoothing perpendicular to the arc
     float d1 = abs(length(circleUv) - r) - t;
-    float w1 = 2.0*fwidth(d1); // proportional to how much `d1` change between pixels
+    float w1 = 2.0*fwidth(d1); // proportional to how much 'd1' change between pixels
     float s1 = smoothstep(w1/2.0, -w1/2.0, d1); 
 
     // smoothing along the arc
     float d2 = dot(up, normalize(circleUv)) - c;
-    float w2 = 2.0*fwidth(d2); // proportional to how much `d2` changes between pixels
+    float w2 = 2.0*fwidth(d2); // proportional to how much 'd2' changes between pixels
     float s2 = smoothstep(w2/2.0, -w2/2.0, d2); 
 
     // mix perpendicular and parallel smoothing
@@ -502,11 +502,11 @@ float drawLine(vec2 uv, float offset) {
     float c = cos(time - radians(81.0 + time * 1.0)); 
     
     float d1 = abs(length(circleUv) - r) - t;
-    float w1 = 2.0*fwidth(d1); // proportional to how much `d1` change between pixels
+    float w1 = 2.0*fwidth(d1); // proportional to how much 'd1' change between pixels
     float s1 = smoothstep(w1/2.0, -w1/2.0, d1); 
 
     float d2 = dot(up, normalize(circleUv)) - c;
-    float w2 = 2.0*fwidth(d2); // proportional to how much `d2` changes between pixels
+    float w2 = 2.0*fwidth(d2); // proportional to how much 'd2' changes between pixels
     float s2 = smoothstep(w2/2.0, -w2/2.0, d2); 
 
     float s = s1*(1.0 - s2);
@@ -595,11 +595,11 @@ float drawLine(vec2 uv, float offset) {
     float c = cos(time - radians(81.0 + time * 1.0)); 
     
     float d1 = abs(length(circleUv) - r) - t;
-    float w1 = 2.0*fwidth(d1); // proportional to how much `d1` change between pixels
+    float w1 = 2.0*fwidth(d1); // proportional to how much 'd1' change between pixels
     float s1 = smoothstep(w1/2.0, -w1/2.0, d1); 
 
     float d2 = dot(up, normalize(circleUv)) - c;
-    float w2 = 2.0*fwidth(d2); // proportional to how much `d2` changes between pixels
+    float w2 = 2.0*fwidth(d2); // proportional to how much 'd2' changes between pixels
     float s2 = smoothstep(w2/2.0, -w2/2.0, d2); 
 
     float s = s1*(1.0 - s2);

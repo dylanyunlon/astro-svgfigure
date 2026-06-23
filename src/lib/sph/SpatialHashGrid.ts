@@ -1,4 +1,4 @@
-# === SpatialHashGrid.ts ===
+// === SpatialHashGrid.ts ===
 
 // ============================================================
 //  SpatialHashGrid.ts --- 2D Spatial Hash for SPH Neighbor Search
@@ -50,7 +50,7 @@ export class SpatialHashGrid {
   //  Insert the first n particles into the grid.
   //
   //  cellSize: grid cell edge length.  Set equal to the SPH
-  //  smoothing radius h so each query only visits 3Ã-3 = 9 cells.
+  //  smoothing radius h so each query only visits 3--3 = 9 cells.
   // ----------------------------------------------------------
   insertAll(
     px: Float32Array,
