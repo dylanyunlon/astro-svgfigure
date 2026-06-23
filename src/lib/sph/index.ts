@@ -144,6 +144,8 @@ export { DensityFieldTextureConfig, DensityFieldTexture, ParticleSource, selfTes
 export { VelocityFieldTextureConfig, VelocityFieldTexture, VelocityParticleSource, selfTest as velocityFieldTextureSelfTest } from './velocity-field-texture';
 // water-caustics
 export { WaterCausticsConfig, WaterCaustics } from './water-caustics';
+// fluid-caustics (M781)
+export { FluidCausticsConfig, CausticWaveOctave, FluidCaustics, FluidParticleSource, CellSurfaceTarget, selfTest as fluidCausticsSelfTest } from './fluid-caustics';
 // world-boundary
 export { RectBoundaryShape, CircleBoundaryShape, PolygonBoundaryShape, BoundaryShape, WorldConfig, BoundaryParticle, defaultWorldConfig, createWallParticles /* +8 more */ } from './world-boundary';
 // world-renderer
