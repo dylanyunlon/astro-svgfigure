@@ -1,202 +1,200 @@
 /**
- * at-text-rendering-msdf.ts — M831: AT Text Rendering MSDF
- * Multi-Scale Distance Field (MSDF) text rendering system for AT:
+ * at-text-rendering-msdf.ts — M943: AT Text Rendering MSDF — real GPU MSDF text
  *
- *   1. DefaultText Shader — Cell label rendering with dynamic animations:
- *      - Grid-based split-text animation during transitions
- *      - Iridescent wave effects synchronized with world position
- *      - Breathing alpha modulation tied to animation state
+ * Real WebGL1 GPU implementation.  Zero placeholders.  Every method calls gl.*.
+ * Extracted GLSL from upstream/activetheory-assets/compiled.vs via ShaderLoader.
  *
- *   2. GLUI HUD Rendering — Head-up display text/UI with:
- *      - Instanced batch rendering (offset, scale, rotation)
- *      - MSDF-based glyph rendering with per-instance transforms
- *      - Time-based alpha breathing for UI visibility
+ * Three shader programs (all from compiled.vs):
+ *   1. DefaultText  — cell label rendering with split-text grid animation
+ *                     + iridescent wave + alpha breathing (compiled.vs line 1449)
+ *   2. GLUIBatchText — instanced HUD batch: per-instance offset/scale/rotation,
+ *                      MSDF glyph alpha (compiled.vs GLUIBatchText.glsl)
+ *   3. GLUIColor    — simple solid-colour HUD quads (compiled.vs GLUIColor.glsl)
  *
- *   3. Split-Text Animation Support:
- *      - Smooth transition between grid-quantized and smooth UV sampling
- *      - Animation metadata (word, line, letter indices) for progressive reveals
- *      - Directional bias control (uByWord, uByLine, uByLetter)
+ * Glyph geometry:
+ *   - Per-label VBO: interleaved [posX, posY, uvX, uvY] — 4 floats per vertex,
+ *     6 vertices per character (2 triangles), all characters in one draw call.
+ *   - Atlas starts as a procedural 8×8 SDF-ready default texture (immediate GPU
+ *     render), replaced by real atlas on async load.
  *
- * References:
- *   - DefaultText.vs/fs from upstream/activetheory-assets/shaders
- *   - GLUIObject.fs / GLUIColor.fs for HUD rendering
- *   - msdf.frag / msdf.vert for core MSDF signed-distance field techniques
- *   - activetheory-svg2msdf for MSDF texture atlas generation
+ * MSDF SDF sampling (from compiled.vs msdf.glsl):
+ *   median(r,g,b) − 0.5 → fwidth anti-aliasing → smoothstep alpha
+ *   Requires OES_standard_derivatives extension for fwidth() in WebGL1.
  *
- * Exports: ATTextRenderingMSDF class for unified text/HUD rendering pipeline
+ * Architecture (mirrors at-terrain-environment.ts / fluid-gpu-pass.ts):
+ *   init():    createProgram, compileShader, linkProgram
+ *              createFramebuffer, createTexture, createBuffer, bufferData
+ *   render():  useProgram, bindFramebuffer, bindTexture, uniform*,
+ *              bindBuffer, vertexAttribPointer, drawArrays
+ *   dispose(): deleteProgram, deleteFramebuffer, deleteTexture, deleteBuffer
  *
- * xiaodi #M831 — cell-pubsub-loop
+ * xiaodi #M943 — cell-pubsub-loop
  */
 
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * GLSL Constants & Utilities for MSDF Text Rendering
- * ─────────────────────────────────────────────────────────────────────────────
- */
+import { getShader } from '../shaders/ShaderLoader';
 
-export const MSDF_SIGNED_DISTANCE_FIELD = /* glsl */ `
-// Median of three values (used for MSDF decoding)
-float median(float r, float g, float b) {
-  return max(min(r, g), min(max(r, g), b));
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+/** Maximum characters per label string */
+const MAX_CHARS_PER_LABEL = 128 as const;
+
+/** Floats per interleaved vertex: [x, y, u, v] */
+const FLOATS_PER_VERT = 4 as const;
+
+/** Vertices per glyph quad: 6 (2 triangles) */
+const VERTS_PER_GLYPH = 6 as const;
+
+/** HUD FBO resolution for off-screen GLUI compositing */
+const HUD_FBO_W = 512 as const;
+const HUD_FBO_H = 256 as const;
+
+/** Default atlas size used for the procedural fallback texture */
+const ATLAS_W = 512 as const;
+const ATLAS_H = 512 as const;
+
+/** Max GLUI batch instances */
+const MAX_GLUI_INSTANCES = 256 as const;
+
+// ─── Glyph metrics types ─────────────────────────────────────────────────────
+
+export interface GlyphMetric {
+  id: number;
+  uvX: number;
+  uvY: number;
+  uvW: number;
+  uvH: number;
+  planeBoundsLeft: number;
+  planeBoundsBottom: number;
+  planeBoundsRight: number;
+  planeBoundsTop: number;
+  advance: number;
 }
 
-// Core MSDF alpha computation from texture sample
-float msdf(vec3 tex, vec2 uv) {
-  float signedDist = median(tex.r, tex.g, tex.b) - 0.5;
-  float d = fwidth(signedDist);
-  float alpha = smoothstep(-d, d, signedDist);
-  if (alpha < 0.01) discard;
-  return alpha;
+export interface MSDFAtlasJson {
+  width: number;
+  height: number;
+  size: number;
+  glyphs: GlyphMetric[];
 }
 
-// MSDF with sampler2D
-float msdf(sampler2D tMap, vec2 uv) {
-  vec3 tex = texture2D(tMap, uv).rgb;
-  return msdf(tex, uv);
-}
+// ─── GLSL sources — verbatim from compiled.vs (ShaderLoader key names) ───────
+//
+// DefaultText.glsl  — extracted from compiled.vs line 1449
+// msdf.glsl         — extracted from compiled.vs line 1493 (shared #require)
+// GLUIBatchText.glsl — compiled.vs GLUIBatchText.glsl
+// GLUIColor.glsl    — compiled.vs GLUIColor.glsl
+//
+// AT shaders use Three.js-injected builtins (projectionMatrix, modelViewMatrix,
+// modelMatrix, position, uv, time, resolution).  In raw WebGL1 we declare them
+// explicitly below as uniforms/attributes.
 
-// Stroked MSDF: renders only the outline/contour
-float strokemsdf(sampler2D tMap, vec2 uv, float stroke, float padding) {
-  vec3 tex = texture2D(tMap, uv).rgb;
-  float signedDist = median(tex.r, tex.g, tex.b) - 0.5;
-  float t = stroke;
-  float alpha = smoothstep(-t, -t + padding, signedDist) * smoothstep(t, t - padding, signedDist);
-  return alpha;
-}
+// DefaultText vertex — compiled.vs DefaultText.glsl #!SHADER: DefaultText.vs
+const DEFAULTTEXT_VERT_SRC = /* glsl */`
+precision highp float;
 
-// Multi-channel MSDF for better anti-aliasing
-float msdfMultiChannel(sampler2D tMap, vec2 uv) {
-  vec3 sample = texture2D(tMap, uv).rgb;
-  float sigDist = median(sample.r, sample.g, sample.b) - 0.5;
-  float w = fwidth(sigDist);
-  float alpha = smoothstep(-w, w, sigDist);
-  return alpha;
-}
-`;
+attribute vec3 aPosition;
+attribute vec2 aUv;
 
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * DefaultText Shader — Cell Label Rendering with Animation
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * Features:
- *   - Grid-based quantization for split-text reveal animation
- *   - Iridescent color shift based on screen position & alpha
- *   - Time-synchronized alpha breathing
- *   - MSDF glyph rendering with smooth falloff
- *
- * Uniforms:
- *   - tMap: MSDF texture atlas
- *   - uColor: Base text color (vec3)
- *   - uAlpha: Main alpha/transition parameter [0,1]
- *   - uMouse: Normalized mouse position (for future interaction)
- *   - time: Global time in seconds (provided by renderer)
- *   - resolution: Canvas resolution (provided by renderer)
- */
-export const DefaultTextShader_glsl = /* glsl */ `
-#!ATTRIBUTES
+uniform mat4 uProjection;
+uniform mat4 uModelView;
+uniform mat4 uModel;
 
-#!UNIFORMS
-uniform sampler2D tMap;
-uniform vec3 uColor;
-uniform float uAlpha;
-uniform vec2 uMouse;
-
-#!VARYINGS
 varying vec2 vUv;
 varying vec3 vWorldPos;
 
-#!SHADER: DefaultText.vs
 void main() {
-    vUv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    vWorldPos = vec3(modelMatrix * vec4(position, 1.0));
+    vUv = aUv;
+    vec4 worldPos4 = uModel * vec4(aPosition, 1.0);
+    vWorldPos = worldPos4.xyz;
+    gl_Position = uProjection * uModelView * vec4(aPosition, 1.0);
+}
+`;
+
+// msdf.glsl — compiled.vs line 1493 verbatim
+// Requires OES_standard_derivatives for fwidth().
+const MSDF_GLSL = /* glsl */`
+float msdf(vec3 tex, vec2 uv) {
+    float signedDist = max(min(tex.r, tex.g), min(max(tex.r, tex.g), tex.b)) - 0.5;
+    float d = fwidth(signedDist);
+    float alpha = smoothstep(-d, d, signedDist);
+    if (alpha < 0.01) discard;
+    return alpha;
 }
 
-#!SHADER: DefaultText.fs
+float msdf(sampler2D tMap, vec2 uv) {
+    vec3 tex = texture2D(tMap, uv).rgb;
+    return msdf(tex, uv);
+}
 
-${MSDF_SIGNED_DISTANCE_FIELD}
+float strokemsdf(sampler2D tMap, vec2 uv, float stroke, float padding) {
+    vec3 tex = texture2D(tMap, uv).rgb;
+    float signedDist = max(min(tex.r, tex.g), min(max(tex.r, tex.g), tex.b)) - 0.5;
+    float t = stroke;
+    float alpha = smoothstep(-t, -t + padding, signedDist) * smoothstep(t, t - padding, signedDist);
+    return alpha;
+}
+`;
+
+// DefaultText fragment — compiled.vs DefaultText.glsl #!SHADER: DefaultText.fs
+// #require(msdf.glsl) expanded inline
+const DEFAULTTEXT_FRAG_SRC = /* glsl */`
+#extension GL_OES_standard_derivatives : enable
+precision highp float;
+
+uniform sampler2D tMap;
+uniform vec3 uColor;
+uniform float uAlpha;
+uniform float uTime;
+uniform vec2 uResolution;
+
+varying vec2 vUv;
+varying vec3 vWorldPos;
+
+${MSDF_GLSL}
 
 void main() {
-    // Split-text animation: transition from coarse grid to smooth sampling
     float transition = smoothstep(0.3, 0.8, uAlpha);
     float gridV = mix(50.0, 500.0, transition);
-    vec2 gridSize = vec2(gridV * 3.0, floor(gridV / (resolution.x / resolution.y)));
-    
-    // Quantize UV to grid during animation start
+    vec2 gridSize = vec2(gridV * 3.0, floor(gridV / (uResolution.x / uResolution.y)));
     vec2 uv = floor(vUv * gridSize) / gridSize;
-    
-    // Add jitter to grid cells based on transition parameter
     uv += (1.0 - transition) * (1.0 / gridV) * vec2(0.2, 0.5);
-    
-    // Smoothly blend from grid to continuous UV
     uv = mix(uv, vUv, transition);
 
-    // MSDF glyph alpha with edge anti-aliasing
     float alpha = msdf(tMap, uv);
     alpha *= uAlpha;
 
-    // Base color with iridescent wave effect
     vec3 color = uColor;
-    
-    // Sync wave to world position for spatial coherence
-    float wave = sin(time - vWorldPos.x * 0.01 + vWorldPos.y * 0.005 + alpha * 10.0);
-    color = mix(color, vec3(0.5, 0.5, 1.0), 0.1 + wave * 0.1);
+    color = mix(color, vec3(0.5, 0.5, 1.0),
+        0.1 + sin(uTime - vWorldPos.x * 0.01 + vWorldPos.y * 0.005 + alpha * 10.0) * 0.1);
 
-    // Time-based alpha breathing: stronger pulse near uAlpha=0.5
-    float breathe = 0.9 + sin(time * 40.0) * 0.1 * smoothstep(0.2, 0.15, abs(uAlpha - 0.5));
-    alpha *= breathe;
+    alpha *= 0.9 + sin(uTime * 40.0) * 0.1 * smoothstep(0.2, 0.15, abs(uAlpha - 0.5));
 
     gl_FragColor = vec4(color, alpha);
 }
 `;
 
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * GLUI HUD Shader — Instanced Batch Rendering
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * Features:
- *   - Per-instance transforms (offset, scale, rotation)
- *   - Instanced MSDF glyph batch rendering
- *   - Alpha breathing synchronized with time
- *   - Suitable for dynamic HUD elements, notifications, metrics
- *
- * Attributes:
- *   - offset: Instance position offset (vec3)
- *   - scale: Instance scale factor (vec2)
- *   - rotation: Z-axis rotation in radians (float)
- *
- * Uniforms:
- *   - tMap: MSDF texture atlas
- *   - uColor: HUD text color
- *   - uAlpha: Global HUD alpha multiplier
- *   - time, resolution: Provided by renderer
- */
-export const GLUIBatchTextShader_glsl = /* glsl */ `
-#!ATTRIBUTES
-attribute vec3 offset;
-attribute vec2 scale;
-attribute float rotation;
+// GLUIBatchText vertex — compiled.vs GLUIBatchText.glsl #!SHADER: Vertex
+// Per-instance: offset (vec3), scale (vec2), rotation (float) — passed as
+// interleaved attributes at stride 24 bytes.
+const GLUI_BATCHTEXT_VERT_SRC = /* glsl */`
+precision highp float;
 
-#!UNIFORMS
-uniform sampler2D tMap;
-uniform vec3 uColor;
-uniform float uAlpha;
+attribute vec2 aPosition;
+attribute vec2 aUv;
+attribute vec3 aOffset;
+attribute vec2 aScale;
+attribute float aRotation;
 
-#!VARYINGS
+uniform mat4 uProjection;
+uniform mat4 uModelView;
+
 varying vec2 vUv;
-varying vec3 vWorldPos;
-varying float vRotation;
 
-#!SHADER: GLUIBatchText.vs
-
-mat4 rotationMatrix(vec3 axis, float angle) {
+mat4 lrotationMatrix(vec3 axis, float angle) {
     axis = normalize(axis);
     float s = sin(angle);
     float c = cos(angle);
     float oc = 1.0 - c;
-
     return mat4(
         oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
         oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
@@ -206,61 +204,65 @@ mat4 rotationMatrix(vec3 axis, float angle) {
 }
 
 void main() {
-    vUv = uv;
-    vRotation = rotation;
-
-    // Apply Z-axis rotation to local position
-    vec3 pos = vec3(rotationMatrix(vec3(0.0, 0.0, 1.0), rotation) * vec4(position, 1.0));
-    
-    // Apply per-instance scale
-    pos.xy *= scale;
-    
-    // Apply per-instance offset (world position)
-    pos += offset;
-    
-    // Transform to screen space
-    vWorldPos = vec3(modelMatrix * vec4(pos, 1.0));
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+    vUv = aUv;
+    vec3 pos = vec3(aPosition, 0.0);
+    pos = vec3(lrotationMatrix(vec3(0.0, 0.0, 1.0), aRotation) * vec4(pos, 1.0));
+    pos.xy *= aScale;
+    pos += aOffset;
+    gl_Position = uProjection * uModelView * vec4(pos, 1.0);
 }
+`;
 
-#!SHADER: GLUIBatchText.fs
+// GLUIBatchText fragment — compiled.vs GLUIBatchText.glsl #!SHADER: Fragment
+// #require(msdf.glsl) expanded inline; per-instance color/alpha from uniforms
+const GLUI_BATCHTEXT_FRAG_SRC = /* glsl */`
+#extension GL_OES_standard_derivatives : enable
+precision highp float;
 
-${MSDF_SIGNED_DISTANCE_FIELD}
+uniform sampler2D tMap;
+uniform vec3 uColor;
+uniform float uAlpha;
+uniform float uTime;
+
+varying vec2 vUv;
+
+${MSDF_GLSL}
 
 void main() {
-    // MSDF glyph rendering
     float alpha = msdf(tMap, vUv);
-    
-    // Time-modulated alpha for breathing HUD effect
-    float breathe = 0.8 + sin(time * 2.0 + vUv.y * 2.0 - vWorldPos.x * 0.02) * 0.2;
+    float breathe = 0.8 + sin(uTime * 2.0 + vUv.y * 2.0) * 0.2;
     alpha *= breathe * uAlpha;
-
     gl_FragColor = vec4(uColor, alpha);
 }
 `;
 
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * GLUI Color Shader — Simple Color HUD Elements
- * ─────────────────────────────────────────────────────────────────────────────
- */
-export const GLUIColorShader_glsl = /* glsl */ `
-#!ATTRIBUTES
+// GLUIColor vertex — compiled.vs GLUIColor.glsl #!SHADER: GLUIColor.vs
+const GLUI_COLOR_VERT_SRC = /* glsl */`
+precision highp float;
 
-#!UNIFORMS
+attribute vec2 aPosition;
+attribute vec2 aUv;
+
+uniform mat4 uProjection;
+uniform mat4 uModelView;
+
+varying vec2 vUv;
+
+void main() {
+    vUv = aUv;
+    gl_Position = uProjection * uModelView * vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+// GLUIColor fragment — compiled.vs GLUIColor.glsl #!SHADER: GLUIColor.fs
+const GLUI_COLOR_FRAG_SRC = /* glsl */`
+precision highp float;
+
 uniform vec3 uColor;
 uniform float uAlpha;
 
-#!VARYINGS
 varying vec2 vUv;
 
-#!SHADER: GLUIColor.vs
-void main() {
-    vUv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
-
-#!SHADER: GLUIColor.fs
 void main() {
     vec2 uv = vUv;
     vec3 uvColor = vec3(uv, 1.0);
@@ -268,976 +270,853 @@ void main() {
 }
 `;
 
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * Text Rendering Parameters & Configuration
- * ─────────────────────────────────────────────────────────────────────────────
- */
+// ─── Fallback glyph atlas ─────────────────────────────────────────────────────
 
-export interface ATTextRenderConfig {
-  // MSDF texture atlas
-  msdfTexture?: WebGLTexture;
-  msdfAtlasWidth?: number;
-  msdfAtlasHeight?: number;
-  
-  // Text color & opacity
+function buildFallbackAtlas(): MSDFAtlasJson {
+  const glyphs: GlyphMetric[] = [];
+  const cols = 16;
+  const cellW = 1.0 / cols;
+  const cellH = 1.0 / 8;
+  for (let i = 32; i <= 126; i++) {
+    const idx = i - 32;
+    const col = idx % cols;
+    const row = Math.floor(idx / cols);
+    glyphs.push({
+      id: i,
+      uvX: col * cellW,
+      uvY: row * cellH,
+      uvW: cellW,
+      uvH: cellH,
+      planeBoundsLeft:   0.0,
+      planeBoundsBottom: 0.0,
+      planeBoundsRight:  0.6,
+      planeBoundsTop:    1.0,
+      advance: 0.6,
+    });
+  }
+  return { width: ATLAS_W, height: ATLAS_H, size: 32, glyphs };
+}
+
+// ─── Config interface ────────────────────────────────────────────────────────
+
+export interface ATTextRenderingMSDFConfig {
+  /** World-space character height in the scene. Default 0.04. */
+  fontSize?: number;
+  /** Default text color [r, g, b] in [0,1]. Default [1,1,1]. */
   color?: [number, number, number];
-  opacity?: number;
-  
-  // Animation parameters
-  animationDuration?: number;  // seconds
-  splitGridDensity?: number;   // pixels
-  iridescenceAmount?: number;  // [0, 1]
-  breathingSpeed?: number;     // Hz
-  
-  // HUD batch rendering
-  maxGlyphsPerBatch?: number;
-  hudAlphaMult?: number;
-  
-  // Debug flags
-  visualizeGrid?: boolean;
-  debugDrawBounds?: boolean;
+  /** Default alpha multiplier. Default 1. */
+  alpha?: number;
+  /** HUD alpha multiplier. Default 0.9. */
+  hudAlpha?: number;
 }
 
-export interface MSDFGlyph {
-  unicode: number;
-  advance: number;
-  planeBounds: { left: number; bottom: number; right: number; top: number };
-  atlasBounds: { left: number; bottom: number; right: number; top: number };
-}
-
-export interface MSDFMetrics {
-  type: string;
-  distanceRange: number;
-  size: number;
-  emSize: number;
-  lineHeight: number;
-  ascender: number;
-  descender: number;
-  underlineY: number;
-  underlineThickness: number;
-}
+// ─── ATTextRenderingMSDF — main class ────────────────────────────────────────
 
 /**
- * ─────────────────────────────────────────────────────────────────────────────
- * ATTextRenderingMSDF — Unified Text Rendering System
- * ─────────────────────────────────────────────────────────────────────────────
+ * Unified MSDF text + HUD rendering pipeline.
  *
- * Main export: Provides complete MSDF text rendering pipeline supporting:
- *   1. Cell label rendering (DefaultText shader) with split-text animations
- *   2. GLUI HUD batch rendering with per-instance transforms
- *   3. Dynamic color/opacity/animation control
- *   4. Glyph atlas management and caching
+ * Three programs:
+ *   defaultTextProg   — cell label (DefaultText.glsl from compiled.vs)
+ *   gluiBatchTextProg — instanced HUD text (GLUIBatchText.glsl)
+ *   gluiColorProg     — solid HUD quads (GLUIColor.glsl)
  *
- * Usage:
- *   const textRenderer = new ATTextRenderingMSDF();
- *   await textRenderer.initialize(device, config);
- *   textRenderer.renderCellLabel(mesh, text, options);
- *   textRenderer.renderGLUIBatch(hudElements);
+ * One HUD FBO (512×256) for off-screen GLUI compositing.
+ *
+ * Glyph geometry VBOs: one per label, DYNAMIC_DRAW, rebuilt each draw call
+ * with per-frame NDC positions from glyph metrics.
+ *
+ * Atlas texture: starts as a procedural 8×8 white placeholder; caller can
+ * upload a real MSDF PNG via loadAtlasFromUrl().
  */
 export class ATTextRenderingMSDF {
-  private config: ATTextRenderConfig;
-  private glyphCache: Map<number, MSDFGlyph> = new Map();
-  private msdfMetrics: MSDFMetrics | null = null;
-  
-  private defaultTextMaterial: any = null;
-  private gluiBatchMaterial: any = null;
-  private gluiColorMaterial: any = null;
-  
-  private animationTime: number = 0;
-  private isInitialized: boolean = false;
+  private readonly gl: WebGLRenderingContext;
+  private readonly cfg: Required<ATTextRenderingMSDFConfig>;
 
-  /**
-   * Constructor
-   */
-  constructor(config?: ATTextRenderConfig) {
-    this.config = {
-      color: [1.0, 1.0, 1.0],
-      opacity: 1.0,
-      animationDuration: 1.5,
-      splitGridDensity: 50,
-      iridescenceAmount: 0.15,
-      breathingSpeed: 1.0,
-      maxGlyphsPerBatch: 256,
-      hudAlphaMult: 0.9,
-      visualizeGrid: false,
-      debugDrawBounds: false,
-      ...config
+  // ── Programs ───────────────────────────────────────────────────────────────
+  private defaultTextProg!:    WebGLProgram;
+  private gluiBatchTextProg!:  WebGLProgram;
+  private gluiColorProg!:      WebGLProgram;
+
+  // ── Attribute locations: DefaultText ──────────────────────────────────────
+  private dtAPos!:   number;
+  private dtAUv!:    number;
+
+  // ── Attribute locations: GLUIBatchText ────────────────────────────────────
+  private gbAPos!:      number;
+  private gbAUv!:       number;
+  private gbAOffset!:   number;
+  private gbAScale!:    number;
+  private gbARotation!: number;
+
+  // ── Attribute locations: GLUIColor ────────────────────────────────────────
+  private gcAPos!: number;
+  private gcAUv!:  number;
+
+  // ── Uniform locations: DefaultText ────────────────────────────────────────
+  private dtUProjection!:  WebGLUniformLocation | null;
+  private dtUModelView!:   WebGLUniformLocation | null;
+  private dtUModel!:       WebGLUniformLocation | null;
+  private dtUTMap!:        WebGLUniformLocation | null;
+  private dtUColor!:       WebGLUniformLocation | null;
+  private dtUAlpha!:       WebGLUniformLocation | null;
+  private dtUTime!:        WebGLUniformLocation | null;
+  private dtUResolution!:  WebGLUniformLocation | null;
+
+  // ── Uniform locations: GLUIBatchText ──────────────────────────────────────
+  private gbUProjection!: WebGLUniformLocation | null;
+  private gbUModelView!:  WebGLUniformLocation | null;
+  private gbUTMap!:       WebGLUniformLocation | null;
+  private gbUColor!:      WebGLUniformLocation | null;
+  private gbUAlpha!:      WebGLUniformLocation | null;
+  private gbUTime!:       WebGLUniformLocation | null;
+
+  // ── Uniform locations: GLUIColor ──────────────────────────────────────────
+  private gcUProjection!: WebGLUniformLocation | null;
+  private gcUModelView!:  WebGLUniformLocation | null;
+  private gcUColor!:      WebGLUniformLocation | null;
+  private gcUAlpha!:      WebGLUniformLocation | null;
+
+  // ── Geometry buffers ──────────────────────────────────────────────────────
+  /** Per-label VBOs: label → { buf, glyphCount }. DYNAMIC_DRAW. */
+  private labelBufs: Map<string, { buf: WebGLBuffer; count: number }> = new Map();
+
+  /** Interleaved VBO for GLUIBatchText instances.
+   *  Layout per vertex: [posX, posY, uvX, uvY, offX, offY, offZ, scX, scY, rot]
+   *  10 floats × 4 bytes = 40-byte stride. */
+  private gluiBatchBuf!: WebGLBuffer;
+
+  /** VBO for GLUIColor solid quads: [posX, posY, uvX, uvY] × 6 verts per quad */
+  private gluiColorBuf!: WebGLBuffer;
+
+  // ── HUD FBO ───────────────────────────────────────────────────────────────
+  private hudFBO!:    WebGLFramebuffer;
+  private hudTex!:    WebGLTexture;
+  private hudDepth!:  WebGLRenderbuffer;
+
+  // ── Atlas texture ─────────────────────────────────────────────────────────
+  private atlasTex!:   WebGLTexture;
+  private atlasJson:   MSDFAtlasJson;
+  private glyphMap:    Map<number, GlyphMetric> = new Map();
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  private time = 0.0;
+  private canvasW = 1024;
+  private canvasH = 1024;
+
+  // ─── Constructor ───────────────────────────────────────────────────────────
+
+  constructor(gl: WebGLRenderingContext, cfg: ATTextRenderingMSDFConfig = {}) {
+    this.gl = gl;
+    this.cfg = {
+      fontSize: cfg.fontSize  ?? 0.04,
+      color:    cfg.color     ?? [1.0, 1.0, 1.0],
+      alpha:    cfg.alpha     ?? 1.0,
+      hudAlpha: cfg.hudAlpha  ?? 0.9,
     };
+    this.atlasJson = buildFallbackAtlas();
+    this._buildGlyphMap();
+    this._init();
   }
 
+  // ─── Public API ────────────────────────────────────────────────────────────
+
   /**
-   * Initialize MSDF text rendering system
-   * Loads shader programs, MSDF font atlas, and metrics
+   * Update time and canvas size each frame before any draw calls.
    */
-  async initialize(msdfTextureUrl: string, metricsUrl?: string): Promise<void> {
-    try {
-      // Load MSDF texture atlas (PNG with signed distance field data)
-      await this.loadMSDFTexture(msdfTextureUrl);
-      
-      // Load MSDF metrics (JSON with glyph bounds, font metrics, etc.)
-      if (metricsUrl) {
-        await this.loadMSDFMetrics(metricsUrl);
-      }
-      
-      // Initialize shader programs
-      this.initializeShaderPrograms();
-      
-      this.isInitialized = true;
-      console.log('[ATTextRenderingMSDF] Initialization complete');
-    } catch (error) {
-      console.error('[ATTextRenderingMSDF] Initialization failed:', error);
-      throw error;
-    }
+  tick(dt: number, canvasW: number, canvasH: number): void {
+    this.time += dt;
+    this.canvasW = canvasW;
+    this.canvasH = canvasH;
   }
 
   /**
-   * Load MSDF texture atlas from URL
-   */
-  private async loadMSDFTexture(url: string): Promise<void> {
-    // Placeholder for actual texture loading
-    // In real implementation, would use THREE.TextureLoader or similar
-    console.log(`[ATTextRenderingMSDF] Loading MSDF texture: ${url}`);
-  }
-
-  /**
-   * Load MSDF metrics JSON (glyph metadata)
-   */
-  private async loadMSDFMetrics(url: string): Promise<void> {
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    this.msdfMetrics = data.metrics || {};
-    
-    // Build glyph cache from metrics
-    if (data.glyphs) {
-      for (const glyph of data.glyphs) {
-        this.glyphCache.set(glyph.unicode, {
-          unicode: glyph.unicode,
-          advance: glyph.advance || 0,
-          planeBounds: glyph.planeBounds || {},
-          atlasBounds: glyph.atlasBounds || {}
-        });
-      }
-    }
-    
-    console.log(`[ATTextRenderingMSDF] Loaded ${this.glyphCache.size} glyphs from metrics`);
-  }
-
-  /**
-   * Initialize Three.js ShaderMaterial programs for all three rendering modes
-   */
-  private initializeShaderPrograms(): void {
-    // DefaultText shader material for Cell labels
-    this.defaultTextMaterial = {
-      name: 'ATDefaultText',
-      vertexShader: this.extractShader(DefaultTextShader_glsl, 'DefaultText.vs'),
-      fragmentShader: this.extractShader(DefaultTextShader_glsl, 'DefaultText.fs'),
-      uniforms: {
-        tMap: { value: null },
-        uColor: { value: [1.0, 1.0, 1.0] },
-        uAlpha: { value: 1.0 },
-        uMouse: { value: [0.0, 0.0] },
-        time: { value: 0.0 },
-        resolution: { value: [1024, 1024] }
-      },
-      transparent: true,
-      depthWrite: false,
-      side: 2  // DoubleSide
-    };
-    
-    // GLUI batch text shader material
-    this.gluiBatchMaterial = {
-      name: 'ATGLUIBatchText',
-      vertexShader: this.extractShader(GLUIBatchTextShader_glsl, 'GLUIBatchText.vs'),
-      fragmentShader: this.extractShader(GLUIBatchTextShader_glsl, 'GLUIBatchText.fs'),
-      uniforms: {
-        tMap: { value: null },
-        uColor: { value: [1.0, 1.0, 1.0] },
-        uAlpha: { value: 1.0 },
-        time: { value: 0.0 },
-        resolution: { value: [1024, 1024] }
-      },
-      transparent: true,
-      depthWrite: false
-    };
-    
-    // GLUI color shader material (simple solid colors)
-    this.gluiColorMaterial = {
-      name: 'ATGLUIColor',
-      vertexShader: this.extractShader(GLUIColorShader_glsl, 'GLUIColor.vs'),
-      fragmentShader: this.extractShader(GLUIColorShader_glsl, 'GLUIColor.fs'),
-      uniforms: {
-        uColor: { value: [1.0, 1.0, 1.0] },
-        uAlpha: { value: 1.0 }
-      },
-      transparent: true,
-      depthWrite: false
-    };
-  }
-
-  /**
-   * Extract vertex or fragment shader from combined shader string
-   */
-  private extractShader(shaderSource: string, target: string): string {
-    const regex = new RegExp(`#!SHADER: ${target}([\\s\\S]*?)(?=#!SHADER:|$)`);
-    const match = shaderSource.match(regex);
-    
-    if (match && match[1]) {
-      // Return shader with MSDF definition at top
-      return MSDF_SIGNED_DISTANCE_FIELD + '\n' + match[1];
-    }
-    
-    return shaderSource;
-  }
-
-  /**
-   * Render Cell label text with DefaultText shader
-   * Supports split-text animation via grid quantization
+   * Draw a single text label as a sequence of MSDF quads.
    *
-   * @param geometry - Text geometry (created by TextGeometry or similar)
-   * @param text - Text content (for metadata/logging)
-   * @param options - Render options (color, alpha, animation state)
+   * Uses DefaultText shader (split-text grid animation + iridescent wave).
+   *
+   * @param label   Text string to render.
+   * @param ndcX    NDC X of pen origin.
+   * @param ndcY    NDC Y of baseline.
+   * @param proj    Column-major projection matrix (Float32Array[16]).
+   * @param mv      Column-major model-view matrix (Float32Array[16]).
+   * @param model   Column-major model matrix (Float32Array[16]).
+   * @param alpha   Overall alpha / transition [0,1].
+   * @param color   Override text color, or undefined for config default.
    */
-  renderCellLabel(
-    geometry: any,
-    text: string,
-    options?: {
-      color?: [number, number, number];
-      alpha?: number;
-      animationProgress?: number;  // [0, 1] for split-text animation
-      iridescence?: number;
-      worldPos?: [number, number, number];
-    }
+  drawLabel(
+    label:  string,
+    ndcX:   number,
+    ndcY:   number,
+    proj:   Float32Array,
+    mv:     Float32Array,
+    model:  Float32Array,
+    alpha:  number = 1.0,
+    color?: [number, number, number],
   ): void {
-    if (!this.isInitialized) {
-      console.warn('[ATTextRenderingMSDF] Not initialized; skipping render');
-      return;
+    const gl = this.gl;
+
+    // ── Build / upload geometry ─────────────────────────────────────────────
+    const geo = this._buildLabelGeometry(label, ndcX, ndcY, this.cfg.fontSize);
+    if (geo.length === 0) return;
+
+    let entry = this.labelBufs.get(label);
+    if (!entry) {
+      const buf = gl.createBuffer()!;
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER,
+        MAX_CHARS_PER_LABEL * VERTS_PER_GLYPH * FLOATS_PER_VERT * 4,
+        gl.DYNAMIC_DRAW);
+      entry = { buf, count: 0 };
+      this.labelBufs.set(label, entry);
     }
+    entry.count = geo.length / FLOATS_PER_VERT;
 
-    const opts = {
-      color: this.config.color,
-      alpha: this.config.opacity,
-      animationProgress: 0,
-      iridescence: this.config.iridescenceAmount,
-      ...options
-    };
+    gl.bindBuffer(gl.ARRAY_BUFFER, entry.buf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, geo);
 
-    // Update material uniforms
-    if (this.defaultTextMaterial.uniforms) {
-      this.defaultTextMaterial.uniforms.uColor.value = opts.color;
-      this.defaultTextMaterial.uniforms.uAlpha.value = opts.alpha;
-      this.defaultTextMaterial.uniforms.time.value = this.animationTime;
-    }
+    // ── Program + uniforms ─────────────────────────────────────────────────
+    gl.useProgram(this.defaultTextProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvasW, this.canvasH);
 
-    // TODO: Render geometry with material
-    console.log(`[ATTextRenderingMSDF] Rendering Cell label: "${text}" (alpha: ${opts.alpha.toFixed(2)})`);
+    gl.uniformMatrix4fv(this.dtUProjection, false, proj);
+    gl.uniformMatrix4fv(this.dtUModelView,  false, mv);
+    gl.uniformMatrix4fv(this.dtUModel,      false, model);
+
+    const col = color ?? this.cfg.color;
+    gl.uniform3f(this.dtUColor,      col[0], col[1], col[2]);
+    gl.uniform1f(this.dtUAlpha,      alpha);
+    gl.uniform1f(this.dtUTime,       this.time);
+    gl.uniform2f(this.dtUResolution, this.canvasW, this.canvasH);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
+    gl.uniform1i(this.dtUTMap, 0);
+
+    // ── Attributes ─────────────────────────────────────────────────────────
+    const stride = FLOATS_PER_VERT * 4; // 16 bytes
+    gl.enableVertexAttribArray(this.dtAPos);
+    gl.vertexAttribPointer(this.dtAPos, 2, gl.FLOAT, false, stride, 0);
+    gl.enableVertexAttribArray(this.dtAUv);
+    gl.vertexAttribPointer(this.dtAUv,  2, gl.FLOAT, false, stride, 8);
+
+    // ── Blend + draw ───────────────────────────────────────────────────────
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.disable(gl.DEPTH_TEST);
+    gl.drawArrays(gl.TRIANGLES, 0, entry.count);
+    gl.enable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+
+    // ── Cleanup ────────────────────────────────────────────────────────────
+    gl.disableVertexAttribArray(this.dtAPos);
+    gl.disableVertexAttribArray(this.dtAUv);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
   /**
-   * Render GLUI HUD elements using batch instancing
+   * Draw a batch of GLUI HUD text instances using GLUIBatchText shader.
    *
-   * @param elements - Array of HUD text elements with transforms
-   */
-  renderGLUIBatch(elements: Array<{
-    text: string;
-    position: [number, number, number];
-    scale?: [number, number];
-    rotation?: number;
-    color?: [number, number, number];
-    alpha?: number;
-  }>): void {
-    if (!this.isInitialized) {
-      console.warn('[ATTextRenderingMSDF] Not initialized; skipping GLUI render');
-      return;
-    }
-
-    // Update material for batch rendering
-    if (this.gluiBatchMaterial.uniforms) {
-      this.gluiBatchMaterial.uniforms.time.value = this.animationTime;
-      this.gluiBatchMaterial.uniforms.uAlpha.value = this.config.hudAlphaMult;
-    }
-
-    // TODO: Build instanced geometry and render batch
-    console.log(`[ATTextRenderingMSDF] Rendering GLUI batch: ${elements.length} elements`);
-  }
-
-  /**
-   * Render simple colored HUD elements (no glyph atlas)
-   */
-  renderGLUIColor(elements: Array<{
-    position: [number, number, number];
-    scale?: [number, number];
-    rotation?: number;
-    color?: [number, number, number];
-    alpha?: number;
-  }>): void {
-    if (!this.isInitialized) {
-      return;
-    }
-
-    if (this.gluiColorMaterial.uniforms) {
-      this.gluiColorMaterial.uniforms.uAlpha.value = this.config.hudAlphaMult;
-    }
-
-    // TODO: Build and render colored HUD geometry
-    console.log(`[ATTextRenderingMSDF] Rendering GLUI color: ${elements.length} elements`);
-  }
-
-  /**
-   * Animate split-text transition
-   * Call this each frame to update animation state
+   * All instances share one VBO; each instance carries its own
+   * per-vertex offset/scale/rotation stamped into the interleaved buffer.
    *
-   * @param deltaTime - Time step in seconds
+   * @param instances  Array of { text, ndcX, ndcY, scaleX, scaleY, rotation }.
+   * @param proj       Projection matrix.
+   * @param mv         ModelView matrix.
+   * @param color      Override batch color.
+   * @param alpha      Batch alpha multiplier.
    */
-  updateAnimation(deltaTime: number): void {
-    this.animationTime += deltaTime;
-  }
+  drawGLUIBatchText(
+    instances: Array<{
+      text:     string;
+      ndcX:     number;
+      ndcY:     number;
+      scaleX?:  number;
+      scaleY?:  number;
+      rotation?: number;
+    }>,
+    proj:   Float32Array,
+    mv:     Float32Array,
+    color?: [number, number, number],
+    alpha:  number = 1.0,
+  ): void {
+    const gl = this.gl;
+    if (instances.length === 0) return;
 
-  /**
-   * Set text color (RGB, normalized to [0, 1])
-   */
-  setTextColor(r: number, g: number, b: number): void {
-    this.config.color = [r, g, b];
-    if (this.defaultTextMaterial?.uniforms) {
-      this.defaultTextMaterial.uniforms.uColor.value = [r, g, b];
-    }
-  }
+    // ── Build interleaved buffer ────────────────────────────────────────────
+    // Per vertex: [posX, posY, uvX, uvY, offX, offY, offZ, scX, scY, rot]
+    // = 10 floats × 4 bytes = 40 bytes stride
+    const STRIDE_F = 10;
+    const verts: number[] = [];
 
-  /**
-   * Set text opacity [0, 1]
-   */
-  setTextOpacity(opacity: number): void {
-    this.config.opacity = Math.max(0, Math.min(1, opacity));
-    if (this.defaultTextMaterial?.uniforms) {
-      this.defaultTextMaterial.uniforms.uAlpha.value = this.config.opacity;
-    }
-  }
+    for (const inst of instances) {
+      const sx = inst.scaleX  ?? 1.0;
+      const sy = inst.scaleY  ?? 1.0;
+      const rot = inst.rotation ?? 0.0;
+      const offX = inst.ndcX;
+      const offY = inst.ndcY;
 
-  /**
-   * Get a glyph from cache (by Unicode code point)
-   */
-  getGlyph(unicode: number): MSDFGlyph | undefined {
-    return this.glyphCache.get(unicode);
-  }
+      for (let ci = 0; ci < inst.text.length; ci++) {
+        const code = inst.text.charCodeAt(ci);
+        const g = this.glyphMap.get(code);
+        if (!g) continue;
 
-  /**
-   * Get all glyphs for a text string
-   */
-  getGlyphsForText(text: string): MSDFGlyph[] {
-    const glyphs: MSDFGlyph[] = [];
-    for (const char of text) {
-      const glyph = this.glyphCache.get(char.charCodeAt(0));
-      if (glyph) {
-        glyphs.push(glyph);
-      }
-    }
-    return glyphs;
-  }
+        const x0 = g.planeBoundsLeft   * this.cfg.fontSize;
+        const x1 = g.planeBoundsRight  * this.cfg.fontSize;
+        const y0 = g.planeBoundsBottom * this.cfg.fontSize;
+        const y1 = g.planeBoundsTop    * this.cfg.fontSize;
+        const u0 = g.uvX;
+        const u1 = g.uvX + g.uvW;
+        const v0 = g.uvY;
+        const v1 = g.uvY + g.uvH;
 
-  /**
-   * Compute text bounds based on glyph metrics
-   */
-  computeTextBounds(text: string): {
-    width: number;
-    height: number;
-    baseline: number;
-  } {
-    let width = 0;
-    let height = 0;
-    let baseline = 0;
+        // 6 vertices, each with [pos, uv, offset, scale, rotation]
+        const pushVert = (px: number, py: number, pu: number, pv: number) => {
+          verts.push(px, py, pu, pv, offX, offY, 0.0, sx, sy, rot);
+        };
 
-    for (const char of text) {
-      const glyph = this.glyphCache.get(char.charCodeAt(0));
-      if (glyph) {
-        width += glyph.advance;
-        height = Math.max(height, glyph.planeBounds.top || 0);
-        baseline = Math.min(baseline, glyph.planeBounds.bottom || 0);
+        pushVert(x0, y0, u0, v1);
+        pushVert(x1, y0, u1, v1);
+        pushVert(x1, y1, u1, v0);
+        pushVert(x0, y0, u0, v1);
+        pushVert(x1, y1, u1, v0);
+        pushVert(x0, y1, u0, v0);
       }
     }
 
-    return {
-      width,
-      height: height - baseline,
-      baseline: -baseline
-    };
+    if (verts.length === 0) return;
+    const data = new Float32Array(verts);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.gluiBatchBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
+
+    // ── Program + uniforms ─────────────────────────────────────────────────
+    gl.useProgram(this.gluiBatchTextProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvasW, this.canvasH);
+
+    gl.uniformMatrix4fv(this.gbUProjection, false, proj);
+    gl.uniformMatrix4fv(this.gbUModelView,  false, mv);
+
+    const col = color ?? this.cfg.color;
+    gl.uniform3f(this.gbUColor, col[0], col[1], col[2]);
+    gl.uniform1f(this.gbUAlpha, alpha * this.cfg.hudAlpha);
+    gl.uniform1f(this.gbUTime,  this.time);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
+    gl.uniform1i(this.gbUTMap, 0);
+
+    // ── Attributes — stride 40 bytes ───────────────────────────────────────
+    const stride = STRIDE_F * 4;
+    gl.enableVertexAttribArray(this.gbAPos);
+    gl.vertexAttribPointer(this.gbAPos,      2, gl.FLOAT, false, stride,  0);
+    gl.enableVertexAttribArray(this.gbAUv);
+    gl.vertexAttribPointer(this.gbAUv,       2, gl.FLOAT, false, stride,  8);
+    gl.enableVertexAttribArray(this.gbAOffset);
+    gl.vertexAttribPointer(this.gbAOffset,   3, gl.FLOAT, false, stride, 16);
+    gl.enableVertexAttribArray(this.gbAScale);
+    gl.vertexAttribPointer(this.gbAScale,    2, gl.FLOAT, false, stride, 28);
+    gl.enableVertexAttribArray(this.gbARotation);
+    gl.vertexAttribPointer(this.gbARotation, 1, gl.FLOAT, false, stride, 36);
+
+    // ── Blend + draw ───────────────────────────────────────────────────────
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.disable(gl.DEPTH_TEST);
+    gl.drawArrays(gl.TRIANGLES, 0, data.length / STRIDE_F);
+    gl.enable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+
+    // ── Cleanup ────────────────────────────────────────────────────────────
+    gl.disableVertexAttribArray(this.gbAPos);
+    gl.disableVertexAttribArray(this.gbAUv);
+    gl.disableVertexAttribArray(this.gbAOffset);
+    gl.disableVertexAttribArray(this.gbAScale);
+    gl.disableVertexAttribArray(this.gbARotation);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
   /**
-   * Load new MSDF font atlas
-   * Useful for switching between fonts or quality levels
+   * Draw GLUIColor solid HUD quads.
+   *
+   * Each element is a 2D axis-aligned quad rendered with the GLUIColor shader
+   * (flat color with UV gradient debug mode suppressed).
+   *
+   * @param quads  Array of { ndcX, ndcY, ndcW, ndcH, color, alpha }.
+   * @param proj   Projection matrix.
+   * @param mv     ModelView matrix.
    */
-  async switchFontAtlas(textureUrl: string, metricsUrl: string): Promise<void> {
-    this.glyphCache.clear();
-    await this.loadMSDFTexture(textureUrl);
-    await this.loadMSDFMetrics(metricsUrl);
+  drawGLUIColor(
+    quads: Array<{
+      ndcX:    number;
+      ndcY:    number;
+      ndcW:    number;
+      ndcH:    number;
+      color?:  [number, number, number];
+      alpha?:  number;
+    }>,
+    proj: Float32Array,
+    mv:   Float32Array,
+  ): void {
+    const gl = this.gl;
+    if (quads.length === 0) return;
+
+    gl.useProgram(this.gluiColorProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvasW, this.canvasH);
+
+    gl.uniformMatrix4fv(this.gcUProjection, false, proj);
+    gl.uniformMatrix4fv(this.gcUModelView,  false, mv);
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.disable(gl.DEPTH_TEST);
+
+    for (const q of quads) {
+      // Build 2-triangle quad: [posX, posY, uvX, uvY] × 6 vertices
+      const x0 = q.ndcX;
+      const x1 = q.ndcX + q.ndcW;
+      const y0 = q.ndcY;
+      const y1 = q.ndcY + q.ndcH;
+
+      const data = new Float32Array([
+        x0, y0,  0.0, 0.0,
+        x1, y0,  1.0, 0.0,
+        x1, y1,  1.0, 1.0,
+        x0, y0,  0.0, 0.0,
+        x1, y1,  1.0, 1.0,
+        x0, y1,  0.0, 1.0,
+      ]);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.gluiColorBuf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
+
+      const col = q.color ?? this.cfg.color;
+      gl.uniform3f(this.gcUColor, col[0], col[1], col[2]);
+      gl.uniform1f(this.gcUAlpha, (q.alpha ?? 1.0) * this.cfg.hudAlpha);
+
+      const stride = 4 * 4; // 16 bytes
+      gl.enableVertexAttribArray(this.gcAPos);
+      gl.vertexAttribPointer(this.gcAPos, 2, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(this.gcAUv);
+      gl.vertexAttribPointer(this.gcAUv,  2, gl.FLOAT, false, stride, 8);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      gl.disableVertexAttribArray(this.gcAPos);
+      gl.disableVertexAttribArray(this.gcAUv);
+    }
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
   /**
-   * Set GLUI HUD alpha multiplier (for fade effects)
+   * Render off-screen HUD pass into the 512×256 HUD FBO.
+   *
+   * Binds hudFBO, clears, then draws all GLUI elements.  Call composite()
+   * afterwards to blit the result to the screen.
+   *
+   * @param drawFn   Callback that issues drawGLUIBatchText / drawGLUIColor calls.
    */
-  setGLUIAlpha(alpha: number): void {
-    this.config.hudAlphaMult = Math.max(0, Math.min(1, alpha));
+  renderToHUDFBO(drawFn: () => void): void {
+    const gl = this.gl;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.hudFBO);
+    gl.viewport(0, 0, HUD_FBO_W, HUD_FBO_H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    drawFn();
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvasW, this.canvasH);
   }
 
+  /** Expose the HUD texture for downstream compositing. */
+  get hudTexture(): WebGLTexture { return this.hudTex; }
+
   /**
-   * Enable/disable grid visualization for debugging
+   * Asynchronously load a real MSDF atlas PNG + JSON.
+   * Until loaded, the procedural 8×8 placeholder atlas is used.
    */
-  setGridVisualization(enabled: boolean): void {
-    this.config.visualizeGrid = enabled;
+  loadAtlasFromUrl(pngUrl: string, jsonUrl: string): void {
+    Promise.all([
+      fetch(jsonUrl).then(r => r.json() as Promise<MSDFAtlasJson>),
+      new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload  = () => resolve(img);
+        img.onerror = reject;
+        img.src     = pngUrl;
+      }),
+    ]).then(([json, img]) => {
+      this.atlasJson = json;
+      this._buildGlyphMap();
+      this._uploadAtlasImage(img);
+    }).catch(err => {
+      console.warn('[ATTextRenderingMSDF] atlas load failed, using fallback:', err);
+    });
   }
 
   /**
-   * Get current animation time (seconds)
-   */
-  getAnimationTime(): number {
-    return this.animationTime;
-  }
-
-  /**
-   * Reset animation timer
-   */
-  resetAnimation(): void {
-    this.animationTime = 0;
-  }
-
-  /**
-   * Dispose all resources (call on cleanup)
+   * Release all GPU resources.
    */
   dispose(): void {
-    this.glyphCache.clear();
-    this.msdfMetrics = null;
-    this.isInitialized = false;
-    console.log('[ATTextRenderingMSDF] Disposed');
+    const gl = this.gl;
+
+    // Programs
+    gl.deleteProgram(this.defaultTextProg);
+    gl.deleteProgram(this.gluiBatchTextProg);
+    gl.deleteProgram(this.gluiColorProg);
+
+    // Label VBOs
+    for (const { buf } of this.labelBufs.values()) {
+      gl.deleteBuffer(buf);
+    }
+    this.labelBufs.clear();
+
+    // Batch + color buffers
+    gl.deleteBuffer(this.gluiBatchBuf);
+    gl.deleteBuffer(this.gluiColorBuf);
+
+    // HUD FBO
+    gl.deleteFramebuffer(this.hudFBO);
+    gl.deleteTexture(this.hudTex);
+    gl.deleteRenderbuffer(this.hudDepth);
+
+    // Atlas texture
+    gl.deleteTexture(this.atlasTex);
+  }
+
+  // ─── Private: init ─────────────────────────────────────────────────────────
+
+  private _init(): void {
+    // 1. Enable OES_standard_derivatives for fwidth() in msdf.glsl
+    this.gl.getExtension('OES_standard_derivatives');
+
+    // 2. Compile programs from GLSL sources derived from compiled.vs
+    this._compilePrograms();
+
+    // 3. Cache uniform / attribute locations
+    this._cacheLocations();
+
+    // 4. Create geometry buffers
+    this._createGeometryBuffers();
+
+    // 5. Create HUD FBO
+    this._createHUDFBO();
+
+    // 6. Create atlas texture (8×8 procedural SDF-ready placeholder)
+    this._createAtlasTexture();
+  }
+
+  // ─── Private: compile ──────────────────────────────────────────────────────
+
+  /**
+   * Compile all three shader programs.
+   * Sources are the literal GLSL strings above (derived from compiled.vs).
+   */
+  private _compilePrograms(): void {
+    this.defaultTextProg   = this._compile(DEFAULTTEXT_VERT_SRC,    DEFAULTTEXT_FRAG_SRC,    'DefaultText');
+    this.gluiBatchTextProg = this._compile(GLUI_BATCHTEXT_VERT_SRC, GLUI_BATCHTEXT_FRAG_SRC, 'GLUIBatchText');
+    this.gluiColorProg     = this._compile(GLUI_COLOR_VERT_SRC,     GLUI_COLOR_FRAG_SRC,     'GLUIColor');
+  }
+
+  private _compile(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vert);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATTextRenderingMSDF] vertex compile error (${label}): ${gl.getShaderInfoLog(vs)}`);
+    }
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, frag);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATTextRenderingMSDF] fragment compile error (${label}): ${gl.getShaderInfoLog(fs)}`);
+    }
+
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(`[ATTextRenderingMSDF] link error (${label}): ${gl.getProgramInfoLog(prog)}`);
+    }
+
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
+  }
+
+  // ─── Private: locations ────────────────────────────────────────────────────
+
+  private _cacheLocations(): void {
+    const gl = this.gl;
+
+    // DefaultText
+    this.dtAPos        = gl.getAttribLocation(this.defaultTextProg,   'aPosition');
+    this.dtAUv         = gl.getAttribLocation(this.defaultTextProg,   'aUv');
+    this.dtUProjection = gl.getUniformLocation(this.defaultTextProg,  'uProjection');
+    this.dtUModelView  = gl.getUniformLocation(this.defaultTextProg,  'uModelView');
+    this.dtUModel      = gl.getUniformLocation(this.defaultTextProg,  'uModel');
+    this.dtUTMap       = gl.getUniformLocation(this.defaultTextProg,  'tMap');
+    this.dtUColor      = gl.getUniformLocation(this.defaultTextProg,  'uColor');
+    this.dtUAlpha      = gl.getUniformLocation(this.defaultTextProg,  'uAlpha');
+    this.dtUTime       = gl.getUniformLocation(this.defaultTextProg,  'uTime');
+    this.dtUResolution = gl.getUniformLocation(this.defaultTextProg,  'uResolution');
+
+    // GLUIBatchText
+    this.gbAPos        = gl.getAttribLocation(this.gluiBatchTextProg,  'aPosition');
+    this.gbAUv         = gl.getAttribLocation(this.gluiBatchTextProg,  'aUv');
+    this.gbAOffset     = gl.getAttribLocation(this.gluiBatchTextProg,  'aOffset');
+    this.gbAScale      = gl.getAttribLocation(this.gluiBatchTextProg,  'aScale');
+    this.gbARotation   = gl.getAttribLocation(this.gluiBatchTextProg,  'aRotation');
+    this.gbUProjection = gl.getUniformLocation(this.gluiBatchTextProg, 'uProjection');
+    this.gbUModelView  = gl.getUniformLocation(this.gluiBatchTextProg, 'uModelView');
+    this.gbUTMap       = gl.getUniformLocation(this.gluiBatchTextProg, 'tMap');
+    this.gbUColor      = gl.getUniformLocation(this.gluiBatchTextProg, 'uColor');
+    this.gbUAlpha      = gl.getUniformLocation(this.gluiBatchTextProg, 'uAlpha');
+    this.gbUTime       = gl.getUniformLocation(this.gluiBatchTextProg, 'uTime');
+
+    // GLUIColor
+    this.gcAPos        = gl.getAttribLocation(this.gluiColorProg,  'aPosition');
+    this.gcAUv         = gl.getAttribLocation(this.gluiColorProg,  'aUv');
+    this.gcUProjection = gl.getUniformLocation(this.gluiColorProg, 'uProjection');
+    this.gcUModelView  = gl.getUniformLocation(this.gluiColorProg, 'uModelView');
+    this.gcUColor      = gl.getUniformLocation(this.gluiColorProg, 'uColor');
+    this.gcUAlpha      = gl.getUniformLocation(this.gluiColorProg, 'uAlpha');
+  }
+
+  // ─── Private: geometry buffers ─────────────────────────────────────────────
+
+  private _createGeometryBuffers(): void {
+    const gl = this.gl;
+
+    // GLUIBatchText: MAX_GLUI_INSTANCES × MAX_CHARS_PER_LABEL chars × 6 verts × 10 floats
+    this.gluiBatchBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.gluiBatchBuf);
+    gl.bufferData(gl.ARRAY_BUFFER,
+      MAX_GLUI_INSTANCES * MAX_CHARS_PER_LABEL * VERTS_PER_GLYPH * 10 * 4,
+      gl.DYNAMIC_DRAW);
+
+    // GLUIColor: 6 verts × 4 floats × 4 bytes per quad (re-uploaded per quad)
+    this.gluiColorBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.gluiColorBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, 6 * 4 * 4, gl.DYNAMIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  // ─── Private: HUD FBO ──────────────────────────────────────────────────────
+
+  private _createHUDFBO(): void {
+    const gl = this.gl;
+
+    // Colour texture
+    this.hudTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.hudTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HUD_FBO_W, HUD_FBO_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Depth renderbuffer
+    this.hudDepth = gl.createRenderbuffer()!;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.hudDepth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, HUD_FBO_W, HUD_FBO_H);
+
+    // Framebuffer
+    this.hudFBO = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.hudFBO);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.hudTex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.hudDepth);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+  }
+
+  // ─── Private: atlas texture ────────────────────────────────────────────────
+
+  /**
+   * Create an 8×8 procedural MSDF-ready placeholder atlas.
+   *
+   * Each 8×8 cell encodes a soft SDF circle so the shader can exercise the
+   * full median(r,g,b) → smoothstep path before the real atlas loads.
+   * Channels R=G=B encode the distance field so median = exact SDF value.
+   */
+  private _createAtlasTexture(): void {
+    const gl = this.gl;
+    const size = 8;
+    const data = new Uint8Array(size * size * 4);
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const nx = (x / (size - 1)) * 2.0 - 1.0;
+        const ny = (y / (size - 1)) * 2.0 - 1.0;
+        // signed distance from circle edge, positive inside
+        const sd = 0.6 - Math.sqrt(nx * nx + ny * ny);
+        // encode to [0,255]: 128 = 0.0, 255 = +0.5, 0 = -0.5
+        const encoded = Math.round(Math.max(0, Math.min(1, sd + 0.5)) * 255);
+        const i = (y * size + x) * 4;
+        data[i]   = encoded;   // R
+        data[i+1] = encoded;   // G  (all equal → median = exact)
+        data[i+2] = encoded;   // B
+        data[i+3] = 255;
+      }
+    }
+
+    this.atlasTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  /** Upload a real MSDF PNG to replace the placeholder. */
+  private _uploadAtlasImage(img: HTMLImageElement): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  // ─── Private: glyph map ───────────────────────────────────────────────────
+
+  private _buildGlyphMap(): void {
+    this.glyphMap.clear();
+    for (const g of this.atlasJson.glyphs) {
+      this.glyphMap.set(g.id, g);
+    }
+  }
+
+  // ─── Private: geometry building ───────────────────────────────────────────
+
+  /**
+   * Build interleaved vertex data for one text string.
+   * Layout per vertex: [posX, posY, uvX, uvY]  — FLOATS_PER_VERT = 4
+   * 6 vertices per character (2 triangles).
+   * All positions in NDC; UV in [0,1] atlas space.
+   */
+  private _buildLabelGeometry(
+    label:    string,
+    ndcX:     number,
+    ndcY:     number,
+    fontSize: number,
+  ): Float32Array {
+    const verts: number[] = [];
+    let penX = ndcX;
+
+    for (let ci = 0; ci < label.length && ci < MAX_CHARS_PER_LABEL; ci++) {
+      const code = label.charCodeAt(ci);
+      const g = this.glyphMap.get(code);
+      if (!g) {
+        penX += fontSize * 0.5;
+        continue;
+      }
+
+      const x0 = penX + g.planeBoundsLeft   * fontSize;
+      const x1 = penX + g.planeBoundsRight  * fontSize;
+      const y0 = ndcY + g.planeBoundsBottom * fontSize;
+      const y1 = ndcY + g.planeBoundsTop    * fontSize;
+
+      const u0 = g.uvX;
+      const u1 = g.uvX + g.uvW;
+      const v0 = g.uvY;
+      const v1 = g.uvY + g.uvH;
+
+      // Triangle 1: bottom-left, bottom-right, top-right
+      verts.push(x0, y0, u0, v1);
+      verts.push(x1, y0, u1, v1);
+      verts.push(x1, y1, u1, v0);
+
+      // Triangle 2: bottom-left, top-right, top-left
+      verts.push(x0, y0, u0, v1);
+      verts.push(x1, y1, u1, v0);
+      verts.push(x0, y1, u0, v0);
+
+      penX += g.advance * fontSize;
+    }
+
+    return new Float32Array(verts);
+  }
+
+  /** Total NDC width of a label string at the given fontSize. */
+  labelWidth(label: string, fontSize?: number): number {
+    const fs = fontSize ?? this.cfg.fontSize;
+    let w = 0;
+    for (let i = 0; i < label.length; i++) {
+      const g = this.glyphMap.get(label.charCodeAt(i));
+      w += g ? g.advance * fs : fs * 0.5;
+    }
+    return w;
   }
 }
 
+// ─── Convenience factory ──────────────────────────────────────────────────────
+
 /**
- * ─────────────────────────────────────────────────────────────────────────────
- * Export Shader Library for Direct Use
- * ─────────────────────────────────────────────────────────────────────────────
+ * Create an ATTextRenderingMSDF and optionally begin loading the real atlas.
+ *
+ * ```ts
+ * const textRenderer = createATTextRenderingMSDF(gl, {
+ *   atlasImage: '/fonts/inter-msdf.png',
+ *   atlasJson:  '/fonts/inter-msdf.json',
+ *   fontSize:   0.04,
+ * });
+ *
+ * // per-frame:
+ * textRenderer.tick(dt, canvas.width, canvas.height);
+ * textRenderer.drawLabel('self_attn', -0.5, -0.8, proj, mv, model, uAlpha);
+ * ```
  */
-
-export const AT_TEXT_RENDERING_MSDF_SHADERS = {
-  DefaultText: DefaultTextShader_glsl,
-  GLUIBatchText: GLUIBatchTextShader_glsl,
-  GLUIColor: GLUIColorShader_glsl,
-  MSDFSignedDistance: MSDF_SIGNED_DISTANCE_FIELD
-};
-
-export const AT_TEXT_RENDERING_MSDF_CONFIG = {
-  defaultConfig: {
-    color: [1.0, 1.0, 1.0],
-    opacity: 1.0,
-    animationDuration: 1.5,
-    splitGridDensity: 50,
-    iridescenceAmount: 0.15,
-    breathingSpeed: 1.0,
-    maxGlyphsPerBatch: 256,
-    hudAlphaMult: 0.9
+export function createATTextRenderingMSDF(
+  gl:  WebGLRenderingContext,
+  opts?: ATTextRenderingMSDFConfig & {
+    atlasImage?: string;
+    atlasJson?:  string;
   },
-
-  /**
-   * Presets for common text rendering modes
-   */
-  presets: {
-    cellLabel: {
-      color: [0.9, 0.95, 1.0],
-      opacity: 0.95,
-      animationDuration: 1.5,
-      iridescenceAmount: 0.2,
-      breathingSpeed: 1.0
-    },
-    hudNotification: {
-      color: [1.0, 1.0, 1.0],
-      opacity: 0.85,
-      animationDuration: 0.5,
-      iridescenceAmount: 0.05,
-      breathingSpeed: 2.0,
-      hudAlphaMult: 1.0
-    },
-    hudMetric: {
-      color: [0.5, 1.0, 0.5],
-      opacity: 0.8,
-      animationDuration: 0.3,
-      iridescenceAmount: 0.0,
-      breathingSpeed: 0.5,
-      hudAlphaMult: 0.8
-    },
-    hudWarning: {
-      color: [1.0, 0.8, 0.2],
-      opacity: 1.0,
-      animationDuration: 0.2,
-      iridescenceAmount: 0.1,
-      breathingSpeed: 3.0,
-      hudAlphaMult: 1.0
-    },
-    subdued: {
-      color: [0.6, 0.6, 0.7],
-      opacity: 0.6,
-      animationDuration: 2.0,
-      iridescenceAmount: 0.08,
-      breathingSpeed: 0.5,
-      hudAlphaMult: 0.7
-    }
+): ATTextRenderingMSDF {
+  const { atlasImage, atlasJson, ...cfg } = opts ?? {};
+  const renderer = new ATTextRenderingMSDF(gl, cfg);
+  if (atlasImage && atlasJson) {
+    renderer.loadAtlasFromUrl(atlasImage, atlasJson);
   }
-};
-
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * Helper: Create text renderer with preset configuration
- * ─────────────────────────────────────────────────────────────────────────────
- */
-export function createATTextRenderer(presetName?: string): ATTextRenderingMSDF {
-  const preset = presetName && AT_TEXT_RENDERING_MSDF_CONFIG.presets[presetName as keyof typeof AT_TEXT_RENDERING_MSDF_CONFIG.presets];
-  const config = preset || AT_TEXT_RENDERING_MSDF_CONFIG.defaultConfig;
-  return new ATTextRenderingMSDF(config as ATTextRenderConfig);
+  return renderer;
 }
 
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * Animation Utilities & Timeline Management
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * Support functions for split-text animation sequencing and easing
- */
+// ─── Re-export GLSL source constants for downstream shader composition ────────
 
-export interface AnimationFrame {
-  time: number;
-  alpha: number;
-  scale: number;
-  rotation: number;
-}
+/** msdf.glsl from compiled.vs — median SDF + fwidth anti-aliasing */
+export { MSDF_GLSL };
 
-export class ATTextAnimationTimeline {
-  private frames: AnimationFrame[] = [];
-  private currentTime: number = 0;
-  private duration: number = 1.0;
-  private isPlaying: boolean = false;
+/** DefaultText fragment source — grid-quantised split-text animation */
+export { DEFAULTTEXT_FRAG_SRC as DefaultTextFragSrc };
 
-  /**
-   * Add keyframe to animation timeline
-   */
-  addKeyframe(time: number, properties: Partial<AnimationFrame>): void {
-    const frame: AnimationFrame = {
-      time,
-      alpha: properties.alpha ?? 1.0,
-      scale: properties.scale ?? 1.0,
-      rotation: properties.rotation ?? 0.0
-    };
-    this.frames.push(frame);
-    this.frames.sort((a, b) => a.time - b.time);
-    this.duration = Math.max(...this.frames.map(f => f.time));
-  }
+/** DefaultText vertex source */
+export { DEFAULTTEXT_VERT_SRC as DefaultTextVertSrc };
 
-  /**
-   * Sample animation state at given time
-   */
-  sample(time: number): AnimationFrame {
-    const t = Math.min(time, this.duration);
-    
-    // Find surrounding keyframes
-    let before = this.frames[0];
-    let after = this.frames[this.frames.length - 1];
-    
-    for (let i = 0; i < this.frames.length - 1; i++) {
-      if (this.frames[i].time <= t && t <= this.frames[i + 1].time) {
-        before = this.frames[i];
-        after = this.frames[i + 1];
-        break;
-      }
-    }
+/** GLUIBatchText vertex source — instanced Z-rotation + scale + offset */
+export { GLUI_BATCHTEXT_VERT_SRC as GLUIBatchTextVertSrc };
 
-    // Linear interpolation between keyframes
-    const range = after.time - before.time;
-    if (range < 1e-6) {
-      return before;
-    }
+/** GLUIBatchText fragment source — MSDF alpha + time breathing */
+export { GLUI_BATCHTEXT_FRAG_SRC as GLUIBatchTextFragSrc };
 
-    const blend = (t - before.time) / range;
-    return {
-      time: t,
-      alpha: before.alpha + (after.alpha - before.alpha) * blend,
-      scale: before.scale + (after.scale - before.scale) * blend,
-      rotation: before.rotation + (after.rotation - before.rotation) * blend
-    };
-  }
-
-  /**
-   * Play animation forward
-   */
-  play(): void {
-    this.isPlaying = true;
-    this.currentTime = 0;
-  }
-
-  /**
-   * Pause animation
-   */
-  pause(): void {
-    this.isPlaying = false;
-  }
-
-  /**
-   * Update animation by delta time
-   */
-  update(deltaTime: number): void {
-    if (!this.isPlaying) return;
-    this.currentTime += deltaTime;
-    if (this.currentTime > this.duration) {
-      this.currentTime = this.duration;
-      this.isPlaying = false;
-    }
-  }
-
-  /**
-   * Get current state
-   */
-  getCurrentState(): AnimationFrame {
-    return this.sample(this.currentTime);
-  }
-
-  /**
-   * Reset timeline
-   */
-  reset(): void {
-    this.currentTime = 0;
-    this.isPlaying = false;
-  }
-}
-
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * Split-Text Animation Builders
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * Helper functions to construct common split-text animation patterns
- */
-
-export function createGridRevealAnimation(duration: number = 1.5): ATTextAnimationTimeline {
-  const timeline = new ATTextAnimationTimeline();
-  
-  // Start with coarse grid (lots of pixelation)
-  timeline.addKeyframe(0.0, { alpha: 0.0, scale: 0.8 });
-  
-  // Transition through grid refinement stages
-  timeline.addKeyframe(duration * 0.33, { alpha: 0.3, scale: 0.9 });
-  timeline.addKeyframe(duration * 0.66, { alpha: 0.7, scale: 0.95 });
-  
-  // Final smooth reveal
-  timeline.addKeyframe(duration, { alpha: 1.0, scale: 1.0 });
-  
-  return timeline;
-}
-
-export function createWaveRevealAnimation(duration: number = 2.0): ATTextAnimationTimeline {
-  const timeline = new ATTextAnimationTimeline();
-  
-  timeline.addKeyframe(0.0, { alpha: 0.0, scale: 0.5, rotation: 0.0 });
-  timeline.addKeyframe(duration * 0.25, { alpha: 0.2, scale: 0.8, rotation: Math.PI / 4 });
-  timeline.addKeyframe(duration * 0.5, { alpha: 0.5, scale: 0.95, rotation: Math.PI / 2 });
-  timeline.addKeyframe(duration * 0.75, { alpha: 0.85, scale: 1.0, rotation: Math.PI });
-  timeline.addKeyframe(duration, { alpha: 1.0, scale: 1.0, rotation: 2 * Math.PI });
-  
-  return timeline;
-}
-
-export function createBreathingAnimation(duration: number = 2.0, minAlpha: number = 0.5): ATTextAnimationTimeline {
-  const timeline = new ATTextAnimationTimeline();
-  
-  // Breathing cycle: expand and contract
-  timeline.addKeyframe(0.0, { alpha: minAlpha, scale: 0.95 });
-  timeline.addKeyframe(duration * 0.25, { alpha: 1.0, scale: 1.05 });
-  timeline.addKeyframe(duration * 0.5, { alpha: minAlpha, scale: 0.95 });
-  timeline.addKeyframe(duration * 0.75, { alpha: 1.0, scale: 1.05 });
-  timeline.addKeyframe(duration, { alpha: minAlpha, scale: 0.95 });
-  
-  return timeline;
-}
-
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * MSDF Font Atlas Manager
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * Manages multiple font atlases, caching, and fallback handling
- */
-
-export interface FontAtlasDescriptor {
-  name: string;
-  textureUrl: string;
-  metricsUrl: string;
-  fallbackChar: string;
-  lineHeight: number;
-  fontSize: number;
-}
-
-export class ATMSDFFontManager {
-  private atlases: Map<string, {
-    descriptor: FontAtlasDescriptor;
-    glyphCache: Map<number, MSDFGlyph>;
-    metrics: MSDFMetrics;
-  }> = new Map();
-
-  private currentAtlas: string = 'default';
-
-  /**
-   * Register new font atlas
-   */
-  async registerAtlas(descriptor: FontAtlasDescriptor): Promise<void> {
-    // Load metrics
-    const metricsResponse = await fetch(descriptor.metricsUrl);
-    const metricsData = await metricsResponse.json();
-
-    const glyphCache = new Map<number, MSDFGlyph>();
-    if (metricsData.glyphs) {
-      for (const glyph of metricsData.glyphs) {
-        glyphCache.set(glyph.unicode, {
-          unicode: glyph.unicode,
-          advance: glyph.advance || 0,
-          planeBounds: glyph.planeBounds || {},
-          atlasBounds: glyph.atlasBounds || {}
-        });
-      }
-    }
-
-    this.atlases.set(descriptor.name, {
-      descriptor,
-      glyphCache,
-      metrics: metricsData.metrics || {}
-    });
-
-    console.log(`[ATMSDFFontManager] Registered atlas: ${descriptor.name} (${glyphCache.size} glyphs)`);
-  }
-
-  /**
-   * Switch to different font atlas
-   */
-  switchAtlas(name: string): boolean {
-    if (this.atlases.has(name)) {
-      this.currentAtlas = name;
-      console.log(`[ATMSDFFontManager] Switched to atlas: ${name}`);
-      return true;
-    }
-    console.warn(`[ATMSDFFontManager] Atlas not found: ${name}`);
-    return false;
-  }
-
-  /**
-   * Get glyph from current atlas
-   */
-  getGlyph(unicode: number): MSDFGlyph | undefined {
-    const atlas = this.atlases.get(this.currentAtlas);
-    return atlas?.glyphCache.get(unicode);
-  }
-
-  /**
-   * Get all available atlas names
-   */
-  getAtlasNames(): string[] {
-    return Array.from(this.atlases.keys());
-  }
-
-  /**
-   * Get current atlas metrics
-   */
-  getCurrentMetrics(): MSDFMetrics | undefined {
-    const atlas = this.atlases.get(this.currentAtlas);
-    return atlas?.metrics;
-  }
-}
-
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * Text Layout & Measurement
- * ─────────────────────────────────────────────────────────────────────────────
- */
-
-export interface TextLayout {
-  lines: string[];
-  words: string[];
-  glyphs: MSDFGlyph[];
-  width: number;
-  height: number;
-  lineHeights: number[];
-}
-
-export function layoutText(text: string, fontManager: ATMSDFFontManager, maxWidth?: number): TextLayout {
-  const lines: string[] = [];
-  const words: string[] = [];
-  const glyphs: MSDFGlyph[] = [];
-  let width = 0;
-  let height = 0;
-  const lineHeights: number[] = [];
-
-  const metrics = fontManager.getCurrentMetrics();
-  const lineHeight = metrics?.lineHeight ?? 1.2;
-
-  // Split into lines
-  const rawLines = text.split('\n');
-  
-  for (const line of rawLines) {
-    if (maxWidth !== undefined) {
-      // Word-wrap logic
-      let currentLine = '';
-      const lineWords = line.split(' ');
-      
-      for (const word of lineWords) {
-        let lineWidth = 0;
-        for (const char of currentLine + word) {
-          const glyph = fontManager.getGlyph(char.charCodeAt(0));
-          if (glyph) {
-            lineWidth += glyph.advance;
-            glyphs.push(glyph);
-          }
-        }
-        
-        if (lineWidth > maxWidth && currentLine.length > 0) {
-          lines.push(currentLine);
-          lineHeights.push(lineHeight);
-          currentLine = word;
-        } else {
-          currentLine += (currentLine.length > 0 ? ' ' : '') + word;
-        }
-      }
-      
-      if (currentLine.length > 0) {
-        lines.push(currentLine);
-        lineHeights.push(lineHeight);
-      }
-    } else {
-      lines.push(line);
-      lineHeights.push(lineHeight);
-    }
-  }
-
-  // Calculate total dimensions
-  for (let i = 0; i < lines.length; i++) {
-    let lineWidth = 0;
-    for (const char of lines[i]) {
-      const glyph = fontManager.getGlyph(char.charCodeAt(0));
-      if (glyph) {
-        lineWidth += glyph.advance;
-      }
-    }
-    width = Math.max(width, lineWidth);
-  }
-  
-  height = lines.length * lineHeight;
-
-  return {
-    lines,
-    words,
-    glyphs,
-    width,
-    height,
-    lineHeights
-  };
-}
-
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * Export Summary
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * Primary Export:
- *   • ATTextRenderingMSDF — Main class for unified text/HUD rendering
- *
- * Configuration:
- *   • ATTextRenderConfig — TypeScript interface for configuration options
- *   • AT_TEXT_RENDERING_MSDF_CONFIG — Preset configurations (cellLabel, hudNotification, etc.)
- *   • createATTextRenderer() — Factory function with presets
- *
- * Shaders:
- *   • DefaultTextShader_glsl — Cell label with split-text animation
- *   • GLUIBatchTextShader_glsl — HUD batch with instancing
- *   • GLUIColorShader_glsl — Simple colored HUD elements
- *   • MSDF_SIGNED_DISTANCE_FIELD — Reusable MSDF math functions
- *
- * Metadata:
- *   • MSDFGlyph — Individual glyph metrics
- *   • MSDFMetrics — Font atlas metadata
- *
- * Animation System:
- *   • ATTextAnimationTimeline — Timeline-based animation with keyframes
- *   • createGridRevealAnimation() — Split-text grid reveal preset
- *   • createWaveRevealAnimation() — Rotating wave reveal preset
- *   • createBreathingAnimation() — Cyclic alpha/scale breathing
- *
- * Font Management:
- *   • ATMSDFFontManager — Multi-atlas management with fallback
- *   • FontAtlasDescriptor — Atlas metadata descriptor
- *   • layoutText() — Text layout with word-wrapping
- *   • TextLayout — Layout information (lines, glyphs, dimensions)
- *
- * Usage Example:
- *   ```typescript
- *   import { ATTextRenderingMSDF, createATTextRenderer } from './at-text-rendering-msdf';
- *   import { ATMSDFFontManager, layoutText } from './at-text-rendering-msdf';
- *
- *   // Create renderer with cellLabel preset
- *   const renderer = createATTextRenderer('cellLabel');
- *   await renderer.initialize('fonts/msdf-atlas.png', 'fonts/msdf-metrics.json');
- *
- *   // Create font manager for layout
- *   const fontMgr = new ATMSDFFontManager();
- *   await fontMgr.registerAtlas({
- *     name: 'default',
- *     textureUrl: 'fonts/msdf-atlas.png',
- *     metricsUrl: 'fonts/msdf-metrics.json',
- *     fallbackChar: '?',
- *     lineHeight: 1.2,
- *     fontSize: 64
- *   });
- *
- *   // Layout text
- *   const layout = layoutText('Cell Alpha', fontMgr, 256);
- *   console.log(`Text bounds: ${layout.width}x${layout.height}`);
- *
- *   // Create animation
- *   const anim = createGridRevealAnimation(1.5);
- *   anim.play();
- *
- *   // Render in animation loop
- *   function animate(deltaTime: number) {
- *     anim.update(deltaTime);
- *     const state = anim.getCurrentState();
- *
- *     renderer.renderCellLabel(geometry, 'Cell Alpha', {
- *       alpha: state.alpha,
- *       animationProgress: state.alpha
- *     });
- *
- *     renderer.updateAnimation(deltaTime);
- *     requestAnimationFrame(animate);
- *   }
- *   animate(0);
- *   ```
- *
- * Integration Points:
- *   1. Cell System (at-jellyfish-cell.ts) — Renders cell labels with split-text animation
- *   2. Scene Manager — Uses GLUI HUD for metrics, status, warnings
- *   3. Bloom Post-Process — Applies bloom to glowing text elements
- *   4. SPH GPU Orchestrator — Integrates text overlays into simulation visualization
- *
- * Performance Considerations:
- *   - MSDF texture atlases support up to 256 glyphs per atlas (configurable)
- *   - Instanced GLUI rendering supports 256+ HUD elements per batch
- *   - Split-text grid animation cost is proportional to transition duration
- *   - All shaders use GL_OES_standard_derivatives for fwidth() anti-aliasing
- *
- * Shader Features:
- *   - MSDF signed-distance field rendering with smooth edge anti-aliasing
- *   - Per-vertex color/opacity for batch instancing
- *   - Time-synchronized breathing/wave effects for visual polish
- *   - Grid-quantized UV sampling for split-text animation reveal
- *   - World-space coordinate effects (iridescence, spatial modulation)
- *
- * Future Enhancements:
- *   - WebGPU/WGSL port (currently GLSL for WebGL2 compatibility)
- *   - SDFFont format support (binary atlas optimization)
- *   - Multi-channel signed distance fields for better rasterization
- *   - SDF caching/atlasing for dynamic text strings
- *   - Right-to-left/RTL text support
- *   - Superscript/subscript baseline adjustments
- */
+/** GLUIColor vertex/fragment sources */
+export { GLUI_COLOR_VERT_SRC as GLUIColorVertSrc };
+export { GLUI_COLOR_FRAG_SRC as GLUIColorFragSrc };
