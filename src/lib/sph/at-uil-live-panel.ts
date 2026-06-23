@@ -103,6 +103,402 @@ export type PanelSection =
   | 'MESH'
   | 'MISC';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Module classifications (UIL 2593 params → named modules)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fine-grained module within a section.
+ * 2593 AT UIL params are distributed across these modules.
+ *
+ * Distribution (approximate):
+ *   CAMERA      : 89  params  — per-element camera position/fov/lerp settings
+ *   LIGHTING    : 35  params  — L_Element lights + INPUT_L config
+ *   BLOOM       : 62  params  — UnrealBloom strength/radius/threshold
+ *   VOLUMETRIC  : 14  params  — VolumetricLight fDecay/fDensity/fExposure
+ *   COMPOSITE   : 40  params  — HomeComposite / WorkComposite / CleanRoom RGB + DOF
+ *   PARTICLE    : 434 params  — am_ behaviour uniforms + INPUT_P config
+ *   SCENE       : 966 params  — INPUT_Config scene-layout entries
+ *   SHADER      : 395 params  — Shader material uniforms (Glass, PBR, Floor, Wall…)
+ *   MESH        : 333 params  — MESH_ position/rotation/scale per element
+ *   SHADOW      : 10  params  — SHADOW_ light configs
+ *   MISC        : 215 params  — UIL_graph, GROUP, INPUT_GROUP, etc.
+ */
+export type UILModule =
+  | 'CAMERA'
+  | 'LIGHTING'
+  | 'BLOOM'
+  | 'VOLUMETRIC'
+  | 'COMPOSITE'
+  | 'PARTICLE'
+  | 'SCENE'
+  | 'SHADER'
+  | 'MESH'
+  | 'SHADOW'
+  | 'MISC';
+
+/** Mapping from UILModule to its PanelSection. */
+export const MODULE_TO_SECTION: Record<UILModule, PanelSection> = {
+  CAMERA:     'CAMERA',
+  LIGHTING:   'LIGHTS',
+  BLOOM:      'POST_PROCESS',
+  VOLUMETRIC: 'VOLUMETRIC_LIGHT',
+  COMPOSITE:  'POST_PROCESS',
+  PARTICLE:   'PARTICLES',
+  SCENE:      'MISC',
+  SHADER:     'SHADERS',
+  MESH:       'MESH',
+  SHADOW:     'SHADOWS',
+  MISC:       'MISC',
+};
+
+/** Classify a raw UIL key into its fine-grained module. */
+export function classifyModule(key: string): UILModule {
+  if (key.startsWith('CAMERA_'))                                              return 'CAMERA';
+  if (key.startsWith('VolumetricLight'))                                      return 'VOLUMETRIC';
+  if (/UnrealBloom|BloomLuminosity|INPUT_HydraBloom/i.test(key))             return 'BLOOM';
+  if (/Composite|HomeSceneVFX|homeParticle/i.test(key))                      return 'COMPOSITE';
+  if (key.startsWith('L_') || key.startsWith('INPUT_L_'))                    return 'LIGHTING';
+  if (key.startsWith('SHADOW_'))                                              return 'SHADOW';
+  if (key.startsWith('MESH_'))                                                return 'MESH';
+  if (key.startsWith('am_') || key.startsWith('INPUT_P_') ||
+      /Proton|Spline|Antimatter|Particle.*config/i.test(key))                 return 'PARTICLE';
+  if (key.startsWith('INPUT_Config') || key.startsWith('INPUT_scenelayout'))  return 'SCENE';
+  if (key.includes('Shader') || key.includes('PBR') || key.startsWith('PhysicalShader')) {
+    return 'SHADER';
+  }
+  return 'MISC';
+}
+
+/** Module display metadata. */
+export const MODULE_META: Record<UILModule, { label: string; icon: string; approxCount: number }> = {
+  CAMERA:     { label: 'Camera',      icon: '📷', approxCount:  89 },
+  LIGHTING:   { label: 'Lighting',    icon: '💡', approxCount:  35 },
+  BLOOM:      { label: 'Bloom',       icon: '✨', approxCount:  62 },
+  VOLUMETRIC: { label: 'Volumetric',  icon: '🌫', approxCount:  14 },
+  COMPOSITE:  { label: 'Composite',   icon: '🎨', approxCount:  40 },
+  PARTICLE:   { label: 'Particles',   icon: '🌊', approxCount: 434 },
+  SCENE:      { label: 'Scene',       icon: '🏛',  approxCount: 966 },
+  SHADER:     { label: 'Shaders',     icon: '🔮', approxCount: 395 },
+  MESH:       { label: 'Mesh',        icon: '🧊', approxCount: 333 },
+  SHADOW:     { label: 'Shadows',     icon: '🌑', approxCount:  10 },
+  MISC:       { label: 'Misc',        icon: '⚙️',  approxCount: 215 },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Species → UIL preset system
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Known cell species identifiers.
+ * Maps to CoreML cell icon names from CIL.
+ */
+export type SpeciesId =
+  | 'cil-eye'
+  | 'cil-bolt'
+  | 'cil-vector'
+  | 'cil-plus'
+  | 'cil-arrow-right'
+  | 'cil-filter'
+  | 'cil-code'
+  | 'cil-layers'
+  | 'cil-loop'
+  | 'cil-graph';
+
+/**
+ * A species UIL preset: a sparse map of param key → override value.
+ * Only params that differ from the global AT UIL defaults need be listed.
+ * Values are applied via `ATUILLivePanel.setBatch()` when the species activates.
+ */
+export interface SpeciesUILPreset {
+  /** Human-readable description of this species' visual character. */
+  description: string;
+  /** Params overriding the AT UIL baseline. */
+  params: Partial<Record<string, LiveValue>>;
+  /** Module tags that this preset primarily affects (for UI grouping). */
+  modules: UILModule[];
+}
+
+/**
+ * SPECIES_UIL_PRESETS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Each species maps to a curated subset of the 2593 AT UIL params that defines
+ * its unique visual identity.  Values are sourced directly from:
+ *   channels/physics/species_at_params.json  (AT artist-tuned values)
+ *
+ * Rationale per species:
+ *   cil-eye         → Multi-Head Attention — focal, calm, wide FOV, soft bloom
+ *   cil-bolt        → FFN / activation — sharp, high-energy, tight bloom + fast lerp
+ *   cil-vector      → Embedding — diffuse, warm, mid-range bloom, balanced PBR
+ *   cil-plus        → LayerNorm / residual — clean, additive, cool-toned
+ *   cil-arrow-right → Output projection — directional, structured, tree-scene env
+ *   cil-filter      → Attention mask — filtered, selective, clean-room mood
+ *   cil-code        → Token / positional — technical, dark, sparse bloom
+ *   cil-layers      → Stack / depth — layered, rich PBR, deep home scene
+ *   cil-loop        → Recurrent / loop — cyclic, pulsing, about-scene bloom
+ *   cil-graph       → Dependency graph — structural, footer-scene, low bloom
+ */
+export const SPECIES_UIL_PRESETS: Record<SpeciesId, SpeciesUILPreset> = {
+  'cil-eye': {
+    description: 'Multi-Head Attention — focal perception, soft wide-angle look',
+    modules: ['CAMERA', 'BLOOM', 'VOLUMETRIC', 'LIGHTING', 'SHADER'],
+    params: {
+      // Camera — wide, slow lerp, gentle wobble
+      'CAMERA_Element_3_home_scenefov':          30,
+      'CAMERA_Element_3_home_scenewobbleStrength': 0.1,
+      'CAMERA_Element_1_Homefov':                30,
+      'CAMERA_Element_1_HomelerpSpeed':          0.1,
+      'CAMERA_Element_1_HomelerpSpeed2':         1,
+      'CAMERA_Element_1_homeScenefov':           20,
+      // Bloom — soft home bloom
+      'UnrealBloomComposite/UnrealBloomComposite/home/bloomStrength':  1.2,
+      'UnrealBloomComposite/UnrealBloomComposite/home/bloomRadius':    1.0,
+      'UnrealBloomComposite_shaderVariants_homebloomStrength':         0.6,
+      'UnrealBloomComposite_shaderVariants_homebloomRadius':           0.8,
+      'UnrealBloomLuminosity/UnrealBloomLuminosity/home/luminosityThreshold': 0,
+      // Volumetric — mild exposure
+      'VolumetricLight_home_fExposure': 0.86,
+      'VolumetricLight_home_fDensity':  0.22,
+      'VolumetricLight_home_fDecay':    0.80,
+      'VolumetricLight_home_fWeight':   0.34,
+      // Lighting — comfortable intensity
+      'L_Element_10_home_sceneintensity': 2.19,
+      'L_Element_11_home_sceneintensity': 3.44,
+      // Glass — clear refractive, gentle distort
+      'GlassCubeShader/GlassCubeShader/Element_0_home_scene/uDistortStrength': 8.06,
+      'GlassCubeShader/GlassCubeShader/Element_0_home_scene/uReflectScale':    1.0,
+      'GlassCubeShader/GlassCubeShader/Element_0_home_scene/uFresnelPow':      1.5,
+    },
+  },
+
+  'cil-bolt': {
+    description: 'FFN / activation — high-energy, sharp contrast, fast transitions',
+    modules: ['CAMERA', 'BLOOM', 'SHADER', 'PARTICLE'],
+    params: {
+      // Camera — tighter FOV work scene, quick lerp
+      'CAMERA_Element_2_Workfov':         35,
+      'CAMERA_Element_2_WorklerpSpeed':   0.07,
+      'CAMERA_Element_2_WorklerpSpeed2':  1.0,
+      'CAMERA_Element_1_WorkDetaillerpSpeed': 0.07,
+      // Bloom — strong work bloom
+      'UnrealBloomComposite_shaderVariants_workbloomStrength': 0.5,
+      'UnrealBloomComposite_shaderVariants_workbloomRadius':   0.5,
+      'UnrealBloomComposite/UnrealBloomComposite/workbloom/bloomStrength': 1.0,
+      'UnrealBloomComposite/UnrealBloomComposite/workbloom/bloomRadius':   1.0,
+      'UnrealBloomLuminosity/UnrealBloomLuminosity/workbloom/luminosityThreshold': 0,
+      // Work shaders — energetic distortion
+      'WorkDetailCube/WorkDetailCube/Element_0_WorkDetail/uDistortStrength': 5.0,
+      'WorkDetailCube/WorkDetailCube/Element_0_WorkDetail/uNormalScale':     6.0,
+      'WorkDetailCube/WorkDetailCube/Element_0_WorkDetail/uFresnelPow':      0.1,
+      'WorkDetailCube/WorkDetailCube/Element_0_WorkDetail/uParticleDarken':  0.6,
+      // SpineShader — visible normal structure
+      'SpineShader/SpineShader/Element_5_Work/uNormalStrength': 0.19,
+      // Particle — fast curl noise
+      'am_ProtonAntimatter_P_Element_0_particleTestuCurlNoiseSpeed': 0.74,
+      'am_ProtonAntimatter_P_Element_0_particleTestuCurlNoiseScale': 7.76,
+    },
+  },
+
+  'cil-vector': {
+    description: 'Embedding / representation — warm diffuse, balanced PBR',
+    modules: ['CAMERA', 'BLOOM', 'SHADER', 'LIGHTING'],
+    params: {
+      // Camera — home + cleanroom dual context
+      'CAMERA_Element_3_home_scenefov':            30,
+      'CAMERA_Element_3_home_scenewobbleStrength':  0.1,
+      'CAMERA_Element_10_CleanRoomfov':            30,
+      'CAMERA_Element_10_CleanRoomlerpSpeed':      0.08,
+      // Bloom — about scene + footer (embedding = broad coverage)
+      'UnrealBloomComposite_shaderVariants_aboutbloomStrength': 1.0,
+      'UnrealBloomComposite_shaderVariants_aboutbloomRadius':   1.0,
+      'UnrealBloomComposite_shaderVariants_footerbloomStrength': 0.7,
+      'UnrealBloomComposite_shaderVariants_footerbloomRadius':   0.5,
+      // Logo shader — subtle normal
+      'AboutLogoShader/AboutLogoShader/Element_2_About/uNormalStrength': 0.24,
+      // PBR — warm home scene
+      'ATPBR/ATPBR/Element_6_homeScene/uEnv': [1.5, 1],
+      'ATPBR/ATPBR/Element_6_homeScene/uMRON': [1, 1.3, 1, 1],
+    },
+  },
+
+  'cil-plus': {
+    description: 'LayerNorm / residual connection — clean, additive, cool-toned',
+    modules: ['CAMERA', 'BLOOM', 'COMPOSITE', 'LIGHTING'],
+    params: {
+      // Camera — cleanroom (normalisation = clean environment)
+      'CAMERA_Element_10_CleanRoomfov':       30,
+      'CAMERA_Element_10_CleanRoomlerpSpeed': 0.08,
+      'CAMERA_Element_1_Homefov':             30,
+      'CAMERA_Element_1_HomelerpSpeed':       0.1,
+      // Bloom — contact (residual = touch point)
+      'UnrealBloomComposite_shaderVariants_contactbloomStrength':   0.8,
+      'UnrealBloomComposite_shaderVariants_contactbloomRadius':     0.5,
+      'UnrealBloomComposite_shaderVariants_contactbloomTintColor':  '#ffffff',
+      // Cleanroom composite — balanced VFX
+      'CleanRoomCompositeuRGBStrength':        0.3,
+      'CleanRoomCompositeuVolumetricStrength': 0.3,
+      // Volumetric — cleanroom light
+      'VolumetricLight_cleanroom_fExposure': 0.62,
+      'VolumetricLight_cleanroom_fDensity':  0.29,
+      'VolumetricLight_cleanroom_fDecay':    0.865,
+    },
+  },
+
+  'cil-arrow-right': {
+    description: 'Output projection — directional, tree-scene, flowing water',
+    modules: ['CAMERA', 'BLOOM', 'SHADER', 'COMPOSITE'],
+    params: {
+      // Tree scene dominates
+      'UnrealBloomComposite_shaderVariants_treebloomStrength': 0.8,
+      'UnrealBloomComposite_shaderVariants_treebloomRadius':   0.7,
+      'UnrealBloomComposite/UnrealBloomComposite/treescene/bloomStrength': 1.0,
+      'UnrealBloomComposite/UnrealBloomComposite/treescene/bloomRadius':   1.0,
+      'UnrealBloomLuminosity/UnrealBloomLuminosity/treescene/luminosityThreshold': 0,
+      // TreeScene composite — rich contrast
+      'TreeSceneCompositeuRGBStrength': 0,
+      'TreeSceneCompositeuContrast':    [1, 1.5],
+      // Tree PBR materials
+      'TreeFBR/TreeFBR/Element_0_TreeScene/uNormalStrength':  1.0,
+      'TreeFBR/TreeFBR/Element_16_TreeScene/uNormalStrength': 1.0,
+      'TreeFBR/TreeFBR/Element_1_TreeScene/uNormalStrength':  1.0,
+      'TreeFBR/TreeFBR/Element_7_TreeScene/uNormalStrength':  1.0,
+      'TreeFBR/TreeFBR/Element_5_TreeScene/uNormalStrength':  0.4,
+      // Water — directional flow
+      'TreeWaterShader/TreeWaterShader/uSpeed':              0.12,
+      'TreeWaterShader/TreeWaterShader/uNormalStrength':     0.67,
+      'TreeWaterShader/TreeWaterShader/uMouseUVStrength':    0,
+    },
+  },
+
+  'cil-filter': {
+    description: 'Attention mask / filter — selective, clean-room environment',
+    modules: ['CAMERA', 'BLOOM', 'SHADER', 'COMPOSITE', 'VOLUMETRIC'],
+    params: {
+      // Cleanroom camera — filtered view
+      'CAMERA_Element_10_CleanRoomfov':       30,
+      'CAMERA_Element_10_CleanRoomlerpSpeed': 0.08,
+      // Cleanroom bloom
+      'UnrealBloomComposite/UnrealBloomComposite/cleanroom/bloomStrength': 1.0,
+      'UnrealBloomComposite/UnrealBloomComposite/cleanroom/bloomRadius':   1.0,
+      'UnrealBloomLuminosity/UnrealBloomLuminosity/cleanroom/luminosityThreshold': 0.2,
+      // Cleanroom composite — volumetric atmosphere
+      'CleanRoomCompositeuRGBStrength':        0.3,
+      'CleanRoomCompositeuVolumetricStrength': 0.3,
+      // Glass — selective refraction (filter metaphor)
+      'CleanRoomGlass/CleanRoomGlass/Element_4_CleanRoom/uDistortStrength':  -1.0,
+      'CleanRoomGlass/CleanRoomGlass/Element_4_CleanRoom/uFresnelPow':       -0.03,
+      'CleanRoomGlass/CleanRoomGlass/Element_4_CleanRoom/uRefractionRatio':  0.34,
+      // Floor reflections
+      'FloorShader/FloorShader/Element_0_CleanRoom/uDistortStrength': 0.44,
+      'FloorShader/FloorShader/Element_0_CleanRoom/uMirrorStrength':  0.55,
+      'FloorShader/FloorShader/Element_0_CleanRoom/uNormalStrength':  1.0,
+      // Volumetric — cleanroom
+      'VolumetricLight_cleanroom_fExposure': 0.62,
+      'VolumetricLight_cleanroom_fDensity':  0.29,
+      'VolumetricLight_cleanroom_fDecay':    0.865,
+      'VolumetricLight_cleanroom_fWeight':   1.0,
+    },
+  },
+
+  'cil-code': {
+    description: 'Token / positional encoding — technical, sparse, dark work-scene',
+    modules: ['CAMERA', 'BLOOM', 'SHADER'],
+    params: {
+      // Work camera — sharp focus
+      'CAMERA_Element_2_Workfov':                35,
+      'CAMERA_Element_2_WorklerpSpeed':          0.07,
+      'CAMERA_Element_2_WorklerpSpeed2':         1.0,
+      'CAMERA_Element_1_WorkDetaillerpSpeed':    0.07,
+      // Work bloom — constrained
+      'UnrealBloomComposite_shaderVariants_workbloomStrength': 0.5,
+      'UnrealBloomComposite_shaderVariants_workbloomRadius':   0.5,
+      'WorkCompositeuRGBStrength': 0,
+      'WorkCompositeuTransition':  0,
+      // Chain / spine shaders (code = structure)
+      'SpineShader/SpineShader/Element_5_Work/uNormalStrength': 0.19,
+      'SpineShader/SpineShader/Element_5_Work/uReflection':     [2.7, 0.85],
+      // Work detail cube
+      'WorkDetailCube/WorkDetailCube/Element_0_WorkDetail/uDistortStrength': 5.0,
+      'WorkDetailCube/WorkDetailCube/Element_0_WorkDetail/uNormalScale':     6.0,
+    },
+  },
+
+  'cil-layers': {
+    description: 'Transformer stack depth — layered PBR, deep home atmosphere',
+    modules: ['CAMERA', 'BLOOM', 'VOLUMETRIC', 'SHADER', 'LIGHTING'],
+    params: {
+      // Same base as cil-eye but richer PBR
+      'CAMERA_Element_3_home_scenefov':          30,
+      'CAMERA_Element_3_home_scenewobbleStrength': 0.1,
+      'CAMERA_Element_1_Homefov':                30,
+      'CAMERA_Element_1_HomelerpSpeed':          0.1,
+      'CAMERA_Element_1_HomelerpSpeed2':         1,
+      'CAMERA_Element_1_homeScenefov':           20,
+      // Bloom — strong home bloom (depth = brightness)
+      'UnrealBloomComposite/UnrealBloomComposite/home/bloomStrength': 3.82,
+      'UnrealBloomComposite/UnrealBloomComposite/home/bloomRadius':   1.0,
+      'UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength': 1.2,
+      'UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomRadius':   1.0,
+      'UnrealBloomComposite_shaderVariants_homebloomStrength': 0.6,
+      'UnrealBloomComposite_shaderVariants_homebloomRadius':   0.8,
+      // Volumetric — layered fog
+      'VolumetricLight_home_fExposure': 0.86,
+      'VolumetricLight_home_fDensity':  0.22,
+      'VolumetricLight_home_fDecay':    0.80,
+      'VolumetricLight_home_fWeight':   0.34,
+      // Home composite — rich atmosphere
+      'HomeCompositeuVolumetricStrength': 1.1,
+      'HomeCompositeuRGBStrength':        0,
+      // Lighting — deep scene
+      'L_Element_10_home_sceneintensity': 2.19,
+      'L_Element_10_home_scenedistance':  60,
+      'L_Element_11_home_sceneintensity': 3.44,
+      // Glass cube — deep reflections
+      'GlassCubeShader/GlassCubeShader/Element_0_home_scene/uDistortStrength': 8.06,
+      'GlassCubeShader/GlassCubeShader/Element_0_home_scene/uReflectScale':    1.0,
+    },
+  },
+
+  'cil-loop': {
+    description: 'Recurrent / cyclic — pulsing about-scene bloom, cyclical motion',
+    modules: ['CAMERA', 'BLOOM', 'SHADER'],
+    params: {
+      // About + cleanroom cameras (loop = cross-scene)
+      'CAMERA_Element_3_home_scenefov':          30,
+      'CAMERA_Element_3_home_scenewobbleStrength': 0.1,
+      'CAMERA_Element_10_CleanRoomfov':          30,
+      'CAMERA_Element_10_CleanRoomlerpSpeed':    0.08,
+      'CAMERA_Element_1_Homefov':                30,
+      'CAMERA_Element_1_HomelerpSpeed':          0.1,
+      // Bloom — about scene (cyclic = complete loop)
+      'UnrealBloomComposite_shaderVariants_aboutbloomStrength': 1.0,
+      'UnrealBloomComposite_shaderVariants_aboutbloomRadius':   1.0,
+      // Logo shader — looping normals
+      'AboutLogoShader/AboutLogoShader/Element_2_About/uNormalStrength': 0.24,
+    },
+  },
+
+  'cil-graph': {
+    description: 'Dependency graph — structural, footer scene, minimal bloom',
+    modules: ['CAMERA', 'BLOOM', 'SHADER'],
+    params: {
+      // Footer + cleanroom cameras
+      'CAMERA_Element_3_home_scenefov':          30,
+      'CAMERA_Element_3_home_scenewobbleStrength': 0.1,
+      'CAMERA_Element_10_CleanRoomfov':          30,
+      'CAMERA_Element_10_CleanRoomlerpSpeed':    0.08,
+      'CAMERA_Element_1_Homefov':                30,
+      'CAMERA_Element_1_HomelerpSpeed':          0.1,
+      // Bloom — footer (graph = low-level, structural)
+      'UnrealBloomComposite_shaderVariants_footerbloomStrength': 0.7,
+      'UnrealBloomComposite_shaderVariants_footerbloomRadius':   0.5,
+      'UnrealBloomComposite_shaderVariants_footerbloomTintColor': '#ffffff',
+      // Jelly shaders (graph nodes = organic connections)
+      'JellyShader/JellyShader/Element_2_Footer/uReflection': [1, 0.15],
+    },
+  },
+};
+
 /** Payload emitted on every widget interaction. */
 export interface ParamChangeEvent {
   key: string;
@@ -1250,4 +1646,256 @@ function _valueToString(v: LiveValue): string {
   if (typeof v === 'string')  return v;
   if (typeof v === 'number')  return round(v, 3).toString();
   return `[${(v as number[]).map(n => round(n, 3)).join(', ')}]`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Species ↔ UIL preset binding API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Apply a species UIL preset to an existing ATUILLivePanel instance.
+ *
+ * @param panel   Initialised ATUILLivePanel
+ * @param species The species identifier
+ * @param blend   0–1 interpolation factor (1 = full preset, 0 = no change)
+ *
+ * @example
+ *   applySpeciesPreset(panel, 'cil-bolt', 1.0);
+ *   applySpeciesPreset(panel, 'cil-eye',  0.5); // half-blend
+ */
+export function applySpeciesPreset(
+  panel: ATUILLivePanel,
+  species: SpeciesId,
+  blend = 1.0,
+): void {
+  const preset = SPECIES_UIL_PRESETS[species];
+  if (!preset) {
+    console.warn(`[ATUILLivePanel] Unknown species: "${species}"`);
+    return;
+  }
+
+  const updates: Record<string, LiveValue> = {};
+
+  for (const [key, targetValue] of Object.entries(preset.params)) {
+    if (targetValue === undefined) continue;
+
+    if (blend >= 1) {
+      updates[key] = targetValue;
+      continue;
+    }
+
+    // Blend with current value
+    const currentValue = panel.get(key);
+    if (currentValue === undefined) {
+      updates[key] = targetValue;
+      continue;
+    }
+
+    if (typeof targetValue === 'number' && typeof currentValue === 'number') {
+      updates[key] = currentValue + (targetValue - currentValue) * blend;
+    } else if (
+      Array.isArray(targetValue) && Array.isArray(currentValue) &&
+      targetValue.length === currentValue.length &&
+      targetValue.every((x: unknown) => typeof x === 'number')
+    ) {
+      updates[key] = (currentValue as number[]).map(
+        (c, i) => c + ((targetValue as number[])[i] - c) * blend,
+      );
+    } else {
+      // Non-numeric (color, bool) — no blend, hard-switch
+      updates[key] = blend >= 0.5 ? targetValue : currentValue;
+    }
+  }
+
+  panel.setBatch(updates);
+}
+
+/**
+ * Get the UIL params snapshot for a species without applying them.
+ * Useful for preview or diff computation.
+ */
+export function getSpeciesPresetParams(
+  species: SpeciesId,
+): Record<string, LiveValue> | null {
+  const preset = SPECIES_UIL_PRESETS[species];
+  if (!preset) return null;
+  const out: Record<string, LiveValue> = {};
+  for (const [k, v] of Object.entries(preset.params)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Diff two species presets: returns keys that differ and their values from each.
+ */
+export function diffSpeciesPresets(
+  a: SpeciesId,
+  b: SpeciesId,
+): Array<{ key: string; a: LiveValue | undefined; b: LiveValue | undefined }> {
+  const pA = SPECIES_UIL_PRESETS[a]?.params ?? {};
+  const pB = SPECIES_UIL_PRESETS[b]?.params ?? {};
+  const keys = new Set([...Object.keys(pA), ...Object.keys(pB)]);
+  const diffs: Array<{ key: string; a: LiveValue | undefined; b: LiveValue | undefined }> = [];
+
+  for (const key of keys) {
+    const va = pA[key];
+    const vb = pB[key];
+    const same =
+      va === vb ||
+      (Array.isArray(va) && Array.isArray(vb) &&
+       va.length === vb.length &&
+       (va as number[]).every((x, i) => x === (vb as number[])[i]));
+    if (!same) diffs.push({ key, a: va as LiveValue | undefined, b: vb as LiveValue | undefined });
+  }
+  return diffs;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UILModulePanel — module-aware sub-panel for fine-grained param control
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A lightweight wrapper that augments ATUILLivePanel with module-aware
+ * filtering and species preset switching in the browser DevTools panel.
+ *
+ * Usage:
+ *   const modPanel = new UILModulePanel(panel);
+ *   modPanel.mount(document.body);
+ *   modPanel.activateSpecies('cil-bolt');
+ *   modPanel.filterModule('BLOOM');
+ */
+export class UILModulePanel {
+
+  private _panel: ATUILLivePanel;
+  private _activeSpecies: SpeciesId | null = null;
+  private _activeModule: UILModule | null = null;
+  private _moduleEl: HTMLElement | null = null;
+
+  constructor(panel: ATUILLivePanel) {
+    this._panel = panel;
+  }
+
+  /**
+   * Apply a species preset to the underlying ATUILLivePanel.
+   * Optionally filter the panel view to show only that species' modules.
+   */
+  activateSpecies(species: SpeciesId, blend = 1.0, autoFilter = true): void {
+    this._activeSpecies = species;
+    applySpeciesPreset(this._panel, species, blend);
+
+    if (autoFilter) {
+      const preset = SPECIES_UIL_PRESETS[species];
+      if (preset?.modules.length) {
+        const sectionsToShow = new Set<PanelSection>(
+          preset.modules.map(m => MODULE_TO_SECTION[m]),
+        );
+        const ALL_SECTIONS: PanelSection[] = [
+          'CAMERA', 'POST_PROCESS', 'VOLUMETRIC_LIGHT', 'LIGHTS',
+          'SHADERS', 'PARTICLES', 'SHADOWS', 'MESH', 'MISC',
+        ];
+        for (const section of ALL_SECTIONS) {
+          if (sectionsToShow.has(section)) {
+            this._panel.showSection(section);
+          } else {
+            this._panel.hideSection(section);
+          }
+        }
+      }
+    }
+
+    this._updateModuleDisplay();
+  }
+
+  /** Filter panel to show only params belonging to a specific module. */
+  filterModule(module: UILModule | null): void {
+    this._activeModule = module;
+    if (module === null) {
+      this._panel.filterByKey('');
+    } else {
+      const keyFragment = _moduleKeyFragment(module);
+      this._panel.filterByKey(keyFragment);
+    }
+    this._updateModuleDisplay();
+  }
+
+  /** Get the active species. */
+  get activeSpecies(): SpeciesId | null { return this._activeSpecies; }
+
+  /** Get the active module filter. */
+  get activeModule(): UILModule | null { return this._activeModule; }
+
+  /** Render a small species/module badge HUD near the main panel. */
+  mount(container: HTMLElement = document.body): void {
+    const el = document.createElement('div');
+    el.id = 'at-uil-module-panel';
+    el.style.cssText = [
+      'position:fixed;top:10px;right:340px;z-index:99999',
+      'background:#0d0d0f;border:1px solid #2a2a38;border-radius:6px',
+      'padding:8px;font:11px "SF Mono",monospace;color:#c8c8d0',
+      'min-width:160px;box-shadow:0 4px 16px rgba(0,0,0,0.6)',
+    ].join(';');
+    this._moduleEl = el;
+    container.appendChild(el);
+    this._updateModuleDisplay();
+  }
+
+  unmount(): void {
+    this._moduleEl?.remove();
+    this._moduleEl = null;
+  }
+
+  private _updateModuleDisplay(): void {
+    if (!this._moduleEl) return;
+    const sp = this._activeSpecies;
+    const mod = this._activeModule;
+    const preset = sp ? SPECIES_UIL_PRESETS[sp] : null;
+
+    const lines: string[] = [
+      `<div style="color:#9090ff;font-weight:700;margin-bottom:4px">UIL Modules</div>`,
+    ];
+
+    if (sp) {
+      lines.push(`<div style="color:#60c060;margin-bottom:4px">🔵 ${sp}</div>`);
+    }
+
+    for (const [m, meta] of Object.entries(MODULE_META) as [UILModule, typeof MODULE_META[UILModule]][]) {
+      const active = sp && preset?.modules.includes(m);
+      const current = mod === m;
+      const color = current ? '#ffffa0' : active ? '#a0c0ff' : '#404060';
+      lines.push(
+        `<div style="color:${color};cursor:pointer;padding:1px 0"` +
+        ` onclick="window._uilModPanel?.filterModule('${m}')"` +
+        `>${meta.icon} ${meta.label} <span style="opacity:0.5">(~${meta.approxCount})</span></div>`,
+      );
+    }
+
+    if (mod) {
+      lines.push(
+        `<div style="margin-top:4px;color:#80a0ff;cursor:pointer"` +
+        ` onclick="window._uilModPanel?.filterModule(null)">↩ Clear filter</div>`,
+      );
+    }
+
+    this._moduleEl.innerHTML = lines.join('');
+    (window as unknown as Record<string, unknown>)._uilModPanel = this;
+  }
+}
+
+/** Map UILModule to a substring fragment useful for filterByKey(). */
+function _moduleKeyFragment(module: UILModule): string {
+  switch (module) {
+    case 'CAMERA':     return 'CAMERA_';
+    case 'LIGHTING':   return 'L_Element';
+    case 'BLOOM':      return 'Bloom';
+    case 'VOLUMETRIC': return 'VolumetricLight';
+    case 'COMPOSITE':  return 'Composite';
+    case 'PARTICLE':   return 'am_';
+    case 'SCENE':      return 'INPUT_Config';
+    case 'SHADER':     return 'Shader';
+    case 'MESH':       return 'MESH_';
+    case 'SHADOW':     return 'SHADOW_';
+    case 'MISC':       return 'UIL_';
+    default:           return '';
+  }
 }
