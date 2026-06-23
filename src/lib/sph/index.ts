@@ -196,3 +196,6 @@ export type { DecalType, DecalProjectorConfig, DecalGPU, CellTransform } from '.
 // emissive-glow (M791)
 export { EmissiveGlowSystem, createEmissiveGlowSystem, getGlobalEmissiveGlow, setGlobalEmissiveGlow, EMISSIVE_STRIDE, EMISSIVE_GLOW_DEFAULTS, EMISSIVE_BUFFER_WGSL } from './emissive-glow';
 export type { GlowMode, EmissiveProfile, EmissiveGlowConfig, CellBloomFeedback } from './emissive-glow';
+// rain-snow-system (M796)
+export { RainSnowSystem, WEATHER_PRESETS, WEATHER_WORKGROUP, WEATHER_MAX, WIND_FIELD_SIZE, PARTICLE_STRIDE, RAIN, SNOW, createWeatherSystem } from './rain-snow-system';
+export type { WeatherKind, WeatherMode, RainSnowConfig, WeatherSnapshot } from './rain-snow-system';
