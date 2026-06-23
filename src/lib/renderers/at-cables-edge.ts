@@ -1533,6 +1533,33 @@ export function createATCablesEdgeRenderer(
   return new ATCablesEdgeRenderer(stage, cellMap, config, eventSrc);
 }
 
+// ── M893: Apply composite_params edge rendering overrides ────────────────
+// When edge descriptors carry a `rendering` object from composite_params.json,
+// apply spline_params, particle_params, and pixi_filters to the cable renderer.
+export function applyEdgeCompositeRendering(
+  renderer: ATCablesEdgeRenderer,
+  edgeId: string,
+  rendering: {
+    spline_params?: { thickness?: number; color?: string; glow_width?: number; glow_color?: string; glow_intensity?: number; flow_speed?: number; dash_pattern?: { dash: number; gap: number }; noise_amplitude?: number; noise_frequency?: number };
+    particle_params?: { count?: number; size?: number; speed?: number; color?: string; opacity?: number; trail_length?: number };
+    pixi_filters?: { glow?: { distance?: number; outerStrength?: number; color?: string }; blur?: { strength?: number } };
+    render_params?: { z_index?: number; blend_mode?: string; arrow_size?: number; arrow_fill?: string };
+  },
+): void {
+  // Override cable visual params via the renderer's config
+  const sp = rendering.spline_params;
+  if (sp) {
+    if (sp.flow_speed !== undefined) (renderer as any)._config.pulseSpeed = sp.flow_speed;
+    if (sp.noise_amplitude !== undefined) (renderer as any)._config.microSwayAmplitude = sp.noise_amplitude;
+    if (sp.glow_intensity !== undefined) (renderer as any)._config.baseEmissiveAlpha = sp.glow_intensity;
+  }
+  const pp = rendering.particle_params;
+  if (pp) {
+    if (pp.count !== undefined) (renderer as any)._config.maxPulsesPerCable = pp.count;
+    if (pp.speed !== undefined) (renderer as any)._config.pulseSpeed = pp.speed;
+  }
+}
+
 // ── Re-exports ───────────────────────────────────────────────────────────────
 
 export { computeCatenary, buildArcLengthLUT, tangentAtSample, perpendicular, valueNoise2D };

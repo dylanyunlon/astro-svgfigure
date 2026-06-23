@@ -1059,6 +1059,55 @@ function buildCellContainer(desc: CellDescriptor): Container {
     },
   };
 
+  // ── M892: Apply composite_params rendering overrides ────────────────────
+  // When the cell descriptor carries a `rendering` object (from composite_params.json),
+  // override pixi_filters and render_params on the compound container.
+  const rendering = (desc as any).rendering;
+  if (rendering) {
+    const pf = rendering.pixi_filters;
+    if (pf) {
+      const compositeFilters: any[] = [];
+      // Bloom override from composite_params
+      if (pf.bloom) {
+        compositeFilters.push(new AdvancedBloomFilter({
+          threshold: pf.bloom.threshold ?? 0.5,
+          bloomScale: pf.bloom.bloomScale ?? 0.8,
+          brightness: pf.bloom.brightness ?? 1.2,
+          blur: 4,
+          quality: 4,
+        }));
+      }
+      // Glow override from composite_params
+      if (pf.glow) {
+        compositeFilters.push(new GlowFilter({
+          distance: pf.glow.distance ?? 15,
+          outerStrength: pf.glow.outerStrength ?? 2.0,
+          innerStrength: pf.glow.innerStrength ?? 1.0,
+          color: typeof pf.glow.color === 'string' ? parseInt(pf.glow.color.replace('0x', ''), 16) : (pf.glow.color ?? 0xffffff),
+        }));
+      }
+      // DropShadow override from composite_params
+      if (pf.drop_shadow) {
+        compositeFilters.push(new DropShadowFilter({
+          offset: { x: pf.drop_shadow.offset?.[0] ?? 2, y: pf.drop_shadow.offset?.[1] ?? 4 },
+          blur: pf.drop_shadow.blur ?? 6,
+          alpha: pf.drop_shadow.alpha ?? 0.3,
+          color: typeof pf.drop_shadow.color === 'string' ? parseInt(pf.drop_shadow.color.replace('0x', ''), 16) : 0x000000,
+          quality: 4,
+        }));
+      }
+      if (compositeFilters.length > 0) {
+        compound.filters = [...(compound.filters ?? []), ...compositeFilters];
+      }
+    }
+    // render_params overrides
+    const rp = rendering.render_params;
+    if (rp) {
+      if (rp.z_index !== undefined) compound.zIndex = rp.z_index;
+      if (rp.background_opacity !== undefined) (compound as any).__targetAlpha = rp.background_opacity;
+    }
+  }
+
   return compound;
 }
 
