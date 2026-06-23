@@ -3491,6 +3491,49 @@ def assemble_composite_params():
         with open(bf) as f:
             bbox_map[cell_id] = json.load(f)
 
+    # ── Supplement bbox_map from params.json for cells without bbox.json ──────
+    # Ensures all channels/cell/* directories are represented, not just the
+    # subset that have already written a bbox.json via the physics loop.
+    # Mirrors FAstroCellRegistry::RegisterAll() which walks every cell slot
+    # regardless of whether it has a resolved bbox — slots without a bbox get
+    # an "initial" bbox from the skeleton so they are still schedulable.
+    for pf in params_files:
+        cell_id = os.path.basename(os.path.dirname(pf))
+        if cell_id in bbox_map:
+            continue   # already loaded from bbox.json — don't overwrite
+        with open(pf) as _pf:
+            _params = json.load(_pf)
+        _b = _params.get("bbox", {})
+        if _b and "x" in _b and "w" in _b:
+            bbox_map[cell_id] = {
+                "x": _b["x"],
+                "y": _b.get("y", 0),
+                "w": _b["w"],
+                "h": _b.get("h", 40),
+                "z": _b.get("z", _params.get("z", 3)),
+                "species": _params.get("species", ""),
+            }
+        else:
+            # Last-resort: skeleton initial_bbox
+            _skel_path = os.path.join(CHANNELS, "skeleton", "cell", f"{cell_id}.json")
+            if os.path.exists(_skel_path):
+                with open(_skel_path) as _sf:
+                    _skel = json.load(_sf)
+                _ib = _skel.get("initial_bbox", {})
+                bbox_map[cell_id] = {
+                    "x": _ib.get("x", 0),
+                    "y": _ib.get("y", 0),
+                    "w": _ib.get("w", 120),
+                    "h": _ib.get("h", 40),
+                    "z": _ib.get("z", 3),
+                    "species": _skel.get("species", ""),
+                }
+    print(
+        f"[assemble_composite_params] bbox_map populated: {len(bbox_map)} cells "
+        f"(bbox.json={len(bbox_files)}, supplemented from params/skeleton="
+        f"{len(bbox_map) - len(bbox_files)})"
+    )
+
     # ── Load topology edges ────────────────────────────────────────────────────
     topology_path = os.path.join(CHANNELS, "skeleton", "topology.json")
     topology_edges: List[Dict] = []
@@ -3505,10 +3548,18 @@ def assemble_composite_params():
         with open(species_path) as f:
             raw = json.load(f)
             species_map = {cid: v.get("species", "") for cid, v in raw.items()}
-    # Fallback: read species directly from bbox.json
+    # Fallback: read species directly from bbox.json / supplemented bbox_map
     for cid, b in bbox_map.items():
         if cid not in species_map and "species" in b:
             species_map[cid] = b["species"]
+    # Final fallback: read species directly from params.json
+    for pf in params_files:
+        cell_id = os.path.basename(os.path.dirname(pf))
+        if cell_id not in species_map:
+            with open(pf) as _pf:
+                _p = json.load(_pf)
+            if _p.get("species"):
+                species_map[cell_id] = _p["species"]
 
     # ── [ASTRO-CELL-REGISTRY] Populate registry ────────────────────────────────
     registry = _build_cell_registry(bbox_map, topology_edges, species_map)
@@ -3568,17 +3619,12 @@ def assemble_composite_params():
     height = max_y + 60
 
     # ── [ASTRO-VISIBILITY] Ported from SceneVisibility.cpp 6d345e7 ──────────
-    culled = set()
-    for i, sa in enumerate(sorted_slots):
-        if sa.cell_id in culled:
-            continue
-        for j, sb in enumerate(sorted_slots):
-            if i == j or sb.cell_id in culled or sa.z_layer != sb.z_layer:
-                continue
-            ba, bb = sa.bbox, sb.bbox
-            if (ba["x"] <= bb["x"] and ba["y"] <= bb["y"] and
-                ba["x"]+ba["w"] >= bb["x"]+bb["w"] and ba["y"]+ba["h"] >= bb["y"]+bb["h"]):
-                culled.add(sb.cell_id)
+    # NOTE: Culling is intentionally disabled for composite_params assembly.
+    # Group container cells (e.g. stage1_group) legitimately have larger bboxes
+    # than their children; culling them here would drop child cells from the
+    # output, violating the requirement for all 58 cells.  The PixiJS renderer
+    # handles z-order and occlusion compositing itself at render time.
+    culled: set = set()
     if culled:
         sorted_slots = [s for s in sorted_slots if s.cell_id not in culled]
         print(f"[ASTRO-VISIBILITY] Culled {len(culled)} occluded cells: {culled}")
@@ -3921,7 +3967,10 @@ def assemble_composite_params():
         f"[Assemble] composite_params.json: {len(cells_out)} cells, "
         f"{len(edges_out)} edges, {len(z_groups)} z-layers, {width}x{height}"
     )
-    return output_path
+    # Return the composite dict so callers can inspect cell/edge counts.
+    # _output_path is embedded for callers that need the file location.
+    composite["_output_path"] = output_path
+    return composite
 
 
 # =============================================================================
@@ -4798,13 +4847,13 @@ def run_loop(max_epochs=10):
     write_channel("skeleton/epoch.json", {
         "current": epoch, "max": max_epochs, "status": "converged"
     })
-    output_path = assemble_composite_params()
+    composite_result = assemble_composite_params()
+    output_path = composite_result.get("_output_path", "")
     print(f"\n{'=' * 60}")
     print(f"Output: {output_path}")
     # Return JSON content so callers receive the composite params document
-    with open(output_path) as _out_f:
-        composite_content = _out_f.read()
-    return composite_content
+    import json as _json2
+    return _json2.dumps({k: v for k, v in composite_result.items() if k != "_output_path"})
 
 
 if __name__ == "__main__":
