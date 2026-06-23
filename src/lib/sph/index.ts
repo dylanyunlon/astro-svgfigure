@@ -35,6 +35,9 @@ export { CellBBox, SPHWorldView, ATSceneCompositorConfig, CompositorPassFlags, A
 export { WGSL_EASES, WGSL_RANGE, WGSL_BLEND_MODES, AT_SHADER_UTILS_WGSL, range, crange, rangeNorm, rangeMirror /* +3 more */ } from './at-shader-utils';
 // at-spline-particle
 export { SplinePoint3, EdgeSpline, SplineParticleInstance, ATSplineParticleConfig, SplineParticlePreset, ATSplineParticleLife, createATSplineParticleForSPH, canvasRouteToEdgeSpline /* +1 more */ } from './at-spline-particle';
+// at-texture-loader
+export { ATTextureLoader, AT_MATERIAL_NAMES, estimateGPUBytes, estimateMaterialSetGPUBytes, formatBytes } from './at-texture-loader';
+export type { ATTexture, ATMaterialSet, ATMaterialName } from './at-texture-loader';
 // at-volumetric-light
 export { ATVolumetricLightParams, ATVolumetricLight, createATVolumetricLightForSpecies, AT_VOLUMETRIC_LIGHT_WGSL } from './at-volumetric-light';
 // at-water-surface
