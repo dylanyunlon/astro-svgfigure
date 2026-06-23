@@ -1,23 +1,32 @@
 {
-  "input_embed": {
-    "species": "cil-vector",
+  "add_norm1": {
+    "species": "cil-plus",
     "gene_traits": {
-      "primary_shape": "arrow_vec",
-      "pattern": "magnitude",
-      "line_style": "weighted",
-      "family": "embedding"
+      "primary_shape": "cross",
+      "pattern": "merge",
+      "line_style": "converge",
+      "family": "aggregation"
     }
   },
-  "pos_encode": {
-    "species": "cil-vector",
+  "add_norm2": {
+    "species": "cil-plus",
     "gene_traits": {
-      "primary_shape": "arrow_vec",
-      "pattern": "magnitude",
-      "line_style": "weighted",
-      "family": "embedding"
+      "primary_shape": "cross",
+      "pattern": "merge",
+      "line_style": "converge",
+      "family": "aggregation"
     }
   },
-  "self_attn": {
+  "alignment_group": {
+    "species": "cil-loop",
+    "gene_traits": {
+      "primary_shape": "arc",
+      "pattern": "spiral",
+      "line_style": "curved",
+      "family": "iteration"
+    }
+  },
+  "bbox_pruning_group": {
     "species": "cil-eye",
     "gene_traits": {
       "primary_shape": "radial",
@@ -26,13 +35,121 @@
       "family": "attention"
     }
   },
-  "add_norm1": {
+  "coarse_dom_tree": {
+    "species": "cil-loop",
+    "gene_traits": {
+      "primary_shape": "arc",
+      "pattern": "spiral",
+      "line_style": "curved",
+      "family": "iteration"
+    }
+  },
+  "code_linking": {
+    "species": "cil-graph",
+    "gene_traits": {
+      "primary_shape": "axes",
+      "pattern": "bars",
+      "line_style": "polyline",
+      "family": "data"
+    }
+  },
+  "content_align": {
+    "species": "cil-loop",
+    "gene_traits": {
+      "primary_shape": "arc",
+      "pattern": "spiral",
+      "line_style": "curved",
+      "family": "iteration"
+    }
+  },
+  "dec_conv1": {
+    "species": "cil-filter",
+    "gene_traits": {
+      "primary_shape": "grid",
+      "pattern": "kernel",
+      "line_style": "dashed",
+      "family": "convolution"
+    }
+  },
+  "dec_conv2": {
+    "species": "cil-filter",
+    "gene_traits": {
+      "primary_shape": "grid",
+      "pattern": "kernel",
+      "line_style": "dashed",
+      "family": "convolution"
+    }
+  },
+  "dec_upsamp": {
     "species": "cil-plus",
     "gene_traits": {
       "primary_shape": "cross",
       "pattern": "merge",
       "line_style": "converge",
       "family": "aggregation"
+    }
+  },
+  "decoder": {
+    "species": "cil-code",
+    "gene_traits": {
+      "primary_shape": "rect",
+      "pattern": "monospace",
+      "line_style": "solid",
+      "family": "computation"
+    }
+  },
+  "display_errors": {
+    "species": "cil-plus",
+    "gene_traits": {
+      "primary_shape": "cross",
+      "pattern": "merge",
+      "line_style": "converge",
+      "family": "aggregation"
+    }
+  },
+  "empty_elements": {
+    "species": "cil-graph",
+    "gene_traits": {
+      "primary_shape": "axes",
+      "pattern": "bars",
+      "line_style": "polyline",
+      "family": "data"
+    }
+  },
+  "enc_conv1": {
+    "species": "cil-filter",
+    "gene_traits": {
+      "primary_shape": "grid",
+      "pattern": "kernel",
+      "line_style": "dashed",
+      "family": "convolution"
+    }
+  },
+  "enc_conv2": {
+    "species": "cil-filter",
+    "gene_traits": {
+      "primary_shape": "grid",
+      "pattern": "kernel",
+      "line_style": "dashed",
+      "family": "convolution"
+    }
+  },
+  "enc_pool": {
+    "species": "cil-filter",
+    "gene_traits": {
+      "primary_shape": "grid",
+      "pattern": "kernel",
+      "line_style": "dashed",
+      "family": "convolution"
+    }
+  },
+  "encoder": {
+    "species": "cil-code",
+    "gene_traits": {
+      "primary_shape": "rect",
+      "pattern": "monospace",
+      "line_style": "solid",
+      "family": "computation"
     }
   },
   "ffn": {
@@ -44,7 +161,187 @@
       "family": "activation"
     }
   },
-  "add_norm2": {
+  "final_css": {
+    "species": "cil-eye",
+    "gene_traits": {
+      "primary_shape": "radial",
+      "pattern": "heatmap",
+      "line_style": "ray",
+      "family": "attention"
+    }
+  },
+  "final_html": {
+    "species": "cil-layers",
+    "gene_traits": {
+      "primary_shape": "stacked",
+      "pattern": "depth_fade",
+      "line_style": "parallel",
+      "family": "hierarchy"
+    }
+  },
+  "heuristic_rules": {
+    "species": "cil-bolt",
+    "gene_traits": {
+      "primary_shape": "zigzag",
+      "pattern": "gradient",
+      "line_style": "angular",
+      "family": "activation"
+    }
+  },
+  "hidden_elements": {
+    "species": "cil-bolt",
+    "gene_traits": {
+      "primary_shape": "zigzag",
+      "pattern": "gradient",
+      "line_style": "angular",
+      "family": "activation"
+    }
+  },
+  "hidden_states": {
+    "species": "cil-plus",
+    "gene_traits": {
+      "primary_shape": "cross",
+      "pattern": "merge",
+      "line_style": "converge",
+      "family": "aggregation"
+    }
+  },
+  "input": {
+    "species": "cil-arrow-right",
+    "gene_traits": {
+      "primary_shape": "arrow",
+      "pattern": "flow",
+      "line_style": "directed",
+      "family": "dataflow"
+    }
+  },
+  "input_embed": {
+    "species": "cil-vector",
+    "gene_traits": {
+      "primary_shape": "arrow_vec",
+      "pattern": "magnitude",
+      "line_style": "weighted",
+      "family": "embedding"
+    }
+  },
+  "input_image": {
+    "species": "cil-vector",
+    "gene_traits": {
+      "primary_shape": "arrow_vec",
+      "pattern": "magnitude",
+      "line_style": "weighted",
+      "family": "embedding"
+    }
+  },
+  "integrated_code": {
+    "species": "cil-bolt",
+    "gene_traits": {
+      "primary_shape": "zigzag",
+      "pattern": "gradient",
+      "line_style": "angular",
+      "family": "activation"
+    }
+  },
+  "json_output": {
+    "species": "cil-arrow-right",
+    "gene_traits": {
+      "primary_shape": "arrow",
+      "pattern": "flow",
+      "line_style": "directed",
+      "family": "dataflow"
+    }
+  },
+  "latent": {
+    "species": "cil-eye",
+    "gene_traits": {
+      "primary_shape": "radial",
+      "pattern": "heatmap",
+      "line_style": "ray",
+      "family": "attention"
+    }
+  },
+  "leaf_extraction": {
+    "species": "cil-arrow-right",
+    "gene_traits": {
+      "primary_shape": "arrow",
+      "pattern": "flow",
+      "line_style": "directed",
+      "family": "dataflow"
+    }
+  },
+  "local_code_gen": {
+    "species": "cil-eye",
+    "gene_traits": {
+      "primary_shape": "radial",
+      "pattern": "heatmap",
+      "line_style": "ray",
+      "family": "attention"
+    }
+  },
+  "local_images": {
+    "species": "cil-graph",
+    "gene_traits": {
+      "primary_shape": "axes",
+      "pattern": "bars",
+      "line_style": "polyline",
+      "family": "data"
+    }
+  },
+  "loss_training": {
+    "species": "cil-graph",
+    "gene_traits": {
+      "primary_shape": "axes",
+      "pattern": "bars",
+      "line_style": "polyline",
+      "family": "data"
+    }
+  },
+  "mllm_code_agent": {
+    "species": "cil-eye",
+    "gene_traits": {
+      "primary_shape": "radial",
+      "pattern": "heatmap",
+      "line_style": "ray",
+      "family": "attention"
+    }
+  },
+  "mllm_style_agent": {
+    "species": "cil-plus",
+    "gene_traits": {
+      "primary_shape": "cross",
+      "pattern": "merge",
+      "line_style": "converge",
+      "family": "aggregation"
+    }
+  },
+  "next_token_prediction": {
+    "species": "cil-bolt",
+    "gene_traits": {
+      "primary_shape": "zigzag",
+      "pattern": "gradient",
+      "line_style": "angular",
+      "family": "activation"
+    }
+  },
+  "noise_detection": {
+    "species": "cil-code",
+    "gene_traits": {
+      "primary_shape": "rect",
+      "pattern": "monospace",
+      "line_style": "solid",
+      "family": "computation"
+    }
+  },
+  "noise_types": {
+    "species": "cil-bolt",
+    "gene_traits": {
+      "primary_shape": "zigzag",
+      "pattern": "gradient",
+      "line_style": "angular",
+      "family": "activation"
+    }
+  },
+  "nonleaf_styling": {
     "species": "cil-plus",
     "gene_traits": {
       "primary_shape": "cross",
@@ -60,6 +357,168 @@
       "pattern": "flow",
       "line_style": "directed",
       "family": "dataflow"
+    }
+  },
+  "output_group": {
+    "species": "cil-arrow-right",
+    "gene_traits": {
+      "primary_shape": "arrow",
+      "pattern": "flow",
+      "line_style": "directed",
+      "family": "dataflow"
+    }
+  },
+  "patch_division": {
+    "species": "cil-bolt",
+    "gene_traits": {
+      "primary_shape": "zigzag",
+      "pattern": "gradient",
+      "line_style": "angular",
+      "family": "activation"
+    }
+  },
+  "pos_encode": {
+    "species": "cil-vector",
+    "gene_traits": {
+      "primary_shape": "arrow_vec",
+      "pattern": "magnitude",
+      "line_style": "weighted",
+      "family": "embedding"
+    }
+  },
+  "pruned_dataset": {
+    "species": "cil-layers",
+    "gene_traits": {
+      "primary_shape": "stacked",
+      "pattern": "depth_fade",
+      "line_style": "parallel",
+      "family": "hierarchy"
+    }
+  },
+  "ram_resource": {
+    "species": "cil-loop",
+    "gene_traits": {
+      "primary_shape": "arc",
+      "pattern": "spiral",
+      "line_style": "curved",
+      "family": "iteration"
+    }
+  },
+  "rendered_webpage": {
+    "species": "cil-loop",
+    "gene_traits": {
+      "primary_shape": "arc",
+      "pattern": "spiral",
+      "line_style": "curved",
+      "family": "iteration"
+    }
+  },
+  "resolution_handling": {
+    "species": "cil-filter",
+    "gene_traits": {
+      "primary_shape": "grid",
+      "pattern": "kernel",
+      "line_style": "dashed",
+      "family": "convolution"
+    }
+  },
+  "self_attn": {
+    "species": "cil-eye",
+    "gene_traits": {
+      "primary_shape": "radial",
+      "pattern": "heatmap",
+      "line_style": "ray",
+      "family": "attention"
+    }
+  },
+  "softmax_layer": {
+    "species": "cil-vector",
+    "gene_traits": {
+      "primary_shape": "arrow_vec",
+      "pattern": "magnitude",
+      "line_style": "weighted",
+      "family": "embedding"
+    }
+  },
+  "stage1_group": {
+    "species": "cil-plus",
+    "gene_traits": {
+      "primary_shape": "cross",
+      "pattern": "merge",
+      "line_style": "converge",
+      "family": "aggregation"
+    }
+  },
+  "stage2_group": {
+    "species": "cil-filter",
+    "gene_traits": {
+      "primary_shape": "grid",
+      "pattern": "kernel",
+      "line_style": "dashed",
+      "family": "convolution"
+    }
+  },
+  "structure_align": {
+    "species": "cil-plus",
+    "gene_traits": {
+      "primary_shape": "cross",
+      "pattern": "merge",
+      "line_style": "converge",
+      "family": "aggregation"
+    }
+  },
+  "structure_model": {
+    "species": "cil-filter",
+    "gene_traits": {
+      "primary_shape": "grid",
+      "pattern": "kernel",
+      "line_style": "dashed",
+      "family": "convolution"
+    }
+  },
+  "style_align": {
+    "species": "cil-bolt",
+    "gene_traits": {
+      "primary_shape": "zigzag",
+      "pattern": "gradient",
+      "line_style": "angular",
+      "family": "activation"
+    }
+  },
+  "transformer_decoder": {
+    "species": "cil-code",
+    "gene_traits": {
+      "primary_shape": "rect",
+      "pattern": "monospace",
+      "line_style": "solid",
+      "family": "computation"
+    }
+  },
+  "vision2ui_dataset": {
+    "species": "cil-layers",
+    "gene_traits": {
+      "primary_shape": "stacked",
+      "pattern": "depth_fade",
+      "line_style": "parallel",
+      "family": "hierarchy"
+    }
+  },
+  "vit_encoder": {
+    "species": "cil-code",
+    "gene_traits": {
+      "primary_shape": "rect",
+      "pattern": "monospace",
+      "line_style": "solid",
+      "family": "computation"
+    }
+  },
+  "weight_matrix": {
+    "species": "cil-code",
+    "gene_traits": {
+      "primary_shape": "rect",
+      "pattern": "monospace",
+      "line_style": "solid",
+      "family": "computation"
     }
   }
 }
