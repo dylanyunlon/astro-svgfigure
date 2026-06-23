@@ -172,6 +172,9 @@ export type { PhysicsWorldView, RigidBodyRenderState, ContactEvent, PhysicsFrame
 // magnetic-field-lines (M782)
 export { MagneticFieldLines, evaluateField, fieldMagnitude, traceStreamline, generateSeeds, subdivideStreamline, computeArcLengths, catmullRom, SPECIES_CHARGE_SIGN, QOS_FIELD_STYLES } from './magnetic-field-lines';
 export type { FieldCharge, FieldCellInput, MagneticFieldLinesConfig, FieldLineStyle, StreamPoint, Streamline, FieldVec2 } from './magnetic-field-lines';
+// render-loop (M782)
+export { RenderLoop, UPDATE_PRIORITY, FPSMonitor, CellPubSubInbox, RENDER_LOOP_DEFAULTS } from './render-loop';
+export type { RenderLoopConfig, TickerState, TickerCallback, ListenerHandle, CellEventKind, CellEvent, CellEventHandler, UpdatePriority } from './render-loop';
 // particle-effect-system (M783)
 export { ParticleEffectSystem, EFFECT_DEFAULTS, EFFECT_TYPE_INDEX, GPU_STRIDE, PARTICLE_FX_WGSL } from './particle-effect-system';
 export type { ParticleEffectType, Vec2 as ParticleFxVec2, CollisionSparkParams, FlowTrailParams, AmbientDustParams, QosTransitionParams, CellBirthParams, CellDeathParams, EmitParams, ParticleEffectSystemConfig } from './particle-effect-system';
