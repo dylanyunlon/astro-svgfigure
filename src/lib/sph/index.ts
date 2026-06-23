@@ -193,3 +193,6 @@ export type { DestructionConfig, DebrisShard } from './destruction-system';
 // decal-projector (M792)
 export { DecalProjector, DecalGPUPipeline, estimateDecalImpulse } from './decal-projector';
 export type { DecalType, DecalProjectorConfig, DecalGPU, CellTransform } from './decal-projector';
+// emissive-glow (M791)
+export { EmissiveGlowSystem, createEmissiveGlowSystem, getGlobalEmissiveGlow, setGlobalEmissiveGlow, EMISSIVE_STRIDE, EMISSIVE_GLOW_DEFAULTS, EMISSIVE_BUFFER_WGSL } from './emissive-glow';
+export type { GlowMode, EmissiveProfile, EmissiveGlowConfig, CellBloomFeedback } from './emissive-glow';
