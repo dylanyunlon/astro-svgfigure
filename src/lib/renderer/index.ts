@@ -69,3 +69,11 @@ export * from './geometry';
 
 // ── Material ──────────────────────────────────────────────────────────────────
 export * from './material';
+
+// ── Adapter layer — Renderer ↔ Program ↔ Material bridge (M810) ─────────────
+export { RendererAdapter, RenderPassScope } from './adapter/RendererAdapter';
+export type { DrawContext, ProgramHandle } from './adapter/RendererAdapter';
+
+export { ProgramFactory } from './adapter/ProgramFactory';
+
+export { MaterialBinder } from './adapter/MaterialBinder';
