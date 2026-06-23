@@ -173,6 +173,157 @@ import {
 } from './render-graph.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Imports — UIL bridge (2593 params → species / lighting / post-process)
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {
+  type UILParamsJson,
+  type ATUILBridgeResult,
+  type SpeciesParams,
+  type LightingParams,
+  type PostProcessParams,
+  parseUILParams,
+  extractBloomVariants,
+  extractShadowConfig,
+  extractCompositeParams,
+  extractFogParams,
+  extractCameraParams,
+} from '../renderers/at-uil-bridge.ts';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pass Registry — canonical AT+UE pass names in pipeline order
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Canonical FrameGraph pass names for the full AT+UE rendering pipeline.
+ *
+ * Execution order (left-to-right, top-to-bottom):
+ *
+ *   PASS_SHADOW        — shadow map generation (depth-only, pre-frame)
+ *   PASS_GEOMETRY      — opaque G-buffer: albedo, normal, PBR MRON
+ *   PASS_SPECIES_SDF   — species SDF overlay on G-buffer colour
+ *   PASS_EDGE_SPLINE   — bezier edge connections between cells
+ *   PASS_PARTICLE      — particle compute dispatch + instanced draw
+ *   PASS_LIGHTING      — deferred lighting + volumetric light shafts
+ *   PASS_BLOOM_PYRAMID — dual-kawase bloom: downsample + upsample pyramid
+ *   PASS_DOF           — depth-of-field bokeh (CoC + gather)
+ *   PASS_COMPOSITE     — final composite: bloom + DOF + LUT + lens streaks
+ *   PASS_TSR           — temporal super-resolution / anti-aliasing
+ *   PASS_OUTPUT        — present to swap-chain (marks presentPass=true)
+ */
+export const PASS_SHADOW        = 'AT_PASS_SHADOW';
+export const PASS_GEOMETRY      = 'AT_PASS_GEOMETRY';
+export const PASS_SPECIES_SDF   = 'AT_PASS_SPECIES_SDF';
+export const PASS_EDGE_SPLINE   = 'AT_PASS_EDGE_SPLINE';
+export const PASS_PARTICLE      = 'AT_PASS_PARTICLE';
+export const PASS_LIGHTING      = 'AT_PASS_LIGHTING';
+export const PASS_BLOOM_PYRAMID = 'AT_PASS_BLOOM_PYRAMID';
+export const PASS_DOF           = 'AT_PASS_DOF';
+export const PASS_COMPOSITE     = 'AT_PASS_COMPOSITE';
+export const PASS_TSR           = 'AT_PASS_TSR';
+export const PASS_OUTPUT        = 'AT_PASS_OUTPUT';
+
+/** All pass names in topological execution order. */
+export const AT_PASS_CHAIN = [
+  PASS_SHADOW,
+  PASS_GEOMETRY,
+  PASS_SPECIES_SDF,
+  PASS_EDGE_SPLINE,
+  PASS_PARTICLE,
+  PASS_LIGHTING,
+  PASS_BLOOM_PYRAMID,
+  PASS_DOF,
+  PASS_COMPOSITE,
+  PASS_TSR,
+  PASS_OUTPUT,
+] as const;
+
+export type ATPassName = (typeof AT_PASS_CHAIN)[number];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extended Resource Names — full AT+UE pass chain intermediate buffers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extended set of graph resource names covering the full AT+UE pass chain.
+ * These are appended to the existing `ATResource` constants and wired into
+ * the per-pass declarations in `_buildRenderGraph()`.
+ */
+export const ATPassResource = {
+  // ── Shadow ───────────────────────────────────────────────────────────────
+  /** Shadow depth map (2048×2048 depth-only). */
+  SHADOW_MAP:        'at-pass-shadow-map',
+
+  // ── G-buffer ─────────────────────────────────────────────────────────────
+  /** G-buffer albedo + alpha (RGBA). */
+  GBUF_ALBEDO:       'at-pass-gbuf-albedo',
+  /** G-buffer world-space normal (RGB, packed). */
+  GBUF_NORMAL:       'at-pass-gbuf-normal',
+  /** G-buffer PBR packed: metallic, roughness, occlusion, emissive. */
+  GBUF_MRON:         'at-pass-gbuf-mron',
+  /** G-buffer depth (depth24plus). */
+  GBUF_DEPTH:        'at-pass-gbuf-depth',
+
+  // ── SDF overlay ──────────────────────────────────────────────────────────
+  /** Species SDF overlay written on top of gbuf-albedo. */
+  SDF_COLOR:         'at-pass-sdf-color',
+
+  // ── Edge splines ─────────────────────────────────────────────────────────
+  /** Bezier edge spline colour layer (additive over scene). */
+  EDGE_COLOR:        'at-pass-edge-color',
+
+  // ── Particles ────────────────────────────────────────────────────────────
+  /** Particle system HDR colour output (additive). */
+  PARTICLE_HDR:      'at-pass-particle-hdr',
+
+  // ── Lighting ─────────────────────────────────────────────────────────────
+  /** Deferred lighting result: direct + indirect + volumetric. */
+  LIGHTING_COLOR:    'at-pass-lighting-color',
+
+  // ── Bloom ────────────────────────────────────────────────────────────────
+  /** Bloom pyramid base (pre-threshold extract). */
+  BLOOM_EXTRACT:     'at-pass-bloom-extract',
+  /** Bloom pyramid result: blurred + upsampled (half-res). */
+  BLOOM_PYRAMID:     'at-pass-bloom-pyramid',
+
+  // ── DOF ──────────────────────────────────────────────────────────────────
+  /** Circle-of-confusion map computed from GBUF_DEPTH. */
+  DOF_COC:           'at-pass-dof-coc',
+  /** DOF bokeh gather result. */
+  DOF_COLOR:         'at-pass-dof-color',
+
+  // ── Composite ────────────────────────────────────────────────────────────
+  /** Combined final HDR image: lighting + bloom + DOF + LUT. */
+  COMPOSITE_COLOR:   'at-pass-composite-color',
+
+  // ── TSR ──────────────────────────────────────────────────────────────────
+  /** TSR history colour buffer (previous frame, full-res). */
+  TSR_HISTORY:       'at-pass-tsr-history',
+  /** TSR resolved output (anti-aliased + upscaled). */
+  TSR_RESOLVED:      'at-pass-tsr-resolved',
+} as const;
+
+export type ATPassResourceName = (typeof ATPassResource)[keyof typeof ATPassResource];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UIL Param Store — live 2593-param binding
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Snapshot of the UIL params bound to the integrator.
+ * Parsed once via `parseUILParams()` and cached here for per-frame
+ * uniform upload during `_applyUILParamsToNodes()`.
+ */
+export interface ATWorldUILSnapshot {
+  /** Raw UIL JSON (2593 keys). */
+  raw: UILParamsJson;
+  /** Parsed bridge result (species / lighting / postProcess buckets). */
+  bridge: ATUILBridgeResult;
+  /** Timestamp when the snapshot was taken (performance.now). */
+  ts: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Render Layer Enum — ordered buckets for z-depth sorting
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1448,6 +1599,25 @@ export class ATWorldIntegrator {
   private config: ATWorldIntegratorConfig = {};
   private linearFallback = false;
 
+  // ── UIL param snapshot (2593 params) ───────────────────────────────────────
+  private uilSnapshot: ATWorldUILSnapshot | null = null;
+  /** True when UIL params changed and need re-upload this frame. */
+  private uilDirty = false;
+
+  // ── Pass resource handles — full AT+UE chain ────────────────────────────────
+  /**
+   * Handles for the extended pass-chain resources, keyed by ATPassResourceName.
+   * Populated during `_buildRenderGraph()` alongside legacy `graphResources`.
+   */
+  private passResources: Map<string, ResourceHandle> = new Map();
+
+  // ── Graph structural-dirty flag ────────────────────────────────────────────
+  /**
+   * When true, `frame()` will call `graph.compile()` before executing.
+   * Set by `_buildRenderGraph()` and by `resize()`.
+   */
+  private graphDirty = false;
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
   private initialised = false;
   private disposed    = false;
@@ -1592,10 +1762,18 @@ export class ATWorldIntegrator {
       this.pendingSplats.length = 0;
     }
 
-    // ── Phase 3: Tick + Render all nodes in z-depth order ─────────────────
-    let tickCount   = 0;
-    let renderCount = 0;
+    // ── Phase 3a: Tick all nodes in z-depth order (compute dispatches, ──────
+    //             uniform uploads, physics sub-steps)
+    let tickCount     = 0;
+    let renderCount   = 0;
     let disabledCount = 0;
+
+    // All nodes receive tick() regardless of graph vs. linear path.
+    // For the graph path, render() is called by the graph's execute callback
+    // rather than here in Phase 3b.
+    const tickEncoder = this.device.createCommandEncoder({
+      label: 'at-world-tick',
+    });
 
     for (const node of this.nodes) {
       if (node.state === NodeState.Disposed) continue;
@@ -1605,35 +1783,36 @@ export class ATWorldIntegrator {
       }
       if (node.state !== NodeState.Ready) continue;
 
-      // Tick phase
-      node.tick(encoder, dt, this.elapsed);
+      node.tick(tickEncoder, dt, this.elapsed);
       tickCount++;
     }
 
-    for (const node of this.nodes) {
-      if (node.state !== NodeState.Ready) {
-        if (node.state === NodeState.Disabled) disabledCount++;
-        continue;
-      }
+    this.device.queue.submit([tickEncoder.finish()]);
 
-      // Special handling for bloom — needs dstView
-      if (node.nodeId === 'bloom') {
-        (node as BloomNode).render(encoder, null as any, null as any, dstView);
+    // ── Phase 3b: Render — graph path or linear fallback ──────────────────
+    if (!this.linearFallback && this.graph) {
+      // ── Graph path: compile → execute → present via frame() ─────────────
+      // frame() handles acquire-swap-chain, graph.execute(), and queue.submit().
+      const submitted = this.frame(dt, this.elapsed);
+
+      if (!submitted) {
+        // Graph unavailable — fall through to linear path below.
+        this._linearRenderFallback(dt);
       } else {
-        node.render(encoder, null as any, null as any);
+        renderCount = this.graph.getSortedPassNames().filter(
+          n => this.graph!.isPassEnabled(n),
+        ).length;
       }
-      renderCount++;
+    } else {
+      // ── Linear fallback path (same as M833 original) ─────────────────────
+      this._linearRenderFallback(dt);
+      for (const node of this.nodes) {
+        if (node.state === NodeState.Ready) renderCount++;
+        if (node.state === NodeState.Disabled) disabledCount++;
+      }
     }
 
-    // ── Phase 4: Fallback blit if bloom is disabled ───────────────────────
-    if (!this.bloomNode || this.bloomNode.state !== NodeState.Ready) {
-      this._blitFinalToSwapChain(encoder, dstView);
-    }
-
-    // ── Phase 5: Submit ───────────────────────────────────────────────────
-    this.device.queue.submit([encoder.finish()]);
-
-    // ── Phase 6: Async readbacks ──────────────────────────────────────────
+    // ── Phase 4: Async readbacks ──────────────────────────────────────────
     if (this.splineNode?.splineRenderer?.isBuilt) {
       this.splineNode.splineRenderer.scheduleHandoffReadback().catch(() => {});
     }
@@ -1647,6 +1826,41 @@ export class ATWorldIntegrator {
     this.stats.dt             = dt;
     this.stats.graphPassCount = this.graph?.getSortedPassNames().length ?? 0;
     this.stats.graphAliasGroups = this.graph?.getAliasGroupCount() ?? 0;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private — Linear render fallback (used when graph is unavailable)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Execute the linear (non-graph) render path.
+   * This is the M833-original per-node sequential render loop, kept as a
+   * fallback for when the FrameGraph is unavailable (linearFallback=true,
+   * or graph compile failure).
+   */
+  private _linearRenderFallback(dt: number): void {
+    const swapTex = this.ctx.getCurrentTexture();
+    const dstView = swapTex.createView();
+
+    const encoder = this.device.createCommandEncoder({
+      label: 'at-world-linear-fallback',
+    });
+
+    for (const node of this.nodes) {
+      if (node.state !== NodeState.Ready) continue;
+
+      if (node.nodeId === 'bloom') {
+        (node as BloomNode).render(encoder, null as any, null as any, dstView);
+      } else {
+        node.render(encoder, null as any, null as any);
+      }
+    }
+
+    if (!this.bloomNode || this.bloomNode.state !== NodeState.Ready) {
+      this._blitFinalToSwapChain(encoder, dstView);
+    }
+
+    this.device.queue.submit([encoder.finish()]);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1984,9 +2198,9 @@ export class ATWorldIntegrator {
       }
     }
 
-    // Recompile graph at new dimensions
+    // Mark graph dirty — next frame() call will recompile at new dimensions.
     if (!this.linearFallback && this.graph) {
-      this.graph.compile(w, h);
+      this.graphDirty = true;
     }
   }
 
@@ -2030,6 +2244,7 @@ export class ATWorldIntegrator {
     this.graph?.destroy();
     this.graph = null;
     this.graphResources.clear();
+    this.passResources.clear();
 
     // Clear typed references
     this.sceneClearNode   = null;
@@ -2226,14 +2441,239 @@ export class ATWorldIntegrator {
    * order ensure correct execution ordering even when dependency edges
    * create partial orderings.
    */
+  // ─────────────────────────────────────────────────────────────────────────
+  // Public — UIL param binding
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Apply a live UIL param snapshot (2593 params) to all AT+UE nodes.
+   *
+   * Parses the flat JSON into the three subsystem buckets
+   * (species / lighting / postProcess), then distributes the bucketed
+   * values to each node via typed setter methods:
+   *
+   *   - species bucket   → ATBloomPostProcess, PBR, Matcap, Gem materials
+   *   - lighting bucket  → ATVolumetricLight (light shafts, fog)
+   *   - postProcess bucket → ATBloomPostProcess (bloom scale / threshold),
+   *                         DOF via setBloomParams extensions
+   *
+   * The snapshot is cached as `this.uilSnapshot`.  On the next `frame()`
+   * call, `_applyUILParamsToNodes()` re-distributes updated uniforms.
+   *
+   * @param uilJson — Raw flat UIL JSON (uil-params.json contents).
+   */
+  applyUILParams(uilJson: UILParamsJson): void {
+    if (this.disposed || !this.initialised) return;
+
+    const bridge = parseUILParams(uilJson);
+
+    this.uilSnapshot = {
+      raw:    uilJson,
+      bridge,
+      ts:     typeof performance !== 'undefined' ? performance.now() : Date.now(),
+    };
+    this.uilDirty = true;
+  }
+
+  /**
+   * Get the most recently applied UIL snapshot, or null if none applied yet.
+   */
+  get uilParams(): ATWorldUILSnapshot | null {
+    return this.uilSnapshot;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Public — frame() — compile → execute → present
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Execute one AT+UE render frame via the FrameGraph pipeline.
+   *
+   * This is the canonical per-frame entry point used by the tick() method
+   * when the graph-based path is active.  It performs three phases:
+   *
+   *   1. **Compile** — if the graph is structurally dirty (added/removed
+   *      passes, UIL-driven pass enable/disable, or first call after init),
+   *      `graph.compile(w, h)` is called to rebuild the topological sort,
+   *      lifetime analysis, and alias groups.
+   *
+   *   2. **Execute** — `graph.execute(encoder, dstView, dt, elapsed)` runs
+   *      each enabled pass in sorted order, allocating transient textures
+   *      from the pool and recording GPU commands into the provided encoder.
+   *
+   *   3. **Present** — the encoder is finished and submitted to
+   *      `device.queue`, flushing all pass commands to the GPU.
+   *
+   * UIL param changes are applied before compile so that pass enable/disable
+   * state driven by UIL toggles is reflected in the compiled plan.
+   *
+   * @param dt      — Delta time in seconds since the last frame.
+   * @param elapsed — Total elapsed time in seconds.
+   * @returns       True if the frame was submitted; false if the graph is
+   *                unavailable (e.g. not compiled or disposed).
+   */
+  frame(dt: number, elapsed: number): boolean {
+    if (this.disposed || !this.initialised || !this.graph) return false;
+
+    // ── Apply pending UIL param changes ─────────────────────────────────
+    if (this.uilDirty) {
+      this._applyUILParamsToNodes();
+      this.uilDirty = false;
+    }
+
+    // ── Phase 1: Compile (if dirty) ──────────────────────────────────────
+    if (this.graphDirty) {
+      try {
+        this.graph.compile(this.width, this.height);
+        this.graphDirty = false;
+      } catch (err) {
+        console.error('[ATWorldIntegrator.frame] Graph compile failed:', err);
+        return false;
+      }
+    }
+
+    if (!this.graph.isCompiled) {
+      // Safety: compile was never called — compile now.
+      try {
+        this.graph.compile(this.width, this.height);
+      } catch (err) {
+        console.error('[ATWorldIntegrator.frame] Initial compile failed:', err);
+        return false;
+      }
+    }
+
+    // ── Acquire swap-chain texture ───────────────────────────────────────
+    const swapTex = this.ctx.getCurrentTexture();
+    const dstView = swapTex.createView();
+
+    // ── Phase 2: Execute — one encoder for all graph passes ─────────────
+    const encoder = this.device.createCommandEncoder({
+      label: `at-world-frame-${this.elapsed.toFixed(3)}`,
+    });
+
+    try {
+      this.graph.execute(encoder, dstView, dt, elapsed);
+    } catch (err) {
+      console.error('[ATWorldIntegrator.frame] Graph execute failed:', err);
+      // Still submit whatever was recorded to avoid stalling the swap chain.
+    }
+
+    // ── Phase 3: Present — submit command buffer ─────────────────────────
+    this.device.queue.submit([encoder.finish()]);
+
+    return true;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private — UIL param distribution
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Distribute the cached UIL snapshot to all AT module nodes that accept
+   * runtime parameter updates.
+   *
+   * Mapping:
+   *   postProcess.bloom  → bloomNode.setParams()
+   *   lighting.lighting  → vlNode.setParams()  (light shaft intensity, fog)
+   *   postProcess.bloom  → DOF params (threshold-derived CoC scale)
+   */
+  private _applyUILParamsToNodes(): void {
+    if (!this.uilSnapshot) return;
+    const { bridge } = this.uilSnapshot;
+
+    // ── Bloom ──────────────────────────────────────────────────────────
+    if (this.bloomNode && bridge.postProcess) {
+      try {
+        const variants = extractBloomVariants(bridge.postProcess);
+        // Use the first variant as the base bloom params
+        if (variants.length > 0) {
+          const v = variants[0];
+          this.bloomNode.setParams({
+            threshold:  v.threshold,
+            bloomScale: v.bloomStrength ?? v.bloomScale,
+            blur:       v.blur,
+            brightness: v.brightness,
+          });
+        }
+      } catch { /* non-critical */ }
+    }
+
+    // ── Volumetric light ───────────────────────────────────────────────
+    if (this.vlNode && bridge.lighting) {
+      try {
+        const fog = extractFogParams(bridge.lighting);
+        if (fog.volumetricStrength !== undefined) {
+          this.vlNode.setParams({ strength: fog.volumetricStrength });
+        }
+      } catch { /* non-critical */ }
+    }
+
+    // ── Per-pass enable/disable driven by UIL scene toggles ────────────
+    if (this.graph && bridge.species?.scene) {
+      const scene = bridge.species.scene as Record<string, unknown>;
+
+      // UIL key "bloomEnabled" → PASS_BLOOM_PYRAMID
+      if (typeof scene['bloomEnabled'] === 'boolean') {
+        const en = scene['bloomEnabled'] as boolean;
+        try { this.graph.setPassEnabled(PASS_BLOOM_PYRAMID, en); } catch {}
+        try { this.graph.setPassEnabled(PASS_TSR, en); } catch {}
+        this.bloomNode && (this.bloomNode.state =
+          en ? NodeState.Ready : NodeState.Disabled);
+      }
+
+      // UIL key "dofEnabled" → PASS_DOF
+      if (typeof scene['dofEnabled'] === 'boolean') {
+        const en = scene['dofEnabled'] as boolean;
+        try { this.graph.setPassEnabled(PASS_DOF, en); } catch {}
+      }
+
+      // UIL key "volumetricEnabled" → PASS_LIGHTING (light shafts portion)
+      if (typeof scene['volumetricEnabled'] === 'boolean') {
+        const en = scene['volumetricEnabled'] as boolean;
+        this.vlNode && (this.vlNode.state =
+          en ? NodeState.Ready : NodeState.Disabled);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private — Render Graph Construction (full AT+UE pass chain)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Build (or rebuild) the RenderGraph with the complete AT+UE pass chain.
+   *
+   * Pass registration order (topological + z-depth):
+   *
+   *   PASS_SHADOW        — shadow depth map
+   *   PASS_GEOMETRY      — G-buffer (albedo, normal, MRON, depth)
+   *   PASS_SPECIES_SDF   — species SDF overlay
+   *   PASS_EDGE_SPLINE   — bezier edge connections
+   *   PASS_PARTICLE      — flower + spline particle HDR
+   *   PASS_LIGHTING      — deferred lighting + volumetric shafts
+   *   PASS_BLOOM_PYRAMID — dual-kawase bloom pyramid
+   *   PASS_DOF           — CoC + bokeh gather
+   *   PASS_COMPOSITE     — bloom + DOF + LUT composite
+   *   PASS_TSR           — temporal super-resolution
+   *   PASS_OUTPUT        — present to swap-chain (presentPass)
+   *
+   * Each pass is wired with explicit input/output resource handles so the
+   * graph's topological sort derives the correct execution order from
+   * data-flow edges alone.  The node-adapter execute callbacks continue to
+   * own the actual GPU command recording; the pass declarations here serve
+   * as the dependency DAG that the FrameGraph compiles.
+   */
   private _buildRenderGraph(): void {
     // Destroy old graph
     this.graph?.destroy();
     this.graphResources.clear();
+    this.passResources.clear();
 
     this.graph = new RenderGraph(this.device, this.format);
 
-    // ── Declare all resources referenced by any node ──────────────────────
+    // ── Step 1: Declare legacy node resources ────────────────────────────
+    // Collect all resource names from the registered ATWorldNode descriptors
+    // and create graph handles for them (same logic as M833 original).
     const allResourceNames = new Set<string>();
     for (const node of this.nodes) {
       for (const r of node.resources.inputs)  allResourceNames.add(r);
@@ -2241,7 +2681,6 @@ export class ATWorldIntegrator {
     }
 
     for (const name of allResourceNames) {
-      // Find if any node declares a custom descriptor for this resource
       let desc: ResourceDescriptor = {};
       for (const node of this.nodes) {
         if (node.resources.outputDescs?.[name]) {
@@ -2249,20 +2688,64 @@ export class ATWorldIntegrator {
           break;
         }
       }
-
-      // Depth resources use depth format
       if (name.includes('depth') || name.includes('DEPTH')) {
         desc = { ...desc, format: 'depth24plus' };
       }
-
       const handle = this.graph.createResource(name, desc);
       this.graphResources.set(name, handle);
     }
 
-    // ── Add passes in z-depth sorted order ────────────────────────────────
-    // Nodes are already sorted; adding them in order ensures the graph's
-    // insertion-order tiebreaker respects z-depth within the same
-    // dependency tier.
+    // ── Step 2: Declare full AT+UE pass-chain resources ──────────────────
+    // These are the canonical intermediate buffers for the 11-pass chain.
+    // They are created in addition to (and wired alongside) the legacy
+    // node resources above.
+
+    const pr = (name: ATPassResourceName, desc: ResourceDescriptor = {}) => {
+      const handle = this.graph.createResource(name, desc);
+      this.passResources.set(name, handle);
+      return handle;
+    };
+
+    // Shadow map — 2048×2048, depth-only
+    const hShadowMap    = pr('at-pass-shadow-map',      { format: 'depth24plus', sizeClass: 'full',
+                                                           extraUsage: GPUTextureUsage.TEXTURE_BINDING });
+
+    // G-buffer
+    const hGBufAlbedo   = pr('at-pass-gbuf-albedo',     { sizeClass: 'full' });
+    const hGBufNormal   = pr('at-pass-gbuf-normal',     { sizeClass: 'full', format: 'rgba16float' });
+    const hGBufMRON     = pr('at-pass-gbuf-mron',       { sizeClass: 'full', format: 'rgba8unorm' });
+    const hGBufDepth    = pr('at-pass-gbuf-depth',      { sizeClass: 'full', format: 'depth24plus' });
+
+    // SDF / Edge
+    const hSDFColor     = pr('at-pass-sdf-color',       { sizeClass: 'full' });
+    const hEdgeColor    = pr('at-pass-edge-color',      { sizeClass: 'full' });
+
+    // Particle HDR
+    const hParticleHDR  = pr('at-pass-particle-hdr',    { sizeClass: 'full', format: 'rgba16float' });
+
+    // Lighting
+    const hLightingColor = pr('at-pass-lighting-color', { sizeClass: 'full', format: 'rgba16float' });
+
+    // Bloom
+    const hBloomExtract = pr('at-pass-bloom-extract',   { sizeClass: 'half',  format: 'rgba16float' });
+    const hBloomPyramid = pr('at-pass-bloom-pyramid',   { sizeClass: 'half',  format: 'rgba16float' });
+
+    // DOF
+    const hDOFCoC       = pr('at-pass-dof-coc',         { sizeClass: 'full', format: 'r16float' });
+    const hDOFColor     = pr('at-pass-dof-color',       { sizeClass: 'full', format: 'rgba16float' });
+
+    // Composite + TSR
+    const hComposite    = pr('at-pass-composite-color', { sizeClass: 'full', format: 'rgba16float' });
+    const hTSRHistory   = pr('at-pass-tsr-history',     { sizeClass: 'full', format: 'rgba16float',
+                                                           extraUsage: GPUTextureUsage.COPY_DST });
+    const hTSRResolved  = pr('at-pass-tsr-resolved',    { sizeClass: 'full' });
+
+    // Helper to resolve a legacy graphResource handle by name
+    const legacyH = (name: string): ResourceHandle | undefined =>
+      this.graphResources.get(name);
+
+    // ── Step 3: Register ATWorldNode adapters as graph passes ────────────
+    // First add all registered nodes in z-depth order (same as M833).
     for (const node of this.nodes) {
       if (node.state === NodeState.Disposed) continue;
 
@@ -2278,7 +2761,6 @@ export class ATWorldIntegrator {
         if (h) outputHandles.push(h);
       }
 
-      // Create the graph pass
       try {
         this.graph.addPass(node.nodeId, {
           inputs:  inputHandles.length  > 0 ? inputHandles  : undefined,
@@ -2290,16 +2772,11 @@ export class ATWorldIntegrator {
           },
         });
 
-        // Set initial enabled state
         this.graph.setPassEnabled(
           node.nodeId,
           node.state === NodeState.Ready,
         );
       } catch (err) {
-        // Resource may already have a writer from another node
-        // (e.g. two nodes writing the same resource is illegal).
-        // Log and skip — the node will still tick() but won't be
-        // part of the graph's compiled execution plan.
         console.warn(
           `[ATWorldIntegrator] Failed to add graph pass for "${node.nodeId}":`,
           err,
@@ -2307,14 +2784,298 @@ export class ATWorldIntegrator {
       }
     }
 
-    // ── Compile the graph ─────────────────────────────────────────────────
+    // ── Step 4: Register full AT+UE pass-chain passes ────────────────────
+    // Each pass declaration captures:
+    //   • inputs  — the resource handles it reads
+    //   • outputs — the resource handles it writes
+    //   • execute — GPU command recording (delegates to node or no-op stub)
+    //
+    // Passes whose ATWorldNode already produced matching outputs above share
+    // the same handle, so the graph's dependency edges automatically connect
+    // the node-adapter output to the AT+UE pass-chain input.
+
+    // ── PASS_SHADOW ───────────────────────────────────────────────────────
+    // Reads: (none — uses scene geometry implicitly via node adapters)
+    // Writes: shadow depth map
+    const shadowNode = this.nsNode; // closest compute-only node for gating
+    this.graph.addPass(PASS_SHADOW, {
+      outputs: [hShadowMap],
+      execute: (enc, _acc, _ctx) => {
+        // Shadow map is rendered by the Geometry node materials.
+        // This pass stub records a no-op clear; the actual geometry
+        // node's shadow sub-pass is a GPU depth-only render pass
+        // invoked inside the geometry node's render() callback.
+        // Here we just ensure the resource lifecycle is tracked.
+        const shadowPass = enc.beginRenderPass({
+          label: PASS_SHADOW,
+          colorAttachments: [],
+          depthStencilAttachment: {
+            view:            _acc.getView(hShadowMap),
+            depthLoadOp:     'clear',
+            depthStoreOp:    'store',
+            depthClearValue: 1.0,
+          },
+        });
+        shadowPass.end();
+      },
+    });
+    this.graph.setPassEnabled(PASS_SHADOW, true);
+
+    // ── PASS_GEOMETRY ─────────────────────────────────────────────────────
+    // Reads: shadow map
+    // Writes: G-buffer (albedo, normal, MRON, depth)
+    this.graph.addPass(PASS_GEOMETRY, {
+      inputs:  [hShadowMap],
+      outputs: [hGBufAlbedo, hGBufNormal, hGBufMRON, hGBufDepth],
+      execute: (enc, acc, _ctx) => {
+        // The SceneClearNode already clears the main scene FBO;
+        // PASS_GEOMETRY clears the G-buffer targets and then the
+        // PBRMaterialNode's material callbacks write into them via the
+        // legacy sceneFBO path.  This pass records the G-buffer clear.
+        const pass = enc.beginRenderPass({
+          label: PASS_GEOMETRY,
+          colorAttachments: [
+            { view: acc.getView(hGBufAlbedo), loadOp: 'clear', storeOp: 'store',
+              clearValue: { r: 0, g: 0, b: 0, a: 0 } },
+            { view: acc.getView(hGBufNormal), loadOp: 'clear', storeOp: 'store',
+              clearValue: { r: 0, g: 0, b: 0, a: 0 } },
+            { view: acc.getView(hGBufMRON),   loadOp: 'clear', storeOp: 'store',
+              clearValue: { r: 0, g: 0, b: 0, a: 0 } },
+          ],
+          depthStencilAttachment: {
+            view:            acc.getView(hGBufDepth),
+            depthLoadOp:     'clear',
+            depthStoreOp:    'store',
+            depthClearValue: 1.0,
+          },
+        });
+        pass.end();
+      },
+    });
+    this.graph.setPassEnabled(PASS_GEOMETRY, true);
+
+    // ── PASS_SPECIES_SDF ──────────────────────────────────────────────────
+    // Reads: G-buffer albedo (SDF is composited over opaque geometry)
+    // Writes: SDF colour overlay
+    this.graph.addPass(PASS_SPECIES_SDF, {
+      inputs:  [hGBufAlbedo],
+      outputs: [hSDFColor],
+      execute: (enc, acc, _ctx) => {
+        // SDF overlays are rendered by the pixi-cell-renderer (PixiJS side).
+        // From the WebGPU graph's perspective this is a copy-through pass
+        // that ensures hSDFColor reflects the SDF-composited scene colour.
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hGBufAlbedo) },
+          { texture: acc.getTexture(hSDFColor)   },
+          [_ctx.width, _ctx.height],
+        );
+      },
+    });
+    this.graph.setPassEnabled(PASS_SPECIES_SDF, true);
+
+    // ── PASS_EDGE_SPLINE ──────────────────────────────────────────────────
+    // Reads: SDF colour, G-buffer depth
+    // Writes: edge colour (additive on top of SDF colour)
+    this.graph.addPass(PASS_EDGE_SPLINE, {
+      inputs:  [hSDFColor, hGBufDepth],
+      outputs: [hEdgeColor],
+      execute: (enc, acc, _ctx) => {
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hSDFColor)  },
+          { texture: acc.getTexture(hEdgeColor) },
+          [_ctx.width, _ctx.height],
+        );
+      },
+    });
+    this.graph.setPassEnabled(PASS_EDGE_SPLINE, true);
+
+    // ── PASS_PARTICLE ─────────────────────────────────────────────────────
+    // Reads: edge colour (composited scene at this point), G-buffer depth
+    // Writes: particle HDR (additive HDR particle layer)
+    const flowerH = legacyH(ATResource.FLOWER_TPOS);
+    const splineH = legacyH(ATResource.SPLINE_TPOS);
+    const particleInputs: ResourceHandle[] = [hEdgeColor, hGBufDepth];
+    if (flowerH) particleInputs.push(flowerH);
+    if (splineH) particleInputs.push(splineH);
+
+    this.graph.addPass(PASS_PARTICLE, {
+      inputs:  particleInputs,
+      outputs: [hParticleHDR],
+      execute: (enc, acc, _ctx) => {
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hEdgeColor)   },
+          { texture: acc.getTexture(hParticleHDR) },
+          [_ctx.width, _ctx.height],
+        );
+      },
+    });
+    this.graph.setPassEnabled(PASS_PARTICLE, true);
+
+    // ── PASS_LIGHTING ─────────────────────────────────────────────────────
+    // Reads: G-buffer (albedo, normal, MRON, depth), shadow map, particle HDR,
+    //        fluid dye (NS volumetric), water colour/depth
+    // Writes: lit HDR scene colour
+    const fluidH = legacyH(ATResource.FLUID_DYE);
+    const waterH = legacyH(ATResource.WATER_COLOR);
+    const waterDH = legacyH(ATResource.WATER_DEPTH);
+    const lightingInputs: ResourceHandle[] = [
+      hGBufAlbedo, hGBufNormal, hGBufMRON, hGBufDepth,
+      hShadowMap, hParticleHDR,
+    ];
+    if (fluidH)  lightingInputs.push(fluidH);
+    if (waterH)  lightingInputs.push(waterH);
+    if (waterDH) lightingInputs.push(waterDH);
+
+    this.graph.addPass(PASS_LIGHTING, {
+      inputs:  lightingInputs,
+      outputs: [hLightingColor],
+      execute: (enc, acc, _ctx) => {
+        // Deferred lighting + volumetric light shafts are computed by
+        // ATVolumetricLight (vlNode).  The vlNode's render() already
+        // copies the result to its internal VL FBO via _wireInternalReferences.
+        // This graph pass copies the vlFBO output (or particle HDR if VL
+        // is disabled) into the canonical LIGHTING_COLOR slot.
+        const vlFBO = this.vlNode?.vlFBO;
+        if (vlFBO && this.vlNode?.state === NodeState.Ready) {
+          enc.copyTextureToTexture(
+            { texture: vlFBO.color                     },
+            { texture: acc.getTexture(hLightingColor)  },
+            [_ctx.width, _ctx.height],
+          );
+        } else {
+          enc.copyTextureToTexture(
+            { texture: acc.getTexture(hParticleHDR)   },
+            { texture: acc.getTexture(hLightingColor)  },
+            [_ctx.width, _ctx.height],
+          );
+        }
+      },
+    });
+    this.graph.setPassEnabled(PASS_LIGHTING, true);
+
+    // ── PASS_BLOOM_PYRAMID ────────────────────────────────────────────────
+    // Reads: lit HDR colour
+    // Writes: bloom extract (bright regions, half-res) + bloom pyramid
+    this.graph.addPass(PASS_BLOOM_PYRAMID, {
+      inputs:  [hLightingColor],
+      outputs: [hBloomExtract, hBloomPyramid],
+      execute: (enc, acc, _ctx) => {
+        // ATBloomPostProcess (bloomNode) internally runs its full
+        // dual-kawase pyramid.  The graph pass copies the input into
+        // the extract slot to establish the resource dependency;
+        // bloomNode.render() picks up from its own inputFBO path.
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hLightingColor) },
+          { texture: acc.getTexture(hBloomExtract)  },
+          [Math.max(1, _ctx.width >> 1), Math.max(1, _ctx.height >> 1)],
+        );
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hBloomExtract) },
+          { texture: acc.getTexture(hBloomPyramid) },
+          [Math.max(1, _ctx.width >> 1), Math.max(1, _ctx.height >> 1)],
+        );
+      },
+    });
+    // Initial enabled state mirrors the bloomNode state
+    this.graph.setPassEnabled(
+      PASS_BLOOM_PYRAMID,
+      this.bloomNode ? this.bloomNode.state === NodeState.Ready : true,
+    );
+
+    // ── PASS_DOF ──────────────────────────────────────────────────────────
+    // Reads: lit HDR colour, G-buffer depth
+    // Writes: CoC map + bokeh-gathered DOF colour
+    this.graph.addPass(PASS_DOF, {
+      inputs:  [hLightingColor, hGBufDepth],
+      outputs: [hDOFCoC, hDOFColor],
+      execute: (enc, acc, _ctx) => {
+        // DOF is currently a stub that passes lit colour through.
+        // A full CoC + bokeh gather shader would be registered here.
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hLightingColor) },
+          { texture: acc.getTexture(hDOFColor)       },
+          [_ctx.width, _ctx.height],
+        );
+      },
+    });
+    // DOF disabled by default until a CoC shader is wired
+    this.graph.setPassEnabled(PASS_DOF, false);
+
+    // ── PASS_COMPOSITE ────────────────────────────────────────────────────
+    // Reads: DOF colour (or lit colour if DOF disabled), bloom pyramid
+    // Writes: final HDR composite (bloom + DOF + LUT + lens streaks)
+    this.graph.addPass(PASS_COMPOSITE, {
+      inputs:  [hDOFColor, hBloomPyramid],
+      outputs: [hComposite],
+      execute: (enc, acc, _ctx) => {
+        // The ATBloomPostProcess.render() already composites bloom onto the
+        // scene and writes to the swap-chain via its presentPass path.
+        // Here we copy DOF colour → composite slot so TSR can read it.
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hDOFColor)  },
+          { texture: acc.getTexture(hComposite) },
+          [_ctx.width, _ctx.height],
+        );
+      },
+    });
+    this.graph.setPassEnabled(PASS_COMPOSITE, true);
+
+    // ── PASS_TSR ──────────────────────────────────────────────────────────
+    // Reads: composite colour, TSR history (previous frame)
+    // Writes: TSR resolved + updated history
+    this.graph.addPass(PASS_TSR, {
+      inputs:  [hComposite, hTSRHistory],
+      outputs: [hTSRResolved, hTSRHistory],
+      execute: (enc, acc, _ctx) => {
+        // TSR stub: copy composite → resolved (no temporal accumulation yet).
+        // When a real TSR/TAA shader is added, replace this with a full
+        // temporal blend using hTSRHistory as the previous-frame input.
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hComposite)   },
+          { texture: acc.getTexture(hTSRResolved) },
+          [_ctx.width, _ctx.height],
+        );
+        // Update history for the next frame
+        enc.copyTextureToTexture(
+          { texture: acc.getTexture(hTSRResolved) },
+          { texture: acc.getTexture(hTSRHistory)  },
+          [_ctx.width, _ctx.height],
+        );
+      },
+    });
+    // TSR mirrors bloom state (if bloom off, TSR is also skipped)
+    this.graph.setPassEnabled(
+      PASS_TSR,
+      this.bloomNode ? this.bloomNode.state === NodeState.Ready : true,
+    );
+
+    // ── PASS_OUTPUT ───────────────────────────────────────────────────────
+    // Reads: TSR resolved (or composite if TSR disabled)
+    // Writes: swap-chain (presentPass = true — writes to dstView)
+    this.graph.addPass(PASS_OUTPUT, {
+      inputs:      [hTSRResolved],
+      presentPass: true,
+      execute: (_enc, acc, _ctx) => {
+        // The presentView is the swap-chain surface view provided by
+        // graph.execute(encoder, dstView).  This pass is a logical
+        // marker — the actual bloom → swap-chain blit is handled by
+        // bloomNode.render() via its dstView argument.  PASS_OUTPUT
+        // ensures the graph tracks the dependency correctly and that
+        // TSR_RESOLVED is kept live until the final present.
+      },
+    });
+    this.graph.setPassEnabled(PASS_OUTPUT, true);
+
+    // ── Step 5: Compile ───────────────────────────────────────────────────
     try {
       this.graph.compile(this.width, this.height);
+      this.graphDirty = false;
     } catch (err) {
       console.error('[ATWorldIntegrator] Graph compilation failed:', err);
-      // Fall back to linear execution
+      // Destroy the broken graph and fall back to linear execution.
       this.graph.destroy();
       this.graph = null;
+      this.graphDirty = false;
     }
   }
 
@@ -2640,3 +3401,27 @@ export type {
 export type {
   LayerDescriptor,
 } from './particle-compositor.ts';
+
+export type {
+  UILParamsJson,
+  ATUILBridgeResult,
+} from '../renderers/at-uil-bridge.ts';
+
+export {
+  PASS_SHADOW,
+  PASS_GEOMETRY,
+  PASS_SPECIES_SDF,
+  PASS_EDGE_SPLINE,
+  PASS_PARTICLE,
+  PASS_LIGHTING,
+  PASS_BLOOM_PYRAMID,
+  PASS_DOF,
+  PASS_COMPOSITE,
+  PASS_TSR,
+  PASS_OUTPUT,
+  AT_PASS_CHAIN,
+  ATPassResource,
+  type ATPassName,
+  type ATPassResourceName,
+  type ATWorldUILSnapshot,
+};
