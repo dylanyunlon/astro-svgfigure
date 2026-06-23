@@ -1,0 +1,366 @@
+---
+/**
+ * /playground/multiphase-fluid — Multiphase Immiscible Fluid Simulation
+ *
+ * Grid-based fluid with 3 immiscible phases of different densities.
+ * Phases separate under gravity; surface tension smooths interfaces.
+ * Uses a cellular automaton approach with density exchange + diffusion.
+ *
+ * M782 — cell-pubsub-loop
+ */
+export const prerender = false
+
+import GenerateLayout from '@/layouts/GenerateLayout.astro'
+---
+
+<GenerateLayout
+  meta={{ title: 'Multiphase Fluid · Playground', description: 'Immiscible fluid phases separating by density with surface tension' }}
+  highlightColor='#1A6B8A'
+>
+  <div class='fluid-page'>
+    <canvas id='fluidCanvas' width='600' height='480'></canvas>
+    <div class='controls'>
+      <button id='btnReset'>Reset</button>
+      <button id='btnPause'>Pause</button>
+      <label>Gravity <input id='slGravity' type='range' min='0' max='200' value='80' /></label>
+      <label>Tension <input id='slTension' type='range' min='0' max='100' value='45' /></label>
+    </div>
+    <p class='hint'>Click or drag to inject the heaviest phase. Phases separate by density.</p>
+  </div>
+</GenerateLayout>
+
+<style>
+  .fluid-page { display:flex; flex-direction:column; align-items:center; gap:12px; padding:24px 0; }
+  #fluidCanvas { border:1px solid #2a2a2a; border-radius:6px; background:#0a0a12; cursor:crosshair; image-rendering:pixelated; }
+  .controls { display:flex; gap:14px; align-items:center; flex-wrap:wrap; justify-content:center; }
+  .controls button { padding:6px 16px; border:1px solid #555; border-radius:4px; background:#1e1e2a; color:#ccd; cursor:pointer; font-size:13px; }
+  .controls button:hover { background:#2c2c3e; }
+  .controls label { color:#99a; font-size:13px; display:flex; align-items:center; gap:6px; }
+  .controls input[type=range] { width:90px; }
+  .hint { color:#667; font-size:12px; margin:0; }
+</style>
+
+<script>
+  /**
+   * Multiphase Immiscible Fluid — grid cellular automaton
+   *
+   * 3 phases: 0=air(empty), 1=light(oil), 2=medium(water), 3=heavy(mercury)
+   * Each cell holds a phase ID and a fill fraction (0-1).
+   * Gravity pulls heavier phases down; lighter phases rise.
+   * Surface tension penalises high-curvature interfaces between phases.
+   */
+
+  const W = 150, H = 120
+  const CELL = 4
+  const EMPTY = 0, OIL = 1, WATER = 2, MERCURY = 3
+
+  const DENSITY: Record<number, number> = { [EMPTY]:0, [OIL]:0.7, [WATER]:1.0, [MERCURY]:3.2 }
+
+  const PALETTE: Record<number, [number,number,number]> = {
+    [EMPTY]:   [10, 10, 18],
+    [OIL]:     [220, 180, 60],
+    [WATER]:   [40, 120, 210],
+    [MERCURY]: [180, 190, 200],
+  }
+
+  const IFACE_TINT: Record<string, [number,number,number]> = {
+    '1-2': [140, 200, 130],
+    '1-3': [200, 160, 80],
+    '2-3': [100, 170, 220],
+  }
+
+  let phase: Uint8Array
+  let fill: Float32Array
+  let phaseB: Uint8Array
+  let fillB: Float32Array
+  let paused = false
+  let gravity = 0.08
+  let tension = 0.45
+
+  function idx(x: number, y: number) { return y * W + x }
+
+  function init() {
+    phase  = new Uint8Array(W * H)
+    fill   = new Float32Array(W * H)
+    phaseB = new Uint8Array(W * H)
+    fillB  = new Float32Array(W * H)
+
+    // Initial layered mix — randomised bands so they separate visually
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = idx(x, y)
+        const ny = y / H
+        if (ny > 0.3) {
+          // Random mix of all three fluids
+          const r = Math.random()
+          if (r < 0.33) { phase[i] = OIL; fill[i] = 0.8 + Math.random()*0.2 }
+          else if (r < 0.66) { phase[i] = WATER; fill[i] = 0.8 + Math.random()*0.2 }
+          else { phase[i] = MERCURY; fill[i] = 0.8 + Math.random()*0.2 }
+        } else {
+          phase[i] = EMPTY; fill[i] = 0
+        }
+      }
+    }
+  }
+
+  function clamp01(v: number) { return v < 0 ? 0 : v > 1 ? 1 : v }
+
+  /** Count distinct neighbouring phases for surface tension */
+  function interfaceCount(x: number, y: number, p: number): number {
+    let cnt = 0
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue
+        const nx = x + dx, ny2 = y + dy
+        if (nx < 0 || nx >= W || ny2 < 0 || ny2 >= H) continue
+        const ni = idx(nx, ny2)
+        if (phase[ni] !== p && phase[ni] !== EMPTY && fill[ni] > 0.1) cnt++
+      }
+    }
+    return cnt
+  }
+
+  /** Compute local curvature estimate for surface tension */
+  function curvature(x: number, y: number): number {
+    const p = phase[idx(x, y)]
+    if (p === EMPTY) return 0
+    let same = 0, diff = 0
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue
+        const nx = x + dx, ny2 = y + dy
+        if (nx < 0 || nx >= W || ny2 < 0 || ny2 >= H) { diff++; continue }
+        const ni = idx(nx, ny2)
+        if (phase[ni] === p && fill[ni] > 0.2) same++
+        else diff++
+      }
+    }
+    return diff / (same + diff + 1)
+  }
+
+  function step() {
+    phaseB.set(phase)
+    fillB.set(fill)
+
+    // --- Gravity: swap cells where heavier fluid is above lighter ---
+    for (let y = 0; y < H - 1; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = idx(x, y)
+        const ib = idx(x, y + 1)
+        const pTop = phaseB[i], pBot = phaseB[ib]
+        const dTop = DENSITY[pTop] * fillB[i]
+        const dBot = DENSITY[pBot] * fillB[ib]
+
+        if (dTop > dBot + gravity * 0.01) {
+          // Heavy on top of light — exchange
+          const rate = Math.min(0.35, gravity * 0.004 * (dTop - dBot))
+          const transfer = rate * fillB[i]
+
+          if (pBot === EMPTY || fillB[ib] < 0.05) {
+            // Move into empty
+            phaseB[ib] = pTop
+            fillB[ib] = clamp01(fillB[ib] + transfer)
+            fillB[i] = clamp01(fillB[i] - transfer)
+            if (fillB[i] < 0.02) { phaseB[i] = EMPTY; fillB[i] = 0 }
+          } else if (pTop !== pBot) {
+            // Swap immiscible fluids
+            const swapAmt = Math.min(transfer, fillB[ib], fillB[i])
+            fillB[i]  -= swapAmt * 0.5
+            fillB[ib] += swapAmt * 0.3
+            // Partial phase swap for visual mixing at interface
+            if (Math.random() < rate * 2) {
+              const tmp = phaseB[i]; phaseB[i] = phaseB[ib]; phaseB[ib] = tmp
+              const tmpF = fillB[i]; fillB[i] = fillB[ib]; fillB[ib] = tmpF
+            }
+          }
+        }
+      }
+    }
+
+    // --- Lateral spreading under gravity ---
+    for (let y = H - 1; y >= 0; y--) {
+      for (let x = 0; x < W; x++) {
+        const i = idx(x, y)
+        if (phaseB[i] === EMPTY || fillB[i] < 0.1) continue
+
+        // Try to spread sideways if cell below is full
+        const below = y < H-1 ? idx(x, y+1) : -1
+        const belowFull = below >= 0 && fillB[below] > 0.85
+
+        if (belowFull || y === H - 1) {
+          const dir = Math.random() < 0.5 ? -1 : 1
+          for (const d of [dir, -dir]) {
+            const nx = x + d
+            if (nx < 0 || nx >= W) continue
+            const ni = idx(nx, y)
+            if (phaseB[ni] === EMPTY || fillB[ni] < 0.05) {
+              const spread = 0.12 * fillB[i]
+              phaseB[ni] = phaseB[i]
+              fillB[ni] = clamp01(fillB[ni] + spread)
+              fillB[i]  = clamp01(fillB[i] - spread)
+              break
+            }
+          }
+        }
+      }
+    }
+
+    // --- Surface tension: smooth interfaces, reduce curvature ---
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const i = idx(x, y)
+        if (phaseB[i] === EMPTY) continue
+        const k = curvature(x, y)
+        if (k < 0.3) continue
+
+        // High curvature — try to minimise by pulling toward neighbours of same phase
+        const p = phaseB[i]
+        let bestDir = -1, bestK = k
+        const dirs = [[0,-1],[0,1],[-1,0],[1,0]]
+        for (let d = 0; d < 4; d++) {
+          const nx = x + dirs[d][0], ny2 = y + dirs[d][1]
+          if (nx<=0||nx>=W-1||ny2<=0||ny2>=H-1) continue
+          const ni = idx(nx, ny2)
+          if (phaseB[ni] === p && fillB[ni] > 0.5) continue
+          if (phaseB[ni] !== EMPTY && phaseB[ni] !== p) continue
+          // Would moving some fill here reduce curvature?
+          const nk = curvature(nx, ny2)
+          if (nk < bestK) { bestK = nk; bestDir = d }
+        }
+        if (bestDir >= 0 && k - bestK > 0.15) {
+          const nx = x + dirs[bestDir][0], ny2 = y + dirs[bestDir][1]
+          const ni = idx(nx, ny2)
+          const amt = tension * 0.02 * (k - bestK)
+          phaseB[ni] = p
+          fillB[ni] = clamp01(fillB[ni] + amt)
+          fillB[i]  = clamp01(fillB[i] - amt * 0.5)
+        }
+      }
+    }
+
+    // --- Cleanup: evaporate near-zero fills ---
+    for (let i = 0; i < W * H; i++) {
+      if (fillB[i] < 0.02 && phaseB[i] !== EMPTY) {
+        phaseB[i] = EMPTY; fillB[i] = 0
+      }
+      if (phaseB[i] !== EMPTY && fillB[i] > 1) fillB[i] = 1
+    }
+
+    phase.set(phaseB)
+    fill.set(fillB)
+  }
+
+  function render(ctx: CanvasRenderingContext2D, imgData: ImageData) {
+    const d = imgData.data
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = idx(x, y)
+        const p = phase[i]
+        const f = fill[i]
+        const base = PALETTE[p]
+
+        let r = base[0], g = base[1], b = base[2]
+
+        if (p !== EMPTY && f > 0.05) {
+          // Modulate brightness by fill
+          const bright = 0.4 + 0.6 * f
+          r = Math.round(r * bright)
+          g = Math.round(g * bright)
+          b = Math.round(b * bright)
+
+          // Interface tinting — glow at boundaries
+          const ifc = interfaceCount(x, y, p)
+          if (ifc > 0) {
+            // Find which neighbour phase for tint colour
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                const nx2 = x+dx, ny2 = y+dy
+                if (nx2<0||nx2>=W||ny2<0||ny2>=H) continue
+                const ni = idx(nx2, ny2)
+                if (phase[ni] !== p && phase[ni] !== EMPTY) {
+                  const key = Math.min(p, phase[ni]) + '-' + Math.max(p, phase[ni])
+                  const tint = IFACE_TINT[key]
+                  if (tint) {
+                    const t = Math.min(ifc / 6, 0.5)
+                    r = Math.round(r * (1-t) + tint[0] * t)
+                    g = Math.round(g * (1-t) + tint[1] * t)
+                    b = Math.round(b * (1-t) + tint[2] * t)
+                  }
+                  break
+                }
+              }
+              if (ifc > 0) break
+            }
+          }
+        }
+
+        // Write to image — each sim cell = CELL×CELL pixels
+        for (let py = 0; py < CELL; py++) {
+          for (let px = 0; px < CELL; px++) {
+            const pi = ((y*CELL+py) * W*CELL + (x*CELL+px)) * 4
+            d[pi] = r; d[pi+1] = g; d[pi+2] = b; d[pi+3] = 255
+          }
+        }
+      }
+    }
+    ctx.putImageData(imgData, 0, 0)
+  }
+
+  // --- Injection on click/drag ---
+  let mouseDown = false
+  function inject(cx: number, cy: number) {
+    const canvas = document.getElementById('fluidCanvas') as HTMLCanvasElement
+    const rect = canvas.getBoundingClientRect()
+    const sx = (cx - rect.left) / rect.width
+    const sy = (cy - rect.top) / rect.height
+    const gx = Math.floor(sx * W), gy = Math.floor(sy * H)
+    const R = 4
+    for (let dy = -R; dy <= R; dy++) {
+      for (let dx = -R; dx <= R; dx++) {
+        if (dx*dx+dy*dy > R*R) continue
+        const nx = gx+dx, ny = gy+dy
+        if (nx<0||nx>=W||ny<0||ny>=H) continue
+        const i = idx(nx, ny)
+        phase[i] = MERCURY
+        fill[i] = clamp01(fill[i] + 0.6)
+      }
+    }
+  }
+
+  // --- Main ---
+  document.addEventListener('DOMContentLoaded', () => {
+    const canvas = document.getElementById('fluidCanvas') as HTMLCanvasElement
+    const ctx = canvas.getContext('2d')!
+    const imgData = ctx.createImageData(W * CELL, H * CELL)
+
+    const btnReset = document.getElementById('btnReset')!
+    const btnPause = document.getElementById('btnPause')!
+    const slGrav = document.getElementById('slGravity') as HTMLInputElement
+    const slTens = document.getElementById('slTension') as HTMLInputElement
+
+    init()
+
+    btnReset.addEventListener('click', () => init())
+    btnPause.addEventListener('click', () => {
+      paused = !paused
+      btnPause.textContent = paused ? 'Play' : 'Pause'
+    })
+    slGrav.addEventListener('input', () => { gravity = +slGrav.value / 1000 })
+    slTens.addEventListener('input', () => { tension = +slTens.value / 100 })
+
+    canvas.addEventListener('mousedown', e => { mouseDown = true; inject(e.clientX, e.clientY) })
+    canvas.addEventListener('mousemove', e => { if (mouseDown) inject(e.clientX, e.clientY) })
+    window.addEventListener('mouseup', () => { mouseDown = false })
+    canvas.addEventListener('touchstart', e => { e.preventDefault(); inject(e.touches[0].clientX, e.touches[0].clientY) })
+    canvas.addEventListener('touchmove', e => { e.preventDefault(); inject(e.touches[0].clientX, e.touches[0].clientY) })
+
+    function loop() {
+      if (!paused) {
+        for (let s = 0; s < 3; s++) step()
+      }
+      render(ctx, imgData)
+      requestAnimationFrame(loop)
+    }
+    loop()
+  })
+</script>
