@@ -5,7 +5,43 @@
     "neighbors": [
       "pos_encode"
     ],
-    "influence_strength": 0.12
+    "influence_strength": 0.12,
+    "shader_params": {
+      "sdf_type": "sdRoundBox",
+      "sdf_radius": 0.08,
+      "glow_intensity": 0.55,
+      "glow_color": [
+        0.47,
+        0.56,
+        0.61
+      ],
+      "fresnel_power": 2.5,
+      "noise_scale": 0.18,
+      "noise_speed": 0.12,
+      "edge_softness": 0.04
+    },
+    "pixi_filters": {
+      "bloom": {
+        "threshold": 0.6,
+        "bloomScale": 0.4,
+        "brightness": 1.05
+      },
+      "glow": {
+        "distance": 10,
+        "outerStrength": 0.75,
+        "innerStrength": 0.2,
+        "color": "0x78909C"
+      },
+      "drop_shadow": {
+        "offset": [
+          2,
+          3
+        ],
+        "blur": 6,
+        "alpha": 0.28,
+        "color": "0x1C2C35"
+      }
+    }
   },
   "pos_encode": {
     "display_color": "#7E57C2",

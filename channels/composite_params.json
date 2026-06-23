@@ -20,6 +20,54 @@
         "halo_radius": 0.15,
         "internal_pattern": "one_dimensional_heatmap_bars",
         "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
+      },
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.08,
+          "glow_intensity": 0.55,
+          "glow_color": [
+            0.47,
+            0.56,
+            0.61
+          ],
+          "fresnel_power": 2.5,
+          "noise_scale": 0.18,
+          "noise_speed": 0.12,
+          "edge_softness": 0.04
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.6,
+            "bloomScale": 0.4,
+            "brightness": 1.05
+          },
+          "glow": {
+            "distance": 10,
+            "outerStrength": 0.75,
+            "innerStrength": 0.2,
+            "color": "0x78909C"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 6,
+            "alpha": 0.28,
+            "color": "0x1C2C35"
+          }
+        },
+        "render_params": {
+          "z_index": 1,
+          "blend_mode": "normal",
+          "corner_radius": 8,
+          "border_width": 1,
+          "border_color": "#78909C",
+          "background_opacity": 0.88,
+          "label_font_size": 11,
+          "icon_scale": 0.85
+        }
       }
     },
     "pos_encode": {
