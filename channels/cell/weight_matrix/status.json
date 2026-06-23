@@ -1,14 +1,14 @@
 {
   "status": "agent_dispatched",
-  "cell_id": "add_norm2",
-  "species": "cil-plus",
+  "cell_id": "weight_matrix",
+  "species": "cil-code",
   "epoch": 0,
   "bbox": {
-    "x": 220,
-    "y": 575,
+    "x": 776.0,
+    "y": 1401,
     "w": 140,
-    "h": 40,
-    "z": 5
+    "h": 100,
+    "z": 3
   },
   "opacity": 0.8,
   "species_params": {}

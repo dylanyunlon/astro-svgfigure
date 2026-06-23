@@ -1,13 +1,13 @@
 {
   "status": "agent_dispatched",
-  "cell_id": "ffn",
-  "species": "cil-bolt",
+  "cell_id": "local_images",
+  "species": "cil-code",
   "epoch": 0,
   "bbox": {
-    "x": 220,
-    "y": 470,
-    "w": 140,
-    "h": 45,
+    "x": 675,
+    "y": 2335,
+    "w": 170,
+    "h": 118,
     "z": 3
   },
   "opacity": 0.8,

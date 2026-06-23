@@ -1,13 +1,13 @@
 {
   "status": "agent_dispatched",
-  "cell_id": "output",
+  "cell_id": "json_output",
   "species": "cil-arrow-right",
   "epoch": 0,
   "bbox": {
-    "x": 220,
-    "y": 675,
-    "w": 160,
-    "h": 50,
+    "x": 723.5,
+    "y": 1669,
+    "w": 170,
+    "h": 118,
     "z": 3
   },
   "opacity": 0.8,

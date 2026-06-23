@@ -1,13 +1,13 @@
 {
   "status": "agent_dispatched",
-  "cell_id": "ffn",
-  "species": "cil-bolt",
+  "cell_id": "pruned_dataset",
+  "species": "cil-vector",
   "epoch": 0,
   "bbox": {
-    "x": 220,
-    "y": 470,
-    "w": 140,
-    "h": 45,
+    "x": 525,
+    "y": 899,
+    "w": 170,
+    "h": 118,
     "z": 3
   },
   "opacity": 0.8,

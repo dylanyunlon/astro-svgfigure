@@ -1,14 +1,14 @@
 {
   "status": "agent_dispatched",
-  "cell_id": "add_norm2",
+  "cell_id": "loss_training",
   "species": "cil-plus",
   "epoch": 0,
   "bbox": {
-    "x": 220,
-    "y": 575,
-    "w": 140,
-    "h": 40,
-    "z": 5
+    "x": 1082,
+    "y": 25,
+    "w": 150,
+    "h": 105,
+    "z": 3
   },
   "opacity": 0.8,
   "species_params": {}

@@ -1,0 +1,15 @@
+{
+  "status": "agent_dispatched",
+  "cell_id": "patch_division",
+  "species": "cil-code",
+  "epoch": 0,
+  "bbox": {
+    "x": 907.6666666666665,
+    "y": 1107,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
+}

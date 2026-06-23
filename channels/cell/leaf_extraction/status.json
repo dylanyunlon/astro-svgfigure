@@ -1,0 +1,15 @@
+{
+  "status": "agent_dispatched",
+  "cell_id": "leaf_extraction",
+  "species": "cil-code",
+  "epoch": 0,
+  "bbox": {
+    "x": 703.3333333333334,
+    "y": 2197,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
+}

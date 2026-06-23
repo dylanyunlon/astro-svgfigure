@@ -1,0 +1,15 @@
+{
+  "status": "agent_dispatched",
+  "cell_id": "next_token_prediction",
+  "species": "cil-loop",
+  "epoch": 0,
+  "bbox": {
+    "x": 913.5,
+    "y": 1669,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
+}

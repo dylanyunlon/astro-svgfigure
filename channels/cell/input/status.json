@@ -1,13 +1,13 @@
 {
   "status": "agent_dispatched",
-  "cell_id": "add_norm2",
-  "species": "cil-plus",
+  "cell_id": "input",
+  "species": "cil-vector",
   "epoch": 0,
   "bbox": {
     "x": 220,
-    "y": 575,
-    "w": 140,
-    "h": 40,
+    "y": 40,
+    "w": 160,
+    "h": 45,
     "z": 5
   },
   "opacity": 0.8,

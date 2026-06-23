@@ -1,6 +1,15 @@
 {
-  "status": "converged",
+  "status": "agent_dispatched",
   "cell_id": "add_norm1",
   "species": "cil-plus",
-  "epoch": 10
+  "epoch": 0,
+  "bbox": {
+    "x": 220,
+    "y": 370,
+    "w": 140,
+    "h": 40,
+    "z": 5
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

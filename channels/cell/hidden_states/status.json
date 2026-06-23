@@ -1,13 +1,13 @@
 {
   "status": "agent_dispatched",
-  "cell_id": "ffn",
+  "cell_id": "hidden_states",
   "species": "cil-bolt",
   "epoch": 0,
   "bbox": {
-    "x": 220,
-    "y": 470,
-    "w": 140,
-    "h": 45,
+    "x": 936.0,
+    "y": 1383,
+    "w": 170,
+    "h": 118,
     "z": 3
   },
   "opacity": 0.8,

@@ -1,13 +1,13 @@
 {
   "status": "agent_dispatched",
-  "cell_id": "add_norm2",
-  "species": "cil-plus",
+  "cell_id": "alignment_group",
+  "species": "cil-layers",
   "epoch": 0,
   "bbox": {
-    "x": 220,
-    "y": 575,
-    "w": 140,
-    "h": 40,
+    "x": 533,
+    "y": 3820,
+    "w": 450,
+    "h": 145,
     "z": 5
   },
   "opacity": 0.8,
