@@ -1,0 +1,17 @@
+{
+  "species_shader_sync": {
+    "conv_id": "e460d7eb-92c7-42e7-99f4-8d0cdb97d1ad",
+    "milestone": "M840",
+    "url": "https://claude.hk.cn/chat/e460d7eb-92c7-42e7-99f4-8d0cdb97d1ad"
+  },
+  "bloom_camera_params": {
+    "conv_id": "eb3da019-2fdf-440e-a53d-7a4ee78d36a5",
+    "milestone": "M841",
+    "url": "https://claude.hk.cn/chat/eb3da019-2fdf-440e-a53d-7a4ee78d36a5"
+  },
+  "z_layers_compute": {
+    "conv_id": "74f64148-df99-472a-bd1d-92ab8ef9cebd",
+    "milestone": "M842",
+    "url": "https://claude.hk.cn/chat/74f64148-df99-472a-bd1d-92ab8ef9cebd"
+  }
+}

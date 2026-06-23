@@ -6,6 +6,15 @@
       "pattern": "magnitude",
       "line_style": "weighted",
       "family": "embedding"
+    },
+    "agent_derived": {
+      "primary_color": "#546E7A",
+      "glow_color": "#78909C",
+      "algorithm_gene": "token_to_vector_heatmap",
+      "sdf_shape": "rounded_rect",
+      "animation_speed": 0.6,
+      "internal_pattern": "one_dimensional_heatmap_bars",
+      "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
     }
   },
   "pos_encode": {
@@ -15,6 +24,15 @@
       "pattern": "magnitude",
       "line_style": "weighted",
       "family": "embedding"
+    },
+    "agent_derived": {
+      "primary_color": "#7E57C2",
+      "glow_color": "#B39DDB",
+      "algorithm_gene": "sinusoidal_wave_pattern",
+      "sdf_shape": "rounded_rect",
+      "animation_speed": 1.2,
+      "internal_pattern": "sine_cosine_alternating_bands",
+      "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies"
     }
   },
   "self_attn": {
@@ -24,6 +42,15 @@
       "pattern": "heatmap",
       "line_style": "ray",
       "family": "attention"
+    },
+    "agent_derived": {
+      "primary_color": "#1E88E5",
+      "glow_color": "#64B5F6",
+      "algorithm_gene": "radial_qkv_heatmap",
+      "sdf_shape": "rounded_rect",
+      "animation_speed": 0.8,
+      "internal_pattern": "multi_head_attention_grid",
+      "academic_source": "InTraVisTo: green=attention flow; Transformer Explainer: QKV branching Sankey"
     }
   },
   "add_norm1": {
@@ -33,6 +60,15 @@
       "pattern": "merge",
       "line_style": "converge",
       "family": "aggregation"
+    },
+    "agent_derived": {
+      "primary_color": "#E53935",
+      "glow_color": "#EF9A9A",
+      "algorithm_gene": "residual_merge_crosshair",
+      "sdf_shape": "rounded_rect",
+      "animation_speed": 0.4,
+      "internal_pattern": "plus_sign_merge_indicator",
+      "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
     }
   },
   "ffn": {
@@ -42,6 +78,15 @@
       "pattern": "gradient",
       "line_style": "angular",
       "family": "activation"
+    },
+    "agent_derived": {
+      "primary_color": "#F57C00",
+      "glow_color": "#FFB74D",
+      "algorithm_gene": "zigzag_relu_activation",
+      "sdf_shape": "rounded_rect",
+      "animation_speed": 1.0,
+      "internal_pattern": "expand_contract_bottleneck",
+      "academic_source": "InTraVisTo: pink=FF layers; standard: wide→narrow→wide MLP bottleneck shape"
     }
   },
   "add_norm2": {
@@ -51,6 +96,15 @@
       "pattern": "merge",
       "line_style": "converge",
       "family": "aggregation"
+    },
+    "agent_derived": {
+      "primary_color": "#C62828",
+      "glow_color": "#EF5350",
+      "algorithm_gene": "residual_merge_crosshair",
+      "sdf_shape": "rounded_rect",
+      "animation_speed": 0.4,
+      "internal_pattern": "plus_sign_merge_indicator",
+      "academic_source": "Same residual convention as add_norm1; paired visually"
     }
   },
   "output": {
@@ -60,6 +114,15 @@
       "pattern": "flow",
       "line_style": "directed",
       "family": "dataflow"
+    },
+    "agent_derived": {
+      "primary_color": "#2E7D32",
+      "glow_color": "#66BB6A",
+      "algorithm_gene": "directed_arrow_flow_terminal",
+      "sdf_shape": "capsule",
+      "animation_speed": 0.5,
+      "internal_pattern": "probability_distribution_bars",
+      "academic_source": "Transformer Explainer: output probabilities as bar chart; green for output/result"
     }
   }
 }

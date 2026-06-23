@@ -1,65 +1,58 @@
 {
-  "_source": "channels/physics/at_uil_params.json — UnrealBloomComposite & UnrealBloomLuminosity trees",
-  "_note": "All values verbatim from AT UIL. Two families: core scenes and shaderVariants (sv_*).",
-
-  "home": {
-    "bloomStrength": 3.8200000000000003,
-    "bloomRadius": 1,
-    "luminosityThreshold": 0
+  "input_embed": {
+    "color": "#546E7A",
+    "glow_color": "#78909C",
+    "bloom_threshold": 0.6,
+    "bloom_intensity": 0.4,
+    "bloom_radius": 8,
+    "glow_strength": 0.75
   },
-  "homebloom": {
-    "bloomStrength": 1.2,
-    "bloomRadius": 1,
-    "luminosityThreshold": 0
+  "pos_encode": {
+    "color": "#7E57C2",
+    "glow_color": "#B39DDB",
+    "bloom_threshold": 0.6,
+    "bloom_intensity": 0.4,
+    "bloom_radius": 8,
+    "glow_strength": 1.0
   },
-  "globalbloom": {
-    "bloomStrength": 0.3,
-    "bloomRadius": 0.2,
-    "luminosityThreshold": 0
+  "self_attn": {
+    "color": "#1E88E5",
+    "glow_color": "#64B5F6",
+    "bloom_threshold": 0.6,
+    "bloom_intensity": 0.8,
+    "bloom_radius": 12,
+    "glow_strength": 1.75
   },
-  "cleanroom": {
-    "bloomStrength": 1,
-    "bloomRadius": 1,
-    "luminosityThreshold": 0.2
+  "add_norm1": {
+    "color": "#E53935",
+    "glow_color": "#EF9A9A",
+    "bloom_threshold": 0.6,
+    "bloom_intensity": 0.4,
+    "bloom_radius": 8,
+    "glow_strength": 0.6
   },
-  "workbloom": {
-    "bloomStrength": 1,
-    "bloomRadius": 1,
-    "luminosityThreshold": 0
+  "ffn": {
+    "color": "#F57C00",
+    "glow_color": "#FFB74D",
+    "bloom_threshold": 0.6,
+    "bloom_intensity": 0.8,
+    "bloom_radius": 8,
+    "glow_strength": 1.1
   },
-  "treescene": {
-    "bloomStrength": 1,
-    "bloomRadius": 1,
-    "luminosityThreshold": 0
+  "add_norm2": {
+    "color": "#C62828",
+    "glow_color": "#EF5350",
+    "bloom_threshold": 0.6,
+    "bloom_intensity": 0.4,
+    "bloom_radius": 8,
+    "glow_strength": 0.6
   },
-  "sv_contact": {
-    "bloomStrength": 0.8,
-    "bloomRadius": 0.5,
-    "luminosityThreshold": 0
-  },
-  "sv_about": {
-    "bloomStrength": 1,
-    "bloomRadius": 1,
-    "luminosityThreshold": 0
-  },
-  "sv_footer": {
-    "bloomStrength": 0.7,
-    "bloomRadius": 0.5,
-    "luminosityThreshold": 0
-  },
-  "sv_home": {
-    "bloomStrength": 0.6,
-    "bloomRadius": 0.8,
-    "luminosityThreshold": 0
-  },
-  "sv_work": {
-    "bloomStrength": 0.5,
-    "bloomRadius": 0.5,
-    "luminosityThreshold": 0
-  },
-  "sv_tree": {
-    "bloomStrength": 0.8,
-    "bloomRadius": 0.7,
-    "luminosityThreshold": 0
+  "output": {
+    "color": "#2E7D32",
+    "glow_color": "#66BB6A",
+    "bloom_threshold": 0.6,
+    "bloom_intensity": 0.4,
+    "bloom_radius": 8,
+    "glow_strength": 0.8999999999999999
   }
 }
