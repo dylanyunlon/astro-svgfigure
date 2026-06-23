@@ -1,0 +1,244 @@
+{
+  "_meta": {
+    "task": "M878",
+    "description": "AT texture manifest — 33 PBR textures mapped to cell/scene elements",
+    "source_dir": "upstream/activetheory-assets/textures/",
+    "format": "ktx2",
+    "generated": "2026-06-23",
+    "total_textures": 33,
+    "pbr_sets": 8,
+    "pbr_channel_groups": ["baseColor", "Normal", "MRO"]
+  },
+  "pbr_textures": {
+    "CABLES": {
+      "cell": "_edges",
+      "scene_element": "cables",
+      "geometry_bin": "cables.bin",
+      "baseColor": "CABLES___CyclesBake_COMBINED.ktx2",
+      "Normal": "CABLES___PBR_Normal.ktx2",
+      "MRO": "CABLES___PBR_AT_MRO.ktx2",
+      "size_bytes": {
+        "CABLES___CyclesBake_COMBINED.ktx2": 100626,
+        "CABLES___PBR_Normal.ktx2": 131543,
+        "CABLES___PBR_AT_MRO.ktx2": 28218
+      }
+    },
+    "PILLARS": {
+      "cell": "input_embed",
+      "scene_element": "pillars",
+      "geometry_bin": "pillars.bin",
+      "baseColor": "PILLARS___CyclesBake_COMBINED.ktx2",
+      "Normal": "PILLARS___PBR_Normal.ktx2",
+      "MRO": "PILLARS___PBR_AT_MRO.ktx2",
+      "size_bytes": {
+        "PILLARS___CyclesBake_COMBINED.ktx2": 48879,
+        "PILLARS___PBR_Normal.ktx2": 79488,
+        "PILLARS___PBR_AT_MRO.ktx2": 67994
+      }
+    },
+    "ROCKY_SOIL": {
+      "cell": "_ground",
+      "scene_element": "rocky_soil",
+      "geometry_bin": "rocky_soil.bin",
+      "baseColor": "ROCKY_SOIL___CyclesBake_COMBINED.ktx2",
+      "Normal": "ROCKY_SOIL___PBR_Normal.ktx2",
+      "MRO": "ROCKY_SOIL___PBR_AT_MRO.ktx2",
+      "size_bytes": {
+        "ROCKY_SOIL___CyclesBake_COMBINED.ktx2": 38157,
+        "ROCKY_SOIL___PBR_Normal.ktx2": 174547,
+        "ROCKY_SOIL___PBR_AT_MRO.ktx2": 62877
+      }
+    },
+    "ROCK_L": {
+      "cell": "add_norm1",
+      "scene_element": "rock_left",
+      "geometry_bin": "rock_L.bin",
+      "baseColor": "ROCK_L___CyclesBake_COMBINED.ktx2",
+      "Normal": "ROCK_L___PBR_Normal.ktx2",
+      "MRO": "ROCK_L___PBR_AT_MRO.ktx2",
+      "size_bytes": {
+        "ROCK_L___CyclesBake_COMBINED.ktx2": 27408,
+        "ROCK_L___PBR_Normal.ktx2": 138030,
+        "ROCK_L___PBR_AT_MRO.ktx2": 48823
+      }
+    },
+    "ROCK_R": {
+      "cell": "add_norm2",
+      "scene_element": "rock_right",
+      "geometry_bin": "rock_R.bin",
+      "baseColor": "ROCK_R___CyclesBake_COMBINED.ktx2",
+      "Normal": "ROCK_R___PBR_Normal.ktx2",
+      "MRO": "ROCK_R___PBR_AT_MRO.ktx2",
+      "size_bytes": {
+        "ROCK_R___CyclesBake_COMBINED.ktx2": 50354,
+        "ROCK_R___PBR_Normal.ktx2": 162237,
+        "ROCK_R___PBR_AT_MRO.ktx2": 44004
+      }
+    },
+    "SAND": {
+      "cell": "_ground",
+      "scene_element": "sand",
+      "geometry_bin": "sand.bin",
+      "baseColor": "SAND___CyclesBake_COMBINED.ktx2",
+      "Normal": "SAND___PBR_Normal.ktx2",
+      "MRO": "SAND___PBR_AT_MRO.ktx2",
+      "size_bytes": {
+        "SAND___CyclesBake_COMBINED.ktx2": 48609,
+        "SAND___PBR_Normal.ktx2": 126734,
+        "SAND___PBR_AT_MRO.ktx2": 19974
+      }
+    },
+    "STRUCTURE": {
+      "cell": "_scene",
+      "scene_element": "structure",
+      "geometry_bin": "structure.bin",
+      "baseColor": "STRUCTURE___CyclesBake_COMBINED.ktx2",
+      "Normal": "STRUCTURE___PBR_Normal.ktx2",
+      "MRO": "STRUCTURE___PBR_AT_MRO.ktx2",
+      "size_bytes": {
+        "STRUCTURE___CyclesBake_COMBINED.ktx2": 128224,
+        "STRUCTURE___PBR_Normal.ktx2": 45357,
+        "STRUCTURE___PBR_AT_MRO.ktx2": 106212
+      }
+    },
+    "WALLS_CEILING": {
+      "cell": "_boundary",
+      "scene_element": "walls",
+      "geometry_bin": "walls.bin",
+      "baseColor": "WALLS_CEILING___CyclesBake_COMBINED.ktx2",
+      "Normal": "WALLS_CEILING___PBR_Normal.ktx2",
+      "MRO": "WALLS_CEILING___PBR_AT_MRO.ktx2",
+      "size_bytes": {
+        "WALLS_CEILING___CyclesBake_COMBINED.ktx2": 57497,
+        "WALLS_CEILING___PBR_Normal.ktx2": 32846,
+        "WALLS_CEILING___PBR_AT_MRO.ktx2": 2578
+      }
+    }
+  },
+  "standalone_textures": {
+    "alien_cracked_2_basecolor.ktx2": {
+      "cell": "self_attn",
+      "scene_element": "jellyfish_surface",
+      "pbr_channel": "baseColor",
+      "notes": "alien cracked surface — jellyfish/self-attention geometry overlay",
+      "size_bytes": 55172
+    },
+    "cracked_ice_basecolor.ktx2": {
+      "cell": "pos_encode",
+      "scene_element": "spine_surface",
+      "pbr_channel": "baseColor",
+      "notes": "cracked ice surface — spine/positional-encoding geometry overlay",
+      "size_bytes": 51750
+    },
+    "cliffs_MRO.ktx2": {
+      "cell": "_ground",
+      "scene_element": "terrain_cliffs",
+      "pbr_channel": "MRO",
+      "notes": "cliff terrain MRO — ground-layer supplement",
+      "size_bytes": 40978
+    },
+    "woodplanks_normal.ktx2": {
+      "cell": "_scene",
+      "scene_element": "floor_detail",
+      "pbr_channel": "Normal",
+      "notes": "wood plank normal — floor/structure detail layer",
+      "size_bytes": 39899
+    },
+    "env1.ktx2": {
+      "cell": "_bg",
+      "scene_element": "environment_ibl",
+      "pbr_channel": "envmap",
+      "notes": "IBL environment map — scene background lighting",
+      "size_bytes": 21416
+    },
+    "matcap-test.ktx2": {
+      "cell": "_fx",
+      "scene_element": "matcap_fx",
+      "pbr_channel": "matcap",
+      "notes": "matcap test — fx/post layer material capture",
+      "size_bytes": 44610
+    },
+    "matcap3.ktx2": {
+      "cell": "output",
+      "scene_element": "AT_logo_matcap",
+      "pbr_channel": "matcap",
+      "notes": "matcap3 — output/AT_logo material capture",
+      "size_bytes": 1951
+    },
+    "empty_normal.ktx2": {
+      "cell": "_prim",
+      "scene_element": "fallback_normal",
+      "pbr_channel": "Normal",
+      "notes": "1×1 flat normal fallback for unassigned primitives",
+      "size_bytes": 493
+    },
+    "empty_mro.ktx2": {
+      "cell": "_prim",
+      "scene_element": "fallback_mro",
+      "pbr_channel": "MRO",
+      "notes": "1×1 neutral MRO fallback for unassigned primitives",
+      "size_bytes": 492
+    }
+  },
+  "index_by_cell": {
+    "self_attn":   ["ROCK_R___CyclesBake_COMBINED.ktx2", "ROCK_R___PBR_Normal.ktx2", "ROCK_R___PBR_AT_MRO.ktx2", "alien_cracked_2_basecolor.ktx2"],
+    "add_norm1":   ["ROCK_L___CyclesBake_COMBINED.ktx2", "ROCK_L___PBR_Normal.ktx2", "ROCK_L___PBR_AT_MRO.ktx2"],
+    "add_norm2":   ["ROCK_R___CyclesBake_COMBINED.ktx2", "ROCK_R___PBR_Normal.ktx2", "ROCK_R___PBR_AT_MRO.ktx2"],
+    "ffn":         ["STRUCTURE___CyclesBake_COMBINED.ktx2", "STRUCTURE___PBR_Normal.ktx2", "STRUCTURE___PBR_AT_MRO.ktx2"],
+    "input_embed": ["PILLARS___CyclesBake_COMBINED.ktx2", "PILLARS___PBR_Normal.ktx2", "PILLARS___PBR_AT_MRO.ktx2"],
+    "pos_encode":  ["ROCKY_SOIL___CyclesBake_COMBINED.ktx2", "ROCKY_SOIL___PBR_Normal.ktx2", "ROCKY_SOIL___PBR_AT_MRO.ktx2", "cracked_ice_basecolor.ktx2"],
+    "output":      ["matcap3.ktx2"],
+    "_edges":      ["CABLES___CyclesBake_COMBINED.ktx2", "CABLES___PBR_Normal.ktx2", "CABLES___PBR_AT_MRO.ktx2"],
+    "_ground":     ["SAND___CyclesBake_COMBINED.ktx2", "SAND___PBR_Normal.ktx2", "SAND___PBR_AT_MRO.ktx2", "ROCKY_SOIL___CyclesBake_COMBINED.ktx2", "ROCKY_SOIL___PBR_Normal.ktx2", "ROCKY_SOIL___PBR_AT_MRO.ktx2", "cliffs_MRO.ktx2"],
+    "_boundary":   ["WALLS_CEILING___CyclesBake_COMBINED.ktx2", "WALLS_CEILING___PBR_Normal.ktx2", "WALLS_CEILING___PBR_AT_MRO.ktx2"],
+    "_scene":      ["STRUCTURE___CyclesBake_COMBINED.ktx2", "STRUCTURE___PBR_Normal.ktx2", "STRUCTURE___PBR_AT_MRO.ktx2", "woodplanks_normal.ktx2"],
+    "_bg":         ["env1.ktx2"],
+    "_fx":         ["matcap-test.ktx2"],
+    "_prim":       ["empty_normal.ktx2", "empty_mro.ktx2"]
+  },
+  "index_by_pbr_channel": {
+    "baseColor": [
+      "CABLES___CyclesBake_COMBINED.ktx2",
+      "PILLARS___CyclesBake_COMBINED.ktx2",
+      "ROCKY_SOIL___CyclesBake_COMBINED.ktx2",
+      "ROCK_L___CyclesBake_COMBINED.ktx2",
+      "ROCK_R___CyclesBake_COMBINED.ktx2",
+      "SAND___CyclesBake_COMBINED.ktx2",
+      "STRUCTURE___CyclesBake_COMBINED.ktx2",
+      "WALLS_CEILING___CyclesBake_COMBINED.ktx2",
+      "alien_cracked_2_basecolor.ktx2",
+      "cracked_ice_basecolor.ktx2"
+    ],
+    "Normal": [
+      "CABLES___PBR_Normal.ktx2",
+      "PILLARS___PBR_Normal.ktx2",
+      "ROCKY_SOIL___PBR_Normal.ktx2",
+      "ROCK_L___PBR_Normal.ktx2",
+      "ROCK_R___PBR_Normal.ktx2",
+      "SAND___PBR_Normal.ktx2",
+      "STRUCTURE___PBR_Normal.ktx2",
+      "WALLS_CEILING___PBR_Normal.ktx2",
+      "woodplanks_normal.ktx2",
+      "empty_normal.ktx2"
+    ],
+    "MRO": [
+      "CABLES___PBR_AT_MRO.ktx2",
+      "PILLARS___PBR_AT_MRO.ktx2",
+      "ROCKY_SOIL___PBR_AT_MRO.ktx2",
+      "ROCK_L___PBR_AT_MRO.ktx2",
+      "ROCK_R___PBR_AT_MRO.ktx2",
+      "SAND___PBR_AT_MRO.ktx2",
+      "STRUCTURE___PBR_AT_MRO.ktx2",
+      "WALLS_CEILING___PBR_AT_MRO.ktx2",
+      "cliffs_MRO.ktx2",
+      "empty_mro.ktx2"
+    ],
+    "matcap": [
+      "matcap-test.ktx2",
+      "matcap3.ktx2"
+    ],
+    "envmap": [
+      "env1.ktx2"
+    ]
+  }
+}
