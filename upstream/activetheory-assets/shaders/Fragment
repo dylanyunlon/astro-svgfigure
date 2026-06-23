@@ -1,0 +1,6 @@
+
+#require(fresnel.glsl)
+
+void main() {
+    gl_FragColor = vec4(uColor * (1.0 - getFresnel(vNormal, vViewDir, 5.0)), 1.0);
+}
