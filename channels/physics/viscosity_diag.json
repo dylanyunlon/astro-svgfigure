@@ -1,0 +1,10 @@
+{
+  "cells": 7,
+  "edges": 8,
+  "dt_mu": 0.00025,
+  "cg_iter_x": 1,
+  "cg_iter_y": 2,
+  "residual_x": 1.7776366470164438e-07,
+  "residual_y": 6.480048658355603e-09,
+  "max_delta": 0.0814159
+}
