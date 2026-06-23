@@ -314,6 +314,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
   <div id="world-root">
     <canvas id="sph-canvas"></canvas>
+    <!-- GPU render loop canvas (M885: GPURenderLoop integration) -->
+    <canvas id="gpu-world" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;"></canvas>
 
     <!-- HUD -->
     <div id="hud">
@@ -568,6 +570,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     extractCompositeParams,
     type CompositeParams,
   } from '@/lib/renderers/at-uil-bridge';
+  import {
+    GPURenderLoop,
+    type CellData,
+    type EdgeData,
+  } from '@/lib/sph/gpu-render-loop';
 
   // ── QoS profiles ──────────────────────────────────────────────────────────
   const QOS_PROFILES = {
@@ -1399,6 +1406,113 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     });
     resizeObserver.observe(canvas);
 
+    // ── GPURenderLoop (M885) — WebGL cell+edge render on #gpu-world ──────
+    // This is the canonical connection that makes the GPU render actually run.
+    // Canvas sized to match the window at full device pixel ratio.
+    const gpuWorldCanvas = document.getElementById('gpu-world') as HTMLCanvasElement;
+    gpuWorldCanvas.width  = Math.floor(window.innerWidth  * devicePixelRatio);
+    gpuWorldCanvas.height = Math.floor(window.innerHeight * devicePixelRatio);
+
+    // hex "#rrggbb" → [r, g, b] normalised floats
+    function hexToRGB(hex: string): [number, number, number] {
+      const n = parseInt(hex.replace('#', ''), 16);
+      return [(n >> 16 & 0xff) / 255, (n >> 8 & 0xff) / 255, (n & 0xff) / 255];
+    }
+
+    // Map species string to CellData-compatible species key
+    const SPECIES_ALIAS: Record<string, string> = {
+      'cil-vector':      'cil-vector',
+      'cil-eye':         'cil-eye',
+      'cil-bolt':        'cil-bolt',
+      'cil-plus':        'cil-plus',
+      'cil-arrow-right': 'cil-arrow-right',
+    };
+
+    async function loadGPUScene(): Promise<{ cells: CellData[]; edges: EdgeData[] }> {
+      // ── Try /api/composite-params first, fall back to static JSON ──────
+      let raw: Record<string, any> | null = null;
+      try {
+        const res = await fetch('/api/composite-params');
+        if (res.ok) raw = await res.json();
+      } catch (_) { /* network miss — fall through */ }
+
+      if (!raw) {
+        try {
+          // Static channel file served from project root /channels/
+          const res = await fetch('/channels/composite_params.json');
+          if (res.ok) raw = await res.json();
+        } catch (_) { /* ignore */ }
+      }
+
+      if (!raw) {
+        console.warn('[gpu-world] No composite_params source — using empty scene');
+        return { cells: [], edges: [] };
+      }
+
+      // ── Convert cells ─────────────────────────────────────────────────
+      const rawCells  = (raw.cells  ?? {}) as Record<string, any>;
+      const speciesAssign = (raw.species_assignment ?? {}) as Record<string, any>;
+      const cells: CellData[] = Object.entries(rawCells).map(([cellId, cv]: [string, any]) => {
+        const bbox  = cv?.agent_params?.bbox ?? { x: 0, y: 0, w: 100, h: 50, z: 1 };
+        const sp    = cv?.agent_params?.species_params ?? {};
+        const color = hexToRGB(sp.primary_color ?? '#4488ff');
+        const spKey = SPECIES_ALIAS[speciesAssign?.[cellId]?.species] ?? 'cil-eye';
+        return {
+          cell_id:   cellId,
+          species:   spKey,
+          x: bbox.x as number,
+          y: bbox.y as number,
+          w: bbox.w as number,
+          h: bbox.h as number,
+          z: (bbox.z as number) ?? 1,
+          metallic:  0.1,
+          roughness: 0.55,
+          albedo:    color,
+          label:     cellId,
+        } satisfies CellData;
+      });
+
+      // ── Convert edges from edge_routes ────────────────────────────────
+      const rawEdges = (raw.edge_routes ?? {}) as Record<string, any>;
+      const edges: EdgeData[] = Object.entries(rawEdges).map(([edgeId, ev]: [string, any]) => {
+        const cp: [number, number][] = (ev.control_points ?? []) as [number, number][];
+        // Pick edge colour from source cell's albedo (falls back to teal)
+        const srcCell = cells.find(c => c.cell_id === ev.source);
+        return {
+          edge_id:       edgeId,
+          source:        ev.source  as string,
+          target:        ev.target  as string,
+          controlPoints: cp,
+          color:         srcCell?.albedo ?? [0.2, 0.8, 0.6],
+        } satisfies EdgeData;
+      });
+
+      console.info(`[gpu-world] scene loaded — ${cells.length} cells, ${edges.length} edges`);
+      return { cells, edges };
+    }
+
+    // Boot the GPU render loop (non-blocking — starts in parallel with rest of init)
+    let gpuRenderLoop: GPURenderLoop | null = null;
+    loadGPUScene().then(({ cells, edges }) => {
+      try {
+        gpuRenderLoop = new GPURenderLoop(gpuWorldCanvas);
+        gpuRenderLoop.setScene(cells, edges);
+        gpuRenderLoop.start();
+        console.info('[gpu-world] GPURenderLoop started');
+      } catch (err) {
+        console.warn('[gpu-world] GPURenderLoop init failed:', err);
+        gpuRenderLoop = null;
+      }
+    }).catch(err => {
+      console.warn('[gpu-world] loadGPUScene failed:', err);
+    });
+
+    // Resize gpu-world canvas with the rest
+    window.addEventListener('resize', () => {
+      gpuWorldCanvas.width  = Math.floor(window.innerWidth  * devicePixelRatio);
+      gpuWorldCanvas.height = Math.floor(window.innerHeight * devicePixelRatio);
+    });
+
     // ── Cleanup on page unload ──────────────────────────────────────────
     window.addEventListener('beforeunload', () => {
       closeSSE();
@@ -1410,6 +1524,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       astroPipeline?.dispose();
       terminatePhysicsWorker();
       gpuDevice?.destroy();
+      gpuRenderLoop?.stop();
     });
   })();
 </script>
