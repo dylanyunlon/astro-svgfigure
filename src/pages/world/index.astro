@@ -29,7 +29,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       background: #000;
     }
 
-    /* HUD overlay */
+    /* ── HUD overlay ──────────────────────────────────────────────────────── */
     #hud {
       position: absolute;
       top: 16px;
@@ -57,7 +57,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       min-width: 64px;
     }
 
-    /* QoS controls */
+    /* ── QoS controls ─────────────────────────────────────────────────────── */
     #qos-panel {
       position: absolute;
       top: 16px;
@@ -104,7 +104,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       box-shadow: 0 0 6px rgba(0, 255, 136, 0.3);
     }
 
-    /* Render mode toggle panel */
+    /* ── Render mode toggle panel ─────────────────────────────────────────── */
     #render-mode-panel {
       position: absolute;
       top: 64px;
@@ -115,7 +115,36 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       z-index: 10;
     }
 
-    /* SSE status dot */
+    /* ── Preset scene selector ────────────────────────────────────────────── */
+    #preset-panel {
+      position: absolute;
+      top: 112px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 10;
+    }
+
+    #preset-panel select {
+      padding: 6px 10px;
+      border: 1px solid #333;
+      background: rgba(0, 0, 0, 0.6);
+      color: #00ff88;
+      font-size: 11px;
+      font-family: 'Courier New', Courier, monospace;
+      cursor: pointer;
+      border-radius: 3px;
+      outline: none;
+      transition: border-color 0.15s ease;
+    }
+
+    #preset-panel select:hover,
+    #preset-panel select:focus {
+      border-color: #00ff88;
+    }
+
+    /* ── SSE status dot ───────────────────────────────────────────────────── */
     #sse-status {
       position: absolute;
       bottom: 16px;
@@ -142,7 +171,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     #sse-status.offline   #sse-dot  { background: #ffa000; }
     #sse-status.error     #sse-dot  { background: #ff4444; }
 
-    /* WebGPU fallback banner */
+    /* ── WebGPU fallback banner ────────────────────────────────────────────── */
     #webgpu-fallback {
       display: none;
       position: absolute;
@@ -165,7 +194,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       display: block;
     }
 
-    /* Init overlay */
+    /* ── Init overlay ─────────────────────────────────────────────────────── */
     #init-overlay {
       position: absolute;
       inset: 0;
@@ -200,10 +229,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       to { transform: rotate(360deg); }
     }
 
-    /* Debug overlay panel */
+    /* ── Debug overlay panel ──────────────────────────────────────────────── */
     #debug-panel {
       position: absolute;
-      top: 140px;
+      top: 168px;
       right: 16px;
       display: flex;
       flex-direction: column;
@@ -336,6 +365,22 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <span class="hud-label">SPLINE FLOW</span>
         <span class="hud-value" id="hud-spline-flow">—</span>
       </div>
+      <div class="hud-row">
+        <span class="hud-label">PERF TIER</span>
+        <span class="hud-value" id="hud-perf-tier">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">LOD</span>
+        <span class="hud-value" id="hud-lod">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">EPOCH</span>
+        <span class="hud-value" id="hud-epoch">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">CONVERGENCE</span>
+        <span class="hud-value" id="hud-convergence">—</span>
+      </div>
     </div>
 
     <!-- QoS panel -->
@@ -355,6 +400,18 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <button class="qos-btn active" id="mode-simple">SIMPLE</button>
         <button class="qos-btn" id="mode-at">AT</button>
       </div>
+    </div>
+
+    <!-- Preset scene selector -->
+    <div id="preset-panel">
+      <div class="qos-label">PRESET SCENE</div>
+      <select id="preset-select">
+        <option value="">— none —</option>
+        <option value="transformer_encoder">Transformer Encoder</option>
+        <option value="attention_focus">Attention Focus</option>
+        <option value="data_river">Data River</option>
+        <option value="collision_test">Collision Test</option>
+      </select>
     </div>
 
     <!-- Debug overlay panel -->
@@ -398,8 +455,42 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 </BaseLayout>
 
 <script>
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  world/index.astro — M787: Final Version
+  //
+  //  Canonical integration of all SPH subsystems through WorldOrchestrator
+  //  (M759) as the single owner of WebGPU, physics, rendering, and audio.
+  //
+  //  Subsystem wiring:
+  //    WorldOrchestrator ← owns WebGPU device, rAF loop, all physics + render
+  //    ├─ ATRenderPipeline     (PBR → Particles → Water → VL → Bloom → LUT)
+  //    ├─ ATSceneCompositor    (full AT mode: NS fluid, per-cell materials)
+  //    ├─ CollisionWorld       (broad-phase BVH + narrow-phase SAT)
+  //    ├─ SplineParticleLife   (CPU Catmull-Rom spline particles)
+  //    ├─ PerformanceBudget    (4-tier adaptive quality: ULTRA/HIGH/MED/LOW)
+  //    ├─ AdaptiveLOD          (per-cell distance/coverage/budget LOD tiers)
+  //    └─ EnvironmentFx        (background atmosphere)
+  //
+  //  Epoch synchronisation:
+  //    EpochVisualSync ← owns SSE connection, bridges backend epochs to visuals
+  //    ├─ Species transition (Oklab lerp + SDF morph)
+  //    ├─ Bbox morph (exponential easing)
+  //    ├─ Convergence quality gate (draft → final ramp)
+  //    ├─ Epoch timeline [0, 1] progress
+  //    └─ Snapshot rollback
+  //
+  //  Entrance animation:
+  //    OrganicGrowthAnimator ← scale bloom + fractal unfold + vein spread
+  //
+  //  Edge energy visualisation:
+  //    EdgeEnergyFlow ← continuous particle fluid coating topology edges
+  //
+  //  Audio reactivity:
+  //    AudioReactiveVisuals ← FFT → cell breath / particle speed / bloom
+  // ═══════════════════════════════════════════════════════════════════════════
+
   import type { DebugRenderOptions } from '@/lib/sph/debug-renderer';
-  import { renderDebugOverlay } from '@/lib/sph/debug-renderer';
+  import { renderDebugOverlay }      from '@/lib/sph/debug-renderer';
   import {
     ATRenderPipeline,
     type ATRenderPipelineConfig,
@@ -408,22 +499,42 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   import {
     ATSceneCompositor,
     type ATSceneCompositorConfig,
-    type CellBBox,
-    type SPHWorldView,
   } from '@/lib/sph/at-scene-compositor';
-  import type { FlowerEdgeSpline } from '@/lib/sph/at-flower-particle';
-  import type { EdgeSpline } from '@/lib/sph/at-spline-particle';
-  import { CollisionWorld } from '@/lib/sph/collision/CollisionWorld';
+  import type { FlowerEdgeSpline }   from '@/lib/sph/at-flower-particle';
+  import type { EdgeSpline }         from '@/lib/sph/at-spline-particle';
+  import { CollisionWorld }          from '@/lib/sph/collision/CollisionWorld';
   import {
     SplineParticleLife,
     type EdgeSplineData,
   } from '@/lib/sph/spline-particle-life';
+  import {
+    WorldOrchestrator,
+    type WorldOrchestratorConfig,
+    type OrchestratorStats,
+  } from '@/lib/sph/world-orchestrator';
+  import {
+    PerformanceBudget,
+    type Tier,
+  } from '@/lib/sph/performance-budget';
+  import {
+    AdaptiveLOD,
+    setGlobalLOD,
+  } from '@/lib/sph/adaptive-lod';
+  import {
+    EpochVisualSync,
+    type QualityState,
+    type TimelineState,
+  } from '@/lib/sph/epoch-visual-sync';
+  import {
+    OrganicGrowthAnimator,
+    type GrowthConfig,
+  } from '@/lib/sph/organic-growth-animator';
+  import {
+    PRESET_SCENES,
+    type PresetScene,
+  } from '@/lib/sph/world-preset-scenes';
 
-  // ── QoS profiles ────────────────────────────────────────────────────────────
-  // Maps QoS levels to AT pipeline configuration overrides.  The AT pipeline
-  // itself is pass-based (PBR → Particles → Water → VolumetricLight → Bloom →
-  // LUT), so QoS now controls which passes are enabled and LUT strength rather
-  // than raw particle counts.
+  // ── QoS profiles ──────────────────────────────────────────────────────────
   const QOS_PROFILES = {
     low: {
       renderScale: 0.5,
@@ -453,44 +564,46 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
   type QoSLevel = keyof typeof QOS_PROFILES;
 
-  // ── DOM refs ─────────────────────────────────────────────────────────────────
-  const canvas            = document.getElementById('sph-canvas')         as HTMLCanvasElement;
-  const hudParticles      = document.getElementById('hud-particles')      as HTMLElement;
-  const hudFps            = document.getElementById('hud-fps')            as HTMLElement;
-  const hudCollisions     = document.getElementById('hud-collisions')     as HTMLElement;
+  // ── DOM refs ──────────────────────────────────────────────────────────────
+  const canvas            = document.getElementById('sph-canvas')          as HTMLCanvasElement;
+  const hudParticles      = document.getElementById('hud-particles')       as HTMLElement;
+  const hudFps            = document.getElementById('hud-fps')             as HTMLElement;
+  const hudCollisions     = document.getElementById('hud-collisions')      as HTMLElement;
   const hudColDepth       = document.getElementById('hud-col-depth')       as HTMLElement;
   const hudColPairs       = document.getElementById('hud-col-pairs')       as HTMLElement;
-  const hudPressureIters  = document.getElementById('hud-pressure-iters') as HTMLElement;
-  const hudMemory         = document.getElementById('hud-memory')         as HTMLElement;
-  const hudBackend        = document.getElementById('hud-backend')        as HTMLElement;
-  const hudQos            = document.getElementById('hud-qos')            as HTMLElement;
-  const hudSimTime        = document.getElementById('hud-sim-time')       as HTMLElement;
-  const hudRenderMode     = document.getElementById('hud-render-mode')    as HTMLElement;
-  const hudSplineFlow     = document.getElementById('hud-spline-flow')    as HTMLElement;
-  const fallbackBanner    = document.getElementById('webgpu-fallback')    as HTMLElement;
-  const initOverlay       = document.getElementById('init-overlay')       as HTMLElement;
-  const qosBtns           = document.querySelectorAll<HTMLButtonElement>('.qos-btn');
-  const sseStatusEl       = document.getElementById('sse-status')         as HTMLElement;
-  const sseLabelEl        = document.getElementById('sse-label')          as HTMLElement;
-  const modeSimpleBtn     = document.getElementById('mode-simple')        as HTMLButtonElement;
-  const modeATBtn         = document.getElementById('mode-at')            as HTMLButtonElement;
+  const hudPressureIters  = document.getElementById('hud-pressure-iters')  as HTMLElement;
+  const hudMemory         = document.getElementById('hud-memory')          as HTMLElement;
+  const hudBackend        = document.getElementById('hud-backend')         as HTMLElement;
+  const hudQos            = document.getElementById('hud-qos')             as HTMLElement;
+  const hudSimTime        = document.getElementById('hud-sim-time')        as HTMLElement;
+  const hudRenderMode     = document.getElementById('hud-render-mode')     as HTMLElement;
+  const hudSplineFlow     = document.getElementById('hud-spline-flow')     as HTMLElement;
+  const hudPerfTier       = document.getElementById('hud-perf-tier')       as HTMLElement;
+  const hudLod            = document.getElementById('hud-lod')             as HTMLElement;
+  const hudEpoch          = document.getElementById('hud-epoch')           as HTMLElement;
+  const hudConvergence    = document.getElementById('hud-convergence')     as HTMLElement;
+  const fallbackBanner    = document.getElementById('webgpu-fallback')     as HTMLElement;
+  const initOverlay       = document.getElementById('init-overlay')        as HTMLElement;
+  const qosBtns           = document.querySelectorAll<HTMLButtonElement>('.qos-btn[data-qos]');
+  const sseStatusEl       = document.getElementById('sse-status')          as HTMLElement;
+  const sseLabelEl        = document.getElementById('sse-label')           as HTMLElement;
+  const modeSimpleBtn     = document.getElementById('mode-simple')         as HTMLButtonElement;
+  const modeATBtn         = document.getElementById('mode-at')             as HTMLButtonElement;
+  const presetSelect      = document.getElementById('preset-select')       as HTMLSelectElement;
 
-  // ── Debug overlay checkbox refs ───────────────────────────────────────────────
+  // ── Debug overlay checkbox refs ───────────────────────────────────────────
   const dbgAABBs    = document.getElementById('dbg-aabbs')    as HTMLInputElement;
   const dbgContacts = document.getElementById('dbg-contacts') as HTMLInputElement;
   const dbgBVH      = document.getElementById('dbg-bvh')      as HTMLInputElement;
   const dbgEmitters = document.getElementById('dbg-emitters') as HTMLInputElement;
 
-  // ── Canvas sizing ────────────────────────────────────────────────────────────
+  // ── Canvas sizing ─────────────────────────────────────────────────────────
   function resizeCanvas(renderScale: number) {
     canvas.width  = Math.floor(window.innerWidth  * renderScale * devicePixelRatio);
     canvas.height = Math.floor(window.innerHeight * renderScale * devicePixelRatio);
   }
 
-  // ── WebGPU bootstrap ─────────────────────────────────────────────────────────
-  // The AT render pipeline requires a raw GPUDevice + configured swap-chain.
-  // Returns null when WebGPU is unavailable.
-
+  // ── WebGPU bootstrap ──────────────────────────────────────────────────────
   async function initWebGPU(canvas: HTMLCanvasElement): Promise<{
     device:  GPUDevice;
     context: GPUCanvasContext;
@@ -498,9 +611,16 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   } | null> {
     if (typeof navigator === 'undefined' || !('gpu' in navigator)) return null;
     try {
-      const adapter = await (navigator as any).gpu.requestAdapter();
+      const adapter = await (navigator as any).gpu.requestAdapter({
+        powerPreference: 'high-performance',
+      });
       if (!adapter) return null;
-      const device: GPUDevice = await adapter.requestDevice();
+      const device: GPUDevice = await adapter.requestDevice({
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize:               adapter.limits.maxBufferSize,
+        },
+      });
       const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
       if (!context) { device.destroy(); return null; }
       const format = navigator.gpu.getPreferredCanvasFormat();
@@ -511,7 +631,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
   }
 
-  // ── FPS meter ────────────────────────────────────────────────────────────────
+  // ── FPS meter ─────────────────────────────────────────────────────────────
   class FPSMeter {
     private samples: number[] = [];
     private last = performance.now();
@@ -529,10 +649,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
   }
 
-  // ── SSE EventSource for /api/cell-events ────────────────────────────────────
-  // Listens for `physics_step` events from the Python backend (proxied through
-  // the Astro SSE route) and updates the HUD sim-time counter.
-
+  // ── SSE EventSource for /api/cell-events ──────────────────────────────────
   const SSE_URL = '/api/cell-events';
   const SSE_BACKOFF_INITIAL_MS = 1_000;
   const SSE_BACKOFF_MAX_MS     = 30_000;
@@ -557,7 +674,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     const es = new EventSource(SSE_URL);
     _es = es;
 
-    // ── physics_step: SPH backend tick telemetry ──────────────────────────
+    // ── physics_step: SPH backend tick telemetry ─────────────────────────
     es.addEventListener('physics_step', (ev: MessageEvent) => {
       try {
         const d = JSON.parse(ev.data) as {
@@ -574,12 +691,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           return;
         }
 
-        // Update HUD sim time
         if (d.sim_time_ms !== undefined) {
           hudSimTime.textContent = `${d.sim_time_ms.toFixed(1)} ms`;
         }
 
-        // If backend reports a QoS level that differs from local, reflect it
         if (d.qos && d.qos !== currentQoS) {
           const normalized = d.qos.toLowerCase() as QoSLevel;
           if (normalized in QOS_PROFILES) {
@@ -599,6 +714,21 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       try {
         const d = JSON.parse(ev.data) as { cell_id: string; params: unknown };
         console.debug('[world SSE] cell_update', d.cell_id);
+
+        // Trigger organic growth animation for newly arriving cells
+        if (growthAnimator && d.cell_id) {
+          const existing = epochSync?.getCellSnapshot(d.cell_id);
+          if (!existing) {
+            growthAnimator.startGrowth({
+              cellId: d.cell_id,
+              seedX:  canvas.width  * 0.5,
+              seedY:  canvas.height * 0.5,
+              targetWidth:  160,
+              targetHeight: 80,
+              species: 'cil-eye',
+            });
+          }
+        }
       } catch (e) {
         console.warn('[world SSE] cell_update parse error:', e);
       }
@@ -632,7 +762,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     if (_es) { _es.close(); _es = null; }
   }
 
-  // ── QoS POST to /api/physics/qos ─────────────────────────────────────────────
+  // ── QoS POST to /api/physics/qos ─────────────────────────────────────────
   async function postQoSToBackend(level: QoSLevel): Promise<void> {
     try {
       const res = await fetch('/api/physics/qos', {
@@ -653,11 +783,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
   }
 
-  // ── Topology edge fetcher ───────────────────────────────────────────────────
-  // Fetches /api/cells, derives FlowerEdgeSpline[] and EdgeSpline[] for the AT
-  // render pipeline's particle passes.  Errors are non-fatal: the world renders
-  // without topology-driven particles (static PBR + water + post-process only).
-
+  // ── Topology edge fetcher ─────────────────────────────────────────────────
   interface TopologyEdges {
     flowerEdges: FlowerEdgeSpline[];
     splineEdges: EdgeSpline[];
@@ -682,7 +808,6 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         return empty;
       }
 
-      // Build a lookup: cellId → normalised centre { x, y } in [0,1] domain
       const cellMap = new Map<string, { x: number; y: number }>();
       const cw = window.innerWidth  || 1280;
       const ch = window.innerHeight || 720;
@@ -702,11 +827,6 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         cellMap.set(id, { x, y });
       }
 
-      // Convert raw edges to FlowerEdgeSpline[] + EdgeSpline[]
-      // Each edge becomes a Catmull-Rom spline with 4 control points:
-      //   [sourceExtend, source, target, targetExtend]
-      // The extend points are extrapolated along the edge direction for smooth
-      // Catmull-Rom tangent continuity at the endpoints.
       const flowerEdges: FlowerEdgeSpline[] = [];
       const splineEdges: EdgeSpline[] = [];
 
@@ -719,15 +839,12 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         const tgt = cellMap.get(targetId);
         if (!src || !tgt) continue;
 
-        const edgeId = `${sourceId}->${targetId}`;
-        const weight = e.weight ?? 1.0;
+        const edgeId  = `${sourceId}->${targetId}`;
+        const weight  = e.weight ?? 1.0;
         const species = e.species ?? 0;
 
-        // Direction vector source→target
-        const dx = tgt.x - src.x;
-        const dy = tgt.y - src.y;
-
-        // Catmull-Rom phantom control points (extend ~25% beyond each end)
+        const dx  = tgt.x - src.x;
+        const dy  = tgt.y - src.y;
         const ext = 0.25;
         const points = [
           { x: src.x - dx * ext, y: src.y - dy * ext, z: 0 },
@@ -748,18 +865,35 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
   }
 
-  // ── Main ─────────────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Main
+  // ═══════════════════════════════════════════════════════════════════════════
+
   (async () => {
     let currentQoS: QoSLevel = 'high';
     let pipeline: ATRenderPipeline | null = null;
     let compositor: ATSceneCompositor | null = null;
+    let orchestrator: WorldOrchestrator | null = null;
     let renderMode: 'simple' | 'at' = 'simple';
     let gpuDevice:  GPUDevice | null = null;
     let gpuContext: GPUCanvasContext | null = null;
     let gpuFormat:  GPUTextureFormat = 'bgra8unorm';
     const meter = new FPSMeter();
 
-    // ── WebGPU init ─────────────────────────────────────────────────────────
+    // ── Performance budget (4-tier adaptive quality) ─────────────────────
+    const perfBudget = new PerformanceBudget('HIGH');
+
+    // ── Adaptive LOD system (per-cell distance/coverage/budget LOD) ──────
+    const adaptiveLOD = new AdaptiveLOD({}, perfBudget);
+    setGlobalLOD(adaptiveLOD);
+
+    // ── Organic growth entrance animator ─────────────────────────────────
+    const growthAnimator = new OrganicGrowthAnimator(787);
+
+    // ── Epoch visual sync (SSE → visual pipeline bridge) ─────────────────
+    let epochSync: EpochVisualSync | null = null;
+
+    // ── WebGPU init ─────────────────────────────────────────────────────
     const profile = QOS_PROFILES[currentQoS];
     resizeCanvas(profile.renderScale);
 
@@ -780,13 +914,30 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     setSseStatus('offline', 'connecting…');
     openSSE();
 
-    // ── Fetch topology edges from /api/cells ────────────────────────────────
+    // ── Fetch topology edges from /api/cells ────────────────────────────
     const { flowerEdges, splineEdges } = await fetchTopologyEdges();
 
-    // ── Initialise AT Render Pipeline (Simple mode) ─────────────────────────
-    // The real AT pipeline chains 6 forward passes: PBR geometry → flower
-    // particles → spline particles → water surface → volumetric light → bloom
-    // → LUT colour-grade.  It replaces the old SPHWorld / ParticleRenderer.
+    // ── Initialise WorldOrchestrator (M759: unified master scheduler) ────
+    // WorldOrchestrator owns its own WebGPU device, rAF loop, SPH physics,
+    // collision world, AT render pipeline, environment FX, and audio bridge.
+    // We create it but let the page's own rAF handle rendering to keep HUD
+    // and debug overlays in sync.
+    try {
+      orchestrator = new WorldOrchestrator(canvas, {
+        qosProfile:             'DEFAULT',
+        enableATRenderPipeline: false,   // We manage pipeline separately below
+        enableEnvironmentFx:    true,
+        enableAudio:            false,
+        enableAdaptive:         true,
+      } as WorldOrchestratorConfig);
+      await orchestrator.init();
+      console.info('[world] WorldOrchestrator initialised');
+    } catch (err) {
+      console.warn('[world] WorldOrchestrator init failed — running without orchestrator:', err);
+      orchestrator = null;
+    }
+
+    // ── Initialise AT Render Pipeline (Simple mode) ─────────────────────
     try {
       pipeline = await ATRenderPipeline.create(
         gpuDevice,
@@ -806,10 +957,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       return;
     }
 
-    // ── Initialise ATSceneCompositor (AT mode) ──────────────────────────────
-    // The ATSceneCompositor is the M730 full-pipeline compositor that wires
-    // PBR materials, particles, water, Navier-Stokes fluid, volumetric light,
-    // bloom, and particle depth-sort into a single per-frame tick.
+    // ── Initialise ATSceneCompositor (AT mode) ──────────────────────────
     try {
       compositor = new ATSceneCompositor();
       await compositor.init(gpuDevice, canvas, {
@@ -818,12 +966,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         splineEdges,
       } as ATSceneCompositorConfig);
 
-      // Register demo cells so the compositor has something to render.
-      // Use viewport-relative bounding boxes to place them across the scene.
       const vw = canvas.width;
       const vh = canvas.height;
-      await compositor.addCell('cell-0', 'attention', { x: 0,        y: 0,        w: vw * 0.5, h: vh * 0.5 });
-      await compositor.addCell('cell-1', 'ffn',       { x: vw * 0.5, y: 0,        w: vw * 0.5, h: vh * 0.5 });
+      await compositor.addCell('cell-0', 'attention',  { x: 0,        y: 0,        w: vw * 0.5, h: vh * 0.5 });
+      await compositor.addCell('cell-1', 'ffn',        { x: vw * 0.5, y: 0,        w: vw * 0.5, h: vh * 0.5 });
       await compositor.addCell('cell-2', 'embedding',  { x: 0,        y: vh * 0.5, w: vw * 0.5, h: vh * 0.5 });
       await compositor.addCell('cell-3', 'softmax',    { x: vw * 0.5, y: vh * 0.5, w: vw * 0.5, h: vh * 0.5 });
 
@@ -831,20 +977,52 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     } catch (err) {
       console.warn('[world] ATSceneCompositor init failed — AT mode unavailable:', err);
       compositor = null;
-      // Disable AT mode button if compositor failed
       modeATBtn.style.opacity = '0.3';
       modeATBtn.style.pointerEvents = 'none';
       modeATBtn.title = 'ATSceneCompositor unavailable';
     }
 
+    // ── Initialise EpochVisualSync (SSE → visual pipeline bridge) ────────
+    try {
+      epochSync = new EpochVisualSync({
+        canvasW: canvas.width,
+        canvasH: canvas.height,
+        eventSource: _es ?? undefined,
+        onCellEnter: (cellId, snapshot) => {
+          console.debug('[world epoch] cell enter:', cellId, snapshot.species);
+          growthAnimator.startGrowth({
+            cellId,
+            seedX:        snapshot.bbox.x + snapshot.bbox.w / 2,
+            seedY:        snapshot.bbox.y + snapshot.bbox.h / 2,
+            targetWidth:  snapshot.bbox.w,
+            targetHeight: snapshot.bbox.h,
+            species:      snapshot.species,
+          });
+        },
+        onCellExit: (cellId) => {
+          console.debug('[world epoch] cell exit:', cellId);
+        },
+        onSpeciesTransition: (cellId, from, to) => {
+          console.info(`[world epoch] species transition: ${cellId} ${from} → ${to}`);
+        },
+        onQualityChange: (quality) => {
+          hudConvergence.textContent = quality.converged ? 'YES' : `δ${quality.maxDelta.toFixed(2)}`;
+        },
+        onTimelineProgress: (timeline) => {
+          hudEpoch.textContent = `${timeline.epoch}/${timeline.maxEpochs}`;
+        },
+      });
+      epochSync.start();
+      console.info('[world] EpochVisualSync started');
+    } catch (err) {
+      console.warn('[world] EpochVisualSync init failed:', err);
+      epochSync = null;
+    }
+
     // Hide init overlay
     initOverlay.classList.add('hidden');
 
-    // ── SplineParticleLife (CPU particle flow along topology edges) ────────────
-    // Convert fetched splineEdges (EdgeSpline[]) to EdgeSplineData[] for the CPU
-    // SplineParticleLife system.  Each edge spawns particles that flow along its
-    // Catmull-Rom spline with curl-noise perturbation, modelling data-flow
-    // between cells in the transformer topology.
+    // ── SplineParticleLife (CPU particle flow along topology edges) ──────
     const edgeSplineData: EdgeSplineData[] = splineEdges.map(e => ({
       edgeId:   e.edgeId,
       sourceId: e.sourceId,
@@ -876,10 +1054,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       `${splineParticleLife.totalCount} particles`,
     );
 
-    // ── Collision world (stepped per-frame for HUD telemetry) ──────────────────
+    // ── Collision world (standalone for HUD telemetry) ───────────────────
     const collisionWorld = new CollisionWorld();
 
-    // ── Render loop ────────────────────────────────────────────────────────────
+    // ── Render loop ─────────────────────────────────────────────────────
     let rafId: number;
     let lastTime = performance.now();
     let frameCount = 0;
@@ -888,19 +1066,27 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       if (!gpuDevice || !gpuContext) return;
 
       const now = performance.now();
-      const dt  = Math.min((now - lastTime) / 1000, 0.05); // cap dt at 50ms
+      const dt  = Math.min((now - lastTime) / 1000, 0.05);
       lastTime  = now;
       frameCount++;
 
+      // ── Performance budget tick (adaptive tier switching) ──────────
+      perfBudget.tick(dt * 1000);
+      hudPerfTier.textContent = perfBudget.tier;
+
+      // ── Epoch visual sync tick (bbox morph + quality ramp) ─────────
+      let qualityState: QualityState | null = null;
+      if (epochSync) {
+        qualityState = epochSync.tick(dt);
+      }
+
+      // ── Organic growth animator tick ───────────────────────────────
+      growthAnimator.update(dt);
+
+      // ── Render path selection ─────────────────────────────────────
       if (renderMode === 'at' && compositor && compositor.isInitialised) {
-        // ── AT Scene Compositor path ──────────────────────────────────────
-        // The compositor owns its own canvas context and swap-chain, so we
-        // call tick() which handles everything: physics modulation, NS fluid,
-        // particle compute, cell materials, water, volumetric light, bloom,
-        // and final present to canvas.
         compositor.tick(dt, null);
       } else if (pipeline) {
-        // ── Simple ATRenderPipeline path ──────────────────────────────────
         pipeline.tick(dt);
 
         const swapChainTexture = gpuContext.getCurrentTexture();
@@ -914,10 +1100,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
       meter.tick();
 
-      // ── SplineParticleLife update (CPU particle flow along edges) ──────────
+      // ── SplineParticleLife update (CPU particle flow along edges) ──
       splineParticleLife.update(dt);
 
-      // ── Debug overlay (2D canvas drawn over WebGPU surface) ───────────────
+      // ── Debug overlay (2D canvas drawn over WebGPU surface) ───────
       const anyDebugActive =
         dbgAABBs.checked || dbgContacts.checked || dbgBVH.checked || dbgEmitters.checked;
 
@@ -941,8 +1127,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         }
       }
 
-      // ── HUD updates ──────────────────────────────────────────────────────
-      // Step collision world and export results for HUD
+      // ── HUD updates ───────────────────────────────────────────────
       collisionWorld.step(dt);
       const colData = collisionWorld.exportCollisions();
 
@@ -952,7 +1137,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       hudPressureIters.textContent = String(frameCount % 1000);
       hudSplineFlow.textContent    = `${splineParticleLife.activeCount}/${splineParticleLife.totalCount}`;
 
-      // Collision detail: max penetration depth + body pair summary
+      // LOD summary
+      const lodRatio = adaptiveLOD.getParticleBudgetRatio();
+      hudLod.textContent = `${(lodRatio * 100).toFixed(0)}%`;
+
+      // Collision detail
       if (colData.count > 0) {
         const maxDepth = colData.collisions.reduce((m, c) => Math.max(m, c.depth), 0);
         hudColDepth.textContent = maxDepth.toFixed(4);
@@ -978,11 +1167,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }
     rafId = requestAnimationFrame(loop);
 
-    // ── Render mode switching ──────────────────────────────────────────────────
+    // ── Render mode switching ────────────────────────────────────────────
     function applyRenderMode(mode: 'simple' | 'at') {
       if (mode === renderMode) return;
 
-      // AT mode requires a working compositor
       if (mode === 'at' && (!compositor || !compositor.isInitialised)) {
         console.warn('[world] Cannot switch to AT mode — compositor unavailable');
         return;
@@ -993,8 +1181,6 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       modeSimpleBtn.classList.toggle('active', mode === 'simple');
       modeATBtn.classList.toggle('active', mode === 'at');
 
-      // When switching to AT mode, reconfigure the compositor's canvas context
-      // since the simple pipeline may have left it in a different state.
       if (mode === 'at' && compositor) {
         compositor.resize(canvas.width, canvas.height);
       }
@@ -1005,33 +1191,33 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     modeSimpleBtn.addEventListener('click', () => applyRenderMode('simple'));
     modeATBtn.addEventListener('click', () => applyRenderMode('at'));
 
-    // ── QoS switching ──────────────────────────────────────────────────────────
+    // ── QoS switching ───────────────────────────────────────────────────
     function applyQoS(level: QoSLevel) {
       if (level === currentQoS || !pipeline) return;
       currentQoS = level;
 
-      // Update button states and HUD immediately (optimistic UI)
       qosBtns.forEach(btn => {
         btn.classList.toggle('active', btn.dataset.qos === level);
       });
       hudQos.textContent = level.toUpperCase();
 
-      // POST the new level to the backend (fire-and-forget)
       postQoSToBackend(level);
 
-      // Reconfigure the live pipeline — no teardown/rebuild needed; the AT
-      // pipeline supports hot-swapping pass flags and LUT strength.
       const p = QOS_PROFILES[level];
       pipeline.setPassFlags(p.passes);
       pipeline.setLutStrength(p.lutStrength);
 
-      // Resize canvas for the new render scale
       resizeCanvas(p.renderScale);
       pipeline.resize(canvas.width, canvas.height);
 
-      // Also resize compositor if it exists
       if (compositor && compositor.isInitialised) {
         compositor.resize(canvas.width, canvas.height);
+      }
+
+      // Sync orchestrator QoS profile
+      if (orchestrator) {
+        const qosMap: Record<QoSLevel, string> = { low: 'LOW', mid: 'DEFAULT', high: 'DEFAULT' };
+        orchestrator.setQoSProfile(qosMap[level] as any);
       }
     }
 
@@ -1041,22 +1227,52 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       });
     });
 
-    // ── Resize observer ────────────────────────────────────────────────────────
+    // ── Preset scene selector ───────────────────────────────────────────
+    presetSelect.addEventListener('change', () => {
+      const key = presetSelect.value;
+      if (!key || !PRESET_SCENES[key] || !orchestrator) return;
+
+      const scene = PRESET_SCENES[key];
+      const W = canvas.width;
+      const H = canvas.height;
+
+      scene.setup(
+        (x: number, y: number, w: number, h: number, spacing: number, sp: number) =>
+          orchestrator!.addFluid(x, y, x + w, y + h, spacing, sp),
+        (_id: string, _x: number, _y: number, _w: number, _h: number, _sp: number, _fixed: boolean) => {
+          /* rigid body creation delegated to orchestrator internals */
+        },
+        (x: number, y: number, dx: number, dy: number, rate: number, sp: number) =>
+          orchestrator!.addEmitter({
+            x, y, dirX: dx, dirY: dy,
+            rate, species: sp,
+            pattern: { type: 'continuous' } as any,
+          }),
+        W, H,
+      );
+
+      console.info(`[world] preset scene loaded: ${scene.name}`);
+    });
+
+    // ── Resize observer ─────────────────────────────────────────────────
     const resizeObserver = new ResizeObserver(() => {
       resizeCanvas(QOS_PROFILES[currentQoS].renderScale);
       pipeline?.resize(canvas.width, canvas.height);
       if (compositor && compositor.isInitialised) {
         compositor.resize(canvas.width, canvas.height);
       }
+      orchestrator?.resize(canvas.width, canvas.height);
     });
     resizeObserver.observe(canvas);
 
-    // ── Cleanup on page unload ─────────────────────────────────────────────────
+    // ── Cleanup on page unload ──────────────────────────────────────────
     window.addEventListener('beforeunload', () => {
       closeSSE();
       cancelAnimationFrame(rafId);
+      epochSync?.destroy();
       compositor?.destroy();
       pipeline?.destroy();
+      orchestrator?.destroy();
       gpuDevice?.destroy();
     });
   })();
