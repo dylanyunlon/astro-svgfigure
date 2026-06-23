@@ -300,6 +300,54 @@
         "halo_radius": 0.22,
         "internal_pattern": "expand_contract_bottleneck",
         "academic_source": "InTraVisTo: pink=FF layers; standard: wide→narrow→wide MLP bottleneck shape"
+      },
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "polySDF",
+          "sdf_radius": 0.38,
+          "glow_intensity": 0.85,
+          "glow_color": [
+            1.0,
+            0.435,
+            0.0
+          ],
+          "fresnel_power": 3.5,
+          "noise_scale": 0.7,
+          "noise_speed": 0.45,
+          "edge_softness": 0.12
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.4,
+            "bloomScale": 1.0,
+            "brightness": 1.3
+          },
+          "glow": {
+            "distance": 18,
+            "outerStrength": 2.5,
+            "innerStrength": 1.2,
+            "color": "0xFF6F00"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              5
+            ],
+            "blur": 7,
+            "alpha": 0.35,
+            "color": "0x000000"
+          }
+        },
+        "render_params": {
+          "z_index": 5,
+          "blend_mode": "normal",
+          "corner_radius": 8,
+          "border_width": 1.5,
+          "border_color": "#FF6F00",
+          "background_opacity": 0.88,
+          "label_font_size": 12,
+          "icon_scale": 1.05
+        }
       }
     },
     "add_norm2": {
@@ -322,6 +370,54 @@
         "halo_radius": 0.12,
         "internal_pattern": "plus_sign_merge_indicator",
         "academic_source": "Same residual convention as add_norm1; paired visually"
+      },
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "crossSDF",
+          "sdf_radius": 0.3,
+          "glow_intensity": 0.5,
+          "glow_color": [
+            0.776,
+            0.157,
+            0.157
+          ],
+          "fresnel_power": 2.0,
+          "noise_scale": 0.3,
+          "noise_speed": 0.2,
+          "edge_softness": 0.18
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.55,
+            "bloomScale": 0.7,
+            "brightness": 1.1
+          },
+          "glow": {
+            "distance": 12,
+            "outerStrength": 1.8,
+            "innerStrength": 0.8,
+            "color": "0xC62828"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 5,
+            "alpha": 0.25,
+            "color": "0x000000"
+          }
+        },
+        "render_params": {
+          "z_index": 6,
+          "blend_mode": "normal",
+          "corner_radius": 8,
+          "border_width": 1.5,
+          "border_color": "#C62828",
+          "background_opacity": 0.82,
+          "label_font_size": 12,
+          "icon_scale": 1.0
+        }
       }
     },
     "output": {
