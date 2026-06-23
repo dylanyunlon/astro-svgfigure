@@ -1,474 +1,578 @@
 {
-  "canvas": {
-    "width": 440.0,
-    "height": 785.0
-  },
-  "palette": {
-    "zenith": "#D9CAC1",
-    "horizon": "#A09D9D",
-    "nadir": "#615F5E"
-  },
-  "cells": [
-    {
-      "cell_id": "ffn",
-      "species": "cil-bolt",
+  "cells": {
+    "input_embed": {
       "bbox": {
-        "x": 220.0,
+        "x": 320.0,
+        "y": 50.0,
+        "w": 160,
+        "h": 55,
+        "z": 1
+      },
+      "opacity": 0.92,
+      "species_params": {
+        "primary_color": "#546E7A",
+        "glow_color": "#78909C",
+        "algorithm_gene": "token_to_vector_heatmap",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 0.6,
+        "num_rays": 0,
+        "focal_intensity": 0.0,
+        "halo_radius": 0.15,
+        "internal_pattern": "one_dimensional_heatmap_bars",
+        "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
+      }
+    },
+    "pos_encode": {
+      "bbox": {
+        "x": 320.0,
+        "y": 135.0,
+        "w": 160,
+        "h": 55,
+        "z": 1
+      },
+      "opacity": 0.88,
+      "species_params": {
+        "primary_color": "#7E57C2",
+        "glow_color": "#B39DDB",
+        "algorithm_gene": "sinusoidal_wave_pattern",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 1.2,
+        "num_rays": 0,
+        "focal_intensity": 0.0,
+        "halo_radius": 0.2,
+        "internal_pattern": "sine_cosine_alternating_bands",
+        "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies"
+      }
+    },
+    "self_attn": {
+      "bbox": {
+        "x": 320.0,
+        "y": 220.0,
+        "w": 180,
+        "h": 65,
+        "z": 3
+      },
+      "opacity": 0.95,
+      "species_params": {
+        "primary_color": "#1E88E5",
+        "glow_color": "#64B5F6",
+        "algorithm_gene": "radial_qkv_heatmap",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 0.8,
+        "num_rays": 8,
+        "focal_intensity": 0.75,
+        "halo_radius": 0.35,
+        "internal_pattern": "multi_head_attention_grid",
+        "academic_source": "InTraVisTo: green=attention flow; Transformer Explainer: QKV branching Sankey"
+      }
+    },
+    "add_norm1": {
+      "bbox": {
+        "x": 320.0,
+        "y": 315.0,
+        "w": 140,
+        "h": 40,
+        "z": 2
+      },
+      "opacity": 0.82,
+      "species_params": {
+        "primary_color": "#E53935",
+        "glow_color": "#EF9A9A",
+        "algorithm_gene": "residual_merge_crosshair",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 0.4,
+        "num_rays": 0,
+        "focal_intensity": 0.0,
+        "halo_radius": 0.12,
+        "internal_pattern": "plus_sign_merge_indicator",
+        "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
+      }
+    },
+    "ffn": {
+      "bbox": {
+        "x": 320.0,
+        "y": 385.0,
+        "w": 160,
+        "h": 55,
+        "z": 2
+      },
+      "opacity": 0.9,
+      "species_params": {
+        "primary_color": "#F57C00",
+        "glow_color": "#FFB74D",
+        "algorithm_gene": "zigzag_relu_activation",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 1.0,
+        "num_rays": 0,
+        "focal_intensity": 0.0,
+        "halo_radius": 0.22,
+        "internal_pattern": "expand_contract_bottleneck",
+        "academic_source": "InTraVisTo: pink=FF layers; standard: wide→narrow→wide MLP bottleneck shape"
+      }
+    },
+    "add_norm2": {
+      "bbox": {
+        "x": 320.0,
         "y": 470.0,
         "w": 140,
-        "h": 45,
-        "z": 3
-      },
-      "z": 3,
-      "opacity": 0.05,
-      "fill_color": "#FF6F00",
-      "stroke_color": "#FF6F00",
-      "label": "Feed Forward",
-      "font_size": 10,
-      "species_params": {
-        "zigzag_count": 6,
-        "amplitude": 6.0,
-        "seg_width": 20.0
-      },
-      "epoch": 9,
-      "shadow": {
-        "dx": 2.0,
-        "dy": 2.0,
-        "blur": 3.38,
-        "opacity": 0.08
-      },
-      "render_order": 0,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 1
-    },
-    {
-      "cell_id": "output",
-      "species": "cil-arrow-right",
-      "bbox": {
-        "x": 220.0,
-        "y": 675.0,
-        "w": 160,
-        "h": 50,
-        "z": 3
-      },
-      "z": 3,
-      "opacity": 0.0937,
-      "fill_color": "#455A64",
-      "stroke_color": "#455A64",
-      "label": "Output",
-      "font_size": 10,
-      "species_params": {
-        "arrow_width": 48.0,
-        "arrow_height": 16.0
-      },
-      "epoch": 9,
-      "shadow": {
-        "dx": 2.0,
-        "dy": 2.0,
-        "blur": 3.75,
-        "opacity": 0.35
-      },
-      "render_order": 1,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0
-    },
-    {
-      "cell_id": "self_attn",
-      "species": "cil-eye",
-      "bbox": {
-        "x": 220.0,
-        "y": 260.0,
-        "w": 160,
-        "h": 50,
-        "z": 3
-      },
-      "z": 3,
-      "opacity": 0.05,
-      "fill_color": "#3F51B5",
-      "stroke_color": "#3F51B5",
-      "label": "Multi-Head Attention",
-      "font_size": 10,
-      "species_params": {
-        "ring_count": 10,
-        "pupil_radius": 4.2,
-        "r_outer": 21.0,
-        "r_inner_ratio": 0.3
-      },
-      "epoch": 9,
-      "shadow": {
-        "dx": 2.0,
-        "dy": 2.0,
-        "blur": 3.75,
-        "opacity": 0.35
-      },
-      "render_order": 2,
-      "z_layer": 3,
-      "is_translucent": true,
-      "outgoing_edge_count": 1
-    },
-    {
-      "cell_id": "pos_encode",
-      "species": "cil-vector",
-      "bbox": {
-        "x": 220.0,
-        "y": 150.0,
-        "w": 160,
-        "h": 50,
-        "z": 5
-      },
-      "z": 5,
-      "opacity": 0.05,
-      "fill_color": "#2E7D32",
-      "stroke_color": "#2E7D32",
-      "label": "Positional Encoding",
-      "font_size": 10,
-      "species_params": {
-        "arrow_count": 5,
-        "arrow_length": 48.0,
-        "angle_spread": 0.8
-      },
-      "epoch": 9,
-      "shadow": {
-        "dx": 8.0,
-        "dy": 8.0,
-        "blur": 5.35,
-        "opacity": 0.55
-      },
-      "render_order": 3,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 2
-    },
-    {
-      "cell_id": "input_embed",
-      "species": "cil-vector",
-      "bbox": {
-        "x": 220.0,
-        "y": 40.0,
-        "w": 160,
-        "h": 50,
-        "z": 5
-      },
-      "z": 5,
-      "opacity": 0.05,
-      "fill_color": "#2E7D32",
-      "stroke_color": "#2E7D32",
-      "label": "Input Embedding",
-      "font_size": 10,
-      "species_params": {
-        "arrow_count": 5,
-        "arrow_length": 48.0,
-        "angle_spread": 0.8
-      },
-      "epoch": 9,
-      "shadow": {
-        "dx": 8.0,
-        "dy": 8.0,
-        "blur": 5.35,
-        "opacity": 0.55
-      },
-      "render_order": 4,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 1
-    },
-    {
-      "cell_id": "add_norm1",
-      "species": "cil-plus",
-      "bbox": {
-        "x": 220.0,
-        "y": 370.0,
-        "w": 140,
         "h": 40,
-        "z": 5
+        "z": 2
       },
-      "z": 5,
-      "opacity": 0.05,
-      "fill_color": "#1E88E5",
-      "stroke_color": "#1E88E5",
-      "label": "Add and Norm",
-      "font_size": 10,
+      "opacity": 0.82,
       "species_params": {
-        "arm_length": 10.0,
-        "stroke_width": 2.5,
-        "dash_corners": true
-      },
-      "epoch": 9,
-      "shadow": {
-        "dx": 8.0,
-        "dy": 8.0,
-        "blur": 4.6,
-        "opacity": 0.55
-      },
-      "render_order": 5,
-      "z_layer": 5,
-      "is_translucent": true,
-      "outgoing_edge_count": 2
+        "primary_color": "#C62828",
+        "glow_color": "#EF5350",
+        "algorithm_gene": "residual_merge_crosshair",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 0.4,
+        "num_rays": 0,
+        "focal_intensity": 0.0,
+        "halo_radius": 0.12,
+        "internal_pattern": "plus_sign_merge_indicator",
+        "academic_source": "Same residual convention as add_norm1; paired visually"
+      }
     },
-    {
-      "cell_id": "add_norm2",
-      "species": "cil-plus",
+    "output": {
       "bbox": {
-        "x": 220.0,
-        "y": 575.0,
-        "w": 140,
-        "h": 40,
-        "z": 5
+        "x": 320.0,
+        "y": 545.0,
+        "w": 160,
+        "h": 50,
+        "z": 1
       },
-      "z": 5,
-      "opacity": 0.05,
-      "fill_color": "#1E88E5",
-      "stroke_color": "#1E88E5",
-      "label": "Add and Norm",
-      "font_size": 10,
+      "opacity": 0.93,
       "species_params": {
-        "arm_length": 10.0,
-        "stroke_width": 2.5,
-        "dash_corners": true
-      },
-      "epoch": 9,
-      "shadow": {
-        "dx": 8.0,
-        "dy": 8.0,
-        "blur": 4.6,
-        "opacity": 0.55
-      },
-      "render_order": 6,
-      "z_layer": 5,
-      "is_translucent": true,
-      "outgoing_edge_count": 1
+        "primary_color": "#2E7D32",
+        "glow_color": "#66BB6A",
+        "algorithm_gene": "directed_arrow_flow_terminal",
+        "sdf_shape": "capsule",
+        "animation_speed": 0.5,
+        "num_rays": 0,
+        "focal_intensity": 0.0,
+        "halo_radius": 0.18,
+        "internal_pattern": "probability_distribution_bars",
+        "academic_source": "Transformer Explainer: output probabilities as bar chart; green for output/result"
+      }
     }
+  },
+  "edges": {
+    "e1": {
+      "source": "input_embed",
+      "target": "pos_encode",
+      "type": "sequential",
+      "control_points": [
+        [
+          400.0,
+          105.0
+        ],
+        [
+          400.0,
+          120.0
+        ],
+        [
+          400.0,
+          120.0
+        ],
+        [
+          400.0,
+          135.0
+        ]
+      ]
+    },
+    "e2": {
+      "source": "pos_encode",
+      "target": "self_attn",
+      "type": "sequential",
+      "control_points": [
+        [
+          400.0,
+          190.0
+        ],
+        [
+          400.0,
+          205.0
+        ],
+        [
+          410.0,
+          205.0
+        ],
+        [
+          410.0,
+          220.0
+        ]
+      ]
+    },
+    "e3": {
+      "source": "self_attn",
+      "target": "add_norm1",
+      "type": "sequential",
+      "control_points": [
+        [
+          410.0,
+          285.0
+        ],
+        [
+          410.0,
+          300.0
+        ],
+        [
+          390.0,
+          300.0
+        ],
+        [
+          390.0,
+          315.0
+        ]
+      ]
+    },
+    "e4": {
+      "source": "add_norm1",
+      "target": "ffn",
+      "type": "sequential",
+      "control_points": [
+        [
+          390.0,
+          355.0
+        ],
+        [
+          390.0,
+          370.0
+        ],
+        [
+          400.0,
+          370.0
+        ],
+        [
+          400.0,
+          385.0
+        ]
+      ]
+    },
+    "e5": {
+      "source": "ffn",
+      "target": "add_norm2",
+      "type": "sequential",
+      "control_points": [
+        [
+          400.0,
+          440.0
+        ],
+        [
+          400.0,
+          455.0
+        ],
+        [
+          390.0,
+          455.0
+        ],
+        [
+          390.0,
+          470.0
+        ]
+      ]
+    },
+    "e6": {
+      "source": "add_norm2",
+      "target": "output",
+      "type": "sequential",
+      "control_points": [
+        [
+          390.0,
+          510.0
+        ],
+        [
+          390.0,
+          527.5
+        ],
+        [
+          400.0,
+          527.5
+        ],
+        [
+          400.0,
+          545.0
+        ]
+      ]
+    },
+    "skip1": {
+      "source": "pos_encode",
+      "target": "add_norm1",
+      "type": "skip",
+      "control_points": [
+        [
+          400.0,
+          190.0
+        ],
+        [
+          520.0,
+          210.0
+        ],
+        [
+          510.0,
+          295.0
+        ],
+        [
+          390.0,
+          315.0
+        ]
+      ]
+    },
+    "skip2": {
+      "source": "add_norm1",
+      "target": "add_norm2",
+      "type": "skip",
+      "control_points": [
+        [
+          390.0,
+          355.0
+        ],
+        [
+          510.0,
+          375.0
+        ],
+        [
+          510.0,
+          450.0
+        ],
+        [
+          390.0,
+          470.0
+        ]
+      ]
+    }
+  },
+  "camera": {
+    "position": {
+      "x": 410.0,
+      "y": 322.5,
+      "z": 800
+    },
+    "target": {
+      "x": 410.0,
+      "y": 322.5,
+      "z": 0
+    },
+    "fov": 45,
+    "near": 0.1,
+    "far": 2000,
+    "zoom": 1.075,
+    "scene_bounds": {
+      "min_x": 270.0,
+      "min_y": 0.0,
+      "max_x": 550.0,
+      "max_y": 645.0
+    },
+    "padding": 50
+  },
+  "bloom": {
+    "input_embed": {
+      "color": "#546E7A",
+      "glow_color": "#78909C",
+      "bloom_threshold": 0.6,
+      "bloom_intensity": 0.4,
+      "bloom_radius": 8,
+      "glow_strength": 0.75
+    },
+    "pos_encode": {
+      "color": "#7E57C2",
+      "glow_color": "#B39DDB",
+      "bloom_threshold": 0.6,
+      "bloom_intensity": 0.4,
+      "bloom_radius": 8,
+      "glow_strength": 1.0
+    },
+    "self_attn": {
+      "color": "#1E88E5",
+      "glow_color": "#64B5F6",
+      "bloom_threshold": 0.6,
+      "bloom_intensity": 0.8,
+      "bloom_radius": 12,
+      "glow_strength": 1.75
+    },
+    "add_norm1": {
+      "color": "#E53935",
+      "glow_color": "#EF9A9A",
+      "bloom_threshold": 0.6,
+      "bloom_intensity": 0.4,
+      "bloom_radius": 8,
+      "glow_strength": 0.6
+    },
+    "ffn": {
+      "color": "#F57C00",
+      "glow_color": "#FFB74D",
+      "bloom_threshold": 0.6,
+      "bloom_intensity": 0.8,
+      "bloom_radius": 8,
+      "glow_strength": 1.1
+    },
+    "add_norm2": {
+      "color": "#C62828",
+      "glow_color": "#EF5350",
+      "bloom_threshold": 0.6,
+      "bloom_intensity": 0.4,
+      "bloom_radius": 8,
+      "glow_strength": 0.6
+    },
+    "output": {
+      "color": "#2E7D32",
+      "glow_color": "#66BB6A",
+      "bloom_threshold": 0.6,
+      "bloom_intensity": 0.4,
+      "bloom_radius": 8,
+      "glow_strength": 0.8999999999999999
+    }
+  },
+  "z_order": [
+    "input_embed",
+    "output",
+    "pos_encode",
+    "add_norm1",
+    "add_norm2",
+    "ffn",
+    "self_attn"
   ],
-  "edges": [
-    {
-      "edge_id": "e1",
-      "sources": [
-        "input_embed"
-      ],
-      "targets": [
-        "pos_encode"
-      ],
-      "is_skip": false,
-      "advanced": {},
-      "points": [
-        {
-          "x": 300.0,
-          "y": 90.0
-        },
-        {
-          "x": 300.0,
-          "y": 150.0
-        }
-      ],
-      "blocked_by": [],
-      "m169": {
-        "crossings_before": 0,
-        "crossings_after": 0
-      }
-    },
-    {
-      "edge_id": "e2",
-      "sources": [
-        "pos_encode"
-      ],
-      "targets": [
-        "self_attn"
-      ],
-      "is_skip": false,
-      "advanced": {},
-      "points": [
-        {
-          "x": 300.0,
-          "y": 200.0
-        },
-        {
-          "x": 300.0,
-          "y": 260.0
-        }
-      ],
-      "blocked_by": [],
-      "m169": {
-        "crossings_before": 0,
-        "crossings_after": 0
-      }
-    },
-    {
-      "edge_id": "e3",
-      "sources": [
-        "self_attn"
-      ],
-      "targets": [
-        "add_norm1"
-      ],
-      "is_skip": false,
-      "advanced": {},
-      "points": [
-        {
-          "x": 300.0,
-          "y": 310.0
-        },
-        {
-          "x": 290.0,
-          "y": 370.0
-        }
-      ],
-      "blocked_by": [],
-      "m169": {
-        "crossings_before": 0,
-        "crossings_after": 0
-      }
-    },
-    {
-      "edge_id": "e4",
-      "sources": [
-        "add_norm1"
-      ],
-      "targets": [
-        "ffn"
-      ],
-      "is_skip": false,
-      "advanced": {},
-      "points": [
-        {
-          "x": 290.0,
-          "y": 410.0
-        },
-        {
-          "x": 290.0,
-          "y": 470.0
-        }
-      ],
-      "blocked_by": [],
-      "m169": {
-        "crossings_before": 0,
-        "crossings_after": 0
-      }
-    },
-    {
-      "edge_id": "e5",
-      "sources": [
-        "ffn"
-      ],
-      "targets": [
-        "add_norm2"
-      ],
-      "is_skip": false,
-      "advanced": {},
-      "points": [
-        {
-          "x": 290.0,
-          "y": 515.0
-        },
-        {
-          "x": 290.0,
-          "y": 575.0
-        }
-      ],
-      "blocked_by": [],
-      "m169": {
-        "crossings_before": 0,
-        "crossings_after": 0
-      }
-    },
-    {
-      "edge_id": "e6",
-      "sources": [
-        "add_norm2"
-      ],
-      "targets": [
-        "output"
-      ],
-      "is_skip": false,
-      "advanced": {},
-      "points": [
-        {
-          "x": 290.0,
-          "y": 615.0
-        },
-        {
-          "x": 300.0,
-          "y": 675.0
-        }
-      ],
-      "blocked_by": [],
-      "m169": {
-        "crossings_before": 0,
-        "crossings_after": 0
-      }
-    },
-    {
-      "edge_id": "skip1",
-      "sources": [
-        "pos_encode"
-      ],
-      "targets": [
-        "add_norm1"
-      ],
-      "is_skip": true,
-      "advanced": {
-        "semanticType": "skip_connection",
-        "routing": "SPLINES",
-        "curvature": 0.6
+  "species": {
+    "input_embed": {
+      "species": "cil-vector",
+      "gene_traits": {
+        "primary_shape": "arrow_vec",
+        "pattern": "magnitude",
+        "line_style": "weighted",
+        "family": "embedding"
       },
-      "points": [
-        {
-          "x": 340.0,
-          "y": 200.0
-        },
-        {
-          "x": 217.00155281000758,
-          "y": 244.7507764050038
-        },
-        {
-          "x": 255.0,
-          "y": 370.0
-        }
-      ],
-      "blocked_by": [
-        "self_attn"
-      ],
-      "m169": {
-        "crossings_before": 0,
-        "crossings_after": 0
+      "agent_derived": {
+        "primary_color": "#546E7A",
+        "glow_color": "#78909C",
+        "algorithm_gene": "token_to_vector_heatmap",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 0.6,
+        "internal_pattern": "one_dimensional_heatmap_bars",
+        "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
       }
     },
-    {
-      "edge_id": "skip2",
-      "sources": [
-        "add_norm1"
-      ],
-      "targets": [
-        "add_norm2"
-      ],
-      "is_skip": true,
-      "advanced": {
-        "semanticType": "skip_connection",
-        "routing": "SPLINES",
-        "curvature": 0.6
+    "pos_encode": {
+      "species": "cil-vector",
+      "gene_traits": {
+        "primary_shape": "arrow_vec",
+        "pattern": "magnitude",
+        "line_style": "weighted",
+        "family": "embedding"
       },
-      "points": [
-        {
-          "x": 325.0,
-          "y": 410.0
-        },
-        {
-          "x": 207.14763963122692,
-          "y": 457.35051378294474
-        },
-        {
-          "x": 255.0,
-          "y": 575.0
-        }
-      ],
-      "blocked_by": [
-        "ffn"
-      ],
-      "m169": {
-        "crossings_before": 0,
-        "crossings_after": 0
+      "agent_derived": {
+        "primary_color": "#7E57C2",
+        "glow_color": "#B39DDB",
+        "algorithm_gene": "sinusoidal_wave_pattern",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 1.2,
+        "internal_pattern": "sine_cosine_alternating_bands",
+        "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies"
+      }
+    },
+    "self_attn": {
+      "species": "cil-eye",
+      "gene_traits": {
+        "primary_shape": "radial",
+        "pattern": "heatmap",
+        "line_style": "ray",
+        "family": "attention"
+      },
+      "agent_derived": {
+        "primary_color": "#1E88E5",
+        "glow_color": "#64B5F6",
+        "algorithm_gene": "radial_qkv_heatmap",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 0.8,
+        "internal_pattern": "multi_head_attention_grid",
+        "academic_source": "InTraVisTo: green=attention flow; Transformer Explainer: QKV branching Sankey"
+      }
+    },
+    "add_norm1": {
+      "species": "cil-plus",
+      "gene_traits": {
+        "primary_shape": "cross",
+        "pattern": "merge",
+        "line_style": "converge",
+        "family": "aggregation"
+      },
+      "agent_derived": {
+        "primary_color": "#E53935",
+        "glow_color": "#EF9A9A",
+        "algorithm_gene": "residual_merge_crosshair",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 0.4,
+        "internal_pattern": "plus_sign_merge_indicator",
+        "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
+      }
+    },
+    "ffn": {
+      "species": "cil-bolt",
+      "gene_traits": {
+        "primary_shape": "zigzag",
+        "pattern": "gradient",
+        "line_style": "angular",
+        "family": "activation"
+      },
+      "agent_derived": {
+        "primary_color": "#F57C00",
+        "glow_color": "#FFB74D",
+        "algorithm_gene": "zigzag_relu_activation",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 1.0,
+        "internal_pattern": "expand_contract_bottleneck",
+        "academic_source": "InTraVisTo: pink=FF layers; standard: wide→narrow→wide MLP bottleneck shape"
+      }
+    },
+    "add_norm2": {
+      "species": "cil-plus",
+      "gene_traits": {
+        "primary_shape": "cross",
+        "pattern": "merge",
+        "line_style": "converge",
+        "family": "aggregation"
+      },
+      "agent_derived": {
+        "primary_color": "#C62828",
+        "glow_color": "#EF5350",
+        "algorithm_gene": "residual_merge_crosshair",
+        "sdf_shape": "rounded_rect",
+        "animation_speed": 0.4,
+        "internal_pattern": "plus_sign_merge_indicator",
+        "academic_source": "Same residual convention as add_norm1; paired visually"
+      }
+    },
+    "output": {
+      "species": "cil-arrow-right",
+      "gene_traits": {
+        "primary_shape": "arrow",
+        "pattern": "flow",
+        "line_style": "directed",
+        "family": "dataflow"
+      },
+      "agent_derived": {
+        "primary_color": "#2E7D32",
+        "glow_color": "#66BB6A",
+        "algorithm_gene": "directed_arrow_flow_terminal",
+        "sdf_shape": "capsule",
+        "animation_speed": 0.5,
+        "internal_pattern": "probability_distribution_bars",
+        "academic_source": "Transformer Explainer: output probabilities as bar chart; green for output/result"
       }
     }
-  ]
+  },
+  "convergence": {
+    "epoch": 10,
+    "converged": true,
+    "max_delta": 0.0,
+    "cell_deltas": {
+      "add_norm1": 0.0,
+      "add_norm2": 0.0,
+      "ffn": 0.0,
+      "input_embed": 0.0,
+      "output": 0.0,
+      "pos_encode": 0.0,
+      "self_attn": 0.0
+    },
+    "diverged": false,
+    "threshold": 0.5
+  }
 }
