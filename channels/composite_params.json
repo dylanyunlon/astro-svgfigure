@@ -702,7 +702,47 @@
           400.0,
           385.0
         ]
-      ]
+      ],
+      "rendering": {
+        "spline_params": {
+          "thickness": 1.5,
+          "color": "#78909C",
+          "dash_pattern": {
+            "dash": 0,
+            "gap": 0
+          },
+          "glow_width": 3.0,
+          "glow_color": "#90A4AE",
+          "glow_intensity": 0.4,
+          "noise_amplitude": 0.2,
+          "noise_frequency": 1.5,
+          "flow_speed": 0.8
+        },
+        "particle_params": {
+          "count": 10,
+          "size": 2.5,
+          "speed": 1.0,
+          "color": "#B0BEC5",
+          "opacity": 0.6,
+          "trail_length": 4
+        },
+        "pixi_filters": {
+          "glow": {
+            "distance": 6,
+            "outerStrength": 1.2,
+            "color": "0x78909C"
+          },
+          "blur": {
+            "strength": 0.3
+          }
+        },
+        "render_params": {
+          "z_index": 1,
+          "blend_mode": "normal",
+          "arrow_size": 5,
+          "arrow_fill": "#546E7A"
+        }
+      }
     },
     "e5": {
       "source": "ffn",
