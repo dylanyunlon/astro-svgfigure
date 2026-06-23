@@ -181,3 +181,6 @@ export type { PICFLIPConfig, FLIPParticle, MACGrid } from './pic-flip-solver';
 // wireframe-overlay (M788)
 export { WireframeOverlay, WIREFRAME_DEFAULTS, createDebugWireframe, createAestheticWireframe, sampleForceGrid, selfTest as wireframeOverlaySelfTest, WGSL_BARY_VERTEX, WGSL_BARY_WIREFRAME_FRAG, WGSL_SDF_ISOCONTOUR } from './wireframe-overlay';
 export type { Vec2 as WireframeVec2, WireframeCellEntry, ForceFieldSample as WireframeForceFieldSample, WireframeFrameData, WireframeOverlayOptions } from './wireframe-overlay';
+// heat-transfer (M783)
+export { HeatTransferSolver, defaultHeatConfig, sampleThermalRamp, rgbaToCss as heatRgbaToCss, rgbaToU8 as heatRgbaToU8, selfTest as heatTransferSelfTest } from './heat-transfer';
+export type { HeatTransferConfig, HeatParticle, HeatParticleSOA, RGBA as HeatRGBA } from './heat-transfer';
