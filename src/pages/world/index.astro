@@ -456,7 +456,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
 <script>
   // ═══════════════════════════════════════════════════════════════════════════
-  //  world/index.astro — M787: Final Version
+  //  world/index.astro — M904: World Page Full Pipeline Render
   //
   //  Canonical integration of all SPH subsystems through WorldOrchestrator
   //  (M759) as the single owner of WebGPU, physics, rendering, and audio.
@@ -470,6 +470,24 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   //    ├─ PerformanceBudget    (4-tier adaptive quality: ULTRA/HIGH/MED/LOW)
   //    ├─ AdaptiveLOD          (per-cell distance/coverage/budget LOD tiers)
   //    └─ EnvironmentFx        (background atmosphere)
+  //
+  //  M904 additions:
+  //    AstroPipeline ← WebGL2 cell render loop (FXScene → Nuke → BloomPass)
+  //    ├─ AstroRenderer   (WebGL2 context owner)
+  //    ├─ FXScene         (offscreen cell render-to-texture)
+  //    ├─ Nuke            (post-process pipeline)
+  //    ├─ BloomPass       (luminosity-threshold bloom)
+  //    └─ CellInstanceManager (instanced per-species meshes)
+  //
+  //    physics-bridge ← WebWorker force/collision compute via comlink
+  //    ├─ computeForces()      (async ForceField per cell bbox)
+  //    ├─ detectCollisions()   (sweep-line overlap pairs)
+  //    ├─ checkConvergence()   (|force| < eps gate)
+  //    └─ terminatePhysicsWorker() (cleanup on unload)
+  //
+  //    composite_params ← per-scene composite config extracted from SSE params
+  //    ├─ extractCompositeParams()  (parse lighting + post buckets)
+  //    └─ CompositeParams           (contrast / rgbStrength / volumetric / DOF)
   //
   //  Epoch synchronisation:
   //    EpochVisualSync ← owns SSE connection, bridges backend epochs to visuals
@@ -533,6 +551,23 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     PRESET_SCENES,
     type PresetScene,
   } from '@/lib/sph/world-preset-scenes';
+  import {
+    AstroPipeline,
+    type AstroPipelineConfig,
+  } from '@/lib/AstroPipeline';
+  import {
+    computeForces,
+    detectCollisions,
+    checkConvergence,
+    terminatePhysicsWorker,
+    type CellBBox,
+    type ForceField,
+    type OverlapPair,
+  } from '@/lib/physics-bridge';
+  import {
+    extractCompositeParams,
+    type CompositeParams,
+  } from '@/lib/renderers/at-uil-bridge';
 
   // ── QoS profiles ──────────────────────────────────────────────────────────
   const QOS_PROFILES = {
@@ -712,8 +747,67 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     // ── cell_update: propagated from Apollo DataNotifier ─────────────────
     es.addEventListener('cell_update', (ev: MessageEvent) => {
       try {
-        const d = JSON.parse(ev.data) as { cell_id: string; params: unknown };
+        const d = JSON.parse(ev.data) as {
+          cell_id: string;
+          params: unknown;
+          bbox?: { x: number; y: number; w: number; h: number; z?: number };
+        };
         console.debug('[world SSE] cell_update', d.cell_id);
+
+        // ── physics-bridge: async force + overlap computation ───────────
+        if (d.bbox) {
+          const bboxes: CellBBox[] = [
+            { id: d.cell_id, x: d.bbox.x, y: d.bbox.y, w: d.bbox.w, h: d.bbox.h, z: d.bbox.z ?? 1 },
+          ];
+          computeForces(bboxes)
+            .then((ff: ForceField) => {
+              lastForceField = { ...lastForceField, ...ff };
+              // Feed computed forces back into orchestrator if available
+              if (orchestrator && typeof (orchestrator as any).applyForceField === 'function') {
+                (orchestrator as any).applyForceField(ff);
+              }
+              return checkConvergence(lastForceField, 0.5);
+            })
+            .then((converged: boolean) => {
+              if (converged) {
+                hudConvergence.textContent = 'YES';
+              }
+            })
+            .catch((err: unknown) => {
+              console.warn('[world physics-bridge] computeForces error:', err);
+            });
+
+          detectCollisions(bboxes)
+            .then((pairs: OverlapPair[]) => {
+              if (pairs.length > 0) {
+                console.debug('[world physics-bridge] overlaps:', pairs.length, 'pairs for', d.cell_id);
+              }
+            })
+            .catch((err: unknown) => {
+              console.warn('[world physics-bridge] detectCollisions error:', err);
+            });
+        }
+
+        // ── composite_params: extract per-scene composite config ─────────
+        if (d.params && typeof d.params === 'object') {
+          try {
+            const raw = d.params as Record<string, unknown>;
+            const lightingBucket  = (raw.lighting  ?? {}) as any;
+            const postBucket      = (raw.post       ?? {}) as any;
+            if (Object.keys(lightingBucket).length > 0 || Object.keys(postBucket).length > 0) {
+              const extracted = extractCompositeParams(
+                { lighting: lightingBucket },
+                { post: postBucket },
+              );
+              if (extracted.length > 0) {
+                activeCompositeParams = extracted;
+                console.debug('[world composite_params] extracted', extracted.length, 'scene entries for', d.cell_id);
+              }
+            }
+          } catch (cpErr) {
+            console.warn('[world composite_params] extraction error:', cpErr);
+          }
+        }
 
         // Trigger organic growth animation for newly arriving cells
         if (growthAnimator && d.cell_id) {
@@ -874,10 +968,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     let pipeline: ATRenderPipeline | null = null;
     let compositor: ATSceneCompositor | null = null;
     let orchestrator: WorldOrchestrator | null = null;
+    let astroPipeline: AstroPipeline | null = null;
     let renderMode: 'simple' | 'at' = 'simple';
     let gpuDevice:  GPUDevice | null = null;
     let gpuContext: GPUCanvasContext | null = null;
     let gpuFormat:  GPUTextureFormat = 'bgra8unorm';
+    let lastForceField: ForceField = {};
+    let activeCompositeParams: CompositeParams[] = [];
     const meter = new FPSMeter();
 
     // ── Performance budget (4-tier adaptive quality) ─────────────────────
@@ -935,6 +1032,26 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     } catch (err) {
       console.warn('[world] WorldOrchestrator init failed — running without orchestrator:', err);
       orchestrator = null;
+    }
+
+    // ── Initialise AstroPipeline (WebGL2 cell render loop) ───────────────
+    // AstroPipeline drives the FXScene → Nuke post-process → BloomPass chain
+    // over WebGL2 in parallel with the WebGPU AT pipeline.  It is kept
+    // separate so that its WebGL2 context does not conflict with WebGPU.
+    try {
+      astroPipeline = new AstroPipeline({
+        cellsEndpoint:       '/api/cells',
+        cellParamsDir:       '/channels/cell',
+        bloomStrength:       profile.lutStrength * 1.4,
+        bloomRadius:         1.0,
+        luminosityThreshold: 0.65,
+      } satisfies AstroPipelineConfig);
+      await astroPipeline.init(canvas);
+      astroPipeline.start();
+      console.info('[world] AstroPipeline initialised and started');
+    } catch (err) {
+      console.warn('[world] AstroPipeline init failed — WebGL2 cell layer unavailable:', err);
+      astroPipeline = null;
     }
 
     // ── Initialise AT Render Pipeline (Simple mode) ─────────────────────
@@ -1082,6 +1199,22 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
       // ── Organic growth animator tick ───────────────────────────────
       growthAnimator.update(dt);
+
+      // ── AstroPipeline composite params sync ────────────────────────
+      // Push the most-recent composite params into AstroPipeline's bloom
+      // pass so scene-specific contrast and RGB-strength values from the
+      // cell SSE stream are reflected on every frame.
+      if (astroPipeline && activeCompositeParams.length > 0) {
+        const cp = activeCompositeParams[0];
+        if (cp.contrast !== undefined || cp.rgbStrength !== undefined) {
+          astroPipeline.bloomPass.setThreshold(
+            cp.contrast !== undefined ? Math.max(0, 1 - cp.contrast) : 0.65,
+          );
+          if (cp.rgbStrength !== undefined) {
+            astroPipeline.bloomPass.setStrength(cp.rgbStrength * 1.5);
+          }
+        }
+      }
 
       // ── Render path selection ─────────────────────────────────────
       if (renderMode === 'at' && compositor && compositor.isInitialised) {
@@ -1262,6 +1395,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         compositor.resize(canvas.width, canvas.height);
       }
       orchestrator?.resize(canvas.width, canvas.height);
+      astroPipeline?.resize(canvas.clientWidth, canvas.clientHeight);
     });
     resizeObserver.observe(canvas);
 
@@ -1273,6 +1407,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       compositor?.destroy();
       pipeline?.destroy();
       orchestrator?.destroy();
+      astroPipeline?.dispose();
+      terminatePhysicsWorker();
       gpuDevice?.destroy();
     });
   })();
