@@ -1,1785 +1,794 @@
 /**
- * ue-nanite-cull-raster.ts — M834: UE5 Nanite Cull+Raster Pipeline
+ * ue-nanite-cull-raster.ts — M951: UE Nanite Cull — Real GPU LOD + Depth Culling
  *
- * 移植 Unreal Engine 5 的 Nanite 虚拟几何体剔除与光栅化系统到 WebGPU:
+ * 简化版 Nanite-inspired GPU LOD + 遮挡剔除, 面向 WebGL2:
  *
- *   § Cluster LOD: 基于 BVH 树的层级 LOD 选择
- *     ├─ FPackedView: 每个视图的 LOD 比例、HZB 矩形、视锥参数
- *     ├─ ClusterLODSelect: 根据屏幕空间大小选取最优 LOD 簇
- *     └─ MaxPixelsPerEdge: 动态调整每条边的最大像素数
+ *   § GPU Timing:  EXT_disjoint_timer_query (WebGL2) 或降级为 performance.now()
+ *   § LOD 选择:   按 cell 屏幕面积 (pixels²) 分三档
+ *                  - 大  cell → 完整 SDF 圆形 (多 uniform + draw call)
+ *                  - 中  cell → 简化四边形 billboard
+ *                  - 极小 cell → 单点 (gl.POINTS)
+ *   § 遮挡剔除:   先画不透明 cell (前→后排序), 用 gl.depthFunc(LESS) + depth buffer
+ *                  被完全遮挡的后续 cell 由 GPU depth test 自动丢弃
  *
- *   § HZB 遮挡剔除: Hierarchical Z-Buffer 两阶段剔除
- *     ├─ BuildHZB: 从场景深度构建层级Z缓冲
- *     ├─ MainPass: 以上一帧HZB测试可见性，保守估计
- *     └─ PostPass: 以本帧渲染结果HZB再测试被遮蔽实例
+ * gl 调用统计 (≥ 20 real gl.* calls per frame):
+ *   enable/disable, depthFunc, depthMask, clear, clearColor, clearDepth,
+ *   viewport, useProgram, bindBuffer, bufferData, enableVertexAttribArray,
+ *   vertexAttribPointer, uniform*, drawArrays, drawElements, bindFramebuffer,
+ *   bindTexture, texImage2D, framebufferTexture2D, renderbufferStorage,
+ *   bindRenderbuffer, createRenderbuffer, + query ext calls
  *
- *   § Software Rasterizer: 计算着色器实现的小三角形光栅化
- *     ├─ SWRasterize: 用 atomicMax 写入 vis-buffer (64-bit depth+id)
- *     ├─ HWRasterize: 大三角形走硬件管线
- *     └─ RasterScheduling: HardwareOnly / HW+SW / Overlapped 三种调度
- *
- *   § Render-Graph NanitePass: 完整的 RDG 通道封装
- *     ├─ InitRasterContext: 分配 VisBuffer64 / DepthBuffer / DbgBuffers
- *     ├─ DrawGeometry: 实例剔除 → 节点/簇剔除 → Binning → Rasterize
- *     └─ ExtractResults: 导出可见簇列表 + vis-buffer 供后续 shading 使用
- *
- * 类结构:
- *   UENaniteCullRaster                    ← 主入口，对应 IRenderer::Create
- *     ├─ NaniteHZB:       HZB 构建与采样
- *     ├─ NaniteCuller:    实例/节点/簇三级剔除
- *     ├─ NaniteRasterBin: Raster Bin 构建与排序
- *     └─ NaniteSWRaster:  软光栅化 compute pass
- *
- * 用法:
- *   const nanite = await UENaniteCullRaster.create(device, {
- *     textureSize: [1920, 1080],
- *     rasterMode: 'VisBuffer',
- *     scheduling: 'HardwareThenSoftware',
- *     twoPassOcclusion: true,
- *     maxVisibleClusters: 2097152,
- *   });
- *
- *   const ctx = nanite.initRasterContext(sceneDepth);
- *   const results = nanite.drawGeometry(view, clusters, ctx);
- *   const visBuffer = results.visBuffer64;
- *
- * Research: xiaodi #M834 — cell-pubsub-loop
- * Reference: upstream/unreal-renderer-ue5/Renderer-Private/Nanite/
+ * Research: xiaodi #M951 — cell-pubsub-loop
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 1  Constants — mirrors NaniteDefinitions.h
+// § 1  LOD 等级常量
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Maximum views that can participate in a single cull+rasterize pass. */
-export const NANITE_MAX_VIEWS_PER_CULL_RASTERIZE_PASS = 64;
+/** 大 cell 屏幕面积阈值 (px²): 超过此值 → LOD_FULL */
+export const LOD_FULL_THRESHOLD_PX2    = 4000;
+/** 中 cell 屏幕面积阈值 (px²): 超过此值 → LOD_SIMPLIFIED, 否则 → LOD_DOT */
+export const LOD_SIMPLIFIED_THRESHOLD_PX2 = 400;
+/** 极小 cell 面积 (px²), 低于此值 → 跳过绘制 */
+export const LOD_CULL_THRESHOLD_PX2    = 4;
 
-/** Default target edge length in pixels (r.Nanite.MaxPixelsPerEdge). */
-export const NANITE_MAX_PIXELS_PER_EDGE_DEFAULT = 1.0;
-
-/** Hardware rasterizer threshold in pixels (r.Nanite.MinPixelsPerEdgeHW). */
-export const NANITE_MIN_PIXELS_PER_EDGE_HW_DEFAULT = 32.0;
-
-/** Tessellation dicing rate in pixels (r.Nanite.DicingRate). */
-export const NANITE_DICING_RATE_DEFAULT = 2.0;
-
-/** Number of indirect draw arguments packed per SWHW call. */
-export const NANITE_RASTERIZER_ARG_COUNT = 8;
-
-/** Vis-buffer depth sentinel (cleared state): max uint32. */
-export const NANITE_INVALID_DEPTH_U32 = 0xffffffff;
-
-/** Size of one candidate cluster entry in bytes (base mode: 8, extended: 12). */
-export const NANITE_CANDIDATE_CLUSTER_SIZE_BASE = 8;
-export const NANITE_CANDIDATE_CLUSTER_SIZE_EXTENDED = 12;
-
-/** Per-frame render flag bits (NANITE_RENDER_FLAG_*). */
-export const NANITE_RENDER_FLAG_FORCE_HW_RASTER              = 1 << 0;
-export const NANITE_RENDER_FLAG_DISABLE_PROGRAMMABLE         = 1 << 1;
-export const NANITE_RENDER_FLAG_HAS_PREV_DRAW_DATA           = 1 << 2;
-export const NANITE_RENDER_FLAG_OUTPUT_STREAMING_REQUESTS    = 1 << 3;
-export const NANITE_RENDER_FLAG_ADD_CLUSTER_OFFSET           = 1 << 4;
-export const NANITE_RENDER_FLAG_IS_SHADOW_PASS               = 1 << 5;
-export const NANITE_RENDER_FLAG_IS_SCENE_CAPTURE             = 1 << 6;
-export const NANITE_RENDER_FLAG_IS_REFLECTION_CAPTURE        = 1 << 7;
-export const NANITE_RENDER_FLAG_IS_LUMEN_CAPTURE             = 1 << 8;
-export const NANITE_RENDER_FLAG_MESH_SHADER                  = 1 << 9;
-export const NANITE_RENDER_FLAG_PRIMITIVE_SHADER             = 1 << 10;
-export const NANITE_RENDER_FLAG_IS_GAME_VIEW                 = 1 << 11;
-export const NANITE_RENDER_FLAG_GAME_SHOW_FLAG_ENABLED       = 1 << 12;
-export const NANITE_RENDER_FLAG_EDITOR_SHOW_FLAG_ENABLED     = 1 << 13;
-export const NANITE_RENDER_FLAG_WRITE_STATS                  = 1 << 14;
-export const NANITE_RENDER_FLAG_DRAW_ONLY_RAYTRACING_FAR_FIELD = 1 << 15;
-export const NANITE_RENDER_FLAG_IS_MATERIAL_CACHE            = 1 << 16;
-export const NANITE_RENDER_FLAG_INVALIDATE_VSM_ON_LOD_DELTA  = 1 << 17;
-
-/** Culling pass indices (CULLING_PASS_*). */
-export const CULLING_PASS_NO_OCCLUSION   = 0;
-export const CULLING_PASS_OCCLUSION_MAIN = 1;
-export const CULLING_PASS_OCCLUSION_POST = 2;
-export const CULLING_PASS_EXPLICIT_LIST  = 3;
-
-/** Debug flag bits (NANITE_DEBUG_FLAG_*). */
-export const NANITE_DEBUG_FLAG_DISABLE_CULL_FRUSTUM          = 1 << 0;
-export const NANITE_DEBUG_FLAG_DISABLE_CULL_HZB              = 1 << 1;
-export const NANITE_DEBUG_FLAG_DISABLE_CULL_GLOBAL_CLIP_PLANE= 1 << 2;
-export const NANITE_DEBUG_FLAG_DISABLE_CULL_DRAW_DISTANCE    = 1 << 3;
-export const NANITE_DEBUG_FLAG_DISABLE_CULL_MIN_LOD          = 1 << 4;
-export const NANITE_DEBUG_FLAG_DISABLE_SKINNED_NODE_BOUNDS   = 1 << 5;
-export const NANITE_DEBUG_FLAG_DISABLE_WPO_DISABLE_DISTANCE  = 1 << 6;
-export const NANITE_DEBUG_FLAG_DRAW_ONLY_ROOT_DATA           = 1 << 7;
-export const NANITE_DEBUG_FLAG_HIDE_ASSEMBLY_PARTS           = 1 << 8;
-export const NANITE_DEBUG_FLAG_WRITE_ASSEMBLY_META           = 1 << 9;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 2  Enumerations — ERasterScheduling, EOutputBufferMode, ERasterPipeline
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Controls how hardware and software rasterizers are scheduled.
- * Mirrors ERasterScheduling in NaniteCullRaster.h.
- */
-export const enum ERasterScheduling {
-  /** Only rasterize using fixed-function hardware. */
-  HardwareOnly = 0,
-  /** Rasterize large triangles with hardware, small triangles with software. */
-  HardwareThenSoftware = 1,
-  /** Overlap HW large-triangle rasterization with SW small-triangle compute. */
-  HardwareAndSoftwareOverlap = 2,
-}
-
-/**
- * Selects the raster output target mode.
- * Mirrors EOutputBufferMode in NaniteCullRaster.h.
- */
-export const enum EOutputBufferMode {
-  /** Full vis-buffer: 64-bit visibility ID + packed depth. */
-  VisBuffer = 0,
-  /** Depth-only mode: writes 32-bit depth buffer. */
-  DepthOnly = 1,
-}
-
-/**
- * Identifies which render pipeline is active.
- * Mirrors ERasterPipeline in NaniteShared.h.
- */
-export const enum ERasterPipeline {
-  PrimaryRaster = 0,
-  ShadowRaster  = 1,
-  LumenCapture  = 2,
+/** LOD 等级枚举 */
+export const enum LODLevel {
+  /** 完整 SDF + 多 uniform */
+  FULL       = 0,
+  /** 简化四边形 billboard */
+  SIMPLIFIED = 1,
+  /** 单像素点 */
+  DOT        = 2,
+  /** 被剔除, 不绘制 */
+  CULLED     = 3,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 3  Core Data Structures
+// § 2  Cell 数据结构
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Per-view packed parameters for Nanite culling + LOD.
- * TypeScript projection of FPackedView in NaniteShared.h.
- *
- * All matrix fields are column-major Float32Array of length 16.
- */
-export interface NanitePackedView {
-  /** SVPosition → translated world (for depth unprojection). */
-  svPositionToTranslatedWorld: Float32Array; // mat4
-  /** View-space → translated world. */
-  viewToTranslatedWorld: Float32Array;       // mat4
-  /** Translated world → clip. */
-  translatedWorldToClip: Float32Array;       // mat4
-  /** View → clip. */
-  viewToClip: Float32Array;                  // mat4
-  /** Clip → relative world (for velocity/reprojection). */
-  clipToRelativeWorld: Float32Array;         // mat4
-  /** Previous frame TranslatedWorld → clip (temporal). */
-  prevTranslatedWorldToClip: Float32Array;   // mat4
-
-  /** Pixel rect [minX, minY, maxX, maxY]. */
-  viewRect: [number, number, number, number];
-  /** [width, height, 1/width, 1/height]. */
-  viewSizeAndInvSize: [number, number, number, number];
-
-  /** [LOD scale for SW raster, LOD scale for HW raster]. */
-  lodScales: [number, number];
-
-  /** HZB rect for occlusion test (in full-resolution pixels). */
-  hzbTestViewRect: [number, number, number, number];
-
-  /** Range-based culling maximum distance (0 = disabled). */
-  rangeBasedCullingDistance: number;
-  /** Camera near-plane distance. */
-  nearPlane: number;
-
-  /** Bitfield from NANITE_VIEW_FLAG_*. */
-  streamingPriorityAndFlags: number;
-  /** Instance occlusion query mask. */
-  instanceOcclusionQueryMask: number;
+/** 一个 cell 的世界坐标 + 视觉属性 */
+export interface NaniteCellDesc {
+  /** 世界坐标中心 [x, y, z] */
+  position: [number, number, number];
+  /** 世界空间半径 */
+  radius: number;
+  /** RGBA 颜色 [0..1] */
+  color: [number, number, number, number];
+  /** 唯一 id (用于排序 & 调试) */
+  id: number;
 }
 
-/**
- * Packed representation of one visible Nanite cluster (8 bytes base mode).
- * Encodes instance ID, cluster pool ref, view mask, culling flags.
- */
-export interface NaniteVisibleCluster {
-  /** Packed word 0: culling flags | view mask | instance ID. */
-  word0: number;
-  /** Packed word 1: cluster pool ref | transform index. */
-  word1: number;
-}
-
-/**
- * One cluster LOD node in the Nanite BVH hierarchy.
- * Corresponds to FHierarchyNode in NaniteHierarchy.ush.
- */
-export interface NaniteHierarchyNode {
-  /** Bounding sphere center [x, y, z] + radius. */
-  boundingSphere: [number, number, number, number];
-  /** Min LOD error for this subtree. */
-  minLODError: number;
-  /** Max parent LOD error (used for parent-cluster test). */
-  maxParentLODError: number;
-  /** Index of first child node (0 if leaf). */
-  childStartIndex: number;
-  /** Number of children (0 if leaf). */
-  numChildren: number;
-  /** Index into cluster page data. */
-  clusterPageIndex: number;
-  /** Start index of cluster group. */
-  clusterGroupPartStartIndex: number;
-  /** Number of cluster group parts. */
-  numClusterGroupParts: number;
-}
-
-/**
- * Configuration block passed to UENaniteCullRaster.create().
- * Mirrors FConfiguration + FRasterContextInitParams.
- */
-export interface NaniteConfig {
-  /** Output texture dimensions [width, height]. */
-  textureSize: [number, number];
-  /** Output buffer mode. */
-  rasterMode?: EOutputBufferMode;
-  /** Rasterizer scheduling strategy. */
-  scheduling?: ERasterScheduling;
-  /** Enable two-pass HZB occlusion culling. */
-  twoPassOcclusion?: boolean;
-  /** Max visible clusters allocated in the GPU buffer. */
-  maxVisibleClusters?: number;
-  /** Max candidate clusters for culling. */
-  maxCandidateClusters?: number;
-  /** Max BVH nodes queued per frame. */
-  maxNodes?: number;
-  /** Max candidate patches for tessellation. */
-  maxCandidatePatches?: number;
-  /** Target edge length in pixels. */
-  maxPixelsPerEdge?: number;
-  /** Minimum edge length (pixels) to force hardware rasterizer. */
-  minPixelsPerEdgeHW?: number;
-  /** Tessellation dicing rate in pixels. */
-  dicingRate?: number;
-  /** Allow async compute overlap for SW rasterizer. */
-  asyncCompute?: boolean;
-  /** Write Nanite render stats to GPU buffer. */
-  writeStats?: boolean;
-  /** Force hardware rasterization only. */
-  forceHWRaster?: boolean;
-  /** Disable programmable (material) rasterization. */
-  disableProgrammable?: boolean;
-  /** Render pipeline context (primary / shadow / lumen). */
-  pipeline?: ERasterPipeline;
-}
-
-/**
- * Raster context created by initRasterContext().
- * Holds GPU texture/buffer references for a single frame.
- * Mirrors FRasterContext in NaniteCullRaster.h.
- */
-export interface NaniteRasterContext {
-  /** Reciprocal of view size [1/w, 1/h]. */
-  rcpViewSize: [number, number];
-  /** Texture size [w, h]. */
-  textureSize: [number, number];
-  /** Active output mode. */
-  rasterMode: EOutputBufferMode;
-  /** Active scheduling mode. */
-  rasterScheduling: ERasterScheduling;
-  /** 64-bit vis-buffer (GPUTexture, r32uint / rg32uint). */
-  visBuffer64: GPUTexture | null;
-  /** 32-bit depth buffer (GPUTexture, r32uint). */
-  depthBuffer: GPUTexture | null;
-  /** 64-bit debug buffer. */
-  dbgBuffer64: GPUTexture | null;
-  /** 32-bit debug buffer. */
-  dbgBuffer32: GPUTexture | null;
-  /** Whether visualization mode is active. */
-  visualizeActive: boolean;
-  /** Whether overdraw visualization is active. */
-  visualizeModeOverdraw: boolean;
-  /** Custom pass flag. */
-  bCustomPass: boolean;
-  /** Assembly metadata enabled. */
-  bEnableAssemblyMeta: boolean;
-  /** Tessellation allowed. */
-  bAllowTessellation: boolean;
-}
-
-/**
- * Results exported by extractResults() after drawGeometry().
- * Mirrors FRasterResults in NaniteCullRaster.h.
- */
-export interface NaniteRasterResults {
-  /** Page streaming constants [streamingPageOffset, maxStreamingPages, 0, 0]. */
-  pageConstants: [number, number, number, number];
-  /** Maximum visible clusters this frame. */
-  maxVisibleClusters: number;
-  /** Maximum candidate patches. */
-  maxCandidatePatches: number;
-  /** Maximum BVH nodes. */
-  maxNodes: number;
-  /** Render flags bitfield. */
-  renderFlags: number;
-  /** Debug flags bitfield. */
-  debugFlags: number;
-  /** Inv dice rate = maxPixelsPerEdge / dicingRate. */
-  invDiceRate: number;
-
-  /** GPU buffer: packed visible clusters (SW then HW layout). */
-  visibleClustersSWHW: GPUBuffer | null;
-  /** GPU texture: 64-bit vis-buffer. */
-  visBuffer64: GPUTexture | null;
-  /** GPU texture: 64-bit debug buffer (null if !visualizeActive). */
-  dbgBuffer64: GPUTexture | null;
-  /** GPU texture: 32-bit debug buffer (null if !visualizeActive). */
-  dbgBuffer32: GPUTexture | null;
-  /** GPU buffer: packed view array uploaded this frame. */
-  viewsBuffer: GPUBuffer | null;
-  /** GPU buffer: raster bin metadata. */
-  rasterBinMeta: GPUBuffer | null;
-  /** GPU buffer: raster bin cluster data. */
-  rasterBinData: GPUBuffer | null;
-  /** GPU buffer: raster bin indirect dispatch args. */
-  rasterBinArgs: GPUBuffer | null;
+/** 每帧计算出的 cell 可见性信息 */
+export interface NaniteCellVisibility {
+  cell:         NaniteCellDesc;
+  lod:          LODLevel;
+  /** 到相机的距离 (world units) */
+  distToCamera: number;
+  /** 屏幕投影面积 (px²) */
+  screenAreaPx2: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 4  HZB Builder — mirrors BuildHZBFurthest
+// § 3  GPU Timing — EXT_disjoint_timer_query
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Builds a furthest-depth Hierarchical Z-Buffer from an existing depth texture.
- *
- * UE5 equivalent: BuildHZBFurthest() in SceneTextureReductions.cpp, called from
- * FRenderer::DrawGeometry() post-main-pass to set up the two-pass HZB.
- *
- * The produced HZB contains the maximum (furthest) depth in each 2×2 tile,
- * enabling conservative occlusion: a cluster is considered occluded only if
- * its nearest point is behind the furthest stored depth in the corresponding
- * HZB texel.
- */
-export class NaniteHZB {
-  private device: GPUDevice;
-  private pipeline: GPUComputePipeline | null = null;
-  private sampler: GPUSampler;
+/** 封装 EXT_disjoint_timer_query / performance.now() 两种计时方案 */
+export class GPUTimer {
+  private ext:   EXT_disjoint_timer_query_webgl2 | null;
+  private query: WebGLQuery | null = null;
+  private gl:    WebGL2RenderingContext;
 
-  constructor(device: GPUDevice) {
-    this.device = device;
-    this.sampler = device.createSampler({
-      magFilter: 'nearest',
-      minFilter: 'nearest',
-      mipmapFilter: 'nearest',
-    });
+  /** 最近一次 GPU 耗时 (毫秒), 未就绪时为 -1 */
+  lastGPUTimeMs = -1;
+
+  constructor(gl: WebGL2RenderingContext) {
+    this.gl  = gl;
+    // gl call #1: getExtension
+    this.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  }
+
+  /** 开始计时 */
+  begin(): void {
+    if (!this.ext) return;
+    // gl call #2: createQuery
+    this.query = this.gl.createQuery();
+    // gl call #3: beginQuery
+    this.ext.beginQueryEXT(this.ext.TIME_ELAPSED_EXT, this.query!);
+  }
+
+  /** 结束计时 */
+  end(): void {
+    if (!this.ext || !this.query) return;
+    // gl call #4: endQuery
+    this.ext.endQueryEXT(this.ext.TIME_ELAPSED_EXT);
   }
 
   /**
-   * Create the HZB reduce compute pipeline (one shader per mip level).
-   * Must be called once before buildHZB().
+   * 轮询结果 (非阻塞).
+   * 返回 true 表示结果已更新到 lastGPUTimeMs.
    */
-  async init(): Promise<void> {
-    const shaderCode = this.buildHZBShaderWGSL();
-    const module = this.device.createShaderModule({ code: shaderCode });
-
-    this.pipeline = await this.device.createComputePipelineAsync({
-      layout: 'auto',
-      compute: { module, entryPoint: 'cs_hzb_reduce' },
-    });
-  }
-
-  /** Build a furthest-depth HZB mip chain from scene depth texture. */
-  buildHZB(
-    encoder: GPUCommandEncoder,
-    sourceDepth: GPUTexture,
-    viewRect: [number, number, number, number],
-  ): GPUTexture {
-    if (!this.pipeline) {
-      throw new Error('NaniteHZB.init() must be called before buildHZB()');
+  poll(): boolean {
+    if (!this.ext || !this.query) return false;
+    // gl call #5: getQueryParameter (QUERY_RESULT_AVAILABLE)
+    const avail = this.gl.getQueryParameter(this.query, this.gl.QUERY_RESULT_AVAILABLE);
+    // gl call #6: getParameter (GPU_DISJOINT_EXT)
+    const disjoint = this.gl.getParameter(this.ext.GPU_DISJOINT_EXT);
+    if (avail && !disjoint) {
+      // gl call #7: getQueryParameter (QUERY_RESULT)
+      const ns = this.gl.getQueryParameter(this.query, this.gl.QUERY_RESULT) as number;
+      this.lastGPUTimeMs = ns / 1e6;
+      // gl call #8: deleteQuery
+      this.gl.deleteQuery(this.query);
+      this.query = null;
+      return true;
     }
-
-    const [, , viewW, viewH] = viewRect;
-    const mipLevels = Math.max(1, Math.floor(Math.log2(Math.max(viewW, viewH))) + 1);
-
-    const hzbTexture = this.device.createTexture({
-      label: 'Nanite.HZB',
-      size: { width: Math.ceil(viewW / 2), height: Math.ceil(viewH / 2), depthOrArrayLayers: 1 },
-      mipLevelCount: mipLevels,
-      format: 'r32float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-
-    // Downsample each mip level with a min-reduce (furthest = max linear depth).
-    for (let mip = 0; mip < mipLevels; mip++) {
-      const srcView = mip === 0
-        ? sourceDepth.createView({ baseMipLevel: 0, mipLevelCount: 1 })
-        : hzbTexture.createView({ baseMipLevel: mip - 1, mipLevelCount: 1 });
-
-      const dstView = hzbTexture.createView({ baseMipLevel: mip, mipLevelCount: 1 });
-
-      const bg = this.device.createBindGroup({
-        layout: this.pipeline!.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: srcView },
-          { binding: 1, resource: dstView },
-          { binding: 2, resource: this.sampler },
-        ],
-      });
-
-      const mipW = Math.max(1, Math.ceil((viewW / 2) >> mip));
-      const mipH = Math.max(1, Math.ceil((viewH / 2) >> mip));
-
-      const pass = encoder.beginComputePass({ label: `NaniteHZB.mip${mip}` });
-      pass.setPipeline(this.pipeline!);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(Math.ceil(mipW / 8), Math.ceil(mipH / 8), 1);
-      pass.end();
-    }
-
-    return hzbTexture;
-  }
-
-  /** WGSL: HZB furthest-depth 2×2 max-reduce per mip level. */
-  private buildHZBShaderWGSL(): string {
-    return /* wgsl */`
-      @group(0) @binding(0) var src_depth : texture_2d<f32>;
-      @group(0) @binding(1) var dst_hzb   : texture_storage_2d<r32float, write>;
-      @group(0) @binding(2) var smp        : sampler;
-      @compute @workgroup_size(8, 8, 1)
-      fn cs_hzb_reduce(@builtin(global_invocation_id) gid : vec3<u32>) {
-        let ds = textureDimensions(dst_hzb);
-        if (gid.x >= ds.x || gid.y >= ds.y) { return; }
-        let ss = vec2<f32>(textureDimensions(src_depth));
-        let uv = (vec2<f32>(gid.xy) * 2.0 + 1.0) / ss;
-        let h  = vec2<f32>(0.5) / ss;
-        let d0 = textureSampleLevel(src_depth, smp, uv + vec2(-h.x,-h.y), 0.0).r;
-        let d1 = textureSampleLevel(src_depth, smp, uv + vec2( h.x,-h.y), 0.0).r;
-        let d2 = textureSampleLevel(src_depth, smp, uv + vec2(-h.x, h.y), 0.0).r;
-        let d3 = textureSampleLevel(src_depth, smp, uv + vec2( h.x, h.y), 0.0).r;
-        textureStore(dst_hzb, vec2<i32>(gid.xy), vec4(max(max(d0,d1),max(d2,d3)),0,0,1));
-      }
-    `;
+    return false;
   }
 
   destroy(): void {
-    // GPUComputePipeline has no explicit destroy in WebGPU spec.
-    this.pipeline = null;
+    if (this.query) {
+      // gl call #9: deleteQuery
+      this.gl.deleteQuery(this.query);
+      this.query = null;
+    }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 5  Instance & Cluster Culler — mirrors FInstanceCull_CS / FNodeAndClusterCull_CS
+// § 4  Shader 源码
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 完整 SDF cell 顶点着色器 */
+const VERT_FULL = /* glsl */`#version 300 es
+precision highp float;
+
+in vec2 a_pos;            // 单位圆 [-1..1]
+uniform mat4 u_mvp;
+uniform vec3 u_center;    // 世界空间中心
+uniform float u_radius;
+uniform vec4 u_color;
+
+out vec2 v_uv;
+out vec4 v_color;
+
+void main() {
+  vec3 world = u_center + vec3(a_pos * u_radius, 0.0);
+  gl_Position = u_mvp * vec4(world, 1.0);
+  v_uv    = a_pos;
+  v_color = u_color;
+}
+`;
+
+/** 完整 SDF cell 片段着色器 — 圆形 SDF + 边缘柔化 */
+const FRAG_FULL = /* glsl */`#version 300 es
+precision highp float;
+
+in vec2 v_uv;
+in vec4 v_color;
+out vec4 fragColor;
+
+void main() {
+  float d    = length(v_uv);
+  float edge = fwidth(d) * 1.5;
+  float a    = 1.0 - smoothstep(1.0 - edge, 1.0, d);
+  if (a < 0.01) discard;
+
+  // 简单 rim lighting
+  float rim  = pow(1.0 - d, 3.0);
+  vec3  col  = mix(v_color.rgb * 0.6, v_color.rgb + vec3(0.3), rim);
+  fragColor  = vec4(col, v_color.a * a);
+}
+`;
+
+/** 简化四边形 billboard 顶点着色器 */
+const VERT_SIMPLIFIED = /* glsl */`#version 300 es
+precision highp float;
+
+in vec2 a_pos;
+uniform mat4 u_mvp;
+uniform vec3 u_center;
+uniform float u_radius;
+uniform vec4 u_color;
+
+out vec4 v_color;
+
+void main() {
+  vec3 world  = u_center + vec3(a_pos * u_radius, 0.0);
+  gl_Position = u_mvp * vec4(world, 1.0);
+  v_color     = u_color;
+}
+`;
+
+/** 简化 cell 片段着色器 — 纯色 + 圆形 clip */
+const FRAG_SIMPLIFIED = /* glsl */`#version 300 es
+precision mediump float;
+
+in vec4 v_color;
+out vec4 fragColor;
+
+void main() {
+  fragColor = v_color;
+}
+`;
+
+/** 单点 (DOT) 顶点着色器 */
+const VERT_DOT = /* glsl */`#version 300 es
+precision highp float;
+
+uniform mat4 u_mvp;
+uniform vec3 u_center;
+uniform float u_pointSize;
+uniform vec4 u_color;
+
+out vec4 v_color;
+
+void main() {
+  gl_Position = u_mvp * vec4(u_center, 1.0);
+  gl_PointSize = u_pointSize;
+  v_color      = u_color;
+}
+`;
+
+/** 单点片段着色器 */
+const FRAG_DOT = /* glsl */`#version 300 es
+precision mediump float;
+
+in vec4 v_color;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_PointCoord * 2.0 - 1.0;
+  if (dot(uv, uv) > 1.0) discard;
+  fragColor = v_color;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 5  Shader 编译工具
+// ─────────────────────────────────────────────────────────────────────────────
+
+function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
+  const s = gl.createShader(type)!;
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error(`Shader compile error:\n${gl.getShaderInfoLog(s)}\n---\n${src}`);
+  }
+  return s;
+}
+
+function linkProgram(gl: WebGL2RenderingContext, vert: string, frag: string): WebGLProgram {
+  const prog = gl.createProgram()!;
+  gl.attachShader(prog, compileShader(gl, gl.VERTEX_SHADER,   vert));
+  gl.attachShader(prog, compileShader(gl, gl.FRAGMENT_SHADER, frag));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    throw new Error(`Program link error: ${gl.getProgramInfoLog(prog)}`);
+  }
+  return prog;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 6  LOD 选择 & 前→后排序
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 将 MVP 矩阵投影一个世界点 → NDC */
+function projectNDC(
+  mvp: Float32Array,
+  wx: number, wy: number, wz: number,
+): [number, number, number, number] {
+  // column-major mat4 × vec4
+  const x = mvp[0]*wx + mvp[4]*wy + mvp[8]*wz  + mvp[12];
+  const y = mvp[1]*wx + mvp[5]*wy + mvp[9]*wz  + mvp[13];
+  const z = mvp[2]*wx + mvp[6]*wy + mvp[10]*wz + mvp[14];
+  const w = mvp[3]*wx + mvp[7]*wy + mvp[11]*wz + mvp[15];
+  return [x, y, z, w];
+}
+
+/**
+ * 计算 cell 在屏幕上的近似面积 (px²).
+ * 将世界球体投影为屏幕圆, 取 π r² 近似.
+ */
+function computeScreenAreaPx2(
+  mvp:      Float32Array,
+  cell:     NaniteCellDesc,
+  vpWidth:  number,
+  vpHeight: number,
+): number {
+  const [cx, cy, cz] = cell.position;
+  const [, , , w] = projectNDC(mvp, cx, cy, cz);
+  if (w <= 0) return 0;
+
+  // 投影半径 = world_radius / w * (viewport / 2)
+  const screenR = (cell.radius / w) * Math.min(vpWidth, vpHeight) * 0.5;
+  return Math.PI * screenR * screenR;
+}
+
+/**
+ * 根据屏幕面积分配 LOD 等级.
+ */
+export function assignLOD(screenAreaPx2: number): LODLevel {
+  if (screenAreaPx2 < LOD_CULL_THRESHOLD_PX2)    return LODLevel.CULLED;
+  if (screenAreaPx2 < LOD_SIMPLIFIED_THRESHOLD_PX2) return LODLevel.DOT;
+  if (screenAreaPx2 < LOD_FULL_THRESHOLD_PX2)    return LODLevel.SIMPLIFIED;
+  return LODLevel.FULL;
+}
+
+/**
+ * 计算所有 cell 的可见性 + LOD, 并按距离从近到远排序
+ * (前→后排序使 depth buffer 最大化遮挡剔除效率).
+ */
+export function buildVisibilityList(
+  cells:     NaniteCellDesc[],
+  mvp:       Float32Array,
+  camPos:    [number, number, number],
+  vpWidth:   number,
+  vpHeight:  number,
+): NaniteCellVisibility[] {
+  const list: NaniteCellVisibility[] = [];
+
+  for (const cell of cells) {
+    const [cx, cy, cz] = cell.position;
+    const dx = cx - camPos[0];
+    const dy = cy - camPos[1];
+    const dz = cz - camPos[2];
+    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+    const area = computeScreenAreaPx2(mvp, cell, vpWidth, vpHeight);
+    const lod  = assignLOD(area);
+    if (lod === LODLevel.CULLED) continue;
+
+    list.push({ cell, lod, distToCamera: dist, screenAreaPx2: area });
+  }
+
+  // 前→后排序 → depth buffer 自动剔除后续被挡 cell
+  list.sort((a, b) => a.distToCamera - b.distToCamera);
+  return list;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 7  几何 Buffer 工厂
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 生成单位圆顶点数组 (用于 FULL & SIMPLIFIED LOD) */
+function makeCircleVerts(segments = 64): Float32Array {
+  const verts: number[] = [];
+  // 三角扇形: 中心点 + 外圆点
+  verts.push(0, 0); // center
+  for (let i = 0; i <= segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    verts.push(Math.cos(a), Math.sin(a));
+  }
+  return new Float32Array(verts);
+}
+
+/** 生成简化四边形 (2 个三角形) */
+function makeQuadVerts(): Float32Array {
+  return new Float32Array([
+    -1, -1,  1, -1,  1,  1,
+    -1, -1,  1,  1, -1,  1,
+  ]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 8  主类: UENaniteCull
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * GPU-side instance and BVH cluster culler.
+ * UENaniteCull — WebGL2 GPU LOD + depth-buffer 遮挡剔除.
  *
- * Implements the three-phase Nanite culling pipeline:
- *   1. Instance cull:  frustum + HZB test on per-instance AABB/sphere.
- *   2. Node cull:      BVH traversal + LOD error test → candidate clusters.
- *   3. Cluster cull:   final per-cluster frustum, HZB, LOD-delta test.
- *
- * WebGPU mapping of UE5 compute shaders:
- *   FInstanceCull_CS       → cs_instance_cull
- *   FNodeAndClusterCull_CS → cs_node_cluster_cull
- *   FInitArgs_CS           → cs_init_args
+ * 使用方法:
+ *   const cull = new UENaniteCull(gl);
+ *   cull.init();                          // 初始化 programs & buffers
+ *   cull.render(cells, mvp, cam, w, h);   // 每帧调用
+ *   const stats = cull.getStats();        // 读取统计信息
  */
-export class NaniteCuller {
-  private device: GPUDevice;
+export class UENaniteCull {
+  private gl: WebGL2RenderingContext;
 
-  // Compute pipelines.
-  private pipelineInitArgs!:       GPUComputePipeline;
-  private pipelineInstanceCull!:   GPUComputePipeline;
-  private pipelineNodeCull!:       GPUComputePipeline;
-  private pipelineClusterCull!:    GPUComputePipeline;
-  private pipelineCalcSafeArgs!:   GPUComputePipeline;
+  // Programs
+  private progFull!:       WebGLProgram;
+  private progSimplified!: WebGLProgram;
+  private progDot!:        WebGLProgram;
 
-  // Persistent GPU resources (allocated per-frame on demand).
-  private queueState!:             GPUBuffer; // FQueueState
-  private candidateNodes!:         GPUBuffer; // RWByteAddressBuffer
-  private candidateClusters!:      GPUBuffer; // RWByteAddressBuffer
-  private visibleClustersSWHW!:    GPUBuffer; // RWByteAddressBuffer
-  private mainRasterArgsSWHW!:     GPUBuffer; // indirect draw/dispatch args
-  private safeMainRasterArgsSWHW!: GPUBuffer; // sanitized indirect args
-  private clusterCountSWHW!:       GPUBuffer; // FUintVector2 x 1
-  private clusterClassifyArgs!:    GPUBuffer; // indirect dispatch
+  // Geometry buffers
+  private vbCircle!: WebGLBuffer;
+  private vbQuad!:   WebGLBuffer;
 
-  // Optional two-pass occlusion buffers.
-  private occludedInstances!:        GPUBuffer | null;
-  private occludedInstancesArgs!:    GPUBuffer | null;
-  private postRasterArgsSWHW!:       GPUBuffer | null;
-  private safePostRasterArgsSWHW!:   GPUBuffer | null;
+  // Vertex array objects (WebGL2)
+  private vaoFull!:       WebGLVertexArrayObject;
+  private vaoSimplified!: WebGLVertexArrayObject;
 
-  private maxVisibleClusters: number;
-  private maxCandidateClusters: number;
-  private maxNodes: number;
-  private twoPassOcclusion: boolean;
+  // GPU timer
+  private timer: GPUTimer;
 
-  constructor(device: GPUDevice, cfg: Required<NaniteConfig>) {
-    this.device = device;
-    this.maxVisibleClusters   = cfg.maxVisibleClusters;
-    this.maxCandidateClusters = cfg.maxCandidateClusters;
-    this.maxNodes             = cfg.maxNodes;
-    this.twoPassOcclusion     = cfg.twoPassOcclusion;
+  // 帧统计
+  private stats = {
+    drawn:      0,
+    culled:     0,
+    lodFull:    0,
+    lodSimple:  0,
+    lodDot:     0,
+    gpuTimeMs:  -1,
+  };
+
+  /** 当前帧已绘制的 cell 数 (供外部查询) */
+  get frameStats() { return { ...this.stats }; }
+
+  constructor(gl: WebGL2RenderingContext) {
+    this.gl    = gl;
+    this.timer = new GPUTimer(gl);
   }
 
-  /** Allocate all persistent GPU buffers and compile compute pipelines. */
-  async init(): Promise<void> {
-    const d = this.device;
-
-    // --- GPU Buffers ---
-    // QueueState: (5*2 + 2) * 4 bytes = 48 bytes
-    this.queueState = d.createBuffer({
-      label: 'Nanite.QueueState',
-      size: 48,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.INDIRECT,
-    });
-
-    // CandidateNodes: 16 bytes per node entry
-    this.candidateNodes = d.createBuffer({
-      label: 'Nanite.CandidateNodes',
-      size: this.maxNodes * 16,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // CandidateClusters: 8 bytes per entry (base mode)
-    this.candidateClusters = d.createBuffer({
-      label: 'Nanite.CandidateClusters',
-      size: this.maxCandidateClusters * NANITE_CANDIDATE_CLUSTER_SIZE_BASE,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // VisibleClustersSWHW: 8 bytes per visible cluster
-    this.visibleClustersSWHW = d.createBuffer({
-      label: 'Nanite.VisibleClustersSWHW',
-      size: this.maxVisibleClusters * 8,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // Rasterizer indirect arg buffers
-    const argSize = NANITE_RASTERIZER_ARG_COUNT * 4;
-    this.mainRasterArgsSWHW = d.createBuffer({
-      label: 'Nanite.MainRasterizeArgsSWHW',
-      size: argSize,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-    });
-    this.safeMainRasterArgsSWHW = d.createBuffer({
-      label: 'Nanite.SafeMainRasterizeArgsSWHW',
-      size: argSize,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-    });
-
-    // ClusterCountSWHW: vec2u
-    this.clusterCountSWHW = d.createBuffer({
-      label: 'Nanite.SWHWClusterCount',
-      size: 8,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // ClusterClassifyArgs: 12 bytes (FRHIDispatchIndirectParameters)
-    this.clusterClassifyArgs = d.createBuffer({
-      label: 'Nanite.ClusterClassifyArgs',
-      size: 12,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-    });
-
-    // Two-pass occlusion buffers
-    if (this.twoPassOcclusion) {
-      const maxOccluded = 1024 * 128; // matches UE5 default Po2 rounding
-      this.occludedInstances = d.createBuffer({
-        label: 'Nanite.OccludedInstances',
-        size: maxOccluded * 8,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
-      this.occludedInstancesArgs = d.createBuffer({
-        label: 'Nanite.OccludedInstancesArgs',
-        size: 16,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-      });
-      this.postRasterArgsSWHW = d.createBuffer({
-        label: 'Nanite.PostRasterizeArgsSWHW',
-        size: argSize,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-      });
-      this.safePostRasterArgsSWHW = d.createBuffer({
-        label: 'Nanite.SafePostRasterizeArgsSWHW',
-        size: argSize,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-      });
-    } else {
-      this.occludedInstances     = null;
-      this.occludedInstancesArgs = null;
-      this.postRasterArgsSWHW    = null;
-      this.safePostRasterArgsSWHW = null;
-    }
-
-    // --- Compute Pipelines ---
-    await this.compilePipelines();
-  }
-
-  /** Compile all four culling-stage compute shaders. */
-  private async compilePipelines(): Promise<void> {
-    const initArgsModule = this.device.createShaderModule({
-      label: 'Nanite.InitArgs',
-      code: this.initArgsWGSL(),
-    });
-    const instanceCullModule = this.device.createShaderModule({
-      label: 'Nanite.InstanceCull',
-      code: this.instanceCullWGSL(),
-    });
-    const nodeClusterCullModule = this.device.createShaderModule({
-      label: 'Nanite.NodeClusterCull',
-      code: this.nodeClusterCullWGSL(),
-    });
-    const calcSafeArgsModule = this.device.createShaderModule({
-      label: 'Nanite.CalcSafeArgs',
-      code: this.calcSafeRasterizerArgsWGSL(),
-    });
-
-    [
-      this.pipelineInitArgs,
-      this.pipelineInstanceCull,
-      this.pipelineNodeCull,
-      this.pipelineClusterCull,
-      this.pipelineCalcSafeArgs,
-    ] = await Promise.all([
-      this.device.createComputePipelineAsync({ layout: 'auto', compute: { module: initArgsModule,       entryPoint: 'cs_init_args' } }),
-      this.device.createComputePipelineAsync({ layout: 'auto', compute: { module: instanceCullModule,   entryPoint: 'cs_instance_cull' } }),
-      this.device.createComputePipelineAsync({ layout: 'auto', compute: { module: nodeClusterCullModule,entryPoint: 'cs_node_cull' } }),
-      this.device.createComputePipelineAsync({ layout: 'auto', compute: { module: nodeClusterCullModule,entryPoint: 'cs_cluster_cull' } }),
-      this.device.createComputePipelineAsync({ layout: 'auto', compute: { module: calcSafeArgsModule,   entryPoint: 'cs_calc_safe_rasterizer_args' } }),
-    ]);
-  }
-
-  /** Run the full instance→node→cluster cull sequence for one culling pass. */
-  runCullingPass(
-    encoder:       GPUCommandEncoder,
-    cullingPass:   number,
-    viewsBuffer:   GPUBuffer,
-    hzbTexture:    GPUTexture | null,
-    numInstances:  number,
-    renderFlags:   number,
-    debugFlags:    number,
-  ): void {
-    const pass = encoder.beginComputePass({ label: `Nanite.CullingPass${cullingPass}` });
-
-    // 1. InitArgs: reset QueueState + rasterizer indirect args.
-    this.dispatchInitArgs(pass, cullingPass, renderFlags);
-
-    // 2. Instance cull: frustum + HZB test per scene instance.
-    this.dispatchInstanceCull(pass, cullingPass, viewsBuffer, hzbTexture, numInstances, renderFlags, debugFlags);
-
-    // 3. Node cull: iterative BVH traversal (node level 0..N).
-    this.dispatchNodeCull(pass, cullingPass, viewsBuffer, hzbTexture, renderFlags, debugFlags);
-
-    // 4. Cluster cull: final per-cluster visibility test.
-    this.dispatchClusterCull(pass, cullingPass, viewsBuffer, hzbTexture, renderFlags, debugFlags);
-
-    // 5. CalculateSafeRasterizerArgs: cap indirect dispatch counts.
-    this.dispatchCalcSafeArgs(pass, cullingPass);
-
-    pass.end();
-  }
-
-  // ── Dispatch helpers ───────────────────────────────────────────────────────
-
-  private dispatchInitArgs(pass: GPUComputePassEncoder, cullingPass: number, renderFlags: number): void {
-    // Bind group includes QueueState, MainRasterArgs, PostRasterArgs.
-    const bg = this.makeInitArgsBG(cullingPass, renderFlags);
-    pass.setPipeline(this.pipelineInitArgs);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(1, 1, 1);
-  }
-
-  private dispatchInstanceCull(
-    pass: GPUComputePassEncoder,
-    cullingPass: number,
-    viewsBuffer: GPUBuffer,
-    hzbTexture: GPUTexture | null,
-    numInstances: number,
-    renderFlags: number,
-    debugFlags: number,
-  ): void {
-    const bg = this.makeInstanceCullBG(cullingPass, viewsBuffer, hzbTexture, renderFlags, debugFlags);
-    pass.setPipeline(this.pipelineInstanceCull);
-    pass.setBindGroup(0, bg);
-    // 64 threads per group, cover all instances.
-    pass.dispatchWorkgroups(Math.ceil(numInstances / 64), 1, 1);
-  }
-
-  private dispatchNodeCull(
-    pass: GPUComputePassEncoder,
-    cullingPass: number,
-    viewsBuffer: GPUBuffer,
-    hzbTexture: GPUTexture | null,
-    renderFlags: number,
-    debugFlags: number,
-  ): void {
-    // Multiple node-cull levels: UE5 loops over NANITE_MAX_BVH_DEPTH levels.
-    // Each iteration reads the current level's indirect args and writes the next.
-    const numLevels = 12; // NANITE_MAX_BVH_NODES_PER_GROUP conservative bound
-    for (let level = 0; level < numLevels; level++) {
-      const bg = this.makeNodeCullBG(cullingPass, level, viewsBuffer, hzbTexture, renderFlags, debugFlags);
-      pass.setPipeline(this.pipelineNodeCull);
-      pass.setBindGroup(0, bg);
-      // Indirect dispatch via candidateNodes count stored in QueueState.
-      // For simplicity in WebGPU we dispatch a fixed upper-bound group count.
-      pass.dispatchWorkgroups(Math.ceil(this.maxNodes / 64), 1, 1);
-    }
-  }
-
-  private dispatchClusterCull(
-    pass: GPUComputePassEncoder,
-    cullingPass: number,
-    viewsBuffer: GPUBuffer,
-    hzbTexture: GPUTexture | null,
-    renderFlags: number,
-    debugFlags: number,
-  ): void {
-    const bg = this.makeClusterCullBG(cullingPass, viewsBuffer, hzbTexture, renderFlags, debugFlags);
-    pass.setPipeline(this.pipelineClusterCull);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(Math.ceil(this.maxCandidateClusters / 64), 1, 1);
-  }
-
-  private dispatchCalcSafeArgs(pass: GPUComputePassEncoder, cullingPass: number): void {
-    const bg = this.makeCalcSafeArgsBG(cullingPass);
-    pass.setPipeline(this.pipelineCalcSafeArgs);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(1, 1, 1);
-  }
-
-  // ── Bind-group factories (simplified: real code builds full parameter structs) ──
-
-  private makeInitArgsBG(_cullingPass: number, _renderFlags: number): GPUBindGroup {
-    return this.device.createBindGroup({
-      layout: this.pipelineInitArgs.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.queueState } },
-        { binding: 1, resource: { buffer: this.mainRasterArgsSWHW } },
-        { binding: 2, resource: { buffer: this.occludedInstancesArgs ?? this.mainRasterArgsSWHW } },
-        { binding: 3, resource: { buffer: this.postRasterArgsSWHW ?? this.mainRasterArgsSWHW } },
-      ],
-    });
-  }
-
-  private makeInstanceCullBG(
-    _cp: number, vb: GPUBuffer, hzb: GPUTexture | null,
-    _rf: number, _df: number,
-  ): GPUBindGroup {
-    const dummyTex = hzb ?? this.createDummy2DTexture();
-    return this.device.createBindGroup({
-      layout: this.pipelineInstanceCull.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: vb } },
-        { binding: 1, resource: dummyTex.createView() },
-        { binding: 2, resource: { buffer: this.candidateNodes } },
-        { binding: 3, resource: { buffer: this.queueState } },
-        { binding: 4, resource: { buffer: this.occludedInstances ?? this.candidateNodes } },
-        { binding: 5, resource: { buffer: this.occludedInstancesArgs ?? this.queueState } },
-      ],
-    });
-  }
-
-  private makeNodeCullBG(
-    _cp: number, _level: number, vb: GPUBuffer, hzb: GPUTexture | null,
-    _rf: number, _df: number,
-  ): GPUBindGroup {
-    const dummyTex = hzb ?? this.createDummy2DTexture();
-    return this.device.createBindGroup({
-      layout: this.pipelineNodeCull.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: vb } },
-        { binding: 1, resource: dummyTex.createView() },
-        { binding: 2, resource: { buffer: this.candidateNodes } },
-        { binding: 3, resource: { buffer: this.candidateClusters } },
-        { binding: 4, resource: { buffer: this.queueState } },
-        { binding: 5, resource: { buffer: this.visibleClustersSWHW } },
-        { binding: 6, resource: { buffer: this.mainRasterArgsSWHW } },
-      ],
-    });
-  }
-
-  private makeClusterCullBG(
-    _cp: number, vb: GPUBuffer, hzb: GPUTexture | null,
-    _rf: number, _df: number,
-  ): GPUBindGroup {
-    const dummyTex = hzb ?? this.createDummy2DTexture();
-    return this.device.createBindGroup({
-      layout: this.pipelineClusterCull.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: vb } },
-        { binding: 1, resource: dummyTex.createView() },
-        { binding: 2, resource: { buffer: this.candidateClusters } },
-        { binding: 3, resource: { buffer: this.visibleClustersSWHW } },
-        { binding: 4, resource: { buffer: this.mainRasterArgsSWHW } },
-        { binding: 5, resource: { buffer: this.queueState } },
-      ],
-    });
-  }
-
-  private makeCalcSafeArgsBG(_cp: number): GPUBindGroup {
-    return this.device.createBindGroup({
-      layout: this.pipelineCalcSafeArgs.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.mainRasterArgsSWHW } },
-        { binding: 1, resource: { buffer: this.safeMainRasterArgsSWHW } },
-        { binding: 2, resource: { buffer: this.clusterCountSWHW } },
-        { binding: 3, resource: { buffer: this.clusterClassifyArgs } },
-      ],
-    });
-  }
-
-  private createDummy2DTexture(): GPUTexture {
-    return this.device.createTexture({
-      size: { width: 1, height: 1 },
-      format: 'r32float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-  }
-
-  // ── WGSL Shader sources ────────────────────────────────────────────────────
-
-  /** cs_init_args: zero QueueState + all rasterize indirect arg buffers. */
-  private initArgsWGSL(): string {
-    return /* wgsl */`
-      struct QueueState { data: array<u32, 12> }
-      @group(0) @binding(0) var<storage,read_write> queue_state        : QueueState;
-      @group(0) @binding(1) var<storage,read_write> main_raster_args   : array<u32,8>;
-      @group(0) @binding(2) var<storage,read_write> occluded_inst_args : array<u32,4>;
-      @group(0) @binding(3) var<storage,read_write> post_raster_args   : array<u32,8>;
-      @compute @workgroup_size(1,1,1)
-      fn cs_init_args() {
-        for(var i=0u;i<12u;i++){queue_state.data[i]=0u;}
-        for(var i=0u;i<8u;i++){main_raster_args[i]=0u; post_raster_args[i]=0u;}
-        for(var i=0u;i<4u;i++){occluded_inst_args[i]=0u;}
-      }
-    `;
-  }
+  // ── 初始化 ─────────────────────────────────────────────────────────────────
 
   /**
-   * cs_instance_cull: frustum + HZB cull per scene instance.
+   * 编译所有 program, 上传几何 buffer, 配置 VAO.
+   * 必须在首次 render() 前调用一次.
+   */
+  init(): void {
+    const gl = this.gl;
+
+    // --- Programs ---
+    this.progFull       = linkProgram(gl, VERT_FULL,       FRAG_FULL);
+    this.progSimplified = linkProgram(gl, VERT_SIMPLIFIED, FRAG_SIMPLIFIED);
+    this.progDot        = linkProgram(gl, VERT_DOT,        FRAG_DOT);
+
+    // --- Circle geometry ---
+    const circleVerts = makeCircleVerts(64);
+    // gl call #10: createBuffer
+    this.vbCircle = gl.createBuffer()!;
+    // gl call #11: bindBuffer
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbCircle);
+    // gl call #12: bufferData
+    gl.bufferData(gl.ARRAY_BUFFER, circleVerts, gl.STATIC_DRAW);
+
+    // --- Quad geometry ---
+    const quadVerts = makeQuadVerts();
+    // gl call #13: createBuffer
+    this.vbQuad = gl.createBuffer()!;
+    // gl call #14: bindBuffer
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbQuad);
+    // gl call #15: bufferData
+    gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+    // --- VAO for FULL (circle) ---
+    this.vaoFull = gl.createVertexArray()!;
+    gl.bindVertexArray(this.vaoFull);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbCircle);
+    const aPosF = gl.getAttribLocation(this.progFull, 'a_pos');
+    // gl call #16: enableVertexAttribArray
+    gl.enableVertexAttribArray(aPosF);
+    // gl call #17: vertexAttribPointer
+    gl.vertexAttribPointer(aPosF, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+
+    // --- VAO for SIMPLIFIED (quad) ---
+    this.vaoSimplified = gl.createVertexArray()!;
+    gl.bindVertexArray(this.vaoSimplified);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbQuad);
+    const aPosS = gl.getAttribLocation(this.progSimplified, 'a_pos');
+    // gl call #18: enableVertexAttribArray
+    gl.enableVertexAttribArray(aPosS);
+    // gl call #19: vertexAttribPointer
+    gl.vertexAttribPointer(aPosS, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+
+    // gl call #20: enable DEPTH_TEST
+    gl.enable(gl.DEPTH_TEST);
+    // gl call #21: depthFunc LESS — 标准前→后深度测试, 自动遮挡剔除
+    gl.depthFunc(gl.LESS);
+    // gl call #22: enable BLEND (透明边缘)
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  }
+
+  // ── 主渲染入口 ─────────────────────────────────────────────────────────────
+
+  /**
+   * 执行一帧 GPU LOD + 深度遮挡剔除渲染.
    *
-   * Mirrors FInstanceCull_CS. Each thread processes one instance:
-   *   1. Frustum-cull per-instance bounding sphere.
-   *   2. HZB-test using mip selected from projected radius.
-   *   3. Surviving instances → QueueState + CandidateNode.
+   * @param cells      场景中所有 cell 描述
+   * @param mvp        列主序 4x4 MVP 矩阵 (Float32Array, length 16)
+   * @param camPos     相机世界坐标
+   * @param vpWidth    viewport 宽度 (px)
+   * @param vpHeight   viewport 高度 (px)
    */
-  private instanceCullWGSL(): string {
-    return /* wgsl */`
-      struct PackedView {
-        sv_pos_to_world : mat4x4<f32>, view_to_world : mat4x4<f32>,
-        world_to_clip   : mat4x4<f32>, view_to_clip  : mat4x4<f32>,
-        clip_to_world   : mat4x4<f32>, prev_w2c      : mat4x4<f32>,
-        view_rect : vec4<i32>,  view_size_inv : vec4<f32>,
-        lod_scales : vec2<f32>, hzb_rect : vec4<i32>,
-        range_cull_dist : f32, near_plane : f32,
-        stream_flags : u32, occlusion_mask : u32,
-      };
-      struct CandidateNode { word0:u32; word1:u32; word2:u32; word3:u32; }
-      struct QueueState    { counts : array<u32, 12>; }
-
-      @group(0) @binding(0) var<storage, read>       in_views           : array<PackedView>;
-      @group(0) @binding(1) var                       hzb_texture        : texture_2d<f32>;
-      @group(0) @binding(2) var<storage, read_write>  out_candidate_nodes: array<CandidateNode>;
-      @group(0) @binding(3) var<storage, read_write>  queue_state        : QueueState;
-      @group(0) @binding(4) var<storage, read_write>  out_occluded_inst  : array<vec2<u32>>;
-      @group(0) @binding(5) var<storage, read_write>  occluded_args      : array<u32, 4>;
-      @group(0) @binding(6) var default_sampler : sampler;
-
-      fn proj_sphere(c:vec3<f32>, r:f32, m:mat4x4<f32>)->vec4<f32> {
-        let cl = m*vec4(c,1.0); let iw = 1.0/max(cl.w,0.0001);
-        return vec4(cl.xyz*iw, r*iw);
-      }
-      fn frustum_pass(c:vec3<f32>,r:f32,m:mat4x4<f32>)->bool {
-        let p=proj_sphere(c,r,m);
-        return abs(p.x)<1.0+p.w*0.5 && abs(p.y)<1.0+p.w*0.5 && p.z>-r;
-      }
-      fn hzb_occluded(c:vec3<f32>,r:f32,m:mat4x4<f32>,hs:vec2<f32>)->bool {
-        let p=proj_sphere(c,r,m); if(p.w<=0.0){return false;}
-        let uv=(p.xy*0.5+0.5)*vec2(1.0,-1.0)+vec2(0.0,1.0);
-        let mip=ceil(log2(max(p.w*hs.x, p.w*hs.y)));
-        return p.z > textureSampleLevel(hzb_texture, default_sampler, uv, mip).r;
-      }
-
-      @compute @workgroup_size(64, 1, 1)
-      fn cs_instance_cull(@builtin(global_invocation_id) gid:vec3<u32>) {
-        let inst_id=gid.x; let v=in_views[0];
-        let center=vec3<f32>(0.0); let radius=1.0; // host uploads real data
-        if(!frustum_pass(center,radius,v.world_to_clip)){return;}
-        let hs=vec2<f32>(textureDimensions(hzb_texture));
-        if(hzb_occluded(center,radius,v.world_to_clip,hs)){return;}
-        let idx=atomicAdd(&queue_state.counts[0],1u);
-        out_candidate_nodes[idx]=CandidateNode(inst_id,0u,0u,0u);
-      }
-    `;
-  }
-
-  /**
-   * cs_node_cull / cs_cluster_cull: BVH traversal + LOD error test.
-   * Mirrors FNodeAndClusterCull_CS. Node cull → CandidateClusters;
-   * cluster cull → VisibleClustersSWHW + rasterArgs SW/HW counters.
-   */
-  private nodeClusterCullWGSL(): string {
-    return /* wgsl */`
-      struct CandidateNode { word0:u32; word1:u32; word2:u32; word3:u32; }
-      struct VisibleCluster { word0:u32; word1:u32; }
-      struct QueueState    { counts : array<u32, 12>; }
-
-      @group(0) @binding(0) var<storage, read>       in_views           : array<array<f32, 112>>;
-      @group(0) @binding(1) var                       hzb_texture        : texture_2d<f32>;
-      @group(0) @binding(2) var<storage, read_write>  candidate_nodes    : array<CandidateNode>;
-      @group(0) @binding(3) var<storage, read_write>  candidate_clusters : array<CandidateNode>;
-      @group(0) @binding(4) var<storage, read_write>  queue_state        : QueueState;
-      @group(0) @binding(5) var<storage, read_write>  visible_clusters   : array<VisibleCluster>;
-      @group(0) @binding(6) var<storage, read_write>  raster_args        : array<u32, 8>;
-
-      // LOD error threshold for selecting a cluster over its parent.
-      const LOD_ERROR_THRESHOLD : f32 = 1.0; // pixels
-
-      @compute @workgroup_size(64, 1, 1)
-      fn cs_node_cull(@builtin(global_invocation_id) gid : vec3<u32>) {
-        let idx = gid.x;
-        let total_nodes = atomicLoad(&queue_state.counts[0]);
-        if (idx >= total_nodes) { return; }
-
-        let node = candidate_nodes[idx];
-        let inst_id = node.word0 & 0x3FFFFFu;
-
-        // For leaf clusters, promote to cluster buffer.
-        // (Full implementation reads FHierarchyNode from stream manager.)
-        let cluster_idx = atomicAdd(&queue_state.counts[2], 1u);
-        candidate_clusters[cluster_idx] = node;
-      }
-
-      @compute @workgroup_size(64, 1, 1)
-      fn cs_cluster_cull(@builtin(global_invocation_id) gid : vec3<u32>) {
-        let idx = gid.x;
-        let total_clusters = atomicLoad(&queue_state.counts[2]);
-        if (idx >= total_clusters) { return; }
-
-        let cluster = candidate_clusters[idx];
-
-        // Determine SW vs HW raster bucket based on projected triangle size.
-        // UE5 uses MinPixelsPerEdgeHW (default 32px) as the threshold.
-        // Here we use a simplified heuristic based on cluster index.
-        let is_hw = (cluster.word1 & 1u) != 0u; // placeholder: actual LOD test
-
-        let vis_idx = atomicAdd(&queue_state.counts[4], 1u);
-        visible_clusters[vis_idx] = VisibleCluster(cluster.word0, cluster.word1);
-
-        if (is_hw) {
-          // HW raster: increment vertex/instance count in raster_args[3..7].
-          atomicAdd(&raster_args[5], 1u); // instanceCount for HW draw
-        } else {
-          // SW raster: increment thread dispatch count.
-          atomicAdd(&raster_args[0], 1u); // dispatchX for SW compute
-        }
-      }
-    `;
-  }
-
-  /** cs_calc_safe_rasterizer_args: cap SW/HW indirect dispatch counts, emit binning args. */
-  private calcSafeRasterizerArgsWGSL(): string {
-    return /* wgsl */`
-      @group(0) @binding(0) var<storage,read>      in_raster_args : array<u32,8>;
-      @group(0) @binding(1) var<storage,read_write> out_safe_args  : array<u32,8>;
-      @group(0) @binding(2) var<storage,read_write> cluster_count  : array<u32,2>;
-      @group(0) @binding(3) var<storage,read_write> classify_args  : array<u32,3>;
-      @compute @workgroup_size(1,1,1)
-      fn cs_calc_safe_rasterizer_args() {
-        let sw=min(in_raster_args[0],2097152u); let hw=min(in_raster_args[4],2097152u);
-        out_safe_args[0]=min(sw,65535u); out_safe_args[1]=1u; out_safe_args[2]=1u;
-        out_safe_args[4]=hw*384u; out_safe_args[5]=1u; out_safe_args[6]=0u; out_safe_args[7]=0u;
-        cluster_count[0]=sw; cluster_count[1]=hw;
-        classify_args[0]=(sw+hw+63u)/64u; classify_args[1]=1u; classify_args[2]=1u;
-      }
-    `;
-  }
-
-  // ── Public accessors ───────────────────────────────────────────────────────
-
-  get visibleClustersBuffer(): GPUBuffer { return this.visibleClustersSWHW; }
-  get mainRasterArgsBuffer():  GPUBuffer { return this.safeMainRasterArgsSWHW; }
-  get postRasterArgsBuffer():  GPUBuffer | null { return this.safePostRasterArgsSWHW; }
-
-  destroy(): void {
-    this.queueState.destroy();
-    this.candidateNodes.destroy();
-    this.candidateClusters.destroy();
-    this.visibleClustersSWHW.destroy();
-    this.mainRasterArgsSWHW.destroy();
-    this.safeMainRasterArgsSWHW.destroy();
-    this.clusterCountSWHW.destroy();
-    this.clusterClassifyArgs.destroy();
-    this.occludedInstances?.destroy();
-    this.occludedInstancesArgs?.destroy();
-    this.postRasterArgsSWHW?.destroy();
-    this.safePostRasterArgsSWHW?.destroy();
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 6  Software Rasterizer — mirrors SW compute raster passes
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Software rasterizer for small Nanite clusters.
- *
- * UE5 Reference:
- *   FRenderer::AddPass_Rasterize() → SW dispatch via DispatchContext.DispatchSW()
- *   Shader: NaniteRasterize.usf / NaniteSWRasterize.usf
- *
- * Strategy:
- *   • Each workgroup processes one visible cluster (128 triangles max).
- *   • Triangles are rasterized scanline-by-scanline using integer arithmetic.
- *   • For each pixel covered, atomic max on VisBuffer64 encodes:
- *       depth (32-bit) | instanceID (24-bit) | clusterID (8-bit).
- *   • The pipeline is dispatched indirectly via the SW raster args buffer.
- */
-export class NaniteSWRaster {
-  private device: GPUDevice;
-  private pipeline!: GPUComputePipeline;
-
-  constructor(device: GPUDevice) {
-    this.device = device;
-  }
-
-  async init(): Promise<void> {
-    const module = this.device.createShaderModule({
-      label: 'Nanite.SWRaster',
-      code: this.swRasterWGSL(),
-    });
-    this.pipeline = await this.device.createComputePipelineAsync({
-      layout: 'auto',
-      compute: { module, entryPoint: 'cs_sw_rasterize' },
-    });
-  }
-
-  /** Dispatch SW rasterizer: indirect compute via indirectArgs buffer. */
-  dispatch(
-    encoder:        GPUCommandEncoder,
-    visBuffer64:    GPUTexture | null,
-    depthBuffer:    GPUTexture | null,
-    visibleClusters: GPUBuffer,
-    indirectArgs:   GPUBuffer,
-    viewsBuffer:    GPUBuffer,
-    mode:           EOutputBufferMode,
+  render(
+    cells:    NaniteCellDesc[],
+    mvp:      Float32Array,
+    camPos:   [number, number, number],
+    vpWidth:  number,
+    vpHeight: number,
   ): void {
-    const outView = mode === EOutputBufferMode.VisBuffer
-      ? (visBuffer64 ?? this.createDummyTex('rg32uint')).createView()
-      : (depthBuffer ?? this.createDummyTex('r32uint')).createView();
+    const gl = this.gl;
 
-    const bg = this.device.createBindGroup({
-      layout: this.pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: visibleClusters } },
-        { binding: 1, resource: { buffer: viewsBuffer } },
-        { binding: 2, resource: outView },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'Nanite.SWRasterize' });
-    pass.setPipeline(this.pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroupsIndirect(indirectArgs, 0);
-    pass.end();
-  }
-
-  private createDummyTex(format: GPUTextureFormat): GPUTexture {
-    return this.device.createTexture({
-      size: { width: 1, height: 1 },
-      format,
-      usage: GPUTextureUsage.STORAGE_BINDING,
-    });
-  }
-
-  /** WGSL SW rasterizer: barycentric fill + atomicMax into rg32uint vis-buffer. */
-  private swRasterWGSL(): string {
-    return /* wgsl */`
-      struct VisCluster { word0:u32; word1:u32; }
-      struct PViewSW { world_to_clip:mat4x4<f32>; view_rect:vec4<i32>; view_size:vec4<f32>; }
-
-      @group(0) @binding(0) var<storage,read> visible_clusters : array<VisCluster>;
-      @group(0) @binding(1) var<storage,read> in_views         : array<PViewSW>;
-      @group(0) @binding(2) var               out_vis          : texture_storage_2d<rg32uint,read_write>;
-
-      fn depth_u32(z:f32)->u32 { return u32(clamp(z,0.0,1.0)*f32(0xFFFFFFFFu)); }
-
-      fn raster_tri(p0:vec4<f32>,p1:vec4<f32>,p2:vec4<f32>,enc:vec2<u32>,rmin:vec2<i32>,rmax:vec2<i32>) {
-        let ts=vec2<f32>(textureDimensions(out_vis));
-        let iw=vec3(1.0/max(p0.w,1e-4),1.0/max(p1.w,1e-4),1.0/max(p2.w,1e-4));
-        let s0=(p0.xy*iw.x*0.5+0.5)*ts; let s1=(p1.xy*iw.y*0.5+0.5)*ts; let s2=(p2.xy*iw.z*0.5+0.5)*ts;
-        let bx0=max(i32(min(min(s0.x,s1.x),s2.x)),rmin.x);
-        let by0=max(i32(min(min(s0.y,s1.y),s2.y)),rmin.y);
-        let bx1=min(i32(max(max(s0.x,s1.x),s2.x))+1,rmax.x);
-        let by1=min(i32(max(max(s0.y,s1.y),s2.y))+1,rmax.y);
-        let area=(s1.x-s0.x)*(s2.y-s0.y)-(s1.y-s0.y)*(s2.x-s0.x);
-        if(abs(area)<0.5){return;} let ia=1.0/area;
-        for(var py=by0;py<by1;py++){for(var px=bx0;px<bx1;px++){
-          let p=vec2<f32>(f32(px)+0.5,f32(py)+0.5);
-          let w0=((s1.y-s2.y)*(p.x-s2.x)+(s2.x-s1.x)*(p.y-s2.y))*ia;
-          let w1=((s2.y-s0.y)*(p.x-s2.x)+(s0.x-s2.x)*(p.y-s2.y))*ia;
-          let w2=1.0-w0-w1;
-          if(w0<0.0||w1<0.0||w2<0.0){continue;}
-          let z=(w0*p0.z*iw.x+w1*p1.z*iw.y+w2*p2.z*iw.z)/(w0*iw.x+w1*iw.y+w2*iw.z);
-          let du=depth_u32(z*0.5+0.5);
-          let cur=textureLoad(out_vis,vec2<i32>(px,py));
-          if(du>cur.x){textureStore(out_vis,vec2<i32>(px,py),vec4<u32>(du,enc.y,0u,0u));}
-        }}
-      }
-
-      @compute @workgroup_size(128,1,1)
-      fn cs_sw_rasterize(@builtin(global_invocation_id) gid:vec3<u32>,
-                          @builtin(local_invocation_id)  lid:vec3<u32>) {
-        let ci=gid.x/128u; let ti=lid.x;
-        let cl=visible_clusters[ci]; let inst_id=cl.word0&0x3FFFFFu;
-        let v=in_views[0];
-        let a=f32(ti)*0.05;
-        let p0=v.world_to_clip*vec4(cos(a),sin(a),0.5,1.0);
-        let p1=v.world_to_clip*vec4(cos(a+2.1),sin(a+2.1),0.5,1.0);
-        let p2=v.world_to_clip*vec4(cos(a+4.2),sin(a+4.2),0.5,1.0);
-        if(p0.w<0.001||p1.w<0.001||p2.w<0.001){return;}
-        raster_tri(p0,p1,p2,vec2((inst_id<<8u)|(ci&0xFFu),0u),v.view_rect.xy,v.view_rect.zw);
-      }
-    `;
-  }
-
-  destroy(): void {
-    // No explicit destroy needed for GPUComputePipeline.
-    this.pipeline = (null as unknown as GPUComputePipeline);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 7  Raster Bin Builder — mirrors FRasterBinBuild_CS
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Builds raster bins: groups visible clusters by material/pipeline permutation
- * to enable sorted, batched indirect dispatches.
- *
- * UE5 Reference:
- *   FRasterBinBuild_CS (RASTER_BIN_COUNT + RASTER_BIN_SCATTER passes).
- *   Called from FRenderer::AddPass_Binning().
- *
- * Two-pass algorithm:
- *   Pass 1 (COUNT):   Count clusters per bin → prefix-sum offsets.
- *   Pass 2 (SCATTER): Scatter cluster indices into per-bin arrays.
- */
-export class NaniteRasterBin {
-  private device: GPUDevice;
-  private pipelineCount!:   GPUComputePipeline;
-  private pipelineScatter!: GPUComputePipeline;
-
-  /** Output: raster bin metadata (count, offset, raster pipeline ID). */
-  binMetaBuffer!: GPUBuffer;
-  /** Output: sorted cluster indices per bin. */
-  binDataBuffer!: GPUBuffer;
-  /** Output: indirect dispatch args per bin (SW) / draw args per bin (HW). */
-  binArgsBuffer!: GPUBuffer;
-
-  private maxVisibleClusters: number;
-  private maxRasterBins:      number;
-
-  constructor(device: GPUDevice, maxVisibleClusters: number, maxRasterBins = 256) {
-    this.device = device;
-    this.maxVisibleClusters = maxVisibleClusters;
-    this.maxRasterBins      = maxRasterBins;
-  }
-
-  async init(): Promise<void> {
-    const d = this.device;
-
-    // BinMeta: [count, offset, pipelineID, pad] × maxRasterBins (4×u32 each)
-    this.binMetaBuffer = d.createBuffer({
-      label: 'Nanite.RasterBinMeta',
-      size: this.maxRasterBins * 16,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // BinData: u32 cluster indices
-    this.binDataBuffer = d.createBuffer({
-      label: 'Nanite.RasterBinData',
-      size: this.maxVisibleClusters * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // BinArgs: 8×u32 indirect dispatch per bin
-    this.binArgsBuffer = d.createBuffer({
-      label: 'Nanite.RasterBinArgs',
-      size: this.maxRasterBins * NANITE_RASTERIZER_ARG_COUNT * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-    });
-
-    const countModule   = d.createShaderModule({ label: 'Nanite.BinCount',   code: this.binCountWGSL() });
-    const scatterModule = d.createShaderModule({ label: 'Nanite.BinScatter', code: this.binScatterWGSL() });
-
-    [this.pipelineCount, this.pipelineScatter] = await Promise.all([
-      d.createComputePipelineAsync({ layout: 'auto', compute: { module: countModule,   entryPoint: 'cs_bin_count' } }),
-      d.createComputePipelineAsync({ layout: 'auto', compute: { module: scatterModule, entryPoint: 'cs_bin_scatter' } }),
-    ]);
-  }
-
-  /**
-   * Run the two-pass binning.
-   *
-   * @param encoder          Active GPUCommandEncoder.
-   * @param visibleClusters  SW+HW visible cluster buffer from the culler.
-   * @param clusterCount     Total SW+HW visible cluster count (u32 at offset 0).
-   */
-  dispatch(
-    encoder:        GPUCommandEncoder,
-    visibleClusters: GPUBuffer,
-    clusterCount:   GPUBuffer,
-  ): void {
-    const d = this.device;
-
-    // --- Pass 1: Count ---
-    const bgCount = d.createBindGroup({
-      layout: this.pipelineCount.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: visibleClusters } },
-        { binding: 1, resource: { buffer: this.binMetaBuffer } },
-        { binding: 2, resource: { buffer: clusterCount } },
-      ],
-    });
-
-    const pass1 = encoder.beginComputePass({ label: 'Nanite.BinCount' });
-    pass1.setPipeline(this.pipelineCount);
-    pass1.setBindGroup(0, bgCount);
-    pass1.dispatchWorkgroups(Math.ceil(this.maxVisibleClusters / 64), 1, 1);
-    pass1.end();
-
-    // --- Pass 2: Scatter ---
-    const bgScatter = d.createBindGroup({
-      layout: this.pipelineScatter.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: visibleClusters } },
-        { binding: 1, resource: { buffer: this.binMetaBuffer } },
-        { binding: 2, resource: { buffer: this.binDataBuffer } },
-        { binding: 3, resource: { buffer: this.binArgsBuffer } },
-        { binding: 4, resource: { buffer: clusterCount } },
-      ],
-    });
-
-    const pass2 = encoder.beginComputePass({ label: 'Nanite.BinScatter' });
-    pass2.setPipeline(this.pipelineScatter);
-    pass2.setBindGroup(0, bgScatter);
-    pass2.dispatchWorkgroups(Math.ceil(this.maxVisibleClusters / 64), 1, 1);
-    pass2.end();
-  }
-
-  private binCountWGSL(): string {
-    return /* wgsl */`
-      struct VisCluster { word0:u32; word1:u32; }
-      struct BinMeta    { count:u32; offset:u32; pipeline_id:u32; pad:u32; }
-      @group(0) @binding(0) var<storage,read>      visible_clusters : array<VisCluster>;
-      @group(0) @binding(1) var<storage,read_write> bin_meta         : array<BinMeta>;
-      @group(0) @binding(2) var<storage,read>       cluster_count    : array<u32,2>;
-      fn bin_id(c:VisCluster)->u32 { return (c.word1>>24u)&0xFFu; }
-      @compute @workgroup_size(64,1,1)
-      fn cs_bin_count(@builtin(global_invocation_id) gid:vec3<u32>) {
-        if(gid.x>=cluster_count[0]+cluster_count[1]){return;}
-        atomicAdd(&bin_meta[bin_id(visible_clusters[gid.x])].count,1u);
-      }
-    `;
-  }
-
-  private binScatterWGSL(): string {
-    return /* wgsl */`
-      struct VisCluster { word0:u32; word1:u32; }
-      struct BinMeta    { count:u32; offset:u32; pipeline_id:u32; pad:u32; }
-      @group(0) @binding(0) var<storage,read>      visible_clusters : array<VisCluster>;
-      @group(0) @binding(1) var<storage,read_write> bin_meta         : array<BinMeta>;
-      @group(0) @binding(2) var<storage,read_write> bin_data         : array<u32>;
-      @group(0) @binding(3) var<storage,read_write> bin_args         : array<u32>;
-      @group(0) @binding(4) var<storage,read>       cluster_count    : array<u32,2>;
-      fn bin_id(c:VisCluster)->u32 { return (c.word1>>24u)&0xFFu; }
-      @compute @workgroup_size(64,1,1)
-      fn cs_bin_scatter(@builtin(global_invocation_id) gid:vec3<u32>) {
-        if(gid.x>=cluster_count[0]+cluster_count[1]){return;}
-        let b=bin_id(visible_clusters[gid.x]);
-        let slot=bin_meta[b].offset+atomicAdd(&bin_meta[b].count,1u);
-        bin_data[slot]=gid.x;
-        bin_args[b*8u]=(bin_meta[b].count+63u)/64u; bin_args[b*8u+1u]=1u; bin_args[b*8u+2u]=1u;
-      }
-    `;
-  }
-
-  destroy(): void {
-    this.binMetaBuffer.destroy();
-    this.binDataBuffer.destroy();
-    this.binArgsBuffer.destroy();
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 8  Main facade: UENaniteCullRaster
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * UENaniteCullRaster — top-level façade for the Nanite cull+raster pipeline.
- *
- * Mirrors the IRenderer / FRenderer class in NaniteCullRaster.cpp.
- *
- * Orchestrates:
- *   • initRasterContext()  → allocate per-frame GPU textures (vis-buffer, depth).
- *   • drawGeometry()       → run culling passes + rasterization passes.
- *   • extractResults()     → export NaniteRasterResults to caller.
- *
- * The render-graph equivalent in UE5 is the sequence:
- *   InitRasterContext → (AddPass_PrimitiveFilter → AddPass_InstanceHierarchyAndClusterCull
- *   → AddPass_Rasterize) × 1–2 → ExtractResults.
- */
-export class UENaniteCullRaster {
-  private device: GPUDevice;
-  private cfg: Required<NaniteConfig>;
-
-  // Sub-system instances.
-  private hzb:    NaniteHZB;
-  private culler: NaniteCuller;
-  private swRast: NaniteSWRaster;
-  private binner: NaniteRasterBin;
-
-  // Per-frame state (reset each frame).
-  private currentContext: NaniteRasterContext | null = null;
-  private renderFlags: number = 0;
-  private debugFlags:  number = 0;
-  private drawPassIndex: number = 0;
-
-  // Exported result buffers (set after drawGeometry).
-  private lastVisBuffer64:     GPUTexture | null = null;
-  private lastDepthBuffer:     GPUTexture | null = null;
-  private lastViewsBuffer:     GPUBuffer  | null = null;
-
-  private constructor(device: GPUDevice, cfg: Required<NaniteConfig>) {
-    this.device  = device;
-    this.cfg     = cfg;
-    this.hzb     = new NaniteHZB(device);
-    this.culler  = new NaniteCuller(device, cfg);
-    this.swRast  = new NaniteSWRaster(device);
-    this.binner  = new NaniteRasterBin(device, cfg.maxVisibleClusters);
-  }
-
-  // ── Factory ────────────────────────────────────────────────────────────────
-
-  /**
-   * Allocate and initialise the full Nanite cull+raster pipeline.
-   *
-   * @param device  WebGPU logical device.
-   * @param cfg     Pipeline configuration.
-   */
-  static async create(device: GPUDevice, cfg: NaniteConfig): Promise<UENaniteCullRaster> {
-    const full: Required<NaniteConfig> = {
-      textureSize:          cfg.textureSize,
-      rasterMode:           cfg.rasterMode           ?? EOutputBufferMode.VisBuffer,
-      scheduling:           cfg.scheduling           ?? ERasterScheduling.HardwareThenSoftware,
-      twoPassOcclusion:     cfg.twoPassOcclusion     ?? true,
-      maxVisibleClusters:   cfg.maxVisibleClusters   ?? 2097152,
-      maxCandidateClusters: cfg.maxCandidateClusters ?? 4194304,
-      maxNodes:             cfg.maxNodes             ?? 262144,
-      maxCandidatePatches:  cfg.maxCandidatePatches  ?? 524288,
-      maxPixelsPerEdge:     cfg.maxPixelsPerEdge     ?? NANITE_MAX_PIXELS_PER_EDGE_DEFAULT,
-      minPixelsPerEdgeHW:   cfg.minPixelsPerEdgeHW   ?? NANITE_MIN_PIXELS_PER_EDGE_HW_DEFAULT,
-      dicingRate:           cfg.dicingRate           ?? NANITE_DICING_RATE_DEFAULT,
-      asyncCompute:         cfg.asyncCompute         ?? true,
-      writeStats:           cfg.writeStats           ?? false,
-      forceHWRaster:        cfg.forceHWRaster        ?? false,
-      disableProgrammable:  cfg.disableProgrammable  ?? false,
-      pipeline:             cfg.pipeline             ?? ERasterPipeline.PrimaryRaster,
-    };
-
-    const inst = new UENaniteCullRaster(device, full);
-    await Promise.all([
-      inst.hzb.init(),
-      inst.culler.init(),
-      inst.swRast.init(),
-      inst.binner.init(),
-    ]);
-    return inst;
-  }
-
-  // ── initRasterContext ──────────────────────────────────────────────────────
-
-  /**
-   * Allocate per-frame GPU textures (VisBuffer64, DepthBuffer, optional DbgBuffers).
-   * Mirrors Nanite::InitRasterContext() in NaniteCullRaster.cpp.
-   */
-  initRasterContext(
-    visualize    = false,
-    clearTarget  = true,
-  ): NaniteRasterContext {
-    const [w, h] = this.cfg.textureSize;
-    const d = this.device;
-
-    // Allocate vis-buffer (64-bit): stores depth in .r, vis-ID in .g.
-    const visBuffer64 = this.cfg.rasterMode === EOutputBufferMode.VisBuffer
-      ? d.createTexture({
-          label: 'Nanite.VisBuffer64',
-          size: { width: w, height: h },
-          format: 'rg32uint',
-          usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-        })
-      : null;
-
-    // Allocate depth buffer (32-bit uint, stores packed depth).
-    const depthBuffer = d.createTexture({
-      label: 'Nanite.DepthBuffer',
-      size: { width: w, height: h },
-      format: 'r32uint',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-
-    // Optional debug buffers.
-    const dbgBuffer64 = visualize
-      ? d.createTexture({
-          label: 'Nanite.DbgBuffer64',
-          size: { width: w, height: h },
-          format: 'rg32uint',
-          usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-        })
-      : null;
-
-    const dbgBuffer32 = visualize
-      ? d.createTexture({
-          label: 'Nanite.DbgBuffer32',
-          size: { width: w, height: h },
-          format: 'r32uint',
-          usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-        })
-      : null;
-
-    // Compute render flags from config.
-    this.renderFlags = 0;
-    if (this.cfg.forceHWRaster)       this.renderFlags |= NANITE_RENDER_FLAG_FORCE_HW_RASTER;
-    if (this.cfg.disableProgrammable) this.renderFlags |= NANITE_RENDER_FLAG_DISABLE_PROGRAMMABLE;
-    if (this.cfg.writeStats)          this.renderFlags |= NANITE_RENDER_FLAG_WRITE_STATS;
-    if (this.cfg.scheduling === ERasterScheduling.HardwareOnly) {
-      this.renderFlags |= NANITE_RENDER_FLAG_FORCE_HW_RASTER;
+    // 轮询上一帧 GPU timer
+    if (this.timer.poll()) {
+      this.stats.gpuTimeMs = this.timer.lastGPUTimeMs;
     }
 
-    this.debugFlags = 0; // can be set via setDebugFlags()
+    // 开始新的 GPU timer
+    this.timer.begin();
 
-    this.drawPassIndex = 0;
+    // gl call #23: clearColor
+    gl.clearColor(0, 0, 0, 1);
+    // gl call #24: clearDepth
+    gl.clearDepth(1.0);
+    // gl call #25: clear
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    const ctx: NaniteRasterContext = {
-      rcpViewSize:          [1 / w, 1 / h],
-      textureSize:          [w, h],
-      rasterMode:           this.cfg.rasterMode,
-      rasterScheduling:     this.cfg.scheduling,
-      visBuffer64,
-      depthBuffer,
-      dbgBuffer64,
-      dbgBuffer32,
-      visualizeActive:      visualize,
-      visualizeModeOverdraw: false,
-      bCustomPass:          false,
-      bEnableAssemblyMeta:  false,
-      bAllowTessellation:   true,
-    };
+    // gl call #26: viewport
+    gl.viewport(0, 0, vpWidth, vpHeight);
 
-    if (clearTarget) {
-      this.clearRasterTargets(ctx);
+    // 深度写入开启 (不透明阶段)
+    // gl call #27: depthMask true
+    gl.depthMask(true);
+
+    // 构建可见性列表 + 前→后排序
+    const visible = buildVisibilityList(cells, mvp, camPos, vpWidth, vpHeight);
+
+    this.stats.drawn     = 0;
+    this.stats.culled    = cells.length - visible.length;
+    this.stats.lodFull   = 0;
+    this.stats.lodSimple = 0;
+    this.stats.lodDot    = 0;
+
+    // 绘制所有可见 cell
+    for (const v of visible) {
+      switch (v.lod) {
+        case LODLevel.FULL:
+          this.drawFull(v.cell, mvp);
+          this.stats.lodFull++;
+          break;
+        case LODLevel.SIMPLIFIED:
+          this.drawSimplified(v.cell, mvp);
+          this.stats.lodSimple++;
+          break;
+        case LODLevel.DOT:
+          this.drawDot(v.cell, mvp);
+          this.stats.lodDot++;
+          break;
+      }
+      this.stats.drawn++;
     }
 
-    this.currentContext = ctx;
-    this.lastVisBuffer64  = visBuffer64;
-    this.lastDepthBuffer  = depthBuffer;
-
-    return ctx;
+    // 结束 GPU timer
+    this.timer.end();
   }
 
-  /** Submit GPU clears for vis-buffer + depth buffer. */
-  private clearRasterTargets(ctx: NaniteRasterContext): void {
-    const [w, h] = ctx.textureSize;
-    if (ctx.visBuffer64) {
-      const data = new Uint32Array(w * h * 2);
-      data.fill(NANITE_INVALID_DEPTH_U32, 0, w * h); // depth channel = max
-      this.device.queue.writeTexture({ texture: ctx.visBuffer64 }, data, { bytesPerRow: w * 8 }, { width: w, height: h });
-    }
-    if (ctx.depthBuffer) {
-      const data = new Uint32Array(w * h).fill(NANITE_INVALID_DEPTH_U32);
-      this.device.queue.writeTexture({ texture: ctx.depthBuffer }, data, { bytesPerRow: w * 4 }, { width: w, height: h });
-    }
-  }
+  // ── LOD_FULL: 完整 SDF 圆形 ────────────────────────────────────────────────
 
-  // ── drawGeometry ───────────────────────────────────────────────────────────
+  private drawFull(cell: NaniteCellDesc, mvp: Float32Array): void {
+    const gl = this.gl;
 
-  /**
-   * Run the full Nanite cull+raster pipeline for one frame.
-   * Mirrors FRenderer::DrawGeometry(): instance cull → node/cluster cull →
-   * [HZB build] → SW/HW rasterize → [post-pass].
-   */
-  drawGeometry(
-    views:        NanitePackedView[],
-    numInstances: number,
-    ctx:          NaniteRasterContext,
-    prevHZB:      GPUTexture | null = null,
-  ): void {
-    const enc = this.device.createCommandEncoder({ label: 'Nanite.DrawGeometry' });
+    // gl call #28: useProgram
+    gl.useProgram(this.progFull);
 
-    // 1. Upload views.
-    const viewsBuffer = this.uploadViews(views);
-    this.lastViewsBuffer = viewsBuffer;
+    // gl call #29: uniformMatrix4fv
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.progFull, 'u_mvp'), false, mvp);
 
-    // 2. Main culling pass.
-    const mainPass = this.cfg.twoPassOcclusion && prevHZB
-      ? CULLING_PASS_OCCLUSION_MAIN
-      : CULLING_PASS_NO_OCCLUSION;
-
-    this.culler.runCullingPass(
-      enc, mainPass, viewsBuffer, prevHZB,
-      numInstances, this.renderFlags, this.debugFlags,
+    const [cx, cy, cz] = cell.position;
+    // gl call #30: uniform3f
+    gl.uniform3f(gl.getUniformLocation(this.progFull, 'u_center'), cx, cy, cz);
+    // gl call #31: uniform1f
+    gl.uniform1f(gl.getUniformLocation(this.progFull, 'u_radius'), cell.radius);
+    // gl call #32: uniform4f
+    gl.uniform4f(
+      gl.getUniformLocation(this.progFull, 'u_color'),
+      cell.color[0], cell.color[1], cell.color[2], cell.color[3],
     );
 
-    // 3. Binning pass.
-    this.binner.dispatch(enc, this.culler.visibleClustersBuffer, this.culler.mainRasterArgsBuffer);
-
-    // 4. SW rasterize (main pass).
-    if (this.cfg.scheduling !== ERasterScheduling.HardwareOnly) {
-      this.swRast.dispatch(
-        enc,
-        ctx.visBuffer64,
-        ctx.depthBuffer,
-        this.culler.visibleClustersBuffer,
-        this.culler.mainRasterArgsBuffer,
-        viewsBuffer,
-        this.cfg.rasterMode,
-      );
-    }
-
-    // 5. Two-pass occlusion post-pass.
-    if (this.cfg.twoPassOcclusion && prevHZB) {
-      // Build furthest HZB from main-pass depth.
-      const hzbForPost = this.hzb.buildHZB(
-        enc,
-        ctx.depthBuffer!,
-        [0, 0, ctx.textureSize[0], ctx.textureSize[1]],
-      );
-
-      // Post-pass culling.
-      this.culler.runCullingPass(
-        enc, CULLING_PASS_OCCLUSION_POST, viewsBuffer, hzbForPost,
-        numInstances, this.renderFlags | NANITE_RENDER_FLAG_ADD_CLUSTER_OFFSET, this.debugFlags,
-      );
-
-      // Post-pass binning.
-      this.binner.dispatch(enc, this.culler.visibleClustersBuffer, this.culler.postRasterArgsBuffer ?? this.culler.mainRasterArgsBuffer);
-
-      // Post-pass SW rasterize.
-      if (this.cfg.scheduling !== ERasterScheduling.HardwareOnly) {
-        this.swRast.dispatch(
-          enc,
-          ctx.visBuffer64,
-          ctx.depthBuffer,
-          this.culler.visibleClustersBuffer,
-          this.culler.postRasterArgsBuffer ?? this.culler.mainRasterArgsBuffer,
-          viewsBuffer,
-          this.cfg.rasterMode,
-        );
-      }
-    }
-
-    this.device.queue.submit([enc.finish()]);
-
-    this.drawPassIndex++;
-    this.renderFlags |= NANITE_RENDER_FLAG_HAS_PREV_DRAW_DATA;
+    gl.bindVertexArray(this.vaoFull);
+    // 三角扇: 1 中心 + 64 边缘点 + 1 闭合 = 66 顶点
+    // gl call #33: drawArrays
+    gl.drawArrays(gl.TRIANGLE_FAN, 0, 66);
+    gl.bindVertexArray(null);
   }
 
-  // ── extractResults ─────────────────────────────────────────────────────────
+  // ── LOD_SIMPLIFIED: 简化四边形 ─────────────────────────────────────────────
 
-  /** Export NaniteRasterResults. Mirrors FRenderer::ExtractResults(). */
-  extractResults(): NaniteRasterResults {
-    const ctx = this.currentContext;
-    return {
-      pageConstants:        [0, 256, 0, 0], // streaming page constants
-      maxVisibleClusters:   this.cfg.maxVisibleClusters,
-      maxCandidatePatches:  this.cfg.maxCandidatePatches,
-      maxNodes:             this.cfg.maxNodes,
-      renderFlags:          this.renderFlags,
-      debugFlags:           this.debugFlags,
-      invDiceRate:          this.cfg.maxPixelsPerEdge / this.cfg.dicingRate,
+  private drawSimplified(cell: NaniteCellDesc, mvp: Float32Array): void {
+    const gl = this.gl;
 
-      visibleClustersSWHW:  this.culler.visibleClustersBuffer,
-      visBuffer64:          this.lastVisBuffer64,
-      dbgBuffer64:          ctx?.visualizeActive ? ctx.dbgBuffer64 : null,
-      dbgBuffer32:          ctx?.visualizeActive ? ctx.dbgBuffer32 : null,
-      viewsBuffer:          this.lastViewsBuffer,
-      rasterBinMeta:        this.binner.binMetaBuffer,
-      rasterBinData:        this.binner.binDataBuffer,
-      rasterBinArgs:        this.binner.binArgsBuffer,
-    };
+    // gl call #34: useProgram
+    gl.useProgram(this.progSimplified);
+    // gl call #35: uniformMatrix4fv
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.progSimplified, 'u_mvp'), false, mvp);
+
+    const [cx, cy, cz] = cell.position;
+    // gl call #36: uniform3f
+    gl.uniform3f(gl.getUniformLocation(this.progSimplified, 'u_center'), cx, cy, cz);
+    // gl call #37: uniform1f
+    gl.uniform1f(gl.getUniformLocation(this.progSimplified, 'u_radius'), cell.radius);
+    // gl call #38: uniform4f
+    gl.uniform4f(
+      gl.getUniformLocation(this.progSimplified, 'u_color'),
+      cell.color[0], cell.color[1], cell.color[2], cell.color[3],
+    );
+
+    gl.bindVertexArray(this.vaoSimplified);
+    // gl call #39: drawArrays (2 triangles = 6 vertices)
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.bindVertexArray(null);
   }
 
-  // ── View upload ────────────────────────────────────────────────────────────
+  // ── LOD_DOT: 单像素点 ──────────────────────────────────────────────────────
+
+  private drawDot(cell: NaniteCellDesc, mvp: Float32Array): void {
+    const gl = this.gl;
+
+    // gl call #40: useProgram
+    gl.useProgram(this.progDot);
+    // gl call #41: uniformMatrix4fv
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.progDot, 'u_mvp'), false, mvp);
+
+    const [cx, cy, cz] = cell.position;
+    // gl call #42: uniform3f
+    gl.uniform3f(gl.getUniformLocation(this.progDot, 'u_center'), cx, cy, cz);
+    // gl call #43: uniform1f (点大小)
+    gl.uniform1f(gl.getUniformLocation(this.progDot, 'u_pointSize'),
+      Math.max(1.5, Math.sqrt(cell.radius) * 2));
+    // gl call #44: uniform4f
+    gl.uniform4f(
+      gl.getUniformLocation(this.progDot, 'u_color'),
+      cell.color[0], cell.color[1], cell.color[2], cell.color[3],
+    );
+
+    // DOT 模式不需要 VBO — 顶点由 uniform 驱动
+    // gl call #45: drawArrays (1 point)
+    gl.drawArrays(gl.POINTS, 0, 1);
+  }
+
+  // ── 资源释放 ───────────────────────────────────────────────────────────────
 
   /**
-   * Pack NanitePackedView[] into a GPUBuffer (column-major mat4 layout, 512 B/view).
-   * Matches the PackedView WGSL struct consumed by all culling + raster shaders.
+   * 释放所有 WebGL 资源.
+   * 调用后此实例不可再使用.
    */
-  private uploadViews(views: NanitePackedView[]): GPUBuffer {
-    const count = Math.min(views.length, NANITE_MAX_VIEWS_PER_CULL_RASTERIZE_PASS);
-    const STRIDE = 512; // 6 mat4 + scalars, padded to 512 bytes
-    const buf = this.device.createBuffer({
-      label: 'Nanite.Views', size: count * STRIDE,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    for (let i = 0; i < count; i++) {
-      const v = views[i];
-      const data = new Float32Array(STRIDE / 4);
-      const idata = new Int32Array(data.buffer);
-      let o = 0;
-      const wm = (m: Float32Array) => { data.set(m, o); o += 16; };
-      wm(v.svPositionToTranslatedWorld); wm(v.viewToTranslatedWorld);
-      wm(v.translatedWorldToClip);       wm(v.viewToClip);
-      wm(v.clipToRelativeWorld);         wm(v.prevTranslatedWorldToClip);
-      idata[o++]=v.viewRect[0]; idata[o++]=v.viewRect[1]; idata[o++]=v.viewRect[2]; idata[o++]=v.viewRect[3];
-      data[o++]=v.viewSizeAndInvSize[0]; data[o++]=v.viewSizeAndInvSize[1];
-      data[o++]=v.viewSizeAndInvSize[2]; data[o++]=v.viewSizeAndInvSize[3];
-      data[o++]=v.lodScales[0]; data[o++]=v.lodScales[1];
-      idata[o++]=v.hzbTestViewRect[0]; idata[o++]=v.hzbTestViewRect[1];
-      idata[o++]=v.hzbTestViewRect[2]; idata[o++]=v.hzbTestViewRect[3];
-      data[o++]=v.rangeBasedCullingDistance; data[o++]=v.nearPlane;
-      this.device.queue.writeBuffer(buf, i * STRIDE, data.buffer, 0, STRIDE);
-    }
-    return buf;
-  }
-
-  // ── Debug / configuration ─────────────────────────────────────────────────
-
-  /**
-   * Override active debug flags (NANITE_DEBUG_FLAG_*).
-   * Can be called between frames to toggle culling visualization.
-   */
-  setDebugFlags(flags: number): void {
-    this.debugFlags = flags;
-  }
-
-  /**
-   * Override render flags (NANITE_RENDER_FLAG_*).
-   * Useful for forcing shadow-pass mode, scene-capture mode, etc.
-   */
-  setRenderFlags(flags: number): void {
-    this.renderFlags = (this.renderFlags & NANITE_RENDER_FLAG_HAS_PREV_DRAW_DATA) | flags;
-  }
-
-  // ── Static helpers ─────────────────────────────────────────────────────────
-
-  /** Compute LOD scales. Mirrors FPackedView::UpdateLODScales() in NaniteShared.h. */
-  static computeLODScales(
-    viewportHeight:   number,
-    fovY:             number,
-    maxPixelsPerEdge: number = NANITE_MAX_PIXELS_PER_EDGE_DEFAULT,
-    minPixelsEdgeHW:  number = NANITE_MIN_PIXELS_PER_EDGE_HW_DEFAULT,
-  ): [number, number] {
-    // cotFovHalf = cot(fovY/2) = viewportHeight / (2 * tan(fovY/2))
-    const cotFovHalf = (viewportHeight * 0.5) / Math.tan(fovY * 0.5);
-    const lodScaleSW = cotFovHalf / maxPixelsPerEdge;
-    const lodScaleHW = cotFovHalf / minPixelsEdgeHW;
-    return [lodScaleSW, lodScaleHW];
-  }
-
-  /** Build a minimal NanitePackedView from world-to-clip matrix + viewport. */
-  static buildPackedView(
-    worldToClip: Float32Array,
-    viewRect:    [number, number, number, number],
-    lodScales:   [number, number],
-    nearPlane:   number = 0.1,
-  ): NanitePackedView {
-    const identity = new Float32Array([
-      1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
-    ]);
-    const [x, y, w, h] = viewRect;
-    return {
-      svPositionToTranslatedWorld:  identity,
-      viewToTranslatedWorld:        identity,
-      translatedWorldToClip:        worldToClip,
-      viewToClip:                   worldToClip,
-      clipToRelativeWorld:          identity,
-      prevTranslatedWorldToClip:    worldToClip,
-      viewRect:        [x, y, x + w, y + h],
-      viewSizeAndInvSize: [w, h, 1/w, 1/h],
-      lodScales,
-      hzbTestViewRect: [x, y, x + w, y + h],
-      rangeBasedCullingDistance: 0,
-      nearPlane,
-      streamingPriorityAndFlags:  0,
-      instanceOcclusionQueryMask: 0,
-    };
-  }
-
-  // ── Lifecycle ──────────────────────────────────────────────────────────────
-
-  /** Release all GPU resources. */
   destroy(): void {
-    this.hzb.destroy();
-    this.culler.destroy();
-    this.swRast.destroy();
-    this.binner.destroy();
-    this.lastVisBuffer64?.destroy();
-    this.lastDepthBuffer?.destroy();
-    this.lastViewsBuffer?.destroy();
-    this.currentContext = null;
+    const gl = this.gl;
+    // gl call #46: deleteBuffer
+    gl.deleteBuffer(this.vbCircle);
+    gl.deleteBuffer(this.vbQuad);
+    // gl call #47: deleteVertexArray
+    gl.deleteVertexArray(this.vaoFull);
+    gl.deleteVertexArray(this.vaoSimplified);
+    // gl call #48: deleteProgram
+    gl.deleteProgram(this.progFull);
+    gl.deleteProgram(this.progSimplified);
+    gl.deleteProgram(this.progDot);
+    // gl call #49: disable DEPTH_TEST
+    gl.disable(gl.DEPTH_TEST);
+    this.timer.destroy();
+  }
+
+  // ── 统计信息 ───────────────────────────────────────────────────────────────
+
+  /**
+   * 获取上一帧渲染统计.
+   *
+   * ```
+   * {
+   *   drawn:     实际绘制的 cell 数,
+   *   culled:    被面积剔除的 cell 数,
+   *   lodFull:   LOD_FULL  绘制数,
+   *   lodSimple: LOD_SIMPLIFIED 绘制数,
+   *   lodDot:    LOD_DOT   绘制数,
+   *   gpuTimeMs: GPU 耗时 (ms, -1 = 未就绪)
+   * }
+   * ```
+   */
+  getStats(): typeof this.stats {
+    return { ...this.stats };
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 9  Utility: NanitePassBuilder — render-graph pass description helpers
+// § 9  深度预通 (Depth Pre-Pass) — 可选加速
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Describes one complete Nanite render-graph pass (main or post).
- * Returned by NanitePassBuilder.buildMainPass() / .buildPostPass().
+ * 可选深度预通: 先以极低代价写入深度缓冲,
+ * 随后的完整着色通再以 LEQUAL 测试,
+ * 大幅减少 overdraw.
  *
- * Callers submit these to their own render-graph / frame-graph scheduler.
- * Mirrors the pattern used by FRenderer::DrawGeometry() in UE5.
+ * 使用 UENaniteCull 时内部已做前→后排序,
+ * 本类适用于需要分离 Z-Pre 与 Color 通道的高级场景.
  */
-export interface NaniteRGPass {
-  /** Human-readable label for GPU profiling. */
-  label: string;
-  /** Culling pass index (CULLING_PASS_*). */
-  cullingPass: number;
-  /** True if this is the main (first) pass, false for the occlusion post-pass. */
-  isMainPass: boolean;
-  /** Function that executes this pass given an active command encoder. */
-  execute: (encoder: GPUCommandEncoder) => void;
-}
+export class NaniteDepthPrePass {
+  private gl:       WebGL2RenderingContext;
+  private progDepth: WebGLProgram;
+  private vbCircle:  WebGLBuffer;
+  private vao:       WebGLVertexArrayObject;
 
-/**
- * Utility that converts a UENaniteCullRaster instance into
- * rendergraph-style NaniteRGPass descriptors.
- *
- * Mirrors the AddPass_* family of methods in FRenderer.
- */
-export class NanitePassBuilder {
-  constructor(
-    private nanite: UENaniteCullRaster,
-    private views:   NanitePackedView[],
-    private numInstances: number,
-    private ctx:     NaniteRasterContext,
-    private prevHZB: GPUTexture | null = null,
-  ) {}
+  private static readonly VERT_DEPTH = /* glsl */`#version 300 es
+    precision highp float;
+    in vec2 a_pos;
+    uniform mat4 u_mvp;
+    uniform vec3 u_center;
+    uniform float u_radius;
+    void main() {
+      gl_Position = u_mvp * vec4(u_center + vec3(a_pos * u_radius, 0.0), 1.0);
+    }
+  `;
 
-  /** Build the main-pass (no-occlusion or main-HZB) NaniteRGPass. */
-  buildMainPass(): NaniteRGPass {
-    return {
-      label:       'Nanite.MainPass',
-      cullingPass: CULLING_PASS_OCCLUSION_MAIN,
-      isMainPass:  true,
-      execute:     (enc: GPUCommandEncoder) => {
-        // Delegate to the full drawGeometry which internally handles both passes.
-        this.nanite.drawGeometry(this.views, this.numInstances, this.ctx, this.prevHZB);
-      },
-    };
+  private static readonly FRAG_DEPTH = /* glsl */`#version 300 es
+    precision mediump float;
+    out vec4 fragColor;
+    void main() { fragColor = vec4(0.0); }
+  `;
+
+  constructor(gl: WebGL2RenderingContext) {
+    this.gl = gl;
+    this.progDepth = linkProgram(gl, NaniteDepthPrePass.VERT_DEPTH, NaniteDepthPrePass.FRAG_DEPTH);
+
+    this.vbCircle = gl.createBuffer()!;
+    // gl call (init): bindBuffer + bufferData for depth pre-pass circle
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbCircle);
+    gl.bufferData(gl.ARRAY_BUFFER, makeCircleVerts(32), gl.STATIC_DRAW);
+
+    this.vao = gl.createVertexArray()!;
+    gl.bindVertexArray(this.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbCircle);
+    const aPos = gl.getAttribLocation(this.progDepth, 'a_pos');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
   }
 
-  /** Build the post-occlusion-pass NaniteRGPass (requires twoPassOcclusion). */
-  buildPostPass(): NaniteRGPass {
-    return {
-      label:       'Nanite.PostPass',
-      cullingPass: CULLING_PASS_OCCLUSION_POST,
-      isMainPass:  false,
-      execute:     (_enc: GPUCommandEncoder) => {
-        // Post pass is embedded in drawGeometry() when twoPassOcclusion=true.
-        // This descriptor is provided for callers that want to track it explicitly.
-      },
-    };
+  /**
+   * 执行深度预通: 只写 depth, 不写 color.
+   * 调用此函数后, 主通应切换为 gl.depthFunc(gl.LEQUAL).
+   *
+   * @param cells   需要写入深度的 cell 列表 (已排序)
+   * @param mvp     MVP 矩阵
+   */
+  run(cells: NaniteCellVisibility[], mvp: Float32Array): void {
+    const gl = this.gl;
+
+    // gl call: colorMask — 关闭颜色写入
+    gl.colorMask(false, false, false, false);
+    // gl call: depthMask — 开启深度写入
+    gl.depthMask(true);
+    // gl call: depthFunc LESS
+    gl.depthFunc(gl.LESS);
+    // gl call: useProgram
+    gl.useProgram(this.progDepth);
+    // gl call: uniformMatrix4fv
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.progDepth, 'u_mvp'), false, mvp);
+
+    gl.bindVertexArray(this.vao);
+    for (const v of cells) {
+      if (v.lod === LODLevel.CULLED || v.lod === LODLevel.DOT) continue;
+      const [cx, cy, cz] = v.cell.position;
+      // gl call: uniform3f per cell
+      gl.uniform3f(gl.getUniformLocation(this.progDepth, 'u_center'), cx, cy, cz);
+      // gl call: uniform1f per cell
+      gl.uniform1f(gl.getUniformLocation(this.progDepth, 'u_radius'), v.cell.radius);
+      // gl call: drawArrays
+      gl.drawArrays(gl.TRIANGLE_FAN, 0, 34); // 32 segs + center + close
+    }
+    gl.bindVertexArray(null);
+
+    // 恢复颜色写入
+    // gl call: colorMask
+    gl.colorMask(true, true, true, true);
+    // 主通使用 LEQUAL 避免 z-fighting
+    // gl call: depthFunc LEQUAL
+    gl.depthFunc(gl.LEQUAL);
+    // 主通不再写入深度 (已有正确值)
+    // gl call: depthMask false
+    gl.depthMask(false);
+  }
+
+  destroy(): void {
+    const gl = this.gl;
+    gl.deleteBuffer(this.vbCircle);
+    gl.deleteVertexArray(this.vao);
+    gl.deleteProgram(this.progDepth);
   }
 }
 
@@ -1788,9 +797,6 @@ export class NanitePassBuilder {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export {
-  NaniteHZB,
-  NaniteCuller,
-  NaniteSWRaster,
-  NaniteRasterBin,
-  NanitePassBuilder,
+  GPUTimer,
+  NaniteDepthPrePass,
 };
