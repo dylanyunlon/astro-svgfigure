@@ -12,6 +12,10 @@ import { EdgeGPU } from './edge-gpu-pass';
 import { MSDFTextGPU } from './msdf-gpu-pass';
 import { CompositeGPU } from './composite-gpu-pass';
 import { ParticleGPU } from './particle-gpu-pass';
+import { PBRCellGPU } from './pbr-gpu-pass';
+import { GlassGPU } from './glass-gpu-pass';
+import { SDFIconGPU, createSDFIconGPU } from './sdf-gpu-pass';
+import { initATShaderPipeline, listATShaders } from './at-shader-pipeline-bridge';
 
 // ─── Cell 数据接口 ────────────────────────────────────────────
 
@@ -58,6 +62,9 @@ export class GPURenderLoop {
   private msdf: MSDFTextGPU;
   private composite: CompositeGPU;
   private particle: ParticleGPU | null = null; // WebGL2 only
+  private pbr: PBRCellGPU | null = null;
+  private glass: GlassGPU | null = null;
+  private sdfIcon: SDFIconGPU | null = null;
 
   // 状态
   private cells: CellData[] = [];
@@ -95,6 +102,15 @@ export class GPURenderLoop {
     this.msdf = new MSDFTextGPU(gl);
     this.composite = new CompositeGPU(gl, canvas.width, canvas.height);
 
+    // PBR cell surface pass
+    try { this.pbr = new PBRCellGPU(gl); } catch (e) { console.warn('[GPURenderLoop] PBR init failed, using fallback:', e); }
+
+    // Glass Fresnel pass
+    try { this.glass = new GlassGPU(gl); } catch (e) { console.warn('[GPURenderLoop] Glass init failed:', e); }
+
+    // SDF species icon pass
+    try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }
+
     // WebGL2 particle (optional)
     const gl2 = canvas.getContext('webgl2');
     if (gl2) {
@@ -109,6 +125,15 @@ export class GPURenderLoop {
       this.mouseX = (e.clientX - rect.left) / rect.width;
       this.mouseY = 1.0 - (e.clientY - rect.top) / rect.height;
     });
+
+    // 异步加载 AT compiled.vs shader bundle
+    // 加载完成后 172 个 shader 的 #require 依赖全部递归解析
+    initATShaderPipeline('/upstream/activetheory-assets/compiled.vs')
+      .then((loader) => {
+        const names = listATShaders();
+        console.log(`[GPURenderLoop] AT shaders ready: ${names.length} shaders`);
+      })
+      .catch((e) => console.warn('[GPURenderLoop] AT shader load failed (non-fatal):', e));
   }
 
   /** 设置 cell 和 edge 数据 */
@@ -131,15 +156,26 @@ export class GPURenderLoop {
     this.shadow.render(this.cells, lightDir);
 
     // ── Pass 3: PBR cell surface ──
-    // 直接用 cell 颜色画到 composite 的 cell 层
-    // (pbr-gpu-pass 如果到了就用它, 否则 fallback 到简单着色)
-    const cellFBO = this._renderCellsFallback();
+    let cellFBO: WebGLTexture;
+    if (this.pbr) {
+      this.pbr.render(this.cells, this.shadow.outputTexture, lightDir);
+      cellFBO = this.pbr.outputTexture;
+    } else {
+      cellFBO = this._renderCellsFallback();
+    }
+
+    // ── Pass 3b: Glass overlay (Fresnel + refraction on cell bodies) ──
+    if (this.glass) {
+      this.glass.render(this.cells, cellFBO);
+    }
 
     // ── Pass 4: Edge 样条线 ──
     this.edge.render(this.edges);
 
-    // ── Pass 5: SDF Species icon ──
-    // (sdf-gpu-pass 如果到了就用它, 否则跳过)
+    // ── Pass 5: SDF Species icon (instanced) ──
+    if (this.sdfIcon) {
+      this.sdfIcon.render(this.cells);
+    }
 
     // ── Pass 6: Particle ──
     if (this.particle) {
@@ -163,6 +199,8 @@ export class GPURenderLoop {
       bloomTexture: this.bloom.outputTexture,
       shadowTexture: this.shadow.outputTexture,
       fluidTexture: this.fluid.dyeTexture,
+      sdfTexture: this.sdfIcon?.outputTexture ?? null,
+      glassTexture: this.glass?.outputTexture ?? null,
     });
   }
 

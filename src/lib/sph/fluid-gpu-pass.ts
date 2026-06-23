@@ -143,12 +143,26 @@ export class FluidGPU {
     this.displayProg    = this._compile(SIMPLE_VERT, displaySrc, 'display');
 
     // ── 创建 FBO (真正的 GPU 纹理) ──
+    // WebGL2 有 RG16F/R16F/RGBA16F; WebGL1 需要扩展 + fallback to RGBA+FLOAT
+    const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+    const halfFloatExt = !isWebGL2 ? gl.getExtension('OES_texture_half_float') : null;
+    const halfFloat = isWebGL2 ? gl.HALF_FLOAT : (halfFloatExt ? halfFloatExt.HALF_FLOAT_OES : gl.FLOAT);
+
+    // For velocity (2-channel): WebGL2 uses RG16F/RG, WebGL1 falls back to RGBA
+    const velInternal = isWebGL2 ? (gl as WebGL2RenderingContext).RG16F    : gl.RGBA;
+    const velFormat   = isWebGL2 ? (gl as WebGL2RenderingContext).RG       : gl.RGBA;
+    // For pressure/divergence/curl (1-channel): WebGL2 uses R16F/RED, WebGL1 falls back to RGBA
+    const scalarInternal = isWebGL2 ? (gl as WebGL2RenderingContext).R16F  : gl.RGBA;
+    const scalarFormat   = isWebGL2 ? (gl as WebGL2RenderingContext).RED   : gl.RGBA;
+    // For dye (4-channel): WebGL2 uses RGBA16F, WebGL1 uses RGBA
+    const dyeInternal = isWebGL2 ? (gl as WebGL2RenderingContext).RGBA16F : gl.RGBA;
+
     const { simWidth: sw, simHeight: sh, dyeWidth: dw, dyeHeight: dh } = this.config;
-    this.velocity    = this._createDoubleFBO(sw, sh, gl.RG16F ?? gl.RGBA, gl.RG ?? gl.RGBA, gl.HALF_FLOAT ?? gl.FLOAT);
-    this.pressure    = this._createDoubleFBO(sw, sh, gl.R16F ?? gl.RGBA, gl.RED ?? gl.RGBA, gl.HALF_FLOAT ?? gl.FLOAT);
-    this.divergenceRT = this._createSingleFBO(sw, sh, gl.R16F ?? gl.RGBA, gl.RED ?? gl.RGBA, gl.HALF_FLOAT ?? gl.FLOAT);
-    this.curlRT       = this._createSingleFBO(sw, sh, gl.R16F ?? gl.RGBA, gl.RED ?? gl.RGBA, gl.HALF_FLOAT ?? gl.FLOAT);
-    this.dye          = this._createDoubleFBO(dw, dh, gl.RGBA16F ?? gl.RGBA, gl.RGBA, gl.HALF_FLOAT ?? gl.FLOAT);
+    this.velocity    = this._createDoubleFBO(sw, sh, velInternal, velFormat, halfFloat);
+    this.pressure    = this._createDoubleFBO(sw, sh, scalarInternal, scalarFormat, halfFloat);
+    this.divergenceRT = this._createSingleFBO(sw, sh, scalarInternal, scalarFormat, halfFloat);
+    this.curlRT       = this._createSingleFBO(sw, sh, scalarInternal, scalarFormat, halfFloat);
+    this.dye          = this._createDoubleFBO(dw, dh, dyeInternal, gl.RGBA, halfFloat);
 
     // ── 全屏 quad (2 个三角形) ──
     this.quadBuf = gl.createBuffer()!;
@@ -366,18 +380,18 @@ export class FluidGPU {
     return prog;
   }
 
-  /** 创建双缓冲 FBO (ping-pong) */
+  /** 创建双缓冲 FBO (ping-pong) — read 和 write 各一个 FBO+tex 对 */
   private _createDoubleFBO(w: number, h: number,
     internalFormat: number, format: number, type: number): DoubleRT {
+    const readRT  = this._createSingleFBO(w, h, internalFormat, format, type);
+    const writeRT = this._createSingleFBO(w, h, internalFormat, format, type);
     return {
-      read: this._createSingleFBO(w, h, internalFormat, format, type).fbo,
-      write: this._createSingleFBO(w, h, internalFormat, format, type).fbo,
-      readTex: this._createSingleFBO(w, h, internalFormat, format, type).tex,
-      writeTex: this._createSingleFBO(w, h, internalFormat, format, type).tex,
+      read:     readRT.fbo,
+      write:    writeRT.fbo,
+      readTex:  readRT.tex,
+      writeTex: writeRT.tex,
       width: w, height: h,
     };
-    // 注意: 实际应该复用 texture, 这里简化了。
-    // 真实实现中 read/write 共享 texture, fbo 分别指向不同 texture。
   }
 
   private _createSingleFBO(w: number, h: number,
