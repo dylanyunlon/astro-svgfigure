@@ -10,11 +10,21 @@
  *
  * M421: SSE EventSource driven — real-time cell event stream
  *   EventSource("/api/cell-events") listens for SSE events:
- *     topology_updated    → refetch /api/cells → rebuild full render (cells + edges)
- *     cell_params_updated → patch matching CellDescriptor in-place → update left panel + PixiJS stage
- *     cell_update         → CellEventSource compat: patch bbox/opacity/fill_color
+ *     topology_updated        → refetch /api/cells → rebuild full render (cells + edges)
+ *     cell_params_updated     → patch matching CellDescriptor in-place → update left panel + PixiJS stage
+ *     cell_update             → CellEventSource compat: patch bbox/opacity/fill_color
+ *     composite_params_updated→ M899: reload composite_params.json → full fetchAndRender()
  *   Reconnect: exponential backoff 1s → 2s → 4s → … → 30s cap
  *   import from upstream/pixijs-engine/src/ for Container type
+ *
+ * M899: composite_params.json consumption (cell + edge + bloom + camera)
+ *   fetchAndRender() now prefers /channels/composite_params.json over /api/cells:
+ *     cells   → mapCompositeToCells()  → CellDescriptor[] with bloom + species_params
+ *     edges   → mapCompositeToEdges()  → EdgeDescriptor[] (skip_connection detection)
+ *     bloom   → merged into ParamsJson.bloom per cell (threshold/intensity/radius)
+ *     camera  → applyCameraFromComposite() → setZoom() from camera.zoom or scene_bounds fit
+ *   Falls back to /api/cells if composite_params is absent or empty.
+ *   SSE composite_params_updated → re-runs fetchAndRender() for live updates.
  *
  * 三栏布局:
  *   左栏  — Cell 列表 (从 /api/cells 加载 params.json)
@@ -22,10 +32,11 @@
  *   右栏  — Epoch 时间线 (从 /api/epochs 轮询)
  *
  * 数据流:
- *   1. fetch('/api/cells')       → CellDescriptor[] → PixiJS render + 左栏
+ *   1. fetch('/channels/composite_params.json') → cells+edges+bloom+camera → PixiJS render + 左栏 [M899]
+ *      fallback: fetch('/api/cells') → CellDescriptor[] → PixiJS render + 左栏            [M047]
  *   2. POST('/api/cell-loop')    → 触发下一个 epoch
  *   3. fetch('/api/epochs')      → EpochRecord[]   → 右栏时间线
- *   4. SSE /api/cell-events      → topology_updated | cell_params_updated → live update
+ *   4. SSE /api/cell-events      → topology_updated | cell_params_updated | composite_params_updated → live update
  *
  * GitHub 背书: withastro/astro, pixijs/pixijs, cworld1/astro-theme-pure
  */
@@ -186,7 +197,7 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   import type { Container } from '../../upstream/pixijs-engine/src/scene/container/Container'
   import { renderCellGraph } from '@/lib/renderers/pixi-cell-renderer'
   import { renderCellGraphSDF } from '@/lib/renderers/sdf-cell-renderer'
-  import type { CellDescriptor, EdgeDescriptor } from '@/lib/renderers/pixi-cell-renderer'
+  import type { CellDescriptor, EdgeDescriptor, ParamsJson } from '@/lib/renderers/pixi-cell-renderer'
   // M049: CloudFog 全屏背景
   import { mountCloudFogBackground } from '@/lib/CloudFogBackground'
   // M042: Theatre.js epoch timeline — drives per-cell animation via ISequence
@@ -230,6 +241,64 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   let stopFog: (() => void) | null = null
   // M042: Theatre.js epoch timeline instance — initialized on first epoch fetch
   let epochTimeline: EpochTimeline | null = null
+  // M899: composite_params — last-fetched full composite (cells+edges+bloom+camera)
+  let lastCompositeParams: CompositeParams | null = null
+
+  // ── M899: composite_params.json types ────────────────────────────────────
+  // Mirrors the shape of channels/composite_params.json produced by the agent loop.
+  interface CompositeCell {
+    bbox: { x: number; y: number; w: number; h: number; z?: number }
+    opacity?: number
+    species_params?: Record<string, unknown>
+    rendering?: {
+      pixi_filters?: {
+        bloom?: { threshold?: number; bloomScale?: number; brightness?: number }
+        glow?: { distance?: number; outerStrength?: number; innerStrength?: number; color?: string }
+        drop_shadow?: { offset?: [number, number]; blur?: number; alpha?: number; color?: string }
+      }
+    }
+  }
+
+  interface CompositeEdge {
+    source: string
+    target: string
+    type?: string          // 'sequential' | 'skip' | 'residual' | …
+    control_points?: [number, number][]
+    rendering?: Record<string, unknown>
+  }
+
+  interface CompositeBloomEntry {
+    color?: string
+    glow_color?: string
+    bloom_threshold?: number
+    bloom_intensity?: number
+    bloom_radius?: number
+    glow_strength?: number
+  }
+
+  interface CompositeCamera {
+    position?: { x?: number; y?: number; z?: number }
+    zoom?: number
+    fov?: number
+    scene_bounds?: { min_x?: number; min_y?: number; max_x?: number; max_y?: number }
+    padding?: number
+  }
+
+  interface CompositeSpeciesEntry {
+    species?: string
+    gene_traits?: Record<string, unknown>
+    agent_derived?: Record<string, unknown>
+  }
+
+  interface CompositeParams {
+    cells?: Record<string, CompositeCell>
+    edges?: Record<string, CompositeEdge>
+    bloom?: Record<string, CompositeBloomEntry>
+    camera?: CompositeCamera
+    z_order?: string[]
+    species?: Record<string, CompositeSpeciesEntry>
+    convergence?: { epoch?: number; converged?: boolean }
+  }
 
   // ── M421: SSE EventSource — real-time cell-events stream ──────────────────
   // Connects to GET /api/cell-events (text/event-stream).
@@ -272,6 +341,19 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
         await fetchEpochs()
       } catch (err: any) {
         console.warn('[M421] topology_updated refetch failed:', err.message)
+      }
+    })
+
+    // ── M899: composite_params_updated: reload composite_params.json ──────
+    // Fired by the backend when channels/composite_params.json is rewritten.
+    // Triggers a full fetchAndRender() so cell+edge+bloom+camera all refresh.
+    es.addEventListener('composite_params_updated', async () => {
+      console.info('[M899] SSE composite_params_updated → reload composite_params.json')
+      try {
+        await fetchAndRender()
+        await fetchEpochs()
+      } catch (err: any) {
+        console.warn('[M899] composite_params_updated refetch failed:', err.message)
       }
     })
 
@@ -426,6 +508,165 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
   document.getElementById('pl-zoom-in')!.addEventListener('click', () => setZoom(currentZoom + 15))
   document.getElementById('pl-zoom-out')!.addEventListener('click', () => setZoom(currentZoom - 15))
   document.getElementById('pl-zoom-fit')!.addEventListener('click', () => setZoom(100))
+
+  // ── M899: composite_params.json — fetch, map, apply ──────────────────────
+  /**
+   * M899: Fetch /channels/composite_params.json and cache it.
+   * Returns the parsed payload or null if unavailable.
+   */
+  async function fetchCompositeParams(): Promise<CompositeParams | null> {
+    try {
+      const res = await fetch('/channels/composite_params.json', { cache: 'no-store' })
+      if (!res.ok) return null
+      const data: CompositeParams = await res.json()
+      lastCompositeParams = data
+      return data
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * M899: Map composite_params cells + bloom + species → CellDescriptor[].
+   *
+   * For each cell key in composite.cells:
+   *   • bbox (x/y/w/h) comes from cell.bbox
+   *   • z comes from cell.bbox.z or z_order position
+   *   • opacity from cell.opacity
+   *   • species from composite.species[key].species (fallback: 'cil-vector')
+   *   • label = key
+   *   • params.bloom assembled from composite.bloom[key] fields
+   *   • params.species_params carried through from cell.species_params
+   *   • topology is empty stubs (edges are handled separately)
+   */
+  function mapCompositeToCells(cp: CompositeParams): CellDescriptor[] {
+    const cellsMap = cp.cells ?? {}
+    const bloomMap = cp.bloom ?? {}
+    const speciesMap = cp.species ?? {}
+    const zOrder = cp.z_order ?? []
+
+    return Object.entries(cellsMap).map(([cellId, cell]) => {
+      const bloomEntry = bloomMap[cellId]
+      const speciesEntry = speciesMap[cellId]
+
+      // Resolve species string
+      const speciesStr = speciesEntry?.species ?? 'cil-vector'
+
+      // Resolve z from z_order position (higher index = higher z) or bbox.z
+      const zOrderIndex = zOrder.indexOf(cellId)
+      const z = cell.bbox.z ?? (zOrderIndex >= 0 ? zOrderIndex + 1 : 1)
+
+      // Build ParamsJson bloom from composite bloom entry
+      let bloomParams: ParamsJson['bloom'] | undefined
+      if (bloomEntry) {
+        bloomParams = {
+          threshold:    bloomEntry.bloom_threshold,
+          bloomStrength: bloomEntry.glow_strength,
+          bloomScale:   bloomEntry.bloom_intensity,
+          blur:         bloomEntry.bloom_radius,
+          brightness:   1.0,
+        }
+      }
+
+      // Merge pixi_filters bloom if available
+      const pixiBloom = cell.rendering?.pixi_filters?.bloom
+      if (pixiBloom) {
+        bloomParams = {
+          ...bloomParams,
+          threshold:  pixiBloom.threshold ?? bloomParams?.threshold,
+          bloomScale: pixiBloom.bloomScale ?? bloomParams?.bloomScale,
+          brightness: pixiBloom.brightness ?? bloomParams?.brightness,
+        }
+      }
+
+      // Build fill/stroke colors from species_params primary_color / glow_color
+      const sp = cell.species_params ?? {}
+      const fillColor   = (sp.primary_color as string | undefined)
+        ?? (bloomEntry?.color)
+        ?? undefined
+      const strokeColor = (sp.glow_color as string | undefined)
+        ?? (bloomEntry?.glow_color)
+        ?? undefined
+
+      const params: ParamsJson = {
+        cell_id:      cellId,
+        species:      speciesStr,
+        bbox:         cell.bbox,
+        opacity:      cell.opacity,
+        fill_color:   fillColor,
+        stroke_color: strokeColor,
+        bloom:        bloomParams,
+        species_params: sp,
+        epoch:        cp.convergence?.epoch,
+      }
+
+      const desc: CellDescriptor = {
+        cell_id:  cellId,
+        label:    cellId,
+        species:  speciesStr,
+        bbox:     { x: cell.bbox.x, y: cell.bbox.y, w: cell.bbox.w, h: cell.bbox.h },
+        z,
+        topology: { incoming_edges: [], outgoing_edges: [] },
+        params,
+      }
+      return desc
+    })
+  }
+
+  /**
+   * M899: Map composite_params edges → EdgeDescriptor[].
+   * Skips edges whose source/target doesn't exist in the cell set.
+   * Edge type: 'skip_connection' if composite type contains 'skip' or 'residual',
+   * otherwise 'normal'.
+   */
+  function mapCompositeToEdges(
+    cp: CompositeParams,
+    cellIds: Set<string>,
+  ): EdgeDescriptor[] {
+    const edgesMap = cp.edges ?? {}
+    return Object.entries(edgesMap)
+      .filter(([, e]) => cellIds.has(e.source) && cellIds.has(e.target))
+      .map(([edgeId, e]) => {
+        const isSkip = /skip|residual/i.test(e.type ?? '')
+        return {
+          id:     edgeId,
+          source: e.source,
+          target: e.target,
+          type:   isSkip ? 'skip_connection' : 'normal',
+        } satisfies EdgeDescriptor
+      })
+  }
+
+  /**
+   * M899: Apply composite camera params to the canvas zoom/fit.
+   * Uses camera.zoom (1.075 = 107.5%) and scene_bounds to pick a scale
+   * that makes the scene fill the canvas with padding.
+   */
+  function applyCameraFromComposite(cp: CompositeParams) {
+    const cam = cp.camera
+    if (!cam) return
+
+    if (cam.zoom != null) {
+      // cam.zoom is a multiplier (e.g. 1.075); convert to percentage for setZoom()
+      const zoomPct = Math.round(cam.zoom * 100)
+      setZoom(zoomPct)
+      return
+    }
+
+    // Fallback: fit based on scene_bounds vs canvas size
+    const bounds = cam.scene_bounds
+    if (!bounds) return
+    const sceneW = (bounds.max_x ?? 800) - (bounds.min_x ?? 0)
+    const sceneH = (bounds.max_y ?? 600) - (bounds.min_y ?? 0)
+    const pad = cam.padding ?? 50
+    const canvasW = canvas.width  || wrap.clientWidth  || 800
+    const canvasH = canvas.height || wrap.clientHeight || 600
+    const fitScale = Math.min(
+      (canvasW - pad * 2) / sceneW,
+      (canvasH - pad * 2) / sceneH,
+    )
+    setZoom(Math.round(fitScale * 100))
+  }
 
   // ── Build edge list from cell topology ────────────────────────────────────
   function buildEdges(cells: CellDescriptor[]): EdgeDescriptor[] {
@@ -705,19 +946,42 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
     }
   }
 
-  // ── M047: Fetch /api/cells → renderCellGraph() ───────────────────────────
-  // Init flow: fetch('/api/cells') → build EdgeDescriptor[] → size canvas →
-  //   renderCellGraph(canvas, cells, edges) via PixiJS.
-  // Refresh flow (POST /api/cell-loop): triggerEpoch() → fetchAndRender() below.
+  // ── M047/M899: Fetch cells + edges → renderCellGraph() ───────────────────
+  // M899: Prefers composite_params.json for cell+edge+bloom+camera params.
+  //   Falls back to /api/cells if composite_params is empty or unavailable.
+  // M047 Init flow: size canvas → renderCellGraph(canvas, cells, edges).
+  // Refresh flow (POST /api/cell-loop): triggerEpoch() → fetchAndRender().
   async function fetchAndRender() {
-    showStatus('Fetching cells…')
-    const res = await fetch('/api/cells')
-    if (!res.ok) throw new Error(`/api/cells → ${res.status}`)
+    showStatus('Fetching composite params…')
 
-    const raw = await res.json()
-    // The API may return array directly OR { cells: [...] }
-    const cells: CellDescriptor[] = Array.isArray(raw) ? raw : (raw as any).cells ?? []
-    if (!cells.length) throw new Error('No cells returned — is server running?')
+    // ── M899: Try composite_params.json first ─────────────────────────────
+    const cp = await fetchCompositeParams()
+    let cells: CellDescriptor[] = []
+    let edges: EdgeDescriptor[] = []
+    let usedComposite = false
+
+    if (cp?.cells && Object.keys(cp.cells).length > 0) {
+      // Map composite → CellDescriptor[] + EdgeDescriptor[]
+      cells = mapCompositeToCells(cp)
+      const cellIdSet = new Set(cells.map(c => c.cell_id))
+      edges = mapCompositeToEdges(cp, cellIdSet)
+      usedComposite = true
+    } else {
+      // ── Fallback: /api/cells ───────────────────────────────────────────
+      showStatus('Fetching cells…')
+      const res = await fetch('/api/cells')
+      if (!res.ok) throw new Error(`/api/cells → ${res.status}`)
+
+      const raw = await res.json()
+      // The API may return array directly OR { cells: [...] }
+      cells = Array.isArray(raw) ? raw : (raw as any).cells ?? []
+      if (!cells.length) throw new Error('No cells returned — is server running?')
+
+      // M047: build edges from cell topology for /api/cells path
+      edges = buildEdges(cells)
+    }
+
+    if (!cells.length) throw new Error('No cells available — check composite_params.json or start backend')
 
     lastCells = cells
     renderCellList(cells)
@@ -729,11 +993,7 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
     canvas.width  = Math.floor(rect.width)  || canvas.offsetWidth  || 800
     canvas.height = Math.floor(rect.height) || canvas.offsetHeight || 600
 
-    showStatus(`Rendering ${cells.length} cells (${renderMode})…`)
-
-    // M047: build edges from cell topology; edges are rendered below cells
-    // (edgeLayer.zIndex = -1 in pixi-cell-renderer, cells use cell.z ≥ 1)
-    const edges = buildEdges(cells)
+    showStatus(`Rendering ${cells.length} cells (${renderMode})${usedComposite ? ' · composite' : ''}…`)
 
     if (pixiApp) {
       try { pixiApp.destroy(false, { children: true, texture: true }) } catch { /* ok */ }
@@ -749,7 +1009,14 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
 
     emptyEl.classList.add('hidden')
     canvas.classList.remove('hidden')
-    setZoom(100)
+
+    // M899: apply camera zoom/fit from composite_params camera block
+    if (cp?.camera) {
+      applyCameraFromComposite(cp)
+    } else {
+      setZoom(100)
+    }
+
     hideStatus()
   }
 
@@ -776,8 +1043,6 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
       const data = await res.json() as { cells: CellDescriptor[]; svg_bytes: number; epochs_run: number }
       if (!data.cells?.length) throw new Error('Pipeline returned no cells')
 
-      lastCells = data.cells
-      renderCellList(data.cells)
       setConnected(true)
       hideError()
 
@@ -786,9 +1051,26 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
       canvas.width  = Math.floor(rect.width)
       canvas.height = Math.floor(rect.height)
 
-      showStatus(`Rendering ${data.cells.length} cells (${renderMode}) — ${data.svg_bytes} SVG bytes…`)
+      // M899: after pipeline run, re-fetch composite_params.json which should now
+      // contain the latest cell+edge+bloom+camera params written by the pipeline.
+      // Falls back to the /api/pipeline-run response cells if composite unavailable.
+      const cp = await fetchCompositeParams()
+      let cells: CellDescriptor[] = []
+      let edges: EdgeDescriptor[] = []
 
-      const edges = buildEdges(data.cells)
+      if (cp?.cells && Object.keys(cp.cells).length > 0) {
+        cells = mapCompositeToCells(cp)
+        const cellIdSet = new Set(cells.map(c => c.cell_id))
+        edges = mapCompositeToEdges(cp, cellIdSet)
+      } else {
+        cells = data.cells
+        edges = buildEdges(data.cells)
+      }
+
+      lastCells = cells
+      renderCellList(cells)
+
+      showStatus(`Rendering ${cells.length} cells (${renderMode}) — ${data.svg_bytes} SVG bytes…`)
 
       if (pixiApp) {
         try { pixiApp.destroy(false, { children: true, texture: true }) } catch { /* ok */ }
@@ -796,14 +1078,21 @@ import GenerateLayout from '@/layouts/GenerateLayout.astro'
       }
 
       if (renderMode === 'pixi') {
-        pixiApp = await renderCellGraph(canvas, data.cells, edges)
+        pixiApp = await renderCellGraph(canvas, cells, edges)
       } else {
-        pixiApp = await renderCellGraphSDF(canvas, data.cells, edges)
+        pixiApp = await renderCellGraphSDF(canvas, cells, edges)
       }
 
       emptyEl.classList.add('hidden')
       canvas.classList.remove('hidden')
-      setZoom(100)
+
+      // M899: apply camera from composite, fall back to 100%
+      if (cp?.camera) {
+        applyCameraFromComposite(cp)
+      } else {
+        setZoom(100)
+      }
+
       hideStatus()
 
       // Refresh epoch timeline
