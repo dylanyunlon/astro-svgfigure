@@ -1,2124 +1,1278 @@
 /**
- * src/lib/sph/at-terrain-environment.ts  —  M824
+ * at-terrain-environment.ts — M921
  *
- * AT Terrain Environment → WebGPU / WGSL Port
+ * AT Terrain Environment — real WebGL1 GPU implementation
  * ─────────────────────────────────────────────────────────────────────────────
- * Full GPU port of Active Theory's tree-room terrain system into the
- * project's WebGPU architecture.  Loads five Draco-compressed .bin meshes
- * (rocky_soil, rock_L, rock_R, sand, walls) with their PBR texture sets
- * (baseColor, normal, MRO) and renders them using a Cook-Torrance BRDF
- * lighting pipeline ported from AT's lighting.fs / compiled.vs bundle.
+ * Renders AT's ground floor plane + environment background using
+ * FloorShader.glsl and HomeBGShader.glsl extracted from compiled.vs.
  *
- * ─── AT Reverse-Engineered Sources ──────────────────────────────────────────
+ * Architecture (WebGL1, mirrors fluid-gpu-pass.ts / at-antimatter-particles.ts):
+ *   init():    createProgram, compileShader, linkProgram, createFramebuffer,
+ *              createTexture, createBuffer, bufferData — all real gl.* calls
+ *   render():  useProgram, bindFramebuffer, bindTexture, uniform*,
+ *              bindBuffer, vertexAttribPointer, drawArrays/drawElements
+ *   dispose(): deleteProgram, deleteFramebuffer, deleteTexture, deleteBuffer
  *
- *   Geometry (Draco-compressed .bin)
- *     ← upstream/activetheory-assets/geometry/rocky_soil.bin  (12856 verts)
- *     ← upstream/activetheory-assets/geometry/rock_L.bin      (14391 verts)
- *     ← upstream/activetheory-assets/geometry/rock_R.bin      (14391 verts)
- *     ← upstream/activetheory-assets/geometry/sand.bin         (13879 verts)
- *     ← upstream/activetheory-assets/geometry/walls.bin        (14135 verts)
- *     Format: JSON header {name, type:0, attributes:[["position",7],["normal",7],["uv",7]]}
- *             + DRACO compressed payload → position/normal/uv/index arrays
- *
- *   Textures (KTX2 compressed PBR sets)
- *     ← upstream/activetheory-assets/textures/{NAME}___CyclesBake_COMBINED.ktx2
- *     ← upstream/activetheory-assets/textures/{NAME}___PBR_Normal.ktx2
- *     ← upstream/activetheory-assets/textures/{NAME}___PBR_AT_MRO.ktx2
- *     Five complete PBR sets: ROCKY_SOIL, ROCK_L, ROCK_R, SAND, WALLS_CEILING
- *     MRO packing: R=Metallic, G=Roughness, B=Occlusion
- *
- *   Lighting (GLSL → WGSL port)
- *     ← upstream/activetheory-assets/shaders/lighting.fs
- *     ← upstream/activetheory-assets/shaders/lighting.vs
- *     Key algorithms:
- *       • setupLight()         : modelView pos, normal, worldPos, viewDir
- *       • lightDirectional()   : Lambertian volume + clamped min shadow
- *       • lightPoint()         : distance falloff + Phong specular option
- *       • lightCone()          : cone attenuation via angle smoothstep
- *       • getCombinedColor()   : iterate NUM_LIGHTS, dispatch by lProps.w type
- *       • Cook-Torrance BRDF   : GGX NDF + Smith G + Schlick F
- *
- * ─── WebGPU Architecture ────────────────────────────────────────────────────
- *
- *   ATTerrainEnvironment
- *     ├─ Asset loading pipeline
- *     │    ATGeometryLoader  — Draco decode → positions/normals/uvs/indices
- *     │    ATTextureLoader   — KTX2 decode → baseColor/normal/MRO per mesh
- *     │
- *     ├─ Per-mesh GPU resources
- *     │    vertexBuffer      — interleaved float32 [pos.xyz, norm.xyz, uv.xy]
- *     │    indexBuffer        — uint32 indices
- *     │    bindGroup          — PBR textures + samplers + uniforms
- *     │
- *     ├─ PBR render pipeline (render)
- *     │    vertex shader     — model→world→clip transform, TBN basis
- *     │    fragment shader   — Cook-Torrance BRDF + AT multi-light loop
- *     │                        directional + point + cone (from lighting.fs)
- *     │                        normal mapping, MRO unpack, env ambient
- *     │
- *     ├─ Shadow pipeline (render-to-depth)
- *     │    vertex shader     — light-space depth-only pass
- *     │    shadow map        — depth24plus, cascaded or single
- *     │
- *     └─ Environment effects
- *          fog compute       — distance + height fog, colour from sky
- *          dust particles    — instanced billboard quads (wind-driven)
- *          ambient occlusion — SSAO-lite baked from MRO.b channel
- *
- * ─── GLSL → WGSL Translation Key ────────────────────────────────────────────
- *
- *   setupLight(p0, normal)              → vs_terrain output varyings
- *   lworldLight(lPos, localPos, …)      → lightWorldDir() in WGSL
- *   lightDirectional(config, …)         → lightDirectional() WGSL fn
- *   lightPoint(config, …)              → lightPoint() WGSL fn
- *   lightCone(config, …)               → lightCone() WGSL fn
- *   getCombinedColor(config)           → getCombinedColor() iterates lights
- *   texture2D(tMap, vUv)               → textureSample(tMap, samp, uv)
- *   gl_FragColor                       → @location(0) out : vec4f
- *   uniform mat4 modelViewMatrix       → uniforms.modelView
- *   uniform mat4 viewMatrix            → uniforms.view
- *   normalMatrix * normal              → (uniforms.normalMat * vec4f(n,0)).xyz
- *
- * ─── Upstream Copyright Notices ─────────────────────────────────────────────
- *
- *   Active Theory Pty Ltd — All rights reserved
- *   Draco 3D Data Compression — Apache 2.0 License
- *     https://github.com/google/draco
- *   KTX-Software — Apache 2.0 License
- *     https://github.com/KhronosGroup/KTX-Software
- *
- * ─── Usage ───────────────────────────────────────────────────────────────────
- *
- *   const terrain = new ATTerrainEnvironment(device, format, config);
- *   await terrain.build();
- *
- *   // Optional: configure lights
- *   terrain.setLight(0, { type: 1, position: [5, 8, -3], color: [1, 0.95, 0.9], ... });
- *
- *   // Render loop:
- *   const enc = device.createCommandEncoder();
- *   terrain.tick(enc, elapsedSeconds, deltaSeconds);
- *   terrain.renderPass(enc, colorTargetView, depthView, sceneUniformBuf);
- *   device.queue.submit([enc.finish()]);
- *
- * Research: xiaodi #M824 — cell-pubsub-loop
+ * Shader sources extracted from:
+ *   upstream/activetheory-assets/compiled.vs
+ *   - FloorShader.glsl  (line 2889) — floor plane FBR material + mirror reflection
+ *   - HomeBGShader.glsl (line 3752) — environment background quad
+ *   - fbr.vs / fbr.fs   (line 6564/6440) — FBR vertex + PBR fragment
+ *   - range.glsl        (line 2129) — AT crange/range utilities
+ *   - simplenoise.glsl  (line 2259) — cnoise / getNoise
+ *   - transformUV.glsl  (line 2398) — scaleUV / rotateUV
+ *   - matcap.vs         (line 1764) — reflectMatcap
  */
 
-import { ATGeometryLoader } from './at-geometry-loader';
-import type { ATGeometry } from './at-geometry-loader';
-import { ATTextureLoader } from './at-texture-loader';
-import type { ATTexture, ATMaterialSet } from './at-texture-loader';
+import { getShader } from '../shaders/ShaderLoader';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── constants ────────────────────────────────────────────────────────────────
 
-/** Maximum number of lights supported in the WGSL light loop. */
-const MAX_LIGHTS = 8 as const;
+/** Floor mesh: tiled plane subdivisions */
+const FLOOR_SEGS_X = 32 as const;
+const FLOOR_SEGS_Z = 32 as const;
+/** Half-extent of floor plane in world units */
+const FLOOR_HALF  = 20.0 as const;
 
-/** Maximum dust particles in the GPU pool. */
-const MAX_DUST_PARTICLES = 4096 as const;
+/** Reflection FBO resolution */
+const MIRROR_W = 512 as const;
+const MIRROR_H = 512 as const;
 
-/** Workgroup size for compute shaders. */
-const WG = 64 as const;
+/** Lightmap bake resolution (1×1 placeholder for offline-baked data) */
+const LM_W = 4 as const;
+const LM_H = 4 as const;
 
-/** Interleaved vertex stride: position(3) + normal(3) + uv(2) = 8 floats. */
-const VERTEX_STRIDE = 8 as const;
+// ─── GLSL helpers inlined from compiled.vs ────────────────────────────────────
 
-/** Bytes per interleaved vertex (8 × float32 = 32 bytes). */
-const VERTEX_STRIDE_BYTES = 32 as const;
-
-/** Shadow map resolution. */
-const SHADOW_MAP_SIZE = 1024 as const;
-
-/** Default fog density (exponential fog). */
-const FOG_DENSITY = 0.035 as const;
-
-/** Default fog colour (warm atmospheric haze). */
-const FOG_COLOR: [number, number, number] = [0.55, 0.52, 0.48];
-
-/** Default ambient light intensity. */
-const AMBIENT_INTENSITY = 0.12 as const;
-
-/** Default ambient colour (blue-grey skylight). */
-const AMBIENT_COLOR: [number, number, number] = [0.35, 0.40, 0.50];
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Terrain mesh identifiers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** The five terrain meshes that compose the AT tree-room environment. */
-const TERRAIN_MESHES = [
-  'rocky_soil',
-  'rock_L',
-  'rock_R',
-  'sand',
-  'walls',
-] as const;
-
-type TerrainMeshName = typeof TERRAIN_MESHES[number];
-
-/**
- * Mapping from geometry .bin name to PBR texture set prefix.
- * Note: walls.bin uses WALLS_CEILING textures.
- */
-const MESH_TO_TEXTURE_PREFIX: Record<TerrainMeshName, string> = {
-  rocky_soil: 'ROCKY_SOIL',
-  rock_L:     'ROCK_L',
-  rock_R:     'ROCK_R',
-  sand:       'SAND',
-  walls:      'WALLS_CEILING',
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Config types
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Light definition matching AT lighting.fs arrays. */
-export interface ATTerrainLight {
-  /** Light type: 1 = directional, 2 = point, 3 = cone/spot. */
-  type: 1 | 2 | 3;
-  /** Position (world space) or direction for directional lights. */
-  position: [number, number, number];
-  /** RGB colour (linear space, may exceed 1.0 for HDR). */
-  color: [number, number, number];
-  /** Intensity multiplier. Default 1.0. */
-  intensity?: number;
-  /** Max range (point/cone only). Default 50.0. */
-  range?: number;
-  /** Minimum shadow volume (directional penumbra floor). Default 0.0. */
-  shadowMin?: number;
-  /** Cone direction (cone only). */
-  coneDirection?: [number, number, number];
-  /** Cone angle in degrees (cone only). Default 45.0. */
-  coneAngle?: number;
-  /** Cone feather softness (cone only). Default 1.0. */
-  coneFeather?: number;
-  /** Enable Phong specular highlight for this light. */
-  phong?: boolean;
-  /** Phong shininess exponent. Default 30.0. */
-  phongShininess?: number;
-}
-
-/** Per-mesh material overrides. */
-export interface ATTerrainMaterialOverride {
-  /** Base colour tint multiplier. Default [1,1,1]. */
-  tint?: [number, number, number];
-  /** Roughness scale. Default 1.0. */
-  roughnessScale?: number;
-  /** Metallic scale. Default 1.0. */
-  metallicScale?: number;
-  /** Normal map strength. Default 1.0. */
-  normalStrength?: number;
-  /** UV tiling factor. Default [1,1]. */
-  uvScale?: [number, number];
-}
-
-export interface ATTerrainEnvironmentConfig {
-  /**
-   * Base URL path for geometry .bin files.
-   * @default '/upstream/activetheory-assets/geometry'
-   */
-  geometryPath?: string;
-
-  /**
-   * Base URL path for texture .ktx2 files.
-   * @default '/upstream/activetheory-assets/textures'
-   */
-  texturePath?: string;
-
-  /**
-   * Initial light array (up to MAX_LIGHTS).
-   * Default: one warm directional sun + one cool fill.
-   */
-  lights?: ATTerrainLight[];
-
-  /**
-   * Fog colour (linear RGB).
-   * Default: [0.55, 0.52, 0.48] warm atmospheric haze.
-   */
-  fogColor?: [number, number, number];
-
-  /**
-   * Fog density (exponential). Default 0.035.
-   */
-  fogDensity?: number;
-
-  /**
-   * Fog start distance. Default 5.0.
-   */
-  fogStart?: number;
-
-  /**
-   * Fog end distance (full opacity). Default 80.0.
-   */
-  fogEnd?: number;
-
-  /**
-   * Ambient light colour. Default [0.35, 0.40, 0.50].
-   */
-  ambientColor?: [number, number, number];
-
-  /**
-   * Ambient light intensity. Default 0.12.
-   */
-  ambientIntensity?: number;
-
-  /**
-   * Enable shadow mapping. Default true.
-   */
-  enableShadows?: boolean;
-
-  /**
-   * Shadow map resolution. Default 1024.
-   */
-  shadowMapSize?: number;
-
-  /**
-   * Enable dust particle overlay. Default true.
-   */
-  enableDust?: boolean;
-
-  /**
-   * Maximum dust particles. Default 4096.
-   */
-  maxDustParticles?: number;
-
-  /**
-   * Dust particle colour. Default [0.8, 0.75, 0.65].
-   */
-  dustColor?: [number, number, number];
-
-  /**
-   * Wind direction for dust drift. Default [0.3, 0.1, -0.2].
-   */
-  windDirection?: [number, number, number];
-
-  /**
-   * Per-mesh material overrides keyed by TerrainMeshName.
-   */
-  materialOverrides?: Partial<Record<TerrainMeshName, ATTerrainMaterialOverride>>;
-
-  /**
-   * Enable height-based vertex displacement (parallax ground effect).
-   * Default false.
-   */
-  enableHeightDisplacement?: boolean;
-
-  /**
-   * Optional pre-loaded environment map for IBL reflections.
-   */
-  envMap?: GPUTexture;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Uniform buffer layouts
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Scene uniform buffer: 256 bytes (must match WGSL struct SceneUniforms).
- *
- *   offset   0: viewProj       mat4x4f  (64B)
- *   offset  64: modelMat       mat4x4f  (64B)
- *   offset 128: normalMat      mat4x4f  (64B)  — inverse-transpose of modelMat
- *   offset 192: eye            vec4f    (16B)
- *   offset 208: fogParams      vec4f    (16B)  — (.xyz=fogColor, .w=fogDensity)
- *   offset 224: ambientParams  vec4f    (16B)  — (.xyz=ambientColor, .w=ambientIntensity)
- *   offset 240: timeParams     vec4f    (16B)  — (.x=time, .y=dt, .z=fogStart, .w=fogEnd)
- */
-const SCENE_UNIFORM_SIZE = 256 as const;
-
-/**
- * Light uniform buffer: per-light = 80 bytes, array of MAX_LIGHTS.
- *
- *   Per-light struct (80 bytes):
- *     offset 0:  lightColor    vec4f  — .rgb=colour, .w=intensity
- *     offset 16: lightPos      vec4f  — .xyz=position, .w=type
- *     offset 32: lightData     vec4f  — .xyz=coneDir, .w=coneAngle
- *     offset 48: lightData2    vec4f  — .x=feather, .y=phongShininess, .z=shadowMin, .w=range
- *     offset 64: lightProps    vec4f  — .x=intensity, .y=range, .z=shadowMin, .w=type
- */
-const LIGHT_STRUCT_SIZE = 80 as const;
-const LIGHT_BUFFER_SIZE = (LIGHT_STRUCT_SIZE * MAX_LIGHTS) as number;
-
-/**
- * Material uniform buffer: 64 bytes per mesh.
- *
- *   offset 0:  materialTint   vec4f  — .rgb=tint, .w=roughnessScale
- *   offset 16: materialData   vec4f  — .x=metallicScale, .y=normalStrength, .zw=uvScale
- *   offset 32: materialExtra  vec4f  — reserved
- *   offset 48: materialExtra2 vec4f  — reserved
- */
-const MATERIAL_UNIFORM_SIZE = 64 as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Shared math helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_MATH = /* wgsl */`
-// ── saturate ──────────────────────────────────────────────────────────────────
-fn saturate_f(v: f32) -> f32 { return clamp(v, 0.0, 1.0); }
-fn saturate_v3(v: vec3f) -> vec3f { return clamp(v, vec3f(0.0), vec3f(1.0)); }
-
-// ── pow5 (Schlick fast path) ──────────────────────────────────────────────────
-fn pow5(v: f32) -> f32 { let v2 = v * v; return v2 * v2 * v; }
-
-const PI      : f32 = 3.14159265358979;
-const TWO_PI  : f32 = 6.28318530717959;
-const INV_PI  : f32 = 0.31830988618379;
-const EPSILON : f32 = 1e-7;
-
-// ── lrange / lcrange (from AT LightingCommon.glsl) ────────────────────────────
-fn lrange(oldValue: f32, oldMin: f32, oldMax: f32, newMin: f32, newMax: f32) -> f32 {
-    let sub = vec3f(oldValue - oldMin, newMax - newMin, oldMax - oldMin);
+// range.glsl  (compiled.vs line 2131)
+const RANGE_GLSL = /* glsl */`
+float range(float oldValue, float oldMin, float oldMax, float newMin, float newMax) {
+    vec3 sub = vec3(oldValue, newMax, oldMax) - vec3(oldMin, newMin, oldMin);
     return sub.x * sub.y / sub.z + newMin;
 }
-
-fn lcrange(oldValue: f32, oldMin: f32, oldMax: f32, newMin: f32, newMax: f32) -> f32 {
-    return clamp(lrange(oldValue, oldMin, oldMax, newMin, newMax), min(newMax, newMin), max(newMin, newMax));
+vec2 range(vec2 oldValue, vec2 oldMin, vec2 oldMax, vec2 newMin, vec2 newMax) {
+    vec2 oldRange = oldMax - oldMin;
+    vec2 newRange = newMax - newMin;
+    return (oldValue - oldMin) * newRange / oldRange + newMin;
 }
-
-fn lclamp(v: vec3f) -> vec3f { return clamp(v, vec3f(0.0), vec3f(1.0)); }
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Simplex noise (for dust particles, from ashima webgl-noise MIT)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_NOISE = /* wgsl */`
-fn mod289_v3(x: vec3f) -> vec3f { return x - floor(x * (1.0/289.0)) * 289.0; }
-fn mod289_v4(x: vec4f) -> vec4f { return x - floor(x * (1.0/289.0)) * 289.0; }
-fn permute(x: vec4f) -> vec4f { return mod289_v4((x * 34.0 + 10.0) * x); }
-fn taylorInvSqrt(r: vec4f) -> vec4f { return vec4f(1.79284291400159) - 0.85373472095314 * r; }
-
-fn snoise3(v: vec3f) -> f32 {
-    let C = vec2f(1.0/6.0, 1.0/3.0);
-    let D = vec4f(0.0, 0.5, 1.0, 2.0);
-    var i  = floor(v + dot(v, C.yyy));
-    var x0 = v - i + dot(i, C.xxx);
-    var g  = step(x0.yzx, x0.xyz);
-    var l  = vec3f(1.0) - g;
-    var i1 = min(g.xyz, l.zxy);
-    var i2 = max(g.xyz, l.zxy);
-    var x1 = x0 - i1 + C.xxx;
-    var x2 = x0 - i2 + C.yyy;
-    var x3 = x0 - D.yyy;
-    i = mod289_v3(i);
-    var p  = permute(permute(permute(
-        i.zzzz + vec4f(0.0, i1.z, i2.z, 1.0))
-      + i.yyyy + vec4f(0.0, i1.y, i2.y, 1.0))
-      + i.xxxx + vec4f(0.0, i1.x, i2.x, 1.0));
-    let ns = (1.0/7.0) * D.wyz - D.xzx;
-    var j  = p - 49.0 * floor(p * ns.z * ns.z);
-    var x_ = floor(j * ns.z);
-    var y_ = floor(j - 7.0 * x_);
-    var x  = x_ * ns.x + ns.yyyy;
-    var y  = y_ * ns.x + ns.yyyy;
-    var h  = vec4f(1.0) - abs(x) - abs(y);
-    var b0 = vec4f(x.xy, y.xy);
-    var b1 = vec4f(x.zw, y.zw);
-    var s0 = floor(b0) * 2.0 + vec4f(1.0);
-    var s1 = floor(b1) * 2.0 + vec4f(1.0);
-    var sh = -step(h, vec4f(0.0));
-    var a0 = b0.xzyw + s0.xzyw * sh.xxyy;
-    var a1 = b1.xzyw + s1.xzyw * sh.zzww;
-    var p0 = vec3f(a0.xy, h.x);
-    var p1 = vec3f(a0.zw, h.y);
-    var p2 = vec3f(a1.xy, h.z);
-    var p3 = vec3f(a1.zw, h.w);
-    var norm = taylorInvSqrt(vec4f(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
-    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
-    var m = max(vec4f(0.6) - vec4f(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), vec4f(0.0));
-    m = m * m;
-    return 42.0 * dot(m*m, vec4f(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+float crange(float oldValue, float oldMin, float oldMax, float newMin, float newMax) {
+    return clamp(range(oldValue, oldMin, oldMax, newMin, newMax),
+                 min(newMin, newMax), max(newMin, newMax));
 }
-
-fn curl3(p: vec3f) -> vec3f {
-    let eps = 0.001;
-    let dx  = vec3f(eps, 0.0, 0.0);
-    let dy  = vec3f(0.0, eps, 0.0);
-    let dz  = vec3f(0.0, 0.0, eps);
-    let px = (snoise3(p + dy) - snoise3(p - dy)) / (2.0*eps)
-           - (snoise3(p + dz) - snoise3(p - dz)) / (2.0*eps);
-    let py = (snoise3(p + dz) - snoise3(p - dz)) / (2.0*eps)
-           - (snoise3(p + dx) - snoise3(p - dx)) / (2.0*eps);
-    let pz = (snoise3(p + dx) - snoise3(p - dx)) / (2.0*eps)
-           - (snoise3(p + dy) - snoise3(p - dy)) / (2.0*eps);
-    return vec3f(px, py, pz);
+vec2 crange(vec2 oldValue, vec2 oldMin, vec2 oldMax, vec2 newMin, vec2 newMax) {
+    return clamp(range(oldValue, oldMin, oldMax, newMin, newMax),
+                 min(newMin, newMax), max(newMin, newMax));
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Uniform structs
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_SCENE_UNIFORMS = /* wgsl */`
-struct SceneUniforms {
-    viewProj      : mat4x4f,   // offset   0
-    modelMat      : mat4x4f,   // offset  64
-    normalMat     : mat4x4f,   // offset 128
-    eye           : vec4f,     // offset 192  .xyz=eye, .w=unused
-    fogParams     : vec4f,     // offset 208  .xyz=fogColor, .w=fogDensity
-    ambientParams : vec4f,     // offset 224  .xyz=ambientColor, .w=ambientIntensity
-    timeParams    : vec4f,     // offset 240  .x=time, .y=dt, .z=fogStart, .w=fogEnd
-};
-`;
-
-const WGSL_LIGHT_STRUCT = /* wgsl */`
-struct LightEntry {
-    color    : vec4f,    // .rgb=colour, .w=intensity
-    pos      : vec4f,    // .xyz=position, .w=type (1=dir, 2=pt, 3=cone)
-    data     : vec4f,    // .xyz=coneDir, .w=coneAngle
-    data2    : vec4f,    // .x=feather, .y=phongShininess, .z=shadowMin, .w=range
-    props    : vec4f,    // .x=intensity, .y=range, .z=shadowMin, .w=type
-};
-
-struct LightArray {
-    lights   : array<LightEntry, ${MAX_LIGHTS}>,
-};
-`;
-
-const WGSL_MATERIAL_STRUCT = /* wgsl */`
-struct MaterialUniforms {
-    tint        : vec4f,    // .rgb=tint, .w=roughnessScale
-    data        : vec4f,    // .x=metallicScale, .y=normalStrength, .zw=uvScale
-    extra       : vec4f,    // reserved
-    extra2      : vec4f,    // reserved
-};
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — AT Lighting Functions (ported from lighting.fs / LightingCommon.glsl)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_LIGHTING = /* wgsl */`
-${WGSL_MATH}
-
-// ── lworldLight (LightingCommon.glsl) ─────────────────────────────────────────
-// Computes light direction in view space for a given light position.
-fn lightWorldDir(lPos: vec3f, localPos: vec3f, modelViewMat: mat4x4f, viewMat: mat4x4f) -> vec3f {
-    let mvPos = modelViewMat * vec4f(localPos, 1.0);
-    let worldPosition = viewMat * vec4f(lPos, 1.0);
-    return worldPosition.xyz - mvPos.xyz;
+// simplenoise.glsl  (compiled.vs line 2259)
+const SIMPLENOISE_GLSL = /* glsl */`
+float getNoise(vec2 uv, float t) {
+    float x = uv.x * uv.y * t * 1000.0;
+    x = mod(x, 13.0) * mod(x, 123.0);
+    float dx = mod(x, 0.01);
+    return clamp(0.1 + dx * 100.0, 0.0, 1.0);
 }
-
-// ── Cook-Torrance BRDF components ─────────────────────────────────────────────
-
-// Schlick Fresnel: F₀ + (1 - F₀)(1 - cosθ)⁵
-fn F_Schlick(f0: vec3f, cosTheta: f32) -> vec3f {
-    return f0 + (vec3f(1.0) - f0) * pow5(saturate_f(1.0 - cosTheta));
-}
-
-// GGX / Trowbridge-Reitz NDF
-fn D_GGX(NdotH: f32, roughness: f32) -> f32 {
-    let a  = roughness * roughness;
-    let a2 = a * a;
-    let d  = (NdotH * NdotH) * (a2 - 1.0) + 1.0;
-    return a2 / (PI * d * d + EPSILON);
-}
-
-// Smith joint masking-shadowing (height-correlated GGX)
-fn G_SmithGGX(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
-    let a  = roughness * roughness;
-    let a2 = a * a;
-    let gV = NdotL * sqrt(NdotV * NdotV * (1.0 - a2) + a2);
-    let gL = NdotV * sqrt(NdotL * NdotL * (1.0 - a2) + a2);
-    return 0.5 / (gV + gL + EPSILON);
-}
-
-// Full Cook-Torrance specular BRDF: returns D*G*F
-fn specularBRDF(N: vec3f, V: vec3f, L: vec3f, f0: vec3f, roughness: f32) -> vec3f {
-    let H      = normalize(V + L);
-    let NdotH  = saturate_f(dot(N, H));
-    let NdotV  = saturate_f(dot(N, V));
-    let NdotL  = saturate_f(dot(N, L));
-    let VdotH  = saturate_f(dot(V, H));
-    let D  = D_GGX(NdotH, roughness);
-    let Gv = G_SmithGGX(NdotV, NdotL, roughness);
-    let F  = F_Schlick(f0, VdotH);
-    return vec3f(D * Gv) * F;
-}
-
-// ── AT lighting.fs — lightDirectional ─────────────────────────────────────────
-// Port of: float volume = dot(normalize(lDir), config.normal);
-//          return lColor * lcrange(volume, 0.0, 1.0, lProps.z, 1.0);
-fn lightDirectional(
-    normal: vec3f, lColor: vec3f, lPos: vec3f,
-    shadowMin: f32, intensity: f32,
-    viewPos: vec3f, modelViewMat: mat4x4f, viewMat: mat4x4f
-) -> vec3f {
-    let lDir = lightWorldDir(lPos, viewPos, modelViewMat, viewMat);
-    let volume = dot(normalize(lDir), normal);
-    return lColor * lcrange(volume, 0.0, 1.0, shadowMin, 1.0) * intensity;
-}
-
-// ── AT lighting.fs — lightPoint ───────────────────────────────────────────────
-// Port of distance-attenuated point light with optional Phong specular.
-fn lightPoint(
-    normal: vec3f, worldPos: vec3f, viewDir: vec3f,
-    lColor: vec3f, lPos: vec3f,
-    intensity: f32, range: f32, shadowMin: f32,
-    usePhong: f32, phongShininess: f32,
-    viewPos: vec3f, modelViewMat: mat4x4f, viewMat: mat4x4f
-) -> vec3f {
-    let dist = length(worldPos - lPos);
-    if (dist > range) { return vec3f(0.0); }
-
-    let lDir = lightWorldDir(lPos, viewPos, modelViewMat, viewMat);
-    let falloff = pow(lcrange(dist, 0.0, range, 1.0, 0.0), 2.0);
-
-    var color = vec3f(0.0);
-    if (usePhong > 0.5) {
-        // Blinn-Phong specular
-        let lDirN  = normalize(lDir);
-        let H      = normalize(lDirN + normalize(viewDir));
-        let spec   = pow(max(dot(normal, H), 0.0), phongShininess);
-        let diff   = lcrange(dot(lDirN, normal), 0.0, 1.0, shadowMin, 1.0);
-        color = lColor * (diff + spec * 0.5) * intensity * falloff;
-    } else {
-        let volume = dot(normalize(lDir), normal);
-        let v      = lcrange(volume, 0.0, 1.0, shadowMin, 1.0);
-        color = lColor * v * intensity * falloff;
-    }
-    return color;
-}
-
-// ── AT lighting.fs — lightCone ────────────────────────────────────────────────
-// Port of spot/cone light with angular attenuation.
-fn lightCone(
-    normal: vec3f, worldPos: vec3f, viewDir: vec3f,
-    lColor: vec3f, lPos: vec3f, coneDir: vec3f, coneAngle: f32,
-    intensity: f32, range: f32, shadowMin: f32, feather: f32,
-    usePhong: f32, phongShininess: f32,
-    viewPos: vec3f, modelViewMat: mat4x4f, viewMat: mat4x4f
-) -> vec3f {
-    let dist = length(worldPos - lPos);
-    if (dist > range) { return vec3f(0.0); }
-
-    let surfaceToLight = normalize(lPos - worldPos);
-    let lightToSurfaceAngle = degrees(acos(dot(-surfaceToLight, normalize(coneDir))));
-
-    // Base point-light contribution
-    let basePt = lightPoint(
-        normal, worldPos, viewDir, lColor, lPos,
-        intensity, range, shadowMin, usePhong, phongShininess,
-        viewPos, modelViewMat, viewMat
-    );
-
-    let featherMin = 1.0 - feather * 0.1;
-    let featherMax = 1.0 + feather * 0.1;
-    let attenuation = smoothstep(lightToSurfaceAngle * featherMin, lightToSurfaceAngle * featherMax, coneAngle);
-
-    return basePt * attenuation;
-}
-
-// ── getCombinedColor (iterate lights, dispatch by type) ───────────────────────
-// Matches AT lighting.fs getCombinedColor(config) loop.
-fn getCombinedColor(
-    normal: vec3f, worldPos: vec3f, viewDir: vec3f, viewPos: vec3f,
-    modelViewMat: mat4x4f, viewMat: mat4x4f,
-    la: LightArray
-) -> vec3f {
-    var color = vec3f(0.0);
-
-    for (var i = 0u; i < ${MAX_LIGHTS}u; i++) {
-        let light = la.lights[i];
-        let lType = light.props.w;
-        if (lType < 0.5) { continue; }  // disabled
-
-        let lColor     = light.color.rgb;
-        let lPos       = light.pos.xyz;
-        let intensity  = light.props.x;
-        let range      = light.props.y;
-        let shadowMin  = light.props.z;
-        let feather    = light.data2.x;
-        let shininess  = light.data2.y;
-        let usePhong   = select(0.0, 1.0, shininess > 0.0);
-
-        if (lType < 1.5) {
-            // Directional
-            color += lightDirectional(normal, lColor, lPos, shadowMin, intensity, viewPos, modelViewMat, viewMat);
-        } else if (lType < 2.5) {
-            // Point
-            color += lightPoint(normal, worldPos, viewDir, lColor, lPos, intensity, range, shadowMin, usePhong, shininess, viewPos, modelViewMat, viewMat);
-        } else if (lType < 3.5) {
-            // Cone / spot
-            let coneDir   = light.data.xyz;
-            let coneAngle = light.data.w;
-            color += lightCone(normal, worldPos, viewDir, lColor, lPos, coneDir, coneAngle, intensity, range, shadowMin, feather, usePhong, shininess, viewPos, modelViewMat, viewMat);
-        }
-    }
-
-    return lclamp(color);
+float cnoise(vec3 v) {
+    float t = v.z * 0.3;
+    v.y *= 0.8;
+    float n = 0.0;
+    float s = 0.5;
+    n += (sin(v.x*0.9/s+t*10.0)+sin(v.x*2.4/s+t*15.0)+sin(v.x*-3.5/s+t*4.0)+sin(v.x*-2.5/s+t*7.1))*0.3;
+    n += (sin(v.y*-0.3/s+t*18.0)+sin(v.y*1.6/s+t*18.0)+sin(v.y*2.6/s+t*8.0)+sin(v.y*-2.6/s+t*4.5))*0.3;
+    return n;
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Terrain PBR render shader
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_TERRAIN_RENDER = /* wgsl */`
-${WGSL_SCENE_UNIFORMS}
-${WGSL_LIGHT_STRUCT}
-${WGSL_MATERIAL_STRUCT}
-${WGSL_LIGHTING}
-
-// ── Bindings ──────────────────────────────────────────────────────────────────
-@group(0) @binding(0) var<uniform> scene     : SceneUniforms;
-@group(0) @binding(1) var<uniform> lights    : LightArray;
-@group(0) @binding(2) var<uniform> material  : MaterialUniforms;
-
-@group(1) @binding(0) var texSampler   : sampler;
-@group(1) @binding(1) var tBaseColor   : texture_2d<f32>;
-@group(1) @binding(2) var tNormal      : texture_2d<f32>;
-@group(1) @binding(3) var tMRO         : texture_2d<f32>;
-
-// ── Vertex output ─────────────────────────────────────────────────────────────
-struct VertexOut {
-    @builtin(position) clipPos   : vec4f,
-    @location(0)       worldPos  : vec3f,
-    @location(1)       viewPos   : vec3f,
-    @location(2)       normal    : vec3f,
-    @location(3)       uv        : vec2f,
-    @location(4)       tangent   : vec3f,
-    @location(5)       bitangent : vec3f,
-    @location(6)       fogDist   : f32,
-};
-
-// ── Vertex shader ─────────────────────────────────────────────────────────────
-// Matches AT lighting.vs setupLight(): computes vPos, vNormal, vWorldPos, vViewDir
-@vertex
-fn vs_terrain(
-    @location(0) aPos    : vec3f,
-    @location(1) aNormal : vec3f,
-    @location(2) aUv     : vec2f,
-) -> VertexOut {
-    let uvScale  = material.data.zw;
-    let scaledUv = aUv * uvScale;
-
-    let worldPos4 = scene.modelMat * vec4f(aPos, 1.0);
-    let worldPos  = worldPos4.xyz;
-    let viewPos4  = scene.viewProj * worldPos4;
-
-    // Transform normal via normalMat (inverse-transpose of modelMat)
-    let worldNormal = normalize((scene.normalMat * vec4f(aNormal, 0.0)).xyz);
-
-    // Compute tangent frame for normal mapping (Gram-Schmidt from normal)
-    var tangent = vec3f(0.0);
-    if (abs(worldNormal.y) < 0.999) {
-        tangent = normalize(cross(vec3f(0.0, 1.0, 0.0), worldNormal));
-    } else {
-        tangent = normalize(cross(vec3f(0.0, 0.0, 1.0), worldNormal));
-    }
-    let bitangent = cross(worldNormal, tangent);
-
-    // Fog distance (camera distance for exponential fog)
-    let eyeDist = length(worldPos - scene.eye.xyz);
-
-    // vPos for lighting (local space)
-    let localViewPos = aPos;
-
-    var out: VertexOut;
-    out.clipPos   = viewPos4;
-    out.worldPos  = worldPos;
-    out.viewPos   = localViewPos;
-    out.normal    = worldNormal;
-    out.uv        = scaledUv;
-    out.tangent   = tangent;
-    out.bitangent = bitangent;
-    out.fogDist   = eyeDist;
-    return out;
+// transformUV.glsl  (compiled.vs line 2398)
+const TRANSFORM_UV_GLSL = /* glsl */`
+vec2 scaleUV(vec2 uv, vec2 scale, vec2 origin) {
+    return (uv - origin) / scale + origin;
 }
+vec2 scaleUV(vec2 uv, vec2 scale) {
+    return scaleUV(uv, scale, vec2(0.5));
+}
+vec2 rotateUV(vec2 uv, float r, vec2 origin) {
+    float c = cos(r); float s = sin(r);
+    vec2 st = uv - origin;
+    st = mat2(c, -s, s, c) * st;
+    return st + origin;
+}
+vec2 rotateUV(vec2 uv, float r) { return rotateUV(uv, r, vec2(0.5)); }
+`;
 
-// ── Fragment shader ───────────────────────────────────────────────────────────
-// PBR pipeline: normal map → Cook-Torrance BRDF → AT multi-light → fog
-@fragment
-fn fs_terrain(in: VertexOut) -> @location(0) vec4f {
-    let uv = in.uv;
-
-    // ── Sample PBR textures ───────────────────────────────────────────────────
-    let baseColor = textureSample(tBaseColor, texSampler, uv).rgb * material.tint.rgb;
-    let mroSample = textureSample(tMRO, texSampler, uv);
-    let normalSample = textureSample(tNormal, texSampler, uv).rgb;
-
-    // MRO unpack: R=Metallic, G=Roughness, B=AO (AT convention)
-    let metallic  = mroSample.r * material.data.x;   // metallicScale
-    let roughness = mroSample.g * material.tint.w;     // roughnessScale
-    let ao        = mroSample.b;
-
-    // ── Normal mapping ────────────────────────────────────────────────────────
-    // Tangent-space normal from texture → world space via TBN
-    let normalStrength = material.data.y;
-    var tangentNormal  = normalSample * 2.0 - vec3f(1.0);
-    tangentNormal.x   *= normalStrength;
-    tangentNormal.y   *= normalStrength;
-    tangentNormal      = normalize(tangentNormal);
-
-    let T = normalize(in.tangent);
-    let B = normalize(in.bitangent);
-    let N_geom = normalize(in.normal);
-    let TBN = mat3x3f(T, B, N_geom);
-    let N = normalize(TBN * tangentNormal);
-
-    // ── View direction ────────────────────────────────────────────────────────
-    let V = normalize(scene.eye.xyz - in.worldPos);
-
-    // ── Build modelView and view matrices from scene uniforms ─────────────────
-    // We re-derive a simple view matrix from the available data.
-    // For the lighting function, we need consistent coordinate spaces.
-    let modelViewMat = scene.viewProj;  // approximate (in practice the scene uniform would provide this)
-    let viewMat = scene.normalMat;       // approximate for light transforms
-
-    // ── AT multi-light loop (getCombinedColor) ────────────────────────────────
-    let directLight = getCombinedColor(N, in.worldPos, V, in.viewPos, scene.modelMat, scene.normalMat, lights);
-
-    // ── PBR Cook-Torrance final composition ───────────────────────────────────
-    let f0 = mix(vec3f(0.04), baseColor, metallic);
-
-    // Accumulate PBR direct lighting from each active light
-    var pbrColor = vec3f(0.0);
-    for (var i = 0u; i < ${MAX_LIGHTS}u; i++) {
-        let light = lights.lights[i];
-        let lType = light.props.w;
-        if (lType < 0.5) { continue; }
-
-        let lPos   = light.pos.xyz;
-        let lColor = light.color.rgb * light.props.x;
-        var L: vec3f;
-        if (lType < 1.5) {
-            L = normalize(lPos);  // directional: position IS the direction
-        } else {
-            L = normalize(lPos - in.worldPos);
-        }
-
-        let NdotL = saturate_f(dot(N, L));
-        if (NdotL < EPSILON) { continue; }
-
-        let specular = specularBRDF(N, V, L, f0, roughness);
-        let diffuse  = baseColor * INV_PI * (1.0 - metallic);
-
-        let ks = F_Schlick(f0, saturate_f(dot(N, V)));
-        let kd = (vec3f(1.0) - ks) * (1.0 - metallic);
-
-        // Distance attenuation for point/cone
-        var atten = 1.0;
-        if (lType > 1.5) {
-            let dist = length(lPos - in.worldPos);
-            let range = light.props.y;
-            atten = pow(lcrange(dist, 0.0, range, 1.0, 0.0), 2.0);
-        }
-
-        pbrColor += (kd * diffuse + specular) * lColor * NdotL * atten;
-    }
-
-    // ── Ambient (simple hemisphere + AO) ──────────────────────────────────────
-    let ambient = scene.ambientParams.rgb * scene.ambientParams.w * baseColor * ao;
-
-    // ── Combine: blend AT lighting feel with PBR accuracy ─────────────────────
-    // The AT lighting provides the artistic warm/cool ramps, while PBR adds
-    // physical specular highlights and energy conservation.
-    var finalColor = pbrColor * 0.7 + directLight * baseColor * 0.3 + ambient;
-
-    // ── Exponential distance fog (AT atmospheric style) ───────────────────────
-    let fogColor   = scene.fogParams.xyz;
-    let fogDensity = scene.fogParams.w;
-    let fogStart   = scene.timeParams.z;
-    let fogEnd     = scene.timeParams.w;
-
-    let fogDist    = clamp((in.fogDist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
-    let fogFactor  = 1.0 - exp(-fogDensity * fogDist * fogDist);
-    finalColor     = mix(finalColor, fogColor, fogFactor);
-
-    // ── Tone-map (simple Reinhard for now) ────────────────────────────────────
-    finalColor = finalColor / (finalColor + vec3f(1.0));
-
-    return vec4f(finalColor, 1.0);
+// matcap.vs  (compiled.vs line 1764)
+const MATCAP_GLSL = /* glsl */`
+vec2 reflectMatcap(vec3 worldPos, vec3 worldNormal) {
+    vec3 viewDir = normalize(cameraPosition - worldPos);
+    vec3 x = normalize(vec3(viewDir.z, 0.0, -viewDir.x));
+    vec3 y = cross(viewDir, x);
+    return vec2(dot(x, worldNormal), dot(y, worldNormal)) * 0.495 + 0.5;
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Shadow depth pass
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_SHADOW_DEPTH = /* wgsl */`
-struct ShadowUniforms {
-    lightViewProj : mat4x4f,
-    modelMat      : mat4x4f,
-};
-@group(0) @binding(0) var<uniform> shadow : ShadowUniforms;
-
-@vertex
-fn vs_shadow(
-    @location(0) aPos : vec3f,
-) -> @builtin(position) vec4f {
-    return shadow.lightViewProj * shadow.modelMat * vec4f(aPos, 1.0);
-}
-
-// No fragment needed — depth-only write
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Dust particle compute (lifecycle + wind drift)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_DUST_UPDATE = /* wgsl */`
-struct DustUniforms {
-    time       : vec4f,    // .x=time, .y=dt, .zw=unused
-    wind       : vec4f,    // .xyz=windDir, .w=unused
-    dustColor  : vec4f,    // .rgb=color, .w=unused
-};
-@group(0) @binding(0) var<uniform> du : DustUniforms;
-
-@group(0) @binding(1) var pSrc : texture_2d<f32>;
-@group(0) @binding(2) var pDst : texture_storage_2d<rgba32float, write>;
-
-${WGSL_MATH}
-${WGSL_NOISE}
-
-fn hash2(p: vec2f) -> f32 {
-    let q = fract(p * vec2f(127.1, 311.7));
-    return fract(dot(q, q + vec2f(19.19)) * 43758.5453);
-}
-
-@compute @workgroup_size(${WG})
-fn cs_dust_update(@builtin(global_invocation_id) gid : vec3u) {
-    let idx  = gid.x;
-    let dim  = vec2u(textureDimensions(pSrc));
-    if (idx >= dim.x * dim.y) { return; }
-
-    let px   = vec2i(i32(idx % dim.x), i32(idx / dim.x));
-    var p    = textureLoad(pSrc, px, 0);  // (x, y, z, life)
-    let time = du.time.x;
-    let dt   = du.time.y;
-
-    let seed = vec2f(f32(idx) * 0.0017, time * 0.05);
-
-    // ── Dead particle: respawn ────────────────────────────────────────────────
-    if (p.a <= 0.0) {
-        let respawnChance = hash2(seed + vec2f(0.5, 0.9));
-        if (respawnChance < 0.006) {
-            let rx = hash2(seed) * 20.0 - 10.0;
-            let ry = hash2(seed + vec2f(1.0, 0.0)) * 5.0 + 0.2;
-            let rz = hash2(seed + vec2f(0.0, 1.0)) * 20.0 - 10.0;
-            let life = 0.6 + hash2(seed + vec2f(2.0, 0.0)) * 0.4;
-            p = vec4f(rx, ry, rz, life);
-            textureStore(pDst, px, p);
-            return;
-        }
-        textureStore(pDst, px, p);
-        return;
-    }
-
-    // ── Live particle: wind drift + curl noise ────────────────────────────────
-    let windDir   = du.wind.xyz;
-    let curlIn    = vec3f(p.x * 0.15, p.z * 0.15, time * 0.2);
-    let drift     = curl3(curlIn) * 0.008;
-    let noiseY    = snoise3(vec3f(p.x * 0.1, time * 0.15, p.z * 0.1)) * 0.003;
-
-    let velocity  = windDir * dt * 0.8 + drift;
-
-    p.x += velocity.x;
-    p.y += velocity.y + noiseY + 0.001;  // gentle float upward
-    p.z += velocity.z;
-
-    // Decay
-    p.a -= dt * 0.15;
-
-    // Bounds: re-wrap if too far
-    if (p.x > 15.0)  { p.x -= 30.0; }
-    if (p.x < -15.0) { p.x += 30.0; }
-    if (p.z > 15.0)  { p.z -= 30.0; }
-    if (p.z < -15.0) { p.z += 30.0; }
-    if (p.y > 8.0)   { p.a = 0.0; }      // kill particles that float too high
-
-    textureStore(pDst, px, p);
+// fbr.vs  (compiled.vs line 6564) — stripped to inline-usable form
+const FBR_VERT_BODY = /* glsl */`
+void setupFBR(vec3 p0) {
+    vNormal      = normalMatrix * normal;
+    vWorldNormal = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz) * normal;
+    vUvFBR       = uv;
+    vPos         = p0;
+    vec4 mPos    = modelMatrix * vec4(p0, 1.0);
+    vMPos        = mPos.xyz / mPos.w;
+    vEyePos      = vec3(modelViewMatrix * vec4(p0, 1.0));
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Dust particle render (billboard quads, alpha-blended)
-// ─────────────────────────────────────────────────────────────────────────────
+// fbr.fs  (compiled.vs line 6440) — PBR microfacet + matcap material
+const FBR_FRAG_BODY = /* glsl */`
+${MATCAP_GLSL}
 
-const WGSL_DUST_RENDER = /* wgsl */`
-struct DustUniforms {
-    time       : vec4f,
-    wind       : vec4f,
-    dustColor  : vec4f,
-};
-@group(0) @binding(0) var<uniform> du : DustUniforms;
-@group(0) @binding(1) var pSamp : sampler;
-@group(0) @binding(2) var pTex  : texture_2d<f32>;
+float pcrange(float v, float a, float b, float c, float d) {
+    float r = (b - a); float nr = (d - c);
+    return clamp((((v - a) * nr) / r) + c, min(d,c), max(d,c));
+}
 
-${WGSL_SCENE_UNIFORMS}
-@group(1) @binding(0) var<uniform> scene : SceneUniforms;
+float geometricOcclusion(float NdL, float NdV, float roughness) {
+    float r  = roughness;
+    float aL = 2.0*NdL/(NdL+sqrt(r*r+(1.0-r*r)*(NdL*NdL)));
+    float aV = 2.0*NdV/(NdV+sqrt(r*r+(1.0-r*r)*(NdV*NdV)));
+    return aL * aV;
+}
+float microfacetDistribution(float roughness, float NdH) {
+    float rSq = roughness * roughness;
+    float f   = (NdH * rSq - NdH) * NdH + 1.0;
+    return rSq / (3.14159265 * f * f);
+}
 
-struct VertexOut {
-    @builtin(position) pos   : vec4f,
-    @location(0)       uv    : vec2f,
-    @location(1)       life  : f32,
-    @location(2)       color : vec3f,
+vec3 unpackNormalFBR(vec3 eyePos, vec3 surfNorm, sampler2D nMap,
+                     float intensity, float scale, vec2 uv) {
+    vec3 q0  = dFdx(eyePos); vec3 q1  = dFdy(eyePos);
+    vec2 st0 = dFdx(uv);    vec2 st1 = dFdy(uv);
+    vec3 N   = normalize(surfNorm);
+    vec3 q1perp = cross(q1, N); vec3 q0perp = cross(N, q0);
+    vec3 T = q1perp*st0.x + q0perp*st1.x;
+    vec3 B = q1perp*st0.y + q0perp*st1.y;
+    float det = max(dot(T,T), dot(B,B));
+    float sf  = (det == 0.0) ? 0.0 : inversesqrt(det);
+    vec3 mapN = texture2D(nMap, uv*scale).xyz*2.0-1.0;
+    mapN.xy  *= intensity;
+    return normalize(T*(mapN.x*sf) + B*(mapN.y*sf) + N*mapN.z);
+}
+
+vec3 getFBR(vec3 baseColor, vec2 uv, vec3 n) {
+    vec3 mro      = texture2D(tMRO, uv).rgb;
+    float roughness = mro.g;
+    vec2 aUV  = reflectMatcap(vMPos, n);
+    vec2 bUV  = ((aUV-0.5)*0.5 - vec2(0.1)) + 0.5;
+    vec2 mUV  = mix(aUV, bUV, roughness);
+    vec3 V    = normalize(cameraPosition - vMPos);
+    vec3 L    = normalize(uLight.xyz);
+    vec3 H    = normalize((L+V)/2.0);
+    float NdL = pcrange(clamp(dot(n,L),0.001,1.0),0.0,1.0,0.4,1.0);
+    float NdV = pcrange(clamp(abs(dot(n,V)),0.001,1.0),0.0,1.0,0.4,1.0);
+    float NdH = clamp(dot(n,H),0.0,1.0);
+    float G   = geometricOcclusion(NdL,NdV,roughness);
+    float D   = microfacetDistribution(roughness,NdH);
+    vec3 spec = G*D/(4.0*NdL*NdV) * uColor;
+    vec3 col  = NdL*spec*uLight.w;
+    return ((baseColor * texture2D(tMatcap, mUV).rgb) + col) * mro.b;
+}
+vec3 getFBR(vec3 baseColor, vec2 uv) {
+    vec3 n = unpackNormalFBR(vEyePos, vWorldNormal, tNormal, uNormalStrength, 1.0, uv);
+    return getFBR(baseColor, uv, n);
+}
+vec3 getFBR(vec3 baseColor) { return getFBR(baseColor, vUvFBR); }
+`;
+
+// ─── FloorShader.glsl — vertex shader ─────────────────────────────────────────
+// Source: compiled.vs line 2889 FloorShader.glsl #!SHADER: Vertex
+// Uses: fbr.vs (setupFBR), + adds vUv2 / vMirrorCoord / vWorldPos varyings
+
+const FLOOR_VERT_SRC = /* glsl */`
+precision highp float;
+
+// geometry attributes
+attribute vec3 position;
+attribute vec3 normal;
+attribute vec2 uv;
+attribute vec2 uv2;
+
+// AT standard matrices (set as uniforms here since we're not Three.js)
+uniform mat4 modelMatrix;
+uniform mat4 modelViewMatrix;
+uniform mat4 projectionMatrix;
+uniform mat3 normalMatrix;
+uniform mat4 uMirrorMatrix;
+uniform vec3 cameraPosition;
+
+// FBR varyings
+varying vec3 vNormal;
+varying vec3 vWorldNormal;
+varying vec3 vPos;
+varying vec3 vEyePos;
+varying vec2 vUvFBR;
+varying vec3 vMPos;
+// FloorShader extras
+varying vec2 vUv2;
+varying vec4 vMirrorCoord;
+varying vec3 vWorldPos;
+
+${FBR_VERT_BODY}
+
+void main() {
+    vec4 worldPos    = modelMatrix * vec4(position, 1.0);
+    vMirrorCoord     = uMirrorMatrix * worldPos;
+    vWorldPos        = worldPos.xyz;
+    setupFBR(position);
+    vUv2             = uv2;
+    gl_Position      = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+// ─── FloorShader.glsl — fragment shader ───────────────────────────────────────
+// Source: compiled.vs line 2889 FloorShader.glsl #!SHADER: Fragment
+// Requires: fbr.fs, range.glsl, simplenoise.glsl, transformUV.glsl
+
+const FLOOR_FRAG_SRC = /* glsl */`
+precision highp float;
+
+// FBR uniforms
+uniform sampler2D tMRO;
+uniform sampler2D tMatcap;
+uniform sampler2D tNormal;
+uniform vec4      uLight;
+uniform vec3      uColor;
+uniform float     uNormalStrength;
+// FloorShader-specific uniforms
+uniform sampler2D tLightmap;
+uniform sampler2D tMirrorReflection;
+uniform sampler2D tLightReflection;
+uniform mat4      uMirrorMatrix;
+uniform float     uMirrorStrength;
+uniform float     uDistortStrength;
+uniform vec2      uRUVOffset;
+uniform float     uRUVScale;
+uniform float     time;
+uniform vec3      cameraPosition;
+
+// FBR varyings
+varying vec3 vNormal;
+varying vec3 vWorldNormal;
+varying vec3 vPos;
+varying vec3 vEyePos;
+varying vec2 vUvFBR;
+varying vec3 vMPos;
+// FloorShader extras
+varying vec2 vUv2;
+varying vec4 vMirrorCoord;
+varying vec3 vWorldPos;
+
+${RANGE_GLSL}
+${SIMPLENOISE_GLSL}
+${TRANSFORM_UV_GLSL}
+${FBR_FRAG_BODY}
+
+void main() {
+    // Base FBR colour + noise modulation
+    gl_FragColor     = vec4(getFBR(vec3(1.0)), 1.0);
+    gl_FragColor.rgb *= crange(getNoise(vUvFBR, time), 0.0, 1.0, 0.5, 1.0);
+
+    vec3 mro     = texture2D(tMRO, vUvFBR).rgb;
+    vec3 normTex = texture2D(tNormal, vUvFBR).rgb;
+
+    // Mirror reflection with normal distortion
+    vec2 mirrorUV  = vMirrorCoord.xy / vMirrorCoord.w;
+    mirrorUV      += crange(normTex.xy, vec2(0.0), vec2(1.0), vec2(-1.0), vec2(1.0))
+                   * uDistortStrength;
+    float strength = crange(mro.y, 0.6, 0.7, 0.0, 1.0);
+
+    // Simple box-blur approximation: average 5 taps for mirror blur
+    vec3 refBlur   = vec3(0.0);
+    refBlur       += texture2D(tMirrorReflection, mirrorUV).rgb;
+    refBlur       += texture2D(tMirrorReflection, mirrorUV + vec2( 0.003,  0.0  ) * strength).rgb;
+    refBlur       += texture2D(tMirrorReflection, mirrorUV + vec2(-0.003,  0.0  ) * strength).rgb;
+    refBlur       += texture2D(tMirrorReflection, mirrorUV + vec2( 0.0,    0.003) * strength).rgb;
+    refBlur       += texture2D(tMirrorReflection, mirrorUV + vec2( 0.0,   -0.003) * strength).rgb;
+    refBlur       /= 5.0;
+    gl_FragColor.rgb += refBlur * uMirrorStrength;
+
+    // Lightmap: ao in .r, lighting in .g
+    vec3 lightmap  = texture2D(tLightmap, vUv2).rgb;
+    float ao       = lightmap.r;
+    float lighting = lightmap.g;
+    gl_FragColor.rgb *= ao;
+    gl_FragColor.rgb += lighting * 0.15;
+
+    // View-skew parallax for light-reflection texture
+    vec3 viewDir       = normalize(vWorldPos - cameraPosition);
+    vec3 viewProjection = viewDir - dot(viewDir, vWorldNormal) * vWorldNormal;
+    float maxViewSkew  = radians(30.0);
+    vec2 viewSkew;
+    viewSkew.x         = clamp(viewProjection.x / maxViewSkew, -1.0, 1.0);
+    viewSkew.y         = -clamp(viewProjection.y / maxViewSkew, -1.0, 1.0);
+
+    vec2 ruv   = scaleUV(vUvFBR, vec2(0.2 * uRUVScale));
+    ruv       += uRUVOffset + viewSkew * 0.2;
+    gl_FragColor.rgb += texture2D(tLightReflection, ruv).rgb
+                      * 0.5
+                      * crange(strength, 0.0, 1.0, 0.5, 1.0);
+}
+`;
+
+// ─── HomeBGShader.glsl — vertex shader ────────────────────────────────────────
+// Source: compiled.vs line 3752 HomeBGShader.glsl #!SHADER: Vertex
+
+const HOMEBG_VERT_SRC = /* glsl */`
+precision highp float;
+
+attribute vec3 position;
+attribute vec2 uv;
+
+uniform mat4 modelMatrix;
+uniform mat4 modelViewMatrix;
+uniform mat4 projectionMatrix;
+
+varying vec2 vUv;
+varying vec3 vPos;
+varying vec3 vWorldPos;
+
+void main() {
+    vUv       = uv;
+    vPos      = position;
+    vWorldPos = vec3(modelMatrix * vec4(position, 1.0));
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+// ─── HomeBGShader.glsl — fragment shader ──────────────────────────────────────
+// Source: compiled.vs line 3752 HomeBGShader.glsl #!SHADER: Fragment
+// Renders environment background: tMap sampled at half-UV, height-based fade
+
+const HOMEBG_FRAG_SRC = /* glsl */`
+precision highp float;
+
+uniform sampler2D tMap;
+uniform float     uAlpha;
+
+varying vec2 vUv;
+varying vec3 vPos;
+varying vec3 vWorldPos;
+
+void main() {
+    vec2 uv     = vUv;
+    uv         *= 0.5;
+    vec4 color  = texture2D(tMap, uv);
+    color.rgb  *= smoothstep(30.0, 0.0, abs(vWorldPos.y - 5.0)) * 0.1;
+    gl_FragColor       = color;
+    gl_FragColor.a    *= uAlpha;
+}
+`;
+
+// ─── Mirror-render pass — simple colour copy vertex ───────────────────────────
+// Used to render the scene into the mirror FBO (planar reflection pre-pass)
+
+const MIRROR_VERT_SRC = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+    vUv         = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+const MIRROR_FRAG_SRC = /* glsl */`
+precision highp float;
+uniform sampler2D tScene;
+varying vec2 vUv;
+void main() {
+    // Flip Y for reflection
+    gl_FragColor = texture2D(tScene, vec2(vUv.x, 1.0 - vUv.y));
+}
+`;
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+export interface ATTerrainEnvironmentConfig {
+  /** Floor plane half-extent. Default 20. */
+  floorHalfExtent?: number;
+  /** Mirror reflection strength (0–1). Default 0.4. */
+  mirrorStrength?: number;
+  /** Normal distortion strength for mirror. Default 0.03. */
+  distortStrength?: number;
+  /** Light position in world space. Default [2, 4, 3]. */
+  lightPos?: [number, number, number];
+  /** Light intensity. Default 1.2. */
+  lightIntensity?: number;
+  /** FBR material colour tint. Default [1, 1, 1]. */
+  materialColor?: [number, number, number];
+  /** Normal map strength. Default 1.0. */
+  normalStrength?: number;
+  /** Background quad UV scale. Default 1. */
+  bgUvScale?: number;
+  /** Background alpha. Default 1. */
+  bgAlpha?: number;
+  /** Reflection UV scale multiplier. Default 1. */
+  ruvScale?: number;
+  /** Reflection UV offset. Default [0,0]. */
+  ruvOffset?: [number, number];
+}
+
+const DEFAULTS: Required<ATTerrainEnvironmentConfig> = {
+  floorHalfExtent: FLOOR_HALF,
+  mirrorStrength:  0.4,
+  distortStrength: 0.03,
+  lightPos:        [2.0, 4.0, 3.0],
+  lightIntensity:  1.2,
+  materialColor:   [1.0, 1.0, 1.0],
+  normalStrength:  1.0,
+  bgUvScale:       1.0,
+  bgAlpha:         1.0,
+  ruvScale:        1.0,
+  ruvOffset:       [0.0, 0.0],
 };
 
-const QUAD : array<vec2f, 6> = array<vec2f, 6>(
-    vec2f(-1.0, -1.0), vec2f( 1.0, -1.0), vec2f(-1.0,  1.0),
-    vec2f(-1.0,  1.0), vec2f( 1.0, -1.0), vec2f( 1.0,  1.0),
-);
+// ─── Main class ───────────────────────────────────────────────────────────────
 
-@vertex
-fn vs_dust(
-    @builtin(vertex_index)   vid  : u32,
-    @builtin(instance_index) inst : u32,
-) -> VertexOut {
-    let texDim = vec2u(textureDimensions(pTex));
-    let px     = vec2i(i32(inst % texDim.x), i32(inst / texDim.x));
-    let state  = textureLoad(pTex, px, 0);
-    let life   = state.a;
-
-    let corner = QUAD[vid];
-    let size   = 0.02 * saturate_f(life * 3.0);
-
-    // Camera-facing billboard basis
-    let viewRight = vec3f(scene.viewProj[0][0], scene.viewProj[1][0], scene.viewProj[2][0]);
-    let viewUp    = vec3f(scene.viewProj[0][1], scene.viewProj[1][1], scene.viewProj[2][1]);
-    let worldPos  = state.xyz
-                  + viewRight * corner.x * size
-                  + viewUp    * corner.y * size;
-
-    var out: VertexOut;
-    out.pos   = scene.viewProj * scene.modelMat * vec4f(worldPos, 1.0);
-    out.uv    = corner * 0.5 + 0.5;
-    out.life  = life;
-    out.color = du.dustColor.rgb;
-    return out;
-}
-
-${WGSL_MATH}
-
-@fragment
-fn fs_dust(in: VertexOut) -> @location(0) vec4f {
-    if (in.life <= 0.0) { discard; }
-
-    // Soft circle mask
-    let d    = length(in.uv - 0.5) * 2.0;
-    let mask = 1.0 - smoothstep(0.5, 1.0, d);
-
-    // Fade in/out using life
-    let alpha = sin(PI * saturate_f(in.life)) * mask * 0.25;
-
-    return vec4f(in.color, alpha);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GPU resource descriptor per terrain mesh
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface TerrainMeshGPU {
-  name:         TerrainMeshName;
-  vertexBuffer: GPUBuffer;
-  indexBuffer:  GPUBuffer;
-  indexCount:   number;
-  vertexCount:  number;
-  bindGroup:    GPUBindGroup;      // group(1): textures + sampler
-  materialBuf:  GPUBuffer;         // material uniforms
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main class
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * ATTerrainEnvironment — WebGPU port of Active Theory's tree-room terrain
- * rendering system.
- *
- * Provides:
- *   • Draco geometry loading for 5 terrain meshes (rocky_soil, rocks, sand, walls)
- *   • PBR material rendering with KTX2 compressed textures (baseColor, normal, MRO)
- *   • AT multi-light pipeline (directional + point + cone) from lighting.fs
- *   • Cook-Torrance BRDF with GGX/Smith/Schlick
- *   • Atmospheric distance fog
- *   • Dust particle overlay with wind-driven curl noise
- *   • Shadow depth pre-pass
- */
 export class ATTerrainEnvironment {
-  // ── Config ──────────────────────────────────────────────────────────────────
-  private readonly cfg: Required<Omit<ATTerrainEnvironmentConfig, 'envMap' | 'materialOverrides'>> & {
-    envMap?: GPUTexture;
-    materialOverrides: Partial<Record<TerrainMeshName, ATTerrainMaterialOverride>>;
-  };
+  private readonly gl: WebGLRenderingContext;
+  private readonly cfg: Required<ATTerrainEnvironmentConfig>;
 
-  // ── WebGPU ──────────────────────────────────────────────────────────────────
-  private readonly device: GPUDevice;
-  private readonly format: GPUTextureFormat;
+  // ── Programs ────────────────────────────────────────────────────────────────
+  private floorProg!:    WebGLProgram;
+  private bgProg!:       WebGLProgram;
+  private mirrorProg!:   WebGLProgram;
 
-  // ── Loaders ─────────────────────────────────────────────────────────────────
-  private geoLoader!:  ATGeometryLoader;
-  private texLoader!:  ATTextureLoader;
+  // ── Floor geometry ──────────────────────────────────────────────────────────
+  private floorPosBuf!:  WebGLBuffer;   // vec3 position
+  private floorNorBuf!:  WebGLBuffer;   // vec3 normal
+  private floorUvBuf!:   WebGLBuffer;   // vec2 uv
+  private floorUv2Buf!:  WebGLBuffer;   // vec2 uv2 (lightmap)
+  private floorIdxBuf!:  WebGLBuffer;   // uint16 indices
+  private floorIndexCount = 0;
 
-  // ── Per-mesh GPU resources ──────────────────────────────────────────────────
-  private meshes: TerrainMeshGPU[] = [];
+  // ── Background quad ─────────────────────────────────────────────────────────
+  private bgQuadBuf!:    WebGLBuffer;   // vec2 position (full-screen quad)
+  private bgUvBuf!:      WebGLBuffer;   // vec2 uv
 
-  // ── Shared GPU resources ────────────────────────────────────────────────────
-  private sceneUniformBuf!:  GPUBuffer;
-  private lightUniformBuf!:  GPUBuffer;
-  private sampler!:          GPUSampler;
+  // ── Mirror FBO ──────────────────────────────────────────────────────────────
+  private mirrorFBO!:    WebGLFramebuffer;
+  private mirrorTex!:    WebGLTexture;
+  private mirrorDepth!:  WebGLRenderbuffer;
+  private mirrorQuad!:   WebGLBuffer;
 
-  // ── Pipelines ───────────────────────────────────────────────────────────────
-  private terrainRenderPipe!:   GPURenderPipeline;
-  private shadowDepthPipe!:     GPURenderPipeline;
-  private dustUpdatePipe!:      GPUComputePipeline;
-  private dustRenderPipe!:      GPURenderPipeline;
-
-  // ── Shadow map ──────────────────────────────────────────────────────────────
-  private shadowMap!:         GPUTexture;
-  private shadowUniformBuf!:  GPUBuffer;
-
-  // ── Dust particles ──────────────────────────────────────────────────────────
-  private dustA!:           GPUTexture;
-  private dustB!:           GPUTexture;
-  private dustUniformBuf!:  GPUBuffer;
-  private maxDustParticles: number;
-
-  // ── Lights ──────────────────────────────────────────────────────────────────
-  private lights: ATTerrainLight[] = [];
+  // ── Textures ────────────────────────────────────────────────────────────────
+  private tMRO!:              WebGLTexture;  // Metallic/Roughness/AO
+  private tMatcap!:           WebGLTexture;  // FBR matcap lookup
+  private tNormal!:           WebGLTexture;  // tangent-space normal map
+  private tLightmap!:         WebGLTexture;  // pre-baked lightmap (uv2)
+  private tMirrorReflection!: WebGLTexture;  // planar mirror (= mirrorTex)
+  private tLightReflection!:  WebGLTexture;  // light-reflection shimmer
+  private tBGMap!:            WebGLTexture;  // HomeBGShader env texture
 
   // ── State ───────────────────────────────────────────────────────────────────
-  private built = false;
+  private time = 0.0;
+  /** Read-back: pointer to live mirrorTex so the caller can override it. */
+  get mirrorTexture(): WebGLTexture { return this.mirrorTex; }
 
-  // ─── Constructor ────────────────────────────────────────────────────────────
+  // ─── Constructor ─────────────────────────────────────────────────────────────
 
-  constructor(
-    device: GPUDevice,
-    format: GPUTextureFormat,
-    cfg:    ATTerrainEnvironmentConfig = {},
-  ) {
-    this.device = device;
-    this.format = format;
-
-    // Default lights: warm directional sun + cool fill
-    const defaultLights: ATTerrainLight[] = cfg.lights ?? [
-      {
-        type: 1,
-        position: [5.0, 8.0, -3.0],
-        color: [1.0, 0.95, 0.88],
-        intensity: 1.2,
-        shadowMin: 0.15,
-      },
-      {
-        type: 1,
-        position: [-3.0, 4.0, 6.0],
-        color: [0.4, 0.45, 0.55],
-        intensity: 0.4,
-        shadowMin: 0.05,
-      },
-    ];
-
-    this.cfg = {
-      geometryPath:     cfg.geometryPath     ?? '/upstream/activetheory-assets/geometry',
-      texturePath:      cfg.texturePath      ?? '/upstream/activetheory-assets/textures',
-      lights:           defaultLights,
-      fogColor:         cfg.fogColor         ?? [...FOG_COLOR],
-      fogDensity:       cfg.fogDensity       ?? FOG_DENSITY,
-      fogStart:         cfg.fogStart         ?? 5.0,
-      fogEnd:           cfg.fogEnd           ?? 80.0,
-      ambientColor:     cfg.ambientColor     ?? [...AMBIENT_COLOR],
-      ambientIntensity: cfg.ambientIntensity ?? AMBIENT_INTENSITY,
-      enableShadows:    cfg.enableShadows    ?? true,
-      shadowMapSize:    cfg.shadowMapSize    ?? SHADOW_MAP_SIZE,
-      enableDust:       cfg.enableDust       ?? true,
-      maxDustParticles: cfg.maxDustParticles ?? MAX_DUST_PARTICLES,
-      dustColor:        cfg.dustColor        ?? [0.8, 0.75, 0.65],
-      windDirection:    cfg.windDirection    ?? [0.3, 0.1, -0.2],
-      enableHeightDisplacement: cfg.enableHeightDisplacement ?? false,
-      envMap:           cfg.envMap,
-      materialOverrides: cfg.materialOverrides ?? {},
-    };
-
-    this.lights          = [...defaultLights];
-    this.maxDustParticles = this.cfg.maxDustParticles;
+  constructor(gl: WebGLRenderingContext, cfg: ATTerrainEnvironmentConfig = {}) {
+    this.gl  = gl;
+    this.cfg = { ...DEFAULTS, ...cfg };
+    this._init();
   }
 
-  // ─── Public API ─────────────────────────────────────────────────────────────
+  // ─── Public API ──────────────────────────────────────────────────────────────
 
   /**
-   * Compile all pipelines, load geometry + textures, allocate GPU resources.
-   * Must be called before tick() / renderPass().
+   * Render one frame: updates time, renders BG quad then floor plane.
+   * @param dt     Delta seconds.
+   * @param view   Column-major 4×4 view matrix (Float32Array[16]).
+   * @param proj   Column-major 4×4 projection matrix (Float32Array[16]).
+   * @param model  Column-major 4×4 model matrix for the floor (optional; identity if omitted).
+   * @param camPos Camera world position [x,y,z].
+   * @param w      Viewport width.
+   * @param h      Viewport height.
    */
-  async build(): Promise<void> {
-    this.geoLoader = new ATGeometryLoader({ basePath: this.cfg.geometryPath });
-    this.texLoader = new ATTextureLoader();
-
-    this._createSharedResources();
-    await this._loadAndUploadMeshes();
-    await this._createPipelines();
-
-    if (this.cfg.enableShadows) {
-      this._createShadowResources();
-    }
-
-    if (this.cfg.enableDust) {
-      this._createDustResources();
-    }
-
-    this.built = true;
-  }
-
-  /**
-   * Set or update a light at the given index.
-   *
-   * @param index  Light slot (0 to MAX_LIGHTS-1).
-   * @param light  Light definition.
-   */
-  setLight(index: number, light: ATTerrainLight): void {
-    if (index < 0 || index >= MAX_LIGHTS) return;
-    this.lights[index] = light;
-  }
-
-  /**
-   * Remove (disable) a light at the given index.
-   */
-  removeLight(index: number): void {
-    if (index < 0 || index >= MAX_LIGHTS) return;
-    this.lights[index] = { type: 1, position: [0, 0, 0], color: [0, 0, 0], intensity: 0 };
-  }
-
-  /**
-   * Get the current light array (readonly).
-   */
-  getLights(): readonly ATTerrainLight[] {
-    return this.lights;
-  }
-
-  /**
-   * Update fog parameters at runtime.
-   */
-  setFog(params: { color?: [number, number, number]; density?: number; start?: number; end?: number }): void {
-    if (params.color)   this.cfg.fogColor   = params.color;
-    if (params.density != null) this.cfg.fogDensity = params.density;
-    if (params.start != null)   this.cfg.fogStart   = params.start;
-    if (params.end != null)     this.cfg.fogEnd     = params.end;
-  }
-
-  /**
-   * Update ambient light parameters at runtime.
-   */
-  setAmbient(params: { color?: [number, number, number]; intensity?: number }): void {
-    if (params.color) this.cfg.ambientColor = params.color;
-    if (params.intensity != null) this.cfg.ambientIntensity = params.intensity;
-  }
-
-  /**
-   * Update wind direction for dust particles at runtime.
-   */
-  setWind(direction: [number, number, number]): void {
-    this.cfg.windDirection = direction;
-  }
-
-  /**
-   * Run one frame of simulation (dust particles).
-   *
-   * @param encoder  Open GPUCommandEncoder.
-   * @param time     Elapsed seconds.
-   * @param dt       Delta seconds.
-   */
-  tick(encoder: GPUCommandEncoder, time: number, dt: number): void {
-    if (!this.built) return;
-
-    this._writeSceneUniforms(time, dt);
-    this._writeLightUniforms();
-
-    if (this.cfg.enableDust) {
-      this._writeDustUniforms(time, dt);
-      this._dispatchDustUpdate(encoder);
-    }
-  }
-
-  /**
-   * Encode the terrain render pass (all meshes + optional dust overlay).
-   *
-   * @param encoder         Open GPUCommandEncoder.
-   * @param colorTarget     Output colour attachment view.
-   * @param depthView       Output depth attachment view.
-   * @param sceneUniformBuf External scene uniform buffer with viewProj etc.
-   *                         If provided, overrides the internal one.
-   */
-  renderPass(
-    encoder:          GPUCommandEncoder,
-    colorTarget:      GPUTextureView,
-    depthView:        GPUTextureView,
-    sceneUniformBuf?: GPUBuffer,
+  render(
+    dt:     number,
+    view:   Float32Array,
+    proj:   Float32Array,
+    model:  Float32Array,
+    camPos: [number, number, number],
+    w: number, h: number,
   ): void {
-    if (!this.built) return;
+    this.time += dt;
+    this._renderMirrorPass(view, proj, model, w, h);
+    this._renderBG(view, proj, model, camPos, w, h);
+    this._renderFloor(view, proj, model, camPos, w, h);
+  }
 
-    const uniformBuf = sceneUniformBuf ?? this.sceneUniformBuf;
+  /**
+   * tick() alias — same as render() but matches the interface expected by
+   * the cell-pubsub pipeline.
+   */
+  tick(
+    dt: number,
+    view: Float32Array,
+    proj: Float32Array,
+    model: Float32Array,
+    camPos: [number, number, number],
+    w: number, h: number,
+  ): void {
+    this.render(dt, view, proj, model, camPos, w, h);
+  }
 
-    // ── Shadow pre-pass ───────────────────────────────────────────────────────
-    if (this.cfg.enableShadows) {
-      this._renderShadowPass(encoder);
-    }
+  /**
+   * Upload a custom tMRO texture (replaces the default grey 1×1).
+   * Must be called after init(). Accepts an HTMLImageElement.
+   */
+  setMROTexture(img: HTMLImageElement): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tMRO);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
 
-    // ── Main terrain pass ─────────────────────────────────────────────────────
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view:    colorTarget,
-        loadOp:  'load',
-        storeOp: 'store',
-      }],
-      depthStencilAttachment: {
-        view:          depthView,
-        depthLoadOp:   'load',
-        depthStoreOp:  'store',
-      },
-    });
+  /**
+   * Upload a custom matcap texture.
+   */
+  setMatcapTexture(img: HTMLImageElement): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tMatcap);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
 
-    pass.setPipeline(this.terrainRenderPipe);
+  /**
+   * Upload a custom normal map texture.
+   */
+  setNormalTexture(img: HTMLImageElement): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tNormal);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
 
-    // Shared group(0): scene + lights + material (per-mesh material in loop)
-    for (const mesh of this.meshes) {
-      const bg0 = this._makeTerrainBG0(uniformBuf, mesh.materialBuf);
-      pass.setBindGroup(0, bg0);
-      pass.setBindGroup(1, mesh.bindGroup);
-      pass.setVertexBuffer(0, mesh.vertexBuffer);
-      pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
-      pass.drawIndexed(mesh.indexCount);
-    }
+  /**
+   * Upload a custom lightmap texture (sampled at uv2 coordinates).
+   */
+  setLightmapTexture(img: HTMLImageElement): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tLightmap);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
 
-    // ── Dust particles ────────────────────────────────────────────────────────
-    if (this.cfg.enableDust) {
-      pass.setPipeline(this.dustRenderPipe);
-      const dustBG0 = this._makeDustRenderBG0();
-      const dustBG1 = this._makeDustSceneBG1(uniformBuf);
-      pass.setBindGroup(0, dustBG0);
-      pass.setBindGroup(1, dustBG1);
-      pass.draw(6, this.maxDustParticles);
-    }
-
-    pass.end();
+  /**
+   * Upload environment/background map (used by HomeBGShader).
+   */
+  setBGMapTexture(img: HTMLImageElement): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tBGMap);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
   /**
    * Release all GPU resources.
    */
-  destroy(): void {
-    for (const mesh of this.meshes) {
-      mesh.vertexBuffer.destroy();
-      mesh.indexBuffer.destroy();
-      mesh.materialBuf.destroy();
+  dispose(): void {
+    const gl = this.gl;
+
+    // Programs
+    gl.deleteProgram(this.floorProg);
+    gl.deleteProgram(this.bgProg);
+    gl.deleteProgram(this.mirrorProg);
+
+    // Floor geometry buffers
+    gl.deleteBuffer(this.floorPosBuf);
+    gl.deleteBuffer(this.floorNorBuf);
+    gl.deleteBuffer(this.floorUvBuf);
+    gl.deleteBuffer(this.floorUv2Buf);
+    gl.deleteBuffer(this.floorIdxBuf);
+
+    // BG quad buffers
+    gl.deleteBuffer(this.bgQuadBuf);
+    gl.deleteBuffer(this.bgUvBuf);
+
+    // Mirror FBO
+    gl.deleteFramebuffer(this.mirrorFBO);
+    gl.deleteTexture(this.mirrorTex);
+    gl.deleteRenderbuffer(this.mirrorDepth);
+    gl.deleteBuffer(this.mirrorQuad);
+
+    // Textures
+    gl.deleteTexture(this.tMRO);
+    gl.deleteTexture(this.tMatcap);
+    gl.deleteTexture(this.tNormal);
+    gl.deleteTexture(this.tLightmap);
+    gl.deleteTexture(this.tLightReflection);
+    gl.deleteTexture(this.tBGMap);
+    // mirrorTex already deleted above
+  }
+
+  // ─── Private: init ───────────────────────────────────────────────────────────
+
+  private _init(): void {
+    // 1. compile programs
+    this.floorProg  = this._compile(FLOOR_VERT_SRC,   FLOOR_FRAG_SRC,   'floor');
+    this.bgProg     = this._compile(HOMEBG_VERT_SRC,  HOMEBG_FRAG_SRC,  'bg');
+    this.mirrorProg = this._compile(MIRROR_VERT_SRC,  MIRROR_FRAG_SRC,  'mirror');
+
+    // 2. build geometry
+    this._buildFloorMesh();
+    this._buildBGQuad();
+    this._buildMirrorQuad();
+
+    // 3. create FBOs + textures
+    this._createMirrorFBO();
+    this._createTextures();
+  }
+
+  // ─── Private: compile ────────────────────────────────────────────────────────
+
+  private _compile(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vert);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATTerrainEnv] vert compile error (${label}): ${gl.getShaderInfoLog(vs)}`);
     }
-    this.meshes = [];
 
-    this.sceneUniformBuf.destroy();
-    this.lightUniformBuf.destroy();
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, frag);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATTerrainEnv] frag compile error (${label}): ${gl.getShaderInfoLog(fs)}`);
+    }
 
-    if (this.shadowMap) this.shadowMap.destroy();
-    if (this.shadowUniformBuf) this.shadowUniformBuf.destroy();
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(`[ATTerrainEnv] link error (${label}): ${gl.getProgramInfoLog(prog)}`);
+    }
 
-    if (this.dustA) this.dustA.destroy();
-    if (this.dustB) this.dustB.destroy();
-    if (this.dustUniformBuf) this.dustUniformBuf.destroy();
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
+  }
 
-    this.geoLoader?.dispose();
-    this.built = false;
+  // ─── Private: geometry ───────────────────────────────────────────────────────
+
+  /**
+   * Build a subdivided floor plane (FLOOR_SEGS_X × FLOOR_SEGS_Z quads).
+   * Interleaved as separate attribute buffers to match AT shader layout.
+   * Also generates uv2 as the same as uv (in lieu of a real baked lightmap UV).
+   */
+  private _buildFloorMesh(): void {
+    const gl    = this.gl;
+    const segX  = FLOOR_SEGS_X;
+    const segZ  = FLOOR_SEGS_Z;
+    const half  = this.cfg.floorHalfExtent;
+
+    const vCount = (segX + 1) * (segZ + 1);
+    const pos  = new Float32Array(vCount * 3);
+    const nor  = new Float32Array(vCount * 3);
+    const uvs  = new Float32Array(vCount * 2);
+    const uv2  = new Float32Array(vCount * 2);
+
+    let vi = 0;
+    for (let iz = 0; iz <= segZ; iz++) {
+      const fz = iz / segZ;
+      const z  = (fz - 0.5) * 2.0 * half;
+      for (let ix = 0; ix <= segX; ix++) {
+        const fx    = ix / segX;
+        const x     = (fx - 0.5) * 2.0 * half;
+        pos[vi*3+0] = x;
+        pos[vi*3+1] = 0.0;
+        pos[vi*3+2] = z;
+        nor[vi*3+0] = 0.0;
+        nor[vi*3+1] = 1.0;
+        nor[vi*3+2] = 0.0;
+        uvs[vi*2+0] = fx;
+        uvs[vi*2+1] = fz;
+        uv2[vi*2+0] = fx;
+        uv2[vi*2+1] = fz;
+        vi++;
+      }
+    }
+
+    const iCount = segX * segZ * 6;
+    const idx    = new Uint16Array(iCount);
+    let ii = 0;
+    for (let iz = 0; iz < segZ; iz++) {
+      for (let ix = 0; ix < segX; ix++) {
+        const a = iz * (segX+1) + ix;
+        const b = a + 1;
+        const c = a + (segX+1);
+        const d = c + 1;
+        idx[ii++] = a; idx[ii++] = b; idx[ii++] = c;
+        idx[ii++] = b; idx[ii++] = d; idx[ii++] = c;
+      }
+    }
+    this.floorIndexCount = iCount;
+
+    // upload position
+    this.floorPosBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.floorPosBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
+
+    // upload normals
+    this.floorNorBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.floorNorBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, nor, gl.STATIC_DRAW);
+
+    // upload UV
+    this.floorUvBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.floorUvBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+
+    // upload UV2 (lightmap)
+    this.floorUv2Buf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.floorUv2Buf);
+    gl.bufferData(gl.ARRAY_BUFFER, uv2, gl.STATIC_DRAW);
+
+    // upload indices
+    this.floorIdxBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.floorIdxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
   }
 
   /**
-   * Get the list of loaded terrain mesh names.
+   * Build background quad: two triangles covering clip space, with UV.
    */
-  getMeshNames(): TerrainMeshName[] {
-    return this.meshes.map(m => m.name);
-  }
+  private _buildBGQuad(): void {
+    const gl = this.gl;
 
-  /**
-   * Get the total vertex count across all terrain meshes.
-   */
-  getTotalVertexCount(): number {
-    return this.meshes.reduce((acc, m) => acc + m.vertexCount, 0);
-  }
-
-  /**
-   * Get the total index count across all terrain meshes.
-   */
-  getTotalIndexCount(): number {
-    return this.meshes.reduce((acc, m) => acc + m.indexCount, 0);
-  }
-
-  // ─── Private: Shared resource creation ──────────────────────────────────────
-
-  private _createSharedResources(): void {
-    // Scene uniform buffer
-    this.sceneUniformBuf = this.device.createBuffer({
-      size:  SCENE_UNIFORM_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Light uniform buffer
-    this.lightUniformBuf = this.device.createBuffer({
-      size:  LIGHT_BUFFER_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Shared texture sampler (linear filtering, repeat)
-    this.sampler = this.device.createSampler({
-      addressModeU: 'repeat',
-      addressModeV: 'repeat',
-      magFilter:    'linear',
-      minFilter:    'linear',
-      mipmapFilter: 'linear',
-    });
-  }
-
-  // ─── Private: Geometry + texture loading ────────────────────────────────────
-
-  private async _loadAndUploadMeshes(): Promise<void> {
-    // Load all geometry files in parallel
-    const geoPromises = TERRAIN_MESHES.map(name =>
-      this.geoLoader.loadGeometry(`${name}.bin`).then(geo => ({ name, geo }))
-    );
-
-    // Load all PBR texture sets in parallel
-    const texPromises = TERRAIN_MESHES.map(name => {
-      const prefix = MESH_TO_TEXTURE_PREFIX[name];
-      return this.texLoader.loadMaterialSet(prefix).then(set => ({ name, set }));
-    });
-
-    const [geoResults, texResults] = await Promise.all([
-      Promise.all(geoPromises),
-      Promise.all(texPromises),
+    // World-space background quad (large plane behind scene at y = 0..15)
+    // Use a world-space quad so HomeBGShader vWorldPos.y works correctly.
+    const h = this.cfg.floorHalfExtent * 1.5;
+    const bgPos = new Float32Array([
+      -h, -h, -h,
+       h, -h, -h,
+      -h,  h, -h,
+       h, -h, -h,
+       h,  h, -h,
+      -h,  h, -h,
+    ]);
+    const bgUv = new Float32Array([
+      0,0, 1,0, 0,1,
+      1,0, 1,1, 0,1,
     ]);
 
-    // Build per-mesh GPU resources
-    const texMap = new Map(texResults.map(r => [r.name, r.set]));
+    this.bgQuadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.bgQuadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, bgPos, gl.STATIC_DRAW);
 
-    for (const { name, geo } of geoResults) {
-      const texSet = texMap.get(name)!;
-      const meshGPU = this._uploadMesh(name, geo, texSet);
-      this.meshes.push(meshGPU);
-    }
+    this.bgUvBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.bgUvBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, bgUv, gl.STATIC_DRAW);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
   /**
-   * Upload a single mesh's geometry and textures to the GPU.
+   * Build full-screen clip-space quad for mirror blit pass.
    */
-  private _uploadMesh(
-    name: TerrainMeshName,
-    geo:  ATGeometry,
-    texSet: ATMaterialSet,
-  ): TerrainMeshGPU {
-    const d = this.device;
+  private _buildMirrorQuad(): void {
+    const gl = this.gl;
+    this.mirrorQuad = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.mirrorQuad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1,-1,  1,-1,  -1, 1,
+       1,-1,  1, 1,  -1, 1,
+    ]), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
 
-    // ── Interleave vertex data: [pos.xyz, norm.xyz, uv.xy] ───────────────────
-    const vertexCount = geo.vertexCount;
-    const interleaved = new Float32Array(vertexCount * VERTEX_STRIDE);
+  // ─── Private: FBO creation ───────────────────────────────────────────────────
 
-    for (let i = 0; i < vertexCount; i++) {
-      const off = i * VERTEX_STRIDE;
-      interleaved[off + 0] = geo.positions[i * 3 + 0];
-      interleaved[off + 1] = geo.positions[i * 3 + 1];
-      interleaved[off + 2] = geo.positions[i * 3 + 2];
-      interleaved[off + 3] = geo.normals[i * 3 + 0];
-      interleaved[off + 4] = geo.normals[i * 3 + 1];
-      interleaved[off + 5] = geo.normals[i * 3 + 2];
-      interleaved[off + 6] = geo.uvs[i * 2 + 0];
-      interleaved[off + 7] = geo.uvs[i * 2 + 1];
-    }
+  /**
+   * Create the planar mirror reflection FBO.
+   * mirrorTex will be sampled as tMirrorReflection in FloorShader.
+   */
+  private _createMirrorFBO(): void {
+    const gl = this.gl;
 
-    const vertexBuffer = d.createBuffer({
-      size:  interleaved.byteLength,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    d.queue.writeBuffer(vertexBuffer, 0, interleaved);
+    // colour texture
+    this.mirrorTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.mirrorTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, MIRROR_W, MIRROR_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    // ── Index buffer ──────────────────────────────────────────────────────────
-    const indexBuffer = d.createBuffer({
-      size:  geo.indices.byteLength,
-      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-    });
-    d.queue.writeBuffer(indexBuffer, 0, geo.indices);
+    // depth renderbuffer
+    this.mirrorDepth = gl.createRenderbuffer()!;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.mirrorDepth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, MIRROR_W, MIRROR_H);
 
-    // ── Upload PBR textures ───────────────────────────────────────────────────
-    const tBaseColor = this._uploadTexture(texSet.baseColor);
-    const tNormal    = this._uploadTexture(texSet.normal);
-    const tMRO       = this._uploadTexture(texSet.mro);
+    // framebuffer
+    this.mirrorFBO = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.mirrorFBO);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.mirrorTex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.mirrorDepth);
 
-    // ── Material uniform buffer ───────────────────────────────────────────────
-    const materialBuf = d.createBuffer({
-      size:  MATERIAL_UNIFORM_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+  }
 
-    const overrides = this.cfg.materialOverrides[name] ?? {};
-    const tint    = overrides.tint           ?? [1, 1, 1];
-    const roughS  = overrides.roughnessScale ?? 1.0;
-    const metalS  = overrides.metallicScale  ?? 1.0;
-    const normS   = overrides.normalStrength ?? 1.0;
-    const uvScale = overrides.uvScale        ?? [1, 1];
+  // ─── Private: texture creation ───────────────────────────────────────────────
 
-    const matData = new Float32Array(16);
-    // Row 0: tint.rgb + roughnessScale
-    matData[0] = tint[0]; matData[1] = tint[1]; matData[2] = tint[2]; matData[3] = roughS;
-    // Row 1: metallicScale, normalStrength, uvScale.xy
-    matData[4] = metalS;  matData[5] = normS;  matData[6] = uvScale[0]; matData[7] = uvScale[1];
-    // Row 2-3: reserved
-    d.queue.writeBuffer(materialBuf, 0, matData);
+  /**
+   * Create all material/environment textures with sensible default data.
+   * The caller can replace them with setXxxTexture() after construction.
+   */
+  private _createTextures(): void {
+    const gl = this.gl;
 
-    // ── Texture bind group (group 1) ──────────────────────────────────────────
-    // Will be created after pipeline is available; store texture references for now
-    const bindGroup = this._createTextureBindGroup(tBaseColor, tNormal, tMRO);
+    // tMRO: 1×1 (metallic=0, roughness=0.5, ao=1)
+    this.tMRO = this._createTexture1x1(gl, new Uint8Array([0, 128, 255, 255]));
 
-    return {
-      name,
-      vertexBuffer,
-      indexBuffer,
-      indexCount:  geo.indexCount,
-      vertexCount: geo.vertexCount,
-      bindGroup,
-      materialBuf,
-    };
+    // tMatcap: 4×4 soft-lit matcap approximation
+    this.tMatcap = this._createMatcapDefault(gl);
+
+    // tNormal: flat normal (128,128,255)
+    this.tNormal = this._createTexture1x1(gl, new Uint8Array([128, 128, 255, 255]));
+
+    // tLightmap: warm grey (ao=200, lighting=60)
+    this.tLightmap = this._createLightmapDefault(gl);
+
+    // tLightReflection: subtle warm shimmer (small gradient texture)
+    this.tLightReflection = this._createLightReflectionDefault(gl);
+
+    // tBGMap: deep blue-grey sky gradient
+    this.tBGMap = this._createBGMapDefault(gl);
+
+    // tMirrorReflection is the mirrorTex (already created in _createMirrorFBO)
+    this.tMirrorReflection = this.mirrorTex;
   }
 
   /**
-   * Upload an ATTexture to a GPUTexture.
+   * 1×1 RGBA texture from a 4-byte array.
    */
-  private _uploadTexture(tex: ATTexture): GPUTexture {
-    const d = this.device;
-
-    const gpuTex = d.createTexture({
-      size:   [tex.width, tex.height, 1],
-      format: tex.format as GPUTextureFormat,
-      usage:  GPUTextureUsage.TEXTURE_BINDING
-            | GPUTextureUsage.COPY_DST
-            | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-
-    d.queue.writeTexture(
-      { texture: gpuTex },
-      tex.data,
-      { bytesPerRow: this._bytesPerRow(tex) },
-      { width: tex.width, height: tex.height },
-    );
-
-    // Upload mip levels
-    let mipW = tex.width;
-    let mipH = tex.height;
-    for (let level = 0; level < tex.mipLevels.length; level++) {
-      mipW = Math.max(1, mipW >> 1);
-      mipH = Math.max(1, mipH >> 1);
-      d.queue.writeTexture(
-        { texture: gpuTex, mipLevel: level + 1 },
-        tex.mipLevels[level],
-        { bytesPerRow: this._bytesPerRowMip(tex.format, mipW) },
-        { width: mipW, height: mipH },
-      );
-    }
-
-    return gpuTex;
-  }
-
-  /**
-   * Compute bytes per row for texture upload (block-aware for compressed formats).
-   */
-  private _bytesPerRow(tex: ATTexture): number {
-    return this._bytesPerRowMip(tex.format, tex.width);
-  }
-
-  private _bytesPerRowMip(format: string, width: number): number {
-    // For compressed formats, compute based on block size
-    if (format.startsWith('astc-4x4') || format.startsWith('etc2') || format.startsWith('bc')) {
-      const blockW = 4;
-      const blocksX = Math.ceil(width / blockW);
-      const bytesPerBlock = format.includes('bc1') || format.includes('etc2-rgb') ? 8 : 16;
-      return blocksX * bytesPerBlock;
-    }
-    // Uncompressed RGBA8
-    return width * 4;
-  }
-
-  /**
-   * Create a placeholder GPUTexture (1×1 white) for missing textures.
-   */
-  private _placeholderTexture(): GPUTexture {
-    const tex = this.device.createTexture({
-      size:   [1, 1, 1],
-      format: 'rgba8unorm',
-      usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    const data = new Uint8Array([255, 255, 255, 255]);
-    this.device.queue.writeTexture(
-      { texture: tex },
-      data,
-      { bytesPerRow: 4 },
-      { width: 1, height: 1 },
-    );
+  private _createTexture1x1(gl: WebGLRenderingContext, data: Uint8Array): WebGLTexture {
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
     return tex;
   }
 
   /**
-   * Create a placeholder normal map (flat: 128, 128, 255, 255).
+   * 4×4 soft matcap: bright centre shading off to edges.
    */
-  private _placeholderNormal(): GPUTexture {
-    const tex = this.device.createTexture({
-      size:   [1, 1, 1],
-      format: 'rgba8unorm',
-      usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    const data = new Uint8Array([128, 128, 255, 255]);
-    this.device.queue.writeTexture(
-      { texture: tex },
-      data,
-      { bytesPerRow: 4 },
-      { width: 1, height: 1 },
-    );
-    return tex;
-  }
-
-  /**
-   * Create texture bind group for a mesh (group 1).
-   */
-  private _createTextureBindGroup(
-    tBaseColor: GPUTexture,
-    tNormal:    GPUTexture,
-    tMRO:       GPUTexture,
-  ): GPUBindGroup {
-    // This is a lazy bind group — actual layout comes from the pipeline.
-    // We'll re-create it after pipeline creation.
-    // For now, return a stub that will be replaced.
-    return this.device.createBindGroup({
-      layout: this.device.createBindGroupLayout({
-        entries: [
-          { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
-          { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
-          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
-          { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
-        ],
-      }),
-      entries: [
-        { binding: 0, resource: this.sampler },
-        { binding: 1, resource: tBaseColor.createView() },
-        { binding: 2, resource: tNormal.createView() },
-        { binding: 3, resource: tMRO.createView() },
-      ],
-    });
-  }
-
-  // ─── Private: Shadow resources ──────────────────────────────────────────────
-
-  private _createShadowResources(): void {
-    const size = this.cfg.shadowMapSize;
-
-    this.shadowMap = this.device.createTexture({
-      size:   [size, size, 1],
-      format: 'depth24plus',
-      usage:  GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-
-    this.shadowUniformBuf = this.device.createBuffer({
-      size:  128,  // lightViewProj(64) + modelMat(64)
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-  }
-
-  // ─── Private: Dust particle resources ───────────────────────────────────────
-
-  private _createDustResources(): void {
-    const pW = Math.min(this.maxDustParticles, 256);
-    const pH = Math.ceil(this.maxDustParticles / pW);
-
-    const pDesc: GPUTextureDescriptor = {
-      size:   [pW, pH, 1],
-      format: 'rgba32float',
-      usage:  GPUTextureUsage.TEXTURE_BINDING
-            | GPUTextureUsage.STORAGE_BINDING
-            | GPUTextureUsage.COPY_DST,
-    };
-    this.dustA = this.device.createTexture(pDesc);
-    this.dustB = this.device.createTexture(pDesc);
-
-    // Seed with dead particles (life = 0)
-    const pPixels = pW * pH * 4;
-    const pData = new Float32Array(pPixels);
-    this.device.queue.writeTexture(
-      { texture: this.dustA },
-      pData,
-      { bytesPerRow: pW * 16 },
-      { width: pW, height: pH },
-    );
-    this.device.queue.writeTexture(
-      { texture: this.dustB },
-      pData,
-      { bytesPerRow: pW * 16 },
-      { width: pW, height: pH },
-    );
-
-    // Dust uniform buffer: 3 × vec4f = 48 bytes
-    this.dustUniformBuf = this.device.createBuffer({
-      size:  48,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-  }
-
-  // ─── Private: Pipeline creation ─────────────────────────────────────────────
-
-  private async _createPipelines(): Promise<void> {
-    const d = this.device;
-
-    // ── Bind group layouts ────────────────────────────────────────────────────
-
-    // Group 0: scene + lights + material (all uniforms)
-    const bg0Layout = d.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: 'uniform' } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: 'uniform' } },
-      ],
-    });
-
-    // Group 1: textures + sampler
-    const bg1Layout = d.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
-      ],
-    });
-
-    const terrainLayout = d.createPipelineLayout({
-      bindGroupLayouts: [bg0Layout, bg1Layout],
-    });
-
-    // ── Terrain PBR render pipeline ───────────────────────────────────────────
-    const terrainMod = d.createShaderModule({ code: WGSL_TERRAIN_RENDER });
-
-    this.terrainRenderPipe = await d.createRenderPipelineAsync({
-      layout: terrainLayout,
-      vertex: {
-        module:     terrainMod,
-        entryPoint: 'vs_terrain',
-        buffers: [{
-          arrayStride: VERTEX_STRIDE_BYTES,
-          attributes: [
-            { shaderLocation: 0, offset: 0,  format: 'float32x3' },  // position
-            { shaderLocation: 1, offset: 12, format: 'float32x3' },  // normal
-            { shaderLocation: 2, offset: 24, format: 'float32x2' },  // uv
-          ],
-        }],
-      },
-      fragment: {
-        module:     terrainMod,
-        entryPoint: 'fs_terrain',
-        targets: [{
-          format: this.format,
-          blend: {
-            color: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' },
-          },
-        }],
-      },
-      depthStencil: {
-        format:            'depth24plus',
-        depthWriteEnabled: true,
-        depthCompare:      'less',
-      },
-      primitive: {
-        topology: 'triangle-list',
-        cullMode: 'back',
-        frontFace: 'ccw',
-      },
-    });
-
-    // ── Rebuild texture bind groups with the actual pipeline layout ────────────
-    for (const mesh of this.meshes) {
-      // The existing bind group was created with a temporary layout;
-      // it should be compatible since we specified the same entries.
-      // If not, we'd rebuild here with: this.terrainRenderPipe.getBindGroupLayout(1)
-    }
-
-    // ── Shadow depth pipeline ─────────────────────────────────────────────────
-    if (this.cfg.enableShadows) {
-      const shadowMod = d.createShaderModule({ code: WGSL_SHADOW_DEPTH });
-
-      this.shadowDepthPipe = await d.createRenderPipelineAsync({
-        layout: 'auto',
-        vertex: {
-          module:     shadowMod,
-          entryPoint: 'vs_shadow',
-          buffers: [{
-            arrayStride: VERTEX_STRIDE_BYTES,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x3' },
-            ],
-          }],
-        },
-        depthStencil: {
-          format:            'depth24plus',
-          depthWriteEnabled: true,
-          depthCompare:      'less',
-          depthBias:         2,
-          depthBiasSlopeScale: 2.0,
-        },
-        primitive: {
-          topology: 'triangle-list',
-          cullMode: 'front',   // front-face culling for shadow bias
-        },
-      });
-    }
-
-    // ── Dust particle update compute ──────────────────────────────────────────
-    if (this.cfg.enableDust) {
-      const dustUpdateMod = d.createShaderModule({ code: WGSL_DUST_UPDATE });
-
-      this.dustUpdatePipe = await d.createComputePipelineAsync({
-        layout: 'auto',
-        compute: { module: dustUpdateMod, entryPoint: 'cs_dust_update' },
-      });
-
-      // ── Dust particle render ────────────────────────────────────────────────
-      const dustRenderMod = d.createShaderModule({ code: WGSL_DUST_RENDER });
-
-      // Dust render group 0: dustUniforms + sampler + pTex
-      // Dust render group 1: scene uniforms
-
-      this.dustRenderPipe = await d.createRenderPipelineAsync({
-        layout: 'auto',
-        vertex: {
-          module:     dustRenderMod,
-          entryPoint: 'vs_dust',
-        },
-        fragment: {
-          module:     dustRenderMod,
-          entryPoint: 'fs_dust',
-          targets: [{
-            format: this.format,
-            blend: {
-              color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-              alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            },
-          }],
-        },
-        depthStencil: {
-          format:            'depth24plus',
-          depthWriteEnabled: false,
-          depthCompare:      'less-equal',
-        },
-        primitive: { topology: 'triangle-list', cullMode: 'none' },
-      });
-    }
-  }
-
-  // ─── Private: Uniform writes ────────────────────────────────────────────────
-
-  private _writeSceneUniforms(time: number, dt: number): void {
-    const data = new Float32Array(SCENE_UNIFORM_SIZE / 4);
-
-    // viewProj — identity placeholder (caller provides via sceneUniformBuf or overwrites)
-    // The viewProj/modelMat/normalMat are typically provided by the scene compositor.
-    // We fill in the fog/ambient/time params here.
-    data[0]  = 1; data[5]  = 1; data[10] = 1; data[15] = 1; // identity viewProj
-    data[16] = 1; data[21] = 1; data[26] = 1; data[31] = 1; // identity modelMat
-    data[32] = 1; data[37] = 1; data[42] = 1; data[47] = 1; // identity normalMat
-
-    // eye — offset 192 (index 48)
-    // (Set by caller or left at origin)
-    data[48] = 0; data[49] = 3; data[50] = 5; data[51] = 1;
-
-    // fogParams — offset 208 (index 52)
-    data[52] = this.cfg.fogColor[0];
-    data[53] = this.cfg.fogColor[1];
-    data[54] = this.cfg.fogColor[2];
-    data[55] = this.cfg.fogDensity;
-
-    // ambientParams — offset 224 (index 56)
-    data[56] = this.cfg.ambientColor[0];
-    data[57] = this.cfg.ambientColor[1];
-    data[58] = this.cfg.ambientColor[2];
-    data[59] = this.cfg.ambientIntensity;
-
-    // timeParams — offset 240 (index 60)
-    data[60] = time;
-    data[61] = dt;
-    data[62] = this.cfg.fogStart;
-    data[63] = this.cfg.fogEnd;
-
-    this.device.queue.writeBuffer(this.sceneUniformBuf, 0, data);
-  }
-
-  private _writeLightUniforms(): void {
-    const data = new Float32Array(LIGHT_BUFFER_SIZE / 4);
-
-    for (let i = 0; i < MAX_LIGHTS; i++) {
-      const light = this.lights[i];
-      const off = i * (LIGHT_STRUCT_SIZE / 4);  // 20 floats per light
-
-      if (!light || (light.intensity ?? 1.0) <= 0) {
-        // Disabled light: type = 0
-        data[off + 19] = 0;  // props.w = type = 0
-        continue;
+  private _createMatcapDefault(gl: WebGLRenderingContext): WebGLTexture {
+    const size = 8;
+    const data = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const nx = (x / (size-1)) * 2.0 - 1.0;
+        const ny = (y / (size-1)) * 2.0 - 1.0;
+        const d  = Math.sqrt(nx*nx + ny*ny);
+        const v  = Math.max(0, 1.0 - d);
+        const b  = Math.floor(v * 200 + 55);
+        const i  = (y * size + x) * 4;
+        data[i]   = b;   // R
+        data[i+1] = b;   // G
+        data[i+2] = Math.min(255, b + 20);  // B: slightly cooler
+        data[i+3] = 255;
       }
-
-      const intensity  = light.intensity    ?? 1.0;
-      const range      = light.range        ?? 50.0;
-      const shadowMin  = light.shadowMin    ?? 0.0;
-      const coneDir    = light.coneDirection ?? [0, -1, 0];
-      const coneAngle  = light.coneAngle    ?? 45.0;
-      const feather    = light.coneFeather   ?? 1.0;
-      const shininess  = light.phong ? (light.phongShininess ?? 30.0) : 0.0;
-
-      // color: .rgb=colour, .w=intensity
-      data[off + 0]  = light.color[0];
-      data[off + 1]  = light.color[1];
-      data[off + 2]  = light.color[2];
-      data[off + 3]  = intensity;
-
-      // pos: .xyz=position, .w=type
-      data[off + 4]  = light.position[0];
-      data[off + 5]  = light.position[1];
-      data[off + 6]  = light.position[2];
-      data[off + 7]  = light.type;
-
-      // data: .xyz=coneDir, .w=coneAngle
-      data[off + 8]  = coneDir[0];
-      data[off + 9]  = coneDir[1];
-      data[off + 10] = coneDir[2];
-      data[off + 11] = coneAngle;
-
-      // data2: .x=feather, .y=phongShininess, .z=shadowMin, .w=range
-      data[off + 12] = feather;
-      data[off + 13] = shininess;
-      data[off + 14] = shadowMin;
-      data[off + 15] = range;
-
-      // props: .x=intensity, .y=range, .z=shadowMin, .w=type
-      data[off + 16] = intensity;
-      data[off + 17] = range;
-      data[off + 18] = shadowMin;
-      data[off + 19] = light.type;
     }
-
-    this.device.queue.writeBuffer(this.lightUniformBuf, 0, data);
-  }
-
-  private _writeDustUniforms(time: number, dt: number): void {
-    const data = new Float32Array(12);
-    // time
-    data[0] = time; data[1] = dt; data[2] = 0; data[3] = 0;
-    // wind
-    data[4] = this.cfg.windDirection[0];
-    data[5] = this.cfg.windDirection[1];
-    data[6] = this.cfg.windDirection[2];
-    data[7] = 0;
-    // dustColor
-    data[8]  = this.cfg.dustColor[0];
-    data[9]  = this.cfg.dustColor[1];
-    data[10] = this.cfg.dustColor[2];
-    data[11] = 0;
-
-    this.device.queue.writeBuffer(this.dustUniformBuf, 0, data);
-  }
-
-  // ─── Private: Compute dispatches ────────────────────────────────────────────
-
-  private _dispatchDustUpdate(enc: GPUCommandEncoder): void {
-    const bg = this.device.createBindGroup({
-      layout: this.dustUpdatePipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.dustUniformBuf } },
-        { binding: 1, resource: this.dustA.createView() },
-        { binding: 2, resource: this.dustB.createView() },
-      ],
-    });
-    const pass = enc.beginComputePass();
-    pass.setPipeline(this.dustUpdatePipe);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(Math.ceil(this.maxDustParticles / WG));
-    pass.end();
-
-    // Ping-pong swap
-    [this.dustA, this.dustB] = [this.dustB, this.dustA];
-  }
-
-  // ─── Private: Shadow render ─────────────────────────────────────────────────
-
-  private _renderShadowPass(enc: GPUCommandEncoder): void {
-    if (!this.shadowDepthPipe || !this.shadowMap) return;
-
-    // Compute light-space VP matrix from the primary directional light
-    const primaryLight = this.lights.find(l => l && l.type === 1);
-    if (!primaryLight) return;
-
-    // Write shadow uniforms (lightViewProj + modelMat)
-    const shadowData = new Float32Array(32);
-    // Simple orthographic projection from light direction
-    // This is a simplified projection; a real implementation would compute
-    // a proper frustum from the scene bounds.
-    const lx = primaryLight.position[0];
-    const ly = primaryLight.position[1];
-    const lz = primaryLight.position[2];
-    const len = Math.hypot(lx, ly, lz) || 1;
-    const dlx = lx / len, dly = ly / len, dlz = lz / len;
-
-    // Look-at from light direction (simplified)
-    // Build a view matrix looking from light position toward origin
-    const lightEye = [dlx * 20, dly * 20, dlz * 20];
-    const lightTarget = [0, 0, 0];
-    const lightUp = [0, 1, 0];
-
-    // Compute view matrix columns
-    const fwd = [
-      lightTarget[0] - lightEye[0],
-      lightTarget[1] - lightEye[1],
-      lightTarget[2] - lightEye[2],
-    ];
-    const fwdLen = Math.hypot(fwd[0], fwd[1], fwd[2]) || 1;
-    fwd[0] /= fwdLen; fwd[1] /= fwdLen; fwd[2] /= fwdLen;
-
-    const right = [
-      lightUp[1] * fwd[2] - lightUp[2] * fwd[1],
-      lightUp[2] * fwd[0] - lightUp[0] * fwd[2],
-      lightUp[0] * fwd[1] - lightUp[1] * fwd[0],
-    ];
-    const rLen = Math.hypot(right[0], right[1], right[2]) || 1;
-    right[0] /= rLen; right[1] /= rLen; right[2] /= rLen;
-
-    const up = [
-      fwd[1] * right[2] - fwd[2] * right[1],
-      fwd[2] * right[0] - fwd[0] * right[2],
-      fwd[0] * right[1] - fwd[1] * right[0],
-    ];
-
-    // View matrix (column-major for WGSL mat4x4f)
-    const viewMat = [
-      right[0], up[0], -fwd[0], 0,
-      right[1], up[1], -fwd[1], 0,
-      right[2], up[2], -fwd[2], 0,
-      -(right[0]*lightEye[0] + right[1]*lightEye[1] + right[2]*lightEye[2]),
-      -(up[0]*lightEye[0]    + up[1]*lightEye[1]    + up[2]*lightEye[2]),
-       (fwd[0]*lightEye[0]   + fwd[1]*lightEye[1]   + fwd[2]*lightEye[2]),
-      1,
-    ];
-
-    // Orthographic projection: [-25, 25] × [-25, 25] × [0, 60]
-    const orthoHalf = 25.0;
-    const near = 0.0;
-    const far = 60.0;
-    const projMat = [
-      1/orthoHalf, 0, 0, 0,
-      0, 1/orthoHalf, 0, 0,
-      0, 0, -1/(far - near), 0,
-      0, 0, -near/(far - near), 1,
-    ];
-
-    // Multiply proj × view → lightViewProj
-    for (let i = 0; i < 16; i++) {
-      shadowData[i] = 0;
-      // Row-based multiplication for column-major layout
-    }
-    // For simplicity, store identity (the shadow pass is a structural placeholder;
-    // full cascade shadow mapping would be implemented in at-shadow-import.ts)
-    shadowData[0] = 1; shadowData[5] = 1; shadowData[10] = 1; shadowData[15] = 1;
-    // Model matrix: identity
-    shadowData[16] = 1; shadowData[21] = 1; shadowData[26] = 1; shadowData[31] = 1;
-
-    this.device.queue.writeBuffer(this.shadowUniformBuf, 0, shadowData);
-
-    const shadowView = this.shadowMap.createView();
-    const pass = enc.beginRenderPass({
-      colorAttachments: [],
-      depthStencilAttachment: {
-        view:          shadowView,
-        depthLoadOp:   'clear',
-        depthStoreOp:  'store',
-        depthClearValue: 1.0,
-      },
-    });
-
-    pass.setPipeline(this.shadowDepthPipe);
-
-    const bg = this.device.createBindGroup({
-      layout: this.shadowDepthPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.shadowUniformBuf } },
-      ],
-    });
-    pass.setBindGroup(0, bg);
-
-    for (const mesh of this.meshes) {
-      pass.setVertexBuffer(0, mesh.vertexBuffer);
-      pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
-      pass.drawIndexed(mesh.indexCount);
-    }
-
-    pass.end();
-  }
-
-  // ─── Private: Bind group factories ──────────────────────────────────────────
-
-  /**
-   * Create group(0) bind group for terrain render (per-mesh material).
-   */
-  private _makeTerrainBG0(sceneBuf: GPUBuffer, materialBuf: GPUBuffer): GPUBindGroup {
-    return this.device.createBindGroup({
-      layout: this.terrainRenderPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: sceneBuf } },
-        { binding: 1, resource: { buffer: this.lightUniformBuf } },
-        { binding: 2, resource: { buffer: materialBuf } },
-      ],
-    });
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
   }
 
   /**
-   * Create group(0) bind group for dust render.
+   * LM_W×LM_H lightmap: ao=0.85 warm, lighting=0.15.
    */
-  private _makeDustRenderBG0(): GPUBindGroup {
-    return this.device.createBindGroup({
-      layout: this.dustRenderPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.dustUniformBuf } },
-        { binding: 1, resource: this.sampler },
-        { binding: 2, resource: this.dustA.createView() },
-      ],
-    });
+  private _createLightmapDefault(gl: WebGLRenderingContext): WebGLTexture {
+    const data = new Uint8Array(LM_W * LM_H * 4);
+    for (let i = 0; i < LM_W * LM_H; i++) {
+      data[i*4+0] = 216;  // ao
+      data[i*4+1] = 38;   // lighting (indirect)
+      data[i*4+2] = 0;
+      data[i*4+3] = 255;
+    }
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, LM_W, LM_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
   }
 
   /**
-   * Create group(1) bind group for dust render (scene uniforms).
+   * 8×8 light-reflection shimmer: soft white radial gradient.
    */
-  private _makeDustSceneBG1(sceneBuf: GPUBuffer): GPUBindGroup {
-    return this.device.createBindGroup({
-      layout: this.dustRenderPipe.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: { buffer: sceneBuf } },
-      ],
-    });
+  private _createLightReflectionDefault(gl: WebGLRenderingContext): WebGLTexture {
+    const size = 8;
+    const data = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const nx = (x / (size-1)) * 2.0 - 1.0;
+        const ny = (y / (size-1)) * 2.0 - 1.0;
+        const v  = Math.max(0, 1.0 - Math.sqrt(nx*nx + ny*ny));
+        const b  = Math.floor(v * 80);
+        const i  = (y * size + x) * 4;
+        data[i]   = Math.min(255, b + 20);
+        data[i+1] = Math.min(255, b + 18);
+        data[i+2] = b;
+        data[i+3] = 255;
+      }
+    }
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
+  }
+
+  /**
+   * 8×8 deep blue-grey sky gradient for HomeBGShader.
+   */
+  private _createBGMapDefault(gl: WebGLRenderingContext): WebGLTexture {
+    const size = 8;
+    const data = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      const t = y / (size - 1);
+      // horizon: warm grey → zenith: cool dark blue
+      const r = Math.floor((0.22 - t * 0.12) * 255);
+      const g = Math.floor((0.25 - t * 0.10) * 255);
+      const b = Math.floor((0.35 + t * 0.15) * 255);
+      for (let x = 0; x < size; x++) {
+        const i    = (y * size + x) * 4;
+        data[i]   = Math.max(0, r);
+        data[i+1] = Math.max(0, g);
+        data[i+2] = Math.min(255, b);
+        data[i+3] = 255;
+      }
+    }
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
+  }
+
+  // ─── Private: render passes ──────────────────────────────────────────────────
+
+  /**
+   * Mirror pre-pass: render a Y-flipped copy of the current mirrorTex into
+   * the mirror FBO to provide planar reflection for this frame.
+   * In a full pipeline the caller would render the scene here first.
+   */
+  private _renderMirrorPass(
+    view: Float32Array, proj: Float32Array, model: Float32Array,
+    w: number, h: number,
+  ): void {
+    const gl = this.gl;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.mirrorFBO);
+    gl.viewport(0, 0, MIRROR_W, MIRROR_H);
+    gl.clearColor(0.05, 0.05, 0.08, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    gl.useProgram(this.mirrorProg);
+
+    // Bind mirrorTex as tScene (this is a self-blit that seed-initialises it
+    // the first frame; the caller can override by binding an external scene tex)
+    const sceneULoc = gl.getUniformLocation(this.mirrorProg, 'tScene');
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tBGMap);  // use BG map as initial fill
+    gl.uniform1i(sceneULoc, 0);
+
+    const posLoc = gl.getAttribLocation(this.mirrorProg, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.mirrorQuad);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    gl.disableVertexAttribArray(posLoc);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+  }
+
+  /**
+   * Render HomeBGShader environment background quad.
+   */
+  private _renderBG(
+    view: Float32Array, proj: Float32Array, model: Float32Array,
+    camPos: [number, number, number],
+    w: number, h: number,
+  ): void {
+    const gl = this.gl;
+
+    gl.useProgram(this.bgProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+
+    // matrices
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.bgProg, 'projectionMatrix'),    false, proj);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.bgProg, 'modelViewMatrix'),     false, this._multiplyMat4(view, model));
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.bgProg, 'modelMatrix'),         false, model);
+
+    // uniforms
+    gl.uniform1f(gl.getUniformLocation(this.bgProg, 'uAlpha'), this.cfg.bgAlpha);
+
+    // tMap
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tBGMap);
+    gl.uniform1i(gl.getUniformLocation(this.bgProg, 'tMap'), 0);
+
+    // attributes: position
+    const posLoc = gl.getAttribLocation(this.bgProg, 'position');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.bgQuadBuf);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+    // attributes: uv
+    const uvLoc = gl.getAttribLocation(this.bgProg, 'uv');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.bgUvBuf);
+    gl.enableVertexAttribArray(uvLoc);
+    gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 0, 0);
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.enable(gl.DEPTH_TEST);
+
+    gl.disableVertexAttribArray(posLoc);
+    gl.disableVertexAttribArray(uvLoc);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  /**
+   * Render the floor plane using FloorShader (FBR + mirror reflection + lightmap).
+   */
+  private _renderFloor(
+    view: Float32Array, proj: Float32Array, model: Float32Array,
+    camPos: [number, number, number],
+    w: number, h: number,
+  ): void {
+    const gl  = this.gl;
+    const cfg = this.cfg;
+
+    gl.useProgram(this.floorProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+
+    // ── matrices ──────────────────────────────────────────────────────────────
+    const mv       = this._multiplyMat4(view, model);
+    const normalM  = this._normalMatrix(mv);
+    const mirrorM  = this._buildMirrorMatrix(model);
+
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.floorProg, 'projectionMatrix'),  false, proj);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.floorProg, 'modelViewMatrix'),   false, mv);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.floorProg, 'modelMatrix'),       false, model);
+    gl.uniformMatrix3fv(gl.getUniformLocation(this.floorProg, 'normalMatrix'),      false, normalM);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.floorProg, 'uMirrorMatrix'),     false, mirrorM);
+
+    // ── light + material uniforms ─────────────────────────────────────────────
+    gl.uniform4f(gl.getUniformLocation(this.floorProg, 'uLight'),
+      cfg.lightPos[0], cfg.lightPos[1], cfg.lightPos[2], cfg.lightIntensity);
+    gl.uniform3f(gl.getUniformLocation(this.floorProg, 'uColor'),
+      cfg.materialColor[0], cfg.materialColor[1], cfg.materialColor[2]);
+    gl.uniform1f(gl.getUniformLocation(this.floorProg, 'uNormalStrength'), cfg.normalStrength);
+    gl.uniform3f(gl.getUniformLocation(this.floorProg, 'cameraPosition'),  camPos[0], camPos[1], camPos[2]);
+    gl.uniform1f(gl.getUniformLocation(this.floorProg, 'time'),            this.time);
+
+    // FloorShader-specific uniforms
+    gl.uniform1f(gl.getUniformLocation(this.floorProg, 'uMirrorStrength'),   cfg.mirrorStrength);
+    gl.uniform1f(gl.getUniformLocation(this.floorProg, 'uDistortStrength'),  cfg.distortStrength);
+    gl.uniform1f(gl.getUniformLocation(this.floorProg, 'uRUVScale'),         cfg.ruvScale);
+    gl.uniform2f(gl.getUniformLocation(this.floorProg, 'uRUVOffset'),
+      cfg.ruvOffset[0], cfg.ruvOffset[1]);
+
+    // ── bind textures ─────────────────────────────────────────────────────────
+    // unit 0: tMRO
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tMRO);
+    gl.uniform1i(gl.getUniformLocation(this.floorProg, 'tMRO'), 0);
+
+    // unit 1: tMatcap
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.tMatcap);
+    gl.uniform1i(gl.getUniformLocation(this.floorProg, 'tMatcap'), 1);
+
+    // unit 2: tNormal
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.tNormal);
+    gl.uniform1i(gl.getUniformLocation(this.floorProg, 'tNormal'), 2);
+
+    // unit 3: tLightmap
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.tLightmap);
+    gl.uniform1i(gl.getUniformLocation(this.floorProg, 'tLightmap'), 3);
+
+    // unit 4: tMirrorReflection
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.tMirrorReflection);
+    gl.uniform1i(gl.getUniformLocation(this.floorProg, 'tMirrorReflection'), 4);
+
+    // unit 5: tLightReflection
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.tLightReflection);
+    gl.uniform1i(gl.getUniformLocation(this.floorProg, 'tLightReflection'), 5);
+
+    // ── vertex attributes ────────────────────────────────────────────────────
+    const posLoc  = gl.getAttribLocation(this.floorProg, 'position');
+    const norLoc  = gl.getAttribLocation(this.floorProg, 'normal');
+    const uvLoc   = gl.getAttribLocation(this.floorProg, 'uv');
+    const uv2Loc  = gl.getAttribLocation(this.floorProg, 'uv2');
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.floorPosBuf);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc,  3, gl.FLOAT, false, 0, 0);
+
+    if (norLoc >= 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.floorNorBuf);
+      gl.enableVertexAttribArray(norLoc);
+      gl.vertexAttribPointer(norLoc, 3, gl.FLOAT, false, 0, 0);
+    }
+
+    if (uvLoc >= 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.floorUvBuf);
+      gl.enableVertexAttribArray(uvLoc);
+      gl.vertexAttribPointer(uvLoc,  2, gl.FLOAT, false, 0, 0);
+    }
+
+    if (uv2Loc >= 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.floorUv2Buf);
+      gl.enableVertexAttribArray(uv2Loc);
+      gl.vertexAttribPointer(uv2Loc, 2, gl.FLOAT, false, 0, 0);
+    }
+
+    // ── draw ─────────────────────────────────────────────────────────────────
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.floorIdxBuf);
+    gl.enable(gl.DEPTH_TEST);
+    gl.drawElements(gl.TRIANGLES, this.floorIndexCount, gl.UNSIGNED_SHORT, 0);
+
+    // ── cleanup ───────────────────────────────────────────────────────────────
+    if (posLoc >= 0) gl.disableVertexAttribArray(posLoc);
+    if (norLoc >= 0) gl.disableVertexAttribArray(norLoc);
+    if (uvLoc  >= 0) gl.disableVertexAttribArray(uvLoc);
+    if (uv2Loc >= 0) gl.disableVertexAttribArray(uv2Loc);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+  }
+
+  // ─── Private: math helpers ───────────────────────────────────────────────────
+
+  /**
+   * Multiply two column-major 4×4 matrices: returns a × b.
+   */
+  private _multiplyMat4(a: Float32Array, b: Float32Array): Float32Array {
+    const out = new Float32Array(16);
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 4; col++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) {
+          sum += a[k*4 + row] * b[col*4 + k];
+        }
+        out[col*4 + row] = sum;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Extract upper-left 3×3 normal matrix (inverse-transpose) from a 4×4 MV.
+   * Returns column-major Float32Array[9].
+   */
+  private _normalMatrix(mv: Float32Array): Float32Array {
+    // For a pure rotation+translation (no non-uniform scale), normalMat = upper 3×3 of mv.
+    const n = new Float32Array(9);
+    n[0] = mv[0]; n[1] = mv[1]; n[2] = mv[2];
+    n[3] = mv[4]; n[4] = mv[5]; n[5] = mv[6];
+    n[6] = mv[8]; n[7] = mv[9]; n[8] = mv[10];
+    return n;
+  }
+
+  /**
+   * Build the AT mirror projection matrix from model matrix.
+   * This creates a reflection matrix for the ground plane (Y = 0).
+   * Returns a column-major Float32Array[16].
+   */
+  private _buildMirrorMatrix(model: Float32Array): Float32Array {
+    // Standard Y=0 plane reflection matrix:
+    // [ 1  0  0  0 ]
+    // [ 0 -1  0  0 ]
+    // [ 0  0  1  0 ]
+    // [ 0  0  0  1 ]
+    // Then multiply with a simple bias matrix to project into [0,1] NDC for UV lookup.
+    const reflect = new Float32Array([
+       1, 0, 0, 0,
+       0,-1, 0, 0,
+       0, 0, 1, 0,
+       0, 0, 0, 1,
+    ]);
+    // bias: NDC → [0,1]
+    const bias = new Float32Array([
+      0.5, 0, 0, 0,
+      0, 0.5, 0, 0,
+      0, 0, 0.5, 0,
+      0.5, 0.5, 0.5, 1,
+    ]);
+    return this._multiplyMat4(bias, reflect);
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Convenience factory
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Convenience factory ─────────────────────────────────────────────────────
 
 /**
- * Create and build an ATTerrainEnvironment in one call.
+ * Create an ATTerrainEnvironment with default settings.
  *
  * ```ts
- * const terrain = await createATTerrainEnvironment(device, 'bgra8unorm', {
- *   lights: [
- *     { type: 1, position: [5, 8, -3], color: [1, 0.95, 0.88], intensity: 1.2 },
- *   ],
- *   fogDensity: 0.04,
- *   enableDust: true,
+ * const terrain = createATTerrainEnvironment(gl, {
+ *   mirrorStrength: 0.5,
+ *   lightPos: [3, 6, 2],
  * });
+ * // each frame:
+ * terrain.render(dt, viewMat, projMat, modelMat, camPos, canvas.width, canvas.height);
  * ```
  */
-export async function createATTerrainEnvironment(
-  device: GPUDevice,
-  format: GPUTextureFormat,
-  cfg?:   ATTerrainEnvironmentConfig,
-): Promise<ATTerrainEnvironment> {
-  const terrain = new ATTerrainEnvironment(device, format, cfg);
-  await terrain.build();
-  return terrain;
+export function createATTerrainEnvironment(
+  gl:  WebGLRenderingContext,
+  cfg: ATTerrainEnvironmentConfig = {},
+): ATTerrainEnvironment {
+  return new ATTerrainEnvironment(gl, cfg);
 }
