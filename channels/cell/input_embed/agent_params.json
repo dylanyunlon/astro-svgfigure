@@ -1,16 +1,22 @@
 {
   "bbox": {
-    "x": 220.0,
-    "y": 40.0,
+    "x": 320.0,
+    "y": 50.0,
     "w": 160,
-    "h": 50,
-    "z": 5
+    "h": 55,
+    "z": 1
   },
-  "opacity": 0.834,
+  "opacity": 0.92,
   "species_params": {
-    "num_arrows": 4,
-    "angle_spread": 0.416,
-    "arrow_weight": 2.429,
-    "arrow_opacity": 0.624
+    "primary_color": "#546E7A",
+    "glow_color": "#78909C",
+    "algorithm_gene": "token_to_vector_heatmap",
+    "sdf_shape": "rounded_rect",
+    "animation_speed": 0.6,
+    "num_rays": 0,
+    "focal_intensity": 0.0,
+    "halo_radius": 0.15,
+    "internal_pattern": "one_dimensional_heatmap_bars",
+    "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
   }
 }

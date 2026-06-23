@@ -1,16 +1,22 @@
 {
   "bbox": {
-    "x": 220.0,
-    "y": 470.0,
-    "w": 140,
-    "h": 45,
-    "z": 3
+    "x": 320.0,
+    "y": 385.0,
+    "w": 160,
+    "h": 55,
+    "z": 2
   },
-  "opacity": 0.955,
+  "opacity": 0.9,
   "species_params": {
-    "zigzag_segments": 6,
-    "arc_seed": 4090,
-    "stroke_weight": 1.588,
-    "activation_type": "relu"
+    "primary_color": "#F57C00",
+    "glow_color": "#FFB74D",
+    "algorithm_gene": "zigzag_relu_activation",
+    "sdf_shape": "rounded_rect",
+    "animation_speed": 1.0,
+    "num_rays": 0,
+    "focal_intensity": 0.0,
+    "halo_radius": 0.22,
+    "internal_pattern": "expand_contract_bottleneck",
+    "academic_source": "InTraVisTo: pink=FF layers; standard: wide\u2192narrow\u2192wide MLP bottleneck shape"
   }
 }

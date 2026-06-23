@@ -1,16 +1,22 @@
 {
   "bbox": {
-    "x": 220.0,
-    "y": 370.0,
+    "x": 320.0,
+    "y": 315.0,
     "w": 140,
     "h": 40,
-    "z": 5
+    "z": 2
   },
-  "opacity": 0.9,
+  "opacity": 0.82,
   "species_params": {
-    "arm_ratio": 0.259,
-    "stroke_weight": 3.412,
-    "diag_dasharray": "4,3",
-    "norm_strength": 0.594
+    "primary_color": "#E53935",
+    "glow_color": "#EF9A9A",
+    "algorithm_gene": "residual_merge_crosshair",
+    "sdf_shape": "rounded_rect",
+    "animation_speed": 0.4,
+    "num_rays": 0,
+    "focal_intensity": 0.0,
+    "halo_radius": 0.12,
+    "internal_pattern": "plus_sign_merge_indicator",
+    "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
   }
 }

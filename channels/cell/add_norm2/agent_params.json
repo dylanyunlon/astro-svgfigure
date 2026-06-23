@@ -1,16 +1,22 @@
 {
   "bbox": {
-    "x": 220.0,
-    "y": 575.0,
+    "x": 320.0,
+    "y": 470.0,
     "w": 140,
     "h": 40,
-    "z": 5
+    "z": 2
   },
-  "opacity": 0.732,
+  "opacity": 0.82,
   "species_params": {
-    "arm_ratio": 0.338,
-    "stroke_weight": 3.09,
-    "diag_dasharray": "5,2",
-    "norm_strength": 0.849
+    "primary_color": "#C62828",
+    "glow_color": "#EF5350",
+    "algorithm_gene": "residual_merge_crosshair",
+    "sdf_shape": "rounded_rect",
+    "animation_speed": 0.4,
+    "num_rays": 0,
+    "focal_intensity": 0.0,
+    "halo_radius": 0.12,
+    "internal_pattern": "plus_sign_merge_indicator",
+    "academic_source": "Same residual convention as add_norm1; paired visually"
   }
 }

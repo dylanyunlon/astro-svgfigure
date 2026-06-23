@@ -1,16 +1,22 @@
 {
   "bbox": {
-    "x": 220.0,
-    "y": 150.0,
+    "x": 320.0,
+    "y": 135.0,
     "w": 160,
-    "h": 50,
-    "z": 5
+    "h": 55,
+    "z": 1
   },
-  "opacity": 0.842,
+  "opacity": 0.88,
   "species_params": {
-    "num_arrows": 5,
-    "angle_spread": 0.357,
-    "arrow_weight": 2.047,
-    "arrow_opacity": 0.476
+    "primary_color": "#7E57C2",
+    "glow_color": "#B39DDB",
+    "algorithm_gene": "sinusoidal_wave_pattern",
+    "sdf_shape": "rounded_rect",
+    "animation_speed": 1.2,
+    "num_rays": 0,
+    "focal_intensity": 0.0,
+    "halo_radius": 0.2,
+    "internal_pattern": "sine_cosine_alternating_bands",
+    "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies"
   }
 }
