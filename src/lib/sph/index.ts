@@ -199,3 +199,6 @@ export type { GlowMode, EmissiveProfile, EmissiveGlowConfig, CellBloomFeedback }
 // rain-snow-system (M796)
 export { RainSnowSystem, WEATHER_PRESETS, WEATHER_WORKGROUP, WEATHER_MAX, WIND_FIELD_SIZE, PARTICLE_STRIDE, RAIN, SNOW, createWeatherSystem } from './rain-snow-system';
 export type { WeatherKind, WeatherMode, RainSnowConfig, WeatherSnapshot } from './rain-snow-system';
+// holographic-display (M798)
+export { HolographicDisplay, HOLO_PRESETS, HOLOGRAPHIC_DEFAULTS, HOLOGRAPHIC_WGSL, createHolographicDisplay, createDebugHolographic, createSubtleHolographic, selfTest as holographicDisplaySelfTest } from './holographic-display';
+export type { HoloCellEntry, HoloFrameData, HoloPresetName, RGBA as HoloRGBA, HoloPalette, HolographicDisplayOptions } from './holographic-display';
