@@ -2,8 +2,6 @@
 // Bridges cell_registry.json + species_assignment.json to RigidBody creation.
 // Maps the 7 Transformer cells from /api/cells into SPH rigid body parameters.
 
-import SPECIES_PHYSICS_JSON from '../../../channels/physics/species_physics.json';
-
 export interface CellPhysicsConfig {
   id: string;           // e.g. "self_attn"
   x: number; y: number; // center from bbox
@@ -16,10 +14,29 @@ export interface CellPhysicsConfig {
   pinned: boolean;
 }
 
-// Species → physics property mapping — loaded from channels/physics/species_physics.json
-// so that tuning values live in one place and are shared with the Python pipeline.
-const SPECIES_PHYSICS: Record<string, { mass: number; friction: number; restitution: number; buoyancy: number }> =
-  SPECIES_PHYSICS_JSON as Record<string, { mass: number; friction: number; restitution: number; buoyancy: number }>;
+// Species → physics property mapping — loaded at runtime from
+// channels/physics/species_physics.json so that tuning values live in one
+// place and are shared with the Python pipeline.
+let SPECIES_PHYSICS: Record<string, { mass: number; friction: number; restitution: number; buoyancy: number }> = {};
+
+/**
+ * Fetch and cache the species physics data.
+ * Safe to call multiple times — subsequent calls are no-ops once loaded.
+ */
+let _loadPromise: Promise<void> | null = null;
+export function loadSpeciesPhysics(): Promise<void> {
+  if (!_loadPromise) {
+    _loadPromise = fetch('/channels/physics/species_physics.json')
+      .then((resp) => {
+        if (!resp.ok) throw new Error(`Failed to fetch species_physics.json: ${resp.status}`);
+        return resp.json();
+      })
+      .then((data) => {
+        SPECIES_PHYSICS = data as Record<string, { mass: number; friction: number; restitution: number; buoyancy: number }>;
+      });
+  }
+  return _loadPromise;
+}
 
 // Fallback physics for unknown species
 const DEFAULT_PHYSICS = { mass: 75, friction: 0.5, restitution: 0.3, buoyancy: 0.5 };
@@ -107,6 +124,9 @@ export async function initCellBodies(
   sphBridge: any,
   cells: Array<{ id: string; bbox: { min: number[]; max: number[] }; species: string }>
 ): Promise<void> {
+  // Ensure species physics data is loaded before resolving configs
+  await loadSpeciesPhysics();
+
   if (!sphBridge || typeof sphBridge.createRigidBody !== 'function') {
     throw new Error(
       'cell-body-bridge: sphBridge must expose a createRigidBody(config) method.'
