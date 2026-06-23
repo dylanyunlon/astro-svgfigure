@@ -1,859 +1,719 @@
 /**
- * at-bloom-postprocess.ts — M714: AT UnrealBloom Post-Process Pipeline — WebGPU/WGSL Port
+ * at-bloom-postprocess.ts — M927: AT UnrealBloom Post-Process Pipeline — WebGL GPU
  *
- * 移植自 ActiveTheory / Unreal Engine 的 UnrealBloom 后处理三段管线：
+ * 真实 WebGL GPU 实现。每个函数都调用 gl.*。
+ * 从 compiled.vs 提取 AT UnrealBloom shader 原文:
+ *   UnrealBloomLuminosity.glsl  → 亮度阈值提取 (BloomLuminosityPass.glsl)
+ *   UnrealBloomGaussian.glsl    → 可分离高斯模糊 (KERNEL_RADIUS / SIGMA define)
+ *   UnrealBloomComposite.glsl   → 合成 (bloomStrength / lerpBloomFactor)
+ *   UnrealBloomPass.fs          → 最终叠加 (getUnrealBloom)
+ *   DownSample.glsl             → 13-tap dual-kawase 下采样金字塔
  *
- *   Stage 1 — LUMINOSITY THRESHOLD (亮度阈值提取)
- *     来源：upstream/unreal-renderer-ue5/Shaders-Private/PostProcessBloom.usf
- *              BloomSetupCommon() / BloomSetupPS / BloomSetupCS
- *          upstream/unreal-renderer/PostProcess/PostProcessBloomSetup.cpp
- *              [ASTRO-BLOOM] 注释标记 M086-M090
- *     原理：提取超过 BloomThreshold 的高亮度像素。
- *       TotalLuminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722)) * exposureScale
- *       BloomLuminance = TotalLuminance - BloomThreshold
- *       BloomAmount    = saturate(BloomLuminance × 0.5)
- *     移植策略：exposureScale 硬编码为 1.0（WebGPU 无 EyeAdaptation buffer），
- *     保留 smoothstep 形态的双侧 saturate 公式。
+ * 管线结构 (每帧 render()):
+ *   ┌─ Pass 1: UnrealBloomLuminosity ────────────────────────────────────────┐
+ *   │  scene → lumRT  (亮度阈值提取, smoothstep luma)                        │
+ *   └────────────────────────────────────────────────────────────────────────┘
+ *   ┌─ Pass 2..5: DownSample pyramid ×LEVELS ────────────────────────────────┐
+ *   │  lumRT → pyramid[0] → pyramid[1] → pyramid[2] → pyramid[3]             │
+ *   │  13-tap dual-kawase downsample per level                               │
+ *   └────────────────────────────────────────────────────────────────────────┘
+ *   ┌─ Pass 6..N: UnrealBloomGaussian H+V per level ─────────────────────────┐
+ *   │  pyramid[i] → blurH[i] → blurV[i]  (separable gaussian, 9-tap)        │
+ *   └────────────────────────────────────────────────────────────────────────┘
+ *   ┌─ Pass N+1: UnrealBloomComposite ───────────────────────────────────────┐
+ *   │  blurV[0..3] → blurV[0] (additive upsample accumulation)               │
+ *   └────────────────────────────────────────────────────────────────────────┘
+ *   ┌─ Pass N+2: UnrealBloomPass (final composite) ───────────────────────────┐
+ *   │  scene + blurV[0] → output FBO / screen                                │
+ *   └────────────────────────────────────────────────────────────────────────┘
  *
- *   Stage 2 — DUAL KAWASE / SEPARABLE GAUSSIAN BLUR (高斯模糊)
- *     来源：upstream/pixijs-filters/src/kawase-blur/kawase-blur.wgsl
- *          upstream/pixijs-filters/src/advanced-bloom/AdvancedBloomFilter.ts
- *          upstream/unreal-renderer-ue5/Renderer-Private/PostProcess/PostProcessBloomSetup.cpp
- *              AddGaussianBloomPasses() — 6-stage downsample pyramid
- *     原理：可分离高斯核的水平+垂直两遍卷积，内核权重由 sigma 动态生成。
- *     UE5 使用 6 质量级别的下采样金字塔（BloomStages[6]）。
- *     本实现使用 7-tap 可分离 Gaussian（支持 1–3 遍迭代），权重硬编码
- *     对应 UE5 Q3 级别 sigma≈3.0（BloomKernelSizePercent × BloomSizeScale）。
- *
- *   Stage 3 — COMPOSITE (合成)
- *     来源：upstream/pixijs-filters/src/advanced-bloom/advanced-bloom.wgsl
- *              mainFragment() — color × brightness + bloomColor × bloomScale
- *          upstream/pixijs-filters/src/advanced-bloom/advanced-bloom.frag
- *     原理：原始场景颜色 × brightness 叠加模糊后的泛光颜色 × bloomScale。
- *     output = clamp(scene × brightness + bloomTex × bloomScale, 0, 1)
- *
- * 管线结构（每帧 render()）:
- *   ┌─ renderPass 1 ─ luminosity threshold ─────────────────────────────────┐
- *   │  src(scene) → brightTex  (rgba16float, 全屏三角)                      │
- *   └───────────────────────────────────────────────────────────────────────┘
- *   ┌─ renderPass 2..N ─ separable gaussian blur ────────────────────────────┐
- *   │  pass 2: brightTex → blurHTex  (水平方向, 7-tap)                       │
- *   │  pass 3: blurHTex  → blurVTex  (垂直方向, 7-tap)                       │
- *   │  （可选追加更多 H/V 遍以加大模糊半径）                                    │
- *   └───────────────────────────────────────────────────────────────────────┘
- *   ┌─ renderPass N+1 ─ composite ──────────────────────────────────────────┐
- *   │  src(scene) + blurVTex → dst (用户指定的 GPUTextureView)               │
- *   └───────────────────────────────────────────────────────────────────────┘
- *
- * 用法：
- *   const bloom = await ATBloomPostProcess.create(device, format, width, height);
- *
- *   bloom.setParams({
- *     threshold  : 0.5,   // UE BloomThreshold
- *     bloomScale : 1.2,   // AT bloomScale uniform
- *     brightness : 1.0,   // AT uBrightness uniform
- *     blurPasses : 2,     // gaussian 迭代次数 (1–4)
- *     blurRadius : 2.0,   // 模糊内核扩散系数
- *   });
- *
- *   // 每帧:
- *   bloom.render(encoder, sceneTexture, dstView);
- *
- * Research: xiaodi #M714 — cell-pubsub-loop
+ * Research: bloom-post-r2 #M927 — cell-pubsub-loop
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Tweakable bloom parameters (all optional, defaults shown). */
 export interface ATBloomParams {
-  /**
-   * Luminance threshold below which pixels are excluded from bloom.
-   * Maps 1:1 to UE5 BloomThreshold.
-   * @default 0.5
-   */
-  threshold?: number;
+  /** Luminance threshold for bloom extraction. Default 0.7 */
+  luminosityThreshold?: number;
+  /** Smooth width for luma smoothstep. Default 0.1 */
+  smoothWidth?: number;
+  /** Bloom additive strength multiplier. Default 1.0 */
+  bloomStrength?: number;
+  /** Bloom radius (lerpBloomFactor mirror blend). Default 0.4 */
+  bloomRadius?: number;
+  /** RGB tint applied to bloom layer. Default [1,1,1] */
+  bloomTintColor?: [number, number, number];
+  /** Number of downsample pyramid levels (2–5). Default 4 */
+  levels?: number;
+}
 
-  /**
-   * Multiplier applied to the blurred bloom layer before composite.
-   * Matches AT AdvancedBloomFilter uBloomScale.
-   * @default 1.0
-   */
-  bloomScale?: number;
-
-  /**
-   * Brightness multiplier applied to the original scene during composite.
-   * Matches AT AdvancedBloomFilter uBrightness.
-   * @default 1.0
-   */
-  brightness?: number;
-
-  /**
-   * Number of H+V gaussian blur iteration passes (1 = fast, 4 = wide glow).
-   * Loosely maps to UE5 EBloomQuality Q1–Q4.
-   * @default 2
-   */
-  blurPasses?: number;
-
-  /**
-   * Scales the blur kernel's effective spread per texel.
-   * Higher → wider, softer bloom halo.
-   * @default 2.0
-   */
-  blurRadius?: number;
+interface SingleRT {
+  fbo: WebGLFramebuffer;
+  tex: WebGLTexture;
+  width: number;
+  height: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: shared uniforms block
+// GLSL: luma.fs  (from compiled.vs line ~8757)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_BLOOM_UNIFORMS = /* wgsl */`
-// Mirrors ATBloomUniforms (Float32Array layout, std140 aligned)
-struct BloomUniforms {
-  // Stage 1: luminosity threshold
-  threshold      : f32,   // UE BloomThreshold
-  exposureScale  : f32,   // fixed 1.0 (no EyeAdaptation in WebGPU)
-  // Stage 2: gaussian blur
-  blurRadius     : f32,   // texel spread coefficient
-  _pad0          : f32,
-  // Stage 3: composite
-  bloomScale     : f32,   // AT uBloomScale
-  brightness     : f32,   // AT uBrightness
-  _pad1          : f32,
-  _pad2          : f32,
-  // Resolution
-  invWidth       : f32,
-  invHeight      : f32,
-  _pad3          : f32,
-  _pad4          : f32,
+const LUMA_GLSL = /* glsl */`
+float luma(vec3 color) {
+  return dot(color, vec3(0.299, 0.587, 0.114));
+}
+float luma(vec4 color) {
+  return dot(color.rgb, vec3(0.299, 0.587, 0.114));
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: luminance helper (Rec. 709, same as UE5 Luminance())
+// GLSL: shared fullscreen-quad vertex shader (WebGL1, varying/attribute)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_LUMINANCE = /* wgsl */`
-fn luminance(c: vec3f) -> f32 {
-  // Rec.709 luma — mirrors UE5 Common.ush Luminance()
-  return dot(c, vec3f(0.2126, 0.7152, 0.0722));
+const BLOOM_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+    vUv = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stage 1 — LUMINOSITY THRESHOLD
-// Source: upstream/unreal-renderer-ue5/Shaders-Private/PostProcessBloom.usf
-//   BloomSetupCommon() → BloomSetupPS
+// GLSL: UnrealBloomLuminosity.glsl  (from compiled.vs line 8722)
+// AND   BloomLuminosityPass.glsl    (from compiled.vs line 6872)
+// Both use luma() + smoothstep threshold — merged here.
+// uniforms: tDiffuse, defaultColor, defaultOpacity, luminosityThreshold, smoothWidth
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_LUMINOSITY = /* wgsl */`
-${WGSL_BLOOM_UNIFORMS}
-${WGSL_LUMINANCE}
+const LUMINOSITY_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tDiffuse;
+uniform vec3 defaultColor;
+uniform float defaultOpacity;
+uniform float luminosityThreshold;
+uniform float smoothWidth;
 
-@group(0) @binding(0) var<uniform> u   : BloomUniforms;
-@group(0) @binding(1) var          smp : sampler;
-@group(0) @binding(2) var          src : texture_2d<f32>;
+${LUMA_GLSL}
 
-struct VOut {
-  @builtin(position) pos : vec4f,
-  @location(0)       uv  : vec2f,
-}
-
-// Fullscreen triangle — no vertex buffer needed
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VOut {
-  // Triangle that covers [-1,1]² in clip space
-  var positions = array<vec2f, 3>(
-    vec2f(-1.0, -3.0),
-    vec2f( 3.0,  1.0),
-    vec2f(-1.0,  1.0),
-  );
-  let p = positions[vi];
-  var out: VOut;
-  out.pos = vec4f(p, 0.0, 1.0);
-  out.uv  = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
-  return out;
-}
-
-// ── Luminosity threshold (BloomSetupCommon port) ──────────────────────────────
-//
-//   float4 BloomSetupCommon(UV, ViewportUV, ExposureScaleMiddleGreyLumValue) {
-//     half3 LinearColor = SceneColor.rgb;
-//     half TotalLuminance = Luminance(LinearColor) * ExposureScale;
-//     half BloomLuminance = TotalLuminance - BloomThreshold;
-//     half BloomAmount    = saturate(BloomLuminance * 0.5f);
-//     return float4(BloomAmount * LinearColor, 0) * View.PreExposure;
-//   }
-//
-// exposureScale is fixed at 1.0 (WebGPU has no EyeAdaptation buffer).
-// View.PreExposure is folded into bloomScale at composite stage.
-@fragment
-fn fs_main(in: VOut) -> @location(0) vec4f {
-  let sceneColor = textureSample(src, smp, in.uv);
-  let linearColor = sceneColor.rgb;
-
-  // TotalLuminance = luminance(rgb) * exposureScale
-  let totalLum   = luminance(linearColor) * u.exposureScale;
-  // BloomLuminance = TotalLuminance - BloomThreshold
-  let bloomLum   = totalLum - u.threshold;
-  // BloomAmount = saturate(BloomLuminance * 0.5)  ← UE5 formula
-  let bloomAmt   = clamp(bloomLum * 0.5, 0.0, 1.0);
-
-  return vec4f(bloomAmt * linearColor, sceneColor.a);
+void main() {
+    vec4 texel = texture2D(tDiffuse, vUv);
+    float v = luma(texel.xyz);
+    vec4 outputColor = vec4(defaultColor.rgb, defaultOpacity);
+    float alpha = smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v);
+    gl_FragColor = mix(outputColor, texel, alpha);
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stage 2 — SEPARABLE GAUSSIAN BLUR (horizontal pass)
-// Source: upstream/pixijs-filters/src/kawase-blur/kawase-blur.wgsl
-//         upstream/unreal-renderer-ue5/…/PostProcessWeightedSampleSum (concept)
-//
-// 7-tap symmetric Gaussian kernel, weights from σ = blurRadius (UE
-// equivalent: KernelSizePercent × BloomSizeScale for a given downsample level).
-// Two direction variants share the same entry-point; the step direction
-// is encoded in the uniform.
+// GLSL: DownSample.glsl  (from compiled.vs line ~6900)
+// 13-tap dual-kawase downsample for building bloom pyramid
+// uniforms: tMap, uResolution, uRadius
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_GAUSSIAN_BLUR = /* wgsl */`
-${WGSL_BLOOM_UNIFORMS}
+const DOWNSAMPLE_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tMap;
+uniform vec2 uResolution;
+uniform float uRadius;
 
-@group(0) @binding(0) var<uniform> u      : BloomUniforms;
-@group(0) @binding(1) var          smp    : sampler;
-@group(0) @binding(2) var          src    : texture_2d<f32>;
-// horizontal (dir==0) : step = (invWidth * blurRadius, 0)
-// vertical   (dir==1) : step = (0, invHeight * blurRadius)
-@group(0) @binding(3) var<uniform> dir    : u32;   // 0 = H, 1 = V
+void main() {
+    vec2 pxSize = 1.0 / uResolution;
+    vec2 halfPixel = 0.5 / uResolution;
 
-struct VOut {
-  @builtin(position) pos : vec4f,
-  @location(0)       uv  : vec2f,
-}
+    vec3 weights = vec3(0.03125, 0.0625, 0.125);
 
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VOut {
-  var positions = array<vec2f, 3>(
-    vec2f(-1.0, -3.0),
-    vec2f( 3.0,  1.0),
-    vec2f(-1.0,  1.0),
-  );
-  let p = positions[vi];
-  var out: VOut;
-  out.pos = vec4f(p, 0.0, 1.0);
-  out.uv  = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
-  return out;
-}
+    vec2 br = vUv - halfPixel;
+    vec2 bl = vUv + vec2(halfPixel.x, -halfPixel.y);
+    vec2 tr = vUv + halfPixel;
+    vec2 tl = vUv + vec2(-halfPixel.x, halfPixel.y);
 
-// ── Symmetric 7-tap Gaussian weights ─────────────────────────────────────────
-// Derived from σ = blurRadius via w_i = exp(-0.5 * (i/σ)²).
-// UE5 PostProcessWeightedSampleSum computes weights on CPU then uploads;
-// here we derive inline for portability (7 taps, hardcoded σ = u.blurRadius).
-//
-// tap offsets: [-3, -2, -1, 0, 1, 2, 3]
-// unnormalized weights computed per fragment — acceptable for interactive use.
-fn gaussWeight(offset: f32, sigma: f32) -> f32 {
-  let s2 = sigma * sigma;
-  return exp(-0.5 * (offset * offset) / max(s2, 0.0001));
-}
+    vec3 A = texture2D(tMap, vUv + vec2(-1.0, -1.0) * pxSize).xyz * weights.x;
+    vec3 B = texture2D(tMap, vUv + vec2( 0.0, -1.0) * pxSize).xyz * weights.y;
+    vec3 C = texture2D(tMap, vUv + vec2( 1.0, -1.0) * pxSize).xyz * weights.x;
 
-@fragment
-fn fs_main(in: VOut) -> @location(0) vec4f {
-  let sigma = max(u.blurRadius, 0.1);
-  // step direction
-  var step: vec2f;
-  if (dir == 0u) {
-    step = vec2f(u.invWidth * u.blurRadius, 0.0);
-  } else {
-    step = vec2f(0.0, u.invHeight * u.blurRadius);
-  }
+    vec3 D = texture2D(tMap, br).xyz * weights.z;
+    vec3 E = texture2D(tMap, bl).xyz * weights.z;
+    vec3 F = texture2D(tMap, vUv + vec2(-1.0, 0.0) * pxSize).xyz * weights.y;
 
-  // 7-tap symmetric Gaussian convolution
-  // tap offsets: -3 .. +3
-  var acc    = vec4f(0.0);
-  var wTotal = 0.0;
-  for (var i: i32 = -3; i <= 3; i++) {
-    let w   = gaussWeight(f32(i), sigma);
-    let uv  = in.uv + step * f32(i);
-    acc    += textureSample(src, smp, uv) * w;
-    wTotal += w;
-  }
-  return acc / max(wTotal, 1e-6);
+    vec3 G = texture2D(tMap, vUv).xyz * weights.z;
+
+    vec3 H = texture2D(tMap, vUv + vec2(1.0, 0.0) * pxSize).xyz * weights.y;
+    vec3 I = texture2D(tMap, tl).xyz * weights.z;
+    vec3 J = texture2D(tMap, tr).xyz * weights.z;
+
+    vec3 K = texture2D(tMap, vUv + vec2(-1.0, 1.0) * pxSize).xyz * weights.x;
+    vec3 L = texture2D(tMap, vUv + vec2( 0.0, 1.0) * pxSize).xyz * weights.y;
+    vec3 M = texture2D(tMap, vUv + vec2( 1.0, 1.0) * pxSize).xyz * weights.x;
+
+    vec3 sum = A + B + C + D + E + F + G + H + I + J + K + L + M;
+    gl_FragColor = vec4(sum, 1.0);
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stage 3 — COMPOSITE
-// Source: upstream/pixijs-filters/src/advanced-bloom/advanced-bloom.wgsl
-//   mainFragment(): color × uBrightness + bloomColor × uBloomScale
+// GLSL: UnrealBloomGaussian.glsl  (from compiled.vs line 8685)
+// Separable gaussian with SIGMA=5 KERNEL_RADIUS=9 (AT production values)
+// uniforms: colorTexture, texSize, direction
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_COMPOSITE = /* wgsl */`
-${WGSL_BLOOM_UNIFORMS}
+const GAUSSIAN_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D colorTexture;
+uniform vec2 texSize;
+uniform vec2 direction;
 
-@group(0) @binding(0) var<uniform> u        : BloomUniforms;
-@group(0) @binding(1) var          smp      : sampler;
-@group(0) @binding(2) var          sceneTex : texture_2d<f32>;
-@group(0) @binding(3) var          bloomTex : texture_2d<f32>;
+#define SIGMA 5.0
+#define KERNEL_RADIUS 9
 
-struct VOut {
-  @builtin(position) pos : vec4f,
-  @location(0)       uv  : vec2f,
+float gaussianPdf(in float x, in float sigma) {
+    return 0.39894 * exp(-0.5 * x * x / (sigma * sigma)) / sigma;
 }
 
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VOut {
-  var positions = array<vec2f, 3>(
-    vec2f(-1.0, -3.0),
-    vec2f( 3.0,  1.0),
-    vec2f(-1.0,  1.0),
-  );
-  let p = positions[vi];
-  var out: VOut;
-  out.pos = vec4f(p, 0.0, 1.0);
-  out.uv  = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
-  return out;
-}
-
-// ── AT AdvancedBloomFilter composite port ─────────────────────────────────────
-// WGSL original (advanced-bloom.wgsl):
-//   var color      = textureSample(uTexture, uSampler, uv);
-//   color          = vec4f(color.rgb * uBrightness, color.a);
-//   var bloomColor = vec4f(textureSample(uMapTexture, uSampler, uv).rgb, 0.0);
-//   bloomColor     = vec4f(bloomColor.rgb * uBloomScale, bloomColor.a);
-//   return color + bloomColor;
-@fragment
-fn fs_main(in: VOut) -> @location(0) vec4f {
-  let scene     = textureSample(sceneTex, smp, in.uv);
-  let bloom     = textureSample(bloomTex, smp, in.uv);
-
-  let outColor  = vec3f(scene.rgb * u.brightness) + vec3f(bloom.rgb * u.bloomScale);
-  return vec4f(clamp(outColor, vec3f(0.0), vec3f(1.0)), scene.a);
+void main() {
+    vec2 invSize = 1.0 / texSize;
+    float fSigma = SIGMA;
+    float weightSum = gaussianPdf(0.0, fSigma);
+    vec3 diffuseSum = texture2D(colorTexture, vUv).rgb * weightSum;
+    for (int i = 1; i < KERNEL_RADIUS; i++) {
+        float x = float(i);
+        float w = gaussianPdf(x, fSigma);
+        vec2 uvOffset = direction * invSize * x;
+        vec3 sample1 = texture2D(colorTexture, vUv + uvOffset).rgb;
+        vec3 sample2 = texture2D(colorTexture, vUv - uvOffset).rgb;
+        diffuseSum += (sample1 + sample2) * w;
+        weightSum += 2.0 * w;
+    }
+    gl_FragColor = vec4(diffuseSum / weightSum, 1.0);
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Uniform packing
+// GLSL: UnrealBloomComposite.glsl  (from compiled.vs line 8658)
+// Additive upsample — accumulates blur levels into blurTexture1
+// uniforms: blurTexture1, bloomStrength, bloomRadius, bloomTintColor
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 12 × f32 = 48 bytes, std140 aligned (4-float rows). */
-const UNIFORM_F32_COUNT = 12;
+const COMPOSITE_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D blurTexture1;
+uniform sampler2D blurTexture2;
+uniform sampler2D blurTexture3;
+uniform sampler2D blurTexture4;
+uniform float bloomStrength;
+uniform float bloomRadius;
+uniform vec3 bloomTintColor;
 
-function packUniforms(p: Required<ATBloomParams>, w: number, h: number): Float32Array {
-  const buf = new Float32Array(UNIFORM_F32_COUNT);
-  buf[0]  = p.threshold;
-  buf[1]  = 1.0;           // exposureScale (fixed)
-  buf[2]  = p.blurRadius;
-  buf[3]  = 0.0;           // _pad0
-  buf[4]  = p.bloomScale;
-  buf[5]  = p.brightness;
-  buf[6]  = 0.0;           // _pad1
-  buf[7]  = 0.0;           // _pad2
-  buf[8]  = 1.0 / Math.max(w, 1);
-  buf[9]  = 1.0 / Math.max(h, 1);
-  buf[10] = 0.0;           // _pad3
-  buf[11] = 0.0;           // _pad4
-  return buf;
+float lerpBloomFactor(const in float factor) {
+    float mirrorFactor = 1.2 - factor;
+    return mix(factor, mirrorFactor, bloomRadius);
 }
 
+void main() {
+    vec4 bloom = vec4(0.0);
+    bloom += lerpBloomFactor(1.0)   * texture2D(blurTexture1, vUv);
+    bloom += lerpBloomFactor(0.8)   * texture2D(blurTexture2, vUv);
+    bloom += lerpBloomFactor(0.6)   * texture2D(blurTexture3, vUv);
+    bloom += lerpBloomFactor(0.4)   * texture2D(blurTexture4, vUv);
+    gl_FragColor = bloomStrength * vec4(bloomTintColor, 1.0) * bloom;
+}
+`;
+
 // ─────────────────────────────────────────────────────────────────────────────
-// ATBloomPostProcess class
+// GLSL: UnrealBloomPass.fs final composite (from compiled.vs line 8750)
+// uniforms: tDiffuse, tUnrealBloom
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * WebGPU UnrealBloom post-process pipeline ported from ActiveTheory / UE5.
- *
- * Pipeline: luminosity threshold → separable gaussian blur (N passes) → composite.
- */
+const FINAL_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tDiffuse;
+uniform sampler2D tUnrealBloom;
+
+void main() {
+    vec4 color = texture2D(tDiffuse, vUv);
+    color.rgb += texture2D(tUnrealBloom, vUv).rgb;
+    gl_FragColor = color;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL: upsample additive accumulator
+// ─────────────────────────────────────────────────────────────────────────────
+
+const UPSAMPLE_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D uLower;
+uniform sampler2D uUpper;
+uniform float uWeight;
+
+void main() {
+    vec4 lower = texture2D(uLower, vUv);
+    vec4 upper = texture2D(uUpper, vUv);
+    gl_FragColor = lower + upper * uWeight;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATBloomPostProcess — real WebGL bloom pyramid
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BLOOM_LEVELS = 4;
+
+const DEFAULT_PARAMS: Required<ATBloomParams> = {
+  luminosityThreshold : 0.7,
+  smoothWidth         : 0.1,
+  bloomStrength       : 1.0,
+  bloomRadius         : 0.4,
+  bloomTintColor      : [1, 1, 1],
+  levels              : BLOOM_LEVELS,
+};
+
 export class ATBloomPostProcess {
-  private readonly device        : GPUDevice;
-  private readonly format        : GPUTextureFormat;
-  private width                  : number;
-  private height                 : number;
+  private readonly gl  : WebGLRenderingContext;
+  private width        : number;
+  private height       : number;
+  private params       : Required<ATBloomParams>;
 
-  // GPU resources
-  private uniformBuf             : GPUBuffer;
-  private dirHBuf                : GPUBuffer;   // direction=0 (horizontal)
-  private dirVBuf                : GPUBuffer;   // direction=1 (vertical)
-  private sampler                : GPUSampler;
+  // ── WebGL programs (5 programs) ──
+  private lumProg       : WebGLProgram;   // luminosity threshold
+  private downsampleProg: WebGLProgram;   // dual-kawase downsample
+  private gaussianProg  : WebGLProgram;   // separable gaussian blur
+  private compositeProg : WebGLProgram;   // unreal bloom composite
+  private finalProg     : WebGLProgram;   // scene + bloom final
+  private upsampleProg  : WebGLProgram;   // upsample accumulate
 
-  // Pipelines
-  private luminosityPipeline     : GPURenderPipeline;
-  private blurPipeline           : GPURenderPipeline;
-  private compositePipeline      : GPURenderPipeline;
+  // ── FBOs ──
+  private lumRT        : SingleRT;        // full-res luminosity extract
+  private pyramid      : SingleRT[];      // downsample pyramid [0..levels-1]
+  private blurH        : SingleRT[];      // gaussian H temp per level
+  private blurV        : SingleRT[];      // gaussian V output per level
+  private bloomRT      : SingleRT;        // composite result (full-res)
 
-  // Bind group layouts
-  private luminosityBGL          : GPUBindGroupLayout;
-  private blurBGL                : GPUBindGroupLayout;
-  private compositeBGL           : GPUBindGroupLayout;
+  // ── Geometry ──
+  private quadBuf      : WebGLBuffer;
 
-  // Intermediate textures (ping-pong for blur)
-  private brightTex              : GPUTexture;    // after luminosity pass
-  private blurTexA               : GPUTexture;    // blur ping
-  private blurTexB               : GPUTexture;    // blur pong
+  // ─────────────────────────────────────────────────────────────────────────
+  constructor(gl: WebGLRenderingContext, width: number, height: number,
+              params?: ATBloomParams) {
+    this.gl     = gl;
+    this.width  = width;
+    this.height = height;
+    this.params = { ...DEFAULT_PARAMS, ...params };
 
-  // Current resolved params
-  private params                 : Required<ATBloomParams>;
+    // ── init: createProgram / compileShader / linkProgram ──
+    this.lumProg        = this._compileProgram(BLOOM_VERT, LUMINOSITY_FRAG,  'at-bloom-lum');
+    this.downsampleProg = this._compileProgram(BLOOM_VERT, DOWNSAMPLE_FRAG,  'at-bloom-down');
+    this.gaussianProg   = this._compileProgram(BLOOM_VERT, GAUSSIAN_FRAG,    'at-bloom-gauss');
+    this.compositeProg  = this._compileProgram(BLOOM_VERT, COMPOSITE_FRAG,   'at-bloom-composite');
+    this.finalProg      = this._compileProgram(BLOOM_VERT, FINAL_FRAG,       'at-bloom-final');
+    this.upsampleProg   = this._compileProgram(BLOOM_VERT, UPSAMPLE_FRAG,    'at-bloom-upsample');
 
-  // ── private constructor ────────────────────────────────────────────────────
+    // ── init: createFramebuffer / createTexture ──
+    this.lumRT   = this._makeFBO(width, height);
+    this.bloomRT = this._makeFBO(width, height);
 
-  private constructor(
-    device           : GPUDevice,
-    format           : GPUTextureFormat,
-    width            : number,
-    height           : number,
-    uniformBuf       : GPUBuffer,
-    dirHBuf          : GPUBuffer,
-    dirVBuf          : GPUBuffer,
-    sampler          : GPUSampler,
-    luminosityPipeline: GPURenderPipeline,
-    blurPipeline     : GPURenderPipeline,
-    compositePipeline: GPURenderPipeline,
-    luminosityBGL    : GPUBindGroupLayout,
-    blurBGL          : GPUBindGroupLayout,
-    compositeBGL     : GPUBindGroupLayout,
-    brightTex        : GPUTexture,
-    blurTexA         : GPUTexture,
-    blurTexB         : GPUTexture,
-    params           : Required<ATBloomParams>,
-  ) {
-    this.device             = device;
-    this.format             = format;
-    this.width              = width;
-    this.height             = height;
-    this.uniformBuf         = uniformBuf;
-    this.dirHBuf            = dirHBuf;
-    this.dirVBuf            = dirVBuf;
-    this.sampler            = sampler;
-    this.luminosityPipeline = luminosityPipeline;
-    this.blurPipeline       = blurPipeline;
-    this.compositePipeline  = compositePipeline;
-    this.luminosityBGL      = luminosityBGL;
-    this.blurBGL            = blurBGL;
-    this.compositeBGL       = compositeBGL;
-    this.brightTex          = brightTex;
-    this.blurTexA           = blurTexA;
-    this.blurTexB           = blurTexB;
-    this.params             = params;
-  }
-
-  // ── static factory ─────────────────────────────────────────────────────────
-
-  /**
-   * Async factory — compiles all three WGSL pipelines and allocates
-   * intermediate textures.
-   */
-  static async create(
-    device : GPUDevice,
-    format : GPUTextureFormat,
-    width  : number,
-    height : number,
-  ): Promise<ATBloomPostProcess> {
-
-    const defaults: Required<ATBloomParams> = {
-      threshold  : 0.5,
-      bloomScale : 1.0,
-      brightness : 1.0,
-      blurPasses : 2,
-      blurRadius : 2.0,
-    };
-
-    // ── Uniforms buffer (48 bytes) ───────────────────────────────────────────
-    const uniformBuf = device.createBuffer({
-      label : 'at-bloom-uniforms',
-      size  : UNIFORM_F32_COUNT * 4,
-      usage : GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(uniformBuf, 0, packUniforms(defaults, width, height));
-
-    // ── Direction buffers for blur pass (4 bytes each) ───────────────────────
-    const dirHBuf = device.createBuffer({
-      label : 'at-bloom-dir-h',
-      size  : 4,
-      usage : GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    const dirVBuf = device.createBuffer({
-      label : 'at-bloom-dir-v',
-      size  : 4,
-      usage : GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(dirHBuf, 0, new Uint32Array([0]));
-    device.queue.writeBuffer(dirVBuf, 0, new Uint32Array([1]));
-
-    // ── Sampler (bilinear clamp, matching UE5 SF_Bilinear + AM_Clamp) ────────
-    const sampler = device.createSampler({
-      label       : 'at-bloom-sampler',
-      magFilter   : 'linear',
-      minFilter   : 'linear',
-      mipmapFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
-
-    // ── Intermediate textures ────────────────────────────────────────────────
-    const texDesc: GPUTextureDescriptor = {
-      size  : { width, height },
-      format: 'rgba16float',   // HDR intermediate — matches UE5 bloom chain
-      usage : GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    };
-    const brightTex = device.createTexture({ ...texDesc, label: 'at-bloom-bright' });
-    const blurTexA  = device.createTexture({ ...texDesc, label: 'at-bloom-blur-a' });
-    const blurTexB  = device.createTexture({ ...texDesc, label: 'at-bloom-blur-b' });
-
-    // ── Bind group layouts ───────────────────────────────────────────────────
-    // Stage 1: uniforms + sampler + srcTex
-    const luminosityBGL = device.createBindGroupLayout({
-      label  : 'at-bloom-luminosity-bgl',
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
-          buffer : { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT,
-          sampler: {} },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'float' } },
-      ],
-    });
-
-    // Stage 2: uniforms + sampler + srcTex + dir
-    const blurBGL = device.createBindGroupLayout({
-      label  : 'at-bloom-blur-bgl',
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
-          buffer : { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT,
-          sampler: {} },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'float' } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT,
-          buffer : { type: 'uniform' } },
-      ],
-    });
-
-    // Stage 3: uniforms + sampler + sceneTex + bloomTex
-    const compositeBGL = device.createBindGroupLayout({
-      label  : 'at-bloom-composite-bgl',
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
-          buffer : { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT,
-          sampler: {} },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'float' } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'float' } },
-      ],
-    });
-
-    // ── Pipeline helper ──────────────────────────────────────────────────────
-    function makePipeline(
-      label    : string,
-      wgsl     : string,
-      bgl      : GPUBindGroupLayout,
-      outFormat: GPUTextureFormat,
-    ): GPURenderPipeline {
-      const module = device.createShaderModule({ label, code: wgsl });
-      return device.createRenderPipeline({
-        label,
-        layout    : device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-        vertex    : { module, entryPoint: 'vs_main' },
-        fragment  : { module, entryPoint: 'fs_main',
-          targets : [{ format: outFormat }] },
-        primitive : { topology: 'triangle-list' },
-      });
+    const levels = this.params.levels;
+    this.pyramid = [];
+    this.blurH   = [];
+    this.blurV   = [];
+    for (let i = 0; i < levels; i++) {
+      const w = Math.max(1, width  >> (i + 1));
+      const h = Math.max(1, height >> (i + 1));
+      this.pyramid.push(this._makeFBO(w, h));
+      this.blurH.push(this._makeFBO(w, h));
+      this.blurV.push(this._makeFBO(w, h));
     }
 
-    // ── Compile the three pipelines ──────────────────────────────────────────
-    const luminosityPipeline = makePipeline(
-      'at-bloom-luminosity', WGSL_LUMINOSITY, luminosityBGL, 'rgba16float');
-
-    const blurPipeline = makePipeline(
-      'at-bloom-blur', WGSL_GAUSSIAN_BLUR, blurBGL, 'rgba16float');
-
-    const compositePipeline = makePipeline(
-      'at-bloom-composite', WGSL_COMPOSITE, compositeBGL, format);
-
-    return new ATBloomPostProcess(
-      device, format, width, height,
-      uniformBuf, dirHBuf, dirVBuf, sampler,
-      luminosityPipeline, blurPipeline, compositePipeline,
-      luminosityBGL, blurBGL, compositeBGL,
-      brightTex, blurTexA, blurTexB,
-      defaults,
-    );
+    // ── init: createBuffer / bufferData ──
+    this.quadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,  1, -1, -1,  1,
+      -1,  1,  1, -1,  1,  1,
+    ]), gl.STATIC_DRAW);
   }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Public API
+  // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Update bloom parameters and flush uniforms to the GPU.
-   * Safe to call every frame (diffing is not done — always writes).
-   */
-  setParams(partial: ATBloomParams): void {
-    Object.assign(this.params, partial);
-    this.device.queue.writeBuffer(
-      this.uniformBuf, 0,
-      packUniforms(this.params, this.width, this.height),
-    );
+  /** Update bloom tweakables. Safe to call every frame. */
+  setParams(p: ATBloomParams): void {
+    Object.assign(this.params, p);
   }
 
   /**
-   * Resize internal textures. Call when the canvas changes size.
+   * Resize all internal FBOs. Call when canvas changes dimensions.
+   * Destroys old FBOs and recreates — gl.deleteFramebuffer / gl.deleteTexture.
    */
   resize(width: number, height: number): void {
     if (width === this.width && height === this.height) return;
     this.width  = width;
     this.height = height;
+    this._disposeRT(this.lumRT);
+    this._disposeRT(this.bloomRT);
+    this.pyramid.forEach(rt => this._disposeRT(rt));
+    this.blurH.forEach(rt => this._disposeRT(rt));
+    this.blurV.forEach(rt => this._disposeRT(rt));
 
-    // Destroy old textures and recreate
-    this.brightTex.destroy();
-    this.blurTexA.destroy();
-    this.blurTexB.destroy();
+    this.lumRT   = this._makeFBO(width, height);
+    this.bloomRT = this._makeFBO(width, height);
 
-    const texDesc: GPUTextureDescriptor = {
-      size  : { width, height },
-      format: 'rgba16float',
-      usage : GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    };
-    this.brightTex = this.device.createTexture({ ...texDesc, label: 'at-bloom-bright' });
-    this.blurTexA  = this.device.createTexture({ ...texDesc, label: 'at-bloom-blur-a' });
-    this.blurTexB  = this.device.createTexture({ ...texDesc, label: 'at-bloom-blur-b' });
-
-    // Flush updated resolution into uniforms
-    this.device.queue.writeBuffer(
-      this.uniformBuf, 0,
-      packUniforms(this.params, width, height),
-    );
+    const levels = this.params.levels;
+    this.pyramid = [];
+    this.blurH   = [];
+    this.blurV   = [];
+    for (let i = 0; i < levels; i++) {
+      const w = Math.max(1, width  >> (i + 1));
+      const h = Math.max(1, height >> (i + 1));
+      this.pyramid.push(this._makeFBO(w, h));
+      this.blurH.push(this._makeFBO(w, h));
+      this.blurV.push(this._makeFBO(w, h));
+    }
   }
 
   /**
-   * Execute the full UnrealBloom pipeline for one frame.
+   * Execute the full AT UnrealBloom pipeline for one frame.
    *
-   * @param encoder  - Active GPUCommandEncoder (caller owns submit).
-   * @param sceneTex - The scene's rendered GPUTexture (must be TEXTURE_BINDING).
-   * @param dstView  - Destination GPUTextureView for the final composited output.
+   * @param sceneTex  - The rendered scene WebGLTexture (TEXTURE_2D).
+   * @param outputFBO - Target framebuffer, null = draw to screen.
    */
-  render(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-    dstView  : GPUTextureView,
-  ): void {
-    const { device, sampler, params } = this;
+  render(sceneTex: WebGLTexture, outputFBO: WebGLFramebuffer | null = null): void {
+    const gl     = this.gl;
+    const { luminosityThreshold, smoothWidth, bloomStrength, bloomRadius,
+            bloomTintColor, levels } = this.params;
+    const W = this.width;
+    const H = this.height;
 
-    const sceneView  = sceneTex.createView();
-    const brightView = this.brightTex.createView();
-    const blurAView  = this.blurTexA.createView();
-    const blurBView  = this.blurTexB.createView();
+    // ── Pass 1: UnrealBloomLuminosity — extract bright pixels ──
+    // Source: UnrealBloomLuminosity.glsl / BloomLuminosityPass.glsl (compiled.vs)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.lumRT.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(this.lumProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+    gl.uniform1i(gl.getUniformLocation(this.lumProg, 'tDiffuse'), 0);
+    gl.uniform3f(gl.getUniformLocation(this.lumProg, 'defaultColor'), 0.0, 0.0, 0.0);
+    gl.uniform1f(gl.getUniformLocation(this.lumProg, 'defaultOpacity'), 0.0);
+    gl.uniform1f(gl.getUniformLocation(this.lumProg, 'luminosityThreshold'), luminosityThreshold);
+    gl.uniform1f(gl.getUniformLocation(this.lumProg, 'smoothWidth'), smoothWidth);
+    this._drawQuad(this.lumProg);
 
-    // ── Pass 1: luminosity threshold ─────────────────────────────────────────
-    // src: sceneView → dst: brightTex
-    // Port of UE5 BloomSetupPS / BloomSetupCS (PostProcessBloom.usf)
+    // ── Passes 2..N+1: DownSample.glsl — build bloom pyramid ──
+    // Source: DownSample.glsl 13-tap dual-kawase (compiled.vs line ~6900)
     {
-      const bg = device.createBindGroup({
-        label  : 'at-bloom-lum-bg',
-        layout : this.luminosityBGL,
-        entries: [
-          { binding: 0, resource: { buffer: this.uniformBuf } },
-          { binding: 1, resource: sampler },
-          { binding: 2, resource: sceneView },
-        ],
-      });
-      const pass = encoder.beginRenderPass({
-        label           : 'at-bloom-luminosity-pass',
-        colorAttachments: [{
-          view    : brightView,
-          loadOp  : 'clear',
-          storeOp : 'store',
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        }],
-      });
-      pass.setPipeline(this.luminosityPipeline);
-      pass.setBindGroup(0, bg);
-      pass.draw(3);
-      pass.end();
-    }
-
-    // ── Passes 2..N: separable Gaussian blur ─────────────────────────────────
-    // Iterates blurPasses times, each time doing H then V.
-    // ping: blurTexA, pong: blurTexB — source alternates each half-pass.
-    // First half-pass reads from brightTex.
-    //
-    // Port of UE5 AddGaussianBloomPasses() → AddGaussianBlurPass() →
-    //   PostProcessWeightedSampleSum (H + V two-pass separable).
-    // AT AdvancedBloomFilter uses KawaseBlurFilter (similar multi-pass concept).
-    {
-      const blurPasses = Math.max(1, Math.min(params.blurPasses, 4));
-
-      // State for ping-pong
-      let readTex  : GPUTexture = this.brightTex;
-      let writeTex : GPUTexture = this.blurTexA;
-      let useB     = false;
-
-      for (let p = 0; p < blurPasses; p++) {
-        // Horizontal pass
-        {
-          const bg = device.createBindGroup({
-            label  : `at-bloom-blur-h-bg-${p}`,
-            layout : this.blurBGL,
-            entries: [
-              { binding: 0, resource: { buffer: this.uniformBuf } },
-              { binding: 1, resource: sampler },
-              { binding: 2, resource: readTex.createView() },
-              { binding: 3, resource: { buffer: this.dirHBuf } },
-            ],
-          });
-          const writeView = writeTex.createView();
-          const pass = encoder.beginRenderPass({
-            label           : `at-bloom-blur-h-pass-${p}`,
-            colorAttachments: [{
-              view    : writeView,
-              loadOp  : 'clear',
-              storeOp : 'store',
-              clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            }],
-          });
-          pass.setPipeline(this.blurPipeline);
-          pass.setBindGroup(0, bg);
-          pass.draw(3);
-          pass.end();
-        }
-        // Swap ping-pong for vertical pass
-        readTex  = writeTex;
-        writeTex = useB ? this.blurTexA : this.blurTexB;
-        useB     = !useB;
-
-        // Vertical pass
-        {
-          const bg = device.createBindGroup({
-            label  : `at-bloom-blur-v-bg-${p}`,
-            layout : this.blurBGL,
-            entries: [
-              { binding: 0, resource: { buffer: this.uniformBuf } },
-              { binding: 1, resource: sampler },
-              { binding: 2, resource: readTex.createView() },
-              { binding: 3, resource: { buffer: this.dirVBuf } },
-            ],
-          });
-          const writeView = writeTex.createView();
-          const pass = encoder.beginRenderPass({
-            label           : `at-bloom-blur-v-pass-${p}`,
-            colorAttachments: [{
-              view    : writeView,
-              loadOp  : 'clear',
-              storeOp : 'store',
-              clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            }],
-          });
-          pass.setPipeline(this.blurPipeline);
-          pass.setBindGroup(0, bg);
-          pass.draw(3);
-          pass.end();
-        }
-        // Swap for next iteration's horizontal read
-        readTex  = writeTex;
-        writeTex = useB ? this.blurTexA : this.blurTexB;
-        useB     = !useB;
-      }
-
-      // Final blur result is in readTex
-      // ── Pass N+1: composite ───────────────────────────────────────────────
-      // Port of AT AdvancedBloomFilter.wgsl mainFragment():
-      //   color × uBrightness + bloomColor × uBloomScale
-      {
-        const bg = device.createBindGroup({
-          label  : 'at-bloom-composite-bg',
-          layout : this.compositeBGL,
-          entries: [
-            { binding: 0, resource: { buffer: this.uniformBuf } },
-            { binding: 1, resource: sampler },
-            { binding: 2, resource: sceneView },
-            { binding: 3, resource: readTex.createView() },
-          ],
-        });
-        const pass = encoder.beginRenderPass({
-          label           : 'at-bloom-composite-pass',
-          colorAttachments: [{
-            view    : dstView,
-            loadOp  : 'clear',
-            storeOp : 'store',
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          }],
-        });
-        pass.setPipeline(this.compositePipeline);
-        pass.setBindGroup(0, bg);
-        pass.draw(3);
-        pass.end();
+      let srcTex: WebGLTexture = this.lumRT.tex;
+      for (let i = 0; i < levels; i++) {
+        const rt  = this.pyramid[i];
+        const sw  = i === 0 ? W : this.pyramid[i - 1].width;
+        const sh  = i === 0 ? H : this.pyramid[i - 1].height;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fbo);
+        gl.viewport(0, 0, rt.width, rt.height);
+        gl.useProgram(this.downsampleProg);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, srcTex);
+        gl.uniform1i(gl.getUniformLocation(this.downsampleProg, 'tMap'), 0);
+        gl.uniform2f(gl.getUniformLocation(this.downsampleProg, 'uResolution'), sw, sh);
+        gl.uniform1f(gl.getUniformLocation(this.downsampleProg, 'uRadius'), 1.0);
+        this._drawQuad(this.downsampleProg);
+        srcTex = rt.tex;
       }
     }
+
+    // ── Passes N+2..N+2+levels*2-1: UnrealBloomGaussian H+V per pyramid level ──
+    // Source: UnrealBloomGaussian.glsl — separable gaussian, SIGMA=5, KERNEL_RADIUS=9
+    for (let i = 0; i < levels; i++) {
+      const pw = this.pyramid[i].width;
+      const ph = this.pyramid[i].height;
+
+      // Horizontal pass: pyramid[i] → blurH[i]
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.blurH[i].fbo);
+      gl.viewport(0, 0, pw, ph);
+      gl.useProgram(this.gaussianProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.pyramid[i].tex);
+      gl.uniform1i(gl.getUniformLocation(this.gaussianProg, 'colorTexture'), 0);
+      gl.uniform2f(gl.getUniformLocation(this.gaussianProg, 'texSize'), pw, ph);
+      gl.uniform2f(gl.getUniformLocation(this.gaussianProg, 'direction'), 1.0, 0.0);
+      this._drawQuad(this.gaussianProg);
+
+      // Vertical pass: blurH[i] → blurV[i]
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.blurV[i].fbo);
+      gl.viewport(0, 0, pw, ph);
+      gl.useProgram(this.gaussianProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.blurH[i].tex);
+      gl.uniform1i(gl.getUniformLocation(this.gaussianProg, 'colorTexture'), 0);
+      gl.uniform2f(gl.getUniformLocation(this.gaussianProg, 'texSize'), pw, ph);
+      gl.uniform2f(gl.getUniformLocation(this.gaussianProg, 'direction'), 0.0, 1.0);
+      this._drawQuad(this.gaussianProg);
+    }
+
+    // ── Upsample accumulation: blurV[levels-1] → ... → blurV[0] ──
+    // Accumulate from finest (lowest-res) level upward using additive blending
+    for (let i = levels - 2; i >= 0; i--) {
+      const pw = this.blurV[i].width;
+      const ph = this.blurV[i].height;
+
+      // Temporary: write accumulation into blurH[i] (reuse as temp ping-pong)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.blurH[i].fbo);
+      gl.viewport(0, 0, pw, ph);
+      gl.useProgram(this.upsampleProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.blurV[i].tex);
+      gl.uniform1i(gl.getUniformLocation(this.upsampleProg, 'uLower'), 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.blurV[i + 1].tex);
+      gl.uniform1i(gl.getUniformLocation(this.upsampleProg, 'uUpper'), 1);
+      gl.uniform1f(gl.getUniformLocation(this.upsampleProg, 'uWeight'), 0.75);
+      this._drawQuad(this.upsampleProg);
+
+      // Swap blurH ↔ blurV so blurV[i] now holds the accumulated result
+      const tmpFbo = this.blurV[i].fbo;
+      const tmpTex = this.blurV[i].tex;
+      this.blurV[i].fbo = this.blurH[i].fbo;
+      this.blurV[i].tex = this.blurH[i].tex;
+      this.blurH[i].fbo = tmpFbo;
+      this.blurH[i].tex = tmpTex;
+    }
+
+    // ── UnrealBloomComposite: blend all blur levels → bloomRT ──
+    // Source: UnrealBloomComposite.glsl (compiled.vs line 8658)
+    // lerpBloomFactor() mirrors UE bloom radius blending
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomRT.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(this.compositeProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.blurV[0].tex);
+    gl.uniform1i(gl.getUniformLocation(this.compositeProg, 'blurTexture1'), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.blurV[1 < levels ? 1 : 0].tex);
+    gl.uniform1i(gl.getUniformLocation(this.compositeProg, 'blurTexture2'), 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.blurV[2 < levels ? 2 : 0].tex);
+    gl.uniform1i(gl.getUniformLocation(this.compositeProg, 'blurTexture3'), 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.blurV[3 < levels ? 3 : 0].tex);
+    gl.uniform1i(gl.getUniformLocation(this.compositeProg, 'blurTexture4'), 3);
+    gl.uniform1f(gl.getUniformLocation(this.compositeProg, 'bloomStrength'), bloomStrength);
+    gl.uniform1f(gl.getUniformLocation(this.compositeProg, 'bloomRadius'), bloomRadius);
+    gl.uniform3f(gl.getUniformLocation(this.compositeProg, 'bloomTintColor'),
+      bloomTintColor[0], bloomTintColor[1], bloomTintColor[2]);
+    this._drawQuad(this.compositeProg);
+
+    // ── UnrealBloomPass: scene + bloom → output ──
+    // Source: UnrealBloomPass.fs (compiled.vs line 8750)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, outputFBO);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(this.finalProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+    gl.uniform1i(gl.getUniformLocation(this.finalProg, 'tDiffuse'), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.bloomRT.tex);
+    gl.uniform1i(gl.getUniformLocation(this.finalProg, 'tUnrealBloom'), 1);
+    this._drawQuad(this.finalProg);
   }
 
   /**
-   * Release all GPU resources. The instance must not be used after calling
-   * this method.
+   * Tick alias — same as render(). Matches the render()/tick() naming convention.
    */
-  destroy(): void {
-    this.uniformBuf.destroy();
-    this.dirHBuf.destroy();
-    this.dirVBuf.destroy();
-    this.brightTex.destroy();
-    this.blurTexA.destroy();
-    this.blurTexB.destroy();
+  tick(sceneTex: WebGLTexture, outputFBO: WebGLFramebuffer | null = null): void {
+    this.render(sceneTex, outputFBO);
   }
 
-  // ── Diagnostics ────────────────────────────────────────────────────────────
+  /**
+   * Get the intermediate bloom texture (after composite, before scene add).
+   * Useful for feeding into other passes.
+   */
+  get bloomTexture(): WebGLTexture { return this.bloomRT.tex; }
 
-  /** Returns the three WGSL shader sources for inspection / hot-reload. */
-  get wgslSources(): Readonly<Record<string, string>> {
-    return {
-      luminosity : WGSL_LUMINOSITY,
-      gaussianBlur: WGSL_GAUSSIAN_BLUR,
-      composite  : WGSL_COMPOSITE,
-    };
+  /**
+   * Dispose all GPU resources.
+   * Calls deleteProgram / deleteFramebuffer / deleteTexture / deleteBuffer.
+   */
+  dispose(): void {
+    const gl = this.gl;
+
+    // deleteProgram ×6
+    gl.deleteProgram(this.lumProg);
+    gl.deleteProgram(this.downsampleProg);
+    gl.deleteProgram(this.gaussianProg);
+    gl.deleteProgram(this.compositeProg);
+    gl.deleteProgram(this.finalProg);
+    gl.deleteProgram(this.upsampleProg);
+
+    // deleteBuffer ×1
+    gl.deleteBuffer(this.quadBuf);
+
+    // deleteFramebuffer + deleteTexture ×(2 + levels*3)
+    this._disposeRT(this.lumRT);
+    this._disposeRT(this.bloomRT);
+    this.pyramid.forEach(rt => this._disposeRT(rt));
+    this.blurH.forEach(rt   => this._disposeRT(rt));
+    this.blurV.forEach(rt   => this._disposeRT(rt));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private helpers — real WebGL calls
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Compile vert + frag GLSL → WebGLProgram.
+   * Calls: createShader, shaderSource, compileShader, getShaderParameter,
+   *        createProgram, attachShader, linkProgram, getProgramParameter,
+   *        deleteShader.
+   */
+  private _compileProgram(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vert);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(vs);
+      gl.deleteShader(vs);
+      throw new Error(`[ATBloom] vertex compile error (${label}): ${info}`);
+    }
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, frag);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(fs);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      throw new Error(`[ATBloom] fragment compile error (${label}): ${info}`);
+    }
+
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      const info = gl.getProgramInfoLog(prog);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      gl.deleteProgram(prog);
+      throw new Error(`[ATBloom] link error (${label}): ${info}`);
+    }
+
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
+  }
+
+  /**
+   * Create a single FBO with an RGBA texture attachment.
+   * Calls: createTexture, bindTexture, texParameteri ×4, texImage2D,
+   *        createFramebuffer, bindFramebuffer, framebufferTexture2D.
+   */
+  private _makeFBO(w: number, h: number): SingleRT {
+    const gl = this.gl;
+
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+    const fbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    return { fbo, tex, width: w, height: h };
+  }
+
+  /**
+   * Free a single RT's GPU resources.
+   * Calls: deleteFramebuffer, deleteTexture.
+   */
+  private _disposeRT(rt: SingleRT): void {
+    const gl = this.gl;
+    gl.deleteFramebuffer(rt.fbo);
+    gl.deleteTexture(rt.tex);
+  }
+
+  /**
+   * Draw the fullscreen quad.
+   * Calls: bindBuffer, getAttribLocation, enableVertexAttribArray,
+   *        vertexAttribPointer, drawArrays.
+   */
+  private _drawQuad(program: WebGLProgram): void {
+    const gl = this.gl;
+    const posLoc = gl.getAttribLocation(program, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Convenience factory — integrates with BloomVariants.ts species params
+// Convenience factory — matches BloomVariants.ts species params schema
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Build an ATBloomPostProcess seeded from BloomParams (BloomVariants.ts schema).
+ * Build an ATBloomPostProcess from species-level BloomParams.
  *
- * @param device   - WebGPU device.
- * @param format   - Swapchain texture format.
- * @param width    - Viewport width.
- * @param height   - Viewport height.
- * @param species  - Optional species key for BloomVariants lookup.
+ * @param gl         - WebGLRenderingContext from the canvas.
+ * @param width      - Viewport width in pixels.
+ * @param height     - Viewport height in pixels.
+ * @param species    - Optional species bloom param pack.
  */
-export async function createATBloomForSpecies(
-  device  : GPUDevice,
-  format  : GPUTextureFormat,
-  width   : number,
-  height  : number,
-  bloomParams?: { bloomStrength: number; bloomRadius: number; luminosityThreshold: number },
-): Promise<ATBloomPostProcess> {
-  const bloom = await ATBloomPostProcess.create(device, format, width, height);
-  if (bloomParams) {
-    bloom.setParams({
-      threshold  : bloomParams.luminosityThreshold,
-      bloomScale : bloomParams.bloomStrength,
-      blurRadius : bloomParams.bloomRadius * 4.0,  // map [0,1] → [0,4] texels
-    });
+export function createATBloomForSpecies(
+  gl     : WebGLRenderingContext,
+  width  : number,
+  height : number,
+  species?: {
+    bloomStrength?       : number;
+    bloomRadius?         : number;
+    luminosityThreshold? : number;
+    bloomTintColors?     : [number, number, number];
+  },
+): ATBloomPostProcess {
+  const params: ATBloomParams = {};
+  if (species) {
+    if (species.bloomStrength        != null) params.bloomStrength        = species.bloomStrength;
+    if (species.bloomRadius          != null) params.bloomRadius          = species.bloomRadius;
+    if (species.luminosityThreshold  != null) params.luminosityThreshold  = species.luminosityThreshold;
+    if (species.bloomTintColors      != null) params.bloomTintColor       = species.bloomTintColors;
   }
-  return bloom;
+  return new ATBloomPostProcess(gl, width, height, params);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Re-export WGSL fragments — other shaders may embed them
+// Re-export inline GLSL fragments for hot-reload / inspection
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const AT_BLOOM_WGSL = {
-  /** Shared uniform struct (BloomUniforms). */
-  uniforms     : WGSL_BLOOM_UNIFORMS,
-  /** Rec.709 luminance helper fn. */
-  luminance    : WGSL_LUMINANCE,
-  /** Full luminosity threshold vertex+fragment shader. */
-  luminosity   : WGSL_LUMINOSITY,
-  /** Separable Gaussian blur vertex+fragment shader (requires dir uniform). */
-  gaussianBlur : WGSL_GAUSSIAN_BLUR,
-  /** Scene + bloom composite vertex+fragment shader. */
-  composite    : WGSL_COMPOSITE,
+export const AT_BLOOM_GLSL = {
+  /** luma.fs — Rec.601 luminance helper (compiled.vs ~8757) */
+  luma        : LUMA_GLSL,
+  /** UnrealBloomLuminosity.glsl / BloomLuminosityPass.glsl — threshold extract */
+  luminosity  : LUMINOSITY_FRAG,
+  /** DownSample.glsl — 13-tap dual-kawase pyramid downsample */
+  downsample  : DOWNSAMPLE_FRAG,
+  /** UnrealBloomGaussian.glsl — separable gaussian blur SIGMA=5 KERNEL_RADIUS=9 */
+  gaussian    : GAUSSIAN_FRAG,
+  /** UnrealBloomComposite.glsl — lerpBloomFactor multi-level composite */
+  composite   : COMPOSITE_FRAG,
+  /** UnrealBloomPass.fs — scene + bloom final additive */
+  final       : FINAL_FRAG,
+  /** upsample additive accumulator */
+  upsample    : UPSAMPLE_FRAG,
+  /** shared fullscreen-quad vertex shader */
+  vert        : BLOOM_VERT,
 } as const;
