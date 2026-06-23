@@ -175,3 +175,6 @@ export type { FieldCharge, FieldCellInput, MagneticFieldLinesConfig, FieldLineSt
 // particle-effect-system (M783)
 export { ParticleEffectSystem, EFFECT_DEFAULTS, EFFECT_TYPE_INDEX, GPU_STRIDE, PARTICLE_FX_WGSL } from './particle-effect-system';
 export type { ParticleEffectType, Vec2 as ParticleFxVec2, CollisionSparkParams, FlowTrailParams, AmbientDustParams, QosTransitionParams, CellBirthParams, CellDeathParams, EmitParams, ParticleEffectSystemConfig } from './particle-effect-system';
+// wireframe-overlay (M788)
+export { WireframeOverlay, WIREFRAME_DEFAULTS, createDebugWireframe, createAestheticWireframe, sampleForceGrid, selfTest as wireframeOverlaySelfTest, WGSL_BARY_VERTEX, WGSL_BARY_WIREFRAME_FRAG, WGSL_SDF_ISOCONTOUR } from './wireframe-overlay';
+export type { Vec2 as WireframeVec2, WireframeCellEntry, ForceFieldSample as WireframeForceFieldSample, WireframeFrameData, WireframeOverlayOptions } from './wireframe-overlay';
