@@ -220,8 +220,45 @@ fn subsurfaceScattering(
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WGSL — 高级 IOR 色散模型 (Cauchy-Helmholtz Dispersion)
+// 实现波长相关的折射率，用于精确色散模拟
+// ─────────────────────────────────────────────────────────────────────────────
+
+const WGSL_ADVANCED_DISPERSION = /* wgsl */`
+// ── Cauchy 色散方程 (n(λ) = A + B/λ²) ──────────────────────────────────────────
+// 对于玻璃: A ≈ 1.45, B ≈ 0.003
+// 可见光波长: R=650nm, G=550nm, B=450nm
+fn cauchyDispersion(wavelengthNm: f32, A: f32, B: f32) -> f32 {
+    let lambdaMicron = wavelengthNm / 1000.0;  // 转换为微米
+    let lambdaSq = lambdaMicron * lambdaMicron;
+    return A + B / lambdaSq;
+}
+
+// ── RGB 波长对应的 IOR ────────────────────────────────────────────────────────
+fn getColorIOR(color: i32, A: f32, B: f32) -> f32 {
+    // 0=R, 1=G, 2=B
+    let wavelengths = vec3f(650.0, 550.0, 450.0);
+    let wl = wavelengths[color];
+    return cauchyDispersion(wl, A, B);
+}
+
+// ── 色散系数计算 (用于彩虹效应) ────────────────────────────────────────────────
+fn dispersionFactor(ior_r: f32, ior_g: f32, ior_b: f32) -> f32 {
+    return (ior_r - ior_b) / (ior_g - 1.0);
+}
+
+// ── 阿贝数计算 (色散度指标) ────────────────────────────────────────────────────
+// V_d = (n_d - 1) / (n_f - n_c)
+fn abbe(ior_d: f32, ior_f: f32, ior_c: f32) -> f32 {
+    let num = ior_d - 1.0;
+    let den = ior_f - ior_c;
+    return select(0.0, num / den, den != 0.0);
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // WGSL — 环境反射 (Environment Reflection & Probe)
-// 参考 refl.vs + refl.fs
+// 参考 refl.vs + refl.fs 支持 cubemap 和 equirectangular
 // ─────────────────────────────────────────────────────────────────────────────
 
 const WGSL_ENVIRONMENT_REFLECTION = /* wgsl */`
@@ -239,6 +276,11 @@ fn transformDirection(dir: vec3f, matrix: mat4x4f) -> vec3f {
     return normalize((matrix * vec4f(dir, 0.0)).xyz);
 }
 
+// ── Cubemap 翻转 (镜像坐标系) ────────────────────────────────────────────────────
+fn flipCubemapCoord(dir: vec3f) -> vec3f {
+    return vec3f(-1.0 * dir.x, dir.yz);
+}
+
 // ── 环境探针采样 (等距柱面) ────────────────────────────────────────────────────
 fn sampleEnvironmentProbe(
     texProbe: texture_2d<f32>,
@@ -251,8 +293,121 @@ fn sampleEnvironmentProbe(
     return sample.rgb * intensity;
 }
 
+// ── 高质量环境反射 (基于粗糙度的多级采样) ────────────────────────────────────────
+fn sampleEnvironmentProbeRough(
+    texProbe: texture_2d<f32>,
+    samplerProbe: sampler,
+    direction: vec3f,
+    roughness: f32,
+    intensity: f32
+) -> vec3f {
+    // 粗糙度 → mipmap 级别映射 (需要预生成 mipmap)
+    let mipLevel = roughness * 8.0;  // 假设 9 级 mipmap (0-8)
+    let uv = equirectangularCoords(direction);
+    
+    // 模拟 mipmap 采样 (实际应使用 textureSampleLevel)
+    let jitter = sin(vec2f(uv.x * 12.9898, uv.y * 78.233)) * 0.43758;
+    let offsetUv = uv + jitter * roughness * 0.05;
+    
+    let sample = textureSample(texProbe, samplerProbe, offsetUv);
+    return sample.rgb * intensity;
+}
+
 // ── 铝箔反射 (平面镜面) ────────────────────────────────────────────────────────
-fn mirrorReflection(
+fn mirrorReflection(mirrorCoord: vec4f, texMirror: texture_2d<f32>, samplerMirror: sampler) -> vec3f {
+    let projCoord = mirrorCoord.xy / mirrorCoord.w;
+    return textureSample(texMirror, samplerMirror, projCoord * 0.5 + 0.5).rgb;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WGSL — BasicMirror 简单镜面反射 (参考 BasicMirror.glsl)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const WGSL_BASIC_MIRROR = /* wgsl */`
+// ── 镜面反射计算 ──────────────────────────────────────────────────────────────
+fn basicMirrorShading(
+    mirrorCoord: vec4f,
+    texMirror: texture_2d<f32>,
+    samplerMirror: sampler,
+    normalizedMirrorCoord: vec2f
+) -> vec3f {
+    let projCoord = normalizedMirrorCoord * 0.5 + 0.5;
+    let mirrorSample = textureSample(texMirror, samplerMirror, projCoord);
+    return mirrorSample.rgb;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WGSL — CleanRoom 玻璃着色 (参考 CleanRoomGlass.glsl)
+// 完整的彩虹色散 + 高精度折射 + 微细结构
+// ─────────────────────────────────────────────────────────────────────────────
+
+const WGSL_CLEANROOM_GLASS = /* wgsl */`
+// ── 彩虹颜色映射 (基于 Fresnel 因子) ─────────────────────────────────────────────
+fn rainbowColor(t: f32) -> vec3f {
+    let tWrapped = fract(t);
+    
+    // 根据区间返回不同的颜色插值
+    if (tWrapped < 0.03) {
+        // 紫色 → 蓝色
+        return mix(vec3f(0.5, 0.0, 0.5), vec3f(0.5, 0.0, 1.0), tWrapped / 0.03);
+    } else if (tWrapped < 0.06) {
+        // 蓝色 → 深蓝
+        return mix(vec3f(0.5, 0.0, 1.0), vec3f(0.0, 0.0, 1.0), (tWrapped - 0.03) / 0.03);
+    } else if (tWrapped < 0.09) {
+        // 深蓝 → 青色
+        return mix(vec3f(0.0, 0.0, 1.0), vec3f(0.0, 1.0, 1.0), (tWrapped - 0.06) / 0.03);
+    } else if (tWrapped < 0.12) {
+        // 青色 → 绿色
+        return mix(vec3f(0.0, 1.0, 1.0), vec3f(0.0, 1.0, 0.0), (tWrapped - 0.09) / 0.03);
+    } else if (tWrapped < 0.18) {
+        // 绿色 → 黄色
+        return mix(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 1.0, 0.0), (tWrapped - 0.12) / 0.06);
+    } else if (tWrapped < 0.24) {
+        // 黄色 → 橙色
+        return mix(vec3f(1.0, 1.0, 0.0), vec3f(1.0, 0.5, 0.0), (tWrapped - 0.18) / 0.06);
+    } else {
+        // 橙色 → 红色
+        return mix(vec3f(1.0, 0.5, 0.0), vec3f(1.0, 0.0, 0.0), (tWrapped - 0.24) / 0.06);
+    }
+}
+
+// ── CleanRoom 玻璃着色器 (综合所有效果) ────────────────────────────────────────────
+fn cleanroomGlassShading(
+    fresnel: f32,
+    refractColor: vec3f,
+    envColor: vec3f,
+    subsurfaceColor: vec3f,
+    noiseDetail: f32,
+    edgeGlow: f32,
+    normalY: f32
+) -> vec3f {
+    // 基于 Fresnel 计算彩虹颜色
+    let rainbowHue = rainbowColor(fresnel * 4.0);
+    
+    // 混合折射和环境反射
+    let refractionMix = refractColor * (1.0 - fresnel);
+    let reflectionMix = envColor * fresnel;
+    
+    // 组合彩虹效果
+    let rainbow = rainbowHue * fresnel * 0.6;
+    
+    // 体积散射贡献
+    let volumetric = subsurfaceColor * (1.0 - fresnel) * 0.4;
+    
+    // 噪声和细节
+    let details = vec3f(noiseDetail + edgeGlow) * 0.1;
+    
+    // 最终合成
+    var result = refractionMix + reflectionMix + rainbow + volumetric + details;
+    
+    // 微妙的高度偏差 (基于法线Y分量)
+    result += normalY * 0.05;
+    
+    return saturate_v3(result);
+}
+`;
     texMirror: texture_2d<f32>,
     samplerMirror: sampler,
     mirrorCoord: vec4f
@@ -340,14 +495,38 @@ fn cleanroomGlassShading(
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface GlassReflectionParams {
-    fresnelPower?: number;           // Fresnel 衰减指数 (2.0 - 8.0)
-    refractionRatio?: number;        // IOR 比例 (0.5 - 1.0)
-    dispersiveness?: number;         // 色散强度 (0.0 - 0.5)
-    distortStrength?: number;        // 折射扭曲强度 (0.0 - 1.0)
-    subsurfaceIntensity?: number;    // 体积散射强度 (0.0 - 2.0)
-    envProbeStrength?: number;       // 环境探针强度 (0.0 - 1.5)
-    mirrorStrength?: number;         // 镜面反射强度 (0.0 - 1.0)
-    cleanRoomMode?: boolean;         // 是否启用 CleanRoom 彩虹模式
+    fresnelPower?: number;           // Fresnel 衰减指数 (2.0 - 8.0), 默认 4.0
+    refractionRatio?: number;        // IOR 比例 (0.5 - 2.0), 默认 0.66
+    dispersiveness?: number;         // 色散强度 (0.0 - 0.5), 默认 0.25
+    distortStrength?: number;        // 折射扭曲强度 (0.0 - 1.0), 默认 0.1
+    subsurfaceIntensity?: number;    // 体积散射强度 (0.0 - 2.0), 默认 0.8
+    envProbeStrength?: number;       // 环境探针强度 (0.0 - 1.5), 默认 1.0
+    mirrorStrength?: number;         // 镜面反射强度 (0.0 - 1.0), 默认 0.5
+    cleanRoomMode?: boolean;         // 是否启用 CleanRoom 彩虹模式，默认 false
+    
+    // 高级色散参数 (Cauchy-Helmholtz)
+    cauchyA?: number;                // Cauchy A 系数 (1.0 - 1.5), 默认 1.45
+    cauchyB?: number;                // Cauchy B 系数 (0.001 - 0.01), 默认 0.003
+    
+    // 环境反射高级参数
+    roughnessValue?: number;         // 粗糙度 (0.0 - 1.0), 默认 0.1
+    cubeMapBlur?: number;            // Cubemap 模糊程度 (0.0 - 1.0), 默认 0.0
+    
+    // 内部纹理和效果
+    innerTextureIntensity?: number;  // 内部纹理强度 (0.0 - 1.0), 默认 0.5
+    edgeGlowIntensity?: number;      // 边缘光晕强度 (0.0 - 1.0), 默认 0.2
+    rimColor?: [number, number, number]; // Fresnel 边缘光颜色 RGB, 默认 [1, 1, 1]
+    
+    // 法线扰动
+    normalMapStrength?: number;      // 法线贴图强度 (0.0 - 1.0), 默认 0.5
+    
+    // 时间和动画
+    time?: number;                   // 动画时间 (秒)
+    timeScale?: number;              // 时间缩放因子, 默认 1.0
+    
+    // 聚焦效果
+    focusDistance?: number;          // 聚焦距离, 默认 0.0 (无聚焦)
+    focusPower?: number;             // 聚焦幂次, 默认 1.0
 }
 
 interface GlassReflectionUniform {
@@ -359,9 +538,101 @@ interface GlassReflectionUniform {
     envProbeStrength: f32;
     mirrorStrength: f32;
     cleanRoomMode: u32;
+    
+    // 扩展字段
+    roughnessValue: f32;
+    cubeMapBlur: f32;
+    innerTextureIntensity: f32;
+    edgeGlowIntensity: f32;
+    
+    rimColorR: f32;
+    rimColorG: f32;
+    rimColorB: f32;
+    normalMapStrength: f32;
+    
     time: f32;
-    padding: f32;
+    timeScale: f32;
+    focusDistance: f32;
+    focusPower: f32;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 默认参数预设
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEFAULT_GLASS_PARAMS: GlassReflectionParams = {
+    fresnelPower: 4.0,
+    refractionRatio: 0.66,
+    dispersiveness: 0.25,
+    distortStrength: 0.1,
+    subsurfaceIntensity: 0.8,
+    envProbeStrength: 1.0,
+    mirrorStrength: 0.5,
+    cleanRoomMode: false,
+    cauchyA: 1.45,
+    cauchyB: 0.003,
+    roughnessValue: 0.1,
+    cubeMapBlur: 0.0,
+    innerTextureIntensity: 0.5,
+    edgeGlowIntensity: 0.2,
+    rimColor: [1.0, 1.0, 1.0],
+    normalMapStrength: 0.5,
+    time: 0.0,
+    timeScale: 1.0,
+    focusDistance: 0.0,
+    focusPower: 1.0,
+};
+
+// ── 预设：光学玻璃 (高折射率，低色散) ──────────────────────────────────────────
+const PRESET_OPTICAL_GLASS: GlassReflectionParams = {
+    ...DEFAULT_GLASS_PARAMS,
+    refractionRatio: 1.52,
+    fresnelPower: 5.0,
+    dispersiveness: 0.1,
+    subsurfaceIntensity: 0.3,
+};
+
+// ── 预设：冠玻璃 (标准硅酸盐，中等折射率) ────────────────────────────────────────
+const PRESET_CROWN_GLASS: GlassReflectionParams = {
+    ...DEFAULT_GLASS_PARAMS,
+    refractionRatio: 1.52,
+    dispersiveness: 0.15,
+    cauchyA: 1.51,
+    cauchyB: 0.004,
+};
+
+// ── 预设：火石玻璃 (高折射率，高色散 - 彩虹效果) ─────────────────────────────────
+const PRESET_FLINT_GLASS: GlassReflectionParams = {
+    ...DEFAULT_GLASS_PARAMS,
+    refractionRatio: 1.65,
+    dispersiveness: 0.35,
+    cauchyA: 1.60,
+    cauchyB: 0.007,
+    fresnelPower: 3.5,
+};
+
+// ── 预设：钻石 (最高折射率和色散) ───────────────────────────────────────────────
+const PRESET_DIAMOND: GlassReflectionParams = {
+    ...DEFAULT_GLASS_PARAMS,
+    refractionRatio: 2.42,
+    fresnelPower: 2.0,
+    dispersiveness: 0.44,
+    cauchyA: 2.38,
+    cauchyB: 0.013,
+    subsurfaceIntensity: 0.1,
+};
+
+// ── 预设：洁净室玻璃 (CleanRoom 模式专用) ──────────────────────────────────────
+const PRESET_CLEANROOM: GlassReflectionParams = {
+    ...DEFAULT_GLASS_PARAMS,
+    cleanRoomMode: true,
+    fresnelPower: 3.5,
+    dispersiveness: 0.3,
+    refractionRatio: 1.33,
+    envProbeStrength: 1.2,
+    edgeGlowIntensity: 0.5,
+    rimColor: [1.0, 0.8, 0.6],
+};
 
 export class ATGlassReflectionSystem {
     private device: GPUDevice;
@@ -384,11 +655,23 @@ export class ATGlassReflectionSystem {
             fresnelPower: 4.0,
             refractionRatio: 0.66,
             dispersiveness: 0.25,
-            distortStrength: 0.5,
+            distortStrength: 0.1,
             subsurfaceIntensity: 0.8,
             envProbeStrength: 1.0,
-            mirrorStrength: 0.7,
+            mirrorStrength: 0.5,
             cleanRoomMode: false,
+            cauchyA: 1.45,
+            cauchyB: 0.003,
+            roughnessValue: 0.1,
+            cubeMapBlur: 0.0,
+            innerTextureIntensity: 0.5,
+            edgeGlowIntensity: 0.2,
+            rimColor: [1.0, 1.0, 1.0],
+            normalMapStrength: 0.5,
+            time: 0.0,
+            timeScale: 1.0,
+            focusDistance: 0.0,
+            focusPower: 1.0,
         };
         this.startTime = performance.now();
     }
@@ -726,6 +1009,127 @@ fn main(input: VertexInput) -> VertexOutput {
     }
 
     /**
+     * 应用玻璃预设
+     */
+    applyPreset(preset: GlassReflectionParams): void {
+        this.setParams(preset);
+    }
+
+    /**
+     * 应用光学玻璃预设
+     */
+    applyOpticalGlassPreset(): void {
+        this.applyPreset(PRESET_OPTICAL_GLASS);
+    }
+
+    /**
+     * 应用冠玻璃预设
+     */
+    applyCrownGlassPreset(): void {
+        this.applyPreset(PRESET_CROWN_GLASS);
+    }
+
+    /**
+     * 应用火石玻璃预设 (高色散)
+     */
+    applyFlintGlassPreset(): void {
+        this.applyPreset(PRESET_FLINT_GLASS);
+    }
+
+    /**
+     * 应用钻石预设 (最高折射率)
+     */
+    applyDiamondPreset(): void {
+        this.applyPreset(PRESET_DIAMOND);
+    }
+
+    /**
+     * 应用洁净室玻璃预设
+     */
+    applyCleanroomPreset(): void {
+        this.applyPreset(PRESET_CLEANROOM);
+    }
+
+    /**
+     * 计算色散系数 (基于当前的 Cauchy 参数)
+     */
+    computeDispersionFactor(): number {
+        const A = this.params.cauchyA || 1.45;
+        const B = this.params.cauchyB || 0.003;
+        
+        // 计算 R/G/B 的 IOR
+        const ior_r = A + B / (650 / 1000) ** 2;
+        const ior_g = A + B / (550 / 1000) ** 2;
+        const ior_b = A + B / (450 / 1000) ** 2;
+        
+        return (ior_r - ior_b) / (ior_g - 1.0);
+    }
+
+    /**
+     * 计算阿贝数 (玻璃特征参数)
+     */
+    computeAbbeNumber(): number {
+        const A = this.params.cauchyA || 1.45;
+        const B = this.params.cauchyB || 0.003;
+        
+        // 标准波长: d=589nm, F=486nm, C=656nm
+        const ior_d = A + B / (589 / 1000) ** 2;
+        const ior_f = A + B / (486 / 1000) ** 2;
+        const ior_c = A + B / (656 / 1000) ** 2;
+        
+        const num = ior_d - 1.0;
+        const den = ior_f - ior_c;
+        return den !== 0 ? num / den : 0;
+    }
+
+    /**
+     * 从时间更新动画参数
+     */
+    tick(deltaTimeMs: number): void {
+        this.params.time += deltaTimeMs * (this.params.timeScale || 1.0) * 0.001;
+        this.setParams({});
+    }
+
+    /**
+     * 平滑过渡到新的 Fresnel 指数
+     */
+    transitionFresnelPower(targetValue: number, durationMs: number): void {
+        const startValue = this.params.fresnelPower;
+        const startTime = performance.now();
+        
+        const animate = () => {
+            const elapsed = performance.now() - startTime;
+            const progress = Math.min(elapsed / durationMs, 1.0);
+            
+            this.params.fresnelPower = startValue + (targetValue - startValue) * progress;
+            this.setParams({});
+            
+            if (progress < 1.0) {
+                requestAnimationFrame(animate);
+            }
+        };
+        
+        animate();
+    }
+
+    /**
+     * 获取当前材质参数统计信息
+     */
+    getParameterStats(): Record<string, any> {
+        return {
+            fresnelPower: this.params.fresnelPower,
+            refractionRatio: this.params.refractionRatio,
+            dispersiveness: this.params.dispersiveness,
+            subsurfaceIntensity: this.params.subsurfaceIntensity,
+            envProbeStrength: this.params.envProbeStrength,
+            cleanRoomMode: this.params.cleanRoomMode,
+            dispersionFactor: this.computeDispersionFactor(),
+            abbeNumber: this.computeAbbeNumber(),
+            currentTime: this.params.time,
+        };
+    }
+
+    /**
      * 销毁资源
      */
     destroy(): void {
@@ -744,6 +1148,60 @@ fn main(input: VertexInput) -> VertexOutput {
 export type {
     GlassReflectionParams,
     GlassReflectionUniform,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 导出预设常量
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const AT_GLASS_PRESETS = {
+    /** 默认参数 */
+    default: DEFAULT_GLASS_PARAMS,
+    
+    /** 光学玻璃 (高折射率，低色散) */
+    opticalGlass: PRESET_OPTICAL_GLASS,
+    
+    /** 冠玻璃 (标准硅酸盐) */
+    crownGlass: PRESET_CROWN_GLASS,
+    
+    /** 火石玻璃 (高色散彩虹效果) */
+    flintGlass: PRESET_FLINT_GLASS,
+    
+    /** 钻石 (最高折射率) */
+    diamond: PRESET_DIAMOND,
+    
+    /** 洁净室玻璃 (CleanRoom 模式) */
+    cleanroom: PRESET_CLEANROOM,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 导出 WGSL 着色器片段供其他系统使用
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const AT_GLASS_WGSL = {
+    /** 数学助手函数 */
+    mathHelpers: WGSL_MATH_HELPERS,
+    
+    /** Fresnel 计算 (菲涅耳反射) */
+    fresnel: WGSL_FRESNEL_GLASS,
+    
+    /** 高级 Cauchy 色散模型 */
+    advancedDispersion: WGSL_ADVANCED_DISPERSION,
+    
+    /** 折射与色散 */
+    refractionDispersion: WGSL_REFRACTION_DISPERSION,
+    
+    /** 体积散射 (GlassInner 效果) */
+    subsurfaceScattering: WGSL_SUBSURFACE_SCATTERING,
+    
+    /** 环境反射与探针采样 */
+    environmentReflection: WGSL_ENVIRONMENT_REFLECTION,
+    
+    /** BasicMirror 平面反射 */
+    basicMirror: WGSL_BASIC_MIRROR,
+    
+    /** CleanRoom 彩虹玻璃 */
+    cleanroomGlass: WGSL_CLEANROOM_GLASS,
 };
 
 export default ATGlassReflectionSystem;
