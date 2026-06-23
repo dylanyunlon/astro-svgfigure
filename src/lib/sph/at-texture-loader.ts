@@ -35,7 +35,7 @@
 import { read as readKTX2 } from 'ktx-parse';
 import type { KTX2Container } from 'ktx-parse';
 
-import type { TextureDescriptor } from '../renderer/material/Material.js';
+import type { TextureDescriptor } from '../renderer/material/Material.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types

@@ -54,40 +54,40 @@ import {
   ATPBRMaterial,
   type PBRParams,
   DEFAULT_PBR_PARAMS,
-} from './at-pbr-material.js';
+} from './at-pbr-material.ts';
 
 import {
   ATFlowerParticleRenderer,
   type FlowerEdgeSpline,
   type ATFlowerConfig,
-} from './at-flower-particle.js';
+} from './at-flower-particle.ts';
 
 import {
   ATSplineParticleLife,
   type EdgeSpline,
   type ATSplineParticleConfig,
-} from './at-spline-particle.js';
+} from './at-spline-particle.ts';
 
 import {
   ATWaterSurface,
   type ATWaterSurfaceConfig,
-} from './at-water-surface.js';
+} from './at-water-surface.ts';
 
 import {
   ATVolumetricLight,
   type ATVolumetricLightParams,
-} from './at-volumetric-light.js';
+} from './at-volumetric-light.ts';
 
 import {
   ATBloomPostProcess,
   type ATBloomParams,
-} from './at-bloom-postprocess.js';
+} from './at-bloom-postprocess.ts';
 
 import {
   LutGenerator,
   type LutStyleName,
   type LutCube,
-} from './lut-generator.js';
+} from './lut-generator.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LUT pass — inline WGSL (full-screen 3-D LUT grade blit)

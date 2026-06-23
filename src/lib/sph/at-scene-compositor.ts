@@ -93,54 +93,54 @@ import {
   ATMatcapFresnel,
   type PBRParams,
   type MatcapParams,
-} from './at-pbr-material.js';
+} from './at-pbr-material.ts';
 
 import {
   ATFlowerParticleRenderer,
   type FlowerEdgeSpline,
-} from './at-flower-particle.js';
+} from './at-flower-particle.ts';
 
 import {
   ATSplineParticleLife,
   type EdgeSpline,
-} from './at-spline-particle.js';
+} from './at-spline-particle.ts';
 
 import {
   ATWaterSurface,
   type ATWaterSurfaceConfig,
-} from './at-water-surface.js';
+} from './at-water-surface.ts';
 
 import {
   ATBloomPostProcess,
   type ATBloomParams,
-} from './at-bloom-postprocess.js';
+} from './at-bloom-postprocess.ts';
 
 import {
   NavierStokesFluid,
   type NavierStokesSplat,
-} from './at-navier-stokes.js';
+} from './at-navier-stokes.ts';
 
 import {
   ATVolumetricLight,
   type ATVolumetricLightParams,
-} from './at-volumetric-light.js';
+} from './at-volumetric-light.ts';
 
 import {
   ParticleCompositor,
   LayerType,
   type LayerDescriptor,
-} from './particle-compositor.js';
+} from './particle-compositor.ts';
 
 import {
   getSpeciesShaderConfig,
   type SpeciesShaderConfig,
-} from './species-shader-registry.js';
+} from './species-shader-registry.ts';
 
 import {
   getCellMaterial,
   type CellSpecies,
   type SpeciesMaterialDef,
-} from './cell-material-system.js';
+} from './cell-material-system.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types

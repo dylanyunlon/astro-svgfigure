@@ -696,7 +696,7 @@ fn blendReflect3Opacity(base: vec3f, blend: vec3f, opacity: f32) -> vec3f {
  * Usage in a WebGPU compute/render shader:
  *
  *   ```ts
- *   import { AT_SHADER_UTILS_WGSL } from '$lib/sph/at-shader-utils.js';
+ *   import { AT_SHADER_UTILS_WGSL } from '$lib/sph/at-shader-utils.ts';
  *
  *   const code = /* wgsl *\/ `
  *     ${AT_SHADER_UTILS_WGSL}
@@ -715,7 +715,7 @@ fn blendReflect3Opacity(base: vec3f, blend: vec3f, opacity: f32) -> vec3f {
  *
  * Or inject only what you need:
  *   ```ts
- *   import { WGSL_RANGE, WGSL_EASES, WGSL_UV_TRANSFORMS, WGSL_BLEND_MODES } from '$lib/sph/at-shader-utils.js';
+ *   import { WGSL_RANGE, WGSL_EASES, WGSL_UV_TRANSFORMS, WGSL_BLEND_MODES } from '$lib/sph/at-shader-utils.ts';
  *   ```
  */
 export const AT_SHADER_UTILS_WGSL: string = [

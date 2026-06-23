@@ -37,9 +37,9 @@
  * Research: xiaodi #M804 — cell-pubsub-loop
  */
 
-import { ATShaderLoader } from './at-shader-loader.js';
-import { AstroProgram } from '../renderer/AstroProgram.js';
-import type { AstroRenderer } from '../renderer/AstroRenderer.js';
+import { ATShaderLoader } from './at-shader-loader.ts';
+import { AstroProgram } from '../renderer/AstroProgram.ts';
+import type { AstroRenderer } from '../renderer/AstroRenderer.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  Types
