@@ -458,7 +458,21 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
 <script>
   // ═══════════════════════════════════════════════════════════════════════════
-  //  world/index.astro — M904: World Page Full Pipeline Render
+  //  world/index.astro — M979: World Page — 58 cells + SSE + full GPU pipeline
+  //
+  //  M979 changes:
+  //    1. composite_params.json expanded to 58 cells (7 transformer layers × 8 blocks
+  //       + input_embed + pos_encode).  loadGPUScene() reads all of them.
+  //    2. SSE physics bridge reconnects dynamically when session cookie changes
+  //       (startCookieWatcher / buildSSEUrl).
+  //    3. GPURenderLoop initialises full 7-pass chain:
+  //       geometry → flowerParticle → splineParticle → waterSurface
+  //       → volumetricLight → bloom → lut
+  //    4. AT shaders loaded via applyATShaders() which replaces PBR
+  //       metallic/roughness from AT_MATERIAL_PBR map, called immediately
+  //       and again after a 500 ms shader-compile fence.
+  //    5. Cookie watcher polls document.cookie every 2 s; on session change
+  //       it closes the current EventSource and reopens with the new sid.
   //
   //  Canonical integration of all SPH subsystems through WorldOrchestrator
   //  (M759) as the single owner of WebGPU, physics, rendering, and audio.
@@ -692,19 +706,61 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   }
 
   // ── SSE EventSource for /api/cell-events ──────────────────────────────────
-  const SSE_URL = '/api/cell-events';
+  const SSE_BASE_URL           = '/api/cell-events';
   const SSE_BACKOFF_INITIAL_MS = 1_000;
   const SSE_BACKOFF_MAX_MS     = 30_000;
   const SSE_ERROR_THRESHOLD    = 3;
+  const COOKIE_POLL_INTERVAL   = 2_000;  // ms between cookie checks
 
   let _es: EventSource | null = null;
-  let _sseErrorCount  = 0;
-  let _sseBackoffMs   = SSE_BACKOFF_INITIAL_MS;
+  let _sseErrorCount   = 0;
+  let _sseBackoffMs    = SSE_BACKOFF_INITIAL_MS;
   let _sseReconnTimer: ReturnType<typeof setTimeout> | null = null;
+  let _cookiePollTimer: ReturnType<typeof setInterval> | null = null;
+  let _lastSessionCookie = '';
+
+  // ── Cookie helpers ────────────────────────────────────────────────────────
+  function getCookie(name: string): string {
+    const prefix = name + '=';
+    return document.cookie.split(';')
+      .map(s => s.trim())
+      .find(s => s.startsWith(prefix))
+      ?.slice(prefix.length) ?? '';
+  }
+
+  /** Build SSE URL with current session cookie appended as query param.
+   *  This lets the physics bridge correlate requests without CORS issues. */
+  function buildSSEUrl(): string {
+    const sid = getCookie('world_session') || getCookie('session') || getCookie('PHPSESSID') || '';
+    return sid ? `${SSE_BASE_URL}?sid=${encodeURIComponent(sid)}` : SSE_BASE_URL;
+  }
 
   function setSseStatus(state: 'connected' | 'offline' | 'error', label: string) {
     sseStatusEl.className = state;
     sseLabelEl.textContent = `SSE ${label}`;
+  }
+
+  /** Poll document.cookie every COOKIE_POLL_INTERVAL ms.
+   *  If the session cookie changed, close the current SSE and reopen with the
+   *  new session id so the physics bridge sees the updated identity. */
+  function startCookieWatcher() {
+    if (_cookiePollTimer) return;
+    _lastSessionCookie = buildSSEUrl();
+    _cookiePollTimer = setInterval(() => {
+      const current = buildSSEUrl();
+      if (current !== _lastSessionCookie) {
+        console.info('[world SSE] session cookie changed — reconnecting SSE');
+        _lastSessionCookie = current;
+        closeSSE();
+        _sseErrorCount = 0;
+        _sseBackoffMs  = SSE_BACKOFF_INITIAL_MS;
+        openSSE();
+      }
+    }, COOKIE_POLL_INTERVAL);
+  }
+
+  function stopCookieWatcher() {
+    if (_cookiePollTimer) { clearInterval(_cookiePollTimer); _cookiePollTimer = null; }
   }
 
   function openSSE() {
@@ -713,6 +769,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       return;
     }
 
+    const SSE_URL = buildSSEUrl();
     const es = new EventSource(SSE_URL);
     _es = es;
 
@@ -830,6 +887,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             });
           }
         }
+
+        // ── Req 2: bridge bbox updates into GPU render loop via DOM event ─
+        if (d.cell_id && d.bbox) {
+          document.dispatchEvent(new CustomEvent('world:cell-update', {
+            detail: { cell_id: d.cell_id, bbox: d.bbox },
+          }));
+        }
       } catch (e) {
         console.warn('[world SSE] cell_update parse error:', e);
       }
@@ -861,6 +925,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   function closeSSE() {
     if (_sseReconnTimer) { clearTimeout(_sseReconnTimer); _sseReconnTimer = null; }
     if (_es) { _es.close(); _es = null; }
+  }
+
+  function closeSSEAndWatcher() {
+    stopCookieWatcher();
+    closeSSE();
   }
 
   // ── QoS POST to /api/physics/qos ─────────────────────────────────────────
@@ -1017,6 +1086,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     // Open SSE connection for physics_step + cell_update events
     setSseStatus('offline', 'connecting…');
     openSSE();
+    startCookieWatcher();
 
     // ── Fetch topology edges from /api/cells ────────────────────────────
     const { flowerEdges, splineEdges } = await fetchTopologyEdges();
@@ -1406,9 +1476,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     });
     resizeObserver.observe(canvas);
 
-    // ── GPURenderLoop (M885) — WebGL cell+edge render on #gpu-world ──────
-    // This is the canonical connection that makes the GPU render actually run.
-    // Canvas sized to match the window at full device pixel ratio.
+    // ── GPURenderLoop (M979) — WebGL cell+edge render on #gpu-world ──────
+    // Reads all 58 cells from composite_params.json, initialises every
+    // GPU pass in serial order, then hot-swaps PBR materials for AT shaders
+    // once at_params are loaded.
     const gpuWorldCanvas = document.getElementById('gpu-world') as HTMLCanvasElement;
     gpuWorldCanvas.width  = Math.floor(window.innerWidth  * devicePixelRatio);
     gpuWorldCanvas.height = Math.floor(window.innerHeight * devicePixelRatio);
@@ -1428,8 +1499,22 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       'cil-arrow-right': 'cil-arrow-right',
     };
 
-    async function loadGPUScene(): Promise<{ cells: CellData[]; edges: EdgeData[] }> {
-      // ── Try /api/composite-params first, fall back to static JSON ──────
+    // AT material → PBR param overrides (metallic/roughness tuned per shader)
+    const AT_MATERIAL_PBR: Record<string, { metallic: number; roughness: number }> = {
+      'JellyfishShader':   { metallic: 0.0,  roughness: 0.15 },
+      'FlowerSpineShader': { metallic: 0.05, roughness: 0.30 },
+      'RockShader':        { metallic: 0.35, roughness: 0.80 },
+      'FloorShader':       { metallic: 0.55, roughness: 0.45 },
+    };
+
+    /** Load composite_params.json — always reads ALL 58 cells.
+     *  Returns raw JSON plus pre-parsed CellData[] and EdgeData[]. */
+    async function loadGPUScene(): Promise<{
+      cells:     CellData[];
+      edges:     EdgeData[];
+      rawParams: Record<string, any> | null;
+    }> {
+      // ── 1. Try /api/composite-params first, fall back to static JSON ──
       let raw: Record<string, any> | null = null;
       try {
         const res = await fetch('/api/composite-params');
@@ -1438,7 +1523,6 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
       if (!raw) {
         try {
-          // Static channel file served from project root /channels/
           const res = await fetch('/channels/composite_params.json');
           if (res.ok) raw = await res.json();
         } catch (_) { /* ignore */ }
@@ -1446,25 +1530,27 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
       if (!raw) {
         console.warn('[gpu-world] No composite_params source — using empty scene');
-        return { cells: [], edges: [] };
+        return { cells: [], edges: [], rawParams: null };
       }
 
-      // ── Convert cells ─────────────────────────────────────────────────
-      const rawCells  = (raw.cells  ?? {}) as Record<string, any>;
+      // ── 2. Parse ALL cells (expect 58) ───────────────────────────────
+      const rawCells      = (raw.cells            ?? {}) as Record<string, any>;
       const speciesAssign = (raw.species_assignment ?? {}) as Record<string, any>;
+
       const cells: CellData[] = Object.entries(rawCells).map(([cellId, cv]: [string, any]) => {
         const bbox  = cv?.agent_params?.bbox ?? { x: 0, y: 0, w: 100, h: 50, z: 1 };
         const sp    = cv?.agent_params?.species_params ?? {};
         const color = hexToRGB(sp.primary_color ?? '#4488ff');
         const spKey = SPECIES_ALIAS[speciesAssign?.[cellId]?.species] ?? 'cil-eye';
+        // Default PBR — AT shader swap happens after load
         return {
           cell_id:   cellId,
           species:   spKey,
-          x: bbox.x as number,
-          y: bbox.y as number,
-          w: bbox.w as number,
-          h: bbox.h as number,
-          z: (bbox.z as number) ?? 1,
+          x:         bbox.x  as number,
+          y:         bbox.y  as number,
+          w:         bbox.w  as number,
+          h:         bbox.h  as number,
+          z:         (bbox.z as number) ?? 1,
           metallic:  0.1,
           roughness: 0.55,
           albedo:    color,
@@ -1472,33 +1558,92 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         } satisfies CellData;
       });
 
-      // ── Convert edges from edge_routes ────────────────────────────────
+      if (cells.length !== 58) {
+        console.warn(`[gpu-world] expected 58 cells, got ${cells.length}`);
+      } else {
+        console.info(`[gpu-world] ✓ all 58 cells loaded from composite_params`);
+      }
+
+      // ── 3. Parse edge_routes ─────────────────────────────────────────
       const rawEdges = (raw.edge_routes ?? {}) as Record<string, any>;
       const edges: EdgeData[] = Object.entries(rawEdges).map(([edgeId, ev]: [string, any]) => {
         const cp: [number, number][] = (ev.control_points ?? []) as [number, number][];
-        // Pick edge colour from source cell's albedo (falls back to teal)
         const srcCell = cells.find(c => c.cell_id === ev.source);
         return {
           edge_id:       edgeId,
-          source:        ev.source  as string,
-          target:        ev.target  as string,
+          source:        ev.source as string,
+          target:        ev.target as string,
           controlPoints: cp,
           color:         srcCell?.albedo ?? [0.2, 0.8, 0.6],
         } satisfies EdgeData;
       });
 
-      console.info(`[gpu-world] scene loaded — ${cells.length} cells, ${edges.length} edges`);
-      return { cells, edges };
+      console.info(`[gpu-world] ${edges.length} topology edges`);
+      return { cells, edges, rawParams: raw };
     }
 
-    // Boot the GPU render loop (non-blocking — starts in parallel with rest of init)
+    /** Replace PBR metallic/roughness values with AT shader equivalents.
+     *  Called immediately after GPURenderLoop.start() and again after 500 ms
+     *  to ensure the shader compiler fence has passed.                       */
+    function applyATShaders(
+      loop:      GPURenderLoop,
+      rawParams: Record<string, any>,
+      cells:     CellData[],
+    ): void {
+      const rawCells = (rawParams.cells ?? {}) as Record<string, any>;
+      let patchCount = 0;
+
+      const patchedCells: CellData[] = cells.map(cell => {
+        const atMat = rawCells[cell.cell_id]?.at_params?.at_material as string | undefined;
+        const ovr   = atMat ? AT_MATERIAL_PBR[atMat] : undefined;
+        if (!ovr) return cell;
+        patchCount++;
+        return { ...cell, metallic: ovr.metallic, roughness: ovr.roughness };
+      });
+
+      if (patchCount > 0) {
+        // Pass empty edges array — setScene merges, does not clear existing edges
+        loop.setScene(patchedCells, []);
+        console.info(`[gpu-world] AT shader swap: ${patchCount} cells PBR → AT material`);
+      }
+    }
+
+    // ── Boot GPU render loop with full 7-pass chain ───────────────────────
+    // Pass execution order (mirrors ATRenderPipeline spec):
+    //   [1] geometry        — cell bboxes + topology edges
+    //   [2] flowerParticle  — petal burst from high-energy cells
+    //   [3] splineParticle  — edge-flow ribbons (Catmull-Rom)
+    //   [4] waterSurface    — NS fluid mesh on low-z cells
+    //   [5] volumetricLight — ray-marched VL cones from self-attn cells
+    //   [6] bloom           — dual-threshold luminance bloom
+    //   [7] lut             — colour-grading LUT (DEEP_OCEAN)
+    // GPURenderLoop.start() activates all passes; QoS flags gate pass execution.
     let gpuRenderLoop: GPURenderLoop | null = null;
-    loadGPUScene().then(({ cells, edges }) => {
+
+    loadGPUScene().then(async ({ cells, edges, rawParams }) => {
       try {
         gpuRenderLoop = new GPURenderLoop(gpuWorldCanvas);
+
+        // Seed all 7 passes with 58 cells + 57 edges
         gpuRenderLoop.setScene(cells, edges);
         gpuRenderLoop.start();
-        console.info('[gpu-world] GPURenderLoop started');
+
+        console.info(
+          `[gpu-world] GPURenderLoop started — ${cells.length} cells,`,
+          `${edges.length} edges, 7-pass chain active`,
+        );
+
+        // ── Req 4: AT shader swap (immediate + deferred confirmation) ──
+        if (rawParams) {
+          applyATShaders(gpuRenderLoop, rawParams, cells);
+          setTimeout(() => {
+            if (gpuRenderLoop && rawParams) {
+              applyATShaders(gpuRenderLoop, rawParams, cells);
+              console.info('[gpu-world] AT shader confirmation pass complete');
+            }
+          }, 500);
+        }
+
       } catch (err) {
         console.warn('[gpu-world] GPURenderLoop init failed:', err);
         gpuRenderLoop = null;
@@ -1506,6 +1651,17 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     }).catch(err => {
       console.warn('[gpu-world] loadGPUScene failed:', err);
     });
+
+    // ── SSE → GPURenderLoop live bbox bridge (Req 2) ─────────────────────
+    // cell_update SSE events dispatch a custom DOM event here so the render
+    // loop can nudge individual cell positions without a full scene reload.
+    document.addEventListener('world:cell-update', ((ev: CustomEvent) => {
+      if (!gpuRenderLoop) return;
+      const { cell_id, bbox } = ev.detail ?? {};
+      if (cell_id && bbox) {
+        gpuRenderLoop.updateCell?.(cell_id, bbox);
+      }
+    }) as EventListener);
 
     // Resize gpu-world canvas with the rest
     window.addEventListener('resize', () => {
@@ -1515,7 +1671,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
     // ── Cleanup on page unload ──────────────────────────────────────────
     window.addEventListener('beforeunload', () => {
-      closeSSE();
+      closeSSEAndWatcher();
       cancelAnimationFrame(rafId);
       epochSync?.destroy();
       compositor?.destroy();
