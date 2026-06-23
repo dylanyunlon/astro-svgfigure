@@ -190,3 +190,6 @@ export type { HeatTransferConfig, HeatParticle, HeatParticleSOA, RGBA as HeatRGB
 // destruction-system (M789)
 export { DestructionSystem, estimateDestructionImpulse } from './destruction-system';
 export type { DestructionConfig, DebrisShard } from './destruction-system';
+// decal-projector (M792)
+export { DecalProjector, DecalGPUPipeline, estimateDecalImpulse } from './decal-projector';
+export type { DecalType, DecalProjectorConfig, DecalGPU, CellTransform } from './decal-projector';
