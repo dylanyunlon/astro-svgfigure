@@ -1,5 +1,5 @@
 {
-  "current": 9,
-  "max": 10,
-  "status": "converged"
+  "epoch": 10,
+  "state": "converged",
+  "max_epochs": 10
 }
