@@ -1,0 +1,35 @@
+{
+  "cell_id": "pos_encode",
+  "at_material": "FloorShader",
+  "role": "positional_sine",
+  "species_color": "#7E57C2",
+  "glow_color": "#B39DDB",
+  "bloom": {
+    "threshold": 0.6,
+    "intensity": 0.5,
+    "radius": 8
+  },
+  "pixi_filters": [
+    "AdvancedBloomFilter",
+    "GlowFilter",
+    "DropShadowFilter"
+  ],
+  "render": {
+    "blend_mode": "normal",
+    "z_layer": 1,
+    "opacity": 0.88
+  },
+  "uil_param_count": 29,
+  "uil_sample": {
+    "FloorShader/FloorShader/Element_0_CleanRoom/uColor": "#454545",
+    "FloorShader/FloorShader/Element_0_CleanRoom/uDistortStrength": 0.44,
+    "FloorShader/FloorShader/Element_0_CleanRoom/uLight": [
+      0,
+      1,
+      -5.57,
+      0.48
+    ],
+    "FloorShader/FloorShader/Element_0_CleanRoom/uMirrorStrength": 0.55,
+    "FloorShader/FloorShader/Element_0_CleanRoom/uNormalStrength": 1
+  }
+}

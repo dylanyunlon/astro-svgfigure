@@ -1,0 +1,50 @@
+{
+  "cell_id": "add_norm1",
+  "at_material": "HomeColumnShader",
+  "role": "residual_pillar",
+  "species_color": "#E53935",
+  "glow_color": "#EF9A9A",
+  "bloom": {
+    "threshold": 0.6,
+    "intensity": 0.3,
+    "radius": 8
+  },
+  "pixi_filters": [
+    "AdvancedBloomFilter",
+    "GlowFilter",
+    "DropShadowFilter"
+  ],
+  "render": {
+    "blend_mode": "normal",
+    "z_layer": 2,
+    "opacity": 0.82
+  },
+  "uil_param_count": 6,
+  "uil_sample": {
+    "HomeColumnShader/HomeColumnShader/Element_10_ParticleTest/_tx_tRefraction": {
+      "hotreload": true,
+      "src": "assets/images/room/matcap-test.jpg?1704406116063-compressedKtx2"
+    },
+    "HomeColumnShader/HomeColumnShader/Element_10_ParticleTest/_txtRefraction": {
+      "compressed": false,
+      "filename": "matcap-test.jpg",
+      "prefix": "assets/images",
+      "relative": "assets/images",
+      "src": "assets/images/room/matcap-test.jpg",
+      "useCompressed": false
+    },
+    "HomeColumnShader/HomeColumnShader/Element_10_ParticleTest/uOffset": 3,
+    "HomeColumnShader/HomeColumnShader/Element_9_ParticleTest/_tx_tRefraction": {
+      "hotreload": true,
+      "src": "assets/images/room/matcap-test.jpg?1704406116063-compressedKtx2"
+    },
+    "HomeColumnShader/HomeColumnShader/Element_9_ParticleTest/_txtRefraction": {
+      "compressed": false,
+      "filename": "matcap-test.jpg",
+      "prefix": "assets/images",
+      "relative": "assets/images",
+      "src": "assets/images/room/matcap-test.jpg",
+      "useCompressed": false
+    }
+  }
+}

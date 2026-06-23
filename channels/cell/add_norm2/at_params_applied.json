@@ -1,0 +1,30 @@
+{
+  "cell_id": "add_norm2",
+  "at_material": "WallShader",
+  "role": "residual_pillar",
+  "species_color": "#C62828",
+  "glow_color": "#EF5350",
+  "bloom": {
+    "threshold": 0.6,
+    "intensity": 0.3,
+    "radius": 8
+  },
+  "pixi_filters": [
+    "AdvancedBloomFilter",
+    "GlowFilter",
+    "DropShadowFilter"
+  ],
+  "render": {
+    "blend_mode": "normal",
+    "z_layer": 2,
+    "opacity": 0.82
+  },
+  "uil_param_count": 23,
+  "uil_sample": {
+    "GlassWallShader/GlassWallShader/Element_18_home_scene/uAlpha": 0.22999999999999998,
+    "GlassWallShader/GlassWallShader/Element_18_home_scene/uGradient": 0.63,
+    "WorkGlassWallShader/WorkGlassWallShader/uAlpha": 0.2,
+    "WorkGlassWallShader/WorkGlassWallShader/uGradient": 1,
+    "WorkGlassWallShader/WorkGlassWallShader/uReflectionAmount": 0.1
+  }
+}

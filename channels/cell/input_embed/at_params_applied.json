@@ -1,0 +1,35 @@
+{
+  "cell_id": "input_embed",
+  "at_material": "FloorShader",
+  "role": "foundation_input",
+  "species_color": "#546E7A",
+  "glow_color": "#78909C",
+  "bloom": {
+    "threshold": 0.6,
+    "intensity": 0.4,
+    "radius": 8
+  },
+  "pixi_filters": [
+    "AdvancedBloomFilter",
+    "GlowFilter",
+    "DropShadowFilter"
+  ],
+  "render": {
+    "blend_mode": "normal",
+    "z_layer": 1,
+    "opacity": 0.92
+  },
+  "uil_param_count": 29,
+  "uil_sample": {
+    "FloorShader/FloorShader/Element_0_CleanRoom/uColor": "#454545",
+    "FloorShader/FloorShader/Element_0_CleanRoom/uDistortStrength": 0.44,
+    "FloorShader/FloorShader/Element_0_CleanRoom/uLight": [
+      0,
+      1,
+      -5.57,
+      0.48
+    ],
+    "FloorShader/FloorShader/Element_0_CleanRoom/uMirrorStrength": 0.55,
+    "FloorShader/FloorShader/Element_0_CleanRoom/uNormalStrength": 1
+  }
+}
