@@ -230,6 +230,54 @@
         "halo_radius": 0.12,
         "internal_pattern": "plus_sign_merge_indicator",
         "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
+      },
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "cil-plus",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.6,
+          "glow_color": [
+            198,
+            40,
+            40
+          ],
+          "fresnel_power": 2.0,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.15
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.5,
+            "bloomScale": 0.8,
+            "brightness": 1.2
+          },
+          "glow": {
+            "distance": 15,
+            "outerStrength": 2.0,
+            "innerStrength": 1.0,
+            "color": "0xC62828"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 6,
+            "alpha": 0.3,
+            "color": "0x000000"
+          }
+        },
+        "render_params": {
+          "z_index": 2,
+          "blend_mode": "normal",
+          "corner_radius": 8,
+          "border_width": 1.5,
+          "border_color": "#C62828",
+          "background_opacity": 0.85,
+          "label_font_size": 12,
+          "icon_scale": 1.0
+        }
       }
     },
     "ffn": {
