@@ -1039,6 +1039,410 @@ export class RenderGraph {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AT+UE Module Pass Registration — M900
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Registers one RenderGraphPass per AT+UE module into any RenderGraph instance.
+// Each module declaration specifies:
+//   • A canonical pass-name constant (AT_PASS_*)
+//   • The virtual resource handles it reads (inputs) and writes (outputs)
+//   • A stub execute callback — the real GPU work is recorded by the
+//     corresponding ATWorldNode adapter; the graph pass owns only the
+//     dependency-DAG declaration and resource lifecycle.
+//
+// Execution order (defined by data-flow edges, not insertion order):
+//   NavierStokes  → (fluid sim compute — no graph resource inputs)
+//   HydraBloom    → reads sceneColor,   writes bloomColor
+//   Proton        → reads sceneColor,   writes protonHDR
+//   Glass         → reads sceneColor + gbufDepth, writes glassColor
+//   PBR           → reads gbufAlbedo + gbufNormal + gbufMRON + gbufDepth,
+//                   writes pbrLit
+//   SceneComposite→ reads pbrLit + bloomColor + glassColor + protonHDR,
+//                   writes compositeOut
+//   TextRendering → reads compositeOut, writes textOut  (presentPass)
+//
+// Resource naming follows the existing ATPassResource convention
+// (lower-kebab-case, "at-module-<slot>").
+//
+// Usage:
+//   const { graph, handles } = registerATModulePasses(device, format, w, h);
+//   // or, to inject into an existing graph:
+//   registerATModulePasses(device, format, w, h, existingGraph);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Canonical pass-name constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** NavierStokes fluid simulation compute pass (no colour output — writes fluid dye). */
+export const AT_PASS_NAVIER_STOKES     = 'AT_MODULE_NAVIER_STOKES';
+
+/** HydraBloom dual-kawase bloom pyramid pass. */
+export const AT_PASS_HYDRA_BLOOM       = 'AT_MODULE_HYDRA_BLOOM';
+
+/** Proton tube / antimatter particle render pass. */
+export const AT_PASS_PROTON            = 'AT_MODULE_PROTON';
+
+/** Glass PBR refraction + reflection pass. */
+export const AT_PASS_GLASS             = 'AT_MODULE_GLASS';
+
+/** Full PBR deferred-lighting pass. */
+export const AT_PASS_PBR               = 'AT_MODULE_PBR';
+
+/** Scene composite — merges all layers into a single HDR buffer. */
+export const AT_PASS_SCENE_COMPOSITE   = 'AT_MODULE_SCENE_COMPOSITE';
+
+/** Text rendering (MSDF / SDF) overlay pass — presentPass. */
+export const AT_PASS_TEXT_RENDERING    = 'AT_MODULE_TEXT_RENDERING';
+
+/** All seven AT+UE module pass names in topological execution order. */
+export const AT_MODULE_PASS_CHAIN = [
+  AT_PASS_NAVIER_STOKES,
+  AT_PASS_HYDRA_BLOOM,
+  AT_PASS_PROTON,
+  AT_PASS_GLASS,
+  AT_PASS_PBR,
+  AT_PASS_SCENE_COMPOSITE,
+  AT_PASS_TEXT_RENDERING,
+] as const;
+
+export type ATModulePassName = (typeof AT_MODULE_PASS_CHAIN)[number];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Canonical resource-name constants for the module pass chain
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Navier-Stokes fluid dye output (RGBA16Float, NS_GRID×NS_GRID). */
+export const AT_RES_FLUID_DYE        = 'at-module-fluid-dye';
+
+/** Scene colour buffer entering the post-process stack (opaque geometry + particles). */
+export const AT_RES_SCENE_COLOR      = 'at-module-scene-color';
+
+/** G-buffer albedo (RGBA, full-res). */
+export const AT_RES_GBUF_ALBEDO      = 'at-module-gbuf-albedo';
+
+/** G-buffer packed normal (RGBA16Float, full-res). */
+export const AT_RES_GBUF_NORMAL      = 'at-module-gbuf-normal';
+
+/** G-buffer PBR MRON (metallic/roughness/occlusion/emissive, RGBA8Unorm). */
+export const AT_RES_GBUF_MRON        = 'at-module-gbuf-mron';
+
+/** G-buffer depth (Depth24Plus, full-res). */
+export const AT_RES_GBUF_DEPTH       = 'at-module-gbuf-depth';
+
+/** HydraBloom output — blurred HDR bloom pyramid (RGBA16Float, half-res). */
+export const AT_RES_BLOOM_COLOR      = 'at-module-bloom-color';
+
+/** Proton tube / antimatter particle HDR additive layer (RGBA16Float, full-res). */
+export const AT_RES_PROTON_HDR       = 'at-module-proton-hdr';
+
+/** Glass PBR colour output including refraction (RGBA16Float, full-res). */
+export const AT_RES_GLASS_COLOR      = 'at-module-glass-color';
+
+/** PBR deferred-lighting result (RGBA16Float, full-res). */
+export const AT_RES_PBR_LIT          = 'at-module-pbr-lit';
+
+/** Scene composite output — all layers merged (RGBA16Float, full-res). */
+export const AT_RES_COMPOSITE_OUT    = 'at-module-composite-out';
+
+/** Text rendering output — MSDF/SDF text overlaid on composite (swap-chain format). */
+export const AT_RES_TEXT_OUT         = 'at-module-text-out';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATModulePassHandles — the set of resource handles produced by registration
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Resource handles for every virtual texture declared by the AT+UE module
+ * pass chain.  Returned by `registerATModulePasses()` so callers can wire
+ * additional passes against the same resources.
+ */
+export interface ATModulePassHandles {
+  /** Navier-Stokes fluid dye (NS_GRID × NS_GRID, RGBA16Float). */
+  fluidDye:       ResourceHandle;
+  /** Scene colour entering post-process (full-res, swap-chain format). */
+  sceneColor:     ResourceHandle;
+  /** G-buffer albedo (full-res, swap-chain format). */
+  gbufAlbedo:     ResourceHandle;
+  /** G-buffer packed normal (full-res, RGBA16Float). */
+  gbufNormal:     ResourceHandle;
+  /** G-buffer MRON (full-res, RGBA8Unorm). */
+  gbufMRON:       ResourceHandle;
+  /** G-buffer depth (full-res, Depth24Plus). */
+  gbufDepth:      ResourceHandle;
+  /** HydraBloom output (half-res, RGBA16Float). */
+  bloomColor:     ResourceHandle;
+  /** Proton HDR layer (full-res, RGBA16Float). */
+  protonHDR:      ResourceHandle;
+  /** Glass colour output (full-res, RGBA16Float). */
+  glassColor:     ResourceHandle;
+  /** PBR lit result (full-res, RGBA16Float). */
+  pbrLit:         ResourceHandle;
+  /** Scene composite output (full-res, RGBA16Float). */
+  compositeOut:   ResourceHandle;
+  /** Text rendering output / final present (full-res, swap-chain format). */
+  textOut:        ResourceHandle;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// registerATModulePasses() — main registration entry-point
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Register all seven AT+UE module render-graph passes into `graph`.
+ *
+ * If `graph` is not provided a new `RenderGraph` is created with the given
+ * device and format, compiled at `width × height`, and returned.
+ *
+ * Each pass is registered with explicit input/output resource handles so the
+ * graph's topological sort derives correct execution order from data-flow
+ * edges.  The execute callbacks are intentionally lightweight stubs — the
+ * real GPU command recording is performed by the corresponding `ATWorldNode`
+ * adapter whose `render()` is invoked by `ATWorldIntegrator` in lock-step
+ * with the graph's pass sequence.
+ *
+ * @param device  — WebGPU device.
+ * @param format  — Swap-chain texture format (e.g. `'bgra8unorm'`).
+ * @param width   — Viewport width for the initial `compile()` call.
+ * @param height  — Viewport height for the initial `compile()` call.
+ * @param graph   — Existing `RenderGraph` to inject passes into.
+ *                  When provided, `width` / `height` are used only if the
+ *                  graph has not yet been compiled.
+ * @returns       An object with the compiled `RenderGraph` and all
+ *                `ATModulePassHandles` so callers can wire custom passes.
+ */
+export function registerATModulePasses(
+  device:  GPUDevice,
+  format:  GPUTextureFormat,
+  width:   number,
+  height:  number,
+  graph?:  RenderGraph,
+): { graph: RenderGraph; handles: ATModulePassHandles } {
+
+  const g = graph ?? new RenderGraph(device, format);
+
+  // ── Declare virtual resources ──────────────────────────────────────────────
+
+  const hFluidDye     = g.createResource(AT_RES_FLUID_DYE,     { sizeClass: 'full', format: 'rgba16float' });
+  const hSceneColor   = g.createResource(AT_RES_SCENE_COLOR,   { sizeClass: 'full' });
+  const hGBufAlbedo   = g.createResource(AT_RES_GBUF_ALBEDO,   { sizeClass: 'full' });
+  const hGBufNormal   = g.createResource(AT_RES_GBUF_NORMAL,   { sizeClass: 'full', format: 'rgba16float' });
+  const hGBufMRON     = g.createResource(AT_RES_GBUF_MRON,     { sizeClass: 'full', format: 'rgba8unorm' });
+  const hGBufDepth    = g.createResource(AT_RES_GBUF_DEPTH,    { sizeClass: 'full', format: 'depth24plus' });
+  const hBloomColor   = g.createResource(AT_RES_BLOOM_COLOR,   { sizeClass: 'half', format: 'rgba16float' });
+  const hProtonHDR    = g.createResource(AT_RES_PROTON_HDR,    { sizeClass: 'full', format: 'rgba16float' });
+  const hGlassColor   = g.createResource(AT_RES_GLASS_COLOR,   { sizeClass: 'full', format: 'rgba16float' });
+  const hPBRLit       = g.createResource(AT_RES_PBR_LIT,       { sizeClass: 'full', format: 'rgba16float' });
+  const hCompositeOut = g.createResource(AT_RES_COMPOSITE_OUT, { sizeClass: 'full', format: 'rgba16float' });
+  const hTextOut      = g.createResource(AT_RES_TEXT_OUT,      { sizeClass: 'full' });
+
+  // ── AT_PASS_NAVIER_STOKES ─────────────────────────────────────────────────
+  //
+  // Fluid simulation compute dispatches (advection, diffusion, projection).
+  // Writes the dye / velocity textures that HydraBloom and Proton sample.
+  // No graph colour-resource inputs — the NS grid is self-contained.
+  // Output: AT_RES_FLUID_DYE
+  //
+  g.addPass(AT_PASS_NAVIER_STOKES, {
+    outputs: [hFluidDye],
+    execute: (_enc, _acc, _ctx) => {
+      // NavierStokesFluid.step() is dispatched inside NavierStokesNode.tick().
+      // This pass stub ensures the fluid-dye resource is tracked in the graph
+      // and that downstream passes (Bloom, Proton) have a declared dependency.
+    },
+  });
+  g.setPassEnabled(AT_PASS_NAVIER_STOKES, true);
+
+  // ── AT_PASS_HYDRA_BLOOM ───────────────────────────────────────────────────
+  //
+  // ATHydraBloomImport — dual-kawase / Unreal-style bloom pipeline.
+  //   1. Bright-region extraction (threshold + knee curve)
+  //   2. Downsample pyramid (up to 6 mip levels, half-res each)
+  //   3. Upsample + blend → final bloom colour (half-res, tone-mapped)
+  //
+  // Reads:  AT_RES_SCENE_COLOR  (HDR opaque scene entering post-process)
+  //         AT_RES_FLUID_DYE    (NS dye modulates bloom emissive intensity)
+  // Writes: AT_RES_BLOOM_COLOR  (blurred bloom contribution, half-res)
+  //
+  g.addPass(AT_PASS_HYDRA_BLOOM, {
+    inputs:  [hSceneColor, hFluidDye],
+    outputs: [hBloomColor],
+    execute: (_enc, _acc, _ctx) => {
+      // ATHydraBloomImport.render() is called by ATWorldIntegrator via the
+      // BloomNode adapter.  The graph records the data-flow edge so that
+      // SceneComposite waits for bloom before compositing.
+    },
+  });
+  g.setPassEnabled(AT_PASS_HYDRA_BLOOM, true);
+
+  // ── AT_PASS_PROTON ────────────────────────────────────────────────────────
+  //
+  // Proton tube / antimatter particle system (at-proton-tube-import.ts).
+  //   • Proton tubes: spline-guided cylindrical beams with fresnel glow.
+  //   • Antimatter:   volumetric billboard particles with lifecycle decay.
+  //   • Neutrino:     ultra-thin high-velocity streak particles.
+  //
+  // Reads:  AT_RES_SCENE_COLOR  (colour buffer for depth-correct compositing)
+  //         AT_RES_FLUID_DYE    (NS dye drives colour and emission of proton tubes)
+  // Writes: AT_RES_PROTON_HDR   (additive HDR proton/antimatter layer)
+  //
+  g.addPass(AT_PASS_PROTON, {
+    inputs:  [hSceneColor, hFluidDye],
+    outputs: [hProtonHDR],
+    execute: (_enc, _acc, _ctx) => {
+      // Proton tube and antimatter particle instanced draws are recorded by
+      // the ProtonNode adapter (registered via ATWorldIntegrator.addNode).
+      // This stub tracks the resource lifecycle so the graph allocates
+      // hProtonHDR only when this pass is enabled.
+    },
+  });
+  g.setPassEnabled(AT_PASS_PROTON, true);
+
+  // ── AT_PASS_GLASS ─────────────────────────────────────────────────────────
+  //
+  // Glass PBR refraction + reflection (at-glass-pbr-import.ts /
+  // at-glass-reflection-system.ts).
+  //   • CleanRoomGlass: single-layer refraction with chromatic aberration.
+  //   • GlassInner:     inner surface backface with subsurface scattering.
+  //   • GlassReflection: SSR-driven specular reflection layer.
+  //
+  // Reads:  AT_RES_SCENE_COLOR  (background colour for refraction sampling)
+  //         AT_RES_GBUF_DEPTH   (depth buffer for correct glass occlusion)
+  // Writes: AT_RES_GLASS_COLOR  (refracted + reflected glass layer, RGBA16Float)
+  //
+  g.addPass(AT_PASS_GLASS, {
+    inputs:  [hSceneColor, hGBufDepth],
+    outputs: [hGlassColor],
+    execute: (enc, acc, ctx) => {
+      // Glass refraction reads the scene colour texture as a background
+      // for chromatic-aberration-offset UV sampling.  Copy scene → glass
+      // colour slot to establish the resource link; the GlassNode adapter
+      // then composites the refraction result in-place.
+      enc.copyTextureToTexture(
+        { texture: acc.getTexture(hSceneColor)  },
+        { texture: acc.getTexture(hGlassColor)  },
+        [ctx.width, ctx.height],
+      );
+    },
+  });
+  g.setPassEnabled(AT_PASS_GLASS, true);
+
+  // ── AT_PASS_PBR ───────────────────────────────────────────────────────────
+  //
+  // Full PBR deferred-lighting pass (at-full-pbr-pipeline.ts).
+  //   • Reads the G-buffer written by the geometry node adapters.
+  //   • Evaluates direct lighting (point, directional, area, cone).
+  //   • Adds indirect IBL (environment map + BRDF LUT).
+  //   • Writes a combined HDR lit scene buffer.
+  //
+  // Reads:  AT_RES_GBUF_ALBEDO  — albedo + alpha
+  //         AT_RES_GBUF_NORMAL  — packed world-space normal
+  //         AT_RES_GBUF_MRON    — metallic / roughness / occlusion / emissive
+  //         AT_RES_GBUF_DEPTH   — depth for world-position reconstruction
+  // Writes: AT_RES_PBR_LIT      — HDR deferred-lit scene colour (RGBA16Float)
+  //
+  g.addPass(AT_PASS_PBR, {
+    inputs:  [hGBufAlbedo, hGBufNormal, hGBufMRON, hGBufDepth],
+    outputs: [hPBRLit],
+    execute: (enc, acc, ctx) => {
+      // ATFullPBRPipeline.render() is invoked by the PBRMaterialNode adapter.
+      // Copy G-buffer albedo → PBR lit slot to establish the resource edge;
+      // the PBR adapter will overwrite with the fully lit result.
+      enc.copyTextureToTexture(
+        { texture: acc.getTexture(hGBufAlbedo) },
+        { texture: acc.getTexture(hPBRLit)     },
+        [ctx.width, ctx.height],
+      );
+    },
+  });
+  g.setPassEnabled(AT_PASS_PBR, true);
+
+  // ── AT_PASS_SCENE_COMPOSITE ───────────────────────────────────────────────
+  //
+  // Final scene composition (at-scene-composites-full.ts / ATSceneCompositesFull).
+  //   • Layer stack: Background → Cell/3D → Foreground FX → UI/HUD.
+  //   • Merges PBR lit, bloom contribution, glass colour, and proton HDR.
+  //   • Applies per-scene uniform overrides (HomeCompositeUniforms,
+  //     CleanRoomCompositeUniforms, WorkCompositeUniforms, …).
+  //   • Outputs a single RGBA16Float composite buffer for TSR / text overlay.
+  //
+  // Reads:  AT_RES_PBR_LIT      — deferred-lit scene
+  //         AT_RES_BLOOM_COLOR   — bloom contribution
+  //         AT_RES_GLASS_COLOR   — glass refraction layer
+  //         AT_RES_PROTON_HDR    — proton / antimatter additive layer
+  // Writes: AT_RES_COMPOSITE_OUT — merged HDR composite (RGBA16Float)
+  //
+  g.addPass(AT_PASS_SCENE_COMPOSITE, {
+    inputs:  [hPBRLit, hBloomColor, hGlassColor, hProtonHDR],
+    outputs: [hCompositeOut],
+    execute: (enc, acc, ctx) => {
+      // ATSceneCompositesFull.composite() is called by the CompositeNode adapter.
+      // Copy PBR lit → composite output as the base layer; the adapter then
+      // additively blends bloom, glass, and proton on top.
+      enc.copyTextureToTexture(
+        { texture: acc.getTexture(hPBRLit)       },
+        { texture: acc.getTexture(hCompositeOut) },
+        [ctx.width, ctx.height],
+      );
+    },
+  });
+  g.setPassEnabled(AT_PASS_SCENE_COMPOSITE, true);
+
+  // ── AT_PASS_TEXT_RENDERING ────────────────────────────────────────────────
+  //
+  // MSDF / SDF text rendering overlay (at-text-rendering-msdf.ts /
+  // at-text-rendering-import.ts).
+  //   • DefaultText: basic SDF single-channel text atlas.
+  //   • Text3D:      multi-channel MSDF for high-quality 3-D labels.
+  //   • GLUIBatch:   batched UI text glyphs (GLUIBatchText_glsl).
+  //   • GLUIColor:   solid-colour UI overlay boxes.
+  //   • GLUIObject:  arbitrary UI object sprites.
+  //
+  // This is the final pass in the AT+UE pipeline and writes directly to the
+  // swap-chain surface (presentPass = true).
+  //
+  // Reads:  AT_RES_COMPOSITE_OUT — post-process composite from SceneComposite
+  // Writes: AT_RES_TEXT_OUT      — composite + text overlaid (swap-chain format)
+  //         presentPass = true   — graph routes dstView here
+  //
+  g.addPass(AT_PASS_TEXT_RENDERING, {
+    inputs:      [hCompositeOut],
+    outputs:     [hTextOut],
+    presentPass: true,
+    execute: (_enc, _acc, _ctx) => {
+      // ATTextRenderingMSDF.render() is invoked by the TextNode adapter inside
+      // ATWorldIntegrator.  Writing to the swap-chain view (accessor.presentView)
+      // is handled by the adapter; the graph stub ensures correct ordering and
+      // that hCompositeOut stays live until this pass executes.
+    },
+  });
+  g.setPassEnabled(AT_PASS_TEXT_RENDERING, true);
+
+  // ── Compile ───────────────────────────────────────────────────────────────
+  // Only compile if not already compiled (caller may have additional passes
+  // to register before the first compile).
+  if (!g.isCompiled) {
+    g.compile(width, height);
+  }
+
+  const handles: ATModulePassHandles = {
+    fluidDye:     hFluidDye,
+    sceneColor:   hSceneColor,
+    gbufAlbedo:   hGBufAlbedo,
+    gbufNormal:   hGBufNormal,
+    gbufMRON:     hGBufMRON,
+    gbufDepth:    hGBufDepth,
+    bloomColor:   hBloomColor,
+    protonHDR:    hProtonHDR,
+    glassColor:   hGlassColor,
+    pbrLit:       hPBRLit,
+    compositeOut: hCompositeOut,
+    textOut:      hTextOut,
+  };
+
+  return { graph: g, handles };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Convenience: RenderGraphBuilder — fluent API for common patterns
 // ─────────────────────────────────────────────────────────────────────────────
 
