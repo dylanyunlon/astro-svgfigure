@@ -1,0 +1,65 @@
+{
+  "_source": "channels/physics/at_uil_params.json — UnrealBloomComposite & UnrealBloomLuminosity trees",
+  "_note": "All values verbatim from AT UIL. Two families: core scenes and shaderVariants (sv_*).",
+
+  "home": {
+    "bloomStrength": 3.8200000000000003,
+    "bloomRadius": 1,
+    "luminosityThreshold": 0
+  },
+  "homebloom": {
+    "bloomStrength": 1.2,
+    "bloomRadius": 1,
+    "luminosityThreshold": 0
+  },
+  "globalbloom": {
+    "bloomStrength": 0.3,
+    "bloomRadius": 0.2,
+    "luminosityThreshold": 0
+  },
+  "cleanroom": {
+    "bloomStrength": 1,
+    "bloomRadius": 1,
+    "luminosityThreshold": 0.2
+  },
+  "workbloom": {
+    "bloomStrength": 1,
+    "bloomRadius": 1,
+    "luminosityThreshold": 0
+  },
+  "treescene": {
+    "bloomStrength": 1,
+    "bloomRadius": 1,
+    "luminosityThreshold": 0
+  },
+  "sv_contact": {
+    "bloomStrength": 0.8,
+    "bloomRadius": 0.5,
+    "luminosityThreshold": 0
+  },
+  "sv_about": {
+    "bloomStrength": 1,
+    "bloomRadius": 1,
+    "luminosityThreshold": 0
+  },
+  "sv_footer": {
+    "bloomStrength": 0.7,
+    "bloomRadius": 0.5,
+    "luminosityThreshold": 0
+  },
+  "sv_home": {
+    "bloomStrength": 0.6,
+    "bloomRadius": 0.8,
+    "luminosityThreshold": 0
+  },
+  "sv_work": {
+    "bloomStrength": 0.5,
+    "bloomRadius": 0.5,
+    "luminosityThreshold": 0
+  },
+  "sv_tree": {
+    "bloomStrength": 0.8,
+    "bloomRadius": 0.7,
+    "luminosityThreshold": 0
+  }
+}

@@ -1,0 +1,230 @@
+{
+  "e1": {
+    "edge_id": "e1",
+    "sources": [
+      "input_embed"
+    ],
+    "targets": [
+      "pos_encode"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 300.0,
+        "y": 90.0
+      },
+      {
+        "x": 300.0,
+        "y": 150.0
+      }
+    ],
+    "blocked_by": [],
+    "m169": {
+      "crossings_before": 0,
+      "crossings_after": 0
+    }
+  },
+  "e2": {
+    "edge_id": "e2",
+    "sources": [
+      "pos_encode"
+    ],
+    "targets": [
+      "self_attn"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 300.0,
+        "y": 200.0
+      },
+      {
+        "x": 300.0,
+        "y": 260.0
+      }
+    ],
+    "blocked_by": [],
+    "m169": {
+      "crossings_before": 0,
+      "crossings_after": 0
+    }
+  },
+  "e3": {
+    "edge_id": "e3",
+    "sources": [
+      "self_attn"
+    ],
+    "targets": [
+      "add_norm1"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 300.0,
+        "y": 310.0
+      },
+      {
+        "x": 290.0,
+        "y": 370.0
+      }
+    ],
+    "blocked_by": [],
+    "m169": {
+      "crossings_before": 0,
+      "crossings_after": 0
+    }
+  },
+  "e4": {
+    "edge_id": "e4",
+    "sources": [
+      "add_norm1"
+    ],
+    "targets": [
+      "ffn"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 290.0,
+        "y": 410.0
+      },
+      {
+        "x": 290.0,
+        "y": 470.0
+      }
+    ],
+    "blocked_by": [],
+    "m169": {
+      "crossings_before": 0,
+      "crossings_after": 0
+    }
+  },
+  "e5": {
+    "edge_id": "e5",
+    "sources": [
+      "ffn"
+    ],
+    "targets": [
+      "add_norm2"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 290.0,
+        "y": 515.0
+      },
+      {
+        "x": 290.0,
+        "y": 575.0
+      }
+    ],
+    "blocked_by": [],
+    "m169": {
+      "crossings_before": 0,
+      "crossings_after": 0
+    }
+  },
+  "e6": {
+    "edge_id": "e6",
+    "sources": [
+      "add_norm2"
+    ],
+    "targets": [
+      "output"
+    ],
+    "is_skip": false,
+    "advanced": {},
+    "points": [
+      {
+        "x": 290.0,
+        "y": 615.0
+      },
+      {
+        "x": 300.0,
+        "y": 675.0
+      }
+    ],
+    "blocked_by": [],
+    "m169": {
+      "crossings_before": 0,
+      "crossings_after": 0
+    }
+  },
+  "skip1": {
+    "edge_id": "skip1",
+    "sources": [
+      "pos_encode"
+    ],
+    "targets": [
+      "add_norm1"
+    ],
+    "is_skip": true,
+    "advanced": {
+      "semanticType": "skip_connection",
+      "routing": "SPLINES",
+      "curvature": 0.6
+    },
+    "points": [
+      {
+        "x": 340.0,
+        "y": 200.0
+      },
+      {
+        "x": 217.00155281000758,
+        "y": 244.7507764050038
+      },
+      {
+        "x": 255.0,
+        "y": 370.0
+      }
+    ],
+    "blocked_by": [
+      "self_attn"
+    ],
+    "m169": {
+      "crossings_before": 0,
+      "crossings_after": 0
+    }
+  },
+  "skip2": {
+    "edge_id": "skip2",
+    "sources": [
+      "add_norm1"
+    ],
+    "targets": [
+      "add_norm2"
+    ],
+    "is_skip": true,
+    "advanced": {
+      "semanticType": "skip_connection",
+      "routing": "SPLINES",
+      "curvature": 0.6
+    },
+    "points": [
+      {
+        "x": 325.0,
+        "y": 410.0
+      },
+      {
+        "x": 207.14763963122692,
+        "y": 457.35051378294474
+      },
+      {
+        "x": 255.0,
+        "y": 575.0
+      }
+    ],
+    "blocked_by": [
+      "ffn"
+    ],
+    "m169": {
+      "crossings_before": 0,
+      "crossings_after": 0
+    }
+  }
+}

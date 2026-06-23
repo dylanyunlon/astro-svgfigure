@@ -17,8 +17,6 @@
  */
 
 import { Container, Graphics } from 'pixi.js';
-import routes from '../../channels/physics/edge_routes.json';
-import speciesParamsArr from '../../channels/rendering/species/params.json';
 
 // ── Species params lookup (species → primary_color hex number) ──────────────
 
@@ -34,11 +32,25 @@ function hexToNum(hex: string): number {
 
 const DEFAULT_EDGE_COLOR = 0x90A4AE;
 
-const speciesColorMap: Record<string, number> = {};
-for (const entry of speciesParamsArr as SpeciesParamEntry[]) {
-  if (entry.species && entry.primary_color) {
-    speciesColorMap[entry.species] = hexToNum(entry.primary_color);
+/**
+ * Fetch JSON data at runtime (no static import).
+ * Paths resolve against the Astro `public/` directory.
+ */
+async function loadEdgeRoutes(): Promise<Record<string, RouteEntry>> {
+  const res = await fetch('/channels/physics/edge_routes.json');
+  return res.json();
+}
+
+async function loadSpeciesColorMap(): Promise<Record<string, number>> {
+  const res = await fetch('/channels/rendering/species/params.json');
+  const arr: SpeciesParamEntry[] = await res.json();
+  const map: Record<string, number> = {};
+  for (const entry of arr) {
+    if (entry.species && entry.primary_color) {
+      map[entry.species] = hexToNum(entry.primary_color);
+    }
   }
+  return map;
 }
 
 // ── Route data shapes ────────────────────────────────────────────────────────
@@ -152,12 +164,25 @@ export class EdgeRenderer {
   private entries: EdgeEntry[] = [];
   private stage: Container;
 
-  constructor(
+  /** Use EdgeRenderer.create() instead of new — data is loaded async at runtime. */
+  private constructor(stage: Container) {
+    this.stage = stage;
+  }
+
+  /**
+   * Async factory — fetches route and species-color JSON at runtime,
+   * then builds the edge geometry.
+   */
+  static async create(
     stage: Container,
     cellMap: Map<string, { species: string }>,
-  ) {
-    this.stage = stage;
-    const routeMap = routes as Record<string, RouteEntry>;
+  ): Promise<EdgeRenderer> {
+    const [routeMap, speciesColorMap] = await Promise.all([
+      loadEdgeRoutes(),
+      loadSpeciesColorMap(),
+    ]);
+
+    const renderer = new EdgeRenderer(stage);
 
     for (const key of Object.keys(routeMap)) {
       const route = routeMap[key];
@@ -191,9 +216,9 @@ export class EdgeRenderer {
       gfx.stroke({ color: strokeColor, width, alpha });
 
       stage.addChild(gfx);
-      this.edges.push(gfx);
+      renderer.edges.push(gfx);
 
-      this.entries.push({
+      renderer.entries.push({
         gfx,
         edgeId: route.edge_id,
         sourceSpecies: species,
@@ -207,6 +232,8 @@ export class EdgeRenderer {
         flowOffset: 0,
       });
     }
+
+    return renderer;
   }
 
   // ── Flow animation — redraws each edge with a shifting dash offset ────────

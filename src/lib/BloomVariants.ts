@@ -1,16 +1,15 @@
 /**
  * BloomVariants.ts
  * Per-species bloom parameter lookup.
- * Reads bloom_variants.json at build time (Astro/Vite static import),
+ * Fetches bloom_variants.json at runtime (no static import),
  * exposes getBloomParams(species) for use in the Three.js FX pipeline.
  *
  * Usage:
- *   import { getBloomParams, BloomParams } from '$lib/BloomVariants';
+ *   import { initBloomVariants, getBloomParams, BloomParams } from '$lib/BloomVariants';
+ *   await initBloomVariants();            // call once at startup
  *   const params = getBloomParams('cil-eye');
  *   // → { bloomStrength: 2.0, bloomRadius: 0.8, luminosityThreshold: 0.0 }
  */
-
-import bloomVariantsRaw from '../../channels/physics/bloom_variants.json';
 
 export interface BloomParams {
   bloomStrength: number;
@@ -20,8 +19,20 @@ export interface BloomParams {
 
 type BloomVariantMap = Record<string, BloomParams>;
 
-// Cast the imported JSON to the typed map
-const BLOOM_VARIANTS: BloomVariantMap = bloomVariantsRaw as BloomVariantMap;
+// Module-level cache — populated by initBloomVariants()
+let BLOOM_VARIANTS: BloomVariantMap = {};
+let _initialized = false;
+
+/**
+ * Fetch bloom_variants.json at runtime and populate the module cache.
+ * Safe to call multiple times — subsequent calls are no-ops.
+ */
+export async function initBloomVariants(): Promise<void> {
+  if (_initialized) return;
+  const res = await fetch('/channels/physics/bloom_variants.json');
+  BLOOM_VARIANTS = (await res.json()) as BloomVariantMap;
+  _initialized = true;
+}
 
 /**
  * Default fallback bloom params for unknown species.

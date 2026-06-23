@@ -291,13 +291,27 @@ interface SpeciesVisualTraitEntry {
 
 type SpeciesVisualTraitsMap = Record<string, SpeciesVisualTraitEntry>;
 
-// ── Static JSON imports (bundler-resolved, channels/physics/) ─────────────
-// These are imported as JSON modules; the bundler (Vite/Astro) handles them.
-import bloomVariantsData from '../../../channels/physics/bloom_variants.json';
-import speciesVisualTraitsData from '../../../channels/physics/species_visual_traits.json';
+// ── Runtime JSON data (fetched once via initFilterData) ─────────────────────
 
-const BLOOM_VARIANTS  = bloomVariantsData as BloomVariantsMap;
-const SPECIES_TRAITS  = speciesVisualTraitsData as SpeciesVisualTraitsMap;
+let BLOOM_VARIANTS: BloomVariantsMap = {};
+let SPECIES_TRAITS: SpeciesVisualTraitsMap = {};
+let _filterDataReady = false;
+
+/**
+ * Fetch bloom_variants.json and species_visual_traits.json at runtime.
+ * Must be called once before buildCellFilterChain / getBloomVariantNames /
+ * getSpeciesNames.  Safe to call multiple times — subsequent calls are no-ops.
+ */
+export async function initFilterData(): Promise<void> {
+  if (_filterDataReady) return;
+  const [bv, svt] = await Promise.all([
+    fetch('/channels/physics/bloom_variants.json').then(r => r.json()),
+    fetch('/channels/physics/species_visual_traits.json').then(r => r.json()),
+  ]);
+  BLOOM_VARIANTS = bv as BloomVariantsMap;
+  SPECIES_TRAITS = svt as SpeciesVisualTraitsMap;
+  _filterDataReady = true;
+}
 
 /**
  * Default bloom variant used when the caller doesn't specify one.
