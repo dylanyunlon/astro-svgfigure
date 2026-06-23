@@ -108,3 +108,60 @@ export function terminatePhysicsWorker(): void {
     _worker = null;
   }
 }
+
+// ── M902: SSE EventSource for composite_params realtime updates ─────────────
+// Connects to backend /api/world/state SSE endpoint, parses composite_params
+// updates and dispatches to registered callbacks.
+
+type CompositeUpdateCallback = (params: any) => void;
+const _sseCallbacks: CompositeUpdateCallback[] = [];
+let _eventSource: EventSource | null = null;
+
+/**
+ * onCompositeUpdate — register a callback for composite_params SSE updates.
+ */
+export function onCompositeUpdate(cb: CompositeUpdateCallback): () => void {
+  _sseCallbacks.push(cb);
+  return () => {
+    const idx = _sseCallbacks.indexOf(cb);
+    if (idx >= 0) _sseCallbacks.splice(idx, 1);
+  };
+}
+
+/**
+ * connectSSE — establish EventSource connection to /api/world/state.
+ * Parses SSE data as JSON composite_params and dispatches to all registered callbacks.
+ */
+export function connectSSE(baseUrl = ''): void {
+  if (_eventSource) return; // already connected
+  
+  const url = `${baseUrl}/api/world/state`;
+  _eventSource = new EventSource(url);
+  
+  _eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      // Dispatch composite_params update to all registered callbacks
+      for (const cb of _sseCallbacks) {
+        try { cb(data); } catch (e) { console.error('[SSE] callback error:', e); }
+      }
+    } catch (e) {
+      // Non-JSON SSE events (heartbeats etc) are silently ignored
+    }
+  };
+  
+  _eventSource.onerror = () => {
+    // Auto-reconnect is built into EventSource spec
+    console.warn('[SSE] connection error, will auto-reconnect');
+  };
+}
+
+/**
+ * disconnectSSE — close the EventSource connection.
+ */
+export function disconnectSSE(): void {
+  if (_eventSource) {
+    _eventSource.close();
+    _eventSource = null;
+  }
+}

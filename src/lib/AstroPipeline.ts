@@ -229,4 +229,47 @@ export class AstroPipeline {
 
   /** Direct access to BloomPass for live parameter tuning. */
   get bloomPass(): BloomPass { return this.bloom; }
+
+  // ── M903: Initialize pipeline from composite_params.json ──────────────
+  /**
+   * initFromComposite — read composite_params and wire up all renderers.
+   * Called once after composite_params.json is fetched or received via SSE.
+   *
+   * 1. Sort cells by z_order
+   * 2. Create cell containers with rendering params (pixi_filters, shader_params)
+   * 3. Create edge renderers with spline/particle/glow params
+   * 4. Apply global bloom + camera settings
+   */
+  initFromComposite(compositeParams: any): void {
+    if (!compositeParams?.cells || !compositeParams?.edges) return;
+
+    // Apply global bloom settings
+    if (compositeParams.bloom) {
+      const b = compositeParams.bloom;
+      if (b.threshold !== undefined) this.bloom.threshold = b.threshold;
+      if (b.intensity !== undefined) this.bloom.intensity = b.intensity;
+    }
+
+    // Apply camera settings
+    if (compositeParams.camera) {
+      const cam = compositeParams.camera;
+      if (cam.zoom !== undefined) this.mainScene.scale.set(cam.zoom);
+      if (cam.x !== undefined && cam.y !== undefined) {
+        this.mainScene.pivot.set(cam.x, cam.y);
+      }
+    }
+
+    // Register cells with their rendering params
+    for (const [cellId, cellData] of Object.entries(compositeParams.cells) as [string, any][]) {
+      this.cellManager.updateCell(cellId, {
+        ...cellData,
+        rendering: cellData.rendering,
+      });
+    }
+
+    // Log pipeline init
+    const cellCount = Object.keys(compositeParams.cells).length;
+    const edgeCount = Object.keys(compositeParams.edges).length;
+    console.log(`[AstroPipeline] initFromComposite: ${cellCount} cells, ${edgeCount} edges`);
+  }
 }
