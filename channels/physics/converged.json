@@ -1,5 +1,5 @@
 {
-  "converged": true,
-  "epoch": 9,
-  "conflicts": 0
+  "converged": false,
+  "epoch": 0,
+  "conflicts": 7
 }

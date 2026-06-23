@@ -4,12 +4,12 @@
   "species": "cil-bolt",
   "gene_traits": {
     "primary_shape": "zigzag",
-    "pattern": "stripe",
-    "line_style": "dash",
+    "pattern": "gradient",
+    "line_style": "angular",
     "family": "activation"
   },
   "initial_bbox": {
-    "x": 220,
+    "x": 230,
     "y": 470,
     "w": 140,
     "h": 45,

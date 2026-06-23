@@ -3,9 +3,9 @@
   "label": "Positional Encoding",
   "species": "cil-vector",
   "gene_traits": {
-    "primary_shape": "arrow",
-    "pattern": "gradient",
-    "line_style": "solid",
+    "primary_shape": "arrow_vec",
+    "pattern": "magnitude",
+    "line_style": "weighted",
     "family": "embedding"
   },
   "initial_bbox": {

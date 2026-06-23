@@ -1,35 +1,10 @@
 {
-  "layers": [
-    {
-      "z": 1,
-      "cells": [
-        "input_embed",
-        "output",
-        "pos_encode"
-      ]
-    },
-    {
-      "z": 2,
-      "cells": [
-        "add_norm1",
-        "add_norm2",
-        "ffn"
-      ]
-    },
-    {
-      "z": 3,
-      "cells": [
-        "self_attn"
-      ]
-    }
-  ],
-  "render_order": [
-    "input_embed",
-    "output",
-    "pos_encode",
-    "add_norm1",
-    "add_norm2",
-    "ffn",
-    "self_attn"
-  ]
+  "__schema__": "z=0 background, z=1 groups, z=2 edges_below, z=3 nodes, z=4 decorations, z=5 edges_above, z=6 labels, z=7 annotations",
+  "input_embed": 3,
+  "pos_encode": 5,
+  "self_attn": 3,
+  "add_norm1": 5,
+  "ffn": 3,
+  "add_norm2": 5,
+  "output": 3
 }

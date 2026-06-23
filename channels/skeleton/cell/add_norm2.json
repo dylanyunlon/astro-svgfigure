@@ -4,12 +4,12 @@
   "species": "cil-plus",
   "gene_traits": {
     "primary_shape": "cross",
-    "pattern": "grid",
-    "line_style": "solid",
-    "family": "normalization"
+    "pattern": "merge",
+    "line_style": "converge",
+    "family": "aggregation"
   },
   "initial_bbox": {
-    "x": 220,
+    "x": 230,
     "y": 575,
     "w": 140,
     "h": 40,

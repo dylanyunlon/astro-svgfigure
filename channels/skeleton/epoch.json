@@ -1,5 +1,6 @@
 {
-  "epoch": 10,
-  "state": "converged",
-  "max_epochs": 10
+  "current": 0,
+  "max": 10,
+  "status": "seeded",
+  "total_cells": 7
 }
