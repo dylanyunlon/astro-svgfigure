@@ -187,3 +187,6 @@ export type { Vec2 as WireframeVec2, WireframeCellEntry, ForceFieldSample as Wir
 // heat-transfer (M783)
 export { HeatTransferSolver, defaultHeatConfig, sampleThermalRamp, rgbaToCss as heatRgbaToCss, rgbaToU8 as heatRgbaToU8, selfTest as heatTransferSelfTest } from './heat-transfer';
 export type { HeatTransferConfig, HeatParticle, HeatParticleSOA, RGBA as HeatRGBA } from './heat-transfer';
+// destruction-system (M789)
+export { DestructionSystem, estimateDestructionImpulse } from './destruction-system';
+export type { DestructionConfig, DebrisShard } from './destruction-system';
