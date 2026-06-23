@@ -13,56 +13,55 @@
 import { AdvancedBloomFilter } from '../../../upstream/pixijs-filters/src/advanced-bloom';
 export type { AdvancedBloomFilterOptions } from '../../../upstream/pixijs-filters/src/advanced-bloom/AdvancedBloomFilter';
 
-// ─── blur ────────────────────────────────────────────────────────────────────
-import { KawaseBlurFilter }    from '../../../upstream/pixijs-filters-v2/src/kawase-blur';
-import { BackdropBlurFilter }  from '../../../upstream/pixijs-filters-v2/src/backdrop-blur';
-import { RadialBlurFilter }    from '../../../upstream/pixijs-filters-v2/src/radial-blur';
-import { ZoomBlurFilter }      from '../../../upstream/pixijs-filters-v2/src/zoom-blur';
-import { TiltShiftFilter }     from '../../../upstream/pixijs-filters-v2/src/tilt-shift';
-import { MotionBlurFilter }    from '../../../upstream/pixijs-filters-v2/src/motion-blur';
+// ─── pixijs-filters-v2 barrel import (M815) ─────────────────────────────────
+// All 30+ filter constructors + GlowFilterOptions consolidated from the v2 barrel.
+import {
+  // blur
+  KawaseBlurFilter,
+  BackdropBlurFilter,
+  RadialBlurFilter,
+  ZoomBlurFilter,
+  TiltShiftFilter,
+  MotionBlurFilter,
+  // color
+  AdjustmentFilter,
+  ColorGradientFilter,
+  ColorMapFilter,
+  ColorOverlayFilter,
+  ColorReplaceFilter,
+  GrayscaleFilter,
+  HslAdjustmentFilter,
+  MultiColorReplaceFilter,
+  // style
+  AsciiFilter,
+  CrossHatchFilter,
+  CRTFilter,
+  DotFilter,
+  EmbossFilter,
+  OldFilmFilter,
+  PixelateFilter,
+  SimplexNoiseFilter,
+  // distort
+  BulgePinchFilter,
+  ShockwaveFilter,
+  TwistFilter,
+  ReflectionFilter,
+  // light
+  BloomFilter,
+  GlowFilter,
+  GodrayFilter,
+  SimpleLightmapFilter,
+  // edge
+  BevelFilter,
+  OutlineFilter,
+  DropShadowFilter,
+  // fx
+  GlitchFilter,
+  RGBSplitFilter,
+  ConvolutionFilter,
+} from '../../../upstream/pixijs-filters-v2/src';
 
-// ─── color ───────────────────────────────────────────────────────────────────
-import { AdjustmentFilter }       from '../../../upstream/pixijs-filters-v2/src/adjustment';
-import { ColorGradientFilter }    from '../../../upstream/pixijs-filters-v2/src/color-gradient';
-import { ColorMapFilter }         from '../../../upstream/pixijs-filters-v2/src/color-map';
-import { ColorOverlayFilter }     from '../../../upstream/pixijs-filters-v2/src/color-overlay';
-import { ColorReplaceFilter }     from '../../../upstream/pixijs-filters-v2/src/color-replace';
-import { GrayscaleFilter }        from '../../../upstream/pixijs-filters-v2/src/grayscale';
-import { HslAdjustmentFilter }    from '../../../upstream/pixijs-filters-v2/src/hsl-adjustment';
-import { MultiColorReplaceFilter }from '../../../upstream/pixijs-filters-v2/src/multi-color-replace';
-
-// ─── style ───────────────────────────────────────────────────────────────────
-import { AsciiFilter }       from '../../../upstream/pixijs-filters-v2/src/ascii';
-import { CrossHatchFilter }  from '../../../upstream/pixijs-filters-v2/src/cross-hatch';
-import { CRTFilter }         from '../../../upstream/pixijs-filters-v2/src/crt';
-import { DotFilter }         from '../../../upstream/pixijs-filters-v2/src/dot';
-import { EmbossFilter }      from '../../../upstream/pixijs-filters-v2/src/emboss';
-import { OldFilmFilter }     from '../../../upstream/pixijs-filters-v2/src/old-film';
-import { PixelateFilter }    from '../../../upstream/pixijs-filters-v2/src/pixelate';
-import { SimplexNoiseFilter }from '../../../upstream/pixijs-filters-v2/src/simplex-noise';
-
-// ─── distort ─────────────────────────────────────────────────────────────────
-import { BulgePinchFilter } from '../../../upstream/pixijs-filters-v2/src/bulge-pinch';
-import { ShockwaveFilter }  from '../../../upstream/pixijs-filters-v2/src/shockwave';
-import { TwistFilter }      from '../../../upstream/pixijs-filters-v2/src/twist';
-import { ReflectionFilter } from '../../../upstream/pixijs-filters-v2/src/reflection';
-
-// ─── light ───────────────────────────────────────────────────────────────────
-import { BloomFilter }          from '../../../upstream/pixijs-filters-v2/src/bloom';
-import { GlowFilter }           from '../../../upstream/pixijs-filters-v2/src/glow';
-export type { GlowFilterOptions } from '../../../upstream/pixijs-filters-v2/src/glow/GlowFilter';
-import { GodrayFilter }         from '../../../upstream/pixijs-filters-v2/src/godray';
-import { SimpleLightmapFilter } from '../../../upstream/pixijs-filters-v2/src/simple-lightmap';
-
-// ─── edge ────────────────────────────────────────────────────────────────────
-import { BevelFilter }      from '../../../upstream/pixijs-filters-v2/src/bevel';
-import { OutlineFilter }    from '../../../upstream/pixijs-filters-v2/src/outline';
-import { DropShadowFilter } from '../../../upstream/pixijs-filters-v2/src/drop-shadow';
-
-// ─── fx ──────────────────────────────────────────────────────────────────────
-import { GlitchFilter }      from '../../../upstream/pixijs-filters-v2/src/glitch';
-import { RGBSplitFilter }    from '../../../upstream/pixijs-filters-v2/src/rgb-split';
-import { ConvolutionFilter } from '../../../upstream/pixijs-filters-v2/src/convolution';
+export type { GlowFilterOptions } from '../../../upstream/pixijs-filters-v2/src';
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -204,7 +203,7 @@ export type CellGlowMode = 'hover' | 'select';
  * hover  → cool cyan, moderate strength, no knockout
  * select → gold,      higher  strength, no knockout
  */
-export const CELL_GLOW_PRESETS: Record<CellGlowMode, import('../../upstream/pixijs-filters-v2/src/glow/GlowFilter').GlowFilterOptions> = {
+export const CELL_GLOW_PRESETS: Record<CellGlowMode, import('../../upstream/pixijs-filters-v2/src').GlowFilterOptions> = {
   hover: {
     distance:      12,
     outerStrength: 2.5,
