@@ -96,7 +96,43 @@
       "pos_encode",
       "add_norm1"
     ],
-    "influence_strength": 0.24
+    "influence_strength": 0.24,
+    "shader_params": {
+      "sdf_type": "sdEllipse",
+      "sdf_radius": 0.42,
+      "glow_intensity": 0.72,
+      "glow_color": [
+        0.392,
+        0.714,
+        0.965
+      ],
+      "fresnel_power": 2.8,
+      "noise_scale": 0.18,
+      "noise_speed": 0.35,
+      "edge_softness": 0.06
+    },
+    "pixi_filters": {
+      "bloom": {
+        "threshold": 0.55,
+        "bloomScale": 1.2,
+        "brightness": 1.05
+      },
+      "glow": {
+        "distance": 14,
+        "outerStrength": 1.8,
+        "innerStrength": 0.6,
+        "color": "0x64B5F6"
+      },
+      "drop_shadow": {
+        "offset": [
+          2,
+          3
+        ],
+        "blur": 8,
+        "alpha": 0.28,
+        "color": "0x1A237E"
+      }
+    }
   },
   "add_norm1": {
     "display_color": "#E53935",
