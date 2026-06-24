@@ -371,6 +371,23 @@ export class PBRCellGPU {
     return this.fboTarget.texture;
   }
 
+  /**
+   * swapProgram — 用外部编译好的 WebGLProgram 替换默认 PBR shader。
+   * 替换后重新查询所有 uniform / attribute location，保证 renderCells() 正常工作。
+   * 原 program 会被 deleteProgram 释放。
+   *
+   * @param newProg - 已链接的 WebGLProgram（例如来自 getATProgram(gl, 'PhysicalShader')）
+   */
+  swapProgram(newProg: WebGLProgram): void {
+    const gl = this.gl;
+    // 释放旧 program
+    if (this.prog) gl.deleteProgram(this.prog);
+    this.prog = newProg;
+    // 重新缓存所有 attribute / uniform 位置
+    this._cacheLocations();
+    console.log('[PBRCellGPU] program swapped → AT PhysicalShader');
+  }
+
   /** Release all GPU resources. */
   dispose(): void {
     const gl = this.gl;

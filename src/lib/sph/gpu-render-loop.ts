@@ -16,7 +16,7 @@ import { ParticleGPU } from './particle-gpu-pass';
 import { PBRCellGPU } from './pbr-gpu-pass';
 import { GlassGPU } from './glass-gpu-pass';
 import { SDFIconGPU, createSDFIconGPU } from './sdf-gpu-pass';
-import { initATShaderPipeline, listATShaders } from './at-shader-pipeline-bridge';
+import { initATShaderPipeline, listATShaders, getATProgram } from './at-shader-pipeline-bridge';
 import { safeCompile, checkFBO, drainErrors, setupContextLost } from './gpu-error-guard';
 import { GPUPerfMonitor } from './gpu-perf-monitor';
 
@@ -133,6 +133,17 @@ export class GPURenderLoop {
       .then(() => {
         const names = listATShaders();
         console.log(`[GPURenderLoop] AT shaders ready: ${names.length} shaders`);
+
+        // M982: 用 AT PhysicalShader 替换 PBR pass 的默认 shader
+        if (this.pbr) {
+          const atPhysical = getATProgram(this.gl, 'PhysicalShader');
+          if (atPhysical) {
+            this.pbr.swapProgram(atPhysical.program);
+            console.log('[GPURenderLoop] PBR pass: AT PhysicalShader active');
+          } else {
+            console.warn('[GPURenderLoop] AT PhysicalShader not found — PBR keeps default shader');
+          }
+        }
       })
       .catch((e) => console.warn('[GPURenderLoop] AT shader load failed (non-fatal):', e));
   }
