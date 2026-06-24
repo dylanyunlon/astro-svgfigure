@@ -7,7 +7,7 @@
 
 
 
-import { QoSProfile, SpatialConfig } from './types';
+import type { QoSProfile, SpatialConfig } from './types';
 
 export type QoSProfileName =
   | 'DEFAULT'

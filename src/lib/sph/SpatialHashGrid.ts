@@ -12,7 +12,7 @@
 
 
 
-import { MAX_PARTICLES } from "./types";
+import { MAX_PARTICLES } from './types';
 
 export class SpatialHashGrid {
   private readonly tableSize: number;   // power-of-2

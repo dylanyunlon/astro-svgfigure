@@ -11,7 +11,8 @@
 
 
 
-import { GPUBufferSet, SimParams, WORKGROUP_SIZE } from "./types";
+import type { GPUBufferSet, SimParams } from './types';
+import { WORKGROUP_SIZE } from './types';
 
 const DENSITY_SHADER = /* wgsl */`
 struct SimUniforms {

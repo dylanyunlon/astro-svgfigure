@@ -85,7 +85,7 @@ import type { CellBBox }       from './instanced-cell-renderer';
 import type { LODCamera }      from './adaptive-lod';
 import type { Tier }            from './performance-budget';
 import { getGlobalBudget }     from './performance-budget';
-import { WORKGROUP_SIZE }      from './types';
+import { WORKGROUP_SIZE } from './types';
 
 // [orphan-precise] /** Maximum number of cullable objects (cells + particle groups). */
 const MAX_OBJECTS      = 2048;

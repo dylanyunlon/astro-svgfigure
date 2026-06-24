@@ -139,7 +139,7 @@
 
 
 
-import type { QoSProfile }        from './types';
+import type { QoSProfile } from './types';
 import type { QoSProfileName }    from './qosSpatial';
 import { QOS_PRESETS }             from './qosSpatial';
 import { QOS_THEME }               from './color-palette';

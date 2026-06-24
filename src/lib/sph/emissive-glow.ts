@@ -101,7 +101,7 @@ import type { ATBloomParams }              from './at-bloom-postprocess';
 import type { SpeciesShaderConfig }        from './species-shader-registry';
 import type { CellSpecies }                from './cell-material-system';
 import type { RGB }                        from './color-palette';
-import { MAX_PARTICLES }                   from './types';
+import { MAX_PARTICLES } from './types';
 import { getSpeciesShaderConfig }          from './species-shader-registry';
 import { samplePhysicsForBody }            from './physics-uniform-bridge';
 

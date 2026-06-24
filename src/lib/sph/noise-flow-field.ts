@@ -24,7 +24,8 @@
 
 
 
-import { GPUBufferSet, SimParams, WORKGROUP_SIZE } from "./types";
+import type { GPUBufferSet, SimParams } from './types';
+import { WORKGROUP_SIZE } from './types';
 
 export type NoiseEffect = "smoke" | "aurora" | "water";
 

@@ -35,7 +35,7 @@
 
 
 
-import type { QoSProfile }        from './types';
+import type { QoSProfile } from './types';
 import type { MaterialType, PatternShader, SdfShape } from './types';
 import { getSpeciesShaderConfig }  from './species-shader-registry';
 import { qosToSpatial }           from './qosSpatial';

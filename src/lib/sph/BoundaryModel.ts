@@ -16,7 +16,7 @@
 
 
 
-import { ObstacleData } from "./types";
+import type { ObstacleData } from './types';
 import {
 
   BoundaryShape,

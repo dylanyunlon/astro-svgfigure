@@ -14,10 +14,8 @@ import { PhysarumSimulation } from './physarum-sim';
 import { BoidsCompute }       from './boids-compute';
 import { OceanBackground }    from './ocean-background';
 
-import {
-  SimParams, ParticleData,
-  ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
-} from "./types";
+import type { SimParams, ParticleData, ObstacleData } from './types';
+import { MAX_PARTICLES, WORKGROUP_SIZE } from './types';
 import type { GPUBufferSet } from "./ParticleRenderer";
 
 // ─────────────────────────────────────────────
