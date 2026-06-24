@@ -202,3 +202,9 @@ export class SpatialHashGrid {
     return result;
   }
 }
+
+// Singleton shared culler instance
+export const sharedCellCuller = {
+  cull: cullCells,
+  grid: new SpatialHashGrid(100),
+};

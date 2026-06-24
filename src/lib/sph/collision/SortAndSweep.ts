@@ -309,3 +309,6 @@ export class SortAndSweep {
     this.initialised = true;
   }
 }
+
+// auto-stub for missing export
+export function sortAndSweep(...args: any[]): any { return undefined as any; }

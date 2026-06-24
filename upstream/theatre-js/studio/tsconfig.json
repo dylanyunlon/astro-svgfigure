@@ -1,11 +1,17 @@
 {
-  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": ".temp/declarations",
-    "lib": ["es2017", "dom", "ESNext"],
+    "lib": [
+      "es2017",
+      "dom",
+      "ESNext"
+    ],
     "rootDir": ".",
     "composite": true,
-    "types": ["jest", "node"],
+    "types": [
+      "jest",
+      "node"
+    ],
     "emitDeclarationOnly": true,
     "plugins": [
       {
@@ -17,13 +23,27 @@
     ]
   },
   "references": [
-    {"path": "../core"},
-    {"path": "../utils"},
-    {"path": "../dataverse"},
-    {"path": "../react"},
-    {"path": "../app"},
-    {"path": "../sync-server"},
-    {"path": "../saaz"}
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../utils"
+    },
+    {
+      "path": "../dataverse"
+    },
+    {
+      "path": "../react"
+    },
+    {
+      "path": "../app"
+    },
+    {
+      "path": "../sync-server"
+    },
+    {
+      "path": "../saaz"
+    }
   ],
   "include": [
     "../core/globals.d.ts",
@@ -31,5 +51,11 @@
     "./src/**/*",
     "./devEnv/**/*"
   ],
-  "exclude": ["**/node_modules", "**/.*", "**/xeno", "**/dist", "**/.temp"]
+  "exclude": [
+    "**/node_modules",
+    "**/.*",
+    "**/xeno",
+    "**/dist",
+    "**/.temp"
+  ]
 }

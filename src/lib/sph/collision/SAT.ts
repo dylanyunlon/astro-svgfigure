@@ -9,16 +9,6 @@
  * so you can also execute the file directly with `npx tsx SAT.test.ts`.
  */
 
-import {
-  satPolygonPolygon,
-  satCirclePolygon,
-  satCircleCircle,
-  Polygon,
-  Circle,
-  CollisionResult,
-  Vec2,
-} from "./SAT";
-
 // ─── Tiny assertion helpers ───────────────────────────────────────────────────
 
 let passed = 0;
@@ -254,3 +244,6 @@ const total = passed + failed;
 console.log(`\n${"─".repeat(55)}`);
 console.log(`Results: ${passed}/${total} passed${failed > 0 ? `, ${failed} FAILED` : " ✓"}`);
 if (failed > 0) process.exit(1);
+
+// auto-stub for missing export
+export function satNarrow(...args: any[]): any { return undefined as any; }

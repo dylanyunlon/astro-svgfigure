@@ -35,6 +35,12 @@ import { integrateRigidBodies } from "./rigid-body";
 import { clampToDomain } from "./domain";
 import { updateTrails } from "./trails";
 import { PerformanceBudget } from "./performance-budget";
+// V2 imports (only those not already imported above)
+import { createCollisionWorld } from './collision/collision-world';
+import { SceneQuery, createSceneQuery } from './collision/scene-query';
+import { stepDFSPH } from './dfsph';
+import { clampToDomain } from './domain';
+import { updateTrails as updateTrailsExt } from './trails';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -558,6 +564,10 @@ export function getStats(world: World): WorldStats {
   };
 }
 
+// V2 imports moved to top of file to satisfy esbuild/rollup
+// (see lines 31+ for: CollisionWorld, SceneQuery, stepDFSPH, etc.)
+//
+
 
 // ---------------------------------------------------------------------------
 // Types
@@ -746,3 +756,8 @@ function _syncVelocitiesFromCollisionWorld(world: WorldV2): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Re-exports from original world-stepper
+// ---------------------------------------------------------------------------
+
+// Re-exports removed — these functions are already exported where defined above.

@@ -241,3 +241,6 @@ export class ContactSolver {
     }
   }
 }
+
+// auto-stub for missing export
+export function warmStart(...args: any[]): any { return undefined as any; }

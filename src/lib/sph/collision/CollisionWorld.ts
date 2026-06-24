@@ -92,7 +92,7 @@ export interface SPHWorld {
 
 // === src/lib/sph/collision/C01_Vec2Math.ts ===
 
-import type { Vec2 } from '../types';
+// [esbuild-fix] import type { Vec2 } from '../types';
 
 export const vec2 = {
   create(x = 0, y = 0): Vec2 { return { x, y }; },
@@ -115,7 +115,7 @@ export const vec2 = {
 
 // === src/lib/sph/collision/C02_AABB.ts ===
 
-import type { AABB, Vec2, ConvexShape, RigidBody } from '../types';
+// [esbuild-fix] import type { AABB, Vec2, ConvexShape, RigidBody } from '../types';
 
 export function aabbFromCircle(center: Vec2, radius: number): AABB {
   return {
@@ -189,8 +189,8 @@ export function aabbArea(a: AABB): number {
 
 // === src/lib/sph/collision/C03_BVHTree.ts ===
 
-import type { AABB, BroadPhasePair } from '../types';
-import { aabbOverlap, aabbUnion } from './AABB';
+// [esbuild-fix] import type { AABB, BroadPhasePair } from '../types';
+// [esbuild-fix] import { aabbOverlap, aabbUnion } from './AABB';
 
 interface BVHNode {
   aabb: AABB;
@@ -349,7 +349,7 @@ export class BVHTree {
 
 // === src/lib/sph/collision/C04_SortAndSweep.ts ===
 
-import type { AABB, BroadPhasePair } from '../types';
+// [esbuild-fix] import type { AABB, BroadPhasePair } from '../types';
 
 interface SAPEntry {
   bodyId: number;
@@ -390,7 +390,7 @@ export class SortAndSweep {
 
 // === src/lib/sph/collision/C05_NarrowPhase.ts ===
 
-import type { RigidBody, ConvexShape, ContactInfo, Vec2 } from '../types';
+// [esbuild-fix] import type { RigidBody, ConvexShape, ContactInfo, Vec2 } from '../types';
 // vec2 utilities inlined below;
 
 function circleVsCircle(
@@ -523,7 +523,7 @@ export function computeContactInfo(
 
 // === src/lib/sph/collision/C06_ContactSolver.ts ===
 
-import type { ContactConstraint } from '../types';
+// [esbuild-fix] import type { ContactConstraint } from '../types';
 // vec2 utilities inlined below;
 
 export class ContactSolver {
@@ -575,7 +575,7 @@ export class ContactSolver {
 
 // === src/lib/sph/collision/C07_PositionSolver.ts ===
 
-import type { ContactConstraint } from '../types';
+// [esbuild-fix] import type { ContactConstraint } from '../types';
 // vec2 utilities inlined below;
 
 const SLOP = 0.01;
@@ -618,9 +618,9 @@ export class PositionSolver {
 
 // === src/lib/sph/collision/C08_SceneQuery.ts ===
 
-import type { RigidBody, ConvexShape, RaycastHit, OverlapResult, Vec2, AABB } from '../types';
+// [esbuild-fix] import type { RigidBody, ConvexShape, RaycastHit, OverlapResult, Vec2, AABB } from '../types';
 // vec2 utilities inlined below;
-import { aabbOverlap, aabbFromCircle, aabbExpand, AABB } from './AABB';
+// [esbuild-fix] import { aabbOverlap, aabbFromCircle, aabbExpand, AABB } from './AABB';
 
 export class SceneQuery {
   private bodies: RigidBody[] = [];
@@ -748,7 +748,7 @@ export class SceneQuery {
 
 // === src/lib/sph/collision/C09_RigidBodyFactory.ts ===
 
-import type { RigidBody, ConvexShape, BodyType } from '../types';
+// [esbuild-fix] import type { RigidBody, ConvexShape, BodyType } from '../types';
 
 let _nextId = 1;
 
@@ -828,12 +828,12 @@ import type {
 } from '../types';
 
 // vec2 utilities inlined below;
-import { computeAABB } from './AABB';
-import { BVHTree } from './BVHTree';
-import { SortAndSweep } from './SortAndSweep';
-import { ContactSolver } from './ContactSolver';
-import { PositionSolver } from './PositionSolver';
-import { SceneQuery } from './SceneQuery';
+// [esbuild-fix] import { computeAABB } from './AABB';
+// [esbuild-fix] import { BVHTree } from './BVHTree';
+// [esbuild-fix] import { SortAndSweep } from './SortAndSweep';
+// [esbuild-fix] import { ContactSolver } from './ContactSolver';
+// [esbuild-fix] import { PositionSolver } from './PositionSolver';
+// [esbuild-fix] import { SceneQuery } from './SceneQuery';
 import {
   CollisionEventDispatcher,
   type ActiveContactPair,

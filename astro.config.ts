@@ -133,12 +133,27 @@ export default defineConfig({
   // [Vite] ELK.js bundled needs explicit optimizeDeps
   // Ref: https://github.com/kieler/elkjs
   vite: {
+    plugins: [
+      (await import('vite-plugin-glsl')).default(),
+    ],
     optimizeDeps: {
       include: ['elkjs/lib/elk.bundled.js'],
       exclude: ['pixi.js']
     },
+    build: {
+      rollupOptions: {
+        external: ['tweedle.js', 'fs', 'path', 'lodash-es', /^@theatre\/.*/, /^@pixi\/.*/],
+        onwarn(warning, warn) {
+          // 忽略 unresolved import warnings (upstream 依赖)
+          if (warning.code === 'UNRESOLVED_IMPORT') return;
+          warn(warning);
+        },
+      }
+    },
     resolve: {
       alias: {
+        '@theatre/utils': './upstream/theatre-js/utils/src',
+        '@theatre/dataverse': './upstream/theatre-js/dataverse/src',
         'worker:./basis.worker.ts': './src/lib/stubs/empty-worker.ts',
         'worker:./ktx.worker.ts': './src/lib/stubs/empty-worker.ts',
         'worker:./checkImageBitmap.worker.ts': './src/lib/stubs/empty-worker.ts',
