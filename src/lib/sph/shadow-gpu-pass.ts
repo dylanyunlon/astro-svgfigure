@@ -1,5 +1,5 @@
 /**
- * shadow-gpu-pass.ts — M873: GPU Shadow Map + PCF
+ * shadow-gpu-pass.ts — M1134: GPU Shadow Map + 5×5 PCF + Contact Hardening
  * ─────────────────────────────────────────────────────────────────────────────
  * 光的缺席即是阴影。
  *
@@ -7,9 +7,15 @@
  * 参考 fluid-gpu-pass.ts (414行, 82处gl调用) 的写法。
  * 从 compiled.vs 通过 ShaderLoader 提取 AT 生产 shader 源码。
  *
+ * M1134 改动:
+ *   - PCF kernel: 3×3 (9 taps) → 5×5 (25 taps) — 更柔和的阴影边缘
+ *   - shadow bias: 0.005 → 0.002 — 减少 peter panning
+ *   - 阴影颜色: 纯黑 → ambient occlusion 蓝 vec3(0.1, 0.12, 0.18)
+ *   - contact hardening: PCF 半径随光空间深度增大 (近处硬, 远处软)
+ *
  * Pass 链 (每帧):
  *   shadowDepth → [bind DEPTH_ATTACHMENT FBO] → drawArrays (光源视角深度)
- *   shadowSample → [3×3 PCF kernel] → shadow factor texture (R=0..1)
+ *   shadowSample → [5×5 PCF kernel + contact hardening] → shadow factor texture (RGB+A)
  *
  * 架构:
  * ─────────────────────────────────────────────────────────────────────────────
@@ -22,15 +28,16 @@
  *   └─────────────────────────────────────────────────────────────────────────┘
  *                  │ shadowDepthTex
  *                  ▼
- *   ┌─ Pass 2: SHADOW SAMPLE PASS (PCF) ─────────────────────────────────────┐
- *   │  3×3 PCF kernel (9 taps) around each shadow map texel                  │
- *   │  For each tap: sample depth from shadowDepthTex                        │
- *   │                compare with current fragment projected depth            │
- *   │                accumulate lit/shadow                                    │
- *   │  Output R channel = shadow factor ∈ [0,1]                              │
- *   │    0.0 = fully in shadow                                                │
- *   │    1.0 = fully lit                                                      │
- *   │  Result: shadowFactorTex (RGBA, R = shadow factor)                     │
+ *   ┌─ Pass 2: SHADOW SAMPLE PASS (5×5 PCF + Contact Hardening) ────────────┐
+ *   │  5×5 PCF kernel (25 taps) around each shadow map texel               │
+ *   │  Contact hardening: PCF radius = mix(1.0, 3.0, depth) × texelSize   │
+ *   │  For each tap: sample depth from shadowDepthTex                       │
+ *   │                compare with current fragment projected depth           │
+ *   │                accumulate lit/shadow                                   │
+ *   │  Output RGB = ambient occlusion blue tint when in shadow              │
+ *   │    vec3(0.1, 0.12, 0.18) = shadow color (blue AO)                    │
+ *   │    vec3(1.0, 1.0, 1.0)   = fully lit                                  │
+ *   │  Result: shadowFactorTex (RGBA, RGB = shadow color blend)             │
  *   └─────────────────────────────────────────────────────────────────────────┘
  *
  * WebGL 扩展要求:
@@ -112,9 +119,9 @@ void main() {
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shadow Sample (PCF) Fragment Shader
-// 3×3 kernel: 9 taps, 每 tap 比较 shadow map depth 和当前 fragment depth
-// 输出 R = shadow factor (0=shadow, 1=lit)
+// Shadow Sample (PCF) Fragment Shader — M1134
+// 5×5 kernel: 25 taps + contact hardening (radius ∝ depth)
+// 阴影颜色: ambient occlusion 蓝 vec3(0.1, 0.12, 0.18), 而非纯黑
 // WebGL1 语法: texture2D, varying, gl_FragColor
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -133,15 +140,20 @@ uniform mat4 uLightViewProj;
 // shadow map 分辨率的 texel 大小 (1/shadowMapSize)
 uniform vec2 uShadowTexelSize;
 
-// depth bias 防止 shadow acne
+// depth bias 防止 shadow acne (M1134: 0.005 → 0.002)
 uniform float uBias;
 
 // 从全屏 quad vert 传来的 UV
 varying vec2 vUv;
 
+// ── M1134: ambient occlusion 蓝色调阴影 ───────────────────────────────────────
+// 纯黑阴影视觉上很死板; 蓝调 AO 模拟天空漫反射
+const vec3 SHADOW_COLOR = vec3(0.1, 0.12, 0.18);
+const vec3 LIT_COLOR    = vec3(1.0, 1.0,  1.0);
+
 // ── 采样一个 shadow map texel 并比较深度 ──────────────────────────────────────
-// shadowCoord.xy = shadow map UV (0..1)
-// shadowCoord.z  = current fragment depth in light space (0..1)
+// uv: shadow map UV (0..1)
+// depth: current fragment depth in light space (0..1)
 // 返回 1.0 = 亮, 0.0 = 遮挡
 float shadowCompare(vec2 uv, float depth) {
     // texture2D — WebGL1 语法
@@ -150,8 +162,16 @@ float shadowCompare(vec2 uv, float depth) {
     return step(depth - uBias, shadowDepth);
 }
 
-// ── 3×3 PCF kernel — 9 tap 平均 ───────────────────────────────────────────────
-float samplePCF3x3(vec3 shadowCoord) {
+// ── M1134: 5×5 PCF kernel — 25 tap + contact hardening ───────────────────────
+// shadowCoord.xy = shadow map UV (0..1)
+// shadowCoord.z  = current fragment depth in light space (0..1)
+// 返回 shadow factor ∈ [0,1]: 0=shadow, 1=lit
+//
+// Contact Hardening (PCSS 简化版):
+//   近处遮挡 (depth 小) → PCF radius 小 → 阴影边缘硬
+//   远处遮挡 (depth 大) → PCF radius 大 → 阴影边缘软
+//   radius = mix(1.0, 3.0, depth) × texelSize
+float samplePCF5x5(vec3 shadowCoord) {
     vec2 uv    = shadowCoord.xy;
     float depth = shadowCoord.z;
 
@@ -160,19 +180,28 @@ float samplePCF3x3(vec3 shadowCoord) {
         return 1.0;
     }
 
+    // ── Contact hardening: radius ∝ depth ────────────────────────────────
+    // depth ∈ [0,1]; 近处 depth~0 → radius×1.0, 远处 depth~1 → radius×3.0
+    // clamp depth 避免超出 [0,1] 范围带来的扩散失控
+    float contactDepth = clamp(depth, 0.0, 1.0);
+    // radius 乘数: 1.0 (near) → 3.0 (far)
+    float radiusMul = mix(1.0, 3.0, contactDepth);
+    // 每 tap 的实际 UV 步长
+    vec2 step = uShadowTexelSize * radiusMul;
+
     float sum = 0.0;
 
-    // 3×3 kernel: offsets -1, 0, +1 in both axes
-    // 使用 texel size 偏移 UV (真正的 PCF — 不是 shadow map blur)
-    for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
-            vec2 offset = vec2(float(x), float(y)) * uShadowTexelSize;
+    // 5×5 kernel: offsets -2, -1, 0, +1, +2 in both axes (25 taps)
+    // 使用动态 step (contact hardening) 偏移 UV
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            vec2 offset = vec2(float(x), float(y)) * step;
             sum += shadowCompare(uv + offset, depth);
         }
     }
 
-    // 9 tap 平均 → 软阴影
-    return sum / 9.0;
+    // 25 tap 平均 → 柔和软阴影
+    return sum / 25.0;
 }
 
 void main() {
@@ -188,12 +217,17 @@ void main() {
     // NDC → shadow map UV [0,1] 和深度 [0,1]
     vec3 shadowCoord = ndc * 0.5 + 0.5;
 
-    // 3×3 PCF 采样
-    float shadow = samplePCF3x3(shadowCoord);
+    // ── M1134: 5×5 PCF + contact hardening ───────────────────────────────
+    float shadowFactor = samplePCF5x5(shadowCoord);
 
-    // 输出: R = shadow factor (0=shadow, 1=lit)
+    // ── M1134: 阴影颜色混合 ────────────────────────────────────────────────
+    // shadowFactor=1 → LIT_COLOR (白), shadowFactor=0 → SHADOW_COLOR (蓝调AO)
+    // mix(a, b, t) = a*(1-t) + b*t  →  mix(SHADOW, LIT, factor)
+    vec3 color = mix(SHADOW_COLOR, LIT_COLOR, shadowFactor);
+
+    // 输出: RGB = 阴影颜色混合, A = shadow factor (供外部 blend 使用)
     // texture2D — WebGL1 语法
-    gl_FragColor = vec4(shadow, shadow, shadow, 1.0);
+    gl_FragColor = vec4(color, shadowFactor);
 }
 `;
 
@@ -206,7 +240,7 @@ export interface ShadowConfig {
   shadowMapSize: number;
   /** shadow factor texture 输出分辨率. @default 512 */
   outputSize: number;
-  /** depth bias 防止 shadow acne. @default 0.005 */
+  /** depth bias 防止 shadow acne. M1134: 0.005→0.002 减少 peter panning. @default 0.002 */
   bias: number;
   /** 光源方向 (normalized). @default [0.5, -1.0, 0.3] */
   lightDir: [number, number, number];
@@ -217,7 +251,7 @@ export interface ShadowConfig {
 const DEFAULT_SHADOW_CONFIG: ShadowConfig = {
   shadowMapSize: 512,
   outputSize: 512,
-  bias: 0.005,
+  bias: 0.002,                     // M1134: 0.005 → 0.002 (减少 peter panning)
   lightDir: [0.5, -1.0, 0.3],
   lightOrthoSize: 200,
 };
@@ -494,9 +528,10 @@ export class ShadowGPU {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  // ─── Pass 2: Shadow Sample Pass (PCF) ────────────────────────────────────
-  // 读取 shadow depth map, 做 3×3 PCF, 输出 shadow factor texture
+  // ─── Pass 2: Shadow Sample Pass (5×5 PCF + Contact Hardening) ───────────
+  // 读取 shadow depth map, 做 5×5 PCF + contact hardening, 输出 shadow color texture
   // positionTex: 世界坐标纹理 (外部提供 or null → 用 default)
+  // M1134: 输出 RGB = AO蓝调阴影色混合, A = shadow factor
 
   renderShadowFactor(positionTex?: WebGLTexture): void {
     const gl  = this.gl;
@@ -570,7 +605,7 @@ export class ShadowGPU {
 
   // ─── 公开 API ─────────────────────────────────────────────────────────────
 
-  /** 输出的 shadow factor 纹理 (R channel = 0 shadow, 1 lit) */
+  /** 输出的 shadow color 纹理 (RGB = AO蓝调混合, A = shadow factor 0=shadow/1=lit) */
   get shadowFactorTexture(): WebGLTexture {
     return this._shadowFactorTex;
   }
@@ -605,7 +640,7 @@ export class ShadowGPU {
     // Pass 1: 光源视角深度 (DEPTH_ATTACHMENT FBO + drawElements)
     this.renderShadowDepth(cellPositions, cellCount);
 
-    // Pass 2: 3×3 PCF kernel → shadow factor texture (drawArrays)
+    // Pass 2: 5×5 PCF kernel + contact hardening → shadow color texture (drawArrays)
     this.renderShadowFactor(positionTex);
   }
 
