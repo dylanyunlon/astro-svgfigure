@@ -3,7 +3,6 @@
  * Main simulation loop orchestrating all physics modules.
  */
 
-
 import { SpatialHash, buildSpatialHash, queryNeighbors, findNeighbors } from "./spatial-hash";
 import { DFSPHSolver, solvePressure, applyPressureForces, Particle as DfsphParticle, pressureSolve as dfsphPressureSolve, divergenceSolve as dfsphDivergenceSolve } from "./dfsph-solver";
 import { RigidBody, integrateRigidBody, applyImpulseToRigidBody, getRigidBodyParticles, integrateRigidBodies } from "./rigid-body";

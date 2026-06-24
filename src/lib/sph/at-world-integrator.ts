@@ -1,3 +1,15 @@
+import { getShader } from '../shaders/ShaderLoader';
+import { FluidGPU } from './fluid-gpu-pass';
+import { BloomGPU } from './bloom-gpu-pass';
+import { ShadowGPU } from './shadow-gpu-pass';
+import { EdgeGPU, type EdgeControlPoints } from './edge-gpu-pass';
+import { ParticleGPU, type ParticleEdgeDef } from './particle-gpu-pass';
+import { CompositeGPU, type CompositeInputs } from './composite-gpu-pass';
+import { MSDFTextGPU } from './msdf-gpu-pass';
+import { PBRCellGPU, type CellPBRDescriptor } from './pbr-gpu-pass';
+import { GlassGPU } from './glass-gpu-pass';
+import { SDFIconGPU, type SDFInstance, makeSDFBatch } from './sdf-gpu-pass';
+
 /**
  * at-world-integrator.ts — M1000: AT World Integrator (real GPU 11-pass orchestrator)
  * ─────────────────────────────────────────────────────────────────────────────
@@ -41,25 +53,12 @@
  */
 
 
-
-
 // ─── GLSL: simple quad vertex (shared by blit + accum passes) ────────────────
 // Extracted from compiled.vs — the same fullscreen quad vert used by AT's
 // display / post-process passes (DisplayShader, BloomComposite, etc.)
 
 
 
-import { getShader } from '../shaders/ShaderLoader';
-import { FluidGPU } from './fluid-gpu-pass';
-import { BloomGPU } from './bloom-gpu-pass';
-import { ShadowGPU } from './shadow-gpu-pass';
-import { EdgeGPU, type EdgeControlPoints } from './edge-gpu-pass';
-import { ParticleGPU, type ParticleEdgeDef } from './particle-gpu-pass';
-import { CompositeGPU, type CompositeInputs } from './composite-gpu-pass';
-import { MSDFTextGPU } from './msdf-gpu-pass';
-import { PBRCellGPU, type CellPBRDescriptor } from './pbr-gpu-pass';
-import { GlassGPU } from './glass-gpu-pass';
-import { SDFIconGPU, type SDFInstance, makeSDFBatch } from './sdf-gpu-pass';
 
 const QUAD_VERT_SRC = /* glsl */ `
 precision highp float;

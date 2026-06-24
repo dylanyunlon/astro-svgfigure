@@ -1,39 +1,21 @@
 // === src/lib/sph/SPHWorld.ts ===
 
-
-
-
-
-
-
-
 import { SpatialHashGrid }    from "./SpatialHashGrid";
 import { NeighborListBuilder } from "./NeighborListBuilder";
 import { SPHGPUOrchestrator }  from "./SPHGPUOrchestrator";
 import { ParticleRenderer }   from "./ParticleRenderer";
 import { BoundaryModel }      from "./BoundaryModel";
 import { qosSpatial, QoSProfileName } from "./qosSpatial";
-<<<<<<< HEAD
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from "./types";
-=======
 import {
   GPUBufferSet, SimParams, ParticleData,
   ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
 } from "./types";
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
 import { SceneQuery } from './collision/SceneQuery';
 import { PhysarumSimulation } from './physarum-sim';
 import { BoidsCompute }       from './boids-compute';
 import { OceanBackground }    from './ocean-background';
 
-<<<<<<< HEAD
-// [orphan-precise]   GPUBufferSet, SimParams, ParticleData,
-// [orphan-precise]   ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
-
-=======
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 // ─────────────────────────────────────────────
 // Effect module protocol  (M755)
 // ─────────────────────────────────────────────
