@@ -31,15 +31,7 @@
 
 import type { RGB, RGBA } from './color-palette';
 
-<<<<<<< HEAD
 // [orphan-precise] /** 三种自然界色彩模式。 */
-=======
-/** 三种自然界色彩模式。 */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type ChromaticMode = 'SUNSET' | 'ABYSS' | 'AURORA';
 
 /** 驱动色彩自适应的粒子物理量。 */

@@ -26,12 +26,9 @@ import {
   BoundaryParticle as WBParticle,
 } from "./world-boundary";
 
-<<<<<<< HEAD
 // --------- Constants ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 // [orphan-precise] /** Spacing factor relative to smoothing length h */
-=======
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const BOUNDARY_SPACING_FACTOR = 0.8;
 
 /** Cubic Spline kernel normalisation constant (2-D) */

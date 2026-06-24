@@ -14,7 +14,7 @@ import { SceneQuery, createSceneQuery } from "./collision/scene-query";
 import { computeBoundaryDensity } from "./boundary";
 import { stepDFSPH } from "./dfsph";
 import { clampToDomain } from "./domain";
-import { updateTrails } from "./trails";
+// [dup-local-def] import { updateTrails } from "./trails";
 import { PerformanceBudget } from "./performance-budget";
 
 // ---------------------------------------------------------------------------

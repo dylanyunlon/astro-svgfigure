@@ -39,7 +39,6 @@
 
 import type { RGB, RGBA } from './color-palette';
 
-<<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * 粒子生命周期的四个阶段。
 // [orphan-precise]  * 由归一化年龄 ageNorm ∈ [0, 1] 决定:
@@ -48,20 +47,6 @@ import type { RGB, RGBA } from './color-palette';
 // [orphan-precise]  *   MATURE  — [0.40, 0.75)  成熟, 品种色加深
 // [orphan-precise]  *   DYING   — [0.75, 1.00]  衰亡, 向暗红过渡并淡出
 // [orphan-precise]  */
-=======
-/**
- * 粒子生命周期的四个阶段。
- * 由归一化年龄 ageNorm ∈ [0, 1] 决定:
- *   BIRTH   — [0.00, 0.15)  初生, 白色闪光渐变至品种色
- *   YOUNG   — [0.15, 0.40)  年轻, 品种色最鲜明
- *   MATURE  — [0.40, 0.75)  成熟, 品种色加深
- *   DYING   — [0.75, 1.00]  衰亡, 向暗红过渡并淡出
- */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type LifecyclePhase = 'BIRTH' | 'YOUNG' | 'MATURE' | 'DYING';
 
 /** 阶段边界常量 — 保持与文档一致 */

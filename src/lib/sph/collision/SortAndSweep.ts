@@ -31,13 +31,7 @@
 
 import type { AABB } from '../types';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Encode a pair (a, b) as a single integer key.  Order-independent. */
-=======
-/** Encode a pair (a, b) as a single integer key.  Order-independent. */
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 function pairKey(a: number, b: number, stride: number): number {
   return a < b ? a * stride + b : b * stride + a;
 }

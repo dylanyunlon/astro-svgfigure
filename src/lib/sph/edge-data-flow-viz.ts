@@ -77,15 +77,7 @@ import type { QoSProfileName }  from './qosSpatial';
 import { QOS_THEME }             from './color-palette';
 import type { ThemePalette, RGB } from './color-palette';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Maximum concurrent pulses per edge (ring buffer). */
-=======
-/** Maximum concurrent pulses per edge (ring buffer). */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_PULSES_PER_EDGE = 8;
 
 /** Spline evaluation subdivision count for Canvas2D drawing. */

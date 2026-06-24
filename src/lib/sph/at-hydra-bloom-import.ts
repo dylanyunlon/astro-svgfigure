@@ -89,21 +89,7 @@
 import { ATShaderLoader } from './at-shader-loader.ts';
 import type {
 
-<<<<<<< HEAD
 // [orphan-precise] /** Slimmed WebGL2 context reference carried by AstroRenderer. */
-=======
-/** Slimmed WebGL2 context reference carried by AstroRenderer. */
-
-
-
-
-  PassDescriptor,
-  ResourceHandle,
-  ResourceAccessor,
-  PassContext,
-} from './render-graph.ts';
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 interface AstroRenderer {
   gl: WebGL2RenderingContext;
 }

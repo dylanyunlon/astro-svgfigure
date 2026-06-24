@@ -145,12 +145,9 @@ import { QOS_PRESETS }             from './qosSpatial';
 import { QOS_THEME }               from './color-palette';
 import type { ThemePalette, RGB }  from './color-palette';
 
-<<<<<<< HEAD
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 // [orphan-precise] /** Default distance (domain units) beyond which portals activate. */
-=======
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const DEFAULT_DISTANCE_THRESHOLD = 300;
 
 /** Blend zone half-width for smooth portal fade-in/out. */

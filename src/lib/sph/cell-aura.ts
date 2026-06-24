@@ -83,15 +83,7 @@
 import type { PhysicsUniforms } from './physics-uniform-bridge';
 import type { SdfShape }        from './species-shader-registry';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Floats per aura instance in the interleaved GPU buffer. */
-=======
-/** Floats per aura instance in the interleaved GPU buffer. */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export const AURA_FLOATS_PER_CELL = 16;
 
 /** Maximum number of active SDF kinds supported in the shader. */

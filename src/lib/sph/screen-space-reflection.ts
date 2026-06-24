@@ -115,15 +115,7 @@
 import type { CellSpecies }     from './cell-material-system';
 import type { PhysicsUniforms } from './physics-uniform-bridge';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Tunable parameters for the M784 SSR pipeline. */
-=======
-/** Tunable parameters for the M784 SSR pipeline. */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface SSRReflectionParams {
   /** Enable/disable SSR entirely. @default true */
   enabled: boolean;

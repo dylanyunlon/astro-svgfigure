@@ -26,15 +26,7 @@
 import { DracoThread } from '../threed-pipeline';
 import type { GeometryDescriptor } from '../threed-pipeline';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Decoded AT geometry with guaranteed attribute arrays. */
-=======
-/** Decoded AT geometry with guaranteed attribute arrays. */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ATGeometry {
   positions: Float32Array;   // xyz, stride 3
   normals:   Float32Array;   // xyz, stride 3

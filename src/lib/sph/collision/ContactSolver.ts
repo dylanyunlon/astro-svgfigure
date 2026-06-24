@@ -9,13 +9,7 @@
 
 import type { RigidBody, ContactConstraint } from '../types';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Baumgarte positional-correction strength (fraction of penetration per step). */
-=======
-/** Baumgarte positional-correction strength (fraction of penetration per step). */
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const BAUMGARTE_BETA = 0.2;
 
 /**

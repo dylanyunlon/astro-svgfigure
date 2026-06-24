@@ -47,15 +47,7 @@
 
 import { getShader } from '../shaders/ShaderLoader';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Maximum particle pool size. */
-=======
-/** Maximum particle pool size. */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_PARTICLES = 32768 as const;
 
 /** Spline texture atlas dimensions (W × H ≥ MAX_SPLINES × PER_SPLINE). */

@@ -101,15 +101,7 @@ import type { World, Particle }    from './world-stepper';
 import type { ATBloomParams }      from './at-bloom-postprocess';
 import type { VFXHandler }         from './vfx-timeline';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Low band floor (Hz) — sub-bass. */
-=======
-/** Low band floor (Hz) — sub-bass. */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const LOW_FREQ_MIN  = 20;
 /** Low band ceiling (Hz) — upper bass. */
 const LOW_FREQ_MAX  = 250;

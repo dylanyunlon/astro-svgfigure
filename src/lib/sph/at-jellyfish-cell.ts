@@ -41,15 +41,7 @@ import type { GeometryDescriptor } from '../threed-pipeline';
 import { DracoThread }             from '../threed-pipeline';
 import type { Morphology, VisualProfile } from './cell-visual-identity';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Path to AT jellyfish geometry (Draco-compressed). */
-=======
-/** Path to AT jellyfish geometry (Draco-compressed). */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const JELLYFISH_BIN_PATH = '/upstream/activetheory-assets/geometry/jellyfish.bin';
 
 /**

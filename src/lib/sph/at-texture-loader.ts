@@ -44,7 +44,6 @@ import { read as readKTX2 } from 'ktx-parse';
 import type { KTX2Container } from 'ktx-parse';
 import type { TextureDescriptor } from '../renderer/material/Material.ts';
 
-<<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * Decoded texture ready for GPU upload.
 // [orphan-precise]  *
@@ -53,20 +52,6 @@ import type { TextureDescriptor } from '../renderer/material/Material.ts';
 // [orphan-precise]  * For uncompressed fallbacks, `format` is 'rgba8unorm' and `data` holds
 // [orphan-precise]  * RGBA8 pixel bytes.
 // [orphan-precise]  */
-=======
-/**
- * Decoded texture ready for GPU upload.
- *
- * For hardware-compressed formats (ASTC, ETC2, BC7, …) `data` is the raw
- * compressed payload and `format` is the GPU-native format string.
- * For uncompressed fallbacks, `format` is 'rgba8unorm' and `data` holds
- * RGBA8 pixel bytes.
- */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ATTexture {
   /** Raw pixel/block data — upload via compressedTexImage2D or texImage2D. */
   data: Uint8Array;

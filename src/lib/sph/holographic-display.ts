@@ -113,15 +113,7 @@
 
 import type { ParticleData } from './types';
 
-<<<<<<< HEAD
 // [orphan-precise] /** A visible cell entry for the holographic renderer. */
-=======
-/** A visible cell entry for the holographic renderer. */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface HoloCellEntry {
   /** Centre X in world coordinates. */
   cx: number;

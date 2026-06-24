@@ -67,23 +67,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 
-import {
+// [orphan-import] import {
 
-<<<<<<< HEAD
 // [orphan-precise] /** Callback invoked once per frame after the simulation step. */
-=======
-/** Callback invoked once per frame after the simulation step. */
-
-
-
-
-  NavierStokesFluid,
-  NavierStokesParams,
-  NavierStokesSplat,
-  createNavierStokesFluid,
-} from './at-navier-stokes';
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type FluidRenderCallback = (fluid: NavierStokesFluid) => void;
 
 /** Configuration for InteractiveFluid. */

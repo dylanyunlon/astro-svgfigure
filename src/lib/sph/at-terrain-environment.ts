@@ -32,15 +32,7 @@
 
 import { getShader } from '../shaders/ShaderLoader';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Floor mesh: tiled plane subdivisions */
-=======
-/** Floor mesh: tiled plane subdivisions */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const FLOOR_SEGS_X = 32 as const;
 const FLOOR_SEGS_Z = 32 as const;
 /** Half-extent of floor plane in world units */

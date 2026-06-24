@@ -85,12 +85,9 @@ import { QOS_PRESETS }                from './qosSpatial';
 import { QOS_THEME }                  from './color-palette';
 import type { ThemePalette, RGB }     from './color-palette';
 
-<<<<<<< HEAD
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 // [orphan-precise] /** Max electric pulse particles across all edges. */
-=======
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_PULSES           = 2048;
 /** Max synaptic vesicle particles across all edges. */
 const MAX_VESICLES         = 512;

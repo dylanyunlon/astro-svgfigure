@@ -49,14 +49,11 @@ import {
   RD_MAX_SPECIES,
 } from './reaction-diffusion';
 
-<<<<<<< HEAD
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 // [orphan-precise] /** Per-cell surface patch resolution (64×64 texels). */
-=======
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export const CELL_RD_SIZE = 64;
 
 /** Storage texture format for ping-pong buffers (R=u, G=v, B=0, A=1). */

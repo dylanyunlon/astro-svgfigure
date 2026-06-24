@@ -57,15 +57,7 @@
 import type { CollisionEvent }           from './collision/CollisionEvents';
 import type { CameraUniforms }           from './ParticleRenderer';
 
-<<<<<<< HEAD
 // [orphan-precise] /** WGSL: wave propagation step (fullscreen quad → writes new wave state) */
-=======
-/** WGSL: wave propagation step (fullscreen quad → writes new wave state) */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const RIPPLE_PROPAGATE_SHADER = /* wgsl */`
 // ── Lygia ripple.wgsl — inlined ───────────────────────────────────────────
 // Propagation kernel operating on a double-buffered wave texture.

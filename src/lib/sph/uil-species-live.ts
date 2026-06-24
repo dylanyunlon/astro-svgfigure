@@ -66,15 +66,7 @@
 
 import type { PhysicsUniforms } from './physics-uniform-bridge';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Scalar or numeric-array uniform value (string/texture paths are dropped). */
-=======
-/** Scalar or numeric-array uniform value (string/texture paths are dropped). */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type UniformValue = number | number[];
 
 /** Complete live uniform bag for one species at one physics moment. */

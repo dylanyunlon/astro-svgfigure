@@ -78,15 +78,7 @@
 import type { RigidBody } from './rigid-body';
 import type { ObstacleData } from './types';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Tweakable shadow parameters. */
-=======
-/** Tweakable shadow parameters. */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ShadowConfig {
   /** Depth comparison bias to prevent shadow acne. @default 0.005 */
   bias: number;

@@ -87,15 +87,7 @@ import type { Tier }            from './performance-budget';
 import { getGlobalBudget }     from './performance-budget';
 import { WORKGROUP_SIZE }      from './types';
 
-<<<<<<< HEAD
 // [orphan-precise] /** Maximum number of cullable objects (cells + particle groups). */
-=======
-/** Maximum number of cullable objects (cells + particle groups). */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_OBJECTS      = 2048;
 
 /** Workgroup size for culling + compaction shaders. */

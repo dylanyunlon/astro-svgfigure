@@ -76,7 +76,6 @@ import {
   AT_MOUSEFLUID_CONSUME_FS,
 } from './at-mousefluid-import';
 
-<<<<<<< HEAD
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,8 +84,6 @@ import {
 // [orphan-precise]  * A single fullscreen shader pass.
 // [orphan-precise]  * Every field mirrors what the AT fluid pipeline passes per-frame.
 // [orphan-precise]  */
-=======
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ShaderPass {
   /** Human-readable label (used for debug / error messages). */
   name: string;

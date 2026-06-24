@@ -52,9 +52,8 @@
 
 
 
-import {
+// [fix-orphan-import] import {
 
-<<<<<<< HEAD
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './at-pbr-material';
 // [auto-fix empty import] import {
@@ -69,21 +68,6 @@ import {
 // [auto-fix empty import] } from './at-bloom-postprocess';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './lut-generator';
-=======
-
-
-
-
-
-} from './at-pbr-material';
-
-} from './at-flower-particle';
-} from './at-spline-particle';
-} from './at-water-surface';
-} from './at-volumetric-light';
-} from './at-bloom-postprocess';
-} from './lut-generator';
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 
 // [orphan]   ATPBRMaterial,
 // [orphan]   type PBRParams,

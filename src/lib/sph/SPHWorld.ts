@@ -7,7 +7,7 @@ import { SPHGPUOrchestrator }  from "./SPHGPUOrchestrator";
 import { ParticleRenderer }   from "./ParticleRenderer";
 import { BoundaryModel }      from "./BoundaryModel";
 import { qosSpatial, QoSProfileName } from "./qosSpatial";
-import {
+// [orphan-import] import {
 import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
 import { SceneQuery } from './collision/SceneQuery';
 import { PhysarumSimulation } from './physarum-sim';

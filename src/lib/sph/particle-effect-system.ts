@@ -105,21 +105,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 
-import {
+// [orphan-import] import {
 
-<<<<<<< HEAD
 // [orphan-precise] /** Default pool capacity (pre-allocated particle slots) */
-=======
-/** Default pool capacity (pre-allocated particle slots) */
-
-
-
-
-  getSpeciesShaderConfig,
-  type SpeciesShaderConfig,
-} from './species-shader-registry';
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const DEFAULT_POOL_SIZE = 4096;
 
 /** Floats per particle in the GPU instance buffer */

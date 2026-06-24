@@ -69,21 +69,10 @@ import type { PhysicsBinding, MaterialType }       from './species-shader-regist
 import type { PhysicsUniforms }                    from './physics-uniform-bridge';
 import { DEFAULT_PBR_PARAMS, DEFAULT_MATCAP_PARAMS } from './at-pbr-material';
 
-<<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * The five conceptual species types managed by this system.
 // [orphan-precise]  * Values mirror the Transformer-analogy roles used throughout the codebase.
 // [orphan-precise]  */
-=======
-/**
- * The five conceptual species types managed by this system.
- * Values mirror the Transformer-analogy roles used throughout the codebase.
- */
-
-
-
-
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type CellSpecies =
   | 'attention'
   | 'ffn'
