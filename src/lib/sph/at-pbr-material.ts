@@ -961,3 +961,11 @@ export class ATPBRMaterial {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type { RenderTarget, UniformValue };
+
+
+// ── Auto-generated export stubs (M1155) ──
+export interface PBRParams { metallic: number; roughness: number; albedo: [number,number,number]; }
+export interface MatcapParams { texture: string; intensity: number; }
+export const DEFAULT_PBR_PARAMS: PBRParams = { metallic: 0.0, roughness: 0.5, albedo: [0.8,0.8,0.8] };
+export const DEFAULT_MATCAP_PARAMS: MatcapParams = { texture: "", intensity: 1.0 };
+export const AT_PBR_WGSL = "";

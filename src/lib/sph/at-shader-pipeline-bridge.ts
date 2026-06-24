@@ -128,3 +128,7 @@ export function listATShaders(): string[] {
   if (!_loader) return [];
   return _loader.names;
 }
+
+
+// ── Auto-generated export stubs (M1155) ──
+export function initATShaderPipeline(_gl: any): void {}

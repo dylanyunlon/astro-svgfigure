@@ -62,15 +62,10 @@
 
 
 
-// [orphan-import] import {
 import type { CellBBox } from './instanced-cell-renderer';
 import type { MaterialType, PatternShader } from './species-shader-registry';
 
-// [empty-import] import {
-// [empty-import] } from './performance-budget';
 
-// [orphan-precise]   PerformanceBudget,
-// [orphan-precise]   getGlobalBudget,
 // [orphan] type Tier,
 // [orphan] type TierConfig,
 

@@ -82,10 +82,6 @@ import type { EmitterConfig }        from './emitter-strategy';
 import { ContinuousPattern }         from './emitter-strategy';
 // [orphan-import] import {
 
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './cell-body-bridge';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './rigid-body';
 
 // [orphan3]   type CellPhysicsConfig,
 // [orphan3]   cellsToBodies,

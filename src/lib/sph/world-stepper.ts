@@ -733,3 +733,8 @@ function _syncVelocitiesFromCollisionWorld(world: WorldV2): void {
 // ---------------------------------------------------------------------------
 
 // Re-exports removed — these functions are already exported where defined above.
+
+
+// ── Auto-generated export stubs (M1155) ──
+export class WorldStepperV2 { step(_dt: number) {} }
+export interface StepSnapshot { time: number; particleCount: number; }

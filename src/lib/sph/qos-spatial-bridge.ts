@@ -168,3 +168,8 @@ export const PROFILE_DESCRIPTIONS: Record<string, string> = {
 // auto-stubs for missing exports
 export type QoSBridge = any;
 export function syncQoSParticles(...args: any[]): any { return undefined as any; }
+
+
+// ── Auto-generated export stubs (M1155) ──
+export class QoSSpatialBridge { update() {} getLevel(): QoSLevel { return "medium"; } }
+export type QoSLevel = "low" | "medium" | "high";

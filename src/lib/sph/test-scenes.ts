@@ -17,8 +17,6 @@
 
 import type { ParticleData, ObstacleData } from './types';
 import { MAX_PARTICLES } from './types';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './collision/CollisionWorld';
 import { qosToSpatial } from './qosSpatial';
 import { QOS_PRESETS } from './qosSpatial';
 import type { QoSProfileName } from './qosSpatial';

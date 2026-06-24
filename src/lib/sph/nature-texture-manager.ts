@@ -37,20 +37,6 @@
 
 // [orphan-import] import {
 
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './reaction-diffusion';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './physarum-sim';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './differential-growth';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './boids-compute';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './turing-pattern';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './natural-patterns';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './morphogenesis';
 
 // [orphan3]   ReactionDiffusionSim,
 // [orphan3]   type RDSimConfig,

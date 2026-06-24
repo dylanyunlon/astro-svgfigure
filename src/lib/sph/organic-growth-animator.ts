@@ -70,8 +70,6 @@
 
 
 import { Easing, type EasingFn } from '../tween-system';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './morphogenesis';
 import { GOLDEN_ANGLE_RAD, cartesianAt } from './phyllotaxis';
 
 // [orphan3]   Morphogenesis,

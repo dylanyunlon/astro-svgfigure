@@ -105,3 +105,11 @@ export interface ContactConstraint {
   tangentImpulse: number;       // accumulated (warm start)
 }
 // force vite cache bust — M1150 fix
+
+
+// ── Auto-generated export stubs (M1155) ──
+export type MaterialType = string;
+export type PatternShader = string;
+export type SdfShape = string;
+export interface SdfShapeParams { shape: string; scale: number; }
+export interface MaterialParams { type: string; color: string; metallic: number; roughness: number; }
