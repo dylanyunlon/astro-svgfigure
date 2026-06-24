@@ -1,0 +1,32 @@
+{
+    "M1070": {
+        "conv_id": "84d4f31c-545c-437c-97da-0c338a041744",
+        "url": "https://claude.hk.cn/chat/84d4f31c-545c-437c-97da-0c338a041744",
+        "desc": "tsconfig fix + astro build smoke test"
+    },
+    "M1071": {
+        "conv_id": "d0e69a16-2754-42a1-a533-c148b22e7b59",
+        "url": "https://claude.hk.cn/chat/d0e69a16-2754-42a1-a533-c148b22e7b59",
+        "desc": "channels/physics 参数验证 — 58 cell bbox 无碰撞确认"
+    },
+    "M1072": {
+        "conv_id": "70630ae4-7ce0-4b39-8bbd-a17237b14461",
+        "url": "https://claude.hk.cn/chat/70630ae4-7ce0-4b39-8bbd-a17237b14461",
+        "desc": "channels/rendering 30 子模块 __init__.py 补全"
+    },
+    "M1073": {
+        "conv_id": "f5f2f731-13e2-42c3-941d-76ca09a610b9",
+        "url": "https://claude.hk.cn/chat/f5f2f731-13e2-42c3-941d-76ca09a610b9",
+        "desc": "src/lib/shaders/ — cil-filter + cil-code + cil-layers + cil-loop + cil-graph 5个缺失 species SDF 着色器"
+    },
+    "M1074": {
+        "conv_id": "60f39aa1-8a6d-4a93-ac68-4f4f9e389d0f",
+        "url": "https://claude.hk.cn/chat/60f39aa1-8a6d-4a93-ac68-4f4f9e389d0f",
+        "desc": "tests/ — pipeline 集成测试扩充"
+    },
+    "M1075": {
+        "conv_id": "95d87c58-8966-4954-a1d6-7454af17f384",
+        "url": "https://claude.hk.cn/chat/95d87c58-8966-4954-a1d6-7454af17f384",
+        "desc": "PIPELINE_GUIDE.md 更新为最新 M1055 状态"
+    }
+}
