@@ -1,42 +1,52 @@
 {
-  "M980": {
-    "conv_id": "38069ae8-cb6f-4fca-a649-5826ab544672",
-    "url": "https://claude.hk.cn/chat/38069ae8-cb6f-4fca-a649-5826ab544672"
+  "M990": {
+    "conv_id": "fba0c9f1-d16d-4fd6-a008-638ea0deec7f",
+    "url": "https://claude.hk.cn/chat/fba0c9f1-d16d-4fd6-a008-638ea0deec7f",
+    "task": "tsc-fix-sph"
   },
-  "M981": {
-    "conv_id": "f626f91e-0acd-45fb-b548-783271cc01f1",
-    "url": "https://claude.hk.cn/chat/f626f91e-0acd-45fb-b548-783271cc01f1"
+  "M991": {
+    "conv_id": "43646e53-88fe-4d6c-8619-499436e222e3",
+    "url": "https://claude.hk.cn/chat/43646e53-88fe-4d6c-8619-499436e222e3",
+    "task": "tsc-fix-renderers"
   },
-  "M982": {
-    "conv_id": "d0a62a5a-88cf-4ad3-a886-a5ce7cf523dd",
-    "url": "https://claude.hk.cn/chat/d0a62a5a-88cf-4ad3-a886-a5ce7cf523dd"
+  "M992": {
+    "conv_id": "b1070c23-4770-4eaf-94c9-c0ee86f17b70",
+    "url": "https://claude.hk.cn/chat/b1070c23-4770-4eaf-94c9-c0ee86f17b70",
+    "task": "tsc-fix-pages"
   },
-  "M983": {
-    "conv_id": "5e935858-4802-4953-b8ec-241763f2ccf6",
-    "url": "https://claude.hk.cn/chat/5e935858-4802-4953-b8ec-241763f2ccf6"
+  "M993": {
+    "conv_id": "706e910a-0788-4109-847a-38c5c1b5f3ad",
+    "url": "https://claude.hk.cn/chat/706e910a-0788-4109-847a-38c5c1b5f3ad",
+    "task": "gpu-render-loop-typecheck"
   },
-  "M984": {
-    "conv_id": "dfa5935d-41b8-4636-b921-a8f6dc5761f1",
-    "url": "https://claude.hk.cn/chat/dfa5935d-41b8-4636-b921-a8f6dc5761f1"
+  "M994": {
+    "conv_id": "ecd73cd9-9927-4b8d-8195-f65e86b9a02e",
+    "url": "https://claude.hk.cn/chat/ecd73cd9-9927-4b8d-8195-f65e86b9a02e",
+    "task": "world-page-build"
   },
-  "M985": {
-    "conv_id": "32d24056-4812-4b87-90d1-f60ee58177ee",
-    "url": "https://claude.hk.cn/chat/32d24056-4812-4b87-90d1-f60ee58177ee"
+  "M995": {
+    "conv_id": "c7edab7c-e40e-4300-b239-8d796fd58f45",
+    "url": "https://claude.hk.cn/chat/c7edab7c-e40e-4300-b239-8d796fd58f45",
+    "task": "fluid-pass-standalone"
   },
-  "M986": {
-    "conv_id": "5d60e7de-634b-4bd5-929c-3a076279315f",
-    "url": "https://claude.hk.cn/chat/5d60e7de-634b-4bd5-929c-3a076279315f"
+  "M996": {
+    "conv_id": "ed84e526-c317-4c63-84c4-39a1d35f1f6f",
+    "url": "https://claude.hk.cn/chat/ed84e526-c317-4c63-84c4-39a1d35f1f6f",
+    "task": "topology-58-cells"
   },
-  "M987": {
-    "conv_id": "7dce8460-3dc7-400e-bc6d-dd105b85e1c8",
-    "url": "https://claude.hk.cn/chat/7dce8460-3dc7-400e-bc6d-dd105b85e1c8"
+  "M997": {
+    "conv_id": "3f91ef89-63d1-4d72-bc77-baa25dc348fd",
+    "url": "https://claude.hk.cn/chat/3f91ef89-63d1-4d72-bc77-baa25dc348fd",
+    "task": "composite-edges"
   },
-  "M988": {
-    "conv_id": "fa41d154-4d28-4792-8146-01407bb89e3b",
-    "url": "https://claude.hk.cn/chat/fa41d154-4d28-4792-8146-01407bb89e3b"
+  "M998": {
+    "conv_id": "bb72d553-d0cd-4c85-9074-06d8f289d22e",
+    "url": "https://claude.hk.cn/chat/bb72d553-d0cd-4c85-9074-06d8f289d22e",
+    "task": "uil-theatre-wire"
   },
-  "M989": {
-    "conv_id": "4a0f89b4-7ad3-42d7-a503-5a76f8373eb9",
-    "url": "https://claude.hk.cn/chat/4a0f89b4-7ad3-42d7-a503-5a76f8373eb9"
+  "M999": {
+    "conv_id": "ac986e8b-c82e-4690-8279-cfa608fa25e8",
+    "url": "https://claude.hk.cn/chat/ac986e8b-c82e-4690-8279-cfa608fa25e8",
+    "task": "bun-dev-smoke-test"
   }
 }
