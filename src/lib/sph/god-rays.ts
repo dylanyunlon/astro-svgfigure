@@ -55,6 +55,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Maximum number of simultaneous light sources for god rays. */
+
+
+
+
+
+
+
+
 const MAX_LIGHTS = 8;
 
 /** Workgroup size for compute dispatches (16×16 = 256 threads). */

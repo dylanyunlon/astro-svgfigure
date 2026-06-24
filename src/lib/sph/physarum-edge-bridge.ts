@@ -66,9 +66,15 @@
  *   src/lib/sph/flowmap-bridge.ts     — analogous GPU→CPU bridge pattern
  */
 
-import type { PhysarumSimulation, PhysarumParams } from './physarum-sim';
+
+
 
 // ─── Configuration ────────────────────────────────────────────────────────────
+
+
+
+
+import type { PhysarumSimulation, PhysarumParams } from './physarum-sim';
 
 export interface PhysarumEdgeBridgeConfig {
   /** Domain width in canvas/world units (maps trail texture X to world X). */

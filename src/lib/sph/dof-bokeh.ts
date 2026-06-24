@@ -71,6 +71,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Tunable DOF bokeh parameters. */
+
+
+
+
+
+
+
+
 export interface DOFBokehParams {
   /**
    * Focal distance in world-space (depth at perfect focus).

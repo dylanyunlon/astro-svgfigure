@@ -34,6 +34,7 @@
 //     GPUDevice and can be created even when WebGPU is unavailable.
 
 
+<<<<<<< HEAD
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './reaction-diffusion';
 // [auto-fix empty import] import {
@@ -48,6 +49,22 @@
 // [auto-fix empty import] } from './natural-patterns';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './morphogenesis';
+=======
+
+
+
+
+
+import {
+} from './reaction-diffusion';
+
+} from './physarum-sim';
+} from './differential-growth';
+} from './boids-compute';
+} from './turing-pattern';
+} from './natural-patterns';
+} from './morphogenesis';
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 
 // [orphan3]   ReactionDiffusionSim,
 // [orphan3]   type RDSimConfig,

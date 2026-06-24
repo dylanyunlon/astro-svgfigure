@@ -38,6 +38,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Phase of the collision lifecycle. */
+
+
+
+
 export type CollisionPhase = 'enter' | 'stay' | 'exit';
 
 /** Snapshot of contact information carried with every event. */

@@ -107,17 +107,27 @@
  */
 
 
+
+
+
+
+
 import type {
 } from './particle-effect-system';
-import type {
-} from './vfx-timeline';
 import { VFXTimelineBuilder } from './vfx-timeline';
+<<<<<<< HEAD
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './species-shader-registry';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './color-palette';
+=======
+import {
+} from './species-shader-registry';
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 import type { QoSProfileName } from './qosSpatial';
-import type {
+
+} from './vfx-timeline';
+} from './color-palette';
 } from './topology-physics-sync';
 
 // [orphan3]   ParticleEffectSystem,

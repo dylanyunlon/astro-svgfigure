@@ -51,6 +51,12 @@
  */
 
 
+
+
+
+
+
+
 import type { SdfShape, MaterialType, PatternShader, SdfShapeParams, MaterialParams }
 import type { VisualProfile }     from './cell-visual-identity';
 import type { PhysicsUniforms }   from './physics-uniform-bridge';

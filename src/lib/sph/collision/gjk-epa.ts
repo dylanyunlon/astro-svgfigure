@@ -1,5 +1,9 @@
 // gjk-epa.ts — GJK + EPA in 2D
 
+
+
+
+
 export interface ConvexShape {
   support(dirX: number, dirY: number): [number, number];
 }

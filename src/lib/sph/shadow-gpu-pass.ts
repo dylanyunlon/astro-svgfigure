@@ -47,13 +47,19 @@
  * Research: xiaodi #M873 — cell-pubsub-loop
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shadow Map 专用 Vertex Shader (WebGL1 语法)
 // vert: 把每个 cell quad 按光源矩阵变换 → 输出 depth
 // frag: 空 — 只写深度缓冲
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
 
 const SHADOW_DEPTH_VERT = /* glsl */ `
 precision highp float;

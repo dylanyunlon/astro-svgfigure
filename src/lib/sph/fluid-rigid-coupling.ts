@@ -22,11 +22,17 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+
+
+
+// ─── public re-export so callers can cache the volume table ──────────────────
+
+
+
 import { Particle } from './dfsph-solver';
 import { RigidBody, sampleBoundaryParticles } from './rigid-body';
 import { cubicW, cubicGradW } from './sph-kernels';
 
-// ─── public re-export so callers can cache the volume table ──────────────────
 export type BoundaryVolumeTable = Map<number, Float64Array>;
 
 // ═══════════════════════════════════════════════════════════════════════════════

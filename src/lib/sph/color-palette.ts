@@ -11,11 +11,17 @@
 // math, and a scalar dither offset is added before quantising to 8-bit to
 // suppress banding artefacts on the canvas renderer.
 
-import type { QoSProfileName } from './qosSpatial';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Colour type (linear, 0-1 range)
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import type { QoSProfileName } from './qosSpatial';
 
 export interface RGB {
   r: number;

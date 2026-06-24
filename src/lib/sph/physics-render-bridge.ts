@@ -61,6 +61,26 @@
  * Research: xiaodi #M781 — cell-pubsub-loop
  */
 
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+<<<<<<< HEAD
+// [orphan-precise] /**
+// [orphan-precise]  * Minimal physics world interface — duck-typed to accept both SPHWorld
+// [orphan-precise]  * (WebGPU) and World (CPU world-stepper.ts) without tight coupling.
+// [orphan-precise]  */
+=======
+/**
+ * Minimal physics world interface — duck-typed to accept both SPHWorld
+ * (WebGPU) and World (CPU world-stepper.ts) without tight coupling.
+ */
+
+
+
 import type { ParticleData, GPUBufferSet, SimParams } from './types';
 import type { PhysicsUniforms } from './physics-uniform-bridge';
 import { samplePhysicsForBody } from './physics-uniform-bridge';
@@ -70,14 +90,7 @@ import type { VFXTimelinePlayer, VFXEventKind } from './vfx-timeline';
 import type { DensityFieldTexture } from './density-field-texture';
 import type { VelocityFieldTexture } from './velocity-field-texture';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
-
-// [orphan-precise] /**
-// [orphan-precise]  * Minimal physics world interface — duck-typed to accept both SPHWorld
-// [orphan-precise]  * (WebGPU) and World (CPU world-stepper.ts) without tight coupling.
-// [orphan-precise]  */
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface PhysicsWorldView {
   /** Fluid particle arrays (CPU-side mirror for readback). */
   readonly particles: ParticleData | ReadonlyArray<{

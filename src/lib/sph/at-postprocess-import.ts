@@ -31,6 +31,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── 全屏三角 / 四边形 vertex shader (lens flare passes 共用) ──
+
+
+
+
+
+
+
+
 const FULLSCREEN_VERT = `
 attribute vec3 position;
 attribute vec2 uv;

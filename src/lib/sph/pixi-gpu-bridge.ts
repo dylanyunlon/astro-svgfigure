@@ -61,13 +61,12 @@
 
 // ─── PixiJS upstream imports ─────────────────────────────────────────────────
 
-import { Texture }      from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
-import { TextureSource } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
-import { Sprite }       from '../../../upstream/pixijs-engine/src/scene/sprite/Sprite';
-import type { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
+
+
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * Minimal interface satisfied by both PixiJS WebGLRenderer and
 // [orphan-precise]  * the Application.renderer property.
@@ -76,6 +75,24 @@ import type { Container } from '../../../upstream/pixijs-engine/src/scene/contai
 // [orphan-precise]  * to keep this bridge decoupled from PixiJS internals.
 // [orphan-precise]  * All real accesses go through optional chaining with clear error messages.
 // [orphan-precise]  */
+=======
+/**
+ * Minimal interface satisfied by both PixiJS WebGLRenderer and
+ * the Application.renderer property.
+ *
+ * We intentionally use 'any' for the upstream Renderer type here
+ * to keep this bridge decoupled from PixiJS internals.
+ * All real accesses go through optional chaining with clear error messages.
+ */
+
+
+
+import { Texture }      from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
+import { TextureSource } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
+import { Sprite }       from '../../../upstream/pixijs-engine/src/scene/sprite/Sprite';
+import type { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface PixiRendererLike {
   /** The native WebGL context that PixiJS allocated on the canvas. */
   gl: WebGL2RenderingContext | WebGLRenderingContext;

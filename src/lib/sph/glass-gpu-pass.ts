@@ -13,6 +13,14 @@
  */
 
 // ─── WebGL1 全屏 quad vertex shader ──────────────────────────────────────────
+
+
+
+
+
+
+
+
 const GLASS_VERT = /* glsl */ `
 precision highp float;
 attribute vec2 aPosition;

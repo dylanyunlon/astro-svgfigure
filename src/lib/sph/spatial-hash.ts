@@ -17,6 +17,14 @@
 // ---------------------------------------------------------------------------
 
 /** Next power of two >= n (n must be > 0). */
+
+
+
+
+
+
+
+
 function nextPow2(n: number): number {
   let p = 1;
   while (p < n) p <<= 1;

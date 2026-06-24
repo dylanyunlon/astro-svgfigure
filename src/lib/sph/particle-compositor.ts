@@ -108,6 +108,14 @@
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Workgroup size for all compute passes. Keep ≤256 for broad compatibility. */
+
+
+
+
+
+
+
+
 const WG = 64 as const;
 
 /**

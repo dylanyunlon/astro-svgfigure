@@ -17,12 +17,22 @@
  *   hexagon_gem.bin       (501B)  — cell icon gem
  */
 
-import { DracoThread } from '../threed-pipeline';
-import type { GeometryDescriptor } from '../threed-pipeline';
+
+
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** Decoded AT geometry with guaranteed attribute arrays. */
+=======
+/** Decoded AT geometry with guaranteed attribute arrays. */
+
+
+
+import { DracoThread } from '../threed-pipeline';
+import type { GeometryDescriptor } from '../threed-pipeline';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ATGeometry {
   positions: Float32Array;   // xyz, stride 3
   normals:   Float32Array;   // xyz, stride 3

@@ -52,12 +52,18 @@
  * Research: xiaodi #M763 — cell-pubsub-loop
  */
 
-import { poly6W } from './sph-kernels';
-import { SpatialHashGrid } from './SpatialHashGrid';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import { poly6W } from './sph-kernels';
+import { SpatialHashGrid } from './SpatialHashGrid';
 
 export interface DensityFieldTextureConfig {
   /**

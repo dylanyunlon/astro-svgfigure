@@ -76,6 +76,7 @@
  */
 
 
+<<<<<<< HEAD
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './cell-body-bridge';
 import type { FlowEdge }            from './edge-flow-renderer';
@@ -83,6 +84,20 @@ import type { EmitterConfig }        from './emitter-strategy';
 import { ContinuousPattern }         from './emitter-strategy';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './rigid-body';
+=======
+
+
+
+
+
+import {
+} from './cell-body-bridge';
+import type { FlowEdge }            from './edge-flow-renderer';
+import type { EmitterConfig }        from './emitter-strategy';
+import { ContinuousPattern }         from './emitter-strategy';
+
+} from './rigid-body';
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 
 // [orphan3]   type CellPhysicsConfig,
 // [orphan3]   cellsToBodies,

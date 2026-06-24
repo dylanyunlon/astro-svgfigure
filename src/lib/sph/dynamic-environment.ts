@@ -76,6 +76,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The four phases of the sky cycle. */
+
+
+
+
+
+
+
+
 export type SkyPhase = 'dawn' | 'day' | 'dusk' | 'night';
 
 /** RGB triplet in linear sRGB [0,1]. */

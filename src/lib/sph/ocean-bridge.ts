@@ -56,6 +56,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Which upstream simulator drives the frame loop. */
+
+
+
+
+
+
+
+
 export type SimMode = 'sph' | 'mlsmpm';
 
 /** Particle-count preset index (0 = smallest, 3 = largest). */

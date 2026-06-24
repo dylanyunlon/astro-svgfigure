@@ -45,14 +45,19 @@
  *   audio.dispose();
  */
 
-import * as Tone from 'tone';
 
-import type { ContactManifold, ContactPoint } from './collision/contact-manifold';
-import type { World, Particle, Emitter } from './world-stepper';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Species → timbre configuration
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import * as Tone from 'tone';
+import type { ContactManifold, ContactPoint } from './collision/contact-manifold';
+import type { World, Particle, Emitter } from './world-stepper';
 
 interface SpeciesTimbre {
   /** Oscillator waveform type. */

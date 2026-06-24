@@ -1,5 +1,11 @@
 // === src/lib/sph/NeighborListBuilder.ts ===
 
+
+
+
+
+
+
 import { SpatialHashGrid } from './SpatialHashGrid';
 import { MAX_PARTICLES, MAX_NEIGHBORS, NeighborCSR } from './types';
 

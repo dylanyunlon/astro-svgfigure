@@ -8,6 +8,12 @@
  *   4. executePasses(gl, passes) → multi-pass FBO chain → 屏幕
  */
 
+
+
+
+
+
+
 import { ATShaderLoader } from './at-shader-loader';
 import { compileShader, executePasses, type ShaderPass } from './nanogl-shader-executor';
 

@@ -91,6 +91,14 @@
  * Listener execution priority.  Higher numeric value = earlier execution.
  * Matches PixiJS v8 `UPDATE_PRIORITY` for interop with existing code.
  */
+
+
+
+
+
+
+
+
 export const UPDATE_PRIORITY = {
   /** Pointer & drag events — first to run. */
   INTERACTION: 50,

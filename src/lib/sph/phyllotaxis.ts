@@ -19,6 +19,14 @@
 // ---------------------------------------------------------------------------
 
 /** Golden angle in degrees: 360° × (2 − φ)  where φ = (1 + √5) / 2 */
+
+
+
+
+
+
+
+
 export const GOLDEN_ANGLE_DEG = 137.50776405003785;
 
 /** Golden angle in radians */

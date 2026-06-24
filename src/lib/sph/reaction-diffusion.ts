@@ -42,6 +42,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Storage texture format for ping-pong buffers (R=u, G=v, B=speciesIdx, A=1). */
+
+
+
+
+
+
+
+
 const RD_TEX_FORMAT: GPUTextureFormat = 'rgba32float';
 
 /** Species map texture format — single-channel unsigned integer per texel. */

@@ -57,11 +57,17 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { cubicW, cubicGradW, type SPHConfig } from './sph-kernels';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import { cubicW, cubicGradW, type SPHConfig } from './sph-kernels';
 
 export interface HeatTransferConfig {
   /** Thermal diffusivity κ [m²/s sim-units]. Controls how fast heat spreads

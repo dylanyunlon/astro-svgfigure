@@ -33,6 +33,14 @@
 // ─── Vec2 helpers (no external dependency) ────────────────────────────────────
 
 /** Immutable 2-D vector used throughout the SDF math. */
+
+
+
+
+
+
+
+
 export type Vec2 = readonly [number, number];
 
 function len([x, y]: Vec2): number { return Math.sqrt(x * x + y * y); }

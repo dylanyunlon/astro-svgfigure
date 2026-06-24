@@ -31,13 +31,19 @@
  *   每帧: render(dt, inputs)
  */
 
-import { getShader } from '../shaders/ShaderLoader';
-import type { CellSpecies } from './cell-material-system';
-import type { PhysicsUniforms } from './physics-uniform-bridge';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public Types
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
+import type { CellSpecies } from './cell-material-system';
+import type { PhysicsUniforms } from './physics-uniform-bridge';
 
 export interface UELumenGIConfig {
   /** GI intensity multiplier. @default 1.0 */

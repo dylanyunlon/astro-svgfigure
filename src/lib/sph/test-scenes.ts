@@ -9,6 +9,12 @@
  */
 
 
+
+
+
+
+
+
 import type { ParticleData, ObstacleData } from './types';
 import { MAX_PARTICLES } from './types';
 // [auto-fix empty import] import {

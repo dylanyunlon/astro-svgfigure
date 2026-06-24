@@ -73,6 +73,14 @@
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /** Workgroup size for histogram and scatter passes. */
+
+
+
+
+
+
+
+
 const WG_SIZE = 256 as const;
 
 /** Radix bits per pass — 4-bit digits → 16 buckets. */

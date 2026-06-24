@@ -18,6 +18,14 @@
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 export interface SPHConfig {
   /** Smoothing radius h (support = 2 h for cubic, h for others). Typical: 12 */
   smoothingRadius: number;

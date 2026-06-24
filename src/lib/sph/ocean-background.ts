@@ -19,11 +19,17 @@
 // runtime.  The code follows the same "inline snippet + TypeScript driver"
 // pattern used by noise-flow-field.ts and natural-patterns.ts.
 
-import { WORKGROUP_SIZE } from './types';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import { WORKGROUP_SIZE } from './types';
 
 export interface OceanConfig {
   /** Width of the domain in simulation units (matches SimParams.domainW). */

@@ -30,6 +30,14 @@
 //   FOAM            – Voronoi + Worley blend (soap-bubble foam)      (cil-layers, cil-loop)
 //   SCALES          – Voronoi with distance modulation               (cil-code, cil-graph)
 //   FBM_VORONOISE   – fBm-warped Voronoi (domain-warped noise blend) (fluid, cil-star, cil-drop)
+
+
+
+
+
+
+
+
 export type NaturalPatternMode =
   | 'CELL_DIVISION'
   | 'TORTOISE_SHELL'

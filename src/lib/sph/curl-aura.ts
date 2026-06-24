@@ -57,6 +57,14 @@
 // ─── Constants ─────────────────────────────────────────────────────────────
 
 /** Floats per aura instance in the interleaved buffer. */
+
+
+
+
+
+
+
+
 export const AURA_STRIDE = 10;
 // centerX, centerY, halfW, halfH, species, phase,
 // velocity, density, opacity, pulseRate

@@ -41,6 +41,14 @@
 // ─── Public configuration ─────────────────────────────────────────────────────
 
 /** Built-in named L-system presets. */
+
+
+
+
+
+
+
+
 export type LSystemPreset =
   | 'FERN'          // Barnsley-style fern frond
   | 'ALGAE'         // Lindenmayer's original algae model

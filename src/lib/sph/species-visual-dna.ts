@@ -36,14 +36,26 @@
  */
 
 
+
+
+
+
+
 import type { World } from './world-stepper';
+<<<<<<< HEAD
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './species-shader-registry';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './physics-uniform-bridge';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './uil-species-live';
+=======
+import {
+} from './species-shader-registry';
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 
+} from './physics-uniform-bridge';
+} from './uil-species-live';
 
 // [orphan3]   getSpeciesShaderConfig,
 // [orphan3]   resolvePhysicsBindings,

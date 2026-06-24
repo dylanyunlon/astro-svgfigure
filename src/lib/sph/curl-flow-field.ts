@@ -71,6 +71,14 @@
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /** Workgroup size for all compute passes. */
+
+
+
+
+
+
+
+
 const WG = 64 as const;
 
 /** Finite-difference step for numerical curl derivation. */

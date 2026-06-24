@@ -30,6 +30,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** One CPU-side particle used by the Canvas2D fallback. */
+
+
+
+
+
+
+
+
 interface Particle2D {
   x:  number;  // domain units [0, domainW]
   y:  number;  // domain units [0, domainH]

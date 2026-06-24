@@ -3,6 +3,14 @@
  * MSDF text + GLUI system for GPU text rendering.
  */
 
+
+
+
+
+
+
+
+
 export const DefaultText_glsl = `#!ATTRIBUTES
 
 #!UNIFORMS

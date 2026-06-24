@@ -51,15 +51,25 @@
 //
 // Research: xiaodi #M624 — cell-pubsub-loop / lut-grading
 
-import type { QoSProfile } from './types';
-import type { QoSProfileName } from './qosSpatial';
-import { QOS_PRESETS } from './qosSpatial';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API types
 // ─────────────────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** Named LUT style presets. */
+=======
+/** Named LUT style presets. */
+
+
+
+import type { QoSProfile } from './types';
+import type { QoSProfileName } from './qosSpatial';
+import { QOS_PRESETS } from './qosSpatial';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type LutStyleName =
   | 'NEUTRAL'        // Identity — no grade (debug / bypass)
   | 'CINEMATIC'      // Warm lifted film emulation (RELIABLE channels)

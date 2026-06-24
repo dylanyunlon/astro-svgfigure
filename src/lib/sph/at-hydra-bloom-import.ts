@@ -78,19 +78,30 @@
  * Research: xiaodi #M851 — cell-pubsub-loop
  */
 
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 0  Minimal WebGL types (subset used here; full types from at-render-pipeline.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+<<<<<<< HEAD
+// [orphan-precise] /** Slimmed WebGL2 context reference carried by AstroRenderer. */
+=======
+/** Slimmed WebGL2 context reference carried by AstroRenderer. */
+
+
+
 import { ATShaderLoader } from './at-shader-loader.ts';
 import type {
+
   PassDescriptor,
   ResourceHandle,
   ResourceAccessor,
   PassContext,
 } from './render-graph.ts';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// § 0  Minimal WebGL types (subset used here; full types from at-render-pipeline.ts)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// [orphan-precise] /** Slimmed WebGL2 context reference carried by AstroRenderer. */
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 interface AstroRenderer {
   gl: WebGL2RenderingContext;
 }

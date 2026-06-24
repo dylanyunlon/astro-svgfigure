@@ -64,12 +64,18 @@
  *   src/lib/sph/rigid-body.ts              — RigidBody structure
  */
 
-import type { CollisionContactInfo } from './collision/CollisionEvents';
-import type { RigidBody }           from './rigid-body';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lygia random port (shared convention with contact-sparks / collision-fx)
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import type { CollisionContactInfo } from './collision/CollisionEvents';
+import type { RigidBody }           from './rigid-body';
 
 const SCALE_X = 0.1031;
 const SCALE_Y = 0.1030;

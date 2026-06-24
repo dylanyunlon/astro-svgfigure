@@ -24,11 +24,21 @@
  *   - matcap.vs         (line 1764) — reflectMatcap
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** Floor mesh: tiled plane subdivisions */
+=======
+/** Floor mesh: tiled plane subdivisions */
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const FLOOR_SEGS_X = 32 as const;
 const FLOOR_SEGS_Z = 32 as const;
 /** Half-extent of floor plane in world units */

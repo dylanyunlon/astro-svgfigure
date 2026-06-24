@@ -31,14 +31,24 @@
  * Research: xiaodi #M935 — cell-pubsub-loop
  */
 
-import { getShader } from '../shaders/ShaderLoader';
-import type { ATLight } from './at-lighting-import.ts';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** Maximum point lights packed into the uniform array. WebGL1 limit ~256 vec4s. */
+=======
+/** Maximum point lights packed into the uniform array. WebGL1 limit ~256 vec4s. */
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
+import type { ATLight } from './at-lighting-import.ts';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_LIGHTS = 64 as const;
 
 /** Floats per light in the packed CPU-side array (kept as plain uniforms). */

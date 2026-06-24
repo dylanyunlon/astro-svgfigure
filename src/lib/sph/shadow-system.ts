@@ -67,14 +67,24 @@
  * Research: xiaodi #M784 — cell-pubsub-loop
  */
 
-import type { RigidBody } from './rigid-body';
-import type { ObstacleData } from './types';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** Tweakable shadow parameters. */
+=======
+/** Tweakable shadow parameters. */
+
+
+
+import type { RigidBody } from './rigid-body';
+import type { ObstacleData } from './types';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ShadowConfig {
   /** Depth comparison bias to prevent shadow acne. @default 0.005 */
   bias: number;

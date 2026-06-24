@@ -32,6 +32,14 @@
 //   cycle detection.
 // ─────────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 export class ATShaderLoader {
   /** All parsed shaders keyed by name */
   private shaders: Map<string, string> = new Map();

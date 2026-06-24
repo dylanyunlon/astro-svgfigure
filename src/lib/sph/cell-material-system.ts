@@ -56,19 +56,32 @@
  * Research: xiaodi #M766 — cell-pubsub-loop
  */
 
-import type { PBRParams, MatcapParams }           from './at-pbr-material';
-import type { PhysicsBinding, MaterialType }       from './species-shader-registry';
-import type { PhysicsUniforms }                    from './physics-uniform-bridge';
-import { DEFAULT_PBR_PARAMS, DEFAULT_MATCAP_PARAMS } from './at-pbr-material';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Species identifier type
 // ─────────────────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * The five conceptual species types managed by this system.
 // [orphan-precise]  * Values mirror the Transformer-analogy roles used throughout the codebase.
 // [orphan-precise]  */
+=======
+/**
+ * The five conceptual species types managed by this system.
+ * Values mirror the Transformer-analogy roles used throughout the codebase.
+ */
+
+
+
+import type { PBRParams, MatcapParams }           from './at-pbr-material';
+import type { PhysicsBinding, MaterialType }       from './species-shader-registry';
+import type { PhysicsUniforms }                    from './physics-uniform-bridge';
+import { DEFAULT_PBR_PARAMS, DEFAULT_MATCAP_PARAMS } from './at-pbr-material';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type CellSpecies =
   | 'attention'
   | 'ffn'

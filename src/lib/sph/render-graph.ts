@@ -88,6 +88,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Resolution class for a virtual resource. */
+
+
+
+
+
+
+
+
 export type SizeClass = 'full' | 'half' | 'quarter';
 
 /** Descriptor for a virtual resource at declaration time. */

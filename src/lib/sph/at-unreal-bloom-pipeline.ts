@@ -26,6 +26,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Number of mip levels in the downsample / upsample pyramid. */
+
+
+
+
+
+
+
+
 const MIP_LEVELS = 5;
 
 /** Maximum supported gaussian kernel radius (compile-time constant in WGSL). */

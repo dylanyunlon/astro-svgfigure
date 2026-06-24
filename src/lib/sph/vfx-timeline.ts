@@ -53,15 +53,25 @@
  * [ASTRO-VFX-TIMELINE] debug prefix.
  */
 
-import { Easing, type EasingFn } from '../tween-system';
-import type { CollisionContactInfo, CollisionEvent } from './collision/CollisionEvents';
-import type { CollisionEventDispatcher }              from './collision/CollisionEvents';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** Default timeline duration cap — prevents runaway timelines (seconds) */
+=======
+/** Default timeline duration cap — prevents runaway timelines (seconds) */
+
+
+
+import { Easing, type EasingFn } from '../tween-system';
+import type { CollisionContactInfo, CollisionEvent } from './collision/CollisionEvents';
+import type { CollisionEventDispatcher }              from './collision/CollisionEvents';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_TIMELINE_DURATION = 5.0;
 
 /** Maximum number of concurrent playing timelines per player instance */

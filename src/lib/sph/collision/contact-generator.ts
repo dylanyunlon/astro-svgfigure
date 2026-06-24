@@ -8,10 +8,19 @@
 //   Polygon ↔ Polygon  (SAT + Sutherland-Hodgman clipping)
 
 
+<<<<<<< HEAD
 // [empty-import] import {
 // [empty-import] } from './math';
 // [empty-import] import {
 // [empty-import] } from './rigid-body';
+=======
+
+
+import {
+} from './math';
+
+} from './rigid-body';
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 
 // [orphan3]   Vec2,
 // [orphan3]   vec2,

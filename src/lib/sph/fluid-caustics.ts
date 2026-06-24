@@ -90,10 +90,16 @@
  * Research: xiaodi #M781 — cell-pubsub-loop
  */
 
-import { poly6W } from './sph-kernels';
-import { SpatialHashGrid } from './SpatialHashGrid';
+
+
 
 // ─── Physical Constants ──────────────────────────────────────────────────────
+
+
+
+
+import { poly6W } from './sph-kernels';
+import { SpatialHashGrid } from './SpatialHashGrid';
 
 const IOR_AIR   = 1.0;
 const IOR_WATER = 1.333;

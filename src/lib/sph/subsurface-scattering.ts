@@ -82,14 +82,24 @@
  * Research: xiaodi #M780 — cell-pubsub-loop
  */
 
-import type { CellSpecies } from './cell-material-system';
-import type { PhysicsUniforms } from './physics-uniform-bridge';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** Workgroup size for compute dispatches (16×16 = 256 threads). */
+=======
+/** Workgroup size for compute dispatches (16×16 = 256 threads). */
+
+
+
+import type { CellSpecies } from './cell-material-system';
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const WG_SIZE = 16;
 
 /** Maximum number of Gaussian blur taps per axis (must match WGSL constant). */

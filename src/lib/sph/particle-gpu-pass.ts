@@ -52,11 +52,21 @@
  *   src/lib/sph/world-renderer.ts       — SPECIES_COLORS palette
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** Total particle pool (shared across all edges). */
+=======
+/** Total particle pool (shared across all edges). */
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const PARTICLE_COUNT = 5000;
 
 /** Floats per particle in the VBO (vec2 pos + vec2 vel + float life + vec3 color + float pad). */

@@ -21,9 +21,15 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import type { SPHConfig } from "./sph-kernels";
+
+
 
 // ─── Constants ───────────────────────────────────────────────────────────────
+
+
+
+
+import type { SPHConfig } from "./sph-kernels";
 
 const WG_SIZE = 256;
 

@@ -56,13 +56,19 @@
  * Research: xiaodi #M746 — cell-pubsub-loop
  */
 
-import { poly6W } from './sph-kernels';
-import { SpatialHashGrid } from './SpatialHashGrid';
-import type { ParticleData } from './types';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import { poly6W } from './sph-kernels';
+import { SpatialHashGrid } from './SpatialHashGrid';
+import type { ParticleData } from './types';
 
 export interface FluidSurfaceMeshConfig {
   /** Grid resolution along X. Default 128. */

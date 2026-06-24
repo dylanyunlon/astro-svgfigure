@@ -38,6 +38,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Workgroup size for the agent step pass (1-D, one thread per agent). */
+
+
+
+
+
+
+
+
 const AGENT_WG = 64;
 
 /** Workgroup tile for the diffuse/decay pass (2-D). */

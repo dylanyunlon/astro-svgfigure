@@ -46,13 +46,19 @@
  *       sparks.draw(ctx);         // paint onto canvas
  */
 
-import type { CollisionContactInfo } from './collision/CollisionEvents';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lygia random.wgsl — TypeScript port (sin-less, RANDOM_SINLESS = true)
 //
 // RANDOM_SCALE = vec4(0.1031, 0.1030, 0.0973, 0.1099)
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import type { CollisionContactInfo } from './collision/CollisionEvents';
 
 const SCALE_X = 0.1031;
 const SCALE_Y = 0.1030;

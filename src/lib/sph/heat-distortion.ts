@@ -100,6 +100,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** A single heat-distortion emitter (CPU-side representation). */
+
+
+
+
+
+
+
+
 export interface HeatEmitter {
   /** Stable identifier for add/remove/update. */
   id: string;

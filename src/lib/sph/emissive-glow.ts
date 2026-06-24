@@ -84,6 +84,17 @@
  * Research: xiaodi #M791 — cell-pubsub-loop
  */
 
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Floats per particle in the emissive buffer: R, G, B, A (HDR, linear). */
+
+
+
 import type { World, Particle }           from './world-stepper';
 import type { PhysicsUniforms }            from './physics-uniform-bridge';
 import type { ATBloomParams }              from './at-bloom-postprocess';
@@ -94,11 +105,14 @@ import { MAX_PARTICLES }                   from './types';
 import { getSpeciesShaderConfig }          from './species-shader-registry';
 import { samplePhysicsForBody }            from './physics-uniform-bridge';
 
+<<<<<<< HEAD
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 // [orphan-precise] /** Floats per particle in the emissive buffer: R, G, B, A (HDR, linear). */
+=======
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export const EMISSIVE_STRIDE = 4;
 
 /** Maximum projection radius (world units) — clamp to prevent O(N²) blow-up. */

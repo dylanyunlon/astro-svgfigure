@@ -61,8 +61,19 @@
  */
 
 
+<<<<<<< HEAD
 // [empty-import] import {
 // [empty-import] } from './performance-budget';
+=======
+
+
+
+
+
+
+import {
+} from './performance-budget';
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 import type { CellBBox } from './instanced-cell-renderer';
 import type { MaterialType, PatternShader } from './species-shader-registry';
 

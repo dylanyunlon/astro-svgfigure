@@ -40,6 +40,14 @@
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Max particles in GPU pool. */
+
+
+
+
+
+
+
+
 const MAX_PARTICLES = 8192 as const;
 
 /** tPos texture dimension: 128×64 = 8192 texels. */

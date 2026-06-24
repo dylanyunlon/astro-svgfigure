@@ -30,6 +30,14 @@
 
 // ─── Cell species type (mirrors CellMaterial.ts) ────────────────────────────
 
+
+
+
+
+
+
+
+
 export type CellSpecies =
   | 'cil-eye'
   | 'cil-bolt'

@@ -5,6 +5,14 @@
 // ---------------------------------------------------------------------------
 
 /** Axis-aligned rectangle world boundary. */
+
+
+
+
+
+
+
+
 export interface RectBoundaryShape {
   kind: 'rect';
   width: number;

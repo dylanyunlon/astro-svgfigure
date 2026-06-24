@@ -26,6 +26,14 @@
 
 // ── Vertex Shader: GlassInner pass ──────────────────────────────────────────
 // Source: compiled.vs line 2972-2978 GlassInner.glsl
+
+
+
+
+
+
+
+
 const GLASS_INNER_VERT = /* glsl */`
 precision highp float;
 attribute vec3 aPosition;

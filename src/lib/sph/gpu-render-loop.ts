@@ -6,6 +6,14 @@
  * 和 gpu-perf-monitor (per-pass CPU 计时 + FPS + drawcall 统计)。
  */
 
+
+
+
+// ─── Cell 数据接口 ────────────────────────────────────────────
+
+
+
+
 import { FluidGPU } from './fluid-gpu-pass';
 import { BloomGPU } from './bloom-gpu-pass';
 import { ShadowGPU } from './shadow-gpu-pass';
@@ -19,8 +27,6 @@ import { SDFIconGPU, createSDFIconGPU } from './sdf-gpu-pass';
 import { initATShaderPipeline, listATShaders, getATProgram } from './at-shader-pipeline-bridge';
 import { safeCompile, checkFBO, drainErrors, setupContextLost } from './gpu-error-guard';
 import { GPUPerfMonitor } from './gpu-perf-monitor';
-
-// ─── Cell 数据接口 ────────────────────────────────────────────
 
 export interface CellData {
   cell_id: string;

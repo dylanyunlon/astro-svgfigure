@@ -141,13 +141,23 @@
 // Imports
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { TransitionDirection, TransitionMode } from './transition-system';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 // [orphan-precise] /** SSE endpoint for cell events. */
+=======
+/** SSE endpoint for cell events. */
+
+
+
+import type { TransitionDirection, TransitionMode } from './transition-system';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const SSE_URL       = '/api/cell-events';
 
 /** REST endpoint for bulk cell data. */

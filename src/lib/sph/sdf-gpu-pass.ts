@@ -22,6 +22,14 @@
 // a_iPos:    instance world position (canvas coords, NDC via u_resolution)
 // a_iSize:   instance size in pixels
 // a_iOpacity: per-instance opacity override
+
+
+
+
+
+
+
+
 const SDF_VERT = /* glsl */ `
 precision highp float;
 

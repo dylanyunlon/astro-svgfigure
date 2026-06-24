@@ -59,11 +59,17 @@
  *   bridge.start();
  */
 
+
+
+
+// ── SSE endpoint ─────────────────────────────────────────────────────────────
+
+
+
+
 import { SPHWorld }         from './SPHWorld';
 import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
 import type { RigidBody, ConvexShape } from './collision/CollisionWorld';
-
-// ── SSE endpoint ─────────────────────────────────────────────────────────────
 
 const SSE_URL       = '/api/cell-events';
 const CELLS_API_URL = '/api/cells';

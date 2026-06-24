@@ -43,20 +43,35 @@
  *   src/lib/sph/nature-texture-manager.ts   — NatureTextureManager
  */
 
+
+
+
+// ─── Texture algorithm enum ─────────────────────────────────────────────────
+
+<<<<<<< HEAD
+// [orphan-precise] /**
+// [orphan-precise]  * Procedural texture algorithm rendered into each atlas tile.
+// [orphan-precise]  *
+// [orphan-precise]  * Each variant maps to a branch in the WGSL compute shader.
+// [orphan-precise]  */
+=======
+/**
+ * Procedural texture algorithm rendered into each atlas tile.
+ *
+ * Each variant maps to a branch in the WGSL compute shader.
+ */
+
+
+
 import {
+
   getSpeciesShaderConfig,
   getAllSpeciesIds,
   type PatternShader,
   type SpeciesShaderConfig,
 } from './species-shader-registry';
 
-// ─── Texture algorithm enum ─────────────────────────────────────────────────
-
-// [orphan-precise] /**
-// [orphan-precise]  * Procedural texture algorithm rendered into each atlas tile.
-// [orphan-precise]  *
-// [orphan-precise]  * Each variant maps to a branch in the WGSL compute shader.
-// [orphan-precise]  */
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type ProceduralTextureKind =
   | 'VORONOI_MEMBRANE'
   | 'PERLIN_ROCK'

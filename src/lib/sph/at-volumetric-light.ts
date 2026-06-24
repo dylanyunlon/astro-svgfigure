@@ -27,6 +27,14 @@
 // ─── GLSL helpers inlined from compiled.vs ────────────────────────────────────
 
 // range.glsl (compiled.vs line 2129)
+
+
+
+
+
+
+
+
 const RANGE_GLSL = /* glsl */`
 float range(float oldValue, float oldMin, float oldMax, float newMin, float newMax) {
     vec3 sub = vec3(oldValue, newMax, oldMax) - vec3(oldMin, newMin, oldMin);

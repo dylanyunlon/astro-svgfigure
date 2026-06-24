@@ -5,6 +5,12 @@
 // renderer expects (e.g. `width/height` vs `w/h` half-extents, `tick` vs `frame`).
 
 
+
+
+
+
+
+
 import type { RigidBody as PhysicsRigidBody } from './rigid-body';
 
 export type { Particle } from './world-stepper';

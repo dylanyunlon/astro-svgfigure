@@ -41,10 +41,20 @@
  *   src/lib/sph/types.ts            — MAX_PARTICLES, ParticleData
  */
 
-import { MAX_PARTICLES } from './types';
+
+
 
 // ─── Stride ────────────────────────────────────────────────────────────────
+<<<<<<< HEAD
 // [orphan-precise] /** Floats per particle instance in the interleaved buffer. */
+=======
+/** Floats per particle instance in the interleaved buffer. */
+
+
+
+import { MAX_PARTICLES } from './types';
+
+>>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export const INSTANCE_STRIDE = 6; // posX, posY, velX, velY, species, density
 
 // ─── Species colour palette (matches world-renderer SPECIES_COLORS) ────────

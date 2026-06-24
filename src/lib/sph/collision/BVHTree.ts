@@ -1,6 +1,9 @@
 // BVHTree.ts — Dynamic BVH for broad-phase collision detection
 // Modeled after Box2D b2DynamicTree
 
+
+
+
 import { AABB, aabbOverlap, aabbUnion, aabbArea, aabbExpand, aabbContains } from './AABB';
 
 const NULL_NODE = -1;

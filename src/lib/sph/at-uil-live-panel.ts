@@ -68,6 +68,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Raw value types that can appear in uil-params.json. */
+
+
+
+
+
+
+
+
 export type RawValue = number | boolean | string | number[];
 
 /** Value types the live panel can control (texture dicts and str lists excluded). */

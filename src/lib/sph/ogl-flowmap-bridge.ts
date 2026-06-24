@@ -96,6 +96,14 @@
 // ── Particle input type ────────────────────────────────────────────────────────
 
 /** Minimal particle descriptor consumed by SPHFlowmap. */
+
+
+
+
+
+
+
+
 export interface FlowParticle {
   /** World-space X coordinate (domain units). */
   x: number;

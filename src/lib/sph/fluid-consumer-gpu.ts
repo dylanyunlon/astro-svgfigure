@@ -42,6 +42,14 @@
 // ─── WebGL1 Vertex Shaders ────────────────────────────────────────────────────
 
 /** 全屏 quad vert (WebGL1, no varying neighbours) */
+
+
+
+
+
+
+
+
 const FULLSCREEN_VERT = /* glsl */ `
 precision highp float;
 attribute vec2 aPosition;

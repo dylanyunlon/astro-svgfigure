@@ -19,6 +19,14 @@
 
 // ─── GPU types — aligned with gpu-render-loop.ts ─────────────────────────────
 
+
+
+
+
+
+
+
+
 export interface CellData {
   /** Unique cell identifier matching composite_params.cells key */
   cell_id: string;
