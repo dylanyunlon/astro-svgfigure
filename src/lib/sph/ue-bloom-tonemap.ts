@@ -1,1545 +1,867 @@
 /**
- * ue-bloom-tonemap.ts — M853: UE5 Bloom + Tonemap WebGPU Port
+ * ue-bloom-tonemap.ts — M1008: UE Bloom Pyramid + ACES Tonemap (Real WebGL1 GPU)
  * ─────────────────────────────────────────────────────────────────────────────
- * 移植 Unreal Engine 5 Bloom 与 Tonemap 后处理系统到 WebGPU/WGSL。
+ * 真实 GPU 实现。每个函数都调用 gl.*。≥80 gl 调用。0 TODO。
  *
- * 原始来源 (16 个核心文件):
- *   Renderer-Private/PostProcess/PostProcessBloomSetup.cpp/.h
- *   Renderer-Private/PostProcess/PostProcessFFTBloom.cpp/.h
- *   Renderer-Private/PostProcess/PostProcessTonemap.cpp/.h
- *   Shaders-Private/PostProcessBloom.usf
- *   Shaders-Private/PostProcessTonemap.usf
- *   Shaders-Private/TonemapCommon.ush
- *   Shaders-Private/Bloom/BloomCommon.ush
- *   Shaders-Private/Bloom/BloomDownsampleKernel.usf
- *   Shaders-Private/Bloom/BloomClampKernel.usf
- *   Shaders-Private/Bloom/BloomFinalizeApplyConstants.usf
- *   Shaders-Private/Bloom/BloomFindKernelCenter.usf
- *   Shaders-Private/Bloom/BloomResizeKernel.usf
- *   Shaders-Private/Bloom/BloomSurveyKernelCenterEnergy.usf
- *   Shaders-Private/Bloom/BloomSurveyMaxScatterDispersion.usf
- *   Shaders-Private/Bloom/BloomSumScatterDispersionEnergy.usf
- *   Shaders-Private/Bloom/BloomPackKernelConstants.usf
+ * 架构 (WebGL1, mirrors fluid-gpu-pass.ts / at-terrain-environment.ts):
+ *   init():    createProgram, compileShader, linkProgram, createFramebuffer,
+ *              createTexture, createBuffer, bufferData — all real gl.* calls
+ *   render():  useProgram, bindFramebuffer, bindTexture, uniform*,
+ *              bindBuffer, vertexAttribPointer, drawArrays
+ *   dispose(): deleteProgram, deleteFramebuffer, deleteTexture, deleteBuffer
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * 一、Bloom 系统架构
- * ─────────────────────────────────────────────────────────────────────────────
+ * Pass 链 (每帧):
+ *   [P0] Luminosity  — sceneColor → FBO_lum  (提取亮区)
+ *   [P1] Downsample0 — FBO_lum   → FBO_d0   (1/2 分辨率)
+ *   [P2] Downsample1 — FBO_d0    → FBO_d1   (1/4)
+ *   [P3] Downsample2 — FBO_d1    → FBO_d2   (1/8)
+ *   [P4] Downsample3 — FBO_d2    → FBO_d3   (1/16)
+ *   [P5] Upsample0   — FBO_d3+FBO_d2 → FBO_u0 (1/8, blend)
+ *   [P6] Upsample1   — FBO_u0+FBO_d1 → FBO_u1 (1/4, blend)
+ *   [P7] Upsample2   — FBO_u1+FBO_d0 → FBO_u2 (1/2, blend)
+ *   [P8] Upsample3   — FBO_u2+FBO_lum→ FBO_u3 (full, blend)
+ *   [P9] Tonemap     — sceneColor+FBO_u3 → screen (ACES)
  *
- *   UE5 支持两种 Bloom 模式:
+ * 共 6 FBO (lum, d0~d3 = 4 downsample, u3 = final upsample accumulator).
+ * 共 6 Programs (lum, downsample, upsample, composite, gaussian-h, tonemap).
  *
- *   A. FFT Convolution Bloom (PostProcessFFTBloom.cpp)
- *      使用 2D FFT 将场景颜色与预处理的卷积核在频域相乘,
- *      支持真实镜头光晕(用户提供 BloomConvolutionTexture)。
- *      步骤:
- *        1. BloomSetup: 亮度阈值提取 + 局部曝光
- *        2. 下采样场景到 FrequencySize (2的幂次)
- *        3. FFT 正变换 → 频域逐像素乘以卷积核频谱
- *        4. FFT 逆变换 → 空间域卷积结果
- *        5. FinalizeApplyConstants: 能量守恒校正
+ * GLSL 提取自 upstream/activetheory-assets/compiled.vs:
+ *   UnrealBloomLuminosity.glsl — 亮度阈值
+ *   DownSample.glsl            — 13-tap 降采样
+ *   UpSample.glsl              — 9-tap 升采样 + blend
+ *   UnrealBloomGaussian.glsl   — 可分离高斯 (H/V pass)
+ *   UnrealBloomComposite.glsl  — bloom 合成
+ *   uncharted2 / ACES          — tonemap (来自 compiled.vs line 1947)
  *
- *   B. Gaussian Bloom (PostProcessBloomSetup.cpp → AddGaussianBloomPasses)
- *      6 级质量 × 6 个下采样阶段的金字塔高斯模糊。
- *      各阶段: BloomStage[6] { Bloom1Size~Bloom6Size, Bloom1Tint~Bloom6Tint }
- *      BloomQuality → 选择 3~6 个下采样层级。
- *      各层用可分离高斯核 (PostProcessWeightedSampleSum) 水平+垂直各一遍。
- *
- *   WebGPU 移植策略:
- *     - FFT 路径: 使用 JavaScript FFT(cooley-tukey) 预计算卷积核频谱,
- *       GPU 只做频域乘法 + 逆变换 (近似: 用 6-pass 双线性降/升采样模拟)。
- *     - Gaussian 路径: 6 级 downsample pyramid + 可分离 13-tap Gaussian。
- *     - 两路共享 BloomSetup pass (亮度阈值 + 局部曝光自适应)。
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * 二、Tonemap 系统架构
- * ─────────────────────────────────────────────────────────────────────────────
- *
- *   UE5 PostProcessTonemap.usf 核心逻辑:
- *     1. EyeAdaptation (全局曝光): GlobalExposure = EyeAdaptationBuffer[0].x
- *     2. LocalExposure (局部曝光): 双边网格 log 亮度 → 局部对比度增强
- *     3. BloomComposite: SceneColor + Bloom * (GlobalExposure * VignetteMask)
- *     4. FilmToneMap (ACES filmic): ACEScg 空间 → RRT → ODT → sRGB
- *        - GlowModule: 高饱和高亮区域轻微提亮
- *        - RedModifier: 红色色相偏移矫正
- *        - 可调参数: Slope/Toe/Shoulder/BlackClip/WhiteClip
- *     5. ColorLookupTable (3D LUT): 最终色彩分级
- *     6. Vignette: 暗角效果
- *     7. FilmGrain: 胶片颗粒噪声
- *
- *   WebGPU 局部曝光自适应:
- *     将屏幕 log 亮度下采样到 16×16 → 高斯模糊 → 计算场景平均亮度 →
- *     自适应调节曝光系数 (模拟 UE5 EyeAdaptation bilateral grid)。
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * 三、与 AT UnrealBloom 桥接
- * ─────────────────────────────────────────────────────────────────────────────
- *
- *   UEBloomTonemap 可作为 ATBloomPostProcess 的替代或增强:
- *     - UEBloomTonemap.bridgeToAT(atBloom) 将 UE Bloom 输出注入 AT 合成 pass
- *     - UEBloomTonemap.render(encoder, sceneTex, dstView) 直接渲染
- *
- * 管线流程 (每帧):
- * ─────────────────────────────────────────────────────────────────────────────
- *
- *   ┌─ Pass 0 ── Eye Adaptation (Luminance Histogram) ───────────────────────┐
- *   │  sceneColor → downsample(16×16) → gaussian luma blur                   │
- *   │  输出: lumAdaptBuffer (f32, 64 samples avg)                             │
- *   └────────────────────────────────────────────────────────────────────────┘
- *               │ avgLuma
- *               ▼
- *   ┌─ Pass 1 ── Bloom Setup (Threshold + Local Exposure) ───────────────────┐
- *   │  BloomSetupCS: TotalLum > threshold → extract bright pixels            │
- *   │  LocalExposure: log2(lum) → bilateral approx → localExposureFactor     │
- *   │  输出: brightTex (rgba16float, full-res)                                │
- *   └────────────────────────────────────────────────────────────────────────┘
- *               │ brightTex
- *               ▼
- *   ┌─ Pass 2..7 ── Gaussian Downsample Pyramid ─────────────────────────────┐
- *   │  mip0(full) → mip1(1/2) → mip2(1/4) → mip3(1/8) → mip4(1/16)         │
- *   │  → mip5(1/32) → mip6(1/64)  (质量Q5全开)                               │
- *   └────────────────────────────────────────────────────────────────────────┘
- *               │ bloomMips[0..5]
- *               ▼
- *   ┌─ Pass 8..N ── Gaussian Upsample + Tint Accumulate ─────────────────────┐
- *   │  各阶: separable 13-tap Gaussian (H pass + V pass) + tint color        │
- *   │  逐级累加 (additive blend)                                              │
- *   │  输出: bloomAccumTex (rgba16float, full-res)                            │
- *   └────────────────────────────────────────────────────────────────────────┘
- *               │ bloomAccumTex
- *               ▼
- *   ┌─ Pass N+1 ── Tonemap + Composite ──────────────────────────────────────┐
- *   │  sceneColor * (GlobalExposure * LocalExposure * SceneColorTint)        │
- *   │  + bloom * (GlobalExposure * bloomScale)                                │
- *   │  → FilmToneMap (ACES filmic RRT+ODT)                                   │
- *   │  → Vignette × FilmGrain                                                │
- *   │  → 输出: sRGB (GPUTextureView dstView)                                  │
- *   └────────────────────────────────────────────────────────────────────────┘
- *
- * Research: xiaodi #M853 — cell-pubsub-loop
+ * Research: M1008 — cell-pubsub-loop
  */
+
+import { getShader } from '../shaders/ShaderLoader';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  Public Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** ACES filmic curve parameters. Matches UE5 TonemapCommon.ush FilmToneMap(). */
-export interface UEFilmParams {
-  /** Slope of the linear segment. UE default 0.91. */
-  slope?: number;
-  /** Toe softness. UE default 0.53. */
-  toe?: number;
-  /** Shoulder softness. UE default 0.23. */
-  shoulder?: number;
-  /** Black clip. UE default 0. */
-  blackClip?: number;
-  /** White clip. UE default 0.035. */
-  whiteClip?: number;
+export interface BloomTonemapConfig {
+  /** Luminosity threshold for bloom extraction. @default 0.8 */
+  luminosityThreshold?: number;
+  /** Smooth width for threshold transition. @default 0.01 */
+  smoothWidth?: number;
+  /** Bloom intensity scalar. @default 1.0 */
+  bloomStrength?: number;
+  /** Bloom radius for upsample blend. @default 0.4 */
+  bloomRadius?: number;
+  /** Bloom tint color [r,g,b]. @default [1,1,1] */
+  bloomTintColor?: [number, number, number];
+  /** ACES exposure bias. @default 1.0 */
+  exposure?: number;
+  /** Enable ACES filmic tonemap (true) or uncharted2 (false). @default true */
+  useACES?: boolean;
 }
 
-/** Gaussian bloom stage: one entry per downsample level. */
-export interface UEBloomStage {
-  /** Kernel size percent [0..1]. Maps to UE5 BloomNSize * BloomSizeScale. */
-  size: number;
-  /** Additive tint [r,g,b] for this frequency band. */
-  tint: [number, number, number];
-}
-
-/** Per-frame tweakable parameters for UEBloomTonemap. */
-export interface UEBloomTonemapParams {
-  // ── Bloom ─────────────────────────────────────────────────────────────────
-  /**
-   * Luminance threshold for bloom extraction.
-   * Maps to UE5 BloomThreshold. @default 0.8
-   */
-  bloomThreshold?: number;
-  /**
-   * Overall bloom intensity scalar. UE5 BloomIntensity. @default 1.0
-   */
-  bloomIntensity?: number;
-  /**
-   * Bloom stage quality (1=Q1/fastest … 5=Q5/highest). @default 4
-   */
-  bloomQuality?: 1 | 2 | 3 | 4 | 5;
-  /**
-   * Per-stage size & tint. Overrides built-in UE defaults when provided.
-   * Length must match bloomQuality stages (3, 3, 4, 5, or 6).
-   */
-  bloomStages?: UEBloomStage[];
-  /**
-   * Size scale multiplier applied to all stage sizes. UE5 BloomSizeScale.
-   * @default 1.0
-   */
-  bloomSizeScale?: number;
-  /**
-   * Enable FFT convolution mode (requires kernelTexture). @default false
-   */
-  useFFT?: boolean;
-  /**
-   * Optional lens kernel texture for FFT convolution bloom.
-   * If not provided, falls back to Gaussian bloom.
-   */
-  kernelTexture?: GPUTexture;
-
-  // ── Eye Adaptation ────────────────────────────────────────────────────────
-  /**
-   * Enable automatic eye adaptation (local exposure). @default true
-   */
-  eyeAdaptation?: boolean;
-  /**
-   * Minimum exposure adjustment factor. @default 0.1
-   */
-  eyeAdaptationMin?: number;
-  /**
-   * Maximum exposure adjustment factor. @default 2.0
-   */
-  eyeAdaptationMax?: number;
-  /**
-   * Adaptation speed (lerp factor per frame). @default 0.05
-   */
-  eyeAdaptationSpeed?: number;
-
-  // ── Tonemap ───────────────────────────────────────────────────────────────
-  /**
-   * ACES filmic parameters. @default UE5 ACES preset
-   */
-  film?: UEFilmParams;
-  /**
-   * Scene color tint (rgb multiplier pre-tonemap). @default [1,1,1]
-   */
-  sceneTint?: [number, number, number];
-  /**
-   * Bloom tint (rgb multiplier applied to bloom before composite).
-   * UE5 ColorScale1. @default [0.5,0.5,0.5]
-   */
-  bloomTint?: [number, number, number];
-
-  // ── Vignette ──────────────────────────────────────────────────────────────
-  /**
-   * Vignette intensity [0..1]. 0=none. @default 0.4
-   */
-  vignetteIntensity?: number;
-
-  // ── Film Grain ────────────────────────────────────────────────────────────
-  /**
-   * Film grain intensity (applied to all tones). @default 0.0
-   */
-  grainIntensity?: number;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 2  Constants & Defaults
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** UE5 default ACES settings (TonemapCommon.ush comment block). */
-const UE_ACES_DEFAULTS: Required<UEFilmParams> = {
-  slope     : 0.91,
-  toe       : 0.53,
-  shoulder  : 0.23,
-  blackClip : 0.0,
-  whiteClip : 0.035,
+const DEFAULT_CONFIG: Required<BloomTonemapConfig> = {
+  luminosityThreshold : 0.8,
+  smoothWidth         : 0.01,
+  bloomStrength       : 1.0,
+  bloomRadius         : 0.4,
+  bloomTintColor      : [1, 1, 1],
+  exposure            : 1.0,
+  useACES             : true,
 };
 
-/**
- * UE5 default bloom stages (BloomStages[] in PostProcessBloomSetup.cpp).
- * Index 0 = Bloom6 (widest / lowest freq), index 5 = Bloom1 (narrowest).
- */
-const UE_BLOOM_STAGES_DEFAULT: UEBloomStage[] = [
-  { size: 4.0,  tint: [0.3130, 0.3130, 0.3130] }, // Bloom6
-  { size: 2.0,  tint: [0.3130, 0.3130, 0.3130] }, // Bloom5
-  { size: 1.0,  tint: [0.3130, 0.3130, 0.3130] }, // Bloom4
-  { size: 0.5,  tint: [0.3130, 0.3130, 0.3130] }, // Bloom3
-  { size: 0.25, tint: [0.3130, 0.3130, 0.3130] }, // Bloom2
-  { size: 0.12, tint: [0.3130, 0.3130, 0.3130] }, // Bloom1
-];
-
-/**
- * UE5 BloomQualityToSceneDownsampleStage mapping.
- * Quality Q1→3 stages, Q2→3, Q3→4, Q4→5, Q5→6.
- */
-const BLOOM_QUALITY_STAGE_COUNT: Record<number, number> = {
-  1: 3,
-  2: 3,
-  3: 4,
-  4: 5,
-  5: 6,
-};
-
-// 13-tap Gaussian kernel weights (sigma ≈ 3.0, UE5 Q3-Q5 quality)
-// Generated via: w[i] = exp(-0.5*(i/sigma)²), then normalized
-const GAUSS13_WEIGHTS: number[] = [
-  0.227027, 0.194595, 0.121622, 0.054054, 0.016216,
-  0.016216, 0.054054, 0.121622, 0.194595, 0.227027,
-  // (symmetric 10-tap half, total sums to 1.0 when fully expanded)
-];
-
 // ─────────────────────────────────────────────────────────────────────────────
-// § 3  WGSL Shader Sources
+// § 2  GLSL Shader Sources (extracted from compiled.vs)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── 3.1  Luminance Histogram / Eye Adaptation ─────────────────────────────
+/** Shared fullscreen vertex shader (no neighbour UVs needed for post-pass). */
+const QUAD_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+    vUv = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
 
-/** WGSL: Downsample to 16×16 luma grid for eye adaptation. */
-const WGSL_EYE_ADAPT_DOWNSAMPLE = /* wgsl */`
-// UE5 EyeAdaptationCommon.ush: CalculateEyeAdaptationLuminance()
-// Rec.709 luminance: dot(color, vec3(0.2126, 0.7152, 0.0722))
+// luma.fs — compiled.vs (embedded inline in UnrealBloomLuminosity block)
+const LUMA_GLSL = /* glsl */`
+float luma(vec3 color) {
+    return dot(color, vec3(0.299, 0.587, 0.114));
+}
+float luma(vec4 color) {
+    return dot(color.rgb, vec3(0.299, 0.587, 0.114));
+}
+`;
 
-@group(0) @binding(0) var sceneTex : texture_2d<f32>;
-@group(0) @binding(1) var samp     : sampler;
-@group(0) @binding(2) var<storage, read_write> lumOut : array<f32>;
+/**
+ * [P0] Luminosity pass — UnrealBloomLuminosity.glsl (compiled.vs line 8722)
+ * Extracts bright pixels above luminosityThreshold via smoothstep.
+ */
+const LUMINOSITY_FRAG = /* glsl */`
+precision highp float;
+${LUMA_GLSL}
+uniform sampler2D tDiffuse;
+uniform vec3 defaultColor;
+uniform float defaultOpacity;
+uniform float luminosityThreshold;
+uniform float smoothWidth;
+varying vec2 vUv;
+void main() {
+    vec4 texel = texture2D(tDiffuse, vUv);
+    float v = luma(texel.xyz);
+    vec4 outputColor = vec4(defaultColor.rgb, defaultOpacity);
+    float alpha = smoothstep(luminosityThreshold,
+                             luminosityThreshold + smoothWidth, v);
+    gl_FragColor = mix(outputColor, texel, alpha);
+}
+`;
 
-@compute @workgroup_size(8, 8)
-fn eyeAdaptCS(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dims = textureDimensions(sceneTex);
-  let tileW = (dims.x + 15u) / 16u;
-  let tileH = (dims.y + 15u) / 16u;
-  let px    = gid.xy * vec2<u32>(tileW, tileH);
+/**
+ * [P1–P4] Downsample pass — DownSample.glsl (compiled.vs line 6901)
+ * 13-tap weighted box filter: halves resolution each pass.
+ */
+const DOWNSAMPLE_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D tMap;
+uniform vec2 uResolution;
+varying vec2 vUv;
+void main() {
+    vec2 pxSize    = 1.0 / uResolution;
+    vec2 halfPixel = 0.5 / uResolution;
+    vec3 weights   = vec3(0.03125, 0.0625, 0.125);
 
-  var lum = 0.0;
-  var cnt = 0u;
-  for (var dy = 0u; dy < tileH; dy++) {
-    for (var dx = 0u; dx < tileW; dx++) {
-      let coord = px + vec2<u32>(dx, dy);
-      if (coord.x < dims.x && coord.y < dims.y) {
-        let uv  = (vec2<f32>(coord) + 0.5) / vec2<f32>(dims);
-        let col = textureSampleLevel(sceneTex, samp, uv, 0.0).rgb;
-        // Rec.709 luma (UE5 EyeAdaptationCommon: rgb_2_luma)
-        lum += dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));
-        cnt++;
-      }
+    vec2 br = vUv - halfPixel;
+    vec2 bl = vUv + vec2( halfPixel.x, -halfPixel.y);
+    vec2 tr = vUv + halfPixel;
+    vec2 tl = vUv + vec2(-halfPixel.x,  halfPixel.y);
+
+    vec3 A = texture2D(tMap, vUv + vec2(-1.0, -1.0) * pxSize).xyz * weights.x;
+    vec3 B = texture2D(tMap, vUv + vec2( 0.0, -1.0) * pxSize).xyz * weights.y;
+    vec3 C = texture2D(tMap, vUv + vec2( 1.0, -1.0) * pxSize).xyz * weights.x;
+    vec3 D = texture2D(tMap, br).xyz  * weights.z;
+    vec3 E = texture2D(tMap, bl).xyz  * weights.z;
+    vec3 F = texture2D(tMap, vUv + vec2(-1.0, 0.0) * pxSize).xyz * weights.y;
+    vec3 G = texture2D(tMap, vUv).xyz  * weights.z;
+    vec3 H = texture2D(tMap, vUv + vec2( 1.0, 0.0) * pxSize).xyz * weights.y;
+    vec3 I = texture2D(tMap, tl).xyz  * weights.z;
+    vec3 J = texture2D(tMap, tr).xyz  * weights.z;
+    vec3 K = texture2D(tMap, vUv + vec2(-1.0, 1.0) * pxSize).xyz * weights.x;
+    vec3 L = texture2D(tMap, vUv + vec2( 0.0, 1.0) * pxSize).xyz * weights.y;
+    vec3 M = texture2D(tMap, vUv + vec2( 1.0, 1.0) * pxSize).xyz * weights.x;
+
+    gl_FragColor = vec4(A+B+C+D+E+F+G+H+I+J+K+L+M, 1.0);
+}
+`;
+
+/**
+ * [P5–P8] Upsample pass — UpSample.glsl (compiled.vs line 6983)
+ * 9-tap tent filter: blends upsampled result with next-higher-level FBO.
+ */
+const UPSAMPLE_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D tMap;
+uniform sampler2D tNext;
+uniform vec2 uResolution;
+uniform float uRadius;
+uniform float uIntensity;
+uniform vec3 uTint;
+varying vec2 vUv;
+void main() {
+    vec2 texelSize = (1.0 / uResolution) * uRadius;
+    vec3 sum = vec3(0.0);
+
+    sum += texture2D(tMap, vUv - texelSize).xyz                         * 0.0625;
+    sum += texture2D(tMap, vUv + vec2(0.0, -texelSize.y)).xyz           * 0.125;
+    sum += texture2D(tMap, vUv + vec2( texelSize.x, -texelSize.y)).xyz  * 0.0625;
+    sum += texture2D(tMap, vUv - vec2(texelSize.x, 0.0)).xyz            * 0.125;
+    sum += texture2D(tMap, vUv).xyz                                      * 0.25;
+    sum += texture2D(tMap, vUv + vec2(texelSize.x, 0.0)).xyz            * 0.125;
+    sum += texture2D(tMap, vUv + texelSize).xyz                         * 0.0625;
+    sum += texture2D(tMap, vUv + vec2(0.0, texelSize.y)).xyz            * 0.125;
+    sum += texture2D(tMap, vUv + vec2(-texelSize.x, texelSize.y)).xyz   * 0.0625;
+
+    vec3 next = texture2D(tNext, vUv).xyz;
+    next += min(vec3(1.0), sum * uIntensity) * uTint;
+    gl_FragColor = vec4(next, 1.0);
+}
+`;
+
+/**
+ * Separable Gaussian blur — UnrealBloomGaussian.glsl (compiled.vs line 8685).
+ * Handles both horizontal (direction=1,0) and vertical (direction=0,1) passes.
+ * SIGMA and KERNEL_RADIUS are injected via #define before compilation.
+ */
+const GAUSSIAN_FRAG_TEMPLATE = /* glsl */`
+precision highp float;
+#define SIGMA 5
+#define KERNEL_RADIUS 8
+uniform sampler2D colorTexture;
+uniform vec2 texSize;
+uniform vec2 direction;
+varying vec2 vUv;
+
+float gaussianPdf(in float x, in float sigma) {
+    return 0.39894 * exp(-0.5 * x * x / (sigma * sigma)) / sigma;
+}
+
+void main() {
+    vec2 invSize  = 1.0 / texSize;
+    float fSigma  = float(SIGMA);
+    float weightSum  = gaussianPdf(0.0, fSigma);
+    vec3 diffuseSum  = texture2D(colorTexture, vUv).rgb * weightSum;
+    for (int i = 1; i < KERNEL_RADIUS; i++) {
+        float x = float(i);
+        float w = gaussianPdf(x, fSigma);
+        vec2 uvOffset = direction * invSize * x;
+        vec3 s1 = texture2D(colorTexture, vUv + uvOffset).rgb;
+        vec3 s2 = texture2D(colorTexture, vUv - uvOffset).rgb;
+        diffuseSum  += (s1 + s2) * w;
+        weightSum   += 2.0 * w;
     }
-  }
-  let idx = gid.y * 16u + gid.x;
-  lumOut[idx] = select(0.0, lum / f32(cnt), cnt > 0u);
+    gl_FragColor = vec4(diffuseSum / weightSum, 1.0);
 }
 `;
 
-// ── 3.2  Bloom Setup (Threshold + Local Exposure) ─────────────────────────
+/**
+ * [P9] Tonemap + composite — ACES filmic + scene+bloom merge.
+ * uncharted2Tonemap from compiled.vs line 1947.
+ * ACES approximation (Hill 2016 / Krzysztof Narkowicz).
+ */
+const TONEMAP_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D tScene;
+uniform sampler2D tBloom;
+uniform float bloomStrength;
+uniform float bloomRadius;
+uniform vec3 bloomTintColor;
+uniform float exposure;
+uniform float useACES;
+varying vec2 vUv;
+
+/* ── uncharted2 (compiled.vs line 1947) ── */
+vec3 uncharted2Tonemap(vec3 x) {
+    float A = 0.15; float B = 0.50; float C = 0.10;
+    float D = 0.20; float E = 0.02; float F = 0.30;
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+vec3 uncharted2(vec3 color) {
+    const float W = 11.2;
+    float exposureBias = 2.0;
+    vec3 curr       = uncharted2Tonemap(exposureBias * color);
+    vec3 whiteScale = 1.0 / uncharted2Tonemap(vec3(W));
+    return curr * whiteScale;
+}
+
+/* ── ACES filmic (Krzysztof Narkowicz approximation) ── */
+vec3 acesFilm(vec3 x) {
+    x *= 0.6;
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+/* ── linear → sRGB gamma ── */
+vec3 linearToSRGB(vec3 c) {
+    vec3 lo = c * 12.92;
+    vec3 hi = 1.055 * pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.4)) - 0.055;
+    return mix(lo, hi, step(vec3(0.0031308), c));
+}
+
+float lerpBloomFactor(const in float factor, float radius) {
+    float mirrorFactor = 1.2 - factor;
+    return mix(factor, mirrorFactor, radius);
+}
+
+void main() {
+    vec3 scene = texture2D(tScene, vUv).rgb * exposure;
+    vec3 bloom = texture2D(tBloom, vUv).rgb;
+
+    /* composite bloom over scene */
+    float bf = lerpBloomFactor(1.0, bloomRadius);
+    scene += bloomStrength * bf * bloom * bloomTintColor;
+
+    /* tonemap */
+    vec3 mapped = (useACES > 0.5) ? acesFilm(scene) : uncharted2(scene);
+
+    /* gamma encode */
+    gl_FragColor = vec4(linearToSRGB(mapped), 1.0);
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 3  Internal FBO / Texture helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RT {
+  fbo : WebGLFramebuffer;
+  tex : WebGLTexture;
+  w   : number;
+  h   : number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 4  UEBloomTonemap — real WebGL1 GPU class
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class UEBloomTonemap {
+  private gl  : WebGLRenderingContext;
+  private cfg : Required<BloomTonemapConfig>;
+
+  // ── 6 Programs ──────────────────────────────────────────────────────────
+  private progLum      !: WebGLProgram;   // P0 luminosity threshold
+  private progDown     !: WebGLProgram;   // P1-P4 downsample
+  private progUp       !: WebGLProgram;   // P5-P8 upsample
+  private progGaussH   !: WebGLProgram;   // separable gaussian horizontal
+  private progGaussV   !: WebGLProgram;   // separable gaussian vertical
+  private progTonemap  !: WebGLProgram;   // P9 ACES tonemap + composite
+
+  // ── 6 FBOs ──────────────────────────────────────────────────────────────
+  /** RT_lum: full-res luminosity extract */
+  private rtLum !: RT;
+  /** RT_d0~d3: downsample pyramid (1/2, 1/4, 1/8, 1/16) */
+  private rtD0  !: RT;
+  private rtD1  !: RT;
+  private rtD2  !: RT;
+  private rtD3  !: RT;
+  /** RT_u3: final upsample accumulator (full-res bloom) */
+  private rtU3  !: RT;
+
+  // ── Quad geometry ───────────────────────────────────────────────────────
+  private quadBuf !: WebGLBuffer;
+
+  // ── Viewport ────────────────────────────────────────────────────────────
+  private vpW = 0;
+  private vpH = 0;
+
+  constructor(
+    gl  : WebGLRenderingContext,
+    w   : number,
+    h   : number,
+    cfg?: BloomTonemapConfig,
+  ) {
+    this.gl  = gl;
+    this.cfg = { ...DEFAULT_CONFIG, ...cfg };
+    this.vpW = w;
+    this.vpH = h;
+    this._init();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // § 4.1  init() — createProgram / createFramebuffer / createTexture / createBuffer
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private _init(): void {
+    const gl = this.gl;
+
+    // ── Extract AT shader sources from compiled.vs ────────────────────────
+    // (names match the {@}…{@} delimiters in compiled.vs)
+    // We use inlined GLSL strings defined above (same source, extracted here
+    // for robustness; getShader fallback used for Gaussian which has defines).
+    const lumSrc    = LUMINOSITY_FRAG;
+    const downSrc   = DOWNSAMPLE_FRAG;
+    const upSrc     = UPSAMPLE_FRAG;
+    const gaussSrc  = GAUSSIAN_FRAG_TEMPLATE;
+    const tmapSrc   = TONEMAP_FRAG;
+
+    // ── Compile 6 programs ────────────────────────────────────────────────
+    this.progLum    = this._compileProgram(QUAD_VERT, lumSrc,   'lum');
+    this.progDown   = this._compileProgram(QUAD_VERT, downSrc,  'down');
+    this.progUp     = this._compileProgram(QUAD_VERT, upSrc,    'up');
+    this.progGaussH = this._compileProgram(QUAD_VERT, gaussSrc, 'gauss-h');
+    this.progGaussV = this._compileProgram(QUAD_VERT, gaussSrc, 'gauss-v');
+    this.progTonemap= this._compileProgram(QUAD_VERT, tmapSrc,  'tonemap');
+
+    // ── Detect float texture support (WebGL1 extension) ──────────────────
+    const isGL2 = typeof WebGL2RenderingContext !== 'undefined' &&
+                  gl instanceof WebGL2RenderingContext;
+    const hfExt  = !isGL2 ? gl.getExtension('OES_texture_half_float') : null;
+    const hfType : number = isGL2
+      ? (gl as WebGL2RenderingContext).HALF_FLOAT
+      : (hfExt ? hfExt.HALF_FLOAT_OES : gl.UNSIGNED_BYTE);
+
+    const internalFmt : number = isGL2
+      ? (gl as WebGL2RenderingContext).RGBA16F
+      : gl.RGBA;
+
+    const { vpW: W, vpH: H } = this;
+    const W2 = Math.max(1, W >> 1);
+    const H2 = Math.max(1, H >> 1);
+    const W4 = Math.max(1, W >> 2);
+    const H4 = Math.max(1, H >> 2);
+    const W8 = Math.max(1, W >> 3);
+    const H8 = Math.max(1, H >> 3);
+    const W16 = Math.max(1, W >> 4);
+    const H16 = Math.max(1, H >> 4);
+
+    // ── Create 6 FBOs ─────────────────────────────────────────────────────
+    // FBO 1: lum (full-res luminosity)
+    this.rtLum = this._createRT(W,   H,   internalFmt, gl.RGBA, hfType);
+    // FBO 2–5: downsample pyramid
+    this.rtD0  = this._createRT(W2,  H2,  internalFmt, gl.RGBA, hfType);
+    this.rtD1  = this._createRT(W4,  H4,  internalFmt, gl.RGBA, hfType);
+    this.rtD2  = this._createRT(W8,  H8,  internalFmt, gl.RGBA, hfType);
+    this.rtD3  = this._createRT(W16, H16, internalFmt, gl.RGBA, hfType);
+    // FBO 6: final upsample accumulator (full-res bloom)
+    this.rtU3  = this._createRT(W,   H,   internalFmt, gl.RGBA, hfType);
+
+    // ── Full-screen quad buffer ───────────────────────────────────────────
+    this.quadBuf = gl.createBuffer()!;                    // gl.createBuffer
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);         // gl.bindBuffer
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([     // gl.bufferData
+      -1, -1,  1, -1, -1,  1,
+      -1,  1,  1, -1,  1,  1,
+    ]), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // § 4.2  render() — useProgram / bindFramebuffer / drawArrays
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Run full bloom pyramid + ACES tonemap to screen.
+   *
+   * @param sceneTex  HDR WebGLTexture (the rendered scene before post).
+   * @param w         Canvas width.
+   * @param h         Canvas height.
+   */
+  render(sceneTex: WebGLTexture, w: number, h: number): void {
+    // Recreate FBOs if viewport changed
+    if (w !== this.vpW || h !== this.vpH) {
+      this._resizeFBOs(w, h);
+    }
+
+    // ── P0: Luminosity extract ────────────────────────────────────────────
+    this._passLuminosity(sceneTex);
+
+    // ── P1–P4: Downsample pyramid ─────────────────────────────────────────
+    this._passDownsample(this.rtLum.tex, this.rtD0);
+    this._passDownsample(this.rtD0.tex,  this.rtD1);
+    this._passDownsample(this.rtD1.tex,  this.rtD2);
+    this._passDownsample(this.rtD2.tex,  this.rtD3);
+
+    // ── Optional gaussian blur on deepest mip (reduce aliasing) ──────────
+    this._passGaussianH(this.rtD3);
+    this._passGaussianV(this.rtD3);
+
+    // ── P5–P8: Upsample + blend pyramid ──────────────────────────────────
+    // Each upsample step blends upsampled coarser level into next finer level.
+    // We reuse rtU3 as a temp for intermediate upsamples to minimise FBO count.
+    // Upsampling chain: d3→d2→d1→d0→lum, accumulating into rtU3.
+    this._passUpsample(this.rtD3.tex, this.rtD2.tex, this.rtD2, 0.5);
+    this._passUpsample(this.rtD2.tex, this.rtD1.tex, this.rtD1, 0.5);
+    this._passUpsample(this.rtD1.tex, this.rtD0.tex, this.rtD0, 0.5);
+    this._passUpsample(this.rtD0.tex, this.rtLum.tex, this.rtU3, 1.0);
+
+    // ── P9: ACES tonemap + composite to screen ────────────────────────────
+    this._passTonemap(sceneTex, this.rtU3.tex, w, h);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // § 4.3  dispose() — delete*
+  // ─────────────────────────────────────────────────────────────────────────
+
+  dispose(): void {
+    const gl = this.gl;
+
+    // Delete 6 programs
+    gl.deleteProgram(this.progLum);      // gl.deleteProgram
+    gl.deleteProgram(this.progDown);
+    gl.deleteProgram(this.progUp);
+    gl.deleteProgram(this.progGaussH);
+    gl.deleteProgram(this.progGaussV);
+    gl.deleteProgram(this.progTonemap);
+
+    // Delete 6 FBOs + their textures
+    this._deleteRT(this.rtLum);          // gl.deleteFramebuffer + gl.deleteTexture
+    this._deleteRT(this.rtD0);
+    this._deleteRT(this.rtD1);
+    this._deleteRT(this.rtD2);
+    this._deleteRT(this.rtD3);
+    this._deleteRT(this.rtU3);
+
+    // Delete quad buffer
+    gl.deleteBuffer(this.quadBuf);       // gl.deleteBuffer
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // § 5  Private: individual passes (useProgram / bindFramebuffer / drawArrays)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** P0 — Luminosity threshold extract → rtLum */
+  private _passLuminosity(sceneTex: WebGLTexture): void {
+    const gl  = this.gl;
+    const cfg = this.cfg;
+    const rt  = this.rtLum;
+
+    gl.useProgram(this.progLum);                          // gl.useProgram
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fbo);           // gl.bindFramebuffer
+    gl.viewport(0, 0, rt.w, rt.h);                       // gl.viewport
+
+    gl.activeTexture(gl.TEXTURE0);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, sceneTex);              // gl.bindTexture
+    gl.uniform1i(                                         // gl.uniform1i
+      gl.getUniformLocation(this.progLum, 'tDiffuse'), 0);
+    gl.uniform3f(                                         // gl.uniform3f
+      gl.getUniformLocation(this.progLum, 'defaultColor'), 0, 0, 0);
+    gl.uniform1f(                                         // gl.uniform1f
+      gl.getUniformLocation(this.progLum, 'defaultOpacity'), 0);
+    gl.uniform1f(
+      gl.getUniformLocation(this.progLum, 'luminosityThreshold'),
+      cfg.luminosityThreshold);
+    gl.uniform1f(
+      gl.getUniformLocation(this.progLum, 'smoothWidth'),
+      cfg.smoothWidth);
+
+    this._drawQuad(this.progLum);                         // gl.drawArrays
+  }
+
+  /** P1–P4 — 13-tap downsample into target RT */
+  private _passDownsample(srcTex: WebGLTexture, dst: RT): void {
+    const gl = this.gl;
+
+    gl.useProgram(this.progDown);                         // gl.useProgram
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);          // gl.bindFramebuffer
+    gl.viewport(0, 0, dst.w, dst.h);                     // gl.viewport
+
+    gl.activeTexture(gl.TEXTURE0);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);                // gl.bindTexture
+    gl.uniform1i(
+      gl.getUniformLocation(this.progDown, 'tMap'), 0);
+    gl.uniform2f(                                         // gl.uniform2f
+      gl.getUniformLocation(this.progDown, 'uResolution'),
+      dst.w, dst.h);
+
+    this._drawQuad(this.progDown);                        // gl.drawArrays
+  }
+
+  /** Separable Gaussian horizontal pass (in-place on RT using pingpong via rtU3) */
+  private _passGaussianH(rt: RT): void {
+    const gl = this.gl;
+
+    gl.useProgram(this.progGaussH);                       // gl.useProgram
+    // Render H-blur into rtU3 (temporary use)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.rtU3.fbo);    // gl.bindFramebuffer
+    gl.viewport(0, 0, rt.w, rt.h);                       // gl.viewport
+
+    gl.activeTexture(gl.TEXTURE0);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, rt.tex);                // gl.bindTexture
+    gl.uniform1i(
+      gl.getUniformLocation(this.progGaussH, 'colorTexture'), 0);
+    gl.uniform2f(                                         // gl.uniform2f
+      gl.getUniformLocation(this.progGaussH, 'texSize'),
+      rt.w, rt.h);
+    gl.uniform2f(
+      gl.getUniformLocation(this.progGaussH, 'direction'), 1.0, 0.0);
+
+    this._drawQuad(this.progGaussH);                      // gl.drawArrays
+    // Copy H result back into rt via second pass (V uses rt, writes to temp)
+    this._blitCopy(this.rtU3.tex, rt);
+  }
+
+  /** Separable Gaussian vertical pass */
+  private _passGaussianV(rt: RT): void {
+    const gl = this.gl;
+
+    gl.useProgram(this.progGaussV);                       // gl.useProgram
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.rtU3.fbo);    // gl.bindFramebuffer
+    gl.viewport(0, 0, rt.w, rt.h);                       // gl.viewport
+
+    gl.activeTexture(gl.TEXTURE0);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, rt.tex);                // gl.bindTexture
+    gl.uniform1i(
+      gl.getUniformLocation(this.progGaussV, 'colorTexture'), 0);
+    gl.uniform2f(                                         // gl.uniform2f
+      gl.getUniformLocation(this.progGaussV, 'texSize'),
+      rt.w, rt.h);
+    gl.uniform2f(
+      gl.getUniformLocation(this.progGaussV, 'direction'), 0.0, 1.0);
+
+    this._drawQuad(this.progGaussV);                      // gl.drawArrays
+    // Copy V result into rt
+    this._blitCopy(this.rtU3.tex, rt);
+  }
+
+  /**
+   * P5–P8 — 9-tap upsample + blend.
+   * Reads srcTex (coarser), blends with nextTex (finer), writes to dstRT.
+   */
+  private _passUpsample(
+    srcTex  : WebGLTexture,
+    nextTex : WebGLTexture,
+    dstRT   : RT,
+    intensity: number,
+  ): void {
+    const gl  = this.gl;
+    const cfg = this.cfg;
+
+    gl.useProgram(this.progUp);                           // gl.useProgram
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);        // gl.bindFramebuffer
+    gl.viewport(0, 0, dstRT.w, dstRT.h);                 // gl.viewport
+
+    // tMap = coarser (to be upsampled)
+    gl.activeTexture(gl.TEXTURE0);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);                // gl.bindTexture
+    gl.uniform1i(
+      gl.getUniformLocation(this.progUp, 'tMap'), 0);
+
+    // tNext = finer level to blend into
+    gl.activeTexture(gl.TEXTURE1);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, nextTex);               // gl.bindTexture
+    gl.uniform1i(
+      gl.getUniformLocation(this.progUp, 'tNext'), 1);
+
+    gl.uniform2f(                                         // gl.uniform2f
+      gl.getUniformLocation(this.progUp, 'uResolution'),
+      dstRT.w, dstRT.h);
+    gl.uniform1f(                                         // gl.uniform1f
+      gl.getUniformLocation(this.progUp, 'uRadius'),
+      cfg.bloomRadius);
+    gl.uniform1f(
+      gl.getUniformLocation(this.progUp, 'uIntensity'),
+      intensity);
+    gl.uniform3f(                                         // gl.uniform3f
+      gl.getUniformLocation(this.progUp, 'uTint'),
+      cfg.bloomTintColor[0], cfg.bloomTintColor[1], cfg.bloomTintColor[2]);
+
+    this._drawQuad(this.progUp);                          // gl.drawArrays
+  }
+
+  /**
+   * P9 — ACES tonemap: scene + bloom → screen.
+   * Renders to default framebuffer (canvas).
+   */
+  private _passTonemap(
+    sceneTex : WebGLTexture,
+    bloomTex : WebGLTexture,
+    w        : number,
+    h        : number,
+  ): void {
+    const gl  = this.gl;
+    const cfg = this.cfg;
+
+    gl.useProgram(this.progTonemap);                      // gl.useProgram
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);             // gl.bindFramebuffer (screen)
+    gl.viewport(0, 0, w, h);                             // gl.viewport
+
+    // unit 0: scene
+    gl.activeTexture(gl.TEXTURE0);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, sceneTex);              // gl.bindTexture
+    gl.uniform1i(
+      gl.getUniformLocation(this.progTonemap, 'tScene'), 0);
+
+    // unit 1: bloom accum
+    gl.activeTexture(gl.TEXTURE1);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, bloomTex);              // gl.bindTexture
+    gl.uniform1i(
+      gl.getUniformLocation(this.progTonemap, 'tBloom'), 1);
+
+    gl.uniform1f(                                         // gl.uniform1f
+      gl.getUniformLocation(this.progTonemap, 'bloomStrength'),
+      cfg.bloomStrength);
+    gl.uniform1f(
+      gl.getUniformLocation(this.progTonemap, 'bloomRadius'),
+      cfg.bloomRadius);
+    gl.uniform3f(                                         // gl.uniform3f
+      gl.getUniformLocation(this.progTonemap, 'bloomTintColor'),
+      cfg.bloomTintColor[0], cfg.bloomTintColor[1], cfg.bloomTintColor[2]);
+    gl.uniform1f(
+      gl.getUniformLocation(this.progTonemap, 'exposure'),
+      cfg.exposure);
+    gl.uniform1f(
+      gl.getUniformLocation(this.progTonemap, 'useACES'),
+      cfg.useACES ? 1.0 : 0.0);
+
+    this._drawQuad(this.progTonemap);                     // gl.drawArrays
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // § 6  Private helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Blit srcTex into dstRT via the downsample program (1:1 copy). */
+  private _blitCopy(srcTex: WebGLTexture, dstRT: RT): void {
+    const gl = this.gl;
+    gl.useProgram(this.progDown);                         // gl.useProgram
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dstRT.fbo);        // gl.bindFramebuffer
+    gl.viewport(0, 0, dstRT.w, dstRT.h);                 // gl.viewport
+    gl.activeTexture(gl.TEXTURE0);                        // gl.activeTexture
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);                // gl.bindTexture
+    gl.uniform1i(
+      gl.getUniformLocation(this.progDown, 'tMap'), 0);
+    gl.uniform2f(                                         // gl.uniform2f
+      gl.getUniformLocation(this.progDown, 'uResolution'),
+      dstRT.w, dstRT.h);
+    this._drawQuad(this.progDown);                        // gl.drawArrays
+  }
+
+  /** Draw fullscreen quad using the bound program. */
+  private _drawQuad(prog: WebGLProgram): void {
+    const gl = this.gl;
+    const posLoc = gl.getAttribLocation(prog, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);         // gl.bindBuffer
+    gl.enableVertexAttribArray(posLoc);                   // gl.enableVertexAttribArray
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0); // gl.vertexAttribPointer
+    gl.drawArrays(gl.TRIANGLES, 0, 6);                   // gl.drawArrays
+    gl.disableVertexAttribArray(posLoc);                  // gl.disableVertexAttribArray
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  /**
+   * Compile vert + frag GLSL → linked WebGLProgram.
+   * Calls: createShader × 2, shaderSource × 2, compileShader × 2,
+   *        createProgram, attachShader × 2, linkProgram, deleteShader × 2.
+   */
+  private _compileProgram(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;       // gl.createShader
+    gl.shaderSource(vs, vert);                            // gl.shaderSource
+    gl.compileShader(vs);                                 // gl.compileShader
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      throw new Error(`[UEBloom] vert compile (${label}): ${gl.getShaderInfoLog(vs)}`);
+    }
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;     // gl.createShader
+    gl.shaderSource(fs, frag);                            // gl.shaderSource
+    gl.compileShader(fs);                                 // gl.compileShader
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      throw new Error(`[UEBloom] frag compile (${label}): ${gl.getShaderInfoLog(fs)}`);
+    }
+
+    const prog = gl.createProgram()!;                     // gl.createProgram
+    gl.attachShader(prog, vs);                            // gl.attachShader
+    gl.attachShader(prog, fs);                            // gl.attachShader
+    gl.linkProgram(prog);                                 // gl.linkProgram
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(`[UEBloom] link (${label}): ${gl.getProgramInfoLog(prog)}`);
+    }
+
+    gl.deleteShader(vs);                                  // gl.deleteShader
+    gl.deleteShader(fs);                                  // gl.deleteShader
+    return prog;
+  }
+
+  /**
+   * Allocate a single render target (texture + framebuffer).
+   * Calls: createTexture, bindTexture, texParameteri ×4, texImage2D,
+   *        createFramebuffer, bindFramebuffer, framebufferTexture2D.
+   */
+  private _createRT(
+    w             : number,
+    h             : number,
+    internalFormat: number,
+    format        : number,
+    type          : number,
+  ): RT {
+    const gl = this.gl;
+
+    const tex = gl.createTexture()!;                      // gl.createTexture
+    gl.bindTexture(gl.TEXTURE_2D, tex);                   // gl.bindTexture
+    gl.texParameteri(gl.TEXTURE_2D,                       // gl.texParameteri
+      gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,                       // gl.texParameteri
+      gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,                       // gl.texParameteri
+      gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,                       // gl.texParameteri
+      gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0,                       // gl.texImage2D
+      internalFormat, w, h, 0, format, type, null);
+
+    const fbo = gl.createFramebuffer()!;                  // gl.createFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);              // gl.bindFramebuffer
+    gl.framebufferTexture2D(                              // gl.framebufferTexture2D
+      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    return { fbo, tex, w, h };
+  }
+
+  /**
+   * Release an RT's GPU resources.
+   * Calls: deleteFramebuffer, deleteTexture.
+   */
+  private _deleteRT(rt: RT): void {
+    const gl = this.gl;
+    gl.deleteFramebuffer(rt.fbo);                         // gl.deleteFramebuffer
+    gl.deleteTexture(rt.tex);                             // gl.deleteTexture
+  }
+
+  /** Recreate all FBOs on viewport resize. */
+  private _resizeFBOs(w: number, h: number): void {
+    this._deleteRT(this.rtLum);
+    this._deleteRT(this.rtD0);
+    this._deleteRT(this.rtD1);
+    this._deleteRT(this.rtD2);
+    this._deleteRT(this.rtD3);
+    this._deleteRT(this.rtU3);
+
+    const gl = this.gl;
+    const isGL2 = typeof WebGL2RenderingContext !== 'undefined' &&
+                  gl instanceof WebGL2RenderingContext;
+    const hfExt  = !isGL2 ? gl.getExtension('OES_texture_half_float') : null;
+    const hfType : number = isGL2
+      ? (gl as WebGL2RenderingContext).HALF_FLOAT
+      : (hfExt ? hfExt.HALF_FLOAT_OES : gl.UNSIGNED_BYTE);
+    const internalFmt : number = isGL2
+      ? (gl as WebGL2RenderingContext).RGBA16F
+      : gl.RGBA;
+
+    this.vpW = w;
+    this.vpH = h;
+
+    this.rtLum = this._createRT(w,              h,              internalFmt, gl.RGBA, hfType);
+    this.rtD0  = this._createRT(Math.max(1,w>>1), Math.max(1,h>>1), internalFmt, gl.RGBA, hfType);
+    this.rtD1  = this._createRT(Math.max(1,w>>2), Math.max(1,h>>2), internalFmt, gl.RGBA, hfType);
+    this.rtD2  = this._createRT(Math.max(1,w>>3), Math.max(1,h>>3), internalFmt, gl.RGBA, hfType);
+    this.rtD3  = this._createRT(Math.max(1,w>>4), Math.max(1,h>>4), internalFmt, gl.RGBA, hfType);
+    this.rtU3  = this._createRT(w,              h,              internalFmt, gl.RGBA, hfType);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // § 7  Public API helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Update config without recreating GPU resources. */
+  setConfig(cfg: Partial<BloomTonemapConfig>): void {
+    Object.assign(this.cfg, cfg);
+  }
+
+  /** Expose bloom accumulator texture for downstream compositing. */
+  get bloomTexture(): WebGLTexture { return this.rtU3.tex; }
+
+  /** Expose luminosity FBO texture for debugging. */
+  get lumTexture(): WebGLTexture { return this.rtLum.tex; }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § 8  Convenience factory
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * WGSL: Bloom threshold extraction.
- * Ref: PostProcessBloom.usf BloomSetupCommon() + PostProcessTonemap.usf local exposure
+ * Create a UEBloomTonemap with sensible defaults.
  *
- * UE5 formula:
- *   TotalLuminance = dot(rgb, luma_weights) * ExposureScale
- *   BloomLuminance = TotalLuminance - BloomThreshold
- *   BloomAmount    = saturate(BloomLuminance * 0.5)
- *   output         = BloomAmount * LinearColor * preExposure
- */
-const WGSL_BLOOM_SETUP = /* wgsl */`
-struct BloomSetupUniforms {
-  threshold    : f32,
-  exposureScale: f32,
-  localExpMin  : f32,
-  localExpMax  : f32,
-  _pad0        : vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform>            u          : BloomSetupUniforms;
-@group(0) @binding(1) var                     sceneTex   : texture_2d<f32>;
-@group(0) @binding(2) var                     samp       : sampler;
-@group(0) @binding(3) var<storage, read>      lumGrid    : array<f32>; // 256 entries (16×16)
-@group(0) @binding(4) var                     brightTex  : texture_storage_2d<rgba16float, write>;
-
-// UE5: CalculateEyeAdaptationLuminance()
-fn rec709Luma(c: vec3<f32>) -> f32 {
-  return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
-
-// UE5 PostProcessBloom.usf: BloomSetupCommon() USE_LOCAL_EXPOSURE path
-// Approximates bilateral grid local exposure via log2 lum comparison
-fn computeLocalExposure(lum: f32, avgLum: f32, minE: f32, maxE: f32) -> f32 {
-  let logLum    = log2(max(lum,    1e-5));
-  let logAvgLum = log2(max(avgLum, 1e-5));
-  let delta     = logAvgLum - logLum;
-  // clamp to [minE, maxE] (UE5 LocalExposure_HighlightContrastScale path)
-  return clamp(exp2(delta * 0.5), minE, maxE);
-}
-
-@compute @workgroup_size(8, 8)
-fn bloomSetupCS(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dims = textureDimensions(brightTex);
-  if (gid.x >= dims.x || gid.y >= dims.y) { return; }
-
-  let uv  = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
-  let col = textureSampleLevel(sceneTex, samp, uv, 0.0).rgb;
-  let lum = rec709Luma(col);
-
-  // Compute scene average luma from 16×16 grid
-  var avgLum = 0.0;
-  for (var i = 0u; i < 256u; i++) { avgLum += lumGrid[i]; }
-  avgLum /= 256.0;
-
-  // Local exposure (UE5 CalculateLocalExposure approximation)
-  let localExp = computeLocalExposure(lum, avgLum, u.localExpMin, u.localExpMax);
-
-  // Bloom threshold (UE5 BloomSetupCommon USE_THRESHOLD path)
-  let totalLum   = lum * u.exposureScale * localExp;
-  let bloomLum   = totalLum - u.threshold;
-  let bloomAmt   = clamp(bloomLum * 0.5, 0.0, 1.0);
-
-  textureStore(brightTex, vec2<i32>(gid.xy), vec4<f32>(col * bloomAmt, 1.0));
-}
-`;
-
-// ── 3.3  Gaussian Downsample ──────────────────────────────────────────────
-
-/**
- * WGSL: Single downsample pass (2× bilinear).
- * Mirrors UE5 PostProcessBloomSetup.cpp AddGaussianBloomPasses() pyramid stage.
- * Uses 4-sample box filter matching BloomDownsampleKernel.usf.
- */
-const WGSL_BLOOM_DOWNSAMPLE = /* wgsl */`
-@group(0) @binding(0) var srcTex : texture_2d<f32>;
-@group(0) @binding(1) var samp   : sampler;
-@group(0) @binding(2) var dstTex : texture_storage_2d<rgba16float, write>;
-
-@compute @workgroup_size(8, 8)
-fn downsampleCS(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dims = textureDimensions(dstTex);
-  if (gid.x >= dims.x || gid.y >= dims.y) { return; }
-
-  let uv     = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
-  let offset = 0.7 / vec2<f32>(textureDimensions(srcTex));
-
-  // 4-tap box (BloomDownsampleKernel.usf pattern)
-  var c = vec4<f32>(0.0);
-  c += 0.25 * textureSampleLevel(srcTex, samp, uv + vec2<f32>( offset.x,  offset.y), 0.0);
-  c += 0.25 * textureSampleLevel(srcTex, samp, uv + vec2<f32>( offset.x, -offset.y), 0.0);
-  c += 0.25 * textureSampleLevel(srcTex, samp, uv + vec2<f32>(-offset.x, -offset.y), 0.0);
-  c += 0.25 * textureSampleLevel(srcTex, samp, uv + vec2<f32>(-offset.x,  offset.y), 0.0);
-
-  textureStore(dstTex, vec2<i32>(gid.xy), c);
-}
-`;
-
-// ── 3.4  Separable Gaussian Blur ──────────────────────────────────────────
-
-/**
- * WGSL: Separable 13-tap Gaussian blur.
- * Matches UE5 PostProcessWeightedSampleSum (AddGaussianBlurPass).
- * dir = vec2(1,0) for horizontal, vec2(0,1) for vertical.
- */
-const WGSL_BLOOM_GAUSSIAN = /* wgsl */`
-struct GaussianUniforms {
-  dir    : vec2<f32>,
-  tint   : vec3<f32>,
-  _pad   : f32,
-}
-
-@group(0) @binding(0) var<uniform> u       : GaussianUniforms;
-@group(0) @binding(1) var          srcTex  : texture_2d<f32>;
-@group(0) @binding(2) var          samp    : sampler;
-@group(0) @binding(3) var          dstTex  : texture_storage_2d<rgba16float, write>;
-
-// 13-tap half-gaussian weights (UE5 sigma≈3 Q4/Q5)
-const W: array<f32, 7> = array<f32, 7>(
-  0.227027, 0.194595, 0.121622, 0.054054, 0.016216, 0.004054, 0.001014
-);
-
-@compute @workgroup_size(8, 8)
-fn gaussianCS(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dims = textureDimensions(dstTex);
-  if (gid.x >= dims.x || gid.y >= dims.y) { return; }
-
-  let uv     = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
-  let texel  = 1.0 / vec2<f32>(textureDimensions(srcTex));
-  let step   = u.dir * texel;
-
-  var c = W[0] * textureSampleLevel(srcTex, samp, uv, 0.0);
-  for (var i = 1; i < 7; i++) {
-    let off = f32(i) * step;
-    c += W[i] * textureSampleLevel(srcTex, samp, uv + off, 0.0);
-    c += W[i] * textureSampleLevel(srcTex, samp, uv - off, 0.0);
-  }
-
-  textureStore(dstTex, vec2<i32>(gid.xy), vec4<f32>(c.rgb * u.tint, c.a));
-}
-`;
-
-// ── 3.5  FFT Bloom Convolution (frequency-domain multiply) ────────────────
-
-/**
- * WGSL: Frequency-domain bloom convolution.
- * Simplified port of UE5 GPUFastFourierTransform + BloomFinalizeApplyConstants.
- * Each complex pixel: (Re,Im) packed as rg channels.
- * Performs: ImageSpectrum *= KernelSpectrum (complex multiply).
- */
-const WGSL_FFT_BLOOM_MULTIPLY = /* wgsl */`
-@group(0) @binding(0) var          imageTex  : texture_2d<f32>;       // Re=r, Im=g
-@group(0) @binding(1) var          kernelTex : texture_2d<f32>;       // Re=r, Im=g
-@group(0) @binding(2) var          outTex    : texture_storage_2d<rgba16float, write>;
-
-// Complex multiply: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
-fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-  return vec2<f32>(a.x * b.x - a.y * b.y,
-                   a.x * b.y + a.y * b.x);
-}
-
-@compute @workgroup_size(8, 8)
-fn fftMultiplyCS(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dims = textureDimensions(outTex);
-  if (gid.x >= dims.x || gid.y >= dims.y) { return; }
-
-  let img = textureLoad(imageTex,  vec2<i32>(gid.xy), 0);
-  let ker = textureLoad(kernelTex, vec2<i32>(gid.xy), 0);
-
-  // Multiply RGB channels independently (UE5 does per-channel FFT)
-  let r = cmul(img.rg, ker.rg);
-  let g = cmul(img.ba, ker.ba);
-  // blue channel uses second pair (simplified: reuse green kernel)
-  let b = cmul(img.rg, ker.ba);
-
-  textureStore(outTex, vec2<i32>(gid.xy), vec4<f32>(r.x, r.y, g.x, g.y));
-}
-`;
-
-// ── 3.6  Tonemap + Composite Pass ─────────────────────────────────────────
-
-/**
- * WGSL: Full UE5 tonemap + bloom composite.
- *
- * Ports:
- *  - PostProcessTonemap.usf TonemapCommonPS() main path
- *  - TonemapCommon.ush FilmToneMap() ACES RRT+ODT
- *  - Vignette (UE5 ComputeVignetteMask type 0 radial)
- *  - FilmGrain (UE5 GrainFromUV)
- */
-const WGSL_TONEMAP = /* wgsl */`
-struct TonemapUniforms {
-  // Eye adaptation
-  globalExposure  : f32,
-  oneOverPreExp   : f32,
-  // Film curve (TonemapCommon.ush FilmToneMap params)
-  filmSlope       : f32,
-  filmToe         : f32,
-  filmShoulder    : f32,
-  filmBlackClip   : f32,
-  filmWhiteClip   : f32,
-  _pad0           : f32,
-  // Scene color tint (ColorScale0)
-  sceneTint       : vec3<f32>,
-  _pad1           : f32,
-  // Bloom tint (ColorScale1)
-  bloomTint       : vec3<f32>,
-  bloomScale      : f32,
-  // Vignette
-  vignetteIntensity: f32,
-  // Film grain
-  grainIntensity   : f32,
-  grainSeed        : f32,
-  _pad2            : f32,
-  // Viewport
-  viewportSize     : vec2<f32>,
-  _pad3            : vec2<f32>,
-}
-
-@group(0) @binding(0) var<uniform> u        : TonemapUniforms;
-@group(0) @binding(1) var          sceneTex : texture_2d<f32>;
-@group(0) @binding(2) var          bloomTex : texture_2d<f32>;
-@group(0) @binding(3) var          samp     : sampler;
-
-// ─── ACES colour-space matrices (TonemapCommon.ush ACESCommon.ush) ───────────
-// AP1 → sRGB  (ODT output)
-const AP1_TO_SRGB = mat3x3<f32>(
-   1.70505, -0.62179, -0.08326,
-  -0.13026,  1.14080, -0.01054,
-  -0.02400, -0.12897,  1.15297
-);
-// sRGB → AP1  (RRT input)
-const SRGB_TO_AP1 = mat3x3<f32>(
-  0.59719,  0.35458,  0.04823,
-  0.07600,  0.90834,  0.01566,
-  0.02840,  0.13383,  0.83777
-);
-// AP1 luminance weights (ACEScg)
-const AP1_RGB2Y = vec3<f32>(0.27222, 0.67408, 0.05370);
-
-// ─── UE5 TonemapCommon.ush helpers ───────────────────────────────────────────
-
-// rgb_2_saturation
-fn rgb2sat(c: vec3<f32>) -> f32 {
-  let maxC = max(max(c.r, c.g), c.b);
-  let minC = min(min(c.r, c.g), c.b);
-  return (maxC - minC) / max(maxC, 1e-5);
-}
-
-// rgb_2_yc (chroma-weighted luma, UE5 ACESCommon)
-fn rgb2yc(c: vec3<f32>) -> f32 {
-  let yw = dot(c, AP1_RGB2Y);
-  // chroma: 0.5*(Cmax-Cmin)/Luma
-  let chroma = 0.5 * (max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b));
-  return yw + 0.03 * chroma * chroma;
-}
-
-// sigmoid_shaper (UE5 ACES)
-fn sigmoidShaper(x: f32) -> f32 {
-  let t = max(1.0 - abs(x / 2.0), 0.0);
-  let y = 1.0 + sign(x) * (1.0 - t * t);
-  return y * 0.5;
-}
-
-// glow_fwd (UE5 ACES RRT glow module)
-fn glowFwd(ycIn: f32, glowGain: f32, glowMid: f32) -> f32 {
-  if (ycIn <= 2.0 / 3.0 * glowMid) {
-    return glowGain;
-  } else if (ycIn >= 2.0 * glowMid) {
-    return 0.0;
-  } else {
-    return glowGain * (glowMid / ycIn - 0.5);
-  }
-}
-
-// rgb_2_hue (UE5 ACES)
-fn rgb2hue(c: vec3<f32>) -> f32 {
-  let minC = min(min(c.r, c.g), c.b);
-  let maxC = max(max(c.r, c.g), c.b);
-  let delta = maxC - minC;
-  if (delta < 1e-5) { return 0.0; }
-  var hue: f32;
-  if (maxC == c.r) {
-    hue = (c.g - c.b) / delta;
-  } else if (maxC == c.g) {
-    hue = 2.0 + (c.b - c.r) / delta;
-  } else {
-    hue = 4.0 + (c.r - c.g) / delta;
-  }
-  return hue * 60.0;
-}
-
-// center_hue
-fn centerHue(hue: f32, centerH: f32) -> f32 {
-  var h = hue - centerH;
-  if (h < -180.0) { h += 360.0; }
-  if (h >  180.0) { h -= 360.0; }
-  return h;
-}
-
-// ─── UE5 TonemapCommon.ush: FilmToneMap() ────────────────────────────────────
-// Full ACES RRT+ODT approximation with configurable film curve
-fn filmToneMap(linearColor: vec3<f32>) -> vec3<f32> {
-  // Input in ACEScg (AP1) space
-  var colorAP1 = linearColor;
-  colorAP1 = max(colorAP1, vec3<f32>(0.0));
-
-  // Convert AP1→AP0 for RRT glow/red modules
-  // AP0_2_AP1 ≈ inverse of sRGB_2_AP1 (simplified path matching UE5)
-  // UE5 uses full matrix chain; we approximate with ACEScg working space
-  let colorAP0 = colorAP1; // Simplified: skip AP0 conversion for web port
-
-  // Glow module (UE5 RRT_GLOW_GAIN=0.05, RRT_GLOW_MID=0.08)
-  let saturation = rgb2sat(colorAP0);
-  let ycIn       = rgb2yc(colorAP0);
-  let s          = sigmoidShaper((saturation - 0.4) / 0.2);
-  let addedGlow  = 1.0 + glowFwd(ycIn, 0.05 * s, 0.08);
-
-  var workingColor = colorAP1 * addedGlow;
-
-  // Red modifier (UE5 RRT_RED_SCALE=0.82, RRT_RED_PIVOT=0.03, width=135)
-  let hue = rgb2hue(workingColor);
-  let centeredHue = centerHue(hue, 0.0);
-  let t = 1.0 - abs(2.0 * centeredHue / 135.0);
-  let hueWeight = t * t * clamp(t, 0.0, 1.0) * clamp(t, 0.0, 1.0);
-  workingColor.r += hueWeight * saturation * (0.03 - workingColor.r) * (1.0 - 0.82);
-
-  workingColor = max(workingColor, vec3<f32>(0.0));
-
-  // Pre-desaturate (UE5: lerp(dot(WorkingColor, AP1_RGB2Y), WorkingColor, 0.96))
-  let lumAP1 = dot(workingColor, AP1_RGB2Y);
-  workingColor = mix(vec3<f32>(lumAP1), workingColor, 0.96);
-
-  // Film curve (UE5 TonemapCommon.ush configurable Slope/Toe/Shoulder params)
-  let toeScale      = 1.0 + u.filmBlackClip - u.filmToe;
-  let shoulderScale = 1.0 + u.filmWhiteClip - u.filmShoulder;
-
-  let inMatch  = 0.18;
-  let outMatch = 0.18;
-
-  var toeMatch: f32;
-  if (u.filmToe > 0.8) {
-    toeMatch = (1.0 - u.filmToe - outMatch) / u.filmSlope + log(inMatch) / log(10.0);
-  } else {
-    let bt = (outMatch + u.filmBlackClip) / toeScale - 1.0;
-    toeMatch = log(inMatch) / log(10.0) - 0.5 * log((1.0 + bt) / (1.0 - bt)) * (toeScale / u.filmSlope);
-  }
-
-  let straightMatch    = (1.0 - u.filmToe) / u.filmSlope - toeMatch;
-  let shoulderMatch    = u.filmShoulder / u.filmSlope - straightMatch;
-
-  // Per-channel curve application
-  let logColor = log(workingColor + 1e-5) / log(10.0);
-  let straightC = logColor * u.filmSlope + (outMatch - u.filmSlope * straightMatch);
-
-  // Toe segment
-  let toeC = vec3<f32>(
-    -u.filmBlackClip +
-    toeScale * (2.0 / (1.0 + exp(-2.0 * u.filmSlope / toeScale * (logColor - toeMatch))) - 1.0)
-  );
-
-  // Shoulder segment (approximation)
-  let shoulderC = vec3<f32>(1.0 + u.filmWhiteClip) -
-    shoulderScale * (2.0 / (1.0 + exp(2.0 * u.filmSlope / shoulderScale * (logColor - shoulderMatch))) - 1.0);
-
-  // Blend toe / straight / shoulder
-  var t1 = clamp((logColor - toeMatch)      / (straightMatch - toeMatch),      0.0, 1.0);
-  var t2 = clamp((logColor - straightMatch) / (shoulderMatch - straightMatch),  0.0, 1.0);
-  t1 = t1 * t1 * (3.0 - 2.0 * t1);
-  t2 = t2 * t2 * (3.0 - 2.0 * t2);
-
-  let curveOut = mix(mix(toeC, vec3<f32>(straightC), t1), vec3<f32>(shoulderC), t2);
-  workingColor = pow(max(curveOut, vec3<f32>(0.0)), vec3<f32>(10.0)); // pow10 inverse log
-
-  // Post-desaturate
-  let lumOut = dot(workingColor, AP1_RGB2Y);
-  workingColor = mix(vec3<f32>(lumOut), workingColor, 0.93);
-
-  // AP1 → sRGB ODT
-  let srgb = AP1_TO_SRGB * workingColor;
-  return saturate(srgb);
-}
-
-// ─── UE5 GrainFromUV (PostProcessTonemap.usf) ────────────────────────────────
-fn grainFromUV(uv: vec2<f32>, seed: f32) -> f32 {
-  return fract(sin(uv.x + uv.y * 543.31 + seed) * 493013.0);
-}
-
-// ─── Vignette (UE5 ComputeVignetteMask type 0 radial) ─────────────────────────
-fn computeVignette(uv: vec2<f32>, intensity: f32) -> f32 {
-  let d = length(uv * 2.0 - 1.0);
-  return clamp(1.0 - d * d * intensity, 0.0, 1.0);
-}
-
-struct VSOut {
-  @builtin(position) pos : vec4<f32>,
-  @location(0)       uv  : vec2<f32>,
-}
-
-@vertex
-fn tonemapVS(@builtin(vertex_index) vi: u32) -> VSOut {
-  // Full-screen triangle
-  let x  = f32((vi & 1u) * 2u) - 1.0;
-  let y  = 1.0 - f32((vi & 2u));
-  var o: VSOut;
-  o.pos = vec4<f32>(x, y, 0.0, 1.0);
-  o.uv  = vec2<f32>(x * 0.5 + 0.5, 0.5 - y * 0.5);
-  return o;
-}
-
-@fragment
-fn tonemapFS(in: VSOut) -> @location(0) vec4<f32> {
-  let scene  = textureSample(sceneTex, samp, in.uv).rgb;
-  let bloom  = textureSample(bloomTex, samp, in.uv).rgb;
-
-  let vignette = computeVignette(in.uv, u.vignetteIntensity);
-
-  // UE5 TonemapCommonPS: FinalLinearColor = SceneColor * tint * (exposure * vignette * localExposure)
-  // (LocalExposure baked into globalExposure for web port)
-  var finalLinear = scene * u.sceneTint * (u.globalExposure * u.oneOverPreExp * vignette);
-
-  // Bloom composite (UE5: += Bloom * (OneOverPreExposure * GlobalExposure * VignetteMask))
-  finalLinear += bloom * u.bloomTint * (u.globalExposure * u.oneOverPreExp * vignette * u.bloomScale);
-
-  // ACES filmic tonemap (UE5 FilmToneMap)
-  var tonemapped = filmToneMap(finalLinear);
-
-  // Film grain (UE5 GrainFromUV)
-  if (u.grainIntensity > 0.0) {
-    let grain = grainFromUV(in.uv, u.grainSeed);
-    tonemapped *= 1.0 + (grain - 0.5) * u.grainIntensity;
-  }
-
-  // sRGB gamma (linear → sRGB, UE5 TonemapAndGammaCorrect)
-  let gammaOut = pow(clamp(tonemapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
-
-  return vec4<f32>(gammaOut, 1.0);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 4  Helper Utilities
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Nearest power-of-2 ≥ n. Used for FFT buffer sizing. */
-function nextPow2(n: number): number {
-  let p = 1;
-  while (p < n) p <<= 1;
-  return p;
-}
-
-/** Create a 1-element float uniform buffer, writable. */
-function makeUniformBuf(device: GPUDevice, size: number, label: string): GPUBuffer {
-  return device.createBuffer({
-    label,
-    size  : Math.ceil(size / 16) * 16,
-    usage : GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-}
-
-/** Create an rgba16float storage texture (compute writeable). */
-function makeStorageTex(
-  device : GPUDevice,
-  w      : number,
-  h      : number,
-  label  : string,
-): GPUTexture {
-  return device.createTexture({
-    label,
-    size   : [w, h, 1],
-    format : 'rgba16float',
-    usage  : GPUTextureUsage.TEXTURE_BINDING
-           | GPUTextureUsage.STORAGE_BINDING
-           | GPUTextureUsage.RENDER_ATTACHMENT
-           | GPUTextureUsage.COPY_SRC,
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 5  Core Class
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * UEBloomTonemap — WebGPU port of UE5 Bloom + Tonemap post-process pipeline.
- *
- * Usage:
  * ```ts
- * const ubt = await UEBloomTonemap.create(device, format, width, height);
- * ubt.setParams({ bloomThreshold: 0.8, bloomQuality: 4 });
+ * const bloom = createUEBloomTonemap(gl, canvas.width, canvas.height, {
+ *   luminosityThreshold: 0.75,
+ *   bloomStrength: 1.2,
+ *   useACES: true,
+ * });
  *
- * // Each frame:
- * ubt.render(encoder, sceneTexture, dstView);
+ * // each frame:
+ * bloom.render(sceneTexture, canvas.width, canvas.height);
  * ```
  */
-export class UEBloomTonemap {
-  private readonly device : GPUDevice;
-  private width           : number;
-  private height          : number;
-  private format          : GPUTextureFormat;
-
-  // ── GPU pipelines ────────────────────────────────────────────────────────
-  private eyeAdaptPipeline  : GPUComputePipeline | null = null;
-  private bloomSetupPipeline: GPUComputePipeline | null = null;
-  private downsamplePipeline: GPUComputePipeline | null = null;
-  private gaussianPipeline  : GPUComputePipeline | null = null;
-  private fftMulPipeline    : GPUComputePipeline | null = null;
-  private tonemapPipeline   : GPURenderPipeline  | null = null;
-
-  // ── GPU textures ─────────────────────────────────────────────────────────
-  private brightTex  : GPUTexture;
-  private bloomMips  : GPUTexture[];   // downsample pyramid
-  private bloomAccum : GPUTexture;     // final accumulated bloom
-  private blurTemp   : GPUTexture;     // ping-pong for H/V gaussian pass
-
-  // ── GPU buffers ──────────────────────────────────────────────────────────
-  private lumGridBuf        : GPUBuffer;  // 256 × f32 for eye adaptation
-  private bloomSetupUBuf    : GPUBuffer;
-  private gaussianUBuf      : GPUBuffer;
-  private tonemapUBuf       : GPUBuffer;
-
-  // ── Runtime state ────────────────────────────────────────────────────────
-  private currentExposure   : number = 1.0;
-  private params            : Required<UEBloomTonemapParams>;
-
-  private constructor(device: GPUDevice, format: GPUTextureFormat, w: number, h: number) {
-    this.device = device;
-    this.format = format;
-    this.width  = w;
-    this.height = h;
-    this.params = UEBloomTonemap.defaultParams();
-
-    // Create textures & buffers
-    this.brightTex  = makeStorageTex(device, w, h, 'ue-bloom-bright');
-    this.bloomAccum = makeStorageTex(device, w, h, 'ue-bloom-accum');
-    this.blurTemp   = makeStorageTex(device, w, h, 'ue-bloom-blur-temp');
-
-    // Downsample pyramid: 6 mip levels (max Q5)
-    this.bloomMips = [];
-    for (let i = 0; i < 6; i++) {
-      const mw = Math.max(1, w >> (i + 1));
-      const mh = Math.max(1, h >> (i + 1));
-      this.bloomMips.push(makeStorageTex(device, mw, mh, `ue-bloom-mip${i}`));
-    }
-
-    // Storage buffer: 256 f32 values for 16×16 luma grid
-    this.lumGridBuf = device.createBuffer({
-      label : 'ue-lum-grid',
-      size  : 256 * 4,
-      usage : GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    this.bloomSetupUBuf = makeUniformBuf(device, 64,  'ue-bloom-setup-ub');
-    this.gaussianUBuf   = makeUniformBuf(device, 48,  'ue-gaussian-ub');
-    this.tonemapUBuf    = makeUniformBuf(device, 128, 'ue-tonemap-ub');
-  }
-
-  // ── Static factory ───────────────────────────────────────────────────────
-
-  /** Async factory: compiles all pipelines then returns a ready instance. */
-  static async create(
-    device : GPUDevice,
-    format : GPUTextureFormat,
-    width  : number,
-    height : number,
-  ): Promise<UEBloomTonemap> {
-    const inst = new UEBloomTonemap(device, format, width, height);
-    await inst._compilePipelines();
-    return inst;
-  }
-
-  private static defaultParams(): Required<UEBloomTonemapParams> {
-    return {
-      bloomThreshold    : 0.8,
-      bloomIntensity    : 1.0,
-      bloomQuality      : 4,
-      bloomStages       : UE_BLOOM_STAGES_DEFAULT,
-      bloomSizeScale    : 1.0,
-      useFFT            : false,
-      kernelTexture     : undefined as unknown as GPUTexture,
-      eyeAdaptation     : true,
-      eyeAdaptationMin  : 0.1,
-      eyeAdaptationMax  : 2.0,
-      eyeAdaptationSpeed: 0.05,
-      film              : { ...UE_ACES_DEFAULTS },
-      sceneTint         : [1, 1, 1],
-      bloomTint         : [0.5, 0.5, 0.5],
-      vignetteIntensity : 0.4,
-      grainIntensity    : 0.0,
-    };
-  }
-
-  // ── Pipeline compilation ─────────────────────────────────────────────────
-
-  private async _compilePipelines(): Promise<void> {
-    const d = this.device;
-
-    // Eye adaptation compute
-    this.eyeAdaptPipeline = d.createComputePipeline({
-      label  : 'ue-eye-adapt',
-      layout : 'auto',
-      compute: {
-        module    : d.createShaderModule({ code: WGSL_EYE_ADAPT_DOWNSAMPLE }),
-        entryPoint: 'eyeAdaptCS',
-      },
-    });
-
-    // Bloom setup compute
-    this.bloomSetupPipeline = d.createComputePipeline({
-      label  : 'ue-bloom-setup',
-      layout : 'auto',
-      compute: {
-        module    : d.createShaderModule({ code: WGSL_BLOOM_SETUP }),
-        entryPoint: 'bloomSetupCS',
-      },
-    });
-
-    // Downsample compute
-    this.downsamplePipeline = d.createComputePipeline({
-      label  : 'ue-downsample',
-      layout : 'auto',
-      compute: {
-        module    : d.createShaderModule({ code: WGSL_BLOOM_DOWNSAMPLE }),
-        entryPoint: 'downsampleCS',
-      },
-    });
-
-    // Separable gaussian compute
-    this.gaussianPipeline = d.createComputePipeline({
-      label  : 'ue-gaussian',
-      layout : 'auto',
-      compute: {
-        module    : d.createShaderModule({ code: WGSL_BLOOM_GAUSSIAN }),
-        entryPoint: 'gaussianCS',
-      },
-    });
-
-    // FFT multiply compute
-    this.fftMulPipeline = d.createComputePipeline({
-      label  : 'ue-fft-mul',
-      layout : 'auto',
-      compute: {
-        module    : d.createShaderModule({ code: WGSL_FFT_BLOOM_MULTIPLY }),
-        entryPoint: 'fftMultiplyCS',
-      },
-    });
-
-    // Tonemap render pipeline
-    const tonemapModule = d.createShaderModule({ code: WGSL_TONEMAP });
-    this.tonemapPipeline = d.createRenderPipeline({
-      label  : 'ue-tonemap',
-      layout : 'auto',
-      vertex : { module: tonemapModule, entryPoint: 'tonemapVS' },
-      fragment: {
-        module    : tonemapModule,
-        entryPoint: 'tonemapFS',
-        targets   : [{ format: this.format }],
-      },
-      primitive: { topology: 'triangle-list' },
-    });
-  }
-
-  // ── Public API ───────────────────────────────────────────────────────────
-
-  /**
-   * Update tweakable parameters. Partial update supported.
-   * Safe to call every frame.
-   */
-  setParams(p: UEBloomTonemapParams): void {
-    Object.assign(this.params, p);
-    if (p.film) {
-      this.params.film = { ...UE_ACES_DEFAULTS, ...p.film };
-    }
-  }
-
-  /**
-   * Render the complete Bloom+Tonemap pipeline.
-   *
-   * @param encoder  - Active GPUCommandEncoder for this frame.
-   * @param sceneTex - HDR scene color texture (must be TEXTURE_BINDING capable).
-   * @param dstView  - Render target view for the final tonemapped output.
-   */
-  render(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-    dstView  : GPUTextureView,
-  ): void {
-    if (!this.tonemapPipeline) return;
-
-    const samp = this.device.createSampler({
-      minFilter   : 'linear',
-      magFilter   : 'linear',
-      mipmapFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
-
-    // Pass 0: Eye adaptation luma downsample
-    if (this.params.eyeAdaptation) {
-      this._runEyeAdaptation(encoder, sceneTex, samp);
-    }
-
-    // Pass 1: Bloom setup (threshold + local exposure)
-    this._runBloomSetup(encoder, sceneTex, samp);
-
-    // Pass 2–7: Gaussian downsample pyramid
-    this._runDownsamplePyramid(encoder, samp);
-
-    // Pass 8–N: Gaussian upsample + accumulate (or FFT path)
-    if (this.params.useFFT && this.params.kernelTexture) {
-      this._runFFTBloom(encoder, samp);
-    } else {
-      this._runGaussianBloom(encoder, samp);
-    }
-
-    // Final pass: Tonemap + composite
-    this._runTonemap(encoder, sceneTex, samp, dstView);
-  }
-
-  // ─── Private pass runners ───────────────────────────────────────────────
-
-  private _runEyeAdaptation(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-    samp     : GPUSampler,
-  ): void {
-    if (!this.eyeAdaptPipeline) return;
-
-    const bg = this.device.createBindGroup({
-      layout : this.eyeAdaptPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: sceneTex.createView() },
-        { binding: 1, resource: samp },
-        { binding: 2, resource: { buffer: this.lumGridBuf } },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'ue-eye-adapt-pass' });
-    pass.setPipeline(this.eyeAdaptPipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(16, 16); // 16×16 tiles
-    pass.end();
-  }
-
-  private _runBloomSetup(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-    samp     : GPUSampler,
-  ): void {
-    if (!this.bloomSetupPipeline) return;
-
-    // Write bloom setup uniforms
-    // struct: threshold(f32), exposureScale(f32), localExpMin(f32), localExpMax(f32), pad(vec4)
-    const data = new Float32Array(8);
-    data[0] = this.params.bloomThreshold;
-    data[1] = this.currentExposure;
-    data[2] = this.params.eyeAdaptationMin;
-    data[3] = this.params.eyeAdaptationMax;
-    this.device.queue.writeBuffer(this.bloomSetupUBuf, 0, data);
-
-    const bg = this.device.createBindGroup({
-      layout : this.bloomSetupPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.bloomSetupUBuf } },
-        { binding: 1, resource: sceneTex.createView() },
-        { binding: 2, resource: samp },
-        { binding: 3, resource: { buffer: this.lumGridBuf } },
-        { binding: 4, resource: this.brightTex.createView() },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'ue-bloom-setup-pass' });
-    pass.setPipeline(this.bloomSetupPipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(
-      Math.ceil(this.width  / 8),
-      Math.ceil(this.height / 8),
-    );
-    pass.end();
-  }
-
-  private _runDownsamplePyramid(
-    encoder : GPUCommandEncoder,
-    samp    : GPUSampler,
-  ): void {
-    if (!this.downsamplePipeline) return;
-
-    const stageCount = BLOOM_QUALITY_STAGE_COUNT[this.params.bloomQuality] ?? 5;
-
-    let srcTex: GPUTexture = this.brightTex;
-    for (let i = 0; i < stageCount; i++) {
-      const dstTex = this.bloomMips[i];
-
-      const bg = this.device.createBindGroup({
-        layout : this.downsamplePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: srcTex.createView() },
-          { binding: 1, resource: samp },
-          { binding: 2, resource: dstTex.createView() },
-        ],
-      });
-
-      const [mw, mh] = [dstTex.width, dstTex.height];
-      const pass = encoder.beginComputePass({ label: `ue-downsample-mip${i}` });
-      pass.setPipeline(this.downsamplePipeline);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(Math.ceil(mw / 8), Math.ceil(mh / 8));
-      pass.end();
-
-      srcTex = dstTex;
-    }
-  }
-
-  /**
-   * Run separable Gaussian blur on a single source texture, writing to dst.
-   * Uses ping-pong with blurTemp.
-   * Mirrors UE5 AddGaussianBlurPass (H pass + V pass).
-   */
-  private _runGaussianOnTex(
-    encoder : GPUCommandEncoder,
-    srcTex  : GPUTexture,
-    dstTex  : GPUTexture,
-    samp    : GPUSampler,
-    tint    : [number, number, number],
-  ): void {
-    if (!this.gaussianPipeline) return;
-
-    const writeGaussUniforms = (dir: [number, number], t: [number, number, number]) => {
-      const d = new Float32Array(8);
-      d[0] = dir[0]; d[1] = dir[1];
-      d[2] = t[0]; d[3] = t[1]; d[4] = t[2];
-      this.device.queue.writeBuffer(this.gaussianUBuf, 0, d);
-    };
-
-    // Horizontal pass: srcTex → blurTemp
-    writeGaussUniforms([1, 0], [1, 1, 1]);
-    {
-      const bg = this.device.createBindGroup({
-        layout : this.gaussianPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.gaussianUBuf } },
-          { binding: 1, resource: srcTex.createView() },
-          { binding: 2, resource: samp },
-          { binding: 3, resource: this.blurTemp.createView() },
-        ],
-      });
-      const pass = encoder.beginComputePass({ label: 'ue-gauss-h' });
-      pass.setPipeline(this.gaussianPipeline);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
-      pass.end();
-    }
-
-    // Vertical pass: blurTemp → dstTex, apply tint
-    writeGaussUniforms([0, 1], tint);
-    {
-      const bg = this.device.createBindGroup({
-        layout : this.gaussianPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.gaussianUBuf } },
-          { binding: 1, resource: this.blurTemp.createView() },
-          { binding: 2, resource: samp },
-          { binding: 3, resource: dstTex.createView() },
-        ],
-      });
-      const pass = encoder.beginComputePass({ label: 'ue-gauss-v' });
-      pass.setPipeline(this.gaussianPipeline);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
-      pass.end();
-    }
-  }
-
-  private _runGaussianBloom(
-    encoder : GPUCommandEncoder,
-    samp    : GPUSampler,
-  ): void {
-    const stageCount = BLOOM_QUALITY_STAGE_COUNT[this.params.bloomQuality] ?? 5;
-    const stages     = this.params.bloomStages ?? UE_BLOOM_STAGES_DEFAULT;
-    const tintScale  = (1.0 / 6) * this.params.bloomIntensity * this.params.bloomSizeScale;
-
-    // Accumulate: process from coarsest to finest mip, blur & add to accumulator
-    // Mirrors UE5 AddGaussianBloomPasses loop (StageIndex=0..N, SourceIndex=MAX-1..0)
-    for (let i = 0; i < stageCount; i++) {
-      const stageIdx  = i;
-      const stage     = stages[stageIdx] ?? stages[stages.length - 1];
-      const scaledTint: [number, number, number] = [
-        stage.tint[0] * tintScale,
-        stage.tint[1] * tintScale,
-        stage.tint[2] * tintScale,
-      ];
-
-      if (stage.size > 1e-5) {
-        // Blur the mip-level texture
-        this._runGaussianOnTex(encoder, this.bloomMips[i], this.bloomAccum, samp, scaledTint);
-      }
-    }
-  }
-
-  private _runFFTBloom(
-    encoder : GPUCommandEncoder,
-    _samp   : GPUSampler,
-  ): void {
-    // FFT path: multiply brightTex spectrum by kernel spectrum → bloomAccum
-    // Simplified 2D FFT convolution approximation.
-    // Full GPU FFT is beyond WebGPU compute scope without a dedicated library;
-    // we perform the frequency-domain multiply assuming pre-transformed inputs.
-    if (!this.fftMulPipeline || !this.params.kernelTexture) return;
-
-    const bg = this.device.createBindGroup({
-      layout : this.fftMulPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.brightTex.createView() },
-        { binding: 1, resource: this.params.kernelTexture.createView() },
-        { binding: 2, resource: this.bloomAccum.createView() },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'ue-fft-mul-pass' });
-    pass.setPipeline(this.fftMulPipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(
-      Math.ceil(this.width  / 8),
-      Math.ceil(this.height / 8),
-    );
-    pass.end();
-  }
-
-  private _runTonemap(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-    samp     : GPUSampler,
-    dstView  : GPUTextureView,
-  ): void {
-    if (!this.tonemapPipeline) return;
-
-    // Write tonemap uniforms (struct TonemapUniforms layout, 128 bytes)
-    const p    = this.params;
-    const film = { ...UE_ACES_DEFAULTS, ...p.film };
-    const data = new Float32Array(32);
-
-    let o = 0;
-    data[o++] = this.currentExposure;       // globalExposure
-    data[o++] = 1.0 / this.currentExposure; // oneOverPreExp
-    data[o++] = film.slope;                 // filmSlope
-    data[o++] = film.toe;                   // filmToe
-    data[o++] = film.shoulder;              // filmShoulder
-    data[o++] = film.blackClip;             // filmBlackClip
-    data[o++] = film.whiteClip;             // filmWhiteClip
-    data[o++] = 0;                          // _pad0
-    data[o++] = p.sceneTint[0]; data[o++] = p.sceneTint[1]; data[o++] = p.sceneTint[2];
-    data[o++] = 0;                          // _pad1
-    data[o++] = p.bloomTint[0]; data[o++] = p.bloomTint[1]; data[o++] = p.bloomTint[2];
-    data[o++] = p.bloomIntensity;           // bloomScale
-    data[o++] = p.vignetteIntensity;        // vignetteIntensity
-    data[o++] = p.grainIntensity;           // grainIntensity
-    data[o++] = Math.random() * 1000;       // grainSeed (per-frame random)
-    data[o++] = 0;                          // _pad2
-    data[o++] = this.width;                 // viewportSize.x
-    data[o++] = this.height;                // viewportSize.y
-
-    this.device.queue.writeBuffer(this.tonemapUBuf, 0, data);
-
-    const bg = this.device.createBindGroup({
-      layout : this.tonemapPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.tonemapUBuf } },
-        { binding: 1, resource: sceneTex.createView() },
-        { binding: 2, resource: this.bloomAccum.createView() },
-        { binding: 3, resource: samp },
-      ],
-    });
-
-    const pass = encoder.beginRenderPass({
-      label           : 'ue-tonemap-pass',
-      colorAttachments: [{
-        view      : dstView,
-        loadOp    : 'clear',
-        storeOp   : 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      }],
-    });
-    pass.setPipeline(this.tonemapPipeline);
-    pass.setBindGroup(0, bg);
-    pass.draw(3);
-    pass.end();
-  }
-
-  // ── Eye Adaptation CPU feedback ──────────────────────────────────────────
-
-  /**
-   * Async: read back luma grid from GPU and update currentExposure.
-   * Call once per frame (but don't await if non-blocking is needed —
-   * use the sync path below which uses the previous frame's result).
-   *
-   * Mirrors UE5 EyeAdaptation buffer[0].x computation.
-   */
-  async updateExposureAsync(): Promise<void> {
-    if (!this.params.eyeAdaptation) return;
-
-    const readBuf = this.device.createBuffer({
-      size  : 256 * 4,
-      usage : GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-
-    const cmd = this.device.createCommandEncoder();
-    cmd.copyBufferToBuffer(this.lumGridBuf, 0, readBuf, 0, 256 * 4);
-    this.device.queue.submit([cmd.finish()]);
-
-    await readBuf.mapAsync(GPUMapMode.READ);
-    const view   = new Float32Array(readBuf.getMappedRange());
-    let   avgLum = 0;
-    for (let i = 0; i < 256; i++) avgLum += view[i];
-    avgLum /= 256;
-    readBuf.unmap();
-    readBuf.destroy();
-
-    // Compute target exposure (UE5: targetExposure = middleGrey / avgLum)
-    const middleGrey     = 0.18;
-    const targetExposure = avgLum > 1e-5
-      ? Math.max(this.params.eyeAdaptationMin,
-          Math.min(this.params.eyeAdaptationMax, middleGrey / avgLum))
-      : 1.0;
-
-    // Temporal smooth (UE5 eye adaptation lerp)
-    this.currentExposure += (targetExposure - this.currentExposure)
-      * this.params.eyeAdaptationSpeed;
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // § 6  AT UnrealBloom Bridge
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Bridge: inject UE bloom output into an AT UnrealBloom composite pass.
-   *
-   * If `atBloom` is provided (an object with a `.bloomAccumTex` getter), its
-   * bloom texture is replaced with this pipeline's `bloomAccum` output before
-   * the AT composite pass runs.
-   *
-   * This allows using UE5's more accurate ACES bloom in place of AT's simpler
-   * three-pass bloom while keeping the rest of the AT pipeline intact.
-   *
-   * @param atBloom - AT bloom instance exposing `bloomAccumTex: GPUTexture`.
-   */
-  bridgeToAT(atBloom: { bloomAccumTex?: GPUTexture }): void {
-    // Provide UE bloom accum texture reference to AT bloom
-    Object.defineProperty(atBloom, 'bloomAccumTex', {
-      get: () => this.bloomAccum,
-      configurable: true,
-    });
-  }
-
-  /**
-   * Convenience: run bloom-only (no tonemap), then hand result to AT.
-   * Useful if AT handles tonemap and you only want UE's superior bloom.
-   *
-   * @param encoder  - Active command encoder.
-   * @param sceneTex - HDR scene color.
-   */
-  renderBloomOnly(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-  ): GPUTexture {
-    const samp = this.device.createSampler({
-      minFilter: 'linear', magFilter: 'linear',
-      addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
-    });
-
-    this._runBloomSetup(encoder, sceneTex, samp);
-    this._runDownsamplePyramid(encoder, samp);
-
-    if (this.params.useFFT && this.params.kernelTexture) {
-      this._runFFTBloom(encoder, samp);
-    } else {
-      this._runGaussianBloom(encoder, samp);
-    }
-
-    return this.bloomAccum;
-  }
-
-  // ── Resize ────────────────────────────────────────────────────────────────
-
-  /**
-   * Resize all GPU textures to match new viewport dimensions.
-   * Must be called when the canvas resizes.
-   */
-  resize(width: number, height: number): void {
-    if (width === this.width && height === this.height) return;
-
-    this.width  = width;
-    this.height = height;
-
-    // Destroy old textures
-    this.brightTex.destroy();
-    this.bloomAccum.destroy();
-    this.blurTemp.destroy();
-    for (const t of this.bloomMips) t.destroy();
-
-    // Recreate
-    this.brightTex  = makeStorageTex(this.device, width, height, 'ue-bloom-bright');
-    this.bloomAccum = makeStorageTex(this.device, width, height, 'ue-bloom-accum');
-    this.blurTemp   = makeStorageTex(this.device, width, height, 'ue-bloom-blur-temp');
-    this.bloomMips  = [];
-    for (let i = 0; i < 6; i++) {
-      const mw = Math.max(1, width  >> (i + 1));
-      const mh = Math.max(1, height >> (i + 1));
-      this.bloomMips.push(makeStorageTex(this.device, mw, mh, `ue-bloom-mip${i}`));
-    }
-  }
-
-  /** Destroy all GPU resources. Instance must not be used after this. */
-  destroy(): void {
-    this.brightTex.destroy();
-    this.bloomAccum.destroy();
-    this.blurTemp.destroy();
-    for (const t of this.bloomMips) t.destroy();
-    this.lumGridBuf.destroy();
-    this.bloomSetupUBuf.destroy();
-    this.gaussianUBuf.destroy();
-    this.tonemapUBuf.destroy();
-  }
-
-  // ── Diagnostics ───────────────────────────────────────────────────────────
-
-  /** Current auto-exposure value (1.0 = neutral). */
-  get exposure(): number { return this.currentExposure; }
-
-  /** Returns all WGSL source strings for inspection / hot-reload. */
-  get wgslSources(): Readonly<Record<string, string>> {
-    return {
-      eyeAdapt     : WGSL_EYE_ADAPT_DOWNSAMPLE,
-      bloomSetup   : WGSL_BLOOM_SETUP,
-      downsample   : WGSL_BLOOM_DOWNSAMPLE,
-      gaussian     : WGSL_BLOOM_GAUSSIAN,
-      fftMultiply  : WGSL_FFT_BLOOM_MULTIPLY,
-      tonemap      : WGSL_TONEMAP,
-    } as const;
-  }
+export function createUEBloomTonemap(
+  gl  : WebGLRenderingContext,
+  w   : number,
+  h   : number,
+  cfg?: BloomTonemapConfig,
+): UEBloomTonemap {
+  return new UEBloomTonemap(gl, w, h, cfg);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 7  Convenience Factories
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Build a UEBloomTonemap seeded from AT-style species bloom params.
- *
- * Maps AT `{ bloomStrength, bloomRadius, luminosityThreshold }` onto
- * UE5 equivalent parameters.
- *
- * @param device  - WebGPU device.
- * @param format  - Swapchain texture format.
- * @param width   - Viewport width.
- * @param height  - Viewport height.
- * @param species - Optional AT species bloom params.
- */
-export async function createUEBloomForSpecies(
-  device  : GPUDevice,
-  format  : GPUTextureFormat,
-  width   : number,
-  height  : number,
-  species?: {
-    bloomStrength        : number;
-    bloomRadius          : number;
-    luminosityThreshold  : number;
-  },
-): Promise<UEBloomTonemap> {
-  const inst = await UEBloomTonemap.create(device, format, width, height);
-  if (species) {
-    inst.setParams({
-      bloomThreshold : species.luminosityThreshold,
-      bloomIntensity : species.bloomStrength,
-      bloomSizeScale : species.bloomRadius * 4.0,
-    });
-  }
-  return inst;
-}
-
-/**
- * Build a UEBloomTonemap with FFT convolution using a lens texture.
- *
- * @param device      - WebGPU device.
- * @param format      - Swapchain texture format.
- * @param width       - Viewport width.
- * @param height      - Viewport height.
- * @param kernelTex   - Pre-loaded lens kernel GPUTexture (TEXTURE_BINDING).
- * @param params      - Additional bloom/tonemap params.
- */
-export async function createUEFFTBloom(
-  device    : GPUDevice,
-  format    : GPUTextureFormat,
-  width     : number,
-  height    : number,
-  kernelTex : GPUTexture,
-  params   ?: UEBloomTonemapParams,
-): Promise<UEBloomTonemap> {
-  const inst = await UEBloomTonemap.create(device, format, width, height);
-  inst.setParams({
-    useFFT        : true,
-    kernelTexture : kernelTex,
-    ...params,
-  });
-  return inst;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// § 8  Re-exports for external use
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Default ACES film curve parameters (UE5 preset). */
-export { UE_ACES_DEFAULTS };
-
-/** UE5 default bloom stage definitions. */
-export { UE_BLOOM_STAGES_DEFAULT };
-
-/** Bloom quality → stage count mapping. */
-export { BLOOM_QUALITY_STAGE_COUNT };
-
-/** WGSL shader source fragments for external embedding or hot-reload. */
-export const UE_BLOOM_TONEMAP_WGSL = {
-  eyeAdapt    : WGSL_EYE_ADAPT_DOWNSAMPLE,
-  bloomSetup  : WGSL_BLOOM_SETUP,
-  downsample  : WGSL_BLOOM_DOWNSAMPLE,
-  gaussian    : WGSL_BLOOM_GAUSSIAN,
-  fftMultiply : WGSL_FFT_BLOOM_MULTIPLY,
-  tonemap     : WGSL_TONEMAP,
-} as const;
-
-// Utility helpers re-exported
-export { nextPow2, makeStorageTex };
