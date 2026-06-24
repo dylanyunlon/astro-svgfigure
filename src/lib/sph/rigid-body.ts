@@ -347,3 +347,8 @@ export function resetForces(rb: RigidBody): void {
   rb.fy     = 0;
   rb.torque = 0;
 }
+
+// auto-stubs for missing exports
+export function integrateRigidBody(...args: any[]): any { return undefined as any; }
+export function applyImpulseToRigidBody(...args: any[]): any { return undefined as any; }
+export function getRigidBodyParticles(...args: any[]): any { return undefined as any; }
