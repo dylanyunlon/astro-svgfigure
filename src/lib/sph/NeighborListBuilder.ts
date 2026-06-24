@@ -1,42 +1,50 @@
 // === src/lib/sph/NeighborListBuilder.ts ===
 
-
-
-
-
-
-
 import { SpatialHashGrid } from './SpatialHashGrid';
-import { MAX_PARTICLES, MAX_NEIGHBORS, NeighborCSR } from './types';
+import { MAX_PARTICLES, MAX_NEIGHBORS } from './types';
+
+// Inline NeighborCSR so we never depend on types.ts exporting it
+export interface NeighborCSR {
+  offsetBuf: any;
+  listBuf:   any;
+  offset:    Int32Array;
+  list:      Int32Array;
+}
 
 export class NeighborListBuilder {
-  private device: GPUDevice;
+  private device: any;
   private grid: SpatialHashGrid;
 
   private offsetCPU: Int32Array;
-  private listCPU: Int32Array;
+  private listCPU:   Int32Array;
 
-  offsetBuf: GPUBuffer;
-  listBuf: GPUBuffer;
+  offsetBuf: any;
+  listBuf:   any;
 
-  constructor(device: GPUDevice) {
+  constructor(device: any) {
     this.device = device;
     this.grid = new SpatialHashGrid();
 
     this.offsetCPU = new Int32Array(MAX_PARTICLES + 1);
     this.listCPU   = new Int32Array(MAX_PARTICLES * MAX_NEIGHBORS);
 
-    this.offsetBuf = device.createBuffer({
-      label: 'nlb-offset',
-      size: (MAX_PARTICLES + 1) * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
+    // Only allocate GPU buffers when a real WebGPU device is present
+    if (device && typeof device.createBuffer === 'function') {
+      this.offsetBuf = device.createBuffer({
+        label: 'nlb-offset',
+        size: (MAX_PARTICLES + 1) * 4,
+        usage: (GPUBufferUsage as any).STORAGE | (GPUBufferUsage as any).COPY_DST,
+      });
 
-    this.listBuf = device.createBuffer({
-      label: 'nlb-list',
-      size: MAX_PARTICLES * MAX_NEIGHBORS * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
+      this.listBuf = device.createBuffer({
+        label: 'nlb-list',
+        size: MAX_PARTICLES * MAX_NEIGHBORS * 4,
+        usage: (GPUBufferUsage as any).STORAGE | (GPUBufferUsage as any).COPY_DST,
+      });
+    } else {
+      this.offsetBuf = null;
+      this.listBuf   = null;
+    }
   }
 
   build(px: Float32Array, py: Float32Array, n: number, radius: number): void {
@@ -59,18 +67,19 @@ export class NeighborListBuilder {
       this.offsetCPU[i + 1] = cursor;
     }
 
-    // upload offset array (n+1 entries)
-    this.device.queue.writeBuffer(
-      this.offsetBuf, 0,
-      this.offsetCPU.buffer, 0, (n + 1) * 4,
-    );
+    // Upload to GPU only when buffers exist
+    if (this.offsetBuf && this.device?.queue) {
+      this.device.queue.writeBuffer(
+        this.offsetBuf, 0,
+        this.offsetCPU.buffer, 0, (n + 1) * 4,
+      );
 
-    // upload list array (total neighbour count entries, min 4 bytes)
-    const listBytes = Math.max(cursor * 4, 4);
-    this.device.queue.writeBuffer(
-      this.listBuf, 0,
-      this.listCPU.buffer, 0, listBytes,
-    );
+      const listBytes = Math.max(cursor * 4, 4);
+      this.device.queue.writeBuffer(
+        this.listBuf, 0,
+        this.listCPU.buffer, 0, listBytes,
+      );
+    }
   }
 
   getCSR(): NeighborCSR {
@@ -83,7 +92,11 @@ export class NeighborListBuilder {
   }
 
   destroy(): void {
-    this.offsetBuf.destroy();
-    this.listBuf.destroy();
+    if (this.offsetBuf && typeof this.offsetBuf.destroy === 'function') {
+      this.offsetBuf.destroy();
+    }
+    if (this.listBuf && typeof this.listBuf.destroy === 'function') {
+      this.listBuf.destroy();
+    }
   }
 }
