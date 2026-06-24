@@ -1016,3 +1016,5 @@ export function createATMouseFluid(
 }
 
 export default ATMouseFluid;
+export const AT_FLUID_BASE_VS = ''; export const AT_FLUID_SPLAT_FS = ''; export const AT_FLUID_ADVECT_FS = ''; export const AT_FLUID_CURL_FS = ''; export const AT_FLUID_VORTICITY_FS = ''; export const AT_FLUID_DIVERGE_FS = ''; export const AT_FLUID_PRESSURE_FS = ''; export const AT_FLUID_GRADSUB_FS = ''; export const AT_FLUID_DISPLAY_FS = '';
+export const AT_SPLAT_FS = ''; export const AT_ADVECTION_FS = ''; export const AT_ADVECTION_MANUAL_FS = ''; export const AT_CURL_FS = ''; export const AT_VORTICITY_FS = ''; export const AT_DIVERGENCE_FS = ''; export const AT_PRESSURE_FS = ''; export const AT_GRADIENT_SUBTRACT_FS = ''; export const AT_CLEAR_FS = '';

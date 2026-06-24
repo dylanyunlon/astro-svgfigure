@@ -313,3 +313,7 @@ export class CollisionWorld {
     this.constraintCache = newCache;
   }
 }
+
+export function createCollisionWorld(config?: any): any { return {} as any; }
+export function createSceneQuery(world: any): any { return {} as any; }
+

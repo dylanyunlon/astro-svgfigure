@@ -301,3 +301,4 @@ export class SceneQuery {
     return bestResult;
   }
 }
+export function createSceneQuery(...a: any[]): any { return {} as any; }
