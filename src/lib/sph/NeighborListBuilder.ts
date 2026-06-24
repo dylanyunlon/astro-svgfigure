@@ -1,25 +1,27 @@
 // === src/lib/sph/NeighborListBuilder.ts ===
+// [M1150] WebGL2 compat: all WebGPU concrete types replaced with `any`
+// NeighborCSR inlined to avoid cross-module interface resolution issues with esbuild
 
 import { SpatialHashGrid } from './SpatialHashGrid';
 import { MAX_PARTICLES, MAX_NEIGHBORS } from './types';
 
-// Inline NeighborCSR so we never depend on types.ts exporting it
+// Inline NeighborCSR to avoid types.ts module-resolution issues in esbuild/Vite
 export interface NeighborCSR {
-  offsetBuf: any;
-  listBuf:   any;
-  offset:    Int32Array;
-  list:      Int32Array;
+  offsetBuf: any; // GPUBuffer | WebGLBuffer | null
+  listBuf:   any; // GPUBuffer | WebGLBuffer | null
+  offsetCPU: Int32Array;
+  listCPU:   Int32Array;
 }
 
 export class NeighborListBuilder {
-  private device: any;
+  private device: any; // GPUDevice | null
   private grid: SpatialHashGrid;
 
   private offsetCPU: Int32Array;
   private listCPU:   Int32Array;
 
-  offsetBuf: any;
-  listBuf:   any;
+  offsetBuf: any; // GPUBuffer | null
+  listBuf:   any; // GPUBuffer | null
 
   constructor(device: any) {
     this.device = device;
@@ -30,16 +32,17 @@ export class NeighborListBuilder {
 
     // Only allocate GPU buffers when a real WebGPU device is present
     if (device && typeof device.createBuffer === 'function') {
+      const GPU_STORAGE  = 0x0088; // GPUBufferUsage.STORAGE
+      const GPU_COPY_DST = 0x0008; // GPUBufferUsage.COPY_DST
       this.offsetBuf = device.createBuffer({
         label: 'nlb-offset',
         size: (MAX_PARTICLES + 1) * 4,
-        usage: (GPUBufferUsage as any).STORAGE | (GPUBufferUsage as any).COPY_DST,
+        usage: GPU_STORAGE | GPU_COPY_DST,
       });
-
       this.listBuf = device.createBuffer({
         label: 'nlb-list',
         size: MAX_PARTICLES * MAX_NEIGHBORS * 4,
-        usage: (GPUBufferUsage as any).STORAGE | (GPUBufferUsage as any).COPY_DST,
+        usage: GPU_STORAGE | GPU_COPY_DST,
       });
     } else {
       this.offsetBuf = null;
@@ -86,8 +89,8 @@ export class NeighborListBuilder {
     return {
       offsetBuf: this.offsetBuf,
       listBuf:   this.listBuf,
-      offset:    this.offsetCPU,
-      list:      this.listCPU,
+      offsetCPU: this.offsetCPU,
+      listCPU:   this.listCPU,
     };
   }
 

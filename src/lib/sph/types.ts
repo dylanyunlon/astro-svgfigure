@@ -4,11 +4,6 @@
 
 
 
-
-
-
-
-
 export interface anySet {
   posX: any; // any
   posY: any; // any
@@ -109,4 +104,4 @@ export interface ContactConstraint {
   normalImpulse: number;        // accumulated (warm start)
   tangentImpulse: number;       // accumulated (warm start)
 }
-// force vite cache bust
+// force vite cache bust — M1150 fix
