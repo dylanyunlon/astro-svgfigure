@@ -1,0 +1,19 @@
+{
+  "cell_id": "enc_pool",
+  "parent_id": "encoder",
+  "species": "cil-layers",
+  "bbox": {
+    "x": 220,
+    "y": 355,
+    "w": 130,
+    "h": 40,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "MaxPool",
+  "font_size": 10,
+  "is_group": false
+}

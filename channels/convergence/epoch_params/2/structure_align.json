@@ -1,0 +1,19 @@
+{
+  "cell_id": "structure_align",
+  "parent_id": "alignment_group",
+  "species": "cil-code",
+  "bbox": {
+    "x": 693,
+    "y": 3855,
+    "w": 130,
+    "h": 100,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Structure",
+  "font_size": 10,
+  "is_group": false
+}

@@ -1,0 +1,19 @@
+{
+  "cell_id": "mllm_style_agent",
+  "parent_id": "stage2_group",
+  "species": "cil-code",
+  "bbox": {
+    "x": 670,
+    "y": 3032,
+    "w": 180,
+    "h": 125,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "MLLM Style Agent",
+  "font_size": 10,
+  "is_group": false
+}

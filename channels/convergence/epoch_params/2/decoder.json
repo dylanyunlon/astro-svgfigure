@@ -1,0 +1,19 @@
+{
+  "cell_id": "decoder",
+  "parent_id": null,
+  "species": "cil-arrow-right",
+  "bbox": {
+    "x": 220,
+    "y": 360,
+    "w": 140,
+    "h": 50,
+    "z": 5
+  },
+  "z": 5,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Decoder",
+  "font_size": 10,
+  "is_group": true
+}

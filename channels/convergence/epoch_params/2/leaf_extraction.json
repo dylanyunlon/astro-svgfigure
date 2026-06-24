@@ -1,0 +1,19 @@
+{
+  "cell_id": "leaf_extraction",
+  "parent_id": "stage2_group",
+  "species": "cil-code",
+  "bbox": {
+    "x": 703.3333333333334,
+    "y": 2197,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Leaf Node Extraction",
+  "font_size": 10,
+  "is_group": false
+}

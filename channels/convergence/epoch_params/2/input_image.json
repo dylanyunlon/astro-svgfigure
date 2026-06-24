@@ -1,0 +1,19 @@
+{
+  "cell_id": "input_image",
+  "parent_id": null,
+  "species": "cil-code",
+  "bbox": {
+    "x": 12,
+    "y": 18,
+    "w": 160,
+    "h": 112,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "High-Resolution Design Image",
+  "font_size": 10,
+  "is_group": false
+}

@@ -1,0 +1,19 @@
+{
+  "cell_id": "noise_detection",
+  "parent_id": "bbox_pruning_group",
+  "species": "cil-filter",
+  "bbox": {
+    "x": 525,
+    "y": 453,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Noise Detection",
+  "font_size": 10,
+  "is_group": false
+}

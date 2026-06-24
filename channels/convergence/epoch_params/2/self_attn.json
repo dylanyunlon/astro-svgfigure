@@ -2,29 +2,29 @@
   "cell_id": "self_attn",
   "species": "cil-eye",
   "bbox": {
-    "x": 220.0,
-    "y": 260.0,
-    "w": 160,
-    "h": 50,
+    "x": 520.0,
+    "y": 220.0,
+    "w": 180,
+    "h": 65,
     "z": 3
   },
   "z": 3,
-  "opacity": 0.99,
+  "opacity": 0.05,
   "fill_color": "#3F51B5",
   "stroke_color": "#3F51B5",
   "label": "Multi-Head Attention",
   "font_size": 10,
   "species_params": {
     "ring_count": 10,
-    "pupil_radius": 4.2,
-    "r_outer": 21.0,
+    "pupil_radius": 5.7,
+    "r_outer": 28.5,
     "r_inner_ratio": 0.3
   },
-  "epoch": 9,
+  "epoch": 0,
   "shadow": {
     "dx": 2.0,
     "dy": 2.0,
-    "blur": 3.75,
+    "blur": 4.88,
     "opacity": 0.35
   }
 }

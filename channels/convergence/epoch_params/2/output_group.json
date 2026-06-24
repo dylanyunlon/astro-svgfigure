@@ -1,0 +1,19 @@
+{
+  "cell_id": "output_group",
+  "parent_id": null,
+  "species": "cil-arrow-right",
+  "bbox": {
+    "x": 645,
+    "y": 3427,
+    "w": 340,
+    "h": 288,
+    "z": 5
+  },
+  "z": 5,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Final Output",
+  "font_size": 10,
+  "is_group": true
+}

@@ -1,0 +1,19 @@
+{
+  "cell_id": "stage1_group",
+  "parent_id": null,
+  "species": "cil-graph",
+  "bbox": {
+    "x": 335,
+    "y": 235,
+    "w": 829.3333333333333,
+    "h": 1587,
+    "z": 5
+  },
+  "z": 5,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Stage 1: Coarse DOM Layout Generation",
+  "font_size": 10,
+  "is_group": true
+}

@@ -1,0 +1,19 @@
+{
+  "cell_id": "pruned_dataset",
+  "parent_id": "bbox_pruning_group",
+  "species": "cil-vector",
+  "bbox": {
+    "x": 525,
+    "y": 899,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Pruned Clean Dataset",
+  "font_size": 10,
+  "is_group": false
+}

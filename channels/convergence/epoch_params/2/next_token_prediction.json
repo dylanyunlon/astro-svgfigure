@@ -1,0 +1,19 @@
+{
+  "cell_id": "next_token_prediction",
+  "parent_id": "structure_model",
+  "species": "cil-loop",
+  "bbox": {
+    "x": 913.5,
+    "y": 1669,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "z": 3,
+  "opacity": 0.05,
+  "fill_color": "#607D8B",
+  "stroke_color": "#607D8B",
+  "label": "Next-Token Prediction",
+  "font_size": 10,
+  "is_group": false
+}
