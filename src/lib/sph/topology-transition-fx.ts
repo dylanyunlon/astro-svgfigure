@@ -108,18 +108,6 @@
 
 
 import type {
-} from './particle-effect-system';
-import type {
-} from './vfx-timeline';
-import { VFXTimelineBuilder } from './vfx-timeline';
-import {
-} from './species-shader-registry';
-import {
-} from './color-palette';
-import type { QoSProfileName } from './qosSpatial';
-import type {
-} from './topology-physics-sync';
-
   ParticleEffectSystem,
   Vec2,
   CellBirthParams,
@@ -128,22 +116,28 @@ import type {
   FlowTrailParams,
   QosTransitionParams,
   AmbientDustParams,
-
+} from './particle-effect-system';
+import type {
   VFXTimelinePlayer,
   VFXTimeline,
-
+} from './vfx-timeline';
+import { VFXTimelineBuilder } from './vfx-timeline';
+import {
   getSpeciesShaderConfig,
   type SpeciesShaderConfig,
-
+} from './species-shader-registry';
+import {
   QOS_THEME,
   type RGB,
   type ThemePalette,
-
-
+} from './color-palette';
+import type { QoSProfileName } from './qosSpatial';
+import type {
   TopologyPhysicsSync,
   TopoNode,
   TopoEdge,
   SyncStats,
+} from './topology-physics-sync';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
