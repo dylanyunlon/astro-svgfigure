@@ -454,3 +454,7 @@ export function buildBoundaryNeighbors(
 
   return result;
 }
+
+// auto-stubs for missing exports
+export function computeFluidRigidCoupling(...args: any[]): any { return undefined as any; }
+export function transferMomentumToRigid(...args: any[]): any { return undefined as any; }
