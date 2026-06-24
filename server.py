@@ -249,9 +249,27 @@ def _register_cell_sse_notifier() -> None:
 
         notifier.add_notifier("physics/collision.json", Notifier(_physics_collision_cb))
 
+        # ── composite_params watcher (composite_params event) ─────────────
+        def _composite_params_cb():
+            from backend.sse_physics_bridge import _load_composite_params
+            data = _load_composite_params()
+            if data is not None:
+                _sse_broadcast("composite_params", {
+                    "cells":      data.get("cells", []),
+                    "edges":      data.get("edges", []),
+                    "canvas":     data.get("canvas", {}),
+                    "palette":    data.get("palette", {}),
+                    "cell_count": len(data.get("cells", [])),
+                    "timestamp":  datetime.now().isoformat(),
+                })
+
+        notifier.add_notifier("composite_params.json",        Notifier(_composite_params_cb))
+        notifier.add_notifier("output/composite_params.json", Notifier(_composite_params_cb))
+
         logger.info(
             "[cell-sse] DataNotifier callbacks registered for %d cells "
-            "+ topology + epoch + physics_step + physics_collision watchers",
+            "+ topology + epoch + physics_step + physics_collision "
+            "+ composite_params watchers",
             len(cell_ids),
         )
     except Exception as exc:
@@ -376,6 +394,8 @@ async def api_cell_events() -> StreamingResponse:
                              converged flag
       physics_collision    — physics engine wrote collision.json; payload
                              includes collisions list and count
+      composite_params     — full 58-cell world snapshot; payload includes
+                             cells[], edges[], canvas, palette, cell_count
 
     A keepalive comment (": ping") is sent every 15 s to prevent proxy
     timeouts and to let the client detect a dropped connection quickly.
@@ -420,6 +440,24 @@ async def api_cell_events() -> StreamingResponse:
                 epoch_data = json.loads(epoch_path.read_text())
                 data = json.dumps(epoch_data, ensure_ascii=True)
                 yield f"event: epoch_completed\ndata: {data}\n\n"
+            except Exception:
+                pass
+
+        # ── composite_params snapshot (58-cell full world state) ─────────
+        from backend.sse_physics_bridge import _load_composite_params as _lcp
+        cp = _lcp()
+        if cp is not None:
+            try:
+                payload = {
+                    "cells":      cp.get("cells", []),
+                    "edges":      cp.get("edges", []),
+                    "canvas":     cp.get("canvas", {}),
+                    "palette":    cp.get("palette", {}),
+                    "cell_count": len(cp.get("cells", [])),
+                    "timestamp":  datetime.now().isoformat(),
+                }
+                data = json.dumps(payload, ensure_ascii=True)
+                yield f"event: composite_params\ndata: {data}\n\n"
             except Exception:
                 pass
 
@@ -1133,6 +1171,73 @@ def health_check() -> JSONResponse:
         "status": "ok",
         "providers": providers,
         "python": PYTHON_EXECUTABLE,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.get("/api/world/state")
+def api_world_state() -> JSONResponse:
+    """
+    GET /api/world/state
+
+    Returns the complete world state including the full 58-cell
+    composite_params payload plus current epoch and topology metadata.
+
+    Response schema
+    ───────────────
+    {
+      "composite_params": {
+        "cells":      [...],   // 58 cell descriptors
+        "edges":      [...],   // edge route descriptors
+        "canvas":     {...},   // {width, height}
+        "palette":    {...},   // {zenith, horizon, nadir}
+        "cell_count": <int>
+      },
+      "epoch":     <int | null>,   // current epoch (-1 = no epoch yet)
+      "converged": <bool>,
+      "timestamp": <str>           // ISO-8601
+    }
+    """
+    from backend.sse_physics_bridge import _load_composite_params
+
+    # ── composite_params (58 cells) ──────────────────────────────────────────
+    cp = _load_composite_params()
+    if cp is None:
+        return JSONResponse(
+            {"error": "composite_params.json not found"},
+            status_code=503,
+        )
+
+    composite = {
+        "cells":      cp.get("cells", []),
+        "edges":      cp.get("edges", []),
+        "canvas":     cp.get("canvas", {}),
+        "palette":    cp.get("palette", {}),
+        "cell_count": len(cp.get("cells", [])),
+    }
+
+    # ── current epoch ────────────────────────────────────────────────────────
+    epoch_num: int | None = None
+    converged = False
+    epoch_path = BASE_DIR / "channels" / "skeleton" / "epoch.json"
+    if epoch_path.exists():
+        try:
+            ep = json.loads(epoch_path.read_text())
+            epoch_num = ep.get("current", -1)
+        except Exception:
+            pass
+
+    conv_path = BASE_DIR / "channels" / "physics" / "converged.json"
+    if conv_path.exists():
+        try:
+            converged = bool(json.loads(conv_path.read_text()).get("converged", False))
+        except Exception:
+            pass
+
+    return JSONResponse({
+        "composite_params": composite,
+        "epoch":     epoch_num,
+        "converged": converged,
         "timestamp": datetime.now().isoformat(),
     })
 
