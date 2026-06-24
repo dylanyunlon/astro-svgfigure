@@ -5059,7 +5059,1846 @@
       }
     }
   ],
-  "edges": [],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "input_embed",
+      "target": "pos_encode",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 300.0,
+          "y": 90.0
+        },
+        {
+          "x": 300.0,
+          "y": 120.0
+        },
+        {
+          "x": 300.0,
+          "y": 120.0
+        },
+        {
+          "x": 300.0,
+          "y": 150.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "e2",
+      "source": "pos_encode",
+      "target": "self_attn",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 300.0,
+          "y": 200.0
+        },
+        {
+          "x": 300.0,
+          "y": 230.0
+        },
+        {
+          "x": 300.0,
+          "y": 230.0
+        },
+        {
+          "x": 300.0,
+          "y": 260.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "e3",
+      "source": "self_attn",
+      "target": "add_norm1",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 300.0,
+          "y": 310.0
+        },
+        {
+          "x": 300.0,
+          "y": 334.0
+        },
+        {
+          "x": 290.0,
+          "y": 334.0
+        },
+        {
+          "x": 290.0,
+          "y": 370.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "e4",
+      "source": "add_norm1",
+      "target": "ffn",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 290.0,
+          "y": 410.0
+        },
+        {
+          "x": 290.0,
+          "y": 440.0
+        },
+        {
+          "x": 290.0,
+          "y": 440.0
+        },
+        {
+          "x": 290.0,
+          "y": 470.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "e5",
+      "source": "ffn",
+      "target": "add_norm2",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 290.0,
+          "y": 515.0
+        },
+        {
+          "x": 290.0,
+          "y": 545.0
+        },
+        {
+          "x": 290.0,
+          "y": 545.0
+        },
+        {
+          "x": 290.0,
+          "y": 575.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "e6",
+      "source": "add_norm2",
+      "target": "output",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 290.0,
+          "y": 615.0
+        },
+        {
+          "x": 290.0,
+          "y": 639.0
+        },
+        {
+          "x": 300.0,
+          "y": 639.0
+        },
+        {
+          "x": 300.0,
+          "y": 675.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "skip1",
+      "source": "pos_encode",
+      "target": "add_norm1",
+      "type": "skip",
+      "is_skip": true,
+      "waypoints": [
+        {
+          "x": 300.0,
+          "y": 200.0
+        },
+        {
+          "x": 300.0,
+          "y": 268.0
+        },
+        {
+          "x": 290.0,
+          "y": 268.0
+        },
+        {
+          "x": 290.0,
+          "y": 370.0
+        }
+      ],
+      "advanced": {
+        "semanticType": "skip_connection",
+        "routing": "SPLINES",
+        "curvature": 0.6
+      }
+    },
+    {
+      "id": "skip2",
+      "source": "add_norm1",
+      "target": "add_norm2",
+      "type": "skip",
+      "is_skip": true,
+      "waypoints": [
+        {
+          "x": 290.0,
+          "y": 410.0
+        },
+        {
+          "x": 290.0,
+          "y": 492.5
+        },
+        {
+          "x": 290.0,
+          "y": 492.5
+        },
+        {
+          "x": 290.0,
+          "y": 575.0
+        }
+      ],
+      "advanced": {
+        "semanticType": "skip_connection",
+        "routing": "SPLINES",
+        "curvature": 0.6
+      }
+    },
+    {
+      "id": "grp_stage2_group__in",
+      "source": "stage2_group",
+      "target": "leaf_extraction",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 771.667,
+          "y": 3317
+        },
+        {
+          "x": 771.667,
+          "y": 3337
+        },
+        {
+          "x": 788.333,
+          "y": 3337
+        },
+        {
+          "x": 788.333,
+          "y": 2197
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_stage2_group__out",
+      "source": "nonleaf_styling",
+      "target": "stage2_group",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 760.0,
+          "y": 3302
+        },
+        {
+          "x": 760.0,
+          "y": 3322
+        },
+        {
+          "x": 771.667,
+          "y": 3322
+        },
+        {
+          "x": 771.667,
+          "y": 2157
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_leaf_extraction__local_images",
+      "source": "leaf_extraction",
+      "target": "local_images",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 788.333,
+          "y": 2315
+        },
+        {
+          "x": 788.333,
+          "y": 2323.0
+        },
+        {
+          "x": 760.0,
+          "y": 2323.0
+        },
+        {
+          "x": 760.0,
+          "y": 2335
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_local_images__mllm_code_agent",
+      "source": "local_images",
+      "target": "mllm_code_agent",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 760.0,
+          "y": 2453
+        },
+        {
+          "x": 760.0,
+          "y": 2463.0
+        },
+        {
+          "x": 760.0,
+          "y": 2463.0
+        },
+        {
+          "x": 760.0,
+          "y": 2473
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_mllm_code_agent__local_code_gen",
+      "source": "mllm_code_agent",
+      "target": "local_code_gen",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 760.0,
+          "y": 2598
+        },
+        {
+          "x": 760.0,
+          "y": 2608.0
+        },
+        {
+          "x": 760.0,
+          "y": 2608.0
+        },
+        {
+          "x": 760.0,
+          "y": 2618
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_local_code_gen__code_linking",
+      "source": "local_code_gen",
+      "target": "code_linking",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 760.0,
+          "y": 2736
+        },
+        {
+          "x": 760.0,
+          "y": 2746.0
+        },
+        {
+          "x": 760.0,
+          "y": 2746.0
+        },
+        {
+          "x": 760.0,
+          "y": 2756
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_code_linking__integrated_code",
+      "source": "code_linking",
+      "target": "integrated_code",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 760.0,
+          "y": 2874
+        },
+        {
+          "x": 760.0,
+          "y": 2884.0
+        },
+        {
+          "x": 760.0,
+          "y": 2884.0
+        },
+        {
+          "x": 760.0,
+          "y": 2894
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_integrated_code__mllm_style_agent",
+      "source": "integrated_code",
+      "target": "mllm_style_agent",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 760.0,
+          "y": 3012
+        },
+        {
+          "x": 760.0,
+          "y": 3022.0
+        },
+        {
+          "x": 760.0,
+          "y": 3022.0
+        },
+        {
+          "x": 760.0,
+          "y": 3032
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_mllm_style_agent__nonleaf_styling",
+      "source": "mllm_style_agent",
+      "target": "nonleaf_styling",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 760.0,
+          "y": 3157
+        },
+        {
+          "x": 760.0,
+          "y": 3167.0
+        },
+        {
+          "x": 760.0,
+          "y": 3167.0
+        },
+        {
+          "x": 760.0,
+          "y": 3177
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "grp_alignment_group__in",
+      "source": "alignment_group",
+      "target": "content_align",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 983,
+          "y": 3892.5
+        },
+        {
+          "x": 763.0,
+          "y": 3892.5
+        },
+        {
+          "x": 763.0,
+          "y": 3905.0
+        },
+        {
+          "x": 543,
+          "y": 3905.0
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_alignment_group__out",
+      "source": "style_align",
+      "target": "alignment_group",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 973,
+          "y": 3905.0
+        },
+        {
+          "x": 753.0,
+          "y": 3905.0
+        },
+        {
+          "x": 753.0,
+          "y": 3892.5
+        },
+        {
+          "x": 533,
+          "y": 3892.5
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_content_align__structure_align",
+      "source": "content_align",
+      "target": "structure_align",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 673,
+          "y": 3905.0
+        },
+        {
+          "x": 683.0,
+          "y": 3905.0
+        },
+        {
+          "x": 683.0,
+          "y": 3905.0
+        },
+        {
+          "x": 693,
+          "y": 3905.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_structure_align__style_align",
+      "source": "structure_align",
+      "target": "style_align",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 823,
+          "y": 3905.0
+        },
+        {
+          "x": 833.0,
+          "y": 3905.0
+        },
+        {
+          "x": 833.0,
+          "y": 3905.0
+        },
+        {
+          "x": 843,
+          "y": 3905.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "grp_decoder__in",
+      "source": "decoder",
+      "target": "dec_conv1",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 290.0,
+          "y": 410
+        },
+        {
+          "x": 290.0,
+          "y": 434.0
+        },
+        {
+          "x": 285.0,
+          "y": 434.0
+        },
+        {
+          "x": 285.0,
+          "y": 470
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_decoder__out",
+      "source": "dec_conv2",
+      "target": "decoder",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 285.0,
+          "y": 710
+        },
+        {
+          "x": 285.0,
+          "y": 730
+        },
+        {
+          "x": 290.0,
+          "y": 730
+        },
+        {
+          "x": 290.0,
+          "y": 360
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_dec_conv1__dec_upsamp",
+      "source": "dec_conv1",
+      "target": "dec_upsamp",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 285.0,
+          "y": 510
+        },
+        {
+          "x": 285.0,
+          "y": 540.0
+        },
+        {
+          "x": 285.0,
+          "y": 540.0
+        },
+        {
+          "x": 285.0,
+          "y": 570
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_dec_upsamp__dec_conv2",
+      "source": "dec_upsamp",
+      "target": "dec_conv2",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 285.0,
+          "y": 610
+        },
+        {
+          "x": 285.0,
+          "y": 640.0
+        },
+        {
+          "x": 285.0,
+          "y": 640.0
+        },
+        {
+          "x": 285.0,
+          "y": 670
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "grp_noise_types__in",
+      "source": "noise_types",
+      "target": "display_errors",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 860,
+          "y": 666.0
+        },
+        {
+          "x": 615.0,
+          "y": 666.0
+        },
+        {
+          "x": 615.0,
+          "y": 678.5
+        },
+        {
+          "x": 370,
+          "y": 678.5
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_noise_types__out",
+      "source": "empty_elements",
+      "target": "noise_types",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 610.0,
+          "y": 728.5
+        },
+        {
+          "x": 610.0,
+          "y": 659.75
+        },
+        {
+          "x": 610.0,
+          "y": 659.75
+        },
+        {
+          "x": 610.0,
+          "y": 591
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_display_errors__hidden_elements",
+      "source": "display_errors",
+      "target": "hidden_elements",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 520,
+          "y": 678.5
+        },
+        {
+          "x": 610.0,
+          "y": 678.5
+        },
+        {
+          "x": 610.0,
+          "y": 678.5
+        },
+        {
+          "x": 700,
+          "y": 678.5
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_hidden_elements__empty_elements",
+      "source": "hidden_elements",
+      "target": "empty_elements",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 850,
+          "y": 678.5
+        },
+        {
+          "x": 695.0,
+          "y": 678.5
+        },
+        {
+          "x": 695.0,
+          "y": 678.5
+        },
+        {
+          "x": 540,
+          "y": 678.5
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "grp_encoder__in",
+      "source": "encoder",
+      "target": "enc_conv1",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 290.0,
+          "y": 195
+        },
+        {
+          "x": 290.0,
+          "y": 219.0
+        },
+        {
+          "x": 285.0,
+          "y": 219.0
+        },
+        {
+          "x": 285.0,
+          "y": 255
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_encoder__out",
+      "source": "enc_conv2",
+      "target": "encoder",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 285.0,
+          "y": 495
+        },
+        {
+          "x": 285.0,
+          "y": 515
+        },
+        {
+          "x": 290.0,
+          "y": 515
+        },
+        {
+          "x": 290.0,
+          "y": 145
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_enc_conv1__enc_pool",
+      "source": "enc_conv1",
+      "target": "enc_pool",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 285.0,
+          "y": 295
+        },
+        {
+          "x": 285.0,
+          "y": 325.0
+        },
+        {
+          "x": 285.0,
+          "y": 325.0
+        },
+        {
+          "x": 285.0,
+          "y": 355
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_enc_pool__enc_conv2",
+      "source": "enc_pool",
+      "target": "enc_conv2",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 285.0,
+          "y": 395
+        },
+        {
+          "x": 285.0,
+          "y": 425.0
+        },
+        {
+          "x": 285.0,
+          "y": 425.0
+        },
+        {
+          "x": 285.0,
+          "y": 455
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "grp_output_group__in",
+      "source": "output_group",
+      "target": "final_html",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 985,
+          "y": 3571.0
+        },
+        {
+          "x": 820.0,
+          "y": 3571.0
+        },
+        {
+          "x": 820.0,
+          "y": 3514.5
+        },
+        {
+          "x": 655,
+          "y": 3514.5
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_output_group__out",
+      "source": "rendered_webpage",
+      "target": "output_group",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 758.333,
+          "y": 3705
+        },
+        {
+          "x": 758.333,
+          "y": 3725
+        },
+        {
+          "x": 815.0,
+          "y": 3725
+        },
+        {
+          "x": 815.0,
+          "y": 3427
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_final_html__final_css",
+      "source": "final_html",
+      "target": "final_css",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 805,
+          "y": 3514.5
+        },
+        {
+          "x": 815.0,
+          "y": 3514.5
+        },
+        {
+          "x": 815.0,
+          "y": 3514.5
+        },
+        {
+          "x": 825,
+          "y": 3514.5
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_final_css__rendered_webpage",
+      "source": "final_css",
+      "target": "rendered_webpage",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 900.0,
+          "y": 3567
+        },
+        {
+          "x": 900.0,
+          "y": 3575.0
+        },
+        {
+          "x": 758.333,
+          "y": 3575.0
+        },
+        {
+          "x": 758.333,
+          "y": 3587
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "grp_bbox_pruning_group__in",
+      "source": "bbox_pruning_group",
+      "target": "vision2ui_dataset",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 610.0,
+          "y": 1027
+        },
+        {
+          "x": 610.0,
+          "y": 671.0
+        },
+        {
+          "x": 610.0,
+          "y": 671.0
+        },
+        {
+          "x": 610.0,
+          "y": 315
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_bbox_pruning_group__out",
+      "source": "pruned_dataset",
+      "target": "bbox_pruning_group",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 610.0,
+          "y": 1017
+        },
+        {
+          "x": 610.0,
+          "y": 646.0
+        },
+        {
+          "x": 610.0,
+          "y": 646.0
+        },
+        {
+          "x": 610.0,
+          "y": 275
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_vision2ui_dataset__noise_detection",
+      "source": "vision2ui_dataset",
+      "target": "noise_detection",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 610.0,
+          "y": 433
+        },
+        {
+          "x": 610.0,
+          "y": 443.0
+        },
+        {
+          "x": 610.0,
+          "y": 443.0
+        },
+        {
+          "x": 610.0,
+          "y": 453
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_noise_detection__noise_types",
+      "source": "noise_detection",
+      "target": "noise_types",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 610.0,
+          "y": 571
+        },
+        {
+          "x": 610.0,
+          "y": 581.0
+        },
+        {
+          "x": 610.0,
+          "y": 581.0
+        },
+        {
+          "x": 610.0,
+          "y": 591
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_noise_types__heuristic_rules",
+      "source": "noise_types",
+      "target": "heuristic_rules",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 610.0,
+          "y": 741
+        },
+        {
+          "x": 610.0,
+          "y": 751.0
+        },
+        {
+          "x": 610.0,
+          "y": 751.0
+        },
+        {
+          "x": 610.0,
+          "y": 761
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_heuristic_rules__pruned_dataset",
+      "source": "heuristic_rules",
+      "target": "pruned_dataset",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 610.0,
+          "y": 879
+        },
+        {
+          "x": 610.0,
+          "y": 889.0
+        },
+        {
+          "x": 610.0,
+          "y": 889.0
+        },
+        {
+          "x": 610.0,
+          "y": 899
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "grp_structure_model__in",
+      "source": "structure_model",
+      "target": "patch_division",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 871.0,
+          "y": 1802
+        },
+        {
+          "x": 871.0,
+          "y": 1822
+        },
+        {
+          "x": 992.667,
+          "y": 1822
+        },
+        {
+          "x": 992.667,
+          "y": 1107
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_structure_model__out",
+      "source": "next_token_prediction",
+      "target": "structure_model",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 998.5,
+          "y": 1787
+        },
+        {
+          "x": 998.5,
+          "y": 1807
+        },
+        {
+          "x": 871.0,
+          "y": 1807
+        },
+        {
+          "x": 871.0,
+          "y": 1067
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_patch_division__vit_encoder",
+      "source": "patch_division",
+      "target": "vit_encoder",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 992.667,
+          "y": 1225
+        },
+        {
+          "x": 992.667,
+          "y": 1233.0
+        },
+        {
+          "x": 1021.0,
+          "y": 1233.0
+        },
+        {
+          "x": 1021.0,
+          "y": 1245
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_vit_encoder__hidden_states",
+      "source": "vit_encoder",
+      "target": "hidden_states",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 1021.0,
+          "y": 1363
+        },
+        {
+          "x": 1021.0,
+          "y": 1373.0
+        },
+        {
+          "x": 1021.0,
+          "y": 1373.0
+        },
+        {
+          "x": 1021.0,
+          "y": 1383
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_hidden_states__weight_matrix",
+      "source": "hidden_states",
+      "target": "weight_matrix",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 1106.0,
+          "y": 1442.0
+        },
+        {
+          "x": 941.0,
+          "y": 1442.0
+        },
+        {
+          "x": 941.0,
+          "y": 1451.0
+        },
+        {
+          "x": 776.0,
+          "y": 1451.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_weight_matrix__transformer_decoder",
+      "source": "weight_matrix",
+      "target": "transformer_decoder",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 846.0,
+          "y": 1501
+        },
+        {
+          "x": 846.0,
+          "y": 1509.0
+        },
+        {
+          "x": 1049.333,
+          "y": 1509.0
+        },
+        {
+          "x": 1049.333,
+          "y": 1521
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_transformer_decoder__softmax_layer",
+      "source": "transformer_decoder",
+      "target": "softmax_layer",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 1134.333,
+          "y": 1580.0
+        },
+        {
+          "x": 952.667,
+          "y": 1580.0
+        },
+        {
+          "x": 952.667,
+          "y": 1583.25
+        },
+        {
+          "x": 771.0,
+          "y": 1583.25
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_softmax_layer__json_output",
+      "source": "softmax_layer",
+      "target": "json_output",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 846.0,
+          "y": 1635.75
+        },
+        {
+          "x": 846.0,
+          "y": 1649.05
+        },
+        {
+          "x": 808.5,
+          "y": 1649.05
+        },
+        {
+          "x": 808.5,
+          "y": 1669
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "seq_json_output__next_token_prediction",
+      "source": "json_output",
+      "target": "next_token_prediction",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 893.5,
+          "y": 1728.0
+        },
+        {
+          "x": 903.5,
+          "y": 1728.0
+        },
+        {
+          "x": 903.5,
+          "y": 1728.0
+        },
+        {
+          "x": 913.5,
+          "y": 1728.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "grp_stage1_group__in",
+      "source": "stage1_group",
+      "target": "bbox_pruning_group",
+      "type": "group_in",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 749.667,
+          "y": 1822
+        },
+        {
+          "x": 749.667,
+          "y": 1842
+        },
+        {
+          "x": 610.0,
+          "y": 1842
+        },
+        {
+          "x": 610.0,
+          "y": 275
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_entry"
+      }
+    },
+    {
+      "id": "grp_stage1_group__out",
+      "source": "structure_model",
+      "target": "stage1_group",
+      "type": "group_out",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 871.0,
+          "y": 1802
+        },
+        {
+          "x": 871.0,
+          "y": 1822
+        },
+        {
+          "x": 749.667,
+          "y": 1822
+        },
+        {
+          "x": 749.667,
+          "y": 235
+        }
+      ],
+      "advanced": {
+        "semanticType": "group_exit"
+      }
+    },
+    {
+      "id": "seq_bbox_pruning_group__structure_model",
+      "source": "bbox_pruning_group",
+      "target": "structure_model",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 610.0,
+          "y": 1027
+        },
+        {
+          "x": 610.0,
+          "y": 1043.0
+        },
+        {
+          "x": 871.0,
+          "y": 1043.0
+        },
+        {
+          "x": 871.0,
+          "y": 1067
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_resolution_handling__input_image",
+      "source": "resolution_handling",
+      "target": "input_image",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 1022,
+          "y": 71.0
+        },
+        {
+          "x": 517.0,
+          "y": 71.0
+        },
+        {
+          "x": 517.0,
+          "y": 74.0
+        },
+        {
+          "x": 12,
+          "y": 74.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_input_image__loss_training",
+      "source": "input_image",
+      "target": "loss_training",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 172,
+          "y": 74.0
+        },
+        {
+          "x": 627.0,
+          "y": 74.0
+        },
+        {
+          "x": 627.0,
+          "y": 77.5
+        },
+        {
+          "x": 1082,
+          "y": 77.5
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_loss_training__ram_resource",
+      "source": "loss_training",
+      "target": "ram_resource",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 1232,
+          "y": 77.5
+        },
+        {
+          "x": 1572.0,
+          "y": 77.5
+        },
+        {
+          "x": 1572.0,
+          "y": 80.0
+        },
+        {
+          "x": 1912,
+          "y": 80.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_ram_resource__input_embed",
+      "source": "ram_resource",
+      "target": "input_embed",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 2052,
+          "y": 80.0
+        },
+        {
+          "x": 1136.0,
+          "y": 80.0
+        },
+        {
+          "x": 1136.0,
+          "y": 65.0
+        },
+        {
+          "x": 220.0,
+          "y": 65.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_input_embed__input",
+      "source": "input_embed",
+      "target": "input",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 300.0,
+          "y": 90.0
+        },
+        {
+          "x": 300.0,
+          "y": 65.0
+        },
+        {
+          "x": 300.0,
+          "y": 65.0
+        },
+        {
+          "x": 300.0,
+          "y": 40
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_input__encoder",
+      "source": "input",
+      "target": "encoder",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 300.0,
+          "y": 85
+        },
+        {
+          "x": 300.0,
+          "y": 109.0
+        },
+        {
+          "x": 290.0,
+          "y": 109.0
+        },
+        {
+          "x": 290.0,
+          "y": 145
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_encoder__pos_encode",
+      "source": "encoder",
+      "target": "pos_encode",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 360,
+          "y": 170.0
+        },
+        {
+          "x": 290.0,
+          "y": 170.0
+        },
+        {
+          "x": 290.0,
+          "y": 175.0
+        },
+        {
+          "x": 220.0,
+          "y": 175.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_pos_encode__stage1_group",
+      "source": "pos_encode",
+      "target": "stage1_group",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 300.0,
+          "y": 200.0
+        },
+        {
+          "x": 300.0,
+          "y": 214.0
+        },
+        {
+          "x": 749.667,
+          "y": 214.0
+        },
+        {
+          "x": 749.667,
+          "y": 235
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_stage1_group__latent",
+      "source": "stage1_group",
+      "target": "latent",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 749.667,
+          "y": 1822
+        },
+        {
+          "x": 749.667,
+          "y": 1842
+        },
+        {
+          "x": 290.0,
+          "y": 1842
+        },
+        {
+          "x": 290.0,
+          "y": 255
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_latent__self_attn",
+      "source": "latent",
+      "target": "self_attn",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 360,
+          "y": 277.5
+        },
+        {
+          "x": 290.0,
+          "y": 277.5
+        },
+        {
+          "x": 290.0,
+          "y": 285.0
+        },
+        {
+          "x": 220.0,
+          "y": 285.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_self_attn__decoder",
+      "source": "self_attn",
+      "target": "decoder",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 300.0,
+          "y": 310.0
+        },
+        {
+          "x": 300.0,
+          "y": 330.0
+        },
+        {
+          "x": 290.0,
+          "y": 330.0
+        },
+        {
+          "x": 290.0,
+          "y": 360
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_decoder__add_norm1",
+      "source": "decoder",
+      "target": "add_norm1",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 290.0,
+          "y": 410
+        },
+        {
+          "x": 290.0,
+          "y": 390.0
+        },
+        {
+          "x": 290.0,
+          "y": 390.0
+        },
+        {
+          "x": 290.0,
+          "y": 370.0
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_coarse_dom_tree__stage2_group",
+      "source": "coarse_dom_tree",
+      "target": "stage2_group",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 808.0,
+          "y": 2052
+        },
+        {
+          "x": 808.0,
+          "y": 2094.0
+        },
+        {
+          "x": 771.667,
+          "y": 2094.0
+        },
+        {
+          "x": 771.667,
+          "y": 2157
+        }
+      ],
+      "advanced": {}
+    },
+    {
+      "id": "tl_output_group__alignment_group",
+      "source": "output_group",
+      "target": "alignment_group",
+      "type": "sequential",
+      "is_skip": false,
+      "waypoints": [
+        {
+          "x": 815.0,
+          "y": 3715
+        },
+        {
+          "x": 815.0,
+          "y": 3757.0
+        },
+        {
+          "x": 758.0,
+          "y": 3757.0
+        },
+        {
+          "x": 758.0,
+          "y": 3820
+        }
+      ],
+      "advanced": {}
+    }
+  ],
   "canvas": {
     "width": 2112,
     "height": 4025
