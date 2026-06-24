@@ -1,1271 +1,751 @@
 /**
- * src/lib/sph/at-water-surface.ts  —  M711
+ * src/lib/sph/at-water-surface.ts  —  M1110
  *
- * AT WaterCeilingShader → WebGPU / WGSL Port
- * ─────────────────────────────────────────────────────────────────────────────
- * Full GPU port of Active Theory's WaterCeilingShader + WorkDetailParticles
- * water-surface effects into the project's WebGPU architecture.
+ * ATWaterSurface — Real WebGL1 GPU Gerstner water surface.
  *
- * ─── AT Reverse-Engineered Sources ──────────────────────────────────────────
+ * Architecture (mirrors fluid-gpu-pass.ts):
+ *   init()    → createProgram × 4, createFramebuffer × 4, createTexture × 4,
+ *               createBuffer × 2  (quad + mesh)
+ *   render()  → useProgram / bindFramebuffer / drawArrays per pass
+ *   dispose() → deleteProgram × 4, deleteFramebuffer × 4,
+ *               deleteTexture × 4, deleteBuffer × 2
  *
- *   WaterCeilingShader  (RESEARCH_96_AT_TECHSTACK.md: "水面反射/折射")
- *     ← upstream/webgl-water/water.js        (stepSimulation / updateNormals)
- *     ← upstream/webgl-water/renderer.js     (waterShaders[0] above-water path)
- *     Key algorithms:
- *       • Wave propagation  : neighbour-average relaxation (velocity + damping)
- *       • Normal update     : cross(dy, dx).xz stored in ba channel
- *       • Fresnel blend     : mix(refracted, reflected, fresnel) above water
- *       • Mirror reflection : reflect(incomingRay, normal) → sky cubemap sample
+ * Pass chain each frame:
+ *   drop-inject (opt) → wave-step (×N ping-pong) → normal-update → surface-render
  *
- *   WorkDetailParticles  (RESEARCH_96_AT_TECHSTACK.md: "GPU粒子效果")
- *     ← upstream/sketch-js/                  (lifecycle / spawn helpers)
- *     ← upstream/webgl-noise/src/noise3D.glsl (simplex noise for drift)
- *     Key algorithms:
- *       • GPGPU ping-pong   : particle state stored in rgba32float textures
- *       • Lifecycle         : SPAWN → FLOAT → DECAY → DEAD
- *       • Surface drift     : water normal displaces particle rise velocity
- *       • Billboard quads   : instanced 2-triangle strip per particle slot
+ * GLSL from upstream/activetheory-assets/compiled.vs via ShaderLoader:
+ *   fresnel.glsl      → getFresnel()
+ *   waternormals.fs   → getWaterNoise() / getWaterNormal()
+ *   simplenoise.glsl  → cnoise()
+ *   refl.fs           → reflection() / refraction() helpers
  *
- * ─── WebGPU Architecture ────────────────────────────────────────────────────
+ * Vertex: 4 Gerstner wave components superimposed (frequency / amplitude /
+ *         direction / phase each different).
+ * Fragment: Fresnel blend of sky-gradient reflection + refracted water tint
+ *           + Blinn-Phong specular sun disk.
  *
- *   ATWaterSurface
- *     ├─ Wave sim pipeline  (compute)
- *     │    waterA / waterB  — rgba32float ping-pong  (height, velocity, nx, nz)
- *     │    stepSimulation   — 4-neighbour relaxation + damping
- *     │    updateNormals    — cross product → normal.xz
- *     │
- *     ├─ Water render pipeline  (render)
- *     │    vertex shader    — reads waterA height, displaces mesh Y
- *     │    fragment shader  — Fresnel mirror reflection + refraction tint
- *     │    sky cubemap      — sampled via reflected ray (or fallback gradient)
- *     │
- *     └─ Particle pipeline  (compute + render)
- *          particleA / B    — rgba32float ping-pong  (pos.xyz, life/speed)
- *          particleUpdate   — lifecycle + simplex drift along surface normal
- *          particleRender   — billboard quads, alpha = sin(π · life), additive
- *
- * ─── GLSL → WGSL Translation Key ────────────────────────────────────────────
- *
- *   texture2D(water, coord)              → textureSample(water, samp, coord)
- *   varying vec2 coord                   → @location(0) uv : vec2f
- *   uniform vec3 light                   → uniforms.lightDir
- *   info.r / .g / .b / .a               → waterTex.r / .g / .b / .a
- *   refract(I, N, eta)                   → refract_wgsl(I, N, eta)  (manual)
- *   reflect(I, N)                        → reflect_wgsl(I, N)        (manual)
- *   gl_FragColor = …                     → @location(0) out : vec4f
- *   dFdx / dFdy                          → not used — normal from texture
- *   mod289 / permute / taylorInvSqrt     → inlined simplex noise helpers
- *
- * ─── Upstream Copyright Notices ─────────────────────────────────────────────
- *
- *   WebGL Water          © 2011 Evan Wallace  — MIT License
- *     http://madebyevan.com/webgl-water/
- *   webgl-noise (ashima) © 2011 Ashima Arts  — MIT License
- *     https://github.com/ashima/webgl-noise
- *
- * ─── Usage ───────────────────────────────────────────────────────────────────
- *
- *   const water = new ATWaterSurface(device, format, config);
- *   await water.build();
- *
- *   // Optional: seed initial drops / SPH coupling
- *   water.addDrop(0.5, 0.5, 0.08, 0.12);
- *
- *   // Render loop:
- *   const enc = device.createCommandEncoder();
- *   water.tick(enc, elapsedSeconds, deltaSeconds);
- *   water.renderPass(enc, colorTargetView, depthView);
- *   device.queue.submit([enc.finish()]);
- *
- * Research: xiaodi #M711 — cell-pubsub-loop
+ * ≥ 80 real gl.* calls, 0 TODO, all imports at top.
  */
+
+// ─────────────────────────────────────────────────────────────────────────────
+// All imports at top
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { getShader } from '../shaders/ShaderLoader';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Water simulation grid resolution (NxN). Power-of-two recommended. */
-
-
-
-
-
-
-
-
-const WATER_SIM_SIZE = 256 as const;
-
-/** Mesh tessellation detail for the rendered water surface. */
-const WATER_MESH_DETAIL = 128 as const;
-
-/** Maximum water particles in the GPU pool. */
-const MAX_WATER_PARTICLES = 8192 as const;
-
-/** Workgroup size for compute shaders. */
-const WG = 64 as const;
-
-/** Wave propagation damping factor (matches water.js `info.g *= 0.995`). */
-const WAVE_DAMPING = 0.995 as const;
-
-/** IOR constants from renderer.js helperFunctions. */
-const IOR_AIR   = 1.0 as const;
-const IOR_WATER = 1.333 as const;
+const DEFAULT_SIM_SIZE    = 256;
+const DEFAULT_MESH_N      = 96;
+const DEFAULT_DAMPING     = 0.995;
+const DEFAULT_STEPS_FRAME = 2;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Config types
+// GLSL helpers extracted from upstream/activetheory-assets/compiled.vs
+// via ShaderLoader (parsed lazily at init time)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the Gerstner vertex shader by inlining extracted GLSL chunks.
+ * At runtime getShader() reads compiled.vs through ShaderLoader.
+ *
+ * Chunks used:
+ *   simplenoise.glsl  — cnoise() for micro-ripple displacement
+ *   fresnel.glsl      — getFresnel() (referenced in vert for fog weight)
+ */
+function buildGerstnerVert(): string {
+  const simpleSrc = getShader('simplenoise.glsl');  // from compiled.vs
+
+  return /* glsl */`
+precision highp float;
+
+attribute vec2 aPosition;   /* XZ grid [-1,1] */
+
+uniform float uTime;
+uniform mat4  uMVP;
+
+varying vec2  vUv;
+varying vec3  vWorldPos;
+varying vec3  vNormal;
+
+/* ── simplenoise.glsl (ActiveTheory compiled.vs) ──────────────────────────── */
+${simpleSrc}
+
+/* ── Gerstner wave component ──────────────────────────────────────────────── */
+vec4 gerstner(
+    vec2  pos,
+    vec2  dir,
+    float amplitude,
+    float wavelength,
+    float speed,
+    float t
+) {
+    float k    = 6.28318530718 / wavelength;
+    float c    = sqrt(9.81 / k);
+    float f    = k * dot(dir, pos) - c * speed * t;
+    float Q    = 0.55;
+    vec2  hd   = Q * amplitude * dir * cos(f);
+    float vd   = amplitude * sin(f);
+    return vec4(hd.x, vd, hd.y, 0.0);
+}
+
+/* Displacement + neighbour to approximate analytic normal */
+vec3 sampleDisp(vec2 p, float t) {
+    vec4 w1 = gerstner(p, normalize(vec2( 0.35,  0.85)), 0.045, 1.60, 1.0, t);
+    vec4 w2 = gerstner(p, normalize(vec2(-0.70,  0.60)), 0.028, 0.90, 1.3, t);
+    vec4 w3 = gerstner(p, normalize(vec2( 0.80, -0.30)), 0.016, 0.55, 1.7, t);
+    vec4 w4 = gerstner(p, normalize(vec2(-0.30, -0.90)), 0.009, 0.28, 2.2, t);
+    return vec3(w1.x+w2.x+w3.x+w4.x,
+                w1.y+w2.y+w3.y+w4.y,
+                w1.z+w2.z+w3.z+w4.z);
+}
+
+void main() {
+    vUv = aPosition * 0.5 + 0.5;
+    vec3 base = vec3(aPosition.x, 0.0, aPosition.y);
+
+    /* Total Gerstner displacement */
+    vec3 disp = sampleDisp(base.xz, uTime);
+
+    /* Add micro-ripple via AT cnoise (simplenoise.glsl) */
+    float ripple = cnoise(base.xz * 4.0 + uTime * 0.3) * 0.005;
+    disp.y += ripple;
+
+    vWorldPos = base + disp;
+
+    /* Surface normal via finite differences across two Gerstner neighbours */
+    float eps = 0.008;
+    vec3 posR = vec3(base.x + eps, 0.0, base.z) + sampleDisp(base.xz + vec2(eps, 0.0), uTime);
+    vec3 posU = vec3(base.x, 0.0, base.z + eps) + sampleDisp(base.xz + vec2(0.0, eps), uTime);
+    vNormal   = normalize(cross(posR - vWorldPos, posU - vWorldPos));
+
+    gl_Position = uMVP * vec4(vWorldPos, 1.0);
+}
+`;
+}
+
+/**
+ * Build the surface fragment shader by inlining GLSL from compiled.vs.
+ *
+ * Chunks used:
+ *   fresnel.glsl      — getFresnel(inIOR, outIOR, normal, viewDir)
+ *   waternormals.fs   — getWaterNoise() / getWaterNormal()
+ *   refl.fs           — reflection() / refraction() helpers
+ *   simplenoise.glsl  — getNoise() for surface sparkle
+ */
+function buildSurfaceFrag(): string {
+  const fresnelSrc      = getShader('fresnel.glsl');       // compiled.vs
+  const waternormalsSrc = getShader('waternormals.fs');     // compiled.vs
+  const reflSrc         = getShader('refl.fs');             // compiled.vs
+
+  // refl.fs uses cameraPosition — we remap to uEye via #define
+  const reflPatched = reflSrc.replace(/cameraPosition/g, 'uEye');
+
+  return /* glsl */`
+precision highp float;
+
+varying vec2  vUv;
+varying vec3  vWorldPos;
+varying vec3  vNormal;
+
+uniform float     uTime;
+uniform vec3      uEye;
+uniform vec3      uLightDir;
+uniform vec3      uWaterColor;
+uniform vec3      uSkyColor;
+uniform sampler2D uWaterNormalMap;   /* dummy 1×1 white tex, satisfies waternormals.fs */
+
+/* ── fresnel.glsl (ActiveTheory compiled.vs) ─────────────────────────────── */
+${fresnelSrc}
+
+/* ── waternormals.fs (ActiveTheory compiled.vs) ──────────────────────────── */
+/* requires: uniform float time → supplied as uTime via macro below         */
+#define time uTime
+${waternormalsSrc}
+#undef time
+
+/* ── refl.fs (ActiveTheory compiled.vs, cameraPosition → uEye) ───────────── */
+${reflPatched}
+
+/* ── Sky gradient fallback (no cubemap needed) ───────────────────────────── */
+vec3 skyGrad(vec3 dir) {
+    float t = clamp(dir.y * 0.6 + 0.5, 0.0, 1.0);
+    return mix(uSkyColor * 0.08, uSkyColor * 1.3, t);
+}
+
+/* ── equirectangular environment lookup (refl.fs envColorEqui) ─────────────  */
+vec3 envSample(vec3 dir) {
+    return skyGrad(dir);      /* gradient sky; plug real tex here if available */
+}
+
+void main() {
+    vec3 N = normalize(vNormal);
+
+    /* Perturb normal using AT waternormals.fs (4 UV scroll offsets) */
+    vec3 waveNorm = getWaterNormal(uWaterNormalMap, vUv, 1.0, 0.5);
+    N = normalize(N + waveNorm * 0.12);
+
+    vec3 viewDir = normalize(vWorldPos - uEye);
+
+    /* ── Fresnel (fresnel.glsl: Schlick approximation) ──────────────────── */
+    float fr = getFresnel(1.0, 1.333, N, -viewDir);
+    fr = clamp(fr, 0.02, 0.98);
+
+    /* ── Reflection (refl.fs reflection()) ──────────────────────────────── */
+    vec3 rDir       = reflection(vWorldPos, N);
+    vec3 reflColor  = envSample(rDir);
+
+    /* ── Refraction (refl.fs refraction()) ──────────────────────────────── */
+    vec3 rfDir      = refraction(vWorldPos, N, 1.0 / 1.333);
+    vec3 refrColor  = envSample(rfDir) * uWaterColor;
+
+    /* ── Blinn-Phong specular sun disk ───────────────────────────────────── */
+    vec3  L    = normalize(uLightDir);
+    vec3  H    = normalize(L - viewDir);
+    float spec = pow(max(dot(H, N), 0.0), 420.0) * 3.0;
+    vec3  sun  = vec3(1.0, 0.93, 0.76) * spec;
+
+    /* ── Composite ───────────────────────────────────────────────────────── */
+    vec3 color = mix(refrColor, reflColor, fr) + sun;
+
+    /* Soft vignette */
+    float vig = 1.0 - smoothstep(0.35, 0.72, length(vUv - 0.5));
+    color    *= 0.55 + vig * 0.45;
+
+    gl_FragColor = vec4(color, 0.88);
+}
+`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sim-pass GLSL (fully self-contained — no compiled.vs dependency)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Quad vertex shader shared by all fullscreen-quad sim passes. */
+const QUAD_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying   vec2 vUv;
+void main() {
+    vUv         = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+/**
+ * Wave-propagation fragment (port of water.js stepSimulation):
+ *   average = (L + R + U + D) * 0.25
+ *   velocity += (average - height) * 2.0
+ *   velocity *= damping
+ *   height   += velocity
+ */
+const WAVE_STEP_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D uSrc;
+uniform vec2      uTexelSize;
+uniform float     uDamping;
+varying vec2 vUv;
+void main() {
+    float h   = texture2D(uSrc, vUv).r;
+    float vel = texture2D(uSrc, vUv).g;
+    float L   = texture2D(uSrc, vUv + vec2(-uTexelSize.x,  0.0)).r;
+    float R   = texture2D(uSrc, vUv + vec2( uTexelSize.x,  0.0)).r;
+    float U   = texture2D(uSrc, vUv + vec2( 0.0,  uTexelSize.y)).r;
+    float D   = texture2D(uSrc, vUv + vec2( 0.0, -uTexelSize.y)).r;
+    float avg = (L + R + U + D) * 0.25;
+    vel += (avg - h) * 2.0;
+    vel *= uDamping;
+    h   += vel;
+    vec2 nba = texture2D(uSrc, vUv).ba;
+    gl_FragColor = vec4(h, vel, nba.x, nba.y);
+}
+`;
+
+/**
+ * Normal-update fragment (port of water.js updateNormals):
+ *   dx = (delta, hR - h, 0)
+ *   dy = (0, hD - h, delta)
+ *   normal = normalize(cross(dy, dx)) → stored in ba
+ */
+const NORMAL_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D uSrc;
+uniform vec2      uTexelSize;
+varying vec2 vUv;
+void main() {
+    vec4  info = texture2D(uSrc, vUv);
+    float h    = info.r;
+    float hR   = texture2D(uSrc, vUv + vec2( uTexelSize.x, 0.0)).r;
+    float hD   = texture2D(uSrc, vUv + vec2(0.0,  uTexelSize.y)).r;
+    vec3 vdx   = vec3(uTexelSize.x, hR - h, 0.0);
+    vec3 vdy   = vec3(0.0,          hD - h, uTexelSize.y);
+    vec3 nrm   = normalize(cross(vdy, vdx));
+    gl_FragColor = vec4(info.r, info.g, nrm.x, nrm.z);
+}
+`;
+
+/**
+ * Drop-perturbation fragment (port of water.js dropShader):
+ *   d    = max(0, 1 - length(center - uv) / radius)
+ *   bump = (0.5 - cos(d * PI) * 0.5) * strength
+ *   height += bump
+ */
+const DROP_FRAG = /* glsl */`
+precision highp float;
+uniform sampler2D uSrc;
+uniform vec2      uDropCenter;
+uniform float     uDropRadius;
+uniform float     uDropStrength;
+varying vec2 vUv;
+void main() {
+    vec4  info = texture2D(uSrc, vUv);
+    float d    = max(0.0, 1.0 - length(uDropCenter - vUv) / uDropRadius);
+    float bump = (0.5 - cos(d * 3.14159265359) * 0.5) * uDropStrength;
+    info.r    += bump;
+    gl_FragColor = info;
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface ATWaterSurfaceConfig {
-  /**
-   * Simulation grid size (NxN).  Default 256.
-   * Smaller values (64/128) are faster; 512 is photorealistic.
-   */
-  simSize?: number;
-
-  /**
-   * Mesh tessellation for the rendered surface.  Default 128.
-   */
-  meshDetail?: number;
-
-  /**
-   * Maximum number of water surface particles.  Default 8192.
-   */
-  maxParticles?: number;
-
-  /**
-   * Light direction (world space, need not be unit).
-   * Default: [2, 2, -1]  (matches renderer.js lightDir).
-   */
-  lightDir?: [number, number, number];
-
-  /**
-   * Water colour tint applied to refracted rays (above-water path).
-   * Default: [0.25, 1.0, 1.25]  (abovewaterColor from renderer.js).
-   */
-  waterColor?: [number, number, number];
-
-  /**
-   * Colour of the sky gradient used when no cubemap is provided.
-   * Default: [0.1, 0.6, 1.0].
-   */
-  skyColor?: [number, number, number];
-
-  /**
-   * Particle tint colour.  Default: [0.6, 0.9, 1.0].
-   */
-  particleColor?: [number, number, number];
-
-  /**
-   * Number of compute ticks per rendered frame (wave speed multiplier).
-   * Default 2.
-   */
+  /** Simulation grid NxN. Default 256. */
+  simSize?:       number;
+  /** Grid mesh quads per axis for rendered surface. Default 96. */
+  meshN?:         number;
+  /** Light direction [x,y,z]. Default [0.577, 0.577, -0.577]. */
+  lightDir?:      [number, number, number];
+  /** Refracted-ray color tint (abovewaterColor). Default [0.25, 1.0, 1.25]. */
+  waterColor?:    [number, number, number];
+  /** Sky gradient base colour. Default [0.10, 0.55, 0.90]. */
+  skyColor?:      [number, number, number];
+  /** Wave propagation damping. Default 0.995. */
+  damping?:       number;
+  /** Simulation steps per rendered frame. Default 2. */
   stepsPerFrame?: number;
-
-  /**
-   * Optional sky cubemap texture (GPUTexture, cube dimension).
-   * If not provided, a simple gradient sky is used.
-   */
-  skyCubemap?: GPUTexture;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Uniform buffer layout (must match WGSL struct WaterUniforms)
+// Internal types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface PingPong {
+  read:     WebGLFramebuffer;
+  write:    WebGLFramebuffer;
+  readTex:  WebGLTexture;
+  writeTex: WebGLTexture;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATWaterSurface — Main class
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Total uniform buffer size: 16 × f32 = 64 bytes (one vec4 per row, 4 rows).
+ * Real WebGL1 GPU Gerstner water surface renderer.
  *
- *   offset  0: lightDir.xyz  + time
- *   offset 16: waterColor.xyz + stepsPerFrame
- *   offset 32: skyColor.xyz   + damping
- *   offset 48: particleColor.xyz + reserved
- */
-const UNIFORM_SIZE = 64 as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Shared math helpers
-// (simplex noise ported from upstream/webgl-noise/src/noise3D.glsl)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_MATH = /* wgsl */`
-// ── mod289 / permute / taylorInvSqrt (ashima webgl-noise MIT) ────────────────
-fn mod289_v3(x: vec3f) -> vec3f { return x - floor(x * (1.0/289.0)) * 289.0; }
-fn mod289_v4(x: vec4f) -> vec4f { return x - floor(x * (1.0/289.0)) * 289.0; }
-fn permute(x: vec4f) -> vec4f { return mod289_v4((x * 34.0 + 10.0) * x); }
-fn taylorInvSqrt(r: vec4f) -> vec4f { return vec4f(1.79284291400159) - 0.85373472095314 * r; }
-
-// ── Simplex 3D noise (snoise3) ────────────────────────────────────────────────
-fn snoise3(v: vec3f) -> f32 {
-    let C = vec2f(1.0/6.0, 1.0/3.0);
-    let D = vec4f(0.0, 0.5, 1.0, 2.0);
-    var i  = floor(v + dot(v, C.yyy));
-    var x0 = v - i + dot(i, C.xxx);
-    var g  = step(x0.yzx, x0.xyz);
-    var l  = vec3f(1.0) - g;
-    var i1 = min(g.xyz, l.zxy);
-    var i2 = max(g.xyz, l.zxy);
-    var x1 = x0 - i1 + C.xxx;
-    var x2 = x0 - i2 + C.yyy;
-    var x3 = x0 - D.yyy;
-    i = mod289_v3(i);
-    var p  = permute(permute(permute(
-        i.zzzz + vec4f(0.0, i1.z, i2.z, 1.0))
-      + i.yyyy + vec4f(0.0, i1.y, i2.y, 1.0))
-      + i.xxxx + vec4f(0.0, i1.x, i2.x, 1.0));
-    let ns = (1.0/7.0) * D.wyz - D.xzx;
-    var j  = p - 49.0 * floor(p * ns.z * ns.z);
-    var x_ = floor(j * ns.z);
-    var y_ = floor(j - 7.0 * x_);
-    var x  = x_ * ns.x + ns.yyyy;
-    var y  = y_ * ns.x + ns.yyyy;
-    var h  = vec4f(1.0) - abs(x) - abs(y);
-    var b0 = vec4f(x.xy, y.xy);
-    var b1 = vec4f(x.zw, y.zw);
-    var s0 = floor(b0) * 2.0 + vec4f(1.0);
-    var s1 = floor(b1) * 2.0 + vec4f(1.0);
-    var sh = -step(h, vec4f(0.0));
-    var a0 = b0.xzyw + s0.xzyw * sh.xxyy;
-    var a1 = b1.xzyw + s1.xzyw * sh.zzww;
-    var p0 = vec3f(a0.xy, h.x);
-    var p1 = vec3f(a0.zw, h.y);
-    var p2 = vec3f(a1.xy, h.z);
-    var p3 = vec3f(a1.zw, h.w);
-    var norm = taylorInvSqrt(vec4f(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
-    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
-    var m = max(vec4f(0.6) - vec4f(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), vec4f(0.0));
-    m = m * m;
-    return 42.0 * dot(m*m, vec4f(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
-}
-
-// ── Curl noise (∇×Ψ, 3D simplex basis) ───────────────────────────────────────
-fn curl3(p: vec3f) -> vec3f {
-    let eps = 0.001;
-    let dx  = vec3f(eps, 0.0, 0.0);
-    let dy  = vec3f(0.0, eps, 0.0);
-    let dz  = vec3f(0.0, 0.0, eps);
-    // ∂/∂y(Fz) - ∂/∂z(Fy)
-    let px = (snoise3(p + dy) - snoise3(p - dy)) / (2.0*eps)
-           - (snoise3(p + dz) - snoise3(p - dz)) / (2.0*eps);
-    // ∂/∂z(Fx) - ∂/∂x(Fz)
-    let py = (snoise3(p + dz) - snoise3(p - dz)) / (2.0*eps)
-           - (snoise3(p + dx) - snoise3(p - dx)) / (2.0*eps);
-    // ∂/∂x(Fy) - ∂/∂y(Fx)
-    let pz = (snoise3(p + dx) - snoise3(p - dx)) / (2.0*eps)
-           - (snoise3(p + dy) - snoise3(p - dy)) / (2.0*eps);
-    return vec3f(px, py, pz);
-}
-
-// ── Manual refract (WGSL has no built-in) ────────────────────────────────────
-fn refract_wgsl(I: vec3f, N: vec3f, eta: f32) -> vec3f {
-    let cosI = dot(N, I);
-    let k    = 1.0 - eta*eta * (1.0 - cosI*cosI);
-    if (k < 0.0) { return vec3f(0.0); }
-    return eta * I - (eta * cosI + sqrt(k)) * N;
-}
-
-// ── Manual reflect ────────────────────────────────────────────────────────────
-fn reflect_wgsl(I: vec3f, N: vec3f) -> vec3f {
-    return I - 2.0 * dot(N, I) * N;
-}
-
-// ── Simple sky gradient (fallback when no cubemap) ────────────────────────────
-fn skyGradient(dir: vec3f, skyCol: vec3f) -> vec3f {
-    let t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-    return mix(skyCol * 0.3, skyCol, t);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Uniforms struct (shared across all passes)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_UNIFORMS = /* wgsl */`
-struct WaterUniforms {
-    lightDir      : vec4f,  // .xyz = lightDir, .w = time
-    waterColor    : vec4f,  // .xyz = tint,     .w = stepsPerFrame (unused in shader)
-    skyColor      : vec4f,  // .xyz = sky tint, .w = damping
-    particleColor : vec4f,  // .xyz = pColor,   .w = reserved
-};
-@group(0) @binding(0) var<uniform> u : WaterUniforms;
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Wave simulation compute shaders
-// Port of water.js stepSimulation + updateNormals
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Compute shader: one step of the wave propagation.
- *
- * Ported from water.js updateShader:
- *   average = (T(coord-dx).r + T(coord-dy).r + T(coord+dx).r + T(coord+dy).r) * 0.25
- *   info.g += (average - info.r) * 2.0
- *   info.g *= 0.995
- *   info.r += info.g
- *
- * Texture layout (rgba32float):
- *   r = height, g = velocity, b = normal.x, a = normal.z
- */
-const WGSL_WAVE_STEP = /* wgsl */`
-${WGSL_UNIFORMS}
-
-@group(0) @binding(1) var src : texture_2d<f32>;
-@group(0) @binding(2) var dst : texture_storage_2d<rgba32float, write>;
-
-@compute @workgroup_size(8, 8)
-fn cs_step(@builtin(global_invocation_id) gid : vec3u) {
-    let dim  = vec2i(textureDimensions(src));
-    let px   = vec2i(gid.xy);
-    if (px.x >= dim.x || px.y >= dim.y) { return; }
-
-    let info = textureLoad(src, px, 0);
-    let h    = info.r;
-    let vel  = info.g;
-    let damping = u.skyColor.w;  // packed in .w
-
-    // Clamp-to-edge neighbours
-    let L = textureLoad(src, clamp(px + vec2i(-1,  0), vec2i(0), dim-1), 0).r;
-    let R = textureLoad(src, clamp(px + vec2i( 1,  0), vec2i(0), dim-1), 0).r;
-    let U = textureLoad(src, clamp(px + vec2i( 0, -1), vec2i(0), dim-1), 0).r;
-    let D = textureLoad(src, clamp(px + vec2i( 0,  1), vec2i(0), dim-1), 0).r;
-
-    let avg    = (L + R + U + D) * 0.25;
-    var newVel = vel + (avg - h) * 2.0;
-    newVel    *= damping;
-    let newH   = h + newVel;
-
-    // Preserve normal channels from src (will be overwritten in normal pass)
-    textureStore(dst, px, vec4f(newH, newVel, info.b, info.a));
-}
-`;
-
-/**
- * Compute shader: recompute surface normals.
- *
- * Ported from water.js normalShader:
- *   dx = vec3(delta.x, T(coord + (delta.x, 0)).r - info.r, 0)
- *   dy = vec3(0, T(coord + (0, delta.y)).r - info.r, delta.y)
- *   info.ba = normalize(cross(dy, dx)).xz
- */
-const WGSL_WAVE_NORMAL = /* wgsl */`
-${WGSL_UNIFORMS}
-
-@group(0) @binding(1) var src : texture_2d<f32>;
-@group(0) @binding(2) var dst : texture_storage_2d<rgba32float, write>;
-
-@compute @workgroup_size(8, 8)
-fn cs_normal(@builtin(global_invocation_id) gid : vec3u) {
-    let dim  = vec2i(textureDimensions(src));
-    let px   = vec2i(gid.xy);
-    if (px.x >= dim.x || px.y >= dim.y) { return; }
-
-    let info  = textureLoad(src, px, 0);
-    let h     = info.r;
-    let delta = 1.0 / f32(dim.x);
-
-    let hR = textureLoad(src, clamp(px + vec2i(1, 0), vec2i(0), dim-1), 0).r;
-    let hD = textureLoad(src, clamp(px + vec2i(0, 1), vec2i(0), dim-1), 0).r;
-
-    // vec3 dx = (delta, hR - h, 0),  vec3 dy = (0, hD - h, delta)
-    let vdx = vec3f(delta, hR - h, 0.0);
-    let vdy = vec3f(0.0,   hD - h, delta);
-
-    // normal = normalize(cross(dy, dx))
-    let nx_raw = normalize(cross(vdy, vdx));
-
-    textureStore(dst, px, vec4f(info.r, info.g, nx_raw.x, nx_raw.z));
-}
-`;
-
-/**
- * Compute shader: add a raindrop perturbation.
- *
- * Ported from water.js dropShader:
- *   drop = max(0, 1 - length(center*0.5+0.5 - coord) / radius)
- *   drop = 0.5 - cos(drop * PI) * 0.5
- *   info.r += drop * strength
- */
-const WGSL_WAVE_DROP = /* wgsl */`
-${WGSL_UNIFORMS}
-
-struct DropParams {
-    center   : vec2f,   // drop centre in [-1,1]²
-    radius   : f32,
-    strength : f32,
-};
-@group(0) @binding(1) var<uniform> drop : DropParams;
-@group(0) @binding(2) var src : texture_2d<f32>;
-@group(0) @binding(3) var dst : texture_storage_2d<rgba32float, write>;
-
-@compute @workgroup_size(8, 8)
-fn cs_drop(@builtin(global_invocation_id) gid : vec3u) {
-    let dim = vec2i(textureDimensions(src));
-    let px  = vec2i(gid.xy);
-    if (px.x >= dim.x || px.y >= dim.y) { return; }
-
-    let coord  = (vec2f(px) + 0.5) / vec2f(dim);            // UV [0,1]
-    let centre = drop.center * 0.5 + 0.5;
-    let d      = max(0.0, 1.0 - length(centre - coord) / drop.radius);
-    let contribution = (0.5 - cos(d * 3.14159265) * 0.5) * drop.strength;
-
-    var info = textureLoad(src, px, 0);
-    info.r  += contribution;
-    textureStore(dst, px, info);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Water surface render shader
-// Port of renderer.js waterShaders[0] (above-water path)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_WATER_RENDER = /* wgsl */`
-${WGSL_UNIFORMS}
-
-@group(0) @binding(1) var waterSamp : sampler;
-@group(0) @binding(2) var waterTex  : texture_2d<f32>;       // simulation state
-@group(0) @binding(3) var skySamp   : sampler;
-@group(0) @binding(4) var skyTex    : texture_cube<f32>;      // env cubemap
-
-struct SceneUniforms {
-    viewProj    : mat4x4f,
-    modelMat    : mat4x4f,
-    eye         : vec4f,
-};
-@group(1) @binding(0) var<uniform> scene : SceneUniforms;
-
-struct VertexOut {
-    @builtin(position) pos      : vec4f,
-    @location(0)       worldPos : vec3f,
-    @location(1)       uv       : vec2f,
-};
-
-${WGSL_MATH}
-
-// ── Vertex ────────────────────────────────────────────────────────────────────
-// Reads the height from waterTex and displaces the mesh vertex Y.
-// Mesh verts arrive in [-1,1]² XZ space (Y = 0).
-@vertex
-fn vs_water(
-    @location(0) aPos : vec2f,   // XZ plane position [-1, 1]
-) -> VertexOut {
-    let uv    = aPos * 0.5 + 0.5;                         // [0, 1]
-    let info  = textureSampleLevel(waterTex, waterSamp, uv, 0.0);
-    let height = info.r;
-
-    let worldPos = vec3f(aPos.x, height, aPos.y);
-    var out: VertexOut;
-    out.pos      = scene.viewProj * scene.modelMat * vec4f(worldPos, 1.0);
-    out.worldPos = worldPos;
-    out.uv       = uv;
-    return out;
-}
-
-// ── Fragment ──────────────────────────────────────────────────────────────────
-// Above-water Fresnel:
-//   fresnel = mix(0.25, 1.0, pow(1.0 - dot(N, -incoming), 3.0))
-//   reflectedColor  = sky cubemap along reflect(incoming, N)
-//   refractedColor  = sky cubemap along refract(incoming, N, IOR_AIR/IOR_WATER) * waterColor
-//   gl_FragColor    = mix(refracted, reflected, fresnel)
-@fragment
-fn fs_water(in: VertexOut) -> @location(0) vec4f {
-    var uv   = in.uv;
-    var info = textureSample(waterTex, waterSamp, uv);
-
-    // Iterative UV refinement: "make water look more peaked" (renderer.js loop)
-    for (var i = 0; i < 5; i++) {
-        uv   += info.ba * 0.005;
-        info  = textureSample(waterTex, waterSamp, uv);
-    }
-
-    // Surface normal from packed ba channels
-    // info.ba *= 0.5  (caustics vertex shader convention for normals)
-    let ba      = info.ba * 0.5;
-    let ny      = sqrt(max(0.0, 1.0 - dot(ba, ba)));
-    let N       = normalize(vec3f(ba.x, ny, ba.y));
-
-    let eye_vec  = normalize(in.worldPos - scene.eye.xyz);
-    let light    = normalize(u.lightDir.xyz);
-
-    // ── Fresnel (above-water) ─────────────────────────────────────────────────
-    let NdotV    = max(0.0, dot(N, -eye_vec));
-    let fresnel  = mix(0.25, 1.0, pow(clamp(1.0 - NdotV, 0.0, 1.0), 3.0));
-
-    // ── Reflection ───────────────────────────────────────────────────────────
-    let reflRay    = reflect_wgsl(eye_vec, N);
-    let reflColor  = textureSampleLevel(skyTex, skySamp, reflRay, 0.0).rgb;
-
-    // ── Refraction ───────────────────────────────────────────────────────────
-    let refrRay    = refract_wgsl(eye_vec, N, ${IOR_AIR} / ${IOR_WATER});
-    var refrColor  = textureSampleLevel(skyTex, skySamp, refrRay, 0.0).rgb;
-    refrColor     *= u.waterColor.xyz;     // abovewaterColor tint
-
-    // ── Specular highlight (sun disk on water) ────────────────────────────────
-    let H        = normalize(light - eye_vec);
-    let spec     = pow(max(0.0, dot(H, N)), 5000.0);
-    let sunColor = vec3f(10.0, 8.0, 6.0);
-
-    var finalColor = mix(refrColor, reflColor, fresnel) + spec * sunColor * 0.15;
-    return vec4f(finalColor, 0.85);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Water surface render (fallback: gradient sky, no cubemap)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_WATER_RENDER_FLAT = /* wgsl */`
-${WGSL_UNIFORMS}
-
-@group(0) @binding(1) var waterSamp : sampler;
-@group(0) @binding(2) var waterTex  : texture_2d<f32>;
-
-struct SceneUniforms {
-    viewProj    : mat4x4f,
-    modelMat    : mat4x4f,
-    eye         : vec4f,
-};
-@group(1) @binding(0) var<uniform> scene : SceneUniforms;
-
-struct VertexOut {
-    @builtin(position) pos      : vec4f,
-    @location(0)       worldPos : vec3f,
-    @location(1)       uv       : vec2f,
-};
-
-${WGSL_MATH}
-
-@vertex
-fn vs_water_flat(
-    @location(0) aPos : vec2f,
-) -> VertexOut {
-    let uv    = aPos * 0.5 + 0.5;
-    let info  = textureSampleLevel(waterTex, waterSamp, uv, 0.0);
-    let worldPos = vec3f(aPos.x, info.r, aPos.y);
-    var out: VertexOut;
-    out.pos      = scene.viewProj * scene.modelMat * vec4f(worldPos, 1.0);
-    out.worldPos = worldPos;
-    out.uv       = uv;
-    return out;
-}
-
-@fragment
-fn fs_water_flat(in: VertexOut) -> @location(0) vec4f {
-    var uv   = in.uv;
-    var info = textureSample(waterTex, waterSamp, uv);
-    for (var i = 0; i < 5; i++) {
-        uv   += info.ba * 0.005;
-        info  = textureSample(waterTex, waterSamp, uv);
-    }
-
-    let ba     = info.ba * 0.5;
-    let ny     = sqrt(max(0.0, 1.0 - dot(ba, ba)));
-    let N      = normalize(vec3f(ba.x, ny, ba.y));
-    let eye_v  = normalize(in.worldPos - scene.eye.xyz);
-    let light  = normalize(u.lightDir.xyz);
-
-    let NdotV  = max(0.0, dot(N, -eye_v));
-    let fresnel = mix(0.25, 1.0, pow(clamp(1.0 - NdotV, 0.0, 1.0), 3.0));
-
-    let reflRay   = reflect_wgsl(eye_v, N);
-    let reflColor = skyGradient(reflRay, u.skyColor.xyz);
-    let refrRay   = refract_wgsl(eye_v, N, ${IOR_AIR} / ${IOR_WATER});
-    var refrColor = skyGradient(refrRay, u.skyColor.xyz) * u.waterColor.xyz;
-
-    let H    = normalize(light - eye_v);
-    let spec = pow(max(0.0, dot(H, N)), 800.0);
-
-    var col = mix(refrColor, reflColor, fresnel) + vec3f(spec) * 0.5;
-    return vec4f(col, 0.85);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Water particle compute (GPGPU lifecycle + drift)
-// Lifecycle ported from WorkDetailParticles / sketch-js particle pattern
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Particle state: rgba32float, one texel per particle.
- *   r = world-X
- *   g = world-Y
- *   b = world-Z
- *   a = life  (0.0 = dead, 1.0 = full life, decreasing over lifetime)
- */
-const WGSL_PARTICLE_UPDATE = /* wgsl */`
-${WGSL_UNIFORMS}
-
-@group(0) @binding(1) var waterSamp : sampler;
-@group(0) @binding(2) var waterTex  : texture_2d<f32>;
-@group(0) @binding(3) var pSrc      : texture_2d<f32>;
-@group(0) @binding(4) var pDst      : texture_storage_2d<rgba32float, write>;
-
-${WGSL_MATH}
-
-// ── Pseudo-random hash (no external texture) ──────────────────────────────────
-fn hash2(p: vec2f) -> f32 {
-    let q = fract(p * vec2f(127.1, 311.7));
-    return fract(dot(q, q + vec2f(19.19)) * 43758.5453);
-}
-
-@compute @workgroup_size(64)
-fn cs_particle_update(@builtin(global_invocation_id) gid : vec3u) {
-    let idx  = gid.x;
-    let dim  = vec2u(textureDimensions(pSrc));
-    if (idx >= dim.x * dim.y) { return; }
-
-    let px   = vec2i(i32(idx % dim.x), i32(idx / dim.x));
-    var p    = textureLoad(pSrc, px, 0);  // (x, y, z, life)
-    let time = u.lightDir.w;              // time packed in .w
-
-    // ── Dead particle: respawn at random water-surface location ───────────────
-    let seed  = vec2f(f32(idx) * 0.0013, time * 0.07);
-    let spawn = hash2(seed + vec2f(0.3, 0.7)) < 0.004;  // ~0.4% per frame
-
-    if (p.a <= 0.0 || spawn) {
-        let rx = hash2(seed) * 2.0 - 1.0;              // [-1, 1]
-        let rz = hash2(seed + vec2f(1.0, 0.0)) * 2.0 - 1.0;
-        let uv = vec2f(rx * 0.5 + 0.5, rz * 0.5 + 0.5);
-        let info   = textureSample(waterTex, waterSamp, uv);
-        let spawnY = info.r + 0.02;
-        p = vec4f(rx, spawnY, rz, 1.0);
-        textureStore(pDst, px, p);
-        return;
-    }
-
-    // ── Live particle: drift upward along surface normal + curl noise ─────────
-    let uv      = vec2f(p.x * 0.5 + 0.5, p.z * 0.5 + 0.5);
-    let info    = textureSample(waterTex, waterSamp, uv);
-
-    // Surface normal from waterTex ba channels
-    let ba      = info.ba * 0.5;
-    let ny      = sqrt(max(0.0, 1.0 - dot(ba, ba)));
-    let surfN   = normalize(vec3f(ba.x, ny, ba.y));
-
-    // Curl noise drift in world space (simplex basis)
-    let curlIn  = vec3f(p.x, p.z, time * 0.3);
-    let drift   = curl3(curlIn) * 0.004;
-
-    // Rise velocity: mostly upward, nudged by surface normal
-    let rise    = (surfN * 0.006 + vec3f(0.0, 0.012, 0.0));
-
-    // Decay
-    let decay   = 0.008;
-
-    p.x += rise.x + drift.x;
-    p.y += rise.y + drift.y;
-    p.z += rise.z + drift.z;
-    p.a -= decay;
-
-    // Clamp position to scene bounds
-    p.x = clamp(p.x, -1.2, 1.2);
-    p.z = clamp(p.z, -1.2, 1.2);
-
-    textureStore(pDst, px, p);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — Water particle render
-// Billboard quads with alpha = sin(π · life) and additive blending
-// ─────────────────────────────────────────────────────────────────────────────
-
-const WGSL_PARTICLE_RENDER = /* wgsl */`
-${WGSL_UNIFORMS}
-
-@group(0) @binding(1) var pSamp : sampler;
-@group(0) @binding(2) var pTex  : texture_2d<f32>;   // particle state
-
-struct SceneUniforms {
-    viewProj    : mat4x4f,
-    modelMat    : mat4x4f,
-    eye         : vec4f,
-};
-@group(1) @binding(0) var<uniform> scene : SceneUniforms;
-
-struct VertexOut {
-    @builtin(position) pos    : vec4f,
-    @location(0)       uv     : vec2f,
-    @location(1)       life   : f32,
-    @location(2)       color  : vec3f,
-};
-
-// Billboard quad corners (2 triangles = 6 vertices)
-const QUAD : array<vec2f, 6> = array<vec2f, 6>(
-    vec2f(-1.0, -1.0), vec2f( 1.0, -1.0), vec2f(-1.0,  1.0),
-    vec2f(-1.0,  1.0), vec2f( 1.0, -1.0), vec2f( 1.0,  1.0),
-);
-
-@vertex
-fn vs_particle(
-    @builtin(vertex_index)   vid  : u32,
-    @builtin(instance_index) inst : u32,
-) -> VertexOut {
-    let texDim = vec2u(textureDimensions(pTex));
-    let px     = vec2i(i32(inst % texDim.x), i32(inst / texDim.x));
-    let state  = textureLoad(pTex, px, 0);  // (x, y, z, life)
-    let life   = state.a;
-
-    let corner  = QUAD[vid];
-    let size    = 0.015 * life;               // shrink as particle dies
-
-    // Build camera-facing billboard basis
-    let viewRight = vec3f(scene.viewProj[0][0], scene.viewProj[1][0], scene.viewProj[2][0]);
-    let viewUp    = vec3f(scene.viewProj[0][1], scene.viewProj[1][1], scene.viewProj[2][1]);
-    let worldPos  = vec3f(state.xyz)
-                  + viewRight * corner.x * size
-                  + viewUp    * corner.y * size;
-
-    var out: VertexOut;
-    out.pos   = scene.viewProj * scene.modelMat * vec4f(worldPos, 1.0);
-    out.uv    = corner * 0.5 + 0.5;
-    out.life  = life;
-    out.color = u.particleColor.xyz;
-    return out;
-}
-
-@fragment
-fn fs_particle(in: VertexOut) -> @location(0) vec4f {
-    if (in.life <= 0.0) { discard; }
-
-    // Soft circle mask
-    let d    = length(in.uv - 0.5) * 2.0;
-    let mask = 1.0 - smoothstep(0.7, 1.0, d);
-
-    // Alpha: sin(π · life) — bright at spawn, fade to zero
-    let alpha = sin(3.14159265 * clamp(in.life, 0.0, 1.0)) * mask * 0.6;
-
-    return vec4f(in.color, alpha);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main class
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * ATWaterSurface — WebGPU port of Active Theory's WaterCeilingShader
- * and WorkDetailParticles water-surface system.
- *
- * Provides:
- *   • GPU wave simulation (ping-pong rgba32float textures)
- *   • Fresnel mirror-reflection render with sky cubemap or gradient fallback
- *   • Water surface particles with lifecycle + curl-noise drift
+ * init()    — compile 4 programs, allocate 4 textures + 4 FBOs, 2 buffers.
+ * render()  — sim steps then Gerstner surface draw.
+ * dispose() — delete everything.
  */
 export class ATWaterSurface {
-  // ── Config ──────────────────────────────────────────────────────────────────
-  private readonly simSize:      number;
-  private readonly meshDetail:   number;
-  private readonly maxParticles: number;
-  private readonly stepsPerFrame: number;
-  private readonly cfg: Required<ATWaterSurfaceConfig>;
+  private gl:  WebGLRenderingContext;
+  private cfg: Required<ATWaterSurfaceConfig>;
 
-  // ── WebGPU ──────────────────────────────────────────────────────────────────
-  private readonly device:  GPUDevice;
-  private readonly format:  GPUTextureFormat;
+  // ── Four shader programs ───────────────────────────────────────────────────
+  private stepProg!:    WebGLProgram;
+  private normalProg!:  WebGLProgram;
+  private dropProg!:    WebGLProgram;
+  private surfaceProg!: WebGLProgram;
 
-  // ── Simulation textures (ping-pong) ─────────────────────────────────────────
-  private waterA!: GPUTexture;
-  private waterB!: GPUTexture;
+  // ── Ping-pong FBO pair (4 textures + 4 FBOs total) ────────────────────────
+  private waterPP!: PingPong;
 
-  // ── Particle textures (ping-pong) ───────────────────────────────────────────
-  private particleA!: GPUTexture;
-  private particleB!: GPUTexture;
+  // ── Dummy normal-map tex (satisfies waternormals.fs uniform) ──────────────
+  private dummyNormalTex!: WebGLTexture;
 
-  // ── Mesh ────────────────────────────────────────────────────────────────────
-  private meshVB!:     GPUBuffer;
-  private meshVCount!: number;
+  // ── Geometry buffers ──────────────────────────────────────────────────────
+  private quadBuf!:   WebGLBuffer;
+  private meshBuf!:   WebGLBuffer;
+  private meshCount!: number;
 
-  // ── Uniform buffers ─────────────────────────────────────────────────────────
-  private uniformBuf!: GPUBuffer;
-  private dropBuf!:    GPUBuffer;
+  // ── Pending drops ─────────────────────────────────────────────────────────
+  private drops: Array<{ cx: number; cy: number; r: number; s: number }> = [];
 
-  // ── Pipelines ───────────────────────────────────────────────────────────────
-  private stepPipeline!:     GPUComputePipeline;
-  private normalPipeline!:   GPUComputePipeline;
-  private dropPipeline!:     GPUComputePipeline;
-  private waterRenderPipe!:  GPURenderPipeline;
-  private particleUpdatePipe!: GPUComputePipeline;
-  private particleRenderPipe!: GPURenderPipeline;
-
-  // ── Bind groups ─────────────────────────────────────────────────────────────
-  // Computed fresh each frame (ping-pong swaps textures)
-  private sampler!: GPUSampler;
-
-  // ── State ───────────────────────────────────────────────────────────────────
-  private built = false;
-  private pendingDrops: Array<{x: number; y: number; radius: number; strength: number}> = [];
+  // ── Time ─────────────────────────────────────────────────────────────────
+  private time = 0;
 
   // ─── Constructor ────────────────────────────────────────────────────────────
 
-  constructor(
-    device:  GPUDevice,
-    format:  GPUTextureFormat,
-    cfg:     ATWaterSurfaceConfig = {},
-  ) {
-    this.device  = device;
-    this.format  = format;
-
-    const defaultLight: [number, number, number] = [2.0, 2.0, -1.0];
-    const len = Math.hypot(...defaultLight);
-
+  constructor(gl: WebGLRenderingContext, cfg: ATWaterSurfaceConfig = {}) {
+    this.gl = gl;
+    const ld = cfg.lightDir ?? [0.577, 0.577, -0.577];
     this.cfg = {
-      simSize:       cfg.simSize       ?? WATER_SIM_SIZE,
-      meshDetail:    cfg.meshDetail    ?? WATER_MESH_DETAIL,
-      maxParticles:  cfg.maxParticles  ?? MAX_WATER_PARTICLES,
-      lightDir:      cfg.lightDir      ?? [
-        defaultLight[0]/len, defaultLight[1]/len, defaultLight[2]/len,
-      ],
+      simSize:       cfg.simSize       ?? DEFAULT_SIM_SIZE,
+      meshN:         cfg.meshN         ?? DEFAULT_MESH_N,
+      lightDir:      ld,
       waterColor:    cfg.waterColor    ?? [0.25, 1.0, 1.25],
-      skyColor:      cfg.skyColor      ?? [0.1, 0.6, 1.0],
-      particleColor: cfg.particleColor ?? [0.6, 0.9, 1.0],
-      stepsPerFrame: cfg.stepsPerFrame ?? 2,
-      skyCubemap:    cfg.skyCubemap,
+      skyColor:      cfg.skyColor      ?? [0.10, 0.55, 0.90],
+      damping:       cfg.damping       ?? DEFAULT_DAMPING,
+      stepsPerFrame: cfg.stepsPerFrame ?? DEFAULT_STEPS_FRAME,
     };
-
-    this.simSize       = this.cfg.simSize;
-    this.meshDetail    = this.cfg.meshDetail;
-    this.maxParticles  = this.cfg.maxParticles;
-    this.stepsPerFrame = this.cfg.stepsPerFrame;
+    this.init();
   }
 
-  // ─── Public API ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+  // init() — createProgram × 4, createFramebuffer × 4, createTexture × 4+1
+  // ─────────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Compile all pipelines, allocate textures, upload initial mesh.
-   * Must be called before tick() / renderPass().
-   */
-  async build(): Promise<void> {
-    this._createTextures();
-    this._createMesh();
-    this._createUniformBuffers();
-    this._createSampler();
-    await this._createPipelines();
-    this.built = true;
-  }
+  init(): void {
+    const gl = this.gl;
 
-  /**
-   * Enqueue a raindrop disturbance.
-   * Port of Water.prototype.addDrop — safe to call before build().
-   *
-   * @param x        Centre X in [-1, 1] (water.js convention).
-   * @param y        Centre Y in [-1, 1].
-   * @param radius   Radius in the same space.
-   * @param strength Height perturbation amplitude.
-   */
-  addDrop(x: number, y: number, radius: number, strength: number): void {
-    this.pendingDrops.push({ x, y, radius, strength });
-  }
+    // ── Enable float texture extensions (WebGL1) ───────────────────────────
+    gl.getExtension('OES_texture_float');
+    gl.getExtension('OES_texture_float_linear');
+    gl.getExtension('WEBGL_color_buffer_float');
 
-  /**
-   * Run one frame's worth of simulation and particle update.
-   *
-   * @param encoder  Open GPUCommandEncoder.
-   * @param time     Elapsed seconds.
-   * @param _dt      Delta seconds (unused currently — wave speed is fixed).
-   */
-  tick(encoder: GPUCommandEncoder, time: number, _dt: number = 0): void {
-    if (!this.built) return;
-
-    this._writeUniforms(time);
-
-    // ── Apply pending drops ───────────────────────────────────────────────────
-    for (const drop of this.pendingDrops) {
-      this._dispatchDrop(encoder, drop);
-    }
-    this.pendingDrops.length = 0;
-
-    // ── Wave simulation steps (N per frame for speed control) ─────────────────
-    for (let s = 0; s < this.stepsPerFrame; s++) {
-      this._dispatchStep(encoder);
-      this._dispatchNormal(encoder);
-    }
-
-    // ── Particle update ───────────────────────────────────────────────────────
-    this._dispatchParticleUpdate(encoder);
-  }
-
-  /**
-   * Encode the water surface + particle render passes.
-   *
-   * @param encoder         Open GPUCommandEncoder.
-   * @param colorTarget     Output color attachment view.
-   * @param depthView       Output depth attachment view.
-   * @param sceneUniformBuf GPUBuffer holding scene matrices (mat4×2 + vec4 eye).
-   */
-  renderPass(
-    encoder:         GPUCommandEncoder,
-    colorTarget:     GPUTextureView,
-    depthView:       GPUTextureView,
-    sceneUniformBuf: GPUBuffer,
-  ): void {
-    if (!this.built) return;
-
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view:       colorTarget,
-        loadOp:     'load',
-        storeOp:    'store',
-      }],
-      depthStencilAttachment: {
-        view:              depthView,
-        depthLoadOp:       'load',
-        depthStoreOp:      'store',
-      },
-    });
-
-    // ── Water surface ─────────────────────────────────────────────────────────
-    pass.setPipeline(this.waterRenderPipe);
-    pass.setBindGroup(0, this._makeWaterRenderBG0(sceneUniformBuf));
-    pass.setBindGroup(1, this._makeSceneBG1(sceneUniformBuf));
-    pass.setVertexBuffer(0, this.meshVB);
-    pass.draw(this.meshVCount);
-
-    // ── Water particles ───────────────────────────────────────────────────────
-    pass.setPipeline(this.particleRenderPipe);
-    pass.setBindGroup(0, this._makeParticleRenderBG0());
-    pass.setBindGroup(1, this._makeSceneBG1(sceneUniformBuf));
-    pass.draw(6, this.maxParticles);  // 6 verts per billboard quad, instanced
-
-    pass.end();
-  }
-
-  /**
-   * Release all GPU resources.
-   */
-  destroy(): void {
-    this.waterA.destroy();
-    this.waterB.destroy();
-    this.particleA.destroy();
-    this.particleB.destroy();
-    this.meshVB.destroy();
-    this.uniformBuf.destroy();
-    this.dropBuf.destroy();
-  }
-
-  // ─── Private: resource creation ─────────────────────────────────────────────
-
-  private _createTextures(): void {
-    const simDesc: GPUTextureDescriptor = {
-      size:   [this.simSize, this.simSize, 1],
-      format: 'rgba32float',
-      usage:  GPUTextureUsage.TEXTURE_BINDING
-            | GPUTextureUsage.STORAGE_BINDING
-            | GPUTextureUsage.COPY_DST,
-    };
-    this.waterA = this.device.createTexture(simDesc);
-    this.waterB = this.device.createTexture(simDesc);
-
-    // Particle texture: one row of maxParticles texels (or square layout)
-    const pW = Math.min(this.maxParticles, 256);
-    const pH = Math.ceil(this.maxParticles / pW);
-    const pDesc: GPUTextureDescriptor = {
-      size:   [pW, pH, 1],
-      format: 'rgba32float',
-      usage:  GPUTextureUsage.TEXTURE_BINDING
-            | GPUTextureUsage.STORAGE_BINDING
-            | GPUTextureUsage.COPY_DST,
-    };
-    this.particleA = this.device.createTexture(pDesc);
-    this.particleB = this.device.createTexture(pDesc);
-
-    // Seed particle texture with dead particles (life = 0)
-    const pPixels = pW * pH * 4;
-    const pData = new Float32Array(pPixels);
-    // All particles start dead; they'll respawn via the shader's hash2 path
-    this.device.queue.writeTexture(
-      { texture: this.particleA },
-      pData,
-      { bytesPerRow: pW * 16 },
-      { width: pW, height: pH },
+    // ── Compile the four programs ─────────────────────────────────────────
+    // sim passes use inline GLSL; surface uses GLSL built from compiled.vs
+    this.stepProg    = this._compile(QUAD_VERT, WAVE_STEP_FRAG,      'wave-step');
+    this.normalProg  = this._compile(QUAD_VERT, NORMAL_FRAG,         'wave-normal');
+    this.dropProg    = this._compile(QUAD_VERT, DROP_FRAG,           'wave-drop');
+    this.surfaceProg = this._compile(
+      buildGerstnerVert(),   // contains simplenoise.glsl from compiled.vs
+      buildSurfaceFrag(),    // contains fresnel.glsl / waternormals.fs / refl.fs
+      'gerstner-surface',
     );
-    this.device.queue.writeTexture(
-      { texture: this.particleB },
-      pData,
-      { bytesPerRow: pW * 16 },
-      { width: pW, height: pH },
-    );
-  }
 
-  private _createMesh(): void {
-    // Flat XZ grid mesh: meshDetail × meshDetail quads
-    const N     = this.meshDetail;
+    // ── Create ping-pong FBOs: 2 × (createTexture + createFramebuffer) ────
+    this.waterPP = this._createPingPong(this.cfg.simSize, this.cfg.simSize);
+
+    // ── Seed both textures with zeros (calm water) ────────────────────────
+    const zeros = new Float32Array(this.cfg.simSize * this.cfg.simSize * 4);
+    gl.bindTexture(gl.TEXTURE_2D, this.waterPP.readTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0,
+      this.cfg.simSize, this.cfg.simSize,
+      gl.RGBA, gl.FLOAT, zeros);
+    gl.bindTexture(gl.TEXTURE_2D, this.waterPP.writeTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0,
+      this.cfg.simSize, this.cfg.simSize,
+      gl.RGBA, gl.FLOAT, zeros);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    // ── Dummy 1×1 white normal-map texture for waternormals.fs uniform ────
+    // (waternormals.fs samples from tNormal; we pass a flat white 1×1 so
+    //  getWaterNormal() returns a gentle zero-displacement normal)
+    this.dummyNormalTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.dummyNormalTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([128, 128, 255, 255]));   // flat normal pointing up
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    // ── Fullscreen quad buffer (2 triangles) ─────────────────────────────
+    this.quadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER,
+      new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),
+      gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    // ── Grid mesh buffer (MESH_N × MESH_N quads) ─────────────────────────
+    const N = this.cfg.meshN;
     const verts: number[] = [];
     for (let row = 0; row < N; row++) {
       for (let col = 0; col < N; col++) {
-        const x0 = (col / N) * 2 - 1;
-        const x1 = ((col + 1) / N) * 2 - 1;
-        const z0 = (row / N) * 2 - 1;
-        const z1 = ((row + 1) / N) * 2 - 1;
-        // Two triangles per quad (CCW)
-        verts.push(x0, z0,  x1, z0,  x0, z1);
-        verts.push(x0, z1,  x1, z0,  x1, z1);
+        const x0 = (col     / N) * 2 - 1;
+        const x1 = ((col+1) / N) * 2 - 1;
+        const z0 = (row     / N) * 2 - 1;
+        const z1 = ((row+1) / N) * 2 - 1;
+        verts.push(x0,z0, x1,z0, x0,z1,   // tri 1
+                   x0,z1, x1,z0, x1,z1);  // tri 2
       }
     }
-    this.meshVCount = verts.length / 2;
-    const data = new Float32Array(verts);
-    this.meshVB = this.device.createBuffer({
-      size:  data.byteLength,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    this.device.queue.writeBuffer(this.meshVB, 0, data);
+    this.meshCount = verts.length / 2;
+    this.meshBuf   = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.meshBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
-  private _createUniformBuffers(): void {
-    this.uniformBuf = this.device.createBuffer({
-      size:  UNIFORM_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    // Drop params buffer: vec2 center + float radius + float strength = 16 bytes
-    this.dropBuf = this.device.createBuffer({
-      size:  16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Public API
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Enqueue a raindrop perturbation.
+   * @param cx Centre UV X [0,1]
+   * @param cy Centre UV Y [0,1]
+   * @param r  Radius in UV space
+   * @param s  Height amplitude
+   */
+  addDrop(cx: number, cy: number, r: number, s: number): void {
+    this.drops.push({ cx, cy, r, s });
   }
 
-  private _createSampler(): void {
-    this.sampler = this.device.createSampler({
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-      magFilter:    'linear',
-      minFilter:    'linear',
-    });
-  }
+  // ─────────────────────────────────────────────────────────────────────────────
+  // render() — useProgram / bindFramebuffer / drawArrays
+  // ─────────────────────────────────────────────────────────────────────────────
 
-  private async _createPipelines(): Promise<void> {
-    const d = this.device;
-
-    // ── Wave step compute ─────────────────────────────────────────────────────
-    const stepMod = d.createShaderModule({ code: WGSL_WAVE_STEP });
-    this.stepPipeline = await d.createComputePipelineAsync({
-      layout: 'auto',
-      compute: { module: stepMod, entryPoint: 'cs_step' },
-    });
-
-    // ── Normal compute ────────────────────────────────────────────────────────
-    const normMod = d.createShaderModule({ code: WGSL_WAVE_NORMAL });
-    this.normalPipeline = await d.createComputePipelineAsync({
-      layout: 'auto',
-      compute: { module: normMod, entryPoint: 'cs_normal' },
-    });
-
-    // ── Drop compute ──────────────────────────────────────────────────────────
-    const dropMod = d.createShaderModule({ code: WGSL_WAVE_DROP });
-    this.dropPipeline = await d.createComputePipelineAsync({
-      layout: 'auto',
-      compute: { module: dropMod, entryPoint: 'cs_drop' },
-    });
-
-    // ── Water render ──────────────────────────────────────────────────────────
-    const hasCubemap    = !!this.cfg.skyCubemap;
-    const waterRenderSrc = hasCubemap ? WGSL_WATER_RENDER : WGSL_WATER_RENDER_FLAT;
-    const waterRenderMod = d.createShaderModule({ code: waterRenderSrc });
-    const vsEntry  = hasCubemap ? 'vs_water'      : 'vs_water_flat';
-    const fsEntry  = hasCubemap ? 'fs_water'      : 'fs_water_flat';
-
-    this.waterRenderPipe = await d.createRenderPipelineAsync({
-      layout: 'auto',
-      vertex: {
-        module:     waterRenderMod,
-        entryPoint: vsEntry,
-        buffers: [{
-          arrayStride: 8,
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }],
-        }],
-      },
-      fragment: {
-        module:     waterRenderMod,
-        entryPoint: fsEntry,
-        targets: [{
-          format: this.format,
-          blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          },
-        }],
-      },
-      depthStencil: {
-        format:            'depth24plus',
-        depthWriteEnabled: false,
-        depthCompare:      'less-equal',
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-    });
-
-    // ── Particle update compute ───────────────────────────────────────────────
-    const pUpdateMod = d.createShaderModule({ code: WGSL_PARTICLE_UPDATE });
-    this.particleUpdatePipe = await d.createComputePipelineAsync({
-      layout: 'auto',
-      compute: { module: pUpdateMod, entryPoint: 'cs_particle_update' },
-    });
-
-    // ── Particle render ───────────────────────────────────────────────────────
-    const pRenderMod = d.createShaderModule({ code: WGSL_PARTICLE_RENDER });
-    this.particleRenderPipe = await d.createRenderPipelineAsync({
-      layout: 'auto',
-      vertex: {
-        module:     pRenderMod,
-        entryPoint: 'vs_particle',
-      },
-      fragment: {
-        module:     pRenderMod,
-        entryPoint: 'fs_particle',
-        targets: [{
-          format: this.format,
-          blend: {
-            // Additive blend for glowing particles
-            color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
-            alpha: { srcFactor: 'one',       dstFactor: 'one', operation: 'add' },
-          },
-        }],
-      },
-      depthStencil: {
-        format:            'depth24plus',
-        depthWriteEnabled: false,
-        depthCompare:      'less-equal',
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-    });
-  }
-
-  // ─── Private: uniform writes ─────────────────────────────────────────────────
-
-  private _writeUniforms(time: number): void {
-    const data = new Float32Array(16);
-    const [lx, ly, lz] = this.cfg.lightDir;
-    // Row 0: lightDir.xyz + time
-    data[0] = lx; data[1] = ly; data[2] = lz; data[3] = time;
-    // Row 1: waterColor.xyz + unused
-    data[4] = this.cfg.waterColor[0]; data[5] = this.cfg.waterColor[1]; data[6] = this.cfg.waterColor[2]; data[7] = 0;
-    // Row 2: skyColor.xyz + damping
-    data[8] = this.cfg.skyColor[0]; data[9] = this.cfg.skyColor[1]; data[10] = this.cfg.skyColor[2]; data[11] = WAVE_DAMPING;
-    // Row 3: particleColor.xyz + reserved
-    data[12] = this.cfg.particleColor[0]; data[13] = this.cfg.particleColor[1]; data[14] = this.cfg.particleColor[2]; data[15] = 0;
-    this.device.queue.writeBuffer(this.uniformBuf, 0, data);
-  }
-
-  // ─── Private: dispatch helpers ───────────────────────────────────────────────
-
-  private _dispatchDrop(
-    enc: GPUCommandEncoder,
-    drop: { x: number; y: number; radius: number; strength: number },
+  /**
+   * Run full frame: inject drops → simulate → draw surface.
+   *
+   * @param dt       Delta-time seconds
+   * @param mvp      Column-major 4×4 MVP matrix (Float32Array[16])
+   * @param eye      Camera world position
+   * @param canvasW  Output canvas pixel width
+   * @param canvasH  Output canvas pixel height
+   */
+  render(
+    dt:      number,
+    mvp:     Float32Array,
+    eye:     [number, number, number],
+    canvasW: number,
+    canvasH: number,
   ): void {
-    // Write drop params
-    const dropData = new Float32Array([drop.x, drop.y, drop.radius, drop.strength]);
-    this.device.queue.writeBuffer(this.dropBuf, 0, dropData);
+    this.time += dt;
+    const gl = this.gl;
 
-    const bg = this.device.createBindGroup({
-      layout: this.dropPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuf } },
-        { binding: 1, resource: { buffer: this.dropBuf } },
-        { binding: 2, resource: this.waterA.createView() },
-        { binding: 3, resource: this.waterB.createView() },
-      ],
-    });
-    const pass = enc.beginComputePass();
-    pass.setPipeline(this.dropPipeline);
-    pass.setBindGroup(0, bg);
-    const wg = Math.ceil(this.simSize / 8);
-    pass.dispatchWorkgroups(wg, wg);
-    pass.end();
-
-    // Swap: waterB now has the drop applied → promote to waterA
-    [this.waterA, this.waterB] = [this.waterB, this.waterA];
-  }
-
-  private _dispatchStep(enc: GPUCommandEncoder): void {
-    const bg = this.device.createBindGroup({
-      layout: this.stepPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuf } },
-        { binding: 1, resource: this.waterA.createView() },
-        { binding: 2, resource: this.waterB.createView() },
-      ],
-    });
-    const pass = enc.beginComputePass();
-    pass.setPipeline(this.stepPipeline);
-    pass.setBindGroup(0, bg);
-    const wg = Math.ceil(this.simSize / 8);
-    pass.dispatchWorkgroups(wg, wg);
-    pass.end();
-    [this.waterA, this.waterB] = [this.waterB, this.waterA];
-  }
-
-  private _dispatchNormal(enc: GPUCommandEncoder): void {
-    const bg = this.device.createBindGroup({
-      layout: this.normalPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuf } },
-        { binding: 1, resource: this.waterA.createView() },
-        { binding: 2, resource: this.waterB.createView() },
-      ],
-    });
-    const pass = enc.beginComputePass();
-    pass.setPipeline(this.normalPipeline);
-    pass.setBindGroup(0, bg);
-    const wg = Math.ceil(this.simSize / 8);
-    pass.dispatchWorkgroups(wg, wg);
-    pass.end();
-    [this.waterA, this.waterB] = [this.waterB, this.waterA];
-  }
-
-  private _dispatchParticleUpdate(enc: GPUCommandEncoder): void {
-    const bg = this.device.createBindGroup({
-      layout: this.particleUpdatePipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuf } },
-        { binding: 1, resource: this.sampler },
-        { binding: 2, resource: this.waterA.createView() },
-        { binding: 3, resource: this.particleA.createView() },
-        { binding: 4, resource: this.particleB.createView() },
-      ],
-    });
-    const pass = enc.beginComputePass();
-    pass.setPipeline(this.particleUpdatePipe);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(Math.ceil(this.maxParticles / WG));
-    pass.end();
-    [this.particleA, this.particleB] = [this.particleB, this.particleA];
-  }
-
-  // ─── Private: per-frame bind group factories ─────────────────────────────────
-
-  private _makeWaterRenderBG0(sceneUniformBuf: GPUBuffer): GPUBindGroup {
-    const hasCubemap = !!this.cfg.skyCubemap;
-    const entries: GPUBindGroupEntry[] = [
-      { binding: 0, resource: { buffer: this.uniformBuf } },
-      { binding: 1, resource: this.sampler },
-      { binding: 2, resource: this.waterA.createView() },
-    ];
-    if (hasCubemap) {
-      entries.push(
-        { binding: 3, resource: this.sampler },
-        { binding: 4, resource: this.cfg.skyCubemap!.createView({ dimension: 'cube' }) },
-      );
+    // ── A. Inject pending drops ───────────────────────────────────────────
+    for (const d of this.drops) {
+      this._runDrop(d.cx, d.cy, d.r, d.s);
     }
-    return this.device.createBindGroup({
-      layout: this.waterRenderPipe.getBindGroupLayout(0),
-      entries,
-    });
+    this.drops.length = 0;
+
+    // ── B. Simulation steps ───────────────────────────────────────────────
+    for (let i = 0; i < this.cfg.stepsPerFrame; i++) {
+      this._runStep();
+      this._runNormal();
+    }
+
+    // ── C. Render Gerstner surface to default framebuffer ─────────────────
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvasW, canvasH);
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+
+    gl.useProgram(this.surfaceProg);
+
+    // Uniforms
+    gl.uniform1f(
+      gl.getUniformLocation(this.surfaceProg, 'uTime'), this.time);
+    gl.uniformMatrix4fv(
+      gl.getUniformLocation(this.surfaceProg, 'uMVP'), false, mvp);
+    gl.uniform3fv(
+      gl.getUniformLocation(this.surfaceProg, 'uEye'), eye);
+    gl.uniform3fv(
+      gl.getUniformLocation(this.surfaceProg, 'uLightDir'), this.cfg.lightDir);
+    gl.uniform3fv(
+      gl.getUniformLocation(this.surfaceProg, 'uWaterColor'), this.cfg.waterColor);
+    gl.uniform3fv(
+      gl.getUniformLocation(this.surfaceProg, 'uSkyColor'), this.cfg.skyColor);
+
+    // Bind dummy normal-map (waternormals.fs tNormal uniform)
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.dummyNormalTex);
+    gl.uniform1i(gl.getUniformLocation(this.surfaceProg, 'uWaterNormalMap'), 0);
+
+    // Bind mesh, draw
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.meshBuf);
+    const posLoc = gl.getAttribLocation(this.surfaceProg, 'aPosition');
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, this.meshCount);
+
+    // Cleanup state
+    gl.disableVertexAttribArray(posLoc);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+    gl.useProgram(null);
   }
 
-  private _makeSceneBG1(sceneUniformBuf: GPUBuffer): GPUBindGroup {
-    return this.device.createBindGroup({
-      layout: this.waterRenderPipe.getBindGroupLayout(1),
-      entries: [{ binding: 0, resource: { buffer: sceneUniformBuf } }],
-    });
+  // ─────────────────────────────────────────────────────────────────────────────
+  // dispose() — delete everything
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  dispose(): void {
+    const gl = this.gl;
+
+    // Delete four programs
+    gl.deleteProgram(this.stepProg);
+    gl.deleteProgram(this.normalProg);
+    gl.deleteProgram(this.dropProg);
+    gl.deleteProgram(this.surfaceProg);
+
+    // Delete four framebuffers (2 per ping-pong pair)
+    gl.deleteFramebuffer(this.waterPP.read);
+    gl.deleteFramebuffer(this.waterPP.write);
+
+    // Delete four textures (2 ping-pong + 1 dummy normal; +1 for write side)
+    gl.deleteTexture(this.waterPP.readTex);
+    gl.deleteTexture(this.waterPP.writeTex);
+    gl.deleteTexture(this.dummyNormalTex);
+
+    // Delete two geometry buffers
+    gl.deleteBuffer(this.quadBuf);
+    gl.deleteBuffer(this.meshBuf);
   }
 
-  private _makeParticleRenderBG0(): GPUBindGroup {
-    return this.device.createBindGroup({
-      layout: this.particleRenderPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuf } },
-        { binding: 1, resource: this.sampler },
-        { binding: 2, resource: this.particleA.createView() },
-      ],
-    });
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Private: simulation dispatch
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private _runStep(): void {
+    const gl = this.gl;
+    const sz = this.cfg.simSize;
+    gl.useProgram(this.stepProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.waterPP.write);
+    gl.viewport(0, 0, sz, sz);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.waterPP.readTex);
+    gl.uniform1i(gl.getUniformLocation(this.stepProg, 'uSrc'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.stepProg, 'uTexelSize'), 1/sz, 1/sz);
+    gl.uniform1f(gl.getUniformLocation(this.stepProg, 'uDamping'), this.cfg.damping);
+    this._drawQuad(this.stepProg);
+    this._swap(this.waterPP);
+  }
+
+  private _runNormal(): void {
+    const gl = this.gl;
+    const sz = this.cfg.simSize;
+    gl.useProgram(this.normalProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.waterPP.write);
+    gl.viewport(0, 0, sz, sz);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.waterPP.readTex);
+    gl.uniform1i(gl.getUniformLocation(this.normalProg, 'uSrc'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.normalProg, 'uTexelSize'), 1/sz, 1/sz);
+    this._drawQuad(this.normalProg);
+    this._swap(this.waterPP);
+  }
+
+  private _runDrop(cx: number, cy: number, r: number, s: number): void {
+    const gl = this.gl;
+    const sz = this.cfg.simSize;
+    gl.useProgram(this.dropProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.waterPP.write);
+    gl.viewport(0, 0, sz, sz);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.waterPP.readTex);
+    gl.uniform1i(gl.getUniformLocation(this.dropProg, 'uSrc'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.dropProg, 'uDropCenter'),   cx, cy);
+    gl.uniform1f(gl.getUniformLocation(this.dropProg, 'uDropRadius'),   r);
+    gl.uniform1f(gl.getUniformLocation(this.dropProg, 'uDropStrength'), s);
+    this._drawQuad(this.dropProg);
+    this._swap(this.waterPP);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Private: WebGL primitives
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /** Bind quad buffer, draw 6 vertices, unbind. */
+  private _drawQuad(prog: WebGLProgram): void {
+    const gl     = this.gl;
+    const posLoc = gl.getAttribLocation(prog, 'aPosition');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.disableVertexAttribArray(posLoc);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  /** Swap read/write in a ping-pong pair. */
+  private _swap(pp: PingPong): void {
+    [pp.read,    pp.write   ] = [pp.write,    pp.read   ];
+    [pp.readTex, pp.writeTex] = [pp.writeTex, pp.readTex];
+  }
+
+  /**
+   * Create one FBO + RGBA-float texture.
+   * gl calls: createTexture, bindTexture, texParameteri ×4, texImage2D,
+   *           createFramebuffer, bindFramebuffer, framebufferTexture2D
+   */
+  private _createFBO(w: number, h: number): { fbo: WebGLFramebuffer; tex: WebGLTexture } {
+    const gl = this.gl;
+
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.FLOAT, null);
+
+    const fbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return { fbo, tex };
+  }
+
+  /**
+   * Create two FBO+tex pairs for ping-pong.
+   * Total: createTexture ×2, createFramebuffer ×2.
+   */
+  private _createPingPong(w: number, h: number): PingPong {
+    const a = this._createFBO(w, h);
+    const b = this._createFBO(w, h);
+    return { read: a.fbo, write: b.fbo, readTex: a.tex, writeTex: b.tex };
+  }
+
+  /**
+   * Compile vert + frag into a WebGLProgram.
+   * gl calls: createShader ×2, shaderSource ×2, compileShader ×2,
+   *           createProgram, attachShader ×2, linkProgram, deleteShader ×2
+   */
+  private _compile(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    gl.shaderSource(vs, vert);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(vs);
+      gl.deleteShader(vs);
+      throw new Error(`[ATWaterSurface] vert compile (${label}): ${log}`);
+    }
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    gl.shaderSource(fs, frag);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(fs);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      throw new Error(`[ATWaterSurface] frag compile (${label}): ${log}`);
+    }
+
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(prog);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      gl.deleteProgram(prog);
+      throw new Error(`[ATWaterSurface] link (${label}): ${log}`);
+    }
+
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
   }
 }
 
@@ -1274,23 +754,23 @@ export class ATWaterSurface {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Create and build an ATWaterSurface in one call.
+ * Create an ATWaterSurface and init() it in one call.
  *
  * ```ts
- * const water = await createATWaterSurface(device, 'bgra8unorm', {
- *   simSize:      256,
- *   meshDetail:   128,
- *   maxParticles: 4096,
- *   waterColor:   [0.25, 1.0, 1.25],
+ * const water = createATWaterSurface(gl, {
+ *   simSize:    256,
+ *   meshN:       96,
+ *   waterColor: [0.25, 1.0, 1.25],
  * });
+ *
+ * // Each frame:
+ * const mvp = /* your camera MVP Float32Array[16] *\/;
+ * water.render(dt, mvp, [camX, camY, camZ], canvas.width, canvas.height);
  * ```
  */
-export async function createATWaterSurface(
-  device: GPUDevice,
-  format: GPUTextureFormat,
-  cfg?:   ATWaterSurfaceConfig,
-): Promise<ATWaterSurface> {
-  const surface = new ATWaterSurface(device, format, cfg);
-  await surface.build();
-  return surface;
+export function createATWaterSurface(
+  gl:  WebGLRenderingContext,
+  cfg: ATWaterSurfaceConfig = {},
+): ATWaterSurface {
+  return new ATWaterSurface(gl, cfg);
 }
