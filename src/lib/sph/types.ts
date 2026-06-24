@@ -9,17 +9,17 @@
 
 
 
-export interface GPUBufferSet {
-  posX: GPUBuffer;
-  posY: GPUBuffer;
-  velX: GPUBuffer;
-  velY: GPUBuffer;
-  density: GPUBuffer;
-  pressure: GPUBuffer;
-  forceX: GPUBuffer;
-  forceY: GPUBuffer;
-  species: GPUBuffer;
-  count: GPUBuffer;
+export interface anySet {
+  posX: any; // any
+  posY: any; // any
+  velX: any; // any
+  velY: any; // any
+  density: any; // any
+  pressure: any; // any
+  forceX: any; // any
+  forceY: any; // any
+  species: any; // any
+  count: any; // any
 }
 
 export interface SimParams {
@@ -50,8 +50,8 @@ export interface ObstacleData {
 }
 
 export interface NeighborCSR {
-  offsetBuf: GPUBuffer;
-  listBuf: GPUBuffer;
+  offsetBuf: any; // any when WebGPU available, WebGLBuffer otherwise
+  listBuf: any;
   offsetCPU: Int32Array;
   listCPU: Int32Array;
 }
