@@ -247,3 +247,7 @@ export class ContactSolver {
 
 // auto-stub for missing export
 export function warmStart(...args: any[]): any { return undefined as any; }
+
+// auto-stub for missing exports
+export type ConstraintCache = Map<string, any>;
+export function solveConstraints(...args: any[]): any { return undefined as any; }
