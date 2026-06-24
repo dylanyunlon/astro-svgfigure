@@ -30,7 +30,6 @@
  *
  * Integration
  * ───────────
- *   import { AudioPhysicsBridge } from './audio-physics-bridge';
  *
  *   const audio = new AudioPhysicsBridge();
  *

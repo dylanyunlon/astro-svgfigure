@@ -60,15 +60,17 @@
  * Research: xiaodi #M779 — cell-pubsub-loop
  */
 
+
 import {
+} from './performance-budget';
+import type { CellBBox } from './instanced-cell-renderer';
+import type { MaterialType, PatternShader } from './species-shader-registry';
+
   PerformanceBudget,
   getGlobalBudget,
   type Tier,
   type TierConfig,
-} from './performance-budget';
 
-import type { CellBBox } from './instanced-cell-renderer';
-import type { MaterialType, PatternShader } from './species-shader-registry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOD Level enum & render hints

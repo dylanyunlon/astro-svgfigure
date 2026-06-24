@@ -425,7 +425,6 @@ export const sceneDataLoader = new SceneDataLoader();
  * Top-level loadScene() shortcut.
  *
  * Browser usage:
- *   import { loadScene } from './scene-data-loader';
  *   const { cells, edges } = await loadScene();
  *
  * Node REPL validation (run from project root):

@@ -13,7 +13,6 @@
  *
  * Usage
  * ─────────────────────────────────────────────────────────────────────────────
- *   import { getVisualDNA, initVisualDNA } from './species-visual-dna';
  *
  *   // once at startup (pre-loads UIL baselines; optional — auto-inits lazily)
  *   await initVisualDNA();
@@ -36,26 +35,28 @@
  *   src/lib/sph/uil-species-live.ts         — getSpeciesUniforms, physicsUniformsToState
  */
 
-import type { World } from './world-stepper';
 
+import type { World } from './world-stepper';
 import {
+} from './species-shader-registry';
+import {
+} from './physics-uniform-bridge';
+import {
+} from './uil-species-live';
+
+
   getSpeciesShaderConfig,
   resolvePhysicsBindings,
   type SpeciesShaderConfig,
   type PhysicsBindings,
-} from './species-shader-registry';
 
-import {
   samplePhysicsForBody,
   type PhysicsUniforms,
-} from './physics-uniform-bridge';
 
-import {
   initSpeciesLive,
   getSpeciesUniforms,
   physicsUniformsToState,
   type SpeciesUniformBag,
-} from './uil-species-live';
 
 // ─── Output types ────────────────────────────────────────────────────────────
 

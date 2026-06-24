@@ -59,12 +59,14 @@
  *   high impulse → saturated, near-white hot-core petals
  */
 
+
 import type {
-  CollisionContactInfo,
-  CollisionEvent,
 } from './collision/CollisionEvents';
 import type { CollisionEventDispatcher } from './collision/CollisionEvents';
 import type { FlowerEdgeSpline, FlowerPoint3 } from './at-flower-particle';
+
+  CollisionContactInfo,
+  CollisionEvent,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lygia random port (shared with contact-sparks.ts)

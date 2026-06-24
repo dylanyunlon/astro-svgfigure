@@ -74,11 +74,13 @@
  *   src/lib/sph/collision/CollisionEvents.ts — CollisionContactInfo types
  */
 
+
 import type {
-  CollisionContactInfo,
-  CollisionEvent,
 } from './collision/CollisionEvents';
 import type { CollisionEventDispatcher } from './collision/CollisionEvents';
+
+  CollisionContactInfo,
+  CollisionEvent,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lygia random port (shared convention with contact-sparks / collision-fx)

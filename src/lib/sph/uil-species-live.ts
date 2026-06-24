@@ -39,7 +39,6 @@
  *
  * Usage
  * ─────────────────────────────────────────────────────────────────────────────
- *   import { getSpeciesUniforms, initSpeciesLive } from './uil-species-live';
  *
  *   // once at startup (or lazy — getSpeciesUniforms auto-inits)
  *   await initSpeciesLive();

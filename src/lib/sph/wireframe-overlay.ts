@@ -58,7 +58,6 @@
  *
  * ─── Integration ────────────────────────────────────────────────────────────
  *
- *   import { WireframeOverlay } from './wireframe-overlay';
  *
  *   const wireframe = new WireframeOverlay();
  *

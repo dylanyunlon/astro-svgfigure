@@ -50,7 +50,6 @@
  *
  * Integration
  * ───────────
- *   import { AudioReactiveVisuals } from './audio-reactive-visuals';
  *
  *   const arv = new AudioReactiveVisuals();
  *

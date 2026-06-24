@@ -54,7 +54,6 @@
  *
  * Usage
  * ─────────────────────────────────────────────────────────────────────────────
- *   import { ShadowMap } from './shadow-map';
  *
  *   const sm = new ShadowMap({ resolution: 256, lightDir: [-0.5, -1] });
  *   sm.setWorldBounds(0, 0, 800, 600);

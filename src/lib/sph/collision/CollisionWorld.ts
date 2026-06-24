@@ -1,5 +1,11 @@
 // === src/lib/sph/types.ts ===
 
+
+import type {
+} from '../types';
+import {
+} from './CollisionEvents';
+
 export interface Vec2 {
   x: number;
   y: number;
@@ -815,7 +821,6 @@ export function resetIdCounter(): void { _nextId = 1; }
 
 // === src/lib/sph/collision/CollisionWorld.ts ===
 
-import type {
   RigidBody,
   ConvexShape,
   ContactConstraint,
@@ -825,7 +830,6 @@ import type {
   AABB,
   SPHWorld,
   BroadPhasePair,
-} from '../types';
 
 // vec2 utilities inlined below;
 // [esbuild-fix] import { computeAABB } from './AABB';
@@ -834,12 +838,10 @@ import type {
 // [esbuild-fix] import { ContactSolver } from './ContactSolver';
 // [esbuild-fix] import { PositionSolver } from './PositionSolver';
 // [esbuild-fix] import { SceneQuery } from './SceneQuery';
-import {
   CollisionEventDispatcher,
   type ActiveContactPair,
   type CollisionCallback,
   type CollisionEvent,
-} from './CollisionEvents';
 // computeContactInfo, createCircleBody, createBoxBody inlined above;
 
 export interface CollisionWorldConfig {

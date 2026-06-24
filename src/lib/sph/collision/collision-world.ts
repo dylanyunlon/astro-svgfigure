@@ -1,3 +1,4 @@
+
 import { AABB, aabbOverlap, computeAABB } from './AABB';
 import { BVHNode, BVHTree, refitBVH, insertLeaf, removeLeaf } from './BVHTree';
 import { sortAndSweep, BroadPair } from './SortAndSweep';
@@ -7,10 +8,11 @@ import { warmStart, solveConstraints, ConstraintCache } from './ContactSolver';
 import { SceneQuery, raycast, shapecast, overlapTest } from './SceneQuery';
 import { RigidBody, BodyHandle, BodyType } from './rigid-body';
 import {
-  CollisionEventDispatcher,
-  type ActiveContactPair,
 } from './CollisionEvents';
 import { Vec3, mat3Transpose, vec3Add, vec3Scale } from './math';
+
+  CollisionEventDispatcher,
+  type ActiveContactPair,
 
 export interface CollisionWorldConfig {
   maxBodies: number;

@@ -7,7 +7,12 @@
 //   Circle  ↔ Polygon
 //   Polygon ↔ Polygon  (SAT + Sutherland-Hodgman clipping)
 
+
 import {
+} from './math';
+import {
+} from './rigid-body';
+
   Vec2,
   vec2,
   vec2Add,
@@ -20,16 +25,13 @@ import {
   vec2LengthSq,
   vec2Normalize,
   vec2Distance,
-} from './math';
 
-import {
   RigidBody2D,
   ShapeKind,
   bodyToWorld,
   bodyDirToWorld,
   getWorldVertices,
   getWorldNormals,
-} from './rigid-body';
 
 // ─── Contact output ───────────────────────────────────────────────────────────
 // Compatible with the ContactConstraint in ../types.ts and ContactSolver.ts

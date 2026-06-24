@@ -111,7 +111,6 @@ function rrtOdtFit(v: Color3): Color3 {
  *
  * @example
  * ```ts
- * import { acesFilm } from './tone-mapping';
  *
  * const hdr: Color3 = [2.4, 1.1, 0.6];
  * const ldr = acesFilm(hdr);

@@ -47,7 +47,6 @@
  *
  * Integration
  * ─────────────────────────────────────────────────────────────────────────────
- *   import { CellAuraSystem, CellAuraPass } from './cell-aura';
  *
  *   const system = new CellAuraSystem(256);
  *   const pass   = new CellAuraPass(256);

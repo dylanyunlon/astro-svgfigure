@@ -33,40 +33,42 @@
 //   • CPU-only generators (DifferentialGrowth, Morphogenesis) don't require a
 //     GPUDevice and can be created even when WebGPU is unavailable.
 
+
 import {
+} from './reaction-diffusion';
+import {
+} from './physarum-sim';
+import {
+} from './differential-growth';
+import {
+} from './boids-compute';
+import {
+} from './turing-pattern';
+import {
+} from './natural-patterns';
+import {
+} from './morphogenesis';
+
   ReactionDiffusionSim,
   type RDSimConfig,
-} from './reaction-diffusion';
 
-import {
   PhysarumSimulation,
   type PhysarumParams,
-} from './physarum-sim';
 
-import {
   DifferentialGrowth,
   type DifferentialGrowthConfig,
-} from './differential-growth';
 
-import {
   BoidsCompute,
   type BoidsParams,
-} from './boids-compute';
 
-import {
   TuringPatternGenerator,
   type TuringPatternParams,
-} from './turing-pattern';
 
-import {
   NaturalPatternGenerator,
   type NaturalPatternParams,
-} from './natural-patterns';
 
-import {
   Morphogenesis,
   type MorphogenesisConfig,
-} from './morphogenesis';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types

@@ -57,6 +57,7 @@
 // Imports
 // ─────────────────────────────────────────────────────────────────────────────
 
+
 import { SpatialHashGrid }        from './SpatialHashGrid';
 import { NeighborListBuilder }    from './NeighborListBuilder';
 import { SPHGPUOrchestrator }     from './SPHGPUOrchestrator';
@@ -64,13 +65,8 @@ import { ParticleRenderer }       from './ParticleRenderer';
 import { BoundaryModel }          from './BoundaryModel';
 import { qosSpatial, type QoSProfileName } from './qosSpatial';
 import {
-  type GPUBufferSet, type SimParams, type ParticleData,
-  type ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
 } from './types';
 import {
-  CollisionWorld,
-  createCircleBody,
-  createBoxBody,
 } from './collision/CollisionWorld';
 import { SceneQuery }             from './collision/SceneQuery';
 import { ATRenderPipeline, type ATRenderPipelineConfig } from './at-render-pipeline';
@@ -78,6 +74,12 @@ import { EnvironmentFx, type EnvironmentFxConfig }       from './environment-fx'
 import { AudioPhysicsBridge }     from './audio-physics-bridge';
 import type { EmitterConfig, EmissionPattern }           from './emitter-strategy';
 import { ContinuousPattern }      from './emitter-strategy';
+
+  type GPUBufferSet, type SimParams, type ParticleData,
+  type ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
+  CollisionWorld,
+  createCircleBody,
+  createBoxBody,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants & adaptive thresholds

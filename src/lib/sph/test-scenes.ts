@@ -8,16 +8,18 @@
  * TestScene.validate() — return a list of failure messages (empty = pass)
  */
 
+
 import type { ParticleData, ObstacleData } from './types';
 import { MAX_PARTICLES } from './types';
 import {
-  CollisionWorld,
-  createCircleBody,
-  createBoxBody,
 } from './collision/CollisionWorld';
 import { qosToSpatial } from './qosSpatial';
 import { QOS_PRESETS } from './qosSpatial';
 import type { QoSProfileName } from './qosSpatial';
+
+  CollisionWorld,
+  createCircleBody,
+  createBoxBody,
 
 // ─── TestScene interface ──────────────────────────────────────────────────────
 

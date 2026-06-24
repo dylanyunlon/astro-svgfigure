@@ -40,7 +40,6 @@
  *
  * ─── Integration ───────────────────────────────────────────────────────────
  *
- *   import { FluidSurfaceMesh } from './fluid-surface-mesh';
  *
  *   const mesh = new FluidSurfaceMesh({
  *     gridW: 128, gridH: 96,

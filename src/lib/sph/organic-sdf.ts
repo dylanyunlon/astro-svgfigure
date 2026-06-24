@@ -11,7 +11,6 @@
  *
  * Usage
  * ─────────────────────────────────────────────────────────────────────────────
- *   import { organicOutline, OrganicSdfKind } from './organic-sdf';
  *
  *   // Sample the SDF for a given species at a UV coordinate:
  *   const d = organicOutline('cil-eye', 0.55, 0.48);

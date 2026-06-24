@@ -638,7 +638,6 @@ export class DracoGeometryLoader {
  *
  * @example
  * ```ts
- * import { decodeATBin } from './draco-geometry-loader';
  * const geo = await decodeATBin(fs.readFileSync('hexagon_gem.bin').buffer);
  * console.log(geo.vertexCount, geo.faceCount);
  * ```

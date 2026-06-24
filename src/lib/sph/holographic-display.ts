@@ -1313,7 +1313,6 @@ export function createSubtleHolographic(
 // § 13  Self-test
 //
 // Validates core utility functions and option defaults.
-// Run via: import { selfTest } from './holographic-display'; selfTest();
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function selfTest(): boolean {

@@ -28,11 +28,13 @@
  *   src/lib/sph/color-palette.ts           — RGB
  */
 
+
 import type { QoSProfile }        from './types';
 import type { MaterialType, PatternShader, SdfShape }
-                                   from './species-shader-registry';
 import { getSpeciesShaderConfig }  from './species-shader-registry';
 import { qosToSpatial }           from './qosSpatial';
+
+                                   from './species-shader-registry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Morphology — the five base morphologies derived from species semantics

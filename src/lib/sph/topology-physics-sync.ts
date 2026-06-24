@@ -75,20 +75,22 @@
  *   channels/physics/edge_routes.json  — resolved edge spline control points
  */
 
-import {
-  type CellPhysicsConfig,
-  cellsToBodies,
-  speciesToIndex,
-} from './cell-body-bridge';
 
+import {
+} from './cell-body-bridge';
 import type { FlowEdge }            from './edge-flow-renderer';
 import type { EmitterConfig }        from './emitter-strategy';
 import { ContinuousPattern }         from './emitter-strategy';
 import {
+} from './rigid-body';
+
+  type CellPhysicsConfig,
+  cellsToBodies,
+  speciesToIndex,
+
   createRigidBody,
   type RigidBody,
   type RigidBodyOptions,
-} from './rigid-body';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

@@ -43,7 +43,6 @@
  *
  * Usage
  * ─────────────────────────────────────────────────────────────────────────────
- *   import { ATUILLivePanel } from './at-uil-live-panel';
  *
  *   const panel = new ATUILLivePanel();
  *   await panel.init('/assets/uil-params.json');  // or pass params directly

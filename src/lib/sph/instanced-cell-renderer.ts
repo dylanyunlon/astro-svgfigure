@@ -50,10 +50,12 @@
  * Research: xiaodi #M769 — cell-pubsub-loop
  */
 
+
 import type { SdfShape, MaterialType, PatternShader, SdfShapeParams, MaterialParams }
-  from './species-shader-registry';
 import type { VisualProfile }     from './cell-visual-identity';
 import type { PhysicsUniforms }   from './physics-uniform-bridge';
+
+  from './species-shader-registry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants

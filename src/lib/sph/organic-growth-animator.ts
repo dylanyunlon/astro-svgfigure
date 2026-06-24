@@ -62,13 +62,15 @@
  * [ASTRO-ORGANIC-GROWTH] debug prefix.
  */
 
+
 import { Easing, type EasingFn } from '../tween-system';
 import {
+} from './morphogenesis';
+import { GOLDEN_ANGLE_RAD, cartesianAt } from './phyllotaxis';
+
   Morphogenesis,
   type MorphogenesisConfig,
   type LSystemPreset,
-} from './morphogenesis';
-import { GOLDEN_ANGLE_RAD, cartesianAt } from './phyllotaxis';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants

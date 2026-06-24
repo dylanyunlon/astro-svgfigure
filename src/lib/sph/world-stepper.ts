@@ -3,27 +3,16 @@
  * Main simulation loop orchestrating all physics modules.
  */
 
+
 import { SpatialHash, buildSpatialHash, queryNeighbors } from "./spatial-hash";
 import { DFSPHSolver, solvePressure, applyPressureForces } from "./dfsph-solver";
 import {
-  Particle as DfsphParticle,
-  pressureSolve as dfsphPressureSolve,
-  divergenceSolve as dfsphDivergenceSolve,
 } from "./dfsph-solver";
 import {
-  RigidBody,
-  integrateRigidBody,
-  applyImpulseToRigidBody,
-  getRigidBodyParticles,
 } from "./rigid-body";
 import {
-  applyBoundaryDensity,
-  clampParticlesToBounds,
-  BoundaryConfig,
 } from "./world-boundary";
 import {
-  computeFluidRigidCoupling,
-  transferMomentumToRigid,
 } from "./fluid-rigid-coupling";
 import { SpatialPhysics, QoSBridge, syncQoSParticles } from "./qos-spatial-bridge";
 import { CollisionWorld, createCollisionWorld } from "./collision/collision-world";
@@ -35,12 +24,25 @@ import { integrateRigidBodies } from "./rigid-body";
 import { clampToDomain } from "./domain";
 import { updateTrails } from "./trails";
 import { PerformanceBudget } from "./performance-budget";
-// V2 imports (only those not already imported above)
 import { createCollisionWorld } from './collision/collision-world';
 import { SceneQuery, createSceneQuery } from './collision/scene-query';
 import { stepDFSPH } from './dfsph';
 import { clampToDomain } from './domain';
 import { updateTrails as updateTrailsExt } from './trails';
+
+  Particle as DfsphParticle,
+  pressureSolve as dfsphPressureSolve,
+  divergenceSolve as dfsphDivergenceSolve,
+  RigidBody,
+  integrateRigidBody,
+  applyImpulseToRigidBody,
+  getRigidBodyParticles,
+  applyBoundaryDensity,
+  clampParticlesToBounds,
+  BoundaryConfig,
+  computeFluidRigidCoupling,
+  transferMomentumToRigid,
+// V2 imports (only those not already imported above)
 
 // ---------------------------------------------------------------------------
 // Types

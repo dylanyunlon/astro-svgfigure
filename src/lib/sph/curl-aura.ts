@@ -29,7 +29,6 @@
  *
  * Integration
  * ─────────────────────────────────────────────────────────────────────────────
- *   import { CurlAuraRenderer, packAuraData } from './curl-aura';
  *   import { ParticleInstancer, ortho } from './particle-instancing';
  *
  *   const particles = new ParticleInstancer(50000);
