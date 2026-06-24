@@ -11,6 +11,8 @@ import { SDFIconGPU, createSDFIconGPU } from './sdf-gpu-pass';
 import { initATShaderPipeline, listATShaders, getATProgram } from './at-shader-pipeline-bridge';
 import { safeCompile, checkFBO, drainErrors, setupContextLost } from './gpu-error-guard';
 import { GPUPerfMonitor } from './gpu-perf-monitor';
+import { parseUILParams, type UILParamsJson } from '../renderers/at-uil-bridge';
+import uilParamsJson from '../../../upstream/activetheory-assets/uil-params.json';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -79,6 +81,15 @@ export class GPURenderLoop {
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
   private frameCount = 0;
+
+  // UIL params — loaded once from uil-params.json, live-patchable at runtime
+  private uil: UILParamsJson = uilParamsJson as UILParamsJson;
+
+  // UIL-driven camera state
+  private cameraWobbleStrength = 0.1;
+
+  // UIL-driven shadow state
+  private shadowLightDir: [number, number, number] = [-0.5, -1.0, -0.3];
 
   // 状态
   private cells: CellData[] = [];
@@ -192,12 +203,200 @@ export class GPURenderLoop {
     this.edges = edges;
   }
 
+  /**
+   * 运行时替换 UIL 参数 (hot-reload / PubSub 推送时调用)。
+   * 不需要重新创建 GPU pass — 下一帧 _pushUILUniforms 会自动拾取。
+   */
+  setUILParams(params: UILParamsJson): void {
+    this.uil = params;
+  }
+
+  /**
+   * _pushUILUniforms — 在每帧 render 开始时把 UIL 参数推到各 pass 的 shader uniform。
+   *
+   * UIL key 格式 (来自 uil-params.json):
+   *   bloom:   "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomStrength"
+   *            "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomRadius"
+   *   shadow:  "SHADOW_Element_9_home_scene*" → lightDir via L_Element / CAMERA entries
+   *   fluid:   "VolumetricLight_home_fDensity"  (drives fluid curl strength)
+   *   pbr:     "ATPBR/ATPBR/Element_6_homeScene/uEnv", "uMRON", "uTint"
+   *   camera:  "CAMERA_Element_3_home_scenewobbleStrength"
+   */
+  private _pushUILUniforms(): void {
+    const gl = this.gl;
+    const uil = this.uil;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+    const getNum = (key: string, fallback: number): number => {
+      const v = uil[key];
+      if (typeof v === 'number') return v;
+      if (typeof v === 'string') { const n = parseFloat(v); return isNaN(n) ? fallback : n; }
+      return fallback;
+    };
+    const getVec3 = (key: string, fallback: [number,number,number]): [number,number,number] => {
+      const v = uil[key];
+      if (Array.isArray(v) && v.length >= 3) return [Number(v[0]), Number(v[1]), Number(v[2])];
+      return fallback;
+    };
+    const setUniform1f = (program: WebGLProgram, name: string, value: number): void => {
+      gl.useProgram(program);
+      const loc = gl.getUniformLocation(program, name);
+      if (loc !== null) gl.uniform1f(loc, value);
+    };
+    const setUniform3f = (program: WebGLProgram, name: string, v: [number,number,number]): void => {
+      gl.useProgram(program);
+      const loc = gl.getUniformLocation(program, name);
+      if (loc !== null) gl.uniform3f(loc, v[0], v[1], v[2]);
+    };
+    const setUniform4f = (program: WebGLProgram, name: string, arr: number[]): void => {
+      gl.useProgram(program);
+      const loc = gl.getUniformLocation(program, name);
+      if (loc !== null) gl.uniform4f(loc, arr[0] ?? 0, arr[1] ?? 0, arr[2] ?? 0, arr[3] ?? 0);
+    };
+
+    // ── 1. Bloom pass ─────────────────────────────────────────────────────────
+    // UIL keys for globalbloom variant (primary post-process bloom):
+    //   "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomStrength" = 0.3
+    //   "UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomRadius"   = 0.2
+    // Home scene bloom:
+    //   "UnrealBloomComposite/UnrealBloomComposite/home/bloomStrength"        = 3.82
+    //   "UnrealBloomComposite/UnrealBloomComposite/home/bloomRadius"          = 1.0
+    if (this.bloom?.program) {
+      const globalStrength = getNum(
+        'UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomStrength', 0.3,
+      );
+      const globalRadius = getNum(
+        'UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomRadius', 0.2,
+      );
+      const homeStrength = getNum(
+        'UnrealBloomComposite/UnrealBloomComposite/home/bloomStrength', 3.82,
+      );
+      const homeRadius = getNum(
+        'UnrealBloomComposite/UnrealBloomComposite/home/bloomRadius', 1.0,
+      );
+      const lumThreshold = getNum(
+        'UnrealBloomLuminosity/UnrealBloomLuminosity/globalbloom/luminosityThreshold', 0.0,
+      );
+      setUniform1f(this.bloom.program, 'globalBloom',        globalStrength);
+      setUniform1f(this.bloom.program, 'globalBloomRadius',  globalRadius);
+      setUniform1f(this.bloom.program, 'homeBloomStrength',  homeStrength);
+      setUniform1f(this.bloom.program, 'homeBloomRadius',    homeRadius);
+      setUniform1f(this.bloom.program, 'luminosityThreshold', lumThreshold);
+    }
+
+    // ── 2. Shadow pass ────────────────────────────────────────────────────────
+    // UIL shadow light position comes from SHADOW_Element_9_home_scene
+    //   "SHADOW_Element_9_home_sceneposition": [0, 6.51, 0]
+    // We derive a light direction vector from that position.
+    if (this.shadow?.program) {
+      const shadowPos = getVec3('SHADOW_Element_9_home_sceneposition', [0, 6.51, 0]);
+      // normalise position → direction (pointing from pos toward origin)
+      const len = Math.sqrt(shadowPos[0]**2 + shadowPos[1]**2 + shadowPos[2]**2) || 1;
+      this.shadowLightDir = [
+        -shadowPos[0] / len,
+        -shadowPos[1] / len,
+        -shadowPos[2] / len,
+      ];
+      setUniform3f(this.shadow.program, 'uLightDir', this.shadowLightDir);
+
+      // Shadow far plane from UIL
+      const shadowFar = getNum('SHADOW_Element_9_home_scenefar', 40);
+      setUniform1f(this.shadow.program, 'uShadowFar', shadowFar);
+    }
+
+    // ── 3. Fluid pass ─────────────────────────────────────────────────────────
+    // UIL: "VolumetricLight_home_fDensity" = 0.22  → drives fluid curl strength
+    //      "VolumetricLight_home_fDecay"   = 0.80  → fluid dissipation
+    if (this.fluid?.program) {
+      const fluidDensity = getNum('VolumetricLight_home_fDensity', 0.22);
+      const fluidDecay   = getNum('VolumetricLight_home_fDecay',   0.80);
+      setUniform1f(this.fluid.program, 'uCurlStrength',  fluidDensity);
+      setUniform1f(this.fluid.program, 'uDissipation',   fluidDecay);
+    }
+
+    // ── 4. PBR pass ───────────────────────────────────────────────────────────
+    // Primary AT PBR scene: ATPBR/ATPBR/Element_6_homeScene
+    //   "ATPBR/ATPBR/Element_6_homeScene/uEnv":  [1.5, 1]
+    //   "ATPBR/ATPBR/Element_6_homeScene/uMRON": [1, 1.3, 1, 1]
+    //   "ATPBR/ATPBR/Element_6_homeScene/uTint": "#e5f1ff"
+    if (this.pbr?.program) {
+      // uEnv — environment intensity [specular, diffuse]
+      const uEnvRaw = uil['ATPBR/ATPBR/Element_6_homeScene/uEnv'];
+      if (Array.isArray(uEnvRaw) && uEnvRaw.length >= 2) {
+        gl.useProgram(this.pbr.program);
+        const loc = gl.getUniformLocation(this.pbr.program, 'uEnv');
+        if (loc !== null) gl.uniform2f(loc, Number(uEnvRaw[0]), Number(uEnvRaw[1]));
+      }
+
+      // uMRON — metallic, roughness, occlusion, normal strength [4f]
+      const uMRONRaw = uil['ATPBR/ATPBR/Element_6_homeScene/uMRON'];
+      if (Array.isArray(uMRONRaw)) {
+        setUniform4f(this.pbr.program, 'uMRON', uMRONRaw.map(Number));
+      }
+
+      // uTint — hex color string → vec3
+      const uTintRaw = uil['ATPBR/ATPBR/Element_6_homeScene/uTint'];
+      if (typeof uTintRaw === 'string' && uTintRaw.startsWith('#')) {
+        const hex = uTintRaw.slice(1);
+        const r = parseInt(hex.slice(0,2), 16) / 255;
+        const g = parseInt(hex.slice(2,4), 16) / 255;
+        const b = parseInt(hex.slice(4,6), 16) / 255;
+        setUniform3f(this.pbr.program, 'uTint', [r, g, b]);
+      }
+
+      // PhysicalShader uParams (Fresnel, roughness overrides)
+      const physParams = uil['PhysicalShader/PhysicalShader/uParams'];
+      if (Array.isArray(physParams)) {
+        setUniform4f(this.pbr.program, 'uParams', physParams.map(Number));
+      }
+
+      // Shadow far / light dir (keep in sync with shadow pass)
+      setUniform3f(this.pbr.program, 'uLightDir', this.shadowLightDir);
+    }
+
+    // ── 5. Camera wobble → particle emitter strength ──────────────────────────
+    // UIL: "CAMERA_Element_3_home_scenewobbleStrength" = 0.1
+    // We expose this as cameraWobbleStrength and forward it to the particle pass
+    // as a velocity/turbulence scale.
+    const wobble = getNum('CAMERA_Element_3_home_scenewobbleStrength', 0.1);
+    this.cameraWobbleStrength = wobble;
+    if (this.particle?.program) {
+      setUniform1f(this.particle.program, 'uTurbulence', this.cameraWobbleStrength);
+    }
+
+    // ── 6. Glass pass ─────────────────────────────────────────────────────────
+    // UIL: "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uDistortStrength" = 8.06
+    //      "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uFresnelPow"      = 1.5
+    //      "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uRefractionRatio" = 1.0
+    if (this.glass?.program) {
+      const distort   = getNum('GlassCubeShader/GlassCubeShader/Element_0_home_scene/uDistortStrength', 8.06);
+      const fresnelPow = getNum('GlassCubeShader/GlassCubeShader/Element_0_home_scene/uFresnelPow', 1.5);
+      const refracRatio = getNum('GlassCubeShader/GlassCubeShader/Element_0_home_scene/uRefractionRatio', 1.0);
+      setUniform1f(this.glass.program, 'uDistortStrength', distort);
+      setUniform1f(this.glass.program, 'uFresnelPow',      fresnelPow);
+      setUniform1f(this.glass.program, 'uRefractionRatio', refracRatio);
+
+      // Fresnel tint color
+      const fresnelColor = uil['GlassCubeShader/GlassCubeShader/Element_0_home_scene/uFresnelColor'];
+      if (typeof fresnelColor === 'string' && fresnelColor.startsWith('#')) {
+        const hex = fresnelColor.slice(1);
+        const r = parseInt(hex.slice(0,2), 16) / 255;
+        const g = parseInt(hex.slice(2,4), 16) / 255;
+        const b = parseInt(hex.slice(4,6), 16) / 255;
+        setUniform3f(this.glass.program, 'uFresnelColor', [r, g, b]);
+      }
+    }
+  }
+
   /** 单帧渲染 — 执行全部 GPU pass，每 pass 带 error guard + perf 计时 */
   frame(dt: number): void {
     const gl = this.gl;
     this.frameCount++;
 
     this.perf.frameStart();
+
+    // ── UIL params → GPU uniforms (每帧开始时推送) ──
+    this._pushUILUniforms();
 
     // ── Pass 1: Fluid (鼠标流体) ──
     {
@@ -211,11 +410,10 @@ export class GPURenderLoop {
     }
 
     // ── Pass 2: Shadow map ──
-    const lightDir: [number, number, number] = [-0.5, -1.0, -0.3];
     {
       const t = this.perf.passStart('shadow');
       try {
-        this.shadow.render(this.cells, lightDir);
+        this.shadow.render(this.cells, this.shadowLightDir);
       } catch (e) {
         console.error('[GPURenderLoop] shadow pass error:', e);
       }
@@ -228,7 +426,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('pbr');
       try {
         if (this.pbr) {
-          this.pbr.render(this.cells, this.shadow.outputTexture, lightDir);
+          this.pbr.render(this.cells, this.shadow.outputTexture, this.shadowLightDir);
           cellFBO = this.pbr.outputTexture;
         } else {
           cellFBO = this._renderCellsFallback();
