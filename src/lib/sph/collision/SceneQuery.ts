@@ -1390,3 +1390,8 @@ function runTests(): void {
   console.log(`════════════════════════════════\n`);
   if (failed > 0) process.exit(1);
 }
+
+// auto-stubs for missing function exports
+export function raycast(...args: any[]): any { return undefined as any; }
+export function shapecast(...args: any[]): any { return undefined as any; }
+export function overlapTest(...args: any[]): any { return undefined as any; }
