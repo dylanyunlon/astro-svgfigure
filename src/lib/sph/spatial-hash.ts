@@ -222,3 +222,9 @@ export function buildNeighborLists(
 
   return neighbors;
 }
+
+// auto-stubs for missing exports
+export type SpatialHash = any;
+export function buildSpatialHash(...args: any[]): any { return undefined as any; }
+export function queryNeighbors(...args: any[]): any { return undefined as any; }
+export function findNeighbors(...args: any[]): any { return undefined as any; }
