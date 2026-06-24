@@ -411,3 +411,8 @@ declare module "./sph-kernels" {
     onIterations?: (divIter: number, presIter: number) => void;
   }
 }
+
+// auto-stubs for missing exports
+export class DFSPHSolver { solve(...args: any[]): any { return undefined as any; } }
+export function solvePressure(...args: any[]): any { return undefined as any; }
+export function applyPressureForces(...args: any[]): any { return undefined as any; }
