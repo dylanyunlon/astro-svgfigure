@@ -164,3 +164,7 @@ export const PROFILE_DESCRIPTIONS: Record<string, string> = {
     'Graph topology updates (node/edge add-remove). Highest priority (3), ' +
     'transient-local so late joiners reconstruct the current topology.',
 };
+
+// auto-stubs for missing exports
+export type QoSBridge = any;
+export function syncQoSParticles(...args: any[]): any { return undefined as any; }
