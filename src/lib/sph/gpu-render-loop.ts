@@ -1,3 +1,17 @@
+import { FluidGPU } from './fluid-gpu-pass';
+import { BloomGPU } from './bloom-gpu-pass';
+import { ShadowGPU } from './shadow-gpu-pass';
+import { EdgeGPU } from './edge-gpu-pass';
+import { MSDFTextGPU } from './msdf-gpu-pass';
+import { CompositeGPU } from './composite-gpu-pass';
+import { ParticleGPU } from './particle-gpu-pass';
+import { PBRCellGPU } from './pbr-gpu-pass';
+import { GlassGPU } from './glass-gpu-pass';
+import { SDFIconGPU, createSDFIconGPU } from './sdf-gpu-pass';
+import { initATShaderPipeline, listATShaders, getATProgram } from './at-shader-pipeline-bridge';
+import { safeCompile, checkFBO, drainErrors, setupContextLost } from './gpu-error-guard';
+import { GPUPerfMonitor } from './gpu-perf-monitor';
+
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
  *
@@ -14,19 +28,6 @@
 
 
 
-import { FluidGPU } from './fluid-gpu-pass';
-import { BloomGPU } from './bloom-gpu-pass';
-import { ShadowGPU } from './shadow-gpu-pass';
-import { EdgeGPU } from './edge-gpu-pass';
-import { MSDFTextGPU } from './msdf-gpu-pass';
-import { CompositeGPU } from './composite-gpu-pass';
-import { ParticleGPU } from './particle-gpu-pass';
-import { PBRCellGPU } from './pbr-gpu-pass';
-import { GlassGPU } from './glass-gpu-pass';
-import { SDFIconGPU, createSDFIconGPU } from './sdf-gpu-pass';
-import { initATShaderPipeline, listATShaders, getATProgram } from './at-shader-pipeline-bridge';
-import { safeCompile, checkFBO, drainErrors, setupContextLost } from './gpu-error-guard';
-import { GPUPerfMonitor } from './gpu-perf-monitor';
 
 export interface CellData {
   cell_id: string;

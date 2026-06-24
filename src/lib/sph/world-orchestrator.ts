@@ -1,3 +1,18 @@
+import { SpatialHashGrid }        from './SpatialHashGrid';
+import { NeighborListBuilder }    from './NeighborListBuilder';
+import { SPHGPUOrchestrator }     from './SPHGPUOrchestrator';
+import { ParticleRenderer }       from './ParticleRenderer';
+import { BoundaryModel }          from './BoundaryModel';
+import { qosSpatial, type QoSProfileName } from './qosSpatial';
+import { type GPUBufferSet, type SimParams, type ParticleData, type ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE } from './types';
+import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
+import { SceneQuery }             from './collision/SceneQuery';
+import { ATRenderPipeline, type ATRenderPipelineConfig } from './at-render-pipeline';
+import { EnvironmentFx, type EnvironmentFxConfig }       from './environment-fx';
+import { AudioPhysicsBridge }     from './audio-physics-bridge';
+import type { EmitterConfig, EmissionPattern }           from './emitter-strategy';
+import { ContinuousPattern }      from './emitter-strategy';
+
 /**
  * world-orchestrator.ts — 终极总控 (Ultimate World Orchestrator)
  *
@@ -57,37 +72,7 @@
 // Imports
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { SpatialHashGrid }        from './SpatialHashGrid';
-import { NeighborListBuilder }    from './NeighborListBuilder';
-import { SPHGPUOrchestrator }     from './SPHGPUOrchestrator';
-import { ParticleRenderer }       from './ParticleRenderer';
-import { BoundaryModel }          from './BoundaryModel';
-import { qosSpatial, type QoSProfileName } from './qosSpatial';
-<<<<<<< HEAD
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './types';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './collision/CollisionWorld';
-=======
-import { type GPUBufferSet, type SimParams, type ParticleData, type ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE } from './types';
-import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
-import { SceneQuery }             from './collision/SceneQuery';
-import { ATRenderPipeline, type ATRenderPipelineConfig } from './at-render-pipeline';
-import { EnvironmentFx, type EnvironmentFxConfig }       from './environment-fx';
-import { AudioPhysicsBridge }     from './audio-physics-bridge';
-import type { EmitterConfig, EmissionPattern }           from './emitter-strategy';
-import { ContinuousPattern }      from './emitter-strategy';
 
-<<<<<<< HEAD
-// [orphan5]   type GPUBufferSet, type SimParams, type ParticleData,
-// [orphan5]   type ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
-// [orphan5]   CollisionWorld,
-// [orphan5]   createCircleBody,
-// [orphan5]   createBoxBody,
-
-=======
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants & adaptive thresholds
 // ─────────────────────────────────────────────────────────────────────────────

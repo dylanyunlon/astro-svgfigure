@@ -1,3 +1,18 @@
+import { ATPBRMaterial, ATMatcapFresnel, type PBRParams, type MatcapParams } from './at-pbr-material.js';
+import { ATFlowerParticleRenderer, type FlowerEdgeSpline } from './at-flower-particle.js';
+import { ATSplineParticleLife, type EdgeSpline } from './at-spline-particle.js';
+import { ATWaterSurface, type ATWaterSurfaceConfig } from './at-water-surface.js';
+import { ATBloomPostProcess, type ATBloomParams } from './at-bloom-postprocess.js';
+import { NavierStokesFluid, type NavierStokesSplat } from './at-navier-stokes.js';
+import { ATVolumetricLight, type ATVolumetricLightParams } from './at-volumetric-light.js';
+import { ParticleCompositor } from './particle-compositor.js';
+import { getSpeciesShaderConfig, type SpeciesShaderConfig } from './species-shader-registry.js';
+import { getCellMaterial, type CellSpecies, type SpeciesMaterialDef } from './cell-material-system.js';
+import { AtmospherePass, type AtmosphereParams } from './atmosphere.js';
+import { EnvironmentFx, type EnvironmentFxConfig } from './environment-fx.js';
+import { PostProcessPipeline, type PostProcessStyle, type PostProcessParams } from './post-process.js';
+import { LutGenerator, type LutStyleName } from './lut-generator.js';
+
 /**
  * render-compositor.ts — M745: Final All-Pass Render Compositor
  * ─────────────────────────────────────────────────────────────────────────────
@@ -125,97 +140,6 @@
 // Imports
 // ─────────────────────────────────────────────────────────────────────────────
 
-<<<<<<< HEAD
-
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './at-pbr-material.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './at-flower-particle.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './at-spline-particle.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './at-water-surface.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './at-bloom-postprocess.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './at-navier-stokes.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './at-volumetric-light.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './particle-compositor.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './species-shader-registry.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './cell-material-system.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './atmosphere.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './environment-fx.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './post-process.js';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './lut-generator.js';
-
-// [orphan3]   ATPBRMaterial,
-// [orphan3]   ATMatcapFresnel,
-// [orphan3]   type PBRParams,
-// [orphan3]   type MatcapParams,
-
-// [orphan3]   ATFlowerParticleRenderer,
-// [orphan3]   type FlowerEdgeSpline,
-
-// [orphan3]   ATSplineParticleLife,
-// [orphan3]   type EdgeSpline,
-
-// [orphan3]   ATWaterSurface,
-// [orphan3]   type ATWaterSurfaceConfig,
-
-// [orphan3]   ATBloomPostProcess,
-// [orphan3]   type ATBloomParams,
-
-// [orphan3]   NavierStokesFluid,
-// [orphan3]   type NavierStokesSplat,
-
-// [orphan3]   ATVolumetricLight,
-// [orphan3]   type ATVolumetricLightParams,
-
-// [orphan3]   ParticleCompositor,
-
-// [orphan3]   getSpeciesShaderConfig,
-// [orphan3]   type SpeciesShaderConfig,
-
-// [orphan3]   getCellMaterial,
-// [orphan3]   type CellSpecies,
-// [orphan3]   type SpeciesMaterialDef,
-
-// [orphan3]   AtmospherePass,
-// [orphan3]   type AtmosphereParams,
-
-// [orphan3]   EnvironmentFx,
-// [orphan3]   type EnvironmentFxConfig,
-
-// [orphan3]   PostProcessPipeline,
-// [orphan3]   type PostProcessStyle,
-// [orphan3]   type PostProcessParams,
-
-// [orphan3]   LutGenerator,
-// [orphan3]   type LutStyleName,
-=======
-import { ATPBRMaterial, ATMatcapFresnel, type PBRParams, type MatcapParams } from './at-pbr-material.js';
-import { ATFlowerParticleRenderer, type FlowerEdgeSpline } from './at-flower-particle.js';
-import { ATSplineParticleLife, type EdgeSpline } from './at-spline-particle.js';
-import { ATWaterSurface, type ATWaterSurfaceConfig } from './at-water-surface.js';
-import { ATBloomPostProcess, type ATBloomParams } from './at-bloom-postprocess.js';
-import { NavierStokesFluid, type NavierStokesSplat } from './at-navier-stokes.js';
-import { ATVolumetricLight, type ATVolumetricLightParams } from './at-volumetric-light.js';
-import { ParticleCompositor } from './particle-compositor.js';
-import { getSpeciesShaderConfig, type SpeciesShaderConfig } from './species-shader-registry.js';
-import { getCellMaterial, type CellSpecies, type SpeciesMaterialDef } from './cell-material-system.js';
-import { AtmospherePass, type AtmosphereParams } from './atmosphere.js';
-import { EnvironmentFx, type EnvironmentFxConfig } from './environment-fx.js';
-import { PostProcessPipeline, type PostProcessStyle, type PostProcessParams } from './post-process.js';
-import { LutGenerator, type LutStyleName } from './lut-generator.js';
->>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LUT pass — inline WGSL (full-screen 3-D LUT grade blit)
