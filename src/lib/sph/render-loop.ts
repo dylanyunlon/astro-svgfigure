@@ -873,12 +873,4 @@ export {
   DEFAULT_CONFIG as RENDER_LOOP_DEFAULTS,
 };
 
-export type {
-  RenderLoopConfig,
-  TickerState,
-  TickerCallback,
-  ListenerHandle,
-  CellEventKind,
-  CellEvent,
-  CellEventHandler,
-};
+
