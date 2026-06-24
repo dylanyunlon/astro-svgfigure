@@ -113,20 +113,9 @@
 
 
 
-import type {
 import { VFXTimelineBuilder } from './vfx-timeline';
-// [orphan-import] import {
 import type { QoSProfileName } from './qosSpatial';
-
-} from './particle-effect-system';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './species-shader-registry';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './color-palette';
-
-} from './vfx-timeline';
-} from './color-palette';
-} from './topology-physics-sync';
+// [orphan-cleaned M1052] particle-effect-system, species-shader-registry, color-palette, topology-physics-sync imports inlined/removed
 
 // [orphan3]   ParticleEffectSystem,
 // [orphan3]   Vec2,

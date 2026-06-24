@@ -103,10 +103,7 @@
 
 
 
-import type {
 import type { CollisionEventDispatcher } from './collision/CollisionEvents';
-
-} from './collision/CollisionEvents';
 
 // [orphan3]   CollisionContactInfo,
 // [orphan3]   CollisionEvent,

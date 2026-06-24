@@ -826,16 +826,7 @@ export function resetIdCounter(): void { _nextId = 1; }
 
 // === src/lib/sph/collision/CollisionWorld.ts ===
 
-  RigidBody,
-  ConvexShape,
-  ContactConstraint,
-  RaycastHit,
-  OverlapResult,
-  Vec2,
-  AABB,
-  SPHWorld,
-  BroadPhasePair,
-
+// [orphan-cleaned M1052] RigidBody, ConvexShape, ContactConstraint, RaycastHit, OverlapResult, Vec2, AABB, SPHWorld, BroadPhasePair — all defined/inlined above
 // vec2 utilities inlined below;
 // [esbuild-fix] import { computeAABB } from './AABB';
 // [esbuild-fix] import { BVHTree } from './BVHTree';
@@ -843,11 +834,12 @@ export function resetIdCounter(): void { _nextId = 1; }
 // [esbuild-fix] import { ContactSolver } from './ContactSolver';
 // [esbuild-fix] import { PositionSolver } from './PositionSolver';
 // [esbuild-fix] import { SceneQuery } from './SceneQuery';
-  CollisionEventDispatcher,
-  type ActiveContactPair,
-  type CollisionCallback,
-  type CollisionEvent,
-// computeContactInfo, createCircleBody, createBoxBody inlined above;
+// [orphan-cleaned M1052] CollisionEventDispatcher, ActiveContactPair, CollisionCallback, CollisionEvent inlined above;
+
+
+
+
+
 
 export interface CollisionWorldConfig {
   /** Which broad-phase algorithm to use (default: 'bvh') */

@@ -43,30 +43,7 @@
 
 
 import type { World } from './world-stepper';
-import {
-
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './species-shader-registry';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './physics-uniform-bridge';
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './uil-species-live';
-
-} from './physics-uniform-bridge';
-} from './uil-species-live';
-
-// [orphan3]   getSpeciesShaderConfig,
-// [orphan3]   resolvePhysicsBindings,
-// [orphan3]   type SpeciesShaderConfig,
-// [orphan3]   type PhysicsBindings,
-
-// [orphan3]   samplePhysicsForBody,
-// [orphan3]   type PhysicsUniforms,
-
-// [orphan3]   initSpeciesLive,
-// [orphan3]   getSpeciesUniforms,
-// [orphan3]   physicsUniformsToState,
-// [orphan3]   type SpeciesUniformBag,
+// [orphan-cleaned M1052] species-shader-registry, physics-uniform-bridge, uil-species-live imports removed (inlined above)
 
 // ─── Output types ────────────────────────────────────────────────────────────
 

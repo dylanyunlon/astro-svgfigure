@@ -87,9 +87,9 @@
 
 
 import { ATShaderLoader } from './at-shader-loader.ts';
-import type {
+// [orphan-cleaned M1052]
 
-// [orphan-precise] /** Slimmed WebGL2 context reference carried by AstroRenderer. */
+/** Slimmed WebGL2 context reference carried by AstroRenderer. */
 interface AstroRenderer {
   gl: WebGL2RenderingContext;
 }

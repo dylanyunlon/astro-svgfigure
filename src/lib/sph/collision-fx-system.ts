@@ -67,11 +67,8 @@
 
 
 
-import type {
 import type { CollisionEventDispatcher } from './collision/CollisionEvents';
 import type { FlowerEdgeSpline, FlowerPoint3 } from './at-flower-particle';
-
-} from './collision/CollisionEvents';
 
 // [orphan-precise]   CollisionContactInfo,
 // [orphan-precise]   CollisionEvent,
