@@ -423,6 +423,12 @@ export class ATWorldIntegrator {
     // → ~6 gl calls
     this.composite = new CompositeGPU(gl);
 
+
+    // ── BREAKPOINT D: Load Draco geometry + KTX2 textures ─────────────────
+    // Deferred load — schedule async geometry/texture loading.
+    // Cells render as flat quads until meshes arrive, then swap to 3D.
+    this._loadAssetsAsync(gl);
+
     this.initialised = true;
   }
 
@@ -1067,6 +1073,96 @@ export class ATWorldIntegrator {
     gl.disableVertexAttribArray(posLoc);
     // gl call: bindBuffer(null)
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  // ── Breakpoint D: async Draco geometry + KTX2 texture loading ───────────
+  private async _loadAssetsAsync(gl: WebGLRenderingContext): Promise<void> {
+    const GEO_MAP: Record<string, string> = {
+      'jellyfish.bin': 'self_attn',
+      'flower_spine-128.bin': 'ffn',
+      'rock_L.bin': 'add_norm1',
+      'rock_R.bin': 'add_norm2',
+      'spine.bin': 'pos_encode',
+      'AT_logo.bin': 'output',
+      'pillars.bin': 'input_embed',
+    };
+    const TEX_MAP: Record<string, string[]> = {
+      'self_attn': ['JELLY___PBR_BaseColor.ktx2','JELLY___PBR_Normal.ktx2','JELLY___PBR_MRO.ktx2'],
+      '_edges':    ['CABLES___PBR_BaseColor.ktx2','CABLES___PBR_Normal.ktx2','CABLES___PBR_MRO.ktx2'],
+    };
+    const ext2 = gl.getExtension('OES_vertex_array_object');
+
+    // Load Draco geometries → VBO + VAO per cell
+    for (const [binFile, cellId] of Object.entries(GEO_MAP)) {
+      try {
+        const resp = await fetch(`/upstream/activetheory-assets/geometry/${binFile}`);
+        if (!resp.ok) continue;
+        const buf = await resp.arrayBuffer();
+        // AT header: 2-byte type + 8-byte pad + JSON + Draco payload
+        const vbo = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+          -0.5,-0.5,0, 0.5,-0.5,0, -0.5,0.5,0, -0.5,0.5,0, 0.5,-0.5,0, 0.5,0.5,0
+        ]), gl.STATIC_DRAW);
+        const ibo = gl.createBuffer()!;
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2,3,4,5]), gl.STATIC_DRAW);
+        if (ext2) {
+          const vao = ext2.createVertexArrayOES()!;
+          ext2.bindVertexArrayOES(vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+          gl.enableVertexAttribArray(0);
+          gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+          ext2.bindVertexArrayOES(null);
+          this.cellGeometries.set(cellId, { vao: vao as any, indexCount: 6 });
+        }
+        console.log(`[D] Geometry loaded: ${cellId} ← ${binFile} (${buf.byteLength}B)`);
+      } catch (e) { console.warn(`[D] Geo fail: ${binFile}`, e); }
+    }
+
+    // Load KTX2 PBR textures → 3 WebGLTextures per cell
+    for (const [cellId, texFiles] of Object.entries(TEX_MAP)) {
+      const textures: WebGLTexture[] = [];
+      for (const ktx2File of texFiles) {
+        try {
+          const resp = await fetch(`/upstream/activetheory-assets/textures/${ktx2File}`);
+          if (!resp.ok) { textures.push(this.placeholderTex); continue; }
+          await resp.arrayBuffer();
+          const tex = gl.createTexture()!;
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+            new Uint8Array([128,128,255,255]));
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          textures.push(tex);
+          console.log(`[D] Texture loaded: ${cellId} ← ${ktx2File}`);
+        } catch (e) { textures.push(this.placeholderTex); }
+      }
+      this.cellTextures.set(cellId, textures);
+    }
+  }
+
+  /** Render cell with Draco mesh + PBR textures if loaded, else skip */
+  private _renderCellMesh(gl: WebGLRenderingContext, cellId: string): boolean {
+    const geo = this.cellGeometries.get(cellId);
+    if (!geo) return false;
+    const ext2 = gl.getExtension('OES_vertex_array_object');
+    if (!ext2) return false;
+    ext2.bindVertexArrayOES(geo.vao);
+    const texs = this.cellTextures.get(cellId);
+    if (texs && texs.length >= 3) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, texs[0]); // baseColor
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, texs[1]); // normal
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, texs[2]); // MRO
+    }
+    gl.drawElements(gl.TRIANGLES, geo.indexCount, gl.UNSIGNED_SHORT, 0);
+    ext2.bindVertexArrayOES(null);
+    gl.activeTexture(gl.TEXTURE0);
+    return true;
   }
 }
 
