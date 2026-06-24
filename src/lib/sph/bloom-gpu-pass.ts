@@ -8,16 +8,13 @@
  *
  * Pass 链 (每帧):
  *   luminosity extract → downsample ×4 → gaussian blur H+V 每级 → upsample ×4 → additive composite
+ *
+ * M1131: bloomStrength=1.5, bloomRadius=0.6, bloomTintColor=warm(1,0.95,0.85), threshold=0.4
  */
 
-
-
+import { getShader } from '../shaders/ShaderLoader';
 
 // ─── WebGL1 全屏 quad vertex shader ──────────────────────────────────────────
-
-
-
-import { getShader } from '../shaders/ShaderLoader';
 
 const BLOOM_VERT = /* glsl */ `
 precision highp float;
@@ -68,7 +65,9 @@ void main() {
 `;
 
 // ─── Composite (additive blend) Fragment Shader ──────────────────────────────
-// 将bloom金字塔叠加回原始图像; 支持强度控制
+// 将bloom金字塔叠加回原始图像; 支持强度、半径权重、暖色色调控制
+// uRadius: 控制金字塔层权重分布 (0.0=只取最清晰层, 1.0=均匀扩散)
+// uTintColor: bloom 叠加时的色调倍乘 (暖色 vec3(1.0, 0.95, 0.85))
 const COMPOSITE_FRAG = /* glsl */ `
 precision highp float;
 varying vec2 vUv;
@@ -78,12 +77,21 @@ uniform sampler2D uBloom1;
 uniform sampler2D uBloom2;
 uniform sampler2D uBloom3;
 uniform float uStrength;
+uniform float uRadius;
+uniform vec3  uTintColor;
 void main() {
     vec4 base = texture2D(uBase, vUv);
-    vec4 bloom = texture2D(uBloom0, vUv) * 0.5;
-    bloom += texture2D(uBloom1, vUv) * 0.25;
-    bloom += texture2D(uBloom2, vUv) * 0.15;
-    bloom += texture2D(uBloom3, vUv) * 0.10;
+    // radius 越大，模糊层权重越高 → 光晕越宽
+    float w0 = mix(0.50, 0.25, uRadius);
+    float w1 = mix(0.25, 0.25, uRadius);
+    float w2 = mix(0.15, 0.25, uRadius);
+    float w3 = mix(0.10, 0.25, uRadius);
+    vec4 bloom = texture2D(uBloom0, vUv) * w0;
+    bloom += texture2D(uBloom1, vUv) * w1;
+    bloom += texture2D(uBloom2, vUv) * w2;
+    bloom += texture2D(uBloom3, vUv) * w3;
+    // 暖色色调: bloom.rgb 乘以 tint
+    bloom.rgb *= uTintColor;
     gl_FragColor = base + bloom * uStrength;
 }
 `;
@@ -108,19 +116,29 @@ void main() {
 interface BloomConfig {
   width: number;
   height: number;
-  threshold: number;   // 亮度阈值 (0.7 ~ 0.9)
-  knee: number;        // 软膝部 (0.1)
-  strength: number;    // bloom 强度倍数 (1.0)
-  levels: number;      // 金字塔层数 (4)
+  /** 亮度阈值: 低于此值的像素不做 bloom (M1131: 0.4 — 过滤暗区域) */
+  threshold: number;
+  /** 软膝部 (0.1) */
+  knee: number;
+  /** bloom 强度倍数 (M1131: 1.5) */
+  strength: number;
+  /** 金字塔层数 (4) */
+  levels: number;
+  /** bloom 扩散半径权重 0..1 (M1131: 0.6) */
+  radius: number;
+  /** bloom 色调 RGB (M1131: 暖色 [1.0, 0.95, 0.85]) */
+  tintColor: [number, number, number];
 }
 
 const DEFAULT_BLOOM: BloomConfig = {
   width: 1024,
   height: 1024,
-  threshold: 0.8,
+  threshold: 0.4,       // M1131: 过滤暗区域 (原 0.8)
   knee: 0.1,
-  strength: 1.2,
+  strength: 1.5,        // M1131: 增大强度 (原 1.2)
   levels: 4,
+  radius: 0.6,          // M1131: 扩散半径 (新增)
+  tintColor: [1.0, 0.95, 0.85],  // M1131: 暖色色调 (新增)
 };
 
 // 单层 FBO + 纹理
@@ -225,9 +243,10 @@ export class BloomGPU {
 
   step(inputTex: WebGLTexture): WebGLTexture {
     const gl = this.gl;
-    const { width, height, levels, threshold, knee, strength } = this.cfg;
+    const { width, height, levels, threshold, knee, strength, radius, tintColor } = this.cfg;
 
     // ── Pass A: Luminosity threshold → lumRT ──
+    // threshold=0.4: 只有足够亮的像素参与 bloom，暗区域不受影响
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.lumRT.fbo);
     gl.viewport(0, 0, width, height);
     gl.useProgram(this.lumProg);
@@ -277,6 +296,7 @@ export class BloomGPU {
     }
 
     // ── Pass D: Additive composite → lumRT (重用作输出 RT) ──
+    // uniforms: bloomStrength=1.5, bloomRadius=0.6, bloomTintColor=warm
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.lumRT.fbo);
     gl.viewport(0, 0, width, height);
     gl.useProgram(this.compositeProg);
@@ -301,7 +321,16 @@ export class BloomGPU {
     gl.bindTexture(gl.TEXTURE_2D, this.pyramid[3].tex);
     gl.uniform1i(gl.getUniformLocation(this.compositeProg, 'uBloom3'), 4);
 
+    // bloomStrength uniform (1.5)
     gl.uniform1f(gl.getUniformLocation(this.compositeProg, 'uStrength'), strength);
+    // bloomRadius uniform (0.6) — 控制扩散层权重分布
+    gl.uniform1f(gl.getUniformLocation(this.compositeProg, 'uRadius'), radius);
+    // bloomTintColor uniform — 暖色 vec3(1.0, 0.95, 0.85)
+    gl.uniform3f(
+      gl.getUniformLocation(this.compositeProg, 'uTintColor'),
+      tintColor[0], tintColor[1], tintColor[2]
+    );
+
     this._drawQuad(this.compositeProg);
 
     return this.lumRT.tex;
