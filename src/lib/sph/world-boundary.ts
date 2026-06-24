@@ -427,3 +427,8 @@ function _createPolygonWall(
     cfg.wallLayers ?? 3
   );
 }
+
+// auto-stubs for missing exports
+export type BoundaryConfig = any;
+export function applyBoundaryDensity(...args: any[]): any { return undefined as any; }
+export function clampParticlesToBounds(...args: any[]): any { return undefined as any; }
