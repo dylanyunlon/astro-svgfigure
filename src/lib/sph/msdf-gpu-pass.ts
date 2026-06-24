@@ -11,6 +11,12 @@
  *   - MSDF atlas 先用 1×1 白色占位纹理, 异步加载真实 atlas 后替换
  *   - fragment: median(r,g,b) → SDF → smoothstep → alpha
  *
+ * M1138 — 新增视觉效果:
+ *   1. 阴影   — offset (1px NDC) 半透明黑色，额外 shadow draw call
+ *   2. Glow   — SDF halo 区域 species color × 0.3 发光
+ *   3. 重要性 — self_attn 1.4×, output 1.2×, 其他 1.0×
+ *   4. Hover  — hover 状态 opacity 从 base 渐变到 1.0
+ *
  * 7 个 cell 标签 (SPECIES_PIPELINE_ORDER):
  *   input_embed | pos_encode | self_attn | add_norm1 | ffn | add_norm2 | output
  *
@@ -99,6 +105,31 @@ export const CELL_LABELS: readonly string[] = [
   'output',
 ] as const;
 
+// ─── M1138: Importance-based font size multipliers ────────────────────────────
+
+/**
+ * Per-label font size multiplier.
+ * self_attn is the architectural core → largest.
+ * output is the final representation → medium-large.
+ * All others render at 1× base size.
+ */
+const LABEL_SIZE_SCALE: Readonly<Record<string, number>> = {
+  self_attn: 1.4,
+  output:    1.2,
+};
+
+/** Return the importance scale for a given label (default 1.0). */
+function importanceScale(label: string): number {
+  return LABEL_SIZE_SCALE[label] ?? 1.0;
+}
+
+// ─── M1138: Shadow pixel offset in NDC ───────────────────────────────────────
+//
+// 1 screen-pixel in NDC ≈ 2 / viewportHeight.
+// We hard-code 0.003 (≈1.2px on a 800px-tall canvas) which looks good at
+// typical browser viewport sizes.  Callers can override via shadowOffsetNDC.
+const DEFAULT_SHADOW_OFFSET_NDC = 0.003;
+
 // ─── MSDFTextGPU ──────────────────────────────────────────────────────────────
 
 /**
@@ -111,7 +142,7 @@ export const CELL_LABELS: readonly string[] = [
  *
  * // inside render loop:
  * CELL_LABELS.forEach((label, i) => {
- *   msdf.drawLabel(label, cellX[i], cellY[i], cellW[i], 0.04, [1,1,1], 1.0);
+ *   msdf.drawLabel(label, cellX[i], cellY[i], 0.04, [1,1,1], 1.0, false);
  * });
  * ```
  */
@@ -125,12 +156,16 @@ export class MSDFTextGPU {
   private aPositionLoc!: number;
   private aUvLoc!: number;
 
-  // Uniform locations
+  // Uniform locations — base
   private uMsdfTextureLoc!: WebGLUniformLocation | null;
   private uColorLoc!: WebGLUniformLocation | null;
   private uOpacityLoc!: WebGLUniformLocation | null;
   private uOutlineWidthLoc!: WebGLUniformLocation | null;
   private uOutlineColorLoc!: WebGLUniformLocation | null;
+  // Uniform locations — M1138
+  private uShadowModeLoc!: WebGLUniformLocation | null;
+  private uGlowColorLoc!: WebGLUniformLocation | null;
+  private uGlowRadiusLoc!: WebGLUniformLocation | null;
 
   // MSDF atlas texture — starts as 1×1 white placeholder
   private atlasTex!: WebGLTexture;
@@ -178,14 +213,16 @@ export class MSDFTextGPU {
   }
 
   /**
-   * Draw one cell label.  Call once per frame per visible label.
+   * Draw one cell label with shadow + glow + importance sizing + hover alpha.
    *
    * @param label      e.g. "self_attn"
    * @param ndcX       NDC x of glyph run origin (-1..1)
    * @param ndcY       NDC y of baseline (-1..1)
-   * @param fontSize   NDC height of one em (e.g. 0.04)
-   * @param color      RGB [0..1]
-   * @param opacity    alpha [0..1]
+   * @param fontSize   NDC height of one em (e.g. 0.04) — scaled by importance internally
+   * @param color      RGB [0..1] — also used for glow at 0.3 intensity
+   * @param opacity    base alpha [0..1]; boosted toward 1.0 on hover
+   * @param hovered    whether this label's parent cell is currently hovered
+   * @param shadowOffsetNDC  optional override for shadow pixel offset (default 0.003)
    */
   drawLabel(
     label: string,
@@ -194,43 +231,94 @@ export class MSDFTextGPU {
     fontSize: number,
     color: [number, number, number] = [1, 1, 1],
     opacity: number = 1.0,
+    hovered: boolean = false,
+    shadowOffsetNDC: number = DEFAULT_SHADOW_OFFSET_NDC,
   ): void {
     const gl = this.gl;
     const entry = this.cellBufs.get(label);
     if (!entry || entry.count === 0) return;
 
-    // Rebuild VBO with the current ndcX/ndcY/fontSize (geometry changes per frame)
-    const data = this._buildLabelGeometry(label, ndcX, ndcY, fontSize);
+    // M1138 #3 — scale font size by importance
+    const scaledFontSize = fontSize * importanceScale(label);
+
+    // M1138 #4 — hover alpha: lerp base opacity toward 1.0
+    const hoverBoost = hovered ? 0.4 : 0.0;
+    const finalOpacity = Math.min(1.0, opacity + hoverBoost);
+
+    // Build geometry at the (possibly importance-scaled) font size
+    const data = this._buildLabelGeometry(label, ndcX, ndcY, scaledFontSize);
     if (data.length === 0) return;
 
     gl.useProgram(this.prog);
 
-    // Bind / upload vertex data
+    // Shared blend state
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    // ── M1138 #1: Shadow pass ────────────────────────────────────────────────
+    // Draw the shadow first (underneath) using a vertically-shifted copy.
+    const shadowData = this._buildLabelGeometry(
+      label,
+      ndcX + shadowOffsetNDC,
+      ndcY - shadowOffsetNDC,
+      scaledFontSize,
+    );
+    if (shadowData.length > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, entry.buf);
+      gl.bufferData(gl.ARRAY_BUFFER, shadowData, gl.DYNAMIC_DRAW);
+
+      const stride = 4 * 4;
+      gl.enableVertexAttribArray(this.aPositionLoc);
+      gl.vertexAttribPointer(this.aPositionLoc, 2, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(this.aUvLoc);
+      gl.vertexAttribPointer(this.aUvLoc, 2, gl.FLOAT, false, stride, 8);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
+      gl.uniform1i(this.uMsdfTextureLoc, 0);
+
+      // Shadow uniforms
+      gl.uniform3f(this.uColorLoc, 0, 0, 0);
+      gl.uniform1f(this.uOpacityLoc, finalOpacity);
+      gl.uniform1f(this.uOutlineWidthLoc, 0.0);
+      gl.uniform3f(this.uOutlineColorLoc, 0, 0, 0);
+      gl.uniform1f(this.uShadowModeLoc, 1.0);  // shadow pass
+      gl.uniform3f(this.uGlowColorLoc, 0, 0, 0);
+      gl.uniform1f(this.uGlowRadiusLoc, 0.0);
+
+      gl.drawArrays(gl.TRIANGLES, 0, shadowData.length / 4);
+    }
+
+    // ── M1138 #2 + #4: Normal pass with glow + hover opacity ────────────────
     gl.bindBuffer(gl.ARRAY_BUFFER, entry.buf);
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
 
-    // attribute: position (xy) + uv (zw) — stride 4 floats, 16 bytes
-    const stride = 4 * 4; // 4 floats × 4 bytes
+    const stride = 4 * 4;
     gl.enableVertexAttribArray(this.aPositionLoc);
     gl.vertexAttribPointer(this.aPositionLoc, 2, gl.FLOAT, false, stride, 0);
     gl.enableVertexAttribArray(this.aUvLoc);
     gl.vertexAttribPointer(this.aUvLoc, 2, gl.FLOAT, false, stride, 8);
 
-    // Uniforms
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
     gl.uniform1i(this.uMsdfTextureLoc, 0);
+
+    // M1138 #2 — glow colour = species colour × 0.3
+    const glowColor: [number, number, number] = [
+      color[0] * 0.3,
+      color[1] * 0.3,
+      color[2] * 0.3,
+    ];
+
     gl.uniform3f(this.uColorLoc, color[0], color[1], color[2]);
-    gl.uniform1f(this.uOpacityLoc, opacity);
+    gl.uniform1f(this.uOpacityLoc, finalOpacity);
     gl.uniform1f(this.uOutlineWidthLoc, 0.0);
     gl.uniform3f(this.uOutlineColorLoc, 0, 0, 0);
+    gl.uniform1f(this.uShadowModeLoc, 0.0);   // normal pass
+    gl.uniform3f(this.uGlowColorLoc, glowColor[0], glowColor[1], glowColor[2]);
+    gl.uniform1f(this.uGlowRadiusLoc, 0.08);  // SDF units: ~1.5px halo
 
-    // Blend for MSDF alpha
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-    // One draw call for the whole label (all characters, 2 triangles each)
-    const vertexCount = (data.length / 4); // 4 floats per vertex
+    const vertexCount = data.length / 4;
     gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
 
     gl.disableVertexAttribArray(this.aPositionLoc);
@@ -247,14 +335,18 @@ export class MSDFTextGPU {
     fontSize: number = 0.04,
     colors?: Array<[number, number, number]>,
     opacities?: number[],
+    hoveredIndex?: number,
   ): void {
     const n = CELL_LABELS.length;
     for (let i = 0; i < n; i++) {
-      const label  = CELL_LABELS[i];
-      const ndcX   = -1.0 + (2.0 / n) * (i + 0.5) - this._labelWidth(label, fontSize) * 0.5;
-      const color: [number, number, number]  = colors?.[i]  ?? [1, 1, 1];
-      const alpha  = opacities?.[i] ?? 1.0;
-      this.drawLabel(label, ndcX, ndcYBaseline, fontSize, color, alpha);
+      const label = CELL_LABELS[i];
+      // Compute ndcX accounting for scaled label width so text stays centred
+      const scaledFont = fontSize * importanceScale(label);
+      const ndcX  = -1.0 + (2.0 / n) * (i + 0.5) - this._labelWidth(label, scaledFont) * 0.5;
+      const color: [number, number, number] = colors?.[i] ?? [1, 1, 1];
+      const alpha = opacities?.[i] ?? 1.0;
+      const hovered = (hoveredIndex === i);
+      this.drawLabel(label, ndcX, ndcYBaseline, fontSize, color, alpha, hovered);
     }
   }
 
@@ -317,6 +409,11 @@ export class MSDFTextGPU {
     this.uOpacityLoc      = gl.getUniformLocation(prog, 'uOpacity');
     this.uOutlineWidthLoc = gl.getUniformLocation(prog, 'uOutlineWidth');
     this.uOutlineColorLoc = gl.getUniformLocation(prog, 'uOutlineColor');
+
+    // M1138 — new uniforms
+    this.uShadowModeLoc   = gl.getUniformLocation(prog, 'uShadowMode');
+    this.uGlowColorLoc    = gl.getUniformLocation(prog, 'uGlowColor');
+    this.uGlowRadiusLoc   = gl.getUniformLocation(prog, 'uGlowRadius');
   }
 
   // ─── Private: atlas texture ──────────────────────────────────────────────────
