@@ -184,7 +184,7 @@ export interface WorldOrchestratorConfig {
 // GPU buffer helpers (mirrored from SPHWorld)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function makeStorageBuf(device: GPUDevice, byteLen: number, label: string): GPUBuffer {
+function makeStorageBuf(device: any, byteLen: number, label: string): any {
   return device.createBuffer({
     label,
     size:  Math.max(byteLen, 4),
@@ -192,7 +192,7 @@ function makeStorageBuf(device: GPUDevice, byteLen: number, label: string): GPUB
   });
 }
 
-function allocParticleBuffers(device: GPUDevice): GPUBufferSet {
+function allocParticleBuffers(device: any): GPUBufferSet {
   const n4 = MAX_PARTICLES * 4;
   return {
     posX:     makeStorageBuf(device, n4, 'orch-posX'),
@@ -238,10 +238,10 @@ function makeSimParams(domainW: number, domainH: number, profile: QoSProfileName
 export class WorldOrchestrator {
   // ── Canvas & WebGPU ────────────────────────────────────────────────────────
   private canvas:   HTMLCanvasElement;
-  private ctx!:     GPUCanvasContext;
-  private adapter!: GPUAdapter;
-  private device!:  GPUDevice;
-  private format!:  GPUTextureFormat;
+  private ctx!:     any;
+  private adapter!: any;
+  private device!:  any;
+  private format!:  any;
 
   // ── Core SPH subsystems ────────────────────────────────────────────────────
   private grid!:         SpatialHashGrid;
@@ -515,7 +515,7 @@ export class WorldOrchestrator {
 
     // GPU buffers
     if (this.gpuBufs) {
-      (Object.values(this.gpuBufs) as GPUBuffer[]).forEach((b) => {
+      (Object.values(this.gpuBufs) as any[]).forEach((b) => {
         try { b.destroy(); } catch { /* already gone */ }
       });
     }
@@ -991,7 +991,7 @@ export class WorldOrchestrator {
   private _uploadParticles(): void {
     const { x, y, vx, vy, species, count } = this.cpuPos;
     const dev = this.device;
-    const sub = (buf: GPUBuffer, data: ArrayBufferView, n: number) =>
+    const sub = (buf: any, data: ArrayBufferView, n: number) =>
       dev.queue.writeBuffer(buf, 0, data, 0, n);
 
     sub(this.gpuBufs.posX,    x,       count);

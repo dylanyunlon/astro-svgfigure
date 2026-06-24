@@ -50,10 +50,24 @@ export interface ObstacleData {
 }
 
 export interface NeighborCSR {
-  offsetBuf: any; // any when WebGPU available, WebGLBuffer otherwise
+  offsetBuf: any; // any — WebGPU GPUBuffer or WebGLBuffer
   listBuf: any;
   offsetCPU: Int32Array;
   listCPU: Int32Array;
+}
+
+/** Particle GPU buffer set — typed as any to avoid WebGPU type leakage in WebGL2 builds. */
+export interface GPUBufferSet {
+  posX: any;
+  posY: any;
+  velX: any;
+  velY: any;
+  density: any;
+  pressure: any;
+  forceX: any;
+  forceY: any;
+  species: any;
+  count: any;
 }
 
 export interface QoSProfile {
