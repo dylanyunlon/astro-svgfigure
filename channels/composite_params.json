@@ -40,7 +40,61 @@
       "render_order": 0,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 1
+      "outgoing_edge_count": 1,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "polySDF",
+          "sdf_radius": 0.38,
+          "glow_intensity": 0.85,
+          "glow_color": [
+            1.0,
+            0.435,
+            0.0
+          ],
+          "fresnel_power": 3.5,
+          "noise_scale": 0.7,
+          "noise_speed": 0.45,
+          "edge_softness": 0.12
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.4,
+            "bloomScale": 1.0,
+            "brightness": 1.3
+          },
+          "glow": {
+            "distance": 18,
+            "outerStrength": 2.5,
+            "innerStrength": 1.2,
+            "color": "0xFF6F00"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              5
+            ],
+            "blur": 7,
+            "alpha": 0.35,
+            "color": "0x000000"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 0,
+          "opacity": 0.97,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.0247,
+          "animation": {
+            "speed": 1.7,
+            "phase_offset": 0.0,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "coarse_dom_tree",
@@ -72,7 +126,61 @@
       "render_order": 1,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdCircle",
+          "sdf_radius": 0.083,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.3765,
+            0.4902,
+            0.5451
+          ],
+          "fresnel_power": 2.0,
+          "noise_scale": 0.35,
+          "noise_speed": 0.25,
+          "edge_softness": 0.075
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.735,
+            "bloomScale": 0.336,
+            "brightness": 1.01
+          },
+          "glow": {
+            "distance": 8,
+            "outerStrength": 0.575,
+            "innerStrength": 0.136,
+            "color": "0x607D8B"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.286,
+            "color": "0x263238"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 1,
+          "opacity": 0.86,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.9365,
+          "animation": {
+            "speed": 0.55,
+            "phase_offset": 0.125,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "code_linking",
@@ -104,7 +212,61 @@
       "render_order": 2,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 2,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.25,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "content_align",
@@ -136,7 +298,61 @@
       "render_order": 3,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 3,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.472,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.375,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "dec_conv1",
@@ -168,7 +384,61 @@
       "render_order": 4,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.75,
+          "glow_intensity": 0.65,
+          "glow_color": [
+            0.8784,
+            0.251,
+            0.9843
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.05
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.425,
+            "bloomScale": 1.08,
+            "brightness": 1.228
+          },
+          "glow": {
+            "distance": 17,
+            "outerStrength": 2.125,
+            "innerStrength": 0.88,
+            "color": "0xE040FB"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 7,
+            "alpha": 0.293,
+            "color": "0x4A148C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 4,
+          "opacity": 0.96,
+          "blend_mode": "NORMAL",
+          "scale_factor": 0.9309,
+          "animation": {
+            "speed": 1.48,
+            "phase_offset": 0.5,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "dec_conv2",
@@ -200,7 +470,61 @@
       "render_order": 5,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.75,
+          "glow_intensity": 0.65,
+          "glow_color": [
+            0.8784,
+            0.251,
+            0.9843
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.05
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.425,
+            "bloomScale": 1.08,
+            "brightness": 1.228
+          },
+          "glow": {
+            "distance": 17,
+            "outerStrength": 2.125,
+            "innerStrength": 0.88,
+            "color": "0xE040FB"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 7,
+            "alpha": 0.293,
+            "color": "0x4A148C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 5,
+          "opacity": 0.96,
+          "blend_mode": "NORMAL",
+          "scale_factor": 0.9309,
+          "animation": {
+            "speed": 1.48,
+            "phase_offset": 0.625,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "dec_upsamp",
@@ -232,7 +556,61 @@
       "render_order": 6,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdCircle",
+          "sdf_radius": 0.45,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            1.0,
+            0.8431,
+            0.251
+          ],
+          "fresnel_power": 2.4,
+          "noise_scale": 0.22,
+          "noise_speed": 0.2,
+          "edge_softness": 0.06
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.7,
+            "bloomScale": 0.42,
+            "brightness": 1.035
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.75,
+            "innerStrength": 0.22,
+            "color": "0xFFD740"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.213,
+            "color": "0xF57F17"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 6,
+          "opacity": 0.92,
+          "blend_mode": "NORMAL",
+          "scale_factor": 0.9309,
+          "animation": {
+            "speed": 0.65,
+            "phase_offset": 0.75,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "display_errors",
@@ -264,7 +642,61 @@
       "render_order": 7,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.8,
+          "glow_intensity": 0.8,
+          "glow_color": [
+            1.0,
+            0.6706,
+            0.251
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.048
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.35,
+            "bloomScale": 1.26,
+            "brightness": 1.28
+          },
+          "glow": {
+            "distance": 19,
+            "outerStrength": 2.5,
+            "innerStrength": 1.06,
+            "color": "0xFFAB40"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              5
+            ],
+            "blur": 8,
+            "alpha": 0.238,
+            "color": "0xBF360C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 7,
+          "opacity": 0.97,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.6202,
+          "animation": {
+            "speed": 1.7,
+            "phase_offset": 0.875,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "empty_elements",
@@ -296,7 +728,61 @@
       "render_order": 8,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 8,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.5275,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.0,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "enc_conv1",
@@ -328,7 +814,61 @@
       "render_order": 9,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.75,
+          "glow_intensity": 0.65,
+          "glow_color": [
+            0.8784,
+            0.251,
+            0.9843
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.05
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.425,
+            "bloomScale": 1.08,
+            "brightness": 1.228
+          },
+          "glow": {
+            "distance": 17,
+            "outerStrength": 2.125,
+            "innerStrength": 0.88,
+            "color": "0xE040FB"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 7,
+            "alpha": 0.293,
+            "color": "0x4A148C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 9,
+          "opacity": 0.96,
+          "blend_mode": "NORMAL",
+          "scale_factor": 0.9309,
+          "animation": {
+            "speed": 1.48,
+            "phase_offset": 0.125,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "enc_conv2",
@@ -360,7 +900,61 @@
       "render_order": 10,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.75,
+          "glow_intensity": 0.65,
+          "glow_color": [
+            0.8784,
+            0.251,
+            0.9843
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.05
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.425,
+            "bloomScale": 1.08,
+            "brightness": 1.228
+          },
+          "glow": {
+            "distance": 17,
+            "outerStrength": 2.125,
+            "innerStrength": 0.88,
+            "color": "0xE040FB"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 7,
+            "alpha": 0.293,
+            "color": "0x4A148C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 10,
+          "opacity": 0.96,
+          "blend_mode": "NORMAL",
+          "scale_factor": 0.9309,
+          "animation": {
+            "speed": 1.48,
+            "phase_offset": 0.25,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "enc_pool",
@@ -392,7 +986,61 @@
       "render_order": 11,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.4,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.2667,
+            0.5412,
+            1.0
+          ],
+          "fresnel_power": 2.6,
+          "noise_scale": 0.28,
+          "noise_speed": 0.18,
+          "edge_softness": 0.062
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.71,
+            "bloomScale": 0.396,
+            "brightness": 1.028
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.7,
+            "innerStrength": 0.196,
+            "color": "0x448AFF"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.277,
+            "color": "0x0D47A1"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 11,
+          "opacity": 0.91,
+          "blend_mode": "NORMAL",
+          "scale_factor": 0.9309,
+          "animation": {
+            "speed": 0.62,
+            "phase_offset": 0.375,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "final_css",
@@ -424,7 +1072,61 @@
       "render_order": 12,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4706,
+            0.5647,
+            0.6118
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.065
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.72,
+            "bloomScale": 0.372,
+            "brightness": 1.021
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.65,
+            "innerStrength": 0.172,
+            "color": "0x78909C"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.27,
+            "color": "0x263238"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 12,
+          "opacity": 0.9,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.6202,
+          "animation": {
+            "speed": 0.59,
+            "phase_offset": 0.5,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "final_html",
@@ -456,7 +1158,61 @@
       "render_order": 13,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4706,
+            0.5647,
+            0.6118
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.065
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.72,
+            "bloomScale": 0.372,
+            "brightness": 1.021
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.65,
+            "innerStrength": 0.172,
+            "color": "0x78909C"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.27,
+            "color": "0x263238"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 13,
+          "opacity": 0.9,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.6202,
+          "animation": {
+            "speed": 0.59,
+            "phase_offset": 0.625,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "heuristic_rules",
@@ -488,7 +1244,61 @@
       "render_order": 14,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.75,
+          "glow_intensity": 0.65,
+          "glow_color": [
+            0.8784,
+            0.251,
+            0.9843
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.05
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.425,
+            "bloomScale": 1.08,
+            "brightness": 1.228
+          },
+          "glow": {
+            "distance": 17,
+            "outerStrength": 2.125,
+            "innerStrength": 0.88,
+            "color": "0xE040FB"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 7,
+            "alpha": 0.293,
+            "color": "0x4A148C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 14,
+          "opacity": 0.96,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 1.48,
+            "phase_offset": 0.75,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "hidden_elements",
@@ -520,7 +1330,61 @@
       "render_order": 15,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.8,
+          "glow_intensity": 0.8,
+          "glow_color": [
+            1.0,
+            0.6706,
+            0.251
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.048
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.35,
+            "bloomScale": 1.26,
+            "brightness": 1.28
+          },
+          "glow": {
+            "distance": 19,
+            "outerStrength": 2.5,
+            "innerStrength": 1.06,
+            "color": "0xFFAB40"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              5
+            ],
+            "blur": 8,
+            "alpha": 0.238,
+            "color": "0xBF360C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 15,
+          "opacity": 0.97,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.6202,
+          "animation": {
+            "speed": 1.7,
+            "phase_offset": 0.875,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "hidden_states",
@@ -552,7 +1416,61 @@
       "render_order": 16,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.8,
+          "glow_intensity": 0.8,
+          "glow_color": [
+            1.0,
+            0.6706,
+            0.251
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.048
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.35,
+            "bloomScale": 1.26,
+            "brightness": 1.28
+          },
+          "glow": {
+            "distance": 19,
+            "outerStrength": 2.5,
+            "innerStrength": 1.06,
+            "color": "0xFFAB40"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              5
+            ],
+            "blur": 8,
+            "alpha": 0.238,
+            "color": "0xBF360C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 16,
+          "opacity": 0.97,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 1.7,
+            "phase_offset": 0.0,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "input_image",
@@ -584,7 +1502,61 @@
       "render_order": 17,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 17,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.7282,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.125,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "integrated_code",
@@ -616,7 +1588,61 @@
       "render_order": 18,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 18,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.25,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "json_output",
@@ -648,7 +1674,61 @@
       "render_order": 19,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4706,
+            0.5647,
+            0.6118
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.065
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.72,
+            "bloomScale": 0.372,
+            "brightness": 1.021
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.65,
+            "innerStrength": 0.172,
+            "color": "0x78909C"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.27,
+            "color": "0x263238"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 19,
+          "opacity": 0.9,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.59,
+            "phase_offset": 0.375,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "latent",
@@ -680,7 +1760,61 @@
       "render_order": 20,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 20,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.0247,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.5,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "leaf_extraction",
@@ -712,7 +1846,61 @@
       "render_order": 21,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 21,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.625,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "local_code_gen",
@@ -744,7 +1932,61 @@
       "render_order": 22,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 22,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.75,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "local_images",
@@ -776,7 +2018,61 @@
       "render_order": 23,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 23,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.875,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "mllm_code_agent",
@@ -808,7 +2104,61 @@
       "render_order": 24,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 24,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.9365,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.0,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "mllm_style_agent",
@@ -840,7 +2190,61 @@
       "render_order": 25,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 25,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.9365,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.125,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "next_token_prediction",
@@ -872,7 +2276,61 @@
       "render_order": 26,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdCircle",
+          "sdf_radius": 0.45,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            1.0,
+            0.8431,
+            0.251
+          ],
+          "fresnel_power": 2.4,
+          "noise_scale": 0.22,
+          "noise_speed": 0.2,
+          "edge_softness": 0.06
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.7,
+            "bloomScale": 0.42,
+            "brightness": 1.035
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.75,
+            "innerStrength": 0.22,
+            "color": "0xFFD740"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.213,
+            "color": "0xF57F17"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 26,
+          "opacity": 0.92,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.65,
+            "phase_offset": 0.25,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "noise_detection",
@@ -904,7 +2362,61 @@
       "render_order": 27,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.75,
+          "glow_intensity": 0.65,
+          "glow_color": [
+            0.8784,
+            0.251,
+            0.9843
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.05
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.425,
+            "bloomScale": 1.08,
+            "brightness": 1.228
+          },
+          "glow": {
+            "distance": 17,
+            "outerStrength": 2.125,
+            "innerStrength": 0.88,
+            "color": "0xE040FB"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 7,
+            "alpha": 0.293,
+            "color": "0x4A148C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 27,
+          "opacity": 0.96,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 1.48,
+            "phase_offset": 0.375,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "nonleaf_styling",
@@ -936,7 +2448,61 @@
       "render_order": 28,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.4,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.2667,
+            0.5412,
+            1.0
+          ],
+          "fresnel_power": 2.6,
+          "noise_scale": 0.28,
+          "noise_speed": 0.18,
+          "edge_softness": 0.062
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.71,
+            "bloomScale": 0.396,
+            "brightness": 1.028
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.7,
+            "innerStrength": 0.196,
+            "color": "0x448AFF"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.277,
+            "color": "0x0D47A1"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 28,
+          "opacity": 0.91,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.9365,
+          "animation": {
+            "speed": 0.62,
+            "phase_offset": 0.5,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "output",
@@ -977,7 +2543,61 @@
       "render_order": 29,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdArrow",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.6,
+          "glow_color": [
+            0.271,
+            0.353,
+            0.392
+          ],
+          "fresnel_power": 2.0,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.15
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.5,
+            "bloomScale": 0.8,
+            "brightness": 1.2
+          },
+          "glow": {
+            "distance": 15,
+            "outerStrength": 2.0,
+            "innerStrength": 1.0,
+            "color": "0x455A64"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 6,
+            "alpha": 0.3,
+            "color": "0x000000"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 29,
+          "opacity": 0.9,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.1547,
+          "animation": {
+            "speed": 0.59,
+            "phase_offset": 0.625,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "patch_division",
@@ -1009,7 +2629,61 @@
       "render_order": 30,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 30,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.75,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "pruned_dataset",
@@ -1041,7 +2715,61 @@
       "render_order": 31,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.25,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4118,
+            0.9412,
+            0.6824
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.068
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x69F0AE"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.218,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 31,
+          "opacity": 0.89,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.875,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "ram_resource",
@@ -1073,7 +2801,61 @@
       "render_order": 32,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 32,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.5275,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.0,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "rendered_webpage",
@@ -1105,7 +2887,61 @@
       "render_order": 33,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4706,
+            0.5647,
+            0.6118
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.065
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.72,
+            "bloomScale": 0.372,
+            "brightness": 1.021
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.65,
+            "innerStrength": 0.172,
+            "color": "0x78909C"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.27,
+            "color": "0x263238"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 33,
+          "opacity": 0.9,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.59,
+            "phase_offset": 0.125,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "resolution_handling",
@@ -1137,7 +2973,61 @@
       "render_order": 34,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 34,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.25,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "softmax_layer",
@@ -1169,7 +3059,61 @@
       "render_order": 35,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 35,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.6202,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.375,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "structure_align",
@@ -1201,7 +3145,61 @@
       "render_order": 36,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 36,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.472,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.5,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "style_align",
@@ -1233,7 +3231,61 @@
       "render_order": 37,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.4,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.2667,
+            0.5412,
+            1.0
+          ],
+          "fresnel_power": 2.6,
+          "noise_scale": 0.28,
+          "noise_speed": 0.18,
+          "edge_softness": 0.062
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.71,
+            "bloomScale": 0.396,
+            "brightness": 1.028
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.7,
+            "innerStrength": 0.196,
+            "color": "0x448AFF"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.277,
+            "color": "0x0D47A1"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 37,
+          "opacity": 0.91,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.472,
+          "animation": {
+            "speed": 0.62,
+            "phase_offset": 0.625,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "vision2ui_dataset",
@@ -1265,7 +3317,61 @@
       "render_order": 38,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.25,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4118,
+            0.9412,
+            0.6824
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.068
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x69F0AE"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.218,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 38,
+          "opacity": 0.89,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.75,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "weight_matrix",
@@ -1297,7 +3403,61 @@
       "render_order": 39,
       "z_layer": 3,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 39,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.5275,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.875,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "self_attn",
@@ -1340,7 +3500,61 @@
       "render_order": 40,
       "z_layer": 3,
       "is_translucent": true,
-      "outgoing_edge_count": 1
+      "outgoing_edge_count": 1,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdEllipse",
+          "sdf_radius": 0.42,
+          "glow_intensity": 0.72,
+          "glow_color": [
+            0.392,
+            0.714,
+            0.965
+          ],
+          "fresnel_power": 2.8,
+          "noise_scale": 0.18,
+          "noise_speed": 0.35,
+          "edge_softness": 0.06
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.55,
+            "bloomScale": 1.2,
+            "brightness": 1.05
+          },
+          "glow": {
+            "distance": 14,
+            "outerStrength": 1.8,
+            "innerStrength": 0.6,
+            "color": "0x64B5F6"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 8,
+            "alpha": 0.28,
+            "color": "0x1A237E"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 40,
+          "opacity": 0.748,
+          "blend_mode": "SCREEN",
+          "scale_factor": 1.1547,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.0,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "loss_training",
@@ -1372,7 +3586,61 @@
       "render_order": 41,
       "z_layer": 3,
       "is_translucent": true,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.1,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            1.0,
+            0.3216,
+            0.3216
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.075
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.74,
+            "bloomScale": 0.324,
+            "brightness": 1.007
+          },
+          "glow": {
+            "distance": 8,
+            "outerStrength": 0.55,
+            "innerStrength": 0.124,
+            "color": "0xFF5252"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.287,
+            "color": "0xB71C1C"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 41,
+          "opacity": 0.731,
+          "blend_mode": "SCREEN",
+          "scale_factor": 1.6202,
+          "animation": {
+            "speed": 0.53,
+            "phase_offset": 0.125,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "transformer_decoder",
@@ -1404,7 +3672,61 @@
       "render_order": 42,
       "z_layer": 3,
       "is_translucent": true,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdCircle",
+          "sdf_radius": 0.2,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.3255,
+            0.4275,
+            0.9961
+          ],
+          "fresnel_power": 2.4,
+          "noise_scale": 0.22,
+          "noise_speed": 0.2,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x536DFE"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.291,
+            "color": "0x1A237E"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 42,
+          "opacity": 0.748,
+          "blend_mode": "SCREEN",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.25,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "vit_encoder",
@@ -1436,7 +3758,61 @@
       "render_order": 43,
       "z_layer": 3,
       "is_translucent": true,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdCircle",
+          "sdf_radius": 0.2,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.3255,
+            0.4275,
+            0.9961
+          ],
+          "fresnel_power": 2.4,
+          "noise_scale": 0.22,
+          "noise_speed": 0.2,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x536DFE"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.291,
+            "color": "0x1A237E"
+          }
+        },
+        "render_params": {
+          "layer": 3,
+          "render_order": 43,
+          "opacity": 0.748,
+          "blend_mode": "SCREEN",
+          "scale_factor": 1.8285,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.375,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "pos_encode",
@@ -1478,7 +3854,61 @@
       "render_order": 44,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 2
+      "outgoing_edge_count": 2,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundedBox",
+          "sdf_radius": 8.0,
+          "glow_intensity": 0.55,
+          "glow_color": [
+            0.702,
+            0.616,
+            0.859
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 3.5,
+          "noise_speed": 0.35,
+          "edge_softness": 0.06
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.72,
+            "bloomScale": 0.4,
+            "brightness": 1.05
+          },
+          "glow": {
+            "distance": 10,
+            "outerStrength": 1.4,
+            "innerStrength": 0.3,
+            "color": "0xB39DDB"
+          },
+          "drop_shadow": {
+            "offset": [
+              0,
+              2
+            ],
+            "blur": 4,
+            "alpha": 0.22,
+            "color": "0x4527A0"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 44,
+          "opacity": 0.89,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.1547,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.5,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "input_embed",
@@ -1520,7 +3950,61 @@
       "render_order": 45,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 1
+      "outgoing_edge_count": 1,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.08,
+          "glow_intensity": 0.55,
+          "glow_color": [
+            0.47,
+            0.56,
+            0.61
+          ],
+          "fresnel_power": 2.5,
+          "noise_scale": 0.18,
+          "noise_speed": 0.12,
+          "edge_softness": 0.04
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.6,
+            "bloomScale": 0.4,
+            "brightness": 1.05
+          },
+          "glow": {
+            "distance": 10,
+            "outerStrength": 0.75,
+            "innerStrength": 0.2,
+            "color": "0x78909C"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 6,
+            "alpha": 0.28,
+            "color": "0x1C2C35"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 45,
+          "opacity": 0.89,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.1547,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.625,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "alignment_group",
@@ -1552,7 +4036,61 @@
       "render_order": 46,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.4,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.2667,
+            0.5412,
+            1.0
+          ],
+          "fresnel_power": 2.6,
+          "noise_scale": 0.28,
+          "noise_speed": 0.18,
+          "edge_softness": 0.062
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.71,
+            "bloomScale": 0.396,
+            "brightness": 1.028
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.7,
+            "innerStrength": 0.196,
+            "color": "0x448AFF"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.277,
+            "color": "0x0D47A1"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 46,
+          "opacity": 0.91,
+          "blend_mode": "NORMAL",
+          "scale_factor": 3.2977,
+          "animation": {
+            "speed": 0.62,
+            "phase_offset": 0.75,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "bbox_pruning_group",
@@ -1584,7 +4122,61 @@
       "render_order": 47,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.25,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4118,
+            0.9412,
+            0.6824
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.068
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x69F0AE"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.218,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 47,
+          "opacity": 0.89,
+          "blend_mode": "NORMAL",
+          "scale_factor": 8.073,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.875,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "decoder",
@@ -1616,7 +4208,61 @@
       "render_order": 48,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4706,
+            0.5647,
+            0.6118
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.065
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.72,
+            "bloomScale": 0.372,
+            "brightness": 1.021
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.65,
+            "innerStrength": 0.172,
+            "color": "0x78909C"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.27,
+            "color": "0x263238"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 48,
+          "opacity": 0.9,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.0801,
+          "animation": {
+            "speed": 0.59,
+            "phase_offset": 0.0,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "encoder",
@@ -1648,7 +4294,61 @@
       "render_order": 49,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.25,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4118,
+            0.9412,
+            0.6824
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.068
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x69F0AE"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.218,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 49,
+          "opacity": 0.89,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.0801,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.125,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "input",
@@ -1680,7 +4380,61 @@
       "render_order": 50,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.25,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4118,
+            0.9412,
+            0.6824
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.068
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x69F0AE"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.218,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 50,
+          "opacity": 0.89,
+          "blend_mode": "NORMAL",
+          "scale_factor": 1.0954,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.25,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "noise_types",
@@ -1712,7 +4466,61 @@
       "render_order": 51,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.8,
+          "glow_intensity": 0.8,
+          "glow_color": [
+            1.0,
+            0.6706,
+            0.251
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.048
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.35,
+            "bloomScale": 1.26,
+            "brightness": 1.28
+          },
+          "glow": {
+            "distance": 19,
+            "outerStrength": 2.5,
+            "innerStrength": 1.06,
+            "color": "0xFFAB40"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              5
+            ],
+            "blur": 8,
+            "alpha": 0.238,
+            "color": "0xBF360C"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 51,
+          "opacity": 0.97,
+          "blend_mode": "NORMAL",
+          "scale_factor": 3.5355,
+          "animation": {
+            "speed": 1.7,
+            "phase_offset": 0.375,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "output_group",
@@ -1744,7 +4552,61 @@
       "render_order": 52,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4706,
+            0.5647,
+            0.6118
+          ],
+          "fresnel_power": 3.0,
+          "noise_scale": 0.18,
+          "noise_speed": 0.15,
+          "edge_softness": 0.065
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.72,
+            "bloomScale": 0.372,
+            "brightness": 1.021
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.65,
+            "innerStrength": 0.172,
+            "color": "0x78909C"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.27,
+            "color": "0x263238"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 52,
+          "opacity": 0.9,
+          "blend_mode": "NORMAL",
+          "scale_factor": 4.0398,
+          "animation": {
+            "speed": 0.59,
+            "phase_offset": 0.5,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "stage1_group",
@@ -1776,7 +4638,61 @@
       "render_order": 53,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdCircle",
+          "sdf_radius": 0.083,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.3765,
+            0.4902,
+            0.5451
+          ],
+          "fresnel_power": 2.0,
+          "noise_scale": 0.35,
+          "noise_speed": 0.25,
+          "edge_softness": 0.075
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.735,
+            "bloomScale": 0.336,
+            "brightness": 1.01
+          },
+          "glow": {
+            "distance": 8,
+            "outerStrength": 0.575,
+            "innerStrength": 0.136,
+            "color": "0x607D8B"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.286,
+            "color": "0x263238"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 53,
+          "opacity": 0.86,
+          "blend_mode": "NORMAL",
+          "scale_factor": 14.8108,
+          "animation": {
+            "speed": 0.55,
+            "phase_offset": 0.625,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "stage2_group",
@@ -1808,7 +4724,61 @@
       "render_order": 54,
       "z_layer": 5,
       "is_translucent": false,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdRoundBox",
+          "sdf_radius": 0.217,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.4627,
+            1.0,
+            0.0118
+          ],
+          "fresnel_power": 2.2,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x76FF03"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 9,
+            "alpha": 0.217,
+            "color": "0x1B5E20"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 54,
+          "opacity": 0.88,
+          "blend_mode": "NORMAL",
+          "scale_factor": 6.7165,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.75,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "add_norm1",
@@ -1850,7 +4820,61 @@
       "render_order": 55,
       "z_layer": 5,
       "is_translucent": true,
-      "outgoing_edge_count": 2
+      "outgoing_edge_count": 2,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "cil-plus",
+          "sdf_radius": 0.35,
+          "glow_intensity": 0.6,
+          "glow_color": [
+            198,
+            40,
+            40
+          ],
+          "fresnel_power": 2.0,
+          "noise_scale": 0.5,
+          "noise_speed": 0.3,
+          "edge_softness": 0.15
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.5,
+            "bloomScale": 0.8,
+            "brightness": 1.2
+          },
+          "glow": {
+            "distance": 15,
+            "outerStrength": 2.0,
+            "innerStrength": 1.0,
+            "color": "0xC62828"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              4
+            ],
+            "blur": 6,
+            "alpha": 0.3,
+            "color": "0x000000"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 55,
+          "opacity": 0.731,
+          "blend_mode": "SCREEN",
+          "scale_factor": 0.9661,
+          "animation": {
+            "speed": 0.53,
+            "phase_offset": 0.875,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "add_norm2",
@@ -1892,7 +4916,61 @@
       "render_order": 56,
       "z_layer": 5,
       "is_translucent": true,
-      "outgoing_edge_count": 1
+      "outgoing_edge_count": 1,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "crossSDF",
+          "sdf_radius": 0.3,
+          "glow_intensity": 0.5,
+          "glow_color": [
+            0.776,
+            0.157,
+            0.157
+          ],
+          "fresnel_power": 2.0,
+          "noise_scale": 0.3,
+          "noise_speed": 0.2,
+          "edge_softness": 0.18
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.55,
+            "bloomScale": 0.7,
+            "brightness": 1.1
+          },
+          "glow": {
+            "distance": 12,
+            "outerStrength": 1.8,
+            "innerStrength": 0.8,
+            "color": "0xC62828"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 5,
+            "alpha": 0.25,
+            "color": "0x000000"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 56,
+          "opacity": 0.731,
+          "blend_mode": "SCREEN",
+          "scale_factor": 0.9661,
+          "animation": {
+            "speed": 0.53,
+            "phase_offset": 0.0,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     },
     {
       "id": "structure_model",
@@ -1924,7 +5002,61 @@
       "render_order": 57,
       "z_layer": 5,
       "is_translucent": true,
-      "outgoing_edge_count": 0
+      "outgoing_edge_count": 0,
+      "rendering": {
+        "shader_params": {
+          "sdf_type": "sdCircle",
+          "sdf_radius": 0.2,
+          "glow_intensity": 0.2,
+          "glow_color": [
+            0.3255,
+            0.4275,
+            0.9961
+          ],
+          "fresnel_power": 2.4,
+          "noise_scale": 0.22,
+          "noise_speed": 0.2,
+          "edge_softness": 0.07
+        },
+        "pixi_filters": {
+          "bloom": {
+            "threshold": 0.73,
+            "bloomScale": 0.348,
+            "brightness": 1.014
+          },
+          "glow": {
+            "distance": 9,
+            "outerStrength": 0.6,
+            "innerStrength": 0.148,
+            "color": "0x536DFE"
+          },
+          "drop_shadow": {
+            "offset": [
+              2,
+              3
+            ],
+            "blur": 7,
+            "alpha": 0.291,
+            "color": "0x1A237E"
+          }
+        },
+        "render_params": {
+          "layer": 5,
+          "render_order": 57,
+          "opacity": 0.748,
+          "blend_mode": "SCREEN",
+          "scale_factor": 8.2578,
+          "animation": {
+            "speed": 0.56,
+            "phase_offset": 0.125,
+            "loop": true
+          },
+          "cull": {
+            "near": 0.1,
+            "far": 1000.0
+          }
+        }
+      }
     }
   ],
   "edges": [],
