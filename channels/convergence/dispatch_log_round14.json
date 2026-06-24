@@ -1,0 +1,38 @@
+{
+    "M1060": {
+        "conv_id": "3881bc30-1068-44b5-b119-9a7cb0f7284e",
+        "url": "https://claude.hk.cn/chat/3881bc30-1068-44b5-b119-9a7cb0f7284e",
+        "files": "src/lib/sph/BoundaryModel.ts, src/lib/sph/adaptive-lod.ts, src/lib/sph/at-geometry-loader.ts ... (10 total)",
+        "desc": "merge-conflict-fix batch 1: AT loaders + pipeline"
+    },
+    "M1061": {
+        "conv_id": "a3291c0d-d6b3-494b-80fa-19c0276f6fef",
+        "url": "https://claude.hk.cn/chat/a3291c0d-d6b3-494b-80fa-19c0276f6fef",
+        "files": "src/lib/sph/at-texture-loader.ts, src/lib/sph/audio-reactive-visuals.ts, src/lib/sph/cell-aura.ts ... (10 total)",
+        "desc": "merge-conflict-fix batch 2: texture + collision + cell"
+    },
+    "M1062": {
+        "conv_id": "5841f6c0-a94f-401e-b055-4e5053f4078d",
+        "url": "https://claude.hk.cn/chat/5841f6c0-a94f-401e-b055-4e5053f4078d",
+        "files": "src/lib/sph/edge-energy-flow.ts, src/lib/sph/edge-flow-renderer.ts, src/lib/sph/emissive-glow.ts ... (10 total)",
+        "desc": "merge-conflict-fix batch 3: edge + epoch + effects"
+    },
+    "M1063": {
+        "conv_id": "e835a8cc-ddf8-43ec-973a-f20750954ddd",
+        "url": "https://claude.hk.cn/chat/e835a8cc-ddf8-43ec-973a-f20750954ddd",
+        "files": "src/lib/sph/msdf-gpu-pass.ts, src/lib/sph/nanogl-shader-executor.ts, src/lib/sph/nature-texture-manager.ts ... (10 total)",
+        "desc": "merge-conflict-fix batch 4: GPU pass + particles + bridge"
+    },
+    "M1064": {
+        "conv_id": "f9214047-4c8a-4686-95d3-517978ab7b68",
+        "url": "https://claude.hk.cn/chat/f9214047-4c8a-4686-95d3-517978ab7b68",
+        "files": "src/lib/sph/portal-effect.ts, src/lib/sph/procedural-texture-atlas.ts, src/lib/sph/reaction-diffusion-surface.ts ... (10 total)",
+        "desc": "merge-conflict-fix batch 5: portal + species + shadow"
+    },
+    "M1065": {
+        "conv_id": "5cd4cc91-0db4-4e09-a283-296428639f0a",
+        "url": "https://claude.hk.cn/chat/5cd4cc91-0db4-4e09-a283-296428639f0a",
+        "files": "src/lib/sph/subsurface-scattering.ts, src/lib/sph/topology-physics-sync.ts, src/lib/sph/topology-transition-fx.ts ... (9 total)",
+        "desc": "merge-conflict-fix batch 6: topology + UE + remaining"
+    }
+}
