@@ -77,9 +77,9 @@ const DEFAULT_CONFIG: FluidConfig = {
   dyeHeight: 1024,
   pressureIterations: 25,
   curl: 30,
-  splatRadius: 0.25,
-  dissipation: 0.98,
-  dyeDissipation: 0.97,
+  splatRadius: 0.5,
+  dissipation: 0.95,
+  dyeDissipation: 0.95,
 };
 
 interface DoubleRT {
@@ -179,6 +179,31 @@ export class FluidGPU {
     ]), gl.STATIC_DRAW);
   }
 
+  // 自动背景 splat 的内部时间计数器
+  private _autoSplatTimer: number = 0;
+  private _autoSplatPoints: Array<{x:number,y:number,vx:number,vy:number,color:[number,number,number]}> = [];
+
+  /** 初始化随机背景 splat 漂移点 (首次调用时) */
+  private _initAutoSplats(): void {
+    if (this._autoSplatPoints.length > 0) return;
+    const palette: Array<[number,number,number]> = [
+      [0.9, 0.1, 0.6],
+      [0.1, 0.7, 0.9],
+      [0.95, 0.5, 0.0],
+      [0.2, 0.9, 0.3],
+      [0.6, 0.0, 1.0],
+    ];
+    for (let i = 0; i < 5; i++) {
+      this._autoSplatPoints.push({
+        x: Math.random(),
+        y: Math.random(),
+        vx: (Math.random() - 0.5) * 0.004,
+        vy: (Math.random() - 0.5) * 0.004,
+        color: palette[i % palette.length],
+      });
+    }
+  }
+
   /** 每帧调用 — 跑完整 Navier-Stokes pass 链 */
   step(mouseX: number, mouseY: number,
        prevMouseX: number, prevMouseY: number,
@@ -186,11 +211,29 @@ export class FluidGPU {
     const gl = this.gl;
     const { simWidth: sw, simHeight: sh, dyeWidth: dw, dyeHeight: dh } = this.config;
 
-    // 1. Splat — 鼠标注入速度+染料
+    // 0. 自动背景 splat — 每帧 2-3 个随机漂移点注入流体
+    this._initAutoSplats();
+    this._autoSplatTimer += dt;
+    const numAuto = 2 + (Math.random() < 0.5 ? 1 : 0); // 2 or 3
+    for (let i = 0; i < numAuto; i++) {
+      const p = this._autoSplatPoints[i % this._autoSplatPoints.length];
+      // 缓慢漂移 + 随机扰动
+      p.x += p.vx + (Math.random() - 0.5) * 0.002;
+      p.y += p.vy + (Math.random() - 0.5) * 0.002;
+      // 边界反弹
+      if (p.x < 0.05 || p.x > 0.95) { p.vx *= -1; p.x = Math.max(0.05, Math.min(0.95, p.x)); }
+      if (p.y < 0.05 || p.y > 0.95) { p.vy *= -1; p.y = Math.max(0.05, Math.min(0.95, p.y)); }
+      const force = 8000 * dt;
+      const angle = this._autoSplatTimer * 1.3 + i * 2.1;
+      this._splat(p.x, p.y, Math.cos(angle) * force, Math.sin(angle) * force, p.color);
+    }
+
+    // 1. Splat — 鼠标注入速度+染料 (force = 8000/s)
     const dx = mouseX - prevMouseX;
     const dy = mouseY - prevMouseY;
     if (dx !== 0 || dy !== 0) {
-      this._splat(mouseX, mouseY, dx * 10, dy * 10, [0.8, 0.2, 0.05]);
+      const force = 8000;
+      this._splat(mouseX, mouseY, dx * force, dy * force, [0.8, 0.2, 0.05]);
     }
 
     // 2. Curl — 计算涡度
