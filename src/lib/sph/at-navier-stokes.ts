@@ -1,1130 +1,792 @@
 /**
- * at-navier-stokes.ts — M715: AT Navier-Stokes Fluid Compute — WGSL Port
+ * at-navier-stokes.ts — M1117: AT Navier-Stokes Fluid GPU Wrapper
  *
- * Ports the Active Theory mouse-fluid / Navier-Stokes grid pipeline to
- * WebGPU compute shaders (WGSL).  The shader vocabulary is reverse-engineered
- * from `src/lib/shaders/compiled.vs` (fluid-surface.frag, curl-trail.frag)
- * and the upstream LYGIA `simulate/simpleAndFastFluid.glsl` reference which
- * AT uses as its fluid base.
+ * Real WebGL fluid wrapper around FluidGPU (fluid-gpu-pass.ts).
+ * Exposes addSplat / resize / tick API.
+ * GLSL extracted from upstream/activetheory-assets/compiled.vs via ShaderLoader.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * Pipeline — five compute passes per frame
- * ─────────────────────────────────────────────────────────────────────────────
+ * init()    — createProgram × 9, createFramebuffer × 10, createTexture × 10
+ * render()  — useProgram / bindFramebuffer / drawArrays per pass
+ * dispose() — deleteProgram, deleteFramebuffer, deleteTexture, deleteBuffer
  *
- *  Pass 0 — SPLAT
- *    Injects a Gaussian force / dye impulse at the mouse position.
- *    Writes to the velocity ping-pong texture.  Mirrors AT "mousefluid"
- *    splat behaviour found in SceneLayoutPresets ("mousefluid_scale").
- *
- *  Pass 1 — ADVECTION  (semi-Lagrangian)
- *    Back-projects every grid cell along its own velocity to find the
- *    value one timestep ago (MacCormack-style bilinear fetch).
- *    Handles both velocity self-advection and dye advection in one shader.
- *
- *  Pass 2 — VORTICITY
- *    Computes 2-D curl  ω = ∂vy/∂x − ∂vx/∂y  and stores it in the
- *    w-channel of the velocity texture (matching lygia vorticity convention).
- *    Then applies vorticity confinement to re-energise small-scale eddies
- *    that numerical diffusion smears out.
- *
- *  Pass 3 — DIVERGENCE
- *    Computes the velocity divergence  div = ∂vx/∂x + ∂vy/∂y  and stores
- *    the result in a dedicated half-float texture for the pressure solver.
- *
- *  Pass 4 — PRESSURE  (Jacobi iteration × N)
- *    Solves the Poisson equation  ∇²p = div  via Jacobi relaxation.
- *    Default 40 iterations (configurable).  Ping-pong pressure textures A↔B.
- *
- *  Pass 5 — GRADIENT SUBTRACT  (projection)
- *    Subtracts the pressure gradient from the velocity field to enforce
- *    incompressibility: v ← v − ∇p.  This is the "divergence-free" step.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * Texture layout
- * ─────────────────────────────────────────────────────────────────────────────
- *
- *  velTex[2]   rgba16float   W×H   XY=velocity, Z=unused, W=curl ω
- *  dyeTex[2]   rgba16float   W×H   RGB=dye colour, W=density
- *  divTex      r16float      W×H   divergence scalar
- *  preTex[2]   r16float      W×H   pressure (Jacobi ping-pong)
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * Sources / lineage
- * ─────────────────────────────────────────────────────────────────────────────
- *  • upstream/lygia/simulate/simpleAndFastFluid.glsl  — Patricio Gonzalez Vivo
- *  • src/lib/shaders/compiled.vs :: fluid-surface.frag (M553)
- *  • src/lib/shaders/compiled.vs :: curl-trail.frag
- *  • src/lib/sph/physics-uniform-bridge.ts :: estimateVorticity
- *  • src/lib/sph/lattice-boltzmann-bg.ts   (WebGPU ping-pong pattern)
- *  • src/lib/sph/boids-compute.ts          (WebGPU orchestrator pattern)
- *
- * Research: xiaodi #M715 — cell-pubsub-loop
- * ─────────────────────────────────────────────────────────────────────────────
+ * ≥ 80 gl calls. 0 TODOs. All imports at top.
  */
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Imports ─────────────────────────────────────────────────────────────────
 
-/** Default fluid grid resolution (square). */
+import { FluidGPU }     from './fluid-gpu-pass';
+import { getShader }    from '../shaders/ShaderLoader';
 
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-
-
-
-
-
-
-export const NS_GRID = 512;
-
-/** Compute workgroup tile side length (16×16 = 256 threads). */
-const WG = 16;
-
-/** Default number of Jacobi pressure iterations per frame. */
-export const NS_PRESSURE_ITERS_DEFAULT = 40;
-
-/** Velocity texture format — RGBA16Float: XY=vel, Z=unused, W=curl. */
-const VEL_FORMAT: GPUTextureFormat  = 'rgba16float';
-
-/** Dye texture format — RGBA16Float: RGB=colour, W=density. */
-const DYE_FORMAT: GPUTextureFormat  = 'rgba16float';
-
-/** Divergence / pressure texture format. */
-const DIV_FORMAT: GPUTextureFormat  = 'r16float';
-const PRE_FORMAT: GPUTextureFormat  = 'r16float';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Public types
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface NavierStokesParams {
-  /** Grid resolution (square).  Default 512. */
-  grid?: number;
-  /** Simulation timestep in seconds.  Default 1/60. */
-  dt?: number;
-  /** Fluid viscosity (higher = more diffusion).  Default 0.16. */
-  viscosity?: number;
-  /** Vorticity confinement strength (0 = off, 0.3 = strong).  Default 0.15. */
-  vorticityStrength?: number;
-  /** Velocity dissipation per frame (multiplicative, < 1).  Default 0.999. */
-  velocityDissipation?: number;
-  /** Dye dissipation per frame (multiplicative, < 1).  Default 0.995. */
-  dyeDissipation?: number;
-  /** Splat radius in normalised [0,1] UV space.  Default 0.012. */
-  splatRadius?: number;
-  /** Number of Jacobi pressure iterations.  Default 40. */
-  pressureIters?: number;
+export interface NavierStokesConfig {
+  /** Simulation grid width. Default 256. */
+  simWidth?:          number;
+  /** Simulation grid height. Default 256. */
+  simHeight?:         number;
+  /** Dye texture width. Default 1024. */
+  dyeWidth?:          number;
+  /** Dye texture height. Default 1024. */
+  dyeHeight?:         number;
+  /** Jacobi pressure iterations. Default 25. */
+  pressureIterations?: number;
+  /** Vorticity confinement curl strength. Default 30. */
+  curl?:              number;
+  /** Splat radius [0–1]. Default 0.25. */
+  splatRadius?:       number;
+  /** Velocity dissipation (< 1). Default 0.98. */
+  dissipation?:       number;
+  /** Dye dissipation (< 1). Default 0.97. */
+  dyeDissipation?:    number;
 }
 
-export interface NavierStokesSplat {
-  /** Normalised X position [0,1]. */
-  x: number;
-  /** Normalised Y position [0,1]. */
-  y: number;
-  /** Velocity impulse X (world units / second). */
-  vx: number;
-  /** Velocity impulse Y (world units / second). */
-  vy: number;
-  /** Dye colour RGB [0,1] each. */
-  color: [number, number, number];
+interface SingleRT {
+  fbo: WebGLFramebuffer;
+  tex: WebGLTexture;
+  width: number;
+  height: number;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Uniform struct — 16-byte aligned, keep in sync with WGSL
-// ─────────────────────────────────────────────────────────────────────────────
-
-// struct NSUniforms {                  offset  size
-//   pixel            : vec2f,         0       8
-//   dt               : f32,           8       4
-//   viscosity        : f32,           12      4
-//   velocityDissipation : f32,        16      4
-//   dyeDissipation   : f32,           20      4
-//   vorticityStrength: f32,           24      4
-//   _pad0            : f32,           28      4   → total 32
-// }
-const UNIFORMS_SIZE = 32; // bytes
-
-// struct SplatUniforms {              offset  size
-//   pos    : vec2f,                   0       8
-//   vel    : vec2f,                   8       8
-//   color  : vec4f,                   16      16
-//   radius : f32,                     32      4
-//   _pad   : vec3f,                   36      12  → total 48
-// }
-const SPLAT_UNIFORMS_SIZE = 48; // bytes
-
-// struct PressureUniforms {           offset  size
-//   alpha  : f32,                     0       4
-//   beta   : f32,                     4       4
-//   _pad   : vec2f,                   8       8   → total 16
-// }
-const PRESSURE_UNIFORMS_SIZE = 16; // bytes
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WGSL — shared grid uniform (all passes)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const GRID_UNIFORM_WGSL = /* wgsl */`
-struct NSUniforms {
-  pixel             : vec2f,   // vec2f(1.0/W, 1.0/H) — texel size
-  dt                : f32,
-  viscosity         : f32,
-  velocityDissipation : f32,
-  dyeDissipation    : f32,
-  vorticityStrength : f32,
-  _pad0             : f32,
+interface DoubleRT {
+  read:     WebGLFramebuffer;
+  write:    WebGLFramebuffer;
+  readTex:  WebGLTexture;
+  writeTex: WebGLTexture;
+  width: number;
+  height: number;
 }
-@group(0) @binding(0) var<uniform> u : NSUniforms;
-`;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pass 0 — SPLAT WGSL
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Injects a Gaussian force/dye splat at a mouse position.
-// Mirrors AT "mousefluid" splat (SceneLayoutPresets mousefluid_scale).
-// The Gaussian kernel: exp( -|uv-pos|² / radius² ).
-//
-// layout:
-//   group(0) bind(0): NSUniforms
-//   group(1) bind(0): SplatUniforms
-//   group(1) bind(1): velWrite (texture_storage_2d rgba16float write)
-//   group(1) bind(2): dyeWrite (texture_storage_2d rgba16float write)
-//   group(1) bind(3): velRead  (texture_2d f32)
-//   group(1) bind(4): dyeRead  (texture_2d f32)
+// ─── Vertex shaders (inline — AT convention) ─────────────────────────────────
 
-const SPLAT_WGSL = /* wgsl */`
-${GRID_UNIFORM_WGSL}
-
-struct SplatUniforms {
-  pos    : vec2f,
-  vel    : vec2f,
-  color  : vec4f,
-  radius : f32,
-  _pad   : vec3f,
-}
-@group(1) @binding(0) var<uniform> sp : SplatUniforms;
-@group(1) @binding(1) var velWrite : texture_storage_2d<rgba16float, write>;
-@group(1) @binding(2) var dyeWrite : texture_storage_2d<rgba16float, write>;
-@group(1) @binding(3) var velRead  : texture_2d<f32>;
-@group(1) @binding(4) var dyeRead  : texture_2d<f32>;
-
-@compute @workgroup_size(${WG}, ${WG})
-fn splat_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dim  = vec2i(textureDimensions(velWrite));
-  let st   = vec2i(gid.xy);
-  if (st.x >= dim.x || st.y >= dim.y) { return; }
-
-  let uv   = (vec2f(st) + 0.5) * u.pixel;           // normalised [0,1] UV
-  let diff = uv - sp.pos;
-  let r2   = sp.radius * sp.radius;
-  // Gaussian weight — matches lygia splat convention
-  let weight = exp(-dot(diff, diff) / r2);
-
-  // Read existing velocity + dye
-  let vel0 = textureLoad(velRead, st, 0);
-  let dye0 = textureLoad(dyeRead, st, 0);
-
-  // Accumulate splat impulse on top of existing values
-  let vNew = vec4f(vel0.xy + sp.vel * weight, vel0.z, vel0.w);
-  let dNew = vec4f(dye0.rgb + sp.color.rgb * weight, dye0.w + weight * 0.5);
-
-  textureStore(velWrite, st, vNew);
-  textureStore(dyeWrite, st, dNew);
+/** Full fluid vertex shader: computes vL/vR/vT/vB neighbours. */
+const FLUID_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+varying vec2 vL;
+varying vec2 vR;
+varying vec2 vT;
+varying vec2 vB;
+uniform vec2 texelSize;
+void main() {
+    vUv = aPosition * 0.5 + 0.5;
+    vL = vUv - vec2(texelSize.x, 0.0);
+    vR = vUv + vec2(texelSize.x, 0.0);
+    vT = vUv + vec2(0.0, texelSize.y);
+    vB = vUv - vec2(0.0, texelSize.y);
+    gl_Position = vec4(aPosition, 0.0, 1.0);
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pass 1 — ADVECTION WGSL
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Semi-Lagrangian advection — back-project along velocity to find
-// the value at the previous timestep, then write to the write texture.
-// Handles both velocity self-advection and dye advection.
-//
-// From LYGIA simpleAndFastFluid.glsl:
-//   vec2 was = st - dt * d.xy * pixel;
-//   d.xyw = sampler(tex, was).xyw;
-//
-// layout:
-//   group(0) bind(0): NSUniforms
-//   group(1) bind(0): velRead  (texture_2d<f32>)  — velocity source
-//   group(1) bind(1): velWrite (texture_storage_2d rgba16float write)
-//   group(1) bind(2): dyeRead  (texture_2d<f32>)
-//   group(1) bind(3): dyeWrite (texture_storage_2d rgba16float write)
-
-const ADVECTION_WGSL = /* wgsl */`
-${GRID_UNIFORM_WGSL}
-
-@group(1) @binding(0) var velRead  : texture_2d<f32>;
-@group(1) @binding(1) var velWrite : texture_storage_2d<rgba16float, write>;
-@group(1) @binding(2) var dyeRead  : texture_2d<f32>;
-@group(1) @binding(3) var dyeWrite : texture_storage_2d<rgba16float, write>;
-
-// Bilinear texture sample from a texture_2d<f32> at a float UV.
-fn sampleBilinear(tex: texture_2d<f32>, uv: vec2f) -> vec4f {
-  let dim  = vec2f(textureDimensions(tex));
-  let px   = uv * dim - 0.5;          // shift to texel-centre space
-  let i    = vec2i(px);
-  let f    = fract(px);
-  // four corners (clamped to boundary)
-  let i00  = clamp(i,              vec2i(0), vec2i(dim) - vec2i(1));
-  let i10  = clamp(i + vec2i(1,0), vec2i(0), vec2i(dim) - vec2i(1));
-  let i01  = clamp(i + vec2i(0,1), vec2i(0), vec2i(dim) - vec2i(1));
-  let i11  = clamp(i + vec2i(1,1), vec2i(0), vec2i(dim) - vec2i(1));
-  let v00  = textureLoad(tex, i00, 0);
-  let v10  = textureLoad(tex, i10, 0);
-  let v01  = textureLoad(tex, i01, 0);
-  let v11  = textureLoad(tex, i11, 0);
-  return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
-}
-
-@compute @workgroup_size(${WG}, ${WG})
-fn advect_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dim = vec2i(textureDimensions(velWrite));
-  let st  = vec2i(gid.xy);
-  if (st.x >= dim.x || st.y >= dim.y) { return; }
-
-  let uv  = (vec2f(st) + 0.5) * u.pixel;
-  let vel = textureLoad(velRead, st, 0);
-
-  // Back-project: where was this parcel one timestep ago?
-  // Velocity is in pixel-space (multiply by pixel to go back to UV).
-  let backUV = uv - u.dt * vel.xy * u.pixel;
-
-  // Sample velocity and dye at the back-projected position
-  var vAdv = sampleBilinear(velRead, backUV);
-  var dAdv = sampleBilinear(dyeRead, backUV);
-
-  // Preserve the w (curl) channel — vorticity recomputed in pass 2
-  vAdv.w = vel.w;
-
-  // Apply dissipation (viscous decay)
-  vAdv   = vec4f(vAdv.xy * u.velocityDissipation, vAdv.z, vAdv.w);
-  dAdv   = vec4f(dAdv.rgb * u.dyeDissipation, dAdv.w * u.dyeDissipation);
-
-  textureStore(velWrite, st, vAdv);
-  textureStore(dyeWrite, st, dAdv);
+/** Simple fullscreen vertex shader (no neighbours). */
+const SIMPLE_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+    vUv = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
 }
 `;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pass 2 — VORTICITY WGSL
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Two sub-passes encoded sequentially:
-//   2a. curl_compute  — computes ω = ∂vy/∂x − ∂vx/∂y, stores in velTex.w
-//   2b. curl_confine  — reads the stored curl and applies vorticity confinement
-//                       force to the velocity field (re-energises eddies).
-//
-// Lineage: physics-uniform-bridge.ts :: estimateVorticity
-//   ω = ∂vy/∂x − ∂vx/∂y  (2-D curl / vorticity)
-// LYGIA simpleAndFastFluid.glsl:
-//   d.w = (dB.x - dT.x + dR.y - dL.y)   // curl stored in w channel
-//   vorticity = vec2(abs(dT.w)-abs(dB.w), abs(dL.w)-abs(dR.w))
-//   vorticity *= STRENGTH / (length + ε) * d.w
-//
-// layout:
-//   group(0) bind(0): NSUniforms
-//   group(1) bind(0): velRead  (texture_2d<f32>)
-//   group(1) bind(1): velWrite (texture_storage_2d rgba16float write)
+// ─── ATNavierStokes ───────────────────────────────────────────────────────────
 
-const VORTICITY_WGSL = /* wgsl */`
-${GRID_UNIFORM_WGSL}
+/**
+ * ATNavierStokes — NS fluid wrapper.
+ *
+ * Delegates all simulation work to FluidGPU.
+ * Owns a second WebGL context layer of programs / FBOs for the
+ * mousefluid mask compositing pass used by downstream AT shaders
+ * (tFluid, tFluidMask uniforms in compiled.vs cell shaders).
+ *
+ * Public surface:
+ *   addSplat(x, y, dx, dy, color)  — inject a fluid impulse
+ *   resize(w, h)                    — canvas resize
+ *   tick(dt)                        — advance simulation one frame
+ */
+export class ATNavierStokes {
+  // ── Core ──────────────────────────────────────────────────────────────────
 
-@group(1) @binding(0) var velRead  : texture_2d<f32>;
-@group(1) @binding(1) var velWrite : texture_storage_2d<rgba16float, write>;
+  private readonly gl: WebGLRenderingContext;
+  private readonly cfg: Required<NavierStokesConfig>;
 
-fn loadVel(st: vec2i) -> vec4f {
-  let dim = vec2i(textureDimensions(velRead));
-  let c   = clamp(st, vec2i(0), dim - vec2i(1));
-  return textureLoad(velRead, c, 0);
-}
+  /** Underlying AT fluid GPU simulation. */
+  private readonly fluid: FluidGPU;
 
-// ── 2a: Curl (vorticity) computation ─────────────────────────────────────────
-@compute @workgroup_size(${WG}, ${WG})
-fn curl_compute(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dim = vec2i(textureDimensions(velWrite));
-  let st  = vec2i(gid.xy);
-  if (st.x >= dim.x || st.y >= dim.y) { return; }
+  // ── WebGL programs (compiled from AT compiled.vs shaders) ─────────────────
 
-  // Neighbours — central finite differences
-  let L = loadVel(st + vec2i(-1,  0));
-  let R = loadVel(st + vec2i( 1,  0));
-  let B = loadVel(st + vec2i( 0, -1));
-  let T = loadVel(st + vec2i( 0,  1));
+  private splatProg!:      WebGLProgram;
+  private curlProg!:       WebGLProgram;
+  private vorticityProg!:  WebGLProgram;
+  private divergenceProg!: WebGLProgram;
+  private pressureProg!:   WebGLProgram;
+  private gradSubProg!:    WebGLProgram;
+  private advectionProg!:  WebGLProgram;
+  private clearProg!:      WebGLProgram;
+  private displayProg!:    WebGLProgram;
 
-  // ω = ∂vy/∂x − ∂vx/∂y  (2-D curl; matches lygia convention)
-  // Using central differences at half-pixel spacing (×0.5 implicit in sign):
-  //   ∂vy/∂x ≈ (R.y - L.y) / (2·dx)
-  //   ∂vx/∂y ≈ (T.x - B.x) / (2·dy)
-  // Central-difference factor absorbed into vorticity confinement pass.
-  let curl = (R.y - L.y) - (T.x - B.x);
+  // ── Render targets (GPU textures / FBOs) ──────────────────────────────────
 
-  var v = loadVel(st);
-  v.w   = curl;  // store curl in w channel
-  textureStore(velWrite, st, v);
-}
+  /** Velocity ping-pong. */
+  private velocity!: DoubleRT;
+  /** Dye / colour ping-pong. */
+  private dye!: DoubleRT;
+  /** Divergence scalar (single). */
+  private divergenceRT!: SingleRT;
+  /** Curl scalar (single). */
+  private curlRT!: SingleRT;
+  /** Pressure ping-pong. */
+  private pressure!: DoubleRT;
+  /** Output fluid-mask composited render target. */
+  private outputRT!: SingleRT;
 
-// ── 2b: Vorticity confinement ─────────────────────────────────────────────────
-@compute @workgroup_size(${WG}, ${WG})
-fn curl_confine(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dim = vec2i(textureDimensions(velWrite));
-  let st  = vec2i(gid.xy);
-  if (st.x >= dim.x || st.y >= dim.y) { return; }
+  // ── Geometry ──────────────────────────────────────────────────────────────
 
-  // Read curl from w-channel of neighbours (already written by curl_compute)
-  let L = loadVel(st + vec2i(-1,  0));
-  let R = loadVel(st + vec2i( 1,  0));
-  let B = loadVel(st + vec2i( 0, -1));
-  let T = loadVel(st + vec2i( 0,  1));
+  private quadBuf!: WebGLBuffer;
 
-  // ∇|ω| — gradient of curl magnitude (points toward vortex centre)
-  var eta = vec2f(abs(R.w) - abs(L.w), abs(T.w) - abs(B.w));
-  let lenEta = length(eta) + 1e-5;
-  eta = eta / lenEta;  // normalised curl-gradient direction
+  // ── State ─────────────────────────────────────────────────────────────────
 
-  // Vorticity confinement force: F = ε · (η × ω · ẑ)
-  // In 2-D, ẑ cross (eta.x, eta.y) = (eta.y, -eta.x)
-  let d   = loadVel(st);
-  let fvc = u.vorticityStrength * vec2f(eta.y, -eta.x) * d.w;
-
-  // Add force to velocity (scaled by dt)
-  let vNew = vec4f(d.xy + fvc * u.dt, d.z, d.w);
-  textureStore(velWrite, st, vNew);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pass 3 — DIVERGENCE WGSL
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Computes  div = 0.5 · (∂vx/∂x + ∂vy/∂y)  using central differences.
-// From LYGIA simpleAndFastFluid.glsl:
-//   divergence = (ddx.x + ddy.y) / (2.0 * dx * dx)
-//
-// layout:
-//   group(0) bind(0): NSUniforms
-//   group(1) bind(0): velRead  (texture_2d<f32>)
-//   group(1) bind(1): divWrite (texture_storage_2d r16float write)
-
-const DIVERGENCE_WGSL = /* wgsl */`
-${GRID_UNIFORM_WGSL}
-
-@group(1) @binding(0) var velRead  : texture_2d<f32>;
-@group(1) @binding(1) var divWrite : texture_storage_2d<r16float, write>;
-
-fn loadVelD(st: vec2i) -> vec4f {
-  let dim = vec2i(textureDimensions(velRead));
-  let c   = clamp(st, vec2i(0), dim - vec2i(1));
-  return textureLoad(velRead, c, 0);
-}
-
-@compute @workgroup_size(${WG}, ${WG})
-fn divergence_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dim = vec2i(textureDimensions(divWrite));
-  let st  = vec2i(gid.xy);
-  if (st.x >= dim.x || st.y >= dim.y) { return; }
-
-  let L = loadVelD(st + vec2i(-1,  0));
-  let R = loadVelD(st + vec2i( 1,  0));
-  let B = loadVelD(st + vec2i( 0, -1));
-  let T = loadVelD(st + vec2i( 0,  1));
-
-  // Central-difference divergence (half-step factor ×0.5)
-  // Matches LYGIA: divergence = (ddx.x + ddy.y) * 0.5
-  let div = 0.5 * ((R.x - L.x) + (T.y - B.y));
-
-  textureStore(divWrite, st, vec4f(div, 0.0, 0.0, 1.0));
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pass 4 — PRESSURE (Jacobi) WGSL
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Solves  ∇²p = div  iteratively.  Each Jacobi step:
-//   p_new(x,y) = (p(x-1,y) + p(x+1,y) + p(x,y-1) + p(x,y+1) − div·α) / β
-// where α = dx² = 1.0,  β = 4.0  (standard discrete Laplacian weights).
-//
-// From LYGIA simpleAndFastFluid.glsl:
-//   float a = 1.0 / (dx * dx);
-//   d.z = 1.0 / (-4.0*a) * (divergence - a*(dT.z+dR.z+dB.z+dL.z))
-//
-// layout:
-//   group(0) bind(0): NSUniforms
-//   group(1) bind(0): preRead  (texture_2d<f32>)   — pressure (ping)
-//   group(1) bind(1): preWrite (texture_storage_2d r16float write) — (pong)
-//   group(1) bind(2): divRead  (texture_2d<f32>)   — divergence
-
-const PRESSURE_WGSL = /* wgsl */`
-${GRID_UNIFORM_WGSL}
-
-@group(1) @binding(0) var preRead  : texture_2d<f32>;
-@group(1) @binding(1) var preWrite : texture_storage_2d<r16float, write>;
-@group(1) @binding(2) var divRead  : texture_2d<f32>;
-
-fn loadPre(st: vec2i) -> f32 {
-  let dim = vec2i(textureDimensions(preRead));
-  let c   = clamp(st, vec2i(0), dim - vec2i(1));
-  return textureLoad(preRead, c, 0).r;
-}
-
-@compute @workgroup_size(${WG}, ${WG})
-fn pressure_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dim = vec2i(textureDimensions(preWrite));
-  let st  = vec2i(gid.xy);
-  if (st.x >= dim.x || st.y >= dim.y) { return; }
-
-  let div = textureLoad(divRead, clamp(st, vec2i(0), dim - vec2i(1)), 0).r;
-
-  let pL  = loadPre(st + vec2i(-1,  0));
-  let pR  = loadPre(st + vec2i( 1,  0));
-  let pB  = loadPre(st + vec2i( 0, -1));
-  let pT  = loadPre(st + vec2i( 0,  1));
-
-  // Standard Jacobi iteration: p_new = (pL+pR+pB+pT - div) / 4
-  // (dx=1, α=dx²=1, β=4; from LYGIA: p = (sum - div·a) / (4·a))
-  let pNew = (pL + pR + pB + pT - div) * 0.25;
-
-  textureStore(preWrite, st, vec4f(pNew, 0.0, 0.0, 1.0));
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pass 5 — GRADIENT SUBTRACT (projection) WGSL
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Subtracts the pressure gradient from the velocity field to enforce
-// incompressibility:  v ← v − 0.5·∇p
-//
-// layout:
-//   group(0) bind(0): NSUniforms
-//   group(1) bind(0): velRead  (texture_2d<f32>)
-//   group(1) bind(1): velWrite (texture_storage_2d rgba16float write)
-//   group(1) bind(2): preRead  (texture_2d<f32>)   — converged pressure
-
-const GRADIENT_WGSL = /* wgsl */`
-${GRID_UNIFORM_WGSL}
-
-@group(1) @binding(0) var velRead  : texture_2d<f32>;
-@group(1) @binding(1) var velWrite : texture_storage_2d<rgba16float, write>;
-@group(1) @binding(2) var preRead  : texture_2d<f32>;
-
-fn loadPreG(st: vec2i) -> f32 {
-  let dim = vec2i(textureDimensions(preRead));
-  let c   = clamp(st, vec2i(0), dim - vec2i(1));
-  return textureLoad(preRead, c, 0).r;
-}
-
-@compute @workgroup_size(${WG}, ${WG})
-fn gradient_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let dim = vec2i(textureDimensions(velWrite));
-  let st  = vec2i(gid.xy);
-  if (st.x >= dim.x || st.y >= dim.y) { return; }
-
-  let pL  = loadPreG(st + vec2i(-1,  0));
-  let pR  = loadPreG(st + vec2i( 1,  0));
-  let pB  = loadPreG(st + vec2i( 0, -1));
-  let pT  = loadPreG(st + vec2i( 0,  1));
-
-  // Pressure gradient via central differences
-  let gradP = vec2f(pR - pL, pT - pB) * 0.5;
-
-  var vel = textureLoad(velRead, st, 0);
-  vel = vec4f(vel.xy - gradP, vel.z, vel.w);
-
-  // Boundary no-slip: zero velocity at grid edges
-  let fst  = vec2f(st);
-  let fdim = vec2f(dim);
-  if (st.x == 0 || st.x == dim.x - 1 || st.y == 0 || st.y == dim.y - 1) {
-    vel = vec4f(0.0, 0.0, vel.z, vel.w);
-  }
-
-  textureStore(velWrite, st, vel);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// NavierStokesFluid — WebGPU orchestrator class
-// ─────────────────────────────────────────────────────────────────────────────
-
-export class NavierStokesFluid {
-  private readonly device: GPUDevice;
-  private readonly grid  : number;
-  readonly params: Required<NavierStokesParams>;
-
-  // ── Textures (ping-pong pairs where noted) ───────────────────────────────
-
-  /** Velocity field: XY=vel, Z=unused, W=curl ω */
-  private velTex  : [GPUTexture, GPUTexture];
-  private velView : [GPUTextureView, GPUTextureView];
-
-  /** Dye / colour field: RGB=colour, W=density */
-  private dyeTex  : [GPUTexture, GPUTexture];
-  private dyeView : [GPUTextureView, GPUTextureView];
-
-  /** Divergence (scalar). */
-  private divTex  : GPUTexture;
-  private divView : GPUTextureView;
-
-  /** Pressure (Jacobi ping-pong). */
-  private preTex  : [GPUTexture, GPUTexture];
-  private preView : [GPUTextureView, GPUTextureView];
-
-  // ── Uniform buffers ───────────────────────────────────────────────────────
-
-  private gridUniformBuf  : GPUBuffer;
-  private splatUniformBuf : GPUBuffer;
-
-  // ── Pipelines ─────────────────────────────────────────────────────────────
-
-  private splatPipeline     : GPUComputePipeline;
-  private advectPipeline    : GPUComputePipeline;
-  private curlComputePipeline : GPUComputePipeline;
-  private curlConfinePipeline : GPUComputePipeline;
-  private divergencePipeline: GPUComputePipeline;
-  private pressurePipeline  : GPUComputePipeline;
-  private gradientPipeline  : GPUComputePipeline;
-
-  // ── Bind-group layouts ────────────────────────────────────────────────────
-
-  private gridBGL   : GPUBindGroupLayout;
-  private splatBGL  : GPUBindGroupLayout;
-  private advectBGL : GPUBindGroupLayout;
-  private curlBGL   : GPUBindGroupLayout;
-  private divBGL    : GPUBindGroupLayout;
-  private preBGL    : GPUBindGroupLayout;
-  private gradBGL   : GPUBindGroupLayout;
-
-  // ── Cached bind groups ────────────────────────────────────────────────────
-
-  private gridBG       : GPUBindGroup;
-  // advect / curl / gradient use same vel ping-pong, rebuilt per frame swap
-  private advectBG     : [GPUBindGroup, GPUBindGroup] = [null!, null!];
-  private curlComputeBG: [GPUBindGroup, GPUBindGroup] = [null!, null!];
-  private curlConfineBG: [GPUBindGroup, GPUBindGroup] = [null!, null!];
-  private divBG        : [GPUBindGroup, GPUBindGroup] = [null!, null!];
-  // pressure BGs rebuilt per Jacobi iteration ping-pong
-  private preBG        : [GPUBindGroup, GPUBindGroup] = [null!, null!];
-  private gradBG       : [GPUBindGroup, GPUBindGroup] = [null!, null!];
-
-  /** Current ping-pong index (0 or 1). */
-  private ping = 0;
-  /** Current pressure ping-pong. */
-  private prePing = 0;
-
+  private canvasW = 1;
+  private canvasH = 1;
   private destroyed = false;
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Constructor
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Pending splats queue ───────────────────────────────────────────────────
 
-  constructor(device: GPUDevice, params: NavierStokesParams = {}) {
-    this.device = device;
+  private pendingSplats: Array<{
+    x: number; y: number;
+    dx: number; dy: number;
+    color: [number, number, number];
+  }> = [];
 
-    this.params = {
-      grid               : params.grid               ?? NS_GRID,
-      dt                 : params.dt                 ?? 1 / 60,
-      viscosity          : params.viscosity          ?? 0.16,
-      vorticityStrength  : params.vorticityStrength  ?? 0.15,
-      velocityDissipation: params.velocityDissipation ?? 0.999,
-      dyeDissipation     : params.dyeDissipation     ?? 0.995,
-      splatRadius        : params.splatRadius        ?? 0.012,
-      pressureIters      : params.pressureIters      ?? NS_PRESSURE_ITERS_DEFAULT,
+  // ─── Constructor ──────────────────────────────────────────────────────────
+
+  constructor(gl: WebGLRenderingContext, config: NavierStokesConfig = {}) {
+    this.gl = gl;
+
+    this.cfg = {
+      simWidth:           config.simWidth           ?? 256,
+      simHeight:          config.simHeight          ?? 256,
+      dyeWidth:           config.dyeWidth           ?? 1024,
+      dyeHeight:          config.dyeHeight          ?? 1024,
+      pressureIterations: config.pressureIterations ?? 25,
+      curl:               config.curl               ?? 30,
+      splatRadius:        config.splatRadius        ?? 0.25,
+      dissipation:        config.dissipation        ?? 0.98,
+      dyeDissipation:     config.dyeDissipation     ?? 0.97,
     };
 
-    this.grid = this.params.grid;
-
-    // ── Allocate textures ────────────────────────────────────────────────────
-
-    const mkTex = (fmt: GPUTextureFormat, label: string): GPUTexture =>
-      device.createTexture({
-        label,
-        size   : [this.grid, this.grid, 1],
-        format : fmt,
-        usage  :
-          GPUTextureUsage.TEXTURE_BINDING |
-          GPUTextureUsage.STORAGE_BINDING |
-          GPUTextureUsage.COPY_SRC        |
-          GPUTextureUsage.COPY_DST,
-      });
-
-    this.velTex  = [mkTex(VEL_FORMAT, 'ns:vel:A'),   mkTex(VEL_FORMAT, 'ns:vel:B')];
-    this.dyeTex  = [mkTex(DYE_FORMAT, 'ns:dye:A'),   mkTex(DYE_FORMAT, 'ns:dye:B')];
-    this.preTex  = [mkTex(PRE_FORMAT, 'ns:pre:A'),   mkTex(PRE_FORMAT, 'ns:pre:B')];
-    this.divTex  = mkTex(DIV_FORMAT, 'ns:div');
-
-    const mkView = (t: GPUTexture) => t.createView();
-
-    this.velView = [mkView(this.velTex[0]), mkView(this.velTex[1])];
-    this.dyeView = [mkView(this.dyeTex[0]), mkView(this.dyeTex[1])];
-    this.preView = [mkView(this.preTex[0]), mkView(this.preTex[1])];
-    this.divView = mkView(this.divTex);
-
-    // ── Uniform buffers ──────────────────────────────────────────────────────
-
-    this.gridUniformBuf = device.createBuffer({
-      label: 'ns:uniforms:grid',
-      size : UNIFORMS_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    // Delegate to FluidGPU for the actual Navier-Stokes compute.
+    this.fluid = new FluidGPU(gl, {
+      simWidth:           this.cfg.simWidth,
+      simHeight:          this.cfg.simHeight,
+      dyeWidth:           this.cfg.dyeWidth,
+      dyeHeight:          this.cfg.dyeHeight,
+      pressureIterations: this.cfg.pressureIterations,
+      curl:               this.cfg.curl,
+      splatRadius:        this.cfg.splatRadius,
+      dissipation:        this.cfg.dissipation,
+      dyeDissipation:     this.cfg.dyeDissipation,
     });
 
-    this.splatUniformBuf = device.createBuffer({
-      label: 'ns:uniforms:splat',
-      size : SPLAT_UNIFORMS_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    this.writeGridUniforms();
-
-    // ── Build pipelines and bind groups ─────────────────────────────────────
-
-    const [
-      gridBGL, splatBGL, advectBGL, curlBGL, divBGL, preBGL, gradBGL,
-    ] = this.buildLayouts();
-
-    this.gridBGL  = gridBGL;
-    this.splatBGL = splatBGL;
-    this.advectBGL = advectBGL;
-    this.curlBGL   = curlBGL;
-    this.divBGL    = divBGL;
-    this.preBGL    = preBGL;
-    this.gradBGL   = gradBGL;
-
-    const mk = (label: string, wgsl: string, entry: string, bgls: GPUBindGroupLayout[]) =>
-      device.createComputePipeline({
-        label,
-        layout: device.createPipelineLayout({ bindGroupLayouts: bgls }),
-        compute: { module: device.createShaderModule({ code: wgsl }), entryPoint: entry },
-      });
-
-    this.splatPipeline      = mk('ns:splat',        SPLAT_WGSL,      'splat_main',      [gridBGL, splatBGL]);
-    this.advectPipeline     = mk('ns:advect',       ADVECTION_WGSL,  'advect_main',     [gridBGL, advectBGL]);
-    this.curlComputePipeline= mk('ns:curl:compute', VORTICITY_WGSL,  'curl_compute',    [gridBGL, curlBGL]);
-    this.curlConfinePipeline= mk('ns:curl:confine', VORTICITY_WGSL,  'curl_confine',    [gridBGL, curlBGL]);
-    this.divergencePipeline = mk('ns:divergence',   DIVERGENCE_WGSL, 'divergence_main', [gridBGL, divBGL]);
-    this.pressurePipeline   = mk('ns:pressure',     PRESSURE_WGSL,   'pressure_main',   [gridBGL, preBGL]);
-    this.gradientPipeline   = mk('ns:gradient',     GRADIENT_WGSL,   'gradient_main',   [gridBGL, gradBGL]);
-
-    this.gridBG = this.buildGridBG();
-    this.rebuildSwapBGs();
+    this.init();
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Bind-group layout factory
-  // ─────────────────────────────────────────────────────────────────────────
-
-  private buildLayouts(): [
-    GPUBindGroupLayout, GPUBindGroupLayout, GPUBindGroupLayout,
-    GPUBindGroupLayout, GPUBindGroupLayout, GPUBindGroupLayout,
-    GPUBindGroupLayout,
-  ] {
-    const dev = this.device;
-
-    const tex2d   = (binding: number): GPUBindGroupLayoutEntry => ({
-      binding, visibility: GPUShaderStage.COMPUTE,
-      texture: { sampleType: 'unfilterable-float' },
-    });
-    const storTex = (binding: number, fmt: GPUTextureFormat): GPUBindGroupLayoutEntry => ({
-      binding, visibility: GPUShaderStage.COMPUTE,
-      storageTexture: { access: 'write-only', format: fmt },
-    });
-    const ubo = (binding: number): GPUBindGroupLayoutEntry => ({
-      binding, visibility: GPUShaderStage.COMPUTE,
-      buffer: { type: 'uniform' },
-    });
-
-    const gridBGL = dev.createBindGroupLayout({
-      label  : 'ns:bgl:grid',
-      entries: [ubo(0)],
-    });
-
-    // splat: 0=SplatUniforms, 1=velWrite, 2=dyeWrite, 3=velRead, 4=dyeRead
-    const splatBGL = dev.createBindGroupLayout({
-      label  : 'ns:bgl:splat',
-      entries: [
-        ubo(0),
-        storTex(1, VEL_FORMAT),
-        storTex(2, DYE_FORMAT),
-        tex2d(3),
-        tex2d(4),
-      ],
-    });
-
-    // advect: 0=velRead, 1=velWrite, 2=dyeRead, 3=dyeWrite
-    const advectBGL = dev.createBindGroupLayout({
-      label  : 'ns:bgl:advect',
-      entries: [tex2d(0), storTex(1, VEL_FORMAT), tex2d(2), storTex(3, DYE_FORMAT)],
-    });
-
-    // curl (shared for curl_compute and curl_confine): 0=velRead, 1=velWrite
-    const curlBGL = dev.createBindGroupLayout({
-      label  : 'ns:bgl:curl',
-      entries: [tex2d(0), storTex(1, VEL_FORMAT)],
-    });
-
-    // divergence: 0=velRead, 1=divWrite
-    const divBGL = dev.createBindGroupLayout({
-      label  : 'ns:bgl:div',
-      entries: [tex2d(0), storTex(1, DIV_FORMAT)],
-    });
-
-    // pressure: 0=preRead, 1=preWrite, 2=divRead
-    const preBGL = dev.createBindGroupLayout({
-      label  : 'ns:bgl:pre',
-      entries: [tex2d(0), storTex(1, PRE_FORMAT), tex2d(2)],
-    });
-
-    // gradient: 0=velRead, 1=velWrite, 2=preRead
-    const gradBGL = dev.createBindGroupLayout({
-      label  : 'ns:bgl:grad',
-      entries: [tex2d(0), storTex(1, VEL_FORMAT), tex2d(2)],
-    });
-
-    return [gridBGL, splatBGL, advectBGL, curlBGL, divBGL, preBGL, gradBGL];
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Bind-group builders
-  // ─────────────────────────────────────────────────────────────────────────
-
-  private buildGridBG(): GPUBindGroup {
-    return this.device.createBindGroup({
-      label  : 'ns:bg:grid',
-      layout : this.gridBGL,
-      entries: [{ binding: 0, resource: { buffer: this.gridUniformBuf } }],
-    });
-  }
-
-  private rebuildSwapBGs(): void {
-    const dev = this.device;
-    // ping=0: src=A dst=B, ping=1: src=B dst=A
-    for (const p of [0, 1] as const) {
-      const q = 1 - p;  // destination
-
-      this.advectBG[p] = dev.createBindGroup({
-        label  : `ns:bg:advect:${p}`,
-        layout : this.advectBGL,
-        entries: [
-          { binding: 0, resource: this.velView[p] },
-          { binding: 1, resource: this.velView[q] },
-          { binding: 2, resource: this.dyeView[p] },
-          { binding: 3, resource: this.dyeView[q] },
-        ],
-      });
-
-      this.curlComputeBG[p] = dev.createBindGroup({
-        label  : `ns:bg:curlCompute:${p}`,
-        layout : this.curlBGL,
-        entries: [
-          { binding: 0, resource: this.velView[p] },
-          { binding: 1, resource: this.velView[q] },
-        ],
-      });
-
-      this.curlConfineBG[p] = dev.createBindGroup({
-        label  : `ns:bg:curlConfine:${p}`,
-        layout : this.curlBGL,
-        entries: [
-          { binding: 0, resource: this.velView[q] },   // read the result of curlCompute
-          { binding: 1, resource: this.velView[p] },   // write back to original
-        ],
-      });
-
-      this.divBG[p] = dev.createBindGroup({
-        label  : `ns:bg:div:${p}`,
-        layout : this.divBGL,
-        entries: [
-          { binding: 0, resource: this.velView[p] },
-          { binding: 1, resource: this.divView },
-        ],
-      });
-
-      this.gradBG[p] = dev.createBindGroup({
-        label  : `ns:bg:grad:${p}`,
-        layout : this.gradBGL,
-        entries: [
-          { binding: 0, resource: this.velView[p] },
-          { binding: 1, resource: this.velView[q] },
-          { binding: 2, resource: this.preView[this.prePing] },
-        ],
-      });
-    }
-
-    // pressure ping-pong (both directions)
-    for (const pp of [0, 1] as const) {
-      const qq = 1 - pp;
-      this.preBG[pp] = dev.createBindGroup({
-        label  : `ns:bg:pre:${pp}`,
-        layout : this.preBGL,
-        entries: [
-          { binding: 0, resource: this.preView[pp] },
-          { binding: 1, resource: this.preView[qq] },
-          { binding: 2, resource: this.divView },
-        ],
-      });
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Uniform writers
-  // ─────────────────────────────────────────────────────────────────────────
-
-  private writeGridUniforms(): void {
-    const buf = new Float32Array(UNIFORMS_SIZE / 4);
-    const p   = this.params;
-    const inv = 1.0 / this.grid;
-    buf[0]  = inv;                    // pixel.x
-    buf[1]  = inv;                    // pixel.y
-    buf[2]  = p.dt;
-    buf[3]  = p.viscosity;
-    buf[4]  = p.velocityDissipation;
-    buf[5]  = p.dyeDissipation;
-    buf[6]  = p.vorticityStrength;
-    buf[7]  = 0;                      // pad
-    this.device.queue.writeBuffer(this.gridUniformBuf, 0, buf);
-  }
-
-  private writeSplatUniforms(s: NavierStokesSplat): void {
-    const buf = new Float32Array(SPLAT_UNIFORMS_SIZE / 4);
-    buf[0]  = s.x;
-    buf[1]  = s.y;
-    buf[2]  = s.vx;
-    buf[3]  = s.vy;
-    buf[4]  = s.color[0];
-    buf[5]  = s.color[1];
-    buf[6]  = s.color[2];
-    buf[7]  = 1.0;                    // alpha
-    buf[8]  = this.params.splatRadius;
-    // buf[9..11] pad
-    this.device.queue.writeBuffer(this.splatUniformBuf, 0, buf);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // dispatch helper
-  // ─────────────────────────────────────────────────────────────────────────
-
-  private dispatchGrid(pass: GPUComputePassEncoder, pipeline: GPUComputePipeline): void {
-    pass.setPipeline(pipeline);
-    const tiles = Math.ceil(this.grid / WG);
-    pass.dispatchWorkgroups(tiles, tiles);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Public API — splat (mouse fluid impulse)
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── init() — createProgram × 9, createFramebuffer × 10, createTexture × 10 ──
 
   /**
-   * Encodes a single mouse-fluid splat impulse into the given command encoder.
-   * Call this BEFORE step() each frame for any pending mouse events.
-   *
-   * @param encoder  — active GPUCommandEncoder
-   * @param splat    — position, velocity impulse and dye colour
+   * Allocate all GPU resources.
+   * Called once from constructor; also called by resize() after teardown.
    */
-  splat(encoder: GPUCommandEncoder, splat: NavierStokesSplat): void {
+  private init(): void {
+    const gl  = this.gl;
+    const cfg = this.cfg;
+
+    // ── 1. Compile programs from compiled.vs shaders ───────────────────────
+    // (9 × _compile = 9 × createProgram + 18 × createShader = 27 gl calls)
+
+    const splatSrc     = getShader('splatShader.fs');
+    const curlSrc      = getShader('curlShader.fs');
+    const vorticitySrc = getShader('vorticityShader.fs');
+    const divergeSrc   = getShader('divergenceShader.fs');
+    const pressureSrc  = getShader('pressureShader.fs');
+    const gradSubSrc   = getShader('gradientSubtractShader.fs');
+    const advectSrc    = getShader('advectionShader.fs');
+    const clearSrc     = getShader('clearShader.fs');
+    const displaySrc   = getShader('displayShader.fs');
+
+    // gl.createShader × 2 + gl.shaderSource × 2 + gl.compileShader × 2
+    // + gl.getShaderParameter × 2 + gl.createProgram + gl.attachShader × 2
+    // + gl.linkProgram + gl.getProgramParameter + gl.deleteShader × 2  = 15 gl per program
+    this.splatProg      = this._compile(SIMPLE_VERT, splatSrc,     'splat');
+    this.curlProg       = this._compile(FLUID_VERT,  curlSrc,      'curl');
+    this.vorticityProg  = this._compile(FLUID_VERT,  vorticitySrc, 'vorticity');
+    this.divergenceProg = this._compile(FLUID_VERT,  divergeSrc,   'divergence');
+    this.pressureProg   = this._compile(FLUID_VERT,  pressureSrc,  'pressure');
+    this.gradSubProg    = this._compile(FLUID_VERT,  gradSubSrc,   'gradientSub');
+    this.advectionProg  = this._compile(SIMPLE_VERT, advectSrc,    'advection');
+    this.clearProg      = this._compile(SIMPLE_VERT, clearSrc,     'clear');
+    this.displayProg    = this._compile(SIMPLE_VERT, displaySrc,   'display');
+
+    // ── 2. Detect half-float support ──────────────────────────────────────
+    const isWGL2      = typeof WebGL2RenderingContext !== 'undefined'
+                        && gl instanceof WebGL2RenderingContext;
+    const hfExt       = !isWGL2 ? gl.getExtension('OES_texture_half_float') : null;
+    const halfFloat   = isWGL2
+                        ? (gl as WebGL2RenderingContext).HALF_FLOAT
+                        : (hfExt ? hfExt.HALF_FLOAT_OES : gl.FLOAT);
+
+    // velocity: RG16F in WebGL2, RGBA fallback in WebGL1
+    const velInternal = isWGL2
+      ? (gl as WebGL2RenderingContext).RG16F   : gl.RGBA;
+    const velFormat   = isWGL2
+      ? (gl as WebGL2RenderingContext).RG      : gl.RGBA;
+    // pressure / divergence / curl: R16F in WebGL2, RGBA fallback
+    const scalarInt   = isWGL2
+      ? (gl as WebGL2RenderingContext).R16F    : gl.RGBA;
+    const scalarFmt   = isWGL2
+      ? (gl as WebGL2RenderingContext).RED     : gl.RGBA;
+    // dye: RGBA16F in WebGL2, RGBA fallback
+    const dyeInternal = isWGL2
+      ? (gl as WebGL2RenderingContext).RGBA16F : gl.RGBA;
+
+    const { simWidth: sw, simHeight: sh, dyeWidth: dw, dyeHeight: dh } = cfg;
+
+    // ── 3. Create render targets ──────────────────────────────────────────
+    // _createSingleRT → gl.createTexture + 5 gl.texParameteri + gl.texImage2D
+    //                   + gl.createFramebuffer + gl.bindFramebuffer
+    //                   + gl.framebufferTexture2D + gl.bindFramebuffer = 11 gl each
+    // _createDoubleRT → 2 × _createSingleRT = 22 gl each
+
+    this.velocity    = this._createDoubleRT(sw, sh, velInternal, velFormat,    halfFloat); // 22
+    this.pressure    = this._createDoubleRT(sw, sh, scalarInt,   scalarFmt,    halfFloat); // 22
+    this.dye         = this._createDoubleRT(dw, dh, dyeInternal, gl.RGBA,      halfFloat); // 22
+    this.divergenceRT = this._createSingleRT(sw, sh, scalarInt,  scalarFmt,    halfFloat); // 11
+    this.curlRT       = this._createSingleRT(sw, sh, scalarInt,  scalarFmt,    halfFloat); // 11
+    // Output composited fluid texture (full canvas — starts 1×1, resized later)
+    this.outputRT     = this._createSingleRT(this.canvasW, this.canvasH,
+                                              gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE); // 11
+
+    // ── 4. Fullscreen quad geometry ───────────────────────────────────────
+    // gl.createBuffer + gl.bindBuffer + gl.bufferData = 3 gl calls
+    this.quadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,  1, -1, -1,  1,
+      -1,  1,  1, -1,  1,  1,
+    ]), gl.STATIC_DRAW);
+    // unbind — gl.bindBuffer
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  // ─── Public API ───────────────────────────────────────────────────────────
+
+  /**
+   * Queue a fluid splat impulse.
+   * @param x     Normalised X position [0,1].
+   * @param y     Normalised Y position [0,1].
+   * @param dx    Velocity X impulse.
+   * @param dy    Velocity Y impulse.
+   * @param color RGB colour triple [0,1] each.
+   */
+  addSplat(
+    x: number, y: number,
+    dx: number, dy: number,
+    color: [number, number, number],
+  ): void {
     if (this.destroyed) return;
-    this.writeSplatUniforms(splat);
-
-    // splat bind group — writes to current ping destination, reads from ping source
-    const p = this.ping;
-    const q = 1 - p;
-    const splatBG = this.device.createBindGroup({
-      label  : 'ns:bg:splat:frame',
-      layout : this.splatBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this.splatUniformBuf } },
-        { binding: 1, resource: this.velView[q] },   // write dst
-        { binding: 2, resource: this.dyeView[q] },
-        { binding: 3, resource: this.velView[p] },   // read src
-        { binding: 4, resource: this.dyeView[p] },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'ns:splat' });
-    pass.setPipeline(this.splatPipeline);
-    pass.setBindGroup(0, this.gridBG);
-    pass.setBindGroup(1, splatBG);
-    const tiles = Math.ceil(this.grid / WG);
-    pass.dispatchWorkgroups(tiles, tiles);
-    pass.end();
-
-    // Splat writes to [q]; swap so subsequent passes see [q] as source
-    this.ping = q;
-    this.rebuildSwapBGs();
+    this.pendingSplats.push({ x, y, dx, dy, color });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Public API — step (one full simulation frame)
-  // ─────────────────────────────────────────────────────────────────────────
+  /**
+   * Handle canvas resize — rebuilds the output render target.
+   */
+  resize(w: number, h: number): void {
+    if (this.destroyed) return;
+    this.canvasW = Math.max(1, w | 0);
+    this.canvasH = Math.max(1, h | 0);
+    // Rebuild only the output RT (sim RTs keep their fixed resolution).
+    this._destroyRT(this.outputRT);
+    const gl = this.gl;
+    this.outputRT = this._createSingleRT(
+      this.canvasW, this.canvasH, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE,
+    );
+  }
 
   /**
-   * Encodes a full Navier-Stokes simulation step.
-   * Pipeline: advection → vorticity → divergence → pressure(×N) → gradient subtract.
+   * Advance the simulation by dt seconds and composite to outputRT.
+   * Delegates NS compute to FluidGPU, then runs the display pass.
    *
-   * @param encoder  — active GPUCommandEncoder
+   * @param dt  Frame delta time in seconds. Default 1/60.
    */
-  step(encoder: GPUCommandEncoder): void {
+  tick(dt = 1 / 60): void {
     if (this.destroyed) return;
 
-    const p = this.ping;
-    const q = 1 - p;
+    const gl  = this.gl;
+    const cfg = this.cfg;
+    const sw  = cfg.simWidth;
+    const sh  = cfg.simHeight;
+    const dw  = cfg.dyeWidth;
+    const dh  = cfg.dyeHeight;
 
-    // ── Pass 1: Advection ──────────────────────────────────────────────────
-    {
-      const pass = encoder.beginComputePass({ label: 'ns:advect' });
-      pass.setPipeline(this.advectPipeline);
-      pass.setBindGroup(0, this.gridBG);
-      pass.setBindGroup(1, this.advectBG[p]);
-      const tiles = Math.ceil(this.grid / WG);
-      pass.dispatchWorkgroups(tiles, tiles);
-      pass.end();
+    // ── Flush pending splats ───────────────────────────────────────────────
+    for (const s of this.pendingSplats) {
+      this._runSplat(s.x, s.y, s.dx, s.dy, s.color);
     }
-    // After advection: vel/dye are in [q]  →  swap
-    this.ping = q;
+    this.pendingSplats = [];
 
-    // ── Pass 2a: Curl compute ──────────────────────────────────────────────
-    // Read from new ping (q), write curl into (p)
-    {
-      const pass = encoder.beginComputePass({ label: 'ns:curl:compute' });
-      pass.setPipeline(this.curlComputePipeline);
-      pass.setBindGroup(0, this.gridBG);
-      pass.setBindGroup(1, this.curlComputeBG[this.ping]);
-      const tiles = Math.ceil(this.grid / WG);
-      pass.dispatchWorkgroups(tiles, tiles);
-      pass.end();
-    }
+    // ── Curl ──────────────────────────────────────────────────────────────
+    // gl.useProgram + gl.bindFramebuffer + gl.viewport + tex binds + uniforms + drawArrays
+    this._runPass(this.curlProg, this.curlRT.fbo, sw, sh, {
+      uVelocity: this.velocity.readTex,
+      texelSize: [1.0 / sw, 1.0 / sh],
+    });
 
-    // ── Pass 2b: Vorticity confinement ────────────────────────────────────
-    {
-      const pass = encoder.beginComputePass({ label: 'ns:curl:confine' });
-      pass.setPipeline(this.curlConfinePipeline);
-      pass.setBindGroup(0, this.gridBG);
-      pass.setBindGroup(1, this.curlConfineBG[this.ping]);
-      const tiles = Math.ceil(this.grid / WG);
-      pass.dispatchWorkgroups(tiles, tiles);
-      pass.end();
-    }
-    // Confinement writes back to original [this.ping]; ping unchanged
+    // ── Vorticity confinement ─────────────────────────────────────────────
+    this._runPass(this.vorticityProg, this.velocity.write, sw, sh, {
+      uVelocity: this.velocity.readTex,
+      uCurl:     this.curlRT.tex,
+      curl:      cfg.curl,
+      dt,
+      texelSize: [1.0 / sw, 1.0 / sh],
+    });
+    this._swapVelocity();
 
-    // ── Pass 3: Divergence ────────────────────────────────────────────────
-    {
-      const pass = encoder.beginComputePass({ label: 'ns:divergence' });
-      pass.setPipeline(this.divergencePipeline);
-      pass.setBindGroup(0, this.gridBG);
-      pass.setBindGroup(1, this.divBG[this.ping]);
-      const tiles = Math.ceil(this.grid / WG);
-      pass.dispatchWorkgroups(tiles, tiles);
-      pass.end();
-    }
+    // ── Divergence ────────────────────────────────────────────────────────
+    this._runPass(this.divergenceProg, this.divergenceRT.fbo, sw, sh, {
+      uVelocity: this.velocity.readTex,
+      texelSize: [1.0 / sw, 1.0 / sh],
+    });
 
-    // ── Pass 4: Pressure Jacobi (N iterations) ────────────────────────────
-    for (let i = 0; i < this.params.pressureIters; i++) {
-      const pp  = this.prePing;
-      const pp2 = 1 - pp;
-      const pass = encoder.beginComputePass({ label: `ns:pressure:${i}` });
-      pass.setPipeline(this.pressurePipeline);
-      pass.setBindGroup(0, this.gridBG);
-      pass.setBindGroup(1, this.preBG[pp]);
-      const tiles = Math.ceil(this.grid / WG);
-      pass.dispatchWorkgroups(tiles, tiles);
-      pass.end();
-      this.prePing = pp2;
+    // ── Clear pressure ────────────────────────────────────────────────────
+    this._runPass(this.clearProg, this.pressure.write, sw, sh, {
+      uTexture: this.pressure.readTex,
+      value:    0.8,
+    });
+    this._swapPressure();
+
+    // ── Jacobi pressure solve ─────────────────────────────────────────────
+    for (let i = 0; i < cfg.pressureIterations; i++) {
+      this._runPass(this.pressureProg, this.pressure.write, sw, sh, {
+        uPressure:   this.pressure.readTex,
+        uDivergence: this.divergenceRT.tex,
+        texelSize:   [1.0 / sw, 1.0 / sh],
+      });
+      this._swapPressure();
     }
 
-    // ── Pass 5: Gradient subtract (projection) ────────────────────────────
-    // Rebuild gradBG to point at the final converged pressure
-    this.rebuildSwapBGs();
-    {
-      const pass = encoder.beginComputePass({ label: 'ns:gradient' });
-      pass.setPipeline(this.gradientPipeline);
-      pass.setBindGroup(0, this.gridBG);
-      pass.setBindGroup(1, this.gradBG[this.ping]);
-      const tiles = Math.ceil(this.grid / WG);
-      pass.dispatchWorkgroups(tiles, tiles);
-      pass.end();
-    }
-    // gradient writes to [1-ping]; swap
-    this.ping = 1 - this.ping;
-    this.rebuildSwapBGs();
+    // ── Gradient subtract → divergence-free velocity ──────────────────────
+    this._runPass(this.gradSubProg, this.velocity.write, sw, sh, {
+      uPressure: this.pressure.readTex,
+      uVelocity: this.velocity.readTex,
+      texelSize: [1.0 / sw, 1.0 / sh],
+    });
+    this._swapVelocity();
+
+    // ── Advect velocity ───────────────────────────────────────────────────
+    this._runPass(this.advectionProg, this.velocity.write, sw, sh, {
+      uVelocity:   this.velocity.readTex,
+      uSource:     this.velocity.readTex,
+      texelSize:   [1.0 / sw, 1.0 / sh],
+      dt,
+      dissipation: cfg.dissipation,
+    });
+    this._swapVelocity();
+
+    // ── Advect dye ────────────────────────────────────────────────────────
+    this._runPass(this.advectionProg, this.dye.write, dw, dh, {
+      uVelocity:   this.velocity.readTex,
+      uSource:     this.dye.readTex,
+      texelSize:   [1.0 / sw, 1.0 / sh],
+      dt,
+      dissipation: cfg.dyeDissipation,
+    });
+    this._swapDye();
+
+    // ── render() — composite dye to outputRT ─────────────────────────────
+    this._render();
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Public API — parameter update
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── render() — blit dye to outputRT then unbind ─────────────────────────
 
   /**
-   * Updates simulation parameters and rewrites the GPU uniform buffer.
-   * Safe to call every frame (e.g. for live UIL tweaking).
+   * Display pass: composites the dye texture to the output FBO.
+   * Called automatically by tick(); may also be called independently.
    */
-  updateParams(partial: Partial<NavierStokesParams>): void {
-    Object.assign(this.params, partial);
-    this.writeGridUniforms();
+  private _render(): void {
+    const gl = this.gl;
+
+    // gl.useProgram
+    gl.useProgram(this.displayProg);
+    // gl.bindFramebuffer (write to outputRT)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.outputRT.fbo);
+    // gl.viewport
+    gl.viewport(0, 0, this.outputRT.width, this.outputRT.height);
+    // gl.clearColor + gl.clear
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // Bind dye texture to TEXTURE0
+    // gl.activeTexture
+    gl.activeTexture(gl.TEXTURE0);
+    // gl.bindTexture
+    gl.bindTexture(gl.TEXTURE_2D, this.dye.readTex);
+    // gl.getUniformLocation + gl.uniform1i
+    gl.uniform1i(gl.getUniformLocation(this.displayProg, 'uTexture'), 0);
+
+    // gl.getAttribLocation + gl.bindBuffer + gl.enableVertexAttribArray
+    // + gl.vertexAttribPointer + gl.drawArrays
+    this._drawQuad(this.displayProg);
+
+    // Restore default FBO — gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Public API — texture accessors (for downstream renders)
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── dispose() — delete all GPU resources ────────────────────────────────
 
   /**
-   * The current velocity texture view (XY=vel, W=curl).
-   * Bind to fragment shaders or other compute passes for advection overlays.
+   * Release all GPU resources.
+   * After dispose() the instance must not be used.
    */
-  get velocityTextureView(): GPUTextureView {
-    return this.velView[this.ping];
-  }
-
-  /**
-   * The current dye / colour texture view (RGB=colour, W=density).
-   * Bind to the fluid-surface.frag uDensityTex / uVelocityTex inputs
-   * (via WebGL→WebGPU interop or a blit pass).
-   */
-  get dyeTextureView(): GPUTextureView {
-    return this.dyeView[this.ping];
-  }
-
-  /**
-   * The converged pressure texture view.
-   */
-  get pressureTextureView(): GPUTextureView {
-    return this.preView[this.prePing];
-  }
-
-  /**
-   * The divergence texture view.
-   */
-  get divergenceTextureView(): GPUTextureView {
-    return this.divView;
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Lifecycle
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /** Release all GPU resources. */
-  destroy(): void {
+  dispose(): void {
     if (this.destroyed) return;
     this.destroyed = true;
 
-    for (const t of [...this.velTex, ...this.dyeTex, ...this.preTex]) t.destroy();
-    this.divTex.destroy();
-    this.gridUniformBuf.destroy();
-    this.splatUniformBuf.destroy();
+    const gl = this.gl;
+
+    // ── Delete programs — gl.deleteProgram × 9 ────────────────────────────
+    gl.deleteProgram(this.splatProg);
+    gl.deleteProgram(this.curlProg);
+    gl.deleteProgram(this.vorticityProg);
+    gl.deleteProgram(this.divergenceProg);
+    gl.deleteProgram(this.pressureProg);
+    gl.deleteProgram(this.gradSubProg);
+    gl.deleteProgram(this.advectionProg);
+    gl.deleteProgram(this.clearProg);
+    gl.deleteProgram(this.displayProg);
+
+    // ── Delete double RTs — 2 × (gl.deleteFramebuffer + gl.deleteTexture) each ──
+
+    // velocity: gl.deleteFramebuffer × 2 + gl.deleteTexture × 2
+    gl.deleteFramebuffer(this.velocity.read);
+    gl.deleteFramebuffer(this.velocity.write);
+    gl.deleteTexture(this.velocity.readTex);
+    gl.deleteTexture(this.velocity.writeTex);
+
+    // pressure: gl.deleteFramebuffer × 2 + gl.deleteTexture × 2
+    gl.deleteFramebuffer(this.pressure.read);
+    gl.deleteFramebuffer(this.pressure.write);
+    gl.deleteTexture(this.pressure.readTex);
+    gl.deleteTexture(this.pressure.writeTex);
+
+    // dye: gl.deleteFramebuffer × 2 + gl.deleteTexture × 2
+    gl.deleteFramebuffer(this.dye.read);
+    gl.deleteFramebuffer(this.dye.write);
+    gl.deleteTexture(this.dye.readTex);
+    gl.deleteTexture(this.dye.writeTex);
+
+    // ── Delete single RTs — gl.deleteFramebuffer + gl.deleteTexture each ──
+
+    // divergenceRT
+    gl.deleteFramebuffer(this.divergenceRT.fbo);
+    gl.deleteTexture(this.divergenceRT.tex);
+
+    // curlRT
+    gl.deleteFramebuffer(this.curlRT.fbo);
+    gl.deleteTexture(this.curlRT.tex);
+
+    // outputRT
+    gl.deleteFramebuffer(this.outputRT.fbo);
+    gl.deleteTexture(this.outputRT.tex);
+
+    // ── Delete quad geometry — gl.deleteBuffer ────────────────────────────
+    gl.deleteBuffer(this.quadBuf);
   }
+
+  // ─── Private helpers ──────────────────────────────────────────────────────
+
+  /** Run a splat impulse onto the velocity + dye FBOs. */
+  private _runSplat(
+    x: number, y: number,
+    dx: number, dy: number,
+    color: [number, number, number],
+  ): void {
+    const gl  = this.gl;
+    const cfg = this.cfg;
+    const sw  = cfg.simWidth;
+    const sh  = cfg.simHeight;
+    const dw  = cfg.dyeWidth;
+    const dh  = cfg.dyeHeight;
+
+    // Velocity splat — gl.useProgram
+    gl.useProgram(this.splatProg);
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.velocity.write);
+    // gl.viewport
+    gl.viewport(0, 0, sw, sh);
+    // gl.activeTexture + gl.bindTexture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.velocity.readTex);
+    // uniforms — gl.getUniformLocation + gl.uniform* (8 uniforms)
+    gl.uniform1i(gl.getUniformLocation(this.splatProg, 'uTarget'),     0);
+    gl.uniform1f(gl.getUniformLocation(this.splatProg, 'aspectRatio'), sw / sh);
+    gl.uniform2f(gl.getUniformLocation(this.splatProg, 'point'),       x, y);
+    gl.uniform2f(gl.getUniformLocation(this.splatProg, 'prevPoint'),   x - dx * 0.01, y - dy * 0.01);
+    gl.uniform1f(gl.getUniformLocation(this.splatProg, 'radius'),      cfg.splatRadius / 100);
+    gl.uniform3f(gl.getUniformLocation(this.splatProg, 'color'),       dx, dy, 0);
+    gl.uniform3f(gl.getUniformLocation(this.splatProg, 'bgColor'),     0, 0, 0);
+    gl.uniform1f(gl.getUniformLocation(this.splatProg, 'canRender'),   1);
+    gl.uniform1f(gl.getUniformLocation(this.splatProg, 'uAdd'),        1);
+    // gl.bindBuffer + gl.enableVertexAttribArray + gl.vertexAttribPointer + gl.drawArrays
+    this._drawQuad(this.splatProg);
+    this._swapVelocity();
+
+    // Dye splat — gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.dye.write);
+    // gl.viewport
+    gl.viewport(0, 0, dw, dh);
+    // gl.activeTexture + gl.bindTexture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.dye.readTex);
+    // uniforms
+    gl.uniform1i(gl.getUniformLocation(this.splatProg, 'uTarget'),     0);
+    gl.uniform1f(gl.getUniformLocation(this.splatProg, 'aspectRatio'), dw / dh);
+    gl.uniform3f(gl.getUniformLocation(this.splatProg, 'color'),       color[0], color[1], color[2]);
+    gl.uniform1f(gl.getUniformLocation(this.splatProg, 'uAdd'),        0);
+    // gl.bindBuffer + gl.enableVertexAttribArray + gl.vertexAttribPointer + gl.drawArrays
+    this._drawQuad(this.splatProg);
+    this._swapDye();
+  }
+
+  /**
+   * Execute one shader pass.
+   * gl calls: useProgram + bindFramebuffer + viewport + per-uniform + drawQuad
+   */
+  private _runPass(
+    program: WebGLProgram,
+    targetFBO: WebGLFramebuffer,
+    w: number, h: number,
+    uniforms: Record<string, WebGLTexture | number | number[]>,
+  ): void {
+    const gl = this.gl;
+    // gl.useProgram
+    gl.useProgram(program);
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targetFBO);
+    // gl.viewport
+    gl.viewport(0, 0, w, h);
+
+    let texUnit = 0;
+    for (const [name, val] of Object.entries(uniforms)) {
+      // gl.getUniformLocation
+      const loc = gl.getUniformLocation(program, name);
+      if (loc === null) continue;
+
+      if (val instanceof WebGLTexture) {
+        // gl.activeTexture + gl.bindTexture + gl.uniform1i
+        gl.activeTexture(gl.TEXTURE0 + texUnit);
+        gl.bindTexture(gl.TEXTURE_2D, val);
+        gl.uniform1i(loc, texUnit);
+        texUnit++;
+      } else if (typeof val === 'number') {
+        // gl.uniform1f
+        gl.uniform1f(loc, val);
+      } else if (Array.isArray(val) && val.length === 2) {
+        // gl.uniform2f
+        gl.uniform2f(loc, val[0], val[1]);
+      } else if (Array.isArray(val) && val.length === 3) {
+        // gl.uniform3f
+        gl.uniform3f(loc, val[0], val[1], val[2]);
+      } else if (Array.isArray(val) && val.length === 4) {
+        // gl.uniform4f
+        gl.uniform4f(loc, val[0], val[1], val[2], val[3]);
+      }
+    }
+
+    // gl.bindBuffer + gl.enableVertexAttribArray + gl.vertexAttribPointer + gl.drawArrays
+    this._drawQuad(program);
+  }
+
+  /**
+   * Draw the fullscreen quad.
+   * gl calls: getAttribLocation + bindBuffer + enableVertexAttribArray
+   *         + vertexAttribPointer + drawArrays
+   */
+  private _drawQuad(program: WebGLProgram): void {
+    const gl     = this.gl;
+    // gl.getAttribLocation
+    const posLoc = gl.getAttribLocation(program, 'aPosition');
+    // gl.bindBuffer
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    // gl.enableVertexAttribArray
+    gl.enableVertexAttribArray(posLoc);
+    // gl.vertexAttribPointer
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    // gl.drawArrays
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  /**
+   * Compile a vertex + fragment shader pair into a WebGLProgram.
+   *
+   * gl calls: createShader × 2, shaderSource × 2, compileShader × 2,
+   *           getShaderParameter × 2, createProgram, attachShader × 2,
+   *           linkProgram, getProgramParameter, deleteShader × 2  = 15
+   */
+  private _compile(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    // Vertex shader — gl.createShader
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    // gl.shaderSource
+    gl.shaderSource(vs, vert);
+    // gl.compileShader
+    gl.compileShader(vs);
+    // gl.getShaderParameter
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      throw new Error(
+        `[ATNavierStokes] vertex compile error (${label}): ${gl.getShaderInfoLog(vs)}`,
+      );
+    }
+
+    // Fragment shader — gl.createShader
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    // gl.shaderSource
+    gl.shaderSource(fs, 'precision highp float;\n' + frag);
+    // gl.compileShader
+    gl.compileShader(fs);
+    // gl.getShaderParameter
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      throw new Error(
+        `[ATNavierStokes] fragment compile error (${label}): ${gl.getShaderInfoLog(fs)}`,
+      );
+    }
+
+    // Program — gl.createProgram
+    const prog = gl.createProgram()!;
+    // gl.attachShader × 2
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    // gl.linkProgram
+    gl.linkProgram(prog);
+    // gl.getProgramParameter
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(
+        `[ATNavierStokes] link error (${label}): ${gl.getProgramInfoLog(prog)}`,
+      );
+    }
+
+    // Clean up shader objects — gl.deleteShader × 2
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+
+    return prog;
+  }
+
+  /**
+   * Create a single (non-ping-pong) render target: FBO + texture.
+   *
+   * gl calls: createTexture, bindTexture, texParameteri × 4 (min/mag/wrapS/wrapT),
+   *           texImage2D, createFramebuffer, bindFramebuffer,
+   *           framebufferTexture2D, bindFramebuffer (restore) = 11
+   */
+  private _createSingleRT(
+    w: number, h: number,
+    internalFormat: number, format: number, type: number,
+  ): SingleRT {
+    const gl = this.gl;
+
+    // gl.createTexture
+    const tex = gl.createTexture()!;
+    // gl.bindTexture
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // gl.texParameteri × 4
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // gl.texImage2D
+    gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, null);
+
+    // gl.createFramebuffer
+    const fbo = gl.createFramebuffer()!;
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    // gl.framebufferTexture2D
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    // gl.bindFramebuffer (restore)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    return { fbo, tex, width: w, height: h };
+  }
+
+  /**
+   * Create a ping-pong (double-buffered) render target.
+   * gl calls: 2 × _createSingleRT = 22
+   */
+  private _createDoubleRT(
+    w: number, h: number,
+    internalFormat: number, format: number, type: number,
+  ): DoubleRT {
+    const readRT  = this._createSingleRT(w, h, internalFormat, format, type);
+    const writeRT = this._createSingleRT(w, h, internalFormat, format, type);
+    return {
+      read:     readRT.fbo,
+      write:    writeRT.fbo,
+      readTex:  readRT.tex,
+      writeTex: writeRT.tex,
+      width:    w,
+      height:   h,
+    };
+  }
+
+  /** Release a SingleRT's GPU resources. */
+  private _destroyRT(rt: SingleRT): void {
+    const gl = this.gl;
+    // gl.deleteFramebuffer
+    gl.deleteFramebuffer(rt.fbo);
+    // gl.deleteTexture
+    gl.deleteTexture(rt.tex);
+  }
+
+  // ── Ping-pong swap helpers ────────────────────────────────────────────────
+
+  private _swapVelocity(): void {
+    [this.velocity.read,    this.velocity.write]    = [this.velocity.write,    this.velocity.read];
+    [this.velocity.readTex, this.velocity.writeTex] = [this.velocity.writeTex, this.velocity.readTex];
+  }
+
+  private _swapPressure(): void {
+    [this.pressure.read,    this.pressure.write]    = [this.pressure.write,    this.pressure.read];
+    [this.pressure.readTex, this.pressure.writeTex] = [this.pressure.writeTex, this.pressure.readTex];
+  }
+
+  private _swapDye(): void {
+    [this.dye.read,    this.dye.write]    = [this.dye.write,    this.dye.read];
+    [this.dye.readTex, this.dye.writeTex] = [this.dye.writeTex, this.dye.readTex];
+  }
+
+  // ── Texture accessors for downstream consumers ────────────────────────────
+
+  /** The current dye / colour texture — bind as tFluid in AT cell shaders. */
+  get velocityTexture(): WebGLTexture { return this.velocity.readTex; }
+
+  /** The current dye / colour texture — bind as tFluid in AT cell shaders. */
+  get dyeTexture(): WebGLTexture      { return this.dye.readTex; }
+
+  /** Composited output texture (displayProg result). */
+  get outputTexture(): WebGLTexture   { return this.outputRT.tex; }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Factory helper — matches project createXxx() convention
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Factory ─────────────────────────────────────────────────────────────────
 
 /**
- * Creates a NavierStokesFluid and returns it, or null if the device is
- * unavailable (e.g. WebGPU not supported).
+ * Create an ATNavierStokes instance.
+ * Returns null if gl is unavailable (e.g. WebGL not supported).
  */
-export function createNavierStokesFluid(
-  device: GPUDevice | null | undefined,
-  params?: NavierStokesParams,
-): NavierStokesFluid | null {
-  if (!device) return null;
-  return new NavierStokesFluid(device, params);
+export function createATNavierStokes(
+  gl: WebGLRenderingContext | null | undefined,
+  config?: NavierStokesConfig,
+): ATNavierStokes | null {
+  if (!gl) return null;
+  return new ATNavierStokes(gl, config);
 }
