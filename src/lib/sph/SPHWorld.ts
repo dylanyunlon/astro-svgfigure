@@ -15,9 +15,10 @@ import { BoidsCompute }       from './boids-compute';
 import { OceanBackground }    from './ocean-background';
 
 import {
-  GPUBufferSet, SimParams, ParticleData,
+  SimParams, ParticleData,
   ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
 } from "./types";
+import type { GPUBufferSet } from "./ParticleRenderer";
 
 // ─────────────────────────────────────────────
 // Effect module protocol  (M755)
@@ -32,7 +33,7 @@ import {
 // [orphan-precise]  */
 export interface EffectModule {
   init(): Promise<void>;
-  tick(encoder: GPUCommandEncoder, dt: number): void;
+  tick(encoder: any, dt: number): void;
   destroy(): void;
 }
 
@@ -72,10 +73,10 @@ interface CellForce {
 // ─────────────────────────────────────────────
 
 function makeStorageBuf(
-  device: GPUDevice,
+  device: any,
   byteLen: number,
   label: string,
-): GPUBuffer {
+): any {
   return device.createBuffer({
     label,
     size: Math.max(byteLen, 4),
@@ -86,7 +87,7 @@ function makeStorageBuf(
   });
 }
 
-function allocParticleBuffers(device: GPUDevice): GPUBufferSet {
+function allocParticleBuffers(device: any): GPUBufferSet {
   const n4 = MAX_PARTICLES * 4; // 4 bytes per f32 / u32
   return {
     posX:     makeStorageBuf(device, n4, "posX"),
@@ -136,10 +137,10 @@ function makeSimParams(
 export class SPHWorld {
   // ── WebGPU surface ──────────────────────────
   private canvas:  HTMLCanvasElement;
-  private ctx!:    GPUCanvasContext;
-  private adapter!: GPUAdapter;
-  private device!: GPUDevice;
-  private format!: GPUTextureFormat;
+  private ctx!:    any;
+  private adapter!: any;
+  private device!: any;
+  private format!: any;
 
   // ── Sub-systems ─────────────────────────────
   private grid!:           SpatialHashGrid;
@@ -466,7 +467,7 @@ export class SPHWorld {
           async init() {
             sim = await PhysarumSimulation.create(device, cw, ch, 500_000);
           },
-          tick(encoder: GPUCommandEncoder, _dt: number) {
+          tick(encoder: any, _dt: number) {
             sim?.tick(encoder);
           },
           destroy() {
@@ -488,7 +489,7 @@ export class SPHWorld {
             });
             boids.randomise();
           },
-          tick(_encoder: GPUCommandEncoder, dt: number) {
+          tick(_encoder: any, dt: number) {
             boids?.tick(dt);
           },
           destroy() {
@@ -510,7 +511,7 @@ export class SPHWorld {
             ocean = new OceanBackground(device, { domainW, domainH });
             await ocean.init(format);
           },
-          tick(encoder: GPUCommandEncoder, _dt: number) {
+          tick(encoder: any, _dt: number) {
             // Ocean.encode() needs a render pass + cell buffers; wrap a
             // lightweight pass that blends into the current swap-chain.
             // We pass the SPH position/count buffers so splash particles
@@ -737,7 +738,7 @@ export class SPHWorld {
     // Destroy GPU buffers
     const bufs = this.gpuBufs;
     if (bufs) {
-      (Object.values(bufs) as GPUBuffer[]).forEach((b) => {
+      (Object.values(bufs) as any[]).forEach((b) => {
         try { b.destroy(); } catch { /* already destroyed */ }
       });
     }
@@ -773,7 +774,7 @@ export class SPHWorld {
   private _uploadParticles(): void {
     const { x, y, vx, vy, species, count } = this.cpuPos;
     const dev = this.device;
-    const sub = (buf: GPUBuffer, data: ArrayBufferView, n: number) =>
+    const sub = (buf: any, data: ArrayBufferView, n: number) =>
       dev.queue.writeBuffer(buf, 0, data, 0, n);
 
     sub(this.gpuBufs.posX,    x,       count);
