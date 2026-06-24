@@ -9,6 +9,8 @@ import { PBRCellGPU } from './pbr-gpu-pass';
 import { GlassGPU } from './glass-gpu-pass';
 import { SDFIconGPU, createSDFIconGPU } from './sdf-gpu-pass';
 import { initATShaderPipeline, listATShaders, getATProgram } from './at-shader-pipeline-bridge';
+import { ATGeometryLoader } from './at-geometry-loader';
+import { KTX2TextureLoader } from './ktx2-texture-loader';
 import { safeCompile, checkFBO, drainErrors, setupContextLost } from './gpu-error-guard';
 import { NukePass } from '../renderer/NukePass';
 import { GPUPerfMonitor } from './gpu-perf-monitor';
@@ -78,6 +80,9 @@ export class GPURenderLoop {
   private pbr: PBRCellGPU | null = null;
   private glass: GlassGPU | null = null;
   private sdfIcon: SDFIconGPU | null = null;
+  // AT asset loaders — Draco geometry + KTX2 textures
+  private geometryLoader: ATGeometryLoader | null = null;
+  private textureLoader: KTX2TextureLoader | null = null;
   private nukePass: NukePass | null = null;
 
   // Perf + error monitoring
@@ -191,6 +196,51 @@ export class GPURenderLoop {
 
     // SDF species icon pass
     try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }
+
+    // ── M1120: Load AT assets — Draco geometry + KTX2 textures ──
+    // These are the actual 3D models and PBR textures from AT's production site.
+    // Once loaded, cells use jellyfish/flower/hexagon meshes instead of flat rectangles,
+    // and PBR shaders get real albedo/normal/MRO textures.
+    const GEOMETRY_BASE = '/upstream/activetheory-assets/geometry/';
+    const TEXTURE_BASE = '/upstream/activetheory-assets/textures/';
+
+    // Geometry: Draco .bin → GPU VBO/IBO
+    try {
+      this.geometryLoader = new ATGeometryLoader(gl as WebGL2RenderingContext);
+      // Load cell geometries (mapping from AT asset → cell species)
+      const geometryManifest = [
+        { name: 'jellyfish',  url: `${GEOMETRY_BASE}jellyfish.bin`,       cell: 'self_attn' },
+        { name: 'cables',     url: `${GEOMETRY_BASE}cables.bin`,          cell: 'edges' },
+        { name: 'flower',     url: `${GEOMETRY_BASE}flower_spine-128.bin`, cell: 'ffn' },
+        { name: 'hexagon',    url: `${GEOMETRY_BASE}hexagon_gem.bin`,     cell: 'add_norm' },
+        { name: 'pillars',    url: `${GEOMETRY_BASE}pillars.bin`,         cell: 'input_embed' },
+        { name: 'structure',  url: `${GEOMETRY_BASE}structure.bin`,       cell: 'pos_encode' },
+        { name: 'spine',      url: `${GEOMETRY_BASE}spine.bin`,           cell: 'output' },
+      ];
+      for (const { name, url } of geometryManifest) {
+        this.geometryLoader.load(url).then(() => {
+          console.log(`[GPURenderLoop] geometry loaded: ${name}`);
+        }).catch(() => { /* non-fatal */ });
+      }
+    } catch (e) { console.warn('[GPURenderLoop] geometry loader init failed:', e); }
+
+    // Textures: KTX2 → GPU Texture2D (PBR albedo/normal/MRO)
+    try {
+      this.textureLoader = new KTX2TextureLoader(gl as WebGL2RenderingContext);
+      const textureManifest = [
+        'CABLES___CyclesBake_COMBINED.ktx2',
+        'CABLES___PBR_AT_MRO.ktx2',
+        'CABLES___PBR_Normal.ktx2',
+        'PILLARS___CyclesBake_COMBINED.ktx2',
+        'PILLARS___PBR_AT_MRO.ktx2',
+        'PILLARS___PBR_Normal.ktx2',
+      ];
+      for (const name of textureManifest) {
+        this.textureLoader.load(`${TEXTURE_BASE}${name}`).then(() => {
+          console.log(`[GPURenderLoop] texture loaded: ${name}`);
+        }).catch(() => { /* non-fatal */ });
+      }
+    } catch (e) { console.warn('[GPURenderLoop] texture loader init failed:', e); }
 
     // WebGL2 particle (optional)
     const gl2 = canvas.getContext('webgl2');
