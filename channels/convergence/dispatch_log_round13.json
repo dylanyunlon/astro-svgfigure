@@ -1,0 +1,52 @@
+{
+  "M1002": {
+    "conv_id": "d7b9f53e-f4d1-49b5-abea-a61ceebb4963",
+    "url": "https://claude.hk.cn/chat/d7b9f53e-f4d1-49b5-abea-a61ceebb4963",
+    "files": "src/lib/sph/collision/CollisionWorld.ts + src/lib/sph/collision/*.ts"
+  },
+  "M1003": {
+    "conv_id": "0782eb02-e10d-431a-8281-378dcbb94731",
+    "url": "https://claude.hk.cn/chat/0782eb02-e10d-431a-8281-378dcbb94731",
+    "files": "src/lib/sph/world-stepper.ts + src/lib/sph/world-orchestrator.ts"
+  },
+  "M1004": {
+    "conv_id": "38aaf4a1-9065-4231-882c-0827682879de",
+    "url": "https://claude.hk.cn/chat/38aaf4a1-9065-4231-882c-0827682879de",
+    "files": "src/lib/sph/at-render-pipeline.ts + src/lib/sph/adaptive-lod.ts"
+  },
+  "M1005": {
+    "conv_id": "3e48c6cc-086d-463d-b59d-38b4bfa933a2",
+    "url": "https://claude.hk.cn/chat/3e48c6cc-086d-463d-b59d-38b4bfa933a2",
+    "files": "src/lib/sph/render-compositor.ts + src/lib/sph/species-visual-dna.ts + src/lib/sph/topology-*.ts"
+  },
+  "M1006": {
+    "conv_id": "3d0809cd-d78b-4b33-8efb-117ddb836bf9",
+    "url": "https://claude.hk.cn/chat/3d0809cd-d78b-4b33-8efb-117ddb836bf9",
+    "files": "src/lib/renderers/theatre-epoch-timeline.ts + src/lib/renderers/*.ts"
+  },
+  "M1007": {
+    "conv_id": "f85163d1-ac3c-492a-9b81-20ee29f80172",
+    "url": "https://claude.hk.cn/chat/f85163d1-ac3c-492a-9b81-20ee29f80172",
+    "files": "src/lib/sph/SPHWorld.ts + src/lib/sph/organic-growth-animator.ts + src/lib/sph/nature-texture-manager.ts"
+  },
+  "M1008": {
+    "conv_id": "585de0b1-e7f8-471c-aa73-97cd0da1bbd4",
+    "url": "https://claude.hk.cn/chat/585de0b1-e7f8-471c-aa73-97cd0da1bbd4",
+    "files": "src/lib/sph/gpu-render-loop.ts + src/lib/sph/*-gpu-pass.ts"
+  },
+  "M1009": {
+    "conv_id": "5c487bb1-a102-4a3e-a3eb-7e2a716b8323",
+    "url": "https://claude.hk.cn/chat/5c487bb1-a102-4a3e-a3eb-7e2a716b8323",
+    "files": "src/pages/world/index.astro + src/components/pipeline/*.tsx"
+  },
+  "M1010": {
+    "conv_id": "e8cc6f6c-0e5a-4c48-8488-16ef1c4f4ede",
+    "url": "https://claude.hk.cn/chat/e8cc6f6c-0e5a-4c48-8488-16ef1c4f4ede",
+    "files": "src/lib/sph/at-shader-loader.ts + src/lib/sph/at-shader-pipeline-bridge.ts + src/lib/sph/nanogl-shader-executor.ts"
+  },
+  "M1011": {
+    "conv_id": "0c108025-8086-4132-a3ac-0c53ffd87c86",
+    "url": "https://claude.hk.cn/chat/0c108025-8086-4132-a3ac-0c53ffd87c86",
+    "files": "\u6574\u4e2a\u9879\u76ee\u7684 astro build \u2014 \u4ece\u5934\u5230\u5c3e\u4fee\u6240\u6709\u5269\u4f59\u9519\u8bef\u76f4\u5230 client build \u901a\u8fc7"
+  }
+}
