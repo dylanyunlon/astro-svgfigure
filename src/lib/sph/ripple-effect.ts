@@ -260,7 +260,7 @@ export interface RippleEffectConfig {
 
 export class RippleEffect {
 
-  private readonly device : GPUDevice;
+  private readonly device : any /*GPUDevice*/;
   private readonly format : GPUTextureFormat;
 
   // ── Config ─────────────────────────────────────────────────────────────────
@@ -278,23 +278,23 @@ export class RippleEffect {
   private waveSampler !: GPUSampler;
 
   // ── Propagation pipeline ───────────────────────────────────────────────────
-  private propagatePipeline  !: GPURenderPipeline;
+  private propagatePipeline  !: any /*GPURenderPipeline*/;
   private propagateBGL       !: GPUBindGroupLayout;
-  private propagateUniBuf    !: GPUBuffer;  // PropUni (pixel size)
+  private propagateUniBuf    !: any /*GPUBuffer*/;  // PropUni (pixel size)
 
   // ── Stamp pipeline ─────────────────────────────────────────────────────────
-  private stampPipeline      !: GPURenderPipeline;
+  private stampPipeline      !: any /*GPURenderPipeline*/;
   private stampBGL           !: GPUBindGroupLayout;
-  private stampUniBuf        !: GPUBuffer;  // StampUni
+  private stampUniBuf        !: any /*GPUBuffer*/;  // StampUni
 
   // ── Composite pipeline ─────────────────────────────────────────────────────
-  private compositePipeline  !: GPURenderPipeline;
+  private compositePipeline  !: any /*GPURenderPipeline*/;
   private compositeBGL       !: GPUBindGroupLayout;
-  private compositeUniBuf    !: GPUBuffer;  // CompUni
+  private compositeUniBuf    !: any /*GPUBuffer*/;  // CompUni
 
   // ── Intermediate scene texture (copy target for composite) ─────────────────
   private sceneTex           !: GPUTexture;
-  private sceneView          !: GPUTextureView;
+  private sceneView          !: any /*GPUTextureView*/;
   private sceneSampler       !: GPUSampler;
   private sceneW             = 0;
   private sceneH             = 0;
@@ -306,7 +306,7 @@ export class RippleEffect {
   private _built = false;
 
   // ─────────────────────────────────────────────────────────────────────────
-  constructor(device: GPUDevice, format: GPUTextureFormat, config: RippleEffectConfig = {}) {
+  constructor(device: any /*GPUDevice*/, format: GPUTextureFormat, config: RippleEffectConfig = {}) {
     this.device = device;
     this.format = format;
     this.cfg = {
@@ -503,7 +503,7 @@ export class RippleEffect {
   // Call once per frame BEFORE composite().
   // ─────────────────────────────────────────────────────────────────────────
 
-  step(encoder: GPUCommandEncoder, width: number, height: number): void {
+  step(encoder: any /*GPUCommandEncoder*/, width: number, height: number): void {
     if (!this._built) return;
 
     this._ensureWaveTextures(width, height);
@@ -568,9 +568,9 @@ export class RippleEffect {
   // ─────────────────────────────────────────────────────────────────────────
 
   composite(
-    encoder     : GPUCommandEncoder,
-    sceneView   : GPUTextureView,
-    outputView  : GPUTextureView,
+    encoder     : any /*GPUCommandEncoder*/,
+    sceneView   : any /*GPUTextureView*/,
+    outputView  : any /*GPUTextureView*/,
     width       : number,
     height      : number,
   ): void {
@@ -687,9 +687,9 @@ export class RippleEffect {
   }
 
   private _stampImpulse(
-    encoder  : GPUCommandEncoder,
+    encoder  : any /*GPUCommandEncoder*/,
     imp      : PendingImpulse,
-    targetView: GPUTextureView,
+    targetView: any /*GPUTextureView*/,
   ): void {
     const d = this.device;
 

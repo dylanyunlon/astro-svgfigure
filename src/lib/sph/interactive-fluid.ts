@@ -119,7 +119,7 @@ export interface InteractiveFluidOptions {
    * Optional GPUDevice — if provided and no NavierStokesFluid is given
    * to the constructor, the controller will create one internally.
    */
-  device?: GPUDevice;
+  device?: any /*GPUDevice*/;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -567,17 +567,17 @@ export class InteractiveFluid {
   // ─────────────────────────────────────────────────────────────────────────
 
   /** Current velocity texture view (XY=vel, W=curl). */
-  get velocityTextureView(): GPUTextureView {
+  get velocityTextureView(): any /*GPUTextureView*/ {
     return this.fluid.velocityTextureView;
   }
 
   /** Current dye / colour texture view (RGB=colour, W=density). */
-  get dyeTextureView(): GPUTextureView {
+  get dyeTextureView(): any /*GPUTextureView*/ {
     return this.fluid.dyeTextureView;
   }
 
   /** Current pressure texture view. */
-  get pressureTextureView(): GPUTextureView {
+  get pressureTextureView(): any /*GPUTextureView*/ {
     return this.fluid.pressureTextureView;
   }
 

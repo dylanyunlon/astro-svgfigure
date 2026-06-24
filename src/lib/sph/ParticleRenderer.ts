@@ -338,10 +338,10 @@ fn speedColor(t: f32) -> vec3f {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export interface GPUBufferSet {
-  posX: GPUBuffer;
-  posY: GPUBuffer;
-  velX: GPUBuffer;
-  velY: GPUBuffer;
+  posX: any /*GPUBuffer*/;
+  posY: any /*GPUBuffer*/;
+  velX: any /*GPUBuffer*/;
+  velY: any /*GPUBuffer*/;
 }
 
 export interface CameraUniforms {
@@ -385,34 +385,34 @@ export type RenderMode = 'PARTICLES' | 'METABALL';
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export class ParticleRenderer {
-  private readonly device : GPUDevice;
+  private readonly device : any /*GPUDevice*/;
   private readonly format : GPUTextureFormat;
 
   // ------ Particle (original) pipeline ------------------------------------------------------------------------------------------------------------------------------
-  private particlePipeline  !: GPURenderPipeline;
+  private particlePipeline  !: any /*GPURenderPipeline*/;
   private particleBGL       !: GPUBindGroupLayout;
-  private camBuffer         !: GPUBuffer;
-  private particleBG        !: GPUBindGroup;
+  private camBuffer         !: any /*GPUBuffer*/;
+  private particleBG        !: any /*GPUBindGroup*/;
   private lastBufs: GPUBufferSet | null = null;
 
   // ------ Metaball pipelines ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-  private splatPipeline     !: GPURenderPipeline;   // Pass A
-  private compositePipeline !: GPURenderPipeline;   // Pass B
+  private splatPipeline     !: any /*GPURenderPipeline*/;   // Pass A
+  private compositePipeline !: any /*GPURenderPipeline*/;   // Pass B
   private splatBGL          !: GPUBindGroupLayout;
   private compositeBGL      !: GPUBindGroupLayout;
-  private splatBG           !: GPUBindGroup;
+  private splatBG           !: any /*GPUBindGroup*/;
   private lastSplatBufs: GPUBufferSet | null = null;
 
   // Field accumulation render target (off-screen, float16 for precision)
   private fieldTexture  !: GPUTexture;
-  private fieldView     !: GPUTextureView;
+  private fieldView     !: any /*GPUTextureView*/;
   private fieldSampler  !: GPUSampler;
   private fieldWidth    = 0;
   private fieldHeight   = 0;
 
   // Composite uniform buffer
-  private compUniBuf    !: GPUBuffer;
-  private compositeBG   !: GPUBindGroup;
+  private compUniBuf    !: any /*GPUBuffer*/;
+  private compositeBG   !: any /*GPUBindGroup*/;
 
   // Current render mode
   mode: RenderMode = 'METABALL';
@@ -440,7 +440,7 @@ export class ParticleRenderer {
     foamColor     : [0.92, 0.97, 1.00, 1.0],
   };
 
-  constructor(device: GPUDevice, format: GPUTextureFormat) {
+  constructor(device: any /*GPUDevice*/, format: GPUTextureFormat) {
     this.device = device;
     this.format = format;
   }
@@ -720,8 +720,8 @@ export class ParticleRenderer {
   // Main render entry point
   // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   render(
-    encoder : GPUCommandEncoder,
-    view    : GPUTextureView,
+    encoder : any /*GPUCommandEncoder*/,
+    view    : any /*GPUTextureView*/,
     bufs    : GPUBufferSet,
     count   : number,
     /** Canvas pixel dimensions --- required for metaball mode */
@@ -745,8 +745,8 @@ export class ParticleRenderer {
 
   // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   private _renderParticles(
-    encoder: GPUCommandEncoder,
-    view   : GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    view   : any /*GPUTextureView*/,
     bufs   : GPUBufferSet,
     count  : number,
   ): void {
@@ -768,8 +768,8 @@ export class ParticleRenderer {
 
   // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   private _renderMetaball(
-    encoder     : GPUCommandEncoder,
-    view        : GPUTextureView,
+    encoder     : any /*GPUCommandEncoder*/,
+    view        : any /*GPUTextureView*/,
     bufs        : GPUBufferSet,
     count       : number,
     canvasWidth : number,

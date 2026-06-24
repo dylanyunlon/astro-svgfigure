@@ -569,7 +569,7 @@ fn cs_autofocus() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function makeRT(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   label: string,
   width: number,
   height: number,
@@ -587,14 +587,14 @@ function makeRT(
 }
 
 function makeBGL(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   entries: GPUBindGroupLayoutEntry[],
 ): GPUBindGroupLayout {
   return device.createBindGroupLayout({ entries });
 }
 
 async function makePipeline(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   code: string,
   vsEntry: string,
   fsEntry: string,
@@ -618,17 +618,17 @@ async function makePipeline(
 
 export class DOFBokehPipeline {
   // ── GPU resources ──────────────────────────────────────────────────────────
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private readonly format: GPUTextureFormat;
   private readonly sampler: GPUSampler;
-  private readonly uniformBuf: GPUBuffer;
+  private readonly uniformBuf: any /*GPUBuffer*/;
 
   // Pipelines
   private readonly cocPipeline:       GPURenderPipeline;
   private readonly hexBlurAPipeline:  GPURenderPipeline;
   private readonly hexBlurBPipeline:  GPURenderPipeline;
-  private readonly compositePipeline: GPURenderPipeline;
-  private readonly autoFocusPipeline: GPUComputePipeline | null;
+  private readonly compositePipeline: any /*GPURenderPipeline*/;
+  private readonly autoFocusPipeline: any /*GPUComputePipeline*/ | null;
 
   // Bind group layouts
   private readonly cocBGL:       GPUBindGroupLayout;
@@ -643,9 +643,9 @@ export class DOFBokehPipeline {
   private hexBTex:     GPUTexture;
 
   // Auto-focus resources
-  private readonly afUniformBuf: GPUBuffer | null;
+  private readonly afUniformBuf: any /*GPUBuffer*/ | null;
   private readonly afResultBuf:  GPUBuffer | null;
-  private readonly afStagingBuf: GPUBuffer | null;
+  private readonly afStagingBuf: any /*GPUBuffer*/ | null;
 
   // Dimensions
   private width:  number;
@@ -660,7 +660,7 @@ export class DOFBokehPipeline {
   private cachedCocBG:       GPUBindGroup | null = null;
   private cachedHexABG:      GPUBindGroup | null = null;
   private cachedHexBBG:      GPUBindGroup | null = null;
-  private cachedCompositeBG: GPUBindGroup | null = null;
+  private cachedCompositeBG: any /*GPUBindGroup*/ | null = null;
   private cachedAfBG:        GPUBindGroup | null = null;
   private cachedDepthView:   GPUTextureView | null = null;
   private cachedSceneView:   GPUTextureView | null = null;
@@ -668,25 +668,25 @@ export class DOFBokehPipeline {
   // ── Private constructor (use static create) ────────────────────────────────
 
   private constructor(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     format: GPUTextureFormat,
     width: number,
     height: number,
-    cocPipeline: GPURenderPipeline,
-    hexBlurAPipeline: GPURenderPipeline,
-    hexBlurBPipeline: GPURenderPipeline,
-    compositePipeline: GPURenderPipeline,
-    autoFocusPipeline: GPUComputePipeline | null,
+    cocPipeline: any /*GPURenderPipeline*/,
+    hexBlurAPipeline: any /*GPURenderPipeline*/,
+    hexBlurBPipeline: any /*GPURenderPipeline*/,
+    compositePipeline: any /*GPURenderPipeline*/,
+    autoFocusPipeline: any /*GPUComputePipeline*/ | null,
     cocBGL: GPUBindGroupLayout,
     hexABGL: GPUBindGroupLayout,
     hexBBGL: GPUBindGroupLayout,
     compositeBGL: GPUBindGroupLayout,
     autoFocusBGL: GPUBindGroupLayout | null,
     sampler: GPUSampler,
-    uniformBuf: GPUBuffer,
-    afUniformBuf: GPUBuffer | null,
-    afResultBuf: GPUBuffer | null,
-    afStagingBuf: GPUBuffer | null,
+    uniformBuf: any /*GPUBuffer*/,
+    afUniformBuf: any /*GPUBuffer*/ | null,
+    afResultBuf: any /*GPUBuffer*/ | null,
+    afStagingBuf: any /*GPUBuffer*/ | null,
     params: ResolvedParams,
   ) {
     this.device = device;
@@ -727,7 +727,7 @@ export class DOFBokehPipeline {
   // ── Factory ────────────────────────────────────────────────────────────────
 
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     format: GPUTextureFormat,
     width: number,
     height: number,
@@ -811,11 +811,11 @@ export class DOFBokehPipeline {
     });
 
     // ── Auto-focus compute pipeline (optional) ──────────────────────────────
-    let autoFocusPipeline: GPUComputePipeline | null = null;
+    let autoFocusPipeline: any /*GPUComputePipeline*/ | null = null;
     let autoFocusBGL: GPUBindGroupLayout | null = null;
-    let afUniformBuf: GPUBuffer | null = null;
+    let afUniformBuf: any /*GPUBuffer*/ | null = null;
     let afResultBuf:  GPUBuffer | null = null;
-    let afStagingBuf: GPUBuffer | null = null;
+    let afStagingBuf: any /*GPUBuffer*/ | null = null;
 
     if (resolved.autoFocus) {
       autoFocusBGL = makeBGL(device, [
@@ -913,9 +913,9 @@ export class DOFBokehPipeline {
    * @param dstView   Output texture view (swap-chain or next FBO)
    */
   render(
-    encoder: GPUCommandEncoder,
-    sceneView: GPUTextureView,
-    depthView: GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    sceneView: any /*GPUTextureView*/,
+    depthView: any /*GPUTextureView*/,
     dstView:   GPUTextureView,
   ): void {
     this._uploadUniforms();
@@ -1046,10 +1046,10 @@ export class DOFBokehPipeline {
   // ── Internal: fullscreen render pass helper ────────────────────────────────
 
   private _fullscreenPass(
-    encoder: GPUCommandEncoder,
-    pipeline: GPURenderPipeline,
-    bindGroup: GPUBindGroup,
-    dstView: GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    pipeline: any /*GPURenderPipeline*/,
+    bindGroup: any /*GPUBindGroup*/,
+    dstView: any /*GPUTextureView*/,
     label: string,
   ): void {
     const pass = encoder.beginRenderPass({
@@ -1077,7 +1077,7 @@ export class DOFBokehPipeline {
     this.cachedAfBG        = null;
   }
 
-  private _cocBindGroup(depthView: GPUTextureView): GPUBindGroup {
+  private _cocBindGroup(depthView: any /*GPUTextureView*/): any /*GPUBindGroup*/ {
     if (this.cachedCocBG) return this.cachedCocBG;
     const bg = this.device.createBindGroup({
       layout: this.cocBGL,
@@ -1091,7 +1091,7 @@ export class DOFBokehPipeline {
     return bg;
   }
 
-  private _hexABindGroup(sceneView: GPUTextureView, cocView: GPUTextureView): GPUBindGroup {
+  private _hexABindGroup(sceneView: any /*GPUTextureView*/, cocView: any /*GPUTextureView*/): any /*GPUBindGroup*/ {
     // Always rebuild — cocView is recreated each frame from intermediate tex
     const bg = this.device.createBindGroup({
       layout: this.hexABGL,
@@ -1105,7 +1105,7 @@ export class DOFBokehPipeline {
     return bg;
   }
 
-  private _hexBBindGroup(hexAView: GPUTextureView, cocView: GPUTextureView): GPUBindGroup {
+  private _hexBBindGroup(hexAView: any /*GPUTextureView*/, cocView: any /*GPUTextureView*/): any /*GPUBindGroup*/ {
     const bg = this.device.createBindGroup({
       layout: this.hexBBGL,
       entries: [
@@ -1119,10 +1119,10 @@ export class DOFBokehPipeline {
   }
 
   private _compositeBindGroup(
-    sceneView: GPUTextureView,
-    bokehView: GPUTextureView,
-    cocView: GPUTextureView,
-  ): GPUBindGroup {
+    sceneView: any /*GPUTextureView*/,
+    bokehView: any /*GPUTextureView*/,
+    cocView: any /*GPUTextureView*/,
+  ): any /*GPUBindGroup*/ {
     const bg = this.device.createBindGroup({
       layout: this.compositeBGL,
       entries: [
@@ -1136,7 +1136,7 @@ export class DOFBokehPipeline {
     return bg;
   }
 
-  private _autoFocusBindGroup(cocView: GPUTextureView): GPUBindGroup {
+  private _autoFocusBindGroup(cocView: any /*GPUTextureView*/): any /*GPUBindGroup*/ {
     if (!this.autoFocusBGL || !this.afUniformBuf || !this.afResultBuf) {
       throw new Error('dof-bokeh: auto-focus not initialised');
     }
@@ -1249,7 +1249,7 @@ export const DOFBokehPresets = {
  * Sets sensible defaults for the cell visualisation scale.
  */
 export async function createDOFBokehForScene(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   format: GPUTextureFormat,
   width: number,
   height: number,

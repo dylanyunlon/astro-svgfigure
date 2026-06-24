@@ -409,25 +409,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 export class CurlFlowField {
   readonly params: ResolvedCurlParams;
 
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
 
   // Compute pipeline — fills the flat vec4f storage buffer.
-  private curlPipeline!    : GPUComputePipeline;
+  private curlPipeline!    : any /*GPUComputePipeline*/;
   private curlBGL!         : GPUBindGroupLayout;
-  private curlBG!          : GPUBindGroup;
+  private curlBG!          : any /*GPUBindGroup*/;
 
   // Injection pipeline — blends curl into SPH force buffers.
-  private injectPipeline!  : GPUComputePipeline;
+  private injectPipeline!  : any /*GPUComputePipeline*/;
   private injectBGL!       : GPUBindGroupLayout;
   /** Injection bind group is rebuilt per `injectIntoSPH()` call (SPH bufs vary). */
 
   // GPU buffers.
-  private uniformBuf!      : GPUBuffer;
-  private injectUniformBuf!: GPUBuffer;
+  private uniformBuf!      : any /*GPUBuffer*/;
+  private injectUniformBuf!: any /*GPUBuffer*/;
   /** Flat storage buffer: width × height × depth × vec4f. */
-  curlBuf!                 : GPUBuffer;
+  curlBuf!                 : any /*GPUBuffer*/;
   /** CPU-readable staging buffer for `scheduleReadback()`. */
-  private stagingBuf!      : GPUBuffer;
+  private stagingBuf!      : any /*GPUBuffer*/;
 
   // CPU mirror updated by readback.
   private cpuData: Float32Array | null = null;
@@ -435,7 +435,7 @@ export class CurlFlowField {
 
   // ──────────────────────────────────────────────────────────────────────────
 
-  constructor(device: GPUDevice, params: CurlFlowFieldParams = {}) {
+  constructor(device: any /*GPUDevice*/, params: CurlFlowFieldParams = {}) {
     this.device = device;
     this.params = {
       width:      params.width      ?? 64,
@@ -559,7 +559,7 @@ export class CurlFlowField {
    * @param encoder  Command encoder for this frame.
    * @param time     Elapsed time in seconds (used to animate the field).
    */
-  update(encoder: GPUCommandEncoder, time: number): void {
+  update(encoder: any /*GPUCommandEncoder*/, time: number): void {
     this._writeUniform(time);
 
     const { width, height, depth } = this.params;
@@ -586,11 +586,11 @@ export class CurlFlowField {
    * @param blendOverride  Optional per-call blend override (else uses params.sphBlend).
    */
   injectIntoSPH(
-    encoder    : GPUCommandEncoder,
-    posXBuf    : GPUBuffer,
-    posYBuf    : GPUBuffer,
-    forceXBuf  : GPUBuffer,
-    forceYBuf  : GPUBuffer,
+    encoder    : any /*GPUCommandEncoder*/,
+    posXBuf    : any /*GPUBuffer*/,
+    posYBuf    : any /*GPUBuffer*/,
+    forceXBuf  : any /*GPUBuffer*/,
+    forceYBuf  : any /*GPUBuffer*/,
     count      : number,
     blendOverride?: number,
   ): void {
@@ -640,7 +640,7 @@ export class CurlFlowField {
    * frame's command encoder, then call `await device.queue.onSubmittedWorkDone()`
    * and finally `finishReadback()` to make `sampleCPU()` reflect the new data.
    */
-  scheduleReadback(encoder: GPUCommandEncoder): void {
+  scheduleReadback(encoder: any /*GPUCommandEncoder*/): void {
     if (this.readbackPending) return;
     const bytes = this.params.width * this.params.height * this.params.depth * 16;
     encoder.copyBufferToBuffer(this.curlBuf, 0, this.stagingBuf, 0, bytes);
@@ -772,7 +772,7 @@ export class CurlFlowField {
  *   device.queue.submit([enc.finish()]);
  */
 export async function createCurlFlowField(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   params?: CurlFlowFieldParams,
 ): Promise<CurlFlowField> {
   const field = new CurlFlowField(device, params);

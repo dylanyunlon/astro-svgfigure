@@ -725,19 +725,19 @@ export class CollisionShockwavePipeline {
   private readonly pipeline:   GPURenderPipeline;
   private readonly bgl:        GPUBindGroupLayout;
   private readonly sampler:    GPUSampler;
-  private readonly uniformBuf: GPUBuffer;
+  private readonly uniformBuf: any /*GPUBuffer*/;
   private readonly ringBuf:    GPUBuffer;
 
   // Bind group cache — invalidated when source texture view changes
   private cachedBG:  GPUBindGroup | null = null;
-  private cachedSrc: GPUTextureView | null = null;
+  private cachedSrc: any /*GPUTextureView*/ | null = null;
 
   private constructor(
     device:     GPUDevice,
     pipeline:   GPURenderPipeline,
     bgl:        GPUBindGroupLayout,
     sampler:    GPUSampler,
-    uniformBuf: GPUBuffer,
+    uniformBuf: any /*GPUBuffer*/,
     ringBuf:    GPUBuffer,
   ) {
     this.device     = device;
@@ -758,7 +758,7 @@ export class CollisionShockwavePipeline {
    * @returns Ready-to-use CollisionShockwavePipeline instance.
    */
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     format: GPUTextureFormat,
   ): Promise<CollisionShockwavePipeline> {
     const module = device.createShaderModule({ code: SHOCKWAVE_WGSL });
@@ -858,9 +858,9 @@ export class CollisionShockwavePipeline {
    * @param height   Render target height in pixels.
    */
   render(
-    encoder: GPUCommandEncoder,
-    srcView: GPUTextureView,
-    dstView: GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    srcView: any /*GPUTextureView*/,
+    dstView: any /*GPUTextureView*/,
     width:   number,
     height:  number,
   ): void {
@@ -900,7 +900,7 @@ export class CollisionShockwavePipeline {
     this.device.queue.writeBuffer(this.uniformBuf, 0, data);
   }
 
-  private _bindGroup(srcView: GPUTextureView): GPUBindGroup {
+  private _bindGroup(srcView: any /*GPUTextureView*/): any /*GPUBindGroup*/ {
     if (this.cachedBG && this.cachedSrc === srcView) {
       return this.cachedBG;
     }

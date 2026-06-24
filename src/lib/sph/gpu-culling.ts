@@ -470,11 +470,11 @@ export class GPUCullingPipeline {
 
   // ── WebGPU handles ─────────────────────────────────────────────────────
 
-  private device: GPUDevice;
+  private device: any /*GPUDevice*/;
 
   // Pipelines
   private cullPipeline!:    GPUComputePipeline;
-  private compactPipeline!: GPUComputePipeline;
+  private compactPipeline!: any /*GPUComputePipeline*/;
   private hizPipeline!:     GPUComputePipeline;
 
   // Buffers
@@ -494,7 +494,7 @@ export class GPUCullingPipeline {
   private hizTexture:    GPUTexture  | null = null;
   private hizViews:      GPUTextureView[] = [];
   private hizSampler!:   GPUSampler;
-  private hizBindGroups: GPUBindGroup[]   = [];
+  private hizBindGroups: any /*GPUBindGroup*/[]   = [];
   private hizMipCount = 0;
 
   // Bind group layouts
@@ -510,17 +510,17 @@ export class GPUCullingPipeline {
   // Stats (CPU-side, updated via readback only when debug is on)
   private _lastVisibleCount = 0;
 
-  constructor(device: GPUDevice) {
+  constructor(device: any /*GPUDevice*/) {
     this.device = device;
   }
 
   // ── Public accessors ───────────────────────────────────────────────────
 
   /** The indirect draw args buffer. Bind to pass.drawIndirect(). */
-  get drawIndirectBuffer(): GPUBuffer { return this.drawIndirectBuffer_; }
+  get drawIndirectBuffer(): any /*GPUBuffer*/ { return this.drawIndirectBuffer_; }
 
   /** Compacted visible-object index buffer (storage, read-only in VS). */
-  get compactedIndexBuffer(): GPUBuffer { return this.compactedIndexBuffer_; }
+  get compactedIndexBuffer(): any /*GPUBuffer*/ { return this.compactedIndexBuffer_; }
 
   /** Last known visible count (only valid if debug readback is enabled). */
   get lastVisibleCount(): number { return this._lastVisibleCount; }
@@ -986,7 +986,7 @@ export class GPUCullingPipeline {
 
   private dummyTexture: GPUTexture | null = null;
 
-  private makeDummyHiZBindGroup(): GPUBindGroup {
+  private makeDummyHiZBindGroup(): any /*GPUBindGroup*/ {
     if (!this.dummyTexture) {
       this.dummyTexture = this.device.createTexture({
         label: 'hiz-dummy-1x1',
@@ -1065,7 +1065,7 @@ export function prepareCellCullDispatch(
   camera:       LODCamera,
   depthTexture: GPUTexture | null = null,
   baseVertexCount = 6,
-): { drawIndirectBuffer: GPUBuffer; compactedIndexBuffer: GPUBuffer; cellOrder: string[] } {
+): { drawIndirectBuffer: any /*GPUBuffer*/; compactedIndexBuffer: any /*GPUBuffer*/; cellOrder: string[] } {
 
   const cellOrder: string[] = [];
   const aabbs: CullAABB[]   = [];

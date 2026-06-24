@@ -621,7 +621,7 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
 
 /** Create a GPUTexture for an intermediate render target. */
 function makeRT(
-  device : GPUDevice,
+  device : any /*GPUDevice*/,
   width  : number,
   height : number,
   format : GPUTextureFormat,
@@ -637,7 +637,7 @@ function makeRT(
 
 /** Build a bind-group-layout: uniform + sampler + N textures. */
 function makeBGL(
-  device      : GPUDevice,
+  device      : any /*GPUDevice*/,
   label       : string,
   numTextures : number,
 ): GPUBindGroupLayout {
@@ -659,14 +659,14 @@ function makeBGL(
 
 /** Build a render pipeline with the given WGSL and entry points. */
 function makePipeline(
-  device  : GPUDevice,
+  device  : any /*GPUDevice*/,
   label   : string,
   wgsl    : string,
   vsEntry : string,
   fsEntry : string,
   bgl     : GPUBindGroupLayout,
   format  : GPUTextureFormat,
-): GPURenderPipeline {
+): any /*GPURenderPipeline*/ {
   const module = device.createShaderModule({ label, code: wgsl });
   const layout = device.createPipelineLayout({
     label,
@@ -708,13 +708,13 @@ const UNIFORM_SIZE   = UNIFORM_FLOATS * 4;
  *   4. Mie 加权合成 + ACES tone mapping (fogTex + raysTex → dst)
  */
 export class EnvironmentFog {
-  private readonly device : GPUDevice;
+  private readonly device : any /*GPUDevice*/;
   private readonly format : GPUTextureFormat;
   private width  : number;
   private height : number;
 
   // ── GPU resources ──────────────────────────────────────────────────────────
-  private uniformBuf : GPUBuffer;
+  private uniformBuf : any /*GPUBuffer*/;
   private sampler    : GPUSampler;
 
   private fogTex       : GPUTexture;   // 全分辨率: 雾化场景 (alpha=depth)
@@ -727,16 +727,16 @@ export class EnvironmentFog {
   private raysBGL       : GPUBindGroupLayout;
   private compositeBGL  : GPUBindGroupLayout;
 
-  private fogPipeline       : GPURenderPipeline;
-  private occlusionPipeline : GPURenderPipeline;
-  private raysPipeline      : GPURenderPipeline;
-  private compositePipeline : GPURenderPipeline;
+  private fogPipeline       : any /*GPURenderPipeline*/;
+  private occlusionPipeline : any /*GPURenderPipeline*/;
+  private raysPipeline      : any /*GPURenderPipeline*/;
+  private compositePipeline : any /*GPURenderPipeline*/;
 
   // ── Runtime state ──────────────────────────────────────────────────────────
   private params : Required<EnvironmentFogParams>;
 
   private constructor(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     format : GPUTextureFormat,
     width  : number,
     height : number,
@@ -809,7 +809,7 @@ export class EnvironmentFog {
    * @param height - Viewport height in pixels.
    */
   static async create(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     format : GPUTextureFormat,
     width  : number,
     height : number,
@@ -872,10 +872,10 @@ export class EnvironmentFog {
    * @param dstView      - Destination GPUTextureView (e.g. swapchain).
    */
   render(
-    encoder       : GPUCommandEncoder,
+    encoder       : any /*GPUCommandEncoder*/,
     sceneTex      : GPUTexture,
     depthFieldTex : GPUTexture,
-    dstView       : GPUTextureView,
+    dstView       : any /*GPUTextureView*/,
   ): void {
     const sceneView     = sceneTex.createView();
     const depthView     = depthFieldTex.createView();
@@ -1085,7 +1085,7 @@ export class EnvironmentFog {
  * @param speciesOpts - Optional species-specific overrides.
  */
 export async function createEnvironmentFogForSpecies(
-  device      : GPUDevice,
+  device      : any /*GPUDevice*/,
   format      : GPUTextureFormat,
   width       : number,
   height      : number,

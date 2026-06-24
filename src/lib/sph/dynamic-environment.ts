@@ -628,7 +628,7 @@ function interpolateKeyframes(kfA: PhaseKeyframe, kfB: PhaseKeyframe, t: number)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class DynamicEnvironment {
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private readonly format: GPUTextureFormat;
 
   // Dimensions (updated on resize)
@@ -659,29 +659,29 @@ export class DynamicEnvironment {
   private interp = interpolateKeyframes(KEYFRAMES.dawn, KEYFRAMES.day, 0);
 
   // ── GPU resources — AO compute pass ──
-  private aoComputePipeline!: GPUComputePipeline;
+  private aoComputePipeline!: any /*GPUComputePipeline*/;
   private aoBGL!: GPUBindGroupLayout;
-  private aoUniBuf!: GPUBuffer;
+  private aoUniBuf!: any /*GPUBuffer*/;
   private aoTex!: GPUTexture;
-  private aoTexView!: GPUTextureView;
+  private aoTexView!: any /*GPUTextureView*/;
   private aoSampler!: GPUSampler;
-  private aoBG: GPUBindGroup | null = null;
-  private lastFieldView: GPUTextureView | null = null;
+  private aoBG: any /*GPUBindGroup*/ | null = null;
+  private lastFieldView: any /*GPUTextureView*/ | null = null;
 
   // ── GPU resources — composite render pass ──
-  private compositePipeline!: GPURenderPipeline;
+  private compositePipeline!: any /*GPURenderPipeline*/;
   private compositeBGL!: GPUBindGroupLayout;
-  private compositeUniBuf!: GPUBuffer;
+  private compositeUniBuf!: any /*GPUBuffer*/;
   private compositeSampler!: GPUSampler;
-  private compositeBG: GPUBindGroup | null = null;
-  private lastSceneView: GPUTextureView | null = null;
-  private lastAoView: GPUTextureView | null = null;
+  private compositeBG: any /*GPUBindGroup*/ | null = null;
+  private lastSceneView: any /*GPUTextureView*/ | null = null;
+  private lastAoView: any /*GPUTextureView*/ | null = null;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Construction
   // ─────────────────────────────────────────────────────────────────────────
 
-  private constructor(device: GPUDevice, format: GPUTextureFormat, w: number, h: number) {
+  private constructor(device: any /*GPUDevice*/, format: GPUTextureFormat, w: number, h: number) {
     this.device = device;
     this.format = format;
     this.width  = w;
@@ -692,7 +692,7 @@ export class DynamicEnvironment {
    * Factory — creates all GPU resources asynchronously.
    */
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     format: GPUTextureFormat,
     width : number,
     height: number,
@@ -742,10 +742,10 @@ export class DynamicEnvironment {
    * @param dstView     Final output target view.
    */
   render(
-    encoder  : GPUCommandEncoder,
-    sceneView: GPUTextureView,
-    fieldView: GPUTextureView,
-    dstView  : GPUTextureView,
+    encoder  : any /*GPUCommandEncoder*/,
+    sceneView: any /*GPUTextureView*/,
+    fieldView: any /*GPUTextureView*/,
+    dstView  : any /*GPUTextureView*/,
   ): void {
     // ── Pass 1: AO compute ─────────────────────────────────────────────
     this._uploadAOUniforms();
@@ -1001,7 +1001,7 @@ export class DynamicEnvironment {
   // Internal — bind group management
   // ─────────────────────────────────────────────────────────────────────────
 
-  private _ensureAOBindGroup(fieldView: GPUTextureView): void {
+  private _ensureAOBindGroup(fieldView: any /*GPUTextureView*/): void {
     if (this.aoBG && this.lastFieldView === fieldView) return;
 
     this.aoBG = this.device.createBindGroup({
@@ -1017,7 +1017,7 @@ export class DynamicEnvironment {
     this.lastFieldView = fieldView;
   }
 
-  private _ensureCompositeBindGroup(sceneView: GPUTextureView, aoView: GPUTextureView): void {
+  private _ensureCompositeBindGroup(sceneView: any /*GPUTextureView*/, aoView: any /*GPUTextureView*/): void {
     if (this.compositeBG && this.lastSceneView === sceneView && this.lastAoView === aoView) return;
 
     this.compositeBG = this.device.createBindGroup({
@@ -1106,7 +1106,7 @@ export const DYNAMIC_ENV_PRESETS = {
  * ```
  */
 export async function createDynamicEnvironment(
-  device : GPUDevice,
+  device : any /*GPUDevice*/,
   format : GPUTextureFormat,
   width  : number,
   height : number,

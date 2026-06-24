@@ -818,7 +818,7 @@ fn main(
 // ─── WebGPUSPHCompute class ─────────────────────────────────────────────────
 
 export class WebGPUSPHCompute {
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private readonly maxParticles: number;
   private readonly tblSize: number;
   private count = 0;
@@ -832,7 +832,7 @@ export class WebGPUSPHCompute {
   private accYBuf!:       GPUBuffer;
   private densityBuf!:    GPUBuffer;
   private factorBuf!:     GPUBuffer;
-  private densityAdvBuf!: GPUBuffer;
+  private densityAdvBuf!: any /*GPUBuffer*/;
   private errorBuf!:      GPUBuffer;
 
   // ── Spatial hash buffers ────────────────────────────────────────────
@@ -841,11 +841,11 @@ export class WebGPUSPHCompute {
   private sortedIdxBuf!:   GPUBuffer;   // maxParticles u32
 
   // ── Prefix-sum scratch ──────────────────────────────────────────────
-  private scanBlockSumBuf!: GPUBuffer;
+  private scanBlockSumBuf!: any /*GPUBuffer*/;
 
   // ── Uniform buffers ────────────────────────────────────────────────
   private uniformBuf!:        GPUBuffer;
-  private correctUniformBuf!: GPUBuffer;
+  private correctUniformBuf!: any /*GPUBuffer*/;
   private scanUniformBuf!:    GPUBuffer;
   private reduceUniformBuf!:  GPUBuffer;
 
@@ -859,10 +859,10 @@ export class WebGPUSPHCompute {
   private prefixSumPipeline!:      GPUComputePipeline;
   private prefixSumAddPipeline!:   GPUComputePipeline;
   private densityFactorPipeline!:  GPUComputePipeline;
-  private predictDensityPipeline!: GPUComputePipeline;
+  private predictDensityPipeline!: any /*GPUComputePipeline*/;
   private correctVelocityPipeline!:GPUComputePipeline;
   private applyGravityPipeline!:   GPUComputePipeline;
-  private updatePositionPipeline!: GPUComputePipeline;
+  private updatePositionPipeline!: any /*GPUComputePipeline*/;
   private reduceErrorPipeline!:    GPUComputePipeline;
 
   // ── Bind Group Layouts ─────────────────────────────────────────────
@@ -903,7 +903,7 @@ export class WebGPUSPHCompute {
   // Constructor
   // ═══════════════════════════════════════════════════════════════════
 
-  constructor(device: GPUDevice, maxParticles: number) {
+  constructor(device: any /*GPUDevice*/, maxParticles: number) {
     this.device       = device;
     this.maxParticles = maxParticles;
     this.tblSize      = hashTableSize(maxParticles);

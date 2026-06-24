@@ -389,9 +389,9 @@ export class LutGenerator {
    * should fall back to rgba16float or nearest sampling.
    */
   uploadToWebGPU(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     lut:    LutCube,
-  ): { texture: GPUTexture; view: GPUTextureView } {
+  ): { texture: GPUTexture; view: any /*GPUTextureView*/ } {
     const N     = lut.size;
     const strip = new Float32Array(N * N * N * 4);
 

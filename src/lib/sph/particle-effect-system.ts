@@ -589,11 +589,11 @@ export class ParticleEffectSystem {
   private activeCount = 0;
 
   // ── GPU resources (initialised lazily via initGPU) ─────────────────────────
-  private device: GPUDevice | null = null;
-  private pipeline: GPURenderPipeline | null = null;
-  private uniformBuffer: GPUBuffer | null = null;
-  private instanceBuffer: GPUBuffer | null = null;
-  private bindGroup: GPUBindGroup | null = null;
+  private device: any /*GPUDevice*/ | null = null;
+  private pipeline: any /*GPURenderPipeline*/ | null = null;
+  private uniformBuffer: any /*GPUBuffer*/ | null = null;
+  private instanceBuffer: any /*GPUBuffer*/ | null = null;
+  private bindGroup: any /*GPUBindGroup*/ | null = null;
   private instanceData: Float32Array;
   private gpuReady = false;
 
@@ -629,7 +629,7 @@ export class ParticleEffectSystem {
    * Initialise WebGPU resources.  Must be called once before `render()`.
    * Safe to call multiple times (no-ops after the first).
    */
-  initGPU(device: GPUDevice, format: GPUTextureFormat): void {
+  initGPU(device: any /*GPUDevice*/, format: GPUTextureFormat): void {
     if (this.gpuReady) return;
     this.device = device;
 
@@ -808,7 +808,7 @@ export class ParticleEffectSystem {
    * @param offsetY     NDC offset Y. Default  1.
    */
   render(
-    passEncoder: GPURenderPassEncoder,
+    passEncoder: any /*GPURenderPassEncoder*/,
     scaleX: number = 2.0 / this.domainWidth,
     scaleY: number = -2.0 / this.domainHeight,
     offsetX: number = -1.0,

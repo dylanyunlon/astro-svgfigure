@@ -272,11 +272,11 @@ export interface PostProcessParams {
 const UNIFORM_FLOATS = 16;
 
 export class PostProcessPipeline {
-  private readonly device   : GPUDevice;
-  private readonly pipeline : GPURenderPipeline;
+  private readonly device   : any /*GPUDevice*/;
+  private readonly pipeline : any /*GPURenderPipeline*/;
   private readonly bgl      : GPUBindGroupLayout;
   private readonly sampler  : GPUSampler;
-  private readonly uniformBuf: GPUBuffer;
+  private readonly uniformBuf: any /*GPUBuffer*/;
 
   // Cached state
   private style  : Required<PostProcessStyle>  = { kuwahara: false, edge: false, ink: false };
@@ -284,15 +284,15 @@ export class PostProcessPipeline {
   private time   = 0;
 
   // Bind group cache — keyed by source texture view (invalidated each resize or src change)
-  private cachedBG   : GPUBindGroup | null = null;
-  private cachedSrc  : GPUTextureView | null = null;
+  private cachedBG   : any /*GPUBindGroup*/ | null = null;
+  private cachedSrc  : any /*GPUTextureView*/ | null = null;
 
   private constructor(
-    device  : GPUDevice,
-    pipeline: GPURenderPipeline,
+    device  : any /*GPUDevice*/,
+    pipeline: any /*GPURenderPipeline*/,
     bgl     : GPUBindGroupLayout,
     sampler : GPUSampler,
-    uniformBuf: GPUBuffer,
+    uniformBuf: any /*GPUBuffer*/,
   ) {
     this.device     = device;
     this.pipeline   = pipeline;
@@ -313,7 +313,7 @@ export class PostProcessPipeline {
   // ── Factory ────────────────────────────────────────────────────────────────
 
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     format: GPUTextureFormat,
   ): Promise<PostProcessPipeline> {
     const module = device.createShaderModule({ code: POST_PROCESS_WGSL });
@@ -384,9 +384,9 @@ export class PostProcessPipeline {
    * @param height   Render target height in pixels
    */
   render(
-    encoder: GPUCommandEncoder,
-    srcView : GPUTextureView,
-    dstView : GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    srcView : any /*GPUTextureView*/,
+    dstView : any /*GPUTextureView*/,
     width   : number,
     height  : number,
   ): void {
@@ -439,7 +439,7 @@ export class PostProcessPipeline {
     this.device.queue.writeBuffer(this.uniformBuf, 0, data);
   }
 
-  private _bindGroup(srcView: GPUTextureView): GPUBindGroup {
+  private _bindGroup(srcView: any /*GPUTextureView*/): any /*GPUBindGroup*/ {
     if (this.cachedBG && this.cachedSrc === srcView) {
       return this.cachedBG;
     }

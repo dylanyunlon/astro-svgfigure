@@ -320,7 +320,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // ---------------------------------------------------------------------------
 
 export class BoidsCompute {
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
 
   // Double-buffered particle state (ping-pong)
   private posXBuf : [GPUBuffer, GPUBuffer];
@@ -329,17 +329,17 @@ export class BoidsCompute {
   private velYBuf : [GPUBuffer, GPUBuffer];
 
   // Per-boid steering accumulator: 6 f32 per boid
-  private steeringBuf!: GPUBuffer;
+  private steeringBuf!: any /*GPUBuffer*/;
 
   // Read-back staging buffer
-  private stagingBuf!: GPUBuffer;
+  private stagingBuf!: any /*GPUBuffer*/;
 
   // Uniform
-  private uniformBuf!: GPUBuffer;
+  private uniformBuf!: any /*GPUBuffer*/;
 
   // Pipelines
-  private influencePipeline!: GPUComputePipeline;
-  private integratePipeline!: GPUComputePipeline;
+  private influencePipeline!: any /*GPUComputePipeline*/;
+  private integratePipeline!: any /*GPUComputePipeline*/;
 
   // Bind-group layouts
   private uniformBGL!    : GPUBindGroupLayout;
@@ -348,11 +348,11 @@ export class BoidsCompute {
   private particleDstBGL!: GPUBindGroupLayout;
 
   // Cached bind groups (rebuilt on demand / on swap)
-  private uniformBG!    : GPUBindGroup;
+  private uniformBG!    : any /*GPUBindGroup*/;
   private srcBG : [GPUBindGroup | null, GPUBindGroup | null] = [null, null];
   private dstBG : [GPUBindGroup | null, GPUBindGroup | null] = [null, null];
-  private steeringReadBG  : GPUBindGroup | null = null;
-  private steeringWriteBG : GPUBindGroup | null = null;
+  private steeringReadBG  : any /*GPUBindGroup*/ | null = null;
+  private steeringWriteBG : any /*GPUBindGroup*/ | null = null;
 
   // Ping-pong index: 0 → A is src, 1 → B is src
   private ping = 0;
@@ -362,7 +362,7 @@ export class BoidsCompute {
 
   // ── constructor ─────────────────────────────────────────────────────────────
 
-  constructor(device: GPUDevice, params: BoidsParams) {
+  constructor(device: any /*GPUDevice*/, params: BoidsParams) {
     this.device = device;
 
     // Fill defaults

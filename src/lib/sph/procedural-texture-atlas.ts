@@ -671,8 +671,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
  * ```
  */
 export class ProceduralTextureAtlas {
-  private readonly device: GPUDevice;
-  private pipeline: GPUComputePipeline | null = null;
+  private readonly device: any /*GPUDevice*/;
+  private pipeline: any /*GPUComputePipeline*/ | null = null;
   private bindGroupLayout: GPUBindGroupLayout | null = null;
 
   /** The most recently generated atlas texture (null until first generate). */
@@ -681,7 +681,7 @@ export class ProceduralTextureAtlas {
   /** The active atlas configuration. */
   private currentConfig: AtlasConfig | null = null;
 
-  constructor(device: GPUDevice) {
+  constructor(device: any /*GPUDevice*/) {
     this.device = device;
   }
 

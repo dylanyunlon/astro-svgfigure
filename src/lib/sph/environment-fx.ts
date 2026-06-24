@@ -419,16 +419,16 @@ const DEFAULTS: Required<EnvironmentFxConfig> = {
 
 export class EnvironmentFx {
   private constructor(
-    private readonly device       : GPUDevice,
-    private readonly computePipeline : GPUComputePipeline,
-    private readonly renderPipeline  : GPURenderPipeline,
+    private readonly device       : any /*GPUDevice*/,
+    private readonly computePipeline : any /*GPUComputePipeline*/,
+    private readonly renderPipeline  : any /*GPURenderPipeline*/,
     private readonly computeBGL   : GPUBindGroupLayout,
     private readonly renderBGL    : GPUBindGroupLayout,
     private readonly sampler      : GPUSampler,
-    private readonly uniformBuf   : GPUBuffer,
+    private readonly uniformBuf   : any /*GPUBuffer*/,
     // mutable per resize
     private bgTex                 : GPUTexture,
-    private bgView                : GPUTextureView,
+    private bgView                : any /*GPUTextureView*/,
     private width                 : number,
     private height                : number,
   ) {}
@@ -436,7 +436,7 @@ export class EnvironmentFx {
   // ── Factory ─────────────────────────────────────────────────────────────────
 
   static async create(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     format : GPUTextureFormat,
     width  : number,
     height : number,
@@ -554,7 +554,7 @@ export class EnvironmentFx {
    *
    * Call `tick()` before this each frame to advance the animation.
    */
-  render(encoder: GPUCommandEncoder, dstView: GPUTextureView): void {
+  render(encoder: any /*GPUCommandEncoder*/, dstView: any /*GPUTextureView*/): void {
     this._uploadUniforms();
 
     // ── Compute: synthesise brick-tile + voronoise → bgTex ─────────────────
@@ -643,7 +643,7 @@ export class EnvironmentFx {
   }
 
   private static _makeBgTex(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     width : number,
     height: number,
   ): [GPUTexture, GPUTextureView] {

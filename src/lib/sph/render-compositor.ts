@@ -366,13 +366,13 @@ export interface FrameTimings {
 
 interface FBO {
   color:     GPUTexture;
-  colorView: GPUTextureView;
+  colorView: any /*GPUTextureView*/;
   depth:     GPUTexture;
-  depthView: GPUTextureView;
+  depthView: any /*GPUTextureView*/;
 }
 
 function createFBO(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   w:      number,
   h:      number,
   format: GPUTextureFormat,
@@ -439,7 +439,7 @@ function packSceneMatrices(m: SceneMatrices): Float32Array {
 export class RenderCompositor {
 
   // ── Core WebGPU ──────────────────────────────────────────────────────────
-  private device!: GPUDevice;
+  private device!: any /*GPUDevice*/;
   private canvas!: HTMLCanvasElement;
   private ctx!:    GPUCanvasContext;
   private format:  GPUTextureFormat = 'bgra8unorm';
@@ -464,7 +464,7 @@ export class RenderCompositor {
   private lutPipeline!:   GPURenderPipeline;
   private lutBGL!:        GPUBindGroupLayout;
   private lutSampler!:    GPUSampler;
-  private lutUniformBuf!: GPUBuffer;
+  private lutUniformBuf!: any /*GPUBuffer*/;
   private lutTexture!:    GPUTexture;
   private lutView!:       GPUTextureView;
   private lutStyle:       LutStyleName = 'DEEP_OCEAN';
@@ -489,7 +489,7 @@ export class RenderCompositor {
   private postFBO!:  FBO;   // Pass 11: post-process
 
   // ── Scene uniform buffer (shared by water surface + geometry) ───────────
-  private sceneUniformBuf!: GPUBuffer;
+  private sceneUniformBuf!: any /*GPUBuffer*/;
   private sceneMatrices:    SceneMatrices = makeDefaultSceneMatrices();
 
   // ── Param caches (for resize recreation of immutable sub-systems) ──────
@@ -527,7 +527,7 @@ export class RenderCompositor {
    * FBO resolution.
    */
   async init(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     canvas: HTMLCanvasElement,
     cfg:    RenderCompositorConfig = {},
   ): Promise<void> {
@@ -1157,7 +1157,7 @@ export class RenderCompositor {
   // ═══════════════════════════════════════════════════════════════════════
 
   /** Clear an FBO to transparent black with a fresh depth buffer. */
-  private _clearFBO(encoder: GPUCommandEncoder, fbo: FBO): void {
+  private _clearFBO(encoder: any /*GPUCommandEncoder*/, fbo: FBO): void {
     const pass = encoder.beginRenderPass({
       label: 'rc-clear',
       colorAttachments: [{
@@ -1178,7 +1178,7 @@ export class RenderCompositor {
 
   /** GPU texture-to-texture copy (same size). */
   private _copyTexture(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     src:     GPUTexture,
     dst:     GPUTexture,
   ): void {
@@ -1256,7 +1256,7 @@ export class RenderCompositor {
    *   b) SPH cell-centre velocity impulses (automated coupling)
    */
   private _injectNSSplats(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     sph:     SPHWorldView,
   ): void {
     // (a) User-queued splats
@@ -1393,9 +1393,9 @@ export class RenderCompositor {
 
   /** Record the LUT grade render pass: src texture → dstView. */
   private _renderLutPass(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     src:     GPUTexture,
-    dstView: GPUTextureView,
+    dstView: any /*GPUTextureView*/,
   ): void {
     const sceneSampler = this.device.createSampler({
       magFilter:    'linear',
@@ -1436,9 +1436,9 @@ export class RenderCompositor {
    * Used when LUT pass is disabled but we still need to present.
    */
   private _blitToSwapChain(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     src:     GPUTexture,
-    dstView: GPUTextureView,
+    dstView: any /*GPUTextureView*/,
   ): void {
     const savedStrength = this.lutStrength;
     this.device.queue.writeBuffer(
@@ -1548,7 +1548,7 @@ export class RenderCompositor {
  * ```
  */
 export async function createRenderCompositor(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   canvas: HTMLCanvasElement,
   cfg:    RenderCompositorConfig = {},
 ): Promise<RenderCompositor> {

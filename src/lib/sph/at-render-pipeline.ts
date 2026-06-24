@@ -282,12 +282,12 @@ const DEFAULT_PASS_FLAGS: ATPassFlags = {
 interface FBO {
   color: GPUTexture;
   depth: GPUTexture;
-  colorView: GPUTextureView;
-  depthView: GPUTextureView;
+  colorView: any /*GPUTextureView*/;
+  depthView: any /*GPUTextureView*/;
 }
 
 function createFBO(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   width : number,
   height: number,
   format: GPUTextureFormat,
@@ -339,7 +339,7 @@ function destroyFBO(fbo: FBO): void {
  */
 export class ATRenderPipeline {
   // ── Core WebGPU ────────────────────────────────────────────────────────────
-  private readonly device  : GPUDevice;
+  private readonly device  : any /*GPUDevice*/;
   private readonly canvas  : HTMLCanvasElement;
   private readonly format  : GPUTextureFormat;
 
@@ -352,12 +352,12 @@ export class ATRenderPipeline {
   private bloom       : ATBloomPostProcess;
 
   // ── LUT pass (custom inline pipeline) ─────────────────────────────────────
-  private lutPipeline : GPURenderPipeline;
+  private lutPipeline : any /*GPURenderPipeline*/;
   private lutBGL      : GPUBindGroupLayout;
   private lutSampler  : GPUSampler;
-  private lutUniformBuf: GPUBuffer;
+  private lutUniformBuf: any /*GPUBuffer*/;
   private lutTexture  : GPUTexture;
-  private lutView     : GPUTextureView;
+  private lutView     : any /*GPUTextureView*/;
   private lutStyle    : LutStyleName;
   private lutStrength : number;
 
@@ -374,7 +374,7 @@ export class ATRenderPipeline {
   private bloomFBO    : FBO;
 
   // ── Scene uniform buffer (view/proj/model/eye — water surface) ─────────────
-  private sceneUniformBuf: GPUBuffer;
+  private sceneUniformBuf: any /*GPUBuffer*/;
   private sceneMatrices  : SceneMatrices;
 
   // ── Pass flags & dims ─────────────────────────────────────────────────────
@@ -387,7 +387,7 @@ export class ATRenderPipeline {
   // ─────────────────────────────────────────────────────────────────────────
 
   private constructor(
-    device        : GPUDevice,
+    device        : any /*GPUDevice*/,
     canvas        : HTMLCanvasElement,
     format        : GPUTextureFormat,
     pbr           : ATPBRMaterial,
@@ -396,12 +396,12 @@ export class ATRenderPipeline {
     water         : ATWaterSurface,
     vlight        : ATVolumetricLight,
     bloom         : ATBloomPostProcess,
-    lutPipeline   : GPURenderPipeline,
+    lutPipeline   : any /*GPURenderPipeline*/,
     lutBGL        : GPUBindGroupLayout,
     lutSampler    : GPUSampler,
-    lutUniformBuf : GPUBuffer,
+    lutUniformBuf : any /*GPUBuffer*/,
     lutTexture    : GPUTexture,
-    lutView       : GPUTextureView,
+    lutView       : any /*GPUTextureView*/,
     lutStyle      : LutStyleName,
     lutStrength   : number,
     geoFBO        : FBO,
@@ -409,7 +409,7 @@ export class ATRenderPipeline {
     waterFBO      : FBO,
     vlFBO         : FBO,
     bloomFBO      : FBO,
-    sceneUniformBuf: GPUBuffer,
+    sceneUniformBuf: any /*GPUBuffer*/,
     passes        : ATPassFlags,
   ) {
     this.device          = device;
@@ -455,7 +455,7 @@ export class ATRenderPipeline {
    * @param cfg           Optional per-pass configuration overrides.
    */
   static async create(
-    device      : GPUDevice,
+    device      : any /*GPUDevice*/,
     canvas      : HTMLCanvasElement,
     flowerEdges : FlowerEdgeSpline[] = [],
     splineEdges : EdgeSpline[]       = [],
@@ -636,7 +636,7 @@ export class ATRenderPipeline {
    *
    * The caller is responsible for submitting the encoder.
    */
-  render(encoder: GPUCommandEncoder, dstView: GPUTextureView): void {
+  render(encoder: any /*GPUCommandEncoder*/, dstView: any /*GPUTextureView*/): void {
     // ── Pass 0: Geometry — PBR material (clear → geoFBO) ──────────────────
     if (this.passes.geometry) {
       this._clearFBO(encoder, this.geoFBO);
@@ -764,7 +764,7 @@ export class ATRenderPipeline {
   // ─────────────────────────────────────────────────────────────────────────
 
   /** Clear an FBO to transparent black with a fresh depth buffer. */
-  private _clearFBO(encoder: GPUCommandEncoder, fbo: FBO): void {
+  private _clearFBO(encoder: any /*GPUCommandEncoder*/, fbo: FBO): void {
     const pass = encoder.beginRenderPass({
       label: 'at-pipeline-clear',
       colorAttachments: [{
@@ -788,7 +788,7 @@ export class ATRenderPipeline {
    * Used to forward one pass's output into the next pass's base color.
    */
   private _copyTexture(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     src    : GPUTexture,
     dst    : GPUTexture,
   ): void {
@@ -804,9 +804,9 @@ export class ATRenderPipeline {
    * with strength = 0 (bypass) — used when LUT pass is disabled.
    */
   private _blitToView(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     src    : GPUTexture,
-    dstView: GPUTextureView,
+    dstView: any /*GPUTextureView*/,
   ): void {
     // Reuse LUT pipeline with strength=0 (identity blit)
     const savedStrength = this.lutStrength;
@@ -821,9 +821,9 @@ export class ATRenderPipeline {
 
   /** Record the LUT grade render pass: src texture → dstView. */
   private _renderLutPass(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     src    : GPUTexture,
-    dstView: GPUTextureView,
+    dstView: any /*GPUTextureView*/,
   ): void {
     const sceneSampler = this.device.createSampler({
       magFilter   : 'linear',
@@ -865,13 +865,13 @@ export class ATRenderPipeline {
 
   /** Build the LUT render pipeline and associated GPU objects. */
   private static async _buildLutPipeline(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     format: GPUTextureFormat,
   ): Promise<{
-    lutPipeline   : GPURenderPipeline;
+    lutPipeline   : any /*GPURenderPipeline*/;
     lutBGL        : GPUBindGroupLayout;
     lutSampler    : GPUSampler;
-    lutUniformBuf : GPUBuffer;
+    lutUniformBuf : any /*GPUBuffer*/;
   }> {
     const mod = device.createShaderModule({
       label: 'at-lut-module',
@@ -928,8 +928,8 @@ export class ATRenderPipeline {
 
   /** Write LUT uniform buffer: lutSize + strength + 2× pad. */
   private static _writeLutUniforms(
-    device   : GPUDevice,
-    buf      : GPUBuffer,
+    device   : any /*GPUDevice*/,
+    buf      : any /*GPUBuffer*/,
     lutSize  : number,
     strength : number,
   ): void {

@@ -213,7 +213,7 @@ export class OceanBridge {
 
   private particleBuffer!:     GPUBuffer;
   private posvelBuffer!:       GPUBuffer;
-  private renderUniformBuffer!: GPUBuffer;
+  private renderUniformBuffer!: any /*GPUBuffer*/;
 
   // ── upstream instances ────────────────────────────────────────────────────
   private mod!:            UpstreamModules;

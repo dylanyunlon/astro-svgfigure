@@ -215,22 +215,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // ---------------------------------------------------------------------------
 
 export class NoiseFlowField {
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private readonly bufs: GPUBufferSet;
 
-  private pipeline!: GPUComputePipeline;
-  private noiseUniformBuf!: GPUBuffer;
+  private pipeline!: any /*GPUComputePipeline*/;
+  private noiseUniformBuf!: any /*GPUBuffer*/;
   private noiseUniformBGL!: GPUBindGroupLayout;
   private particleBGL!: GPUBindGroupLayout;
-  private noiseUniformBG!: GPUBindGroup;
-  private particleBG!: GPUBindGroup;
+  private noiseUniformBG!: any /*GPUBindGroup*/;
+  private particleBG!: any /*GPUBindGroup*/;
 
   /** Current active effect. */
   private _effect: NoiseEffect = "smoke";
   /** Accumulated simulation time (seconds). */
   private _time: number = 0;
 
-  constructor(device: GPUDevice, bufs: GPUBufferSet) {
+  constructor(device: any /*GPUDevice*/, bufs: GPUBufferSet) {
     this.device = device;
     this.bufs   = bufs;
     this._init();
@@ -331,7 +331,7 @@ export class NoiseFlowField {
    * @param cfg     - effect config; if omitted uses last call's settings
    */
   encodeForceOverlay(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     n      : number,
     cfg    : NoiseFlowFieldConfig = { effect: this._effect },
   ): void {
@@ -408,15 +408,15 @@ export class NoiseFlowField {
  * ```
  */
 export function createNoiseOverlay(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   bufs  : GPUBufferSet,
   effect: NoiseEffect = "smoke",
-): (encoder: GPUCommandEncoder, n: number, dt: number) => void {
+): (encoder: any /*GPUCommandEncoder*/, n: number, dt: number) => void {
   const field = new NoiseFlowField(device, bufs);
   field.setEffect(effect);
   let time = 0;
 
-  return (encoder: GPUCommandEncoder, n: number, dt: number) => {
+  return (encoder: any /*GPUCommandEncoder*/, n: number, dt: number) => {
     time += dt;
     field.encodeForceOverlay(encoder, n, { effect, time });
   };

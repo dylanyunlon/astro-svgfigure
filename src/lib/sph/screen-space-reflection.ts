@@ -771,7 +771,7 @@ fn fsComposite(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function makeRT(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   w: number,
   h: number,
   format: GPUTextureFormat,
@@ -788,7 +788,7 @@ function makeRT(
 }
 
 function makeBGL(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   entries: GPUBindGroupLayoutEntry[],
   label: string,
 ): GPUBindGroupLayout {
@@ -796,14 +796,14 @@ function makeBGL(
 }
 
 function makeFullScreenPipeline(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   code: string,
   vsEntry: string,
   fsEntry: string,
   bgl: GPUBindGroupLayout,
   targetFormat: GPUTextureFormat,
   label: string,
-): GPURenderPipeline {
+): any /*GPURenderPipeline*/ {
   const mod = device.createShaderModule({ label: `${label}-shader`, code });
   return device.createRenderPipeline({
     label,
@@ -835,7 +835,7 @@ function makeFullScreenPipeline(
  *   ssr.render(encoder, depthView, normalView, sceneView, roughnessView, dstView, species);
  */
 export class SSRReflectionPass {
-  private device: GPUDevice;
+  private device: any /*GPUDevice*/;
   private params: SSRReflectionParams;
   private width:  number;
   private height: number;
@@ -883,7 +883,7 @@ export class SSRReflectionPass {
   private farPlane        = 100.0;
 
   private constructor(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     width:  number,
     height: number,
     params: SSRReflectionParams,
@@ -897,7 +897,7 @@ export class SSRReflectionPass {
   // ── Factory ──────────────────────────────────────────────────────────────
 
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     targetFormat: GPUTextureFormat,
     width: number,
     height: number,
@@ -1072,7 +1072,7 @@ export class SSRReflectionPass {
     depthView:     GPUTextureView,
     normalView:    GPUTextureView,
     sceneView:     GPUTextureView,
-    roughnessView: GPUTextureView,
+    roughnessView: any /*GPUTextureView*/,
     dstView:       GPUTextureView,
     species:       CellSpecies = 'attention',
     dt             = 1 / 60,

@@ -475,33 +475,33 @@ function alignUp(n: number, align: number): number {
  * The sort is stable: equal keys preserve their original relative order.
  */
 export class GPUParticleRadixSort {
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private readonly maxParticles: number;
 
   // ── Ping-pong pair buffers ────────────────────────────────────────────────
   /** Buffer A: (key, index) pairs — input for even digit passes. */
-  private pairBufA!: GPUBuffer;
+  private pairBufA!: any /*GPUBuffer*/;
   /** Buffer B: (key, index) pairs — output for even digit passes. */
-  private pairBufB!: GPUBuffer;
+  private pairBufB!: any /*GPUBuffer*/;
 
   // ── Histogram buffer ──────────────────────────────────────────────────────
-  private histBuf!: GPUBuffer;
+  private histBuf!: any /*GPUBuffer*/;
   /** Maximum number of workgroups across any dispatch. */
   private maxWorkgroups: number;
   /** Maximum histogram size = maxWorkgroups × RADIX_BUCKETS. */
   private maxHistSize: number;
 
   // ── Prefix-sum buffers ────────────────────────────────────────────────────
-  private scanBlockSumBuf!: GPUBuffer;
+  private scanBlockSumBuf!: any /*GPUBuffer*/;
 
   // ── Uniform buffers ───────────────────────────────────────────────────────
-  private radixUniformBuf!: GPUBuffer;
+  private radixUniformBuf!: any /*GPUBuffer*/;
   private scanUniformBuf!:  GPUBuffer;
 
   // ── Pipelines ─────────────────────────────────────────────────────────────
   private histogramPipeline!:   GPUComputePipeline;
   private scanPipeline!:        GPUComputePipeline;
-  private addBlockSumPipeline!: GPUComputePipeline;
+  private addBlockSumPipeline!: any /*GPUComputePipeline*/;
   private scatterPipeline!:     GPUComputePipeline;
 
   // ── Key extraction pipelines ──────────────────────────────────────────────
@@ -529,7 +529,7 @@ export class GPUParticleRadixSort {
   /** Current sort key mode. */
   sortKeyMode: SortKeyMode = 'travel';
 
-  constructor(device: GPUDevice, config: RadixSortConfig = {}) {
+  constructor(device: any /*GPUDevice*/, config: RadixSortConfig = {}) {
     this.device       = device;
     this.maxParticles = Math.min(config.maxParticles ?? 65536, MAX_PARTICLES);
     this.sortKeyMode  = config.sortKeyMode ?? 'travel';
@@ -739,7 +739,7 @@ export class GPUParticleRadixSort {
    */
   extractKeysFromTexture(
     enc:      GPUCommandEncoder,
-    tPosView: GPUTextureView,
+    tPosView: any /*GPUTextureView*/,
     count:    number,
     texW:     number,
     texH:     number,
@@ -785,7 +785,7 @@ export class GPUParticleRadixSort {
    */
   extractKeysFromBuffer(
     enc:      GPUCommandEncoder,
-    depthBuf: GPUBuffer,
+    depthBuf: any /*GPUBuffer*/,
     count:    number,
   ): void {
     if (!this.built) return;
@@ -827,7 +827,7 @@ export class GPUParticleRadixSort {
    * @param enc   open command encoder (all passes are recorded sequentially)
    * @param count number of active particles to sort
    */
-  sort(enc: GPUCommandEncoder, count: number): void {
+  sort(enc: any /*GPUCommandEncoder*/, count: number): void {
     if (!this.built) return;
 
     const dev       = this.device;
@@ -1017,7 +1017,7 @@ export class GPUParticleRadixSort {
    */
   extractAndSort(
     enc:      GPUCommandEncoder,
-    tPosView: GPUTextureView,
+    tPosView: any /*GPUTextureView*/,
     count:    number,
     texW:     number,
     texH:     number,
@@ -1032,7 +1032,7 @@ export class GPUParticleRadixSort {
    */
   extractAndSortFromBuffer(
     enc:      GPUCommandEncoder,
-    depthBuf: GPUBuffer,
+    depthBuf: any /*GPUBuffer*/,
     count:    number,
   ): void {
     this.extractKeysFromBuffer(enc, depthBuf, count);
@@ -1044,9 +1044,9 @@ export class GPUParticleRadixSort {
   // ═══════════════════════════════════════════════════════════════════
 
   /** After sort(), returns the buffer holding sorted (key, index) pairs. */
-  private _sortedBuf: GPUBuffer | null = null;
+  private _sortedBuf: any /*GPUBuffer*/ | null = null;
 
-  get sortedBuffer(): GPUBuffer {
+  get sortedBuffer(): any /*GPUBuffer*/ {
     return this._sortedBuf ?? this.pairBufA;
   }
 
@@ -1055,7 +1055,7 @@ export class GPUParticleRadixSort {
    * Write (key, index) pairs here directly if not using extractKeysFrom*.
    * Layout: for particle i, `buf[2*i+0]` = key (u32), `buf[2*i+1]` = index (u32).
    */
-  get inputBuffer(): GPUBuffer {
+  get inputBuffer(): any /*GPUBuffer*/ {
     return this.pairBufA;
   }
 

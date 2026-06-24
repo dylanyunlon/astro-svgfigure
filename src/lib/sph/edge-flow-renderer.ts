@@ -985,7 +985,7 @@ export class EdgeFlowRenderer {
   private qosColorBuf?:     GPUBuffer;
   private tPos?:            GPUTexture;
   private tPosView?:        GPUTextureView;
-  private computePipeline?: GPUComputePipeline;
+  private computePipeline?: any /*GPUComputePipeline*/;
   private renderPipeline?:  GPURenderPipeline;
   private computeBG0?:      GPUBindGroup;
   private computeBG1?:      GPUBindGroup;
@@ -1035,7 +1035,7 @@ export class EdgeFlowRenderer {
    * Call `await renderer.build()` before first use.
    */
   static createGPU(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     canvas: HTMLCanvasElement,
     config: EdgeFlowRendererConfig,
   ): EdgeFlowRenderer {
@@ -1162,7 +1162,7 @@ export class EdgeFlowRenderer {
    * @param dt       — frame delta in seconds
    */
   tick(
-    encoder: GPUCommandEncoder | null,
+    encoder: any /*GPUCommandEncoder*/ | null,
     elapsed: number,
     dt:      number,
   ): void {
@@ -1182,8 +1182,8 @@ export class EdgeFlowRenderer {
    */
   render(
     encoder:   GPUCommandEncoder,
-    colorView: GPUTextureView,
-    depthView?: GPUTextureView,
+    colorView: any /*GPUTextureView*/,
+    depthView?: any /*GPUTextureView*/,
   ): void {
     if (!this.gpuBuilt || !this.renderPipeline || !this.renderBG) return;
 
@@ -1479,7 +1479,7 @@ export class EdgeFlowRenderer {
 
   // ── Private: GPU tick ──────────────────────────────────────────────────────
 
-  private _tickGPU(encoder: GPUCommandEncoder, elapsed: number, dt: number): void {
+  private _tickGPU(encoder: any /*GPUCommandEncoder*/, elapsed: number, dt: number): void {
     if (!this.device || !this.uniformBuf || !this.computePipeline || !this.computeBG0 || !this.computeBG1) return;
 
     this._writeUniforms(elapsed, dt);

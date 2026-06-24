@@ -798,7 +798,7 @@ export class PortalEffectSystem {
   private distBG?:            GPUBindGroup;
   private distSampler?:       GPUSampler;
 
-  private stencilUniformBuf?: GPUBuffer;
+  private stencilUniformBuf?: any /*GPUBuffer*/;
   private stencilCircleBuf?:  GPUBuffer;
   private stencilPipeline?:   GPURenderPipeline;
   private stencilBG?:         GPUBindGroup;
@@ -838,7 +838,7 @@ export class PortalEffectSystem {
 
   /** Create a GPU-mode (WebGPU) portal renderer.  Call `build()` before use. */
   static createGPU(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     canvas: HTMLCanvasElement,
     config: PortalEffectConfig,
   ): PortalEffectSystem {
@@ -1144,7 +1144,7 @@ export class PortalEffectSystem {
   encodeStencilInterior(
     encoder:         GPUCommandEncoder,
     colorView:       GPUTextureView,
-    depthStencilView: GPUTextureView,
+    depthStencilView: any /*GPUTextureView*/,
   ): void {
     if (!this.gpuBuilt || !this.enableStencil || this.portals.length === 0) return;
     if (!this.device) return;
@@ -1270,8 +1270,8 @@ export class PortalEffectSystem {
    * A future iteration could move these to a GPU instanced draw pass.
    */
   encodeVortex(
-    _encoder: GPUCommandEncoder,
-    _colorView: GPUTextureView,
+    _encoder: any /*GPUCommandEncoder*/,
+    _colorView: any /*GPUTextureView*/,
   ): void {
     // GPU vortex/particle rendering is a stub for future migration.
     // Currently, call draw() on a 2D overlay canvas for these layers.

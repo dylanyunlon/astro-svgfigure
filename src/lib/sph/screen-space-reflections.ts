@@ -545,7 +545,7 @@ fn fsComposite(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
 /** Create a GPUTexture for an intermediate render target. */
 function makeRT(
-  device : GPUDevice,
+  device : any /*GPUDevice*/,
   width  : number,
   height : number,
   format : GPUTextureFormat,
@@ -561,7 +561,7 @@ function makeRT(
 
 /** Build a bind-group-layout with: uniform, sampler, texture(s). */
 function makeBGL(
-  device      : GPUDevice,
+  device      : any /*GPUDevice*/,
   label       : string,
   numTextures : number,
 ): GPUBindGroupLayout {
@@ -581,14 +581,14 @@ function makeBGL(
 
 /** Build a render pipeline for a full-screen-triangle pass. */
 function makeFullScreenPipeline(
-  device  : GPUDevice,
+  device  : any /*GPUDevice*/,
   label   : string,
   wgsl    : string,
   vsEntry : string,
   fsEntry : string,
   bgl     : GPUBindGroupLayout,
   format  : GPUTextureFormat,
-): GPURenderPipeline {
+): any /*GPURenderPipeline*/ {
   const module = device.createShaderModule({ label, code: wgsl });
   const layout = device.createPipelineLayout({ label, bindGroupLayouts: [bgl] });
   return device.createRenderPipeline({
@@ -602,10 +602,10 @@ function makeFullScreenPipeline(
 
 /** Create a uniform buffer of the given byte length and return it. */
 function makeUniformBuffer(
-  device : GPUDevice,
+  device : any /*GPUDevice*/,
   size   : number,
   label  : string,
-): GPUBuffer {
+): any /*GPUBuffer*/ {
   return device.createBuffer({
     label,
     size,
@@ -631,7 +631,7 @@ function makeUniformBuffer(
  */
 export class ScreenSpaceReflections {
   // ── GPU handles ────────────────────────────────────────────────────────────
-  private device : GPUDevice;
+  private device : any /*GPUDevice*/;
   private format : GPUTextureFormat;
   private width  : number;
   private height : number;
@@ -642,9 +642,9 @@ export class ScreenSpaceReflections {
   private ssrReflTexPrev  : GPUTexture;    // previous frame for temporal blend
 
   // Pipelines
-  private marchPipeline     : GPURenderPipeline;
-  private resolvePipeline   : GPURenderPipeline;
-  private compositePipeline : GPURenderPipeline;
+  private marchPipeline     : any /*GPURenderPipeline*/;
+  private resolvePipeline   : any /*GPURenderPipeline*/;
+  private compositePipeline : any /*GPURenderPipeline*/;
 
   // Bind group layouts
   private marchBGL     : GPUBindGroupLayout;
@@ -652,9 +652,9 @@ export class ScreenSpaceReflections {
   private compositeBGL : GPUBindGroupLayout;
 
   // Uniform buffers
-  private marchUB     : GPUBuffer;
-  private resolveUB   : GPUBuffer;
-  private compositeUB : GPUBuffer;
+  private marchUB     : any /*GPUBuffer*/;
+  private resolveUB   : any /*GPUBuffer*/;
+  private compositeUB : any /*GPUBuffer*/;
 
   // Sampler
   private sampler : GPUSampler;
@@ -671,19 +671,19 @@ export class ScreenSpaceReflections {
 
   // ── Constructor (private — use static create()) ────────────────────────────
   private constructor(
-    device  : GPUDevice,
+    device  : any /*GPUDevice*/,
     format  : GPUTextureFormat,
     width   : number,
     height  : number,
-    marchPipeline     : GPURenderPipeline,
-    resolvePipeline   : GPURenderPipeline,
-    compositePipeline : GPURenderPipeline,
+    marchPipeline     : any /*GPURenderPipeline*/,
+    resolvePipeline   : any /*GPURenderPipeline*/,
+    compositePipeline : any /*GPURenderPipeline*/,
     marchBGL     : GPUBindGroupLayout,
     resolveBGL   : GPUBindGroupLayout,
     compositeBGL : GPUBindGroupLayout,
-    marchUB      : GPUBuffer,
-    resolveUB    : GPUBuffer,
-    compositeUB  : GPUBuffer,
+    marchUB      : any /*GPUBuffer*/,
+    resolveUB    : any /*GPUBuffer*/,
+    compositeUB  : any /*GPUBuffer*/,
     ssrHitTex    : GPUTexture,
     ssrReflTex   : GPUTexture,
     ssrReflTexPrev : GPUTexture,
@@ -717,7 +717,7 @@ export class ScreenSpaceReflections {
   // ── Factory ────────────────────────────────────────────────────────────────
 
   static async create(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     format : GPUTextureFormat,
     width  : number,
     height : number,
@@ -825,11 +825,11 @@ export class ScreenSpaceReflections {
    * @param dstView   Output destination (swap-chain or next FBO)
    */
   render(
-    encoder    : GPUCommandEncoder,
-    sceneView  : GPUTextureView,
-    depthView  : GPUTextureView,
-    normalView : GPUTextureView,
-    dstView    : GPUTextureView,
+    encoder    : any /*GPUCommandEncoder*/,
+    sceneView  : any /*GPUTextureView*/,
+    depthView  : any /*GPUTextureView*/,
+    normalView : any /*GPUTextureView*/,
+    dstView    : any /*GPUTextureView*/,
   ): void {
     if (!this.params.enabled) {
       // Passthrough blit — just copy scene to dst (or caller can skip this pass)

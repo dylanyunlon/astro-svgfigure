@@ -450,32 +450,32 @@ const SPLASH_CAM_BYTES  = SPLASH_CAM_FLOATS * 4;
 const PARTICLE_STRIDE = 6 * 4;
 
 export class OceanBackground {
-  private device: GPUDevice;
+  private device: any /*GPUDevice*/;
   private cfg: Required<OceanConfig>;
 
   // Ocean mesh
-  private meshPipeline!: GPURenderPipeline;
+  private meshPipeline!: any /*GPURenderPipeline*/;
   private oceanUniBuf!:  GPUBuffer;
-  private oceanBindGroup!: GPUBindGroup;
+  private oceanBindGroup!: any /*GPUBindGroup*/;
   private meshVertexCount!: number;
 
   // Splash compute
-  private splashComputePipeline!: GPUComputePipeline;
+  private splashComputePipeline!: any /*GPUComputePipeline*/;
   private splashParticleBuf!:     GPUBuffer;
   private splashUniBuf!:          GPUBuffer;
-  private splashComputeBindGroup!: GPUBindGroup;
+  private splashComputeBindGroup!: any /*GPUBindGroup*/;
 
   // Splash render
-  private splashRenderPipeline!: GPURenderPipeline;
+  private splashRenderPipeline!: any /*GPURenderPipeline*/;
   private splashCamBuf!:         GPUBuffer;
-  private splashRenderBindGroup!: GPUBindGroup;
+  private splashRenderBindGroup!: any /*GPUBindGroup*/;
 
   // External cell buffers (set before each frame)
-  private cellPosXBuf: GPUBuffer | null = null;
-  private cellPosYBuf: GPUBuffer | null = null;
-  private cellCountBuf: GPUBuffer | null = null;
+  private cellPosXBuf: any /*GPUBuffer*/ | null = null;
+  private cellPosYBuf: any /*GPUBuffer*/ | null = null;
+  private cellCountBuf: any /*GPUBuffer*/ | null = null;
 
-  constructor(device: GPUDevice, config: OceanConfig) {
+  constructor(device: any /*GPUDevice*/, config: OceanConfig) {
     this.device = device;
     this.cfg = {
       domainW:            config.domainW,
@@ -514,7 +514,7 @@ export class OceanBackground {
    */
   encode(
     passEncoder:    GPURenderPassEncoder,
-    commandEncoder: GPUCommandEncoder,
+    commandEncoder: any /*GPUCommandEncoder*/,
     uniforms:       OceanUniforms,
     cellPosXBuf:    GPUBuffer,
     cellPosYBuf:    GPUBuffer,

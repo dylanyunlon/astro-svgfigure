@@ -855,13 +855,13 @@ function generateDefaultGhostLayers(count: number): ResolvedGhostLayer[] {
  * triangles required.
  */
 export class LensFlareCompute {
-  private readonly device : GPUDevice;
+  private readonly device : any /*GPUDevice*/;
   private readonly width  : number;
   private readonly height : number;
 
   // ── GPU resources ─────────────────────────────────────────────────────────
-  private uniformBuf    : GPUBuffer;
-  private occlusionBuf  : GPUBuffer;   // storage: temporal visibility per light
+  private uniformBuf    : any /*GPUBuffer*/;
+  private occlusionBuf  : any /*GPUBuffer*/;   // storage: temporal visibility per light
   private linearSampler : GPUSampler;
 
   // Intermediate textures
@@ -874,10 +874,10 @@ export class LensFlareCompute {
   private readonly halfH : number;
 
   // ── Pipeline state ────────────────────────────────────────────────────────
-  private occlusionPipeline  : GPUComputePipeline;
-  private ghostPipeline      : GPUComputePipeline;
-  private featuresPipeline   : GPUComputePipeline;
-  private compositePipeline  : GPUComputePipeline;
+  private occlusionPipeline  : any /*GPUComputePipeline*/;
+  private ghostPipeline      : any /*GPUComputePipeline*/;
+  private featuresPipeline   : any /*GPUComputePipeline*/;
+  private compositePipeline  : any /*GPUComputePipeline*/;
 
   private occlusionBGL  : GPUBindGroupLayout;
   private ghostBGL      : GPUBindGroupLayout;
@@ -890,7 +890,7 @@ export class LensFlareCompute {
   private ghostLayers : ResolvedGhostLayer[] = [];
 
   private constructor(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     width  : number,
     height : number,
   ) {
@@ -970,7 +970,7 @@ export class LensFlareCompute {
    * @param height - Framebuffer height in pixels
    */
   static async create(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     width  : number,
     height : number,
   ): Promise<LensFlareCompute> {
@@ -1233,10 +1233,10 @@ export class LensFlareCompute {
    * @param dstTexView   - Destination texture view (output, additive composite)
    */
   dispatch(
-    encoder      : GPUCommandEncoder,
-    sceneTexView : GPUTextureView,
-    depthTexView : GPUTextureView,
-    dstTexView   : GPUTextureView,
+    encoder      : any /*GPUCommandEncoder*/,
+    sceneTexView : any /*GPUTextureView*/,
+    depthTexView : any /*GPUTextureView*/,
+    dstTexView   : any /*GPUTextureView*/,
   ): void {
     if (this.lights.length === 0) return;
 
@@ -1345,7 +1345,7 @@ export class LensFlareCompute {
    */
   static async resize(
     old    : LensFlareCompute,
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     width  : number,
     height : number,
   ): Promise<LensFlareCompute> {
@@ -1389,12 +1389,12 @@ export class LensFlareCompute {
   }
 
   /** Intermediate ghost texture view (for debug visualization). */
-  getGhostTexView(): GPUTextureView {
+  getGhostTexView(): any /*GPUTextureView*/ {
     return this.ghostTex.createView();
   }
 
   /** Intermediate features texture view (for debug visualization). */
-  getFeaturesTexView(): GPUTextureView {
+  getFeaturesTexView(): any /*GPUTextureView*/ {
     return this.featuresTex.createView();
   }
 }
@@ -1416,7 +1416,7 @@ export class LensFlareCompute {
  * @param speciesOpts - Per-species overrides (partial LensFlareParams + lights)
  */
 export async function createLensFlareForSpecies(
-  device      : GPUDevice,
+  device      : any /*GPUDevice*/,
   width       : number,
   height      : number,
   speciesOpts : Partial<LensFlareParams> & { lights?: FlareLightSource[] },

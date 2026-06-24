@@ -627,11 +627,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
  * ```
  */
 export class NaturalPatternGenerator {
-  private readonly device: GPUDevice;
-  private pipeline: GPUComputePipeline | null = null;
+  private readonly device: any /*GPUDevice*/;
+  private pipeline: any /*GPUComputePipeline*/ | null = null;
   private bindGroupLayout: GPUBindGroupLayout | null = null;
 
-  constructor(device: GPUDevice) {
+  constructor(device: any /*GPUDevice*/) {
     this.device = device;
   }
 

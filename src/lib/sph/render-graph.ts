@@ -192,13 +192,13 @@ export class ResourceAccessor {
   /** @internal */
   private readonly _views:    Map<number, GPUTextureView>;
   /** @internal */
-  readonly presentView: GPUTextureView;
+  readonly presentView: any /*GPUTextureView*/;
 
   /** @internal */
   constructor(
     textures:    Map<number, GPUTexture>,
     views:       Map<number, GPUTextureView>,
-    presentView: GPUTextureView,
+    presentView: any /*GPUTextureView*/,
   ) {
     this._textures   = textures;
     this._views      = views;
@@ -225,7 +225,7 @@ export class ResourceAccessor {
    * Get a GPUTextureView for a virtual resource.
    * Used as render attachment (colorAttachments[].view).
    */
-  getView(handle: ResourceHandle): GPUTextureView {
+  getView(handle: ResourceHandle): any /*GPUTextureView*/ {
     const view = this._views.get(handle._id);
     if (!view) {
       throw new Error(
@@ -307,13 +307,13 @@ interface PoolEntry {
 }
 
 class TexturePool {
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private pool: PoolEntry[] = [];
   private frameCounter = 0;
   /** Textures idle for this many frames are destroyed. */
   private static readonly MAX_IDLE_FRAMES = 4;
 
-  constructor(device: GPUDevice) {
+  constructor(device: any /*GPUDevice*/) {
     this.device = device;
   }
 
@@ -385,7 +385,7 @@ class TexturePool {
  */
 export class RenderGraph {
   // ── Core ──────────────────────────────────────────────────────────────────
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private readonly defaultFormat: GPUTextureFormat;
 
   // ── Declaration-time registries ───────────────────────────────────────────
@@ -420,7 +420,7 @@ export class RenderGraph {
   // Constructor
   // ─────────────────────────────────────────────────────────────────────────
 
-  constructor(device: GPUDevice, defaultFormat: GPUTextureFormat = 'bgra8unorm') {
+  constructor(device: any /*GPUDevice*/, defaultFormat: GPUTextureFormat = 'bgra8unorm') {
     this.device        = device;
     this.defaultFormat = defaultFormat;
     this.pool          = new TexturePool(device);
@@ -1473,7 +1473,7 @@ export class RenderGraphBuilder {
   private w = 0;
   private h = 0;
 
-  constructor(device: GPUDevice, format?: GPUTextureFormat) {
+  constructor(device: any /*GPUDevice*/, format?: GPUTextureFormat) {
     this.graph = new RenderGraph(device, format);
   }
 

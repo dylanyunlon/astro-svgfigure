@@ -362,7 +362,7 @@ fn diffuse_decay(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 export class PhysarumSimulation {
   // GPU device
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
 
   // Dimensions
   readonly width:      number;
@@ -375,7 +375,7 @@ export class PhysarumSimulation {
   // ── Agent buffers ─────────────────────────────────────────────────────────
   private agentXBuf!:   GPUBuffer;
   private agentYBuf!:   GPUBuffer;
-  private agentAngBuf!: GPUBuffer;
+  private agentAngBuf!: any /*GPUBuffer*/;
 
   // ── Trail textures (ping-pong) ────────────────────────────────────────────
   private trailA!:      GPUTexture;
@@ -387,12 +387,12 @@ export class PhysarumSimulation {
 
   // ── Uniform buffers ───────────────────────────────────────────────────────
   private agentUniformBuf!:   GPUBuffer;
-  private diffuseUniformBuf!: GPUBuffer;
+  private diffuseUniformBuf!: any /*GPUBuffer*/;
 
   // ── Pipelines ─────────────────────────────────────────────────────────────
   private agentPipeline!:   GPUComputePipeline;
   private initPipeline!:    GPUComputePipeline;
-  private diffusePipeline!: GPUComputePipeline;
+  private diffusePipeline!: any /*GPUComputePipeline*/;
 
   // ── Bind group layouts ────────────────────────────────────────────────────
   private agentUniformBGL!:   GPUBindGroupLayout;
@@ -410,7 +410,7 @@ export class PhysarumSimulation {
   // Uniform bind groups (same buffer, shared across directions)
   private agentUniformBG!:   GPUBindGroup;
   private agentBufBG!:       GPUBindGroup;
-  private diffuseUniformBG!: GPUBindGroup;
+  private diffuseUniformBG!: any /*GPUBindGroup*/;
 
   // ── Internal flag ─────────────────────────────────────────────────────────
   private _initialized = false;
@@ -794,7 +794,7 @@ export class PhysarumSimulation {
    *
    * After this returns, `getTrailTexture()` points to the updated trail.
    */
-  tick(encoder: GPUCommandEncoder): void {
+  tick(encoder: any /*GPUCommandEncoder*/): void {
     if (!this._initialized) {
       console.warn("PhysarumSimulation.tick() called before init completed");
       return;

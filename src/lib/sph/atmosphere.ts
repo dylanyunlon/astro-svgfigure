@@ -253,18 +253,18 @@ const UNIFORM_BYTE_SIZE = UNIFORM_F32_COUNT * 4;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class AtmospherePass {
-  private readonly device : GPUDevice;
+  private readonly device : any /*GPUDevice*/;
   private readonly format : GPUTextureFormat;
 
-  private pipeline  !: GPURenderPipeline;
+  private pipeline  !: any /*GPURenderPipeline*/;
   private bgl       !: GPUBindGroupLayout;
-  private uniBuf    !: GPUBuffer;
+  private uniBuf    !: any /*GPUBuffer*/;
   private sampler   !: GPUSampler;
 
   // 当前绑定组 (依赖外部 texture view, 每帧重建或按需重建)
-  private bg        : GPUBindGroup | null = null;
-  private lastSrcView  : GPUTextureView | null = null;
-  private lastFldView  : GPUTextureView | null = null;
+  private bg        : any /*GPUBindGroup*/ | null = null;
+  private lastSrcView  : any /*GPUTextureView*/ | null = null;
+  private lastFldView  : any /*GPUTextureView*/ | null = null;
 
   // 渲染分辨率
   private width  : number;
@@ -288,7 +288,7 @@ export class AtmospherePass {
     sunPower          : 20.0,
   };
 
-  private constructor(device: GPUDevice, format: GPUTextureFormat, width: number, height: number) {
+  private constructor(device: any /*GPUDevice*/, format: GPUTextureFormat, width: number, height: number) {
     this.device = device;
     this.format = format;
     this.width  = width;
@@ -297,7 +297,7 @@ export class AtmospherePass {
 
   // ── 工厂方法 ────────────────────────────────────────────────────────────────
   static async create(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     format : GPUTextureFormat,
     width  : number,
     height : number,
@@ -327,10 +327,10 @@ export class AtmospherePass {
    * @param fieldView metaball field 累积纹理 view（提供深度信息）
    */
   render(
-    encoder  : GPUCommandEncoder,
-    srcView  : GPUTextureView,
-    dstView  : GPUTextureView,
-    fieldView: GPUTextureView,
+    encoder  : any /*GPUCommandEncoder*/,
+    srcView  : any /*GPUTextureView*/,
+    dstView  : any /*GPUTextureView*/,
+    fieldView: any /*GPUTextureView*/,
   ): void {
     this._uploadUniforms();
     this._ensureBindGroup(srcView, fieldView);
@@ -449,7 +449,7 @@ export class AtmospherePass {
     this.device.queue.writeBuffer(this.uniBuf, 0, arr);
   }
 
-  private _ensureBindGroup(srcView: GPUTextureView, fieldView: GPUTextureView): void {
+  private _ensureBindGroup(srcView: any /*GPUTextureView*/, fieldView: any /*GPUTextureView*/): void {
     // 如果 texture views 没变，复用上一个绑定组
     if (this.bg && this.lastSrcView === srcView && this.lastFldView === fieldView) return;
 

@@ -1349,7 +1349,7 @@ export class DecalGPUPipeline {
    * @param maxDecals  Maximum concurrent decals the SSBO can hold.  Default 64.
    */
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     format: GPUTextureFormat,
     maxDecals = 64,
   ): Promise<DecalGPUPipeline> {
@@ -1459,9 +1459,9 @@ export class DecalGPUPipeline {
    * @param height   Render target height in pixels.
    */
   render(
-    encoder: GPUCommandEncoder,
-    srcView: GPUTextureView,
-    dstView: GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    srcView: any /*GPUTextureView*/,
+    dstView: any /*GPUTextureView*/,
     width:   number,
     height:  number,
   ): void {

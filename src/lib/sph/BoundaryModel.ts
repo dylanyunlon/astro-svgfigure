@@ -101,14 +101,14 @@ function cubicSplinedW_dr(r: number, h: number): number {
 // --------- BoundaryModel ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export class BoundaryModel {
-  private device: GPUDevice;
+  private device: any /*GPUDevice*/;
   private restDensity: number;
   readonly h: number;
 
   particles: BoundaryParticle[] = [];
 
   /** GPU storage buffer: [ x, y, volume, pad ]  --  N  (Float32, stride = 16 B) */
-  gpuBoundaryBuf!: GPUBuffer;
+  gpuBoundaryBuf!: any /*GPUBuffer*/;
 
   readonly domainW: number;
   readonly domainH: number;
@@ -125,7 +125,7 @@ export class BoundaryModel {
   private _worldShape: BoundaryShape | null = null;
 
   constructor(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     domainW: number,
     domainH: number,
     restDensity: number,
@@ -298,7 +298,7 @@ export class BoundaryModel {
    *   offset  8: volume  (f32)
    *   offset 12: pad     (f32 = 0)
    */
-  getBuffers(device?: GPUDevice): GPUBuffer {
+  getBuffers(device?: any /*GPUDevice*/): any /*GPUBuffer*/ {
     const gpu = device ?? this.device;
 
     this.gpuBoundaryBuf?.destroy();

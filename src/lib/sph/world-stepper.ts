@@ -371,7 +371,7 @@ function substep(world: World, dt: number): void {
         return ns.map((n) => particles.indexOf(n));
       });
       orch.uploadNeighborLists(nbLists, particles.length);
-      const gpuDevice: GPUDevice | undefined = (world as any)._gpuDevice;
+      const gpuDevice: any /*GPUDevice*/ | undefined = (world as any)._gpuDevice;
       if (gpuDevice) {
         const enc = gpuDevice.createCommandEncoder({ label: `dfsph-pressure-iter-${iter}` });
         orch.encodeDensityPressure(enc, particles.length);
@@ -410,7 +410,7 @@ function substep(world: World, dt: number): void {
         return ns.map((n) => particles.indexOf(n));
       });
       orch.uploadNeighborLists(nbLists, particles.length);
-      const gpuDevice: GPUDevice | undefined = (world as any)._gpuDevice;
+      const gpuDevice: any /*GPUDevice*/ | undefined = (world as any)._gpuDevice;
       if (gpuDevice) {
         const enc = gpuDevice.createCommandEncoder({ label: `dfsph-divergence-iter-${iter}` });
         orch.encodeDensityPressure(enc, particles.length);

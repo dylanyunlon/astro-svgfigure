@@ -187,7 +187,7 @@ export interface LayerDescriptor {
    * tPos texture view (rgba32float, W×H).
    * .r = worldX  .g = worldY  .b = travel  .a = alpha
    */
-  tPosView: GPUTextureView;
+  tPosView: any /*GPUTextureView*/;
   /** tPos texture width (= 256 for most AT systems). */
   texW: number;
   /** tPos texture height (= 128 for most AT systems → 32768 slots). */
@@ -1025,7 +1025,7 @@ function buildLayerUniforms(
  *   compositor.composite(enc, view, elapsed)
  */
 export class ParticleCompositor {
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private readonly canvas: HTMLCanvasElement;
 
   private layers: LayerDescriptor[]   = [];
@@ -1053,14 +1053,14 @@ export class ParticleCompositor {
   private keyBGs:        GPUBindGroup[] = [];
 
   // ── Bitonic sort pipeline ────────────────────────────────────────────────────
-  private bitonicPipeline!: GPUComputePipeline;
+  private bitonicPipeline!: any /*GPUComputePipeline*/;
   private bitonicUniBuf!:   GPUBuffer;
   private bitonicBG!:       GPUBindGroup;
 
   // ── Radix sort pipelines ─────────────────────────────────────────────────────
   private radixHistoPipeline!:   GPUComputePipeline;
   private radixPrefixPipeline!:  GPUComputePipeline;
-  private radixScatterPipeline!: GPUComputePipeline;
+  private radixScatterPipeline!: any /*GPUComputePipeline*/;
   private radixParamsBuf!:       GPUBuffer;
   private radixHistoBuf!:        GPUBuffer;
   private prefixParamsBuf!:      GPUBuffer;
@@ -1070,7 +1070,7 @@ export class ParticleCompositor {
   private radixScatterBGLayout!: GPUBindGroupLayout;
 
   // ── Fill indirect pipeline ───────────────────────────────────────────────────
-  private fillIndirectPipeline!: GPUComputePipeline;
+  private fillIndirectPipeline!: any /*GPUComputePipeline*/;
   private indirectBufs:          GPUBuffer[]    = [];
   private fillIndirectUniBufs:   GPUBuffer[]    = [];
   private fillIndirectBGs:       GPUBindGroup[] = [];
@@ -1099,7 +1099,7 @@ export class ParticleCompositor {
   };
 
   constructor(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     canvas: HTMLCanvasElement,
     config: Partial<CompositorConfig> = {},
   ) {
@@ -1422,7 +1422,7 @@ export class ParticleCompositor {
    * Update compositor uniform buffers (domain size may change on resize).
    * Fills indirect draw buffers for each visible layer.
    */
-  update(_enc: GPUCommandEncoder, _elapsed: number): void {
+  update(_enc: any /*GPUCommandEncoder*/, _elapsed: number): void {
     if (!this.built) return;
     const { device, canvas, gpuMeta, renderUniBufs } = this;
     const dw = canvas.width  || 1;
@@ -1458,7 +1458,7 @@ export class ParticleCompositor {
    * Encode the depth sort sequence (key extract + radix/bitonic sort) into enc.
    * Must be called before renderAlpha / renderGlow.
    */
-  sort(enc: GPUCommandEncoder): void {
+  sort(enc: any /*GPUCommandEncoder*/): void {
     if (!this.built) return;
 
     const algo = this._chooseSortAlgorithm();
@@ -1495,7 +1495,7 @@ export class ParticleCompositor {
    */
   renderAlpha(
     enc:       GPUCommandEncoder,
-    colorView: GPUTextureView,
+    colorView: any /*GPUTextureView*/,
     loadOp:    GPULoadOp = 'clear',
   ): void {
     if (!this.built || this.gpuMeta.length === 0) return;
@@ -1528,7 +1528,7 @@ export class ParticleCompositor {
    * Encode the additive glow render pass for all visible layers.
    * Must be called after renderAlpha (uses 'load' to preserve alpha-pass output).
    */
-  renderGlow(enc: GPUCommandEncoder, colorView: GPUTextureView): void {
+  renderGlow(enc: any /*GPUCommandEncoder*/, colorView: any /*GPUTextureView*/): void {
     if (!this.built || !this.cfg.enableGlow || this.gpuMeta.length === 0) return;
 
     const pass = enc.beginRenderPass({
@@ -1632,7 +1632,7 @@ export class ParticleCompositor {
   }
 
   /** Hot-swap the tPosView for a layer (e.g. double-buffer flip). */
-  updateLayerTexture(id: string, tPosView: GPUTextureView): void {
+  updateLayerTexture(id: string, tPosView: any /*GPUTextureView*/): void {
     const idx = this.gpuMeta.findIndex(m => m.id === id);
     if (idx < 0) return;
     this.gpuMeta[idx].tPosView = tPosView;
@@ -1662,7 +1662,7 @@ export class ParticleCompositor {
     return this.sortedCount >= RADIX_THRESHOLD ? 'radix' : 'bitonic';
   }
 
-  private _sortBitonic(enc: GPUCommandEncoder): void {
+  private _sortBitonic(enc: any /*GPUCommandEncoder*/): void {
     const sortPass = enc.beginComputePass({ label: 'compositor:bitonicSort' });
     sortPass.setPipeline(this.bitonicPipeline);
     sortPass.setBindGroup(0, this.bitonicBG);
@@ -1680,7 +1680,7 @@ export class ParticleCompositor {
     sortPass.end();
   }
 
-  private _sortRadix(enc: GPUCommandEncoder): void {
+  private _sortRadix(enc: any /*GPUCommandEncoder*/): void {
     const n     = this.sortedCount;
     const numWG = Math.ceil(n / WG);
     const { device } = this;
@@ -1765,7 +1765,7 @@ export class ParticleCompositor {
     }
   }
 
-  private _fillIndirect(enc: GPUCommandEncoder): void {
+  private _fillIndirect(enc: any /*GPUCommandEncoder*/): void {
     const fillPass = enc.beginComputePass({ label: 'compositor:fillIndirect' });
     fillPass.setPipeline(this.fillIndirectPipeline);
     for (let i = 0; i < this.gpuMeta.length; i++) {
@@ -1796,7 +1796,7 @@ export class ParticleCompositor {
     return blendStateForPreset(key as BlendPreset);
   }
 
-  private _writeKeyUniforms(buf: GPUBuffer, meta: GPULayerMeta): void {
+  private _writeKeyUniforms(buf: any /*GPUBuffer*/, meta: GPULayerMeta): void {
     const data = new Uint32Array(8);
     data[0] = meta.layerOffset;
     data[1] = meta.particleCount;
@@ -1894,7 +1894,7 @@ export async function createCompositorForATRenderers(
   canvas:  HTMLCanvasElement,
   layers: {
     flower?: {
-      renderer:   { tPosView: GPUTextureView; activeParticleCount: number };
+      renderer:   { tPosView: any /*GPUTextureView*/; activeParticleCount: number };
       glowScale?: number;
       glowAlpha?: number;
       glowSigma?: number;
@@ -1902,7 +1902,7 @@ export async function createCompositorForATRenderers(
       zOrder?:    number;
     };
     spline?: {
-      renderer:   { tPosView: GPUTextureView; particleSlots: number };
+      renderer:   { tPosView: any /*GPUTextureView*/; particleSlots: number };
       glowScale?: number;
       glowAlpha?: number;
       glowSigma?: number;
@@ -1910,7 +1910,7 @@ export async function createCompositorForATRenderers(
       zOrder?:    number;
     };
     edgeFlow?: {
-      renderer:   { tPosView?: GPUTextureView; totalSlots: number };
+      renderer:   { tPosView?: any /*GPUTextureView*/; totalSlots: number };
       glowScale?: number;
       glowAlpha?: number;
       glowSigma?: number;
@@ -1918,7 +1918,7 @@ export async function createCompositorForATRenderers(
       zOrder?:    number;
     };
     sparks?: {
-      renderer:   { tPosView: GPUTextureView; particleCount: number };
+      renderer:   { tPosView: any /*GPUTextureView*/; particleCount: number };
       glowScale?: number;
       glowAlpha?: number;
       glowSigma?: number;

@@ -438,7 +438,7 @@ fn csComposite(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 /** Intermediate storage texture (rgba16float for HDR). */
 function makeStorageTex(
-  device : GPUDevice,
+  device : any /*GPUDevice*/,
   width  : number,
   height : number,
   label  : string,
@@ -487,12 +487,12 @@ const UNIFORM_BYTE_SIZE  = UNIFORM_F32_TOTAL * 4;  // 288 bytes
  * position, color, intensity, decay, and density parameters.
  */
 export class GodRaysCompute {
-  private readonly device : GPUDevice;
+  private readonly device : any /*GPUDevice*/;
   private readonly width  : number;
   private readonly height : number;
 
   // ── GPU resources ─────────────────────────────────────────────────────────
-  private uniformBuf   : GPUBuffer;
+  private uniformBuf   : any /*GPUBuffer*/;
   private sceneSampler : GPUSampler;
   private raysSampler  : GPUSampler;
 
@@ -506,9 +506,9 @@ export class GodRaysCompute {
   private readonly halfH : number;
 
   // ── Pipeline state ────────────────────────────────────────────────────────
-  private occlusionPipeline  : GPUComputePipeline;
-  private radialBlurPipeline : GPUComputePipeline;
-  private compositePipeline  : GPUComputePipeline;
+  private occlusionPipeline  : any /*GPUComputePipeline*/;
+  private radialBlurPipeline : any /*GPUComputePipeline*/;
+  private compositePipeline  : any /*GPUComputePipeline*/;
 
   private occlusionBGL  : GPUBindGroupLayout;
   private radialBlurBGL : GPUBindGroupLayout;
@@ -519,7 +519,7 @@ export class GodRaysCompute {
   private lights : ResolvedLight[] = [];
 
   private constructor(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     width  : number,
     height : number,
   ) {
@@ -650,7 +650,7 @@ export class GodRaysCompute {
    * @param height - Viewport height in pixels.
    */
   static async create(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     width  : number,
     height : number,
   ): Promise<GodRaysCompute> {
@@ -738,9 +738,9 @@ export class GodRaysCompute {
    *                        If undefined, writes to the internal dstTex (retrieve via getDstTexture).
    */
   dispatch(
-    encoder      : GPUCommandEncoder,
-    sceneTexView : GPUTextureView,
-    dstTexView?  : GPUTextureView,
+    encoder      : any /*GPUCommandEncoder*/,
+    sceneTexView : any /*GPUTextureView*/,
+    dstTexView?  : any /*GPUTextureView*/,
   ): void {
     const occlusionView = this.occlusionTex.createView();
     const raysView      = this.raysTex.createView();
@@ -959,7 +959,7 @@ export class GodRaysCompute {
  * @param speciesOpts - Species-specific overrides.
  */
 export async function createGodRaysForSpecies(
-  device      : GPUDevice,
+  device      : any /*GPUDevice*/,
   width       : number,
   height      : number,
   speciesOpts?: {

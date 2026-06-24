@@ -796,8 +796,8 @@ export class HeatDistortionPipeline {
     pipeline:   GPURenderPipeline,
     bgl:        GPUBindGroupLayout,
     sampler:    GPUSampler,
-    uniformBuf: GPUBuffer,
-    emitterBuf: GPUBuffer,
+    uniformBuf: any /*GPUBuffer*/,
+    emitterBuf: any /*GPUBuffer*/,
     cfg:        HeatDistortionConfig,
   ) {
     this.device     = device;
@@ -926,9 +926,9 @@ export class HeatDistortionPipeline {
    * @param dt       Delta time in seconds (advances internal clock).
    */
   render(
-    encoder: GPUCommandEncoder,
-    srcView: GPUTextureView,
-    dstView: GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    srcView: any /*GPUTextureView*/,
+    dstView: any /*GPUTextureView*/,
     width:   number,
     height:  number,
     dt = 0,
@@ -974,7 +974,7 @@ export class HeatDistortionPipeline {
     this.device.queue.writeBuffer(this.uniformBuf, 0, data);
   }
 
-  private _bindGroup(srcView: GPUTextureView): GPUBindGroup {
+  private _bindGroup(srcView: any /*GPUTextureView*/): any /*GPUBindGroup*/ {
     if (this.cachedBG && this.cachedSrc === srcView) {
       return this.cachedBG;
     }

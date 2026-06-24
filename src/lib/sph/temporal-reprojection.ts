@@ -473,28 +473,28 @@ const DEFAULT_JITTER_LENGTH = 16;
 export class TemporalReprojection {
 
   // ── GPU resources ────────────────────────────────────────────────────────
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
   private readonly format: GPUTextureFormat;
 
   // Motion vector pass
-  private readonly motionPipeline : GPURenderPipeline;
+  private readonly motionPipeline : any /*GPURenderPipeline*/;
   private readonly motionBGL      : GPUBindGroupLayout;
-  private readonly motionUniformBuf: GPUBuffer;
+  private readonly motionUniformBuf: any /*GPUBuffer*/;
   private motionTex    : GPUTexture;
-  private motionView   : GPUTextureView;
-  private motionBG     : GPUBindGroup | null = null;
-  private cachedDepthSrc: GPUTextureView | null = null;
+  private motionView   : any /*GPUTextureView*/;
+  private motionBG     : any /*GPUBindGroup*/ | null = null;
+  private cachedDepthSrc: any /*GPUTextureView*/ | null = null;
 
   // Resolve pass
-  private readonly resolvePipeline : GPURenderPipeline;
+  private readonly resolvePipeline : any /*GPURenderPipeline*/;
   private readonly resolveBGL      : GPUBindGroupLayout;
-  private readonly resolveUniformBuf: GPUBuffer;
+  private readonly resolveUniformBuf: any /*GPUBuffer*/;
 
   // History ping-pong
   private historyTexA  : GPUTexture;
   private historyTexB  : GPUTexture;
-  private historyViewA : GPUTextureView;
-  private historyViewB : GPUTextureView;
+  private historyViewA : any /*GPUTextureView*/;
+  private historyViewB : any /*GPUTextureView*/;
   private historyIndex = 0;   // 0 = read A / write B, 1 = read B / write A
 
   // Samplers
@@ -516,14 +516,14 @@ export class TemporalReprojection {
   // ── Constructor (private — use static `create`) ──────────────────────────
 
   private constructor(
-    device          : GPUDevice,
+    device          : any /*GPUDevice*/,
     format          : GPUTextureFormat,
-    motionPipeline  : GPURenderPipeline,
+    motionPipeline  : any /*GPURenderPipeline*/,
     motionBGL       : GPUBindGroupLayout,
-    motionUniformBuf: GPUBuffer,
-    resolvePipeline : GPURenderPipeline,
+    motionUniformBuf: any /*GPUBuffer*/,
+    resolvePipeline : any /*GPURenderPipeline*/,
     resolveBGL      : GPUBindGroupLayout,
-    resolveUniformBuf: GPUBuffer,
+    resolveUniformBuf: any /*GPUBuffer*/,
     samplerLinear   : GPUSampler,
     samplerNearest  : GPUSampler,
     width           : number,
@@ -581,7 +581,7 @@ export class TemporalReprojection {
    * @param params - Optional initial TAA parameters
    */
   static async create(
-    device : GPUDevice,
+    device : any /*GPUDevice*/,
     format : GPUTextureFormat,
     width  : number,
     height : number,
@@ -784,8 +784,8 @@ export class TemporalReprojection {
    * @param depthView Scene depth buffer texture view (r32float or depth24plus etc.)
    */
   renderMotionVectors(
-    encoder  : GPUCommandEncoder,
-    depthView: GPUTextureView,
+    encoder  : any /*GPUCommandEncoder*/,
+    depthView: any /*GPUTextureView*/,
   ): void {
     this._uploadMotionUniforms();
     const bg = this._motionBindGroup(depthView);
@@ -812,7 +812,7 @@ export class TemporalReprojection {
    *
    * @param motionView - A GPUTextureView with RG motion vectors in NDC.
    */
-  setExternalMotionVectors(motionView: GPUTextureView): void {
+  setExternalMotionVectors(motionView: any /*GPUTextureView*/): void {
     this.motionView = motionView;
   }
 
@@ -835,9 +835,9 @@ export class TemporalReprojection {
    * @param dstView      Output texture view (next pass in post-process chain)
    */
   resolve(
-    encoder     : GPUCommandEncoder,
-    currentView : GPUTextureView,
-    dstView     : GPUTextureView,
+    encoder     : any /*GPUCommandEncoder*/,
+    currentView : any /*GPUTextureView*/,
+    dstView     : any /*GPUTextureView*/,
   ): void {
     this._uploadResolveUniforms();
 
@@ -929,12 +929,12 @@ export class TemporalReprojection {
   // ── Accessors (for external integration) ─────────────────────────────────
 
   /** Get the motion vector texture view (for debug visualisation etc.). */
-  getMotionVectorView(): GPUTextureView {
+  getMotionVectorView(): any /*GPUTextureView*/ {
     return this.motionView;
   }
 
   /** Get the current history buffer view (read-only, for debug). */
-  getHistoryView(): GPUTextureView {
+  getHistoryView(): any /*GPUTextureView*/ {
     return this.historyIndex === 0 ? this.historyViewA : this.historyViewB;
   }
 
@@ -989,7 +989,7 @@ export class TemporalReprojection {
     this.device.queue.writeBuffer(this.resolveUniformBuf, 0, data);
   }
 
-  private _motionBindGroup(depthView: GPUTextureView): GPUBindGroup {
+  private _motionBindGroup(depthView: any /*GPUTextureView*/): any /*GPUBindGroup*/ {
     if (this.motionBG && this.cachedDepthSrc === depthView) {
       return this.motionBG;
     }
@@ -1007,9 +1007,9 @@ export class TemporalReprojection {
   }
 
   private _resolveBindGroup(
-    currentView : GPUTextureView,
-    historyView : GPUTextureView,
-  ): GPUBindGroup {
+    currentView : any /*GPUTextureView*/,
+    historyView : any /*GPUTextureView*/,
+  ): any /*GPUBindGroup*/ {
     // Always recreate — currentView changes every frame
     return this.device.createBindGroup({
       layout  : this.resolveBGL,

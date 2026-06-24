@@ -758,14 +758,14 @@ export class SSSPass {
   // Pipelines
   private thicknessPipeline:     GPUComputePipeline | null = null;
   private blurPipeline:          GPUComputePipeline | null = null;
-  private transmittancePipeline: GPUComputePipeline | null = null;
+  private transmittancePipeline: any /*GPUComputePipeline*/ | null = null;
   private compositePipeline:     GPUComputePipeline | null = null;
 
   // Uniform buffers
   private thicknessUBO:     GPUBuffer | null = null;
   private blurHUBO:         GPUBuffer | null = null;
   private blurVUBO:         GPUBuffer | null = null;
-  private transmittanceUBO: GPUBuffer | null = null;
+  private transmittanceUBO: any /*GPUBuffer*/ | null = null;
   private compositeUBO:     GPUBuffer | null = null;
 
   // Internal textures
@@ -774,7 +774,7 @@ export class SSSPass {
   // Current params
   private params: SSSParams = { ...DEFAULT_SSS_PARAMS };
 
-  private constructor(device: GPUDevice, width: number, height: number) {
+  private constructor(device: any /*GPUDevice*/, width: number, height: number) {
     this.device = device;
     this.width  = width;
     this.height = height;
@@ -790,7 +790,7 @@ export class SSSPass {
    *                but kept for API symmetry with other post-process passes).
    */
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     width: number,
     height: number,
     _format?: GPUTextureFormat,
@@ -841,9 +841,9 @@ export class SSSPass {
    * @param inputs.invProjY        1/projection[1][1] for view-space reconstruction.
    */
   dispatch(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     inputs: {
-      frontDepthView: GPUTextureView;
+      frontDepthView: any /*GPUTextureView*/;
       backDepthView:  GPUTextureView;
       normalView:     GPUTextureView;
       speciesIdView:  GPUTextureView;
@@ -1075,7 +1075,7 @@ export class SSSPass {
   // ── Internal: Uniform Buffer Creation ─────────────────────────────────────
 
   private initUBOs(): void {
-    const mkUBO = (label: string, size: number): GPUBuffer =>
+    const mkUBO = (label: string, size: number): any /*GPUBuffer*/ =>
       this.device.createBuffer({
         label,
         size:  Math.ceil(size / 16) * 16, // 16-byte alignment

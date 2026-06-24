@@ -332,11 +332,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
  * ```
  */
 export class TuringPatternGenerator {
-  private readonly device: GPUDevice;
+  private readonly device: any /*GPUDevice*/;
 
   // Pipelines (lazily initialised)
-  private initPipeline: GPUComputePipeline | null = null;
-  private stepPipeline: GPUComputePipeline | null = null;
+  private initPipeline: any /*GPUComputePipeline*/ | null = null;
+  private stepPipeline: any /*GPUComputePipeline*/ | null = null;
 
   // Bind group layouts
   private initBGL: GPUBindGroupLayout | null = null;
@@ -345,7 +345,7 @@ export class TuringPatternGenerator {
   // Sampler for the step shader (repeat wrap for torus topology)
   private sampler: GPUSampler | null = null;
 
-  constructor(device: GPUDevice) {
+  constructor(device: any /*GPUDevice*/) {
     this.device = device;
   }
 
@@ -423,7 +423,7 @@ export class TuringPatternGenerator {
     du: number, dv: number,
     f: number,  k: number,
     dt: number, step: number, seed: number,
-  ): GPUBuffer {
+  ): any /*GPUBuffer*/ {
     // Struct: 12 × u32/f32 = 48 bytes
     const data = new ArrayBuffer(48);
     const view = new DataView(data);

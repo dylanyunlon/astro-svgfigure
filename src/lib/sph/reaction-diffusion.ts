@@ -644,7 +644,7 @@ export class ReactionDiffusionSim {
   private texB!: GPUTexture;
 
   // Uniform buffer: GSUniforms (32 bytes — 8 × f32/u32)
-  private uniformBuf!: GPUBuffer;
+  private uniformBuf!: any /*GPUBuffer*/;
 
   // Pipeline & bind-group layouts
   private pipeline!:     GPUComputePipeline;
@@ -677,7 +677,7 @@ export class ReactionDiffusionSim {
   /** Whether init() has completed. */
   private ready = false;
 
-  constructor(device: GPUDevice, cfg: RDSimConfig = {}) {
+  constructor(device: any /*GPUDevice*/, cfg: RDSimConfig = {}) {
     this.device     = device;
     this.width      = cfg.width      ?? RD_DEFAULT_SIZE;
     this.height     = cfg.height     ?? RD_DEFAULT_SIZE;
@@ -731,7 +731,7 @@ export class ReactionDiffusionSim {
    *
    * @param encoder  Current frame's GPUCommandEncoder.
    */
-  step(encoder: GPUCommandEncoder): void {
+  step(encoder: any /*GPUCommandEncoder*/): void {
     if (!this.ready) {
       throw new Error('ReactionDiffusionSim.init() must be awaited before step()');
     }

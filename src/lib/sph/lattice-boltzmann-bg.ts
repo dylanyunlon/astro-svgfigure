@@ -212,13 +212,13 @@ export interface LBMConfig {
 
 export interface LBMBuffers {
   /** SPH position X (f32 array, length = SPH_PARTICLE_COUNT) */
-  posX: GPUBuffer;
+  posX: any /*GPUBuffer*/;
   /** SPH position Y */
-  posY: GPUBuffer;
+  posY: any /*GPUBuffer*/;
   /** SPH velocity X (read_write — LBM will add macro-flow correction) */
-  velX: GPUBuffer;
+  velX: any /*GPUBuffer*/;
   /** SPH velocity Y */
-  velY: GPUBuffer;
+  velY: any /*GPUBuffer*/;
   /** Actual live particle count */
   count: number;
 }
@@ -246,18 +246,18 @@ export interface LBMBuffers {
  * ```
  */
 export class LatticeBoltzmannBackground {
-  readonly device: GPUDevice;
+  readonly device: any /*GPUDevice*/;
 
   // ── LBM ping-pong textures ──────────────────────────────────────────────────
   private texA!: GPUTexture;      // read  on even frames, write on odd frames
   private texB!: GPUTexture;      // write on even frames, read  on odd frames
-  private viewA!: GPUTextureView;
-  private viewB!: GPUTextureView;
+  private viewA!: any /*GPUTextureView*/;
+  private viewB!: any /*GPUTextureView*/;
   private frameIndex = 0;
 
   // ── Pipelines ───────────────────────────────────────────────────────────────
-  private lbmPipeline!: GPUComputePipeline;
-  private couplePipeline!: GPUComputePipeline;
+  private lbmPipeline!: any /*GPUComputePipeline*/;
+  private couplePipeline!: any /*GPUComputePipeline*/;
 
   // ── Bind group layouts ──────────────────────────────────────────────────────
   private lbmUniformBGL!: GPUBindGroupLayout;
@@ -268,17 +268,17 @@ export class LatticeBoltzmannBackground {
   private coupleParticleBGL!: GPUBindGroupLayout;
 
   // ── Uniform buffers ─────────────────────────────────────────────────────────
-  private lbmUniformBuf!: GPUBuffer;     // LBMUniforms
-  private coupleUniformBuf!: GPUBuffer;  // CoupleUniforms
+  private lbmUniformBuf!: any /*GPUBuffer*/;     // LBMUniforms
+  private coupleUniformBuf!: any /*GPUBuffer*/;  // CoupleUniforms
 
   // ── Sampler for coupling pass ───────────────────────────────────────────────
   private linearSampler!: GPUSampler;
 
   // ── Cached bind groups (rebuilt when textures swap) ─────────────────────────
-  private lbmBG_AtoB!: GPUBindGroup;   // read A, write B
-  private lbmBG_BtoA!: GPUBindGroup;   // read B, write A
-  private coupleTexBG_A!: GPUBindGroup; // sample A (even frames)
-  private coupleTexBG_B!: GPUBindGroup; // sample B (odd  frames)
+  private lbmBG_AtoB!: any /*GPUBindGroup*/;   // read A, write B
+  private lbmBG_BtoA!: any /*GPUBindGroup*/;   // read B, write A
+  private coupleTexBG_A!: any /*GPUBindGroup*/; // sample A (even frames)
+  private coupleTexBG_B!: any /*GPUBindGroup*/; // sample B (odd  frames)
 
   // ── Config ──────────────────────────────────────────────────────────────────
   private cfg: Required<LBMConfig>;
@@ -287,7 +287,7 @@ export class LatticeBoltzmannBackground {
   // Factory
   // ─────────────────────────────────────────────────────────────────────────
 
-  private constructor(device: GPUDevice, cfg: Required<LBMConfig>) {
+  private constructor(device: any /*GPUDevice*/, cfg: Required<LBMConfig>) {
     this.device = device;
     this.cfg    = cfg;
   }
@@ -298,7 +298,7 @@ export class LatticeBoltzmannBackground {
    * @param cfg     可选配置，见 LBMConfig
    */
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     cfg: LBMConfig = {}
   ): Promise<LatticeBoltzmannBackground> {
     const fullCfg: Required<LBMConfig> = {
@@ -498,7 +498,7 @@ export class LatticeBoltzmannBackground {
   }
 
   // extra private field for uniform bind group (shared)
-  private _lbmUniformBG!: GPUBindGroup;
+  private _lbmUniformBG!: any /*GPUBindGroup*/;
 
   /** Seed the LBM grid with a small random thermal noise to kick-start flow. */
   private _seedInitialState(): void {
@@ -536,7 +536,7 @@ export class LatticeBoltzmannBackground {
    * @param dt       时间步（默认 1.0）
    */
   step(
-    encoder: GPUCommandEncoder,
+    encoder: any /*GPUCommandEncoder*/,
     force:   { x: number; y: number } = this.cfg.force,
     dt      = 1.0,
   ): void {
@@ -642,7 +642,7 @@ export class LatticeBoltzmannBackground {
    *   B  = 无序能量（湍流强度代理，[0,1]）
    *   A  = 内部质量（流体密度代理，[0,1]）
    */
-  get velocityTexture(): GPUTextureView {
+  get velocityTexture(): any /*GPUTextureView*/ {
     // After step(), frameIndex has been incremented.
     // Even frameIndex → last write was to texB.
     // Odd  frameIndex → last write was to texA.
@@ -668,8 +668,8 @@ export class LatticeBoltzmannBackground {
   // ─────────────────────────────────────────────────────────────────────────
 
   /** Lazily cached couple uniform bind group (uniforms don't change between calls). */
-  private _coupleUniformBGCache: GPUBindGroup | null = null;
-  private _coupleUniformBG(): GPUBindGroup {
+  private _coupleUniformBGCache: any /*GPUBindGroup*/ | null = null;
+  private _coupleUniformBG(): any /*GPUBindGroup*/ {
     if (!this._coupleUniformBGCache) {
       this._coupleUniformBGCache = this.device.createBindGroup({
         label:  "couple-uniform-bg",

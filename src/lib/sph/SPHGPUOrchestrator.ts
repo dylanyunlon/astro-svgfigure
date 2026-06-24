@@ -508,8 +508,8 @@ fn main(
 // ---------------------------------------------------------------------------
 
 interface NeighborCSR {
-  neighborBuf: GPUBuffer; // array<i32>
-  rowPtrBuf  : GPUBuffer; // array<i32>, length = N+1
+  neighborBuf: any /*GPUBuffer*/; // array<i32>
+  rowPtrBuf  : any /*GPUBuffer*/; // array<i32>, length = N+1
 }
 
 // ---------------------------------------------------------------------------
@@ -534,18 +534,18 @@ export interface PerfEntry {
 // ---------------------------------------------------------------------------
 
 export class SPHGPUOrchestrator {
-  private readonly device  : GPUDevice;
+  private readonly device  : any /*GPUDevice*/;
   private readonly bufs    : GPUBufferSet;
 
-  private uniformBuf!      : GPUBuffer;
+  private uniformBuf!      : any /*GPUBuffer*/;
 
   // pipelines
-  private densityPipeline   !: GPUComputePipeline;
-  private forcePipeline     !: GPUComputePipeline;
-  private integratePipeline !: GPUComputePipeline;
-  private hashCountPipeline !: GPUComputePipeline;   // spatial-hash pass 1
-  private prefixSumPipeline !: GPUComputePipeline;   // Blelloch scan  (pass 1.5 --- local)
-  private prefixSumAddPipeline !: GPUComputePipeline; // Blelloch add   (pass 1.5 --- global fixup)
+  private densityPipeline   !: any /*GPUComputePipeline*/;
+  private forcePipeline     !: any /*GPUComputePipeline*/;
+  private integratePipeline !: any /*GPUComputePipeline*/;
+  private hashCountPipeline !: any /*GPUComputePipeline*/;   // spatial-hash pass 1
+  private prefixSumPipeline !: any /*GPUComputePipeline*/;   // Blelloch scan  (pass 1.5 --- local)
+  private prefixSumAddPipeline !: any /*GPUComputePipeline*/; // Blelloch add   (pass 1.5 --- global fixup)
 
   // bind-group layouts (group 0 is uniform, shared)
   private uniformBGL           !: GPUBindGroupLayout;
@@ -563,37 +563,37 @@ export class SPHGPUOrchestrator {
   private scanBlockBGL   !: GPUBindGroupLayout;
 
   // dedicated uniform buffer for the hash-count pass (32 bytes)
-  private hashUniformBuf       !: GPUBuffer;
+  private hashUniformBuf       !: any /*GPUBuffer*/;
   // dedicated uniform buffer for prefix-sum passes (16 bytes)
-  private scanUniformBuf       !: GPUBuffer;
+  private scanUniformBuf       !: any /*GPUBuffer*/;
 
   // cached bind groups
-  private uniformBG           !: GPUBindGroup;
-  private densityParticleBG   !: GPUBindGroup;
-  private forceParticleBG     !: GPUBindGroup;
-  private integrateParticleBG !: GPUBindGroup;
-  private neighborBG          : GPUBindGroup | null = null;
-  private boundaryBG          : GPUBindGroup | null = null;
+  private uniformBG           !: any /*GPUBindGroup*/;
+  private densityParticleBG   !: any /*GPUBindGroup*/;
+  private forceParticleBG     !: any /*GPUBindGroup*/;
+  private integrateParticleBG !: any /*GPUBindGroup*/;
+  private neighborBG          : any /*GPUBindGroup*/ | null = null;
+  private boundaryBG          : any /*GPUBindGroup*/ | null = null;
 
   // hash-count bind groups (recreated when the cell-count buffer changes)
-  private hashUniformBG       !: GPUBindGroup;
-  private hashPosBG           !: GPUBindGroup;
-  private hashCountBG         : GPUBindGroup | null = null;
-  private lastCellCountBuf    : GPUBuffer    | null = null;
+  private hashUniformBG       !: any /*GPUBindGroup*/;
+  private hashPosBG           !: any /*GPUBindGroup*/;
+  private hashCountBG         : any /*GPUBindGroup*/ | null = null;
+  private lastCellCountBuf    : any /*GPUBuffer*/    | null = null;
 
   // prefix-sum bind groups (recreated when the data/blockSum buffers change)
-  private scanUniformBG       !: GPUBindGroup;
-  private scanDataBG          : GPUBindGroup | null = null;
-  private scanBlockSumBG      : GPUBindGroup | null = null;
-  private lastScanDataBuf     : GPUBuffer    | null = null;
+  private scanUniformBG       !: any /*GPUBindGroup*/;
+  private scanDataBG          : any /*GPUBindGroup*/ | null = null;
+  private scanBlockSumBG      : any /*GPUBindGroup*/ | null = null;
+  private lastScanDataBuf     : any /*GPUBuffer*/    | null = null;
   // internal blockSum scratch buffer (resized on demand)
-  private scanBlockSumBuf     : GPUBuffer    | null = null;
+  private scanBlockSumBuf     : any /*GPUBuffer*/    | null = null;
   private scanBlockSumCapacity: number              = 0;
 
   // last CSR / boundary refs for dirty-checking
-  private lastNeighborBuf  : GPUBuffer | null = null;
-  private lastRowPtrBuf    : GPUBuffer | null = null;
-  private lastBoundaryBuf  : GPUBuffer | null = null;
+  private lastNeighborBuf  : any /*GPUBuffer*/ | null = null;
+  private lastRowPtrBuf    : any /*GPUBuffer*/ | null = null;
+  private lastBoundaryBuf  : any /*GPUBuffer*/ | null = null;
 
   // ------ GPU timestamp profiling ------------------------------------------------------------------------------------------------------------------------------------------
   // Enabled only when the device was requested with `timestamp-query` feature.
@@ -603,9 +603,9 @@ export class SPHGPUOrchestrator {
   // We profile 3 core passes: density(0-1), force(2-3), integrate(4-5).
   private tsQuerySet    : GPUQuerySet   | null = null;
   // Resolve buffer receives the raw u64 ns values from the GPU.
-  private tsResolveBuf  : GPUBuffer     | null = null;
+  private tsResolveBuf  : any /*GPUBuffer*/     | null = null;
   // Map buffer is COPY_DST + MAP_READ so the CPU can read timestamps back.
-  private tsMapBuf      : GPUBuffer     | null = null;
+  private tsMapBuf      : any /*GPUBuffer*/     | null = null;
 
   // Number of timestamp slots we allocate (2 per pass -- 3 passes).
   private static readonly TS_SLOTS = 6;
@@ -617,7 +617,7 @@ export class SPHGPUOrchestrator {
   /** Monotonic counter incremented every `tick()` call. */
   private frameCounter = 0;
 
-  constructor(device: GPUDevice, bufs: GPUBufferSet) {
+  constructor(device: any /*GPUDevice*/, bufs: GPUBufferSet) {
     this.device = device;
     this.bufs   = bufs;
 
@@ -819,7 +819,7 @@ export class SPHGPUOrchestrator {
     label  : string,
     wgsl   : string,
     layouts: GPUBindGroupLayout[],
-  ): GPUComputePipeline {
+  ): any /*GPUComputePipeline*/ {
     const module = this.device.createShaderModule({ label: `${label}-shader`, code: wgsl });
     const layout = this.device.createPipelineLayout({
       label              : `${label}-layout`,
@@ -852,7 +852,7 @@ export class SPHGPUOrchestrator {
     this.lastRowPtrBuf   = csr.rowPtrBuf;
   }
 
-  private updateBoundaryBG(boundaryBuf: GPUBuffer): void {
+  private updateBoundaryBG(boundaryBuf: any /*GPUBuffer*/): void {
     if (this.boundaryBG !== null && boundaryBuf === this.lastBoundaryBuf) { return; }
 
     this.boundaryBG = this.device.createBindGroup({
@@ -899,7 +899,7 @@ export class SPHGPUOrchestrator {
   tick(
     simParams  : SimParams,
     neighborCSR: NeighborCSR,
-    boundaryBuf: GPUBuffer,
+    boundaryBuf: any /*GPUBuffer*/,
   ): void {
     const dev   = this.device;
     const n     = simParams.count;
@@ -1131,7 +1131,7 @@ export class SPHGPUOrchestrator {
   /**
    * Dirty-check the cellCount buffer and rebuild the bind group if needed.
    */
-  private updateHashCountBG(cellCountBuf: GPUBuffer): void {
+  private updateHashCountBG(cellCountBuf: any /*GPUBuffer*/): void {
     if (this.hashCountBG !== null && cellCountBuf === this.lastCellCountBuf) { return; }
 
     this.hashCountBG = this.device.createBindGroup({
@@ -1166,7 +1166,7 @@ export class SPHGPUOrchestrator {
     h           : number,
     domainW     : number,
     domainH     : number,
-    cellCountBuf: GPUBuffer,
+    cellCountBuf: any /*GPUBuffer*/,
   ): void {
     const dev = this.device;
 
@@ -1282,8 +1282,8 @@ export class SPHGPUOrchestrator {
    */
   dispatchPrefixSum(
     n            : number,
-    cellCountBuf : GPUBuffer,
-    encoder?     : GPUCommandEncoder,
+    cellCountBuf : any /*GPUBuffer*/,
+    encoder?     : any /*GPUCommandEncoder*/,
   ): void {
     const dev          = this.device;
     const BLOCK_ELEMS  = 512;                              // 2 -- SCAN_BLOCK (workgroup)
@@ -1468,7 +1468,7 @@ export class SPHGPUOrchestrator {
    * @param encoder - command encoder to append the pass into
    * @param n       - number of fluid particles
    */
-  encodeDensityPressure(encoder: GPUCommandEncoder, n: number): void {
+  encodeDensityPressure(encoder: any /*GPUCommandEncoder*/, n: number): void {
     const wg = Math.ceil(n / WORKGROUP_SIZE);
 
     const pass = encoder.beginComputePass({ label: "dfsph-density-pressure" });
@@ -1488,7 +1488,7 @@ export class SPHGPUOrchestrator {
    * @param encoder - command encoder to append the pass into
    * @param n       - number of fluid particles
    */
-  encodeForces(encoder: GPUCommandEncoder, n: number): void {
+  encodeForces(encoder: any /*GPUCommandEncoder*/, n: number): void {
     const wg = Math.ceil(n / WORKGROUP_SIZE);
 
     const pass = encoder.beginComputePass({ label: "dfsph-forces" });
@@ -1509,7 +1509,7 @@ export class SPHGPUOrchestrator {
    * @param n       - number of fluid particles
    * @param dt      - current frame --t (seconds)
    */
-  encodeIntegrate(encoder: GPUCommandEncoder, n: number, dt: number): void {
+  encodeIntegrate(encoder: any /*GPUCommandEncoder*/, n: number, dt: number): void {
     // Patch `dt` in the uniform buffer (offset 5 -- 4 = byte 20)
     const dtBuf = new Float32Array([dt]);
     this.device.queue.writeBuffer(this.uniformBuf, 20, dtBuf);
@@ -1531,10 +1531,10 @@ export class SPHGPUOrchestrator {
    * the density and force shaders can still bind group 3 without a real
    * boundary buffer.
    */
-  private _emptyBoundaryBG: GPUBindGroup | null = null;
-  private _emptyBoundaryBuf: GPUBuffer | null    = null;
+  private _emptyBoundaryBG: any /*GPUBindGroup*/ | null = null;
+  private _emptyBoundaryBuf: any /*GPUBuffer*/ | null    = null;
 
-  private _getOrCreateEmptyBoundaryBG(): GPUBindGroup {
+  private _getOrCreateEmptyBoundaryBG(): any /*GPUBindGroup*/ {
     if (this._emptyBoundaryBG) return this._emptyBoundaryBG;
 
     this._emptyBoundaryBuf = this.device.createBuffer({

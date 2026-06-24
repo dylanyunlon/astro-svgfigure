@@ -152,7 +152,7 @@ export class PhysarumEdgeBridge {
   private pendingDeposits: PendingDeposit[] = [];
 
   constructor(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     sim:    PhysarumSimulation,
     config: PhysarumEdgeBridgeConfig,
   ) {
@@ -459,17 +459,17 @@ export class PhysarumEdgeBridge {
  * ```
  */
 export function createPhysarumEdgeBridge(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   sim:    PhysarumSimulation,
   config: PhysarumEdgeBridgeConfig & { depositFeedback: true },
 ): { bridge: PhysarumEdgeBridge; onArrival: (edgeId: string, targetId: string, x: number, y: number) => void };
 export function createPhysarumEdgeBridge(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   sim:    PhysarumSimulation,
   config: PhysarumEdgeBridgeConfig,
 ): { bridge: PhysarumEdgeBridge; onArrival: (edgeId: string, targetId: string, x: number, y: number) => void };
 export function createPhysarumEdgeBridge(
-  device: GPUDevice,
+  device: any /*GPUDevice*/,
   sim:    PhysarumSimulation,
   config: PhysarumEdgeBridgeConfig,
 ): { bridge: PhysarumEdgeBridge; onArrival: (edgeId: string, targetId: string, x: number, y: number) => void } {

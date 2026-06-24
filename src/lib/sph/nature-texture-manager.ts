@@ -203,7 +203,7 @@ const ALL_KINDS = new Set<NatureTextureKind>([...GPU_KINDS, ...CPU_KINDS]);
 export class NatureTextureManager {
   /** The WebGPU device shared by all GPU-based generators.  May be null if
    *  only CPU generators will be used. */
-  private readonly device: GPUDevice | null;
+  private readonly device: any /*GPUDevice*/ | null;
 
   /** Active generator instances keyed by kind (at most one per kind). */
   private readonly registry = new Map<NatureTextureKind, {
@@ -216,7 +216,7 @@ export class NatureTextureManager {
    *                Pass `null` if you only intend to use CPU generators
    *                (DifferentialGrowth, Morphogenesis).
    */
-  constructor(device: GPUDevice | null) {
+  constructor(device: any /*GPUDevice*/ | null) {
     this.device = device;
   }
 

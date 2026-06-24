@@ -622,10 +622,10 @@ export class RainSnowSystem {
 
   // Compute pipelines
   private windPipeline!:     GPUComputePipeline;
-  private simulatePipeline!: GPUComputePipeline;
+  private simulatePipeline!: any /*GPUComputePipeline*/;
 
   // Render pipeline
-  private renderPipeline!: GPURenderPipeline;
+  private renderPipeline!: any /*GPURenderPipeline*/;
 
   // State
   private ping        = 0;
@@ -714,8 +714,8 @@ export class RainSnowSystem {
 
   /** Render weather particles into the given render target view. */
   render(
-    encoder: GPUCommandEncoder,
-    dstView: GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    dstView: any /*GPUTextureView*/,
     loadOp:  GPULoadOp = 'load',
   ): void {
     if (this.destroyed || this.cfg.mode === 'off') return;

@@ -227,7 +227,7 @@ export class CellRDSurface {
   private phase = false;
 
   constructor(
-    private readonly device: GPUDevice,
+    private readonly device: any /*GPUDevice*/,
     cfg: CellRDSurfaceConfig,
   ) {
     this.cellId  = cfg.cellId;
@@ -414,7 +414,7 @@ export class CellRDSurfaceManager {
   /** Whether init() has completed. */
   private ready = false;
 
-  constructor(device: GPUDevice, cfg: CellRDManagerConfig = {}) {
+  constructor(device: any /*GPUDevice*/, cfg: CellRDManagerConfig = {}) {
     this.device   = device;
     this.substeps = cfg.substeps ?? CELL_RD_DEFAULT_SUBSTEPS;
   }
@@ -512,7 +512,7 @@ export class CellRDSurfaceManager {
    *
    * @param encoder  Current frame's GPUCommandEncoder.
    */
-  step(encoder: GPUCommandEncoder): void {
+  step(encoder: any /*GPUCommandEncoder*/): void {
     if (!this.ready) {
       throw new Error('CellRDSurfaceManager.init() must be awaited before step()');
     }

@@ -560,15 +560,15 @@ export function packCompositeUniforms(p: CompositeParams): Float32Array {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class SSAOPass {
-  private device: GPUDevice;
+  private device: any /*GPUDevice*/;
   private width: number;
   private height: number;
   private format: GPUTextureFormat;
 
   // ── 管线 ──────────────────────────────────────────────────────────────────
-  private ssaoPipeline: GPURenderPipeline;
-  private blurPipeline: GPURenderPipeline;
-  private compositePipeline: GPURenderPipeline;
+  private ssaoPipeline: any /*GPURenderPipeline*/;
+  private blurPipeline: any /*GPURenderPipeline*/;
+  private compositePipeline: any /*GPURenderPipeline*/;
 
   // ── 纹理 ──────────────────────────────────────────────────────────────────
   private ssaoRawTex: GPUTexture;
@@ -577,11 +577,11 @@ export class SSAOPass {
   private noiseTex: GPUTexture;
 
   // ── Buffers ──────────────────────────────────────────────────────────────
-  private ssaoUniformBuf: GPUBuffer;
-  private blurHUniformBuf: GPUBuffer;
-  private blurVUniformBuf: GPUBuffer;
-  private compositeUniformBuf: GPUBuffer;
-  private kernelBuf: GPUBuffer;
+  private ssaoUniformBuf: any /*GPUBuffer*/;
+  private blurHUniformBuf: any /*GPUBuffer*/;
+  private blurVUniformBuf: any /*GPUBuffer*/;
+  private compositeUniformBuf: any /*GPUBuffer*/;
+  private kernelBuf: any /*GPUBuffer*/;
 
   // ── Samplers ─────────────────────────────────────────────────────────────
   private samplerClamp: GPUSampler;
@@ -598,22 +598,22 @@ export class SSAOPass {
   private compositeParams: CompositeParams;
 
   private constructor(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     width: number,
     height: number,
     format: GPUTextureFormat,
-    ssaoPipeline: GPURenderPipeline,
-    blurPipeline: GPURenderPipeline,
-    compositePipeline: GPURenderPipeline,
+    ssaoPipeline: any /*GPURenderPipeline*/,
+    blurPipeline: any /*GPURenderPipeline*/,
+    compositePipeline: any /*GPURenderPipeline*/,
     ssaoRawTex: GPUTexture,
     ssaoBlurHTex: GPUTexture,
     ssaoBlurredTex: GPUTexture,
     noiseTex: GPUTexture,
-    ssaoUniformBuf: GPUBuffer,
-    blurHUniformBuf: GPUBuffer,
-    blurVUniformBuf: GPUBuffer,
-    compositeUniformBuf: GPUBuffer,
-    kernelBuf: GPUBuffer,
+    ssaoUniformBuf: any /*GPUBuffer*/,
+    blurHUniformBuf: any /*GPUBuffer*/,
+    blurVUniformBuf: any /*GPUBuffer*/,
+    compositeUniformBuf: any /*GPUBuffer*/,
+    kernelBuf: any /*GPUBuffer*/,
     samplerClamp: GPUSampler,
     samplerRepeat: GPUSampler,
     ssaoBGL: GPUBindGroupLayout,
@@ -651,7 +651,7 @@ export class SSAOPass {
   // ─────────────────────────────────────────────────────────────────────────
 
   static async create(
-    device: GPUDevice,
+    device: any /*GPUDevice*/,
     width: number,
     height: number,
     format: GPUTextureFormat = 'bgra8unorm',
@@ -922,11 +922,11 @@ export class SSAOPass {
    * @param outputView  — 最终输出目标
    */
   render(
-    encoder: GPUCommandEncoder,
-    depthView: GPUTextureView,
-    normalView: GPUTextureView,
-    sceneView: GPUTextureView,
-    outputView: GPUTextureView,
+    encoder: any /*GPUCommandEncoder*/,
+    depthView: any /*GPUTextureView*/,
+    normalView: any /*GPUTextureView*/,
+    sceneView: any /*GPUTextureView*/,
+    outputView: any /*GPUTextureView*/,
   ): void {
     // ── Pass 0: SSAO hemisphere sampling ────────────────────────────────
     const ssaoBG = this.device.createBindGroup({
@@ -1107,12 +1107,12 @@ export class SSAOPass {
   // ─────────────────────────────────────────────────────────────────────────
 
   /** 获取最终模糊后的 AO 纹理视图, 可直接绑定到 PBR 材质的 ao 采样器 */
-  get aoTextureView(): GPUTextureView {
+  get aoTextureView(): any /*GPUTextureView*/ {
     return this.ssaoBlurredTex.createView();
   }
 
   /** 获取原始 (未模糊) AO 纹理视图, 用于调试 */
-  get rawAOTextureView(): GPUTextureView {
+  get rawAOTextureView(): any /*GPUTextureView*/ {
     return this.ssaoRawTex.createView();
   }
 
