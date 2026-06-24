@@ -7,24 +7,1187 @@
     "elk.edgeRouting": "ORTHOGONAL"
   },
   "children": [
-    {"id": "input_embed", "width": 160, "height": 50, "labels": [{"text": "Input Embedding"}]},
-    {"id": "pos_encode", "width": 160, "height": 50, "labels": [{"text": "Positional Encoding"}]},
-    {"id": "self_attn", "width": 160, "height": 50, "labels": [{"text": "Multi-Head Attention"}]},
-    {"id": "add_norm1", "width": 140, "height": 40, "labels": [{"text": "Add and Norm"}]},
-    {"id": "ffn", "width": 140, "height": 45, "labels": [{"text": "Feed Forward"}]},
-    {"id": "add_norm2", "width": 140, "height": 40, "labels": [{"text": "Add and Norm"}]},
-    {"id": "output", "width": 160, "height": 50, "labels": [{"text": "Output"}]}
+    {
+      "id": "resolution_handling",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Resolution Handling"
+        }
+      ]
+    },
+    {
+      "id": "input_image",
+      "width": 160,
+      "height": 112,
+      "labels": [
+        {
+          "text": "Input Image"
+        }
+      ]
+    },
+    {
+      "id": "loss_training",
+      "width": 150,
+      "height": 105,
+      "labels": [
+        {
+          "text": "Loss / Training"
+        }
+      ]
+    },
+    {
+      "id": "ram_resource",
+      "width": 140,
+      "height": 100,
+      "labels": [
+        {
+          "text": "RAM Resource"
+        }
+      ]
+    },
+    {
+      "id": "input_embed",
+      "width": 160,
+      "height": 50,
+      "labels": [
+        {
+          "text": "Input Embedding"
+        }
+      ]
+    },
+    {
+      "id": "input",
+      "width": 160,
+      "height": 45,
+      "labels": [
+        {
+          "text": "Input"
+        }
+      ]
+    },
+    {
+      "id": "encoder",
+      "width": 140,
+      "height": 50,
+      "labels": [
+        {
+          "text": "Encoder"
+        }
+      ]
+    },
+    {
+      "id": "pos_encode",
+      "width": 160,
+      "height": 50,
+      "labels": [
+        {
+          "text": "Positional Encoding"
+        }
+      ]
+    },
+    {
+      "id": "stage1_group",
+      "width": 829,
+      "height": 1587,
+      "labels": [
+        {
+          "text": "Stage 1 Group"
+        }
+      ]
+    },
+    {
+      "id": "enc_conv1",
+      "width": 130,
+      "height": 40,
+      "labels": [
+        {
+          "text": "Enc Conv 1"
+        }
+      ]
+    },
+    {
+      "id": "latent",
+      "width": 140,
+      "height": 45,
+      "labels": [
+        {
+          "text": "Latent"
+        }
+      ]
+    },
+    {
+      "id": "self_attn",
+      "width": 160,
+      "height": 50,
+      "labels": [
+        {
+          "text": "Multi-Head Attention"
+        }
+      ]
+    },
+    {
+      "id": "bbox_pruning_group",
+      "width": 520,
+      "height": 752,
+      "labels": [
+        {
+          "text": "BBox Pruning Group"
+        }
+      ]
+    },
+    {
+      "id": "vision2ui_dataset",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Vision2UI Dataset"
+        }
+      ]
+    },
+    {
+      "id": "enc_pool",
+      "width": 130,
+      "height": 40,
+      "labels": [
+        {
+          "text": "Enc Pool"
+        }
+      ]
+    },
+    {
+      "id": "decoder",
+      "width": 140,
+      "height": 50,
+      "labels": [
+        {
+          "text": "Decoder"
+        }
+      ]
+    },
+    {
+      "id": "add_norm1",
+      "width": 140,
+      "height": 40,
+      "labels": [
+        {
+          "text": "Add & Norm 1"
+        }
+      ]
+    },
+    {
+      "id": "noise_detection",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Noise Detection"
+        }
+      ]
+    },
+    {
+      "id": "enc_conv2",
+      "width": 130,
+      "height": 40,
+      "labels": [
+        {
+          "text": "Enc Conv 2"
+        }
+      ]
+    },
+    {
+      "id": "ffn",
+      "width": 140,
+      "height": 45,
+      "labels": [
+        {
+          "text": "Feed Forward"
+        }
+      ]
+    },
+    {
+      "id": "dec_conv1",
+      "width": 130,
+      "height": 40,
+      "labels": [
+        {
+          "text": "Dec Conv 1"
+        }
+      ]
+    },
+    {
+      "id": "dec_upsamp",
+      "width": 130,
+      "height": 40,
+      "labels": [
+        {
+          "text": "Dec Upsample"
+        }
+      ]
+    },
+    {
+      "id": "add_norm2",
+      "width": 140,
+      "height": 40,
+      "labels": [
+        {
+          "text": "Add & Norm 2"
+        }
+      ]
+    },
+    {
+      "id": "noise_types",
+      "width": 500,
+      "height": 150,
+      "labels": [
+        {
+          "text": "Noise Types"
+        }
+      ]
+    },
+    {
+      "id": "hidden_elements",
+      "width": 150,
+      "height": 105,
+      "labels": [
+        {
+          "text": "Hidden Elements"
+        }
+      ]
+    },
+    {
+      "id": "display_errors",
+      "width": 150,
+      "height": 105,
+      "labels": [
+        {
+          "text": "Display Errors"
+        }
+      ]
+    },
+    {
+      "id": "empty_elements",
+      "width": 140,
+      "height": 100,
+      "labels": [
+        {
+          "text": "Empty Elements"
+        }
+      ]
+    },
+    {
+      "id": "dec_conv2",
+      "width": 130,
+      "height": 40,
+      "labels": [
+        {
+          "text": "Dec Conv 2"
+        }
+      ]
+    },
+    {
+      "id": "output",
+      "width": 160,
+      "height": 50,
+      "labels": [
+        {
+          "text": "Output"
+        }
+      ]
+    },
+    {
+      "id": "heuristic_rules",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Heuristic Rules"
+        }
+      ]
+    },
+    {
+      "id": "pruned_dataset",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Pruned Dataset"
+        }
+      ]
+    },
+    {
+      "id": "structure_model",
+      "width": 556,
+      "height": 735,
+      "labels": [
+        {
+          "text": "Structure Model"
+        }
+      ]
+    },
+    {
+      "id": "patch_division",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Patch Division"
+        }
+      ]
+    },
+    {
+      "id": "vit_encoder",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "ViT Encoder"
+        }
+      ]
+    },
+    {
+      "id": "hidden_states",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Hidden States"
+        }
+      ]
+    },
+    {
+      "id": "weight_matrix",
+      "width": 140,
+      "height": 100,
+      "labels": [
+        {
+          "text": "Weight Matrix"
+        }
+      ]
+    },
+    {
+      "id": "transformer_decoder",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Transformer Decoder"
+        }
+      ]
+    },
+    {
+      "id": "softmax_layer",
+      "width": 150,
+      "height": 105,
+      "labels": [
+        {
+          "text": "Softmax Layer"
+        }
+      ]
+    },
+    {
+      "id": "json_output",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "JSON Output"
+        }
+      ]
+    },
+    {
+      "id": "next_token_prediction",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Next Token Prediction"
+        }
+      ]
+    },
+    {
+      "id": "coarse_dom_tree",
+      "width": 180,
+      "height": 125,
+      "labels": [
+        {
+          "text": "Coarse DOM Tree"
+        }
+      ]
+    },
+    {
+      "id": "stage2_group",
+      "width": 233,
+      "height": 1160,
+      "labels": [
+        {
+          "text": "Stage 2 Group"
+        }
+      ]
+    },
+    {
+      "id": "leaf_extraction",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Leaf Extraction"
+        }
+      ]
+    },
+    {
+      "id": "local_images",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Local Images"
+        }
+      ]
+    },
+    {
+      "id": "mllm_code_agent",
+      "width": 180,
+      "height": 125,
+      "labels": [
+        {
+          "text": "MLLM Code Agent"
+        }
+      ]
+    },
+    {
+      "id": "local_code_gen",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Local Code Gen"
+        }
+      ]
+    },
+    {
+      "id": "code_linking",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Code Linking"
+        }
+      ]
+    },
+    {
+      "id": "integrated_code",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Integrated Code"
+        }
+      ]
+    },
+    {
+      "id": "mllm_style_agent",
+      "width": 180,
+      "height": 125,
+      "labels": [
+        {
+          "text": "MLLM Style Agent"
+        }
+      ]
+    },
+    {
+      "id": "nonleaf_styling",
+      "width": 180,
+      "height": 125,
+      "labels": [
+        {
+          "text": "Nonleaf Styling"
+        }
+      ]
+    },
+    {
+      "id": "output_group",
+      "width": 340,
+      "height": 288,
+      "labels": [
+        {
+          "text": "Output Group"
+        }
+      ]
+    },
+    {
+      "id": "final_css",
+      "width": 150,
+      "height": 105,
+      "labels": [
+        {
+          "text": "Final CSS"
+        }
+      ]
+    },
+    {
+      "id": "final_html",
+      "width": 150,
+      "height": 105,
+      "labels": [
+        {
+          "text": "Final HTML"
+        }
+      ]
+    },
+    {
+      "id": "rendered_webpage",
+      "width": 170,
+      "height": 118,
+      "labels": [
+        {
+          "text": "Rendered Webpage"
+        }
+      ]
+    },
+    {
+      "id": "alignment_group",
+      "width": 450,
+      "height": 145,
+      "labels": [
+        {
+          "text": "Alignment Group"
+        }
+      ]
+    },
+    {
+      "id": "content_align",
+      "width": 130,
+      "height": 100,
+      "labels": [
+        {
+          "text": "Content Align"
+        }
+      ]
+    },
+    {
+      "id": "style_align",
+      "width": 130,
+      "height": 100,
+      "labels": [
+        {
+          "text": "Style Align"
+        }
+      ]
+    },
+    {
+      "id": "structure_align",
+      "width": 130,
+      "height": 100,
+      "labels": [
+        {
+          "text": "Structure Align"
+        }
+      ]
+    }
   ],
   "edges": [
-    {"id": "e1", "sources": ["input_embed"], "targets": ["pos_encode"]},
-    {"id": "e2", "sources": ["pos_encode"], "targets": ["self_attn"]},
-    {"id": "e3", "sources": ["self_attn"], "targets": ["add_norm1"]},
-    {"id": "e4", "sources": ["add_norm1"], "targets": ["ffn"]},
-    {"id": "e5", "sources": ["ffn"], "targets": ["add_norm2"]},
-    {"id": "e6", "sources": ["add_norm2"], "targets": ["output"]},
-    {"id": "skip1", "sources": ["pos_encode"], "targets": ["add_norm1"],
-      "advanced": {"semanticType": "skip_connection", "routing": "SPLINES", "curvature": 0.6}},
-    {"id": "skip2", "sources": ["add_norm1"], "targets": ["add_norm2"],
-      "advanced": {"semanticType": "skip_connection", "routing": "SPLINES", "curvature": 0.6}}
+    {
+      "id": "e_res_img",
+      "sources": [
+        "resolution_handling"
+      ],
+      "targets": [
+        "input_image"
+      ]
+    },
+    {
+      "id": "e_res_ram",
+      "sources": [
+        "resolution_handling"
+      ],
+      "targets": [
+        "ram_resource"
+      ]
+    },
+    {
+      "id": "e_img_v2u",
+      "sources": [
+        "input_image"
+      ],
+      "targets": [
+        "vision2ui_dataset"
+      ]
+    },
+    {
+      "id": "e_v2u_noise",
+      "sources": [
+        "vision2ui_dataset"
+      ],
+      "targets": [
+        "noise_detection"
+      ]
+    },
+    {
+      "id": "e_noise_types",
+      "sources": [
+        "noise_detection"
+      ],
+      "targets": [
+        "noise_types"
+      ]
+    },
+    {
+      "id": "e_nt_disp",
+      "sources": [
+        "noise_types"
+      ],
+      "targets": [
+        "display_errors"
+      ]
+    },
+    {
+      "id": "e_nt_hid",
+      "sources": [
+        "noise_types"
+      ],
+      "targets": [
+        "hidden_elements"
+      ]
+    },
+    {
+      "id": "e_nt_empty",
+      "sources": [
+        "noise_types"
+      ],
+      "targets": [
+        "empty_elements"
+      ]
+    },
+    {
+      "id": "e_disp_heur",
+      "sources": [
+        "display_errors"
+      ],
+      "targets": [
+        "heuristic_rules"
+      ]
+    },
+    {
+      "id": "e_hid_heur",
+      "sources": [
+        "hidden_elements"
+      ],
+      "targets": [
+        "heuristic_rules"
+      ]
+    },
+    {
+      "id": "e_empty_heur",
+      "sources": [
+        "empty_elements"
+      ],
+      "targets": [
+        "heuristic_rules"
+      ]
+    },
+    {
+      "id": "e_heur_pruned",
+      "sources": [
+        "heuristic_rules"
+      ],
+      "targets": [
+        "pruned_dataset"
+      ]
+    },
+    {
+      "id": "e_v2u_bbox",
+      "sources": [
+        "vision2ui_dataset"
+      ],
+      "targets": [
+        "bbox_pruning_group"
+      ]
+    },
+    {
+      "id": "e_noise_bbox",
+      "sources": [
+        "noise_detection"
+      ],
+      "targets": [
+        "bbox_pruning_group"
+      ]
+    },
+    {
+      "id": "e_pruned_bbox",
+      "sources": [
+        "pruned_dataset"
+      ],
+      "targets": [
+        "bbox_pruning_group"
+      ]
+    },
+    {
+      "id": "e_in_enc",
+      "sources": [
+        "input"
+      ],
+      "targets": [
+        "encoder"
+      ]
+    },
+    {
+      "id": "e_enc_c1",
+      "sources": [
+        "encoder"
+      ],
+      "targets": [
+        "enc_conv1"
+      ]
+    },
+    {
+      "id": "e_c1_c2",
+      "sources": [
+        "enc_conv1"
+      ],
+      "targets": [
+        "enc_conv2"
+      ]
+    },
+    {
+      "id": "e_c2_pool",
+      "sources": [
+        "enc_conv2"
+      ],
+      "targets": [
+        "enc_pool"
+      ]
+    },
+    {
+      "id": "e_pool_lat",
+      "sources": [
+        "enc_pool"
+      ],
+      "targets": [
+        "latent"
+      ]
+    },
+    {
+      "id": "e_lat_dec",
+      "sources": [
+        "latent"
+      ],
+      "targets": [
+        "decoder"
+      ]
+    },
+    {
+      "id": "e_dec_dc1",
+      "sources": [
+        "decoder"
+      ],
+      "targets": [
+        "dec_conv1"
+      ]
+    },
+    {
+      "id": "e_dc1_up",
+      "sources": [
+        "dec_conv1"
+      ],
+      "targets": [
+        "dec_upsamp"
+      ]
+    },
+    {
+      "id": "e_up_dc2",
+      "sources": [
+        "dec_upsamp"
+      ],
+      "targets": [
+        "dec_conv2"
+      ]
+    },
+    {
+      "id": "e_dc2_out",
+      "sources": [
+        "dec_conv2"
+      ],
+      "targets": [
+        "output"
+      ]
+    },
+    {
+      "id": "e_emb_pos",
+      "sources": [
+        "input_embed"
+      ],
+      "targets": [
+        "pos_encode"
+      ]
+    },
+    {
+      "id": "e_pos_attn",
+      "sources": [
+        "pos_encode"
+      ],
+      "targets": [
+        "self_attn"
+      ]
+    },
+    {
+      "id": "e_attn_an1",
+      "sources": [
+        "self_attn"
+      ],
+      "targets": [
+        "add_norm1"
+      ]
+    },
+    {
+      "id": "skip1",
+      "sources": [
+        "pos_encode"
+      ],
+      "targets": [
+        "add_norm1"
+      ],
+      "advanced": {
+        "semanticType": "skip_connection",
+        "routing": "SPLINES",
+        "curvature": 0.6
+      }
+    },
+    {
+      "id": "e_an1_ffn",
+      "sources": [
+        "add_norm1"
+      ],
+      "targets": [
+        "ffn"
+      ]
+    },
+    {
+      "id": "e_ffn_an2",
+      "sources": [
+        "ffn"
+      ],
+      "targets": [
+        "add_norm2"
+      ]
+    },
+    {
+      "id": "skip2",
+      "sources": [
+        "add_norm1"
+      ],
+      "targets": [
+        "add_norm2"
+      ],
+      "advanced": {
+        "semanticType": "skip_connection",
+        "routing": "SPLINES",
+        "curvature": 0.6
+      }
+    },
+    {
+      "id": "e_an2_loss",
+      "sources": [
+        "add_norm2"
+      ],
+      "targets": [
+        "loss_training"
+      ]
+    },
+    {
+      "id": "e_pruned_s1",
+      "sources": [
+        "pruned_dataset"
+      ],
+      "targets": [
+        "stage1_group"
+      ]
+    },
+    {
+      "id": "e_s1_patch",
+      "sources": [
+        "stage1_group"
+      ],
+      "targets": [
+        "patch_division"
+      ]
+    },
+    {
+      "id": "e_patch_vit",
+      "sources": [
+        "patch_division"
+      ],
+      "targets": [
+        "vit_encoder"
+      ]
+    },
+    {
+      "id": "e_vit_hs",
+      "sources": [
+        "vit_encoder"
+      ],
+      "targets": [
+        "hidden_states"
+      ]
+    },
+    {
+      "id": "e_hs_wm",
+      "sources": [
+        "hidden_states"
+      ],
+      "targets": [
+        "weight_matrix"
+      ]
+    },
+    {
+      "id": "e_wm_td",
+      "sources": [
+        "weight_matrix"
+      ],
+      "targets": [
+        "transformer_decoder"
+      ]
+    },
+    {
+      "id": "e_td_soft",
+      "sources": [
+        "transformer_decoder"
+      ],
+      "targets": [
+        "softmax_layer"
+      ]
+    },
+    {
+      "id": "e_soft_json",
+      "sources": [
+        "softmax_layer"
+      ],
+      "targets": [
+        "json_output"
+      ]
+    },
+    {
+      "id": "e_json_ntp",
+      "sources": [
+        "json_output"
+      ],
+      "targets": [
+        "next_token_prediction"
+      ]
+    },
+    {
+      "id": "loop_ntp",
+      "sources": [
+        "next_token_prediction"
+      ],
+      "targets": [
+        "json_output"
+      ],
+      "advanced": {
+        "semanticType": "feedback_loop",
+        "routing": "SPLINES",
+        "curvature": 0.8
+      }
+    },
+    {
+      "id": "e_s1_strmod",
+      "sources": [
+        "stage1_group"
+      ],
+      "targets": [
+        "structure_model"
+      ]
+    },
+    {
+      "id": "e_strmod_patch",
+      "sources": [
+        "structure_model"
+      ],
+      "targets": [
+        "patch_division"
+      ]
+    },
+    {
+      "id": "e_json_dom",
+      "sources": [
+        "json_output"
+      ],
+      "targets": [
+        "coarse_dom_tree"
+      ]
+    },
+    {
+      "id": "e_dom_s2",
+      "sources": [
+        "coarse_dom_tree"
+      ],
+      "targets": [
+        "stage2_group"
+      ]
+    },
+    {
+      "id": "e_s2_leaf",
+      "sources": [
+        "stage2_group"
+      ],
+      "targets": [
+        "leaf_extraction"
+      ]
+    },
+    {
+      "id": "e_leaf_imgs",
+      "sources": [
+        "leaf_extraction"
+      ],
+      "targets": [
+        "local_images"
+      ]
+    },
+    {
+      "id": "e_leaf_code",
+      "sources": [
+        "leaf_extraction"
+      ],
+      "targets": [
+        "mllm_code_agent"
+      ]
+    },
+    {
+      "id": "e_imgs_code",
+      "sources": [
+        "local_images"
+      ],
+      "targets": [
+        "mllm_code_agent"
+      ]
+    },
+    {
+      "id": "e_code_lcg",
+      "sources": [
+        "mllm_code_agent"
+      ],
+      "targets": [
+        "local_code_gen"
+      ]
+    },
+    {
+      "id": "e_lcg_link",
+      "sources": [
+        "local_code_gen"
+      ],
+      "targets": [
+        "code_linking"
+      ]
+    },
+    {
+      "id": "e_link_int",
+      "sources": [
+        "code_linking"
+      ],
+      "targets": [
+        "integrated_code"
+      ]
+    },
+    {
+      "id": "e_int_style",
+      "sources": [
+        "integrated_code"
+      ],
+      "targets": [
+        "mllm_style_agent"
+      ]
+    },
+    {
+      "id": "e_style_nls",
+      "sources": [
+        "mllm_style_agent"
+      ],
+      "targets": [
+        "nonleaf_styling"
+      ]
+    },
+    {
+      "id": "e_nls_og",
+      "sources": [
+        "nonleaf_styling"
+      ],
+      "targets": [
+        "output_group"
+      ]
+    },
+    {
+      "id": "e_og_html",
+      "sources": [
+        "output_group"
+      ],
+      "targets": [
+        "final_html"
+      ]
+    },
+    {
+      "id": "e_og_css",
+      "sources": [
+        "output_group"
+      ],
+      "targets": [
+        "final_css"
+      ]
+    },
+    {
+      "id": "e_html_rw",
+      "sources": [
+        "final_html"
+      ],
+      "targets": [
+        "rendered_webpage"
+      ]
+    },
+    {
+      "id": "e_css_rw",
+      "sources": [
+        "final_css"
+      ],
+      "targets": [
+        "rendered_webpage"
+      ]
+    },
+    {
+      "id": "e_rw_align",
+      "sources": [
+        "rendered_webpage"
+      ],
+      "targets": [
+        "alignment_group"
+      ]
+    },
+    {
+      "id": "e_ag_content",
+      "sources": [
+        "alignment_group"
+      ],
+      "targets": [
+        "content_align"
+      ]
+    },
+    {
+      "id": "e_ag_struct",
+      "sources": [
+        "alignment_group"
+      ],
+      "targets": [
+        "structure_align"
+      ]
+    },
+    {
+      "id": "e_ag_style",
+      "sources": [
+        "alignment_group"
+      ],
+      "targets": [
+        "style_align"
+      ]
+    }
   ]
 }
