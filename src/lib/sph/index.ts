@@ -21,6 +21,7 @@ export * from './at-geometry-loader';
 export * from './draco-geometry-loader';
 export * from './at-glass-pbr-import';
 export * from './at-glass-reflection-system';
+export * from './at-glass-material';
 export * from './at-hydra-bloom-import';
 export * from './at-jellyfish-cell';
 export * from './at-lighting-import';
