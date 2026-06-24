@@ -192,44 +192,22 @@ interface RawParamsFile {
   species?: string;
 }
 
-// ─── I/O helpers — browser (fetch) vs Node.js (readFileSync) ─────────────────
-
-/** Detect if running under Node.js (REPL / test) rather than a browser. */
-function isNode(): boolean {
-  return typeof process !== 'undefined'
-    && typeof process.versions !== 'undefined'
-    && typeof process.versions.node !== 'undefined';
-}
+// ─── I/O helpers — browser fetch() only (ESM / Vite) ────────────────────────
 
 /**
- * Load JSON from a path/URL.
- * - Browser: uses fetch()
- * - Node.js: uses fs.readFileSync()
+ * Load JSON from a URL.
+ * Uses fetch() — this module runs in the browser only (ESM, no Node APIs).
  *
  * Returns null (does not throw) on 404 / missing file so callers can
  * treat absent optional files as graceful fallbacks.
  */
 async function loadJson<T>(pathOrUrl: string): Promise<T | null> {
-  if (isNode()) {
-    // Node path: synchronous read wrapped in async for uniform interface
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const fs = require('fs') as typeof import('fs');
-      // Resolve relative to cwd (matches Node REPL invoked from project root)
-      const raw = fs.readFileSync(pathOrUrl, 'utf8');
-      return JSON.parse(raw) as T;
-    } catch {
-      return null;
-    }
-  } else {
-    // Browser path: fetch()
-    try {
-      const res = await fetch(pathOrUrl);
-      if (!res.ok) return null;
-      return (await res.json()) as T;
-    } catch {
-      return null;
-    }
+  try {
+    const res = await fetch(pathOrUrl);
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
   }
 }
 
@@ -434,10 +412,6 @@ export const sceneDataLoader = new SceneDataLoader();
  *
  * Browser usage:
  *   const { cells, edges } = await loadScene();
- *
- * Node REPL validation (run from project root):
- *   const { loadScene } = require('./src/lib/sph/scene-data-loader');
- *   loadScene().then(({ cells, edges }) => { console.log(cells, edges); });
  */
 export async function loadScene(
   baseDir = '',

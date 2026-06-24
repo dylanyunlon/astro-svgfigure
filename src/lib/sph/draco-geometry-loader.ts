@@ -233,8 +233,7 @@ interface DracoInt32Array {
   GetValue(i: number): number;
 }
 
-// Lazy singleton for the draco3d WASM module (browser: global window.DracoDecoderModule,
-// Node: require('draco3d').createDecoderModule).
+// Lazy singleton for the draco3d WASM module (resolved via dynamic import / global DracoDecoderModule).
 let _dracoModulePromise: Promise<DracoDecoderModule> | null = null;
 
 /**
@@ -248,26 +247,17 @@ function getDracoModule(): Promise<DracoDecoderModule> {
   if (_dracoModulePromise) return _dracoModulePromise;
 
   _dracoModulePromise = (async (): Promise<DracoDecoderModule> => {
-    // ── Browser path ──
+    // If the host page already bootstrapped a global decoder module, reuse it.
     if (typeof window !== 'undefined') {
-      // If the host page already bootstrapped a global decoder module, reuse it.
       const global = window as unknown as Record<string, unknown>;
       if (typeof global['DracoDecoderModule'] === 'function') {
         return (global['DracoDecoderModule'] as () => Promise<DracoDecoderModule>)();
       }
-      // Otherwise fall through to the npm package dynamic import.
-      // In a bundled environment draco3d must be resolvable.
-      const draco3dPkg = await import('draco3d');
-      return (draco3dPkg as unknown as { createDecoderModule: (opts: object) => Promise<DracoDecoderModule> })
-        .createDecoderModule({});
     }
-
-    // ── Node.js path ──
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const draco3dPkg = require('draco3d') as {
-      createDecoderModule: (opts: object) => Promise<DracoDecoderModule>;
-    };
-    return draco3dPkg.createDecoderModule({});
+    // Fall through to the npm package dynamic import (bundled via Vite).
+    const draco3dPkg = await import('draco3d');
+    return (draco3dPkg as unknown as { createDecoderModule: (opts: object) => Promise<DracoDecoderModule> })
+      .createDecoderModule({});
   })();
 
   return _dracoModulePromise;

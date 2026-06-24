@@ -483,7 +483,7 @@ export class VFXTimelinePlayer {
 
     this.actives.push(active);
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (import.meta.env.DEV) {
       console.log(
         `[ASTRO-VFX-TIMELINE] play "${timeline.name}" id=${id} ` +
         `keyframes=${sorted.length} intensity=${intensity.toFixed(2)} ` +
@@ -572,7 +572,7 @@ export class VFXTimelinePlayer {
   // ── Fire individual keyframes ───────────────────────────────────────────
 
   private _fireKeyframe(kf: VFXKeyframe, intensity: number): void {
-    if (process.env.NODE_ENV !== 'production' && kf.label) {
+    if (import.meta.env.DEV && kf.label) {
       console.log(
         `[ASTRO-VFX-TIMELINE] fire "${kf.label}" kind=${kf.kind} ` +
         `t=${kf.time.toFixed(3)}s intensity=${intensity.toFixed(2)}`,

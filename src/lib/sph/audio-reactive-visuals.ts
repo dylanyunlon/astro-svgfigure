@@ -677,7 +677,7 @@ export class AudioReactiveVisuals {
 
     this._binsCached = true;
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (import.meta.env.DEV) {
       console.log(
         `[ASTRO-ARV] bin boundaries cached: ` +
         `low=[${this.binLowMin},${this.binLowMax}) ` +
