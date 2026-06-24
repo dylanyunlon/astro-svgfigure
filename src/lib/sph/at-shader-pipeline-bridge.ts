@@ -131,4 +131,3 @@ export function listATShaders(): string[] {
 
 
 // ── Auto-generated export stubs (M1155) ──
-export function initATShaderPipeline(_gl: any): void {}
