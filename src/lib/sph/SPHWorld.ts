@@ -8,15 +8,14 @@ import { ParticleRenderer }   from "./ParticleRenderer";
 import { BoundaryModel }      from "./BoundaryModel";
 import { qosSpatial, QoSProfileName } from "./qosSpatial";
 import {
+  GPUBufferSet, SimParams, ParticleData,
+  ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
 } from "./types";
 import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
 import { SceneQuery } from './collision/SceneQuery';
 import { PhysarumSimulation } from './physarum-sim';
 import { BoidsCompute }       from './boids-compute';
 import { OceanBackground }    from './ocean-background';
-
-  GPUBufferSet, SimParams, ParticleData,
-  ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
 
 // ─────────────────────────────────────────────
 // Effect module protocol  (M755)
