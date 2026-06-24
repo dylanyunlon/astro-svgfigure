@@ -1375,6 +1375,10 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         hudMemory.textContent = '—';
       }
 
+    // ── M1105: Apply UIL params to GPU each frame ──
+    if (typeof uilBridge !== 'undefined' && uilBridge.applyAll) {
+      uilBridge.applyAll(gl);
+    }
       rafId = requestAnimationFrame(loop);
     }
     rafId = requestAnimationFrame(loop);

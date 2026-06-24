@@ -10,6 +10,7 @@ import { GlassGPU } from './glass-gpu-pass';
 import { SDFIconGPU, createSDFIconGPU } from './sdf-gpu-pass';
 import { initATShaderPipeline, listATShaders, getATProgram } from './at-shader-pipeline-bridge';
 import { safeCompile, checkFBO, drainErrors, setupContextLost } from './gpu-error-guard';
+import { NukePass } from '../renderer/NukePass';
 import { GPUPerfMonitor } from './gpu-perf-monitor';
 import { parseUILParams, type UILParamsJson } from '../renderers/at-uil-bridge';
 import uilParamsJson from '../../../upstream/activetheory-assets/uil-params.json';
@@ -77,6 +78,7 @@ export class GPURenderLoop {
   private pbr: PBRCellGPU | null = null;
   private glass: GlassGPU | null = null;
   private sdfIcon: SDFIconGPU | null = null;
+  private nukePass: NukePass | null = null;
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -511,6 +513,13 @@ export class GPURenderLoop {
     {
       const t = this.perf.passStart('composite');
       try {
+        // ── M1100: NukePass (HDR tonemap + LUT color grade + blur pyramid) ──
+        if (this.nukePass) {
+          this.perf.beginPass('nuke');
+          this.nukePass.render(this.gl);
+          this.perf.endPass('nuke');
+        }
+
         this.composite.render({
           cellTexture: cellFBO,
           edgeTexture: this.edge.outputTexture,

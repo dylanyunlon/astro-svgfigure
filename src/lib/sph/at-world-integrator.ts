@@ -1,3 +1,5 @@
+import { DracoGeometryLoader } from './draco-geometry-loader';
+import { KTX2TextureLoader } from './ktx2-texture-loader';
 import { getShader } from '../shaders/ShaderLoader';
 import { FluidGPU } from './fluid-gpu-pass';
 import { BloomGPU } from './bloom-gpu-pass';
@@ -167,6 +169,13 @@ export interface WorldFrameStats {
 // ATWorldIntegrator — 11-pass GPU orchestrator
 // ─────────────────────────────────────────────────────────────────────────────
 export class ATWorldIntegrator {
+
+  /** Draco geometry VBOs per cell */
+  private cellGeometries: Map<string, { vao: WebGLVertexArrayObject; indexCount: number }> = new Map();
+  /** KTX2 PBR textures per cell: [baseColor, normal, mro] */
+  private cellTextures: Map<string, WebGLTexture[]> = new Map();
+  private dracoLoader: DracoGeometryLoader | null = null;
+  private ktx2Loader: KTX2TextureLoader | null = null;
   // ── WebGL context ─────────────────────────────────────────────────────────
   private gl!: WebGLRenderingContext;
   private canvas!: HTMLCanvasElement;
