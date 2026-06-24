@@ -28,6 +28,12 @@ import {
 import { SpatialPhysics, QoSBridge, syncQoSParticles } from "./qos-spatial-bridge";
 import { CollisionWorld } from "./collision/collision-world";
 import { PerformanceBudget } from "./performance-budget";
+// V2 imports (only those not already imported above)
+import { createCollisionWorld } from './collision/collision-world';
+import { SceneQuery, createSceneQuery } from './collision/scene-query';
+import { stepDFSPH } from './dfsph';
+import { clampToDomain } from './domain';
+import { updateTrails as updateTrailsExt } from './trails';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -550,25 +556,9 @@ export function getStats(world: World): WorldStats {
     kineticEnergy,
   };
 }
-import { CollisionWorld, createCollisionWorld } from './collision/collision-world';
-import { SceneQuery, createSceneQuery } from './collision/scene-query';
-import {
-  World,
-  SpatialPhysics,
-  createWorld,
-  addFluidBlock,
-  addRigidBody,
-  addEmitter,
-  getStats,
-} from './world-stepper';
-import { buildSpatialHash, findNeighbors } from './spatial-hash';
-import { computeBoundaryDensity } from './boundary';
-import { stepDFSPH } from './dfsph';
-import { computeFluidRigidCoupling } from './fluid-rigid-coupling';
-import { integrateRigidBodies } from './rigid-body';
-import { clampToDomain } from './domain';
-import { updateTrails } from './trails';
-import { RigidBody } from './types';
+// V2 imports moved to top of file to satisfy esbuild/rollup
+// (see lines 31+ for: CollisionWorld, SceneQuery, stepDFSPH, etc.)
+//
 
 // ---------------------------------------------------------------------------
 // Types
@@ -761,8 +751,4 @@ function _syncVelocitiesFromCollisionWorld(world: WorldV2): void {
 // Re-exports from original world-stepper
 // ---------------------------------------------------------------------------
 
-export { addFluidBlock, addRigidBody, addEmitter, getStats };
-
-// Also re-export the base World type so callers that only import from v2
-// don't need a separate import.
-export type { World, SpatialPhysics };
+// Re-exports removed — these functions are already exported where defined above.

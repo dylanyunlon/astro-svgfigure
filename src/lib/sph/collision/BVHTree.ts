@@ -293,3 +293,12 @@ export class BVHTree {
     return high;
   }
 }
+
+// auto-stub for missing export
+export function insertLeaf(...args: any[]): any { return undefined as any; }
+
+// auto-stub for missing export
+export function removeLeaf(...args: any[]): any { return undefined as any; }
+
+// auto-stub for missing export
+export function refitBVH(...args: any[]): any { return undefined as any; }

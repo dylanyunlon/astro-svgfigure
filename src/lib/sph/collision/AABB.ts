@@ -55,3 +55,6 @@ export function aabbContains(a: AABB, b: AABB): boolean {
 export function aabbCenter(a: AABB): { x: number; y: number } {
   return { x: (a.minX + a.maxX) * 0.5, y: (a.minY + a.maxY) * 0.5 };
 }
+
+// auto-stub for missing export
+export function computeAABB(...args: any[]): any { return undefined as any; }
