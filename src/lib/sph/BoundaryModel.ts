@@ -18,7 +18,7 @@ import {
 
 // --------- Constants ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/** Spacing factor relative to smoothing length h */
+// [orphan-precise] /** Spacing factor relative to smoothing length h */
 const BOUNDARY_SPACING_FACTOR = 0.8;
 
 /** Cubic Spline kernel normalisation constant (2-D) */

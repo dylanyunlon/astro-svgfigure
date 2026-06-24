@@ -44,7 +44,7 @@
 import { MAX_PARTICLES } from './types';
 
 // ─── Stride ────────────────────────────────────────────────────────────────
-/** Floats per particle instance in the interleaved buffer. */
+// [orphan-precise] /** Floats per particle instance in the interleaved buffer. */
 export const INSTANCE_STRIDE = 6; // posX, posY, velX, velY, species, density
 
 // ─── Species colour palette (matches world-renderer SPECIES_COLORS) ────────

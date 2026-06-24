@@ -57,7 +57,7 @@ import type { CellDescriptor } from './pixi-cell-renderer';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-/** OutlineFilter color for hover state */
+// [orphan-precise] /** OutlineFilter color for hover state */
 const HOVER_COLOR     = 0x88CCFF;  // cool cyan-blue
 /** OutlineFilter thickness for hover */
 const HOVER_THICKNESS = 2;

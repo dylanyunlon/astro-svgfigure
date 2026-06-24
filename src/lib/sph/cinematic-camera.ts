@@ -53,7 +53,7 @@ import { Easing, type EasingFn } from '../tween-system';
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Default smooth-follow lerp speed (frame-rate-independent) */
+// [orphan-precise] /** Default smooth-follow lerp speed (frame-rate-independent) */
 const DEFAULT_FOLLOW_SPEED    = 0.08;
 
 /** Default orbit angular speed (radians / second for auto-orbit) */

@@ -56,7 +56,7 @@ import { getShader } from '../shaders/ShaderLoader';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Total particle pool (shared across all edges). */
+// [orphan-precise] /** Total particle pool (shared across all edges). */
 const PARTICLE_COUNT = 5000;
 
 /** Floats per particle in the VBO (vec2 pos + vec2 vel + float life + vec3 color + float pad). */

@@ -67,9 +67,9 @@ export {
   viewportFromCamera,
 } from './cell-culling';
 export type {
-  CellViewport,
-  CellBbox,
-  CullableLiveCell,
+// [orphan3]   CellViewport,
+// [orphan3]   CellBbox,
+// [orphan3]   CullableLiveCell,
 } from './cell-culling';
 
 export { renderCellGraph } from './pixi-cell-renderer';
@@ -92,14 +92,14 @@ export {
   UPDATE_PRIORITY,
 } from './epoch-ticker';
 export type {
-  EpochCellState,
-  EpochSnapshot,
-  EpochTickFrame,
-  EpochTickCallback,
-  EpochLoopMode,
-  EpochTickerOptions,
-  SequenceRef,
-  TickerCallback,
+// [orphan3]   EpochCellState,
+// [orphan3]   EpochSnapshot,
+// [orphan3]   EpochTickFrame,
+// [orphan3]   EpochTickCallback,
+// [orphan3]   EpochLoopMode,
+// [orphan3]   EpochTickerOptions,
+// [orphan3]   SequenceRef,
+// [orphan3]   TickerCallback,
 } from './epoch-ticker';
 
 export { renderCellGraphSDF } from './sdf-cell-renderer';
@@ -129,41 +129,41 @@ export {
   buildBloomFilterChain,
 } from './pixi-blur-cell';
 export type {
-  BlurFilterOptions,
-  BlurFilterPassOptions,
-  CellBlurPreset,
-  CellBlurFilterOptions,
-  BloomPreBlurOptions,
+// [orphan3]   BlurFilterOptions,
+// [orphan3]   BlurFilterPassOptions,
+// [orphan3]   CellBlurPreset,
+// [orphan3]   CellBlurFilterOptions,
+// [orphan3]   BloomPreBlurOptions,
 } from './pixi-blur-cell';
 
 export {
-  AntimatterAttribute,
-  AntimatterFBO,
-  AntimatterPass,
-  AntimatterSpawn,
-  AntimatterCellCompute,
-  CELL_PHYSICS_VERT,
-  AttributeKind,
+// [orphan3]   AntimatterAttribute,
+// [orphan3]   AntimatterFBO,
+// [orphan3]   AntimatterPass,
+// [orphan3]   AntimatterSpawn,
+// [orphan3]   AntimatterCellCompute,
+// [orphan3]   CELL_PHYSICS_VERT,
+// [orphan3]   AttributeKind,
 } from './antimatter-compute';
 export type {
-  AntimatterPassOptions,
-  CellSpawnDescriptor,
-  ForceFieldEntry,
+// [orphan3]   AntimatterPassOptions,
+// [orphan3]   CellSpawnDescriptor,
+// [orphan3]   ForceFieldEntry,
 } from './antimatter-compute';
 
 export {
-  TweenManager,
-  VelocityTracker,
-  SplineInterpolation,
-  Easing,
+// [orphan3]   TweenManager,
+// [orphan3]   VelocityTracker,
+// [orphan3]   SplineInterpolation,
+// [orphan3]   Easing,
 } from '../tween-system';
 export type {
-  EasingFn,
-  TweenHandle,
-  MathTweenHandle,
-  FrameTweenHandle,
-  Velocity,
-  Vec2,
+// [orphan3]   EasingFn,
+// [orphan3]   TweenHandle,
+// [orphan3]   MathTweenHandle,
+// [orphan3]   FrameTweenHandle,
+// [orphan3]   Velocity,
+// [orphan3]   Vec2,
 } from '../tween-system';
 
 export { HierarchyAnimation } from '../hierarchy-animation';
@@ -182,27 +182,27 @@ export type {
 } from '../matrix-wasm';
 
 export {
-  GLUIObject,
-  GLUIElement,
-  GLUIText,
-  GLUIBatch,
-  GLUIStage,
-  createGLUIButton,
-  createGLUISlider,
+// [orphan3]   GLUIObject,
+// [orphan3]   GLUIElement,
+// [orphan3]   GLUIText,
+// [orphan3]   GLUIBatch,
+// [orphan3]   GLUIStage,
+// [orphan3]   createGLUIButton,
+// [orphan3]   createGLUISlider,
 } from './glui-system';
 export type {
-  GLUIPoint,
-  GLUISize,
-  GLUIColor,
-  GLUIEventType,
-  GLUIPointerHandler,
-  GLUITextOptions,
-  BatchEntry,
-  BatchRectEntry,
-  BatchCircleEntry,
-  GLUIButtonOptions,
-  GLUISliderOptions,
-  GLUISliderHandle,
+// [orphan3]   GLUIPoint,
+// [orphan3]   GLUISize,
+// [orphan3]   GLUIColor,
+// [orphan3]   GLUIEventType,
+// [orphan3]   GLUIPointerHandler,
+// [orphan3]   GLUITextOptions,
+// [orphan3]   BatchEntry,
+// [orphan3]   BatchRectEntry,
+// [orphan3]   BatchCircleEntry,
+// [orphan3]   GLUIButtonOptions,
+// [orphan3]   GLUISliderOptions,
+// [orphan3]   GLUISliderHandle,
 } from './glui-system';
 
 // L3: InteractAI + GLSEO (AT: 36 + 9 refs)
@@ -251,14 +251,14 @@ export {
   WEBVRPolyfill,
 } from '../xr-system'
 export type {
-  XRSessionConfig,
-  XRFrameCallback,
-  VRInputState,
-  HandJointPose,
-  FingerTipState,
-  BeamHit,
-  BeamOptions,
-  VRActionMap,
+// [orphan3]   XRSessionConfig,
+// [orphan3]   XRFrameCallback,
+// [orphan3]   VRInputState,
+// [orphan3]   HandJointPose,
+// [orphan3]   FingerTipState,
+// [orphan3]   BeamHit,
+// [orphan3]   BeamOptions,
+// [orphan3]   VRActionMap,
 } from '../xr-system'
 
 // L4: Multiplayer (AT: multiplayer)
@@ -270,16 +270,16 @@ export {
   Multiplayer,
 } from '../multiplayer'
 export type {
-  PlayerId,
-  RoomId,
-  MessageId,
-  PlayerMeta,
-  RoomMeta,
-  NetworkMessage,
-  MultiplayerOptions,
-  MultiplayerConfig,
-  GameCenterConfig,
-  RpcResult,
+// [orphan3]   PlayerId,
+// [orphan3]   RoomId,
+// [orphan3]   MessageId,
+// [orphan3]   PlayerMeta,
+// [orphan3]   RoomMeta,
+// [orphan3]   NetworkMessage,
+// [orphan3]   MultiplayerOptions,
+// [orphan3]   MultiplayerConfig,
+// [orphan3]   GameCenterConfig,
+// [orphan3]   RpcResult,
 } from '../multiplayer'
 
 // L4: Audio system (AT: audio-system)
@@ -290,17 +290,17 @@ export {
   createAudioSystem,
 } from '../audio-system'
 export type {
-  SFXOptions,
-  SFXHandle,
-  ResonanceSourceOptions,
-  ResonanceSourceHandle,
-  ResonanceSceneOptions,
-  ResonanceRoomDimensions,
-  ResonanceMaterials,
-  SpeechGrammar,
-  SpeechResult,
-  SpeechInputOptions,
-  AudioSystemBundle,
+// [orphan3]   SFXOptions,
+// [orphan3]   SFXHandle,
+// [orphan3]   ResonanceSourceOptions,
+// [orphan3]   ResonanceSourceHandle,
+// [orphan3]   ResonanceSceneOptions,
+// [orphan3]   ResonanceRoomDimensions,
+// [orphan3]   ResonanceMaterials,
+// [orphan3]   SpeechGrammar,
+// [orphan3]   SpeechResult,
+// [orphan3]   SpeechInputOptions,
+// [orphan3]   AudioSystemBundle,
 } from '../audio-system'
 
 // ── M011: pixijs-engine rendering/render-target fusion ───────────────────────
@@ -317,9 +317,9 @@ export {
   buildBloomPipeline,
 } from './pixi-render-target';
 export type {
-  PixiRenderTargetOptions,
-  BloomFBOPassOptions,
-  BloomFBOPipelineOptions,
+// [orphan3]   PixiRenderTargetOptions,
+// [orphan3]   BloomFBOPassOptions,
+// [orphan3]   BloomFBOPipelineOptions,
 } from './pixi-render-target';
 
 // ── AT: full module coverage ──────────────────────────────────────────────────
@@ -334,12 +334,12 @@ export {
   NBArchitektStdFont,
 } from '../platform';
 export type {
-  PlatformInfo,
-  ScreenLockOrientation,
-  CookieNoticeOptions,
-  PrivacySettings,
-  MetalCapabilities,
-  FontLoadOptions,
+// [orphan3]   PlatformInfo,
+// [orphan3]   ScreenLockOrientation,
+// [orphan3]   CookieNoticeOptions,
+// [orphan3]   PrivacySettings,
+// [orphan3]   MetalCapabilities,
+// [orphan3]   FontLoadOptions,
 } from '../platform';
 
 // physics-animation
@@ -351,16 +351,16 @@ export {
   Bounce,
 } from '../physics-animation';
 export type {
-  BoneTransform,
-  PhysicsBody,
-  PhysicalSyncOptions,
-  SkinClip,
-  SkinAnimationOptions,
-  MirrorAxis,
-  MirrorOptions,
-  PlayerModelOptions,
-  PlayerState,
-  BounceOptions,
+// [orphan3]   BoneTransform,
+// [orphan3]   PhysicsBody,
+// [orphan3]   PhysicalSyncOptions,
+// [orphan3]   SkinClip,
+// [orphan3]   SkinAnimationOptions,
+// [orphan3]   MirrorAxis,
+// [orphan3]   MirrorOptions,
+// [orphan3]   PlayerModelOptions,
+// [orphan3]   PlayerState,
+// [orphan3]   BounceOptions,
 } from '../physics-animation';
 
 // fx-extensions
@@ -375,18 +375,18 @@ export {
   FXDhCwa,
 } from '../fx-extensions';
 export type {
-  FXLayerOptions,
-  StencilRegion,
-  FXAssetEntry,
-  FXAssetLoaded,
-  FXAssetProgress,
-  AssetKind,
-  ScrollTransitionKind,
-  FXScrollTransitionOptions,
-  FXScene,
-  FXSceneCompositorOptions,
-  FragUIHelperOptions,
-  FXDhCwaOptions,
+// [orphan3]   FXLayerOptions,
+// [orphan3]   StencilRegion,
+// [orphan3]   FXAssetEntry,
+// [orphan3]   FXAssetLoaded,
+// [orphan3]   FXAssetProgress,
+// [orphan3]   AssetKind,
+// [orphan3]   ScrollTransitionKind,
+// [orphan3]   FXScrollTransitionOptions,
+// [orphan3]   FXScene,
+// [orphan3]   FXSceneCompositorOptions,
+// [orphan3]   FragUIHelperOptions,
+// [orphan3]   FXDhCwaOptions,
 } from '../fx-extensions';
 
 // page-components
@@ -403,25 +403,25 @@ export {
   Player,
 } from '../page-components';
 export type {
-  WorkItem,
-  WorkItemFilter,
-  WorkItemsOptions,
-  WorkDetailData,
-  WorkDetailOptions,
-  WorkDetailContentOptions,
-  TubeNode,
-  TubeEdge,
-  TubesInteractionOptions,
-  MoveNodeOptions,
-  ContactFormData,
-  ContactOptions,
-  FooterLink,
-  FooterOptions,
-  PlaygroundModule,
-  TheorySection,
-  TheoryOptions,
-  PlayerTrack,
-  PlayerOptions,
+// [orphan3]   WorkItem,
+// [orphan3]   WorkItemFilter,
+// [orphan3]   WorkItemsOptions,
+// [orphan3]   WorkDetailData,
+// [orphan3]   WorkDetailOptions,
+// [orphan3]   WorkDetailContentOptions,
+// [orphan3]   TubeNode,
+// [orphan3]   TubeEdge,
+// [orphan3]   TubesInteractionOptions,
+// [orphan3]   MoveNodeOptions,
+// [orphan3]   ContactFormData,
+// [orphan3]   ContactOptions,
+// [orphan3]   FooterLink,
+// [orphan3]   FooterOptions,
+// [orphan3]   PlaygroundModule,
+// [orphan3]   TheorySection,
+// [orphan3]   TheoryOptions,
+// [orphan3]   PlayerTrack,
+// [orphan3]   PlayerOptions,
 } from '../page-components';
 
 // threed-pipeline
@@ -432,19 +432,19 @@ export {
   GLTFLoader,
 } from '../threed-pipeline';
 export type {
-  SplatPoint,
-  GaussianSplatsOptions,
-  GaussianSplatsLoadResult,
-  GeometryData,
-  GLTFNode,
-  GLTFScene,
-  GLTFAnimation,
-  GLTFAnimationChannel,
-  DracoDecodeResult,
-  DracoThreadOptions,
-  GeomTask,
-  GeomTaskResult,
-  GLTFLoaderOptions,
+// [orphan3]   SplatPoint,
+// [orphan3]   GaussianSplatsOptions,
+// [orphan3]   GaussianSplatsLoadResult,
+// [orphan3]   GeometryData,
+// [orphan3]   GLTFNode,
+// [orphan3]   GLTFScene,
+// [orphan3]   GLTFAnimation,
+// [orphan3]   GLTFAnimationChannel,
+// [orphan3]   DracoDecodeResult,
+// [orphan3]   DracoThreadOptions,
+// [orphan3]   GeomTask,
+// [orphan3]   GeomTaskResult,
+// [orphan3]   GLTFLoaderOptions,
 } from '../threed-pipeline';
 
 // engine-utils
@@ -458,12 +458,12 @@ export {
   Interpolation,
 } from '../engine-utils';
 export type {
-  FrameSnapshot,
-  SnapshotFrameOptions,
-  ProfileSample,
-  ProfileReport,
-  Quat4,
-  EasingName,
+// [orphan3]   FrameSnapshot,
+// [orphan3]   SnapshotFrameOptions,
+// [orphan3]   ProfileSample,
+// [orphan3]   ProfileReport,
+// [orphan3]   Quat4,
+// [orphan3]   EasingName,
 } from '../engine-utils';
 
 // asset-pipeline
@@ -474,16 +474,16 @@ export {
   Config,
 } from '../asset-pipeline';
 export type {
-  AssetType,
-  AssetDescriptor,
-  AssetResult,
-  AssetLoaderEvent,
-  AssetGroup,
-  CMSEntry,
-  CMSCollection,
-  CMSDataOptions,
-  ConfigValue,
-  ConfigSchema,
+// [orphan3]   AssetType,
+// [orphan3]   AssetDescriptor,
+// [orphan3]   AssetResult,
+// [orphan3]   AssetLoaderEvent,
+// [orphan3]   AssetGroup,
+// [orphan3]   CMSEntry,
+// [orphan3]   CMSCollection,
+// [orphan3]   CMSDataOptions,
+// [orphan3]   ConfigValue,
+// [orphan3]   ConfigSchema,
 } from '../asset-pipeline';
 
 // interaction
@@ -495,16 +495,16 @@ export {
   UserInput,
 } from '../interaction';
 export type {
-  DragItem,
-  DropTarget,
-  DragAndDropOptions,
-  ScrollControllerOptions,
-  KeyCombo,
-  KeyBinding,
-  ContextMenuItem,
-  ContextMenuOptions,
-  PointerState,
-  UserInputOptions,
+// [orphan3]   DragItem,
+// [orphan3]   DropTarget,
+// [orphan3]   DragAndDropOptions,
+// [orphan3]   ScrollControllerOptions,
+// [orphan3]   KeyCombo,
+// [orphan3]   KeyBinding,
+// [orphan3]   ContextMenuItem,
+// [orphan3]   ContextMenuOptions,
+// [orphan3]   PointerState,
+// [orphan3]   UserInputOptions,
 } from '../interaction';
 
 // renderers/hydra-css
@@ -515,15 +515,15 @@ export {
   FXScroll,
 } from './hydra-css';
 export type {
-  CSSTransform,
-  HydraProp,
-  HydraObjectOptions,
-  HydraCSSOptions,
-  FXControllerOptions,
-  FXPhase,
-  FXControllerEvent,
-  FXScrollBinding,
-  FXScrollOptions,
+// [orphan3]   CSSTransform,
+// [orphan3]   HydraProp,
+// [orphan3]   HydraObjectOptions,
+// [orphan3]   HydraCSSOptions,
+// [orphan3]   FXControllerOptions,
+// [orphan3]   FXPhase,
+// [orphan3]   FXControllerEvent,
+// [orphan3]   FXScrollBinding,
+// [orphan3]   FXScrollOptions,
 } from './hydra-css';
 
 // renderers/rendering-utils
@@ -536,16 +536,16 @@ export {
   RTPool,
 } from './rendering-utils';
 export type {
-  ScreenProjectionOptions,
-  FrustumPlane,
-  AABB,
-  Sphere,
-  LightKind,
-  Light,
-  LightingUniforms,
-  LightVolumeOptions,
-  RTDescriptor,
-  RenderTarget,
+// [orphan3]   ScreenProjectionOptions,
+// [orphan3]   FrustumPlane,
+// [orphan3]   AABB,
+// [orphan3]   Sphere,
+// [orphan3]   LightKind,
+// [orphan3]   Light,
+// [orphan3]   LightingUniforms,
+// [orphan3]   LightVolumeOptions,
+// [orphan3]   RTDescriptor,
+// [orphan3]   RenderTarget,
 } from './rendering-utils';
 
 // ── M019: cell-env-detect — WebGL2/WebGPU capability probe + Canvas2D fallback ─
@@ -567,11 +567,11 @@ export {
   _resetCellEnvCache,
 } from './cell-env-detect';
 export type {
-  CellRenderBackend,
-  CellGpuFeatures,
-  CellEnvReport,
-  C2DCellDescriptor,
-  C2DEdgeDescriptor,
+// [orphan3]   CellRenderBackend,
+// [orphan3]   CellGpuFeatures,
+// [orphan3]   CellEnvReport,
+// [orphan3]   C2DCellDescriptor,
+// [orphan3]   C2DEdgeDescriptor,
 } from './cell-env-detect';
 
 // ── M020: cell-compressed-tex — ASTC/ETC2/BC 压缩纹理 for 大 topology 图 ────────
@@ -602,11 +602,11 @@ export {
   COMPRESSED_BLOCK_DIM,
 } from './cell-compressed-tex';
 export type {
-  CompressedTexCapabilities,
-  AtlasTile,
-  TopologyAtlasLayout,
-  TopologyTexOptions,
-  AtlasRecord,
+// [orphan3]   CompressedTexCapabilities,
+// [orphan3]   AtlasTile,
+// [orphan3]   TopologyAtlasLayout,
+// [orphan3]   TopologyTexOptions,
+// [orphan3]   AtlasRecord,
 } from './cell-compressed-tex';
 
 // ── M022: cell-prepare — PixiJS PrepareSystem GPU 首帧预上传 ─────────────────
@@ -671,7 +671,7 @@ export {
   buildContainerRegistry,
 } from './theatre-epoch-cell-bridge';
 export type {
-  EpochCellBridgeOptions,
+// [orphan3]   EpochCellBridgeOptions,
 } from './theatre-epoch-cell-bridge';
 
 // ── M042/M067: Theatre.js epoch timeline (re-export for convenience) ──────────
@@ -684,13 +684,13 @@ export {
 } from './theatre-epoch-timeline';
 export type {
   CellState as EpochCellStateTheatre,
-  EpochSheet,
-  EpochSnapshotsJSON,
-  RawCellState,
-  EpochFrame,
-  FrameCallback,
-  EasingPreset,
-  EpochTimelineOptions,
+// [orphan3]   EpochSheet,
+// [orphan3]   EpochSnapshotsJSON,
+// [orphan3]   RawCellState,
+// [orphan3]   EpochFrame,
+// [orphan3]   FrameCallback,
+// [orphan3]   EasingPreset,
+// [orphan3]   EpochTimelineOptions,
 } from './theatre-epoch-timeline';
 
 // ── M705: curl-particle-field — AT curl.glsl analytic derivatives → cell decor ─
@@ -699,8 +699,8 @@ export {
   attachCurlParticleField,
 } from './curl-particle-field';
 export type {
-  CurlParticleFieldConfig,
-  CellDecorDesc,
+// [orphan3]   CurlParticleFieldConfig,
+// [orphan3]   CellDecorDesc,
 } from './curl-particle-field';
 
 // ── M746: caustics-background — AT caustic_plane analytic Jacobian caustics ──
@@ -708,8 +708,8 @@ export {
   mountCausticsBackground,
 } from './caustics-background';
 export type {
-  CausticsBackgroundOptions,
-  CausticsBackgroundHandle,
+// [orphan3]   CausticsBackgroundOptions,
+// [orphan3]   CausticsBackgroundHandle,
 } from './caustics-background';
 
 // ── M765: cell-label-renderer — MSDF text labels for cell bbox + pubsub bridge ──
@@ -724,6 +724,6 @@ export {
   extractLabelsFromTopology,
 } from './cell-label-renderer';
 export type {
-  CellLabelRendererOptions,
-  CellLabelDrawParams,
+// [orphan3]   CellLabelRendererOptions,
+// [orphan3]   CellLabelDrawParams,
 } from './cell-label-renderer';

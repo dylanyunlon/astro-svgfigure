@@ -38,7 +38,7 @@ import type { ATLight } from './at-lighting-import.ts';
 // § 1  Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Maximum point lights packed into the uniform array. WebGL1 limit ~256 vec4s. */
+// [orphan-precise] /** Maximum point lights packed into the uniform array. WebGL1 limit ~256 vec4s. */
 const MAX_LIGHTS = 64 as const;
 
 /** Floats per light in the packed CPU-side array (kept as plain uniforms). */

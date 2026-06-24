@@ -41,7 +41,7 @@ import {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Per-cell surface patch resolution (64×64 texels). */
+// [orphan-precise] /** Per-cell surface patch resolution (64×64 texels). */
 export const CELL_RD_SIZE = 64;
 
 /** Storage texture format for ping-pong buffers (R=u, G=v, B=0, A=1). */

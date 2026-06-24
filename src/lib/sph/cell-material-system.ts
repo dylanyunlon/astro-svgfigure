@@ -65,10 +65,10 @@ import { DEFAULT_PBR_PARAMS, DEFAULT_MATCAP_PARAMS } from './at-pbr-material';
 // Species identifier type
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * The five conceptual species types managed by this system.
- * Values mirror the Transformer-analogy roles used throughout the codebase.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * The five conceptual species types managed by this system.
+// [orphan-precise]  * Values mirror the Transformer-analogy roles used throughout the codebase.
+// [orphan-precise]  */
 export type CellSpecies =
   | 'attention'
   | 'ffn'

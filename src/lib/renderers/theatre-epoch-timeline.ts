@@ -53,18 +53,18 @@ import {
 } from '../../../upstream/theatre-js/core/src/coreExports'
 
 import type {
-  IProject,
-  ISheet,
-  ISheetObject,
-  ISequence,
+// [orphan3]   IProject,
+// [orphan3]   ISheet,
+// [orphan3]   ISheetObject,
+// [orphan3]   ISequence,
 } from '../../../upstream/theatre-js/core/src/types/public'
 
 // ─── Epoch params path ────────────────────────────────────────────────────────
 
-/**
- * Base path to epoch_params directory, relative to project root.
- * At build time this resolves via Astro / Vite import.meta or Node fs.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Base path to epoch_params directory, relative to project root.
+// [orphan-precise]  * At build time this resolves via Astro / Vite import.meta or Node fs.
+// [orphan-precise]  */
 const EPOCH_PARAMS_BASE = 'channels/convergence/epoch_params'
 
 // ─── Public types ─────────────────────────────────────────────────────────────

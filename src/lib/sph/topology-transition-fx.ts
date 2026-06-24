@@ -112,38 +112,38 @@ import type {
 import type {
 } from './vfx-timeline';
 import { VFXTimelineBuilder } from './vfx-timeline';
-import {
-} from './species-shader-registry';
-import {
-} from './color-palette';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './species-shader-registry';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './color-palette';
 import type { QoSProfileName } from './qosSpatial';
 import type {
 } from './topology-physics-sync';
 
-  ParticleEffectSystem,
-  Vec2,
-  CellBirthParams,
-  CellDeathParams,
-  CollisionSparkParams,
-  FlowTrailParams,
-  QosTransitionParams,
-  AmbientDustParams,
+// [orphan3]   ParticleEffectSystem,
+// [orphan3]   Vec2,
+// [orphan3]   CellBirthParams,
+// [orphan3]   CellDeathParams,
+// [orphan3]   CollisionSparkParams,
+// [orphan3]   FlowTrailParams,
+// [orphan3]   QosTransitionParams,
+// [orphan3]   AmbientDustParams,
 
-  VFXTimelinePlayer,
-  VFXTimeline,
+// [orphan3]   VFXTimelinePlayer,
+// [orphan3]   VFXTimeline,
 
-  getSpeciesShaderConfig,
-  type SpeciesShaderConfig,
+// [orphan3]   getSpeciesShaderConfig,
+// [orphan3]   type SpeciesShaderConfig,
 
-  QOS_THEME,
-  type RGB,
-  type ThemePalette,
+// [orphan3]   QOS_THEME,
+// [orphan3]   type RGB,
+// [orphan3]   type ThemePalette,
 
 
-  TopologyPhysicsSync,
-  TopoNode,
-  TopoEdge,
-  SyncStats,
+// [orphan3]   TopologyPhysicsSync,
+// [orphan3]   TopoNode,
+// [orphan3]   TopoEdge,
+// [orphan3]   SyncStats,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants

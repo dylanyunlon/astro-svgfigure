@@ -111,7 +111,7 @@ import type { PhysicsUniforms } from './physics-uniform-bridge';
 // Public configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Tunable parameters for the M784 SSR pipeline. */
+// [orphan-precise] /** Tunable parameters for the M784 SSR pipeline. */
 export interface SSRReflectionParams {
   /** Enable/disable SSR entirely. @default true */
   enabled: boolean;

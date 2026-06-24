@@ -64,10 +64,10 @@ import { SPHGPUOrchestrator }     from './SPHGPUOrchestrator';
 import { ParticleRenderer }       from './ParticleRenderer';
 import { BoundaryModel }          from './BoundaryModel';
 import { qosSpatial, type QoSProfileName } from './qosSpatial';
-import {
-} from './types';
-import {
-} from './collision/CollisionWorld';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './types';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './collision/CollisionWorld';
 import { SceneQuery }             from './collision/SceneQuery';
 import { ATRenderPipeline, type ATRenderPipelineConfig } from './at-render-pipeline';
 import { EnvironmentFx, type EnvironmentFxConfig }       from './environment-fx';
@@ -75,17 +75,17 @@ import { AudioPhysicsBridge }     from './audio-physics-bridge';
 import type { EmitterConfig, EmissionPattern }           from './emitter-strategy';
 import { ContinuousPattern }      from './emitter-strategy';
 
-  type GPUBufferSet, type SimParams, type ParticleData,
-  type ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
-  CollisionWorld,
-  createCircleBody,
-  createBoxBody,
+// [orphan5]   type GPUBufferSet, type SimParams, type ParticleData,
+// [orphan5]   type ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
+// [orphan5]   CollisionWorld,
+// [orphan5]   createCircleBody,
+// [orphan5]   createBoxBody,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants & adaptive thresholds
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Fixed physics timestep in seconds (120 Hz physics). */
+// [orphan-precise] /** Fixed physics timestep in seconds (120 Hz physics). */
 const FIXED_DT                   = 1 / 120;
 
 /** Maximum real-time seconds the accumulator can bank before clamping.

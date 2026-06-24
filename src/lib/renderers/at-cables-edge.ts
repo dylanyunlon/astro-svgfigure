@@ -134,9 +134,9 @@ import { GlowFilter, KawaseBlurFilter } from './pixi-filters-registry';
 
 // ── M893: composite_params.json edge rendering types ─────────────────────────
 
-/**
- * Shape of composite_params.json → edges[edgeId].rendering.spline_params
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Shape of composite_params.json → edges[edgeId].rendering.spline_params
+// [orphan-precise]  */
 export interface CompositeSplineParams {
   thickness:       number;
   color:           string;

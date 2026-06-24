@@ -34,23 +34,23 @@ import type { MaterialType, PatternShader, SdfShape }
 import { getSpeciesShaderConfig }  from './species-shader-registry';
 import { qosToSpatial }           from './qosSpatial';
 
-                                   from './species-shader-registry';
+// [orphan-precise]                                    from './species-shader-registry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Morphology — the five base morphologies derived from species semantics
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Base morphology archetype.  Each species string maps to exactly one
- * morphology through semantic analysis of the species role, not through
- * a per-cellId lookup table.
- *
- *   jellyfish  — translucent, pulsing, trailing tentacles (attention / sensory)
- *   petal      — radially symmetric, soft edges, breathing (embedding / encoding)
- *   coral      — branching, rigid skeleton, textured surface (structural / norm)
- *   mycelium   — networked filaments, spreading, organic flow (routing / skip)
- *   crystal    — faceted, sharp geometry, internal refraction (computation / FFN)
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Base morphology archetype.  Each species string maps to exactly one
+// [orphan-precise]  * morphology through semantic analysis of the species role, not through
+// [orphan-precise]  * a per-cellId lookup table.
+// [orphan-precise]  *
+// [orphan-precise]  *   jellyfish  — translucent, pulsing, trailing tentacles (attention / sensory)
+// [orphan-precise]  *   petal      — radially symmetric, soft edges, breathing (embedding / encoding)
+// [orphan-precise]  *   coral      — branching, rigid skeleton, textured surface (structural / norm)
+// [orphan-precise]  *   mycelium   — networked filaments, spreading, organic flow (routing / skip)
+// [orphan-precise]  *   crystal    — faceted, sharp geometry, internal refraction (computation / FFN)
+// [orphan-precise]  */
 export type Morphology =
   | 'jellyfish'
   | 'petal'

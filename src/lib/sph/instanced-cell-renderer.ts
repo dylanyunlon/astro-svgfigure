@@ -55,13 +55,13 @@ import type { SdfShape, MaterialType, PatternShader, SdfShapeParams, MaterialPar
 import type { VisualProfile }     from './cell-visual-identity';
 import type { PhysicsUniforms }   from './physics-uniform-bridge';
 
-  from './species-shader-registry';
+// [orphan-precise]   from './species-shader-registry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Floats per cell instance in the interleaved buffer. */
+// [orphan-precise] /** Floats per cell instance in the interleaved buffer. */
 export const FLOATS_PER_CELL = 32;
 
 /** Default maximum cells the buffer can hold (resizable). */

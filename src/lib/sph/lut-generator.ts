@@ -59,7 +59,7 @@ import { QOS_PRESETS } from './qosSpatial';
 // Public API types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Named LUT style presets. */
+// [orphan-precise] /** Named LUT style presets. */
 export type LutStyleName =
   | 'NEUTRAL'        // Identity — no grade (debug / bypass)
   | 'CINEMATIC'      // Warm lifted film emulation (RELIABLE channels)

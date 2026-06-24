@@ -37,30 +37,30 @@
 
 
 import type { World } from './world-stepper';
-import {
-} from './species-shader-registry';
-import {
-} from './physics-uniform-bridge';
-import {
-} from './uil-species-live';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './species-shader-registry';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './physics-uniform-bridge';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './uil-species-live';
 
 
-  getSpeciesShaderConfig,
-  resolvePhysicsBindings,
-  type SpeciesShaderConfig,
-  type PhysicsBindings,
+// [orphan3]   getSpeciesShaderConfig,
+// [orphan3]   resolvePhysicsBindings,
+// [orphan3]   type SpeciesShaderConfig,
+// [orphan3]   type PhysicsBindings,
 
-  samplePhysicsForBody,
-  type PhysicsUniforms,
+// [orphan3]   samplePhysicsForBody,
+// [orphan3]   type PhysicsUniforms,
 
-  initSpeciesLive,
-  getSpeciesUniforms,
-  physicsUniformsToState,
-  type SpeciesUniformBag,
+// [orphan3]   initSpeciesLive,
+// [orphan3]   getSpeciesUniforms,
+// [orphan3]   physicsUniformsToState,
+// [orphan3]   type SpeciesUniformBag,
 
 // ─── Output types ────────────────────────────────────────────────────────────
 
-/** Runtime bloom parameters, fully resolved against physics state. */
+// [orphan-precise] /** Runtime bloom parameters, fully resolved against physics state. */
 export interface RuntimeBloom {
   /** Effective bloom strength (base × physics binding). */
   strength: number;

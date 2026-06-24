@@ -22,10 +22,10 @@ import {
 
 // ── composite_params.json schema (M154 output) ────────────────────────────────
 
-/**
- * The shape written by M154 into channels/composite_params.json.
- * Falls back to aggregating individual cell/edge channels when file is absent.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * The shape written by M154 into channels/composite_params.json.
+// [orphan-precise]  * Falls back to aggregating individual cell/edge channels when file is absent.
+// [orphan-precise]  */
 export interface CompositeParams {
   width: number;
   height: number;

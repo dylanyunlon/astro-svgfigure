@@ -74,7 +74,7 @@ import type { CellDescriptor } from './pixi-cell-renderer';
 // § 0. Constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Cell count above which compressed textures are preferred. */
+// [orphan-precise] /** Cell count above which compressed textures are preferred. */
 export const LARGE_TOPOLOGY_THRESHOLD = 64;
 
 /**

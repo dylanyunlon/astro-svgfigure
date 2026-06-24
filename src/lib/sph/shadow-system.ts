@@ -74,7 +74,7 @@ import type { ObstacleData } from './types';
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Tweakable shadow parameters. */
+// [orphan-precise] /** Tweakable shadow parameters. */
 export interface ShadowConfig {
   /** Depth comparison bias to prevent shadow acne. @default 0.005 */
   bias: number;

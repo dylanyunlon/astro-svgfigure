@@ -51,45 +51,45 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 
-import {
-} from './at-pbr-material';
-import {
-} from './at-flower-particle';
-import {
-} from './at-spline-particle';
-import {
-} from './at-water-surface';
-import {
-} from './at-volumetric-light';
-import {
-} from './at-bloom-postprocess';
-import {
-} from './lut-generator';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './at-pbr-material';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './at-flower-particle';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './at-spline-particle';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './at-water-surface';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './at-volumetric-light';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './at-bloom-postprocess';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './lut-generator';
 
-  ATPBRMaterial,
-  type PBRParams,
-  DEFAULT_PBR_PARAMS,
+// [orphan]   ATPBRMaterial,
+// [orphan]   type PBRParams,
+// [orphan]   DEFAULT_PBR_PARAMS,
 
-  ATFlowerParticleRenderer,
-  type FlowerEdgeSpline,
-  type ATFlowerConfig,
+// [orphan]   ATFlowerParticleRenderer,
+// [orphan]   type FlowerEdgeSpline,
+// [orphan]   type ATFlowerConfig,
 
-  ATSplineParticleLife,
-  type EdgeSpline,
-  type ATSplineParticleConfig,
+// [orphan]   ATSplineParticleLife,
+// [orphan]   type EdgeSpline,
+// [orphan]   type ATSplineParticleConfig,
 
-  ATWaterSurface,
-  type ATWaterSurfaceConfig,
+// [orphan]   ATWaterSurface,
+// [orphan]   type ATWaterSurfaceConfig,
 
-  ATVolumetricLight,
-  type ATVolumetricLightParams,
+// [orphan]   ATVolumetricLight,
+// [orphan]   type ATVolumetricLightParams,
 
-  ATBloomPostProcess,
-  type ATBloomParams,
+// [orphan]   ATBloomPostProcess,
+// [orphan]   type ATBloomParams,
 
-  LutGenerator,
-  type LutStyleName,
-  type LutCube,
+// [orphan]   LutGenerator,
+// [orphan]   type LutStyleName,
+// [orphan]   type LutCube,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LUT pass — inline WGSL (full-screen 3-D LUT grade blit)

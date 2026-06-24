@@ -79,7 +79,7 @@ import type { SdfShape }        from './species-shader-registry';
 //  Constants
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/** Floats per aura instance in the interleaved GPU buffer. */
+// [orphan-precise] /** Floats per aura instance in the interleaved GPU buffer. */
 export const AURA_FLOATS_PER_CELL = 16;
 
 /** Maximum number of active SDF kinds supported in the shader. */

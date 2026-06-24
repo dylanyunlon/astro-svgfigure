@@ -65,8 +65,8 @@ import type {
 import type { CollisionEventDispatcher } from './collision/CollisionEvents';
 import type { FlowerEdgeSpline, FlowerPoint3 } from './at-flower-particle';
 
-  CollisionContactInfo,
-  CollisionEvent,
+// [orphan-precise]   CollisionContactInfo,
+// [orphan-precise]   CollisionEvent,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lygia random port (shared with contact-sparks.ts)

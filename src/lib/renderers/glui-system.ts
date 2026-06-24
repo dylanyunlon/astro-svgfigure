@@ -34,7 +34,7 @@ import type { FederatedPointerEvent } from '../../../upstream/pixijs-engine/src/
 
 // ── 公共类型 ──────────────────────────────────────────────────────────────────
 
-/** 2D 位置 */
+// [orphan-precise] /** 2D 位置 */
 export interface GLUIPoint {
   x: number;
   y: number;

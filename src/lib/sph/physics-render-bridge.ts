@@ -74,10 +74,10 @@ import type { VelocityFieldTexture } from './velocity-field-texture';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Minimal physics world interface — duck-typed to accept both SPHWorld
- * (WebGPU) and World (CPU world-stepper.ts) without tight coupling.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Minimal physics world interface — duck-typed to accept both SPHWorld
+// [orphan-precise]  * (WebGPU) and World (CPU world-stepper.ts) without tight coupling.
+// [orphan-precise]  */
 export interface PhysicsWorldView {
   /** Fluid particle arrays (CPU-side mirror for readback). */
   readonly particles: ParticleData | ReadonlyArray<{

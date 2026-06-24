@@ -61,15 +61,15 @@
  */
 
 
-import {
-} from './performance-budget';
+// [empty-import] import {
+// [empty-import] } from './performance-budget';
 import type { CellBBox } from './instanced-cell-renderer';
 import type { MaterialType, PatternShader } from './species-shader-registry';
 
-  PerformanceBudget,
-  getGlobalBudget,
-  type Tier,
-  type TierConfig,
+// [orphan-precise]   PerformanceBudget,
+// [orphan-precise]   getGlobalBudget,
+// [orphan] type Tier,
+// [orphan] type TierConfig,
 
 
 // ─────────────────────────────────────────────────────────────────────────────

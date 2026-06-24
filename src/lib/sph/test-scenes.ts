@@ -11,15 +11,15 @@
 
 import type { ParticleData, ObstacleData } from './types';
 import { MAX_PARTICLES } from './types';
-import {
-} from './collision/CollisionWorld';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './collision/CollisionWorld';
 import { qosToSpatial } from './qosSpatial';
 import { QOS_PRESETS } from './qosSpatial';
 import type { QoSProfileName } from './qosSpatial';
 
-  CollisionWorld,
-  createCircleBody,
-  createBoxBody,
+// [orphan-precise]   CollisionWorld,
+// [orphan-precise]   createCircleBody,
+// [orphan-precise]   createBoxBody,
 
 // ─── TestScene interface ──────────────────────────────────────────────────────
 

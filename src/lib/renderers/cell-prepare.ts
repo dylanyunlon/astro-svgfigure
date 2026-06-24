@@ -51,7 +51,7 @@ import type { CellDescriptor } from './pixi-cell-renderer';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-/** Result returned by prepareCellGPU / prepareStageGPU */
+// [orphan-precise] /** Result returned by prepareCellGPU / prepareStageGPU */
 export interface PrepareResult {
   /** Wall-clock milliseconds spent uploading */
   elapsedMs: number;

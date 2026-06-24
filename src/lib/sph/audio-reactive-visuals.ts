@@ -98,7 +98,7 @@ import type { VFXHandler }         from './vfx-timeline';
 // Constants — Frequency Band Boundaries (Hz)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Low band floor (Hz) — sub-bass. */
+// [orphan-precise] /** Low band floor (Hz) — sub-bass. */
 const LOW_FREQ_MIN  = 20;
 /** Low band ceiling (Hz) — upper bass. */
 const LOW_FREQ_MAX  = 250;

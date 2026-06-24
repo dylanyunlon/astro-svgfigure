@@ -84,14 +84,14 @@ import type { ObstacleData } from './types';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * A Cell treated as a shadow-casting occluder.
- *
- * Unlike RigidBody (which has rotation), CellCaster is axis-aligned: the
- * cell bounding box from InteractionCell / CellPhysicsConfig is used directly.
- * An optional opacity controls shadow intensity — semi-transparent UI elements
- * (layernorm indicators, skip connections) cast lighter shadows.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * A Cell treated as a shadow-casting occluder.
+// [orphan-precise]  *
+// [orphan-precise]  * Unlike RigidBody (which has rotation), CellCaster is axis-aligned: the
+// [orphan-precise]  * cell bounding box from InteractionCell / CellPhysicsConfig is used directly.
+// [orphan-precise]  * An optional opacity controls shadow intensity — semi-transparent UI elements
+// [orphan-precise]  * (layernorm indicators, skip connections) cast lighter shadows.
+// [orphan-precise]  */
 export interface CellCaster {
   /** Unique cell ID (e.g. 'self_attn', 'ffn_0'). */
   id: string;

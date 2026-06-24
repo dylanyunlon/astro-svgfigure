@@ -23,7 +23,7 @@ import { getShader } from '../shaders/ShaderLoader';
 
 // ─── MSDF Atlas Glyph Metrics ─────────────────────────────────────────────────
 
-/** Single glyph entry in the MSDF atlas JSON (msdfgen format). */
+// [orphan-precise] /** Single glyph entry in the MSDF atlas JSON (msdfgen format). */
 interface GlyphMetric {
   /** Unicode codepoint */
   id: number;

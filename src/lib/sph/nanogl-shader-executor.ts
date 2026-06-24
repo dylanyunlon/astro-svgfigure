@@ -66,10 +66,10 @@ import {
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * A single fullscreen shader pass.
- * Every field mirrors what the AT fluid pipeline passes per-frame.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * A single fullscreen shader pass.
+// [orphan-precise]  * Every field mirrors what the AT fluid pipeline passes per-frame.
+// [orphan-precise]  */
 export interface ShaderPass {
   /** Human-readable label (used for debug / error messages). */
   name: string;

@@ -96,7 +96,7 @@ import type { ParticleData } from './types';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 2D vector (reused from contact-sparks / debug-renderer conventions). */
+// [orphan-precise] /** 2D vector (reused from contact-sparks / debug-renderer conventions). */
 export interface Vec2 {
   x: number;
   y: number;

@@ -28,7 +28,7 @@ import type { AABB } from '../types';
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Encode a pair (a, b) as a single integer key.  Order-independent. */
+// [orphan-precise] /** Encode a pair (a, b) as a single integer key.  Order-independent. */
 function pairKey(a: number, b: number, stride: number): number {
   return a < b ? a * stride + b : b * stride + a;
 }

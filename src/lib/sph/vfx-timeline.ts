@@ -61,7 +61,7 @@ import type { CollisionEventDispatcher }              from './collision/Collisio
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Default timeline duration cap — prevents runaway timelines (seconds) */
+// [orphan-precise] /** Default timeline duration cap — prevents runaway timelines (seconds) */
 const MAX_TIMELINE_DURATION = 5.0;
 
 /** Maximum number of concurrent playing timelines per player instance */

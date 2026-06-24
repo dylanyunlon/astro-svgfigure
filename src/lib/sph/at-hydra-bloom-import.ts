@@ -90,7 +90,7 @@ import type {
 // § 0  Minimal WebGL types (subset used here; full types from at-render-pipeline.ts)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Slimmed WebGL2 context reference carried by AstroRenderer. */
+// [orphan-precise] /** Slimmed WebGL2 context reference carried by AstroRenderer. */
 interface AstroRenderer {
   gl: WebGL2RenderingContext;
 }

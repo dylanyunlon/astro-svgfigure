@@ -41,7 +41,7 @@ import { serializeWorld, deserializeWorld } from './world-serializer';
 
 // ─── EpochSnapshot ──────────────────────────────────────────────────────────
 
-/** A single epoch's captured state. */
+// [orphan-precise] /** A single epoch's captured state. */
 export interface EpochSnapshot {
   /** The epoch number as reported by the caller (monotonically increasing). */
   epoch: number;

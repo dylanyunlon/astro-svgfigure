@@ -77,7 +77,7 @@ import type { PhysicsUniforms }  from './physics-uniform-bridge';
 // Public configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Tunable parameters for the SSR pass. */
+// [orphan-precise] /** Tunable parameters for the SSR pass. */
 export interface SSRParams {
   /** Enable/disable SSR entirely. Default: true */
   enabled: boolean;

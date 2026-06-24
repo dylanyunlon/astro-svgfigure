@@ -106,7 +106,7 @@ import {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Default pool capacity (pre-allocated particle slots) */
+// [orphan-precise] /** Default pool capacity (pre-allocated particle slots) */
 const DEFAULT_POOL_SIZE = 4096;
 
 /** Floats per particle in the GPU instance buffer */

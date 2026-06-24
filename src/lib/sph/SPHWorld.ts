@@ -7,28 +7,28 @@ import { SPHGPUOrchestrator }  from "./SPHGPUOrchestrator";
 import { ParticleRenderer }   from "./ParticleRenderer";
 import { BoundaryModel }      from "./BoundaryModel";
 import { qosSpatial, QoSProfileName } from "./qosSpatial";
-import {
-} from "./types";
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from "./types";
 import { CollisionWorld, createCircleBody, createBoxBody } from './collision/CollisionWorld';
 import { SceneQuery } from './collision/SceneQuery';
 import { PhysarumSimulation } from './physarum-sim';
 import { BoidsCompute }       from './boids-compute';
 import { OceanBackground }    from './ocean-background';
 
-  GPUBufferSet, SimParams, ParticleData,
-  ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
+// [orphan-precise]   GPUBufferSet, SimParams, ParticleData,
+// [orphan-precise]   ObstacleData, MAX_PARTICLES, WORKGROUP_SIZE,
 
 // ─────────────────────────────────────────────
 // Effect module protocol  (M755)
 // ─────────────────────────────────────────────
 
-/**
- * Uniform lifecycle contract every pluggable visual effect must satisfy.
- *
- *   init()    — allocate GPU resources (called once, lazily on first enable)
- *   tick(…)   — advance + encode GPU work for one frame
- *   destroy() — release all GPU resources
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Uniform lifecycle contract every pluggable visual effect must satisfy.
+// [orphan-precise]  *
+// [orphan-precise]  *   init()    — allocate GPU resources (called once, lazily on first enable)
+// [orphan-precise]  *   tick(…)   — advance + encode GPU work for one frame
+// [orphan-precise]  *   destroy() — release all GPU resources
+// [orphan-precise]  */
 export interface EffectModule {
   init(): Promise<void>;
   tick(encoder: GPUCommandEncoder, dt: number): void;

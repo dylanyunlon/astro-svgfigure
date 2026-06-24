@@ -64,19 +64,19 @@
 
 
 import { Easing, type EasingFn } from '../tween-system';
-import {
-} from './morphogenesis';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './morphogenesis';
 import { GOLDEN_ANGLE_RAD, cartesianAt } from './phyllotaxis';
 
-  Morphogenesis,
-  type MorphogenesisConfig,
-  type LSystemPreset,
+// [orphan3]   Morphogenesis,
+// [orphan3]   type MorphogenesisConfig,
+// [orphan3]   type LSystemPreset,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Default total growth duration in seconds */
+// [orphan-precise] /** Default total growth duration in seconds */
 const DEFAULT_DURATION = 0.85;
 
 /** Scale bloom occupies the first portion of the timeline */

@@ -71,7 +71,7 @@ import type { ThemePalette, RGB } from './color-palette';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Default particle pool per unit of edge weight. */
+// [orphan-precise] /** Default particle pool per unit of edge weight. */
 const DEFAULT_PARTICLES_PER_UNIT = 12;
 
 /** Maximum particles across all edges. */

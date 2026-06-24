@@ -27,14 +27,14 @@ import { Container } from '../../../upstream/pixijs-engine/src/scene/container/C
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
-/**
- * Configuration for a single layer (mesh slot) within an AT scene.
- *
- * Maps 1:1 to the `INPUT_Config_{i}_{scene}_{prop}` key pattern found in
- * UIL JSON.  Every field except `name` and the ordering fields is optional
- * because the original UIL data is sparse — only explicitly-set properties
- * appear as keys.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Configuration for a single layer (mesh slot) within an AT scene.
+// [orphan-precise]  *
+// [orphan-precise]  * Maps 1:1 to the `INPUT_Config_{i}_{scene}_{prop}` key pattern found in
+// [orphan-precise]  * UIL JSON.  Every field except `name` and the ordering fields is optional
+// [orphan-precise]  * because the original UIL data is sparse — only explicitly-set properties
+// [orphan-precise]  * appear as keys.
+// [orphan-precise]  */
 export interface SceneLayerConfig {
   /** Human-readable name for this layer (e.g. "glasscube", "particles"). */
   name: string;

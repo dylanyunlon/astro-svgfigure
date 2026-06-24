@@ -53,7 +53,7 @@ import type { CameraUniforms }           from './ParticleRenderer';
 //   • float keyword   → let / var  (WGSL syntax fix in original source)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** WGSL: wave propagation step (fullscreen quad → writes new wave state) */
+// [orphan-precise] /** WGSL: wave propagation step (fullscreen quad → writes new wave state) */
 const RIPPLE_PROPAGATE_SHADER = /* wgsl */`
 // ── Lygia ripple.wgsl — inlined ───────────────────────────────────────────
 // Propagation kernel operating on a double-buffered wave texture.

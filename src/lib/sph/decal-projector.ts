@@ -100,8 +100,8 @@ import type {
 } from './collision/CollisionEvents';
 import type { CollisionEventDispatcher } from './collision/CollisionEvents';
 
-  CollisionContactInfo,
-  CollisionEvent,
+// [orphan3]   CollisionContactInfo,
+// [orphan3]   CollisionEvent,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lygia random port (shared convention with contact-sparks / collision-fx)

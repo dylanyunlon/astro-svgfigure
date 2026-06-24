@@ -87,7 +87,7 @@ import type { ObstacleData } from './types';
 // Constants — AT ShadowDepth.fs 原始参数
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** AT cascade shadow maps 默认 4 级 */
+// [orphan-precise] /** AT cascade shadow maps 默认 4 级 */
 const MAX_CASCADES = 4;
 
 /** AT ShadowDepth.fs: cascadeSplitLambda — log/uniform 混合因子 */

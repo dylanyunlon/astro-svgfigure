@@ -70,7 +70,7 @@ import {
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Callback invoked once per frame after the simulation step. */
+// [orphan-precise] /** Callback invoked once per frame after the simulation step. */
 export type FluidRenderCallback = (fluid: NavierStokesFluid) => void;
 
 /** Configuration for InteractiveFluid. */

@@ -104,7 +104,7 @@ import type { ThemePalette, RGB }  from './color-palette';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Maximum streamlines across the entire field. */
+// [orphan-precise] /** Maximum streamlines across the entire field. */
 const MAX_STREAMLINES = 512;
 
 /** Maximum integration steps per streamline (RK4). */

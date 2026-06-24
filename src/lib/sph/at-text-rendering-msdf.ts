@@ -35,7 +35,7 @@ import { getShader } from '../shaders/ShaderLoader';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Maximum characters per label string */
+// [orphan-precise] /** Maximum characters per label string */
 const MAX_CHARS_PER_LABEL = 128 as const;
 
 /** Floats per interleaved vertex: [x, y, u, v] */

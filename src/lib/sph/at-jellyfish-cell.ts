@@ -37,7 +37,7 @@ import type { Morphology, VisualProfile } from './cell-visual-identity';
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Path to AT jellyfish geometry (Draco-compressed). */
+// [orphan-precise] /** Path to AT jellyfish geometry (Draco-compressed). */
 const JELLYFISH_BIN_PATH = '/upstream/activetheory-assets/geometry/jellyfish.bin';
 
 /**

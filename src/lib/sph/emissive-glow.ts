@@ -98,7 +98,7 @@ import { samplePhysicsForBody }            from './physics-uniform-bridge';
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Floats per particle in the emissive buffer: R, G, B, A (HDR, linear). */
+// [orphan-precise] /** Floats per particle in the emissive buffer: R, G, B, A (HDR, linear). */
 export const EMISSIVE_STRIDE = 4;
 
 /** Maximum projection radius (world units) — clamp to prevent O(N²) blow-up. */

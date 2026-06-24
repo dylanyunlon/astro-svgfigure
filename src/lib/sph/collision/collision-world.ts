@@ -7,12 +7,12 @@ import { generateContacts, ContactManifold, ContactPoint } from './contact-gener
 import { warmStart, solveConstraints, ConstraintCache } from './ContactSolver';
 import { SceneQuery, raycast, shapecast, overlapTest } from './SceneQuery';
 import { RigidBody, BodyHandle, BodyType } from './rigid-body';
-import {
-} from './CollisionEvents';
+// [empty-import] import {
+// [empty-import] } from './CollisionEvents';
 import { Vec3, mat3Transpose, vec3Add, vec3Scale } from './math';
 
-  CollisionEventDispatcher,
-  type ActiveContactPair,
+// [orphan3]   CollisionEventDispatcher,
+// [orphan3]   type ActiveContactPair,
 
 export interface CollisionWorldConfig {
   maxBodies: number;

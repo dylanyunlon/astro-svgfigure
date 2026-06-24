@@ -138,7 +138,7 @@ import type { ThemePalette, RGB }  from './color-palette';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Default distance (domain units) beyond which portals activate. */
+// [orphan-precise] /** Default distance (domain units) beyond which portals activate. */
 const DEFAULT_DISTANCE_THRESHOLD = 300;
 
 /** Blend zone half-width for smooth portal fade-in/out. */

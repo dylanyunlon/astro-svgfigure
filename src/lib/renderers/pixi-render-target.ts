@@ -44,8 +44,8 @@ import {
   KawaseBlurFilter,
 } from './pixi-filters-registry';
 import type {
-  FilterName,
-  AdvancedBloomFilterOptions,
+// [orphan3]   FilterName,
+// [orphan3]   AdvancedBloomFilterOptions,
 } from './pixi-filters-registry';
 
 // ── WebGL2 直接 helpers (from hydra-gl-layer) ──────────────────────────────
@@ -56,10 +56,10 @@ import { createProgram } from './hydra-gl-layer';
 // § 1. PixiRenderTarget — Offscreen buffer (对应 upstream RenderTarget)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Options for creating a PixiRenderTarget.
- * Mirrors upstream RenderTargetOptions with project-specific additions.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Options for creating a PixiRenderTarget.
+// [orphan-precise]  * Mirrors upstream RenderTargetOptions with project-specific additions.
+// [orphan-precise]  */
 export interface PixiRenderTargetOptions {
   /** Width in pixels */
   width: number;

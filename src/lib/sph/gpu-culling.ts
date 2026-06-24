@@ -83,7 +83,7 @@ import { WORKGROUP_SIZE }      from './types';
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Maximum number of cullable objects (cells + particle groups). */
+// [orphan-precise] /** Maximum number of cullable objects (cells + particle groups). */
 const MAX_OBJECTS      = 2048;
 
 /** Workgroup size for culling + compaction shaders. */

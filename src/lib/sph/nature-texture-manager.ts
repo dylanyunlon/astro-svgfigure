@@ -34,41 +34,41 @@
 //     GPUDevice and can be created even when WebGPU is unavailable.
 
 
-import {
-} from './reaction-diffusion';
-import {
-} from './physarum-sim';
-import {
-} from './differential-growth';
-import {
-} from './boids-compute';
-import {
-} from './turing-pattern';
-import {
-} from './natural-patterns';
-import {
-} from './morphogenesis';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './reaction-diffusion';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './physarum-sim';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './differential-growth';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './boids-compute';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './turing-pattern';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './natural-patterns';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './morphogenesis';
 
-  ReactionDiffusionSim,
-  type RDSimConfig,
+// [orphan3]   ReactionDiffusionSim,
+// [orphan3]   type RDSimConfig,
 
-  PhysarumSimulation,
-  type PhysarumParams,
+// [orphan3]   PhysarumSimulation,
+// [orphan3]   type PhysarumParams,
 
-  DifferentialGrowth,
-  type DifferentialGrowthConfig,
+// [orphan3]   DifferentialGrowth,
+// [orphan3]   type DifferentialGrowthConfig,
 
-  BoidsCompute,
-  type BoidsParams,
+// [orphan3]   BoidsCompute,
+// [orphan3]   type BoidsParams,
 
-  TuringPatternGenerator,
-  type TuringPatternParams,
+// [orphan3]   TuringPatternGenerator,
+// [orphan3]   type TuringPatternParams,
 
-  NaturalPatternGenerator,
-  type NaturalPatternParams,
+// [orphan3]   NaturalPatternGenerator,
+// [orphan3]   type NaturalPatternParams,
 
-  Morphogenesis,
-  type MorphogenesisConfig,
+// [orphan3]   Morphogenesis,
+// [orphan3]   type MorphogenesisConfig,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types

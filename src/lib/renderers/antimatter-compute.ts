@@ -38,7 +38,7 @@ import { compileShader, HydraGLLayer } from './hydra-gl-layer';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-/** Number of floats per cell in the position buffer: x, y, z, w(padding) */
+// [orphan-precise] /** Number of floats per cell in the position buffer: x, y, z, w(padding) */
 const POSITION_STRIDE = 4;
 /** Number of floats per cell in the velocity buffer: vx, vy, vz, damping */
 const VELOCITY_STRIDE = 4;

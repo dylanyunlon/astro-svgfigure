@@ -44,7 +44,7 @@ import {
   makeOrthoProjection,
 } from './gl-text';
 import type {
-  GLTextGeometryOptions,
+// [orphan3]   GLTextGeometryOptions,
 } from './gl-text';
 import { Color } from '../color-utils';
 import type { CellParamsJson, CellBBox } from '../renderer/CellInstanceManager';
@@ -52,7 +52,7 @@ import type { CellUpdateEvent } from '../CellEventSource';
 
 // ── 配置类型 ──────────────────────────────────────────────────────────────────
 
-/** CellLabelRenderer 初始化选项 */
+// [orphan-precise] /** CellLabelRenderer 初始化选项 */
 export interface CellLabelRendererOptions {
   /** MSDF atlas JSON url (默认 '/fonts/inter-medium-msdf.json') */
   atlasJsonUrl?: string;

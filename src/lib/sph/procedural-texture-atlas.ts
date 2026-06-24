@@ -52,11 +52,11 @@ import {
 
 // ─── Texture algorithm enum ─────────────────────────────────────────────────
 
-/**
- * Procedural texture algorithm rendered into each atlas tile.
- *
- * Each variant maps to a branch in the WGSL compute shader.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Procedural texture algorithm rendered into each atlas tile.
+// [orphan-precise]  *
+// [orphan-precise]  * Each variant maps to a branch in the WGSL compute shader.
+// [orphan-precise]  */
 export type ProceduralTextureKind =
   | 'VORONOI_MEMBRANE'
   | 'PERLIN_ROCK'

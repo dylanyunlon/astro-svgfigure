@@ -47,13 +47,13 @@ import type { Container } from '../../../upstream/pixijs-engine/src/scene/contai
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-/**
- * A flat UIL JSON parameter object.
- * Keys follow AT conventions:
- *   - MESH_Element_{N}_{scene}{prop}   → mesh transform (position / scale / rotation)
- *   - {ShaderClass}/{ShaderClass}/Element_{N}_{scene}/{uParam} → shader uniform
- *   - INPUT_Config_{N}_{scene}_{prop}  → config flags (ignored by this bridge)
- */
+// [orphan-precise] /**
+// [orphan-precise]  * A flat UIL JSON parameter object.
+// [orphan-precise]  * Keys follow AT conventions:
+// [orphan-precise]  *   - MESH_Element_{N}_{scene}{prop}   → mesh transform (position / scale / rotation)
+// [orphan-precise]  *   - {ShaderClass}/{ShaderClass}/Element_{N}_{scene}/{uParam} → shader uniform
+// [orphan-precise]  *   - INPUT_Config_{N}_{scene}_{prop}  → config flags (ignored by this bridge)
+// [orphan-precise]  */
 export type UILJson = Record<string, unknown>;
 
 /**

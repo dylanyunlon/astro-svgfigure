@@ -76,21 +76,21 @@
  */
 
 
-import {
-} from './cell-body-bridge';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './cell-body-bridge';
 import type { FlowEdge }            from './edge-flow-renderer';
 import type { EmitterConfig }        from './emitter-strategy';
 import { ContinuousPattern }         from './emitter-strategy';
-import {
-} from './rigid-body';
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './rigid-body';
 
-  type CellPhysicsConfig,
-  cellsToBodies,
-  speciesToIndex,
+// [orphan3]   type CellPhysicsConfig,
+// [orphan3]   cellsToBodies,
+// [orphan3]   speciesToIndex,
 
-  createRigidBody,
-  type RigidBody,
-  type RigidBodyOptions,
+// [orphan3]   createRigidBody,
+// [orphan3]   type RigidBody,
+// [orphan3]   type RigidBodyOptions,
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

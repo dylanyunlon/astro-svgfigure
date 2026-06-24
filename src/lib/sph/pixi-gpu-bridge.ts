@@ -68,14 +68,14 @@ import type { Container } from '../../../upstream/pixijs-engine/src/scene/contai
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
-/**
- * Minimal interface satisfied by both PixiJS WebGLRenderer and
- * the Application.renderer property.
- *
- * We intentionally use 'any' for the upstream Renderer type here
- * to keep this bridge decoupled from PixiJS internals.
- * All real accesses go through optional chaining with clear error messages.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Minimal interface satisfied by both PixiJS WebGLRenderer and
+// [orphan-precise]  * the Application.renderer property.
+// [orphan-precise]  *
+// [orphan-precise]  * We intentionally use 'any' for the upstream Renderer type here
+// [orphan-precise]  * to keep this bridge decoupled from PixiJS internals.
+// [orphan-precise]  * All real accesses go through optional chaining with clear error messages.
+// [orphan-precise]  */
 export interface PixiRendererLike {
   /** The native WebGL context that PixiJS allocated on the canvas. */
   gl: WebGL2RenderingContext | WebGLRenderingContext;

@@ -6,7 +6,7 @@ import type { RigidBody, ContactConstraint } from '../types';
 // Tuning constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Baumgarte positional-correction strength (fraction of penetration per step). */
+// [orphan-precise] /** Baumgarte positional-correction strength (fraction of penetration per step). */
 const BAUMGARTE_BETA = 0.2;
 
 /**

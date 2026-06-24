@@ -35,7 +35,7 @@ import { Geometry }      from '../renderer/geometry/Geometry';
 
 // ── MSDF Atlas 数据类型 ───────────────────────────────────────────────────────
 
-/** atlas JSON 中单个字形描述 */
+// [orphan-precise] /** atlas JSON 中单个字形描述 */
 export interface GlyphInfo {
   /** Unicode code point */
   id: number;

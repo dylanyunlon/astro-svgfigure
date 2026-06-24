@@ -78,7 +78,7 @@ import {
   type EpochTimelineOptions,
 } from './theatre-epoch-timeline'
 
-import { GlowFilter } from '../../../upstream/pixijs-filters-v2/src/glow'
+// [orphan-precise] import { GlowFilter } from '../../../upstream/pixijs-filters-v2/src/glow'
 
 // ─── Re-export for consumers ───────────────────────────────────────────────────
 export type {

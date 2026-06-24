@@ -11,12 +11,12 @@
 import { ATShaderLoader } from './at-shader-loader';
 import { compileShader, executePasses, type ShaderPass } from './nanogl-shader-executor';
 
-let _loader: ATShaderLoader | null = null;
+// [orphan-precise] let _loader: ATShaderLoader | null = null;
 
-/**
- * initATShaderPipeline — 加载 compiled.vs 并初始化 shader loader。
- * 调用一次, 之后用 getATProgram() 获取编译好的 program。
- */
+// [orphan-precise] /**
+// [orphan-precise]  * initATShaderPipeline — 加载 compiled.vs 并初始化 shader loader。
+// [orphan-precise]  * 调用一次, 之后用 getATProgram() 获取编译好的 program。
+// [orphan-precise]  */
 export async function initATShaderPipeline(compiledVsUrl: string): Promise<ATShaderLoader> {
   const resp = await fetch(compiledVsUrl);
   const src = await resp.text();

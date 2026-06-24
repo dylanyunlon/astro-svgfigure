@@ -41,14 +41,14 @@ import type { TextureDescriptor } from '../renderer/material/Material.ts';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Decoded texture ready for GPU upload.
- *
- * For hardware-compressed formats (ASTC, ETC2, BC7, …) `data` is the raw
- * compressed payload and `format` is the GPU-native format string.
- * For uncompressed fallbacks, `format` is 'rgba8unorm' and `data` holds
- * RGBA8 pixel bytes.
- */
+// [orphan-precise] /**
+// [orphan-precise]  * Decoded texture ready for GPU upload.
+// [orphan-precise]  *
+// [orphan-precise]  * For hardware-compressed formats (ASTC, ETC2, BC7, …) `data` is the raw
+// [orphan-precise]  * compressed payload and `format` is the GPU-native format string.
+// [orphan-precise]  * For uncompressed fallbacks, `format` is 'rgba8unorm' and `data` holds
+// [orphan-precise]  * RGBA8 pixel bytes.
+// [orphan-precise]  */
 export interface ATTexture {
   /** Raw pixel/block data — upload via compressedTexImage2D or texImage2D. */
   data: Uint8Array;

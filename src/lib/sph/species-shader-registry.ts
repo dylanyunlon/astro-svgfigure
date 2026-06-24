@@ -37,20 +37,20 @@ import type { PhysicsUniforms } from './physics-uniform-bridge';
 
 // ─── SDF Shape ────────────────────────────────────────────────────────────────
 
-/**
- * SDF primitive that forms the species silhouette.
- *
- * Values correspond to functions in organic-sdf.ts / sdf-species-library.frag:
- *   flower     → flowerSDF(uv, petals)            lygia/sdf/flowerSDF
- *   koch       → kochSDF(uv, iterations)          lygia/sdf/kochSDF
- *   julia      → juliaSDF(uv, cx, cy)             escape-time quadratic Julia set
- *   supershape → supershapeSDF(uv, m, n1, n2, n3) Gielis / supershape-species.frag
- *   capsule    → sdCapsule(p, a, b, r)             lygia/sdf/capsuleSDF
- *   hexagon    → sdHexagon(p, r)                  lygia/sdf/hexagonSDF
- *   star       → sdStar(p, r, n, m)               Inigo Quilez star SDF
- *   roundbox   → sdRoundBox(p, b, r)              lygia/sdf/boxSDF rounded
- *   polygon    → sdPolygon(p, vertices, n)        lygia/sdf/polygonSDF
- */
+// [orphan-precise] /**
+// [orphan-precise]  * SDF primitive that forms the species silhouette.
+// [orphan-precise]  *
+// [orphan-precise]  * Values correspond to functions in organic-sdf.ts / sdf-species-library.frag:
+// [orphan-precise]  *   flower     → flowerSDF(uv, petals)            lygia/sdf/flowerSDF
+// [orphan-precise]  *   koch       → kochSDF(uv, iterations)          lygia/sdf/kochSDF
+// [orphan-precise]  *   julia      → juliaSDF(uv, cx, cy)             escape-time quadratic Julia set
+// [orphan-precise]  *   supershape → supershapeSDF(uv, m, n1, n2, n3) Gielis / supershape-species.frag
+// [orphan-precise]  *   capsule    → sdCapsule(p, a, b, r)             lygia/sdf/capsuleSDF
+// [orphan-precise]  *   hexagon    → sdHexagon(p, r)                  lygia/sdf/hexagonSDF
+// [orphan-precise]  *   star       → sdStar(p, r, n, m)               Inigo Quilez star SDF
+// [orphan-precise]  *   roundbox   → sdRoundBox(p, b, r)              lygia/sdf/boxSDF rounded
+// [orphan-precise]  *   polygon    → sdPolygon(p, vertices, n)        lygia/sdf/polygonSDF
+// [orphan-precise]  */
 export type SdfShape =
   | 'flower'
   | 'koch'

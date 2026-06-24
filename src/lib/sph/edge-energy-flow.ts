@@ -96,7 +96,7 @@ import type { ThemePalette, RGB }  from './color-palette';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Maximum particles per edge. */
+// [orphan-precise] /** Maximum particles per edge. */
 const MAX_PARTICLES_PER_EDGE = 128;
 
 /** Global particle pool cap. */

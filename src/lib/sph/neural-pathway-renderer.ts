@@ -78,7 +78,7 @@ import type { ThemePalette, RGB }     from './color-palette';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Max electric pulse particles across all edges. */
+// [orphan-precise] /** Max electric pulse particles across all edges. */
 const MAX_PULSES           = 2048;
 /** Max synaptic vesicle particles across all edges. */
 const MAX_VESICLES         = 512;

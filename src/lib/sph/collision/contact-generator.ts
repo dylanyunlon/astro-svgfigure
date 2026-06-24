@@ -8,30 +8,30 @@
 //   Polygon ↔ Polygon  (SAT + Sutherland-Hodgman clipping)
 
 
-import {
-} from './math';
-import {
-} from './rigid-body';
+// [empty-import] import {
+// [empty-import] } from './math';
+// [empty-import] import {
+// [empty-import] } from './rigid-body';
 
-  Vec2,
-  vec2,
-  vec2Add,
-  vec2Sub,
-  vec2Scale,
-  vec2Dot,
-  vec2Cross,
-  vec2Negate,
-  vec2Length,
-  vec2LengthSq,
-  vec2Normalize,
-  vec2Distance,
+// [orphan3]   Vec2,
+// [orphan3]   vec2,
+// [orphan3]   vec2Add,
+// [orphan3]   vec2Sub,
+// [orphan3]   vec2Scale,
+// [orphan3]   vec2Dot,
+// [orphan3]   vec2Cross,
+// [orphan3]   vec2Negate,
+// [orphan3]   vec2Length,
+// [orphan3]   vec2LengthSq,
+// [orphan3]   vec2Normalize,
+// [orphan3]   vec2Distance,
 
-  RigidBody2D,
-  ShapeKind,
-  bodyToWorld,
-  bodyDirToWorld,
-  getWorldVertices,
-  getWorldNormals,
+// [orphan3]   RigidBody2D,
+// [orphan3]   ShapeKind,
+// [orphan3]   bodyToWorld,
+// [orphan3]   bodyDirToWorld,
+// [orphan3]   getWorldVertices,
+// [orphan3]   getWorldNormals,
 
 // ─── Contact output ───────────────────────────────────────────────────────────
 // Compatible with the ContactConstraint in ../types.ts and ContactSolver.ts

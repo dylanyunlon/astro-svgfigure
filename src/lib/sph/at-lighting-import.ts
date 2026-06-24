@@ -45,7 +45,7 @@ import type { AstroRenderer } from '../renderer/AstroRenderer.ts';
 // § 1  Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Parsed uniform metadata extracted from resolved GLSL source. */
+// [orphan-precise] /** Parsed uniform metadata extracted from resolved GLSL source. */
 export interface ATUniformInfo {
   /** GLSL name (e.g. "lightColor", "shadowMatrix") */
   name: string;

@@ -89,7 +89,7 @@ import type { PhysicsUniforms } from './physics-uniform-bridge';
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Workgroup size for compute dispatches (16×16 = 256 threads). */
+// [orphan-precise] /** Workgroup size for compute dispatches (16×16 = 256 threads). */
 const WG_SIZE = 16;
 
 /** Maximum number of Gaussian blur taps per axis (must match WGSL constant). */

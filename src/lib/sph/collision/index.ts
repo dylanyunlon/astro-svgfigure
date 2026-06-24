@@ -19,69 +19,69 @@ export {
 } from './aabb-manager';
 
 export {
-  BVHNode,
-  RaycastHit,
-  BVHTree,
+// [orphan3]   BVHNode,
+// [orphan3]   RaycastHit,
+// [orphan3]   BVHTree,
 } from './bvh-tree';
 
 export {
-  SortAndSweep,
+// [orphan3]   SortAndSweep,
 } from './sort-and-sweep';
 
 export {
-  ConvexShape,
-  GJKResult,
-  EPAResult,
-  createBoxShape,
-  createCircleShape,
-  gjk,
-  epa,
+// [orphan3]   ConvexShape,
+// [orphan3]   GJKResult,
+// [orphan3]   EPAResult,
+// [orphan3]   createBoxShape,
+// [orphan3]   createCircleShape,
+// [orphan3]   gjk,
+// [orphan3]   epa,
 } from './gjk-epa';
 
 export {
-  OBB,
-  SATResult,
-  projectOBB,
-  satTest,
+// [orphan3]   OBB,
+// [orphan3]   SATResult,
+// [orphan3]   projectOBB,
+// [orphan3]   satTest,
 } from './sat-solver';
 
 export {
-  ContactPoint,
-  Body,
-  ContactManifold,
-  generateContacts,
-  warmStartManifold,
-  combineFriction,
-  combineRestitution,
+// [orphan3]   ContactPoint,
+// [orphan3]   Body,
+// [orphan3]   ContactManifold,
+// [orphan3]   generateContacts,
+// [orphan3]   warmStartManifold,
+// [orphan3]   combineFriction,
+// [orphan3]   combineRestitution,
 } from './contact-manifold';
 
 export {
-  RigidBody,
-  Vec3,
-  Constraint,
-  NonPenetrationConstraint,
-  FrictionConstraint,
-  RestitutionConstraint,
+// [orphan3]   RigidBody,
+// [orphan3]   Vec3,
+// [orphan3]   Constraint,
+// [orphan3]   NonPenetrationConstraint,
+// [orphan3]   FrictionConstraint,
+// [orphan3]   RestitutionConstraint,
 } from './constraints';
 
 export {
-  SolverBody,
-  SolverConfig,
-  defaultSolverConfig,
-  solveConstraints,
+// [orphan3]   SolverBody,
+// [orphan3]   SolverConfig,
+// [orphan3]   defaultSolverConfig,
+// [orphan3]   solveConstraints,
 } from './impulse-solver';
 
 export {
-  RayHit,
-  OverlapResult,
-  ClosestPointResult,
-  SceneQuery,
+// [orphan3]   RayHit,
+// [orphan3]   OverlapResult,
+// [orphan3]   ClosestPointResult,
+// [orphan3]   SceneQuery,
 } from './scene-query';
 
 export {
-  CollisionWorldConfig,
-  WorldStats,
-  CollisionWorld,
+// [orphan3]   CollisionWorldConfig,
+// [orphan3]   WorldStats,
+// [orphan3]   CollisionWorld,
 } from './collision-world';
 
 // ── Collision Event System ───────────────────────────────────────────────────
@@ -92,11 +92,11 @@ export {
   makePairKey,
 } from './CollisionEvents';
 export type {
-  CollisionPhase,
-  CollisionContactInfo,
-  CollisionEvent,
-  ActiveContactPair,
-  CollisionCallback,
+// [orphan3]   CollisionPhase,
+// [orphan3]   CollisionContactInfo,
+// [orphan3]   CollisionEvent,
+// [orphan3]   ActiveContactPair,
+// [orphan3]   CollisionCallback,
 } from './CollisionEvents';
 
 // ── PascalCase modules (unique exports only, no name conflicts) ───────────────
@@ -132,13 +132,13 @@ export {
   resetIdCounter,
 } from './CollisionWorld';
 export type {
-  Vec2,
-  ShapeType,
-  BodyType,
-  BroadPhasePair,
-  ContactInfo,
-  SPHParticle,
-  SPHWorld,
+// [orphan3]   Vec2,
+// [orphan3]   ShapeType,
+// [orphan3]   BodyType,
+// [orphan3]   BroadPhasePair,
+// [orphan3]   ContactInfo,
+// [orphan3]   SPHParticle,
+// [orphan3]   SPHWorld,
 } from './CollisionWorld';
 
 // EPA.ts — standalone GJK/EPA on Vec2[] arrays (unique exports only)
@@ -146,7 +146,7 @@ export {
   detectCollision,
 } from './EPA';
 export type {
-  CollisionResult,
+// [orphan3]   CollisionResult,
 } from './EPA';
 
 // GJK.ts — class-based shapes + collision (unique exports only)
@@ -156,7 +156,7 @@ export {
   collide,
 } from './GJK';
 export type {
-  CollisionInfo,
+// [orphan3]   CollisionInfo,
 } from './GJK';
 
 // ── contact-generator ─────────────────────────────────────────────────────────
@@ -211,12 +211,12 @@ export {
   rayIntersectsAABB,
 } from './SceneQuery';
 export type {
-  AABB2,
-  Ray2,
-  CircleShape,
-  AABBShape,
-  CapsuleShape,
-  ConvexPolygonShape,
-  Shape,
-  UserData,
+// [orphan3]   AABB2,
+// [orphan3]   Ray2,
+// [orphan3]   CircleShape,
+// [orphan3]   AABBShape,
+// [orphan3]   CapsuleShape,
+// [orphan3]   ConvexPolygonShape,
+// [orphan3]   Shape,
+// [orphan3]   UserData,
 } from './SceneQuery';
