@@ -152,6 +152,7 @@ export default defineConfig({
     },
     resolve: {
       alias: {
+        '@theatre/core': './upstream/theatre-js/core/src',
         '@theatre/utils': './upstream/theatre-js/utils/src',
         '@theatre/dataverse': './upstream/theatre-js/dataverse/src',
         'worker:./basis.worker.ts': './src/lib/stubs/empty-worker.ts',
