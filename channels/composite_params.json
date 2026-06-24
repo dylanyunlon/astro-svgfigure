@@ -1,14 +1,7 @@
 {
-  "cells": [
-    {
-      "id": "ffn",
-      "x": 220.0,
-      "y": 470.0,
-      "width": 140,
-      "height": 45,
-      "species_params": {
-        "species": "cil-bolt",
-        "cell_id": "ffn",
+  "cells": {
+    "ffn": {
+      "agent_params": {
         "bbox": {
           "x": 220.0,
           "y": 470.0,
@@ -16,96 +9,40 @@
           "h": 45,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#FF6F00",
-        "stroke_color": "#FF6F00",
-        "label": "Feed Forward",
-        "font_size": 10,
         "species_params": {
-          "zigzag_count": 6,
-          "amplitude": 6.0,
-          "seg_width": 20.0
-        },
-        "epoch": 9,
-        "shadow": {
-          "dx": 2.0,
-          "dy": 2.0,
-          "blur": 3.38,
-          "opacity": 0.08
-        }
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 0,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 1,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "polySDF",
-          "sdf_radius": 0.38,
-          "glow_intensity": 0.85,
-          "glow_color": [
-            1.0,
-            0.435,
-            0.0
-          ],
-          "fresnel_power": 3.5,
-          "noise_scale": 0.7,
-          "noise_speed": 0.45,
-          "edge_softness": 0.12
-        },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.4,
-            "bloomScale": 1.0,
-            "brightness": 1.3
+          "species": "cil-bolt",
+          "cell_id": "ffn",
+          "bbox": {
+            "x": 220.0,
+            "y": 470.0,
+            "w": 140,
+            "h": 45,
+            "z": 3
           },
-          "glow": {
-            "distance": 18,
-            "outerStrength": 2.5,
-            "innerStrength": 1.2,
-            "color": "0xFF6F00"
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#FF6F00",
+          "stroke_color": "#FF6F00",
+          "label": "Feed Forward",
+          "font_size": 10,
+          "species_params": {
+            "zigzag_count": 6,
+            "amplitude": 6.0,
+            "seg_width": 20.0
           },
-          "drop_shadow": {
-            "offset": [
-              2,
-              5
-            ],
-            "blur": 7,
-            "alpha": 0.35,
-            "color": "0x000000"
+          "epoch": 9,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.38,
+            "opacity": 0.08
           }
         },
-        "render_params": {
-          "layer": 3,
-          "render_order": 0,
-          "opacity": 0.97,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.0247,
-          "animation": {
-            "speed": 1.7,
-            "phase_offset": 0.0,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "coarse_dom_tree",
-      "x": 718,
-      "y": 1927,
-      "width": 180,
-      "height": 125,
-      "species_params": {
-        "species": "cil-graph",
-        "cell_id": "coarse_dom_tree",
-        "parent_id": null,
+    "coarse_dom_tree": {
+      "agent_params": {
         "bbox": {
           "x": 718,
           "y": 1927,
@@ -113,85 +50,30 @@
           "h": 125,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Coarse DOM Tree + BBoxes",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 1,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdCircle",
-          "sdf_radius": 0.083,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.3765,
-            0.4902,
-            0.5451
-          ],
-          "fresnel_power": 2.0,
-          "noise_scale": 0.35,
-          "noise_speed": 0.25,
-          "edge_softness": 0.075
+        "species_params": {
+          "species": "cil-graph",
+          "cell_id": "coarse_dom_tree",
+          "parent_id": null,
+          "bbox": {
+            "x": 718,
+            "y": 1927,
+            "w": 180,
+            "h": 125,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Coarse DOM Tree + BBoxes",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.735,
-            "bloomScale": 0.336,
-            "brightness": 1.01
-          },
-          "glow": {
-            "distance": 8,
-            "outerStrength": 0.575,
-            "innerStrength": 0.136,
-            "color": "0x607D8B"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.286,
-            "color": "0x263238"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 1,
-          "opacity": 0.86,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.9365,
-          "animation": {
-            "speed": 0.55,
-            "phase_offset": 0.125,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "code_linking",
-      "x": 675,
-      "y": 2756,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "code_linking",
-        "parent_id": "stage2_group",
+    "code_linking": {
+      "agent_params": {
         "bbox": {
           "x": 675,
           "y": 2756,
@@ -199,85 +81,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Link Code to Tree",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 2,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "code_linking",
+          "parent_id": "stage2_group",
+          "bbox": {
+            "x": 675,
+            "y": 2756,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Link Code to Tree",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 2,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.25,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "content_align",
-      "x": 543,
-      "y": 3855,
-      "width": 130,
-      "height": 100,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "content_align",
-        "parent_id": "alignment_group",
+    "content_align": {
+      "agent_params": {
         "bbox": {
           "x": 543,
           "y": 3855,
@@ -285,85 +112,30 @@
           "h": 100,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Content",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 3,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "content_align",
+          "parent_id": "alignment_group",
+          "bbox": {
+            "x": 543,
+            "y": 3855,
+            "w": 130,
+            "h": 100,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Content",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 3,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.472,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.375,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "dec_conv1",
-      "x": 220,
-      "y": 470,
-      "width": 130,
-      "height": 40,
-      "species_params": {
-        "species": "cil-filter",
-        "cell_id": "dec_conv1",
-        "parent_id": "decoder",
+    "dec_conv1": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 470,
@@ -371,85 +143,30 @@
           "h": 40,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "ConvT 3\u00d73",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 4,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.75,
-          "glow_intensity": 0.65,
-          "glow_color": [
-            0.8784,
-            0.251,
-            0.9843
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.05
+        "species_params": {
+          "species": "cil-filter",
+          "cell_id": "dec_conv1",
+          "parent_id": "decoder",
+          "bbox": {
+            "x": 220,
+            "y": 470,
+            "w": 130,
+            "h": 40,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "ConvT 3\u00d73",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.425,
-            "bloomScale": 1.08,
-            "brightness": 1.228
-          },
-          "glow": {
-            "distance": 17,
-            "outerStrength": 2.125,
-            "innerStrength": 0.88,
-            "color": "0xE040FB"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 7,
-            "alpha": 0.293,
-            "color": "0x4A148C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 4,
-          "opacity": 0.96,
-          "blend_mode": "NORMAL",
-          "scale_factor": 0.9309,
-          "animation": {
-            "speed": 1.48,
-            "phase_offset": 0.5,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "dec_conv2",
-      "x": 220,
-      "y": 670,
-      "width": 130,
-      "height": 40,
-      "species_params": {
-        "species": "cil-filter",
-        "cell_id": "dec_conv2",
-        "parent_id": "decoder",
+    "dec_conv2": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 670,
@@ -457,85 +174,30 @@
           "h": 40,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "ConvT 3\u00d73",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 5,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.75,
-          "glow_intensity": 0.65,
-          "glow_color": [
-            0.8784,
-            0.251,
-            0.9843
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.05
+        "species_params": {
+          "species": "cil-filter",
+          "cell_id": "dec_conv2",
+          "parent_id": "decoder",
+          "bbox": {
+            "x": 220,
+            "y": 670,
+            "w": 130,
+            "h": 40,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "ConvT 3\u00d73",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.425,
-            "bloomScale": 1.08,
-            "brightness": 1.228
-          },
-          "glow": {
-            "distance": 17,
-            "outerStrength": 2.125,
-            "innerStrength": 0.88,
-            "color": "0xE040FB"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 7,
-            "alpha": 0.293,
-            "color": "0x4A148C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 5,
-          "opacity": 0.96,
-          "blend_mode": "NORMAL",
-          "scale_factor": 0.9309,
-          "animation": {
-            "speed": 1.48,
-            "phase_offset": 0.625,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "dec_upsamp",
-      "x": 220,
-      "y": 570,
-      "width": 130,
-      "height": 40,
-      "species_params": {
-        "species": "cil-loop",
-        "cell_id": "dec_upsamp",
-        "parent_id": "decoder",
+    "dec_upsamp": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 570,
@@ -543,85 +205,30 @@
           "h": 40,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Upsample",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 6,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdCircle",
-          "sdf_radius": 0.45,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            1.0,
-            0.8431,
-            0.251
-          ],
-          "fresnel_power": 2.4,
-          "noise_scale": 0.22,
-          "noise_speed": 0.2,
-          "edge_softness": 0.06
+        "species_params": {
+          "species": "cil-loop",
+          "cell_id": "dec_upsamp",
+          "parent_id": "decoder",
+          "bbox": {
+            "x": 220,
+            "y": 570,
+            "w": 130,
+            "h": 40,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Upsample",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.7,
-            "bloomScale": 0.42,
-            "brightness": 1.035
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.75,
-            "innerStrength": 0.22,
-            "color": "0xFFD740"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.213,
-            "color": "0xF57F17"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 6,
-          "opacity": 0.92,
-          "blend_mode": "NORMAL",
-          "scale_factor": 0.9309,
-          "animation": {
-            "speed": 0.65,
-            "phase_offset": 0.75,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "display_errors",
-      "x": 370,
-      "y": 626,
-      "width": 150,
-      "height": 105,
-      "species_params": {
-        "species": "cil-bolt",
-        "cell_id": "display_errors",
-        "parent_id": "noise_types",
+    "display_errors": {
+      "agent_params": {
         "bbox": {
           "x": 370,
           "y": 626,
@@ -629,85 +236,30 @@
           "h": 105,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Display Errors",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 7,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.8,
-          "glow_intensity": 0.8,
-          "glow_color": [
-            1.0,
-            0.6706,
-            0.251
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.048
+        "species_params": {
+          "species": "cil-bolt",
+          "cell_id": "display_errors",
+          "parent_id": "noise_types",
+          "bbox": {
+            "x": 370,
+            "y": 626,
+            "w": 150,
+            "h": 105,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Display Errors",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.35,
-            "bloomScale": 1.26,
-            "brightness": 1.28
-          },
-          "glow": {
-            "distance": 19,
-            "outerStrength": 2.5,
-            "innerStrength": 1.06,
-            "color": "0xFFAB40"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              5
-            ],
-            "blur": 8,
-            "alpha": 0.238,
-            "color": "0xBF360C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 7,
-          "opacity": 0.97,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.6202,
-          "animation": {
-            "speed": 1.7,
-            "phase_offset": 0.875,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "empty_elements",
-      "x": 540,
-      "y": 628.5,
-      "width": 140,
-      "height": 100,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "empty_elements",
-        "parent_id": "noise_types",
+    "empty_elements": {
+      "agent_params": {
         "bbox": {
           "x": 540,
           "y": 628.5,
@@ -715,85 +267,30 @@
           "h": 100,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Empty/Small Elements",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 8,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "empty_elements",
+          "parent_id": "noise_types",
+          "bbox": {
+            "x": 540,
+            "y": 628.5,
+            "w": 140,
+            "h": 100,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Empty/Small Elements",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 8,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.5275,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.0,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "enc_conv1",
-      "x": 220,
-      "y": 255,
-      "width": 130,
-      "height": 40,
-      "species_params": {
-        "species": "cil-filter",
-        "cell_id": "enc_conv1",
-        "parent_id": "encoder",
+    "enc_conv1": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 255,
@@ -801,85 +298,30 @@
           "h": 40,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Conv 3\u00d73",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 9,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.75,
-          "glow_intensity": 0.65,
-          "glow_color": [
-            0.8784,
-            0.251,
-            0.9843
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.05
+        "species_params": {
+          "species": "cil-filter",
+          "cell_id": "enc_conv1",
+          "parent_id": "encoder",
+          "bbox": {
+            "x": 220,
+            "y": 255,
+            "w": 130,
+            "h": 40,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Conv 3\u00d73",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.425,
-            "bloomScale": 1.08,
-            "brightness": 1.228
-          },
-          "glow": {
-            "distance": 17,
-            "outerStrength": 2.125,
-            "innerStrength": 0.88,
-            "color": "0xE040FB"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 7,
-            "alpha": 0.293,
-            "color": "0x4A148C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 9,
-          "opacity": 0.96,
-          "blend_mode": "NORMAL",
-          "scale_factor": 0.9309,
-          "animation": {
-            "speed": 1.48,
-            "phase_offset": 0.125,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "enc_conv2",
-      "x": 220,
-      "y": 455,
-      "width": 130,
-      "height": 40,
-      "species_params": {
-        "species": "cil-filter",
-        "cell_id": "enc_conv2",
-        "parent_id": "encoder",
+    "enc_conv2": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 455,
@@ -887,85 +329,30 @@
           "h": 40,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Conv 3\u00d73",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 10,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.75,
-          "glow_intensity": 0.65,
-          "glow_color": [
-            0.8784,
-            0.251,
-            0.9843
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.05
+        "species_params": {
+          "species": "cil-filter",
+          "cell_id": "enc_conv2",
+          "parent_id": "encoder",
+          "bbox": {
+            "x": 220,
+            "y": 455,
+            "w": 130,
+            "h": 40,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Conv 3\u00d73",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.425,
-            "bloomScale": 1.08,
-            "brightness": 1.228
-          },
-          "glow": {
-            "distance": 17,
-            "outerStrength": 2.125,
-            "innerStrength": 0.88,
-            "color": "0xE040FB"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 7,
-            "alpha": 0.293,
-            "color": "0x4A148C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 10,
-          "opacity": 0.96,
-          "blend_mode": "NORMAL",
-          "scale_factor": 0.9309,
-          "animation": {
-            "speed": 1.48,
-            "phase_offset": 0.25,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "enc_pool",
-      "x": 220,
-      "y": 355,
-      "width": 130,
-      "height": 40,
-      "species_params": {
-        "species": "cil-layers",
-        "cell_id": "enc_pool",
-        "parent_id": "encoder",
+    "enc_pool": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 355,
@@ -973,85 +360,30 @@
           "h": 40,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "MaxPool",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 11,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.4,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.2667,
-            0.5412,
-            1.0
-          ],
-          "fresnel_power": 2.6,
-          "noise_scale": 0.28,
-          "noise_speed": 0.18,
-          "edge_softness": 0.062
+        "species_params": {
+          "species": "cil-layers",
+          "cell_id": "enc_pool",
+          "parent_id": "encoder",
+          "bbox": {
+            "x": 220,
+            "y": 355,
+            "w": 130,
+            "h": 40,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "MaxPool",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.71,
-            "bloomScale": 0.396,
-            "brightness": 1.028
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.7,
-            "innerStrength": 0.196,
-            "color": "0x448AFF"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.277,
-            "color": "0x0D47A1"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 11,
-          "opacity": 0.91,
-          "blend_mode": "NORMAL",
-          "scale_factor": 0.9309,
-          "animation": {
-            "speed": 0.62,
-            "phase_offset": 0.375,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "final_css",
-      "x": 825,
-      "y": 3462,
-      "width": 150,
-      "height": 105,
-      "species_params": {
-        "species": "cil-arrow-right",
-        "cell_id": "final_css",
-        "parent_id": "output_group",
+    "final_css": {
+      "agent_params": {
         "bbox": {
           "x": 825,
           "y": 3462,
@@ -1059,85 +391,30 @@
           "h": 105,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "CSS Styles",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 12,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4706,
-            0.5647,
-            0.6118
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.065
+        "species_params": {
+          "species": "cil-arrow-right",
+          "cell_id": "final_css",
+          "parent_id": "output_group",
+          "bbox": {
+            "x": 825,
+            "y": 3462,
+            "w": 150,
+            "h": 105,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "CSS Styles",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.72,
-            "bloomScale": 0.372,
-            "brightness": 1.021
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.65,
-            "innerStrength": 0.172,
-            "color": "0x78909C"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.27,
-            "color": "0x263238"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 12,
-          "opacity": 0.9,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.6202,
-          "animation": {
-            "speed": 0.59,
-            "phase_offset": 0.5,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "final_html",
-      "x": 655,
-      "y": 3462,
-      "width": 150,
-      "height": 105,
-      "species_params": {
-        "species": "cil-arrow-right",
-        "cell_id": "final_html",
-        "parent_id": "output_group",
+    "final_html": {
+      "agent_params": {
         "bbox": {
           "x": 655,
           "y": 3462,
@@ -1145,85 +422,30 @@
           "h": 105,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "HTML Code",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 13,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4706,
-            0.5647,
-            0.6118
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.065
+        "species_params": {
+          "species": "cil-arrow-right",
+          "cell_id": "final_html",
+          "parent_id": "output_group",
+          "bbox": {
+            "x": 655,
+            "y": 3462,
+            "w": 150,
+            "h": 105,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "HTML Code",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.72,
-            "bloomScale": 0.372,
-            "brightness": 1.021
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.65,
-            "innerStrength": 0.172,
-            "color": "0x78909C"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.27,
-            "color": "0x263238"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 13,
-          "opacity": 0.9,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.6202,
-          "animation": {
-            "speed": 0.59,
-            "phase_offset": 0.625,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "heuristic_rules",
-      "x": 525,
-      "y": 761,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-filter",
-        "cell_id": "heuristic_rules",
-        "parent_id": "bbox_pruning_group",
+    "heuristic_rules": {
+      "agent_params": {
         "bbox": {
           "x": 525,
           "y": 761,
@@ -1231,85 +453,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Heuristic Pruning Rules",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 14,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.75,
-          "glow_intensity": 0.65,
-          "glow_color": [
-            0.8784,
-            0.251,
-            0.9843
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.05
+        "species_params": {
+          "species": "cil-filter",
+          "cell_id": "heuristic_rules",
+          "parent_id": "bbox_pruning_group",
+          "bbox": {
+            "x": 525,
+            "y": 761,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Heuristic Pruning Rules",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.425,
-            "bloomScale": 1.08,
-            "brightness": 1.228
-          },
-          "glow": {
-            "distance": 17,
-            "outerStrength": 2.125,
-            "innerStrength": 0.88,
-            "color": "0xE040FB"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 7,
-            "alpha": 0.293,
-            "color": "0x4A148C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 14,
-          "opacity": 0.96,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 1.48,
-            "phase_offset": 0.75,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "hidden_elements",
-      "x": 700,
-      "y": 626,
-      "width": 150,
-      "height": 105,
-      "species_params": {
-        "species": "cil-bolt",
-        "cell_id": "hidden_elements",
-        "parent_id": "noise_types",
+    "hidden_elements": {
+      "agent_params": {
         "bbox": {
           "x": 700,
           "y": 626,
@@ -1317,85 +484,30 @@
           "h": 105,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Visually Hidden Parts",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 15,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.8,
-          "glow_intensity": 0.8,
-          "glow_color": [
-            1.0,
-            0.6706,
-            0.251
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.048
+        "species_params": {
+          "species": "cil-bolt",
+          "cell_id": "hidden_elements",
+          "parent_id": "noise_types",
+          "bbox": {
+            "x": 700,
+            "y": 626,
+            "w": 150,
+            "h": 105,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Visually Hidden Parts",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.35,
-            "bloomScale": 1.26,
-            "brightness": 1.28
-          },
-          "glow": {
-            "distance": 19,
-            "outerStrength": 2.5,
-            "innerStrength": 1.06,
-            "color": "0xFFAB40"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              5
-            ],
-            "blur": 8,
-            "alpha": 0.238,
-            "color": "0xBF360C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 15,
-          "opacity": 0.97,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.6202,
-          "animation": {
-            "speed": 1.7,
-            "phase_offset": 0.875,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "hidden_states",
-      "x": 936.0,
-      "y": 1383,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-bolt",
-        "cell_id": "hidden_states",
-        "parent_id": "structure_model",
+    "hidden_states": {
+      "agent_params": {
         "bbox": {
           "x": 936.0,
           "y": 1383,
@@ -1403,85 +515,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Hidden State Vectors",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 16,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.8,
-          "glow_intensity": 0.8,
-          "glow_color": [
-            1.0,
-            0.6706,
-            0.251
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.048
+        "species_params": {
+          "species": "cil-bolt",
+          "cell_id": "hidden_states",
+          "parent_id": "structure_model",
+          "bbox": {
+            "x": 936.0,
+            "y": 1383,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Hidden State Vectors",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.35,
-            "bloomScale": 1.26,
-            "brightness": 1.28
-          },
-          "glow": {
-            "distance": 19,
-            "outerStrength": 2.5,
-            "innerStrength": 1.06,
-            "color": "0xFFAB40"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              5
-            ],
-            "blur": 8,
-            "alpha": 0.238,
-            "color": "0xBF360C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 16,
-          "opacity": 0.97,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 1.7,
-            "phase_offset": 0.0,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "input_image",
-      "x": 12,
-      "y": 18,
-      "width": 160,
-      "height": 112,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "input_image",
-        "parent_id": null,
+    "input_image": {
+      "agent_params": {
         "bbox": {
           "x": 12,
           "y": 18,
@@ -1489,85 +546,30 @@
           "h": 112,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "High-Resolution Design Image",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 17,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "input_image",
+          "parent_id": null,
+          "bbox": {
+            "x": 12,
+            "y": 18,
+            "w": 160,
+            "h": 112,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "High-Resolution Design Image",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 17,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.7282,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.125,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "integrated_code",
-      "x": 675,
-      "y": 2894,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "integrated_code",
-        "parent_id": "stage2_group",
+    "integrated_code": {
+      "agent_params": {
         "bbox": {
           "x": 675,
           "y": 2894,
@@ -1575,85 +577,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Integrated Code",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 18,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "integrated_code",
+          "parent_id": "stage2_group",
+          "bbox": {
+            "x": 675,
+            "y": 2894,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Integrated Code",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 18,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.25,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "json_output",
-      "x": 723.5,
-      "y": 1669,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-arrow-right",
-        "cell_id": "json_output",
-        "parent_id": "structure_model",
+    "json_output": {
+      "agent_params": {
         "bbox": {
           "x": 723.5,
           "y": 1669,
@@ -1661,85 +608,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "JSON DOM Tree Output",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 19,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4706,
-            0.5647,
-            0.6118
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.065
+        "species_params": {
+          "species": "cil-arrow-right",
+          "cell_id": "json_output",
+          "parent_id": "structure_model",
+          "bbox": {
+            "x": 723.5,
+            "y": 1669,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "JSON DOM Tree Output",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.72,
-            "bloomScale": 0.372,
-            "brightness": 1.021
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.65,
-            "innerStrength": 0.172,
-            "color": "0x78909C"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.27,
-            "color": "0x263238"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 19,
-          "opacity": 0.9,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.59,
-            "phase_offset": 0.375,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "latent",
-      "x": 220,
-      "y": 255,
-      "width": 140,
-      "height": 45,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "latent",
-        "parent_id": null,
+    "latent": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 255,
@@ -1747,85 +639,30 @@
           "h": 45,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Latent z",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 20,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "latent",
+          "parent_id": null,
+          "bbox": {
+            "x": 220,
+            "y": 255,
+            "w": 140,
+            "h": 45,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Latent z",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 20,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.0247,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.5,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "leaf_extraction",
-      "x": 703.3333333333334,
-      "y": 2197,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "leaf_extraction",
-        "parent_id": "stage2_group",
+    "leaf_extraction": {
+      "agent_params": {
         "bbox": {
           "x": 703.3333333333334,
           "y": 2197,
@@ -1833,85 +670,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Leaf Node Extraction",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 21,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "leaf_extraction",
+          "parent_id": "stage2_group",
+          "bbox": {
+            "x": 703.3333333333334,
+            "y": 2197,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Leaf Node Extraction",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 21,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.625,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "local_code_gen",
-      "x": 675,
-      "y": 2618,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "local_code_gen",
-        "parent_id": "stage2_group",
+    "local_code_gen": {
+      "agent_params": {
         "bbox": {
           "x": 675,
           "y": 2618,
@@ -1919,85 +701,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Local Code Generation",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 22,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "local_code_gen",
+          "parent_id": "stage2_group",
+          "bbox": {
+            "x": 675,
+            "y": 2618,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Local Code Generation",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 22,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.75,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "local_images",
-      "x": 675,
-      "y": 2335,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "local_images",
-        "parent_id": "stage2_group",
+    "local_images": {
+      "agent_params": {
         "bbox": {
           "x": 675,
           "y": 2335,
@@ -2005,85 +732,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Local Leaf Images",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 23,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "local_images",
+          "parent_id": "stage2_group",
+          "bbox": {
+            "x": 675,
+            "y": 2335,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Local Leaf Images",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 23,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.875,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "mllm_code_agent",
-      "x": 670,
-      "y": 2473,
-      "width": 180,
-      "height": 125,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "mllm_code_agent",
-        "parent_id": "stage2_group",
+    "mllm_code_agent": {
+      "agent_params": {
         "bbox": {
           "x": 670,
           "y": 2473,
@@ -2091,85 +763,30 @@
           "h": 125,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "MLLM Code Agent",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 24,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "mllm_code_agent",
+          "parent_id": "stage2_group",
+          "bbox": {
+            "x": 670,
+            "y": 2473,
+            "w": 180,
+            "h": 125,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "MLLM Code Agent",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 24,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.9365,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.0,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "mllm_style_agent",
-      "x": 670,
-      "y": 3032,
-      "width": 180,
-      "height": 125,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "mllm_style_agent",
-        "parent_id": "stage2_group",
+    "mllm_style_agent": {
+      "agent_params": {
         "bbox": {
           "x": 670,
           "y": 3032,
@@ -2177,85 +794,30 @@
           "h": 125,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "MLLM Style Agent",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 25,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "mllm_style_agent",
+          "parent_id": "stage2_group",
+          "bbox": {
+            "x": 670,
+            "y": 3032,
+            "w": 180,
+            "h": 125,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "MLLM Style Agent",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 25,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.9365,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.125,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "next_token_prediction",
-      "x": 913.5,
-      "y": 1669,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-loop",
-        "cell_id": "next_token_prediction",
-        "parent_id": "structure_model",
+    "next_token_prediction": {
+      "agent_params": {
         "bbox": {
           "x": 913.5,
           "y": 1669,
@@ -2263,85 +825,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Next-Token Prediction",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 26,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdCircle",
-          "sdf_radius": 0.45,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            1.0,
-            0.8431,
-            0.251
-          ],
-          "fresnel_power": 2.4,
-          "noise_scale": 0.22,
-          "noise_speed": 0.2,
-          "edge_softness": 0.06
+        "species_params": {
+          "species": "cil-loop",
+          "cell_id": "next_token_prediction",
+          "parent_id": "structure_model",
+          "bbox": {
+            "x": 913.5,
+            "y": 1669,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Next-Token Prediction",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.7,
-            "bloomScale": 0.42,
-            "brightness": 1.035
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.75,
-            "innerStrength": 0.22,
-            "color": "0xFFD740"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.213,
-            "color": "0xF57F17"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 26,
-          "opacity": 0.92,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.65,
-            "phase_offset": 0.25,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "noise_detection",
-      "x": 525,
-      "y": 453,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-filter",
-        "cell_id": "noise_detection",
-        "parent_id": "bbox_pruning_group",
+    "noise_detection": {
+      "agent_params": {
         "bbox": {
           "x": 525,
           "y": 453,
@@ -2349,85 +856,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Noise Detection",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 27,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.75,
-          "glow_intensity": 0.65,
-          "glow_color": [
-            0.8784,
-            0.251,
-            0.9843
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.05
+        "species_params": {
+          "species": "cil-filter",
+          "cell_id": "noise_detection",
+          "parent_id": "bbox_pruning_group",
+          "bbox": {
+            "x": 525,
+            "y": 453,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Noise Detection",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.425,
-            "bloomScale": 1.08,
-            "brightness": 1.228
-          },
-          "glow": {
-            "distance": 17,
-            "outerStrength": 2.125,
-            "innerStrength": 0.88,
-            "color": "0xE040FB"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 7,
-            "alpha": 0.293,
-            "color": "0x4A148C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 27,
-          "opacity": 0.96,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 1.48,
-            "phase_offset": 0.375,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "nonleaf_styling",
-      "x": 670,
-      "y": 3177,
-      "width": 180,
-      "height": 125,
-      "species_params": {
-        "species": "cil-layers",
-        "cell_id": "nonleaf_styling",
-        "parent_id": "stage2_group",
+    "nonleaf_styling": {
+      "agent_params": {
         "bbox": {
           "x": 670,
           "y": 3177,
@@ -2435,84 +887,30 @@
           "h": 125,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Non-Leaf Style Supplement",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 28,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.4,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.2667,
-            0.5412,
-            1.0
-          ],
-          "fresnel_power": 2.6,
-          "noise_scale": 0.28,
-          "noise_speed": 0.18,
-          "edge_softness": 0.062
+        "species_params": {
+          "species": "cil-layers",
+          "cell_id": "nonleaf_styling",
+          "parent_id": "stage2_group",
+          "bbox": {
+            "x": 670,
+            "y": 3177,
+            "w": 180,
+            "h": 125,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Non-Leaf Style Supplement",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.71,
-            "bloomScale": 0.396,
-            "brightness": 1.028
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.7,
-            "innerStrength": 0.196,
-            "color": "0x448AFF"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.277,
-            "color": "0x0D47A1"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 28,
-          "opacity": 0.91,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.9365,
-          "animation": {
-            "speed": 0.62,
-            "phase_offset": 0.5,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "output",
-      "x": 220.0,
-      "y": 675.0,
-      "width": 160,
-      "height": 50,
-      "species_params": {
-        "species": "cil-arrow-right",
-        "cell_id": "output",
+    "output": {
+      "agent_params": {
         "bbox": {
           "x": 220.0,
           "y": 675.0,
@@ -2520,95 +918,39 @@
           "h": 50,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.0937,
-        "fill_color": "#455A64",
-        "stroke_color": "#455A64",
-        "label": "Output",
-        "font_size": 10,
         "species_params": {
-          "arrow_width": 48.0,
-          "arrow_height": 16.0
-        },
-        "epoch": 9,
-        "shadow": {
-          "dx": 2.0,
-          "dy": 2.0,
-          "blur": 3.75,
-          "opacity": 0.35
-        }
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 29,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdArrow",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.6,
-          "glow_color": [
-            0.271,
-            0.353,
-            0.392
-          ],
-          "fresnel_power": 2.0,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.15
-        },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.5,
-            "bloomScale": 0.8,
-            "brightness": 1.2
+          "species": "cil-arrow-right",
+          "cell_id": "output",
+          "bbox": {
+            "x": 220.0,
+            "y": 675.0,
+            "w": 160,
+            "h": 50,
+            "z": 3
           },
-          "glow": {
-            "distance": 15,
-            "outerStrength": 2.0,
-            "innerStrength": 1.0,
-            "color": "0x455A64"
+          "z": 3,
+          "opacity": 0.0937,
+          "fill_color": "#455A64",
+          "stroke_color": "#455A64",
+          "label": "Output",
+          "font_size": 10,
+          "species_params": {
+            "arrow_width": 48.0,
+            "arrow_height": 16.0
           },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 6,
-            "alpha": 0.3,
-            "color": "0x000000"
+          "epoch": 9,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.75,
+            "opacity": 0.35
           }
         },
-        "render_params": {
-          "layer": 3,
-          "render_order": 29,
-          "opacity": 0.9,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.1547,
-          "animation": {
-            "speed": 0.59,
-            "phase_offset": 0.625,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "patch_division",
-      "x": 907.6666666666665,
-      "y": 1107,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "patch_division",
-        "parent_id": "structure_model",
+    "patch_division": {
+      "agent_params": {
         "bbox": {
           "x": 907.6666666666665,
           "y": 1107,
@@ -2616,85 +958,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Fixed-Size Patch Division",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 30,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "patch_division",
+          "parent_id": "structure_model",
+          "bbox": {
+            "x": 907.6666666666665,
+            "y": 1107,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Fixed-Size Patch Division",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 30,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.75,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "pruned_dataset",
-      "x": 525,
-      "y": 899,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-vector",
-        "cell_id": "pruned_dataset",
-        "parent_id": "bbox_pruning_group",
+    "pruned_dataset": {
+      "agent_params": {
         "bbox": {
           "x": 525,
           "y": 899,
@@ -2702,85 +989,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Pruned Clean Dataset",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 31,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.25,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4118,
-            0.9412,
-            0.6824
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.068
+        "species_params": {
+          "species": "cil-vector",
+          "cell_id": "pruned_dataset",
+          "parent_id": "bbox_pruning_group",
+          "bbox": {
+            "x": 525,
+            "y": 899,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Pruned Clean Dataset",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x69F0AE"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.218,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 31,
-          "opacity": 0.89,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.875,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "ram_resource",
-      "x": 1912,
-      "y": 30,
-      "width": 140,
-      "height": 100,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "ram_resource",
-        "parent_id": null,
+    "ram_resource": {
+      "agent_params": {
         "bbox": {
           "x": 1912,
           "y": 30,
@@ -2788,85 +1020,30 @@
           "h": 100,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "GPU/RAM Resources",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 32,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "ram_resource",
+          "parent_id": null,
+          "bbox": {
+            "x": 1912,
+            "y": 30,
+            "w": 140,
+            "h": 100,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "GPU/RAM Resources",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 32,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.5275,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.0,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "rendered_webpage",
-      "x": 673.3333333333334,
-      "y": 3587,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-arrow-right",
-        "cell_id": "rendered_webpage",
-        "parent_id": "output_group",
+    "rendered_webpage": {
+      "agent_params": {
         "bbox": {
           "x": 673.3333333333334,
           "y": 3587,
@@ -2874,85 +1051,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Rendered Webpage",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 33,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4706,
-            0.5647,
-            0.6118
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.065
+        "species_params": {
+          "species": "cil-arrow-right",
+          "cell_id": "rendered_webpage",
+          "parent_id": "output_group",
+          "bbox": {
+            "x": 673.3333333333334,
+            "y": 3587,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Rendered Webpage",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.72,
-            "bloomScale": 0.372,
-            "brightness": 1.021
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.65,
-            "innerStrength": 0.172,
-            "color": "0x78909C"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.27,
-            "color": "0x263238"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 33,
-          "opacity": 0.9,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.59,
-            "phase_offset": 0.125,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "resolution_handling",
-      "x": 852,
-      "y": 12,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "resolution_handling",
-        "parent_id": null,
+    "resolution_handling": {
+      "agent_params": {
         "bbox": {
           "x": 852,
           "y": 12,
@@ -2960,85 +1082,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "On-the-Fly Resolution",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 34,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "resolution_handling",
+          "parent_id": null,
+          "bbox": {
+            "x": 852,
+            "y": 12,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "On-the-Fly Resolution",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 34,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.25,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "softmax_layer",
-      "x": 771.0,
-      "y": 1530.75,
-      "width": 150,
-      "height": 105,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "softmax_layer",
-        "parent_id": "structure_model",
+    "softmax_layer": {
+      "agent_params": {
         "bbox": {
           "x": 771.0,
           "y": 1530.75,
@@ -3046,85 +1113,30 @@
           "h": 105,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Softmax (W \u00b7 ht)",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 35,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "softmax_layer",
+          "parent_id": "structure_model",
+          "bbox": {
+            "x": 771.0,
+            "y": 1530.75,
+            "w": 150,
+            "h": 105,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Softmax (W \u00b7 ht)",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 35,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.6202,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.375,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "structure_align",
-      "x": 693,
-      "y": 3855,
-      "width": 130,
-      "height": 100,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "structure_align",
-        "parent_id": "alignment_group",
+    "structure_align": {
+      "agent_params": {
         "bbox": {
           "x": 693,
           "y": 3855,
@@ -3132,85 +1144,30 @@
           "h": 100,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Structure",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 36,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "structure_align",
+          "parent_id": "alignment_group",
+          "bbox": {
+            "x": 693,
+            "y": 3855,
+            "w": 130,
+            "h": 100,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Structure",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 36,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.472,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.5,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "style_align",
-      "x": 843,
-      "y": 3855,
-      "width": 130,
-      "height": 100,
-      "species_params": {
-        "species": "cil-layers",
-        "cell_id": "style_align",
-        "parent_id": "alignment_group",
+    "style_align": {
+      "agent_params": {
         "bbox": {
           "x": 843,
           "y": 3855,
@@ -3218,85 +1175,30 @@
           "h": 100,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Style",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 37,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.4,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.2667,
-            0.5412,
-            1.0
-          ],
-          "fresnel_power": 2.6,
-          "noise_scale": 0.28,
-          "noise_speed": 0.18,
-          "edge_softness": 0.062
+        "species_params": {
+          "species": "cil-layers",
+          "cell_id": "style_align",
+          "parent_id": "alignment_group",
+          "bbox": {
+            "x": 843,
+            "y": 3855,
+            "w": 130,
+            "h": 100,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Style",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.71,
-            "bloomScale": 0.396,
-            "brightness": 1.028
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.7,
-            "innerStrength": 0.196,
-            "color": "0x448AFF"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.277,
-            "color": "0x0D47A1"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 37,
-          "opacity": 0.91,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.472,
-          "animation": {
-            "speed": 0.62,
-            "phase_offset": 0.625,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "vision2ui_dataset",
-      "x": 525,
-      "y": 315,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-vector",
-        "cell_id": "vision2ui_dataset",
-        "parent_id": "bbox_pruning_group",
+    "vision2ui_dataset": {
+      "agent_params": {
         "bbox": {
           "x": 525,
           "y": 315,
@@ -3304,85 +1206,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Vision2UI Dataset",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 38,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.25,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4118,
-            0.9412,
-            0.6824
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.068
+        "species_params": {
+          "species": "cil-vector",
+          "cell_id": "vision2ui_dataset",
+          "parent_id": "bbox_pruning_group",
+          "bbox": {
+            "x": 525,
+            "y": 315,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Vision2UI Dataset",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x69F0AE"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.218,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 38,
-          "opacity": 0.89,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.75,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "weight_matrix",
-      "x": 776.0,
-      "y": 1401,
-      "width": 140,
-      "height": 100,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "weight_matrix",
-        "parent_id": "structure_model",
+    "weight_matrix": {
+      "agent_params": {
         "bbox": {
           "x": 776.0,
           "y": 1401,
@@ -3390,84 +1237,30 @@
           "h": 100,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Weight Matrix W",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 39,
-      "z_layer": 3,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "weight_matrix",
+          "parent_id": "structure_model",
+          "bbox": {
+            "x": 776.0,
+            "y": 1401,
+            "w": 140,
+            "h": 100,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Weight Matrix W",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 39,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.5275,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.875,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "self_attn",
-      "x": 220.0,
-      "y": 260.0,
-      "width": 160,
-      "height": 50,
-      "species_params": {
-        "species": "cil-eye",
-        "cell_id": "self_attn",
+    "self_attn": {
+      "agent_params": {
         "bbox": {
           "x": 220.0,
           "y": 260.0,
@@ -3475,97 +1268,41 @@
           "h": 50,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#3F51B5",
-        "stroke_color": "#3F51B5",
-        "label": "Multi-Head Attention",
-        "font_size": 10,
         "species_params": {
-          "ring_count": 10,
-          "pupil_radius": 4.2,
-          "r_outer": 21.0,
-          "r_inner_ratio": 0.3
-        },
-        "epoch": 9,
-        "shadow": {
-          "dx": 2.0,
-          "dy": 2.0,
-          "blur": 3.75,
-          "opacity": 0.35
-        }
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 40,
-      "z_layer": 3,
-      "is_translucent": true,
-      "outgoing_edge_count": 1,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdEllipse",
-          "sdf_radius": 0.42,
-          "glow_intensity": 0.72,
-          "glow_color": [
-            0.392,
-            0.714,
-            0.965
-          ],
-          "fresnel_power": 2.8,
-          "noise_scale": 0.18,
-          "noise_speed": 0.35,
-          "edge_softness": 0.06
-        },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.55,
-            "bloomScale": 1.2,
-            "brightness": 1.05
+          "species": "cil-eye",
+          "cell_id": "self_attn",
+          "bbox": {
+            "x": 220.0,
+            "y": 260.0,
+            "w": 160,
+            "h": 50,
+            "z": 3
           },
-          "glow": {
-            "distance": 14,
-            "outerStrength": 1.8,
-            "innerStrength": 0.6,
-            "color": "0x64B5F6"
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#3F51B5",
+          "stroke_color": "#3F51B5",
+          "label": "Multi-Head Attention",
+          "font_size": 10,
+          "species_params": {
+            "ring_count": 10,
+            "pupil_radius": 4.2,
+            "r_outer": 21.0,
+            "r_inner_ratio": 0.3
           },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 8,
-            "alpha": 0.28,
-            "color": "0x1A237E"
+          "epoch": 9,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.75,
+            "opacity": 0.35
           }
         },
-        "render_params": {
-          "layer": 3,
-          "render_order": 40,
-          "opacity": 0.748,
-          "blend_mode": "SCREEN",
-          "scale_factor": 1.1547,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.0,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "loss_training",
-      "x": 1082,
-      "y": 25,
-      "width": 150,
-      "height": 105,
-      "species_params": {
-        "species": "cil-plus",
-        "cell_id": "loss_training",
-        "parent_id": null,
+    "loss_training": {
+      "agent_params": {
         "bbox": {
           "x": 1082,
           "y": 25,
@@ -3573,85 +1310,30 @@
           "h": 105,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Training Loss",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 41,
-      "z_layer": 3,
-      "is_translucent": true,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.1,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            1.0,
-            0.3216,
-            0.3216
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.075
+        "species_params": {
+          "species": "cil-plus",
+          "cell_id": "loss_training",
+          "parent_id": null,
+          "bbox": {
+            "x": 1082,
+            "y": 25,
+            "w": 150,
+            "h": 105,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Training Loss",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.74,
-            "bloomScale": 0.324,
-            "brightness": 1.007
-          },
-          "glow": {
-            "distance": 8,
-            "outerStrength": 0.55,
-            "innerStrength": 0.124,
-            "color": "0xFF5252"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.287,
-            "color": "0xB71C1C"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 41,
-          "opacity": 0.731,
-          "blend_mode": "SCREEN",
-          "scale_factor": 1.6202,
-          "animation": {
-            "speed": 0.53,
-            "phase_offset": 0.125,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "transformer_decoder",
-      "x": 964.3333333333333,
-      "y": 1521,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-eye",
-        "cell_id": "transformer_decoder",
-        "parent_id": "structure_model",
+    "transformer_decoder": {
+      "agent_params": {
         "bbox": {
           "x": 964.3333333333333,
           "y": 1521,
@@ -3659,85 +1341,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Transformer Decoder (Dec\u03c6)",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 42,
-      "z_layer": 3,
-      "is_translucent": true,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdCircle",
-          "sdf_radius": 0.2,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.3255,
-            0.4275,
-            0.9961
-          ],
-          "fresnel_power": 2.4,
-          "noise_scale": 0.22,
-          "noise_speed": 0.2,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-eye",
+          "cell_id": "transformer_decoder",
+          "parent_id": "structure_model",
+          "bbox": {
+            "x": 964.3333333333333,
+            "y": 1521,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Transformer Decoder (Dec\u03c6)",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x536DFE"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.291,
-            "color": "0x1A237E"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 42,
-          "opacity": 0.748,
-          "blend_mode": "SCREEN",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.25,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "vit_encoder",
-      "x": 936.0,
-      "y": 1245,
-      "width": 170,
-      "height": 118,
-      "species_params": {
-        "species": "cil-eye",
-        "cell_id": "vit_encoder",
-        "parent_id": "structure_model",
+    "vit_encoder": {
+      "agent_params": {
         "bbox": {
           "x": 936.0,
           "y": 1245,
@@ -3745,84 +1372,30 @@
           "h": 118,
           "z": 3
         },
-        "z": 3,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "ViT Encoder (Enc\u03b8)",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 43,
-      "z_layer": 3,
-      "is_translucent": true,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdCircle",
-          "sdf_radius": 0.2,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.3255,
-            0.4275,
-            0.9961
-          ],
-          "fresnel_power": 2.4,
-          "noise_scale": 0.22,
-          "noise_speed": 0.2,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-eye",
+          "cell_id": "vit_encoder",
+          "parent_id": "structure_model",
+          "bbox": {
+            "x": 936.0,
+            "y": 1245,
+            "w": 170,
+            "h": 118,
+            "z": 3
+          },
+          "z": 3,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "ViT Encoder (Enc\u03b8)",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x536DFE"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.291,
-            "color": "0x1A237E"
-          }
-        },
-        "render_params": {
-          "layer": 3,
-          "render_order": 43,
-          "opacity": 0.748,
-          "blend_mode": "SCREEN",
-          "scale_factor": 1.8285,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.375,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "pos_encode",
-      "x": 220.0,
-      "y": 150.0,
-      "width": 160,
-      "height": 50,
-      "species_params": {
-        "species": "cil-vector",
-        "cell_id": "pos_encode",
+    "pos_encode": {
+      "agent_params": {
         "bbox": {
           "x": 220.0,
           "y": 150.0,
@@ -3830,95 +1403,40 @@
           "h": 50,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#2E7D32",
-        "stroke_color": "#2E7D32",
-        "label": "Positional Encoding",
-        "font_size": 10,
         "species_params": {
-          "arrow_count": 5,
-          "arrow_length": 48.0,
-          "angle_spread": 0.8
-        },
-        "epoch": 9,
-        "shadow": {
-          "dx": 8.0,
-          "dy": 8.0,
-          "blur": 5.35,
-          "opacity": 0.55
-        }
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 44,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 2,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundedBox",
-          "sdf_radius": 8.0,
-          "glow_intensity": 0.55,
-          "glow_color": [
-            0.702,
-            0.616,
-            0.859
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 3.5,
-          "noise_speed": 0.35,
-          "edge_softness": 0.06
-        },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.72,
-            "bloomScale": 0.4,
-            "brightness": 1.05
+          "species": "cil-vector",
+          "cell_id": "pos_encode",
+          "bbox": {
+            "x": 220.0,
+            "y": 150.0,
+            "w": 160,
+            "h": 50,
+            "z": 5
           },
-          "glow": {
-            "distance": 10,
-            "outerStrength": 1.4,
-            "innerStrength": 0.3,
-            "color": "0xB39DDB"
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#2E7D32",
+          "stroke_color": "#2E7D32",
+          "label": "Positional Encoding",
+          "font_size": 10,
+          "species_params": {
+            "arrow_count": 5,
+            "arrow_length": 48.0,
+            "angle_spread": 0.8
           },
-          "drop_shadow": {
-            "offset": [
-              0,
-              2
-            ],
-            "blur": 4,
-            "alpha": 0.22,
-            "color": "0x4527A0"
+          "epoch": 9,
+          "shadow": {
+            "dx": 8.0,
+            "dy": 8.0,
+            "blur": 5.35,
+            "opacity": 0.55
           }
         },
-        "render_params": {
-          "layer": 5,
-          "render_order": 44,
-          "opacity": 0.89,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.1547,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.5,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "input_embed",
-      "x": 220.0,
-      "y": 40.0,
-      "width": 160,
-      "height": 50,
-      "species_params": {
-        "species": "cil-vector",
-        "cell_id": "input_embed",
+    "input_embed": {
+      "agent_params": {
         "bbox": {
           "x": 220.0,
           "y": 40.0,
@@ -3926,96 +1444,40 @@
           "h": 50,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#2E7D32",
-        "stroke_color": "#2E7D32",
-        "label": "Input Embedding",
-        "font_size": 10,
         "species_params": {
-          "arrow_count": 5,
-          "arrow_length": 48.0,
-          "angle_spread": 0.8
-        },
-        "epoch": 9,
-        "shadow": {
-          "dx": 8.0,
-          "dy": 8.0,
-          "blur": 5.35,
-          "opacity": 0.55
-        }
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 45,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 1,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.08,
-          "glow_intensity": 0.55,
-          "glow_color": [
-            0.47,
-            0.56,
-            0.61
-          ],
-          "fresnel_power": 2.5,
-          "noise_scale": 0.18,
-          "noise_speed": 0.12,
-          "edge_softness": 0.04
-        },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.6,
-            "bloomScale": 0.4,
-            "brightness": 1.05
+          "species": "cil-vector",
+          "cell_id": "input_embed",
+          "bbox": {
+            "x": 220.0,
+            "y": 40.0,
+            "w": 160,
+            "h": 50,
+            "z": 5
           },
-          "glow": {
-            "distance": 10,
-            "outerStrength": 0.75,
-            "innerStrength": 0.2,
-            "color": "0x78909C"
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#2E7D32",
+          "stroke_color": "#2E7D32",
+          "label": "Input Embedding",
+          "font_size": 10,
+          "species_params": {
+            "arrow_count": 5,
+            "arrow_length": 48.0,
+            "angle_spread": 0.8
           },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 6,
-            "alpha": 0.28,
-            "color": "0x1C2C35"
+          "epoch": 9,
+          "shadow": {
+            "dx": 8.0,
+            "dy": 8.0,
+            "blur": 5.35,
+            "opacity": 0.55
           }
         },
-        "render_params": {
-          "layer": 5,
-          "render_order": 45,
-          "opacity": 0.89,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.1547,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.625,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "alignment_group",
-      "x": 533,
-      "y": 3820,
-      "width": 450,
-      "height": 145,
-      "species_params": {
-        "species": "cil-layers",
-        "cell_id": "alignment_group",
-        "parent_id": null,
+    "alignment_group": {
+      "agent_params": {
         "bbox": {
           "x": 533,
           "y": 3820,
@@ -4023,85 +1485,30 @@
           "h": 145,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Alignment Criteria",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 46,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.4,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.2667,
-            0.5412,
-            1.0
-          ],
-          "fresnel_power": 2.6,
-          "noise_scale": 0.28,
-          "noise_speed": 0.18,
-          "edge_softness": 0.062
+        "species_params": {
+          "species": "cil-layers",
+          "cell_id": "alignment_group",
+          "parent_id": null,
+          "bbox": {
+            "x": 533,
+            "y": 3820,
+            "w": 450,
+            "h": 145,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Alignment Criteria",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.71,
-            "bloomScale": 0.396,
-            "brightness": 1.028
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.7,
-            "innerStrength": 0.196,
-            "color": "0x448AFF"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.277,
-            "color": "0x0D47A1"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 46,
-          "opacity": 0.91,
-          "blend_mode": "NORMAL",
-          "scale_factor": 3.2977,
-          "animation": {
-            "speed": 0.62,
-            "phase_offset": 0.75,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "bbox_pruning_group",
-      "x": 350,
-      "y": 275,
-      "width": 520,
-      "height": 752,
-      "species_params": {
-        "species": "cil-vector",
-        "cell_id": "bbox_pruning_group",
-        "parent_id": "stage1_group",
+    "bbox_pruning_group": {
+      "agent_params": {
         "bbox": {
           "x": 350,
           "y": 275,
@@ -4109,85 +1516,30 @@
           "h": 752,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "BBox-Based Data Pruning",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 47,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.25,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4118,
-            0.9412,
-            0.6824
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.068
+        "species_params": {
+          "species": "cil-vector",
+          "cell_id": "bbox_pruning_group",
+          "parent_id": "stage1_group",
+          "bbox": {
+            "x": 350,
+            "y": 275,
+            "w": 520,
+            "h": 752,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "BBox-Based Data Pruning",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x69F0AE"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.218,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 47,
-          "opacity": 0.89,
-          "blend_mode": "NORMAL",
-          "scale_factor": 8.073,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.875,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "decoder",
-      "x": 220,
-      "y": 360,
-      "width": 140,
-      "height": 50,
-      "species_params": {
-        "species": "cil-arrow-right",
-        "cell_id": "decoder",
-        "parent_id": null,
+    "decoder": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 360,
@@ -4195,85 +1547,30 @@
           "h": 50,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Decoder",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 48,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4706,
-            0.5647,
-            0.6118
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.065
+        "species_params": {
+          "species": "cil-arrow-right",
+          "cell_id": "decoder",
+          "parent_id": null,
+          "bbox": {
+            "x": 220,
+            "y": 360,
+            "w": 140,
+            "h": 50,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Decoder",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.72,
-            "bloomScale": 0.372,
-            "brightness": 1.021
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.65,
-            "innerStrength": 0.172,
-            "color": "0x78909C"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.27,
-            "color": "0x263238"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 48,
-          "opacity": 0.9,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.0801,
-          "animation": {
-            "speed": 0.59,
-            "phase_offset": 0.0,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "encoder",
-      "x": 220,
-      "y": 145,
-      "width": 140,
-      "height": 50,
-      "species_params": {
-        "species": "cil-vector",
-        "cell_id": "encoder",
-        "parent_id": null,
+    "encoder": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 145,
@@ -4281,85 +1578,30 @@
           "h": 50,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Encoder",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 49,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.25,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4118,
-            0.9412,
-            0.6824
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.068
+        "species_params": {
+          "species": "cil-vector",
+          "cell_id": "encoder",
+          "parent_id": null,
+          "bbox": {
+            "x": 220,
+            "y": 145,
+            "w": 140,
+            "h": 50,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Encoder",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x69F0AE"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.218,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 49,
-          "opacity": 0.89,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.0801,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.125,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "input",
-      "x": 220,
-      "y": 40,
-      "width": 160,
-      "height": 45,
-      "species_params": {
-        "species": "cil-vector",
-        "cell_id": "input",
-        "parent_id": null,
+    "input": {
+      "agent_params": {
         "bbox": {
           "x": 220,
           "y": 40,
@@ -4367,85 +1609,30 @@
           "h": 45,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Input x",
-        "font_size": 10,
-        "is_group": false
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 50,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.25,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4118,
-            0.9412,
-            0.6824
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.068
+        "species_params": {
+          "species": "cil-vector",
+          "cell_id": "input",
+          "parent_id": null,
+          "bbox": {
+            "x": 220,
+            "y": 40,
+            "w": 160,
+            "h": 45,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Input x",
+          "font_size": 10,
+          "is_group": false
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x69F0AE"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.218,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 50,
-          "opacity": 0.89,
-          "blend_mode": "NORMAL",
-          "scale_factor": 1.0954,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.25,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "noise_types",
-      "x": 360,
-      "y": 591,
-      "width": 500,
-      "height": 150,
-      "species_params": {
-        "species": "cil-bolt",
-        "cell_id": "noise_types",
-        "parent_id": "bbox_pruning_group",
+    "noise_types": {
+      "agent_params": {
         "bbox": {
           "x": 360,
           "y": 591,
@@ -4453,85 +1640,30 @@
           "h": 150,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Real-World Noise Types",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 51,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.8,
-          "glow_intensity": 0.8,
-          "glow_color": [
-            1.0,
-            0.6706,
-            0.251
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.048
+        "species_params": {
+          "species": "cil-bolt",
+          "cell_id": "noise_types",
+          "parent_id": "bbox_pruning_group",
+          "bbox": {
+            "x": 360,
+            "y": 591,
+            "w": 500,
+            "h": 150,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Real-World Noise Types",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.35,
-            "bloomScale": 1.26,
-            "brightness": 1.28
-          },
-          "glow": {
-            "distance": 19,
-            "outerStrength": 2.5,
-            "innerStrength": 1.06,
-            "color": "0xFFAB40"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              5
-            ],
-            "blur": 8,
-            "alpha": 0.238,
-            "color": "0xBF360C"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 51,
-          "opacity": 0.97,
-          "blend_mode": "NORMAL",
-          "scale_factor": 3.5355,
-          "animation": {
-            "speed": 1.7,
-            "phase_offset": 0.375,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "output_group",
-      "x": 645,
-      "y": 3427,
-      "width": 340,
-      "height": 288,
-      "species_params": {
-        "species": "cil-arrow-right",
-        "cell_id": "output_group",
-        "parent_id": null,
+    "output_group": {
+      "agent_params": {
         "bbox": {
           "x": 645,
           "y": 3427,
@@ -4539,85 +1671,30 @@
           "h": 288,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Final Output",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 52,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4706,
-            0.5647,
-            0.6118
-          ],
-          "fresnel_power": 3.0,
-          "noise_scale": 0.18,
-          "noise_speed": 0.15,
-          "edge_softness": 0.065
+        "species_params": {
+          "species": "cil-arrow-right",
+          "cell_id": "output_group",
+          "parent_id": null,
+          "bbox": {
+            "x": 645,
+            "y": 3427,
+            "w": 340,
+            "h": 288,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Final Output",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.72,
-            "bloomScale": 0.372,
-            "brightness": 1.021
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.65,
-            "innerStrength": 0.172,
-            "color": "0x78909C"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.27,
-            "color": "0x263238"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 52,
-          "opacity": 0.9,
-          "blend_mode": "NORMAL",
-          "scale_factor": 4.0398,
-          "animation": {
-            "speed": 0.59,
-            "phase_offset": 0.5,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "stage1_group",
-      "x": 335,
-      "y": 235,
-      "width": 829.3333333333333,
-      "height": 1587,
-      "species_params": {
-        "species": "cil-graph",
-        "cell_id": "stage1_group",
-        "parent_id": null,
+    "stage1_group": {
+      "agent_params": {
         "bbox": {
           "x": 335,
           "y": 235,
@@ -4625,85 +1702,30 @@
           "h": 1587,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Stage 1: Coarse DOM Layout Generation",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 53,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdCircle",
-          "sdf_radius": 0.083,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.3765,
-            0.4902,
-            0.5451
-          ],
-          "fresnel_power": 2.0,
-          "noise_scale": 0.35,
-          "noise_speed": 0.25,
-          "edge_softness": 0.075
+        "species_params": {
+          "species": "cil-graph",
+          "cell_id": "stage1_group",
+          "parent_id": null,
+          "bbox": {
+            "x": 335,
+            "y": 235,
+            "w": 829.3333333333333,
+            "h": 1587,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Stage 1: Coarse DOM Layout Generation",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.735,
-            "bloomScale": 0.336,
-            "brightness": 1.01
-          },
-          "glow": {
-            "distance": 8,
-            "outerStrength": 0.575,
-            "innerStrength": 0.136,
-            "color": "0x607D8B"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.286,
-            "color": "0x263238"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 53,
-          "opacity": 0.86,
-          "blend_mode": "NORMAL",
-          "scale_factor": 14.8108,
-          "animation": {
-            "speed": 0.55,
-            "phase_offset": 0.625,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "stage2_group",
-      "x": 655,
-      "y": 2157,
-      "width": 233.33333333333331,
-      "height": 1160,
-      "species_params": {
-        "species": "cil-code",
-        "cell_id": "stage2_group",
-        "parent_id": null,
+    "stage2_group": {
+      "agent_params": {
         "bbox": {
           "x": 655,
           "y": 2157,
@@ -4711,84 +1733,30 @@
           "h": 1160,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Stage 2: Fine-Grained Code Synthesis",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 54,
-      "z_layer": 5,
-      "is_translucent": false,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdRoundBox",
-          "sdf_radius": 0.217,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.4627,
-            1.0,
-            0.0118
-          ],
-          "fresnel_power": 2.2,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-code",
+          "cell_id": "stage2_group",
+          "parent_id": null,
+          "bbox": {
+            "x": 655,
+            "y": 2157,
+            "w": 233.33333333333331,
+            "h": 1160,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Stage 2: Fine-Grained Code Synthesis",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x76FF03"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 9,
-            "alpha": 0.217,
-            "color": "0x1B5E20"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 54,
-          "opacity": 0.88,
-          "blend_mode": "NORMAL",
-          "scale_factor": 6.7165,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.75,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "add_norm1",
-      "x": 220.0,
-      "y": 370.0,
-      "width": 140,
-      "height": 40,
-      "species_params": {
-        "species": "cil-plus",
-        "cell_id": "add_norm1",
+    "add_norm1": {
+      "agent_params": {
         "bbox": {
           "x": 220.0,
           "y": 370.0,
@@ -4796,95 +1764,40 @@
           "h": 40,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#1E88E5",
-        "stroke_color": "#1E88E5",
-        "label": "Add and Norm",
-        "font_size": 10,
         "species_params": {
-          "arm_length": 10.0,
-          "stroke_width": 2.5,
-          "dash_corners": true
-        },
-        "epoch": 9,
-        "shadow": {
-          "dx": 8.0,
-          "dy": 8.0,
-          "blur": 4.6,
-          "opacity": 0.55
-        }
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 55,
-      "z_layer": 5,
-      "is_translucent": true,
-      "outgoing_edge_count": 2,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "cil-plus",
-          "sdf_radius": 0.35,
-          "glow_intensity": 0.6,
-          "glow_color": [
-            198,
-            40,
-            40
-          ],
-          "fresnel_power": 2.0,
-          "noise_scale": 0.5,
-          "noise_speed": 0.3,
-          "edge_softness": 0.15
-        },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.5,
-            "bloomScale": 0.8,
-            "brightness": 1.2
+          "species": "cil-plus",
+          "cell_id": "add_norm1",
+          "bbox": {
+            "x": 220.0,
+            "y": 370.0,
+            "w": 140,
+            "h": 40,
+            "z": 5
           },
-          "glow": {
-            "distance": 15,
-            "outerStrength": 2.0,
-            "innerStrength": 1.0,
-            "color": "0xC62828"
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#1E88E5",
+          "stroke_color": "#1E88E5",
+          "label": "Add and Norm",
+          "font_size": 10,
+          "species_params": {
+            "arm_length": 10.0,
+            "stroke_width": 2.5,
+            "dash_corners": true
           },
-          "drop_shadow": {
-            "offset": [
-              2,
-              4
-            ],
-            "blur": 6,
-            "alpha": 0.3,
-            "color": "0x000000"
+          "epoch": 9,
+          "shadow": {
+            "dx": 8.0,
+            "dy": 8.0,
+            "blur": 4.6,
+            "opacity": 0.55
           }
         },
-        "render_params": {
-          "layer": 5,
-          "render_order": 55,
-          "opacity": 0.731,
-          "blend_mode": "SCREEN",
-          "scale_factor": 0.9661,
-          "animation": {
-            "speed": 0.53,
-            "phase_offset": 0.875,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "add_norm2",
-      "x": 220.0,
-      "y": 575.0,
-      "width": 140,
-      "height": 40,
-      "species_params": {
-        "species": "cil-plus",
-        "cell_id": "add_norm2",
+    "add_norm2": {
+      "agent_params": {
         "bbox": {
           "x": 220.0,
           "y": 575.0,
@@ -4892,96 +1805,40 @@
           "h": 40,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#1E88E5",
-        "stroke_color": "#1E88E5",
-        "label": "Add and Norm",
-        "font_size": 10,
         "species_params": {
-          "arm_length": 10.0,
-          "stroke_width": 2.5,
-          "dash_corners": true
-        },
-        "epoch": 9,
-        "shadow": {
-          "dx": 8.0,
-          "dy": 8.0,
-          "blur": 4.6,
-          "opacity": 0.55
-        }
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 56,
-      "z_layer": 5,
-      "is_translucent": true,
-      "outgoing_edge_count": 1,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "crossSDF",
-          "sdf_radius": 0.3,
-          "glow_intensity": 0.5,
-          "glow_color": [
-            0.776,
-            0.157,
-            0.157
-          ],
-          "fresnel_power": 2.0,
-          "noise_scale": 0.3,
-          "noise_speed": 0.2,
-          "edge_softness": 0.18
-        },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.55,
-            "bloomScale": 0.7,
-            "brightness": 1.1
+          "species": "cil-plus",
+          "cell_id": "add_norm2",
+          "bbox": {
+            "x": 220.0,
+            "y": 575.0,
+            "w": 140,
+            "h": 40,
+            "z": 5
           },
-          "glow": {
-            "distance": 12,
-            "outerStrength": 1.8,
-            "innerStrength": 0.8,
-            "color": "0xC62828"
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#1E88E5",
+          "stroke_color": "#1E88E5",
+          "label": "Add and Norm",
+          "font_size": 10,
+          "species_params": {
+            "arm_length": 10.0,
+            "stroke_width": 2.5,
+            "dash_corners": true
           },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 5,
-            "alpha": 0.25,
-            "color": "0x000000"
+          "epoch": 9,
+          "shadow": {
+            "dx": 8.0,
+            "dy": 8.0,
+            "blur": 4.6,
+            "opacity": 0.55
           }
         },
-        "render_params": {
-          "layer": 5,
-          "render_order": 56,
-          "opacity": 0.731,
-          "blend_mode": "SCREEN",
-          "scale_factor": 0.9661,
-          "animation": {
-            "speed": 0.53,
-            "phase_offset": 0.0,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     },
-    {
-      "id": "structure_model",
-      "x": 592.6666666666666,
-      "y": 1067,
-      "width": 556.6666666666666,
-      "height": 735,
-      "species_params": {
-        "species": "cil-eye",
-        "cell_id": "structure_model",
-        "parent_id": "stage1_group",
+    "structure_model": {
+      "agent_params": {
         "bbox": {
           "x": 592.6666666666666,
           "y": 1067,
@@ -4989,76 +1846,29 @@
           "h": 735,
           "z": 5
         },
-        "z": 5,
-        "opacity": 0.05,
-        "fill_color": "#607D8B",
-        "stroke_color": "#607D8B",
-        "label": "Structure Model (Pix2Struct)",
-        "font_size": 10,
-        "is_group": true
-      },
-      "parent_id": null,
-      "children_ids": [],
-      "render_order": 57,
-      "z_layer": 5,
-      "is_translucent": true,
-      "outgoing_edge_count": 0,
-      "rendering": {
-        "shader_params": {
-          "sdf_type": "sdCircle",
-          "sdf_radius": 0.2,
-          "glow_intensity": 0.2,
-          "glow_color": [
-            0.3255,
-            0.4275,
-            0.9961
-          ],
-          "fresnel_power": 2.4,
-          "noise_scale": 0.22,
-          "noise_speed": 0.2,
-          "edge_softness": 0.07
+        "species_params": {
+          "species": "cil-eye",
+          "cell_id": "structure_model",
+          "parent_id": "stage1_group",
+          "bbox": {
+            "x": 592.6666666666666,
+            "y": 1067,
+            "w": 556.6666666666666,
+            "h": 735,
+            "z": 5
+          },
+          "z": 5,
+          "opacity": 0.05,
+          "fill_color": "#607D8B",
+          "stroke_color": "#607D8B",
+          "label": "Structure Model (Pix2Struct)",
+          "font_size": 10,
+          "is_group": true
         },
-        "pixi_filters": {
-          "bloom": {
-            "threshold": 0.73,
-            "bloomScale": 0.348,
-            "brightness": 1.014
-          },
-          "glow": {
-            "distance": 9,
-            "outerStrength": 0.6,
-            "innerStrength": 0.148,
-            "color": "0x536DFE"
-          },
-          "drop_shadow": {
-            "offset": [
-              2,
-              3
-            ],
-            "blur": 7,
-            "alpha": 0.291,
-            "color": "0x1A237E"
-          }
-        },
-        "render_params": {
-          "layer": 5,
-          "render_order": 57,
-          "opacity": 0.748,
-          "blend_mode": "SCREEN",
-          "scale_factor": 8.2578,
-          "animation": {
-            "speed": 0.56,
-            "phase_offset": 0.125,
-            "loop": true
-          },
-          "cull": {
-            "near": 0.1,
-            "far": 1000.0
-          }
-        }
+        "opacity": 0.9
       }
     }
-  ],
+  },
   "edges": [
     {
       "id": "e1",
@@ -6907,5 +3717,1770 @@
     "zenith": "#F0EBE7",
     "horizon": "#A1A0A2",
     "nadir": "#605F5F"
+  },
+  "edge_routes": {
+    "e1": {
+      "source": "input_embed",
+      "target": "pos_encode",
+      "type": "sequential",
+      "control_points": [
+        [
+          300.0,
+          90.0
+        ],
+        [
+          300.0,
+          120.0
+        ],
+        [
+          300.0,
+          120.0
+        ],
+        [
+          300.0,
+          150.0
+        ]
+      ]
+    },
+    "e2": {
+      "source": "pos_encode",
+      "target": "self_attn",
+      "type": "sequential",
+      "control_points": [
+        [
+          300.0,
+          200.0
+        ],
+        [
+          300.0,
+          230.0
+        ],
+        [
+          300.0,
+          230.0
+        ],
+        [
+          300.0,
+          260.0
+        ]
+      ]
+    },
+    "e3": {
+      "source": "self_attn",
+      "target": "add_norm1",
+      "type": "sequential",
+      "control_points": [
+        [
+          300.0,
+          310.0
+        ],
+        [
+          300.0,
+          334.0
+        ],
+        [
+          290.0,
+          334.0
+        ],
+        [
+          290.0,
+          370.0
+        ]
+      ]
+    },
+    "e4": {
+      "source": "add_norm1",
+      "target": "ffn",
+      "type": "sequential",
+      "control_points": [
+        [
+          290.0,
+          410.0
+        ],
+        [
+          290.0,
+          440.0
+        ],
+        [
+          290.0,
+          440.0
+        ],
+        [
+          290.0,
+          470.0
+        ]
+      ]
+    },
+    "e5": {
+      "source": "ffn",
+      "target": "add_norm2",
+      "type": "sequential",
+      "control_points": [
+        [
+          290.0,
+          515.0
+        ],
+        [
+          290.0,
+          545.0
+        ],
+        [
+          290.0,
+          545.0
+        ],
+        [
+          290.0,
+          575.0
+        ]
+      ]
+    },
+    "e6": {
+      "source": "add_norm2",
+      "target": "output",
+      "type": "sequential",
+      "control_points": [
+        [
+          290.0,
+          615.0
+        ],
+        [
+          290.0,
+          639.0
+        ],
+        [
+          300.0,
+          639.0
+        ],
+        [
+          300.0,
+          675.0
+        ]
+      ]
+    },
+    "skip1": {
+      "source": "pos_encode",
+      "target": "add_norm1",
+      "type": "skip",
+      "control_points": [
+        [
+          300.0,
+          200.0
+        ],
+        [
+          300.0,
+          268.0
+        ],
+        [
+          290.0,
+          268.0
+        ],
+        [
+          290.0,
+          370.0
+        ]
+      ]
+    },
+    "skip2": {
+      "source": "add_norm1",
+      "target": "add_norm2",
+      "type": "skip",
+      "control_points": [
+        [
+          290.0,
+          410.0
+        ],
+        [
+          290.0,
+          492.5
+        ],
+        [
+          290.0,
+          492.5
+        ],
+        [
+          290.0,
+          575.0
+        ]
+      ]
+    },
+    "grp_stage2_group__in": {
+      "source": "stage2_group",
+      "target": "leaf_extraction",
+      "type": "group_in",
+      "control_points": [
+        [
+          771.667,
+          3317
+        ],
+        [
+          771.667,
+          3337
+        ],
+        [
+          788.333,
+          3337
+        ],
+        [
+          788.333,
+          2197
+        ]
+      ]
+    },
+    "grp_stage2_group__out": {
+      "source": "nonleaf_styling",
+      "target": "stage2_group",
+      "type": "group_out",
+      "control_points": [
+        [
+          760.0,
+          3302
+        ],
+        [
+          760.0,
+          3322
+        ],
+        [
+          771.667,
+          3322
+        ],
+        [
+          771.667,
+          2157
+        ]
+      ]
+    },
+    "seq_leaf_extraction__local_images": {
+      "source": "leaf_extraction",
+      "target": "local_images",
+      "type": "sequential",
+      "control_points": [
+        [
+          788.333,
+          2315
+        ],
+        [
+          788.333,
+          2323.0
+        ],
+        [
+          760.0,
+          2323.0
+        ],
+        [
+          760.0,
+          2335
+        ]
+      ]
+    },
+    "seq_local_images__mllm_code_agent": {
+      "source": "local_images",
+      "target": "mllm_code_agent",
+      "type": "sequential",
+      "control_points": [
+        [
+          760.0,
+          2453
+        ],
+        [
+          760.0,
+          2463.0
+        ],
+        [
+          760.0,
+          2463.0
+        ],
+        [
+          760.0,
+          2473
+        ]
+      ]
+    },
+    "seq_mllm_code_agent__local_code_gen": {
+      "source": "mllm_code_agent",
+      "target": "local_code_gen",
+      "type": "sequential",
+      "control_points": [
+        [
+          760.0,
+          2598
+        ],
+        [
+          760.0,
+          2608.0
+        ],
+        [
+          760.0,
+          2608.0
+        ],
+        [
+          760.0,
+          2618
+        ]
+      ]
+    },
+    "seq_local_code_gen__code_linking": {
+      "source": "local_code_gen",
+      "target": "code_linking",
+      "type": "sequential",
+      "control_points": [
+        [
+          760.0,
+          2736
+        ],
+        [
+          760.0,
+          2746.0
+        ],
+        [
+          760.0,
+          2746.0
+        ],
+        [
+          760.0,
+          2756
+        ]
+      ]
+    },
+    "seq_code_linking__integrated_code": {
+      "source": "code_linking",
+      "target": "integrated_code",
+      "type": "sequential",
+      "control_points": [
+        [
+          760.0,
+          2874
+        ],
+        [
+          760.0,
+          2884.0
+        ],
+        [
+          760.0,
+          2884.0
+        ],
+        [
+          760.0,
+          2894
+        ]
+      ]
+    },
+    "seq_integrated_code__mllm_style_agent": {
+      "source": "integrated_code",
+      "target": "mllm_style_agent",
+      "type": "sequential",
+      "control_points": [
+        [
+          760.0,
+          3012
+        ],
+        [
+          760.0,
+          3022.0
+        ],
+        [
+          760.0,
+          3022.0
+        ],
+        [
+          760.0,
+          3032
+        ]
+      ]
+    },
+    "seq_mllm_style_agent__nonleaf_styling": {
+      "source": "mllm_style_agent",
+      "target": "nonleaf_styling",
+      "type": "sequential",
+      "control_points": [
+        [
+          760.0,
+          3157
+        ],
+        [
+          760.0,
+          3167.0
+        ],
+        [
+          760.0,
+          3167.0
+        ],
+        [
+          760.0,
+          3177
+        ]
+      ]
+    },
+    "grp_alignment_group__in": {
+      "source": "alignment_group",
+      "target": "content_align",
+      "type": "group_in",
+      "control_points": [
+        [
+          983,
+          3892.5
+        ],
+        [
+          763.0,
+          3892.5
+        ],
+        [
+          763.0,
+          3905.0
+        ],
+        [
+          543,
+          3905.0
+        ]
+      ]
+    },
+    "grp_alignment_group__out": {
+      "source": "style_align",
+      "target": "alignment_group",
+      "type": "group_out",
+      "control_points": [
+        [
+          973,
+          3905.0
+        ],
+        [
+          753.0,
+          3905.0
+        ],
+        [
+          753.0,
+          3892.5
+        ],
+        [
+          533,
+          3892.5
+        ]
+      ]
+    },
+    "seq_content_align__structure_align": {
+      "source": "content_align",
+      "target": "structure_align",
+      "type": "sequential",
+      "control_points": [
+        [
+          673,
+          3905.0
+        ],
+        [
+          683.0,
+          3905.0
+        ],
+        [
+          683.0,
+          3905.0
+        ],
+        [
+          693,
+          3905.0
+        ]
+      ]
+    },
+    "seq_structure_align__style_align": {
+      "source": "structure_align",
+      "target": "style_align",
+      "type": "sequential",
+      "control_points": [
+        [
+          823,
+          3905.0
+        ],
+        [
+          833.0,
+          3905.0
+        ],
+        [
+          833.0,
+          3905.0
+        ],
+        [
+          843,
+          3905.0
+        ]
+      ]
+    },
+    "grp_decoder__in": {
+      "source": "decoder",
+      "target": "dec_conv1",
+      "type": "group_in",
+      "control_points": [
+        [
+          290.0,
+          410
+        ],
+        [
+          290.0,
+          434.0
+        ],
+        [
+          285.0,
+          434.0
+        ],
+        [
+          285.0,
+          470
+        ]
+      ]
+    },
+    "grp_decoder__out": {
+      "source": "dec_conv2",
+      "target": "decoder",
+      "type": "group_out",
+      "control_points": [
+        [
+          285.0,
+          710
+        ],
+        [
+          285.0,
+          730
+        ],
+        [
+          290.0,
+          730
+        ],
+        [
+          290.0,
+          360
+        ]
+      ]
+    },
+    "seq_dec_conv1__dec_upsamp": {
+      "source": "dec_conv1",
+      "target": "dec_upsamp",
+      "type": "sequential",
+      "control_points": [
+        [
+          285.0,
+          510
+        ],
+        [
+          285.0,
+          540.0
+        ],
+        [
+          285.0,
+          540.0
+        ],
+        [
+          285.0,
+          570
+        ]
+      ]
+    },
+    "seq_dec_upsamp__dec_conv2": {
+      "source": "dec_upsamp",
+      "target": "dec_conv2",
+      "type": "sequential",
+      "control_points": [
+        [
+          285.0,
+          610
+        ],
+        [
+          285.0,
+          640.0
+        ],
+        [
+          285.0,
+          640.0
+        ],
+        [
+          285.0,
+          670
+        ]
+      ]
+    },
+    "grp_noise_types__in": {
+      "source": "noise_types",
+      "target": "display_errors",
+      "type": "group_in",
+      "control_points": [
+        [
+          860,
+          666.0
+        ],
+        [
+          615.0,
+          666.0
+        ],
+        [
+          615.0,
+          678.5
+        ],
+        [
+          370,
+          678.5
+        ]
+      ]
+    },
+    "grp_noise_types__out": {
+      "source": "empty_elements",
+      "target": "noise_types",
+      "type": "group_out",
+      "control_points": [
+        [
+          610.0,
+          728.5
+        ],
+        [
+          610.0,
+          659.75
+        ],
+        [
+          610.0,
+          659.75
+        ],
+        [
+          610.0,
+          591
+        ]
+      ]
+    },
+    "seq_display_errors__hidden_elements": {
+      "source": "display_errors",
+      "target": "hidden_elements",
+      "type": "sequential",
+      "control_points": [
+        [
+          520,
+          678.5
+        ],
+        [
+          610.0,
+          678.5
+        ],
+        [
+          610.0,
+          678.5
+        ],
+        [
+          700,
+          678.5
+        ]
+      ]
+    },
+    "seq_hidden_elements__empty_elements": {
+      "source": "hidden_elements",
+      "target": "empty_elements",
+      "type": "sequential",
+      "control_points": [
+        [
+          850,
+          678.5
+        ],
+        [
+          695.0,
+          678.5
+        ],
+        [
+          695.0,
+          678.5
+        ],
+        [
+          540,
+          678.5
+        ]
+      ]
+    },
+    "grp_encoder__in": {
+      "source": "encoder",
+      "target": "enc_conv1",
+      "type": "group_in",
+      "control_points": [
+        [
+          290.0,
+          195
+        ],
+        [
+          290.0,
+          219.0
+        ],
+        [
+          285.0,
+          219.0
+        ],
+        [
+          285.0,
+          255
+        ]
+      ]
+    },
+    "grp_encoder__out": {
+      "source": "enc_conv2",
+      "target": "encoder",
+      "type": "group_out",
+      "control_points": [
+        [
+          285.0,
+          495
+        ],
+        [
+          285.0,
+          515
+        ],
+        [
+          290.0,
+          515
+        ],
+        [
+          290.0,
+          145
+        ]
+      ]
+    },
+    "seq_enc_conv1__enc_pool": {
+      "source": "enc_conv1",
+      "target": "enc_pool",
+      "type": "sequential",
+      "control_points": [
+        [
+          285.0,
+          295
+        ],
+        [
+          285.0,
+          325.0
+        ],
+        [
+          285.0,
+          325.0
+        ],
+        [
+          285.0,
+          355
+        ]
+      ]
+    },
+    "seq_enc_pool__enc_conv2": {
+      "source": "enc_pool",
+      "target": "enc_conv2",
+      "type": "sequential",
+      "control_points": [
+        [
+          285.0,
+          395
+        ],
+        [
+          285.0,
+          425.0
+        ],
+        [
+          285.0,
+          425.0
+        ],
+        [
+          285.0,
+          455
+        ]
+      ]
+    },
+    "grp_output_group__in": {
+      "source": "output_group",
+      "target": "final_html",
+      "type": "group_in",
+      "control_points": [
+        [
+          985,
+          3571.0
+        ],
+        [
+          820.0,
+          3571.0
+        ],
+        [
+          820.0,
+          3514.5
+        ],
+        [
+          655,
+          3514.5
+        ]
+      ]
+    },
+    "grp_output_group__out": {
+      "source": "rendered_webpage",
+      "target": "output_group",
+      "type": "group_out",
+      "control_points": [
+        [
+          758.333,
+          3705
+        ],
+        [
+          758.333,
+          3725
+        ],
+        [
+          815.0,
+          3725
+        ],
+        [
+          815.0,
+          3427
+        ]
+      ]
+    },
+    "seq_final_html__final_css": {
+      "source": "final_html",
+      "target": "final_css",
+      "type": "sequential",
+      "control_points": [
+        [
+          805,
+          3514.5
+        ],
+        [
+          815.0,
+          3514.5
+        ],
+        [
+          815.0,
+          3514.5
+        ],
+        [
+          825,
+          3514.5
+        ]
+      ]
+    },
+    "seq_final_css__rendered_webpage": {
+      "source": "final_css",
+      "target": "rendered_webpage",
+      "type": "sequential",
+      "control_points": [
+        [
+          900.0,
+          3567
+        ],
+        [
+          900.0,
+          3575.0
+        ],
+        [
+          758.333,
+          3575.0
+        ],
+        [
+          758.333,
+          3587
+        ]
+      ]
+    },
+    "grp_bbox_pruning_group__in": {
+      "source": "bbox_pruning_group",
+      "target": "vision2ui_dataset",
+      "type": "group_in",
+      "control_points": [
+        [
+          610.0,
+          1027
+        ],
+        [
+          610.0,
+          671.0
+        ],
+        [
+          610.0,
+          671.0
+        ],
+        [
+          610.0,
+          315
+        ]
+      ]
+    },
+    "grp_bbox_pruning_group__out": {
+      "source": "pruned_dataset",
+      "target": "bbox_pruning_group",
+      "type": "group_out",
+      "control_points": [
+        [
+          610.0,
+          1017
+        ],
+        [
+          610.0,
+          646.0
+        ],
+        [
+          610.0,
+          646.0
+        ],
+        [
+          610.0,
+          275
+        ]
+      ]
+    },
+    "seq_vision2ui_dataset__noise_detection": {
+      "source": "vision2ui_dataset",
+      "target": "noise_detection",
+      "type": "sequential",
+      "control_points": [
+        [
+          610.0,
+          433
+        ],
+        [
+          610.0,
+          443.0
+        ],
+        [
+          610.0,
+          443.0
+        ],
+        [
+          610.0,
+          453
+        ]
+      ]
+    },
+    "seq_noise_detection__noise_types": {
+      "source": "noise_detection",
+      "target": "noise_types",
+      "type": "sequential",
+      "control_points": [
+        [
+          610.0,
+          571
+        ],
+        [
+          610.0,
+          581.0
+        ],
+        [
+          610.0,
+          581.0
+        ],
+        [
+          610.0,
+          591
+        ]
+      ]
+    },
+    "seq_noise_types__heuristic_rules": {
+      "source": "noise_types",
+      "target": "heuristic_rules",
+      "type": "sequential",
+      "control_points": [
+        [
+          610.0,
+          741
+        ],
+        [
+          610.0,
+          751.0
+        ],
+        [
+          610.0,
+          751.0
+        ],
+        [
+          610.0,
+          761
+        ]
+      ]
+    },
+    "seq_heuristic_rules__pruned_dataset": {
+      "source": "heuristic_rules",
+      "target": "pruned_dataset",
+      "type": "sequential",
+      "control_points": [
+        [
+          610.0,
+          879
+        ],
+        [
+          610.0,
+          889.0
+        ],
+        [
+          610.0,
+          889.0
+        ],
+        [
+          610.0,
+          899
+        ]
+      ]
+    },
+    "grp_structure_model__in": {
+      "source": "structure_model",
+      "target": "patch_division",
+      "type": "group_in",
+      "control_points": [
+        [
+          871.0,
+          1802
+        ],
+        [
+          871.0,
+          1822
+        ],
+        [
+          992.667,
+          1822
+        ],
+        [
+          992.667,
+          1107
+        ]
+      ]
+    },
+    "grp_structure_model__out": {
+      "source": "next_token_prediction",
+      "target": "structure_model",
+      "type": "group_out",
+      "control_points": [
+        [
+          998.5,
+          1787
+        ],
+        [
+          998.5,
+          1807
+        ],
+        [
+          871.0,
+          1807
+        ],
+        [
+          871.0,
+          1067
+        ]
+      ]
+    },
+    "seq_patch_division__vit_encoder": {
+      "source": "patch_division",
+      "target": "vit_encoder",
+      "type": "sequential",
+      "control_points": [
+        [
+          992.667,
+          1225
+        ],
+        [
+          992.667,
+          1233.0
+        ],
+        [
+          1021.0,
+          1233.0
+        ],
+        [
+          1021.0,
+          1245
+        ]
+      ]
+    },
+    "seq_vit_encoder__hidden_states": {
+      "source": "vit_encoder",
+      "target": "hidden_states",
+      "type": "sequential",
+      "control_points": [
+        [
+          1021.0,
+          1363
+        ],
+        [
+          1021.0,
+          1373.0
+        ],
+        [
+          1021.0,
+          1373.0
+        ],
+        [
+          1021.0,
+          1383
+        ]
+      ]
+    },
+    "seq_hidden_states__weight_matrix": {
+      "source": "hidden_states",
+      "target": "weight_matrix",
+      "type": "sequential",
+      "control_points": [
+        [
+          1106.0,
+          1442.0
+        ],
+        [
+          941.0,
+          1442.0
+        ],
+        [
+          941.0,
+          1451.0
+        ],
+        [
+          776.0,
+          1451.0
+        ]
+      ]
+    },
+    "seq_weight_matrix__transformer_decoder": {
+      "source": "weight_matrix",
+      "target": "transformer_decoder",
+      "type": "sequential",
+      "control_points": [
+        [
+          846.0,
+          1501
+        ],
+        [
+          846.0,
+          1509.0
+        ],
+        [
+          1049.333,
+          1509.0
+        ],
+        [
+          1049.333,
+          1521
+        ]
+      ]
+    },
+    "seq_transformer_decoder__softmax_layer": {
+      "source": "transformer_decoder",
+      "target": "softmax_layer",
+      "type": "sequential",
+      "control_points": [
+        [
+          1134.333,
+          1580.0
+        ],
+        [
+          952.667,
+          1580.0
+        ],
+        [
+          952.667,
+          1583.25
+        ],
+        [
+          771.0,
+          1583.25
+        ]
+      ]
+    },
+    "seq_softmax_layer__json_output": {
+      "source": "softmax_layer",
+      "target": "json_output",
+      "type": "sequential",
+      "control_points": [
+        [
+          846.0,
+          1635.75
+        ],
+        [
+          846.0,
+          1649.05
+        ],
+        [
+          808.5,
+          1649.05
+        ],
+        [
+          808.5,
+          1669
+        ]
+      ]
+    },
+    "seq_json_output__next_token_prediction": {
+      "source": "json_output",
+      "target": "next_token_prediction",
+      "type": "sequential",
+      "control_points": [
+        [
+          893.5,
+          1728.0
+        ],
+        [
+          903.5,
+          1728.0
+        ],
+        [
+          903.5,
+          1728.0
+        ],
+        [
+          913.5,
+          1728.0
+        ]
+      ]
+    },
+    "grp_stage1_group__in": {
+      "source": "stage1_group",
+      "target": "bbox_pruning_group",
+      "type": "group_in",
+      "control_points": [
+        [
+          749.667,
+          1822
+        ],
+        [
+          749.667,
+          1842
+        ],
+        [
+          610.0,
+          1842
+        ],
+        [
+          610.0,
+          275
+        ]
+      ]
+    },
+    "grp_stage1_group__out": {
+      "source": "structure_model",
+      "target": "stage1_group",
+      "type": "group_out",
+      "control_points": [
+        [
+          871.0,
+          1802
+        ],
+        [
+          871.0,
+          1822
+        ],
+        [
+          749.667,
+          1822
+        ],
+        [
+          749.667,
+          235
+        ]
+      ]
+    },
+    "seq_bbox_pruning_group__structure_model": {
+      "source": "bbox_pruning_group",
+      "target": "structure_model",
+      "type": "sequential",
+      "control_points": [
+        [
+          610.0,
+          1027
+        ],
+        [
+          610.0,
+          1043.0
+        ],
+        [
+          871.0,
+          1043.0
+        ],
+        [
+          871.0,
+          1067
+        ]
+      ]
+    },
+    "tl_resolution_handling__input_image": {
+      "source": "resolution_handling",
+      "target": "input_image",
+      "type": "sequential",
+      "control_points": [
+        [
+          1022,
+          71.0
+        ],
+        [
+          517.0,
+          71.0
+        ],
+        [
+          517.0,
+          74.0
+        ],
+        [
+          12,
+          74.0
+        ]
+      ]
+    },
+    "tl_input_image__loss_training": {
+      "source": "input_image",
+      "target": "loss_training",
+      "type": "sequential",
+      "control_points": [
+        [
+          172,
+          74.0
+        ],
+        [
+          627.0,
+          74.0
+        ],
+        [
+          627.0,
+          77.5
+        ],
+        [
+          1082,
+          77.5
+        ]
+      ]
+    },
+    "tl_loss_training__ram_resource": {
+      "source": "loss_training",
+      "target": "ram_resource",
+      "type": "sequential",
+      "control_points": [
+        [
+          1232,
+          77.5
+        ],
+        [
+          1572.0,
+          77.5
+        ],
+        [
+          1572.0,
+          80.0
+        ],
+        [
+          1912,
+          80.0
+        ]
+      ]
+    },
+    "tl_ram_resource__input_embed": {
+      "source": "ram_resource",
+      "target": "input_embed",
+      "type": "sequential",
+      "control_points": [
+        [
+          2052,
+          80.0
+        ],
+        [
+          1136.0,
+          80.0
+        ],
+        [
+          1136.0,
+          65.0
+        ],
+        [
+          220.0,
+          65.0
+        ]
+      ]
+    },
+    "tl_input_embed__input": {
+      "source": "input_embed",
+      "target": "input",
+      "type": "sequential",
+      "control_points": [
+        [
+          300.0,
+          90.0
+        ],
+        [
+          300.0,
+          65.0
+        ],
+        [
+          300.0,
+          65.0
+        ],
+        [
+          300.0,
+          40
+        ]
+      ]
+    },
+    "tl_input__encoder": {
+      "source": "input",
+      "target": "encoder",
+      "type": "sequential",
+      "control_points": [
+        [
+          300.0,
+          85
+        ],
+        [
+          300.0,
+          109.0
+        ],
+        [
+          290.0,
+          109.0
+        ],
+        [
+          290.0,
+          145
+        ]
+      ]
+    },
+    "tl_encoder__pos_encode": {
+      "source": "encoder",
+      "target": "pos_encode",
+      "type": "sequential",
+      "control_points": [
+        [
+          360,
+          170.0
+        ],
+        [
+          290.0,
+          170.0
+        ],
+        [
+          290.0,
+          175.0
+        ],
+        [
+          220.0,
+          175.0
+        ]
+      ]
+    },
+    "tl_pos_encode__stage1_group": {
+      "source": "pos_encode",
+      "target": "stage1_group",
+      "type": "sequential",
+      "control_points": [
+        [
+          300.0,
+          200.0
+        ],
+        [
+          300.0,
+          214.0
+        ],
+        [
+          749.667,
+          214.0
+        ],
+        [
+          749.667,
+          235
+        ]
+      ]
+    },
+    "tl_stage1_group__latent": {
+      "source": "stage1_group",
+      "target": "latent",
+      "type": "sequential",
+      "control_points": [
+        [
+          749.667,
+          1822
+        ],
+        [
+          749.667,
+          1842
+        ],
+        [
+          290.0,
+          1842
+        ],
+        [
+          290.0,
+          255
+        ]
+      ]
+    },
+    "tl_latent__self_attn": {
+      "source": "latent",
+      "target": "self_attn",
+      "type": "sequential",
+      "control_points": [
+        [
+          360,
+          277.5
+        ],
+        [
+          290.0,
+          277.5
+        ],
+        [
+          290.0,
+          285.0
+        ],
+        [
+          220.0,
+          285.0
+        ]
+      ]
+    },
+    "tl_self_attn__decoder": {
+      "source": "self_attn",
+      "target": "decoder",
+      "type": "sequential",
+      "control_points": [
+        [
+          300.0,
+          310.0
+        ],
+        [
+          300.0,
+          330.0
+        ],
+        [
+          290.0,
+          330.0
+        ],
+        [
+          290.0,
+          360
+        ]
+      ]
+    },
+    "tl_decoder__add_norm1": {
+      "source": "decoder",
+      "target": "add_norm1",
+      "type": "sequential",
+      "control_points": [
+        [
+          290.0,
+          410
+        ],
+        [
+          290.0,
+          390.0
+        ],
+        [
+          290.0,
+          390.0
+        ],
+        [
+          290.0,
+          370.0
+        ]
+      ]
+    },
+    "tl_coarse_dom_tree__stage2_group": {
+      "source": "coarse_dom_tree",
+      "target": "stage2_group",
+      "type": "sequential",
+      "control_points": [
+        [
+          808.0,
+          2052
+        ],
+        [
+          808.0,
+          2094.0
+        ],
+        [
+          771.667,
+          2094.0
+        ],
+        [
+          771.667,
+          2157
+        ]
+      ]
+    },
+    "tl_output_group__alignment_group": {
+      "source": "output_group",
+      "target": "alignment_group",
+      "type": "sequential",
+      "control_points": [
+        [
+          815.0,
+          3715
+        ],
+        [
+          815.0,
+          3757.0
+        ],
+        [
+          758.0,
+          3757.0
+        ],
+        [
+          758.0,
+          3820
+        ]
+      ]
+    }
+  },
+  "species_assignment": {
+    "ffn": {
+      "species": "cil-bolt"
+    },
+    "coarse_dom_tree": {
+      "species": "cil-graph"
+    },
+    "code_linking": {
+      "species": "cil-code"
+    },
+    "content_align": {
+      "species": "cil-code"
+    },
+    "dec_conv1": {
+      "species": "cil-filter"
+    },
+    "dec_conv2": {
+      "species": "cil-filter"
+    },
+    "dec_upsamp": {
+      "species": "cil-loop"
+    },
+    "display_errors": {
+      "species": "cil-bolt"
+    },
+    "empty_elements": {
+      "species": "cil-code"
+    },
+    "enc_conv1": {
+      "species": "cil-filter"
+    },
+    "enc_conv2": {
+      "species": "cil-filter"
+    },
+    "enc_pool": {
+      "species": "cil-layers"
+    },
+    "final_css": {
+      "species": "cil-arrow-right"
+    },
+    "final_html": {
+      "species": "cil-arrow-right"
+    },
+    "heuristic_rules": {
+      "species": "cil-filter"
+    },
+    "hidden_elements": {
+      "species": "cil-bolt"
+    },
+    "hidden_states": {
+      "species": "cil-bolt"
+    },
+    "input_image": {
+      "species": "cil-code"
+    },
+    "integrated_code": {
+      "species": "cil-code"
+    },
+    "json_output": {
+      "species": "cil-arrow-right"
+    },
+    "latent": {
+      "species": "cil-code"
+    },
+    "leaf_extraction": {
+      "species": "cil-code"
+    },
+    "local_code_gen": {
+      "species": "cil-code"
+    },
+    "local_images": {
+      "species": "cil-code"
+    },
+    "mllm_code_agent": {
+      "species": "cil-code"
+    },
+    "mllm_style_agent": {
+      "species": "cil-code"
+    },
+    "next_token_prediction": {
+      "species": "cil-loop"
+    },
+    "noise_detection": {
+      "species": "cil-filter"
+    },
+    "nonleaf_styling": {
+      "species": "cil-layers"
+    },
+    "output": {
+      "species": "cil-arrow-right"
+    },
+    "patch_division": {
+      "species": "cil-code"
+    },
+    "pruned_dataset": {
+      "species": "cil-vector"
+    },
+    "ram_resource": {
+      "species": "cil-code"
+    },
+    "rendered_webpage": {
+      "species": "cil-arrow-right"
+    },
+    "resolution_handling": {
+      "species": "cil-code"
+    },
+    "softmax_layer": {
+      "species": "cil-code"
+    },
+    "structure_align": {
+      "species": "cil-code"
+    },
+    "style_align": {
+      "species": "cil-layers"
+    },
+    "vision2ui_dataset": {
+      "species": "cil-vector"
+    },
+    "weight_matrix": {
+      "species": "cil-code"
+    },
+    "self_attn": {
+      "species": "cil-eye"
+    },
+    "loss_training": {
+      "species": "cil-plus"
+    },
+    "transformer_decoder": {
+      "species": "cil-eye"
+    },
+    "vit_encoder": {
+      "species": "cil-eye"
+    },
+    "pos_encode": {
+      "species": "cil-vector"
+    },
+    "input_embed": {
+      "species": "cil-vector"
+    },
+    "alignment_group": {
+      "species": "cil-layers"
+    },
+    "bbox_pruning_group": {
+      "species": "cil-vector"
+    },
+    "decoder": {
+      "species": "cil-arrow-right"
+    },
+    "encoder": {
+      "species": "cil-vector"
+    },
+    "input": {
+      "species": "cil-vector"
+    },
+    "noise_types": {
+      "species": "cil-bolt"
+    },
+    "output_group": {
+      "species": "cil-arrow-right"
+    },
+    "stage1_group": {
+      "species": "cil-graph"
+    },
+    "stage2_group": {
+      "species": "cil-code"
+    },
+    "add_norm1": {
+      "species": "cil-plus"
+    },
+    "add_norm2": {
+      "species": "cil-plus"
+    },
+    "structure_model": {
+      "species": "cil-eye"
+    }
   }
 }
