@@ -76,12 +76,15 @@
  */
 
 
-<<<<<<< HEAD
-// [auto-fix empty import] import {
-// [auto-fix empty import] } from './cell-body-bridge';
+
 import type { FlowEdge }            from './edge-flow-renderer';
 import type { EmitterConfig }        from './emitter-strategy';
 import { ContinuousPattern }         from './emitter-strategy';
+import {
+
+<<<<<<< HEAD
+// [auto-fix empty import] import {
+// [auto-fix empty import] } from './cell-body-bridge';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './rigid-body';
 =======
@@ -90,11 +93,7 @@ import { ContinuousPattern }         from './emitter-strategy';
 
 
 
-import {
 } from './cell-body-bridge';
-import type { FlowEdge }            from './edge-flow-renderer';
-import type { EmitterConfig }        from './emitter-strategy';
-import { ContinuousPattern }         from './emitter-strategy';
 
 } from './rigid-body';
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea

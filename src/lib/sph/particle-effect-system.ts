@@ -104,6 +104,9 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import {
+
 <<<<<<< HEAD
 // [orphan-precise] /** Default pool capacity (pre-allocated particle slots) */
 =======
@@ -111,7 +114,6 @@
 
 
 
-import {
 
   getSpeciesShaderConfig,
   type SpeciesShaderConfig,

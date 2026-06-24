@@ -63,6 +63,12 @@
 // Species identifier type
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { PBRParams, MatcapParams }           from './at-pbr-material';
+import type { PhysicsBinding, MaterialType }       from './species-shader-registry';
+import type { PhysicsUniforms }                    from './physics-uniform-bridge';
+import { DEFAULT_PBR_PARAMS, DEFAULT_MATCAP_PARAMS } from './at-pbr-material';
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * The five conceptual species types managed by this system.
@@ -76,10 +82,6 @@
 
 
 
-import type { PBRParams, MatcapParams }           from './at-pbr-material';
-import type { PhysicsBinding, MaterialType }       from './species-shader-registry';
-import type { PhysicsUniforms }                    from './physics-uniform-bridge';
-import { DEFAULT_PBR_PARAMS, DEFAULT_MATCAP_PARAMS } from './at-pbr-material';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type CellSpecies =

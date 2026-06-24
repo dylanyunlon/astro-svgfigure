@@ -103,6 +103,11 @@
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+
+import type { QoSProfileName }    from './qosSpatial';
+import { QOS_THEME }               from './color-palette';
+import type { ThemePalette, RGB }  from './color-palette';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Maximum streamlines across the entire field. */
 =======
@@ -110,9 +115,6 @@
 
 
 
-import type { QoSProfileName }    from './qosSpatial';
-import { QOS_THEME }               from './color-palette';
-import type { ThemePalette, RGB }  from './color-palette';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_STREAMLINES = 512;

@@ -68,6 +68,16 @@
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { ParticleData, GPUBufferSet, SimParams } from './types';
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+import { samplePhysicsForBody } from './physics-uniform-bridge';
+import type { SPHFrameSnapshot } from './sph-bridge';
+import type { CollisionFXSystem } from './collision-fx-system';
+import type { VFXTimelinePlayer, VFXEventKind } from './vfx-timeline';
+import type { DensityFieldTexture } from './density-field-texture';
+import type { VelocityFieldTexture } from './velocity-field-texture';
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * Minimal physics world interface — duck-typed to accept both SPHWorld
@@ -81,14 +91,6 @@
 
 
 
-import type { ParticleData, GPUBufferSet, SimParams } from './types';
-import type { PhysicsUniforms } from './physics-uniform-bridge';
-import { samplePhysicsForBody } from './physics-uniform-bridge';
-import type { SPHFrameSnapshot } from './sph-bridge';
-import type { CollisionFXSystem } from './collision-fx-system';
-import type { VFXTimelinePlayer, VFXEventKind } from './vfx-timeline';
-import type { DensityFieldTexture } from './density-field-texture';
-import type { VelocityFieldTexture } from './velocity-field-texture';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface PhysicsWorldView {

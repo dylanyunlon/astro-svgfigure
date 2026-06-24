@@ -66,6 +66,12 @@
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
+
+import { Texture }      from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
+import { TextureSource } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
+import { Sprite }       from '../../../upstream/pixijs-engine/src/scene/sprite/Sprite';
+import type { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * Minimal interface satisfied by both PixiJS WebGLRenderer and
@@ -87,10 +93,6 @@
 
 
 
-import { Texture }      from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
-import { TextureSource } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
-import { Sprite }       from '../../../upstream/pixijs-engine/src/scene/sprite/Sprite';
-import type { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface PixiRendererLike {

@@ -111,6 +111,10 @@
 // Public configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { CellSpecies }     from './cell-material-system';
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Tunable parameters for the M784 SSR pipeline. */
 =======
@@ -118,8 +122,6 @@
 
 
 
-import type { CellSpecies }     from './cell-material-system';
-import type { PhysicsUniforms } from './physics-uniform-bridge';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface SSRReflectionParams {

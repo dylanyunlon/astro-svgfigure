@@ -39,6 +39,11 @@
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import { read as readKTX2 } from 'ktx-parse';
+import type { KTX2Container } from 'ktx-parse';
+import type { TextureDescriptor } from '../renderer/material/Material.ts';
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * Decoded texture ready for GPU upload.
@@ -60,9 +65,6 @@
 
 
 
-import { read as readKTX2 } from 'ktx-parse';
-import type { KTX2Container } from 'ktx-parse';
-import type { TextureDescriptor } from '../renderer/material/Material.ts';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ATTexture {

@@ -24,6 +24,9 @@
 
 // ─── MSDF Atlas Glyph Metrics ─────────────────────────────────────────────────
 
+
+import { getShader } from '../shaders/ShaderLoader';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Single glyph entry in the MSDF atlas JSON (msdfgen format). */
 =======
@@ -31,7 +34,6 @@
 
 
 
-import { getShader } from '../shaders/ShaderLoader';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 interface GlyphMetric {

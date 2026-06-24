@@ -34,6 +34,9 @@
 //     GPUDevice and can be created even when WebGPU is unavailable.
 
 
+
+import {
+
 <<<<<<< HEAD
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './reaction-diffusion';
@@ -55,7 +58,6 @@
 
 
 
-import {
 } from './reaction-diffusion';
 
 } from './physarum-sim';

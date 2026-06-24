@@ -95,6 +95,12 @@
 // Constants — Frequency Band Boundaries (Hz)
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import * as Tone from 'tone';
+import type { World, Particle }    from './world-stepper';
+import type { ATBloomParams }      from './at-bloom-postprocess';
+import type { VFXHandler }         from './vfx-timeline';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Low band floor (Hz) — sub-bass. */
 =======
@@ -102,10 +108,6 @@
 
 
 
-import * as Tone from 'tone';
-import type { World, Particle }    from './world-stepper';
-import type { ATBloomParams }      from './at-bloom-postprocess';
-import type { VFXHandler }         from './vfx-timeline';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const LOW_FREQ_MIN  = 20;

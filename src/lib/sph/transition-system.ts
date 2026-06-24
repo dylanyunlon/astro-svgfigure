@@ -45,6 +45,10 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import { Easing, type EasingFn } from '../tween-system';
+import type { Morphology }       from './cell-visual-identity';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Default transition duration in seconds */
 =======
@@ -52,8 +56,6 @@
 
 
 
-import { Easing, type EasingFn } from '../tween-system';
-import type { Morphology }       from './cell-visual-identity';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const DEFAULT_DURATION = 0.55;

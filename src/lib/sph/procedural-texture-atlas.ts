@@ -48,6 +48,9 @@
 
 // ─── Texture algorithm enum ─────────────────────────────────────────────────
 
+
+import {
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * Procedural texture algorithm rendered into each atlas tile.
@@ -63,7 +66,6 @@
 
 
 
-import {
 
   getSpeciesShaderConfig,
   getAllSpeciesIds,

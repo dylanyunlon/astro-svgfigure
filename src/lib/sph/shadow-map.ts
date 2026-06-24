@@ -84,6 +84,10 @@
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { RigidBody } from './rigid-body';
+import type { ObstacleData } from './types';
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * A Cell treated as a shadow-casting occluder.
@@ -105,8 +109,6 @@
 
 
 
-import type { RigidBody } from './rigid-body';
-import type { ObstacleData } from './types';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface CellCaster {

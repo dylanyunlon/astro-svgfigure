@@ -74,6 +74,10 @@
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { RigidBody } from './rigid-body';
+import type { ObstacleData } from './types';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Tweakable shadow parameters. */
 =======
@@ -81,8 +85,6 @@
 
 
 
-import type { RigidBody } from './rigid-body';
-import type { ObstacleData } from './types';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ShadowConfig {

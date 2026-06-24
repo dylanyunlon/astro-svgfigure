@@ -112,19 +112,21 @@
 
 
 
+
 import type {
-} from './particle-effect-system';
 import { VFXTimelineBuilder } from './vfx-timeline';
+import {
+import type { QoSProfileName } from './qosSpatial';
+
+} from './particle-effect-system';
 <<<<<<< HEAD
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './species-shader-registry';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './color-palette';
 =======
-import {
 } from './species-shader-registry';
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
-import type { QoSProfileName } from './qosSpatial';
 
 } from './vfx-timeline';
 } from './color-palette';

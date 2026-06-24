@@ -89,6 +89,10 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { CellSpecies } from './cell-material-system';
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Workgroup size for compute dispatches (16×16 = 256 threads). */
 =======
@@ -96,8 +100,6 @@
 
 
 
-import type { CellSpecies } from './cell-material-system';
-import type { PhysicsUniforms } from './physics-uniform-bridge';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const WG_SIZE = 16;

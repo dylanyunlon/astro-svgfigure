@@ -57,6 +57,9 @@
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+
+import { getShader } from '../shaders/ShaderLoader';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Total particle pool (shared across all edges). */
 =======
@@ -64,7 +67,6 @@
 
 
 
-import { getShader } from '../shaders/ShaderLoader';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const PARTICLE_COUNT = 5000;

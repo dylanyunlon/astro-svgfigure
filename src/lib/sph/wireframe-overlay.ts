@@ -96,6 +96,10 @@
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import { organicOutline, getSpeciesSdfParams } from './organic-sdf';
+import type { ParticleData } from './types';
+
 <<<<<<< HEAD
 // [orphan-precise] /** 2D vector (reused from contact-sparks / debug-renderer conventions). */
 =======
@@ -103,8 +107,6 @@
 
 
 
-import { organicOutline, getSpeciesSdfParams } from './organic-sdf';
-import type { ParticleData } from './types';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface Vec2 {

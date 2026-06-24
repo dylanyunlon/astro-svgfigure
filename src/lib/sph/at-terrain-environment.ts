@@ -29,6 +29,9 @@
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
+
+import { getShader } from '../shaders/ShaderLoader';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Floor mesh: tiled plane subdivisions */
 =======
@@ -36,7 +39,6 @@
 
 
 
-import { getShader } from '../shaders/ShaderLoader';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const FLOOR_SEGS_X = 32 as const;

@@ -111,6 +111,10 @@
 // Public Types & Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { CellSpecies }     from './cell-material-system';
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * 大气层物理参数 — 对应 UE5 FAtmosphereUniformShaderParameters
@@ -124,8 +128,6 @@
 
 
 
-import type { CellSpecies }     from './cell-material-system';
-import type { PhysicsUniforms } from './physics-uniform-bridge';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface AtmosphereParams {

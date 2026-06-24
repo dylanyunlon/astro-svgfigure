@@ -85,6 +85,10 @@
 // § 0  Minimal WebGL types (subset used here; full types from at-render-pipeline.ts)
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import { ATShaderLoader } from './at-shader-loader.ts';
+import type {
+
 <<<<<<< HEAD
 // [orphan-precise] /** Slimmed WebGL2 context reference carried by AstroRenderer. */
 =======
@@ -92,8 +96,6 @@
 
 
 
-import { ATShaderLoader } from './at-shader-loader.ts';
-import type {
 
   PassDescriptor,
   ResourceHandle,

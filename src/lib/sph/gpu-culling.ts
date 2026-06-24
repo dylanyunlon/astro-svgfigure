@@ -80,6 +80,13 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { CellBBox }       from './instanced-cell-renderer';
+import type { LODCamera }      from './adaptive-lod';
+import type { Tier }            from './performance-budget';
+import { getGlobalBudget }     from './performance-budget';
+import { WORKGROUP_SIZE }      from './types';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Maximum number of cullable objects (cells + particle groups). */
 =======
@@ -87,11 +94,6 @@
 
 
 
-import type { CellBBox }       from './instanced-cell-renderer';
-import type { LODCamera }      from './adaptive-lod';
-import type { Tier }            from './performance-budget';
-import { getGlobalBudget }     from './performance-budget';
-import { WORKGROUP_SIZE }      from './types';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_OBJECTS      = 2048;

@@ -36,6 +36,9 @@
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+
+import { getShader } from '../shaders/ShaderLoader';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Maximum characters per label string */
 =======
@@ -43,7 +46,6 @@
 
 
 
-import { getShader } from '../shaders/ShaderLoader';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_CHARS_PER_LABEL = 128 as const;

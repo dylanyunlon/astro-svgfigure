@@ -87,6 +87,10 @@
 // Constants — AT ShadowDepth.fs 原始参数
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { RigidBody } from './rigid-body';
+import type { ObstacleData } from './types';
+
 <<<<<<< HEAD
 // [orphan-precise] /** AT cascade shadow maps 默认 4 级 */
 =======
@@ -94,8 +98,6 @@
 
 
 
-import type { RigidBody } from './rigid-body';
-import type { ObstacleData } from './types';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const MAX_CASCADES = 4;

@@ -22,6 +22,10 @@
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+
+import { DracoThread } from '../threed-pipeline';
+import type { GeometryDescriptor } from '../threed-pipeline';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Decoded AT geometry with guaranteed attribute arrays. */
 =======
@@ -29,8 +33,6 @@
 
 
 
-import { DracoThread } from '../threed-pipeline';
-import type { GeometryDescriptor } from '../threed-pipeline';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface ATGeometry {

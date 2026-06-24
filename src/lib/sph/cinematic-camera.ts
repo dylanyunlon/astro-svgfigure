@@ -51,6 +51,12 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import { Vec3 }  from '../math/Vec3';
+import { Quat }  from '../math/Quat';
+import { Box3 }  from '../math/Box3';
+import { Easing, type EasingFn } from '../tween-system';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Default smooth-follow lerp speed (frame-rate-independent) */
 =======
@@ -58,10 +64,6 @@
 
 
 
-import { Vec3 }  from '../math/Vec3';
-import { Quat }  from '../math/Quat';
-import { Box3 }  from '../math/Box3';
-import { Easing, type EasingFn } from '../tween-system';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const DEFAULT_FOLLOW_SPEED    = 0.08;

@@ -28,6 +28,9 @@
 // Public API types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { RGB, RGBA } from './color-palette';
+
 <<<<<<< HEAD
 // [orphan-precise] /** 三种自然界色彩模式。 */
 =======
@@ -35,7 +38,6 @@
 
 
 
-import type { RGB, RGBA } from './color-palette';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type ChromaticMode = 'SUNSET' | 'ABYSS' | 'AURORA';

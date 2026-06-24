@@ -41,7 +41,10 @@
 
 
 
+
 import type { World } from './world-stepper';
+import {
+
 <<<<<<< HEAD
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './species-shader-registry';
@@ -50,7 +53,6 @@ import type { World } from './world-stepper';
 // [auto-fix empty import] import {
 // [auto-fix empty import] } from './uil-species-live';
 =======
-import {
 } from './species-shader-registry';
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 

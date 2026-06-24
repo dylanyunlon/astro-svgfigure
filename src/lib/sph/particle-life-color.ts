@@ -36,6 +36,9 @@
 // Lifecycle phase
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { RGB, RGBA } from './color-palette';
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * 粒子生命周期的四个阶段。
@@ -57,7 +60,6 @@
 
 
 
-import type { RGB, RGBA } from './color-palette';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type LifecyclePhase = 'BIRTH' | 'YOUNG' | 'MATURE' | 'DYING';

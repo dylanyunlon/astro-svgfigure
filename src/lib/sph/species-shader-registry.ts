@@ -38,6 +38,9 @@
 
 // ─── SDF Shape ────────────────────────────────────────────────────────────────
 
+
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+
 <<<<<<< HEAD
 // [orphan-precise] /**
 // [orphan-precise]  * SDF primitive that forms the species silhouette.
@@ -71,7 +74,6 @@
 
 
 
-import type { PhysicsUniforms } from './physics-uniform-bridge';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type SdfShape =

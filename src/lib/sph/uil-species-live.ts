@@ -63,6 +63,9 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+
 <<<<<<< HEAD
 // [orphan-precise] /** Scalar or numeric-array uniform value (string/texture paths are dropped). */
 =======
@@ -70,7 +73,6 @@
 
 
 
-import type { PhysicsUniforms } from './physics-uniform-bridge';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export type UniformValue = number | number[];

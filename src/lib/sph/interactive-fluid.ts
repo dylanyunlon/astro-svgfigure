@@ -66,6 +66,9 @@
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import {
+
 <<<<<<< HEAD
 // [orphan-precise] /** Callback invoked once per frame after the simulation step. */
 =======
@@ -73,7 +76,6 @@
 
 
 
-import {
 
   NavierStokesFluid,
   NavierStokesParams,

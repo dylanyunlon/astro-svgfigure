@@ -148,6 +148,9 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { TransitionDirection, TransitionMode } from './transition-system';
+
 <<<<<<< HEAD
 // [orphan-precise] /** SSE endpoint for cell events. */
 =======
@@ -155,7 +158,6 @@
 
 
 
-import type { TransitionDirection, TransitionMode } from './transition-system';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 const SSE_URL       = '/api/cell-events';

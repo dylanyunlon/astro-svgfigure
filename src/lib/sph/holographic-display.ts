@@ -110,6 +110,9 @@
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+import type { ParticleData } from './types';
+
 <<<<<<< HEAD
 // [orphan-precise] /** A visible cell entry for the holographic renderer. */
 =======
@@ -117,7 +120,6 @@
 
 
 
-import type { ParticleData } from './types';
 
 >>>>>>> ecb00e743307774715a4cdccaff74dfb0983baea
 export interface HoloCellEntry {
