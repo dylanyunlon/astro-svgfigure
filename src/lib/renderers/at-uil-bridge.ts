@@ -1054,3 +1054,172 @@ export function diagnosticSummary(result: ATUILBridgeResult): string {
 
   return lines.join('\n');
 }
+
+// ── WebGL uniform bridge ───────────────────────────────────────────────────────
+
+/**
+ * Flat param store: "<blockName>.<paramName>" → number | number[] | string
+ * Populated by loadParams() and kept live for getCurrentParams().
+ */
+const _currentParams: Map<string, unknown> = new Map();
+
+/**
+ * Fetch and ingest /channels/physics/at_uil_params.json.
+ *
+ * The JSON is keyed by block name (e.g. "self_attn"), each block containing
+ * a flat dict of param names → values.  We flatten to a dotted key space so
+ * that callers can look up "self_attn.quality_level" directly.
+ *
+ * @example
+ *   await loadParams();
+ *   const p = getCurrentParams();
+ *   // p["self_attn.quality_level"] === 1.0
+ */
+export async function loadParams(): Promise<void> {
+  const res = await fetch('/channels/physics/at_uil_params.json');
+  if (!res.ok) {
+    throw new Error(`[at-uil-bridge] loadParams: fetch failed ${res.status} ${res.statusText}`);
+  }
+  const json = (await res.json()) as Record<string, Record<string, unknown>>;
+
+  _currentParams.clear();
+
+  for (const [block, entries] of Object.entries(json)) {
+    if (typeof entries !== 'object' || entries === null) continue;
+    for (const [paramName, value] of Object.entries(entries)) {
+      _currentParams.set(`${block}.${paramName}`, value);
+    }
+  }
+}
+
+/**
+ * Return a snapshot of all currently loaded params as a plain object.
+ *
+ * Keys are in "<blockName>.<paramName>" form — identical to what loadParams()
+ * stored.  Returns a copy; mutations have no effect on internal state.
+ *
+ * @example
+ *   const p = getCurrentParams();
+ *   console.log(p["self_attn.bloom_intensity_multiplier"]); // 1.0
+ */
+export function getCurrentParams(): Record<string, unknown> {
+  return Object.fromEntries(_currentParams);
+}
+
+/**
+ * Infer the WebGL uniform dimension from a value.
+ *
+ *   number              → 1  (scalar float / int)
+ *   [x, y]             → 2  (vec2)
+ *   [x, y, z]          → 3  (vec3)
+ *   [x, y, z, w]       → 4  (vec4)
+ *   larger array       → use uniform1fv / uniformNfv as appropriate
+ */
+function _inferDim(value: unknown): number {
+  if (Array.isArray(value)) return Math.min(value.length, 4);
+  return 1;
+}
+
+/**
+ * Push a single named param into a WebGL program as the appropriate uniform.
+ *
+ * Type dispatch:
+ *   scalar number  →  gl.uniform1f(location, value)
+ *   integer (from JSON int field "shadow_resolution", "z_layer")
+ *                  →  gl.uniform1i(location, value)   ← detected via Number.isInteger
+ *   number[]  len 2 →  gl.uniform2f(location, x, y)
+ *   number[]  len 3 →  gl.uniform3f(location, x, y, z)
+ *   number[]  len 4 →  gl.uniform4f(location, x, y, z, w)
+ *   number[]  len >4 →  gl.uniform1fv(location, Float32Array)
+ *   string / other  →  no-op (not a uniform-uploadable type)
+ *
+ * @param gl        Active WebGL rendering context
+ * @param program   Compiled and linked WebGLProgram
+ * @param paramName Uniform name as it appears in the GLSL shader
+ * @param value     Value to upload; accepts the raw JSON value types
+ *
+ * @example
+ *   setUniform(gl, program, 'uQualityLevel', 1.0);
+ *   setUniform(gl, program, 'uFogColor',     [0.1, 0.5, 0.8]);
+ *   setUniform(gl, program, 'uBloomTint',    [1.0, 0.9, 0.8, 1.0]);
+ */
+export function setUniform(
+  gl: WebGLRenderingContext | WebGL2RenderingContext,
+  program: WebGLProgram,
+  paramName: string,
+  value: unknown,
+): void {
+  const location = gl.getUniformLocation(program, paramName);
+  if (location === null) return; // uniform not active in this program – silent skip
+
+  if (Array.isArray(value)) {
+    const arr = value as number[];
+    switch (_inferDim(arr)) {
+      case 2:
+        gl.uniform2f(location, arr[0], arr[1]);
+        break;
+      case 3:
+        gl.uniform3f(location, arr[0], arr[1], arr[2]);
+        break;
+      case 4:
+        gl.uniform4f(location, arr[0], arr[1], arr[2], arr[3]);
+        break;
+      default:
+        // len > 4: upload as float array
+        gl.uniform1fv(location, new Float32Array(arr));
+        break;
+    }
+    return;
+  }
+
+  if (typeof value === 'number') {
+    // Distinguish integer params (shadow_resolution, z_layer) from floats.
+    if (Number.isInteger(value)) {
+      gl.uniform1i(location, value);
+    } else {
+      gl.uniform1f(location, value);
+    }
+    return;
+  }
+
+  if (typeof value === 'boolean') {
+    gl.uniform1i(location, value ? 1 : 0);
+    return;
+  }
+
+  // string / object / null: not a GL-uploadable type – skip silently.
+}
+
+/**
+ * Upload all currently-loaded params whose dotted key starts with `prefix`
+ * into the given program as GLSL uniforms.
+ *
+ * The uniform name pushed to GLSL is the portion of the key after the
+ * first dot — i.e. for key "self_attn.quality_level" with prefix "self_attn"
+ * the uniform name is "quality_level".
+ *
+ * Params that have no active uniform location in the program are silently
+ * skipped (setUniform handles the null-location guard).
+ *
+ * @param gl      Active WebGL rendering context
+ * @param program Compiled and linked WebGLProgram
+ * @param prefix  Block name (e.g. "self_attn", "bloom_intensity")
+ *
+ * @example
+ *   await loadParams();
+ *   applyToProgram(gl, program, 'self_attn');
+ *   // uploads quality_level, particle_count_multiplier, etc.
+ */
+export function applyToProgram(
+  gl: WebGLRenderingContext | WebGL2RenderingContext,
+  program: WebGLProgram,
+  prefix: string,
+): void {
+  const dotPrefix = `${prefix}.`;
+
+  for (const [key, value] of _currentParams) {
+    if (!key.startsWith(dotPrefix)) continue;
+    const uniformName = key.slice(dotPrefix.length);
+    setUniform(gl, program, uniformName, value);
+  }
+}
