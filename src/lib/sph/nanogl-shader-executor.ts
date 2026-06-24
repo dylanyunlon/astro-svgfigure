@@ -58,11 +58,6 @@ import NanoGLBuffer  from '../../../upstream/nanogl/src/arraybuffer';
 import Texture2D     from '../../../upstream/nanogl/src/texture-2d';
 import type { GLContext } from '../../../upstream/nanogl/src/types';
 import {
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AT fluid shader sources (11 GLSL strings)
-// ─────────────────────────────────────────────────────────────────────────────
-
   AT_FLUID_BASE_VS,
   AT_SPLAT_FS,
   AT_ADVECTION_FS,

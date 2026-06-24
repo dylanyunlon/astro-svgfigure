@@ -737,3 +737,6 @@ export const AT_VOLUMETRIC_LIGHT_GLSL = {
   /** AT simplenoise.glsl helper (compiled.vs line 2259) */
   simplenoise: SIMPLENOISE_GLSL,
 } as const;
+
+// Stub: ATVolumetricLightParams alias — used by render-compositor.ts
+export type ATVolumetricLightParams = Partial<ATVolumetricLightConfig>;

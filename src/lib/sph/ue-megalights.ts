@@ -40,7 +40,7 @@
 
 
 import { getShader } from '../shaders/ShaderLoader';
-import type { ATLight } from './at-lighting-import.ts';
+import type { ATLight } from './at-lighting-import';
 
 // [orphan-precise] /** Maximum point lights packed into the uniform array. WebGL1 limit ~256 vec4s. */
 const MAX_LIGHTS = 64 as const;

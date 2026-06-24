@@ -969,3 +969,9 @@ export interface MatcapParams { texture: string; intensity: number; }
 export const DEFAULT_PBR_PARAMS: PBRParams = { metallic: 0.0, roughness: 0.5, albedo: [0.8,0.8,0.8] };
 export const DEFAULT_MATCAP_PARAMS: MatcapParams = { texture: "", intensity: 1.0 };
 export const AT_PBR_WGSL = "";
+
+// Stub: ATMatcapFresnel — used by render-compositor.ts
+export class ATMatcapFresnel {
+  static async create(_device: any, _format: any): Promise<ATMatcapFresnel> { return new ATMatcapFresnel(); }
+  dispose(): void {}
+}

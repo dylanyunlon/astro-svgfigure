@@ -790,3 +790,12 @@ export function createATNavierStokes(
   if (!gl) return null;
   return new ATNavierStokes(gl, config);
 }
+
+// Stubs: NavierStokesFluid + NavierStokesSplat — used by render-compositor.ts
+export interface NavierStokesSplat { x: number; y: number; dx: number; dy: number; radius: number; }
+export class NavierStokesFluid {
+  constructor(_device: any) {}
+  step(_dt: number): void {}
+  queueSplat(_s: NavierStokesSplat): void {}
+  dispose(): void {}
+}

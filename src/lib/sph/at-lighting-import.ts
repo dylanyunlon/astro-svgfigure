@@ -1204,3 +1204,6 @@ export function cellSpeciesToLights(cells: Array<{
     c.range     ?? 3.0,
   ));
 }
+
+// Stub: ATLight alias — used by ue-megalights.ts
+export type ATLight = ATLightData;
