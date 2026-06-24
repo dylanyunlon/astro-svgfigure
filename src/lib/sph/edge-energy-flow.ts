@@ -90,13 +90,19 @@
  *   src/lib/sph/qosSpatial.ts           — QoS profile definitions
  */
 
-import type { QoSProfileName }    from './qosSpatial';
-import { QOS_THEME }               from './color-palette';
-import type { ThemePalette, RGB }  from './color-palette';
+
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Maximum particles per edge. */
+
+
+
+import type { QoSProfileName }    from './qosSpatial';
+import { QOS_THEME }               from './color-palette';
+import type { ThemePalette, RGB }  from './color-palette';
+
 const MAX_PARTICLES_PER_EDGE = 128;
 
 /** Global particle pool cap. */

@@ -40,6 +40,15 @@
  * Research: xiaodi #M1000 — cell-pubsub-loop
  */
 
+
+
+
+// ─── GLSL: simple quad vertex (shared by blit + accum passes) ────────────────
+// Extracted from compiled.vs — the same fullscreen quad vert used by AT's
+// display / post-process passes (DisplayShader, BloomComposite, etc.)
+
+
+
 import { getShader } from '../shaders/ShaderLoader';
 import { FluidGPU } from './fluid-gpu-pass';
 import { BloomGPU } from './bloom-gpu-pass';
@@ -52,9 +61,6 @@ import { PBRCellGPU, type CellPBRDescriptor } from './pbr-gpu-pass';
 import { GlassGPU } from './glass-gpu-pass';
 import { SDFIconGPU, type SDFInstance, makeSDFBatch } from './sdf-gpu-pass';
 
-// ─── GLSL: simple quad vertex (shared by blit + accum passes) ────────────────
-// Extracted from compiled.vs — the same fullscreen quad vert used by AT's
-// display / post-process passes (DisplayShader, BloomComposite, etc.)
 const QUAD_VERT_SRC = /* glsl */ `
 precision highp float;
 attribute vec2 aPosition;

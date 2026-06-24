@@ -59,18 +59,25 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import {
-  NavierStokesFluid,
-  NavierStokesParams,
-  NavierStokesSplat,
-  createNavierStokesFluid,
-} from './at-navier-stokes';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Callback invoked once per frame after the simulation step. */
+
+
+
+import {
+
+  NavierStokesFluid,
+  NavierStokesParams,
+  NavierStokesSplat,
+  createNavierStokesFluid,
+} from './at-navier-stokes';
+
 export type FluidRenderCallback = (fluid: NavierStokesFluid) => void;
 
 /** Configuration for InteractiveFluid. */

@@ -52,6 +52,14 @@
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /** A 3-D control point */
+
+
+
+
+
+
+
+
 export interface SplinePoint3 {
   x: number;
   y: number;

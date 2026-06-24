@@ -1,12 +1,15 @@
 // === src/lib/sph/collision/ContactSolver.ts ===
 
-import type { RigidBody, ContactConstraint } from '../types';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tuning constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Baumgarte positional-correction strength (fraction of penetration per step). */
+
+import type { RigidBody, ContactConstraint } from '../types';
+
 const BAUMGARTE_BETA = 0.2;
 
 /**

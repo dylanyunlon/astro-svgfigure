@@ -72,14 +72,20 @@
  * Research: xiaodi #M795 — cell-pubsub-loop
  */
 
-import type { PhysicsUniforms } from './physics-uniform-bridge';
-import type { SdfShape }        from './species-shader-registry';
+
+
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Constants
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /** Floats per aura instance in the interleaved GPU buffer. */
+
+
+
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+import type { SdfShape }        from './species-shader-registry';
+
 export const AURA_FLOATS_PER_CELL = 16;
 
 /** Maximum number of active SDF kinds supported in the shader. */

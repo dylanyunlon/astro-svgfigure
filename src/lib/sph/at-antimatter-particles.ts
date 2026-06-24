@@ -17,6 +17,14 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 const MAX_PARTICLES  = 65536 as const;
 const TEX_W          = 256   as const;   // sqrt(MAX_PARTICLES)
 const TEX_H          = 256   as const;

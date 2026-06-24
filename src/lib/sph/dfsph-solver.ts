@@ -4,11 +4,17 @@
  * Reference: SPlisHSPlasH/DFSPH/TimeStepDFSPH.cpp
  */
 
-import { cubicW, cubicGradW, SPHConfig } from "./sph-kernels";
+
+
 
 // ---------------------------------------------------------------------------
 // Particle
 // ---------------------------------------------------------------------------
+
+
+
+
+import { cubicW, cubicGradW, SPHConfig } from "./sph-kernels";
 
 export interface Particle {
   /** Position */

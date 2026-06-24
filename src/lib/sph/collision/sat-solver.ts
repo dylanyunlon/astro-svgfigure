@@ -1,6 +1,10 @@
 // sat-solver.ts
 // SAT (Separating Axis Theorem) for 2D OBB vs OBB collisions
 
+
+
+
+
 export interface OBB {
   cx: number;    // center x
   cy: number;    // center y

@@ -70,14 +70,20 @@
 // Imports
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { CellSpecies }      from './cell-material-system';
-import type { PhysicsUniforms }  from './physics-uniform-bridge';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Tunable parameters for the SSR pass. */
+
+
+
+import type { CellSpecies }      from './cell-material-system';
+import type { PhysicsUniforms }  from './physics-uniform-bridge';
+
 export interface SSRParams {
   /** Enable/disable SSR entirely. Default: true */
   enabled: boolean;

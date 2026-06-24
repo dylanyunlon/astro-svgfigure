@@ -8,6 +8,10 @@
 //  数学工具
 // ─────────────────────────────────────────────────────────────
 
+
+
+
+
 export interface Vec2 { x: number; y: number }
 
 const v2 = (x: number, y: number): Vec2 => ({ x, y });

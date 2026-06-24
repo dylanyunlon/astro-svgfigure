@@ -12,6 +12,14 @@
 // strength (scalar) rather than colour.  The quad radius is enlarged so we
 // capture the full metaball falloff kernel (2-- smoothing length).
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
 const SPLAT_SHADER = /* wgsl */`
 struct Camera {
   pointSize  : f32,   // particle diameter in domain units

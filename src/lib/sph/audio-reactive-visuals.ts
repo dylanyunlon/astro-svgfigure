@@ -88,17 +88,22 @@
  * Research: xiaodi #M776 — cell-pubsub-loop
  */
 
-import * as Tone from 'tone';
 
-import type { World, Particle }    from './world-stepper';
-import type { ATBloomParams }      from './at-bloom-postprocess';
-import type { VFXHandler }         from './vfx-timeline';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants — Frequency Band Boundaries (Hz)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Low band floor (Hz) — sub-bass. */
+
+
+
+import * as Tone from 'tone';
+import type { World, Particle }    from './world-stepper';
+import type { ATBloomParams }      from './at-bloom-postprocess';
+import type { VFXHandler }         from './vfx-timeline';
+
 const LOW_FREQ_MIN  = 20;
 /** Low band ceiling (Hz) — upper bass. */
 const LOW_FREQ_MAX  = 250;

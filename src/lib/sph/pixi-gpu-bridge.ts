@@ -61,10 +61,8 @@
 
 // ─── PixiJS upstream imports ─────────────────────────────────────────────────
 
-import { Texture }      from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
-import { TextureSource } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
-import { Sprite }       from '../../../upstream/pixijs-engine/src/scene/sprite/Sprite';
-import type { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
+
+
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
@@ -76,6 +74,14 @@ import type { Container } from '../../../upstream/pixijs-engine/src/scene/contai
  * to keep this bridge decoupled from PixiJS internals.
  * All real accesses go through optional chaining with clear error messages.
  */
+
+
+
+import { Texture }      from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/Texture';
+import { TextureSource } from '../../../upstream/pixijs-engine/src/rendering/renderers/shared/texture/sources/TextureSource';
+import { Sprite }       from '../../../upstream/pixijs-engine/src/scene/sprite/Sprite';
+import type { Container } from '../../../upstream/pixijs-engine/src/scene/container/Container';
+
 export interface PixiRendererLike {
   /** The native WebGL context that PixiJS allocated on the canvas. */
   gl: WebGL2RenderingContext | WebGLRenderingContext;

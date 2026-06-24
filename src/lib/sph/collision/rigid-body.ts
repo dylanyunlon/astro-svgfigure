@@ -3,7 +3,13 @@
 // generator and impulse solver.  Aligned with the ContactConstraint /
 // ContactSolver interfaces in the same package.
 
+
+
+// ─── Shape primitives ─────────────────────────────────────────────────────────
+
+
 import {
+
   Vec2,
   vec2,
   vec2Add,
@@ -15,8 +21,6 @@ import {
   wrapAngle,
   type Mat2x2,
 } from './math';
-
-// ─── Shape primitives ─────────────────────────────────────────────────────────
 
 export const enum ShapeKind {
   Circle  = 0,

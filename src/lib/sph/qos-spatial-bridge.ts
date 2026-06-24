@@ -2,6 +2,14 @@
 // QoS → Physics mapping for SPH spatial renderer
 // Mirrors qos_spatial.py (task 07) — same formulas, TypeScript types
 
+
+
+
+
+
+
+
+
 export type Reliability = 'RELIABLE' | 'BEST_EFFORT';
 export type Durability  = 'VOLATILE' | 'TRANSIENT_LOCAL';
 

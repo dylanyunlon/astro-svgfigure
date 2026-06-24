@@ -7,6 +7,14 @@
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+
+
+
+
+
+
+
 export function updateTrails(world: any): void {
   const maxLen: number = world.config?.trailLength ?? 20;
   const particles: Array<{ id: number; x: number; y: number }> = world.particles;

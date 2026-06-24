@@ -24,6 +24,10 @@
 // 1.  Primitive math types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+
 export interface Vec2 {
   x: number;
   y: number;

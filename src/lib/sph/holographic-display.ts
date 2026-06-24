@@ -103,13 +103,19 @@
  * Research: xiaodi #M798 — cell-pubsub-loop
  */
 
-import type { ParticleData } from './types';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** A visible cell entry for the holographic renderer. */
+
+
+
+import type { ParticleData } from './types';
+
 export interface HoloCellEntry {
   /** Centre X in world coordinates. */
   cx: number;

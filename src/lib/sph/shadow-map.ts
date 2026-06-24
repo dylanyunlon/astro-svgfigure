@@ -77,8 +77,8 @@
  * Research: xiaodi #M786 — cell-pubsub-loop
  */
 
-import type { RigidBody } from './rigid-body';
-import type { ObstacleData } from './types';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -92,6 +92,12 @@ import type { ObstacleData } from './types';
  * An optional opacity controls shadow intensity — semi-transparent UI elements
  * (layernorm indicators, skip connections) cast lighter shadows.
  */
+
+
+
+import type { RigidBody } from './rigid-body';
+import type { ObstacleData } from './types';
+
 export interface CellCaster {
   /** Unique cell ID (e.g. 'self_attn', 'ffn_0'). */
   id: string;

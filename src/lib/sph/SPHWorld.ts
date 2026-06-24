@@ -1,6 +1,12 @@
 // === src/lib/sph/SPHWorld.ts ===
 
 
+
+
+
+
+
+
 import { SpatialHashGrid }    from "./SpatialHashGrid";
 import { NeighborListBuilder } from "./NeighborListBuilder";
 import { SPHGPUOrchestrator }  from "./SPHGPUOrchestrator";

@@ -31,6 +31,14 @@
 // Mirrors the species taxonomy used by NaturalPatternGenerator in
 // natural-patterns.ts so both generators share the same species vocabulary.
 
+
+
+
+
+
+
+
+
 export type TuringPatternSpecies =
   | 'SPOTS'
   | 'STRIPES'

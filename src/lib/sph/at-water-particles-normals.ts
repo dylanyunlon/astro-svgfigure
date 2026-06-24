@@ -105,6 +105,14 @@
 // Constants & Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 const DEFAULT_NORMAL_ATLAS_SIZE = 512 as const;
 const DEFAULT_PARTICLE_COUNT = 4096 as const;
 const DEFAULT_PARTICLE_POOL_SIZE = 8192 as const;

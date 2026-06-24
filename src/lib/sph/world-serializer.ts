@@ -76,12 +76,18 @@
  * └─────────────────────────────────────────────────────────────────┘
  */
 
-import type { Particle, World, WorldConfig, Emitter } from './world-stepper';
-import type { RigidBody } from './rigid-body';
+
+
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+
+
+
+import type { Particle, World, WorldConfig, Emitter } from './world-stepper';
+import type { RigidBody } from './rigid-body';
 
 const MAGIC = 0x53504857;          // "SPHW" in little-endian
 const VERSION = 1;

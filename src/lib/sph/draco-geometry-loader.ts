@@ -48,6 +48,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** AT binary file header decoded from the first section of a .bin file. */
+
+
+
+
+
+
+
+
 export interface ATBinHeader {
   /** Mesh name, e.g. "hexagon_gem". */
   name: string;

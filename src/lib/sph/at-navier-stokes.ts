@@ -67,6 +67,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Default fluid grid resolution (square). */
+
+
+
+
+
+
+
+
 export const NS_GRID = 512;
 
 /** Compute workgroup tile side length (16×16 = 256 threads). */

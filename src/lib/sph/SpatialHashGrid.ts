@@ -6,6 +6,12 @@
 //  All storage: typed arrays only --- no Map / Set / object
 // ============================================================
 
+
+
+
+
+
+
 import { MAX_PARTICLES } from "./types";
 
 export class SpatialHashGrid {

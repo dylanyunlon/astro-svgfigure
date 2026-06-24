@@ -1,5 +1,9 @@
 // AABB.ts — Axis-Aligned Bounding Box primitives
 
+
+
+
+
 export interface AABB {
   minX: number; minY: number;
   maxX: number; maxY: number;

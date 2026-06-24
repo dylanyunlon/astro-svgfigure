@@ -17,13 +17,19 @@
  * 8 条 edge: e1-e6 (feed-forward) + skip1, skip2 (skip connections)
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─── WebGL1 Bézier Vertex Shader ────────────────────────────────────────────
 // 用 attribute a_t (0..1 沿曲线), a_side (-1/+1 法线方向)
 // 4 个控制点 uniform, 每条 edge 切换 uniform
 // varying vT, vTangentDir, vCurvePx, vHalfWidth, vFragCoordPx, v_t
 // WebGL1: attribute / varying, no in/out
+
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
 
 const EDGE_VERT_SRC = /* glsl */ `
 precision highp float;

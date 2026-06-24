@@ -33,7 +33,8 @@
  *   src/lib/shaders/                         — pattern / surface shader source
  */
 
-import type { PhysicsUniforms } from './physics-uniform-bridge';
+
+
 
 // ─── SDF Shape ────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,11 @@ import type { PhysicsUniforms } from './physics-uniform-bridge';
  *   roundbox   → sdRoundBox(p, b, r)              lygia/sdf/boxSDF rounded
  *   polygon    → sdPolygon(p, vertices, n)        lygia/sdf/polygonSDF
  */
+
+
+
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+
 export type SdfShape =
   | 'flower'
   | 'koch'

@@ -32,6 +32,14 @@
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 export interface ATSceneCompositorConfig {
   /** WebGL context attributes. */
   contextAttribs?: WebGLContextAttributes;

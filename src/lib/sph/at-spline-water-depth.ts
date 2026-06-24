@@ -49,6 +49,14 @@
  * Include via `#include "splineshader.glsl"` or inject as string prefix
  * into edge-spline.frag before compilation.
  */
+
+
+
+
+
+
+
+
 export const SPLINESHADER_GLSL = /* glsl */`
 // splineshader.glsl — AT Spline Shader (edge 数据流样条线渲染核心)
 // Augments edge-spline.frag with AT-quality Catmull-Rom pressure + taper.

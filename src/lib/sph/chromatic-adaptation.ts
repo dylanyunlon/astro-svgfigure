@@ -21,13 +21,19 @@
 // 每条轨迹由三个 IQ cosine palette 控制点合成, 与 heatmap() 做 screen 混合
 // 添加高频细节, 最终用 zucconi6 光谱发光核在温度峰值叠加白色发光。
 
-import type { RGB, RGBA } from './color-palette';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API types
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 三种自然界色彩模式。 */
+
+
+
+import type { RGB, RGBA } from './color-palette';
+
 export type ChromaticMode = 'SUNSET' | 'ABYSS' | 'AURORA';
 
 /** 驱动色彩自适应的粒子物理量。 */

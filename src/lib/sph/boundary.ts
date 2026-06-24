@@ -7,6 +7,14 @@
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+
+
+
+
+
+
+
 export function computeBoundaryDensity(_world: any): void {
   /* no-op stub — boundary density contribution not yet wired */
 }

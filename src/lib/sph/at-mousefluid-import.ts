@@ -29,6 +29,14 @@
 // Outputs neighbour UVs (vL/vR/vT/vB) for all NS passes.
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 const FLUID_VERT = /* glsl */ `
 precision highp float;
 attribute vec2 aPosition;

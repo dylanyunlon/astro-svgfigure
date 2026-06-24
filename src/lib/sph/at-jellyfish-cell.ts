@@ -29,15 +29,21 @@
  * Research: xiaodi #M807 — cell-pubsub-loop
  */
 
-import type { GeometryDescriptor } from '../threed-pipeline';
-import { DracoThread }             from '../threed-pipeline';
-import type { Morphology, VisualProfile } from './cell-visual-identity';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Path to AT jellyfish geometry (Draco-compressed). */
+
+
+
+import type { GeometryDescriptor } from '../threed-pipeline';
+import { DracoThread }             from '../threed-pipeline';
+import type { Morphology, VisualProfile } from './cell-visual-identity';
+
 const JELLYFISH_BIN_PATH = '/upstream/activetheory-assets/geometry/jellyfish.bin';
 
 /**

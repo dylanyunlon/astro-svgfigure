@@ -7,8 +7,18 @@
 // M547: extended with configurable boundary shapes (rect / circle / polygon) and
 //       automatic resampling via `resample()` / `resampleWorld()`.
 
+
+
+
+// --------- Constants ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** Spacing factor relative to smoothing length h */
+
+
+
 import { ObstacleData } from "./types";
 import {
+
   BoundaryShape,
   createPolygonObstacle,
   createBoxObstacle,
@@ -16,9 +26,6 @@ import {
   BoundaryParticle as WBParticle,
 } from "./world-boundary";
 
-// --------- Constants ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-/** Spacing factor relative to smoothing length h */
 const BOUNDARY_SPACING_FACTOR = 0.8;
 
 /** Cubic Spline kernel normalisation constant (2-D) */

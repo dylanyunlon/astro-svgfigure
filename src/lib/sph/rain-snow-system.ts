@@ -83,6 +83,14 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 export const WEATHER_WORKGROUP    = 256;
 export const WEATHER_MAX          = 32768;
 export const WIND_FIELD_SIZE      = 64;    // 64×64 texels

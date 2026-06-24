@@ -63,15 +63,21 @@
  *   src/lib/sph/qosSpatial.ts           — QoS profile definitions
  */
 
+
+
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+/** Default particle pool per unit of edge weight. */
+
+
+
 import type { QoSProfile }      from './types';
 import type { QoSProfileName }  from './qosSpatial';
 import { QOS_PRESETS }           from './qosSpatial';
 import { QOS_THEME }             from './color-palette';
 import type { ThemePalette, RGB } from './color-palette';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-/** Default particle pool per unit of edge weight. */
 const DEFAULT_PARTICLES_PER_UNIT = 12;
 
 /** Maximum particles across all edges. */

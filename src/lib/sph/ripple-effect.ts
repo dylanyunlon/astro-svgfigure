@@ -37,8 +37,8 @@
  *   ripple.composite(encoder, sceneView, canvasWidth, canvasHeight); // overlay
  */
 
-import type { CollisionEvent }           from './collision/CollisionEvents';
-import type { CameraUniforms }           from './ParticleRenderer';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lygia ripple propagation shader (lygia/simulate/ripple.wgsl — inlined)
@@ -54,6 +54,12 @@ import type { CameraUniforms }           from './ParticleRenderer';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** WGSL: wave propagation step (fullscreen quad → writes new wave state) */
+
+
+
+import type { CollisionEvent }           from './collision/CollisionEvents';
+import type { CameraUniforms }           from './ParticleRenderer';
+
 const RIPPLE_PROPAGATE_SHADER = /* wgsl */`
 // ── Lygia ripple.wgsl — inlined ───────────────────────────────────────────
 // Propagation kernel operating on a double-buffered wave texture.

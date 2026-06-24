@@ -97,16 +97,23 @@
  * [ASTRO-PARTICLE-FX] debug prefix.
  */
 
-import {
-  getSpeciesShaderConfig,
-  type SpeciesShaderConfig,
-} from './species-shader-registry';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Default pool capacity (pre-allocated particle slots) */
+
+
+
+import {
+
+  getSpeciesShaderConfig,
+  type SpeciesShaderConfig,
+} from './species-shader-registry';
+
 const DEFAULT_POOL_SIZE = 4096;
 
 /** Floats per particle in the GPU instance buffer */

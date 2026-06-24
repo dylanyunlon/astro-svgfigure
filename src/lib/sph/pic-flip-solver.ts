@@ -66,6 +66,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Configuration for the PIC/FLIP MAC grid solver. */
+
+
+
+
+
+
+
+
 export interface PICFLIPConfig {
   /** Domain width in world units. */
   domainW: number;

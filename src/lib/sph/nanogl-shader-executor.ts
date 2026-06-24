@@ -38,17 +38,31 @@
 // Upstream nanogl imports (vendored at upstream/nanogl/src/)
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A single fullscreen shader pass.
+ * Every field mirrors what the AT fluid pipeline passes per-frame.
+ */
+
+
+
 import Program       from '../../../upstream/nanogl/src/program';
 import Fbo           from '../../../upstream/nanogl/src/fbo';
 import NanoGLBuffer  from '../../../upstream/nanogl/src/arraybuffer';
 import Texture2D     from '../../../upstream/nanogl/src/texture-2d';
 import type { GLContext } from '../../../upstream/nanogl/src/types';
+import {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AT fluid shader sources (11 GLSL strings)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import {
   AT_FLUID_BASE_VS,
   AT_SPLAT_FS,
   AT_ADVECTION_FS,
@@ -62,14 +76,6 @@ import {
   AT_MOUSEFLUID_CONSUME_FS,
 } from './at-mousefluid-import';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public types
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * A single fullscreen shader pass.
- * Every field mirrors what the AT fluid pipeline passes per-frame.
- */
 export interface ShaderPass {
   /** Human-readable label (used for debug / error messages). */
   name: string;

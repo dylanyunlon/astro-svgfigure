@@ -77,6 +77,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Tunable TAA parameters. */
+
+
+
+
+
+
+
+
 export interface TAAParams {
   /**
    * Minimum blend factor (α) for static pixels.

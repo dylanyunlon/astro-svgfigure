@@ -32,10 +32,8 @@
  * Research: xiaodi #M802 — cell-pubsub-loop
  */
 
-import { read as readKTX2 } from 'ktx-parse';
-import type { KTX2Container } from 'ktx-parse';
 
-import type { TextureDescriptor } from '../renderer/material/Material.ts';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -49,6 +47,13 @@ import type { TextureDescriptor } from '../renderer/material/Material.ts';
  * For uncompressed fallbacks, `format` is 'rgba8unorm' and `data` holds
  * RGBA8 pixel bytes.
  */
+
+
+
+import { read as readKTX2 } from 'ktx-parse';
+import type { KTX2Container } from 'ktx-parse';
+import type { TextureDescriptor } from '../renderer/material/Material.ts';
+
 export interface ATTexture {
   /** Raw pixel/block data — upload via compressedTexImage2D or texImage2D. */
   data: Uint8Array;

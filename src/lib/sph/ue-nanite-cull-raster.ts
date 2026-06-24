@@ -26,6 +26,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 大 cell 屏幕面积阈值 (px²): 超过此值 → LOD_FULL */
+
+
+
+
+
+
+
+
 export const LOD_FULL_THRESHOLD_PX2    = 4000;
 /** 中 cell 屏幕面积阈值 (px²): 超过此值 → LOD_SIMPLIFIED, 否则 → LOD_DOT */
 export const LOD_SIMPLIFIED_THRESHOLD_PX2 = 400;

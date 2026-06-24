@@ -35,6 +35,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Tweakable parameters for the three effect layers. */
+
+
+
+
+
+
+
+
 export interface EnvironmentFxConfig {
   /**
    * Number of brick-tile rows.  Column count = gridScale * aspect.

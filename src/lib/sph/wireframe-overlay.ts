@@ -89,14 +89,20 @@
  * Research: xiaodi #M788 — cell-pubsub-loop
  */
 
-import { organicOutline, getSpeciesSdfParams } from './organic-sdf';
-import type { ParticleData } from './types';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 2D vector (reused from contact-sparks / debug-renderer conventions). */
+
+
+
+import { organicOutline, getSpeciesSdfParams } from './organic-sdf';
+import type { ParticleData } from './types';
+
 export interface Vec2 {
   x: number;
   y: number;

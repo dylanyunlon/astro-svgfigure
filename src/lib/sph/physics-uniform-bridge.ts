@@ -21,10 +21,16 @@
  *   convention used by sph-bridge.ts (SPHFrameSnapshot.rigidBodies[].id).
  */
 
-import type { World, Particle } from './world-stepper';
-import type { RigidBody } from './rigid-body';
+
+
 
 // ─── Public interface ─────────────────────────────────────────────────────────
+
+
+
+
+import type { World, Particle } from './world-stepper';
+import type { RigidBody } from './rigid-body';
 
 export interface PhysicsUniforms {
   /** Average density of neighbouring fluid / rest density.  ≥ 0 */

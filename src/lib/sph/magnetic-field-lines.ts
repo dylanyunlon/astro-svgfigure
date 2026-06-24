@@ -98,13 +98,19 @@
  * Research: xiaodi #M782 — cell-pubsub-loop
  */
 
-import type { QoSProfileName }    from './qosSpatial';
-import { QOS_THEME }               from './color-palette';
-import type { ThemePalette, RGB }  from './color-palette';
+
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Maximum streamlines across the entire field. */
+
+
+
+import type { QoSProfileName }    from './qosSpatial';
+import { QOS_THEME }               from './color-palette';
+import type { ThemePalette, RGB }  from './color-palette';
+
 const MAX_STREAMLINES = 512;
 
 /** Maximum integration steps per streamline (RK4). */

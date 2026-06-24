@@ -38,14 +38,20 @@
  * [ASTRO-TRANSITION] debug prefix.
  */
 
-import { Easing, type EasingFn } from '../tween-system';
-import type { Morphology }       from './cell-visual-identity';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Default transition duration in seconds */
+
+
+
+import { Easing, type EasingFn } from '../tween-system';
+import type { Morphology }       from './cell-visual-identity';
+
 const DEFAULT_DURATION = 0.55;
 
 /** Maximum particle count for dissolve effect (clamped by perf budget) */

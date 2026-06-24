@@ -3,6 +3,10 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+
+
+
+
 export interface ContactPoint {
   x: number;
   y: number;

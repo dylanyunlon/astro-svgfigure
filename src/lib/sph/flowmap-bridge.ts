@@ -86,6 +86,14 @@
 // Accepts both the SOA layout from SPHWorld.cpuPos and the AOS layout from
 // world-stepper.ts.  The generic constraint keeps the function tree-shakeable.
 
+
+
+
+
+
+
+
+
 export interface SPHParticleAOS {
   x: number;
   y: number;

@@ -43,12 +43,8 @@
  *   src/lib/sph/nature-texture-manager.ts   — NatureTextureManager
  */
 
-import {
-  getSpeciesShaderConfig,
-  getAllSpeciesIds,
-  type PatternShader,
-  type SpeciesShaderConfig,
-} from './species-shader-registry';
+
+
 
 // ─── Texture algorithm enum ─────────────────────────────────────────────────
 
@@ -57,6 +53,17 @@ import {
  *
  * Each variant maps to a branch in the WGSL compute shader.
  */
+
+
+
+import {
+
+  getSpeciesShaderConfig,
+  getAllSpeciesIds,
+  type PatternShader,
+  type SpeciesShaderConfig,
+} from './species-shader-registry';
+
 export type ProceduralTextureKind =
   | 'VORONOI_MEMBRANE'
   | 'PERLIN_ROCK'

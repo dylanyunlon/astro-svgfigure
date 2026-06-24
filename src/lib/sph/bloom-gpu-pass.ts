@@ -10,9 +10,15 @@
  *   luminosity extract → downsample ×4 → gaussian blur H+V 每级 → upsample ×4 → additive composite
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─── WebGL1 全屏 quad vertex shader ──────────────────────────────────────────
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
+
 const BLOOM_VERT = /* glsl */ `
 precision highp float;
 attribute vec2 aPosition;

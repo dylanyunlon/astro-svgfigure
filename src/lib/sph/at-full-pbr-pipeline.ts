@@ -26,6 +26,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Light type IDs matching AT's lightProperties.w convention. */
+
+
+
+
+
+
+
+
 export type ATLightType = 1 | 2 | 3 | 4;
 
 /**

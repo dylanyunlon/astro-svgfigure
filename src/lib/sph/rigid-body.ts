@@ -2,6 +2,14 @@
 // 2D rigid body simulation for rectangular SPH transformer cells
 // Symplectic Euler integration, AABB collision resolution, boundary sampling
 
+
+
+
+
+
+
+
+
 export interface RigidBody {
   id: number;
   // Position

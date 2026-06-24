@@ -1,6 +1,14 @@
 // === src/lib/sph/types.ts ===
 // types.ts --- shared interfaces
 
+
+
+
+
+
+
+
+
 export interface GPUBufferSet {
   posX: GPUBuffer;
   posY: GPUBuffer;

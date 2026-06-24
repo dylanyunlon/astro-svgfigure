@@ -39,6 +39,14 @@
 // ─────────────────────────────────── GLSL source strings ─────────────────────
 
 /** Fullscreen quad vertex shader — shared by all TSR passes */
+
+
+
+
+
+
+
+
 const TSR_QUAD_VERT = /* glsl */`
 precision highp float;
 attribute vec2 aPosition;

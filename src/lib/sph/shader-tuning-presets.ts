@@ -57,6 +57,14 @@
  * the "artist's final answer" for that species.  Runtime modulation by physics
  * state happens downstream in uil-species-live.ts; these are the baselines.
  */
+
+
+
+
+
+
+
+
 export interface ShaderPreset {
   // ── Bloom (at-bloom-postprocess) ──────────────────────────────────────────
   /** Luminosity threshold for the bright-pass extraction (0 = everything blooms). */

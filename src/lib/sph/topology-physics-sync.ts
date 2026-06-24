@@ -76,12 +76,17 @@
  */
 
 
+
+
+
+
+
 import {
 } from './cell-body-bridge';
 import type { FlowEdge }            from './edge-flow-renderer';
 import type { EmitterConfig }        from './emitter-strategy';
 import { ContinuousPattern }         from './emitter-strategy';
-import {
+
 } from './rigid-body';
 
   type CellPhysicsConfig,

@@ -36,11 +36,17 @@
  * Research: M1008 — cell-pubsub-loop
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  Public Types
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
 
 export interface BloomTonemapConfig {
   /** Luminosity threshold for bloom extraction. @default 0.8 */

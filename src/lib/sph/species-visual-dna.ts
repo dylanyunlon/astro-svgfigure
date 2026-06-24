@@ -36,14 +36,17 @@
  */
 
 
+
+
+
+
+
 import type { World } from './world-stepper';
 import {
 } from './species-shader-registry';
-import {
-} from './physics-uniform-bridge';
-import {
-} from './uil-species-live';
 
+} from './physics-uniform-bridge';
+} from './uil-species-live';
 
   getSpeciesShaderConfig,
   resolvePhysicsBindings,

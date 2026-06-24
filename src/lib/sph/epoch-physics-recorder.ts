@@ -36,12 +36,18 @@
  *   const epochs    = recording.epochCount;       // total captured epochs
  */
 
-import type { World } from './world-stepper';
-import { serializeWorld, deserializeWorld } from './world-serializer';
+
+
 
 // ─── EpochSnapshot ──────────────────────────────────────────────────────────
 
 /** A single epoch's captured state. */
+
+
+
+import type { World } from './world-stepper';
+import { serializeWorld, deserializeWorld } from './world-serializer';
+
 export interface EpochSnapshot {
   /** The epoch number as reported by the caller (monotonically increasing). */
   epoch: number;

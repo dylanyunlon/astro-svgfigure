@@ -45,6 +45,14 @@
 // WGSL 无重载，用 easeInQuad / easeOutQuad / easeInOutQuad 等后缀区分。
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 export const WGSL_EASES = /* wgsl */`
 // ──────────────────────────────────────────────────────────────────────────────
 // AT eases.glsl — Penner easing functions (WGSL port)

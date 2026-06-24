@@ -1,6 +1,9 @@
 // PositionSolver.ts — Baumgarte position correction
 // Resolves residual penetration after velocity-level impulse solving
 
+
+
+
 import { RigidBody, ContactConstraint } from '../types';
 
 export class PositionSolver {

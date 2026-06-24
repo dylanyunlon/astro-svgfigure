@@ -29,7 +29,19 @@
  * Research: xiaodi #M762 — cell-pubsub-loop
  */
 
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Per-cell surface patch resolution (64×64 texels). */
+
+
+
 import {
+
   type GrayScottParams,
   type GrayScottSpecies,
   speciesGrayScottParams,
@@ -37,11 +49,6 @@ import {
   RD_MAX_SPECIES,
 } from './reaction-diffusion';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Per-cell surface patch resolution (64×64 texels). */
 export const CELL_RD_SIZE = 64;
 
 /** Storage texture format for ping-pong buffers (R=u, G=v, B=0, A=1). */

@@ -39,11 +39,17 @@
  *   // handoff callbacks fire automatically after each update pass
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Maximum particle pool size. */
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
+
 const MAX_PARTICLES = 32768 as const;
 
 /** Spline texture atlas dimensions (W × H ≥ MAX_SPLINES × PER_SPLINE). */

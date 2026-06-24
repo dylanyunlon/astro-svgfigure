@@ -1,11 +1,17 @@
 // === SPHGPUOrchestrator.ts ===
 // SPHGPUOrchestrator.ts --- WebGPU compute pipeline for SPH
 
-import { GPUBufferSet, SimParams, WORKGROUP_SIZE } from "./types";
+
+
 
 // ---------------------------------------------------------------------------
 // WGSL Shaders
 // ---------------------------------------------------------------------------
+
+
+
+
+import { GPUBufferSet, SimParams, WORKGROUP_SIZE } from "./types";
 
 const DENSITY_SHADER = /* wgsl */`
 struct SimUniforms {

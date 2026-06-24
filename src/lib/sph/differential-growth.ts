@@ -29,6 +29,14 @@
 
 // ─── Tuning knobs ─────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 export interface DifferentialGrowthConfig {
   /** Domain width – used for spatial hash bucketing only.  Default 800. */
   width?: number;

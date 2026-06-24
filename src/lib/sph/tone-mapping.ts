@@ -15,6 +15,14 @@
 // ---------------------------------------------------------------------------
 
 /** A linear‑light RGB triplet (each channel ≥ 0, no upper bound). */
+
+
+
+
+
+
+
+
 export type Color3 = [r: number, g: number, b: number];
 
 /** A 3×3 matrix stored as nine elements in row‑major order. */

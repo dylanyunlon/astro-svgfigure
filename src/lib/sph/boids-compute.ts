@@ -21,6 +21,14 @@
 // Constants
 // ---------------------------------------------------------------------------
 
+
+
+
+
+
+
+
+
 export const BOIDS_WORKGROUP = 256;
 export const BOIDS_MAX       = 65536;  // hard upper bound (buffer allocation)
 

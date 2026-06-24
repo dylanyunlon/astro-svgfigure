@@ -44,16 +44,22 @@
  * [ASTRO-CINECAM] debug prefix.
  */
 
-import { Vec3 }  from '../math/Vec3';
-import { Quat }  from '../math/Quat';
-import { Box3 }  from '../math/Box3';
-import { Easing, type EasingFn } from '../tween-system';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Default smooth-follow lerp speed (frame-rate-independent) */
+
+
+
+import { Vec3 }  from '../math/Vec3';
+import { Quat }  from '../math/Quat';
+import { Box3 }  from '../math/Box3';
+import { Easing, type EasingFn } from '../tween-system';
+
 const DEFAULT_FOLLOW_SPEED    = 0.08;
 
 /** Default orbit angular speed (radians / second for auto-orbit) */

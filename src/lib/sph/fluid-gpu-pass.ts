@@ -9,8 +9,8 @@
  *   splat → curl → vorticity → divergence → pressure (×N jacobi) → gradientSub → advectVel → advectDye → display
  */
 
-import { getShader } from '../shaders/ShaderLoader';
-import type { RenderTarget, UniformValue } from '../renderer/NukePass';
+
+
 
 // ─── WebGL1 → WebGL2 适配 ────────────────────────────────────────────────────
 // compiled.vs 里的 shader 是 WebGL1 (varying/texture2D)
@@ -20,6 +20,12 @@ import type { RenderTarget, UniformValue } from '../renderer/NukePass';
 // ─── AT 流体 shader 的共用 vertex shader ────────────────────────────────────
 
 // 流体 pass 需要邻居像素 UV (vL/vR/vT/vB)，AT 用这个 vertex shader
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
+import type { RenderTarget, UniformValue } from '../renderer/NukePass';
+
 const FLUID_VERT = /* glsl */ `
 precision highp float;
 attribute vec2 aPosition;

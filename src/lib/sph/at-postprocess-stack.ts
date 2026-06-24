@@ -55,6 +55,14 @@
 // §0  Type Definitions & Interfaces
 // ═════════════════════════════════════════════════════════════════════════════
 
+
+
+
+
+
+
+
+
 export interface LensFlareParams {
   /** Enable/disable lens flare effect */
   enabled?: boolean;

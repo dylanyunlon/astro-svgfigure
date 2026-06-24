@@ -4,16 +4,15 @@
  */
 
 
+
+
+
+
+
 import { SpatialHash, buildSpatialHash, queryNeighbors } from "./spatial-hash";
 import { DFSPHSolver, solvePressure, applyPressureForces } from "./dfsph-solver";
 import {
 } from "./dfsph-solver";
-import {
-} from "./rigid-body";
-import {
-} from "./world-boundary";
-import {
-} from "./fluid-rigid-coupling";
 import { SpatialPhysics, QoSBridge, syncQoSParticles } from "./qos-spatial-bridge";
 import { CollisionWorld, createCollisionWorld } from "./collision/collision-world";
 import { SceneQuery, createSceneQuery } from "./collision/scene-query";
@@ -29,6 +28,10 @@ import { SceneQuery, createSceneQuery } from './collision/scene-query';
 import { stepDFSPH } from './dfsph';
 import { clampToDomain } from './domain';
 import { updateTrails as updateTrailsExt } from './trails';
+
+} from "./rigid-body";
+} from "./world-boundary";
+} from "./fluid-rigid-coupling";
 
   Particle as DfsphParticle,
   pressureSolve as dfsphPressureSolve,

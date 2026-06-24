@@ -19,11 +19,17 @@
  * xiaodi #M878 — cell-pubsub-loop
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─── MSDF Atlas Glyph Metrics ─────────────────────────────────────────────────
 
 /** Single glyph entry in the MSDF atlas JSON (msdfgen format). */
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
+
 interface GlyphMetric {
   /** Unicode codepoint */
   id: number;

@@ -28,9 +28,15 @@
  *   • WebGL1 语法 (varying / texture2D)
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─── Vertex shader (WebGL1, fullscreen quad) ─────────────────────────────────
+
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
 
 const COMPOSITE_VERT = /* glsl */ `
 precision highp float;

@@ -73,6 +73,14 @@
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** WebGPU workgroup size — ≤256 for broad device compatibility. */
+
+
+
+
+
+
+
+
 const WG = 64 as const;
 
 /** Maximum particle slots (tPos texture area). */

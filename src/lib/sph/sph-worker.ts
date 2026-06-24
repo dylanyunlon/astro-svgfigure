@@ -1,12 +1,18 @@
 // sph-worker.ts
+
+
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+
+
+
 import * as Comlink from "comlink";
 import { WorldStepperV2, StepSnapshot } from "./world-stepper";
 import { QoSSpatialBridge, QoSLevel } from "./qos-spatial-bridge";
 import { ATRenderPipeline, type ATRenderPipelineOptions } from "./ATRenderPipeline";
 import { PerformanceBudget, type Tier, type TierConfig } from "./performance-budget";
 import { serializeWorld, deserializeWorld } from "./world-serializer";
-
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface InitOptions {
   gravity: [number, number, number];

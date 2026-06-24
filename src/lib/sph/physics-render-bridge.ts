@@ -61,14 +61,8 @@
  * Research: xiaodi #M781 — cell-pubsub-loop
  */
 
-import type { ParticleData, GPUBufferSet, SimParams } from './types';
-import type { PhysicsUniforms } from './physics-uniform-bridge';
-import { samplePhysicsForBody } from './physics-uniform-bridge';
-import type { SPHFrameSnapshot } from './sph-bridge';
-import type { CollisionFXSystem } from './collision-fx-system';
-import type { VFXTimelinePlayer, VFXEventKind } from './vfx-timeline';
-import type { DensityFieldTexture } from './density-field-texture';
-import type { VelocityFieldTexture } from './velocity-field-texture';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -78,6 +72,18 @@ import type { VelocityFieldTexture } from './velocity-field-texture';
  * Minimal physics world interface — duck-typed to accept both SPHWorld
  * (WebGPU) and World (CPU world-stepper.ts) without tight coupling.
  */
+
+
+
+import type { ParticleData, GPUBufferSet, SimParams } from './types';
+import type { PhysicsUniforms } from './physics-uniform-bridge';
+import { samplePhysicsForBody } from './physics-uniform-bridge';
+import type { SPHFrameSnapshot } from './sph-bridge';
+import type { CollisionFXSystem } from './collision-fx-system';
+import type { VFXTimelinePlayer, VFXEventKind } from './vfx-timeline';
+import type { DensityFieldTexture } from './density-field-texture';
+import type { VelocityFieldTexture } from './velocity-field-texture';
+
 export interface PhysicsWorldView {
   /** Fluid particle arrays (CPU-side mirror for readback). */
   readonly particles: ParticleData | ReadonlyArray<{

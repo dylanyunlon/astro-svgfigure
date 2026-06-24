@@ -85,6 +85,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Water simulation grid resolution (NxN). Power-of-two recommended. */
+
+
+
+
+
+
+
+
 const WATER_SIM_SIZE = 256 as const;
 
 /** Mesh tessellation detail for the rendered water surface. */

@@ -1,6 +1,9 @@
-import { ContactPoint } from "./contact-manifold";
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+
+import { ContactPoint } from "./contact-manifold";
 
 export interface RigidBody {
   position: { x: number; y: number; z: number };

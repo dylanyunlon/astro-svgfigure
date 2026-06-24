@@ -2,6 +2,14 @@
 // Bridges cell_registry.json + species_assignment.json to RigidBody creation.
 // Maps the 7 Transformer cells from /api/cells into SPH rigid body parameters.
 
+
+
+
+
+
+
+
+
 export interface CellPhysicsConfig {
   id: string;           // e.g. "self_attn"
   x: number; y: number; // center from bbox

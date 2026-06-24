@@ -14,11 +14,17 @@
 //   in your sim loop.  It reads posX/posY from the GPUBufferSet and writes an
 //   additive force contribution into forceX/forceY.
 
-import { GPUBufferSet, SimParams, WORKGROUP_SIZE } from "./types";
+
+
 
 // ---------------------------------------------------------------------------
 // Effect presets
 // ---------------------------------------------------------------------------
+
+
+
+
+import { GPUBufferSet, SimParams, WORKGROUP_SIZE } from "./types";
 
 export type NoiseEffect = "smoke" | "aurora" | "water";
 

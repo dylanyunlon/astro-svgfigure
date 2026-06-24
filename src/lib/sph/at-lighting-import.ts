@@ -37,15 +37,21 @@
  * Research: xiaodi #M804 — cell-pubsub-loop
  */
 
-import { ATShaderLoader } from './at-shader-loader.ts';
-import { AstroProgram } from '../renderer/AstroProgram.ts';
-import type { AstroRenderer } from '../renderer/AstroRenderer.ts';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Parsed uniform metadata extracted from resolved GLSL source. */
+
+
+
+import { ATShaderLoader } from './at-shader-loader.ts';
+import { AstroProgram } from '../renderer/AstroProgram.ts';
+import type { AstroRenderer } from '../renderer/AstroRenderer.ts';
+
 export interface ATUniformInfo {
   /** GLSL name (e.g. "lightColor", "shadowMatrix") */
   name: string;

@@ -71,6 +71,14 @@
 // 供所有流体 pass 的 fragment shader 直接读取，避免在 fs 内重复做偏移计算。
 // texelSize 由 CPU 每帧更新（vec2(1/W, 1/H)）。
 
+
+
+
+
+
+
+
+
 export const AT_FLUID_BASE_VS = /* glsl */`
 varying vec2 vUv;
 varying vec2 vL;

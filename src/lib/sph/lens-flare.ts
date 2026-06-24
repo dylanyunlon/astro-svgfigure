@@ -92,6 +92,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Maximum number of simultaneous flare light sources. */
+
+
+
+
+
+
+
+
 const MAX_FLARE_LIGHTS = 4;
 
 /** Number of ghost layers per light (each reflected / scaled independently). */

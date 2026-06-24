@@ -34,6 +34,14 @@
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 export interface ATBloomParams {
   /** Luminance threshold for bloom extraction. Default 0.7 */
   luminosityThreshold?: number;

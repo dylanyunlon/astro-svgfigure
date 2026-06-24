@@ -21,6 +21,14 @@
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 const SSR_TILE_SIZE           = 8   as const;
 const VELOCITY_TILE_SIZE      = 16  as const;
 const CONFIG_MAX_RANGE_SIZE   = 2   as const;

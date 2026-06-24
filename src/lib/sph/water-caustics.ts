@@ -53,6 +53,14 @@
 
 // ─── Constants (mirror renderer.js) ──────────────────────────────────────────
 
+
+
+
+
+
+
+
+
 const IOR_AIR   = 1.0;
 const IOR_WATER = 1.333;
 const POOL_HEIGHT = 1.0;

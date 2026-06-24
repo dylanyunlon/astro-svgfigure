@@ -1,7 +1,13 @@
+
+
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+
+
 import { createWorldV2, stepWorldV2 } from './world-stepper';
 import { QoSSpatialBridge } from './qos-spatial-bridge';
 
-// ─── Constants ───────────────────────────────────────────────────────────────
 const DOMAIN_MIN = { x: 0, y: 0, z: 0 };
 const DOMAIN_MAX = { x: 20, y: 15, z: 10 };
 const TARGET_DENSITY = 1000;

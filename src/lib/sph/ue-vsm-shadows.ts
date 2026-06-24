@@ -23,9 +23,15 @@
  * Ported concept from: Renderer-Private/VirtualShadowMaps/ (UE5)
  */
 
-import { getShader } from '../shaders/ShaderLoader';
+
+
 
 // ─── constants ────────────────────────────────────────────────────────────────
+
+
+
+
+import { getShader } from '../shaders/ShaderLoader';
 
 const SHADOW_MAP_SIZE  = 1024 as const;   // shadow depth FBO resolution
 const SHADOW_OUT_SIZE  = 512  as const;   // PCF output texture resolution

@@ -34,34 +34,41 @@
 //     GPUDevice and can be created even when WebGPU is unavailable.
 
 
+
+
+
+
+
 import {
+} from './reaction-diffusion';
+
+} from './physarum-sim';
+} from './differential-growth';
+} from './boids-compute';
+} from './turing-pattern';
+} from './natural-patterns';
+} from './morphogenesis';
+
   ReactionDiffusionSim,
   type RDSimConfig,
-} from './reaction-diffusion';
-import {
+
   PhysarumSimulation,
   type PhysarumParams,
-} from './physarum-sim';
-import {
+
   DifferentialGrowth,
   type DifferentialGrowthConfig,
-} from './differential-growth';
-import {
+
   BoidsCompute,
   type BoidsParams,
-} from './boids-compute';
-import {
+
   TuringPatternGenerator,
   type TuringPatternParams,
-} from './turing-pattern';
-import {
+
   NaturalPatternGenerator,
   type NaturalPatternParams,
-} from './natural-patterns';
-import {
+
   Morphogenesis,
   type MorphogenesisConfig,
-} from './morphogenesis';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types

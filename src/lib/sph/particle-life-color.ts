@@ -29,7 +29,8 @@
  *   src/lib/sph/world-renderer.ts          — SPECIES_COLORS (legacy numeric)
  */
 
-import type { RGB, RGBA } from './color-palette';
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lifecycle phase
@@ -43,6 +44,11 @@ import type { RGB, RGBA } from './color-palette';
  *   MATURE  — [0.40, 0.75)  成熟, 品种色加深
  *   DYING   — [0.75, 1.00]  衰亡, 向暗红过渡并淡出
  */
+
+
+
+import type { RGB, RGBA } from './color-palette';
+
 export type LifecyclePhase = 'BIRTH' | 'YOUNG' | 'MATURE' | 'DYING';
 
 /** 阶段边界常量 — 保持与文档一致 */

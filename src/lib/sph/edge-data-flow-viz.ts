@@ -67,13 +67,19 @@
  *   channels/physics/edge_routes.json   — topology edge route data
  */
 
-import type { QoSProfileName }  from './qosSpatial';
-import { QOS_THEME }             from './color-palette';
-import type { ThemePalette, RGB } from './color-palette';
+
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /** Maximum concurrent pulses per edge (ring buffer). */
+
+
+
+import type { QoSProfileName }  from './qosSpatial';
+import { QOS_THEME }             from './color-palette';
+import type { ThemePalette, RGB } from './color-palette';
+
 const MAX_PULSES_PER_EDGE = 8;
 
 /** Spline evaluation subdivision count for Canvas2D drawing. */

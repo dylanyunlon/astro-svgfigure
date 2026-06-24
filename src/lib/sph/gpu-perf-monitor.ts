@@ -2,6 +2,14 @@
  * gpu-perf-monitor.ts — FPS counter + per-pass timing + drawcall counting
  */
 
+
+
+
+
+
+
+
+
 export class GPUPerfMonitor {
   private frameTimes: number[] = [];
   private maxSamples = 60;
