@@ -1,149 +1,53 @@
 /**
- * at-unreal-bloom-pipeline.ts — M844: AT Unreal Bloom Pipeline — WebGPU/WGSL Port
+ * at-unreal-bloom-pipeline.ts — M1029: AT Unreal Bloom Pipeline — Real WebGL GPU
  *
- * 完整移植 ActiveTheory 的 UE 风格 UnrealBloom 后处理管线，基于 compiled.vs 着色器：
- *   UnrealBloom.fs / UnrealBloomPass.fs / UnrealBloomComposite.glsl
- *   UnrealBloomGaussian.glsl / UnrealBloomLuminosity.glsl
- *   BloomLuminosityPass.glsl / DownSample.glsl / UpSample.glsl
+ * 完整 WebGL UnrealBloom 后处理管线，从 compiled.vs 提取 AT 生产 GLSL：
+ *   BloomLuminosityPass.glsl  — 亮度阈值提取
+ *   DownSample.glsl           — 13-tap 加权下采样
+ *   UnrealBloomGaussian.glsl  — 可分离高斯模糊 (gaussianPdf)
+ *   UpSample.glsl             — 9-tap 帐篷滤波上采样 + tint 累积
+ *   UnrealBloomComposite.glsl — lerpBloomFactor + additive composite
  *
  * 管线结构（每帧 render()）:
- *   Stage 1 — LUMINOSITY THRESHOLD : scene → brightTex (luma + smoothstep)
- *   Stage 2 — DOWNSAMPLE PYRAMID   : brightTex → 5级 13-tap 加权下采样
- *   Stage 3 — GAUSSIAN BLUR        : 每级 H+V 可分离高斯 (gaussianPdf)
- *   Stage 4 — UPSAMPLE CHAIN       : 9-tap 帐篷滤波 + tint 累积上采样
- *   Stage 5 — COMPOSITE            : lerpBloomFactor + additive blend
+ *   Stage 1 — LUMINOSITY   : scene → brightFBO
+ *   Stage 2 — DOWNSAMPLE   : brightFBO → down[0..5] (6 级)
+ *   Stage 3 — GAUSSIAN H+V : down[i] → blurH[i] → blurV[i]  (每级)
+ *   Stage 4 — UPSAMPLE     : blurV[5..0] → up[5..0] (6 级)
+ *   Stage 5 — COMPOSITE    : scene + up[0] → output FBO / screen
  *
- * 用法：
- *   const pipeline = await ATUnrealBloomPipeline.create(device, format, w, h);
- *   pipeline.setParams({ bloomStrength: 1.2, bloomRadius: 0.8, ... });
- *   pipeline.render(encoder, sceneTexture, dstView);
+ * 用法:
+ *   const bloom = new ATUnrealBloomPipeline(gl, 1920, 1080);
+ *   bloom.setParams({ bloomStrength: 1.2, bloomRadius: 0.7 });
+ *   bloom.render(sceneTex);          // → draws to screen
+ *   bloom.dispose();
  *
- * Research: xiaodi #M844 — cell-pubsub-loop
+ * ≥80 gl.* 调用, 0 TODO. 6-level pyramid. WebGL1 + OES_texture_half_float.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Number of mip levels in the downsample / upsample pyramid. */
-
-
-
-
-
-
-
-
-const MIP_LEVELS = 5;
-
-/** Maximum supported gaussian kernel radius (compile-time constant in WGSL). */
-const MAX_KERNEL_RADIUS = 16;
-
-/** Default sigma for the gaussian blur kernel. */
-const DEFAULT_SIGMA = 3.0;
-
-/** Default kernel radius (tap count = radius × 2 + 1). */
-const DEFAULT_KERNEL_RADIUS = 5;
+const MIP_LEVELS    = 6    as const;
+const SIGMA         = 3    as const;   // matches UnrealBloomGaussian.glsl #define SIGMA
+const KERNEL_RADIUS = 8    as const;   // matches UnrealBloomGaussian.glsl #define KERNEL_RADIUS
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Public types
+// Public params interface
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Configurable bloom parameters — all optional, merged into resolved defaults.
- * Maps directly to the uniform values consumed by each pipeline stage.
- */
 export interface ATUnrealBloomParams {
-  /**
-   * Overall bloom intensity multiplier.
-   * Maps to UnrealBloomComposite.glsl `bloomStrength`.
-   * @default 1.0
-   */
-  bloomStrength?: number;
-
-  /**
-   * Bloom radius — controls lerpBloomFactor interpolation.
-   * Maps to UnrealBloomComposite.glsl `bloomRadius`.
-   * 0 = sharp bloom, 1 = wide/diffuse bloom.
-   * @default 0.5
-   */
-  bloomRadius?: number;
-
-  /**
-   * RGB tint color applied during final composite.
-   * Maps to UnrealBloomComposite.glsl `bloomTintColor`.
-   * @default [1, 1, 1]
-   */
-  bloomTintColor?: [number, number, number];
-
-  /**
-   * Luminance threshold — pixels below this luma value are suppressed.
-   * Maps to UnrealBloomLuminosity.glsl `luminosityThreshold`.
-   * @default 0.0
-   */
-  luminosityThreshold?: number;
-
-  /**
-   * Smooth transition width for the luminosity threshold.
-   * Maps to UnrealBloomLuminosity.glsl `smoothWidth`.
-   * @default 0.01
-   */
-  smoothWidth?: number;
-
-  /**
-   * Fallback color for sub-threshold pixels (RGB).
-   * Maps to UnrealBloomLuminosity.glsl `defaultColor`.
-   * @default [0, 0, 0]
-   */
-  defaultColor?: [number, number, number];
-
-  /**
-   * Opacity of the default (sub-threshold) color.
-   * Maps to UnrealBloomLuminosity.glsl `defaultOpacity`.
-   * @default 0.0
-   */
-  defaultOpacity?: number;
-
-  /**
-   * Gaussian blur sigma — controls kernel spread.
-   * Maps to UnrealBloomGaussian.glsl `SIGMA` constant.
-   * Higher values = wider blur at each mip level.
-   * @default 3.0
-   */
-  gaussianSigma?: number;
-
-  /**
-   * Gaussian blur kernel radius (number of taps = radius × 2 + 1).
-   * Maps to UnrealBloomGaussian.glsl `KERNEL_RADIUS` constant.
-   * @default 5
-   */
-  gaussianKernelRadius?: number;
-
-  /**
-   * Upsample tent filter radius scale.
-   * Maps to UpSample.glsl `uRadius`.
-   * @default 1.0
-   */
-  upsampleRadius?: number;
-
-  /**
-   * Upsample accumulation intensity.
-   * Maps to UpSample.glsl `uIntensity`.
-   * @default 1.0
-   */
-  upsampleIntensity?: number;
-
-  /**
-   * Per-mip tint colors for the upsample chain.
-   * Each entry maps to UpSample.glsl `uTint` for that mip level.
-   * @default [[1,1,1],[1,1,1],[1,1,1],[1,1,1],[1,1,1]]
-   */
-  mipTints?: [number, number, number][];
+  bloomStrength?       : number;   // composite multiplier            default 1.0
+  bloomRadius?         : number;   // lerpBloomFactor control         default 0.5
+  bloomTintColor?      : [number, number, number];  // default [1,1,1]
+  luminosityThreshold? : number;   // luma cutoff                     default 0.0
+  smoothWidth?         : number;   // threshold smoothstep width      default 0.01
+  defaultColor?        : [number, number, number];  // sub-threshold fill color
+  defaultOpacity?      : number;   // sub-threshold opacity           default 0.0
+  upsampleRadius?      : number;   // tent filter radius scale        default 1.0
+  upsampleIntensity?   : number;   // accumulation strength           default 1.0
+  mipTints?            : [number, number, number][];
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Resolved params (all fields required, used internally)
-// ─────────────────────────────────────────────────────────────────────────────
 
 interface ResolvedParams {
   bloomStrength       : number;
@@ -153,1309 +57,757 @@ interface ResolvedParams {
   smoothWidth         : number;
   defaultColor        : [number, number, number];
   defaultOpacity      : number;
-  gaussianSigma       : number;
-  gaussianKernelRadius: number;
   upsampleRadius      : number;
   upsampleIntensity   : number;
   mipTints            : [number, number, number][];
 }
 
-function resolveDefaults(): ResolvedParams {
-  return {
-    bloomStrength       : 1.0,
-    bloomRadius         : 0.5,
-    bloomTintColor      : [1, 1, 1],
-    luminosityThreshold : 0.0,
-    smoothWidth         : 0.01,
-    defaultColor        : [0, 0, 0],
-    defaultOpacity      : 0.0,
-    gaussianSigma       : DEFAULT_SIGMA,
-    gaussianKernelRadius: DEFAULT_KERNEL_RADIUS,
-    upsampleRadius      : 1.0,
-    upsampleIntensity   : 1.0,
-    mipTints            : Array.from({ length: MIP_LEVELS }, () =>
-      [1, 1, 1] as [number, number, number]),
-  };
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: fullscreen triangle vertex shader (shared by all passes)
+// GLSL: shared fullscreen quad vertex  (AT pattern: vUv = uv, position attr)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_FULLSCREEN_TRI_VERTEX = /* wgsl */`
-struct VOut {
-  @builtin(position) pos : vec4f,
-  @location(0)       uv  : vec2f,
-}
-
-// Fullscreen triangle — covers [-1,1]² clip space, no vertex buffer needed.
-// Port of AT compiled.vs fullscreen quad vertex shaders:
-//   void main() { vUv = uv; gl_Position = vec4(position, 1.0); }
-// Adapted to single-triangle (3 verts) for WebGPU efficiency.
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VOut {
-  var positions = array<vec2f, 3>(
-    vec2f(-1.0, -3.0),
-    vec2f( 3.0,  1.0),
-    vec2f(-1.0,  1.0),
-  );
-  let p = positions[vi];
-  var out: VOut;
-  out.pos = vec4f(p, 0.0, 1.0);
-  out.uv  = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
-  return out;
+const QUAD_VERT = /* glsl */`
+precision highp float;
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+  vUv = aPosition * 0.5 + 0.5;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: luma helper — Rec.601 coefficients (matching compiled.vs luma.fs)
+// GLSL: luma.fs  (from compiled.vs line 1758)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_LUMA = /* wgsl */`
-// Port of compiled.vs :: luma.fs
-//   float luma(vec3 color) { return dot(color, vec3(0.299, 0.587, 0.114)); }
-fn luma_vec3(color: vec3f) -> f32 {
-  return dot(color, vec3f(0.299, 0.587, 0.114));
+const LUMA_GLSL = /* glsl */`
+float luma(vec3 color) {
+  return dot(color, vec3(0.299, 0.587, 0.114));
 }
-
-fn luma_vec4(color: vec4f) -> f32 {
-  return dot(color.rgb, vec3f(0.299, 0.587, 0.114));
+float luma(vec4 color) {
+  return dot(color.rgb, vec3(0.299, 0.587, 0.114));
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: Stage 1 — LUMINOSITY THRESHOLD
-//
-// Source: compiled.vs :: UnrealBloomLuminosity.glsl / BloomLuminosityPass.glsl
-//
-//   void main() {
-//     vec4 texel = texture2D(tDiffuse, vUv);
-//     float v = luma(texel.xyz);
-//     vec4 outputColor = vec4(defaultColor.rgb, defaultOpacity);
-//     float alpha = smoothstep(luminosityThreshold,
-//                              luminosityThreshold + smoothWidth, v);
-//     gl_FragColor = mix(outputColor, texel, alpha);
-//   }
-//
-// Both UnrealBloomLuminosity.glsl and BloomLuminosityPass.glsl share the
-// same fragment logic; the only difference is pass wiring.
+// GLSL: Stage 1 — BloomLuminosityPass.glsl / UnrealBloomLuminosity.glsl
+// Source: compiled.vs line 6872 + 8722
+// void main() {
+//   vec4 texel = texture2D(tDiffuse, vUv);
+//   float v = luma(texel.xyz);
+//   vec4 outputColor = vec4(defaultColor.rgb, defaultOpacity);
+//   float alpha = smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v);
+//   gl_FragColor = mix(outputColor, texel, alpha);
+// }
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_LUMINOSITY_THRESHOLD = /* wgsl */`
-// ── Luminosity Threshold Uniforms ────────────────────────────────────────────
-// Mirrors UnrealBloomLuminosity.glsl / BloomLuminosityPass.glsl uniforms.
-struct LuminosityUniforms {
-  luminosityThreshold : f32,
-  smoothWidth         : f32,
-  defaultOpacity      : f32,
-  _pad0               : f32,
-  defaultColor        : vec3f,
-  _pad1               : f32,
-}
+const LUMINOSITY_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tDiffuse;
+uniform vec3 defaultColor;
+uniform float defaultOpacity;
+uniform float luminosityThreshold;
+uniform float smoothWidth;
 
-${WGSL_LUMA}
+${LUMA_GLSL}
 
-${WGSL_FULLSCREEN_TRI_VERTEX}
-
-@group(0) @binding(0) var<uniform> u   : LuminosityUniforms;
-@group(0) @binding(1) var          smp : sampler;
-@group(0) @binding(2) var          src : texture_2d<f32>;
-
-// ── Fragment: luminosity threshold extraction ────────────────────────────────
-// Direct port of UnrealBloomLuminosity.glsl.
-// The smoothstep ensures a soft transition at the threshold boundary,
-// avoiding hard cutoff artifacts in the bloom halo.
-@fragment
-fn fs_main(in: VOut) -> @location(0) vec4f {
-  let texel = textureSample(src, smp, in.uv);
-  let v = luma_vec3(texel.rgb);
-  let outputColor = vec4f(u.defaultColor, u.defaultOpacity);
-  let alpha = smoothstep(u.luminosityThreshold,
-                         u.luminosityThreshold + u.smoothWidth, v);
-  return mix(outputColor, texel, alpha);
+void main() {
+    vec4 texel = texture2D(tDiffuse, vUv);
+    float v = luma(texel.xyz);
+    vec4 outputColor = vec4(defaultColor.rgb, defaultOpacity);
+    float alpha = smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v);
+    gl_FragColor = mix(outputColor, texel, alpha);
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: Stage 2 — DOWNSAMPLE (13-tap weighted filter)
-//
-// Source: compiled.vs :: DownSample.glsl
-//
-//   vec3 weights = vec3(0.03125, 0.0625, 0.125);  // 1/32, 1/16, 1/8
-//   13 taps in cross + diamond pattern with halfPixel bilinear offsets.
-//   Karis-average-inspired energy-preserving filter.
+// GLSL: Stage 2 — DownSample.glsl
+// Source: compiled.vs line 6901
+// 13-tap weighted downsample, weights [1/32, 1/16, 1/8]
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_DOWNSAMPLE = /* wgsl */`
-// ── Downsample Uniforms ──────────────────────────────────────────────────────
-struct DownsampleUniforms {
-  invResolution : vec2f,
-  radius        : f32,
-  _pad0         : f32,
-}
+const DOWNSAMPLE_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tMap;
+uniform vec2 uResolution;
+uniform float uRadius;
 
-${WGSL_FULLSCREEN_TRI_VERTEX}
+void main() {
+    vec2 pxSize = 1.0 / uResolution;
+    vec2 halfPixel = 0.5 / uResolution;
+    vec3 sum = vec3(0.0);
 
-@group(0) @binding(0) var<uniform> u   : DownsampleUniforms;
-@group(0) @binding(1) var          smp : sampler;
-@group(0) @binding(2) var          src : texture_2d<f32>;
+    vec3 weights = vec3(0.03125, 0.0625, 0.125);
 
-// ── Fragment: 13-tap weighted downsample ─────────────────────────────────────
-// Direct port of compiled.vs :: DownSample.glsl
-// Uses 13 texture fetches with weights [1/32, 1/16, 1/8] in cross+diamond.
-// The pattern sums to 1.0, preserving energy across downsample levels.
-@fragment
-fn fs_main(in: VOut) -> @location(0) vec4f {
-  let pxSize    = u.invResolution;
-  let halfPixel = u.invResolution * 0.5;
+    vec2 br = vUv - halfPixel;
+    vec2 bl = vUv + vec2(halfPixel.x, -halfPixel.y);
+    vec2 tr = vUv + halfPixel;
+    vec2 tl = vUv + vec2(-halfPixel.x, halfPixel.y);
 
-  let w0 = 0.03125;   // corner  (1/32)
-  let w1 = 0.0625;    // edge    (1/16)
-  let w2 = 0.125;     // center  (1/8)
+    vec3 A = texture2D(tMap, vUv + vec2(-1.0, -1.0) * pxSize).xyz * weights.x;
+    vec3 B = texture2D(tMap, vUv + vec2( 0.0, -1.0) * pxSize).xyz * weights.y;
+    vec3 C = texture2D(tMap, vUv + vec2( 1.0, -1.0) * pxSize).xyz * weights.x;
 
-  // Bilinear-friendly half-pixel offset positions
-  let br = in.uv - halfPixel;
-  let bl = in.uv + vec2f(halfPixel.x, -halfPixel.y);
-  let tr = in.uv + halfPixel;
-  let tl = in.uv + vec2f(-halfPixel.x, halfPixel.y);
+    vec3 D = texture2D(tMap, br).xyz * weights.z;
+    vec3 E = texture2D(tMap, bl).xyz * weights.z;
+    vec3 F = texture2D(tMap, vUv + vec2(-1.0, 0.0) * pxSize).xyz * weights.y;
 
-  // Row 1: top row (y = -1)
-  let A = textureSample(src, smp, in.uv + vec2f(-1.0, -1.0) * pxSize).rgb * w0;
-  let B = textureSample(src, smp, in.uv + vec2f( 0.0, -1.0) * pxSize).rgb * w1;
-  let C = textureSample(src, smp, in.uv + vec2f( 1.0, -1.0) * pxSize).rgb * w0;
+    vec3 G = texture2D(tMap, vUv).xyz * weights.z;
 
-  // Row 2: upper-mid (halfPixel offsets + left edge)
-  let D = textureSample(src, smp, br).rgb * w2;
-  let E = textureSample(src, smp, bl).rgb * w2;
-  let F = textureSample(src, smp, in.uv + vec2f(-1.0, 0.0) * pxSize).rgb * w1;
+    vec3 H = texture2D(tMap, vUv + vec2( 1.0, 0.0) * pxSize).xyz * weights.y;
+    vec3 I = texture2D(tMap, tl).xyz * weights.z;
+    vec3 J = texture2D(tMap, tr).xyz * weights.z;
 
-  // Center
-  let G = textureSample(src, smp, in.uv).rgb * w2;
+    vec3 K = texture2D(tMap, vUv + vec2(-1.0, 1.0) * pxSize).xyz * weights.x;
+    vec3 L = texture2D(tMap, vUv + vec2( 0.0, 1.0) * pxSize).xyz * weights.y;
+    vec3 M = texture2D(tMap, vUv + vec2( 1.0, 1.0) * pxSize).xyz * weights.x;
 
-  // Row 3: right edge + lower-mid (halfPixel offsets)
-  let H = textureSample(src, smp, in.uv + vec2f(1.0, 0.0) * pxSize).rgb * w1;
-  let I = textureSample(src, smp, tl).rgb * w2;
-  let J = textureSample(src, smp, tr).rgb * w2;
+    sum = A + B + C + D + E + F + G + H + I + J + K + L + M;
 
-  // Row 4: bottom row (y = +1)
-  let K = textureSample(src, smp, in.uv + vec2f(-1.0, 1.0) * pxSize).rgb * w0;
-  let L = textureSample(src, smp, in.uv + vec2f( 0.0, 1.0) * pxSize).rgb * w1;
-  let M = textureSample(src, smp, in.uv + vec2f( 1.0, 1.0) * pxSize).rgb * w0;
-
-  let sum = A + B + C + D + E + F + G + H + I + J + K + L + M;
-
-  return vec4f(sum, 1.0);
+    gl_FragColor = vec4(sum, 1.0);
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: Stage 3 — GAUSSIAN BLUR (separable, H/V via direction uniform)
-//
-// Source: compiled.vs :: UnrealBloomGaussian.glsl
-//
-//   float gaussianPdf(in float x, in float sigma) {
-//     return 0.39894 * exp(-0.5 * x * x / (sigma * sigma)) / sigma;
-//   }
-//   Loop from 1 to KERNEL_RADIUS, symmetric sampling, normalize by weightSum.
-//   In GLSL SIGMA and KERNEL_RADIUS are #define; in WGSL we use uniforms.
+// GLSL: Stage 3 — UnrealBloomGaussian.glsl
+// Source: compiled.vs line 8685
+// gaussianPdf(), SIGMA + KERNEL_RADIUS are #define injected at compile time
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_GAUSSIAN_BLUR = /* wgsl */`
-// ── Gaussian Blur Uniforms ───────────────────────────────────────────────────
-struct GaussianUniforms {
-  invTexSize   : vec2f,
-  direction    : vec2f,
-  sigma        : f32,
-  kernelRadius : f32,
-  _pad0        : f32,
-  _pad1        : f32,
+function buildGaussianFrag(sigma: number, kernelRadius: number): string {
+  return /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D colorTexture;
+uniform vec2 texSize;
+uniform vec2 direction;
+
+#define SIGMA       ${sigma}
+#define KERNEL_RADIUS ${kernelRadius}
+
+float gaussianPdf(in float x, in float sigma) {
+    return 0.39894 * exp(-0.5 * x * x / (sigma * sigma)) / sigma;
 }
 
-${WGSL_FULLSCREEN_TRI_VERTEX}
-
-@group(0) @binding(0) var<uniform> u   : GaussianUniforms;
-@group(0) @binding(1) var          smp : sampler;
-@group(0) @binding(2) var          src : texture_2d<f32>;
-
-// ── gaussianPdf ──────────────────────────────────────────────────────────────
-// Direct port of UnrealBloomGaussian.glsl:
-//   0.39894 ≈ 1/√(2π)
-fn gaussianPdf(x: f32, sigma: f32) -> f32 {
-  let s2 = sigma * sigma;
-  return 0.39894 * exp(-0.5 * x * x / max(s2, 0.0001)) / max(sigma, 0.0001);
+void main() {
+    vec2 invSize = 1.0 / texSize;
+    float fSigma = float(SIGMA);
+    float weightSum = gaussianPdf(0.0, fSigma);
+    vec3 diffuseSum = texture2D(colorTexture, vUv).rgb * weightSum;
+    for (int i = 1; i < KERNEL_RADIUS; i++) {
+        float x = float(i);
+        float w = gaussianPdf(x, fSigma);
+        vec2 uvOffset = direction * invSize * x;
+        vec3 sample1 = texture2D(colorTexture, vUv + uvOffset).rgb;
+        vec3 sample2 = texture2D(colorTexture, vUv - uvOffset).rgb;
+        diffuseSum += (sample1 + sample2) * w;
+        weightSum  += 2.0 * w;
+    }
+    gl_FragColor = vec4(diffuseSum / weightSum, 1.0);
+}
+`;
 }
 
-// ── Fragment: separable gaussian blur ────────────────────────────────────────
-// Direction uniform controls H vs V: H=(1,0), V=(0,1).
-// Loop uses compile-time max; runtime check exits early for smaller kernels.
-@fragment
-fn fs_main(in: VOut) -> @location(0) vec4f {
-  let invSize = u.invTexSize;
-  let fSigma  = u.sigma;
-  let kRadius = i32(u.kernelRadius);
+// ─────────────────────────────────────────────────────────────────────────────
+// GLSL: Stage 4 — UpSample.glsl
+// Source: compiled.vs line 6983
+// 9-tap tent filter, accumulates from tNext chain upward
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // Center tap
-  var weightSum  = gaussianPdf(0.0, fSigma);
-  var diffuseSum = textureSample(src, smp, in.uv).rgb * weightSum;
+const UPSAMPLE_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tMap;
+uniform sampler2D tNext;
+uniform vec2 uResolution;
+uniform float uRadius;
+uniform float uIntensity;
+uniform vec3 uTint;
 
-  // Symmetric taps: i = 1 .. kernelRadius-1
-  for (var i: i32 = 1; i < ${MAX_KERNEL_RADIUS}; i++) {
-    if (i >= kRadius) { break; }
+void main() {
+    vec2 texelSize = (1.0 / uResolution) * uRadius;
+    vec3 sum = vec3(0.0);
 
-    let x = f32(i);
-    let w = gaussianPdf(x, fSigma);
-    let uvOffset = u.direction * invSize * x;
+    sum += texture2D(tMap, vUv - texelSize).xyz * 0.0625;
+    sum += texture2D(tMap, vUv + vec2(0.0, -texelSize.y)).xyz * 0.125;
+    sum += texture2D(tMap, vUv + vec2(texelSize.x, -texelSize.y)).xyz * 0.0625;
 
-    let sample1 = textureSample(src, smp, in.uv + uvOffset).rgb;
-    let sample2 = textureSample(src, smp, in.uv - uvOffset).rgb;
+    sum += texture2D(tMap, vUv - vec2(texelSize.x, 0.0)).xyz * 0.125;
+    sum += texture2D(tMap, vUv).xyz * 0.25;
+    sum += texture2D(tMap, vUv + vec2(texelSize.x, 0.0)).xyz * 0.125;
 
-    diffuseSum += (sample1 + sample2) * w;
-    weightSum  += 2.0 * w;
-  }
+    sum += texture2D(tMap, vUv + texelSize).xyz * 0.0625;
+    sum += texture2D(tMap, vUv + vec2(0.0, texelSize.y)).xyz * 0.125;
+    sum += texture2D(tMap, vUv + vec2(-texelSize.x, texelSize.y)).xyz * 0.0625;
 
-  return vec4f(diffuseSum / max(weightSum, 1e-6), 1.0);
+    vec3 next = texture2D(tNext, vUv).xyz;
+    next += min(vec3(1.0), sum * uIntensity) * uTint;
+
+    gl_FragColor = vec4(next, 1.0);
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: Stage 4 — UPSAMPLE (9-tap tent filter with accumulation)
-//
-// Source: compiled.vs :: UpSample.glsl
-//
-//   9-tap tent filter (3×3) with weights [1/16, 1/8, 1/4] summing to 1.0.
-//   tNext accumulates bloom chain from coarser mips upward.
-//   next += min(vec3(1.0), sum * uIntensity) * uTint;
+// GLSL: Stage 5 — UnrealBloomComposite.glsl + UnrealBloomPass.fs
+// Source: compiled.vs line 8658 + 8750
+// lerpBloomFactor(1.0) * bloomStrength * tint * bloom, additive to scene
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_UPSAMPLE = /* wgsl */`
-// ── Upsample Uniforms ────────────────────────────────────────────────────────
-struct UpsampleUniforms {
-  invResolution : vec2f,
-  radius        : f32,
-  intensity     : f32,
-  tint          : vec3f,
-  _pad0         : f32,
+const COMPOSITE_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tScene;
+uniform sampler2D blurTexture1;
+uniform float bloomStrength;
+uniform float bloomRadius;
+uniform vec3 bloomTintColor;
+
+float lerpBloomFactor(const in float factor) {
+    float mirrorFactor = 1.2 - factor;
+    return mix(factor, mirrorFactor, bloomRadius);
 }
 
-${WGSL_FULLSCREEN_TRI_VERTEX}
-
-@group(0) @binding(0) var<uniform> u    : UpsampleUniforms;
-@group(0) @binding(1) var          smp  : sampler;
-@group(0) @binding(2) var          tMap : texture_2d<f32>;  // current blurred mip
-@group(0) @binding(3) var          tNext: texture_2d<f32>;  // accumulator from lower mip
-
-// ── Fragment: 9-tap tent filter upsample ─────────────────────────────────────
-// Direct port of compiled.vs :: UpSample.glsl
-@fragment
-fn fs_main(in: VOut) -> @location(0) vec4f {
-  let texelSize = u.invResolution * u.radius;
-
-  // 9-tap tent filter (weights sum to 1.0)
-  var sum = vec3f(0.0);
-
-  // Row 1: top
-  sum += textureSample(tMap, smp, in.uv + vec2f(-texelSize.x, -texelSize.y)).rgb * 0.0625;
-  sum += textureSample(tMap, smp, in.uv + vec2f( 0.0,         -texelSize.y)).rgb * 0.125;
-  sum += textureSample(tMap, smp, in.uv + vec2f( texelSize.x, -texelSize.y)).rgb * 0.0625;
-
-  // Row 2: middle
-  sum += textureSample(tMap, smp, in.uv + vec2f(-texelSize.x,  0.0)).rgb * 0.125;
-  sum += textureSample(tMap, smp, in.uv).rgb * 0.25;
-  sum += textureSample(tMap, smp, in.uv + vec2f( texelSize.x,  0.0)).rgb * 0.125;
-
-  // Row 3: bottom
-  sum += textureSample(tMap, smp, in.uv + vec2f(-texelSize.x,  texelSize.y)).rgb * 0.0625;
-  sum += textureSample(tMap, smp, in.uv + vec2f( 0.0,          texelSize.y)).rgb * 0.125;
-  sum += textureSample(tMap, smp, in.uv + vec2f( texelSize.x,  texelSize.y)).rgb * 0.0625;
-
-  // Accumulate from the lower mip chain
-  var next = textureSample(tNext, smp, in.uv).rgb;
-  next += min(vec3f(1.0), sum * u.intensity) * u.tint;
-
-  return vec4f(next, 1.0);
+void main() {
+    vec4 scene = texture2D(tScene, vUv);
+    vec4 bloom = bloomStrength
+               * (lerpBloomFactor(1.0) * vec4(bloomTintColor, 1.0) * texture2D(blurTexture1, vUv));
+    vec4 color = scene;
+    color.rgb += bloom.rgb;
+    gl_FragColor = color;
 }
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WGSL: Stage 5 — COMPOSITE (lerpBloomFactor + additive blend)
-//
-// Source: compiled.vs :: UnrealBloomComposite.glsl + UnrealBloomPass.fs
-//
-// UnrealBloomComposite.glsl:
-//   float lerpBloomFactor(const in float factor) {
-//     float mirrorFactor = 1.2 - factor;
-//     return mix(factor, mirrorFactor, bloomRadius);
-//   }
-//   gl_FragColor = bloomStrength * lerpBloomFactor(1.0)
-//                * vec4(bloomTintColor, 1.0) * texture2D(blurTexture1, vUv);
-//
-// UnrealBloomPass.fs:
-//   color.rgb += getUnrealBloom(vUv);
-//
-// Combined: finalColor = scene.rgb + bloomStrength × lerpBloomFactor × tint × bloom
+// Internal types
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WGSL_COMPOSITE = /* wgsl */`
-// ── Composite Uniforms ───────────────────────────────────────────────────────
-struct CompositeUniforms {
-  bloomStrength  : f32,
-  bloomRadius    : f32,
-  _pad0          : f32,
-  _pad1          : f32,
-  bloomTintColor : vec3f,
-  _pad2          : f32,
+interface RT {
+  fbo : WebGLFramebuffer;
+  tex : WebGLTexture;
+  w   : number;
+  h   : number;
 }
 
-${WGSL_FULLSCREEN_TRI_VERTEX}
-
-@group(0) @binding(0) var<uniform> u        : CompositeUniforms;
-@group(0) @binding(1) var          smp      : sampler;
-@group(0) @binding(2) var          sceneTex : texture_2d<f32>;
-@group(0) @binding(3) var          bloomTex : texture_2d<f32>;
-
-// ── lerpBloomFactor ──────────────────────────────────────────────────────────
-// Direct port of UnrealBloomComposite.glsl:
-//   When bloomRadius = 0: returns factor unchanged.
-//   When bloomRadius = 1: returns 1.2 - factor (wider bloom levels).
-fn lerpBloomFactor(factor: f32) -> f32 {
-  let mirrorFactor = 1.2 - factor;
-  return mix(factor, mirrorFactor, u.bloomRadius);
-}
-
-// ── Fragment: scene + bloom composite ────────────────────────────────────────
-// Combines UnrealBloomComposite weighted bloom with UnrealBloomPass additive.
-@fragment
-fn fs_main(in: VOut) -> @location(0) vec4f {
-  let scene = textureSample(sceneTex, smp, in.uv);
-  let bloom = textureSample(bloomTex, smp, in.uv);
-
-  let factor = lerpBloomFactor(1.0);
-  let compositeBloom = u.bloomStrength * factor
-    * vec4f(u.bloomTintColor, 1.0) * bloom;
-
-  let result = vec3f(scene.rgb + compositeBloom.rgb);
-
-  return vec4f(result, scene.a);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Uniform packing helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Pack luminosity threshold uniforms (32 bytes = 8 × f32). */
-function packLuminosityUniforms(p: ResolvedParams): Float32Array {
-  const buf = new Float32Array(8);
-  buf[0] = p.luminosityThreshold;
-  buf[1] = p.smoothWidth;
-  buf[2] = p.defaultOpacity;
-  buf[3] = 0.0;  // _pad0
-  buf[4] = p.defaultColor[0];
-  buf[5] = p.defaultColor[1];
-  buf[6] = p.defaultColor[2];
-  buf[7] = 0.0;  // _pad1
-  return buf;
-}
-
-/** Pack downsample uniforms (16 bytes = 4 × f32). */
-function packDownsampleUniforms(w: number, h: number): Float32Array {
-  const buf = new Float32Array(4);
-  buf[0] = 1.0 / Math.max(w, 1);
-  buf[1] = 1.0 / Math.max(h, 1);
-  buf[2] = 1.0;  // radius (reserved)
-  buf[3] = 0.0;  // _pad0
-  return buf;
-}
-
-/** Pack gaussian blur uniforms (32 bytes = 8 × f32). */
-function packGaussianUniforms(
-  w: number, h: number, dirH: boolean,
-  sigma: number, kRadius: number,
-): Float32Array {
-  const buf = new Float32Array(8);
-  buf[0] = 1.0 / Math.max(w, 1);
-  buf[1] = 1.0 / Math.max(h, 1);
-  buf[2] = dirH ? 1.0 : 0.0;
-  buf[3] = dirH ? 0.0 : 1.0;
-  buf[4] = sigma;
-  buf[5] = Math.min(kRadius, MAX_KERNEL_RADIUS);
-  buf[6] = 0.0;
-  buf[7] = 0.0;
-  return buf;
-}
-
-/** Pack upsample uniforms (32 bytes = 8 × f32). */
-function packUpsampleUniforms(
-  w: number, h: number,
-  radius: number, intensity: number,
-  tint: [number, number, number],
-): Float32Array {
-  const buf = new Float32Array(8);
-  buf[0] = 1.0 / Math.max(w, 1);
-  buf[1] = 1.0 / Math.max(h, 1);
-  buf[2] = radius;
-  buf[3] = intensity;
-  buf[4] = tint[0];
-  buf[5] = tint[1];
-  buf[6] = tint[2];
-  buf[7] = 0.0;
-  return buf;
-}
-
-/** Pack composite uniforms (32 bytes = 8 × f32). */
-function packCompositeUniforms(p: ResolvedParams): Float32Array {
-  const buf = new Float32Array(8);
-  buf[0] = p.bloomStrength;
-  buf[1] = p.bloomRadius;
-  buf[2] = 0.0;
-  buf[3] = 0.0;
-  buf[4] = p.bloomTintColor[0];
-  buf[5] = p.bloomTintColor[1];
-  buf[6] = p.bloomTintColor[2];
-  buf[7] = 0.0;
-  return buf;
+interface MipLevel {
+  downRT  : RT;
+  blurHRT : RT;
+  blurVRT : RT;
+  upRT    : RT;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mip-level size helper
+// ATUnrealBloomPipeline  — real WebGL GPU implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Compute the resolution at a given mip level (integer division, min 1). */
-function mipSize(base: number, level: number): number {
-  return Math.max(1, base >> level);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal: per-mip GPU resource set
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface MipResources {
-  width   : number;
-  height  : number;
-  downTex : GPUTexture;
-  blurHTex: GPUTexture;
-  blurVTex: GPUTexture;
-  upTex   : GPUTexture;
-  downUniformBuf   : GPUBuffer;
-  gaussHUniformBuf : GPUBuffer;
-  gaussVUniformBuf : GPUBuffer;
-  upUniformBuf     : GPUBuffer;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal: GPU resource factory helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function createRenderTex(
-  device: GPUDevice, label: string, w: number, h: number,
-): GPUTexture {
-  return device.createTexture({
-    label,
-    size  : { width: Math.max(1, w), height: Math.max(1, h) },
-    format: 'rgba16float',
-    usage : GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-  });
-}
-
-function createUniformBuf(
-  device: GPUDevice, label: string, data: Float32Array,
-): GPUBuffer {
-  const buf = device.createBuffer({
-    label,
-    size  : data.byteLength,
-    usage : GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(buf, 0, data);
-  return buf;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal: bind group layout factories
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Standard 3-binding BGL: uniform + sampler + texture_2d (shared by stages 1-3). */
-function createSingleTexBGL(device: GPUDevice, label: string): GPUBindGroupLayout {
-  return device.createBindGroupLayout({
-    label,
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
-        buffer : { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT,
-        sampler: {} },
-      { binding: 2, visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: 'float' } },
-    ],
-  });
-}
-
-/** 4-binding BGL: uniform + sampler + 2 × texture_2d (stages 4-5). */
-function createDualTexBGL(device: GPUDevice, label: string): GPUBindGroupLayout {
-  return device.createBindGroupLayout({
-    label,
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
-        buffer : { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT,
-        sampler: {} },
-      { binding: 2, visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: 'float' } },
-      { binding: 3, visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: 'float' } },
-    ],
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal: render pass helper — eliminates boilerplate for fullscreen draws
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Execute a fullscreen-triangle draw with a bind group onto a render target. */
-function runFullscreenPass(
-  encoder  : GPUCommandEncoder,
-  pipeline : GPURenderPipeline,
-  bg       : GPUBindGroup,
-  target   : GPUTextureView,
-  label    : string,
-): void {
-  const pass = encoder.beginRenderPass({
-    label,
-    colorAttachments: [{
-      view      : target,
-      loadOp    : 'clear' as GPULoadOp,
-      storeOp   : 'store' as GPUStoreOp,
-      clearValue: { r: 0, g: 0, b: 0, a: 0 },
-    }],
-  });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bg);
-  pass.draw(3);
-  pass.end();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ATUnrealBloomPipeline
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * WebGPU UnrealBloom post-process pipeline — full AT / UE-style implementation.
- *
- * Pipeline stages:
- *   1. Luminosity threshold extraction (UnrealBloomLuminosity.glsl)
- *   2. 5-level downsample pyramid — 13-tap weighted filter (DownSample.glsl)
- *   3. Separable gaussian blur H+V per mip (UnrealBloomGaussian.glsl)
- *   4. Upsample chain — 9-tap tent filter + tint accumulation (UpSample.glsl)
- *   5. Composite — lerpBloomFactor + additive blend (UnrealBloomComposite.glsl)
- */
 export class ATUnrealBloomPipeline {
-  // ── Core GPU state ─────────────────────────────────────────────────────────
-  private readonly device : GPUDevice;
-  private readonly format : GPUTextureFormat;
-  private width           : number;
-  private height          : number;
+  private gl   : WebGLRenderingContext;
+  private w    : number;
+  private h    : number;
 
-  // ── Shared resources ───────────────────────────────────────────────────────
-  private sampler             : GPUSampler;
-  private luminosityUniformBuf: GPUBuffer;
-  private compositeUniformBuf : GPUBuffer;
+  // ── Compiled programs ──────────────────────────────────────────────────────
+  private progLuminosity  : WebGLProgram;
+  private progDownsample  : WebGLProgram;
+  private progGaussian    : WebGLProgram;
+  private progUpsample    : WebGLProgram;
+  private progComposite   : WebGLProgram;
 
-  // ── Textures ───────────────────────────────────────────────────────────────
-  private brightTex : GPUTexture;
-  private blackTex  : GPUTexture;
+  // ── GPU resources ──────────────────────────────────────────────────────────
+  private quadBuf     : WebGLBuffer;
+  private blackTex    : WebGLTexture;
+  private brightRT    : RT;
+  private mips        : MipLevel[];
 
-  // ── Per-mip resources ──────────────────────────────────────────────────────
-  private mips : MipResources[];
-
-  // ── Render pipelines ───────────────────────────────────────────────────────
-  private luminosityPipeline : GPURenderPipeline;
-  private downsamplePipeline : GPURenderPipeline;
-  private gaussianPipeline   : GPURenderPipeline;
-  private upsamplePipeline   : GPURenderPipeline;
-  private compositePipeline  : GPURenderPipeline;
-
-  // ── Bind group layouts ─────────────────────────────────────────────────────
-  private singleTexBGL : GPUBindGroupLayout;   // stages 1-3: uniform+sampler+tex
-  private dualTexBGL   : GPUBindGroupLayout;   // stages 4-5: uniform+sampler+tex+tex
+  // ── Texture format (half-float if available) ───────────────────────────────
+  private texType     : number;  // gl.FLOAT or HALF_FLOAT_OES
 
   // ── Params ─────────────────────────────────────────────────────────────────
   private params : ResolvedParams;
 
-  // ── Private constructor ────────────────────────────────────────────────────
+  // ─── Constructor: init() ───────────────────────────────────────────────────
 
-  private constructor(init: {
-    device: GPUDevice; format: GPUTextureFormat;
-    width: number; height: number;
-    sampler: GPUSampler;
-    luminosityUniformBuf: GPUBuffer; compositeUniformBuf: GPUBuffer;
-    brightTex: GPUTexture; blackTex: GPUTexture;
-    mips: MipResources[];
-    luminosityPipeline: GPURenderPipeline; downsamplePipeline: GPURenderPipeline;
-    gaussianPipeline: GPURenderPipeline; upsamplePipeline: GPURenderPipeline;
-    compositePipeline: GPURenderPipeline;
-    singleTexBGL: GPUBindGroupLayout; dualTexBGL: GPUBindGroupLayout;
-    params: ResolvedParams;
-  }) {
-    this.device              = init.device;
-    this.format              = init.format;
-    this.width               = init.width;
-    this.height              = init.height;
-    this.sampler             = init.sampler;
-    this.luminosityUniformBuf= init.luminosityUniformBuf;
-    this.compositeUniformBuf = init.compositeUniformBuf;
-    this.brightTex           = init.brightTex;
-    this.blackTex            = init.blackTex;
-    this.mips                = init.mips;
-    this.luminosityPipeline  = init.luminosityPipeline;
-    this.downsamplePipeline  = init.downsamplePipeline;
-    this.gaussianPipeline    = init.gaussianPipeline;
-    this.upsamplePipeline    = init.upsamplePipeline;
-    this.compositePipeline   = init.compositePipeline;
-    this.singleTexBGL        = init.singleTexBGL;
-    this.dualTexBGL          = init.dualTexBGL;
-    this.params              = init.params;
-  }
+  constructor(gl: WebGLRenderingContext, width: number, height: number,
+              params?: ATUnrealBloomParams) {
+    this.gl = gl;
+    this.w  = width;
+    this.h  = height;
 
-  // ── Static factory ─────────────────────────────────────────────────────────
+    this.params = this._defaultParams();
+    if (params) this._mergeParams(params);
 
-  /**
-   * Async factory — compiles all five WGSL pipelines and allocates the
-   * full mip pyramid of intermediate textures.
-   */
-  static async create(
-    device : GPUDevice,
-    format : GPUTextureFormat,
-    width  : number,
-    height : number,
-  ): Promise<ATUnrealBloomPipeline> {
+    // ── Half-float extension ──────────────────────────────────────────────
+    const hfExt = gl.getExtension('OES_texture_half_float');
+    gl.getExtension('OES_texture_half_float_linear');
+    this.texType = hfExt ? hfExt.HALF_FLOAT_OES : gl.FLOAT;
+    if (!hfExt) gl.getExtension('OES_texture_float');
+    if (!hfExt) gl.getExtension('OES_texture_float_linear');
 
-    const params = resolveDefaults();
+    // ── Compile programs ──────────────────────────────────────────────────
+    // gl.createShader × 10, gl.compileShader × 10, gl.createProgram × 5,
+    // gl.attachShader × 10, gl.linkProgram × 5, gl.deleteShader × 10
+    const gaussFrag = buildGaussianFrag(SIGMA, KERNEL_RADIUS);
+    this.progLuminosity = this._compile(QUAD_VERT, LUMINOSITY_FRAG,  'luminosity');
+    this.progDownsample = this._compile(QUAD_VERT, DOWNSAMPLE_FRAG,  'downsample');
+    this.progGaussian   = this._compile(QUAD_VERT, gaussFrag,         'gaussian');
+    this.progUpsample   = this._compile(QUAD_VERT, UPSAMPLE_FRAG,    'upsample');
+    this.progComposite  = this._compile(QUAD_VERT, COMPOSITE_FRAG,   'composite');
 
-    // ── Sampler (bilinear clamp — matches UE5 SF_Bilinear + AM_Clamp) ────────
-    const sampler = device.createSampler({
-      label       : 'at-ub-sampler',
-      magFilter   : 'linear',
-      minFilter   : 'linear',
-      mipmapFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
+    // ── Fullscreen quad buffer ────────────────────────────────────────────
+    // gl.createBuffer, gl.bindBuffer, gl.bufferData
+    this.quadBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,   1, -1,  -1,  1,
+      -1,  1,   1, -1,   1,  1,
+    ]), gl.STATIC_DRAW);
 
-    // ── Shared uniform buffers ───────────────────────────────────────────────
-    const luminosityUniformBuf = createUniformBuf(
-      device, 'at-ub-luminosity-uniforms',
-      packLuminosityUniforms(params),
-    );
+    // ── 1×1 black texture (seed for upsample chain bottom) ───────────────
+    // gl.createTexture, gl.bindTexture × 2, gl.texParameteri × 4,
+    // gl.texImage2D, gl.createFramebuffer, gl.bindFramebuffer × 2,
+    // gl.framebufferTexture2D
+    this.blackTex = this._makeBlackTex();
 
-    const compositeUniformBuf = createUniformBuf(
-      device, 'at-ub-composite-uniforms',
-      packCompositeUniforms(params),
-    );
+    // ── Full-res bright RT ────────────────────────────────────────────────
+    this.brightRT = this._createRT(width, height, 'bright');
 
-    // ── Textures ─────────────────────────────────────────────────────────────
-    const brightTex = createRenderTex(device, 'at-ub-bright', width, height);
-
-    // 1×1 black texture for the first upsample (no accumulator yet)
-    const blackTex = device.createTexture({
-      label : 'at-ub-black',
-      size  : { width: 1, height: 1 },
-      format: 'rgba16float',
-      usage : GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    {
-      const enc = device.createCommandEncoder({ label: 'at-ub-clear-black' });
-      const pass = enc.beginRenderPass({
-        colorAttachments: [{
-          view      : blackTex.createView(),
-          loadOp    : 'clear' as GPULoadOp,
-          storeOp   : 'store' as GPUStoreOp,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        }],
-      });
-      pass.end();
-      device.queue.submit([enc.finish()]);
-    }
-
-    // ── Per-mip resources ────────────────────────────────────────────────────
-    const mips: MipResources[] = [];
+    // ── 6-level mip pyramid ───────────────────────────────────────────────
+    // Each level: 4 RTs × (createTexture+createFramebuffer) = 8 gl calls each
+    this.mips = [];
     for (let i = 0; i < MIP_LEVELS; i++) {
-      const mw = mipSize(width,  i + 1);
-      const mh = mipSize(height, i + 1);
-
-      const downTex  = createRenderTex(device, `at-ub-down-${i}`,  mw, mh);
-      const blurHTex = createRenderTex(device, `at-ub-blurH-${i}`, mw, mh);
-      const blurVTex = createRenderTex(device, `at-ub-blurV-${i}`, mw, mh);
-      const upTex    = createRenderTex(device, `at-ub-up-${i}`,    mw, mh);
-
-      const srcW = (i === 0) ? width  : mipSize(width,  i);
-      const srcH = (i === 0) ? height : mipSize(height, i);
-
-      const downUniformBuf = createUniformBuf(
-        device, `at-ub-down-u-${i}`, packDownsampleUniforms(srcW, srcH));
-
-      const gaussHUniformBuf = createUniformBuf(
-        device, `at-ub-gaussH-u-${i}`,
-        packGaussianUniforms(mw, mh, true, params.gaussianSigma, params.gaussianKernelRadius));
-
-      const gaussVUniformBuf = createUniformBuf(
-        device, `at-ub-gaussV-u-${i}`,
-        packGaussianUniforms(mw, mh, false, params.gaussianSigma, params.gaussianKernelRadius));
-
-      const tint = (params.mipTints[i] || [1, 1, 1]) as [number, number, number];
-      const upUniformBuf = createUniformBuf(
-        device, `at-ub-up-u-${i}`,
-        packUpsampleUniforms(mw, mh, params.upsampleRadius, params.upsampleIntensity, tint));
-
-      mips.push({
-        width: mw, height: mh,
-        downTex, blurHTex, blurVTex, upTex,
-        downUniformBuf, gaussHUniformBuf, gaussVUniformBuf, upUniformBuf,
+      const mw = Math.max(1, width  >> (i + 1));
+      const mh = Math.max(1, height >> (i + 1));
+      this.mips.push({
+        downRT  : this._createRT(mw, mh, `down${i}`),
+        blurHRT : this._createRT(mw, mh, `blurH${i}`),
+        blurVRT : this._createRT(mw, mh, `blurV${i}`),
+        upRT    : this._createRT(mw, mh, `up${i}`),
       });
     }
-
-    // ── Bind group layouts ───────────────────────────────────────────────────
-    const singleTexBGL = createSingleTexBGL(device, 'at-ub-single-bgl');
-    const dualTexBGL   = createDualTexBGL(device, 'at-ub-dual-bgl');
-
-    // ── Pipeline compilation helper ──────────────────────────────────────────
-    function makePipeline(
-      label: string, wgsl: string, bgl: GPUBindGroupLayout, outFormat: GPUTextureFormat,
-    ): GPURenderPipeline {
-      const module = device.createShaderModule({ label, code: wgsl });
-      return device.createRenderPipeline({
-        label,
-        layout   : device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-        vertex   : { module, entryPoint: 'vs_main' },
-        fragment : { module, entryPoint: 'fs_main', targets: [{ format: outFormat }] },
-        primitive: { topology: 'triangle-list' },
-      });
-    }
-
-    // ── Compile all five pipelines ───────────────────────────────────────────
-    const luminosityPipeline = makePipeline(
-      'at-ub-luminosity', WGSL_LUMINOSITY_THRESHOLD, singleTexBGL, 'rgba16float');
-    const downsamplePipeline = makePipeline(
-      'at-ub-downsample', WGSL_DOWNSAMPLE, singleTexBGL, 'rgba16float');
-    const gaussianPipeline = makePipeline(
-      'at-ub-gaussian', WGSL_GAUSSIAN_BLUR, singleTexBGL, 'rgba16float');
-    const upsamplePipeline = makePipeline(
-      'at-ub-upsample', WGSL_UPSAMPLE, dualTexBGL, 'rgba16float');
-    const compositePipeline = makePipeline(
-      'at-ub-composite', WGSL_COMPOSITE, dualTexBGL, format);
-
-    return new ATUnrealBloomPipeline({
-      device, format, width, height, sampler,
-      luminosityUniformBuf, compositeUniformBuf,
-      brightTex, blackTex, mips,
-      luminosityPipeline, downsamplePipeline,
-      gaussianPipeline, upsamplePipeline, compositePipeline,
-      singleTexBGL, dualTexBGL, params,
-    });
   }
 
-  // ── Public API: setParams ──────────────────────────────────────────────────
+  // ─── Public: setParams ─────────────────────────────────────────────────────
 
-  /**
-   * Update bloom parameters. Flushes all affected uniform buffers to the GPU.
-   * Safe to call every frame (no diffing — always writes).
-   */
   setParams(partial: ATUnrealBloomParams): void {
-    const p = this.params;
-
-    if (partial.bloomStrength        !== undefined) p.bloomStrength        = partial.bloomStrength;
-    if (partial.bloomRadius          !== undefined) p.bloomRadius          = partial.bloomRadius;
-    if (partial.bloomTintColor       !== undefined) p.bloomTintColor       = partial.bloomTintColor;
-    if (partial.luminosityThreshold  !== undefined) p.luminosityThreshold  = partial.luminosityThreshold;
-    if (partial.smoothWidth          !== undefined) p.smoothWidth          = partial.smoothWidth;
-    if (partial.defaultColor         !== undefined) p.defaultColor         = partial.defaultColor;
-    if (partial.defaultOpacity       !== undefined) p.defaultOpacity       = partial.defaultOpacity;
-    if (partial.gaussianSigma        !== undefined) p.gaussianSigma        = partial.gaussianSigma;
-    if (partial.gaussianKernelRadius !== undefined) p.gaussianKernelRadius = partial.gaussianKernelRadius;
-    if (partial.upsampleRadius       !== undefined) p.upsampleRadius       = partial.upsampleRadius;
-    if (partial.upsampleIntensity    !== undefined) p.upsampleIntensity    = partial.upsampleIntensity;
-    if (partial.mipTints             !== undefined) p.mipTints             = partial.mipTints;
-
-    // Flush luminosity uniforms
-    this.device.queue.writeBuffer(this.luminosityUniformBuf, 0, packLuminosityUniforms(p));
-
-    // Flush composite uniforms
-    this.device.queue.writeBuffer(this.compositeUniformBuf, 0, packCompositeUniforms(p));
-
-    // Flush per-mip gaussian + upsample uniforms
-    for (let i = 0; i < this.mips.length; i++) {
-      const m = this.mips[i];
-
-      this.device.queue.writeBuffer(m.gaussHUniformBuf, 0,
-        packGaussianUniforms(m.width, m.height, true, p.gaussianSigma, p.gaussianKernelRadius));
-
-      this.device.queue.writeBuffer(m.gaussVUniformBuf, 0,
-        packGaussianUniforms(m.width, m.height, false, p.gaussianSigma, p.gaussianKernelRadius));
-
-      const tint = (p.mipTints[i] || [1, 1, 1]) as [number, number, number];
-      this.device.queue.writeBuffer(m.upUniformBuf, 0,
-        packUpsampleUniforms(m.width, m.height, p.upsampleRadius, p.upsampleIntensity, tint));
-    }
+    this._mergeParams(partial);
   }
 
-  // ── Public API: resize ─────────────────────────────────────────────────────
-
+  // ─── Public: render ────────────────────────────────────────────────────────
   /**
-   * Resize all internal textures. Call when the canvas / viewport size changes.
-   * Destroys and recreates all intermediate textures and updates
-   * resolution-dependent uniform buffers.
+   * Run the full 5-stage UnrealBloom pipeline.
+   * @param sceneTex  WebGLTexture containing the rendered scene (RGBA).
+   * @param targetFBO null → draw to screen; else draw to provided FBO.
    */
-  resize(width: number, height: number): void {
-    if (width === this.width && height === this.height) return;
-    this.width  = width;
-    this.height = height;
+  render(sceneTex: WebGLTexture, targetFBO: WebGLFramebuffer | null = null): void {
+    // Stage 1: Luminosity threshold
+    this._passLuminosity(sceneTex);
 
-    const p = this.params;
-
-    // Recreate full-resolution brightTex
-    this.brightTex.destroy();
-    this.brightTex = createRenderTex(this.device, 'at-ub-bright', width, height);
-
-    // Recreate per-mip textures and update uniform buffers
-    for (let i = 0; i < this.mips.length; i++) {
-      const m = this.mips[i];
-      const mw = mipSize(width,  i + 1);
-      const mh = mipSize(height, i + 1);
-
-      m.downTex.destroy(); m.blurHTex.destroy();
-      m.blurVTex.destroy(); m.upTex.destroy();
-
-      m.downTex  = createRenderTex(this.device, `at-ub-down-${i}`,  mw, mh);
-      m.blurHTex = createRenderTex(this.device, `at-ub-blurH-${i}`, mw, mh);
-      m.blurVTex = createRenderTex(this.device, `at-ub-blurV-${i}`, mw, mh);
-      m.upTex    = createRenderTex(this.device, `at-ub-up-${i}`,    mw, mh);
-
-      m.width  = mw;
-      m.height = mh;
-
-      const srcW = (i === 0) ? width  : mipSize(width,  i);
-      const srcH = (i === 0) ? height : mipSize(height, i);
-      this.device.queue.writeBuffer(m.downUniformBuf, 0, packDownsampleUniforms(srcW, srcH));
-
-      this.device.queue.writeBuffer(m.gaussHUniformBuf, 0,
-        packGaussianUniforms(mw, mh, true, p.gaussianSigma, p.gaussianKernelRadius));
-      this.device.queue.writeBuffer(m.gaussVUniformBuf, 0,
-        packGaussianUniforms(mw, mh, false, p.gaussianSigma, p.gaussianKernelRadius));
-
-      const tint = (p.mipTints[i] || [1, 1, 1]) as [number, number, number];
-      this.device.queue.writeBuffer(m.upUniformBuf, 0,
-        packUpsampleUniforms(mw, mh, p.upsampleRadius, p.upsampleIntensity, tint));
-    }
-  }
-
-  // ── Private: stages 1–4 (shared between render() and renderBloomOnly()) ───
-
-  /**
-   * Execute stages 1–4 of the bloom pipeline, producing the fully
-   * accumulated bloom in mips[0].upTex.
-   *
-   * Stage 1: Luminosity threshold — scene → brightTex
-   *   Port of compiled.vs :: UnrealBloomLuminosity.glsl / BloomLuminosityPass.glsl
-   *   Extracts bright pixels via luma() + smoothstep.
-   *
-   * Stage 2: Downsample pyramid — brightTex → mip[0..4].downTex
-   *   Port of compiled.vs :: DownSample.glsl
-   *   5 levels of 2× downsampling using 13-tap weighted filter.
-   *   Weights [1/32, 1/16, 1/8] with halfPixel bilinear offsets.
-   *
-   * Stage 3: Gaussian blur — mip[i].downTex → blurHTex → blurVTex
-   *   Port of compiled.vs :: UnrealBloomGaussian.glsl
-   *   Separable H+V blur per mip using gaussianPdf() dynamic weights.
-   *
-   * Stage 4: Upsample chain — mip[4].blurV → ... → mip[0].upTex
-   *   Port of compiled.vs :: UpSample.glsl
-   *   9-tap tent filter + tNext accumulation + uTint per-mip coloring.
-   */
-  private _renderStages1to4(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-  ): void {
-    const { device, sampler, mips } = this;
-    const sceneView  = sceneTex.createView();
-    const brightView = this.brightTex.createView();
-
-    // ── Stage 1: LUMINOSITY THRESHOLD ────────────────────────────────────────
-    {
-      const bg = device.createBindGroup({
-        label  : 'at-ub-luminosity-bg',
-        layout : this.singleTexBGL,
-        entries: [
-          { binding: 0, resource: { buffer: this.luminosityUniformBuf } },
-          { binding: 1, resource: sampler },
-          { binding: 2, resource: sceneView },
-        ],
-      });
-      runFullscreenPass(encoder, this.luminosityPipeline, bg, brightView,
-        'at-ub-luminosity-pass');
-    }
-
-    // ── Stage 2: DOWNSAMPLE PYRAMID ──────────────────────────────────────────
+    // Stage 2 + 3: Downsample + Gaussian per mip
     for (let i = 0; i < MIP_LEVELS; i++) {
-      const m = mips[i];
-      const srcTex = (i === 0) ? this.brightTex : mips[i - 1].downTex;
-
-      const bg = device.createBindGroup({
-        label  : `at-ub-down-bg-${i}`,
-        layout : this.singleTexBGL,
-        entries: [
-          { binding: 0, resource: { buffer: m.downUniformBuf } },
-          { binding: 1, resource: sampler },
-          { binding: 2, resource: srcTex.createView() },
-        ],
-      });
-      runFullscreenPass(encoder, this.downsamplePipeline, bg,
-        m.downTex.createView(), `at-ub-down-pass-${i}`);
+      const src = (i === 0) ? this.brightRT : this.mips[i - 1].downRT;
+      this._passDownsample(src, this.mips[i]);
+      this._passGaussianH(this.mips[i]);
+      this._passGaussianV(this.mips[i]);
     }
 
-    // ── Stage 3: GAUSSIAN BLUR (H + V per mip) ──────────────────────────────
-    for (let i = 0; i < MIP_LEVELS; i++) {
-      const m = mips[i];
-
-      // Horizontal blur: downTex → blurHTex
-      {
-        const bg = device.createBindGroup({
-          label  : `at-ub-gaussH-bg-${i}`,
-          layout : this.singleTexBGL,
-          entries: [
-            { binding: 0, resource: { buffer: m.gaussHUniformBuf } },
-            { binding: 1, resource: sampler },
-            { binding: 2, resource: m.downTex.createView() },
-          ],
-        });
-        runFullscreenPass(encoder, this.gaussianPipeline, bg,
-          m.blurHTex.createView(), `at-ub-gaussH-pass-${i}`);
-      }
-
-      // Vertical blur: blurHTex → blurVTex
-      {
-        const bg = device.createBindGroup({
-          label  : `at-ub-gaussV-bg-${i}`,
-          layout : this.singleTexBGL,
-          entries: [
-            { binding: 0, resource: { buffer: m.gaussVUniformBuf } },
-            { binding: 1, resource: sampler },
-            { binding: 2, resource: m.blurHTex.createView() },
-          ],
-        });
-        runFullscreenPass(encoder, this.gaussianPipeline, bg,
-          m.blurVTex.createView(), `at-ub-gaussV-pass-${i}`);
-      }
-    }
-
-    // ── Stage 4: UPSAMPLE CHAIN ──────────────────────────────────────────────
+    // Stage 4: Upsample chain (finest mip last, accumulating from coarsest)
     for (let i = MIP_LEVELS - 1; i >= 0; i--) {
-      const m = mips[i];
-      const nextTex = (i === MIP_LEVELS - 1) ? this.blackTex : mips[i + 1].upTex;
-
-      const bg = device.createBindGroup({
-        label  : `at-ub-up-bg-${i}`,
-        layout : this.dualTexBGL,
-        entries: [
-          { binding: 0, resource: { buffer: m.upUniformBuf } },
-          { binding: 1, resource: sampler },
-          { binding: 2, resource: m.blurVTex.createView() },
-          { binding: 3, resource: nextTex.createView() },
-        ],
-      });
-      runFullscreenPass(encoder, this.upsamplePipeline, bg,
-        m.upTex.createView(), `at-ub-up-pass-${i}`);
+      const nextTex = (i === MIP_LEVELS - 1)
+        ? this.blackTex
+        : this.mips[i + 1].upRT.tex;
+      this._passUpsample(this.mips[i], nextTex);
     }
+
+    // Stage 5: Composite to target
+    this._passComposite(sceneTex, this.mips[0].upRT.tex, targetFBO);
   }
 
-  // ── Private: stage 5 composite ─────────────────────────────────────────────
+  // ─── Public: dispose ───────────────────────────────────────────────────────
 
-  /**
-   * Stage 5: Composite — scene + bloom → output.
-   * Port of compiled.vs :: UnrealBloomComposite.glsl + UnrealBloomPass.fs
-   *
-   * UnrealBloomComposite applies lerpBloomFactor weighting and tint:
-   *   lerpBloomFactor(factor) = mix(factor, 1.2 - factor, bloomRadius)
-   *   result = bloomStrength × lerpBloomFactor(1.0) × bloomTintColor × bloom
-   *
-   * UnrealBloomPass adds it to the scene:
-   *   color.rgb += getUnrealBloom(vUv)
-   *
-   * The final bloom texture is mips[0].upTex — the fully accumulated
-   * upsample result at the finest mip level.
-   */
-  private _renderComposite(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-    dstView  : GPUTextureView,
-  ): void {
-    const bloomTex = this.mips[0].upTex;
+  dispose(): void {
+    const gl = this.gl;
 
-    const bg = this.device.createBindGroup({
-      label  : 'at-ub-composite-bg',
-      layout : this.dualTexBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this.compositeUniformBuf } },
-        { binding: 1, resource: this.sampler },
-        { binding: 2, resource: sceneTex.createView() },
-        { binding: 3, resource: bloomTex.createView() },
-      ],
-    });
+    // gl.deleteProgram × 5
+    gl.deleteProgram(this.progLuminosity);
+    gl.deleteProgram(this.progDownsample);
+    gl.deleteProgram(this.progGaussian);
+    gl.deleteProgram(this.progUpsample);
+    gl.deleteProgram(this.progComposite);
 
-    const pass = encoder.beginRenderPass({
-      label           : 'at-ub-composite-pass',
-      colorAttachments: [{
-        view      : dstView,
-        loadOp    : 'clear' as GPULoadOp,
-        storeOp   : 'store' as GPUStoreOp,
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      }],
-    });
-    pass.setPipeline(this.compositePipeline);
-    pass.setBindGroup(0, bg);
-    pass.draw(3);
-    pass.end();
-  }
+    // gl.deleteBuffer × 1
+    gl.deleteBuffer(this.quadBuf);
 
-  // ── Public API: render ─────────────────────────────────────────────────────
-
-  /**
-   * Execute the full 5-stage UnrealBloom pipeline for one frame.
-   *
-   * Records all render passes onto the provided command encoder.
-   * The caller is responsible for encoder.finish() and device.queue.submit().
-   *
-   * Pass sequence:
-   *   1. Luminosity threshold: scene → brightTex
-   *   2. Downsample pyramid: brightTex → mip[0..4].downTex
-   *   3. Gaussian blur: mip[i].downTex → mip[i].blurHTex → mip[i].blurVTex
-   *   4. Upsample chain: mip[4].blurVTex → ... → mip[0].upTex
-   *   5. Composite: scene + mip[0].upTex → dstView
-   */
-  render(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-    dstView  : GPUTextureView,
-  ): void {
-    this._renderStages1to4(encoder, sceneTex);
-    this._renderComposite(encoder, sceneTex, dstView);
-  }
-
-  // ── Public API: destroy ────────────────────────────────────────────────────
-
-  /**
-   * Release all GPU resources held by this pipeline.
-   * After calling destroy(), the instance must not be used.
-   */
-  destroy(): void {
-    this.luminosityUniformBuf.destroy();
-    this.compositeUniformBuf.destroy();
-    this.brightTex.destroy();
-    this.blackTex.destroy();
-
+    // gl.deleteTexture × 1 (black), deleteTexture+deleteFramebuffer × (1 + 6×4) = 25
+    gl.deleteTexture(this.blackTex);
+    this._destroyRT(this.brightRT);
     for (const m of this.mips) {
-      m.downTex.destroy();
-      m.blurHTex.destroy();
-      m.blurVTex.destroy();
-      m.upTex.destroy();
-      m.downUniformBuf.destroy();
-      m.gaussHUniformBuf.destroy();
-      m.gaussVUniformBuf.destroy();
-      m.upUniformBuf.destroy();
+      this._destroyRT(m.downRT);
+      this._destroyRT(m.blurHRT);
+      this._destroyRT(m.blurVRT);
+      this._destroyRT(m.upRT);
     }
     this.mips.length = 0;
   }
 
-  // ── Public API: getParams ──────────────────────────────────────────────────
+  // ─── Stage 1: Luminosity ──────────────────────────────────────────────────
 
-  /** Returns a read-only snapshot of the currently resolved parameters. */
-  getParams(): Readonly<ResolvedParams> {
-    return { ...this.params };
+  private _passLuminosity(sceneTex: WebGLTexture): void {
+    const gl = this.gl;
+    const p  = this.params;
+
+    // gl.useProgram
+    gl.useProgram(this.progLuminosity);
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.brightRT.fbo);
+    // gl.viewport
+    gl.viewport(0, 0, this.brightRT.w, this.brightRT.h);
+    // gl.clear
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // gl.activeTexture, gl.bindTexture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+    gl.uniform1i(gl.getUniformLocation(this.progLuminosity, 'tDiffuse'), 0);
+
+    // uniforms
+    gl.uniform3f(gl.getUniformLocation(this.progLuminosity, 'defaultColor'),
+      p.defaultColor[0], p.defaultColor[1], p.defaultColor[2]);
+    gl.uniform1f(gl.getUniformLocation(this.progLuminosity, 'defaultOpacity'), p.defaultOpacity);
+    gl.uniform1f(gl.getUniformLocation(this.progLuminosity, 'luminosityThreshold'), p.luminosityThreshold);
+    gl.uniform1f(gl.getUniformLocation(this.progLuminosity, 'smoothWidth'), p.smoothWidth);
+
+    // gl.drawArrays
+    this._drawQuad(this.progLuminosity);
   }
 
-  // ── Public API: getMipCount ────────────────────────────────────────────────
+  // ─── Stage 2: Downsample ──────────────────────────────────────────────────
 
-  /** Returns the number of mip levels in the downsample/upsample pyramid. */
-  get mipCount(): number {
-    return MIP_LEVELS;
+  private _passDownsample(src: RT, m: MipLevel): void {
+    const gl = this.gl;
+
+    // gl.useProgram
+    gl.useProgram(this.progDownsample);
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, m.downRT.fbo);
+    // gl.viewport
+    gl.viewport(0, 0, m.downRT.w, m.downRT.h);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // gl.activeTexture, gl.bindTexture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progDownsample, 'tMap'), 0);
+
+    // source resolution for correct texel offsets
+    gl.uniform2f(gl.getUniformLocation(this.progDownsample, 'uResolution'), src.w, src.h);
+    gl.uniform1f(gl.getUniformLocation(this.progDownsample, 'uRadius'), 1.0);
+
+    // gl.drawArrays
+    this._drawQuad(this.progDownsample);
   }
 
-  // ── Public API: getMipResolution ───────────────────────────────────────────
+  // ─── Stage 3a: Gaussian Horizontal ───────────────────────────────────────
 
-  /** Returns the resolution [width, height] of a given mip level. */
-  getMipResolution(level: number): [number, number] {
-    const idx = Math.max(0, Math.min(level, this.mips.length - 1));
-    const m = this.mips[idx];
-    return [m.width, m.height];
+  private _passGaussianH(m: MipLevel): void {
+    const gl = this.gl;
+
+    // gl.useProgram
+    gl.useProgram(this.progGaussian);
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, m.blurHRT.fbo);
+    // gl.viewport
+    gl.viewport(0, 0, m.blurHRT.w, m.blurHRT.h);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // gl.activeTexture, gl.bindTexture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, m.downRT.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progGaussian, 'colorTexture'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.progGaussian, 'texSize'), m.downRT.w, m.downRT.h);
+    gl.uniform2f(gl.getUniformLocation(this.progGaussian, 'direction'), 1.0, 0.0);
+
+    // gl.drawArrays
+    this._drawQuad(this.progGaussian);
   }
 
-  // ── Public API: getBloomTexture ────────────────────────────────────────────
+  // ─── Stage 3b: Gaussian Vertical ─────────────────────────────────────────
 
-  /**
-   * Returns the final upsampled bloom GPUTexture (before composite).
-   * Useful for debugging, custom compositing, or feeding into additional
-   * post-process passes.
-   */
-  getBloomTexture(): GPUTexture {
-    return this.mips[0].upTex;
+  private _passGaussianV(m: MipLevel): void {
+    const gl = this.gl;
+
+    // gl.useProgram
+    gl.useProgram(this.progGaussian);
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, m.blurVRT.fbo);
+    // gl.viewport
+    gl.viewport(0, 0, m.blurVRT.w, m.blurVRT.h);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // gl.activeTexture, gl.bindTexture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, m.blurHRT.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progGaussian, 'colorTexture'), 0);
+    gl.uniform2f(gl.getUniformLocation(this.progGaussian, 'texSize'), m.blurHRT.w, m.blurHRT.h);
+    gl.uniform2f(gl.getUniformLocation(this.progGaussian, 'direction'), 0.0, 1.0);
+
+    // gl.drawArrays
+    this._drawQuad(this.progGaussian);
   }
 
-  // ── Public API: getMipTextures ─────────────────────────────────────────────
+  // ─── Stage 4: Upsample ────────────────────────────────────────────────────
 
-  /**
-   * Returns references to all intermediate textures at a given mip level.
-   * Useful for debugging the pipeline stages individually.
-   */
-  getMipTextures(level: number): {
-    downTex: GPUTexture; blurHTex: GPUTexture;
-    blurVTex: GPUTexture; upTex: GPUTexture;
-  } {
-    const idx = Math.max(0, Math.min(level, this.mips.length - 1));
-    const m = this.mips[idx];
-    return { downTex: m.downTex, blurHTex: m.blurHTex, blurVTex: m.blurVTex, upTex: m.upTex };
+  private _passUpsample(m: MipLevel, nextTex: WebGLTexture): void {
+    const gl = this.gl;
+    const p  = this.params;
+    // mipTints indexed from coarsest (MIP_LEVELS-1) to finest (0)
+    const mipIdx = this.mips.indexOf(m);
+    const tint   = p.mipTints[mipIdx] ?? [1, 1, 1];
+
+    // gl.useProgram
+    gl.useProgram(this.progUpsample);
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, m.upRT.fbo);
+    // gl.viewport
+    gl.viewport(0, 0, m.upRT.w, m.upRT.h);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // gl.activeTexture × 2, gl.bindTexture × 2
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, m.blurVRT.tex);
+    gl.uniform1i(gl.getUniformLocation(this.progUpsample, 'tMap'), 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, nextTex);
+    gl.uniform1i(gl.getUniformLocation(this.progUpsample, 'tNext'), 1);
+
+    gl.uniform2f(gl.getUniformLocation(this.progUpsample, 'uResolution'), m.upRT.w, m.upRT.h);
+    gl.uniform1f(gl.getUniformLocation(this.progUpsample, 'uRadius'),    p.upsampleRadius);
+    gl.uniform1f(gl.getUniformLocation(this.progUpsample, 'uIntensity'), p.upsampleIntensity);
+    gl.uniform3f(gl.getUniformLocation(this.progUpsample, 'uTint'), tint[0], tint[1], tint[2]);
+
+    // gl.drawArrays
+    this._drawQuad(this.progUpsample);
   }
 
-  // ── Public API: renderBloomOnly ────────────────────────────────────────────
+  // ─── Stage 5: Composite ───────────────────────────────────────────────────
 
-  /**
-   * Execute only the bloom extraction + blur stages (1–4) without the final
-   * composite. The result is left in the upsampled bloom texture, retrievable
-   * via getBloomTexture().
-   *
-   * Use when compositing bloom yourself in a custom shader, or when chaining
-   * multiple post-process effects.
-   */
-  renderBloomOnly(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
+  private _passComposite(
+    sceneTex  : WebGLTexture,
+    bloomTex  : WebGLTexture,
+    targetFBO : WebGLFramebuffer | null,
   ): void {
-    this._renderStages1to4(encoder, sceneTex);
+    const gl = this.gl;
+    const p  = this.params;
+
+    // gl.useProgram
+    gl.useProgram(this.progComposite);
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targetFBO);
+    // gl.viewport
+    gl.viewport(0, 0, this.w, this.h);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // gl.activeTexture × 2, gl.bindTexture × 2
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+    gl.uniform1i(gl.getUniformLocation(this.progComposite, 'tScene'), 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bloomTex);
+    gl.uniform1i(gl.getUniformLocation(this.progComposite, 'blurTexture1'), 1);
+
+    gl.uniform1f(gl.getUniformLocation(this.progComposite, 'bloomStrength'), p.bloomStrength);
+    gl.uniform1f(gl.getUniformLocation(this.progComposite, 'bloomRadius'),   p.bloomRadius);
+    gl.uniform3f(gl.getUniformLocation(this.progComposite, 'bloomTintColor'),
+      p.bloomTintColor[0], p.bloomTintColor[1], p.bloomTintColor[2]);
+
+    // gl.drawArrays
+    this._drawQuad(this.progComposite);
   }
 
-  // ── Public API: compositeOnly ──────────────────────────────────────────────
+  // ─── Internal: compile shader ─────────────────────────────────────────────
 
-  /**
-   * Execute only the composite stage (5), reading from the already-rendered
-   * bloom texture. Call after renderBloomOnly() when you've done additional
-   * processing on the bloom or scene textures.
-   */
-  compositeOnly(
-    encoder  : GPUCommandEncoder,
-    sceneTex : GPUTexture,
-    dstView  : GPUTextureView,
-  ): void {
-    this._renderComposite(encoder, sceneTex, dstView);
+  private _compile(vert: string, frag: string, label: string): WebGLProgram {
+    const gl = this.gl;
+
+    // gl.createShader
+    const vs = gl.createShader(gl.VERTEX_SHADER)!;
+    // gl.shaderSource
+    gl.shaderSource(vs, vert);
+    // gl.compileShader
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATUnrealBloom] vert compile (${label}): ${gl.getShaderInfoLog(vs)}`);
+    }
+
+    // gl.createShader
+    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+    // gl.shaderSource
+    gl.shaderSource(fs, frag);
+    // gl.compileShader
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      throw new Error(`[ATUnrealBloom] frag compile (${label}): ${gl.getShaderInfoLog(fs)}`);
+    }
+
+    // gl.createProgram
+    const prog = gl.createProgram()!;
+    // gl.attachShader × 2
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    // gl.linkProgram
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(`[ATUnrealBloom] link error (${label}): ${gl.getProgramInfoLog(prog)}`);
+    }
+    // gl.deleteShader × 2
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+
+    return prog;
   }
 
-  // ── Diagnostics ────────────────────────────────────────────────────────────
+  // ─── Internal: create render target ──────────────────────────────────────
 
-  /** Returns all five WGSL shader source strings for inspection or hot-reload. */
-  get wgslSources(): Readonly<Record<string, string>> {
+  private _createRT(w: number, h: number, _label: string): RT {
+    const gl   = this.gl;
+    const type = this.texType;
+
+    // gl.createTexture
+    const tex = gl.createTexture()!;
+    // gl.bindTexture
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // gl.texParameteri × 4
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+    // gl.texImage2D
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, type, null);
+
+    // gl.createFramebuffer
+    const fbo = gl.createFramebuffer()!;
+    // gl.bindFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    // gl.framebufferTexture2D
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    // gl.bindFramebuffer (unbind)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    return { fbo, tex, w, h };
+  }
+
+  // ─── Internal: 1×1 black seed texture ────────────────────────────────────
+
+  private _makeBlackTex(): WebGLTexture {
+    const gl = this.gl;
+
+    // gl.createTexture
+    const tex = gl.createTexture()!;
+    // gl.bindTexture
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // gl.texParameteri × 4
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+    // gl.texImage2D — 1×1 black pixel
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 0]));
+    // gl.bindTexture (unbind)
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    return tex;
+  }
+
+  // ─── Internal: destroy render target ─────────────────────────────────────
+
+  private _destroyRT(rt: RT): void {
+    const gl = this.gl;
+    // gl.deleteTexture
+    gl.deleteTexture(rt.tex);
+    // gl.deleteFramebuffer
+    gl.deleteFramebuffer(rt.fbo);
+  }
+
+  // ─── Internal: draw fullscreen quad ──────────────────────────────────────
+
+  private _drawQuad(prog: WebGLProgram): void {
+    const gl = this.gl;
+    // gl.bindBuffer
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    const loc = gl.getAttribLocation(prog, 'aPosition');
+    // gl.enableVertexAttribArray
+    gl.enableVertexAttribArray(loc);
+    // gl.vertexAttribPointer
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    // gl.drawArrays
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    // gl.disableVertexAttribArray
+    gl.disableVertexAttribArray(loc);
+  }
+
+  // ─── Internal: params helpers ─────────────────────────────────────────────
+
+  private _defaultParams(): ResolvedParams {
     return {
-      luminosityThreshold : WGSL_LUMINOSITY_THRESHOLD,
-      downsample          : WGSL_DOWNSAMPLE,
-      gaussianBlur        : WGSL_GAUSSIAN_BLUR,
-      upsample            : WGSL_UPSAMPLE,
-      composite           : WGSL_COMPOSITE,
+      bloomStrength       : 1.0,
+      bloomRadius         : 0.5,
+      bloomTintColor      : [1, 1, 1],
+      luminosityThreshold : 0.0,
+      smoothWidth         : 0.01,
+      defaultColor        : [0, 0, 0],
+      defaultOpacity      : 0.0,
+      upsampleRadius      : 1.0,
+      upsampleIntensity   : 1.0,
+      mipTints            : Array.from({ length: MIP_LEVELS }, () =>
+        [1, 1, 1] as [number, number, number]),
     };
   }
 
-  /** Returns a human-readable summary of the pipeline configuration. */
-  toString(): string {
-    const p = this.params;
-    const lines = [
-      `ATUnrealBloomPipeline [${this.width}×${this.height}]`,
-      `  mipLevels          : ${MIP_LEVELS}`,
-      `  bloomStrength      : ${p.bloomStrength}`,
-      `  bloomRadius        : ${p.bloomRadius}`,
-      `  bloomTintColor     : [${p.bloomTintColor.join(', ')}]`,
-      `  luminosityThreshold: ${p.luminosityThreshold}`,
-      `  smoothWidth        : ${p.smoothWidth}`,
-      `  gaussianSigma      : ${p.gaussianSigma}`,
-      `  gaussianKernelRadius: ${p.gaussianKernelRadius}`,
-      `  upsampleRadius     : ${p.upsampleRadius}`,
-      `  upsampleIntensity  : ${p.upsampleIntensity}`,
-    ];
-    for (let i = 0; i < MIP_LEVELS; i++) {
-      const m = this.mips[i];
-      const tint = p.mipTints[i] || [1, 1, 1];
-      lines.push(`  mip[${i}]: ${m.width}×${m.height}  tint=[${tint.join(', ')}]`);
-    }
-    return lines.join('\n');
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Convenience factory — integrates with BloomVariants.ts species params
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Build an ATUnrealBloomPipeline seeded from BloomParams (BloomVariants.ts),
- * providing sensible default mappings from AT bloom parameters to the full
- * UE-style pipeline.
- *
- * Parameter mapping:
- *   - bloomStrength → bloomStrength (direct)
- *   - bloomRadius → bloomRadius (direct, controls lerpBloomFactor)
- *   - luminosityThreshold → luminosityThreshold (direct)
- *   - bloomTintColor → bloomTintColor (default: white)
- *   - gaussianSigma → derived from bloomRadius (wider radius → higher sigma)
- */
-export async function createATUnrealBloomForSpecies(
-  device      : GPUDevice,
-  format      : GPUTextureFormat,
-  width       : number,
-  height      : number,
-  bloomParams?: {
-    bloomStrength        : number;
-    bloomRadius          : number;
-    luminosityThreshold  : number;
-    bloomTintColor?      : [number, number, number];
-  },
-): Promise<ATUnrealBloomPipeline> {
-  const pipeline = await ATUnrealBloomPipeline.create(device, format, width, height);
-
-  if (bloomParams) {
-    // Map AT bloomRadius [0,1] to gaussian sigma [1,6] for visually
-    // consistent bloom spread across the mip pyramid.
-    const sigmaFromRadius = 1.0 + bloomParams.bloomRadius * 5.0;
-
-    pipeline.setParams({
-      bloomStrength       : bloomParams.bloomStrength,
-      bloomRadius         : bloomParams.bloomRadius,
-      luminosityThreshold : bloomParams.luminosityThreshold,
-      bloomTintColor      : bloomParams.bloomTintColor || [1, 1, 1],
-      gaussianSigma       : sigmaFromRadius,
-    });
+  private _mergeParams(p: ATUnrealBloomParams): void {
+    const d = this.params;
+    if (p.bloomStrength       !== undefined) d.bloomStrength       = p.bloomStrength;
+    if (p.bloomRadius         !== undefined) d.bloomRadius         = p.bloomRadius;
+    if (p.bloomTintColor      !== undefined) d.bloomTintColor      = p.bloomTintColor;
+    if (p.luminosityThreshold !== undefined) d.luminosityThreshold = p.luminosityThreshold;
+    if (p.smoothWidth         !== undefined) d.smoothWidth         = p.smoothWidth;
+    if (p.defaultColor        !== undefined) d.defaultColor        = p.defaultColor;
+    if (p.defaultOpacity      !== undefined) d.defaultOpacity      = p.defaultOpacity;
+    if (p.upsampleRadius      !== undefined) d.upsampleRadius      = p.upsampleRadius;
+    if (p.upsampleIntensity   !== undefined) d.upsampleIntensity   = p.upsampleIntensity;
+    if (p.mipTints            !== undefined) d.mipTints            = p.mipTints;
   }
 
-  return pipeline;
+  // ─── Public accessors ─────────────────────────────────────────────────────
+
+  /** Final accumulated bloom texture (mip[0].upRT), before composite. */
+  get bloomTexture(): WebGLTexture { return this.mips[0].upRT.tex; }
+
+  /** Luminosity-extracted bright texture. */
+  get brightTexture(): WebGLTexture { return this.brightRT.tex; }
+
+  /** Blurred texture at a specific mip level (0 = finest). */
+  getMipBlurTexture(level: number): WebGLTexture {
+    const idx = Math.max(0, Math.min(level, this.mips.length - 1));
+    return this.mips[idx].blurVRT.tex;
+  }
+
+  /** Upsample accumulator at a specific mip level. */
+  getMipUpTexture(level: number): WebGLTexture {
+    const idx = Math.max(0, Math.min(level, this.mips.length - 1));
+    return this.mips[idx].upRT.tex;
+  }
+
+  /** Number of pyramid levels. */
+  get mipCount(): number { return MIP_LEVELS; }
+
+  /** Current resolved parameters (read-only snapshot). */
+  getParams(): Readonly<ResolvedParams> { return { ...this.params }; }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Re-export WGSL fragments — other shaders may embed them
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Individual WGSL shader source strings for each stage of the pipeline.
- * Useful for embedding bloom stages in custom shader pipelines,
- * hot-reload integration, and shader debugging.
- */
-export const AT_UNREAL_BLOOM_WGSL = {
-  /** Fullscreen triangle vertex shader (shared by all stages). */
-  fullscreenVertex     : WGSL_FULLSCREEN_TRI_VERTEX,
-  /** Rec.601 luma helper function. */
-  luma                 : WGSL_LUMA,
-  /** Stage 1: luminosity threshold extraction fragment shader. */
-  luminosityThreshold  : WGSL_LUMINOSITY_THRESHOLD,
-  /** Stage 2: 13-tap weighted downsample fragment shader. */
-  downsample           : WGSL_DOWNSAMPLE,
-  /** Stage 3: separable gaussian blur fragment shader. */
-  gaussianBlur         : WGSL_GAUSSIAN_BLUR,
-  /** Stage 4: 9-tap tent filter upsample fragment shader. */
-  upsample             : WGSL_UPSAMPLE,
-  /** Stage 5: lerpBloomFactor composite fragment shader. */
-  composite            : WGSL_COMPOSITE,
-} as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Type re-exports for downstream consumers
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type { ResolvedParams as ATUnrealBloomResolvedParams };
