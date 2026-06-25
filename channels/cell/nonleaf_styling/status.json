@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "nonleaf_styling",
-  "epoch": 0
+  "species": "cil-layers",
+  "epoch": 0,
+  "bbox": {
+    "x": 670,
+    "y": 3177,
+    "w": 180,
+    "h": 125,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

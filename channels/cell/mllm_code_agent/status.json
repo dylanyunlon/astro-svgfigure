@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "mllm_code_agent",
-  "epoch": 0
+  "species": "cil-code",
+  "epoch": 0,
+  "bbox": {
+    "x": 670,
+    "y": 2473,
+    "w": 180,
+    "h": 125,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

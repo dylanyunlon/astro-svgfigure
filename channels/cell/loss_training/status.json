@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "loss_training",
-  "epoch": 0
+  "species": "cil-plus",
+  "epoch": 0,
+  "bbox": {
+    "x": 1082,
+    "y": 25,
+    "w": 150,
+    "h": 105,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

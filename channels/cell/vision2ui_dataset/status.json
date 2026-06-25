@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "vision2ui_dataset",
-  "epoch": 0
+  "species": "cil-vector",
+  "epoch": 0,
+  "bbox": {
+    "x": 525,
+    "y": 315,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

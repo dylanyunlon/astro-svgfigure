@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "alignment_group",
-  "epoch": 0
+  "species": "cil-layers",
+  "epoch": 0,
+  "bbox": {
+    "x": 533,
+    "y": 3820,
+    "w": 450,
+    "h": 145,
+    "z": 5
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

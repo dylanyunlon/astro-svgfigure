@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "input",
-  "epoch": 0
+  "species": "cil-vector",
+  "epoch": 0,
+  "bbox": {
+    "x": 220,
+    "y": 40,
+    "w": 160,
+    "h": 45,
+    "z": 5
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

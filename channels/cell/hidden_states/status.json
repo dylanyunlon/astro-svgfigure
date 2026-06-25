@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "hidden_states",
-  "epoch": 0
+  "species": "cil-bolt",
+  "epoch": 0,
+  "bbox": {
+    "x": 936.0,
+    "y": 1383,
+    "w": 170,
+    "h": 118,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "enc_conv2",
-  "epoch": 0
+  "species": "cil-filter",
+  "epoch": 0,
+  "bbox": {
+    "x": 220,
+    "y": 455,
+    "w": 130,
+    "h": 40,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

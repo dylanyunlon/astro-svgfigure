@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "enc_pool",
-  "epoch": 0
+  "species": "cil-layers",
+  "epoch": 0,
+  "bbox": {
+    "x": 220,
+    "y": 355,
+    "w": 130,
+    "h": 40,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

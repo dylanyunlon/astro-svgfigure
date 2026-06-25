@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "stage2_group",
-  "epoch": 0
+  "species": "cil-code",
+  "epoch": 0,
+  "bbox": {
+    "x": 655,
+    "y": 2157,
+    "w": 233.33333333333331,
+    "h": 1160,
+    "z": 5
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

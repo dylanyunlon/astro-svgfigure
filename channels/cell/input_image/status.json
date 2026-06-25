@@ -1,5 +1,15 @@
 {
   "status": "agent_dispatched",
   "cell_id": "input_image",
-  "epoch": 0
+  "species": "cil-code",
+  "epoch": 0,
+  "bbox": {
+    "x": 12,
+    "y": 18,
+    "w": 160,
+    "h": 112,
+    "z": 3
+  },
+  "opacity": 0.8,
+  "species_params": {}
 }

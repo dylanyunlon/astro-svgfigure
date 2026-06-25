@@ -1,7 +1,7 @@
 {
-  "epoch": 3,
-  "converged": true,
-  "max_delta": 0.0,
+  "epoch": 2,
+  "converged": false,
+  "max_delta": 200.0,
   "cell_deltas": {
     "add_norm1": 0.0,
     "add_norm2": 0.0,
@@ -50,7 +50,7 @@
     "ram_resource": 0.0,
     "rendered_webpage": 0.0,
     "resolution_handling": 0.0,
-    "self_attn": 0.0,
+    "self_attn": 200.0,
     "softmax_layer": 0.0,
     "stage1_group": 0.0,
     "stage2_group": 0.0,
@@ -62,6 +62,6 @@
     "vit_encoder": 0.0,
     "weight_matrix": 0.0
   },
-  "diverged": false,
+  "diverged": true,
   "threshold": 0.5
 }
