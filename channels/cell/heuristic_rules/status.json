@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "heuristic_rules",
-  "species": "cil-filter",
-  "epoch": 0,
-  "bbox": {
-    "x": 525,
-    "y": 761,
-    "w": 170,
-    "h": 118,
-    "z": 3
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }

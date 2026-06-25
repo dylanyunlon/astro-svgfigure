@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "local_images",
-  "species": "cil-code",
-  "epoch": 0,
-  "bbox": {
-    "x": 675,
-    "y": 2335,
-    "w": 170,
-    "h": 118,
-    "z": 3
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }

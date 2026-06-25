@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "coarse_dom_tree",
-  "species": "cil-graph",
-  "epoch": 0,
-  "bbox": {
-    "x": 718,
-    "y": 1927,
-    "w": 180,
-    "h": 125,
-    "z": 3
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }

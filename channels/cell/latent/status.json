@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "latent",
-  "species": "cil-code",
-  "epoch": 0,
-  "bbox": {
-    "x": 220,
-    "y": 255,
-    "w": 140,
-    "h": 45,
-    "z": 3
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }

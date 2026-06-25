@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "structure_model",
-  "species": "cil-eye",
-  "epoch": 0,
-  "bbox": {
-    "x": 592.6666666666666,
-    "y": 1067,
-    "w": 556.6666666666666,
-    "h": 735,
-    "z": 5
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }

@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "display_errors",
-  "species": "cil-bolt",
-  "epoch": 0,
-  "bbox": {
-    "x": 370,
-    "y": 626,
-    "w": 150,
-    "h": 105,
-    "z": 3
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }

@@ -1,0 +1,34 @@
+{
+  "bbox": {
+    "x": 335,
+    "y": 235,
+    "w": 829.3333333333333,
+    "h": 1587,
+    "z": 3
+  },
+  "species_params": {
+    "species": "cil-vector",
+    "cell_id": "stage1_group",
+    "label": "Stage 1: Coarse DOM Layout Generation",
+    "bbox": {
+      "x": 335,
+      "y": 235,
+      "w": 829.3333333333333,
+      "h": 1587,
+      "z": 3
+    },
+    "z": 3,
+    "opacity": 0.85,
+    "fill_color": "#B0BEC5",
+    "stroke_color": "#455A64",
+    "font_size": 11,
+    "epoch": 0,
+    "shadow": {
+      "dx": 2.0,
+      "dy": 2.0,
+      "blur": 3.0,
+      "opacity": 0.06
+    }
+  },
+  "opacity": 0.9
+}

@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "bbox_pruning_group",
-  "species": "cil-vector",
-  "epoch": 0,
-  "bbox": {
-    "x": 350,
-    "y": 275,
-    "w": 520,
-    "h": 752,
-    "z": 5
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }

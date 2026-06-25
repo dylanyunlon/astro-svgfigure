@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "transformer_decoder",
-  "species": "cil-eye",
-  "epoch": 0,
-  "bbox": {
-    "x": 964.3333333333333,
-    "y": 1521,
-    "w": 170,
-    "h": 118,
-    "z": 3
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }

@@ -1,15 +1,5 @@
 {
   "status": "agent_dispatched",
   "cell_id": "empty_elements",
-  "species": "cil-code",
-  "epoch": 0,
-  "bbox": {
-    "x": 540,
-    "y": 628.5,
-    "w": 140,
-    "h": 100,
-    "z": 3
-  },
-  "opacity": 0.8,
-  "species_params": {}
+  "epoch": 0
 }
