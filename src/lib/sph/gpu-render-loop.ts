@@ -642,44 +642,47 @@ export class GPURenderLoop {
   }
 
   /** 简单 fallback: 用纯色 quad 画 cell (pbr-gpu-pass 未到时) */
+  private _fallbackTex: WebGLTexture | null = null;
+  private _fallbackFBO: WebGLFramebuffer | null = null;
   private _renderCellsFallback(): WebGLTexture {
     const gl = this.gl;
-    // 创建临时 FBO
-    const tex = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.canvas.width, this.canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const W = this.canvas.width;
+    const H = this.canvas.height;
 
-    const fbo = gl.createFramebuffer()!;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    // 首次创建或尺寸变化时重建
+    if (!this._fallbackTex) {
+      this._fallbackTex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, this._fallbackTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      this._fallbackFBO = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this._fallbackFBO);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._fallbackTex, 0);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._fallbackFBO);
+    gl.viewport(0, 0, W, H);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    // FBO 完整性校验
-    checkFBO(gl, 'fallback-cell');
-
-    // 画每个 cell 为一个纯色矩形 (简化 PBR)
+    // 画每个 cell 为一个纯色矩形
     for (const cell of this.cells) {
       const mat = SPECIES_MATERIAL[cell.species] ?? SPECIES_MATERIAL['cil-eye'];
-      // 用 scissor 画矩形
-      const px = Math.floor(cell.x / 1000 * this.canvas.width);
-      const py = Math.floor(cell.y / 800 * this.canvas.height);
-      const pw = Math.floor(cell.w / 1000 * this.canvas.width);
-      const ph = Math.floor(cell.h / 800 * this.canvas.height);
+      const px = Math.floor(cell.x / 1000 * W);
+      const py = Math.floor(cell.y / 800 * H);
+      const pw = Math.floor(cell.w / 1000 * W);
+      const ph = Math.floor(cell.h / 800 * H);
       gl.enable(gl.SCISSOR_TEST);
       gl.scissor(px, py, pw, ph);
       gl.clearColor(mat.albedo[0], mat.albedo[1], mat.albedo[2], 1.0);
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
     gl.disable(gl.SCISSOR_TEST);
-
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(fbo);
-    return tex;
+    return this._fallbackTex;
   }
 
   /** 启动 requestAnimationFrame 循环 */

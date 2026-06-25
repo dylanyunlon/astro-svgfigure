@@ -17,7 +17,7 @@
 import { ATShaderLoader } from './at-shader-loader';
 import { compileShader, executePasses, type ShaderPass } from './nanogl-shader-executor';
 
-// [orphan-precise] let _loader: ATShaderLoader | null = null;
+let _loader: ATShaderLoader | null = null;
 
 // [orphan-precise] /**
 // [orphan-precise]  * initATShaderPipeline — 加载 compiled.vs 并初始化 shader loader。
