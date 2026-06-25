@@ -407,7 +407,7 @@ export class WorldOrchestrator {
       this.gpuBufs,
       this.params,
     );
-    await this.sphGPU.init();
+    await this.sphGPU.ensureReady();
 
     this.renderer = new ParticleRenderer(
       this.device,

@@ -1408,7 +1408,7 @@ export class SPHGPUOrchestrator {
    * initialisation; this exists so callers that `await orchestrator.init()`
    * continue to work after refactors.
    */
-  async init(): Promise<void> { /* GPU pipelines already built in constructor */ }
+  async ensureReady(): Promise<void> { /* GPU pipelines already built in constructor */ }
 
   // ------ Neighbor / boundary upload ------------------------------------------------------------------------------------------------------------------------------
 

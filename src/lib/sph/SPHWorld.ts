@@ -260,7 +260,7 @@ export class SPHWorld {
       this.gpuBufs,
       this.params,
     );
-    await this.orchestrator.init();
+    await this.orchestrator.ensureReady();
 
     this.renderer = new ParticleRenderer(
       this.device,

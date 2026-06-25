@@ -315,3 +315,5 @@ export class SortAndSweep {
 
 // auto-stub for missing export
 export function sortAndSweep(...args: any[]): any { return undefined as any; }
+
+export interface BroadPair { a: number; b: number; }

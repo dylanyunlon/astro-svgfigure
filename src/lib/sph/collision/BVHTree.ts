@@ -9,7 +9,7 @@ import { AABB, aabbOverlap, aabbUnion, aabbArea, aabbExpand, aabbContains } from
 const NULL_NODE = -1;
 const FAT_MARGIN = 0.05; // AABB expansion for temporal coherence
 
-interface BVHNode {
+export interface BVHNode {
   aabb: AABB;
   parent: number;
   left: number;

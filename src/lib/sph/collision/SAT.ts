@@ -251,3 +251,5 @@ if (failed > 0) process.exit(1);
 
 // auto-stub for missing export
 export function satNarrow(...args: any[]): any { return undefined as any; }
+
+export interface SATResult { overlap: boolean; depth: number; normal: { x: number; y: number }; }
