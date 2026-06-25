@@ -342,8 +342,43 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
-    """Register DataNotifier callbacks on startup."""
+    """Register DataNotifier callbacks on startup, optionally start live loop."""
     _register_cell_sse_notifier()
+
+    # ── Manager loop: auto-start when ASTRO_LIVE_AGENTS=1 ────────────────
+    if os.environ.get("ASTRO_LIVE_AGENTS", "0") == "1":
+        max_epochs = int(os.environ.get("ASTRO_MAX_EPOCHS", "10"))
+
+        def _run_manager_loop():
+            import importlib
+            _channels_str = str(_CHANNELS_DIR)
+            if _channels_str not in sys.path:
+                sys.path.insert(0, _channels_str)
+            # project root for 'channels.rendering...' imports
+            _project_root = str(_CHANNELS_DIR.parent)
+            if _project_root not in sys.path:
+                sys.path.insert(0, _project_root)
+
+            os.chdir(_channels_str)
+            import loop_orchestrator
+            importlib.reload(loop_orchestrator)
+
+            logger.info(
+                f"[Manager] Live loop started: max_epochs={max_epochs} "
+                f"ASTRO_LIVE_AGENTS=1"
+            )
+            try:
+                loop_orchestrator.run_loop(max_epochs=max_epochs)
+                logger.info("[Manager] Loop converged")
+            except Exception as e:
+                logger.error(f"[Manager] Loop error: {e}")
+
+        _manager_thread = threading.Thread(
+            target=_run_manager_loop, daemon=True, name="manager-loop"
+        )
+        _manager_thread.start()
+        logger.info(f"[Manager] Dispatching live loop in background (max_epochs={max_epochs})")
+
     yield
 
 
