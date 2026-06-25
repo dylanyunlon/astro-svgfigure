@@ -217,12 +217,23 @@ function mat3NormalMatrix(mv: Float32Array): Float32Array {
  * matches the AT material convention used in JellyShader / ChainShader /
  * SpineShader.  A `time` and `uScroll` uniform drive per-asset animations.
  */
+/** Strip AT shader preprocessor directives that aren't valid GLSL */
+function stripAT(src: string): string {
+  return src
+    .replace(/#test\b[^\n]*/g, '')
+    .replace(/#endtest\b[^\n]*/g, '')
+    .replace(/#require\([^)]*\)/g, '')
+    .replace(/^varying\s+\w+\s+\w+;\s*$/gm, '// (varying moved to outer)')
+    .trim();
+}
+
 function buildGeometryVertGLSL(): string {
-  // Pull AT shader snippets from compiled.vs
-  const fbrVS        = getShader('fbr.vs');        // setupFBR helper
-  const instanceVS   = getShader('instance.vs');   // transformPosition/Normal
-  const simpleNoise  = getShader('simplenoise.glsl'); // cnoise for jelly
-  const lightsVS     = getShader('lights.vs');     // worldLight()
+  // Pull AT shader snippets from compiled.vs and preprocess
+
+  const fbrVS        = stripAT(getShader('fbr.vs'));
+  const instanceVS   = stripAT(getShader('instance.vs'));
+  const simpleNoise  = stripAT(getShader('simplenoise.glsl'));
+  const lightsVS     = stripAT(getShader('lights.vs'));
 
   return /* glsl */ `
 precision highp float;
@@ -312,13 +323,13 @@ void main() {
  * when no textures are bound (uHasAlbedoTex guards tAlbedoTex sampling).
  */
 function buildGeometryFragGLSL(): string {
-  const fbrFS       = getShader('fbr.fs');
-  const fresnelGLSL = getShader('fresnel.glsl');
-  const blendmodes  = getShader('blendmodes.glsl');
-  const rgb2hsvFS   = getShader('rgb2hsv.fs');
-  const rangeGLSL   = getShader('range.glsl');
-  const matcapVS    = getShader('matcap.vs');     // reflectMatcap() — required by fbr.fs
-  const transformUV = getShader('transformUV.glsl');
+  const fbrFS       = stripAT(getShader('fbr.fs'));
+  const fresnelGLSL = stripAT(getShader('fresnel.glsl'));
+  const blendmodes  = stripAT(getShader('blendmodes.glsl'));
+  const rgb2hsvFS   = stripAT(getShader('rgb2hsv.fs'));
+  const rangeGLSL   = stripAT(getShader('range.glsl'));
+  const matcapVS    = stripAT(getShader('matcap.vs'));
+  const transformUV = stripAT(getShader('transformUV.glsl'));
 
   return /* glsl */ `
 precision highp float;

@@ -497,11 +497,16 @@ export class ParticleGPU {
     resolution: null as WebGLUniformLocation | null,
   };
 
-  constructor(canvas: HTMLCanvasElement, edges: ParticleEdgeDef[] = []) {
-    const gl = canvas.getContext('webgl2');
-    if (!gl) throw new Error('[ParticleGPU] WebGL2 not available on this canvas.');
-    this.gl     = gl;
-    this.canvas = canvas;
+  constructor(canvasOrGL: HTMLCanvasElement | WebGL2RenderingContext, edges: ParticleEdgeDef[] = []) {
+    if (canvasOrGL instanceof WebGL2RenderingContext) {
+      this.gl = canvasOrGL;
+      this.canvas = canvasOrGL.canvas as HTMLCanvasElement;
+    } else {
+      const gl = canvasOrGL.getContext('webgl2');
+      if (!gl) throw new Error('[ParticleGPU] WebGL2 not available on this canvas.');
+      this.gl     = gl;
+      this.canvas = canvasOrGL;
+    }
     this.edges  = edges.slice(0, MAX_EDGES);
     this._init();
   }

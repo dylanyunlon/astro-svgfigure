@@ -242,7 +242,7 @@ export class GPURenderLoop {
     } catch (e) { console.warn('[GPURenderLoop] texture loader init failed:', e); }
 
     // WebGL2 particle — 直接复用同一个 gl2 context
-    this.particle = new ParticleGPU(gl.canvas as HTMLCanvasElement, []);
+    this.particle = new ParticleGPU(gl, []);
   }
 
   /** 设置 cell 和 edge 数据 */
