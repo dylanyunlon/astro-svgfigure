@@ -1069,6 +1069,58 @@ export const prerender = true;
     // ── Epoch visual sync (SSE → visual pipeline bridge) ─────────────────
     let epochSync: EpochVisualSync | null = null;
 
+    // ── GPURenderLoop fallback (WebGL2) — 独立于 WebGPU 的渲染路径 ──────
+    async function _startGPURenderLoop(): Promise<void> {
+      const gpuWorldCanvas = document.getElementById('gpu-world') as HTMLCanvasElement;
+      gpuWorldCanvas.width  = Math.floor(window.innerWidth  * devicePixelRatio);
+      gpuWorldCanvas.height = Math.floor(window.innerHeight * devicePixelRatio);
+
+      // hex → [r,g,b]
+      const hexToRGB = (hex: string): [number,number,number] => {
+        const n = parseInt(hex.replace('#',''), 16);
+        return [(n>>16&0xff)/255, (n>>8&0xff)/255, (n&0xff)/255];
+      };
+      const SPECIES_ALIAS: Record<string,string> = {
+        'cil-eye':'cil-eye','cil-bolt':'cil-bolt','cil-vector':'cil-vector',
+        'cil-plus':'cil-plus','cil-arrow-right':'cil-arrow-right',
+      };
+
+      let raw: Record<string,any>|null = null;
+      try { const r = await fetch('/channels/composite_params.json'); if(r.ok) raw = await r.json(); } catch(_){}
+      if (!raw) { console.warn('[gpu-world] no data'); return; }
+
+      const rawCells = (raw.cells ?? {}) as Record<string,any>;
+      const cells: CellData[] = Object.entries(rawCells).map(([id, cv]: [string,any]) => {
+        const bbox = cv?.agent_params?.bbox ?? {x:0,y:0,w:100,h:50,z:1};
+        const sp = cv?.agent_params?.species_params ?? {};
+        const color = hexToRGB(sp.primary_color ?? '#4488ff');
+        return {
+          cell_id:id, species: SPECIES_ALIAS[sp.species] ?? 'cil-eye',
+          x:bbox.x, y:bbox.y, w:bbox.w, h:bbox.h, z:bbox.z??1,
+          metallic:0.1, roughness:0.55, albedo:color, label:id,
+        } satisfies CellData;
+      });
+
+      const rawEdges = (raw.edge_routes ?? {}) as Record<string,any>;
+      const edges: EdgeData[] = Object.entries(rawEdges).map(([id, ev]: [string,any]) => ({
+        edge_id:id, source:ev.source as string, target:ev.target as string,
+        controlPoints: (ev.control_points ?? []) as [number,number][],
+        color: [0.2, 0.8, 0.6] as [number,number,number],
+      }));
+
+      try {
+        const loop = new GPURenderLoop(gpuWorldCanvas);
+        loop.setScene(cells, edges);
+        loop.start();
+        console.info(`[gpu-world] GPURenderLoop started — ${cells.length} cells, ${edges.length} edges`);
+        // 隐藏 overlay
+        const overlay = document.getElementById('init-overlay');
+        if (overlay) overlay.classList.add('hidden');
+      } catch(err) {
+        console.error('[gpu-world] GPURenderLoop crash:', err);
+      }
+    }
+
     // ── WebGPU init ─────────────────────────────────────────────────────
     const profile = QOS_PROFILES[currentQoS];
     resizeCanvas(profile.renderScale);
@@ -1077,7 +1129,10 @@ export const prerender = true;
     if (!gpu) {
       hudBackend.textContent = 'NONE';
       fallbackBanner.classList.add('visible');
-      initOverlay.textContent = 'WebGPU unavailable — AT render pipeline requires WebGPU.';
+      // WebGPU 不可用 → 用 GPURenderLoop (WebGL2) 作为主渲染路径
+      console.info('[world] WebGPU unavailable — falling back to GPURenderLoop (WebGL2)');
+      initOverlay.textContent = 'Loading WebGL2 renderer…';
+      await _startGPURenderLoop();
       return;
     }
 
@@ -1629,11 +1684,19 @@ export const prerender = true;
 
     loadGPUScene().then(async ({ cells, edges, rawParams }) => {
       try {
+        // Resize canvas to actual pixel size (必须在 getContext 之前)
+        gpuWorldCanvas.width  = Math.floor(window.innerWidth  * devicePixelRatio);
+        gpuWorldCanvas.height = Math.floor(window.innerHeight * devicePixelRatio);
+
         gpuRenderLoop = new GPURenderLoop(gpuWorldCanvas);
 
         // Seed all 7 passes with 58 cells + 57 edges
         gpuRenderLoop.setScene(cells, edges);
         gpuRenderLoop.start();
+
+        // 隐藏 init overlay — GPURenderLoop 是主渲染路径，不需要等 WebGPU
+        const overlay = document.getElementById('init-overlay');
+        if (overlay) overlay.classList.add('hidden');
 
         console.info(
           `[gpu-world] GPURenderLoop started — ${cells.length} cells,`,
