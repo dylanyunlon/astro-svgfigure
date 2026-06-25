@@ -1095,7 +1095,7 @@ export class ATWorldIntegrator {
     // Load Draco geometries → VBO + VAO per cell
     for (const [binFile, cellId] of Object.entries(GEO_MAP)) {
       try {
-        const resp = await fetch(`/upstream/activetheory-assets/geometry/${binFile}`);
+        const resp = await fetch(`/assets/geometry/${binFile}`);
         if (!resp.ok) continue;
         const buf = await resp.arrayBuffer();
         // AT header: 2-byte type + 8-byte pad + JSON + Draco payload
@@ -1126,7 +1126,7 @@ export class ATWorldIntegrator {
       const textures: WebGLTexture[] = [];
       for (const ktx2File of texFiles) {
         try {
-          const resp = await fetch(`/upstream/activetheory-assets/textures/${ktx2File}`);
+          const resp = await fetch(`/assets/textures/${ktx2File}`);
           if (!resp.ok) { textures.push(this.placeholderTex); continue; }
           await resp.arrayBuffer();
           const tex = gl.createTexture()!;

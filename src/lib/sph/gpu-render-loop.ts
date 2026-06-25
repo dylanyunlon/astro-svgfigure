@@ -127,18 +127,14 @@ export class GPURenderLoop {
     };
     setupContextLost(canvas, onLost, onRestored);
 
-    const gl = canvas.getContext('webgl', {
+    const gl = canvas.getContext('webgl2', {
       alpha: true, antialias: true, premultipliedAlpha: false,
     });
-    if (!gl) throw new Error('[GPURenderLoop] WebGL not available');
-    this.gl = gl;
+    if (!gl) throw new Error('[GPURenderLoop] WebGL2 not available');
+    this.gl = gl as unknown as WebGLRenderingContext;
 
-    // 启用必要扩展
-    gl.getExtension('OES_texture_float');
-    gl.getExtension('OES_texture_half_float');
-    gl.getExtension('OES_texture_half_float_linear');
-    gl.getExtension('OES_standard_derivatives');
-    gl.getExtension('WEBGL_color_buffer_float');
+    // WebGL1 扩展在 WebGL2 中已内置，无需手动启用
+    gl.getExtension('EXT_color_buffer_float');
 
     // 初始化全部 GPU pass
     this._initPasses();
@@ -154,7 +150,7 @@ export class GPURenderLoop {
 
     // 异步加载 AT compiled.vs shader bundle
     // 加载完成后 172 个 shader 的 #require 依赖全部递归解析
-    initATShaderPipeline('/upstream/activetheory-assets/compiled.vs')
+    initATShaderPipeline('/activetheory/compiled.vs')
       .then(() => {
         const names = listATShaders();
         console.log(`[GPURenderLoop] AT shaders ready: ${names.length} shaders`);
@@ -201,12 +197,12 @@ export class GPURenderLoop {
     // These are the actual 3D models and PBR textures from AT's production site.
     // Once loaded, cells use jellyfish/flower/hexagon meshes instead of flat rectangles,
     // and PBR shaders get real albedo/normal/MRO textures.
-    const GEOMETRY_BASE = '/upstream/activetheory-assets/geometry/';
-    const TEXTURE_BASE = '/upstream/activetheory-assets/textures/';
+    const GEOMETRY_BASE = '/assets/geometry/';
+    const TEXTURE_BASE = '/assets/textures/';
 
     // Geometry: Draco .bin → GPU VBO/IBO
     try {
-      this.geometryLoader = new ATGeometryLoader(gl as WebGL2RenderingContext);
+      this.geometryLoader = new ATGeometryLoader(gl);
       // Load cell geometries (mapping from AT asset → cell species)
       const geometryManifest = [
         { name: 'jellyfish',  url: `${GEOMETRY_BASE}jellyfish.bin`,       cell: 'self_attn' },
@@ -226,7 +222,7 @@ export class GPURenderLoop {
 
     // Textures: KTX2 → GPU Texture2D (PBR albedo/normal/MRO)
     try {
-      this.textureLoader = new KTX2TextureLoader(gl as WebGL2RenderingContext);
+      this.textureLoader = new KTX2TextureLoader(gl);
       const textureManifest = [
         'CABLES___CyclesBake_COMBINED.ktx2',
         'CABLES___PBR_AT_MRO.ktx2',
@@ -242,11 +238,8 @@ export class GPURenderLoop {
       }
     } catch (e) { console.warn('[GPURenderLoop] texture loader init failed:', e); }
 
-    // WebGL2 particle (optional)
-    const gl2 = canvas.getContext('webgl2');
-    if (gl2) {
-      this.particle = new ParticleGPU(gl2, 5000);
-    }
+    // WebGL2 particle — 直接复用同一个 gl2 context
+    this.particle = new ParticleGPU(gl, 5000);
   }
 
   /** 设置 cell 和 edge 数据 */
