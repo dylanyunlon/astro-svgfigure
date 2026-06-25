@@ -66,7 +66,7 @@ const SPECIES_MATERIAL: Record<string, { metallic: number; roughness: number; al
 // ─── GPU Render Loop ────────────────────────────────────────────
 
 export class GPURenderLoop {
-  private gl: WebGLRenderingContext;
+  private gl: WebGL2RenderingContext;
   private canvas: HTMLCanvasElement;
 
   // GPU passes — 每个都有真实 gl 调用
@@ -134,7 +134,7 @@ export class GPURenderLoop {
       alpha: true, antialias: true, premultipliedAlpha: false,
     });
     if (!gl) throw new Error('[GPURenderLoop] WebGL2 not available');
-    this.gl = gl as unknown as WebGLRenderingContext;
+    this.gl = gl;
 
     // WebGL1 扩展在 WebGL2 中已内置，无需手动启用
     gl.getExtension('EXT_color_buffer_float');
