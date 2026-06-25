@@ -3,42 +3,25 @@
     "ffn": {
       "agent_params": {
         "bbox": {
-          "x": 220.0,
-          "y": 470.0,
-          "w": 140,
-          "h": 45,
-          "z": 3
+          "x": 320.0,
+          "y": 385.0,
+          "w": 160,
+          "h": 55,
+          "z": 2
         },
+        "opacity": 0.9,
         "species_params": {
-          "species": "cil-bolt",
-          "cell_id": "ffn",
-          "bbox": {
-            "x": 220.0,
-            "y": 470.0,
-            "w": 140,
-            "h": 45,
-            "z": 3
-          },
-          "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#FF6F00",
-          "stroke_color": "#FF6F00",
-          "label": "Feed Forward",
-          "font_size": 10,
-          "species_params": {
-            "zigzag_count": 6,
-            "amplitude": 6.0,
-            "seg_width": 20.0
-          },
-          "epoch": 9,
-          "shadow": {
-            "dx": 2.0,
-            "dy": 2.0,
-            "blur": 3.38,
-            "opacity": 0.08
-          }
-        },
-        "opacity": 0.9
+          "primary_color": "#F57C00",
+          "glow_color": "#FFB74D",
+          "algorithm_gene": "zigzag_relu_activation",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 1.0,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.22,
+          "internal_pattern": "expand_contract_bottleneck",
+          "academic_source": "InTraVisTo: pink=FF layers; standard: wide\u2192narrow\u2192wide MLP bottleneck shape"
+        }
       }
     },
     "coarse_dom_tree": {
@@ -51,9 +34,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-graph",
+          "species": "cil-vector",
           "cell_id": "coarse_dom_tree",
-          "parent_id": null,
+          "label": "Coarse DOM Tree + BBoxes",
           "bbox": {
             "x": 718,
             "y": 1927,
@@ -62,12 +45,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Coarse DOM Tree + BBoxes",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#A1887F",
+          "stroke_color": "#4E342E",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -82,9 +70,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-arrow-right",
           "cell_id": "code_linking",
-          "parent_id": "stage2_group",
+          "label": "Link Code to Tree",
           "bbox": {
             "x": 675,
             "y": 2756,
@@ -93,12 +81,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Link Code to Tree",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FFF176",
+          "stroke_color": "#F57F17",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -113,9 +106,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-arrow-right",
           "cell_id": "content_align",
-          "parent_id": "alignment_group",
+          "label": "Content",
           "bbox": {
             "x": 543,
             "y": 3855,
@@ -124,12 +117,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Content",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#80CBC4",
+          "stroke_color": "#00695C",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -144,9 +142,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-filter",
+          "species": "cil-bolt",
           "cell_id": "dec_conv1",
-          "parent_id": "decoder",
+          "label": "ConvT 3\u00d73",
           "bbox": {
             "x": 220,
             "y": 470,
@@ -155,12 +153,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "ConvT 3\u00d73",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#81C784",
+          "stroke_color": "#388E3C",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -175,9 +178,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-filter",
+          "species": "cil-bolt",
           "cell_id": "dec_conv2",
-          "parent_id": "decoder",
+          "label": "ConvT 3\u00d73",
           "bbox": {
             "x": 220,
             "y": 670,
@@ -186,12 +189,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "ConvT 3\u00d73",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#A5D6A7",
+          "stroke_color": "#43A047",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -206,9 +214,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-loop",
+          "species": "cil-arrow-right",
           "cell_id": "dec_upsamp",
-          "parent_id": "decoder",
+          "label": "Upsample",
           "bbox": {
             "x": 220,
             "y": 570,
@@ -217,12 +225,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Upsample",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#C8E6C9",
+          "stroke_color": "#66BB6A",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -237,9 +250,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-bolt",
+          "species": "cil-eye",
           "cell_id": "display_errors",
-          "parent_id": "noise_types",
+          "label": "Display Errors",
           "bbox": {
             "x": 370,
             "y": 626,
@@ -248,12 +261,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Display Errors",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#EF9A9A",
+          "stroke_color": "#B71C1C",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -268,9 +286,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-eye",
           "cell_id": "empty_elements",
-          "parent_id": "noise_types",
+          "label": "Empty/Small Elements",
           "bbox": {
             "x": 540,
             "y": 628.5,
@@ -279,12 +297,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Empty/Small Elements",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#D7CCC8",
+          "stroke_color": "#795548",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -299,9 +322,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-filter",
+          "species": "cil-bolt",
           "cell_id": "enc_conv1",
-          "parent_id": "encoder",
+          "label": "Conv 3\u00d73",
           "bbox": {
             "x": 220,
             "y": 255,
@@ -310,12 +333,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Conv 3\u00d73",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#29B6F6",
+          "stroke_color": "#0277BD",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -330,9 +358,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-filter",
+          "species": "cil-bolt",
           "cell_id": "enc_conv2",
-          "parent_id": "encoder",
+          "label": "Conv 3\u00d73",
           "bbox": {
             "x": 220,
             "y": 455,
@@ -341,12 +369,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Conv 3\u00d73",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#4FC3F7",
+          "stroke_color": "#0288D1",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -361,9 +394,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-layers",
+          "species": "cil-vector",
           "cell_id": "enc_pool",
-          "parent_id": "encoder",
+          "label": "MaxPool",
           "bbox": {
             "x": 220,
             "y": 355,
@@ -372,12 +405,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "MaxPool",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#81D4FA",
+          "stroke_color": "#0288D1",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -392,9 +430,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-arrow-right",
+          "species": "cil-bolt",
           "cell_id": "final_css",
-          "parent_id": "output_group",
+          "label": "CSS Styles",
           "bbox": {
             "x": 825,
             "y": 3462,
@@ -403,12 +441,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "CSS Styles",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#A5D6A7",
+          "stroke_color": "#2E7D32",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -425,7 +468,7 @@
         "species_params": {
           "species": "cil-arrow-right",
           "cell_id": "final_html",
-          "parent_id": "output_group",
+          "label": "HTML Code",
           "bbox": {
             "x": 655,
             "y": 3462,
@@ -434,12 +477,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "HTML Code",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#80CBC4",
+          "stroke_color": "#00695C",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -454,9 +502,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-filter",
+          "species": "cil-bolt",
           "cell_id": "heuristic_rules",
-          "parent_id": "bbox_pruning_group",
+          "label": "Heuristic Pruning Rules",
           "bbox": {
             "x": 525,
             "y": 761,
@@ -465,12 +513,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Heuristic Pruning Rules",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#F0F4C3",
+          "stroke_color": "#827717",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -485,9 +538,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-bolt",
+          "species": "cil-eye",
           "cell_id": "hidden_elements",
-          "parent_id": "noise_types",
+          "label": "Visually Hidden Parts",
           "bbox": {
             "x": 700,
             "y": 626,
@@ -496,12 +549,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Visually Hidden Parts",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#BDBDBD",
+          "stroke_color": "#616161",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -516,9 +574,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-bolt",
+          "species": "cil-vector",
           "cell_id": "hidden_states",
-          "parent_id": "structure_model",
+          "label": "Hidden State Vectors",
           "bbox": {
             "x": 936.0,
             "y": 1383,
@@ -527,12 +585,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Hidden State Vectors",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#AB47BC",
+          "stroke_color": "#7B1FA2",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -547,9 +610,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-plus",
           "cell_id": "input_image",
-          "parent_id": null,
+          "label": "High-Resolution Design Image",
           "bbox": {
             "x": 12,
             "y": 18,
@@ -558,12 +621,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "High-Resolution Design Image",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#78909C",
+          "stroke_color": "#455A64",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -578,9 +646,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-vector",
           "cell_id": "integrated_code",
-          "parent_id": "stage2_group",
+          "label": "Integrated Code",
           "bbox": {
             "x": 675,
             "y": 2894,
@@ -589,12 +657,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Integrated Code",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FFE082",
+          "stroke_color": "#FF8F00",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -609,9 +682,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-arrow-right",
+          "species": "cil-vector",
           "cell_id": "json_output",
-          "parent_id": "structure_model",
+          "label": "JSON DOM Tree Output",
           "bbox": {
             "x": 723.5,
             "y": 1669,
@@ -620,12 +693,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "JSON DOM Tree Output",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#9FA8DA",
+          "stroke_color": "#283593",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -640,9 +718,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-vector",
           "cell_id": "latent",
-          "parent_id": null,
+          "label": "Latent z",
           "bbox": {
             "x": 220,
             "y": 255,
@@ -651,12 +729,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Latent z",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#7E57C2",
+          "stroke_color": "#4527A0",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -671,9 +754,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-plus",
           "cell_id": "leaf_extraction",
-          "parent_id": "stage2_group",
+          "label": "Leaf Node Extraction",
           "bbox": {
             "x": 703.3333333333334,
             "y": 2197,
@@ -682,12 +765,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Leaf Node Extraction",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#BCAAA4",
+          "stroke_color": "#5D4037",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -702,9 +790,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-bolt",
           "cell_id": "local_code_gen",
-          "parent_id": "stage2_group",
+          "label": "Local Code Generation",
           "bbox": {
             "x": 675,
             "y": 2618,
@@ -713,12 +801,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Local Code Generation",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FFD54F",
+          "stroke_color": "#F9A825",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -733,9 +826,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-plus",
           "cell_id": "local_images",
-          "parent_id": "stage2_group",
+          "label": "Local Leaf Images",
           "bbox": {
             "x": 675,
             "y": 2335,
@@ -744,12 +837,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Local Leaf Images",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#C5CAE9",
+          "stroke_color": "#1A237E",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -764,9 +862,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-eye",
           "cell_id": "mllm_code_agent",
-          "parent_id": "stage2_group",
+          "label": "MLLM Code Agent",
           "bbox": {
             "x": 670,
             "y": 2473,
@@ -775,12 +873,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "MLLM Code Agent",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FFCC80",
+          "stroke_color": "#EF6C00",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -795,9 +898,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-eye",
           "cell_id": "mllm_style_agent",
-          "parent_id": "stage2_group",
+          "label": "MLLM Style Agent",
           "bbox": {
             "x": 670,
             "y": 3032,
@@ -806,12 +909,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "MLLM Style Agent",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FFAB91",
+          "stroke_color": "#E64A19",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -826,9 +934,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-loop",
+          "species": "cil-arrow-right",
           "cell_id": "next_token_prediction",
-          "parent_id": "structure_model",
+          "label": "Next-Token Prediction",
           "bbox": {
             "x": 913.5,
             "y": 1669,
@@ -837,12 +945,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Next-Token Prediction",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#EF5350",
+          "stroke_color": "#C62828",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -857,9 +970,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-filter",
+          "species": "cil-eye",
           "cell_id": "noise_detection",
-          "parent_id": "bbox_pruning_group",
+          "label": "Noise Detection",
           "bbox": {
             "x": 525,
             "y": 453,
@@ -868,12 +981,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Noise Detection",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FFAB91",
+          "stroke_color": "#BF360C",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -888,9 +1006,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-layers",
+          "species": "cil-bolt",
           "cell_id": "nonleaf_styling",
-          "parent_id": "stage2_group",
+          "label": "Non-Leaf Style Supplement",
           "bbox": {
             "x": 670,
             "y": 3177,
@@ -899,12 +1017,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Non-Leaf Style Supplement",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#CE93D8",
+          "stroke_color": "#7B1FA2",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -912,41 +1035,25 @@
     "output": {
       "agent_params": {
         "bbox": {
-          "x": 220.0,
-          "y": 675.0,
+          "x": 320.0,
+          "y": 545.0,
           "w": 160,
           "h": 50,
-          "z": 3
+          "z": 1
         },
+        "opacity": 0.93,
         "species_params": {
-          "species": "cil-arrow-right",
-          "cell_id": "output",
-          "bbox": {
-            "x": 220.0,
-            "y": 675.0,
-            "w": 160,
-            "h": 50,
-            "z": 3
-          },
-          "z": 3,
-          "opacity": 0.0937,
-          "fill_color": "#455A64",
-          "stroke_color": "#455A64",
-          "label": "Output",
-          "font_size": 10,
-          "species_params": {
-            "arrow_width": 48.0,
-            "arrow_height": 16.0
-          },
-          "epoch": 9,
-          "shadow": {
-            "dx": 2.0,
-            "dy": 2.0,
-            "blur": 3.75,
-            "opacity": 0.35
-          }
-        },
-        "opacity": 0.9
+          "primary_color": "#2E7D32",
+          "glow_color": "#66BB6A",
+          "algorithm_gene": "directed_arrow_flow_terminal",
+          "sdf_shape": "capsule",
+          "animation_speed": 0.5,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.18,
+          "internal_pattern": "probability_distribution_bars",
+          "academic_source": "Transformer Explainer: output probabilities as bar chart; green for output/result"
+        }
       }
     },
     "patch_division": {
@@ -959,9 +1066,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-plus",
           "cell_id": "patch_division",
-          "parent_id": "structure_model",
+          "label": "Fixed-Size Patch Division",
           "bbox": {
             "x": 907.6666666666665,
             "y": 1107,
@@ -970,12 +1077,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Fixed-Size Patch Division",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#B39DDB",
+          "stroke_color": "#5E35B1",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -990,9 +1102,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-vector",
+          "species": "cil-plus",
           "cell_id": "pruned_dataset",
-          "parent_id": "bbox_pruning_group",
+          "label": "Pruned Clean Dataset",
           "bbox": {
             "x": 525,
             "y": 899,
@@ -1001,12 +1113,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Pruned Clean Dataset",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#D1C4E9",
+          "stroke_color": "#4527A0",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1021,9 +1138,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-bolt",
           "cell_id": "ram_resource",
-          "parent_id": null,
+          "label": "GPU/RAM Resources",
           "bbox": {
             "x": 1912,
             "y": 30,
@@ -1032,12 +1149,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "GPU/RAM Resources",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FFCDD2",
+          "stroke_color": "#B71C1C",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1054,7 +1176,7 @@
         "species_params": {
           "species": "cil-arrow-right",
           "cell_id": "rendered_webpage",
-          "parent_id": "output_group",
+          "label": "Rendered Webpage",
           "bbox": {
             "x": 673.3333333333334,
             "y": 3587,
@@ -1063,12 +1185,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Rendered Webpage",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#4DB6AC",
+          "stroke_color": "#00695C",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1083,9 +1210,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-vector",
           "cell_id": "resolution_handling",
-          "parent_id": null,
+          "label": "On-the-Fly Resolution",
           "bbox": {
             "x": 852,
             "y": 12,
@@ -1094,12 +1221,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "On-the-Fly Resolution",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#90CAF9",
+          "stroke_color": "#1565C0",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1114,9 +1246,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-bolt",
           "cell_id": "softmax_layer",
-          "parent_id": "structure_model",
+          "label": "Softmax (W \u00b7 ht)",
           "bbox": {
             "x": 771.0,
             "y": 1530.75,
@@ -1125,12 +1257,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Softmax (W \u00b7 ht)",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FF7043",
+          "stroke_color": "#E64A19",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1145,9 +1282,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-arrow-right",
           "cell_id": "structure_align",
-          "parent_id": "alignment_group",
+          "label": "Structure",
           "bbox": {
             "x": 693,
             "y": 3855,
@@ -1156,12 +1293,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Structure",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#80DEEA",
+          "stroke_color": "#00838F",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1176,9 +1318,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-layers",
+          "species": "cil-bolt",
           "cell_id": "style_align",
-          "parent_id": "alignment_group",
+          "label": "Style",
           "bbox": {
             "x": 843,
             "y": 3855,
@@ -1187,12 +1329,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Style",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#F48FB1",
+          "stroke_color": "#AD1457",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1207,9 +1354,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-vector",
+          "species": "cil-plus",
           "cell_id": "vision2ui_dataset",
-          "parent_id": "bbox_pruning_group",
+          "label": "Vision2UI Dataset",
           "bbox": {
             "x": 525,
             "y": 315,
@@ -1218,12 +1365,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Vision2UI Dataset",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#E1BEE7",
+          "stroke_color": "#6A1B9A",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1238,9 +1390,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-bolt",
           "cell_id": "weight_matrix",
-          "parent_id": "structure_model",
+          "label": "Weight Matrix W",
           "bbox": {
             "x": 776.0,
             "y": 1401,
@@ -1249,12 +1401,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Weight Matrix W",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#FFA726",
+          "stroke_color": "#EF6C00",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1262,43 +1419,25 @@
     "self_attn": {
       "agent_params": {
         "bbox": {
-          "x": 220.0,
-          "y": 260.0,
-          "w": 160,
-          "h": 50,
+          "x": 320.0,
+          "y": 220.0,
+          "w": 180,
+          "h": 65,
           "z": 3
         },
+        "opacity": 0.95,
         "species_params": {
-          "species": "cil-eye",
-          "cell_id": "self_attn",
-          "bbox": {
-            "x": 220.0,
-            "y": 260.0,
-            "w": 160,
-            "h": 50,
-            "z": 3
-          },
-          "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#3F51B5",
-          "stroke_color": "#3F51B5",
-          "label": "Multi-Head Attention",
-          "font_size": 10,
-          "species_params": {
-            "ring_count": 10,
-            "pupil_radius": 4.2,
-            "r_outer": 21.0,
-            "r_inner_ratio": 0.3
-          },
-          "epoch": 9,
-          "shadow": {
-            "dx": 2.0,
-            "dy": 2.0,
-            "blur": 3.75,
-            "opacity": 0.35
-          }
-        },
-        "opacity": 0.9
+          "primary_color": "#1E88E5",
+          "glow_color": "#64B5F6",
+          "algorithm_gene": "radial_qkv_heatmap",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 0.8,
+          "num_rays": 8,
+          "focal_intensity": 0.75,
+          "halo_radius": 0.35,
+          "internal_pattern": "multi_head_attention_grid",
+          "academic_source": "InTraVisTo: green=attention flow; Transformer Explainer: QKV branching Sankey"
+        }
       }
     },
     "loss_training": {
@@ -1311,9 +1450,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-plus",
+          "species": "cil-bolt",
           "cell_id": "loss_training",
-          "parent_id": null,
+          "label": "Training Loss",
           "bbox": {
             "x": 1082,
             "y": 25,
@@ -1322,12 +1461,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Training Loss",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#EC407A",
+          "stroke_color": "#AD1457",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1342,9 +1486,9 @@
           "z": 3
         },
         "species_params": {
-          "species": "cil-eye",
+          "species": "cil-arrow-right",
           "cell_id": "transformer_decoder",
-          "parent_id": "structure_model",
+          "label": "Transformer Decoder (Dec\u03c6)",
           "bbox": {
             "x": 964.3333333333333,
             "y": 1521,
@@ -1353,12 +1497,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Transformer Decoder (Dec\u03c6)",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#5C6BC0",
+          "stroke_color": "#283593",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1375,7 +1524,7 @@
         "species_params": {
           "species": "cil-eye",
           "cell_id": "vit_encoder",
-          "parent_id": "structure_model",
+          "label": "ViT Encoder (Enc\u03b8)",
           "bbox": {
             "x": 936.0,
             "y": 1245,
@@ -1384,12 +1533,17 @@
             "z": 3
           },
           "z": 3,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "ViT Encoder (Enc\u03b8)",
-          "font_size": 10,
-          "is_group": false
+          "opacity": 0.85,
+          "fill_color": "#26C6DA",
+          "stroke_color": "#00838F",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1397,83 +1551,49 @@
     "pos_encode": {
       "agent_params": {
         "bbox": {
-          "x": 220.0,
-          "y": 150.0,
+          "x": 320.0,
+          "y": 135.0,
           "w": 160,
-          "h": 50,
-          "z": 5
+          "h": 55,
+          "z": 1
         },
+        "opacity": 0.88,
         "species_params": {
-          "species": "cil-vector",
-          "cell_id": "pos_encode",
-          "bbox": {
-            "x": 220.0,
-            "y": 150.0,
-            "w": 160,
-            "h": 50,
-            "z": 5
-          },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#2E7D32",
-          "stroke_color": "#2E7D32",
-          "label": "Positional Encoding",
-          "font_size": 10,
-          "species_params": {
-            "arrow_count": 5,
-            "arrow_length": 48.0,
-            "angle_spread": 0.8
-          },
-          "epoch": 9,
-          "shadow": {
-            "dx": 8.0,
-            "dy": 8.0,
-            "blur": 5.35,
-            "opacity": 0.55
-          }
-        },
-        "opacity": 0.9
+          "primary_color": "#7E57C2",
+          "glow_color": "#B39DDB",
+          "algorithm_gene": "sinusoidal_wave_pattern",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 1.2,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.2,
+          "internal_pattern": "sine_cosine_alternating_bands",
+          "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies"
+        }
       }
     },
     "input_embed": {
       "agent_params": {
         "bbox": {
-          "x": 220.0,
-          "y": 40.0,
+          "x": 320.0,
+          "y": 50.0,
           "w": 160,
-          "h": 50,
-          "z": 5
+          "h": 55,
+          "z": 1
         },
+        "opacity": 0.92,
         "species_params": {
-          "species": "cil-vector",
-          "cell_id": "input_embed",
-          "bbox": {
-            "x": 220.0,
-            "y": 40.0,
-            "w": 160,
-            "h": 50,
-            "z": 5
-          },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#2E7D32",
-          "stroke_color": "#2E7D32",
-          "label": "Input Embedding",
-          "font_size": 10,
-          "species_params": {
-            "arrow_count": 5,
-            "arrow_length": 48.0,
-            "angle_spread": 0.8
-          },
-          "epoch": 9,
-          "shadow": {
-            "dx": 8.0,
-            "dy": 8.0,
-            "blur": 5.35,
-            "opacity": 0.55
-          }
-        },
-        "opacity": 0.9
+          "primary_color": "#546E7A",
+          "glow_color": "#78909C",
+          "algorithm_gene": "token_to_vector_heatmap",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 0.6,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.15,
+          "internal_pattern": "one_dimensional_heatmap_bars",
+          "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
+        }
       }
     },
     "alignment_group": {
@@ -1483,26 +1603,31 @@
           "y": 3820,
           "w": 450,
           "h": 145,
-          "z": 5
+          "z": 3
         },
         "species_params": {
-          "species": "cil-layers",
+          "species": "cil-vector",
           "cell_id": "alignment_group",
-          "parent_id": null,
+          "label": "Alignment Criteria",
           "bbox": {
             "x": 533,
             "y": 3820,
             "w": 450,
             "h": 145,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Alignment Criteria",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#B2DFDB",
+          "stroke_color": "#00796B",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1514,26 +1639,31 @@
           "y": 275,
           "w": 520,
           "h": 752,
-          "z": 5
+          "z": 3
         },
         "species_params": {
           "species": "cil-vector",
           "cell_id": "bbox_pruning_group",
-          "parent_id": "stage1_group",
+          "label": "BBox-Based Data Pruning",
           "bbox": {
             "x": 350,
             "y": 275,
             "w": 520,
             "h": 752,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "BBox-Based Data Pruning",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#B0BEC5",
+          "stroke_color": "#37474F",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1545,26 +1675,31 @@
           "y": 360,
           "w": 140,
           "h": 50,
-          "z": 5
+          "z": 3
         },
         "species_params": {
           "species": "cil-arrow-right",
           "cell_id": "decoder",
-          "parent_id": null,
+          "label": "Decoder",
           "bbox": {
             "x": 220,
             "y": 360,
             "w": 140,
             "h": 50,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Decoder",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#66BB6A",
+          "stroke_color": "#388E3C",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1576,26 +1711,31 @@
           "y": 145,
           "w": 140,
           "h": 50,
-          "z": 5
+          "z": 3
         },
         "species_params": {
-          "species": "cil-vector",
+          "species": "cil-eye",
           "cell_id": "encoder",
-          "parent_id": null,
+          "label": "Encoder",
           "bbox": {
             "x": 220,
             "y": 145,
             "w": 140,
             "h": 50,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Encoder",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#42A5F5",
+          "stroke_color": "#1976D2",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1607,26 +1747,31 @@
           "y": 40,
           "w": 160,
           "h": 45,
-          "z": 5
+          "z": 3
         },
         "species_params": {
-          "species": "cil-vector",
+          "species": "cil-plus",
           "cell_id": "input",
-          "parent_id": null,
+          "label": "Input x",
           "bbox": {
             "x": 220,
             "y": 40,
             "w": 160,
             "h": 45,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Input x",
-          "font_size": 10,
-          "is_group": false
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#90A4AE",
+          "stroke_color": "#546E7A",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1638,26 +1783,31 @@
           "y": 591,
           "w": 500,
           "h": 150,
-          "z": 5
+          "z": 3
         },
         "species_params": {
-          "species": "cil-bolt",
+          "species": "cil-eye",
           "cell_id": "noise_types",
-          "parent_id": "bbox_pruning_group",
+          "label": "Real-World Noise Types",
           "bbox": {
             "x": 360,
             "y": 591,
             "w": 500,
             "h": 150,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Real-World Noise Types",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#FF8A65",
+          "stroke_color": "#D84315",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1669,26 +1819,31 @@
           "y": 3427,
           "w": 340,
           "h": 288,
-          "z": 5
+          "z": 3
         },
         "species_params": {
           "species": "cil-arrow-right",
           "cell_id": "output_group",
-          "parent_id": null,
+          "label": "Final Output",
           "bbox": {
             "x": 645,
             "y": 3427,
             "w": 340,
             "h": 288,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Final Output",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#C5E1A5",
+          "stroke_color": "#558B2F",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1700,26 +1855,31 @@
           "y": 235,
           "w": 829.3333333333333,
           "h": 1587,
-          "z": 5
+          "z": 3
         },
         "species_params": {
-          "species": "cil-graph",
+          "species": "cil-vector",
           "cell_id": "stage1_group",
-          "parent_id": null,
+          "label": "Stage 1: Coarse DOM Layout Generation",
           "bbox": {
             "x": 335,
             "y": 235,
             "w": 829.3333333333333,
             "h": 1587,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Stage 1: Coarse DOM Layout Generation",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#B0BEC5",
+          "stroke_color": "#455A64",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1731,26 +1891,31 @@
           "y": 2157,
           "w": 233.33333333333331,
           "h": 1160,
-          "z": 5
+          "z": 3
         },
         "species_params": {
-          "species": "cil-code",
+          "species": "cil-vector",
           "cell_id": "stage2_group",
-          "parent_id": null,
+          "label": "Stage 2: Fine-Grained Code Synthesis",
           "bbox": {
             "x": 655,
             "y": 2157,
             "w": 233.33333333333331,
             "h": 1160,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Stage 2: Fine-Grained Code Synthesis",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#CFD8DC",
+          "stroke_color": "#546E7A",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
@@ -1758,83 +1923,49 @@
     "add_norm1": {
       "agent_params": {
         "bbox": {
-          "x": 220.0,
-          "y": 370.0,
+          "x": 320.0,
+          "y": 315.0,
           "w": 140,
           "h": 40,
-          "z": 5
+          "z": 2
         },
+        "opacity": 0.82,
         "species_params": {
-          "species": "cil-plus",
-          "cell_id": "add_norm1",
-          "bbox": {
-            "x": 220.0,
-            "y": 370.0,
-            "w": 140,
-            "h": 40,
-            "z": 5
-          },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#1E88E5",
-          "stroke_color": "#1E88E5",
-          "label": "Add and Norm",
-          "font_size": 10,
-          "species_params": {
-            "arm_length": 10.0,
-            "stroke_width": 2.5,
-            "dash_corners": true
-          },
-          "epoch": 9,
-          "shadow": {
-            "dx": 8.0,
-            "dy": 8.0,
-            "blur": 4.6,
-            "opacity": 0.55
-          }
-        },
-        "opacity": 0.9
+          "primary_color": "#E53935",
+          "glow_color": "#EF9A9A",
+          "algorithm_gene": "residual_merge_crosshair",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 0.4,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.12,
+          "internal_pattern": "plus_sign_merge_indicator",
+          "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
+        }
       }
     },
     "add_norm2": {
       "agent_params": {
         "bbox": {
-          "x": 220.0,
-          "y": 575.0,
+          "x": 320.0,
+          "y": 470.0,
           "w": 140,
           "h": 40,
-          "z": 5
+          "z": 2
         },
+        "opacity": 0.82,
         "species_params": {
-          "species": "cil-plus",
-          "cell_id": "add_norm2",
-          "bbox": {
-            "x": 220.0,
-            "y": 575.0,
-            "w": 140,
-            "h": 40,
-            "z": 5
-          },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#1E88E5",
-          "stroke_color": "#1E88E5",
-          "label": "Add and Norm",
-          "font_size": 10,
-          "species_params": {
-            "arm_length": 10.0,
-            "stroke_width": 2.5,
-            "dash_corners": true
-          },
-          "epoch": 9,
-          "shadow": {
-            "dx": 8.0,
-            "dy": 8.0,
-            "blur": 4.6,
-            "opacity": 0.55
-          }
-        },
-        "opacity": 0.9
+          "primary_color": "#C62828",
+          "glow_color": "#EF5350",
+          "algorithm_gene": "residual_merge_crosshair",
+          "sdf_shape": "rounded_rect",
+          "animation_speed": 0.4,
+          "num_rays": 0,
+          "focal_intensity": 0.0,
+          "halo_radius": 0.12,
+          "internal_pattern": "plus_sign_merge_indicator",
+          "academic_source": "Same residual convention as add_norm1; paired visually"
+        }
       }
     },
     "structure_model": {
@@ -1844,26 +1975,31 @@
           "y": 1067,
           "w": 556.6666666666666,
           "h": 735,
-          "z": 5
+          "z": 3
         },
         "species_params": {
-          "species": "cil-eye",
+          "species": "cil-vector",
           "cell_id": "structure_model",
-          "parent_id": "stage1_group",
+          "label": "Structure Model (Pix2Struct)",
           "bbox": {
             "x": 592.6666666666666,
             "y": 1067,
             "w": 556.6666666666666,
             "h": 735,
-            "z": 5
+            "z": 3
           },
-          "z": 5,
-          "opacity": 0.05,
-          "fill_color": "#607D8B",
-          "stroke_color": "#607D8B",
-          "label": "Structure Model (Pix2Struct)",
-          "font_size": 10,
-          "is_group": true
+          "z": 3,
+          "opacity": 0.85,
+          "fill_color": "#B2EBF2",
+          "stroke_color": "#006064",
+          "font_size": 11,
+          "epoch": 0,
+          "shadow": {
+            "dx": 2.0,
+            "dy": 2.0,
+            "blur": 3.0,
+            "opacity": 0.06
+          }
         },
         "opacity": 0.9
       }
