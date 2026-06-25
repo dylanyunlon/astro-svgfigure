@@ -1836,7 +1836,12 @@ export const prerender = true;
     const atCanvas = document.getElementById('at-canvas') as HTMLCanvasElement;
     if (!atCanvas) { console.warn('[M1060] #at-canvas not found'); return; }
 
-    function resizeATCanvas() {
+    // M1208: AT canvas disabled — it renders a demo scene (Fresnel sphere)
+    // that covers the actual GPURenderLoop cell rendering on #gpu-world.
+    // AT shaders are loaded by ShaderLoader.ts for use by GPU passes instead.
+    atCanvas.style.display = 'none';
+    console.info('[M1060] AT canvas disabled — GPU passes use ShaderLoader instead');
+    return;
       atCanvas.width  = Math.floor(window.innerWidth  * devicePixelRatio);
       atCanvas.height = Math.floor(window.innerHeight * devicePixelRatio);
       atCanvas.style.width  = window.innerWidth  + 'px';
