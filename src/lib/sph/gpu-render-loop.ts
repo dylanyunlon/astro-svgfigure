@@ -205,7 +205,7 @@ export class GPURenderLoop {
 
     // Geometry: Draco .bin → GPU VBO/IBO
     try {
-      this.geometryLoader = new ATGeometryLoader(gl);
+      this.geometryLoader = new ATGeometryLoader({ gl });
       // Load cell geometries (mapping from AT asset → cell species)
       const geometryManifest = [
         { name: 'jellyfish',  url: `${GEOMETRY_BASE}jellyfish.bin`,       cell: 'self_attn' },
@@ -242,7 +242,7 @@ export class GPURenderLoop {
     } catch (e) { console.warn('[GPURenderLoop] texture loader init failed:', e); }
 
     // WebGL2 particle — 直接复用同一个 gl2 context
-    this.particle = new ParticleGPU(gl, 5000);
+    this.particle = new ParticleGPU(gl.canvas as HTMLCanvasElement, []);
   }
 
   /** 设置 cell 和 edge 数据 */
