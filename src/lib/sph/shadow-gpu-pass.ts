@@ -683,15 +683,16 @@ export class ShadowGPU {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    // DEPTH_COMPONENT16 — WebGL1 + WEBGL_depth_texture
+    // DEPTH_COMPONENT — WebGL2 uses sized internal format
+    const gl2 = gl as WebGL2RenderingContext;
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
-      gl.DEPTH_COMPONENT,   // internalformat
+      gl2.DEPTH_COMPONENT24,  // internalformat (WebGL2 sized)
       sz, sz,
       0,
-      gl.DEPTH_COMPONENT,   // format
-      gl.UNSIGNED_SHORT,    // type → DEPTH_COMPONENT16
+      gl.DEPTH_COMPONENT,     // format
+      gl.UNSIGNED_INT,        // type → DEPTH_COMPONENT24
       null,
     );
 
