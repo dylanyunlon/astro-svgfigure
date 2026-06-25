@@ -14,7 +14,8 @@
 
 
 
-import { cubicW, cubicGradW, SPHConfig } from "./sph-kernels";
+import { cubicW, cubicGradW } from './sph-kernels';
+import type { SPHConfig } from './sph-kernels';
 
 export interface Particle {
   /** Position */

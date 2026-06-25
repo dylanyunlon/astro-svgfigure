@@ -4,7 +4,7 @@
 
 
 
-import { World, Particle } from './world-stepper';
+import type { World, Particle } from './world-stepper';
 import type { RigidBody } from './types';
 
 export const SPECIES_COLORS: Record<number, string> = {

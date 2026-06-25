@@ -8,8 +8,9 @@
 
 
 
-import { SpatialPhysics, QoSProfile, APOLLO_PROFILES, qosToSpatial } from './qos-spatial-bridge';
-import { CellPhysicsConfig } from './cell-body-bridge';
+import { APOLLO_PROFILES, qosToSpatial } from './qos-spatial-bridge';
+import type { SpatialPhysics, QoSProfile } from './qos-spatial-bridge';
+import type { CellPhysicsConfig } from './cell-body-bridge';
 
 export interface EmitterConfig {
   x: number;

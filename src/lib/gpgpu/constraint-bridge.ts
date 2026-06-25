@@ -21,7 +21,8 @@
  *   src/lib/gpgpu/constraint-texture.ts      (ping-pong FBO)
  */
 
-import { ConstraintTexture, CellConstraintState, createConstraintTexture } from './constraint-texture';
+import { ConstraintTexture, createConstraintTexture } from './constraint-texture';
+import type { CellConstraintState } from './constraint-texture';
 
 // ── Inline vertex shader (reused across passes) ───────────────────────────────
 

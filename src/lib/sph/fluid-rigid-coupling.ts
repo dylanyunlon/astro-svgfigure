@@ -29,8 +29,9 @@
 
 
 
-import { Particle } from './dfsph-solver';
-import { RigidBody, sampleBoundaryParticles } from './rigid-body';
+import type { Particle } from './dfsph-solver';
+import { sampleBoundaryParticles } from './rigid-body';
+import type { RigidBody } from './rigid-body';
 import { cubicW, cubicGradW } from './sph-kernels';
 
 export type BoundaryVolumeTable = Map<number, Float64Array>;

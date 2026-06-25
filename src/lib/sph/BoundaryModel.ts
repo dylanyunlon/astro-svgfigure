@@ -17,12 +17,11 @@
 
 
 import type { ObstacleData } from './types';
-import type { BoundaryShape } from './world-boundary';
+import type { BoundaryShape, BoundaryParticle as WBParticle } from './world-boundary';
 import {
   createPolygonObstacle,
   createBoxObstacle,
   createCircleObstacle,
-  BoundaryParticle as WBParticle,
 } from "./world-boundary";
 
 // --------- Constants ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

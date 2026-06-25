@@ -3,13 +3,17 @@
  * Main simulation loop orchestrating all physics modules.
  */
 
-import { SpatialHash, buildSpatialHash, queryNeighbors, findNeighbors } from "./spatial-hash";
-import { DFSPHSolver, solvePressure, applyPressureForces, Particle as DfsphParticle, pressureSolve as dfsphPressureSolve, divergenceSolve as dfsphDivergenceSolve } from "./dfsph-solver";
-import { RigidBody, integrateRigidBody, applyImpulseToRigidBody, getRigidBodyParticles, integrateRigidBodies } from "./rigid-body";
+import { buildSpatialHash, queryNeighbors, findNeighbors } from './spatial-hash';
+import type { SpatialHash } from './spatial-hash';
+import { DFSPHSolver, solvePressure, applyPressureForces, pressureSolve as dfsphPressureSolve, divergenceSolve as dfsphDivergenceSolve } from './dfsph-solver';
+import type { Particle as DfsphParticle } from './dfsph-solver';
+import { integrateRigidBody, applyImpulseToRigidBody, getRigidBodyParticles, integrateRigidBodies } from './rigid-body';
+import type { RigidBody } from './rigid-body';
 import { applyBoundaryDensity, clampParticlesToBounds } from "./world-boundary";
 import type { BoundaryConfig } from "./world-boundary";
 import { computeFluidRigidCoupling, transferMomentumToRigid } from "./fluid-rigid-coupling";
-import { SpatialPhysics, QoSBridge, syncQoSParticles } from "./qos-spatial-bridge";
+import { syncQoSParticles } from './qos-spatial-bridge';
+import type { SpatialPhysics, QoSBridge } from './qos-spatial-bridge';
 import { CollisionWorld, createCollisionWorld } from "./collision/collision-world";
 import { SceneQuery, createSceneQuery } from "./collision/scene-query";
 import { computeBoundaryDensity } from "./boundary";
