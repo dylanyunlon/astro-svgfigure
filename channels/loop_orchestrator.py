@@ -112,7 +112,7 @@ def run_all_cells():
             # dry_run=True  → deterministic hash params (fast, no API)
             # dry_run=False → sub-Claude with web_search (slow, research-based)
             try:
-                agent_output = dispatch_cell_agent(cell_id, dry_run=use_dry_run)
+                agent_output = dispatch_cell_agent(cell_id)
                 # Persist agent params for proc() to read
                 agent_params_path = os.path.join(CHANNELS, "cell", cell_id, "agent_params.json")
                 os.makedirs(os.path.dirname(agent_params_path), exist_ok=True)
