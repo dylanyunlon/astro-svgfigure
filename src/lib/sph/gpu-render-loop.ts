@@ -101,6 +101,9 @@ export class GPURenderLoop {
   // 状态
   private cells: CellData[] = [];
   private edges: EdgeData[] = [];
+  private _edgesDirty = true;
+  private _placeholderTex: WebGLTexture | null = null;
+  private _pbrFBOReady = false;
   private mouseX = 0;
   private mouseY = 0;
   private prevMouseX = 0;
@@ -246,6 +249,7 @@ export class GPURenderLoop {
   setScene(cells: CellData[], edges: EdgeData[]): void {
     this.cells = cells;
     this.edges = edges;
+    this._edgesDirty = true;
   }
 
   /**
@@ -436,6 +440,9 @@ export class GPURenderLoop {
   /** 单帧渲染 — 执行全部 GPU pass，每 pass 带 error guard + perf 计时 */
   frame(dt: number): void {
     const gl = this.gl;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const time = performance.now() / 1000;
     this.frameCount++;
 
     this.perf.frameStart();
@@ -443,151 +450,195 @@ export class GPURenderLoop {
     // ── UIL params → GPU uniforms (每帧开始时推送) ──
     this._pushUILUniforms();
 
-    // ── Pass 1: Fluid (鼠标流体) ──
+    // ── Pass 1: Fluid (鼠标流体 → FBO) ──
     {
       const t = this.perf.passStart('fluid');
       try {
         this.fluid.step(this.mouseX, this.mouseY, this.prevMouseX, this.prevMouseY, dt);
-      } catch (e) {
-        console.error('[GPURenderLoop] fluid pass error:', e);
-      }
+      } catch (e) { /* non-fatal */ }
       this.perf.passEnd('fluid', t);
     }
 
-    // ── Pass 2: Shadow map ──
+    // ── Pass 2: Shadow map → FBO ──
     {
       const t = this.perf.passStart('shadow');
       try {
-        this.shadow.render(this.cells, this.shadowLightDir);
-      } catch (e) {
-        console.error('[GPURenderLoop] shadow pass error:', e);
-      }
+        // shadow.step(cellPositions: Float32Array, cellCount, positionTex?)
+        const posArr = new Float32Array(this.cells.length * 4);
+        for (let i = 0; i < this.cells.length; i++) {
+          const c = this.cells[i];
+          posArr[i * 4 + 0] = c.x;
+          posArr[i * 4 + 1] = c.y;
+          posArr[i * 4 + 2] = c.w;
+          posArr[i * 4 + 3] = c.h;
+        }
+        this.shadow.step(posArr, this.cells.length);
+      } catch (e) { /* non-fatal */ }
       this.perf.passEnd('shadow', t);
     }
 
-    // ── Pass 3: PBR cell surface ──
-    let cellFBO: WebGLTexture;
+    // ── Pass 3: PBR cell surface → FBO ──
+    let cellTex: WebGLTexture;
     {
       const t = this.perf.passStart('pbr');
       try {
         if (this.pbr) {
-          this.pbr.render(this.cells, this.shadow.outputTexture, this.shadowLightDir);
-          cellFBO = this.pbr.outputTexture;
+          // Convert CellData → CellPBRDescriptor
+          const descs = this.cells.map(c => ({
+            species: c.species as any,
+            x: (c.x / W) * 2 - 1,
+            y: (c.y / H) * 2 - 1,
+            size: Math.max(c.w, c.h) / Math.max(W, H),
+            albedo: c.albedo as [number, number, number],
+            metallic: c.metallic,
+            roughness: c.roughness,
+          }));
+          if (!this._pbrFBOReady) {
+            this.pbr.initFBO(W, H);
+            this._pbrFBOReady = true;
+          }
+          this.pbr.renderCells(descs);
+          cellTex = this.pbr.pbrTexture;
         } else {
-          cellFBO = this._renderCellsFallback();
+          cellTex = this._renderCellsFallback();
         }
       } catch (e) {
-        console.error('[GPURenderLoop] pbr pass error:', e);
-        cellFBO = this._renderCellsFallback();
+        cellTex = this._renderCellsFallback();
       }
       this.perf.passEnd('pbr', t);
     }
 
-    // ── Pass 3b: Glass overlay (Fresnel + refraction on cell bodies) ──
-    if (this.glass) {
-      const t = this.perf.passStart('glass');
-      try {
-        this.glass.render(this.cells, cellFBO);
-      } catch (e) {
-        console.error('[GPURenderLoop] glass pass error:', e);
-      }
-      this.perf.passEnd('glass', t);
-    }
-
-    // ── Pass 4: Edge 样条线 ──
-    {
-      const t = this.perf.passStart('edge');
-      try {
-        this.edge.render(this.edges);
-      } catch (e) {
-        console.error('[GPURenderLoop] edge pass error:', e);
-      }
-      this.perf.passEnd('edge', t);
-    }
-
-    // ── Pass 5: SDF Species icon (instanced) ──
-    if (this.sdfIcon) {
-      const t = this.perf.passStart('sdf');
-      try {
-        this.sdfIcon.render(this.cells);
-      } catch (e) {
-        console.error('[GPURenderLoop] sdf pass error:', e);
-      }
-      this.perf.passEnd('sdf', t);
-    }
-
-    // ── Pass 6: Particle ──
-    if (this.particle) {
-      const t = this.perf.passStart('particle');
-      try {
-        this.particle.step(dt);
-        this.particle.render();
-      } catch (e) {
-        console.error('[GPURenderLoop] particle pass error:', e);
-      }
-      this.perf.passEnd('particle', t);
-    }
-
-    // ── Pass 7: Bloom ──
+    // ── Pass 4: Bloom → FBO ──
     {
       const t = this.perf.passStart('bloom');
       try {
-        this.bloom.step(cellFBO);
-      } catch (e) {
-        console.error('[GPURenderLoop] bloom pass error:', e);
-      }
+        this.bloom.step(cellTex);
+      } catch (e) { /* non-fatal */ }
       this.perf.passEnd('bloom', t);
     }
 
-    // ── Pass 8: MSDF text ──
-    {
-      const t = this.perf.passStart('msdf');
+    // ── Pass 5: Glass → FBO ──
+    if (this.glass) {
+      const t = this.perf.passStart('glass');
       try {
-        this.msdf.render(this.cells.map(c => ({
-          text: c.label, x: c.x, y: c.y, scale: 1.0,
-        })));
-      } catch (e) {
-        console.error('[GPURenderLoop] msdf pass error:', e);
-      }
-      this.perf.passEnd('msdf', t);
+        this.glass.render(cellTex, this.bloom.outputTexture, time);
+      } catch (e) { /* non-fatal */ }
+      this.perf.passEnd('glass', t);
     }
 
-    // ── Pass 9: Final composite → screen ──
+    // ── NukePass (HDR tonemap + LUT) ──
+    if (this.nukePass) {
+      try { this.nukePass.render(gl); } catch (_) { /* non-fatal */ }
+    }
+
+    // ── Pass 6: Composite → canvas (merge FBO layers) ──
     {
       const t = this.perf.passStart('composite');
       try {
-        // ── M1100: NukePass (HDR tonemap + LUT color grade + blur pyramid) ──
-        if (this.nukePass) {
-          this.perf.beginPass('nuke');
-          this.nukePass.render(this.gl);
-          this.perf.endPass('nuke');
-        }
-
+        // Use placeholder for passes that render directly (edge/particle)
+        const placeholder = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
         this.composite.render({
-          cellTexture: cellFBO,
-          edgeTexture: this.edge.outputTexture,
-          particleTexture: this.particle?.outputTexture ?? null,
-          bloomTexture: this.bloom.outputTexture,
-          shadowTexture: this.shadow.outputTexture,
-          fluidTexture: this.fluid.dyeTexture,
-          sdfTexture: this.sdfIcon?.outputTexture ?? null,
-          glassTexture: this.glass?.outputTexture ?? null,
-        });
-      } catch (e) {
-        console.error('[GPURenderLoop] composite pass error:', e);
-      }
+          cell:     cellTex,
+          edge:     placeholder,
+          particle: placeholder,
+          bloom:    this.bloom.outputTexture,
+          shadow:   this.shadow.shadowFactorTexture,
+          fluid:    this.fluid.dyeTexture,
+        }, W, H, time);
+      } catch (e) { /* non-fatal */ }
       this.perf.passEnd('composite', t);
     }
 
-    // ── Drain any accumulated GL errors ──
+    // ── Direct overlay passes (render on top of composite) ──
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, W, H);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    // Edge splines
+    {
+      const t = this.perf.passStart('edge');
+      try {
+        // Convert EdgeData → EdgeControlPoints and upload once
+        if (this._edgesDirty) {
+          const ecp = this.edges.map(e => ({
+            id: e.edge_id,
+            isSkip: e.edge_id.startsWith('skip'),
+            p0: (e.controlPoints[0] ?? [0,0]) as [number,number],
+            p1: (e.controlPoints[1] ?? e.controlPoints[0] ?? [0,0]) as [number,number],
+            p2: (e.controlPoints[2] ?? e.controlPoints[1] ?? [0,0]) as [number,number],
+            p3: (e.controlPoints[3] ?? e.controlPoints[2] ?? [0,0]) as [number,number],
+            sourceColor: e.color as [number,number,number],
+          }));
+          this.edge.setEdges(ecp);
+          this._edgesDirty = false;
+        }
+        this.edge.render(time);
+      } catch (e) { /* non-fatal */ }
+      this.perf.passEnd('edge', t);
+    }
+
+    // SDF species icons
+    if (this.sdfIcon) {
+      const t = this.perf.passStart('sdf');
+      try {
+        // Group cells by species → SpeciesBatch[]
+        const bySpecies = new Map<string, Array<{x:number,y:number,size:number,opacity:number}>>();
+        for (const c of this.cells) {
+          if (!bySpecies.has(c.species)) bySpecies.set(c.species, []);
+          bySpecies.get(c.species)!.push({
+            x: c.x + c.w / 2, y: c.y + c.h / 2,
+            size: Math.max(c.w, c.h) * 0.6, opacity: 1.0,
+          });
+        }
+        const batches = [...bySpecies.entries()].map(([species, instances]) => ({
+          species: species as any, instances,
+        }));
+        this.sdfIcon.render(batches, dt);
+      } catch (e) { /* non-fatal */ }
+      this.perf.passEnd('sdf', t);
+    }
+
+    // Particles
+    if (this.particle) {
+      const t = this.perf.passStart('particle');
+      try {
+        this.particle.render(W, H);
+      } catch (e) { /* non-fatal */ }
+      this.perf.passEnd('particle', t);
+    }
+
+    // MSDF text labels
+    {
+      const t = this.perf.passStart('msdf');
+      try {
+        this.msdf.drawAllCellLabels();
+      } catch (e) { /* non-fatal */ }
+      this.perf.passEnd('msdf', t);
+    }
+
+    // ── Drain accumulated GL errors ──
     drainErrors(gl);
 
     this.perf.frameEnd();
 
-    // ── Log perf stats every 60 frames ──
-    if (this.frameCount % 60 === 0) {
-      console.log('[GPURenderLoop] perf stats:', this.perf.stats);
+    // ── Log perf stats every 120 frames ──
+    if (this.frameCount % 120 === 0) {
+      console.log('[GPURenderLoop] perf:', this.perf.stats);
     }
+  }
+
+  /** 1×1 transparent placeholder texture for composite inputs that have no FBO */
+  private _create1x1Tex(): WebGLTexture {
+    const gl = this.gl;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 0]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
   }
 
   /** 简单 fallback: 用纯色 quad 画 cell (pbr-gpu-pass 未到时) */
