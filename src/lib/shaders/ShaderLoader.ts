@@ -41,15 +41,9 @@ function parse(): void {
   //    composite.fs → GlobalComposite.fs
   //    lighting.fs → lights.fs
   //    ShadowDepth.fs → ShadowDepth.glsl
+  // Aliases: map missing names to AT equivalents (only pure GLSL, no AT #! format)
   const aliases: [string, string][] = [
-    ['bloom-luminosity.fs', 'BloomLuminosityPass.glsl'],
-    ['bloom-blur.fs', 'UnrealBloomGaussian.glsl'],
-    ['bloom-composite.fs', 'UnrealBloomComposite.glsl'],
-    ['bloom-upsample.fs', 'HydraBloomPass.glsl'],
-    ['bloomUpsample.fs', 'HydraBloomPass.glsl'],
-    ['composite.fs', 'GlobalComposite.fs'],
     ['lighting.fs', 'lights.fs'],
-    ['ShadowDepth.fs', 'ShadowDepth.glsl'],
   ];
   for (const [alias, target] of aliases) {
     if (!_cache.has(alias) && _cache.has(target)) {
