@@ -414,7 +414,7 @@ void main() {
 
 export class SDFIconGPU {
   private gl: WebGLRenderingContext;
-  private ext: ANGLE_instanced_arrays;
+  private ext: ANGLE_instanced_arrays | null;
 
   // Per-species compiled program + uniform cache
   private programs: Map<SDFSpecies, SpeciesProgram> = new Map();
@@ -448,10 +448,14 @@ export class SDFIconGPU {
   constructor(gl: WebGLRenderingContext) {
     this.gl  = gl;
 
-    // ── Require ANGLE_instanced_arrays (WebGL1) ──────────────────────────
-    const ext = gl.getExtension('ANGLE_instanced_arrays');
-    if (!ext) throw new Error('[SDFIconGPU] ANGLE_instanced_arrays not supported');
-    this.ext = ext;
+    // ── Require ANGLE_instanced_arrays (WebGL1) / built-in (WebGL2) ────────
+    if (gl instanceof WebGL2RenderingContext) {
+      this.ext = null; // WebGL2: instancing is core
+    } else {
+      const ext = gl.getExtension('ANGLE_instanced_arrays');
+      if (!ext) throw new Error('[SDFIconGPU] ANGLE_instanced_arrays not supported');
+      this.ext = ext;
+    }
 
     this._initQuadVBO();
     this._compileAllSpecies();
@@ -517,7 +521,7 @@ export class SDFIconGPU {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.quadVBO);
       gl.enableVertexAttribArray(sp.loc_aPosition);
       gl.vertexAttribPointer(sp.loc_aPosition, 2, gl.FLOAT, false, 0, 0);
-      ext.vertexAttribDivisorANGLE(sp.loc_aPosition, 0); // per-vertex
+      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_aPosition, 0); // per-vertex
 
       // ── 6. Bind instance VBO ─────────────────────────────────────────
       // Layout: [posX(f32), posY(f32), size(f32), opacity(f32)]
@@ -526,23 +530,23 @@ export class SDFIconGPU {
 
       gl.enableVertexAttribArray(sp.loc_a_iPos);
       gl.vertexAttribPointer(sp.loc_a_iPos, 2, gl.FLOAT, false, stride, 0);
-      ext.vertexAttribDivisorANGLE(sp.loc_a_iPos, 1); // per-instance
+      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iPos, 1); // per-instance
 
       gl.enableVertexAttribArray(sp.loc_a_iSize);
       gl.vertexAttribPointer(sp.loc_a_iSize, 1, gl.FLOAT, false, stride, 2 * 4);
-      ext.vertexAttribDivisorANGLE(sp.loc_a_iSize, 1);
+      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iSize, 1);
 
       gl.enableVertexAttribArray(sp.loc_a_iOpacity);
       gl.vertexAttribPointer(sp.loc_a_iOpacity, 1, gl.FLOAT, false, stride, 3 * 4);
-      ext.vertexAttribDivisorANGLE(sp.loc_a_iOpacity, 1);
+      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iOpacity, 1);
 
       // ── 7. Draw: 6 vertices (2 triangles) × count instances ─────────
-      ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, count);
+      (gl as WebGL2RenderingContext).drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
 
       // ── 8. Reset divisors (WebGL1 requires manual reset) ─────────────
-      ext.vertexAttribDivisorANGLE(sp.loc_a_iPos,     0);
-      ext.vertexAttribDivisorANGLE(sp.loc_a_iSize,    0);
-      ext.vertexAttribDivisorANGLE(sp.loc_a_iOpacity, 0);
+      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iPos,     0);
+      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iSize,    0);
+      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iOpacity, 0);
 
       // Disable attribs
       gl.disableVertexAttribArray(sp.loc_aPosition);

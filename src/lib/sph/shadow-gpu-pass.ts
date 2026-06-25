@@ -346,7 +346,7 @@ export class ShadowGPU {
   private cfg: ShadowConfig;
 
   // ── WebGL extension (depth texture) ──
-  private extDepth!: WEBGL_depth_texture;
+  private extDepth!: WEBGL_depth_texture | null;
 
   // ── Compiled WebGL programs ──
   private shadowDepthProg!: WebGLProgram;
@@ -388,12 +388,16 @@ export class ShadowGPU {
   private _init(): void {
     const gl = this.gl;
 
-    // ── 1. 检测 depth texture 扩展 (WebGL1 必须) ──────────────────────────
-    const ext = gl.getExtension('WEBGL_depth_texture');
-    if (!ext) {
-      throw new Error('[ShadowGPU] WEBGL_depth_texture extension not supported');
+    // ── 1. 检测 depth texture 扩展 (WebGL1 必须, WebGL2 内置) ──────────────
+    if (gl instanceof WebGL2RenderingContext) {
+      this.extDepth = null; // WebGL2: depth textures are core, no extension needed
+    } else {
+      const ext = gl.getExtension('WEBGL_depth_texture');
+      if (!ext) {
+        throw new Error('[ShadowGPU] WEBGL_depth_texture extension not supported');
+      }
+      this.extDepth = ext;
     }
-    this.extDepth = ext;
 
     // ── 2. 从 compiled.vs 提取 AT shader 源码 ─────────────────────────────
     // 用 ShaderLoader.getShader 从 compiled.vs 获取 AT 生产 shader:
