@@ -372,7 +372,7 @@ export class MSDFTextGPU {
 
     // ── Vertex shader ──
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, 'precision highp float;\n' + vertSrc);
+    gl.shaderSource(vs, vertSrc);
     gl.compileShader(vs);
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
       throw new Error(`[MSDFTextGPU] vertex compile error: ${gl.getShaderInfoLog(vs)}`);
