@@ -1,4 +1,4 @@
-#extension GL_OES_standard_derivatives : enable
+// fwidth() is built-in in WebGL2 (no extension needed)
 
 precision highp float;
 
