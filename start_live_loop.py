@@ -81,6 +81,7 @@ def main():
     # ── Run the loop ─────────────────────────────────────────────────────
     os.chdir(channels_dir)
     sys.path.insert(0, channels_dir)
+    sys.path.insert(0, project_root)  # for 'channels.rendering...' imports
 
     import importlib
     import loop_orchestrator
