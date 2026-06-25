@@ -272,7 +272,7 @@ def proc(cell_id: str):
             # Record agent opacity for use below (blended with crowding_opacity)
             if "opacity" in _agent_params and isinstance(_agent_params["opacity"], (int, float)):
                 _agent_opacity = max(0.35, min(1.0, float(_agent_params["opacity"])))
-            import sys
+            # import sys  # already imported at module level
             print(
                 f"[proc] L3 agent_params applied: cell_id={cell_id} "
                 f"bbox=({bbox['x']},{bbox['y']},{bbox['w']},{bbox['h']}) "
@@ -280,7 +280,7 @@ def proc(cell_id: str):
                 file=sys.stderr,
             )
         except Exception as _ap_exc:
-            import sys
+            # import sys  # already imported at module level
             print(f"[proc] WARNING: failed to read agent_params.json "
                   f"for cell_id={cell_id}: {_ap_exc}", file=sys.stderr)
 
