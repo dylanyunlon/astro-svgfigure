@@ -619,6 +619,31 @@ export class GPURenderLoop {
       this.perf.passEnd('msdf', t);
     }
 
+    // ── Direct cell rendering to screen (bypass failed passes) ──
+    {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, W, H);
+
+      // Dark background
+      gl.clearColor(0.04, 0.04, 0.06, 1.0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      // Draw each cell as a colored rectangle
+      gl.enable(gl.SCISSOR_TEST);
+      for (const cell of this.cells) {
+        const a = cell.albedo ?? [0.3, 0.5, 1.0];
+        const px = Math.floor(cell.x);
+        const py = Math.floor(H - cell.y - cell.h); // flip Y
+        const pw = Math.floor(cell.w);
+        const ph = Math.floor(cell.h);
+        if (pw <= 0 || ph <= 0 || px + pw < 0 || py + ph < 0 || px > W || py > H) continue;
+        gl.scissor(px, py, pw, ph);
+        gl.clearColor(a[0], a[1], a[2], 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      }
+      gl.disable(gl.SCISSOR_TEST);
+    }
+
     // ── Drain accumulated GL errors ──
     drainErrors(gl);
 
