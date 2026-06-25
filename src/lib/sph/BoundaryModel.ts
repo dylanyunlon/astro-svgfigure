@@ -17,9 +17,8 @@
 
 
 import type { ObstacleData } from './types';
+import type { BoundaryShape } from './world-boundary';
 import {
-
-  BoundaryShape,
   createPolygonObstacle,
   createBoxObstacle,
   createCircleObstacle,

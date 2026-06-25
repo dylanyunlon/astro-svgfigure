@@ -6,7 +6,8 @@
 import { SpatialHash, buildSpatialHash, queryNeighbors, findNeighbors } from "./spatial-hash";
 import { DFSPHSolver, solvePressure, applyPressureForces, Particle as DfsphParticle, pressureSolve as dfsphPressureSolve, divergenceSolve as dfsphDivergenceSolve } from "./dfsph-solver";
 import { RigidBody, integrateRigidBody, applyImpulseToRigidBody, getRigidBodyParticles, integrateRigidBodies } from "./rigid-body";
-import { applyBoundaryDensity, clampParticlesToBounds, BoundaryConfig } from "./world-boundary";
+import { applyBoundaryDensity, clampParticlesToBounds } from "./world-boundary";
+import type { BoundaryConfig } from "./world-boundary";
 import { computeFluidRigidCoupling, transferMomentumToRigid } from "./fluid-rigid-coupling";
 import { SpatialPhysics, QoSBridge, syncQoSParticles } from "./qos-spatial-bridge";
 import { CollisionWorld, createCollisionWorld } from "./collision/collision-world";
