@@ -246,6 +246,7 @@ attribute vec2 uv;
 /* ── Uniforms ─────────────────────────────────────────────────────── */
 uniform mat4  modelViewMatrix;
 uniform mat4  projectionMatrix;
+uniform mat4  viewMatrix;        /* required by AT lights.vs worldLight() */
 uniform mat3  normalMatrix;
 uniform float time;
 uniform float uScroll;
