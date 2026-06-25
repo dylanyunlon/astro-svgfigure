@@ -1109,7 +1109,9 @@ export const prerender = true;
       }));
 
       try {
+        console.info('[gpu-world] creating GPURenderLoop...');
         const loop = new GPURenderLoop(gpuWorldCanvas);
+        console.info('[gpu-world] loop created, calling setScene with', cells.length, 'cells', edges.length, 'edges');
         loop.setScene(cells, edges);
         loop.start();
         console.info(`[gpu-world] GPURenderLoop started — ${cells.length} cells, ${edges.length} edges`);

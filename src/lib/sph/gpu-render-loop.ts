@@ -517,14 +517,16 @@ export class GPURenderLoop {
       this.perf.passEnd('bloom', t);
     }
 
-    // ── Pass 5: Glass → FBO ──
-    if (this.glass) {
-      const t = this.perf.passStart('glass');
-      try {
-        this.glass.render(cellTex, this.bloom.outputTexture, time);
-      } catch (e) { /* non-fatal */ }
-      this.perf.passEnd('glass', t);
-    }
+    // ── Pass 5: Glass → FBO (disabled until 3D mesh pipeline ready) ──
+    // Glass renders a fullscreen Fresnel overlay that washes out cells.
+    // Enable when AT geometry loader compiles successfully.
+    // if (this.glass) {
+    //   const t = this.perf.passStart('glass');
+    //   try {
+    //     this.glass.render(cellTex, this.bloom.outputTexture, time);
+    //   } catch (e) { /* non-fatal */ }
+    //   this.perf.passEnd('glass', t);
+    // }
 
     // ── NukePass (HDR tonemap + LUT) ──
     if (this.nukePass) {
@@ -668,13 +670,14 @@ export class GPURenderLoop {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    // 画每个 cell 为一个纯色矩形
+    // 画每个 cell 为一个纯色矩形（像素坐标，Y 翻转因为 WebGL origin 在左下）
     for (const cell of this.cells) {
       const mat = SPECIES_MATERIAL[cell.species] ?? SPECIES_MATERIAL['cil-eye'];
-      const px = Math.floor(cell.x / 1000 * W);
-      const py = Math.floor(cell.y / 800 * H);
-      const pw = Math.floor(cell.w / 1000 * W);
-      const ph = Math.floor(cell.h / 800 * H);
+      const px = Math.floor(cell.x);
+      const py = Math.floor(H - cell.y - cell.h); // flip Y
+      const pw = Math.floor(cell.w);
+      const ph = Math.floor(cell.h);
+      if (pw <= 0 || ph <= 0) continue;
       gl.enable(gl.SCISSOR_TEST);
       gl.scissor(px, py, pw, ph);
       gl.clearColor(mat.albedo[0], mat.albedo[1], mat.albedo[2], 1.0);
