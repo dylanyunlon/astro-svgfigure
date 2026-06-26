@@ -81,9 +81,9 @@ vec3 adjustContrast(vec3 color, float shadows, float highlights) {
 // ── rgbshift.fs ────────────────────────────────────────────────────────────
 vec4 getRGB(sampler2D tex, vec2 uv, float angle, float strength) {
     vec2 off = vec2(cos(angle), sin(angle)) * strength;
-    float r = texture2D(tex, uv + off).r;
-    float g = texture2D(tex, uv).g;
-    float b = texture2D(tex, uv - off).b;
+    float r = texture(tex, uv + off).r;
+    float g = texture(tex, uv).g;
+    float b = texture(tex, uv - off).b;
     return vec4(r, g, b, 1.0);
 }
 
@@ -149,7 +149,7 @@ vec3 hsv2rgb(vec3 c) {
 // ── UnrealBloom.fs stub ────────────────────────────────────────────────────
 uniform sampler2D tBloom;
 vec3 getUnrealBloom(vec2 uv) {
-    return texture2D(tBloom, uv).rgb;
+    return texture(tBloom, uv).rgb;
 }
 `;
 
@@ -166,10 +166,10 @@ uniform vec2 uContrast;
 uniform sampler2D tVolumetricBlur;
 
 void main() {
-    vec3 color = texture2D(tDiffuse, vUv).rgb;
+    vec3 color = texture(tDiffuse, vUv).rgb;
     color = adjustContrast(color, uContrast.x, uContrast.y);
-    color += texture2D(tVolumetricBlur, vUv).rgb * uVolumetricStrength;
-    gl_FragColor = vec4(color, 1.0);
+    color += texture(tVolumetricBlur, vUv).rgb * uVolumetricStrength;
+    fragColor = vec4(color, 1.0);
 }
 `;
 
@@ -186,10 +186,10 @@ uniform vec2 uContrast;
 uniform sampler2D tVolumetricBlur;
 
 void main() {
-    vec3 color = texture2D(tDiffuse, vUv).rgb;
+    vec3 color = texture(tDiffuse, vUv).rgb;
     color = adjustContrast(color, uContrast.x, uContrast.y);
-    color += texture2D(tVolumetricBlur, vUv).rgb * uVolumetricStrength;
-    gl_FragColor = vec4(color, 1.0);
+    color += texture(tVolumetricBlur, vUv).rgb * uVolumetricStrength;
+    fragColor = vec4(color, 1.0);
 }
 `;
 
@@ -248,12 +248,12 @@ void main() {
         from *= mix(1.0,2.0,d);
         to   *= mix(2.0,1.0,d);
 
-        gl_FragColor = vec4(mix(from,to,d), 1.0);
+        fragColor = vec4(mix(from,to,d), 1.0);
     } else {
         if (uTransition > 0.999) {
-            gl_FragColor = texture2D(tDetail, vUv);
+            fragColor = texture(tDetail, vUv);
         } else {
-            gl_FragColor = texture2D(tDiffuse, vUv);
+            fragColor = texture(tDiffuse, vUv);
         }
     }
 }
@@ -269,7 +269,7 @@ uniform sampler2D tDiffuse;
 uniform float uRGBStrength;
 
 void main() {
-    gl_FragColor = getRGB(tDiffuse, vUv, 0.3, 0.002 * uRGBStrength);
+    fragColor = getRGB(tDiffuse, vUv, 0.3, 0.002 * uRGBStrength);
 }
 `;
 
@@ -282,7 +282,7 @@ const ABOUT_COMPOSITE_FRAG = GLSL_UTILS + /* glsl */`
 uniform sampler2D tDiffuse;
 
 void main() {
-    gl_FragColor = texture2D(tDiffuse, vUv);
+    fragColor = texture(tDiffuse, vUv);
 }
 `;
 
@@ -299,7 +299,7 @@ uniform vec2 uContrast;
 void main() {
     vec3 color = getRGB(tDiffuse, vUv, 0.3, -0.0002).rgb;
     color = adjustContrast(color, uContrast.x, uContrast.y);
-    gl_FragColor = vec4(color, 1.0);
+    fragColor = vec4(color, 1.0);
 }
 `;
 
@@ -336,8 +336,8 @@ void main() {
     vec2 uv = scaleUV(vUv, vec2(1.0 + uContact*mix(0.01,0.06,uMobile)
         + uContact*0.1*smoothstep(1.0,0.1,length(squareUV-0.5))));
 
-    vec2 fluid = texture2D(tFluid, uv).xy;
-    float fluidMask = smoothstep(0.0,1.0,texture2D(tFluidMask,uv).r);
+    vec2 fluid = texture(tFluid, uv).xy;
+    float fluidMask = smoothstep(0.0,1.0,texture(tFluidMask,uv).r);
     float fluidPush = pow(abs(fluid.x)*0.01, 2.0);
     float fluidEdge = fluidPush * smoothstep(0.7,0.0,abs(fluidMask-0.5));
 
@@ -345,7 +345,7 @@ void main() {
     normalScale *= crange(resolution.x,1000.0,5000.0,1.0,0.35);
     normalScale *= 1.0-(1.0-uContact)*0.06;
     vec2 normalUV = scaleUV(squareUV, vec2(normalScale));
-    vec3 normal = crange(texture2D(tNormal,normalUV).rgb, vec3(0.0), vec3(1.0), vec3(-1.0), vec3(1.0));
+    vec3 normal = crange(texture(tNormal,normalUV).rgb, vec3(0.0), vec3(1.0), vec3(-1.0), vec3(1.0));
 
     float frost = smoothstep(0.3,0.0,length(vUv-vec2(1.0)));
     frost += smoothstep(0.4,0.0,length(vUv-vec2(0.0)))*uChatOpen*0.4;
@@ -368,7 +368,7 @@ void main() {
 
     // Bloom + light streak
     color += pow(getUnrealBloom(uv), vec3(1.8))*mix(1.0,1.1,fluidEdge);
-    color += pow(texture2D(tLightStreak,uv).rgb, vec3(1.25));
+    color += pow(texture(tLightStreak,uv).rgb, vec3(1.25));
 
     // Contact
     color = pow(color, vec3(1.0+uContact*0.3));
@@ -395,7 +395,7 @@ void main() {
     color = blendSoftLight(color, colorTouch, fluidPush*0.6*smoothstep(0.0,0.0001,uSyncTouch));
 
     color = max(vec3(0.0),min(vec3(1.0),color));
-    gl_FragColor = vec4(color, 1.0);
+    fragColor = vec4(color, 1.0);
 }
 `;
 
@@ -418,15 +418,15 @@ vec4 over(vec4 dst, vec4 src) {
 }
 
 void main() {
-    vec4 bg  = texture2D(tBG,         vUv);
-    vec4 cel = texture2D(tCell,       vUv);
-    vec4 fg  = texture2D(tForeground, vUv);
-    vec4 ui  = texture2D(tUI,         vUv);
+    vec4 bg  = texture(tBG,         vUv);
+    vec4 cel = texture(tCell,       vUv);
+    vec4 fg  = texture(tForeground, vUv);
+    vec4 ui  = texture(tUI,         vUv);
     vec4 c   = bg;
     c = over(c, cel);
     c = over(c, fg);
     c = over(c, ui);
-    gl_FragColor = c;
+    fragColor = c;
 }
 `;
 

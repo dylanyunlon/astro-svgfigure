@@ -279,11 +279,11 @@ vec4 packDepthToRGBA(float depth) {
 
 #ifdef USE_FLOAT_TEXTURE
 void main() {
-    gl_FragColor = vec4(vDepth, 0.0, 0.0, 1.0);
+    fragColor = vec4(vDepth, 0.0, 0.0, 1.0);
 }
 #else
 void main() {
-    gl_FragColor = packDepthToRGBA(vDepth);
+    fragColor = packDepthToRGBA(vDepth);
 }
 #endif
 `;
@@ -311,7 +311,7 @@ void main() {
     float dy = dFdy(depth);
     moment2 += 0.25 * (dx * dx + dy * dy);
 
-    gl_FragColor = vec4(depth, moment2, 0.0, 1.0);
+    fragColor = vec4(depth, moment2, 0.0, 1.0);
 }
 `;
 
@@ -347,12 +347,12 @@ void main() {
     for (int i = -4; i <= 4; i++) {
         float w = gaussWeight(float(i), uSigma);
         vec2 uv = vUV + uDirection * float(i);
-        moments += texture2D(uShadowMap, uv).rg * w;
+        moments += texture(uShadowMap, uv).rg * w;
         totalWeight += w;
     }
 
     moments /= totalWeight;
-    gl_FragColor = vec4(moments, 0.0, 1.0);
+    fragColor = vec4(moments, 0.0, 1.0);
 }
 `;
 
@@ -457,7 +457,7 @@ float sampleShadowPCF(vec3 worldPos, vec3 normal, vec2 screenPos, float viewZ) {
 
     for (int i = 0; i < 25; i++) {
         vec2 offset = rotation * uPoissonDisk25[i] * spread;
-        float sampleDepth = texture2D(uShadowMaps[cascadeIdx], sc.xy + offset).r;
+        float sampleDepth = texture(uShadowMaps[cascadeIdx], sc.xy + offset).r;
         shadow += step(sc.z - uShadowBias, sampleDepth);
     }
     shadow /= 25.0;
@@ -504,7 +504,7 @@ float sampleShadowVSM(vec3 worldPos, vec3 normal, float viewZ) {
     if (sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0) return 1.0;
 
     // Hardware-filtered moments (linear/mipmap filtering on RG32F)
-    vec2 moments = texture2D(uShadowMaps[cascadeIdx], sc.xy).rg;
+    vec2 moments = texture(uShadowMaps[cascadeIdx], sc.xy).rg;
     float shadow = chebyshevUpperBound(moments, sc.z);
 
     return mix(1.0, shadow, shadowFade(viewZ));
@@ -539,7 +539,7 @@ vec2 blockerSearch(sampler2D shadowMap, vec2 uv, float receiverDepth, float sear
 
     for (int i = 0; i < 16; i++) {
         vec2 offset = uBlockerDisk16[i] * searchWidth;
-        float sampleDepth = texture2D(shadowMap, uv + offset).r;
+        float sampleDepth = texture(shadowMap, uv + offset).r;
 
         if (sampleDepth < receiverDepth) {
             blockerSum += sampleDepth;
@@ -584,7 +584,7 @@ float sampleShadowPCSS(vec3 worldPos, vec3 normal, vec2 screenPos, float viewZ) 
 
     for (int i = 0; i < 25; i++) {
         vec2 offset = rotation * uPCSSDisk25[i] * filterRadius;
-        float sampleDepth = texture2D(uShadowMaps[cascadeIdx], sc.xy + offset).r;
+        float sampleDepth = texture(uShadowMaps[cascadeIdx], sc.xy + offset).r;
         shadow += step(sc.z - uShadowBias, sampleDepth);
     }
     shadow /= 25.0;

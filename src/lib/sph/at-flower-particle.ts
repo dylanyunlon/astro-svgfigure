@@ -268,11 +268,12 @@ uniform float u_domainH;
 uniform int   u_edgeCount;
 uniform int   u_splineMaxPts;  // always MAX_SPLINE_PTS
 
-// Spline control points: vec4 array, MAX_EDGES * MAX_SPLINE_PTS entries
-// [i*MAX_SPLINE_PTS + j] = vec4(x, y, 0, nPoints) where nPoints only in [0]
-// We store: edgeMeta[e].x = nPoints; splinePts[e * MAX_SPLINE_PTS + j] = vec4(x,y,0,0)
+// Spline control points: packed into a data texture to avoid uniform overflow.
+// tSplineData: RGBA32F texture, width=32 (MAX_SPLINE_PTS), height=32 (MAX_EDGES)
+// texelFetch(tSplineData, ivec2(ptIdx, edgeIdx), 0) = vec4(x, y, 0, 0)
+// Edge metadata packed into row 0 of a separate small texture or as uniforms:
 uniform vec4 u_edgeMeta[32];   // .x = nPoints, .y = arcLen (unused)
-uniform vec4 u_splinePts[1024]; // 32 edges * 32 pts
+uniform sampler2D tSplineData; // RGBA32F 32×32 — replaces u_splinePts[1024]
 
 in vec2 v_uv;
 out vec4 outPos;
@@ -290,7 +291,7 @@ vec3 catmullRom(vec3 p0, vec3 p1, vec3 p2, vec3 p3, float t) {
 vec3 evalSpline(int edgeIdx, float u_frac) {
   int n = int(u_edgeMeta[edgeIdx].x);
   if (n == 0) return vec3(0.0);
-  if (n == 1) return u_splinePts[edgeIdx * 32 + 0].xyz;
+  if (n == 1) return texelFetch(tSplineData, ivec2(0, edgeIdx), 0).xyz;
   float scaled = clamp(u_frac, 0.0, 0.9999) * float(n - 1);
   int i1 = int(floor(scaled));
   float lt = scaled - float(i1);
@@ -298,10 +299,10 @@ vec3 evalSpline(int edgeIdx, float u_frac) {
   int i2 = min(i1 + 1, n - 1);
   int i3 = min(i1 + 2, n - 1);
   return catmullRom(
-    u_splinePts[edgeIdx * 32 + i0].xyz,
-    u_splinePts[edgeIdx * 32 + i1].xyz,
-    u_splinePts[edgeIdx * 32 + i2].xyz,
-    u_splinePts[edgeIdx * 32 + i3].xyz,
+    texelFetch(tSplineData, ivec2(i0, edgeIdx), 0).xyz,
+    texelFetch(tSplineData, ivec2(i1, edgeIdx), 0).xyz,
+    texelFetch(tSplineData, ivec2(i2, edgeIdx), 0).xyz,
+    texelFetch(tSplineData, ivec2(i3, edgeIdx), 0).xyz,
     lt
   );
 }
@@ -596,6 +597,7 @@ export class ATFlowerParticleRenderer {
   // ── Spline GPU data (uniform arrays) ─────────────────────────────────────
   private edgeMetaF32!:  Float32Array;   // [e*4+0]=nPts, [e*4+1]=arcLen, [e*4+2..3]=pad
   private splinePtsF32!: Float32Array;   // [e*32*4 + p*4 + 0..2]=xyz, [+3]=0
+  private _splineDataTex: WebGLTexture | null = null; // RGBA32F 32×32 spline data texture
 
   // ── Life uniform locations ─────────────────────────────────────────────────
   private uLife = {
@@ -621,7 +623,7 @@ export class ATFlowerParticleRenderer {
     edgeCount:   null as WebGLUniformLocation | null,
     splineMaxPts:null as WebGLUniformLocation | null,
     edgeMeta:    null as WebGLUniformLocation | null,
-    splinePts:   null as WebGLUniformLocation | null,
+    splineDataTex: null as WebGLUniformLocation | null,
   };
 
   // ── Render uniform locations ──────────────────────────────────────────────
@@ -1063,7 +1065,7 @@ export class ATFlowerParticleRenderer {
     this.uPos.edgeCount    = gl.getUniformLocation(pp, 'u_edgeCount');
     this.uPos.splineMaxPts = gl.getUniformLocation(pp, 'u_splineMaxPts');
     this.uPos.edgeMeta     = gl.getUniformLocation(pp, 'u_edgeMeta');
-    this.uPos.splinePts    = gl.getUniformLocation(pp, 'u_splinePts');
+    this.uPos.splineDataTex = gl.getUniformLocation(pp, 'tSplineData');
 
     const rp = this.renderProg;
     this.uRender.tPos       = gl.getUniformLocation(rp, 'u_tPos');
@@ -1256,9 +1258,24 @@ export class ATFlowerParticleRenderer {
     gl.uniform1i(this.uPos.edgeCount!,     Math.min(this.edges.length, 32));
     gl.uniform1i(this.uPos.splineMaxPts!,  MAX_SPLINE_PTS);
 
-    // Upload spline data as uniform arrays
+    // Upload spline data: edgeMeta as uniform, spline points as data texture
     gl.uniform4fv(this.uPos.edgeMeta!,  this.edgeMetaF32);
-    gl.uniform4fv(this.uPos.splinePts!, this.splinePtsF32);
+
+    // Upload splinePtsF32 into a 32×32 RGBA32F texture (tSplineData)
+    if (!this._splineDataTex) {
+      this._splineDataTex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, this._splineDataTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    const splineTexUnit = 4; // use texture unit 4 (avoid collision with tPos=0, tLife=1, etc.)
+    gl.activeTexture(gl.TEXTURE0 + splineTexUnit);
+    gl.bindTexture(gl.TEXTURE_2D, this._splineDataTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, (gl as WebGL2RenderingContext).RGBA32F,
+      MAX_SPLINE_PTS, 32, 0, gl.RGBA, gl.FLOAT, this.splinePtsF32);
+    gl.uniform1i(this.uPos.splineDataTex!, splineTexUnit);
 
     // Draw fullscreen quad
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);

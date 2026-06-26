@@ -243,11 +243,10 @@ export class GPURenderLoop {
       });
     } catch (e) { console.warn('[GPURenderLoop] ATJellyfishCell init failed (non-fatal):', e); }
 
-    // ── AT Flower Particle renderer (M1225) ──
-    // M1240: ATFlowerParticle disabled — exceeds MAX_FRAGMENT_UNIFORM_VECTORS(1024) on most GPUs
-    // try {
-    //   this.atFlower = new ATFlowerParticleRenderer(canvas, [], { uTimeMultiplier: 0.17, uSize: 8.0 });
-    // } catch (e) { console.warn('[GPURenderLoop] ATFlowerParticleRenderer init failed:', e); }
+    // ── AT Flower Particle renderer (M1225, M1241: uniform→texture fix) ──
+    try {
+      this.atFlower = new ATFlowerParticleRenderer(canvas, [], { uTimeMultiplier: 0.17, uSize: 8.0 });
+    } catch (e) { console.warn('[GPURenderLoop] ATFlowerParticleRenderer init failed (non-fatal):', e); }
 
     // SDF species icon pass
     try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }

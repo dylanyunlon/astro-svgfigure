@@ -113,11 +113,11 @@ uniform float smoothWidth;
 ${LUMA_GLSL}
 
 void main() {
-    vec4 texel = texture2D(tDiffuse, vUv);
+    vec4 texel = texture(tDiffuse, vUv);
     float v = luma(texel.xyz);
     vec4 outputColor = vec4(defaultColor.rgb, defaultOpacity);
     float alpha = smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, v);
-    gl_FragColor = mix(outputColor, texel, alpha);
+    fragColor = mix(outputColor, texel, alpha);
 }
 `;
 
@@ -146,27 +146,27 @@ void main() {
     vec2 tr = vUv + halfPixel;
     vec2 tl = vUv + vec2(-halfPixel.x, halfPixel.y);
 
-    vec3 A = texture2D(tMap, vUv + vec2(-1.0, -1.0) * pxSize).xyz * weights.x;
-    vec3 B = texture2D(tMap, vUv + vec2( 0.0, -1.0) * pxSize).xyz * weights.y;
-    vec3 C = texture2D(tMap, vUv + vec2( 1.0, -1.0) * pxSize).xyz * weights.x;
+    vec3 A = texture(tMap, vUv + vec2(-1.0, -1.0) * pxSize).xyz * weights.x;
+    vec3 B = texture(tMap, vUv + vec2( 0.0, -1.0) * pxSize).xyz * weights.y;
+    vec3 C = texture(tMap, vUv + vec2( 1.0, -1.0) * pxSize).xyz * weights.x;
 
-    vec3 D = texture2D(tMap, br).xyz * weights.z;
-    vec3 E = texture2D(tMap, bl).xyz * weights.z;
-    vec3 F = texture2D(tMap, vUv + vec2(-1.0, 0.0) * pxSize).xyz * weights.y;
+    vec3 D = texture(tMap, br).xyz * weights.z;
+    vec3 E = texture(tMap, bl).xyz * weights.z;
+    vec3 F = texture(tMap, vUv + vec2(-1.0, 0.0) * pxSize).xyz * weights.y;
 
-    vec3 G = texture2D(tMap, vUv).xyz * weights.z;
+    vec3 G = texture(tMap, vUv).xyz * weights.z;
 
-    vec3 H = texture2D(tMap, vUv + vec2( 1.0, 0.0) * pxSize).xyz * weights.y;
-    vec3 I = texture2D(tMap, tl).xyz * weights.z;
-    vec3 J = texture2D(tMap, tr).xyz * weights.z;
+    vec3 H = texture(tMap, vUv + vec2( 1.0, 0.0) * pxSize).xyz * weights.y;
+    vec3 I = texture(tMap, tl).xyz * weights.z;
+    vec3 J = texture(tMap, tr).xyz * weights.z;
 
-    vec3 K = texture2D(tMap, vUv + vec2(-1.0, 1.0) * pxSize).xyz * weights.x;
-    vec3 L = texture2D(tMap, vUv + vec2( 0.0, 1.0) * pxSize).xyz * weights.y;
-    vec3 M = texture2D(tMap, vUv + vec2( 1.0, 1.0) * pxSize).xyz * weights.x;
+    vec3 K = texture(tMap, vUv + vec2(-1.0, 1.0) * pxSize).xyz * weights.x;
+    vec3 L = texture(tMap, vUv + vec2( 0.0, 1.0) * pxSize).xyz * weights.y;
+    vec3 M = texture(tMap, vUv + vec2( 1.0, 1.0) * pxSize).xyz * weights.x;
 
     sum = A + B + C + D + E + F + G + H + I + J + K + L + M;
 
-    gl_FragColor = vec4(sum, 1.0);
+    fragColor = vec4(sum, 1.0);
 }
 `;
 
@@ -195,17 +195,17 @@ void main() {
     vec2 invSize = 1.0 / texSize;
     float fSigma = float(SIGMA);
     float weightSum = gaussianPdf(0.0, fSigma);
-    vec3 diffuseSum = texture2D(colorTexture, vUv).rgb * weightSum;
+    vec3 diffuseSum = texture(colorTexture, vUv).rgb * weightSum;
     for (int i = 1; i < KERNEL_RADIUS; i++) {
         float x = float(i);
         float w = gaussianPdf(x, fSigma);
         vec2 uvOffset = direction * invSize * x;
-        vec3 sample1 = texture2D(colorTexture, vUv + uvOffset).rgb;
-        vec3 sample2 = texture2D(colorTexture, vUv - uvOffset).rgb;
+        vec3 sample1 = texture(colorTexture, vUv + uvOffset).rgb;
+        vec3 sample2 = texture(colorTexture, vUv - uvOffset).rgb;
         diffuseSum += (sample1 + sample2) * w;
         weightSum  += 2.0 * w;
     }
-    gl_FragColor = vec4(diffuseSum / weightSum, 1.0);
+    fragColor = vec4(diffuseSum / weightSum, 1.0);
 }
 `;
 }
@@ -230,22 +230,22 @@ void main() {
     vec2 texelSize = (1.0 / uResolution) * uRadius;
     vec3 sum = vec3(0.0);
 
-    sum += texture2D(tMap, vUv - texelSize).xyz * 0.0625;
-    sum += texture2D(tMap, vUv + vec2(0.0, -texelSize.y)).xyz * 0.125;
-    sum += texture2D(tMap, vUv + vec2(texelSize.x, -texelSize.y)).xyz * 0.0625;
+    sum += texture(tMap, vUv - texelSize).xyz * 0.0625;
+    sum += texture(tMap, vUv + vec2(0.0, -texelSize.y)).xyz * 0.125;
+    sum += texture(tMap, vUv + vec2(texelSize.x, -texelSize.y)).xyz * 0.0625;
 
-    sum += texture2D(tMap, vUv - vec2(texelSize.x, 0.0)).xyz * 0.125;
-    sum += texture2D(tMap, vUv).xyz * 0.25;
-    sum += texture2D(tMap, vUv + vec2(texelSize.x, 0.0)).xyz * 0.125;
+    sum += texture(tMap, vUv - vec2(texelSize.x, 0.0)).xyz * 0.125;
+    sum += texture(tMap, vUv).xyz * 0.25;
+    sum += texture(tMap, vUv + vec2(texelSize.x, 0.0)).xyz * 0.125;
 
-    sum += texture2D(tMap, vUv + texelSize).xyz * 0.0625;
-    sum += texture2D(tMap, vUv + vec2(0.0, texelSize.y)).xyz * 0.125;
-    sum += texture2D(tMap, vUv + vec2(-texelSize.x, texelSize.y)).xyz * 0.0625;
+    sum += texture(tMap, vUv + texelSize).xyz * 0.0625;
+    sum += texture(tMap, vUv + vec2(0.0, texelSize.y)).xyz * 0.125;
+    sum += texture(tMap, vUv + vec2(-texelSize.x, texelSize.y)).xyz * 0.0625;
 
-    vec3 next = texture2D(tNext, vUv).xyz;
+    vec3 next = texture(tNext, vUv).xyz;
     next += min(vec3(1.0), sum * uIntensity) * uTint;
 
-    gl_FragColor = vec4(next, 1.0);
+    fragColor = vec4(next, 1.0);
 }
 `;
 
@@ -270,12 +270,12 @@ float lerpBloomFactor(const in float factor) {
 }
 
 void main() {
-    vec4 scene = texture2D(tScene, vUv);
+    vec4 scene = texture(tScene, vUv);
     vec4 bloom = bloomStrength
-               * (lerpBloomFactor(1.0) * vec4(bloomTintColor, 1.0) * texture2D(blurTexture1, vUv));
+               * (lerpBloomFactor(1.0) * vec4(bloomTintColor, 1.0) * texture(blurTexture1, vUv));
     vec4 color = scene;
     color.rgb += bloom.rgb;
-    gl_FragColor = color;
+    fragColor = color;
 }
 `;
 
