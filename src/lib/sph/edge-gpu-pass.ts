@@ -76,7 +76,9 @@ vec2 bezierTangent(float t) {
 }
 
 vec2 pxToNDC(vec2 px) {
-    return (px / uResolution) * 2.0 - 1.0;
+    // pixel Y=0 is top-left; NDC Y=+1 is top → flip Y
+    vec2 uv = px / uResolution;
+    return vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
 }
 
 void main() {
@@ -339,6 +341,9 @@ export class EdgeGPU {
 
     gl.useProgram(this.edgeProg);
 
+    // set viewport to match canvas dimensions
+    gl.viewport(0, 0, this.config.canvasWidth, this.config.canvasHeight);
+
     // 绑定共享 strip geometry
     gl.bindBuffer(gl.ARRAY_BUFFER, this.stripBuf);
 
@@ -459,12 +464,14 @@ export class EdgeGPU {
     let idx = 0;
     for (let i = 0; i <= segments; i++) {
       const t = i / segments;
-      // left side  (a_side = -1)
-      data[idx++] = t;
-      data[idx++] = -1.0;
-      // right side (a_side = +1)
+      // right side first (a_side = +1), then left (a_side = -1)
+      // this gives consistent CCW winding across the strip:
+      //   quad[i]: (t_i,+1) (t_i,-1) (t_{i+1},+1) (t_{i+1},-1)
       data[idx++] = t;
       data[idx++] =  1.0;
+      // left side (a_side = -1)
+      data[idx++] = t;
+      data[idx++] = -1.0;
     }
 
     this.stripBuf   = gl.createBuffer()!;
