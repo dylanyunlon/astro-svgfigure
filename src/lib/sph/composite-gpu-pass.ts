@@ -25,13 +25,13 @@
  *   • 真实 gl.bindTexture × 6 (units 0-5)
  *   • 真实 gl.bindFramebuffer(null) + gl.drawArrays
  *   • 从 compiled.vs 通过 getShader() 提取 AT shader
- *   • WebGL1 语法 (varying / texture2D)
+ *   • WebGL2 语法 (GLSL 300 es)
  */
 
 
 
 
-// ─── Vertex shader (WebGL1, fullscreen quad) ─────────────────────────────────
+// ─── Vertex shader (WebGL2, fullscreen quad) ─────────────────────────────────
 
 
 
@@ -39,20 +39,22 @@
 import { getShader } from '../shaders/ShaderLoader';
 
 const COMPOSITE_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
 }
 `;
 
-// ─── Fragment shader (~50 行, WebGL1) ────────────────────────────────────────
+// ─── Fragment shader (~50 行, WebGL2) ────────────────────────────────────────
 // 手写合成 shader (非从 compiled.vs 提取, 因 compiled.vs 无 composite.fs entry).
 // AT 惯例: 最终合成 shader 内联于 ts 文件 (参见 at-scene-composite-shaders.ts).
 
 const COMPOSITE_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
 
 // 6 输入层
@@ -71,7 +73,9 @@ uniform vec3  uShadowColor;      // 暗部色调     (default vec3(0.05,0.02,0.0
 uniform vec3  uHighlightColor;   // 亮部色调     (default vec3(1.0,0.98,0.95))
 uniform vec2  uResolution;       // 画布分辨率 (px)
 
-varying vec2 vUv;
+in vec2 vUv;
+
+out vec4 fragColor;
 
 // ── Screen blend ─────────────────────────────────────────────────────────────
 vec3 blendScreen(vec3 base, vec3 blend) {
@@ -101,17 +105,17 @@ void main() {
     vec2 uv = vUv;
 
     // ── 1. fluid UV distortion (subtle, 扭曲后续所有采样) ────────────────────
-    vec2 fluidVel = texture2D(uFluid, uv).rg;           // velocity in [0,1]
+    vec2 fluidVel = texture(uFluid, uv).rg;           // velocity in [0,1]
     fluidVel = (fluidVel - 0.5) * 2.0;                  // remap → [-1, 1]
     vec2 distortedUv = uv + fluidVel * 0.004;           // 0.4% 最大偏移
     distortedUv = clamp(distortedUv, 0.0, 1.0);
 
     // ── 2. 采样所有层 (全部用 distortedUv 保持一致扭曲) ──────────────────────
-    vec4 cellColor     = texture2D(uCell,     distortedUv);
-    vec4 edgeColor     = texture2D(uEdge,     distortedUv);
-    vec4 particleColor = texture2D(uParticle, distortedUv);
-    vec4 bloomColor    = texture2D(uBloom,    distortedUv);
-    float shadowMask   = texture2D(uShadow,   distortedUv).r; // 0=dark, 1=lit
+    vec4 cellColor     = texture(uCell,     distortedUv);
+    vec4 edgeColor     = texture(uEdge,     distortedUv);
+    vec4 particleColor = texture(uParticle, distortedUv);
+    vec4 bloomColor    = texture(uBloom,    distortedUv);
+    float shadowMask   = texture(uShadow,   distortedUv).r; // 0=dark, 1=lit
 
     // ── 3. Z-order 合成 ──────────────────────────────────────────────────────
     // 底层: cell 乘以 shadow 遮罩
@@ -143,7 +147,7 @@ void main() {
     // color grading
     composite = colorGrade(composite);
 
-    gl_FragColor = vec4(clamp(composite, 0.0, 1.0), 1.0);
+    fragColor = vec4(clamp(composite, 0.0, 1.0), 1.0);
 }
 `;
 
@@ -347,7 +351,7 @@ export class CompositeGPU {
     gl.deleteBuffer(this.quadBuf);
   }
 
-  // ─── 内部: 编译 WebGL1 shader ──────────────────────────────────────────────
+  // ─── 内部: 编译 WebGL2 shader ──────────────────────────────────────────────
 
   private _compile(vert: string, frag: string, label: string): WebGLProgram {
     const gl = this.gl;

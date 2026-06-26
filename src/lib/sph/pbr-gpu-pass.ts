@@ -25,15 +25,10 @@
  * Output: renders to FBO (WebGLFramebuffer + WebGLTexture) — downstream
  * consumers read pbrTexture for composite pass.
  *
- * WebGL2 (GLSL 300 es) — no #version 300 es, no gl_FragData[1], no OES_draw_buffers.
+ * WebGL2 — GLSL 300 es
  */
 
 // ─── Cell species type (mirrors CellMaterial.ts) ────────────────────────────
-
-
-
-
-
 
 
 
@@ -162,6 +157,8 @@ uniform vec3  uLightDir;    // normalised world-space light direction
 uniform vec3  uLightColor;  // HDR light RGB
 uniform vec3  uAmbient;     // ambient / sky colour
 
+out vec4 fragColor;
+
 // ── Schlick Fresnel ──────────────────────────────────────────────────────────
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(max(1.0 - cosTheta, 0.0), 5.0);
@@ -231,7 +228,6 @@ void main() {
     color = color / (color + vec3(1.0));
     color = pow(color, vec3(1.0 / 2.2));
 
-out vec4 fragColor;
     fragColor = vec4(color, 1.0);
 }
 `;

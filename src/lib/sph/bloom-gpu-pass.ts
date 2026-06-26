@@ -4,7 +4,7 @@
  * 这不是空壳。每个函数都调用 gl.*。
  * 4级FBO金字塔: luminosity extract → downsample → gaussian blur → upsample → composite
  * 从 compiled.vs 通过 ShaderLoader 提取 AT 生产 shader 源码。
- * WebGL1 语法 (varying/texture2D)
+ * WebGL2 语法 (GLSL 300 es)
  *
  * Pass 链 (每帧):
  *   luminosity extract → downsample ×4 → gaussian blur H+V 每级 → upsample ×4 → additive composite
@@ -14,7 +14,7 @@
 
 import { getShader } from '../shaders/ShaderLoader';
 
-// ─── WebGL1 全屏 quad vertex shader ──────────────────────────────────────────
+// ─── WebGL2 全屏 quad vertex shader ──────────────────────────────────────────
 
 const BLOOM_VERT = /* glsl */ `
 #version 300 es
@@ -36,13 +36,13 @@ in vec2 vUv;
 uniform sampler2D uInput;
 uniform float uThreshold;
 uniform float uKnee;
+out vec4 fragColor;
 void main() {
     vec4 c = texture(uInput, vUv);
     float lum = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
     float rq = clamp(lum - uThreshold + uKnee, 0.0, 2.0 * uKnee);
     rq = (uKnee > 0.0) ? (rq * rq) / (4.0 * uKnee + 0.00001) : 0.0;
     float w = max(rq, lum - uThreshold) / max(lum, 0.00001);
-out vec4 fragColor;
     fragColor = vec4(c.rgb * w, c.a);
 }
 `;
@@ -56,6 +56,7 @@ in vec2 vUv;
 uniform sampler2D uInput;
 uniform vec2 uTexelSize;
 uniform vec2 uDir;
+out vec4 fragColor;
 void main() {
     vec2 off1 = 1.3333333 * uDir * uTexelSize;
     vec2 off2 = 3.1111111 * uDir * uTexelSize;
@@ -64,7 +65,6 @@ void main() {
     c += texture(uInput, vUv - off1) * 0.35294117;
     c += texture(uInput, vUv + off2) * 0.05882352;
     c += texture(uInput, vUv - off2) * 0.05882352;
-out vec4 fragColor;
     fragColor = c;
 }
 `;
@@ -85,6 +85,7 @@ uniform sampler2D uBloom3;
 uniform float uStrength;
 uniform float uRadius;
 uniform vec3  uTintColor;
+out vec4 fragColor;
 void main() {
     vec4 base = texture(uBase, vUv);
     // radius 越大，模糊层权重越高 → 光晕越宽
@@ -98,7 +99,6 @@ void main() {
     bloom += texture(uBloom3, vUv) * w3;
     // 暖色色调: bloom.rgb 乘以 tint
     bloom.rgb *= uTintColor;
-out vec4 fragColor;
     fragColor = base + bloom * uStrength;
 }
 `;
@@ -112,10 +112,10 @@ in vec2 vUv;
 uniform sampler2D uCurrent;
 uniform sampler2D uUpper;
 uniform float uWeight;
+out vec4 fragColor;
 void main() {
     vec4 cur = texture(uCurrent, vUv);
     vec4 up  = texture(uUpper, vUv);
-out vec4 fragColor;
     fragColor = cur + up * uWeight;
 }
 `;
@@ -192,7 +192,7 @@ export class BloomGPU {
     const gl = this.gl;
 
     // 尝试从 compiled.vs 提取 AT bloom shader;
-    // 若不存在则回退到内联 GLSL (WebGL1)
+    // 若不存在则回退到内联 GLSL (WebGL2)
     let lumFrag: string;
     try {
       lumFrag = getShader('bloom-luminosity.fs');
