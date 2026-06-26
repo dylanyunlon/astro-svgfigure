@@ -596,22 +596,28 @@ export class GPURenderLoop {
     }
 
     // ── Pass 5b: Lumen GI (Screen-Space Global Illumination) ──
+    // M1225: feed the real PBR G-Buffer textures instead of placeholders.
     if (this.lumenGI) {
       const t = this.perf.passStart('ssgi');
       try {
         const placeholder = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
+        // Use real G-Buffer textures from the MRT PBR pass when available.
+        const depthTex     = this.pbr ? this.pbr.depthTexture     : placeholder;
+        const normalTex    = this.pbr ? this.pbr.normalTexture    : placeholder;
+        const albedoTex    = this.pbr ? this.pbr.albedoTexture    : cellTex;
+        const roughnessTex = this.pbr ? this.pbr.roughnessTexture : placeholder;
         this.lumenGI.render(dt, {
-          depthTex: placeholder,
-          normalTex: placeholder,
-          albedoTex: cellTex,
-          roughnessTex: placeholder,
+          depthTex,
+          normalTex,
+          albedoTex,
+          roughnessTex,
           sceneColorTex: cellTex,
           viewMatrix: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
           projMatrix: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
           cameraPos: [0, 0, 5],
           frameIndex: this.frameCount,
         }, W, H);
-      } catch (e) { /* non-fatal — SSGI may need G-Buffer for full quality */ }
+      } catch (e) { /* non-fatal — SSGI degrades gracefully without G-Buffer */ }
       this.perf.passEnd('ssgi', t);
     }
 

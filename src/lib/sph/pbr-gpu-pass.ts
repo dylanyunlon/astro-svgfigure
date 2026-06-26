@@ -10,6 +10,12 @@
  * Vertex shader: cell position / size uniform → fullscreen quad per cell.
  * 每个 cell 独立 gl.uniform* + gl.drawArrays 调用 → 50+ real gl calls.
  *
+ * MRT G-Buffer layout (M1225):
+ *   COLOR_ATTACHMENT0 → gAlbedo   (rgb=albedo,   a=metallic)
+ *   COLOR_ATTACHMENT1 → gNormal   (rgb=view-space normal, a=unused)
+ *   COLOR_ATTACHMENT2 → gRoughAO  (r=roughness,  g=AO, ba=unused)
+ *   COLOR_ATTACHMENT3 → gDepth    (r=linear depth 0..1, gba=unused)
+ *
  * Species metallic mapping:
  *   cil-bolt     → metallic 0.8   (Chain/Spine, high metallic)
  *   cil-eye      → metallic 0.1
@@ -22,8 +28,8 @@
  *   cil-loop     → metallic 0.25
  *   cil-graph    → metallic 0.35
  *
- * Output: renders to FBO (WebGLFramebuffer + WebGLTexture) — downstream
- * consumers read pbrTexture for composite pass.
+ * Output: renders to FBO (MRT, 4 attachments) — downstream consumers
+ * read individual G-Buffer textures for SSGI / composite passes.
  *
  * WebGL2 — GLSL 300 es
  */
@@ -139,8 +145,14 @@ void main() {
 }
 `;
 
-// ─── Fragment shader (~60 lines of real GLSL) ────────────────────────────────
+// ─── Fragment shader — MRT G-Buffer output ───────────────────────────────────
 // Schlick Fresnel + GGX NDF + Smith G + Lambert diffuse = Cook-Torrance PBR.
+// Outputs to 4 render targets for SSGI consumption.
+//
+//   layout(location=0) gAlbedo   — rgb=albedo,        a=metallic
+//   layout(location=1) gNormal   — rgb=view-space N,  a=1
+//   layout(location=2) gRoughAO  — r=roughness,       g=AO, ba=0
+//   layout(location=3) gDepthOut — r=linear depth,    gba=0
 
 const PBR_FRAG = /* glsl */ `
 #version 300 es
@@ -157,7 +169,11 @@ uniform vec3  uLightDir;    // normalised world-space light direction
 uniform vec3  uLightColor;  // HDR light RGB
 uniform vec3  uAmbient;     // ambient / sky colour
 
-out vec4 fragColor;
+// ── MRT outputs ─────────────────────────────────────────────────────────────
+layout(location = 0) out vec4 gAlbedo;    // rgb=albedo,       a=metallic
+layout(location = 1) out vec4 gNormal;    // rgb=view-space N, a=1
+layout(location = 2) out vec4 gRoughAO;  // r=roughness,      g=AO
+layout(location = 3) out vec4 gDepthOut; // r=linear depth
 
 // ── Schlick Fresnel ──────────────────────────────────────────────────────────
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
@@ -224,21 +240,39 @@ void main() {
     vec3  ambient = uAmbient * uAlbedo * (1.0 - uMetallic * 0.5);
     vec3  color   = ambient + Lo;
 
-    // ── Reinhard tone-map + gamma ─────────────────────────────────────────────
-    color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0 / 2.2));
+    // Approximate AO from hemisphere curvature (centre = 1, edge = 0.5)
+    float ao   = mix(0.5, 1.0, max(0.0, dot(N, V)));
 
-    fragColor = vec4(color, 1.0);
+    // Linear depth — z in NDC is 0 (we use orthographic flat scene)
+    // Encode sphere depth: centre=0 (closest), silhouette=1 (furthest)
+    float depth = 1.0 - N.z;  // 0 at front, ~1 at silhouette
+
+    // ── Reinhard tone-map + gamma (for the albedo output only) ───────────────
+    vec3  tonemapped = color / (color + vec3(1.0));
+    tonemapped = pow(tonemapped, vec3(1.0 / 2.2));
+
+    // ── MRT writes ───────────────────────────────────────────────────────────
+    gAlbedo   = vec4(tonemapped, uMetallic);        // attachment 0
+    gNormal   = vec4(N * 0.5 + 0.5, 1.0);          // attachment 1 — encode [-1,1]→[0,1]
+    gRoughAO  = vec4(uRoughness, ao, 0.0, 0.0);     // attachment 2
+    gDepthOut = vec4(depth, 0.0, 0.0, 1.0);         // attachment 3
 }
 `;
 
-// ─── FBO wrapper ─────────────────────────────────────────────────────────────
+// ─── MRT FBO wrapper ──────────────────────────────────────────────────────────
 
-interface PBRTarget {
-  fbo:     WebGLFramebuffer;
-  texture: WebGLTexture;
-  width:   number;
-  height:  number;
+interface PBRMRTTarget {
+  fbo:             WebGLFramebuffer;
+  // attachment 0 — albedo (rgb) + metallic (a)
+  albedoTex:       WebGLTexture;
+  // attachment 1 — view-space normal (rgb), a=1
+  normalTex:       WebGLTexture;
+  // attachment 2 — roughness (r) + AO (g)
+  roughnessTex:    WebGLTexture;
+  // attachment 3 — linear depth (r)
+  depthTex:        WebGLTexture;
+  width:           number;
+  height:          number;
 }
 
 // ─── PBRCellGPU ─────────────────────────────────────────────────────────────
@@ -247,7 +281,7 @@ export class PBRCellGPU {
   private gl:      WebGL2RenderingContext;
   private prog!:   WebGLProgram;
   private quadBuf!: WebGLBuffer;
-  private fboTarget!: PBRTarget;
+  private mrtTarget!: PBRMRTTarget;
 
   // Uniform locations cache
   private uCellPos!:    WebGLUniformLocation;
@@ -262,6 +296,9 @@ export class PBRCellGPU {
   // Attribute location
   private aCorner!: number;
 
+  // ── Expose individual program for UIL uniform injection ──────────────────
+  get program(): WebGLProgram { return this.prog; }
+
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this._compileProgram();
@@ -272,81 +309,112 @@ export class PBRCellGPU {
   // ── Public API ──────────────────────────────────────────────────────────────
 
   /**
-   * Ensure (or resize) the output FBO.
+   * Ensure (or resize) the MRT output FBO with 4 color attachments.
    * Call once per resize / init before renderCells().
+   *
+   *   COLOR_ATTACHMENT0 → albedo + metallic
+   *   COLOR_ATTACHMENT1 → view-space normal
+   *   COLOR_ATTACHMENT2 → roughness + AO
+   *   COLOR_ATTACHMENT3 → linear depth
    */
   initFBO(width: number, height: number): void {
     const gl = this.gl;
 
-    // Destroy old FBO if exists
-    if (this.fboTarget) {
-      gl.deleteFramebuffer(this.fboTarget.fbo);
-      gl.deleteTexture(this.fboTarget.texture);
+    // Destroy old MRT target if exists
+    if (this.mrtTarget) {
+      gl.deleteFramebuffer(this.mrtTarget.fbo);
+      gl.deleteTexture(this.mrtTarget.albedoTex);
+      gl.deleteTexture(this.mrtTarget.normalTex);
+      gl.deleteTexture(this.mrtTarget.roughnessTex);
+      gl.deleteTexture(this.mrtTarget.depthTex);
     }
 
-    // gl.createTexture — real call #1
-    const texture = gl.createTexture()!;
-    // gl.bindTexture — real call #2
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    // gl.texImage2D — real call #3
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0,
-                  gl.RGBA, gl.UNSIGNED_BYTE, null);
-    // gl.texParameteri × 4 — real calls #4–7
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+    // Helper: create + configure a RGBA8 texture for one G-Buffer attachment
+    const makeTex = (): WebGLTexture => {
+      const tex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0,
+                    gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      return tex;
+    };
 
-    // gl.createFramebuffer — real call #8
+    // Create the 4 G-Buffer textures
+    const albedoTex    = makeTex();   // attachment 0
+    const normalTex    = makeTex();   // attachment 1
+    const roughnessTex = makeTex();   // attachment 2
+    const depthTex     = makeTex();   // attachment 3
+
+    // Create and configure the MRT framebuffer
     const fbo = gl.createFramebuffer()!;
-    // gl.bindFramebuffer — real call #9
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    // gl.framebufferTexture2D — real call #10
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
-                            gl.TEXTURE_2D, texture, 0);
-    // gl.bindFramebuffer (restore) — real call #11
+
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, albedoTex,    0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, normalTex,    0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, roughnessTex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, depthTex,     0);
+
+    // Tell the driver we write to all 4 attachments
+    gl.drawBuffers([
+      gl.COLOR_ATTACHMENT0,
+      gl.COLOR_ATTACHMENT1,
+      gl.COLOR_ATTACHMENT2,
+      gl.COLOR_ATTACHMENT3,
+    ]);
+
+    // Validate FBO completeness
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      console.warn(`[PBRCellGPU] MRT FBO incomplete: 0x${status.toString(16)}`);
+    }
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-    this.fboTarget = { fbo, texture, width, height };
+    this.mrtTarget = { fbo, albedoTex, normalTex, roughnessTex, depthTex, width, height };
   }
 
   /**
-   * Render all cells into the PBR FBO.
+   * Render all cells into the PBR MRT G-Buffer FBO.
    * Each cell produces ≥5 gl calls → 10 cells → 50+ calls easily.
    */
   renderCells(cells: CellPBRDescriptor[]): void {
-    if (!this.fboTarget) {
+    if (!this.mrtTarget) {
       throw new Error('[PBRCellGPU] initFBO() must be called before renderCells()');
     }
 
     const gl = this.gl;
 
-    // ── Bind FBO — real call ──────────────────────────────────────────────────
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboTarget.fbo);
-    // gl.viewport — real call
-    gl.viewport(0, 0, this.fboTarget.width, this.fboTarget.height);
-    // gl.clearColor — real call
+    // ── Bind MRT FBO ─────────────────────────────────────────────────────────
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.mrtTarget.fbo);
+
+    // Re-declare draw buffers on every bind (required by some drivers)
+    gl.drawBuffers([
+      gl.COLOR_ATTACHMENT0,
+      gl.COLOR_ATTACHMENT1,
+      gl.COLOR_ATTACHMENT2,
+      gl.COLOR_ATTACHMENT3,
+    ]);
+
+    gl.viewport(0, 0, this.mrtTarget.width, this.mrtTarget.height);
     gl.clearColor(0.0, 0.0, 0.0, 0.0);
-    // gl.clear — real call
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    // ── Use PBR program — real call ───────────────────────────────────────────
+    // ── Use PBR program ───────────────────────────────────────────────────────
     gl.useProgram(this.prog);
 
-    // ── Bind quad VBO — real call ─────────────────────────────────────────────
+    // ── Bind quad VBO ─────────────────────────────────────────────────────────
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
-    // gl.enableVertexAttribArray — real call
     gl.enableVertexAttribArray(this.aCorner);
-    // gl.vertexAttribPointer — real call
     gl.vertexAttribPointer(this.aCorner, 2, gl.FLOAT, false, 0, 0);
 
-    // ── Scene-level uniforms (light + ambient) — real calls ───────────────────
-    // uLightDir — real call
-    gl.uniform3f(this.uLightDir, 0.577, 0.577, 0.577);
-    // uLightColor — real call
-    gl.uniform3f(this.uLightColor, 1.2, 1.15, 1.10);
-    // uAmbient — real call
-    gl.uniform3f(this.uAmbient, 0.08, 0.09, 0.12);
+    // ── Scene-level uniforms (light + ambient) ────────────────────────────────
+    gl.uniform3f(this.uLightDir,   0.577, 0.577, 0.577);
+    gl.uniform3f(this.uLightColor, 1.2,   1.15,  1.10);
+    gl.uniform3f(this.uAmbient,    0.08,  0.09,  0.12);
 
     // ── Per-cell draw loop ────────────────────────────────────────────────────
     for (const cell of cells) {
@@ -354,28 +422,48 @@ export class PBRCellGPU {
       const roughness = cell.roughness ?? SPECIES_ROUGHNESS[cell.species] ?? 0.5;
       const albedo    = cell.albedo    ?? SPECIES_ALBEDO[cell.species]    ?? [0.8, 0.8, 0.8];
 
-      // gl.uniform2f uCellPos — real call
-      gl.uniform2f(this.uCellPos, cell.x, cell.y);
-      // gl.uniform1f uCellSize — real call
+      gl.uniform2f(this.uCellPos,  cell.x, cell.y);
       gl.uniform1f(this.uCellSize, cell.size);
-      // gl.uniform3f uAlbedo — real call
-      gl.uniform3f(this.uAlbedo, albedo[0], albedo[1], albedo[2]);
-      // gl.uniform1f uMetallic — real call
-      gl.uniform1f(this.uMetallic, metallic);
-      // gl.uniform1f uRoughness — real call
+      gl.uniform3f(this.uAlbedo,   albedo[0], albedo[1], albedo[2]);
+      gl.uniform1f(this.uMetallic,  metallic);
       gl.uniform1f(this.uRoughness, roughness);
 
-      // gl.drawArrays — real call (TRIANGLES × 6 vertices = 2 triangles = 1 quad)
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
-    // ── Restore default FBO — real call ──────────────────────────────────────
+    // ── Restore default FBO ───────────────────────────────────────────────────
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  /** Expose the rendered texture for downstream composite passes. */
+  // ── G-Buffer texture getters (for SSGI / downstream passes) ──────────────
+
+  /** Albedo (rgb) + metallic (a) — COLOR_ATTACHMENT0 */
+  get albedoTexture(): WebGLTexture {
+    return this.mrtTarget.albedoTex;
+  }
+
+  /** View-space normal encoded to [0,1] — COLOR_ATTACHMENT1 */
+  get normalTexture(): WebGLTexture {
+    return this.mrtTarget.normalTex;
+  }
+
+  /** Roughness (r) + AO (g) — COLOR_ATTACHMENT2 */
+  get roughnessTexture(): WebGLTexture {
+    return this.mrtTarget.roughnessTex;
+  }
+
+  /** Linear depth (r) — COLOR_ATTACHMENT3 */
+  get depthTexture(): WebGLTexture {
+    return this.mrtTarget.depthTex;
+  }
+
+  /**
+   * pbrTexture — compatibility alias for composite pass.
+   * Returns the albedo G-Buffer (attachment 0) which carries
+   * tone-mapped color — same role as the old single-output texture.
+   */
   get pbrTexture(): WebGLTexture {
-    return this.fboTarget.texture;
+    return this.mrtTarget.albedoTex;
   }
 
   /**
@@ -398,11 +486,14 @@ export class PBRCellGPU {
   /** Release all GPU resources. */
   dispose(): void {
     const gl = this.gl;
-    if (this.prog)     gl.deleteProgram(this.prog);
-    if (this.quadBuf)  gl.deleteBuffer(this.quadBuf);
-    if (this.fboTarget) {
-      gl.deleteFramebuffer(this.fboTarget.fbo);
-      gl.deleteTexture(this.fboTarget.texture);
+    if (this.prog)    gl.deleteProgram(this.prog);
+    if (this.quadBuf) gl.deleteBuffer(this.quadBuf);
+    if (this.mrtTarget) {
+      gl.deleteFramebuffer(this.mrtTarget.fbo);
+      gl.deleteTexture(this.mrtTarget.albedoTex);
+      gl.deleteTexture(this.mrtTarget.normalTex);
+      gl.deleteTexture(this.mrtTarget.roughnessTex);
+      gl.deleteTexture(this.mrtTarget.depthTex);
     }
   }
 
@@ -412,38 +503,28 @@ export class PBRCellGPU {
   private _compileProgram(): void {
     const gl = this.gl;
 
-    // gl.createShader VERTEX — real call
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    // gl.shaderSource — real call
     gl.shaderSource(vs, PBR_VERT);
-    // gl.compileShader — real call
     gl.compileShader(vs);
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
       throw new Error(`[PBRCellGPU] vert compile: ${gl.getShaderInfoLog(vs)}`);
     }
 
-    // gl.createShader FRAGMENT — real call
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    // gl.shaderSource — real call
     gl.shaderSource(fs, PBR_FRAG);
-    // gl.compileShader — real call
     gl.compileShader(fs);
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
       throw new Error(`[PBRCellGPU] frag compile: ${gl.getShaderInfoLog(fs)}`);
     }
 
-    // gl.createProgram — real call
     const prog = gl.createProgram()!;
-    // gl.attachShader × 2 — real calls
     gl.attachShader(prog, vs);
     gl.attachShader(prog, fs);
-    // gl.linkProgram — real call
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
       throw new Error(`[PBRCellGPU] link: ${gl.getProgramInfoLog(prog)}`);
     }
 
-    // gl.deleteShader × 2 — real calls (shader objs no longer needed post-link)
     gl.deleteShader(vs);
     gl.deleteShader(fs);
 
@@ -453,11 +534,8 @@ export class PBRCellGPU {
   /** Upload fullscreen-quad (6 vertices, 2 triangles). */
   private _createQuad(): void {
     const gl = this.gl;
-    // gl.createBuffer — real call
     this.quadBuf = gl.createBuffer()!;
-    // gl.bindBuffer — real call
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
-    // gl.bufferData — real call
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
       -1, -1,   1, -1,  -1,  1,
       -1,  1,   1, -1,   1,  1,
@@ -469,10 +547,8 @@ export class PBRCellGPU {
     const gl   = this.gl;
     const prog = this.prog;
 
-    // gl.getAttribLocation — real call
     this.aCorner    = gl.getAttribLocation(prog, 'aCorner');
 
-    // gl.getUniformLocation × 8 — real calls
     this.uCellPos    = gl.getUniformLocation(prog, 'uCellPos')!;
     this.uCellSize   = gl.getUniformLocation(prog, 'uCellSize')!;
     this.uAlbedo     = gl.getUniformLocation(prog, 'uAlbedo')!;
