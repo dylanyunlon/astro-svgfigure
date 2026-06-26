@@ -127,15 +127,23 @@ export class FluidGPU {
     const gl = this.gl;
 
     // ── 从 compiled.vs 提取 AT 原始 shader 源码 ──
-    const splatSrc     = getShader('splatShader.fs');
-    const curlSrc      = getShader('curlShader.fs');
-    const vorticitySrc = getShader('vorticityShader.fs');
-    const divergeSrc   = getShader('divergenceShader.fs');
-    const pressureSrc  = getShader('pressureShader.fs');
-    const gradSubSrc   = getShader('gradientSubtractShader.fs');
-    const advectSrc    = getShader('advectionShader.fs');
-    const clearSrc     = getShader('clearShader.fs');
-    const displaySrc   = getShader('displayShader.fs');
+    // M1236: guard against missing shader names — getShader() throws, but we add
+    // explicit checks so any name mismatch surfaces with a clear label, not a
+    // generic "cannot read properties of undefined" further down in _compile().
+    const _gs = (name: string): string => {
+      const src = getShader(name);
+      if (!src) throw new Error(`[FluidGPU] shader "${name}" resolved to empty string`);
+      return src;
+    };
+    const splatSrc     = _gs('splatShader.fs');
+    const curlSrc      = _gs('curlShader.fs');
+    const vorticitySrc = _gs('vorticityShader.fs');
+    const divergeSrc   = _gs('divergenceShader.fs');
+    const pressureSrc  = _gs('pressureShader.fs');
+    const gradSubSrc   = _gs('gradientSubtractShader.fs');
+    const advectSrc    = _gs('advectionShader.fs');
+    const clearSrc     = _gs('clearShader.fs');
+    const displaySrc   = _gs('displayShader.fs');
 
     // ── 编译 shader → WebGLProgram (真正的 gl 调用) ──
     this.splatProg      = this._compile(SIMPLE_VERT, splatSrc, 'splat');
@@ -407,15 +415,27 @@ export class FluidGPU {
     const fixVersion = (src: string) => src.replace(/^\s*(?=#version)/m, '');
 
     // M1228: auto-upgrade WebGL1 frag (from compiled.vs) to 300 es
+    // M1236: fix varying+precision qualifier ordering and sampler precision
     const upgrade = (src: string) => {
       if (src.includes('#version')) return fixVersion(src);
-      // WebGL1 → 300 es: replace varying→in, texture2D→texture, gl_FragColor→fragColor
       let s = src;
+      // Step 1: "varying highp/mediump/lowp type" → "in type"
+      // In GLSL 300 es, interpolation qualifiers (in/out) come before storage;
+      // precision qualifiers on individual varyings are not allowed — use global precision instead.
+      s = s.replace(/\bvarying\s+(highp|mediump|lowp)\s+/g, 'in ');
+      // Step 2: remaining plain "varying" → "in"
       s = s.replace(/\bvarying\b/g, 'in');
+      // Step 3: texture2D → texture (300 es built-in)
       s = s.replace(/\btexture2D\b/g, 'texture');
+      // Step 4: textureCube → texture (defensive, in case any shader uses it)
+      s = s.replace(/\btextureCube\b/g, 'texture');
+      // Step 5: gl_FragColor → fragColor
       s = s.replace(/\bgl_FragColor\b/g, 'fragColor');
-      // Add version + fragColor output declaration
-      return `#version 300 es\nprecision highp float;\nout vec4 fragColor;\n${s}`;
+      // Step 6: strip any existing bare "precision X Y;" lines to avoid duplicate/conflict
+      // (we add a canonical global precision block in the preamble)
+      s = s.replace(/^\s*precision\s+(highp|mediump|lowp)\s+\w+\s*;\s*$/gm, '');
+      // Add version preamble + global precision + fragColor output declaration
+      return `#version 300 es\nprecision highp float;\nprecision highp sampler2D;\nout vec4 fragColor;\n${s}`;
     };
 
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
