@@ -909,8 +909,8 @@ export class GPURenderLoop {
 
     this.perf.frameEnd();
 
-    // ── Log perf stats every 120 frames ──
-    if (this.frameCount % 120 === 0) {
+    // ── Log perf stats once (frame 60 — after init settles) ──
+    if (this.frameCount === 60) {
       console.log('[GPURenderLoop] perf:', this.perf.stats);
     }
   }
