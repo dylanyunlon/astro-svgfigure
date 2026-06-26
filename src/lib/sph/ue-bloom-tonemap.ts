@@ -240,6 +240,7 @@ void main() {
  */
 const TONEMAP_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 uniform sampler2D tScene;
 uniform sampler2D tBloom;
 uniform float bloomStrength;

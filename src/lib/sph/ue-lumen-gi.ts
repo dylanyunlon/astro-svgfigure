@@ -160,7 +160,7 @@ vec2 sampleEqui(vec3 dir) {
                 asin(clamp(dir.y, -1.0, 1.0)) * 0.31830988618 + 0.5);
 }
 vec3 envColorEqui(sampler2D envMap, vec3 dir) {
-    return texture2D(envMap, sampleEqui(dir)).rgb;
+    return texture(envMap, sampleEqui(dir)).rgb;
 }
 `;
 
@@ -192,8 +192,8 @@ vec3 fresnelSchlick(vec3 f0, float cosTheta) {
 
 const QUAD_VERT = /* glsl */`#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
@@ -209,8 +209,8 @@ void main() {
 
 const RADIANCE_COLLECT_VERT = /* glsl */`#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 uniform vec2 uProbeDir;    // principal probe direction for this batch
 void main() {
     vUv = aPosition * 0.5 + 0.5;
@@ -223,7 +223,7 @@ precision highp float;
 ${RANGE_GLSL}
 ${SIMPLENOISE_GLSL}
 
-varying vec2 vUv;
+in vec2 vUv;
 
 // Cell SDF data packed into texture: each cell = 2 texels (RGBA each)
 // texel 0: xyz = worldPos, w = radius
@@ -289,8 +289,8 @@ vec3 marchSDF(vec3 origin, vec3 dir, float maxDist, int maxSteps) {
             // Each cell = 2 RGBA texels in a 1D texture of width uCellCount*2
             float tx0 = (float(ci*2)   + 0.5) / float(uCellCount * 2);
             float tx1 = (float(ci*2+1) + 0.5) / float(uCellCount * 2);
-            vec4  d0  = texture2D(tCellData, vec2(tx0, 0.5));  // pos+radius
-            vec4  d1  = texture2D(tCellData, vec2(tx1, 0.5));  // emissive+scale
+            vec4  d0  = texture(tCellData, vec2(tx0, 0.5));  // pos+radius
+            vec4  d1  = texture(tCellData, vec2(tx1, 0.5));  // emissive+scale
             float dist = length(p - d0.xyz) - d0.w;
             if (dist < minD) {
                 minD = dist;
@@ -324,7 +324,7 @@ void main() {
     vec3 traced = marchSDF(origin, jDir, uSdfMaxDist, uSdfMaxSteps);
 
     // Temporal blend with previous cache
-    vec3 prev    = texture2D(tPrevRadiance, vUv).rgb;
+    vec3 prev    = texture(tPrevRadiance, vUv).rgb;
     vec3 blended = mix(prev, traced, uTemporalAlpha);
 
     gl_FragColor = vec4(blended, 1.0);
@@ -339,8 +339,8 @@ void main() {
 
 const LIGHTING_MAIN_VERT = /* glsl */`#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
@@ -353,7 +353,7 @@ ${RANGE_GLSL}
 ${FBR_GLSL}
 ${REFL_GLSL}
 
-varying vec2 vUv;
+in vec2 vUv;
 
 // G-buffer inputs
 uniform sampler2D tDepth;
@@ -402,7 +402,7 @@ vec3 worldPosFromDepth(vec2 uv, float depth) {
 // Maps normal to octahedral UV → samples tRadianceCache
 vec3 sampleRadianceCache(vec3 wNormal) {
     vec2 octUV = octEncode(wNormal);
-    return texture2D(tRadianceCache, octUV).rgb;
+    return texture(tRadianceCache, octUV).rgb;
 }
 
 // GGX importance-sample helper (Hammersley)
@@ -451,11 +451,11 @@ vec3 sampleSpecularGI(vec3 wPos, vec3 wNormal, vec3 V, float roughness) {
 
 void main() {
     // Sample G-buffer
-    float rawDepth  = texture2D(tDepth, vUv).r;
-    vec3  rawNormal = texture2D(tNormal, vUv).xyz;
-    vec4  albedoMet = texture2D(tAlbedo, vUv);
-    float roughness = texture2D(tRoughness, vUv).r;
-    vec3  sceneCol  = texture2D(tSceneColor, vUv).rgb;
+    float rawDepth  = texture(tDepth, vUv).r;
+    vec3  rawNormal = texture(tNormal, vUv).xyz;
+    vec4  albedoMet = texture(tAlbedo, vUv);
+    float roughness = texture(tRoughness, vUv).r;
+    vec3  sceneCol  = texture(tSceneColor, vUv).rgb;
 
     // Decode G-buffer
     vec3  wNormal  = normalize(rawNormal * 2.0 - 1.0);

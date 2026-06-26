@@ -14,7 +14,7 @@
  *   SplineParticlePreset.fs
  *     — pos += (target - pos) * 0.07 * HZ  (lerp-to-spline motion)
  *   FlowerParticleShader.glsl (vertex)
- *     — texture2D(tPos, position.xy) → pos
+ *     — texture(tPos, position.xy) → pos
  *     — spiral: pos.x -= cos(scroll * 5 + len(pos.xz) * 1 + pos.y * 0.5)
  *     — outer spiral via random.w
  *     — vScale size attenuation

@@ -121,6 +121,7 @@ void main() {
 
 const VOLUMETRIC_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 
 ${RANGE_GLSL}
 ${SIMPLENOISE_GLSL}
@@ -181,6 +182,7 @@ void main() {
 
 const RAYMARCH_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 
 ${RANGE_GLSL}
 ${SIMPLENOISE_GLSL}

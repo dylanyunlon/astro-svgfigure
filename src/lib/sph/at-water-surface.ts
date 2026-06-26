@@ -145,6 +145,7 @@ function buildSurfaceFrag(): string {
 
   return /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 
 in vec2  vUv;
 in vec3  vWorldPos;
