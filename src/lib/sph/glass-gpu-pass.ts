@@ -19,8 +19,7 @@
 // 接受 per-cell NDC rect (aPosition 是 cell quad 的顶点),
 // 同时输出 cell 内的 UV (0..1) 供 fragment shader 采样。
 
-const GLASS_VERT = /* glsl */ `
-#version 300 es
+const GLASS_VERT = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 aPosition;
 out vec2 vUv;
@@ -38,8 +37,7 @@ void main() {
 
 // ─── Normal Map Encode Pass — 把法线图编码进 R16G16 FBO ─────────────────────
 // 供后续 Fresnel pass 使用; 接受外部提供的法线纹理或程序化生成
-const NORMALS_FRAG = /* glsl */ `
-#version 300 es
+const NORMALS_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uNormalMap;  // 可以是空白纹理
@@ -73,8 +71,7 @@ void main() {
 //   3. 折射UV偏移采样场景纹理
 //   4. 反射采样 (简单: 用bloom纹理模拟环境反射)
 //   5. Lerp 折射/反射
-const FRESNEL_REFRACT_FRAG = /* glsl */ `
-#version 300 es
+const FRESNEL_REFRACT_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 in vec3 vViewDir;
@@ -131,8 +128,7 @@ void main() {
 // ─── Specular Highlight Fragment Shader ─────────────────────────────────────
 // Blinn-Phong specular; 叠加到 Fresnel pass 结果上
 // 支持多光源 (最多4个)
-const SPECULAR_FRAG = /* glsl */ `
-#version 300 es
+const SPECULAR_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 in vec3 vViewDir;
@@ -181,8 +177,7 @@ void main() {
 
 // ─── Final Composite Fragment Shader ────────────────────────────────────────
 // 将玻璃层合成到最终场景; 支持玻璃tint颜色+opacity
-const COMPOSITE_FRAG = /* glsl */ `
-#version 300 es
+const COMPOSITE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 

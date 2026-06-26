@@ -114,8 +114,7 @@ const SPECIES_ALBEDO: Record<CellSpecies, [number, number, number]> = {
 // uCellPos: NDC centre, uCellSize: half-extent in NDC.
 // aCorner: one of the 6 quad vertices in [-1,1]².
 
-const PBR_VERT = /* glsl */ `
-#version 300 es
+const PBR_VERT = /* glsl */ `#version 300 es
 precision highp float;
 
 in vec2 aCorner;
@@ -154,8 +153,7 @@ void main() {
 //   layout(location=2) gRoughAO  — r=roughness,       g=AO, ba=0
 //   layout(location=3) gDepthOut — r=linear depth,    gba=0
 
-const PBR_FRAG = /* glsl */ `
-#version 300 es
+const PBR_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 
 in vec2  vUv;

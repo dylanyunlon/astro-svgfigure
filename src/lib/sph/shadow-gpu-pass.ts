@@ -68,8 +68,7 @@
 
 import { getShader } from '../shaders/ShaderLoader';
 
-const SHADOW_DEPTH_VERT = /* glsl */ `
-#version 300 es
+const SHADOW_DEPTH_VERT = /* glsl */ `#version 300 es
 precision highp float;
 
 in vec3 aPosition;
@@ -89,8 +88,7 @@ void main() {
 
 // shadow depth frag: 空 body — 硬件写入 gl_FragCoord.z 到 DEPTH_ATTACHMENT
 // WebGL1 varying (vDepth 保留 — 避免 shader 优化移除 varying)
-const SHADOW_DEPTH_FRAG = /* glsl */ `
-#version 300 es
+const SHADOW_DEPTH_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 
 in float vDepth;
@@ -107,8 +105,7 @@ out vec4 fragColor;
 // Shadow Sample (PCF) Vertex Shader — 全屏 quad, WebGL1 varying
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SHADOW_SAMPLE_VERT = /* glsl */ `
-#version 300 es
+const SHADOW_SAMPLE_VERT = /* glsl */ `#version 300 es
 precision highp float;
 
 in vec2 aPosition;
@@ -129,8 +126,7 @@ void main() {
 // WebGL1 语法: texture2D, varying, gl_FragColor
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SHADOW_SAMPLE_FRAG = /* glsl */ `
-#version 300 es
+const SHADOW_SAMPLE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 
 // shadow depth map (DEPTH_COMPONENT16 texture via WEBGL_depth_texture)

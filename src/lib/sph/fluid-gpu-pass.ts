@@ -26,8 +26,7 @@
 import { getShader } from '../shaders/ShaderLoader';
 import type { RenderTarget, UniformValue } from '../renderer/NukePass';
 
-const FLUID_VERT = /* glsl */ `
-#version 300 es
+const FLUID_VERT = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 aPosition;
 out vec2 vUv;
@@ -47,8 +46,7 @@ void main() {
 `;
 
 // 简单的全屏 quad vert (无邻居)
-const SIMPLE_VERT = /* glsl */ `
-#version 300 es
+const SIMPLE_VERT = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 aPosition;
 out vec2 vUv;
@@ -404,15 +402,31 @@ export class FluidGPU {
   /** 编译 vert + frag → WebGLProgram */
   private _compile(vert: string, frag: string, label: string): WebGLProgram {
     const gl = this.gl;
+
+    // M1228: fix #version must be first line — strip leading whitespace
+    const fixVersion = (src: string) => src.replace(/^\s*(?=#version)/m, '');
+
+    // M1228: auto-upgrade WebGL1 frag (from compiled.vs) to 300 es
+    const upgrade = (src: string) => {
+      if (src.includes('#version')) return fixVersion(src);
+      // WebGL1 → 300 es: replace varying→in, texture2D→texture, gl_FragColor→fragColor
+      let s = src;
+      s = s.replace(/\bvarying\b/g, 'in');
+      s = s.replace(/\btexture2D\b/g, 'texture');
+      s = s.replace(/\bgl_FragColor\b/g, 'fragColor');
+      // Add version + fragColor output declaration
+      return `#version 300 es\nprecision highp float;\nout vec4 fragColor;\n${s}`;
+    };
+
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, vert);
+    gl.shaderSource(vs, fixVersion(vert));
     gl.compileShader(vs);
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
       throw new Error(`[FluidGPU] vertex compile error (${label}): ${gl.getShaderInfoLog(vs)}`);
     }
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    gl.shaderSource(fs, 'precision highp float;\n' + frag);
+    gl.shaderSource(fs, upgrade(frag));
     gl.compileShader(fs);
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
       throw new Error(`[FluidGPU] fragment compile error (${label}): ${gl.getShaderInfoLog(fs)}`);

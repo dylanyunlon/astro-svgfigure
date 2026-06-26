@@ -38,8 +38,7 @@
 
 import { getShader } from '../shaders/ShaderLoader';
 
-const COMPOSITE_VERT = /* glsl */ `
-#version 300 es
+const COMPOSITE_VERT = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 aPosition;
 out vec2 vUv;
@@ -53,8 +52,7 @@ void main() {
 // 手写合成 shader (非从 compiled.vs 提取, 因 compiled.vs 无 composite.fs entry).
 // AT 惯例: 最终合成 shader 内联于 ts 文件 (参见 at-scene-composite-shaders.ts).
 
-const COMPOSITE_FRAG = /* glsl */ `
-#version 300 es
+const COMPOSITE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 
 // 6 输入层

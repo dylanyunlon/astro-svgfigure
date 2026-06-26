@@ -30,8 +30,7 @@
 
 
 
-const SDF_VERT = /* glsl */ `
-#version 300 es
+const SDF_VERT = /* glsl */ `#version 300 es
 precision highp float;
 
 // quad geometry (per-vertex)

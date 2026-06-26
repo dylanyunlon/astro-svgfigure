@@ -16,8 +16,7 @@ import { getShader } from '../shaders/ShaderLoader';
 
 // ─── WebGL2 全屏 quad vertex shader ──────────────────────────────────────────
 
-const BLOOM_VERT = /* glsl */ `
-#version 300 es
+const BLOOM_VERT = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 aPosition;
 out vec2 vUv;
@@ -29,8 +28,7 @@ void main() {
 
 // ─── Luminosity Threshold Fragment Shader ────────────────────────────────────
 // 提取亮度超过阈值的像素; 暗像素变黑
-const LUMINOSITY_FRAG = /* glsl */ `
-#version 300 es
+const LUMINOSITY_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uInput;
@@ -49,8 +47,7 @@ void main() {
 
 // ─── Gaussian Blur Fragment Shader (single axis) ─────────────────────────────
 // 5-tap 高斯模糊; uDir = (1,0) 水平, (0,1) 垂直
-const BLUR_FRAG = /* glsl */ `
-#version 300 es
+const BLUR_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uInput;
@@ -73,8 +70,7 @@ void main() {
 // 将bloom金字塔叠加回原始图像; 支持强度、半径权重、暖色色调控制
 // uRadius: 控制金字塔层权重分布 (0.0=只取最清晰层, 1.0=均匀扩散)
 // uTintColor: bloom 叠加时的色调倍乘 (暖色 vec3(1.0, 0.95, 0.85))
-const COMPOSITE_FRAG = /* glsl */ `
-#version 300 es
+const COMPOSITE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uBase;
@@ -105,8 +101,7 @@ void main() {
 
 // ─── Upsample Additive Fragment Shader ────────────────────────────────────────
 // 将低分辨率bloom层加到高分辨率层
-const UPSAMPLE_FRAG = /* glsl */ `
-#version 300 es
+const UPSAMPLE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uCurrent;
