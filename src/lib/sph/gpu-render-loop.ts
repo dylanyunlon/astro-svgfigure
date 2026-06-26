@@ -593,6 +593,21 @@ export class GPURenderLoop {
     this._camOffX = camOffX;
     this._camOffY = camOffY;
 
+    // M1232 debug: log camera and cell NDC positions (first frame only)
+    if (this.frameCount === 0) {
+      console.log('[GPURenderLoop] camera:', { camScale, camOffX, camOffY, bbW, bbH, W, H });
+      const c0 = this.cells[0];
+      if (c0) {
+        console.log('[GPURenderLoop] cell[0] NDC:', {
+          name: c0.id,
+          x: toNdcX(c0.x + c0.w/2).toFixed(3),
+          y: toNdcY(c0.y + c0.h/2).toFixed(3),
+          sizeX: (fitD(c0.w) / W).toFixed(4),
+          sizeY: (fitD(c0.h) / H).toFixed(4),
+        });
+      }
+    }
+
     // ── UIL params → GPU uniforms (每帧开始时推送) ──
     this._pushUILUniforms();
 
