@@ -213,15 +213,18 @@ export class GPURenderLoop {
     const gl = this.gl;
     const canvas = this.canvas;
 
-    this.fluid = new FluidGPU(gl, {
-      simWidth: 256, simHeight: 256,
-      dyeWidth: canvas.width, dyeHeight: canvas.height,
-    });
-    this.bloom = new BloomGPU(gl, canvas.width, canvas.height);
-    this.shadow = new ShadowGPU(gl, 1024);
-    this.edge = new EdgeGPU(gl);
-    this.msdf = new MSDFTextGPU(gl);
-    this.composite = new CompositeGPU(gl, canvas.width, canvas.height);
+    try {
+      this.fluid = new FluidGPU(gl, {
+        simWidth: 256, simHeight: 256,
+        dyeWidth: canvas.width, dyeHeight: canvas.height,
+      });
+    } catch (e) { console.warn('[GPURenderLoop] Fluid init failed (non-fatal):', e); }
+
+    try { this.bloom = new BloomGPU(gl, canvas.width, canvas.height); } catch (e) { console.warn('[GPURenderLoop] Bloom init failed:', e); }
+    try { this.shadow = new ShadowGPU(gl, 1024); } catch (e) { console.warn('[GPURenderLoop] Shadow init failed:', e); }
+    try { this.edge = new EdgeGPU(gl); } catch (e) { console.warn('[GPURenderLoop] Edge init failed:', e); }
+    try { this.msdf = new MSDFTextGPU(gl); } catch (e) { console.warn('[GPURenderLoop] MSDF init failed:', e); }
+    try { this.composite = new CompositeGPU(gl, canvas.width, canvas.height); } catch (e) { console.warn('[GPURenderLoop] Composite init failed:', e); }
 
     // PBR cell surface pass
     try { this.pbr = new PBRCellGPU(gl); } catch (e) { console.warn('[GPURenderLoop] PBR init failed, using fallback:', e); }
@@ -648,7 +651,7 @@ export class GPURenderLoop {
     }
 
     // ── Pass 3: PBR cell surface → FBO ──
-    let cellTex: WebGLTexture;
+    let cellTex: WebGLTexture = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
     {
       const t = this.perf.passStart('pbr');
       try {
@@ -791,17 +794,28 @@ export class GPURenderLoop {
     {
       const t = this.perf.passStart('composite');
       try {
-        // Use placeholder for passes that render directly (edge/particle)
         const placeholder = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
-        this.composite.render({
-          cell:     cellTex,
-          edge:     placeholder,
-          particle: placeholder,
-          bloom:    this.bloom.outputTexture,
-          shadow:   this.shadow.shadowFactorTexture,
-          fluid:    this.fluid.dyeTexture,
-        }, W, H, time);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
+        if (this.composite) {
+          this.composite.render({
+            cell:     cellTex ?? placeholder,
+            edge:     placeholder,
+            particle: placeholder,
+            bloom:    this.bloom?.outputTexture ?? placeholder,
+            shadow:   this.shadow?.shadowFactorTexture ?? placeholder,
+            fluid:    this.fluid?.dyeTexture ?? placeholder,
+          }, W, H, time);
+        } else {
+          // No composite — draw PBR directly to screen as fullscreen blit
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.viewport(0, 0, W, H);
+          gl.clearColor(0.03, 0.03, 0.05, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          if (cellTex) {
+            // Simple blit using the PBR output texture
+            this._blitTexture(cellTex, W, H);
+          }
+        }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] composite pass error:', e); }
       this.perf.passEnd('composite', t);
     }
 
@@ -912,6 +926,43 @@ export class GPURenderLoop {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return tex;
+  }
+
+  /** Blit a texture to current framebuffer (fullscreen quad) */
+  private _blitProg: WebGLProgram | null = null;
+  private _blitVBO: WebGLBuffer | null = null;
+  private _blitTexture(tex: WebGLTexture, w: number, h: number): void {
+    const gl = this.gl;
+    if (!this._blitProg) {
+      const vs = gl.createShader(gl.VERTEX_SHADER)!;
+      gl.shaderSource(vs, `#version 300 es
+in vec2 p; out vec2 uv;
+void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0, 1); }`);
+      gl.compileShader(vs);
+      const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+      gl.shaderSource(fs, `#version 300 es
+precision highp float;
+uniform sampler2D t; in vec2 uv; out vec4 o;
+void main() { o = texture(t, uv); }`);
+      gl.compileShader(fs);
+      this._blitProg = gl.createProgram()!;
+      gl.attachShader(this._blitProg, vs);
+      gl.attachShader(this._blitProg, fs);
+      gl.linkProgram(this._blitProg);
+      gl.deleteShader(vs); gl.deleteShader(fs);
+      this._blitVBO = gl.createBuffer()!;
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._blitVBO);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+    }
+    gl.useProgram(this._blitProg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._blitVBO);
+    const loc = gl.getAttribLocation(this._blitProg, 'p');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(gl.getUniformLocation(this._blitProg, 't'), 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
   /** 简单 fallback: 用纯色 quad 画 cell (pbr-gpu-pass 未到时) */
