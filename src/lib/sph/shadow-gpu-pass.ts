@@ -92,11 +92,10 @@ const SHADOW_DEPTH_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 
 in float vDepth;
+out vec4 fragColor;
 
 void main() {
-    // 空 body — GPU 自动写 gl_FragCoord.z 到 depth attachment
-    // vDepth 供调试使用; 主要深度由硬件写入
-out vec4 fragColor;
+    // vDepth 供调试使用; 主要深度由硬件写入 depth attachment
     fragColor = vec4(vDepth * 0.5 + 0.5, 0.0, 0.0, 1.0);
 }
 `;
@@ -146,6 +145,7 @@ uniform float uBias;
 
 // 从全屏 quad vert 传来的 UV
 in vec2 vUv;
+out vec4 fragColor;
 
 // ── M1134: ambient occlusion 蓝色调阴影 ───────────────────────────────────────
 // 纯黑阴影视觉上很死板; 蓝调 AO 模拟天空漫反射
@@ -227,8 +227,6 @@ void main() {
     vec3 color = mix(SHADOW_COLOR, LIT_COLOR, shadowFactor);
 
     // 输出: RGB = 阴影颜色混合, A = shadow factor (供外部 blend 使用)
-    // texture2D — WebGL1 语法
-out vec4 fragColor;
     fragColor = vec4(color, shadowFactor);
 }
 `;
