@@ -21,6 +21,8 @@ import { ATVolumetricLight } from './at-volumetric-light';
 import { ATWaterSurface } from './at-water-surface';
 import { UEAtmosphereSky } from './ue-atmosphere-sky';
 import { UEBloomTonemap } from './ue-bloom-tonemap';
+import { ATJellyfishCell, type JellyfishInstance } from './at-jellyfish-cell';
+import { ATFlowerParticleRenderer, type FlowerEdgeSpline } from './at-flower-particle';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -94,6 +96,9 @@ export class GPURenderLoop {
   private waterSurface: ATWaterSurface | null = null;
   private atmosphereSky: UEAtmosphereSky | null = null;
   private ueBloomTonemap: UEBloomTonemap | null = null;
+  private atJellyfish: ATJellyfishCell | null = null;
+  private atJellyfishInstances: JellyfishInstance[] = [];
+  private atFlower: ATFlowerParticleRenderer | null = null;
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -248,6 +253,25 @@ export class GPURenderLoop {
       this.ueBloomTonemap = new UEBloomTonemap(gl as unknown as WebGLRenderingContext, canvas.width, canvas.height);
     } catch (e) { console.warn('[GPURenderLoop] UEBloomTonemap init failed (non-fatal):', e); }
 
+    // ── AT Jellyfish Cell renderer (M1225) ──
+    // Replaces rectangular cell visuals with AT jellyfish.bin Draco mesh.
+    // load() is async (Draco decode); rendering silently skips until ready.
+    try {
+      this.atJellyfish = new ATJellyfishCell();
+      this.atJellyfish.load(gl).catch((e) => {
+        console.warn('[GPURenderLoop] ATJellyfishCell load failed (non-fatal):', e);
+      });
+    } catch (e) { console.warn('[GPURenderLoop] ATJellyfishCell init failed (non-fatal):', e); }
+
+    // ── AT Flower Particle renderer (M1225) ──
+    // Initialised with an empty edge list; edges are wired once setScene() runs.
+    try {
+      this.atFlower = new ATFlowerParticleRenderer(canvas, [], {
+        uTimeMultiplier: 0.17,
+        uSize: 8.0,
+      });
+    } catch (e) { console.warn('[GPURenderLoop] ATFlowerParticleRenderer init failed (non-fatal):', e); }
+
     // SDF species icon pass
     try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }
 
@@ -305,6 +329,31 @@ export class GPURenderLoop {
     this.cells = cells;
     this.edges = edges;
     this._edgesDirty = true;
+
+    // ── Rebuild AT jellyfish instances from current cell list ──
+    if (this.atJellyfish) {
+      this.atJellyfishInstances = cells.map(c =>
+        this.atJellyfish!.createVariant(
+          c.cell_id,
+          c.species,
+          c.x + c.w / 2,
+          c.y + c.h / 2,
+          c.z,
+        )
+      );
+    }
+
+    // ── Rebuild AT flower particle edges ──
+    if (this.atFlower) {
+      const flowerEdges: FlowerEdgeSpline[] = edges.map(e => ({
+        edgeId:   e.edge_id,
+        sourceId: e.source,
+        targetId: e.target,
+        weight:   1,
+        points:   e.controlPoints.map(([x, y]) => ({ x, y, z: 0 })),
+      }));
+      this.atFlower.setEdges(flowerEdges);
+    }
   }
 
   /**
@@ -615,7 +664,41 @@ export class GPURenderLoop {
       this.perf.passEnd('pbr', t);
     }
 
-    // ── Pass 4: Bloom → FBO ──
+    // ── Pass 3b: AT Jellyfish cell renderer (M1225) ──
+    // Renders AT jellyfish.bin mesh for each cell, instanced.
+    // Runs after PBR so the translucent jellyfish layer composites on top.
+    if (this.atJellyfish && this.atJellyfish.loaded && this.atJellyfishInstances.length > 0) {
+      const t = this.perf.passStart('atJellyfish');
+      try {
+        // Animate all instances this frame
+        for (const inst of this.atJellyfishInstances) {
+          this.atJellyfish.animate(time, inst, dt);
+        }
+        // Identity view/proj — cells are already in world (pixel) space;
+        // the jellyfish shader maps via modelMatrix written by animate().
+        const identityMat = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+        this.atJellyfish.render(
+          this.gl,
+          this.atJellyfishInstances,
+          identityMat,
+          identityMat,
+          time,
+        );
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] ATJellyfish pass error:', e); }
+      this.perf.passEnd('atJellyfish', t);
+    }
+
+    // ── Pass 3c: AT Flower particle renderer (M1225) ──
+    // Runs Life TF → Pos FBO → Render passes for GPU spline particles.
+    // Placed after PBR so particles layer over cell surfaces.
+    if (this.atFlower) {
+      const t = this.perf.passStart('atFlower');
+      try {
+        this.atFlower.tick(time, dt);
+        this.atFlower.render(W, H);
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] ATFlower pass error:', e); }
+      this.perf.passEnd('atFlower', t);
+    }
     {
       const t = this.perf.passStart('bloom');
       try {
