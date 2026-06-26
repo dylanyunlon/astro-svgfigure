@@ -31,21 +31,22 @@
 
 
 const SDF_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
 
 // quad geometry (per-vertex)
-attribute vec2 aPosition;
+in vec2 aPosition;
 
 // per-instance attributes (divisor = 1 via ANGLE_instanced_arrays)
-attribute vec2  a_iPos;
-attribute float a_iSize;
-attribute float a_iOpacity;
+in vec2  a_iPos;
+in float a_iSize;
+in float a_iOpacity;
 
 // passed to fragment
-varying vec2  v_fragCoord;  // fragment position in canvas space
-varying float v_iOpacity;
-varying float v_iSize;
-varying vec2  v_iPos;
+out vec2  v_fragCoord;  // fragment position in canvas space
+out float v_iOpacity;
+out float v_iSize;
+out vec2  v_iPos;
 
 uniform vec2 u_resolution;  // canvas width/height in pixels
 
@@ -140,6 +141,7 @@ const MAX_INSTANCES       = 4096;
 const FRAG_SOURCES: Record<SDFSpecies, string> = {
   'eye': /* raw cil-eye.frag — precision stripped (prepended globally) */ `
 precision mediump float;
+out vec4 fragColor;
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
 uniform float u_opacity;
@@ -157,8 +159,8 @@ uniform float u_shadowFar;
 uniform float u_shadowBias;
 
 // Per-instance position/size passed from vertex shader (instanced rendering)
-varying vec2  v_iPos;
-varying float v_iSize;
+in vec2  v_iPos;
+in float v_iSize;
 
 float circleSDF(in vec2 v) {
   v -= 0.5;
@@ -204,11 +206,12 @@ void main() {
   vec3 finalColor = u_fillColor + ambientContrib * (iris + bloom) * alpha;
   finalColor += u_fillColor * bloom;
   finalColor *= shadowFactor;
-  gl_FragColor = vec4(finalColor, alpha * u_opacity);
+  fragColor = vec4(finalColor, alpha * u_opacity);
 }
 `,
   'bolt': `
 precision mediump float;
+out vec4 fragColor;
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
 uniform float u_opacity;
@@ -218,8 +221,8 @@ uniform float u_amplitude;
 uniform float u_time;
 
 // Per-instance position/size from vertex shader
-varying vec2  v_iPos;
-varying float v_iSize;
+in vec2  v_iPos;
+in float v_iSize;
 
 #define saturate(V) clamp(V, 0.0, 1.0)
 
@@ -292,11 +295,12 @@ void main() {
   float lumGate = step(AT_LUMINOSITY_THRESHOLD, lum);
   float bloomSum = (glowGlobal + glowHome) * lumGate * AT_BLOOM_INTENSITY * (AT_LIGHT_INTENSITY / 2.19);
   float alpha    = clamp(total + bloomSum, 0.0, 1.0);
-  gl_FragColor = vec4(u_fillColor, alpha * u_opacity);
+  fragColor = vec4(u_fillColor, alpha * u_opacity);
 }
 `,
   'plus': `
 precision mediump float;
+out vec4 fragColor;
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
 uniform float u_opacity;
@@ -305,8 +309,8 @@ uniform float u_armLength;
 uniform float u_strokeWidth;
 
 // Per-instance position/size from vertex shader
-varying vec2  v_iPos;
-varying float v_iSize;
+in vec2  v_iPos;
+in float v_iSize;
 
 float sdBox2(vec2 p, vec2 b) {
   vec2 d = abs(p) - b;
@@ -325,11 +329,12 @@ void main() {
   float mask = smoothstep(0.015, -0.015, d);
   float glow = smoothstep(0.08, 0.0, d) * 0.25;
   float alpha = clamp(mask + glow, 0.0, 1.0);
-  gl_FragColor = vec4(u_fillColor, alpha * u_opacity);
+  fragColor = vec4(u_fillColor, alpha * u_opacity);
 }
 `,
   'arrow-right': `
 precision mediump float;
+out vec4 fragColor;
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
 uniform float u_opacity;
@@ -338,8 +343,8 @@ uniform float u_arrowWidth;
 uniform float u_time;
 
 // Per-instance position/size from vertex shader
-varying vec2  v_iPos;
-varying float v_iSize;
+in vec2  v_iPos;
+in float v_iSize;
 
 #define saturate(V) clamp(V, 0.0, 1.0)
 
@@ -366,11 +371,12 @@ void main() {
   float mask  = smoothstep(0.02, -0.01, d);
   float fade  = smoothstep(0.0, 0.6, tiled.x);
   float alpha = mask * (0.4 + 0.6 * fade);
-  gl_FragColor = vec4(u_fillColor, clamp(alpha, 0.0, 1.0) * u_opacity);
+  fragColor = vec4(u_fillColor, clamp(alpha, 0.0, 1.0) * u_opacity);
 }
 `,
   'vector': `
 precision mediump float;
+out vec4 fragColor;
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
 uniform float u_opacity;
@@ -379,8 +385,8 @@ uniform float u_arrowCount;
 uniform float u_angleSpread;
 
 // Per-instance position/size from vertex shader
-varying vec2  v_iPos;
-varying float v_iSize;
+in vec2  v_iPos;
+in float v_iSize;
 
 #define PI  3.1415926535897932384626433832795
 #define TAU 6.2831853071795864769252867665590
@@ -430,7 +436,7 @@ void main() {
   vec2 loc  = fract(uv * n) - 0.5;
   float jitter = (rand(cell) * 2.0 - 1.0) * u_angleSpread;
   float mask   = drawArrow(loc, jitter, 0.45);
-  gl_FragColor = vec4(u_fillColor, mask * u_opacity);
+  fragColor = vec4(u_fillColor, mask * u_opacity);
 }
 `,
 };
@@ -438,7 +444,7 @@ void main() {
 // ─── SDFIconGPU ────────────────────────────────────────────────────────────
 
 export class SDFIconGPU {
-  private gl: WebGLRenderingContext;
+  private gl: WebGL2RenderingContext;
   private ext: ANGLE_instanced_arrays | null;
 
   // Per-species compiled program + uniform cache
@@ -470,7 +476,7 @@ export class SDFIconGPU {
     ['vector',      [0.3,   0.9,   0.5  ]],
   ]);
 
-  constructor(gl: WebGLRenderingContext) {
+  constructor(gl: WebGL2RenderingContext) {
     this.gl  = gl;
 
     // ── Require ANGLE_instanced_arrays (WebGL1) / built-in (WebGL2) ────────
@@ -865,7 +871,7 @@ export class SDFIconGPU {
  * Create an SDFIconGPU bound to an existing WebGL1 rendering context.
  * Throws if ANGLE_instanced_arrays is unavailable.
  */
-export function createSDFIconGPU(gl: WebGLRenderingContext): SDFIconGPU {
+export function createSDFIconGPU(gl: WebGL2RenderingContext): SDFIconGPU {
   return new SDFIconGPU(gl);
 }
 
