@@ -4,7 +4,7 @@
  * 这不是空壳。每个函数都调用 gl.*。
  * GlassGPU: Fresnel反射+折射UV偏移+specular高光。
  * 绑 scene texture + bloom texture 合成玻璃效果。
- * WebGL1 语法 (varying/texture2D/gl_FragColor)
+ * WebGL2 语法 (#version 300 es / in / out / texture / fragColor)
  *
  * Pass 链 (每帧):
  *   normals → fresnel+refract → specular → composite → output
@@ -20,11 +20,12 @@
 // 同时输出 cell 内的 UV (0..1) 供 fragment shader 采样。
 
 const GLASS_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
-varying vec3 vViewDir;
-varying vec3 vNormal;
+in vec2 aPosition;
+out vec2 vUv;
+out vec3 vViewDir;
+out vec3 vNormal;
 uniform vec2 uTexelSize;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
@@ -38,11 +39,13 @@ void main() {
 // ─── Normal Map Encode Pass — 把法线图编码进 R16G16 FBO ─────────────────────
 // 供后续 Fresnel pass 使用; 接受外部提供的法线纹理或程序化生成
 const NORMALS_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
-varying vec2 vUv;
+in vec2 vUv;
 uniform sampler2D uNormalMap;  // 可以是空白纹理
 uniform float uTime;
 uniform float uDistortStrength;
+out vec4 fragColor;
 // 简单 2D 正弦法线生成 (当没有法线图时)
 vec3 proceduralNormal(vec2 uv, float t) {
     float nx = sin(uv.x * 12.0 + t * 0.7) * 0.5 + sin(uv.y * 8.0 - t * 0.5) * 0.5;
@@ -50,7 +53,7 @@ vec3 proceduralNormal(vec2 uv, float t) {
     return normalize(vec3(nx * uDistortStrength, ny * uDistortStrength, 1.0));
 }
 void main() {
-    vec4 nm = texture2D(uNormalMap, vUv);
+    vec4 nm = texture(uNormalMap, vUv);
     vec3 n;
     // 如果法线图为空 (默认灰色), 用程序化法线
     if (length(nm.rgb - vec3(0.5, 0.5, 1.0)) < 0.05) {
@@ -59,7 +62,7 @@ void main() {
         n = normalize(nm.rgb * 2.0 - 1.0);
     }
     // 编码法线到 [0,1] 存入 RG
-    gl_FragColor = vec4(n * 0.5 + 0.5, 1.0);
+    fragColor = vec4(n * 0.5 + 0.5, 1.0);
 }
 `;
 
@@ -71,9 +74,10 @@ void main() {
 //   4. 反射采样 (简单: 用bloom纹理模拟环境反射)
 //   5. Lerp 折射/反射
 const FRESNEL_REFRACT_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
-varying vec2 vUv;
-varying vec3 vViewDir;
+in vec2 vUv;
+in vec3 vViewDir;
 
 uniform sampler2D uScene;       // 场景颜色纹理
 uniform sampler2D uBloom;       // bloom纹理 → 用作环境反射
@@ -84,6 +88,8 @@ uniform float uFresnelPow;      // Fresnel指数 (通常5.0)
 uniform float uFresnelBias;     // Fresnel基础反射率 (F0, ~0.04玻璃)
 uniform vec2  uTexelSize;
 
+out vec4 fragColor;
+
 // Schlick Fresnel 近似
 float fresnel(vec3 viewDir, vec3 normal, float f0, float power) {
     float cosTheta = clamp(dot(-viewDir, normal), 0.0, 1.0);
@@ -92,7 +98,7 @@ float fresnel(vec3 viewDir, vec3 normal, float f0, float power) {
 
 void main() {
     // 1. 读取并重建法线
-    vec4 normalSample = texture2D(uNormalFBO, vUv);
+    vec4 normalSample = texture(uNormalFBO, vUv);
     vec3 N = normalize(normalSample.rgb * 2.0 - 1.0);
 
     // 2. 视线方向 (屏幕空间近似, 向-Z看)
@@ -103,13 +109,13 @@ void main() {
     vec2 refractUV = clamp(vUv + refractOffset, 0.001, 0.999);
 
     // 4. 采样折射 (场景通过玻璃看到的内容)
-    vec4 refrColor = texture2D(uScene, refractUV);
+    vec4 refrColor = texture(uScene, refractUV);
 
     // 5. 采样反射 — 翻转UV + bloom 模拟环境
     vec2 reflectUV = vec2(vUv.x + N.x * uRefrStrength * 0.5,
                          1.0 - vUv.y + N.y * uRefrStrength * 0.5);
     reflectUV = clamp(reflectUV, 0.001, 0.999);
-    vec4 reflColor = texture2D(uBloom, reflectUV);
+    vec4 reflColor = texture(uBloom, reflectUV);
 
     // 6. Fresnel 系数
     float F = fresnel(V, N, uFresnelBias, uFresnelPow);
@@ -118,7 +124,7 @@ void main() {
     vec4 glassColor = mix(refrColor, reflColor, F);
 
     // 8. 输出 (alpha 保持折射)
-    gl_FragColor = vec4(glassColor.rgb, 1.0);
+    fragColor = vec4(glassColor.rgb, 1.0);
 }
 `;
 
@@ -126,9 +132,10 @@ void main() {
 // Blinn-Phong specular; 叠加到 Fresnel pass 结果上
 // 支持多光源 (最多4个)
 const SPECULAR_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
-varying vec2 vUv;
-varying vec3 vViewDir;
+in vec2 vUv;
+in vec3 vViewDir;
 
 uniform sampler2D uGlassColor;  // Fresnel pass 结果
 uniform sampler2D uNormalFBO;   // 法线 FBO
@@ -142,6 +149,8 @@ uniform vec3  uLightColor2;
 uniform float uShininess;       // 高光指数 (64-512)
 uniform float uSpecStrength;    // 高光强度
 
+out vec4 fragColor;
+
 // Blinn-Phong 高光
 float blinnPhong(vec3 N, vec3 L, vec3 V, float shininess) {
     vec3 H = normalize(L + V);          // 半角向量
@@ -150,8 +159,8 @@ float blinnPhong(vec3 N, vec3 L, vec3 V, float shininess) {
 }
 
 void main() {
-    vec4 base = texture2D(uGlassColor, vUv);
-    vec4 normalSample = texture2D(uNormalFBO, vUv);
+    vec4 base = texture(uGlassColor, vUv);
+    vec4 normalSample = texture(uNormalFBO, vUv);
     vec3 N = normalize(normalSample.rgb * 2.0 - 1.0);
     vec3 V = normalize(-vViewDir);  // 视线反向
 
@@ -166,15 +175,16 @@ void main() {
     specular *= uSpecStrength;
 
     // 叠加高光 (additive)
-    gl_FragColor = vec4(base.rgb + specular, base.a);
+    fragColor = vec4(base.rgb + specular, base.a);
 }
 `;
 
 // ─── Final Composite Fragment Shader ────────────────────────────────────────
 // 将玻璃层合成到最终场景; 支持玻璃tint颜色+opacity
 const COMPOSITE_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
-varying vec2 vUv;
+in vec2 vUv;
 
 uniform sampler2D uScene;       // 原始场景
 uniform sampler2D uGlass;       // 玻璃+specular
@@ -182,20 +192,22 @@ uniform float uGlassOpacity;    // 玻璃不透明度 (0..1)
 uniform vec3  uTintColor;       // 玻璃着色 (例如淡蓝色)
 uniform float uTintStrength;    // 着色强度
 
+out vec4 fragColor;
+
 void main() {
-    vec4 scene = texture2D(uScene, vUv);
-    vec4 glass = texture2D(uGlass, vUv);
+    vec4 scene = texture(uScene, vUv);
+    vec4 glass = texture(uGlass, vUv);
 
     // 应用着色
     vec3 tinted = mix(glass.rgb, glass.rgb * uTintColor, uTintStrength);
 
     // 合成: 玻璃覆盖场景
     vec3 composite = mix(scene.rgb, tinted, uGlassOpacity);
-    gl_FragColor = vec4(composite, 1.0);
+    fragColor = vec4(composite, 1.0);
 }
 `;
 
-// ─── GlassGPU: 真实 WebGL Fresnel 玻璃 ────────────────────────────────────
+// ─── GlassGPU: 真实 WebGL2 Fresnel 玻璃 ────────────────────────────────────
 
 export interface GlassConfig {
   width: number;           // 渲染分辨率
@@ -241,7 +253,7 @@ interface SingleFBO {
 }
 
 export class GlassGPU {
-  private gl: WebGLRenderingContext;
+  private gl: WebGL2RenderingContext;
   private cfg: GlassConfig;
 
   // Programs — 真正 compiled 的 shader
@@ -267,7 +279,7 @@ export class GlassGPU {
   // Expose programs for UIL uniform injection
   get program(): WebGLProgram { return this.fresnelProg; }
 
-  constructor(gl: WebGLRenderingContext, config?: Partial<GlassConfig>) {
+  constructor(gl: WebGL2RenderingContext, config?: Partial<GlassConfig>) {
     this.gl  = gl;
     this.cfg = { ...DEFAULT_GLASS_CONFIG, ...config };
     this._init();

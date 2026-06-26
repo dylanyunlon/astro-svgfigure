@@ -147,7 +147,7 @@ const DEFAULT_SHADOW_OFFSET_NDC = 0.003;
  * ```
  */
 export class MSDFTextGPU {
-  private gl: WebGLRenderingContext;
+  private gl: WebGL2RenderingContext;
 
   // Compiled shader program — real gl.createShader / gl.createProgram calls
   private prog!: WebGLProgram;
@@ -178,7 +178,7 @@ export class MSDFTextGPU {
   private atlas: MSDFAtlas;
   private glyphMap: Map<number, GlyphMetric> = new Map();
 
-  constructor(gl: WebGLRenderingContext) {
+  constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this.atlas = buildFallbackAtlas();
     this._buildGlyphMap();
@@ -559,7 +559,7 @@ export class MSDFTextGPU {
  * ```
  */
 export function createMSDFTextGPU(
-  gl: WebGLRenderingContext,
+  gl: WebGL2RenderingContext,
   opts?: { atlasImage?: string; atlasJson?: string },
 ): MSDFTextGPU {
   const pass = new MSDFTextGPU(gl);
