@@ -224,13 +224,13 @@ export class GPURenderLoop {
 
     // ── UE Atmosphere Sky (background sky scattering) ──
     try {
-      this.atmosphereSky = new UEAtmosphereSky(gl as unknown as WebGLRenderingContext);
+      this.atmosphereSky = new UEAtmosphereSky(gl);
       this.atmosphereSky.init();
     } catch (e) { console.warn('[GPURenderLoop] UEAtmosphereSky init failed (non-fatal):', e); }
 
     // ── UE Bloom + ACES Tonemap (post composite) ──
     try {
-      this.ueBloomTonemap = new UEBloomTonemap(gl as unknown as WebGLRenderingContext, canvas.width, canvas.height);
+      this.ueBloomTonemap = new UEBloomTonemap(gl, canvas.width, canvas.height);
     } catch (e) { console.warn('[GPURenderLoop] UEBloomTonemap init failed (non-fatal):', e); }
 
     // ── AT Jellyfish Cell renderer (M1225) ──
