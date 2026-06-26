@@ -58,8 +58,12 @@ export interface CellPBRDescriptor {
   /** Normalised screen position [-1, 1] */
   x: number;
   y: number;
-  /** Half-size in NDC [0..1] */
+  /** Half-size in NDC [0..1] — used as fallback if sizeX/sizeY not set */
   size: number;
+  /** Half-width in NDC */
+  sizeX?: number;
+  /** Half-height in NDC */
+  sizeY?: number;
   /** Albedo RGB [0..1] */
   albedo: [number, number, number];
   /** 0 = rough dielectric, 1 = perfectly metallic */
@@ -120,22 +124,21 @@ precision highp float;
 in vec2 aCorner;
 
 uniform vec2  uCellPos;    // cell centre NDC
-uniform float uCellSize;   // half-extent NDC
+uniform vec2  uCellSize;   // half-extent NDC (width/2, height/2)
 
 out vec2  vUv;         // [0,1]² UV across the cell quad
-out vec3  vNormal;     // approximate sphere normal from UV
+out vec3  vNormal;     // surface normal
 out vec3  vViewDir;    // view direction (orthographic, constant)
 
 void main() {
-    // Reconstruct quad vertex in NDC
+    // Reconstruct quad vertex in NDC — separate width and height
     vec2 pos   = uCellPos + aCorner * uCellSize;
     vUv        = aCorner * 0.5 + 0.5;
 
-    // Fake sphere normal from UV: map [0,1] UV → [-1,1], project to hemisphere
+    // Flat surface normal with subtle curvature at edges for lighting interest
     vec2 d     = vUv * 2.0 - 1.0;
-    float len2 = dot(d, d);
-    float z    = sqrt(max(0.0, 1.0 - len2));   // hemisphere Z
-    vNormal    = normalize(vec3(d, z));
+    float edge = 1.0 - smoothstep(0.7, 1.0, max(abs(d.x), abs(d.y)));
+    vNormal    = normalize(vec3(d * 0.15 * (1.0 - edge), 1.0));
 
     // View direction: straight-on (orthographic camera)
     vViewDir   = vec3(0.0, 0.0, 1.0);
@@ -204,9 +207,13 @@ float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
 }
 
 void main() {
-    // Discard pixels outside the sphere silhouette (circular cell)
-    vec2  d    = vUv * 2.0 - 1.0;
-    if (dot(d, d) > 1.0) discard;
+    // Rounded rectangle — soft edge with small corner radius
+    vec2  d    = abs(vUv * 2.0 - 1.0);
+    float cornerR = 0.08;
+    vec2  q    = d - vec2(1.0 - cornerR);
+    float sdf  = length(max(q, 0.0)) - cornerR;
+    if (sdf > 0.02) discard;
+    float edgeAlpha = 1.0 - smoothstep(0.0, 0.02, sdf);
 
     vec3  N    = normalize(vNormal);
     vec3  V    = normalize(vViewDir);
@@ -250,10 +257,10 @@ void main() {
     tonemapped = pow(tonemapped, vec3(1.0 / 2.2));
 
     // ── MRT writes ───────────────────────────────────────────────────────────
-    gAlbedo   = vec4(tonemapped, uMetallic);        // attachment 0
-    gNormal   = vec4(N * 0.5 + 0.5, 1.0);          // attachment 1 — encode [-1,1]→[0,1]
-    gRoughAO  = vec4(uRoughness, ao, 0.0, 0.0);     // attachment 2
-    gDepthOut = vec4(depth, 0.0, 0.0, 1.0);         // attachment 3
+    gAlbedo   = vec4(tonemapped, uMetallic) * edgeAlpha;        // attachment 0
+    gNormal   = vec4(N * 0.5 + 0.5, edgeAlpha);                // attachment 1
+    gRoughAO  = vec4(uRoughness, ao, 0.0, 0.0) * edgeAlpha;    // attachment 2
+    gDepthOut = vec4(depth, 0.0, 0.0, edgeAlpha);               // attachment 3
 }
 `;
 
@@ -425,7 +432,7 @@ export class PBRCellGPU {
       const albedo    = cell.albedo    ?? SPECIES_ALBEDO[cell.species]    ?? [0.8, 0.8, 0.8];
 
       gl.uniform2f(this.uCellPos,  cell.x, cell.y);
-      gl.uniform1f(this.uCellSize, cell.size);
+      gl.uniform2f(this.uCellSize, cell.sizeX ?? cell.size, cell.sizeY ?? cell.size);
       gl.uniform3f(this.uAlbedo,   albedo[0], albedo[1], albedo[2]);
       gl.uniform1f(this.uMetallic,  metallic);
       gl.uniform1f(this.uRoughness, roughness);

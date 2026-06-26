@@ -138,7 +138,7 @@ const MAX_INSTANCES       = 4096;
 // (Alternative: use getShader() from ShaderLoader, but that requires compiled.vs)
 
 const FRAG_SOURCES: Record<SDFSpecies, string> = {
-  'eye': /* raw cil-eye.frag — precision stripped (prepended globally) */ `
+  'eye': /* raw cil-eye.frag — precision stripped (prepended globally) */ `#version 300 es
 precision mediump float;
 out vec4 fragColor;
 uniform vec4  u_bbox;
@@ -208,7 +208,7 @@ void main() {
   fragColor = vec4(finalColor, alpha * u_opacity);
 }
 `,
-  'bolt': `
+  'bolt': `#version 300 es
 precision mediump float;
 out vec4 fragColor;
 uniform vec4  u_bbox;
@@ -297,7 +297,7 @@ void main() {
   fragColor = vec4(u_fillColor, alpha * u_opacity);
 }
 `,
-  'plus': `
+  'plus': `#version 300 es
 precision mediump float;
 out vec4 fragColor;
 uniform vec4  u_bbox;
@@ -331,7 +331,7 @@ void main() {
   fragColor = vec4(u_fillColor, alpha * u_opacity);
 }
 `,
-  'arrow-right': `
+  'arrow-right': `#version 300 es
 precision mediump float;
 out vec4 fragColor;
 uniform vec4  u_bbox;
@@ -373,7 +373,7 @@ void main() {
   fragColor = vec4(u_fillColor, clamp(alpha, 0.0, 1.0) * u_opacity);
 }
 `,
-  'vector': `
+  'vector': `#version 300 es
 precision mediump float;
 out vec4 fragColor;
 uniform vec4  u_bbox;

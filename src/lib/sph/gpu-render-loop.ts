@@ -644,6 +644,8 @@ export class GPURenderLoop {
             x: toNdcX(c.x + c.w / 2),
             y: toNdcY(c.y + c.h / 2),
             size: Math.max(fitD(c.w), fitD(c.h)) / Math.max(W, H),
+            sizeX: fitD(c.w) / W,
+            sizeY: fitD(c.h) / H,
             albedo: c.albedo as [number, number, number],
             metallic: c.metallic,
             roughness: c.roughness,
