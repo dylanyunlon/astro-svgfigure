@@ -98,6 +98,11 @@ export class GPURenderLoop {
   // UIL-driven shadow state
   private shadowLightDir: [number, number, number] = [-0.5, -1.0, -0.3];
 
+  // M1219: auto-fit camera state (updated each frame)
+  private _camScale = 1;
+  private _camOffX = 0;
+  private _camOffY = 0;
+
   // 状态
   private cells: CellData[] = [];
   private edges: EdgeData[] = [];
@@ -447,6 +452,48 @@ export class GPURenderLoop {
 
     this.perf.frameStart();
 
+    // ── M1219: Auto-fit camera — scale all cells into the viewport ──────────
+    // Cells live in a 0-2052 × 0-3965 pixel space but the canvas is ~1920×1080.
+    // Compute a uniform scale + offset so every cell is visible.
+    const PADDING = 40; // pixels of breathing room around bounding box
+    let camMinX = Infinity, camMinY = Infinity, camMaxX = -Infinity, camMaxY = -Infinity;
+    for (const c of this.cells) {
+      if (c.x < camMinX) camMinX = c.x;
+      if (c.y < camMinY) camMinY = c.y;
+      if (c.x + c.w > camMaxX) camMaxX = c.x + c.w;
+      if (c.y + c.h > camMaxY) camMaxY = c.y + c.h;
+    }
+    // Fallback when no cells are loaded yet
+    if (!isFinite(camMinX)) { camMinX = 0; camMinY = 0; camMaxX = W; camMaxY = H; }
+    const bbW = camMaxX - camMinX;
+    const bbH = camMaxY - camMinY;
+    const camScale = Math.min(
+      W / (bbW + PADDING * 2),
+      H / (bbH + PADDING * 2),
+    );
+    // After scaling, centre the bounding box inside the canvas
+    const camOffX = (W - bbW * camScale) / 2 - camMinX * camScale;
+    const camOffY = (H - bbH * camScale) / 2 - camMinY * camScale;
+
+    /** Transform a cell's pixel-space x → NDC (−1 … 1) using auto-fit camera */
+    const toNdcX = (px: number): number => ((px * camScale + camOffX) / W) * 2 - 1;
+    /** Transform a cell's pixel-space y → NDC (−1 … 1) using auto-fit camera */
+    const toNdcY = (py: number): number => ((py * camScale + camOffY) / H) * 2 - 1;
+    /** Transform a cell's pixel-space x → fitted canvas pixel */
+    const fitX = (px: number): number => px * camScale + camOffX;
+    /** Transform a cell's pixel-space y → fitted canvas pixel */
+    const fitY = (py: number): number => py * camScale + camOffY;
+    /** Scale a dimension (w or h) by camScale */
+    const fitD = (d: number): number => d * camScale;
+    // ── End auto-fit setup ──────────────────────────────────────────────────
+    // Re-upload edge control points whenever the camera changes
+    if (camScale !== this._camScale || camOffX !== this._camOffX || camOffY !== this._camOffY) {
+      this._edgesDirty = true;
+    }
+    this._camScale = camScale;
+    this._camOffX = camOffX;
+    this._camOffY = camOffY;
+
     // ── UIL params → GPU uniforms (每帧开始时推送) ──
     this._pushUILUniforms();
 
@@ -467,10 +514,10 @@ export class GPURenderLoop {
         const posArr = new Float32Array(this.cells.length * 4);
         for (let i = 0; i < this.cells.length; i++) {
           const c = this.cells[i];
-          posArr[i * 4 + 0] = c.x;
-          posArr[i * 4 + 1] = c.y;
-          posArr[i * 4 + 2] = c.w;
-          posArr[i * 4 + 3] = c.h;
+          posArr[i * 4 + 0] = fitX(c.x);
+          posArr[i * 4 + 1] = fitY(c.y);
+          posArr[i * 4 + 2] = fitD(c.w);
+          posArr[i * 4 + 3] = fitD(c.h);
         }
         this.shadow.step(posArr, this.cells.length);
       } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
@@ -486,9 +533,9 @@ export class GPURenderLoop {
           // Convert CellData → CellPBRDescriptor
           const descs = this.cells.map(c => ({
             species: c.species as any,
-            x: (c.x / W) * 2 - 1,
-            y: (c.y / H) * 2 - 1,
-            size: Math.max(c.w, c.h) / Math.max(W, H),
+            x: toNdcX(c.x + c.w / 2),
+            y: toNdcY(c.y + c.h / 2),
+            size: Math.max(fitD(c.w), fitD(c.h)) / Math.max(W, H),
             albedo: c.albedo as [number, number, number],
             metallic: c.metallic,
             roughness: c.roughness,
@@ -523,7 +570,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('glass');
       try {
         // 将 CellData 转换为 GlassCellRect (像素坐标)
-        const glassRects = this.cells.map(c => ({ x: c.x, y: c.y, w: c.w, h: c.h }));
+        const glassRects = this.cells.map(c => ({ x: fitX(c.x), y: fitY(c.y), w: fitD(c.w), h: fitD(c.h) }));
         this.glass.render(cellTex, this.bloom.outputTexture, time, glassRects, W, H);
       } catch (e) { /* non-fatal */ }
       this.perf.passEnd('glass', t);
@@ -567,10 +614,10 @@ export class GPURenderLoop {
           const ecp = this.edges.map(e => ({
             id: e.edge_id,
             isSkip: e.edge_id.startsWith('skip'),
-            p0: (e.controlPoints[0] ?? [0,0]) as [number,number],
-            p1: (e.controlPoints[1] ?? e.controlPoints[0] ?? [0,0]) as [number,number],
-            p2: (e.controlPoints[2] ?? e.controlPoints[1] ?? [0,0]) as [number,number],
-            p3: (e.controlPoints[3] ?? e.controlPoints[2] ?? [0,0]) as [number,number],
+            p0: [fitX((e.controlPoints[0] ?? [0,0])[0]), fitY((e.controlPoints[0] ?? [0,0])[1])] as [number,number],
+            p1: [fitX((e.controlPoints[1] ?? e.controlPoints[0] ?? [0,0])[0]), fitY((e.controlPoints[1] ?? e.controlPoints[0] ?? [0,0])[1])] as [number,number],
+            p2: [fitX((e.controlPoints[2] ?? e.controlPoints[1] ?? [0,0])[0]), fitY((e.controlPoints[2] ?? e.controlPoints[1] ?? [0,0])[1])] as [number,number],
+            p3: [fitX((e.controlPoints[3] ?? e.controlPoints[2] ?? [0,0])[0]), fitY((e.controlPoints[3] ?? e.controlPoints[2] ?? [0,0])[1])] as [number,number],
             sourceColor: e.color as [number,number,number],
           }));
           this.edge.setEdges(ecp);
@@ -590,8 +637,8 @@ export class GPURenderLoop {
         for (const c of this.cells) {
           if (!bySpecies.has(c.species)) bySpecies.set(c.species, []);
           bySpecies.get(c.species)!.push({
-            x: c.x + c.w / 2, y: c.y + c.h / 2,
-            size: Math.max(c.w, c.h) * 0.6, opacity: 1.0,
+            x: fitX(c.x + c.w / 2), y: fitY(c.y + c.h / 2),
+            size: Math.max(fitD(c.w), fitD(c.h)) * 0.6, opacity: 1.0,
           });
         }
         const batches = [...bySpecies.entries()].map(([species, instances]) => ({
@@ -678,10 +725,14 @@ export class GPURenderLoop {
     // 画每个 cell 为一个纯色矩形（像素坐标，Y 翻转因为 WebGL origin 在左下）
     for (const cell of this.cells) {
       const mat = SPECIES_MATERIAL[cell.species] ?? SPECIES_MATERIAL['cil-eye'];
-      const px = Math.floor(cell.x);
-      const py = Math.floor(H - cell.y - cell.h); // flip Y
-      const pw = Math.floor(cell.w);
-      const ph = Math.floor(cell.h);
+      const fx = cell.x * this._camScale + this._camOffX;
+      const fy = cell.y * this._camScale + this._camOffY;
+      const fw = cell.w * this._camScale;
+      const fh = cell.h * this._camScale;
+      const px = Math.floor(fx);
+      const py = Math.floor(H - fy - fh); // flip Y
+      const pw = Math.floor(fw);
+      const ph = Math.floor(fh);
       if (pw <= 0 || ph <= 0) continue;
       gl.enable(gl.SCISSOR_TEST);
       gl.scissor(px, py, pw, ph);
