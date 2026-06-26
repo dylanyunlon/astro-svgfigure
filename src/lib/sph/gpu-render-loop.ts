@@ -518,16 +518,14 @@ export class GPURenderLoop {
       this.perf.passEnd('bloom', t);
     }
 
-    // ── Pass 5: Glass → FBO (disabled until 3D mesh pipeline ready) ──
-    // Glass renders a fullscreen Fresnel overlay that washes out cells.
-    // Enable when AT geometry loader compiles successfully.
-    // if (this.glass) {
-    //   const t = this.perf.passStart('glass');
-    //   try {
-    //     this.glass.render(cellTex, this.bloom.outputTexture, time);
-    //   } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
-    //   this.perf.passEnd('glass', t);
-    // }
+    // ── Pass 5: Glass → FBO (subtle Fresnel sheen, opacity=0.15) ──
+    if (this.glass) {
+      const t = this.perf.passStart('glass');
+      try {
+        this.glass.render(cellTex, this.bloom.outputTexture, time);
+      } catch (e) { /* non-fatal */ }
+      this.perf.passEnd('glass', t);
+    }
 
     // ── NukePass (HDR tonemap + LUT) ──
     if (this.nukePass) {

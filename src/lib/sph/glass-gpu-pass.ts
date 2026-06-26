@@ -223,7 +223,7 @@ const DEFAULT_GLASS_CONFIG: GlassConfig = {
   fresnelBias: 0.04,
   shininess: 256.0,
   specStrength: 0.8,
-  glassOpacity: 0.85,
+  glassOpacity: 0.15,
   tintColor: [0.82, 0.93, 1.0],  // 淡蓝色玻璃
   tintStrength: 0.25,
   distortStrength: 0.04,
