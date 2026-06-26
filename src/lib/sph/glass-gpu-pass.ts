@@ -10,16 +10,14 @@
  *   normals → fresnel+refract → specular → composite → output
  *
  * 30+ real gl.* calls per render.
+ *
+ * M1212: per-cell Fresnel quads — 不画全屏 quad，遍历 cells 数组，
+ *        每个 cell 在其 NDC 矩形上画 Fresnel 效果。
  */
 
-// ─── WebGL1 全屏 quad vertex shader ──────────────────────────────────────────
-
-
-
-
-
-
-
+// ─── Cell-space vertex shader ─────────────────────────────────────────────────
+// 接受 per-cell NDC rect (aPosition 是 cell quad 的顶点),
+// 同时输出 cell 内的 UV (0..1) 供 fragment shader 采样。
 
 const GLASS_VERT = /* glsl */ `
 precision highp float;
@@ -229,6 +227,14 @@ const DEFAULT_GLASS_CONFIG: GlassConfig = {
   distortStrength: 0.04,
 };
 
+/** Cell 矩形描述 — 像素坐标 (x, y 左上角, w, h) */
+export interface GlassCellRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 interface SingleFBO {
   fbo: WebGLFramebuffer;
   tex: WebGLTexture;
@@ -252,8 +258,14 @@ export class GlassGPU {
   // Blank normal map 纹理 (当外部未提供时)
   private blankNormalTex!: WebGLTexture;
 
-  // 全屏 quad buffer
+  // 全屏 quad buffer (用于 normals/composite 等全屏 pass)
   private quadBuf!: WebGLBuffer;
+
+  // Per-cell quad buffer (动态，每帧按 cells 重建)
+  private cellQuadBuf!: WebGLBuffer;
+
+  // Expose programs for UIL uniform injection
+  get program(): WebGLProgram { return this.fresnelProg; }
 
   constructor(gl: WebGLRenderingContext, config?: Partial<GlassConfig>) {
     this.gl  = gl;
@@ -302,36 +314,59 @@ export class GlassGPU {
       gl.STATIC_DRAW,
     );
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    // ── Per-cell dynamic quad buffer ──
+    this.cellQuadBuf = gl.createBuffer()!;
   }
 
   /**
    * 每帧调用 — 跑完整 Glass Fresnel pass 链
+   *
+   * M1212: 不再画全屏 quad。
+   * normals pass 仍然全屏 (法线场是全局的)，
+   * Fresnel/specular/composite pass 改为遍历 cells，
+   * 每个 cell 只在其像素矩形对应的 NDC quad 上绘制。
+   *
    * @param sceneTex   上游渲染的场景颜色纹理
    * @param bloomTex   bloom 纹理 (用作环境反射)
    * @param time       当前时间 (驱动程序化法线动画)
+   * @param cells      cell 矩形列表 (像素坐标)
+   * @param canvasW    canvas 宽度 (像素), 用于 NDC 转换
+   * @param canvasH    canvas 高度 (像素)
    * @param normalTex  可选外部法线图; 不传则用程序化法线
    */
   render(
     sceneTex:  WebGLTexture,
     bloomTex:  WebGLTexture,
     time:      number,
+    cells?:    GlassCellRect[],
+    canvasW?:  number,
+    canvasH?:  number,
     normalTex?: WebGLTexture,
   ): void {
     const gl = this.gl;
     const { width: W, height: H } = this.cfg;
     const normSrc = normalTex ?? this.blankNormalTex;
 
-    // Pass 1: 法线编码 → normalsFBO
+    // Pass 1: 法线编码 → normalsFBO (全屏，法线是全局场)
     this._passNormals(normSrc, time, W, H);
 
-    // Pass 2: Fresnel + 折射 → fresnelFBO
-    this._passFresnel(sceneTex, bloomTex, W, H);
+    // Pass 2 & 3: per-cell Fresnel + specular
+    if (cells && cells.length > 0 && canvasW && canvasH) {
+      this._passFresnelCells(sceneTex, bloomTex, cells, canvasW, canvasH, W, H);
+      this._passSpecularCells(cells, canvasW, canvasH, W, H);
+    } else {
+      // fallback: 无 cell 数据时画全屏 (保持向后兼容)
+      this._passFresnel(sceneTex, bloomTex, W, H);
+      this._passSpecular(W, H);
+    }
 
-    // Pass 3: Specular 高光 → specularFBO
-    this._passSpecular(W, H);
-
-    // Pass 4: 合成到屏幕 (或供下游使用)
-    this._passComposite(sceneTex, W, H);
+    // Pass 4: 合成到屏幕 — 仅在有 cell 的区域叠加玻璃效果
+    if (cells && cells.length > 0 && canvasW && canvasH) {
+      this._passCompositeCells(sceneTex, cells, canvasW, canvasH, W, H);
+    } else {
+      this._passComposite(sceneTex, W, H);
+    }
   }
 
   /**
@@ -403,6 +438,131 @@ export class GlassGPU {
     gl.uniform2f(gl.getUniformLocation(this.normalsProg, 'uTexelSize'), 1.0 / W, 1.0 / H);
 
     this._drawQuad(this.normalsProg);
+  }
+
+  /**
+   * M1212: Per-cell Fresnel pass — 每个 cell 画自己的 NDC quad。
+   * fresnelFBO 先清零，再逐 cell additive blend。
+   */
+  private _passFresnelCells(
+    sceneTex: WebGLTexture,
+    bloomTex: WebGLTexture,
+    cells: GlassCellRect[],
+    cW: number, cH: number,
+    W: number, H: number,
+  ): void {
+    const gl = this.gl;
+
+    gl.useProgram(this.fresnelProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fresnelFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // 绑定纹理 (所有 cell 共用同一套纹理)
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+    gl.uniform1i(gl.getUniformLocation(this.fresnelProg, 'uScene'), 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bloomTex);
+    gl.uniform1i(gl.getUniformLocation(this.fresnelProg, 'uBloom'), 1);
+
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.normalsFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.fresnelProg, 'uNormalFBO'), 2);
+
+    gl.uniform1f(gl.getUniformLocation(this.fresnelProg, 'uIOR'),         this.cfg.ior);
+    gl.uniform1f(gl.getUniformLocation(this.fresnelProg, 'uRefrStrength'), this.cfg.refrStrength);
+    gl.uniform1f(gl.getUniformLocation(this.fresnelProg, 'uFresnelPow'),   this.cfg.fresnelPow);
+    gl.uniform1f(gl.getUniformLocation(this.fresnelProg, 'uFresnelBias'),  this.cfg.fresnelBias);
+    gl.uniform2f(gl.getUniformLocation(this.fresnelProg, 'uTexelSize'), 1.0 / W, 1.0 / H);
+
+    // 逐 cell 画 NDC quad
+    for (const cell of cells) {
+      this._drawCellQuad(this.fresnelProg, cell, cW, cH);
+    }
+  }
+
+  /**
+   * M1212: Per-cell Specular pass — 每个 cell 画自己的 NDC quad。
+   */
+  private _passSpecularCells(
+    cells: GlassCellRect[],
+    cW: number, cH: number,
+    W: number, H: number,
+  ): void {
+    const gl = this.gl;
+
+    gl.useProgram(this.specularProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.specularFBO.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.fresnelFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.specularProg, 'uGlassColor'), 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.normalsFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.specularProg, 'uNormalFBO'), 1);
+
+    // 主光 (上方偏右, 白色)
+    gl.uniform3f(gl.getUniformLocation(this.specularProg, 'uLightDir0'),
+                 0.4082, 0.8165, 0.4082);
+    gl.uniform3f(gl.getUniformLocation(this.specularProg, 'uLightColor0'),
+                 1.0, 1.0, 1.0);
+    // 次光 (左下, 冷蓝)
+    gl.uniform3f(gl.getUniformLocation(this.specularProg, 'uLightDir1'),
+                 -0.5774, -0.5774, 0.5774);
+    gl.uniform3f(gl.getUniformLocation(this.specularProg, 'uLightColor1'),
+                 0.5, 0.65, 1.0);
+    // 背光 (暖橙)
+    gl.uniform3f(gl.getUniformLocation(this.specularProg, 'uLightDir2'),
+                 0.0, -0.7071, -0.7071);
+    gl.uniform3f(gl.getUniformLocation(this.specularProg, 'uLightColor2'),
+                 1.0, 0.7, 0.3);
+
+    gl.uniform1f(gl.getUniformLocation(this.specularProg, 'uShininess'),   this.cfg.shininess);
+    gl.uniform1f(gl.getUniformLocation(this.specularProg, 'uSpecStrength'), this.cfg.specStrength);
+
+    for (const cell of cells) {
+      this._drawCellQuad(this.specularProg, cell, cW, cH);
+    }
+  }
+
+  /**
+   * M1212: Per-cell Composite pass — 仅在 cell 区域叠加玻璃效果到屏幕。
+   */
+  private _passCompositeCells(
+    sceneTex: WebGLTexture,
+    cells: GlassCellRect[],
+    cW: number, cH: number,
+    W: number, H: number,
+  ): void {
+    const gl = this.gl;
+
+    gl.useProgram(this.compositeProg);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);   // 渲染到屏幕
+    gl.viewport(0, 0, W, H);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+    gl.uniform1i(gl.getUniformLocation(this.compositeProg, 'uScene'), 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.specularFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.compositeProg, 'uGlass'), 1);
+
+    gl.uniform1f(gl.getUniformLocation(this.compositeProg, 'uGlassOpacity'), this.cfg.glassOpacity);
+    gl.uniform3f(gl.getUniformLocation(this.compositeProg, 'uTintColor'),
+                 this.cfg.tintColor[0], this.cfg.tintColor[1], this.cfg.tintColor[2]);
+    gl.uniform1f(gl.getUniformLocation(this.compositeProg, 'uTintStrength'), this.cfg.tintStrength);
+
+    for (const cell of cells) {
+      this._drawCellQuad(this.compositeProg, cell, cW, cH);
+    }
   }
 
   private _passFresnel(sceneTex: WebGLTexture, bloomTex: WebGLTexture,
@@ -508,6 +668,45 @@ export class GlassGPU {
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
+  /**
+   * M1212: 画单个 cell 的 NDC quad。
+   * 将像素坐标 (x, y, w, h) 转换为 NDC [-1, 1]，
+   * 上传到 cellQuadBuf 并 drawArrays。
+   *
+   * 注意: WebGL origin 在左下角，canvas/CSS origin 在左上角，需要 flip Y。
+   */
+  private _drawCellQuad(
+    program: WebGLProgram,
+    cell: GlassCellRect,
+    canvasW: number,
+    canvasH: number,
+  ): void {
+    const gl = this.gl;
+
+    // 像素坐标 → NDC (Y 翻转)
+    const x0 = (cell.x / canvasW) * 2.0 - 1.0;
+    const x1 = ((cell.x + cell.w) / canvasW) * 2.0 - 1.0;
+    // CSS Y: top-down → NDC Y: bottom-up → flip
+    const y0 = 1.0 - ((cell.y + cell.h) / canvasH) * 2.0;
+    const y1 = 1.0 - (cell.y / canvasH) * 2.0;
+
+    // 两个三角形组成的 quad (CCW)
+    const verts = new Float32Array([
+      x0, y0,  x1, y0,  x0, y1,
+      x0, y1,  x1, y0,  x1, y1,
+    ]);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.cellQuadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+
+    const posLoc = gl.getAttribLocation(program, 'aPosition');
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.disableVertexAttribArray(posLoc);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
   /** 创建单个 FBO + 纹理 */
   private _createFBO(w: number, h: number,
                      internalFormat: number, format: number,
@@ -595,5 +794,6 @@ export class GlassGPU {
 
     gl.deleteTexture(this.blankNormalTex);
     gl.deleteBuffer(this.quadBuf);
+    gl.deleteBuffer(this.cellQuadBuf);
   }
 }

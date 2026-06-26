@@ -518,11 +518,13 @@ export class GPURenderLoop {
       this.perf.passEnd('bloom', t);
     }
 
-    // ── Pass 5: Glass → FBO (subtle Fresnel sheen, opacity=0.15) ──
+    // ── Pass 5: Glass → per-cell Fresnel sheen (M1212: per-cell quads, not fullscreen) ──
     if (this.glass) {
       const t = this.perf.passStart('glass');
       try {
-        this.glass.render(cellTex, this.bloom.outputTexture, time);
+        // 将 CellData 转换为 GlassCellRect (像素坐标)
+        const glassRects = this.cells.map(c => ({ x: c.x, y: c.y, w: c.w, h: c.h }));
+        this.glass.render(cellTex, this.bloom.outputTexture, time, glassRects, W, H);
       } catch (e) { /* non-fatal */ }
       this.perf.passEnd('glass', t);
     }
