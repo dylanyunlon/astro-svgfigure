@@ -293,11 +293,12 @@ export class PBRCellGPU {
   private uLightColor!: WebGLUniformLocation;
   private uAmbient!:    WebGLUniformLocation;
 
-  // Attribute location
+  // Attribute location — resolved name may differ when AT shader uses 'aPosition', 'position', etc.
   private aCorner!: number;
 
-  // ── Expose individual program for UIL uniform injection ──────────────────
-  get program(): WebGLProgram { return this.prog; }
+  // When an AT shader is swapped in its vertex attribute name may differ from 'aCorner'.
+  // _attrName tracks the resolved name so renderCells() binds the correct slot.
+  private _attrName = 'aCorner';
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -305,6 +306,9 @@ export class PBRCellGPU {
     this._createQuad();
     this._cacheLocations();
   }
+
+  /** Expose the active WebGLProgram (used by gpu-render-loop for uniform pushes). */
+  get program(): WebGLProgram { return this.prog; }
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -468,19 +472,61 @@ export class PBRCellGPU {
 
   /**
    * swapProgram — 用外部编译好的 WebGLProgram 替换默认 PBR shader。
-   * 替换后重新查询所有 uniform / attribute location，保证 renderCells() 正常工作。
-   * 原 program 会被 deleteProgram 释放。
+   *
+   * AT PhysicalShader 的顶点 attribute 名称可能与默认 PBR 的 'aCorner' 不同
+   * (例如 'aPosition'、'position'、'aCorner')。
+   * 本方法：
+   *   1. 在新 program 中按优先顺序查询多个候选 attribute 名
+   *   2. 找到有效 attribute (location ≥ 0) 后更新 _attrName + aCorner
+   *   3. 若没有任何候选 attribute 找到，说明 AT shader 与 quad VBO 不兼容，
+   *      拒绝 swap 并保留默认 program，返回 false
+   *   4. 成功 swap 后重新缓存所有 uniform location，返回 true
    *
    * @param newProg - 已链接的 WebGLProgram（例如来自 getATProgram(gl, 'PhysicalShader')）
+   * @returns true 如果 swap 成功，false 如果不兼容（保留原 program）
    */
-  swapProgram(newProg: WebGLProgram): void {
+  swapProgram(newProg: WebGLProgram): boolean {
     const gl = this.gl;
-    // 释放旧 program
+
+    // Candidate attribute names in priority order
+    const ATTR_CANDIDATES = ['aCorner', 'aPosition', 'position', 'aVertex', 'aPos'];
+
+    let resolvedAttr = -1;
+    let resolvedName = 'aCorner';
+
+    for (const name of ATTR_CANDIDATES) {
+      const loc = gl.getAttribLocation(newProg, name);
+      if (loc >= 0) {
+        resolvedAttr = loc;
+        resolvedName = name;
+        break;
+      }
+    }
+
+    if (resolvedAttr < 0) {
+      // AT shader has no compatible position attribute — keep default PBR program
+      console.warn(
+        '[PBRCellGPU] swapProgram: AT shader has no compatible vertex attribute ' +
+        `(tried: ${ATTR_CANDIDATES.join(', ')}) — keeping default PBR shader`,
+      );
+      // Delete the incompatible AT program to free GPU memory
+      gl.deleteProgram(newProg);
+      return false;
+    }
+
+    // Swap is compatible — replace program
     if (this.prog) gl.deleteProgram(this.prog);
     this.prog = newProg;
-    // 重新缓存所有 attribute / uniform 位置
+    this._attrName = resolvedName;
+    this.aCorner = resolvedAttr;
+
+    // Re-cache all uniform locations for the new program
     this._cacheLocations();
-    console.log('[PBRCellGPU] program swapped → AT PhysicalShader');
+    console.log(
+      `[PBRCellGPU] program swapped → AT PhysicalShader ` +
+      `(vertex attr: '${resolvedName}' @ location ${resolvedAttr})`,
+    );
+    return true;
   }
 
   /** Release all GPU resources. */
@@ -547,7 +593,19 @@ export class PBRCellGPU {
     const gl   = this.gl;
     const prog = this.prog;
 
-    this.aCorner    = gl.getAttribLocation(prog, 'aCorner');
+    // gl.getAttribLocation — resolve attribute by current _attrName
+    // (swapProgram() already resolved the location and stored it in this.aCorner;
+    //  on initial compile the default name 'aCorner' is always used)
+    const loc = gl.getAttribLocation(prog, this._attrName);
+    if (loc >= 0) {
+      this.aCorner = loc;
+    } else {
+      // Fallback: try all candidate names (covers initial compile where _attrName='aCorner')
+      for (const name of ['aCorner', 'aPosition', 'position', 'aVertex', 'aPos']) {
+        const l = gl.getAttribLocation(prog, name);
+        if (l >= 0) { this.aCorner = l; this._attrName = name; break; }
+      }
+    }
 
     this.uCellPos    = gl.getUniformLocation(prog, 'uCellPos')!;
     this.uCellSize   = gl.getUniformLocation(prog, 'uCellSize')!;

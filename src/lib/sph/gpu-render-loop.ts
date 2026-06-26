@@ -173,14 +173,30 @@ export class GPURenderLoop {
         const names = listATShaders();
         console.log(`[GPURenderLoop] AT shaders ready: ${names.length} shaders`);
 
-        // M982: 用 AT PhysicalShader 替换 PBR pass 的默认 shader
+        // M1226: wire AT PhysicalShader into PBR pass via swapProgram
+        // Use AT production shaders when available; fall back to default PBR on any error.
         if (this.pbr) {
-          const atPhysical = getATProgram(this.gl, 'PhysicalShader');
-          if (atPhysical) {
-            this.pbr.swapProgram(atPhysical.program);
-            console.log('[GPURenderLoop] PBR pass: AT PhysicalShader active');
-          } else {
-            console.warn('[GPURenderLoop] AT PhysicalShader not found — PBR keeps default shader');
+          try {
+            const atPhysical = getATProgram(this.gl, 'PhysicalShader');
+            if (atPhysical) {
+              // swapProgram returns false when AT shader has no compatible vertex attribute
+              // (AT PhysicalShader may use 'position'/'aPosition' instead of 'aCorner').
+              // In that case swapProgram already freed the AT program and kept the default.
+              const swapped = this.pbr.swapProgram(atPhysical.program);
+              if (swapped) {
+                console.log('[GPURenderLoop] PBR pass: AT PhysicalShader active (production shaders)');
+              } else {
+                console.warn(
+                  '[GPURenderLoop] AT PhysicalShader vertex attribute incompatible with quad VBO ' +
+                  '— PBR pass keeps default shader (non-fatal)',
+                );
+              }
+            } else {
+              console.warn('[GPURenderLoop] AT PhysicalShader not found in compiled.vs — PBR keeps default shader');
+            }
+          } catch (e) {
+            // Any unexpected error (e.g. GL context state) must not crash the render loop
+            console.warn('[GPURenderLoop] AT PhysicalShader swap failed (non-fatal):', e);
           }
         }
       })
