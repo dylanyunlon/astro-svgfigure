@@ -17,6 +17,8 @@ import { UELumenGI } from './ue-lumen-gi';
 import { GPUPerfMonitor } from './gpu-perf-monitor';
 import { parseUILParams, type UILParamsJson } from '../renderers/at-uil-bridge';
 import uilParamsJson from '../../../upstream/activetheory-assets/uil-params.json';
+import { ATVolumetricLight } from './at-volumetric-light';
+import { ATWaterSurface } from './at-water-surface';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -86,6 +88,8 @@ export class GPURenderLoop {
   private textureLoader: KTX2TextureLoader | null = null;
   private nukePass: NukePass | null = null;
   private lumenGI: UELumenGI | null = null;
+  private volumetricLight: ATVolumetricLight | null = null;
+  private waterSurface: ATWaterSurface | null = null;
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -202,6 +206,16 @@ export class GPURenderLoop {
 
     // ── Lumen GI (SSGI) ──
     try { this.lumenGI = new UELumenGI(gl); } catch (e) { console.warn('[GPURenderLoop] LumenGI init failed (non-fatal):', e); }
+
+    // ── AT Volumetric Light ──
+    try {
+      this.volumetricLight = new ATVolumetricLight(gl, { width: canvas.width, height: canvas.height });
+    } catch (e) { console.warn('[GPURenderLoop] ATVolumetricLight init failed (non-fatal):', e); }
+
+    // ── AT Water Surface ──
+    try {
+      this.waterSurface = new ATWaterSurface(gl);
+    } catch (e) { console.warn('[GPURenderLoop] ATWaterSurface init failed (non-fatal):', e); }
 
     // SDF species icon pass
     try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }
@@ -604,6 +618,27 @@ export class GPURenderLoop {
     // ── NukePass (HDR tonemap + LUT) ──
     if (this.nukePass) {
       try { this.nukePass.render(gl); } catch (_) { /* non-fatal */ }
+    }
+
+    // ── AT Water Surface pass (背景层，在 fluid 之后) ──
+    if (this.waterSurface) {
+      const t = this.perf.passStart('waterSurface');
+      try {
+        // Build identity MVP for orthographic fullscreen
+        const mvp = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+        const eye: [number, number, number] = [0, 0, 5];
+        this.waterSurface.render(dt, mvp, eye, W, H);
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] waterSurface pass error:', e); }
+      this.perf.passEnd('waterSurface', t);
+    }
+
+    // ── AT Volumetric Light pass (光照叠加层) ──
+    if (this.volumetricLight) {
+      const t = this.perf.passStart('volumetricLight');
+      try {
+        this.volumetricLight.render(cellTex);
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] volumetricLight pass error:', e); }
+      this.perf.passEnd('volumetricLight', t);
     }
 
     // ── Pass 6: Composite → canvas (merge FBO layers) ──
