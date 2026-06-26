@@ -19,6 +19,8 @@ import { parseUILParams, type UILParamsJson } from '../renderers/at-uil-bridge';
 import uilParamsJson from '../../../upstream/activetheory-assets/uil-params.json';
 import { ATVolumetricLight } from './at-volumetric-light';
 import { ATWaterSurface } from './at-water-surface';
+import { UEAtmosphereSky } from './ue-atmosphere-sky';
+import { UEBloomTonemap } from './ue-bloom-tonemap';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -90,6 +92,8 @@ export class GPURenderLoop {
   private lumenGI: UELumenGI | null = null;
   private volumetricLight: ATVolumetricLight | null = null;
   private waterSurface: ATWaterSurface | null = null;
+  private atmosphereSky: UEAtmosphereSky | null = null;
+  private ueBloomTonemap: UEBloomTonemap | null = null;
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -216,6 +220,17 @@ export class GPURenderLoop {
     try {
       this.waterSurface = new ATWaterSurface(gl);
     } catch (e) { console.warn('[GPURenderLoop] ATWaterSurface init failed (non-fatal):', e); }
+
+    // ── UE Atmosphere Sky (background sky scattering) ──
+    try {
+      this.atmosphereSky = new UEAtmosphereSky(gl as unknown as WebGLRenderingContext);
+      this.atmosphereSky.init();
+    } catch (e) { console.warn('[GPURenderLoop] UEAtmosphereSky init failed (non-fatal):', e); }
+
+    // ── UE Bloom + ACES Tonemap (post composite) ──
+    try {
+      this.ueBloomTonemap = new UEBloomTonemap(gl as unknown as WebGLRenderingContext, canvas.width, canvas.height);
+    } catch (e) { console.warn('[GPURenderLoop] UEBloomTonemap init failed (non-fatal):', e); }
 
     // SDF species icon pass
     try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }
@@ -516,6 +531,15 @@ export class GPURenderLoop {
     // ── UIL params → GPU uniforms (每帧开始时推送) ──
     this._pushUILUniforms();
 
+    // ── Pass 0: UE Atmosphere Sky (background — before all scene passes) ──
+    if (this.atmosphereSky) {
+      const t = this.perf.passStart('atmosphereSky');
+      try {
+        this.atmosphereSky.render(W, H);
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] atmosphereSky pass error:', e); }
+      this.perf.passEnd('atmosphereSky', t);
+    }
+
     // ── Pass 1: Fluid (鼠标流体 → FBO) ──
     {
       const t = this.perf.passStart('fluid');
@@ -663,6 +687,19 @@ export class GPURenderLoop {
         }, W, H, time);
       } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('composite', t);
+    }
+
+    // ── UE Bloom + ACES Tonemap (post-composite, UE-grade) ──
+    if (this.ueBloomTonemap) {
+      const t = this.perf.passStart('ueBloomTonemap');
+      try {
+        // Use the composite output (or cellTex fallback) as scene input
+        const sceneTex = this.composite
+          ? (this.composite as any).outputTexture ?? cellTex
+          : cellTex;
+        this.ueBloomTonemap.render(sceneTex, W, H);
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] ueBloomTonemap pass error:', e); }
+      this.perf.passEnd('ueBloomTonemap', t);
     }
 
     // ── Direct overlay passes (render on top of composite) ──
