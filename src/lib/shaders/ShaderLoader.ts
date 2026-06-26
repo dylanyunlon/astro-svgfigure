@@ -58,5 +58,52 @@ export function getShader(name: string): string {
   if (!code) {
     throw new Error(`[ShaderLoader] shader "${name}" not found in compiled.vs`);
   }
-  return code;
+  // Strip AT preprocessor: #test / #endtest blocks
+  // Keep the !Device.mobile (desktop) branch, discard Device.mobile branch
+  return stripATPreprocessor(code);
+}
+
+/**
+ * Strip ActiveTheory #test / #endtest preprocessor blocks.
+ * Strategy: keep the `#test !Device.mobile` branch (desktop path),
+ * discard the `#test Device.mobile` branch.
+ * Any unrecognised #test blocks are discarded entirely.
+ */
+function stripATPreprocessor(src: string): string {
+  // State machine: track nesting of #test blocks
+  const lines = src.split('\n');
+  const out: string[] = [];
+  let skip = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Strip #require directives (AT include system, already resolved)
+    if (trimmed.startsWith('#require(') || trimmed.startsWith('#require (')) {
+      continue;
+    }
+
+    if (trimmed.startsWith('#test ')) {
+      const cond = trimmed.slice(6).trim();
+      if (cond === '!Device.mobile' || cond.startsWith('!')) {
+        // Desktop / negated path — keep this block
+        skip = false;
+      } else {
+        // Mobile path or other condition — skip
+        skip = true;
+      }
+      continue; // Don't emit the #test line itself
+    }
+
+    if (trimmed === '#endtest') {
+      skip = false;
+      continue; // Don't emit #endtest
+    }
+
+    if (!skip) {
+      out.push(line);
+    }
+  }
+
+  return out.join('\n');
 }

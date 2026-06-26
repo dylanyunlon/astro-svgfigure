@@ -373,7 +373,7 @@ interface FBO {
  *   4. Additive composite (AT: uVolumetricStrength × tVolumetricBlur)
  */
 export class ATVolumetricLight {
-  private readonly gl: WebGLRenderingContext;
+  private readonly gl: WebGL2RenderingContext;
   private cfg: Required<ATVolumetricLightConfig>;
 
   // ── WebGL programs ──────────────────────────────────────────────────────────
@@ -396,7 +396,7 @@ export class ATVolumetricLight {
   // ── Runtime ──────────────────────────────────────────────────────────────────
   private time = 0.0;
 
-  constructor(gl: WebGLRenderingContext, config?: Partial<ATVolumetricLightConfig>) {
+  constructor(gl: WebGL2RenderingContext, config?: Partial<ATVolumetricLightConfig>) {
     this.gl  = gl;
     this.cfg = { ...DEFAULTS, ...config };
     this._init();
@@ -584,15 +584,24 @@ export class ATVolumetricLight {
   private _compile(vert: string, frag: string, label: string): WebGLProgram {
     const gl = this.gl;
 
+    // Runtime sanitise: guard against stale WebGL1 builtins
+    const sanitise = (s: string) => s
+      .replace(/\bgl_FragColor\b/g, 'fragColor')
+      .replace(/\btexture2D\s*\(/g, 'texture(')
+      .replace(/\btextureCube\s*\(/g, 'texture(');
+
+    const vertSrc = sanitise(vert);
+    const fragSrc = sanitise(frag);
+
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, vert);
+    gl.shaderSource(vs, vertSrc);
     gl.compileShader(vs);
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
       throw new Error(`[ATVolumetricLight] vert compile error (${label}): ${gl.getShaderInfoLog(vs)}`);
     }
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    gl.shaderSource(fs, frag);
+    gl.shaderSource(fs, fragSrc);
     gl.compileShader(fs);
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
       throw new Error(`[ATVolumetricLight] frag compile error (${label}): ${gl.getShaderInfoLog(fs)}`);
@@ -708,7 +717,7 @@ export function createATVolumetricLightFromCanvas(
     alpha: false,
     depth: false,
     stencil: false,
-  }) as WebGLRenderingContext | null;
+  }) as WebGL2RenderingContext | null;
   if (!gl) {
     throw new Error('[ATVolumetricLight] WebGL1 context unavailable');
   }

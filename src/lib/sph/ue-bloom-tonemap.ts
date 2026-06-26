@@ -319,7 +319,7 @@ interface RT {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class UEBloomTonemap {
-  private gl  : WebGLRenderingContext;
+  private gl  : WebGL2RenderingContext;
   private cfg : Required<BloomTonemapConfig>;
 
   // ── 6 Programs ──────────────────────────────────────────────────────────
@@ -349,7 +349,7 @@ export class UEBloomTonemap {
   private vpH = 0;
 
   constructor(
-    gl  : WebGLRenderingContext,
+    gl  : WebGL2RenderingContext,
     w   : number,
     h   : number,
     cfg?: BloomTonemapConfig,
@@ -461,11 +461,11 @@ export class UEBloomTonemap {
 
     // ── P5–P8: Upsample + blend pyramid ──────────────────────────────────
     // Each upsample step blends upsampled coarser level into next finer level.
-    // We reuse rtU3 as a temp for intermediate upsamples to minimise FBO count.
-    // Upsampling chain: d3→d2→d1→d0→lum, accumulating into rtU3.
-    this._passUpsample(this.rtD3.tex, this.rtD2.tex, this.rtD2, 0.5);
-    this._passUpsample(this.rtD2.tex, this.rtD1.tex, this.rtD1, 0.5);
-    this._passUpsample(this.rtD1.tex, this.rtD0.tex, this.rtD0, 0.5);
+    // IMPORTANT: avoid feedback loops (reading and writing the same FBO).
+    // Use rtU3 as temp target, then blit back to the destination RT.
+    this._passUpsampleSafe(this.rtD3.tex, this.rtD2.tex, this.rtD2, 0.5);
+    this._passUpsampleSafe(this.rtD2.tex, this.rtD1.tex, this.rtD1, 0.5);
+    this._passUpsampleSafe(this.rtD1.tex, this.rtD0.tex, this.rtD0, 0.5);
     this._passUpsample(this.rtD0.tex, this.rtLum.tex, this.rtU3, 1.0);
 
     // ── P9: ACES tonemap + composite to screen ────────────────────────────
@@ -640,6 +640,22 @@ export class UEBloomTonemap {
       cfg.bloomTintColor[0], cfg.bloomTintColor[1], cfg.bloomTintColor[2]);
 
     this._drawQuad(this.progUp);                          // gl.drawArrays
+  }
+
+  /**
+   * Upsample with feedback-loop guard.
+   * When nextTex === dstRT.tex, we render to rtU3 first then blit back,
+   * avoiding the GL_INVALID_OPERATION: Feedback loop error.
+   */
+  private _passUpsampleSafe(
+    srcTex  : WebGLTexture,
+    nextTex : WebGLTexture,
+    dstRT   : RT,
+    intensity: number,
+  ): void {
+    // Render upsample into rtU3 (temp), then copy back to dstRT
+    this._passUpsample(srcTex, nextTex, this.rtU3, intensity);
+    this._blitCopy(this.rtU3.tex, dstRT);
   }
 
   /**
@@ -869,7 +885,7 @@ export class UEBloomTonemap {
  * ```
  */
 export function createUEBloomTonemap(
-  gl  : WebGLRenderingContext,
+  gl  : WebGL2RenderingContext,
   w   : number,
   h   : number,
   cfg?: BloomTonemapConfig,

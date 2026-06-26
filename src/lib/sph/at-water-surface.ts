@@ -356,7 +356,7 @@ interface PingPong {
  * dispose() — delete everything.
  */
 export class ATWaterSurface {
-  private gl:  WebGLRenderingContext;
+  private gl:  WebGL2RenderingContext;
   private cfg: Required<ATWaterSurfaceConfig>;
 
   // ── Four shader programs ───────────────────────────────────────────────────
@@ -384,7 +384,7 @@ export class ATWaterSurface {
 
   // ─── Constructor ────────────────────────────────────────────────────────────
 
-  constructor(gl: WebGLRenderingContext, cfg: ATWaterSurfaceConfig = {}) {
+  constructor(gl: WebGL2RenderingContext, cfg: ATWaterSurfaceConfig = {}) {
     this.gl = gl;
     const ld = cfg.lightDir ?? [0.577, 0.577, -0.577];
     this.cfg = {
@@ -716,8 +716,23 @@ export class ATWaterSurface {
   private _compile(vert: string, frag: string, label: string): WebGLProgram {
     const gl = this.gl;
 
+    // Runtime sanitise WebGL1→WebGL2
+    const sanitise = (s: string) => s
+      .replace(/\bgl_FragColor\b/g, 'fragColor')
+      .replace(/\btexture2D\s*\(/g, 'texture(')
+      .replace(/\btextureCube\s*\(/g, 'texture(')
+      .replace(/\battribute\s+/g, 'in ')
+      .replace(/\bvarying\s+/g, (_, offset: number, full: string) => {
+        // In vert shaders varying = out, in frag shaders varying = in
+        // Heuristic: if 'void main' hasn't appeared yet before this varying, treat as preamble
+        return label.includes('vert') || label.includes('Vert') || label.includes('vs') ? 'out ' : 'in ';
+      });
+
+    const vertSrc = sanitise(vert);
+    const fragSrc = sanitise(frag);
+
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, vert);
+    gl.shaderSource(vs, vertSrc);
     gl.compileShader(vs);
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
       const log = gl.getShaderInfoLog(vs);
@@ -726,7 +741,7 @@ export class ATWaterSurface {
     }
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    gl.shaderSource(fs, frag);
+    gl.shaderSource(fs, fragSrc);
     gl.compileShader(fs);
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
       const log = gl.getShaderInfoLog(fs);
@@ -773,7 +788,7 @@ export class ATWaterSurface {
  * ```
  */
 export function createATWaterSurface(
-  gl:  WebGLRenderingContext,
+  gl:  WebGL2RenderingContext,
   cfg: ATWaterSurfaceConfig = {},
 ): ATWaterSurface {
   return new ATWaterSurface(gl, cfg);

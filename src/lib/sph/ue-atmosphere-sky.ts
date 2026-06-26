@@ -629,7 +629,7 @@ export const DEFAULT_ATMOSPHERE_SKY_CONFIG: UEAtmosphereSkyConfig = {
 //   sky.dispose();
 // ─────────────────────────────────────────────────────────────────────────────
 export class UEAtmosphereSky {
-  private gl:     WebGLRenderingContext;
+  private gl:     WebGL2RenderingContext;
   private config: UEAtmosphereSkyConfig;
 
   // ── WebGL programs ─────────────────────────────────────────────────────────
@@ -653,7 +653,7 @@ export class UEAtmosphereSky {
   private lutDirty     = true;
   private initialized  = false;
 
-  constructor(gl: WebGLRenderingContext, config: Partial<UEAtmosphereSkyConfig> = {}) {
+  constructor(gl: WebGL2RenderingContext, config: Partial<UEAtmosphereSkyConfig> = {}) {
     this.gl = gl;
     this.config = {
       ...DEFAULT_ATMOSPHERE_SKY_CONFIG,
@@ -1058,8 +1058,17 @@ export class UEAtmosphereSky {
   private _compile(vert: string, frag: string, label: string): WebGLProgram {
     const gl = this.gl;
 
+    // Runtime sanitise WebGL1→WebGL2
+    const sanitise = (s: string) => s
+      .replace(/\bgl_FragColor\b/g, 'fragColor')
+      .replace(/\btexture2D\s*\(/g, 'texture(')
+      .replace(/\btextureCube\s*\(/g, 'texture(');
+
+    const vertSrc = sanitise(vert);
+    const fragSrc = sanitise(frag);
+
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, vert);
+    gl.shaderSource(vs, vertSrc);
     gl.compileShader(vs);
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
       const info = gl.getShaderInfoLog(vs);
@@ -1068,7 +1077,7 @@ export class UEAtmosphereSky {
     }
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    gl.shaderSource(fs, frag);
+    gl.shaderSource(fs, fragSrc);
     gl.compileShader(fs);
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
       const info = gl.getShaderInfoLog(fs);
@@ -1115,7 +1124,7 @@ export class CellAtmosphereBackground {
   private timeOfDay = 0.5;
 
   constructor(
-    gl:       WebGLRenderingContext,
+    gl:       WebGL2RenderingContext,
     species?: Partial<CellSpecies>,
     config?:  Partial<UEAtmosphereSkyConfig>,
   ) {

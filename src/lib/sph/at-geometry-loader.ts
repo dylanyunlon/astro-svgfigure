@@ -40,7 +40,7 @@ export type { ATGeometryName } from './at-geometry-loader-types';
 
 export interface ATGeometryLoaderOptions {
   /** WebGL rendering context (WebGL1 or WebGL2). */
-  gl: WebGLRenderingContext | WebGL2RenderingContext;
+  gl: WebGL2RenderingContext | WebGL2RenderingContext;
   /**
    * Base URL for AT geometry assets.
    * @default '/upstream/activetheory-assets/geometry'
@@ -491,7 +491,7 @@ void main() {
  */
 export class ATGeometryLoader {
   // ── WebGL context ─────────────────────────────────────────────────────────
-  private gl: WebGLRenderingContext | WebGL2RenderingContext;
+  private gl: WebGL2RenderingContext | WebGL2RenderingContext;
 
   // ── DracoGeometryLoader (handles .bin fetch + decode + VBO/IBO upload) ───
   private dracoLoader: DracoGeometryLoader;
@@ -963,7 +963,7 @@ export class ATGeometryLoader {
    *  render calls, which are WebGL1-compatible).
    */
   private _asGL2(
-    gl: WebGLRenderingContext | WebGL2RenderingContext,
+    gl: WebGL2RenderingContext | WebGL2RenderingContext,
   ): WebGL2RenderingContext | null {
     if (typeof WebGL2RenderingContext !== 'undefined' &&
         gl instanceof WebGL2RenderingContext) {

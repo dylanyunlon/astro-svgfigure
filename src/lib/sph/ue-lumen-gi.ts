@@ -511,17 +511,26 @@ void main() {
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function compileShader(gl: WebGLRenderingContext, type: number, src: string, label: string): WebGLShader {
+function compileShader(gl: WebGL2RenderingContext, type: number, src: string, label: string): WebGLShader {
+  // Runtime sanitise: ensure no stale WebGL1 builtins survive a cached build
+  let glsl = src;
+  glsl = glsl.replace(/\bgl_FragColor\b/g, 'fragColor');
+  glsl = glsl.replace(/\btexture2D\s*\(/g, 'texture(');
+  glsl = glsl.replace(/\btextureCube\s*\(/g, 'texture(');
+
   const sh = gl.createShader(type)!;
-  gl.shaderSource(sh, src);
+  gl.shaderSource(sh, glsl);
   gl.compileShader(sh);
   if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    const lines = glsl.split('\n');
+    const preview = lines.slice(0, 8).map((l, i) => `  ${i+1}: ${l}`).join('\n');
+    console.error(`[UELumenGI] shader src preview (${label}):\n${preview}\n  ... (${lines.length} lines total)`);
     throw new Error(`[UELumenGI] shader compile error (${label}): ${gl.getShaderInfoLog(sh)}`);
   }
   return sh;
 }
 
-function createProgram(gl: WebGLRenderingContext, vert: string, frag: string, label: string): WebGLProgram {
+function createProgram(gl: WebGL2RenderingContext, vert: string, frag: string, label: string): WebGLProgram {
   const vs   = compileShader(gl, gl.VERTEX_SHADER,   vert, `${label}.vs`);
   const fs   = compileShader(gl, gl.FRAGMENT_SHADER, frag, `${label}.fs`);
   const prog = gl.createProgram()!;
@@ -543,7 +552,7 @@ interface SingleFBO {
   height: number;
 }
 
-function createFBO(gl: WebGLRenderingContext, w: number, h: number, label: string): SingleFBO {
+function createFBO(gl: WebGL2RenderingContext, w: number, h: number, label: string): SingleFBO {
   const tex = gl.createTexture()!;
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -565,7 +574,7 @@ interface DoubleFBO {
   write: SingleFBO;
 }
 
-function createDoubleFBO(gl: WebGLRenderingContext, w: number, h: number): DoubleFBO {
+function createDoubleFBO(gl: WebGL2RenderingContext, w: number, h: number): DoubleFBO {
   return {
     read:  createFBO(gl, w, h, 'read'),
     write: createFBO(gl, w, h, 'write'),
@@ -632,7 +641,7 @@ function mat4Mul(a: Float32Array, b: Float32Array): Float32Array {
  *   }, canvasWidth, canvasHeight);
  */
 export class UELumenGI {
-  private readonly gl: WebGLRenderingContext;
+  private readonly gl: WebGL2RenderingContext;
   private readonly cfg: UELumenGIConfig;
 
   // ── Programs ────────────────────────────────────────────────────────────────
@@ -663,7 +672,7 @@ export class UELumenGI {
   private height = 0;
   private rcRes = 128;
 
-  constructor(gl: WebGLRenderingContext, cfg: Partial<UELumenGIConfig> = {}) {
+  constructor(gl: WebGL2RenderingContext, cfg: Partial<UELumenGIConfig> = {}) {
     this.gl  = gl;
     this.cfg = { ...DEFAULT_LUMEN_GI_CONFIG, ...cfg };
     this.rcRes = this.cfg.radianceCacheRes;
