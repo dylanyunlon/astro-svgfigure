@@ -2,74 +2,83 @@
  * at-shader-pipeline-bridge.ts — M938: 连接 ATShaderLoader → nanogl executor
  *
  * 这是 compiled.vs 字符串到屏幕像素的最后一环:
- *   1. ATShaderLoader.parse(compiledVsSrc) → 172 个 shader 拆分 + #require 递归解析
- *   2. ATShaderLoader.getShader(name) → 完全解析后的 GLSL 字符串
- *   3. compileShader(gl, vert, frag) → nanogl Program
- *   4. executePasses(gl, passes) → multi-pass FBO chain → 屏幕
+ *   1. ATShaderLoader.load(compiledVsUrl) → 174 个 shader 拆分 + #require 递归解析
+ *   2. ATShaderLoader.getProgram(name)    → { vertex, fragment } 完全解析后的 GLSL
+ *   3. compileShader(gl, vert, frag)      → nanogl Program
+ *   4. executePasses(gl, passes)          → multi-pass FBO chain → 屏幕
+ *
+ * Bug fixes (M1218):
+ *   - parse() is private on ATShaderLoader; use public load() instead
+ *   - _loader.names does not exist; use _loader.listShaders()
+ *   - getShader(name) on class blocks returns text with #!SHADER: markers stripped
+ *     (parseClassBlock removes them); use getProgram(name) which returns
+ *     the correctly assembled { vertex, fragment } pair with preamble prepended
+ *   - getATProgram() return type was WebGLProgram; corrected to nanogl Program
+ *     so it is directly usable in ShaderPass.program (PBR pass compatible)
  */
 
-
-
-
-
-
-
 import { ATShaderLoader } from './at-shader-loader';
+import Program from '../../../upstream/nanogl/src/program';
 import { compileShader, executePasses, type ShaderPass } from './nanogl-shader-executor';
 
 let _loader: ATShaderLoader | null = null;
 
-// [orphan-precise] /**
-// [orphan-precise]  * initATShaderPipeline — 加载 compiled.vs 并初始化 shader loader。
-// [orphan-precise]  * 调用一次, 之后用 getATProgram() 获取编译好的 program。
-// [orphan-precise]  */
+/**
+ * initATShaderPipeline — 加载 compiled.vs 并初始化 shader loader。
+ * 调用一次, 之后用 getATProgram() 获取编译好的 program。
+ *
+ * FIX: use loader.load(url) (async, public) instead of
+ *      fetch + private parse().
+ */
 export async function initATShaderPipeline(compiledVsUrl: string): Promise<ATShaderLoader> {
-  const resp = await fetch(compiledVsUrl);
-  const src = await resp.text();
   _loader = new ATShaderLoader();
-  _loader.parse(src);
-  console.log(`[AT Pipeline Bridge] Loaded compiled.vs: ${_loader.names.length} shaders parsed`);
+  await _loader.load(compiledVsUrl);
+  console.log(`[AT Pipeline Bridge] Loaded compiled.vs: ${_loader.listShaders().length} shaders parsed`);
   return _loader;
 }
 
 /**
- * getATProgram — 获取一个编译好的 WebGL program。
+ * getATProgram — 获取一个编译好的 nanogl Program。
  * 自动从 ATShaderLoader 获取 resolved GLSL (含所有 #require 依赖),
  * 然后用 nanogl executor 编译。
  *
- * @param gl - WebGL context
- * @param name - shader 名称 (如 'PhysicalShader', 'HydraBloom', 'SplatShader')
- * @returns compiled WebGL program, 或 null 如果 shader 不存在
+ * FIX: use loader.getProgram(name) instead of getShader(name) + manual
+ *      #!SHADER: regex.  parseClassBlock strips those markers from the stored
+ *      text, so the regex in the old code never matched.  getProgram() returns
+ *      the correctly assembled { vertex, fragment } pair (preamble prepended,
+ *      #require resolved) and is already the right entry-point for class shaders.
+ *
+ * FIX: return type is now nanogl Program (not WebGLProgram) so the result
+ *      plugs directly into ShaderPass.program for PBR / multi-pass use.
+ *
+ * @param gl   - WebGL context
+ * @param name - shader block name (e.g. 'PhysicalMaterial', 'ColorMaterial')
+ *               with or without the .glsl suffix
+ * @returns compiled nanogl Program + source, or null if not found / not a class shader
  */
 export function getATProgram(
   gl: WebGLRenderingContext,
   name: string,
-): { program: WebGLProgram; vertSrc: string; fragSrc: string } | null {
+): { program: Program; vertSrc: string; fragSrc: string } | null {
   if (!_loader) {
     console.error('[AT Pipeline Bridge] loader not initialized. Call initATShaderPipeline() first.');
     return null;
   }
 
-  // ATShaderLoader.getShader() 返回 #require 完全递归解析后的 GLSL
-  const resolved = _loader.getShader(name);
-  if (!resolved) {
-    console.warn(`[AT Pipeline Bridge] shader "${name}" not found in compiled.vs`);
+  let vertSrc: string;
+  let fragSrc: string;
+
+  try {
+    // getProgram() handles class blocks (with #!ATTRIBUTES/#!UNIFORMS/#!VARYINGS)
+    // and returns the preamble-prefixed, #require-resolved vertex + fragment pair.
+    const { vertex, fragment } = _loader.getProgram(name);
+    vertSrc = vertex;
+    fragSrc = fragment;
+  } catch (e) {
+    // Not a class shader (library chunk) or name not found — not directly compilable
+    console.warn(`[AT Pipeline Bridge] getProgram("${name}") failed:`, (e as Error).message);
     return null;
   }
-
-  // Class shaders 有 #!SHADER: Name.vs / #!SHADER: Name.fs 分隔
-  // Library shaders 只是 GLSL 代码片段 (没有 vertex/fragment 分离)
-  const vsMatch = resolved.match(/#!SHADER:\s*[\w.]*\.vs\n([\s\S]*?)(?=#!SHADER:|$)/);
-  const fsMatch = resolved.match(/#!SHADER:\s*[\w.]*\.fs\n([\s\S]*?)(?=#!SHADER:|$)/);
-
-  if (!vsMatch || !fsMatch) {
-    // Library shader — 不能直接编译为 program, 返回原始代码
-    // (调用者需要自己组合 vertex + fragment)
-    return null;
-  }
-
-  const vertSrc = vsMatch[1].trim();
-  const fragSrc = fsMatch[1].trim();
 
   try {
     const program = compileShader(gl, vertSrc, fragSrc);
@@ -105,7 +114,12 @@ export function buildATPassChain(
     }
     result.push({
       program: compiled.program,
-      uniforms: uniforms ?? {},
+      fbo: null,
+      setUniforms: (prog) => {
+        for (const [key, val] of Object.entries(uniforms ?? {})) {
+          if (typeof prog[key] === 'function') prog[key](val);
+        }
+      },
     });
   }
 
@@ -114,19 +128,30 @@ export function buildATPassChain(
 
 /**
  * getATShaderSource — 获取解析后的 GLSL 源码 (不编译)。
- * 用于需要自定义编译流程的场景。
+ * 对 class shaders 返回 vertex + fragment 拼接; 对 library shaders 返回原始代码。
  */
 export function getATShaderSource(name: string): string | null {
   if (!_loader) return null;
-  return _loader.getShader(name) ?? null;
+  try {
+    const { vertex, fragment } = _loader.getProgram(name);
+    return `${vertex}\n// ---\n${fragment}`;
+  } catch {
+    // Fallback to raw library chunk
+    try {
+      return _loader.getShader(name);
+    } catch {
+      return null;
+    }
+  }
 }
 
 /**
  * listATShaders — 列出所有可用的 shader 名称。
+ * FIX: use listShaders() method (ATShaderLoader has no .names property).
  */
 export function listATShaders(): string[] {
   if (!_loader) return [];
-  return _loader.names;
+  return _loader.listShaders();
 }
 
 
