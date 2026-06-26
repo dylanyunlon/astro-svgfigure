@@ -103,7 +103,7 @@ export async function initATShaderPipeline(compiledVsUrl: string): Promise<void>
  *             'PBR' — with or without the '.glsl' suffix
  */
 export function getATProgram(
-  gl: WebGLRenderingContext,
+  gl: WebGL2RenderingContext,
   name: string,
 ): { program: Program; vertSrc: string; fragSrc: string } | null {
   if (!_initialized) {
@@ -157,7 +157,7 @@ export function getATProgram(
  *   executePasses(gl, chain);
  */
 export function buildATPassChain(
-  gl: WebGLRenderingContext,
+  gl: WebGL2RenderingContext,
   passes: Array<{ name: string; uniforms?: Record<string, unknown> }>,
 ): ShaderPass[] {
   const result: ShaderPass[] = [];

@@ -32,7 +32,7 @@ void main() {
 let _fallbackProgram: WebGLProgram | null = null;
 
 export function safeCompile(
-  gl: WebGLRenderingContext,
+  gl: WebGL2RenderingContext,
   vert: string,
   frag: string,
   label: string
@@ -73,7 +73,7 @@ export function safeCompile(
   return prog;
 }
 
-function _getFallback(gl: WebGLRenderingContext): WebGLProgram {
+function _getFallback(gl: WebGL2RenderingContext): WebGLProgram {
   if (_fallbackProgram) return _fallbackProgram;
   const vs = gl.createShader(gl.VERTEX_SHADER)!;
   gl.shaderSource(vs, FALLBACK_VERT);
@@ -91,7 +91,7 @@ function _getFallback(gl: WebGLRenderingContext): WebGLProgram {
   return prog;
 }
 
-export function checkFBO(gl: WebGLRenderingContext, label: string): boolean {
+export function checkFBO(gl: WebGL2RenderingContext, label: string): boolean {
   const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
   if (status !== gl.FRAMEBUFFER_COMPLETE) {
     console.error(`[GPU-GUARD] FBO incomplete (${label}): 0x${status.toString(16)}`);
@@ -100,7 +100,7 @@ export function checkFBO(gl: WebGLRenderingContext, label: string): boolean {
   return true;
 }
 
-export function drainErrors(gl: WebGLRenderingContext): number {
+export function drainErrors(gl: WebGL2RenderingContext): number {
   let count = 0;
   let err: number;
   while ((err = gl.getError()) !== gl.NO_ERROR) {
