@@ -13,6 +13,7 @@ import { ATGeometryLoader } from './at-geometry-loader';
 import { KTX2TextureLoader } from './ktx2-texture-loader';
 import { safeCompile, checkFBO, drainErrors, setupContextLost } from './gpu-error-guard';
 import { NukePass } from '../renderer/NukePass';
+import { UELumenGI } from './ue-lumen-gi';
 import { GPUPerfMonitor } from './gpu-perf-monitor';
 import { parseUILParams, type UILParamsJson } from '../renderers/at-uil-bridge';
 import uilParamsJson from '../../../upstream/activetheory-assets/uil-params.json';
@@ -84,6 +85,7 @@ export class GPURenderLoop {
   private geometryLoader: ATGeometryLoader | null = null;
   private textureLoader: KTX2TextureLoader | null = null;
   private nukePass: NukePass | null = null;
+  private lumenGI: UELumenGI | null = null;
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -197,6 +199,9 @@ export class GPURenderLoop {
 
     // Glass Fresnel pass
     try { this.glass = new GlassGPU(gl); } catch (e) { console.warn('[GPURenderLoop] Glass init failed:', e); }
+
+    // ── Lumen GI (SSGI) ──
+    try { this.lumenGI = new UELumenGI(gl); } catch (e) { console.warn('[GPURenderLoop] LumenGI init failed (non-fatal):', e); }
 
     // SDF species icon pass
     try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }
@@ -574,6 +579,26 @@ export class GPURenderLoop {
         this.glass.render(cellTex, this.bloom.outputTexture, time, glassRects, W, H);
       } catch (e) { /* non-fatal */ }
       this.perf.passEnd('glass', t);
+    }
+
+    // ── Pass 5b: Lumen GI (Screen-Space Global Illumination) ──
+    if (this.lumenGI) {
+      const t = this.perf.passStart('ssgi');
+      try {
+        const placeholder = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
+        this.lumenGI.render(dt, {
+          depthTex: placeholder,
+          normalTex: placeholder,
+          albedoTex: cellTex,
+          roughnessTex: placeholder,
+          sceneColorTex: cellTex,
+          viewMatrix: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+          projMatrix: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+          cameraPos: [0, 0, 5],
+          frameIndex: this.frameCount,
+        }, W, H);
+      } catch (e) { /* non-fatal — SSGI may need G-Buffer for full quality */ }
+      this.perf.passEnd('ssgi', t);
     }
 
     // ── NukePass (HDR tonemap + LUT) ──
