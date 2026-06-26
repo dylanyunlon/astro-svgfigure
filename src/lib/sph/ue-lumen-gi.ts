@@ -190,7 +190,7 @@ vec3 fresnelSchlick(vec3 f0, float cosTheta) {
 // GLSL — Shared vertex shader (full-screen quad)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const QUAD_VERT = /* glsl */`
+const QUAD_VERT = /* glsl */`#version 300 es
 precision highp float;
 attribute vec2 aPosition;
 varying vec2 vUv;
@@ -207,7 +207,7 @@ void main() {
 // indirect radiance for each probe texel via SDF sphere-march.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const RADIANCE_COLLECT_VERT = /* glsl */`
+const RADIANCE_COLLECT_VERT = /* glsl */`#version 300 es
 precision highp float;
 attribute vec2 aPosition;
 varying vec2 vUv;
@@ -218,7 +218,7 @@ void main() {
 }
 `;
 
-const RADIANCE_COLLECT_FRAG = /* glsl */`
+const RADIANCE_COLLECT_FRAG = /* glsl */`#version 300 es
 precision highp float;
 ${RANGE_GLSL}
 ${SIMPLENOISE_GLSL}
@@ -337,7 +337,7 @@ void main() {
 // Implements PBR direct + indirect (diffuse + specular) lighting.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const LIGHTING_MAIN_VERT = /* glsl */`
+const LIGHTING_MAIN_VERT = /* glsl */`#version 300 es
 precision highp float;
 attribute vec2 aPosition;
 varying vec2 vUv;
@@ -347,7 +347,7 @@ void main() {
 }
 `;
 
-const LIGHTING_MAIN_FRAG = /* glsl */`
+const LIGHTING_MAIN_FRAG = /* glsl */`#version 300 es
 precision highp float;
 ${RANGE_GLSL}
 ${FBR_GLSL}

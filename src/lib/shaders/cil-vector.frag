@@ -1,4 +1,6 @@
+#version 300 es
 precision mediump float;
+out vec4 fragColor;
 
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
@@ -96,5 +98,5 @@ void main() {
     float scale = 0.45;
     float mask  = drawArrow(local, angle, scale);
 
-    gl_FragColor = vec4(u_fillColor, mask * u_opacity);
+    fragColor = vec4(u_fillColor, mask * u_opacity);
 }

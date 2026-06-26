@@ -80,10 +80,10 @@ const DEFAULT_CONFIG: Required<BloomTonemapConfig> = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Shared fullscreen vertex shader (no neighbour UVs needed for post-pass). */
-const QUAD_VERT = /* glsl */`
+const QUAD_VERT = /* glsl */`#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
@@ -104,22 +104,23 @@ float luma(vec4 color) {
  * [P0] Luminosity pass — UnrealBloomLuminosity.glsl (compiled.vs line 8722)
  * Extracts bright pixels above luminosityThreshold via smoothstep.
  */
-const LUMINOSITY_FRAG = /* glsl */`
+const LUMINOSITY_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 ${LUMA_GLSL}
 uniform sampler2D tDiffuse;
 uniform vec3 defaultColor;
 uniform float defaultOpacity;
 uniform float luminosityThreshold;
 uniform float smoothWidth;
-varying vec2 vUv;
+in vec2 vUv;
 void main() {
-    vec4 texel = texture2D(tDiffuse, vUv);
+    vec4 texel = texture(tDiffuse, vUv);
     float v = luma(texel.xyz);
     vec4 outputColor = vec4(defaultColor.rgb, defaultOpacity);
     float alpha = smoothstep(luminosityThreshold,
                              luminosityThreshold + smoothWidth, v);
-    gl_FragColor = mix(outputColor, texel, alpha);
+    fragColor = mix(outputColor, texel, alpha);
 }
 `;
 
@@ -127,11 +128,12 @@ void main() {
  * [P1–P4] Downsample pass — DownSample.glsl (compiled.vs line 6901)
  * 13-tap weighted box filter: halves resolution each pass.
  */
-const DOWNSAMPLE_FRAG = /* glsl */`
+const DOWNSAMPLE_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 uniform sampler2D tMap;
 uniform vec2 uResolution;
-varying vec2 vUv;
+in vec2 vUv;
 void main() {
     vec2 pxSize    = 1.0 / uResolution;
     vec2 halfPixel = 0.5 / uResolution;
@@ -142,21 +144,21 @@ void main() {
     vec2 tr = vUv + halfPixel;
     vec2 tl = vUv + vec2(-halfPixel.x,  halfPixel.y);
 
-    vec3 A = texture2D(tMap, vUv + vec2(-1.0, -1.0) * pxSize).xyz * weights.x;
-    vec3 B = texture2D(tMap, vUv + vec2( 0.0, -1.0) * pxSize).xyz * weights.y;
-    vec3 C = texture2D(tMap, vUv + vec2( 1.0, -1.0) * pxSize).xyz * weights.x;
-    vec3 D = texture2D(tMap, br).xyz  * weights.z;
-    vec3 E = texture2D(tMap, bl).xyz  * weights.z;
-    vec3 F = texture2D(tMap, vUv + vec2(-1.0, 0.0) * pxSize).xyz * weights.y;
-    vec3 G = texture2D(tMap, vUv).xyz  * weights.z;
-    vec3 H = texture2D(tMap, vUv + vec2( 1.0, 0.0) * pxSize).xyz * weights.y;
-    vec3 I = texture2D(tMap, tl).xyz  * weights.z;
-    vec3 J = texture2D(tMap, tr).xyz  * weights.z;
-    vec3 K = texture2D(tMap, vUv + vec2(-1.0, 1.0) * pxSize).xyz * weights.x;
-    vec3 L = texture2D(tMap, vUv + vec2( 0.0, 1.0) * pxSize).xyz * weights.y;
-    vec3 M = texture2D(tMap, vUv + vec2( 1.0, 1.0) * pxSize).xyz * weights.x;
+    vec3 A = texture(tMap, vUv + vec2(-1.0, -1.0) * pxSize).xyz * weights.x;
+    vec3 B = texture(tMap, vUv + vec2( 0.0, -1.0) * pxSize).xyz * weights.y;
+    vec3 C = texture(tMap, vUv + vec2( 1.0, -1.0) * pxSize).xyz * weights.x;
+    vec3 D = texture(tMap, br).xyz  * weights.z;
+    vec3 E = texture(tMap, bl).xyz  * weights.z;
+    vec3 F = texture(tMap, vUv + vec2(-1.0, 0.0) * pxSize).xyz * weights.y;
+    vec3 G = texture(tMap, vUv).xyz  * weights.z;
+    vec3 H = texture(tMap, vUv + vec2( 1.0, 0.0) * pxSize).xyz * weights.y;
+    vec3 I = texture(tMap, tl).xyz  * weights.z;
+    vec3 J = texture(tMap, tr).xyz  * weights.z;
+    vec3 K = texture(tMap, vUv + vec2(-1.0, 1.0) * pxSize).xyz * weights.x;
+    vec3 L = texture(tMap, vUv + vec2( 0.0, 1.0) * pxSize).xyz * weights.y;
+    vec3 M = texture(tMap, vUv + vec2( 1.0, 1.0) * pxSize).xyz * weights.x;
 
-    gl_FragColor = vec4(A+B+C+D+E+F+G+H+I+J+K+L+M, 1.0);
+    fragColor = vec4(A+B+C+D+E+F+G+H+I+J+K+L+M, 1.0);
 }
 `;
 
@@ -164,32 +166,33 @@ void main() {
  * [P5–P8] Upsample pass — UpSample.glsl (compiled.vs line 6983)
  * 9-tap tent filter: blends upsampled result with next-higher-level FBO.
  */
-const UPSAMPLE_FRAG = /* glsl */`
+const UPSAMPLE_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 uniform sampler2D tMap;
 uniform sampler2D tNext;
 uniform vec2 uResolution;
 uniform float uRadius;
 uniform float uIntensity;
 uniform vec3 uTint;
-varying vec2 vUv;
+in vec2 vUv;
 void main() {
     vec2 texelSize = (1.0 / uResolution) * uRadius;
     vec3 sum = vec3(0.0);
 
-    sum += texture2D(tMap, vUv - texelSize).xyz                         * 0.0625;
-    sum += texture2D(tMap, vUv + vec2(0.0, -texelSize.y)).xyz           * 0.125;
-    sum += texture2D(tMap, vUv + vec2( texelSize.x, -texelSize.y)).xyz  * 0.0625;
-    sum += texture2D(tMap, vUv - vec2(texelSize.x, 0.0)).xyz            * 0.125;
-    sum += texture2D(tMap, vUv).xyz                                      * 0.25;
-    sum += texture2D(tMap, vUv + vec2(texelSize.x, 0.0)).xyz            * 0.125;
-    sum += texture2D(tMap, vUv + texelSize).xyz                         * 0.0625;
-    sum += texture2D(tMap, vUv + vec2(0.0, texelSize.y)).xyz            * 0.125;
-    sum += texture2D(tMap, vUv + vec2(-texelSize.x, texelSize.y)).xyz   * 0.0625;
+    sum += texture(tMap, vUv - texelSize).xyz                         * 0.0625;
+    sum += texture(tMap, vUv + vec2(0.0, -texelSize.y)).xyz           * 0.125;
+    sum += texture(tMap, vUv + vec2( texelSize.x, -texelSize.y)).xyz  * 0.0625;
+    sum += texture(tMap, vUv - vec2(texelSize.x, 0.0)).xyz            * 0.125;
+    sum += texture(tMap, vUv).xyz                                      * 0.25;
+    sum += texture(tMap, vUv + vec2(texelSize.x, 0.0)).xyz            * 0.125;
+    sum += texture(tMap, vUv + texelSize).xyz                         * 0.0625;
+    sum += texture(tMap, vUv + vec2(0.0, texelSize.y)).xyz            * 0.125;
+    sum += texture(tMap, vUv + vec2(-texelSize.x, texelSize.y)).xyz   * 0.0625;
 
-    vec3 next = texture2D(tNext, vUv).xyz;
+    vec3 next = texture(tNext, vUv).xyz;
     next += min(vec3(1.0), sum * uIntensity) * uTint;
-    gl_FragColor = vec4(next, 1.0);
+    fragColor = vec4(next, 1.0);
 }
 `;
 
@@ -198,14 +201,15 @@ void main() {
  * Handles both horizontal (direction=1,0) and vertical (direction=0,1) passes.
  * SIGMA and KERNEL_RADIUS are injected via #define before compilation.
  */
-const GAUSSIAN_FRAG_TEMPLATE = /* glsl */`
+const GAUSSIAN_FRAG_TEMPLATE = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 #define SIGMA 5
 #define KERNEL_RADIUS 8
 uniform sampler2D colorTexture;
 uniform vec2 texSize;
 uniform vec2 direction;
-varying vec2 vUv;
+in vec2 vUv;
 
 float gaussianPdf(in float x, in float sigma) {
     return 0.39894 * exp(-0.5 * x * x / (sigma * sigma)) / sigma;
@@ -215,17 +219,17 @@ void main() {
     vec2 invSize  = 1.0 / texSize;
     float fSigma  = float(SIGMA);
     float weightSum  = gaussianPdf(0.0, fSigma);
-    vec3 diffuseSum  = texture2D(colorTexture, vUv).rgb * weightSum;
+    vec3 diffuseSum  = texture(colorTexture, vUv).rgb * weightSum;
     for (int i = 1; i < KERNEL_RADIUS; i++) {
         float x = float(i);
         float w = gaussianPdf(x, fSigma);
         vec2 uvOffset = direction * invSize * x;
-        vec3 s1 = texture2D(colorTexture, vUv + uvOffset).rgb;
-        vec3 s2 = texture2D(colorTexture, vUv - uvOffset).rgb;
+        vec3 s1 = texture(colorTexture, vUv + uvOffset).rgb;
+        vec3 s2 = texture(colorTexture, vUv - uvOffset).rgb;
         diffuseSum  += (s1 + s2) * w;
         weightSum   += 2.0 * w;
     }
-    gl_FragColor = vec4(diffuseSum / weightSum, 1.0);
+    fragColor = vec4(diffuseSum / weightSum, 1.0);
 }
 `;
 
@@ -234,7 +238,7 @@ void main() {
  * uncharted2Tonemap from compiled.vs line 1947.
  * ACES approximation (Hill 2016 / Krzysztof Narkowicz).
  */
-const TONEMAP_FRAG = /* glsl */`
+const TONEMAP_FRAG = /* glsl */`#version 300 es
 precision highp float;
 uniform sampler2D tScene;
 uniform sampler2D tBloom;
@@ -243,7 +247,7 @@ uniform float bloomRadius;
 uniform vec3 bloomTintColor;
 uniform float exposure;
 uniform float useACES;
-varying vec2 vUv;
+in vec2 vUv;
 
 /* ── uncharted2 (compiled.vs line 1947) ── */
 vec3 uncharted2Tonemap(vec3 x) {
@@ -283,8 +287,8 @@ float lerpBloomFactor(const in float factor, float radius) {
 }
 
 void main() {
-    vec3 scene = texture2D(tScene, vUv).rgb * exposure;
-    vec3 bloom = texture2D(tBloom, vUv).rgb;
+    vec3 scene = texture(tScene, vUv).rgb * exposure;
+    vec3 bloom = texture(tBloom, vUv).rgb;
 
     /* composite bloom over scene */
     float bf = lerpBloomFactor(1.0, bloomRadius);
@@ -294,7 +298,7 @@ void main() {
     vec3 mapped = (useACES > 0.5) ? acesFilm(scene) : uncharted2(scene);
 
     /* gamma encode */
-    gl_FragColor = vec4(linearToSRGB(mapped), 1.0);
+    fragColor = vec4(linearToSRGB(mapped), 1.0);
 }
 `;
 

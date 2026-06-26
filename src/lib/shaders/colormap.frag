@@ -1,3 +1,4 @@
+#version 300 es
 /**
  * colormap.frag
  * 

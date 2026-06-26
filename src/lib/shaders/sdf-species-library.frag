@@ -1,3 +1,4 @@
+#version 300 es
 /**
  * sdf-species-library.frag
  *
@@ -50,6 +51,7 @@
  */
 
 precision mediump float;
+out vec4 fragColor;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  lygia math helpers (inlined)
@@ -594,7 +596,7 @@ float sdfGraph(vec2 uv) {
  *   float ring = stroke(d, 0.0, 0.025, 0.010);  // outline stroke
  *   float glow = smoothstep(0.12, 0.0, d) * 0.4;
  *   float alpha = clamp(mask + ring + glow, 0.0, 1.0);
- *   gl_FragColor = vec4(u_fillColor, alpha * u_opacity);
+ *   fragColor = vec4(u_fillColor, alpha * u_opacity);
  */
 float speciesSDF(vec2 uv, int species) {
     if      (species == 0) return sdfEye(uv);
@@ -637,7 +639,7 @@ void main() {
 
     vec3 col = u_fillColor + glow * 0.5;
 
-    gl_FragColor = vec4(col, alpha * u_opacity);
+    fragColor = vec4(col, alpha * u_opacity);
 }
 
 #endif // SPECIES_LIBRARY_STANDALONE

@@ -29,10 +29,10 @@ const LUT_SKY_W    = 192;
 const LUT_SKY_H    = 108;
 
 // ─── Inline GLSL — fullscreen quad vertex (AT style, no attribute aliasing) ──
-const QUAD_VERT = /* glsl */`
+const QUAD_VERT = /* glsl */`#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
@@ -40,7 +40,7 @@ void main() {
 `;
 
 // ─── Atmosphere common GLSL (inlined, not from compiled.vs) ──────────────────
-const ATM_COMMON = /* glsl */`
+const ATM_COMMON = /* glsl */`#version 300 es
 precision highp float;
 
 #define PI 3.14159265358979
@@ -111,7 +111,7 @@ vec2 transParamsToUV(float vh, float cosA, float botR, float topR) {
 // Sample transmittance LUT (sqrt-encoded)
 vec3 sampleTransLUT(sampler2D tex, float vh, float cosA, float botR, float topR) {
     vec2 uv = transParamsToUV(vh, cosA, botR, topR);
-    vec3 enc = texture2D(tex, clamp(uv, 0.001, 0.999)).rgb;
+    vec3 enc = texture(tex, clamp(uv, 0.001, 0.999)).rgb;
     return enc * enc;  // decode sqrt
 }
 `;
@@ -121,7 +121,7 @@ vec3 sampleTransLUT(sampler2D tex, float vh, float cosA, float botR, float topR)
 // Beer-Lambert optical depth integral along atmosphere column.
 // ─────────────────────────────────────────────────────────────────────────────
 const TRANS_LUT_FRAG = ATM_COMMON + /* glsl */`
-varying vec2 vUv;
+in vec2 vUv;
 
 uniform float uBotR;   // planet bottom radius km
 uniform float uTopR;   // atmosphere top radius km
@@ -148,7 +148,7 @@ void main() {
     // Find exit at top of atmosphere
     vec2 atm = raySphere(ro, rd, uTopR);
     float tMax = max(atm.x, atm.y);
-    if (tMax < 0.0) { gl_FragColor = vec4(1.0); return; }
+    if (tMax < 0.0) { fragColor = vec4(1.0); return; }
 
     float dt = tMax / uSteps;
     vec3  od = vec3(0.0);
@@ -168,7 +168,7 @@ void main() {
 
     vec3 trans = exp(-od);
     // Encode: sqrt
-    gl_FragColor = vec4(sqrt(clamp(trans, 0.0, 1.0)), 1.0);
+    fragColor = vec4(sqrt(clamp(trans, 0.0, 1.0)), 1.0);
 }
 `;
 
@@ -177,7 +177,7 @@ void main() {
 // Isotropic two-direction approximation of multiple scattering.
 // ─────────────────────────────────────────────────────────────────────────────
 const MS_LUT_FRAG = ATM_COMMON + /* glsl */`
-varying vec2 vUv;
+in vec2 vUv;
 
 uniform sampler2D uTransLUT;
 uniform float uBotR;
@@ -269,7 +269,7 @@ void main() {
     vec3 result = ms * (1.0 + ms + ms*ms + ms*ms*ms + ms*ms*ms*ms);
     result *= uMultiScatFactor;
 
-    gl_FragColor = vec4(result, 0.0);
+    fragColor = vec4(result, 0.0);
 }
 `;
 
@@ -278,7 +278,7 @@ void main() {
 // Latitude/longitude low-res sky panorama with single + multiple scattering.
 // ─────────────────────────────────────────────────────────────────────────────
 const SKY_VIEW_FRAG = ATM_COMMON + /* glsl */`
-varying vec2 vUv;
+in vec2 vUv;
 
 uniform sampler2D uTransLUT;
 uniform sampler2D uMSLUT;
@@ -351,7 +351,7 @@ void main() {
     if (vh > uTopR) {
         vec2 atm = raySphere(worldPos, wd, uTopR);
         float tTop = max(atm.x, atm.y);
-        if (tTop < 0.0) { gl_FragColor = vec4(0.0); return; }
+        if (tTop < 0.0) { fragColor = vec4(0.0); return; }
         worldPos += wd * tTop - normalize(worldPos) * PLANET_OFFSET;
         vh = length(worldPos);
     }
@@ -410,7 +410,7 @@ void main() {
         if (uEnableMS > 0.5) {
             vec2 msUV = vec2(cosL * 0.5 + 0.5,
                              clamp((length(P) - uBotR) / (uTopR - uBotR), 0.0, 1.0));
-            msLum = texture2D(uMSLUT, msUV).rgb;
+            msLum = texture(uMSLUT, msUV).rgb;
         }
 
         vec3  S    = uSunIllum * (shadow * transL * phase + msLum * scatter);
@@ -431,7 +431,7 @@ void main() {
 
     L *= uSkyLumFactor;
     float trans = dot(throughput, vec3(1.0 / 3.0));
-    gl_FragColor = vec4(L, trans);
+    fragColor = vec4(L, trans);
 }
 `;
 
@@ -440,7 +440,7 @@ void main() {
 // Samples SkyView LUT + adds sun disc with transmittance attenuation.
 // ─────────────────────────────────────────────────────────────────────────────
 const SKY_RENDER_FRAG = ATM_COMMON + /* glsl */`
-varying vec2 vUv;
+in vec2 vUv;
 
 uniform sampler2D uTransLUT;
 uniform sampler2D uSkyLUT;
@@ -513,7 +513,7 @@ void main() {
     float azimuth  = (atan(-lDir.y, -lDir.x) + PI) / (2.0 * PI);
     float uvXFinal = (azimuth + 0.5 / lutW) * (lutW / (lutW + 1.0));
 
-    vec3 skyLum = texture2D(uSkyLUT, vec2(uvXFinal, uvYFinal)).rgb * uSkyLumFactor;
+    vec3 skyLum = texture(uSkyLUT, vec2(uvXFinal, uvYFinal)).rgb * uSkyLumFactor;
 
     // Sun disc
     if (uRenderSunDisc > 0.5) {
@@ -533,7 +533,7 @@ void main() {
         }
     }
 
-    gl_FragColor = vec4(skyLum, 1.0);
+    fragColor = vec4(skyLum, 1.0);
 }
 `;
 

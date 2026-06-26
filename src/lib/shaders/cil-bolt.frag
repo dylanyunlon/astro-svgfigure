@@ -1,4 +1,6 @@
+#version 300 es
 precision mediump float;
+out vec4 fragColor;
 
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
@@ -120,5 +122,5 @@ void main() {
   float bloomSum = (glowGlobal + glowHome) * lumGate * AT_BLOOM_INTENSITY * (AT_LIGHT_INTENSITY / 2.19);
   float alpha    = clamp(total + bloomSum, 0.0, 1.0);
 
-  gl_FragColor = vec4(u_fillColor, alpha * u_opacity);
+  fragColor = vec4(u_fillColor, alpha * u_opacity);
 }

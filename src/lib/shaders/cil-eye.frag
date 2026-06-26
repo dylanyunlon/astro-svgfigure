@@ -1,4 +1,6 @@
+#version 300 es
 precision mediump float;
+out vec4 fragColor;
 
 // ─── AT UIL params applied from channels/physics/xiaodi_options_table.json [\"cil-eye\"] ───
 //
@@ -117,5 +119,5 @@ void main() {
   finalColor += u_fillColor * bloom;
   finalColor *= shadowFactor;
 
-  gl_FragColor = vec4(finalColor, alpha * u_opacity);
+  fragColor = vec4(finalColor, alpha * u_opacity);
 }

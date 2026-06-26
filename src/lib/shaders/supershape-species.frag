@@ -1,3 +1,4 @@
+#version 300 es
 /**
  * supershape-species.frag
  *
@@ -74,6 +75,7 @@
  */
 
 precision mediump float;
+out vec4 fragColor;
 
 // ── Uniforms ──────────────────────────────────────────────────────────────────
 
@@ -379,5 +381,5 @@ void main() {
                   + glowTint * glow * 0.30
                   + u_fillColor * textureTerm;
 
-    gl_FragColor = vec4(col, alpha * u_opacity);
+    fragColor = vec4(col, alpha * u_opacity);
 }

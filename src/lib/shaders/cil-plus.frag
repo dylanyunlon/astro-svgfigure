@@ -1,4 +1,6 @@
+#version 300 es
 precision mediump float;
+out vec4 fragColor;
 
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
@@ -44,5 +46,5 @@ void main() {
   float glow = smoothstep(0.08, 0.0, d) * 0.25;
 
   float alpha = clamp(mask + glow, 0.0, 1.0);
-  gl_FragColor = vec4(u_fillColor, alpha * u_opacity);
+  fragColor = vec4(u_fillColor, alpha * u_opacity);
 }

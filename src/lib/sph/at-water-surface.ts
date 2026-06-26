@@ -58,17 +58,17 @@ const DEFAULT_STEPS_FRAME = 2;
 function buildGerstnerVert(): string {
   const simpleSrc = getShader('simplenoise.glsl');  // from compiled.vs
 
-  return /* glsl */`
+  return /* glsl */`#version 300 es
 precision highp float;
 
-attribute vec2 aPosition;   /* XZ grid [-1,1] */
+in vec2 aPosition;   /* XZ grid [-1,1] */
 
 uniform float uTime;
 uniform mat4  uMVP;
 
-varying vec2  vUv;
-varying vec3  vWorldPos;
-varying vec3  vNormal;
+out vec2  vUv;
+out vec3  vWorldPos;
+out vec3  vNormal;
 
 /* ── simplenoise.glsl (ActiveTheory compiled.vs) ──────────────────────────── */
 ${simpleSrc}
@@ -143,12 +143,12 @@ function buildSurfaceFrag(): string {
   // refl.fs uses cameraPosition — we remap to uEye via #define
   const reflPatched = reflSrc.replace(/cameraPosition/g, 'uEye');
 
-  return /* glsl */`
+  return /* glsl */`#version 300 es
 precision highp float;
 
-varying vec2  vUv;
-varying vec3  vWorldPos;
-varying vec3  vNormal;
+in vec2  vUv;
+in vec3  vWorldPos;
+in vec3  vNormal;
 
 uniform float     uTime;
 uniform vec3      uEye;
@@ -214,7 +214,7 @@ void main() {
     float vig = 1.0 - smoothstep(0.35, 0.72, length(vUv - 0.5));
     color    *= 0.55 + vig * 0.45;
 
-    gl_FragColor = vec4(color, 0.88);
+    fragColor = vec4(color, 0.88);
 }
 `;
 }
@@ -224,10 +224,10 @@ void main() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Quad vertex shader shared by all fullscreen-quad sim passes. */
-const QUAD_VERT = /* glsl */`
+const QUAD_VERT = /* glsl */`#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying   vec2 vUv;
+in vec2 aPosition;
+in   vec2 vUv;
 void main() {
     vUv         = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
@@ -241,25 +241,26 @@ void main() {
  *   velocity *= damping
  *   height   += velocity
  */
-const WAVE_STEP_FRAG = /* glsl */`
+const WAVE_STEP_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 uniform sampler2D uSrc;
 uniform vec2      uTexelSize;
 uniform float     uDamping;
-varying vec2 vUv;
+in vec2 vUv;
 void main() {
-    float h   = texture2D(uSrc, vUv).r;
-    float vel = texture2D(uSrc, vUv).g;
-    float L   = texture2D(uSrc, vUv + vec2(-uTexelSize.x,  0.0)).r;
-    float R   = texture2D(uSrc, vUv + vec2( uTexelSize.x,  0.0)).r;
-    float U   = texture2D(uSrc, vUv + vec2( 0.0,  uTexelSize.y)).r;
-    float D   = texture2D(uSrc, vUv + vec2( 0.0, -uTexelSize.y)).r;
+    float h   = texture(uSrc, vUv).r;
+    float vel = texture(uSrc, vUv).g;
+    float L   = texture(uSrc, vUv + vec2(-uTexelSize.x,  0.0)).r;
+    float R   = texture(uSrc, vUv + vec2( uTexelSize.x,  0.0)).r;
+    float U   = texture(uSrc, vUv + vec2( 0.0,  uTexelSize.y)).r;
+    float D   = texture(uSrc, vUv + vec2( 0.0, -uTexelSize.y)).r;
     float avg = (L + R + U + D) * 0.25;
     vel += (avg - h) * 2.0;
     vel *= uDamping;
     h   += vel;
-    vec2 nba = texture2D(uSrc, vUv).ba;
-    gl_FragColor = vec4(h, vel, nba.x, nba.y);
+    vec2 nba = texture(uSrc, vUv).ba;
+    fragColor = vec4(h, vel, nba.x, nba.y);
 }
 `;
 
@@ -269,20 +270,21 @@ void main() {
  *   dy = (0, hD - h, delta)
  *   normal = normalize(cross(dy, dx)) → stored in ba
  */
-const NORMAL_FRAG = /* glsl */`
+const NORMAL_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 uniform sampler2D uSrc;
 uniform vec2      uTexelSize;
-varying vec2 vUv;
+in vec2 vUv;
 void main() {
-    vec4  info = texture2D(uSrc, vUv);
+    vec4  info = texture(uSrc, vUv);
     float h    = info.r;
-    float hR   = texture2D(uSrc, vUv + vec2( uTexelSize.x, 0.0)).r;
-    float hD   = texture2D(uSrc, vUv + vec2(0.0,  uTexelSize.y)).r;
+    float hR   = texture(uSrc, vUv + vec2( uTexelSize.x, 0.0)).r;
+    float hD   = texture(uSrc, vUv + vec2(0.0,  uTexelSize.y)).r;
     vec3 vdx   = vec3(uTexelSize.x, hR - h, 0.0);
     vec3 vdy   = vec3(0.0,          hD - h, uTexelSize.y);
     vec3 nrm   = normalize(cross(vdy, vdx));
-    gl_FragColor = vec4(info.r, info.g, nrm.x, nrm.z);
+    fragColor = vec4(info.r, info.g, nrm.x, nrm.z);
 }
 `;
 
@@ -292,19 +294,20 @@ void main() {
  *   bump = (0.5 - cos(d * PI) * 0.5) * strength
  *   height += bump
  */
-const DROP_FRAG = /* glsl */`
+const DROP_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 uniform sampler2D uSrc;
 uniform vec2      uDropCenter;
 uniform float     uDropRadius;
 uniform float     uDropStrength;
-varying vec2 vUv;
+in vec2 vUv;
 void main() {
-    vec4  info = texture2D(uSrc, vUv);
+    vec4  info = texture(uSrc, vUv);
     float d    = max(0.0, 1.0 - length(uDropCenter - vUv) / uDropRadius);
     float bump = (0.5 - cos(d * 3.14159265359) * 0.5) * uDropStrength;
     info.r    += bump;
-    gl_FragColor = info;
+    fragColor = info;
 }
 `;
 

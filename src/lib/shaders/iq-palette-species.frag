@@ -1,4 +1,6 @@
+#version 300 es
 precision mediump float;
+out vec4 fragColor;
 
 // ── iq-palette-species.frag ───────────────────────────────────────────────────
 // IQ Procedural Palette — per-species coloring for the cell-pubsub-loop system.
@@ -264,5 +266,5 @@ void main() {
     // Master opacity.  Default 1.0; host can animate fade-in/out.
     float alpha = clamp(u_alpha, 0.0, 1.0) * vignette;
 
-    gl_FragColor = vec4(col, alpha);
+    fragColor = vec4(col, alpha);
 }

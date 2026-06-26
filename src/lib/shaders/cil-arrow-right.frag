@@ -1,4 +1,6 @@
+#version 300 es
 precision mediump float;
+out vec4 fragColor;
 
 uniform vec4  u_bbox;
 uniform vec3  u_fillColor;
@@ -58,5 +60,5 @@ void main() {
   float fade  = smoothstep(0.0, 0.6, tiled.x);
   float alpha = mask * (0.4 + 0.6 * fade);
 
-  gl_FragColor = vec4(u_fillColor, clamp(alpha, 0.0, 1.0) * u_opacity);
+  fragColor = vec4(u_fillColor, clamp(alpha, 0.0, 1.0) * u_opacity);
 }

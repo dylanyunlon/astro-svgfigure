@@ -1,8 +1,9 @@
-attribute vec2 a_position;
-attribute float a_t;
+#version 300 es
+in vec2 a_position;
+in float a_t;
 uniform mat3 u_projectionMatrix;
 uniform float u_thickness;
-varying float v_t;
+out float v_t;
 void main(){
   v_t=a_t;
   vec3 pos=u_projectionMatrix*vec3(a_position,1.0);

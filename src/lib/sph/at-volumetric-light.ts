@@ -86,10 +86,10 @@ float fbm(vec3 x, int octaves) {
 
 // ─── Shared vertex shader: fullscreen quad (-1..1 clip space, 2 triangles) ───
 
-const QUAD_VERT = /* glsl */`
+const QUAD_VERT = /* glsl */`#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
@@ -100,16 +100,17 @@ void main() {
 // Extract bright pixels above threshold — these become the light source seeds.
 // AT: VolumetricLightComposite occlusion mask pass; nuke-pipeline VolumetricLight mask.
 
-const OCCLUSION_FRAG = /* glsl */`
+const OCCLUSION_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 uniform sampler2D tScene;
 uniform float uOcclusionThreshold;
-varying vec2 vUv;
+in vec2 vUv;
 void main() {
-    vec4 color = texture2D(tScene, vUv);
+    vec4 color = texture(tScene, vUv);
     float lum  = dot(color.rgb, vec3(0.299, 0.587, 0.114));
     float keep = step(uOcclusionThreshold, lum);
-    gl_FragColor = vec4(color.rgb * keep, 1.0);
+    fragColor = vec4(color.rgb * keep, 1.0);
 }
 `;
 
@@ -118,7 +119,7 @@ void main() {
 // 20-sample radial accumulation toward lightPos — the AT "god ray" kernel.
 // Parameters: lightPos, fExposure, fDecay, fDensity, fWeight, fClamp — all AT originals.
 
-const VOLUMETRIC_FRAG = /* glsl */`
+const VOLUMETRIC_FRAG = /* glsl */`#version 300 es
 precision highp float;
 
 ${RANGE_GLSL}
@@ -136,7 +137,7 @@ uniform float     uEnableNoise;    // 0=off, 1=on (noise shaft variation)
 uniform float     uNoiseScale;     // noise world scale (default 1.0)
 uniform float     uNoiseRange;     // noise UV displacement (default 0.05)
 
-varying vec2 vUv;
+in vec2 vUv;
 
 const int iSamples = 20;           // AT compiled.vs line 2473: const int iSamples = 20
 
@@ -152,13 +153,13 @@ void main() {
     for (int i = 0; i < iSamples; i++) {
         coord -= deltaTextCoord;
 
-        vec4 texel = texture2D(tDiffuse, coord);
+        vec4 texel = texture(tDiffuse, coord);
 
         // Optional: noise-modulate each tap (AT LightVolume noise variation)
         if (uEnableNoise > 0.5) {
             vec3 noisePos = vec3(coord * uNoiseScale, uTime * 0.05);
             float n  = cnoise(noisePos) * uNoiseRange;
-            texel   += texture2D(tDiffuse, coord + vec2(n, n * 0.5));
+            texel   += texture(tDiffuse, coord + vec2(n, n * 0.5));
             texel   *= 0.5;
         }
 
@@ -169,7 +170,7 @@ void main() {
 
     color *= fExposure;
     color  = clamp(color, 0.0, fClamp);
-    gl_FragColor = color;
+    fragColor = color;
 }
 `;
 
@@ -178,7 +179,7 @@ void main() {
 // Uses AT range/noise helpers + Henyey-Greenstein phase function (volumetric physics).
 // uNoiseScale modulates the volume density along the march for organic variation.
 
-const RAYMARCH_FRAG = /* glsl */`
+const RAYMARCH_FRAG = /* glsl */`#version 300 es
 precision highp float;
 
 ${RANGE_GLSL}
@@ -197,7 +198,7 @@ uniform float     uEnableNoise;  // 0=off, 1=on
 uniform float     uNoiseScale;   // 3D noise scale
 uniform float     uNoiseRange;   // noise density modulation range
 
-varying vec2 vUv;
+in vec2 vUv;
 
 const float PI = 3.14159265358979;
 
@@ -228,7 +229,7 @@ void main() {
         if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0) break;
 
         // Sample rays texture at marched position
-        vec4 sample = texture2D(tRays, pos);
+        vec4 sample = texture(tRays, pos);
 
         // Density modulation via AT cnoise (AT LightVolume noise branch)
         float density = 1.0;
@@ -250,27 +251,28 @@ void main() {
     }
 
     // Blend accumulated scatter with rays texture base for robustness
-    vec4 raysBase = texture2D(tRays, vUv);
-    gl_FragColor  = accumulated + raysBase * 0.3;
-    gl_FragColor.a = 1.0;
+    vec4 raysBase = texture(tRays, vUv);
+    fragColor  = accumulated + raysBase * 0.3;
+    fragColor.a = 1.0;
 }
 `;
 
 // ─── Pass 4: Composite ────────────────────────────────────────────────────────
 // Additive blend: output = scene + scatterLight × raysScale
 // AT: VolumetricLightComposite drawbuffer (nuke-pipeline.ts line ~2793)
-//   "color += texture2D(tVolumetricBlur, vUv).rgb * uVolumetricStrength"
+//   "color += texture(tVolumetricBlur, vUv).rgb * uVolumetricStrength"
 
-const COMPOSITE_FRAG = /* glsl */`
+const COMPOSITE_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 uniform sampler2D tScene;
 uniform sampler2D tScatter;
 uniform float     uRaysScale;       // AT: uVolumetricStrength default 1.0
 uniform float     uVignetteStrength; // radial vignette for light falloff
-varying vec2 vUv;
+in vec2 vUv;
 void main() {
-    vec4 scene    = texture2D(tScene,   vUv);
-    vec4 scatter  = texture2D(tScatter, vUv);
+    vec4 scene    = texture(tScene,   vUv);
+    vec4 scatter  = texture(tScatter, vUv);
 
     // Radial vignette falloff — light is stronger near source, fades at edges
     float vd   = length(vUv - vec2(0.5)) * 2.0;
@@ -278,7 +280,7 @@ void main() {
 
     // AT: additive composite (HomeVolumetricLight drawbuffer pattern)
     vec3 result = scene.rgb + scatter.rgb * uRaysScale * vign;
-    gl_FragColor = vec4(clamp(result, 0.0, 1.0), scene.a);
+    fragColor = vec4(clamp(result, 0.0, 1.0), scene.a);
 }
 `;
 

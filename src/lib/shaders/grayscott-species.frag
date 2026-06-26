@@ -1,4 +1,6 @@
+#version 300 es
 precision mediump float;
+out vec4 fragColor;
 
 // ── grayscott-species.frag ────────────────────────────────────────────────────
 // Gray-Scott Reaction-Diffusion Turing Pattern — species surface shader.
@@ -11,7 +13,7 @@ precision mediump float;
 //
 // Generates procedural Turing patterns (spots / stripes / worms / mitosis)
 // directly on each cell's surface without a ping-pong texture.  We simulate
-// several RD iterations per fragment using spatially-varying virtual "pixels"
+// several RD iterations per fragment using spatially-in virtual "pixels"
 // derived from the cell's bbox, then composite the chemical concentration over
 // the cell's fill colour.
 //
@@ -95,7 +97,7 @@ float hash21(vec2 p) {
 // Because we have no ping-pong textures at this stage, we emulate several
 // Gray-Scott time steps by sampling an fBm "landscape" to initialise the UV
 // concentrations and then running the Gray-Scott laplacian kernel analytically
-// over the fBm gradients.  This produces spatially-varying frozen-time Turing
+// over the fBm gradients.  This produces spatially-in frozen-time Turing
 // patterns without GPU-side state.
 //
 // The technique:
@@ -266,5 +268,5 @@ void main() {
     float brightness = 1.0 - pattern * 0.85;
     vec3  col = vec3(brightness) + vec3(glow * 0.3, glow * 0.6, glow * 1.0);
 
-    gl_FragColor = vec4(col, alpha);
+    fragColor = vec4(col, alpha);
 }
