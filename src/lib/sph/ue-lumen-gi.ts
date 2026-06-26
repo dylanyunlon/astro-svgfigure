@@ -153,7 +153,9 @@ vec2 reflectMatcap(vec3 worldPos, mat4 mMatrix, vec3 worldNormal) {
 `;
 
 // refl.fs (compiled.vs line 2166) — reflection utilities
+// AT uses global `cameraPosition`; our shader declares it as `uCameraPos`
 const REFL_GLSL = /* glsl */`
+#define cameraPosition uCameraPos
 ${MATCAP_GLSL}
 vec2 sampleEqui(vec3 dir) {
     return vec2(atan(dir.z, dir.x) * 0.15915494 + 0.5,

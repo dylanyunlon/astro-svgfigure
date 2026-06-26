@@ -1262,6 +1262,7 @@ export class ATFlowerParticleRenderer {
     gl.uniform4fv(this.uPos.edgeMeta!,  this.edgeMetaF32);
 
     // Upload splinePtsF32 into a 32×32 RGBA32F texture (tSplineData)
+    const gl2 = gl as WebGL2RenderingContext;
     if (!this._splineDataTex) {
       this._splineDataTex = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D, this._splineDataTex);
@@ -1269,12 +1270,16 @@ export class ATFlowerParticleRenderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      // Allocate RGBA32F storage once
+      gl2.texImage2D(gl.TEXTURE_2D, 0, gl2.RGBA32F,
+        MAX_SPLINE_PTS, 32, 0, gl.RGBA, gl.FLOAT, null);
     }
     const splineTexUnit = 4; // use texture unit 4 (avoid collision with tPos=0, tLife=1, etc.)
     gl.activeTexture(gl.TEXTURE0 + splineTexUnit);
     gl.bindTexture(gl.TEXTURE_2D, this._splineDataTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, (gl as WebGL2RenderingContext).RGBA32F,
-      MAX_SPLINE_PTS, 32, 0, gl.RGBA, gl.FLOAT, this.splinePtsF32);
+    // Update data each frame (no reallocation)
+    gl2.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0,
+      MAX_SPLINE_PTS, 32, gl.RGBA, gl.FLOAT, this.splinePtsF32);
     gl.uniform1i(this.uPos.splineDataTex!, splineTexUnit);
 
     // Draw fullscreen quad

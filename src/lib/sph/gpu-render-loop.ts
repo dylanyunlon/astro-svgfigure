@@ -860,8 +860,16 @@ export class GPURenderLoop {
     // framebuffer AFTER composite output, destroying all PBR/bloom/shadow work.
     // The GPU passes are not silently failing; M1210 was overwriting them.
 
-    // ── Drain accumulated GL errors ──
-    drainErrors(gl);
+    // ── Drain accumulated GL errors (only log first 10 frames to avoid spam) ──
+    if (this.frameCount < 10) {
+      drainErrors(gl);
+    } else if (this.frameCount === 10) {
+      const n = drainErrors(gl);
+      if (n > 0) console.warn(`[GPU-GUARD] suppressing further gl error logs (${n} errors on frame 10)`);
+    } else {
+      // Silently drain without logging
+      while (gl.getError() !== gl.NO_ERROR) { /* drain */ }
+    }
 
     this.perf.frameEnd();
     this.frameCount++;
