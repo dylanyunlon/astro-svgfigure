@@ -532,15 +532,30 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
     _sc = scene_context or {"nearby_cells": [], "collision_pairs": []}
     scene_context_json = json.dumps(_sc, ensure_ascii=False, indent=2)
 
-    # ── Step 1: Create conversation ────────────────────────────────────────
+    # ── Step 1: Create conversation (with 429 retry) ───────────────────────
     create_data = json.dumps({
         "name": "", "model": model, "is_temporary": False
     }).encode()
-    req = urllib.request.Request(
-        f"{origin}/api/organizations/{org_id}/chat_conversations",
-        data=create_data, headers=headers, method="POST")
-    resp = urllib.request.urlopen(req, timeout=30)
-    conv_id = json.loads(resp.read()).get("uuid", "")
+    conv_id = ""
+    for _retry in range(3):
+        try:
+            req = urllib.request.Request(
+                f"{origin}/api/organizations/{org_id}/chat_conversations",
+                data=create_data, headers=headers, method="POST")
+            resp = urllib.request.urlopen(req, timeout=30)
+            conv_id = json.loads(resp.read()).get("uuid", "")
+            break
+        except urllib.error.HTTPError as he:
+            if he.code == 429 and _retry < 2:
+                print(f"[cell_agent] 429 rate limit on create conv, waiting 10s (retry {_retry+1}/3)", file=sys.stderr)
+                time.sleep(10)
+            else:
+                raise
+        except Exception:
+            if _retry < 2:
+                time.sleep(5)
+            else:
+                raise
 
     # ── Step 2: Build prompt ───────────────────────────────────────────────
     # The sub-Claude IS the cell. No pre-assigned species — it web-searches
@@ -970,9 +985,10 @@ def dispatch_cell_agent(cell_id: str) -> dict:
 # Concurrent dispatch — run_all_cells
 # ─────────────────────────────────────────────────────────────────────────────
 
-_MAX_WORKERS = 10  # cookie supports 10 concurrent sub-Claude sessions
+_MAX_WORKERS = 2  # cookie supports max 2 concurrent sub-Claude sessions (4+ triggers 429)
 _SINGLE_CELL_TIMEOUT = 90  # seconds per cell dispatch
 _MIN_TOTAL_TIMEOUT = 300   # never less than 5 minutes total
+_DISPATCH_SPACING = 3      # seconds between starting each dispatch (rate limit courtesy)
 
 
 def _compute_total_timeout(cell_count: int) -> float:
@@ -1035,10 +1051,12 @@ def run_all_cells(
         results[cid] = "timeout"
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        future_to_cid = {
-            executor.submit(_dispatch_one, cid): cid
-            for cid in ids
-        }
+        future_to_cid = {}
+        for i, cid in enumerate(ids):
+            future_to_cid[executor.submit(_dispatch_one, cid)] = cid
+            # Rate limit: space out dispatches to avoid cookie session conflicts
+            if i < len(ids) - 1:
+                time.sleep(_DISPATCH_SPACING)
         try:
             for future in as_completed(future_to_cid, timeout=total_timeout):
                 cell_id, success, elapsed_ms = future.result()
