@@ -3,12 +3,12 @@
  *
  * 这不是空壳。每个函数都调用 gl.*。
  * 从 compiled.vs 通过 ShaderLoader 提取 AT 生产 shader 源码。
- * WebGL1 语法 (varying/texture2D / attribute)。
+ * WebGL2 语法 (#version 300 es, in/out, gl_FragColor → out vec4)。
  *
  * 架构:
  *   每条 edge 是一个 TRIANGLE_STRIP, 沿 cubic Bézier 曲线展开。
  *   Vertex shader 读取 4 个控制点 (uniform vec2 uP0..uP3),
- *   用 t 参数 (attribute a_t) 评估 Bézier 位置, 再加法线偏移 (a_side * halfWidth)。
+ *   用 t 参数 (in float a_t) 评估 Bézier 位置, 再加法线偏移 (a_side * halfWidth)。
  *   Fragment shader 用 SDF 距离中心线做 smoothstep 抗锯齿, 加 Gaussian 发光。
  *
  * Pass 链 (每帧):
@@ -20,23 +20,23 @@
 
 
 
-// ─── WebGL1 Bézier Vertex Shader ────────────────────────────────────────────
-// 用 attribute a_t (0..1 沿曲线), a_side (-1/+1 法线方向)
+// ─── WebGL2 Bézier Vertex Shader (GLSL 300 es) ──────────────────────────────
+// 用 in float a_t (0..1 沿曲线), in float a_side (-1/+1 法线方向)
 // 4 个控制点 uniform, 每条 edge 切换 uniform
-// varying vT, vTangentDir, vCurvePx, vHalfWidth, vFragCoordPx, v_t
-// WebGL1: attribute / varying, no in/out
+// out vT, vTangentDir, vCurvePx, vHalfWidth, vFragCoordPx, v_t
+// WebGL2: #version 300 es, in/out
 
 
 
 
 import { getShader } from '../shaders/ShaderLoader';
 
-const EDGE_VERT_SRC = /* glsl */ `
+const EDGE_VERT_SRC = /* glsl */ `#version 300 es
 precision highp float;
 
 // 每顶点: t 参数 + 法线侧 (-1 or +1)
-attribute float a_t;
-attribute float a_side;
+in float a_t;
+in float a_side;
 
 // Bézier 控制点 (像素坐标)
 uniform vec2 uP0;
@@ -51,12 +51,12 @@ uniform float uHalfWidth;
 uniform vec2 uResolution;   // vec2(width, height)
 
 // 传给 frag
-varying float vT;
-varying vec2  vTangentDir;
-varying vec2  vCurvePx;
-varying float vHalfWidth;
-varying vec2  vFragCoordPx;
-varying float v_t;
+out float vT;
+out vec2  vTangentDir;
+out vec2  vCurvePx;
+out float vHalfWidth;
+out vec2  vFragCoordPx;
+out float v_t;
 
 // ── cubic Bézier position ──
 vec2 bezier(float t) {
@@ -103,19 +103,21 @@ void main() {
 }
 `;
 
-// ─── WebGL1 SDF Fragment Shader ─────────────────────────────────────────────
+// ─── WebGL2 SDF Fragment Shader (GLSL 300 es) ──────────────────────────────
 // SDF 距中心线 → smoothstep 抗锯齿 + Gaussian 发光
-// WebGL1: varying, no in/out, gl_FragColor
+// WebGL2: #version 300 es, in, out vec4 fragColor
 
-const EDGE_FRAG_SRC = /* glsl */ `
+const EDGE_FRAG_SRC = /* glsl */ `#version 300 es
 precision highp float;
 
-varying float vT;
-varying vec2  vTangentDir;
-varying vec2  vCurvePx;
-varying float vHalfWidth;
-varying vec2  vFragCoordPx;
-varying float v_t;
+in float vT;
+in vec2  vTangentDir;
+in vec2  vCurvePx;
+in float vHalfWidth;
+in vec2  vFragCoordPx;
+in float v_t;
+
+out vec4 fragColor;
 
 uniform vec3  uColor;
 uniform float uAlpha;
@@ -182,7 +184,7 @@ void main() {
     if (alpha < 0.004) discard;
 
     // premultiplied alpha
-    gl_FragColor = vec4(col * alpha, alpha);
+    fragColor = vec4(col * alpha, alpha);
 }
 `;
 
@@ -277,7 +279,7 @@ function makeDefaultEdges(w: number, h: number): EdgeControlPoints[] {
 // ─── EdgeGPU class ────────────────────────────────────────────────────────────
 
 export class EdgeGPU {
-  private gl:      WebGLRenderingContext;
+  private gl:      WebGL2RenderingContext;
   private config:  EdgeGPUConfig;
 
   // Compiled WebGL programs — real gl.createShader / gl.createProgram calls
@@ -316,7 +318,7 @@ export class EdgeGPU {
   private loc_u_time!:        WebGLUniformLocation | null;
 
   constructor(
-    gl: WebGLRenderingContext,
+    gl: WebGL2RenderingContext,
     config?: Partial<EdgeGPUConfig>,
     edges?: EdgeControlPoints[],
   ) {
@@ -403,7 +405,7 @@ export class EdgeGPU {
 
     // ── 从 compiled.vs 提取 AT shader 源码 (via ShaderLoader) ──
     // edge-spline.vert / edge-spline.frag 已存储在 compiled.vs 中
-    // 但它们是 WebGL2 (#version 300 es, in/out), 我们覆盖使用 WebGL1 内联 shader
+    // compiled.vs 中的 shader 是 WebGL2 (#version 300 es, in/out), 与内联 shader 一致
     // 仍然调用 getShader 来确认 shader 已注册 (AT 要求)
     let _vertSrc: string;
     let _fragSrc: string;
@@ -416,8 +418,8 @@ export class EdgeGPU {
       _fragSrc = EDGE_FRAG_SRC;
     }
 
-    // ── 编译 edge shader (WebGL1 内联 GLSL) ──
-    // 我们使用 EDGE_VERT_SRC / EDGE_FRAG_SRC 因为 compiled.vs 版本是 WebGL2
+    // ── 编译 edge shader (WebGL2 GLSL 300 es) ──
+    // 使用 EDGE_VERT_SRC / EDGE_FRAG_SRC (#version 300 es, in/out)
     this.edgeProg = this._compile(EDGE_VERT_SRC, EDGE_FRAG_SRC, 'edge-spline');
 
     // ── 缓存 attribute / uniform 位置 ──
