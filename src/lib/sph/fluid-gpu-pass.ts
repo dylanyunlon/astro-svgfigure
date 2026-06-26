@@ -27,13 +27,14 @@ import { getShader } from '../shaders/ShaderLoader';
 import type { RenderTarget, UniformValue } from '../renderer/NukePass';
 
 const FLUID_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
-varying vec2 vL;
-varying vec2 vR;
-varying vec2 vT;
-varying vec2 vB;
+in vec2 aPosition;
+out vec2 vUv;
+out vec2 vL;
+out vec2 vR;
+out vec2 vT;
+out vec2 vB;
 uniform vec2 texelSize;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
@@ -47,9 +48,10 @@ void main() {
 
 // 简单的全屏 quad vert (无邻居)
 const SIMPLE_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
@@ -92,7 +94,7 @@ interface DoubleRT {
 }
 
 export class FluidGPU {
-  private gl: WebGLRenderingContext;
+  private gl: WebGL2RenderingContext;
   private config: FluidConfig;
 
   // WebGL programs — 真正 compiled 的 shader
@@ -116,7 +118,7 @@ export class FluidGPU {
   // Fullscreen quad VAO
   private quadBuf!: WebGLBuffer;
 
-  constructor(gl: WebGLRenderingContext, config?: Partial<FluidConfig>) {
+  constructor(gl: WebGL2RenderingContext, config?: Partial<FluidConfig>) {
     this.gl = gl;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this._init();

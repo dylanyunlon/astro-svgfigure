@@ -69,14 +69,15 @@
 import { getShader } from '../shaders/ShaderLoader';
 
 const SHADOW_DEPTH_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
 
-attribute vec3 aPosition;
+in vec3 aPosition;
 
 uniform mat4 uLightViewProj;
 
 // 传给 frag 用于精确深度写入 (WebGL1 varying)
-varying float vDepth;
+out float vDepth;
 
 void main() {
     vec4 lightSpacePos = uLightViewProj * vec4(aPosition, 1.0);
@@ -89,14 +90,16 @@ void main() {
 // shadow depth frag: 空 body — 硬件写入 gl_FragCoord.z 到 DEPTH_ATTACHMENT
 // WebGL1 varying (vDepth 保留 — 避免 shader 优化移除 varying)
 const SHADOW_DEPTH_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
 
-varying float vDepth;
+in float vDepth;
 
 void main() {
     // 空 body — GPU 自动写 gl_FragCoord.z 到 depth attachment
     // vDepth 供调试使用; 主要深度由硬件写入
-    gl_FragColor = vec4(vDepth * 0.5 + 0.5, 0.0, 0.0, 1.0);
+out vec4 fragColor;
+    fragColor = vec4(vDepth * 0.5 + 0.5, 0.0, 0.0, 1.0);
 }
 `;
 
@@ -105,12 +108,13 @@ void main() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SHADOW_SAMPLE_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
 
-attribute vec2 aPosition;
+in vec2 aPosition;
 
 // 把顶点坐标传给 frag 用于重建世界坐标
-varying vec2 vUv;
+out vec2 vUv;
 
 void main() {
     vUv = aPosition * 0.5 + 0.5;
@@ -126,6 +130,7 @@ void main() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SHADOW_SAMPLE_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
 
 // shadow depth map (DEPTH_COMPONENT16 texture via WEBGL_depth_texture)
@@ -144,7 +149,7 @@ uniform vec2 uShadowTexelSize;
 uniform float uBias;
 
 // 从全屏 quad vert 传来的 UV
-varying vec2 vUv;
+in vec2 vUv;
 
 // ── M1134: ambient occlusion 蓝色调阴影 ───────────────────────────────────────
 // 纯黑阴影视觉上很死板; 蓝调 AO 模拟天空漫反射
@@ -157,7 +162,7 @@ const vec3 LIT_COLOR    = vec3(1.0, 1.0,  1.0);
 // 返回 1.0 = 亮, 0.0 = 遮挡
 float shadowCompare(vec2 uv, float depth) {
     // texture2D — WebGL1 语法
-    float shadowDepth = texture2D(uShadowMap, uv).r;
+    float shadowDepth = texture(uShadowMap, uv).r;
     // depth 比 shadowDepth + bias 更深 → 在阴影中
     return step(depth - uBias, shadowDepth);
 }
@@ -206,7 +211,7 @@ float samplePCF5x5(vec3 shadowCoord) {
 
 void main() {
     // 从 position texture 中读取当前 fragment 的世界坐标
-    vec4 worldPos = texture2D(uPositionTex, vUv);
+    vec4 worldPos = texture(uPositionTex, vUv);
 
     // 把世界坐标投影到光源裁剪空间
     vec4 lightClipPos = uLightViewProj * vec4(worldPos.xyz, 1.0);
@@ -227,7 +232,8 @@ void main() {
 
     // 输出: RGB = 阴影颜色混合, A = shadow factor (供外部 blend 使用)
     // texture2D — WebGL1 语法
-    gl_FragColor = vec4(color, shadowFactor);
+out vec4 fragColor;
+    fragColor = vec4(color, shadowFactor);
 }
 `;
 
@@ -342,7 +348,7 @@ function mat4Mul(a: Float32Array, b: Float32Array): Float32Array {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class ShadowGPU {
-  private gl: WebGLRenderingContext;
+  private gl: WebGL2RenderingContext;
   private cfg: ShadowConfig;
 
   // ── WebGL extension (depth texture) ──
@@ -378,7 +384,7 @@ export class ShadowGPU {
   // ── Default position texture (placeholder until external data arrives) ──
   private defaultPositionTex!: WebGLTexture;
 
-  constructor(gl: WebGLRenderingContext, config?: Partial<ShadowConfig>) {
+  constructor(gl: WebGL2RenderingContext, config?: Partial<ShadowConfig>) {
     this.gl = gl;
     this.cfg = { ...DEFAULT_SHADOW_CONFIG, ...config };
     this._init();

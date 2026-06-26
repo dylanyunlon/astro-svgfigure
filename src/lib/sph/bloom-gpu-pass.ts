@@ -17,9 +17,10 @@ import { getShader } from '../shaders/ShaderLoader';
 // ─── WebGL1 全屏 quad vertex shader ──────────────────────────────────────────
 
 const BLOOM_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
-attribute vec2 aPosition;
-varying vec2 vUv;
+in vec2 aPosition;
+out vec2 vUv;
 void main() {
     vUv = aPosition * 0.5 + 0.5;
     gl_Position = vec4(aPosition, 0.0, 1.0);
@@ -29,38 +30,42 @@ void main() {
 // ─── Luminosity Threshold Fragment Shader ────────────────────────────────────
 // 提取亮度超过阈值的像素; 暗像素变黑
 const LUMINOSITY_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
-varying vec2 vUv;
+in vec2 vUv;
 uniform sampler2D uInput;
 uniform float uThreshold;
 uniform float uKnee;
 void main() {
-    vec4 c = texture2D(uInput, vUv);
+    vec4 c = texture(uInput, vUv);
     float lum = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
     float rq = clamp(lum - uThreshold + uKnee, 0.0, 2.0 * uKnee);
     rq = (uKnee > 0.0) ? (rq * rq) / (4.0 * uKnee + 0.00001) : 0.0;
     float w = max(rq, lum - uThreshold) / max(lum, 0.00001);
-    gl_FragColor = vec4(c.rgb * w, c.a);
+out vec4 fragColor;
+    fragColor = vec4(c.rgb * w, c.a);
 }
 `;
 
 // ─── Gaussian Blur Fragment Shader (single axis) ─────────────────────────────
 // 5-tap 高斯模糊; uDir = (1,0) 水平, (0,1) 垂直
 const BLUR_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
-varying vec2 vUv;
+in vec2 vUv;
 uniform sampler2D uInput;
 uniform vec2 uTexelSize;
 uniform vec2 uDir;
 void main() {
     vec2 off1 = 1.3333333 * uDir * uTexelSize;
     vec2 off2 = 3.1111111 * uDir * uTexelSize;
-    vec4 c = texture2D(uInput, vUv) * 0.29411764;
-    c += texture2D(uInput, vUv + off1) * 0.35294117;
-    c += texture2D(uInput, vUv - off1) * 0.35294117;
-    c += texture2D(uInput, vUv + off2) * 0.05882352;
-    c += texture2D(uInput, vUv - off2) * 0.05882352;
-    gl_FragColor = c;
+    vec4 c = texture(uInput, vUv) * 0.29411764;
+    c += texture(uInput, vUv + off1) * 0.35294117;
+    c += texture(uInput, vUv - off1) * 0.35294117;
+    c += texture(uInput, vUv + off2) * 0.05882352;
+    c += texture(uInput, vUv - off2) * 0.05882352;
+out vec4 fragColor;
+    fragColor = c;
 }
 `;
 
@@ -69,8 +74,9 @@ void main() {
 // uRadius: 控制金字塔层权重分布 (0.0=只取最清晰层, 1.0=均匀扩散)
 // uTintColor: bloom 叠加时的色调倍乘 (暖色 vec3(1.0, 0.95, 0.85))
 const COMPOSITE_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
-varying vec2 vUv;
+in vec2 vUv;
 uniform sampler2D uBase;
 uniform sampler2D uBloom0;
 uniform sampler2D uBloom1;
@@ -80,34 +86,37 @@ uniform float uStrength;
 uniform float uRadius;
 uniform vec3  uTintColor;
 void main() {
-    vec4 base = texture2D(uBase, vUv);
+    vec4 base = texture(uBase, vUv);
     // radius 越大，模糊层权重越高 → 光晕越宽
     float w0 = mix(0.50, 0.25, uRadius);
     float w1 = mix(0.25, 0.25, uRadius);
     float w2 = mix(0.15, 0.25, uRadius);
     float w3 = mix(0.10, 0.25, uRadius);
-    vec4 bloom = texture2D(uBloom0, vUv) * w0;
-    bloom += texture2D(uBloom1, vUv) * w1;
-    bloom += texture2D(uBloom2, vUv) * w2;
-    bloom += texture2D(uBloom3, vUv) * w3;
+    vec4 bloom = texture(uBloom0, vUv) * w0;
+    bloom += texture(uBloom1, vUv) * w1;
+    bloom += texture(uBloom2, vUv) * w2;
+    bloom += texture(uBloom3, vUv) * w3;
     // 暖色色调: bloom.rgb 乘以 tint
     bloom.rgb *= uTintColor;
-    gl_FragColor = base + bloom * uStrength;
+out vec4 fragColor;
+    fragColor = base + bloom * uStrength;
 }
 `;
 
 // ─── Upsample Additive Fragment Shader ────────────────────────────────────────
 // 将低分辨率bloom层加到高分辨率层
 const UPSAMPLE_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
-varying vec2 vUv;
+in vec2 vUv;
 uniform sampler2D uCurrent;
 uniform sampler2D uUpper;
 uniform float uWeight;
 void main() {
-    vec4 cur = texture2D(uCurrent, vUv);
-    vec4 up  = texture2D(uUpper, vUv);
-    gl_FragColor = cur + up * uWeight;
+    vec4 cur = texture(uCurrent, vUv);
+    vec4 up  = texture(uUpper, vUv);
+out vec4 fragColor;
+    fragColor = cur + up * uWeight;
 }
 `;
 
@@ -152,7 +161,7 @@ interface SingleRT {
 // ─── BloomGPU ─────────────────────────────────────────────────────────────────
 
 export class BloomGPU {
-  private gl: WebGLRenderingContext;
+  private gl: WebGL2RenderingContext;
   private cfg: BloomConfig;
 
   // WebGL programs — 真正 compiled 的 shader
@@ -169,7 +178,7 @@ export class BloomGPU {
   // Fullscreen quad buffer
   private quadBuf!: WebGLBuffer;
 
-  constructor(gl: WebGLRenderingContext, config?: Partial<BloomConfig>) {
+  constructor(gl: WebGL2RenderingContext, config?: Partial<BloomConfig>) {
     this.gl = gl;
     this.cfg = { ...DEFAULT_BLOOM, ...config };
     this._compile();

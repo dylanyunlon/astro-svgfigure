@@ -1,7 +1,7 @@
 /**
  * pbr-gpu-pass.ts — GPU PBR Cell 材质
  *
- * PBRCellGPU: 每个 cell 用真实 WebGL1 shader 渲染 PBR 材质到 FBO.
+ * PBRCellGPU: 每个 cell 用真实 WebGL2 shader 渲染 PBR 材质到 FBO.
  * Fragment shader 实现:
  *   - Schlick Fresnel approximation
  *   - GGX (Trowbridge-Reitz) NDF
@@ -25,7 +25,7 @@
  * Output: renders to FBO (WebGLFramebuffer + WebGLTexture) — downstream
  * consumers read pbrTexture for composite pass.
  *
- * WebGL1 only — no #version 300 es, no gl_FragData[1], no OES_draw_buffers.
+ * WebGL2 (GLSL 300 es) — no #version 300 es, no gl_FragData[1], no OES_draw_buffers.
  */
 
 // ─── Cell species type (mirrors CellMaterial.ts) ────────────────────────────
@@ -114,16 +114,17 @@ const SPECIES_ALBEDO: Record<CellSpecies, [number, number, number]> = {
 // aCorner: one of the 6 quad vertices in [-1,1]².
 
 const PBR_VERT = /* glsl */ `
+#version 300 es
 precision highp float;
 
-attribute vec2 aCorner;
+in vec2 aCorner;
 
 uniform vec2  uCellPos;    // cell centre NDC
 uniform float uCellSize;   // half-extent NDC
 
-varying vec2  vUv;         // [0,1]² UV across the cell quad
-varying vec3  vNormal;     // approximate sphere normal from UV
-varying vec3  vViewDir;    // view direction (orthographic, constant)
+out vec2  vUv;         // [0,1]² UV across the cell quad
+out vec3  vNormal;     // approximate sphere normal from UV
+out vec3  vViewDir;    // view direction (orthographic, constant)
 
 void main() {
     // Reconstruct quad vertex in NDC
@@ -147,11 +148,12 @@ void main() {
 // Schlick Fresnel + GGX NDF + Smith G + Lambert diffuse = Cook-Torrance PBR.
 
 const PBR_FRAG = /* glsl */ `
+#version 300 es
 precision highp float;
 
-varying vec2  vUv;
-varying vec3  vNormal;
-varying vec3  vViewDir;
+in vec2  vUv;
+in vec3  vNormal;
+in vec3  vViewDir;
 
 uniform vec3  uAlbedo;
 uniform float uMetallic;
@@ -229,7 +231,8 @@ void main() {
     color = color / (color + vec3(1.0));
     color = pow(color, vec3(1.0 / 2.2));
 
-    gl_FragColor = vec4(color, 1.0);
+out vec4 fragColor;
+    fragColor = vec4(color, 1.0);
 }
 `;
 
@@ -245,7 +248,7 @@ interface PBRTarget {
 // ─── PBRCellGPU ─────────────────────────────────────────────────────────────
 
 export class PBRCellGPU {
-  private gl:      WebGLRenderingContext;
+  private gl:      WebGL2RenderingContext;
   private prog!:   WebGLProgram;
   private quadBuf!: WebGLBuffer;
   private fboTarget!: PBRTarget;
@@ -263,7 +266,7 @@ export class PBRCellGPU {
   // Attribute location
   private aCorner!: number;
 
-  constructor(gl: WebGLRenderingContext) {
+  constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this._compileProgram();
     this._createQuad();
