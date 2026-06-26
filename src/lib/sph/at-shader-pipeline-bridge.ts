@@ -280,7 +280,7 @@ function _parseCompiledVs(raw: string): void {
  * Structure:
  *   #!ATTRIBUTES  (may be empty)
  *   #!UNIFORMS    uniform ...;
- *   #!VARYINGS    varying ...;
+ *   #!VARYINGS    in ...;
  *   #!SHADER: Name.vs   void main() { ... }
  *   #!SHADER: Name.fs   void main() { ... }
  *

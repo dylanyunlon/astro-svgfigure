@@ -244,13 +244,10 @@ export class GPURenderLoop {
     } catch (e) { console.warn('[GPURenderLoop] ATJellyfishCell init failed (non-fatal):', e); }
 
     // ── AT Flower Particle renderer (M1225) ──
-    // Initialised with an empty edge list; edges are wired once setScene() runs.
-    try {
-      this.atFlower = new ATFlowerParticleRenderer(canvas, [], {
-        uTimeMultiplier: 0.17,
-        uSize: 8.0,
-      });
-    } catch (e) { console.warn('[GPURenderLoop] ATFlowerParticleRenderer init failed (non-fatal):', e); }
+    // M1240: ATFlowerParticle disabled — exceeds MAX_FRAGMENT_UNIFORM_VECTORS(1024) on most GPUs
+    // try {
+    //   this.atFlower = new ATFlowerParticleRenderer(canvas, [], { uTimeMultiplier: 0.17, uSize: 8.0 });
+    // } catch (e) { console.warn('[GPURenderLoop] ATFlowerParticleRenderer init failed:', e); }
 
     // SDF species icon pass
     try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }
@@ -262,25 +259,9 @@ export class GPURenderLoop {
     const GEOMETRY_BASE = '/assets/geometry/';
     const TEXTURE_BASE = '/assets/textures/';
 
-    // Geometry: Draco .bin → GPU VBO/IBO
-    try {
-      this.geometryLoader = new ATGeometryLoader({ gl });
-      // Load cell geometries (mapping from AT asset → cell species)
-      const geometryManifest = [
-        { name: 'jellyfish',  url: `${GEOMETRY_BASE}jellyfish.bin`,       cell: 'self_attn' },
-        { name: 'cables',     url: `${GEOMETRY_BASE}cables.bin`,          cell: 'edges' },
-        { name: 'flower',     url: `${GEOMETRY_BASE}flower_spine-128.bin`, cell: 'ffn' },
-        { name: 'hexagon',    url: `${GEOMETRY_BASE}hexagon_gem.bin`,     cell: 'add_norm' },
-        { name: 'pillars',    url: `${GEOMETRY_BASE}pillars.bin`,         cell: 'input_embed' },
-        { name: 'structure',  url: `${GEOMETRY_BASE}structure.bin`,       cell: 'pos_encode' },
-        { name: 'spine',      url: `${GEOMETRY_BASE}spine.bin`,           cell: 'output' },
-      ];
-      for (const { name, url } of geometryManifest) {
-        this.geometryLoader.load(url).then(() => {
-          console.log(`[GPURenderLoop] geometry loaded: ${name}`);
-        }).catch(() => { /* non-fatal */ });
-      }
-    } catch (e) { console.warn('[GPURenderLoop] geometry loader init failed:', e); }
+    // M1240: ATGeometryLoader disabled — AT PhysicalShader requires WebGL1 + 3D camera pipeline
+    // (cameraPosition, dFdx vec3 overloads, #drawbuffer preprocessor) incompatible with our WebGL2 quad arch.
+    // TODO: port AT mesh pipeline to WebGL2 with proper camera uniforms
 
     // Textures: KTX2 → GPU Texture2D (PBR albedo/normal/MRO)
     try {

@@ -220,6 +220,7 @@ void main() {
 
 const RADIANCE_COLLECT_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 ${RANGE_GLSL}
 ${SIMPLENOISE_GLSL}
 
@@ -274,7 +275,7 @@ vec2 hammersley(int i, int N) {
     return vec2(float(i)/float(N), radicalInverseVdC(i));
 }
 
-// SDF sphere-march to sample Cell radiance
+// SDF sphere-march to sampleVal Cell radiance
 // Returns: rgb indirect radiance along direction dir from origin
 vec3 marchSDF(vec3 origin, vec3 dir, float maxDist, int maxSteps) {
     float t = uSurfaceBias;
@@ -327,7 +328,7 @@ void main() {
     vec3 prev    = texture(tPrevRadiance, vUv).rgb;
     vec3 blended = mix(prev, traced, uTemporalAlpha);
 
-    gl_FragColor = vec4(blended, 1.0);
+    fragColor = vec4(blended, 1.0);
 }
 `;
 
@@ -349,6 +350,7 @@ void main() {
 
 const LIGHTING_MAIN_FRAG = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 ${RANGE_GLSL}
 ${FBR_GLSL}
 ${REFL_GLSL}
@@ -405,7 +407,7 @@ vec3 sampleRadianceCache(vec3 wNormal) {
     return texture(tRadianceCache, octUV).rgb;
 }
 
-// GGX importance-sample helper (Hammersley)
+// GGX importance-sampleVal helper (Hammersley)
 float radicalInv(int bits) {
     float r = 0.0; float b = 0.5;
     for (int i = 0; i < 16; i++) {
@@ -484,7 +486,7 @@ void main() {
     vec3  directLight   = (directDiffuse + specBRDF) * uLightColor * uLightIntensity * NdL;
 
     // ── Indirect lighting from Radiance Cache ─────────────────────────────
-    // Diffuse GI: sample radiance cache at surface normal
+    // Diffuse GI: sampleVal radiance cache at surface normal
     vec3 indirectDiffuseRaw = sampleRadianceCache(wNormal);
     indirectDiffuseRaw     += uAmbientMin;
     vec3 indirectDiffuse    = kD * albedo * indirectDiffuseRaw * uDiffuseIntensity;
@@ -501,7 +503,7 @@ void main() {
     vec3 gi     = (indirectDiffuse + indirectSpecular) * uGIIntensity;
     vec3 final  = sceneCol + directLight + gi;
 
-    gl_FragColor = vec4(final, 1.0);
+    fragColor = vec4(final, 1.0);
 }
 `;
 

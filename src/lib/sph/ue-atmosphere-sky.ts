@@ -42,6 +42,7 @@ void main() {
 // ─── Atmosphere common GLSL (inlined, not from compiled.vs) ──────────────────
 const ATM_COMMON = /* glsl */`#version 300 es
 precision highp float;
+out vec4 fragColor;
 
 #define PI 3.14159265358979
 #define PLANET_OFFSET 0.001

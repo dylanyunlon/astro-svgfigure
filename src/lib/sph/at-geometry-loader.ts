@@ -239,9 +239,9 @@ function buildGeometryVertGLSL(): string {
 precision highp float;
 
 /* ── Attributes (interleaved VBO: stride 32, pos@0 norm@12 uv@24) ─── */
-attribute vec3 position;
-attribute vec3 normal;
-attribute vec2 uv;
+in vec3 position;
+in vec3 normal;
+in vec2 uv;
 
 /* ── Uniforms ─────────────────────────────────────────────────────── */
 uniform mat4  modelViewMatrix;
@@ -253,14 +253,14 @@ uniform float uScroll;
 uniform vec3  cameraPosition;
 
 /* ── Varyings (matches AT fbr.vs contract) ────────────────────────── */
-varying vec3 vNormal;
-varying vec3 vWorldNormal;
-varying vec3 vPos;
-varying vec3 vEyePos;
-varying vec2 vUv;
-varying vec3 vMPos;
-varying vec3 vViewDir;
-varying vec4 vWorldPos;
+out vec3 vNormal;
+out vec3 vWorldNormal;
+out vec3 vPos;
+out vec3 vEyePos;
+out vec2 vUv;
+out vec3 vMPos;
+out vec3 vViewDir;
+out vec4 vWorldPos;
 
 /* ── AT instance.vs: transform helpers ───────────────────────────── */
 ${instanceVS}
@@ -334,16 +334,17 @@ function buildGeometryFragGLSL(): string {
 
   return /* glsl */ `
 precision highp float;
+out vec4 fragColor;
 
 /* ── Varyings ─────────────────────────────────────────────────────── */
-varying vec3 vNormal;
-varying vec3 vWorldNormal;
-varying vec3 vPos;
-varying vec3 vEyePos;
-varying vec2 vUv;
-varying vec3 vMPos;
-varying vec3 vViewDir;
-varying vec4 vWorldPos;
+in vec3 vNormal;
+in vec3 vWorldNormal;
+in vec3 vPos;
+in vec3 vEyePos;
+in vec2 vUv;
+in vec3 vMPos;
+in vec3 vViewDir;
+in vec4 vWorldPos;
 
 /* ── Uniforms ─────────────────────────────────────────────────────── */
 uniform float time;
@@ -409,7 +410,7 @@ void main() {
     /* ── Albedo from texture or uniform ─────────────────────────────── */
     vec3 albedo = uBaseColor * uTint;
     if (uHasAlbedoTex > 0.5) {
-        albedo *= texture2D(uAlbedoTex, vUv).rgb;
+        albedo *= texture(uAlbedoTex, vUv).rgb;
     }
 
     /* ── AT fbr.fs: FBR material color ─────────────────────────────── */
@@ -448,7 +449,7 @@ void main() {
     /* ── Environment intensity tint ─────────────────────────────────── */
     color *= 1.0 + uEnvIntensity * 0.2;
 
-    gl_FragColor = vec4(color, 1.0);
+    fragColor = vec4(color, 1.0);
 }
 `;
 }

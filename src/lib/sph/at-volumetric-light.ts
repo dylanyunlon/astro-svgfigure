@@ -231,7 +231,7 @@ void main() {
         if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0) break;
 
         // Sample rays texture at marched position
-        vec4 sample = texture(tRays, pos);
+        vec4 sampleVal = texture(tRays, pos);
 
         // Density modulation via AT cnoise (AT LightVolume noise branch)
         float density = 1.0;
@@ -248,7 +248,7 @@ void main() {
         // Normalize so isotropic (g=0) = 1.0
         float phaseNorm    = clamp(phase * 4.0 * PI, 0.0, 4.0);
 
-        accumulated += sample * decay * density * phaseNorm * uRayStrength;
+        accumulated += sampleVal * decay * density * phaseNorm * uRayStrength;
         decay       *= uScatterDecay;
     }
 
