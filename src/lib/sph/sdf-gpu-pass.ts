@@ -156,14 +156,19 @@ uniform float u_lightExposure;
 uniform float u_shadowFar;
 uniform float u_shadowBias;
 
+// Per-instance position/size passed from vertex shader (instanced rendering)
+varying vec2  v_iPos;
+varying float v_iSize;
+
 float circleSDF(in vec2 v) {
   v -= 0.5;
   return length(v) * 2.0;
 }
 
 void main() {
-  vec2 fragCoord = gl_FragCoord.xy;
-  vec2 uv = (fragCoord - u_bbox.xy) / u_bbox.zw;
+  // Compute bbox-local UV from per-instance varyings (works for all instances)
+  vec2 bboxOrigin = v_iPos - vec2(v_iSize * 0.5);
+  vec2 uv = (gl_FragCoord.xy - bboxOrigin) / vec2(v_iSize);
   float dist = circleSDF(uv);
   vec2 p = uv * 2.0 - 1.0;
   float angle = atan(p.y, p.x);
@@ -212,6 +217,10 @@ uniform float u_zigzagCount;
 uniform float u_amplitude;
 uniform float u_time;
 
+// Per-instance position/size from vertex shader
+varying vec2  v_iPos;
+varying float v_iSize;
+
 #define saturate(V) clamp(V, 0.0, 1.0)
 
 float lineSDF(in vec2 st, in vec2 a, in vec2 b) {
@@ -236,7 +245,8 @@ const float AT_WIGGLE_SPEED          = 0.7;
 const float AT_LUMINOSITY_THRESHOLD  = 0.0;
 
 void main() {
-  vec2 uv = (gl_FragCoord.xy - u_bbox.xy) / u_bbox.zw;
+  vec2 bboxOrigin = v_iPos - vec2(v_iSize * 0.5);
+  vec2 uv = (gl_FragCoord.xy - bboxOrigin) / vec2(v_iSize);
   vec2 p  = uv * 2.0 - 1.0;
 
   float strokeW = 0.045;
@@ -294,6 +304,10 @@ uniform vec2  u_resolution;
 uniform float u_armLength;
 uniform float u_strokeWidth;
 
+// Per-instance position/size from vertex shader
+varying vec2  v_iPos;
+varying float v_iSize;
+
 float sdBox2(vec2 p, vec2 b) {
   vec2 d = abs(p) - b;
   return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
@@ -304,7 +318,8 @@ float sdPlus(vec2 p, float armLen, float sw) {
 }
 
 void main() {
-  vec2 uv = (gl_FragCoord.xy - u_bbox.xy) / u_bbox.zw;
+  vec2 bboxOrigin = v_iPos - vec2(v_iSize * 0.5);
+  vec2 uv = (gl_FragCoord.xy - bboxOrigin) / vec2(v_iSize);
   vec2 p  = uv * 2.0 - 1.0;
   float d    = sdPlus(p, u_armLength, u_strokeWidth);
   float mask = smoothstep(0.015, -0.015, d);
@@ -322,6 +337,10 @@ uniform vec2  u_resolution;
 uniform float u_arrowWidth;
 uniform float u_time;
 
+// Per-instance position/size from vertex shader
+varying vec2  v_iPos;
+varying float v_iSize;
+
 #define saturate(V) clamp(V, 0.0, 1.0)
 
 float lineSDF(in vec2 st, in vec2 a, in vec2 b) {
@@ -337,7 +356,8 @@ float sdArrowRight(vec2 p, float w) {
 }
 
 void main() {
-  vec2 uv    = (gl_FragCoord.xy - u_bbox.xy) / u_bbox.zw;
+  vec2 bboxOrigin = v_iPos - vec2(v_iSize * 0.5);
+  vec2 uv    = (gl_FragCoord.xy - bboxOrigin) / vec2(v_iSize);
   float cols = 3.0; float rows = 3.0;
   vec2 scroll = vec2(u_time * 0.25, 0.0);
   vec2 tiled  = fract(uv * vec2(cols, rows) + scroll);
@@ -357,6 +377,10 @@ uniform float u_opacity;
 uniform vec2  u_resolution;
 uniform float u_arrowCount;
 uniform float u_angleSpread;
+
+// Per-instance position/size from vertex shader
+varying vec2  v_iPos;
+varying float v_iSize;
 
 #define PI  3.1415926535897932384626433832795
 #define TAU 6.2831853071795864769252867665590
@@ -399,7 +423,8 @@ float rand(vec2 co) {
 }
 
 void main() {
-  vec2 uv   = (gl_FragCoord.xy - u_bbox.xy) / u_bbox.zw;
+  vec2 bboxOrigin = v_iPos - vec2(v_iSize * 0.5);
+  vec2 uv   = (gl_FragCoord.xy - bboxOrigin) / vec2(v_iSize);
   float n   = u_arrowCount;
   vec2 cell = floor(uv * n);
   vec2 loc  = fract(uv * n) - 0.5;
@@ -512,7 +537,12 @@ export class SDFIconGPU {
       // per-icon UV is recomputed from gl_FragCoord vs the vertex-generated bbox.
       // (The frag shader reinterprets its u_bbox relative to gl_FragCoord, which
       //  maps naturally because each instance quad occupies exactly icon-size pixels.)
-      gl.uniform4f(sp.u_bbox, 0.0, 0.0, this.canvasW, this.canvasH);
+      // u_bbox is intentionally NOT set here as a global canvas-sized uniform.
+      // Each fragment shader computes its bbox-local UV from the varyings
+      // v_iPos and v_iSize that the vertex shader already passes per instance:
+      //   uv = (gl_FragCoord.xy - (v_iPos - vec2(v_iSize*0.5))) / vec2(v_iSize)
+      // Frag shaders must use v_iPos/v_iSize varyings, not u_bbox, for instanced rendering.
+      // (drawSingleQuad sets u_bbox directly for non-instanced use.)
 
       // ── 4. Species-specific uniform defaults ────────────────────────
       this._setSpeciesUniforms(sp, batch.species);
@@ -521,7 +551,7 @@ export class SDFIconGPU {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.quadVBO);
       gl.enableVertexAttribArray(sp.loc_aPosition);
       gl.vertexAttribPointer(sp.loc_aPosition, 2, gl.FLOAT, false, 0, 0);
-      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_aPosition, 0); // per-vertex
+      this._vertexAttribDivisor(sp.loc_aPosition, 0); // per-vertex
 
       // ── 6. Bind instance VBO ─────────────────────────────────────────
       // Layout: [posX(f32), posY(f32), size(f32), opacity(f32)]
@@ -530,23 +560,23 @@ export class SDFIconGPU {
 
       gl.enableVertexAttribArray(sp.loc_a_iPos);
       gl.vertexAttribPointer(sp.loc_a_iPos, 2, gl.FLOAT, false, stride, 0);
-      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iPos, 1); // per-instance
+      this._vertexAttribDivisor(sp.loc_a_iPos, 1); // per-instance
 
       gl.enableVertexAttribArray(sp.loc_a_iSize);
       gl.vertexAttribPointer(sp.loc_a_iSize, 1, gl.FLOAT, false, stride, 2 * 4);
-      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iSize, 1);
+      this._vertexAttribDivisor(sp.loc_a_iSize, 1);
 
       gl.enableVertexAttribArray(sp.loc_a_iOpacity);
       gl.vertexAttribPointer(sp.loc_a_iOpacity, 1, gl.FLOAT, false, stride, 3 * 4);
-      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iOpacity, 1);
+      this._vertexAttribDivisor(sp.loc_a_iOpacity, 1);
 
       // ── 7. Draw: 6 vertices (2 triangles) × count instances ─────────
-      (gl as WebGL2RenderingContext).drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
+      this._drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
 
       // ── 8. Reset divisors (WebGL1 requires manual reset) ─────────────
-      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iPos,     0);
-      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iSize,    0);
-      (gl as WebGL2RenderingContext).vertexAttribDivisor(sp.loc_a_iOpacity, 0);
+      this._vertexAttribDivisor(sp.loc_a_iPos,     0);
+      this._vertexAttribDivisor(sp.loc_a_iSize,    0);
+      this._vertexAttribDivisor(sp.loc_a_iOpacity, 0);
 
       // Disable attribs
       gl.disableVertexAttribArray(sp.loc_aPosition);
@@ -602,12 +632,14 @@ export class SDFIconGPU {
     if (sp.u_time !== null) gl.uniform1f(sp.u_time, this.time);
     this._setSpeciesUniforms(sp, species);
 
-    // Build a per-instance VBO containing exactly one instance
-    const singleBuf = new Float32Array([x, y, size, 1.0]);
-    const tmpVBO = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, tmpVBO);
-    gl.bufferData(gl.ARRAY_BUFFER, singleBuf, gl.STREAM_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    // For a single non-instanced draw, set per-instance attribs as constant values
+    // using vertexAttrib* (no array needed — divisor is irrelevant for drawArrays)
+    gl.disableVertexAttribArray(sp.loc_a_iPos);
+    gl.vertexAttrib2f(sp.loc_a_iPos, x, y);
+    gl.disableVertexAttribArray(sp.loc_a_iSize);
+    gl.vertexAttrib1f(sp.loc_a_iSize, size);
+    gl.disableVertexAttribArray(sp.loc_a_iOpacity);
+    gl.vertexAttrib1f(sp.loc_a_iOpacity, 1.0);
 
     // Bind quad VBO for aPosition — only NDC corners, no instancing
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadVBO);
@@ -618,7 +650,6 @@ export class SDFIconGPU {
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     gl.disableVertexAttribArray(sp.loc_aPosition);
-    gl.deleteBuffer(tmpVBO);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
@@ -712,6 +743,26 @@ export class SDFIconGPU {
         if (sp.u_arrowCount   !== null) gl.uniform1f(sp.u_arrowCount,  4.0);
         if (sp.u_angleSpread  !== null) gl.uniform1f(sp.u_angleSpread, 0.8);
         break;
+    }
+  }
+
+  // ── Private: instancing helpers (WebGL1 ext vs WebGL2 built-in) ─────────
+
+  /** Wrapper: vertexAttribDivisor for WebGL1 (ANGLE ext) or WebGL2 (core). */
+  private _vertexAttribDivisor(index: number, divisor: number): void {
+    if (this.ext) {
+      this.ext.vertexAttribDivisorANGLE(index, divisor);
+    } else {
+      (this.gl as unknown as WebGL2RenderingContext).vertexAttribDivisor(index, divisor);
+    }
+  }
+
+  /** Wrapper: drawArraysInstanced for WebGL1 (ANGLE ext) or WebGL2 (core). */
+  private _drawArraysInstanced(mode: number, first: number, count: number, instanceCount: number): void {
+    if (this.ext) {
+      this.ext.drawArraysInstancedANGLE(mode, first, count, instanceCount);
+    } else {
+      (this.gl as unknown as WebGL2RenderingContext).drawArraysInstanced(mode, first, count, instanceCount);
     }
   }
 
