@@ -20,7 +20,7 @@
  * 7 个 cell 标签 (SPECIES_PIPELINE_ORDER):
  *   input_embed | pos_encode | self_attn | add_norm1 | ffn | add_norm2 | output
  *
- * WebGL1 语法: varying / texture2D / attribute (不是 WebGL2)
+ * WebGL2 语法: in/out / texture() / layout location (WebGL2, #version 300 es)
  *
  * xiaodi #M878 — cell-pubsub-loop
  */

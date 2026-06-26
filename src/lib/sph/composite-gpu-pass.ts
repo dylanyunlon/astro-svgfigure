@@ -179,7 +179,7 @@ const DEFAULT_CONFIG: CompositeConfig = {
 // ─── CompositeGPU ────────────────────────────────────────────────────────────
 
 export class CompositeGPU {
-  private gl:      WebGLRenderingContext;
+  private gl:      WebGL2RenderingContext;
   private config:  CompositeConfig;
 
   // WebGL resources — 真正 compiled 的 shader + quad geometry
@@ -201,7 +201,7 @@ export class CompositeGPU {
   private uResolution!:       WebGLUniformLocation;
   private aPosition!:         number;
 
-  constructor(gl: WebGLRenderingContext, config?: Partial<CompositeConfig>) {
+  constructor(gl: WebGL2RenderingContext, config?: Partial<CompositeConfig>) {
     this.gl     = gl;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this._init();
