@@ -550,7 +550,6 @@ export class GPURenderLoop {
     const W = this.canvas.width;
     const H = this.canvas.height;
     const time = performance.now() / 1000;
-    this.frameCount++;
 
     this.perf.frameStart();
 
@@ -619,7 +618,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('atmosphereSky');
       try {
         this.atmosphereSky.render(W, H);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] atmosphereSky pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] atmosphereSky pass error:', e); }
       this.perf.passEnd('atmosphereSky', t);
     }
 
@@ -628,7 +627,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('fluid');
       try {
         this.fluid.step(this.mouseX, this.mouseY, this.prevMouseX, this.prevMouseY, dt);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('fluid', t);
     }
 
@@ -646,7 +645,7 @@ export class GPURenderLoop {
           posArr[i * 4 + 3] = fitD(c.h);
         }
         this.shadow.step(posArr, this.cells.length);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('shadow', t);
     }
 
@@ -678,7 +677,7 @@ export class GPURenderLoop {
           cellTex = this._renderCellsFallback();
         }
       } catch (e) {
-        if (this.frameCount <= 3) console.warn('[GPURenderLoop] PBR pass error:', e);
+        if (this.frameCount <= 10) console.warn('[GPURenderLoop] PBR pass error:', e);
         cellTex = this._renderCellsFallback();
       }
       this.perf.passEnd('pbr', t);
@@ -704,7 +703,7 @@ export class GPURenderLoop {
           identityMat,
           time,
         );
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] ATJellyfish pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] ATJellyfish pass error:', e); }
       this.perf.passEnd('atJellyfish', t);
     }
 
@@ -716,14 +715,14 @@ export class GPURenderLoop {
       try {
         this.atFlower.tick(time, dt);
         this.atFlower.render(W, H);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] ATFlower pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] ATFlower pass error:', e); }
       this.perf.passEnd('atFlower', t);
     }
     {
       const t = this.perf.passStart('bloom');
       try {
         this.bloom.step(cellTex);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('bloom', t);
     }
 
@@ -777,7 +776,7 @@ export class GPURenderLoop {
         const mvp = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
         const eye: [number, number, number] = [0, 0, 5];
         this.waterSurface.render(dt, mvp, eye, W, H);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] waterSurface pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] waterSurface pass error:', e); }
       this.perf.passEnd('waterSurface', t);
     }
 
@@ -786,7 +785,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('volumetricLight');
       try {
         this.volumetricLight.render(cellTex);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] volumetricLight pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] volumetricLight pass error:', e); }
       this.perf.passEnd('volumetricLight', t);
     }
 
@@ -815,7 +814,7 @@ export class GPURenderLoop {
             this._blitTexture(cellTex, W, H);
           }
         }
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] composite pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] composite pass error:', e); }
       this.perf.passEnd('composite', t);
     }
 
@@ -828,7 +827,7 @@ export class GPURenderLoop {
           ? (this.composite as any).outputTexture ?? cellTex
           : cellTex;
         this.ueBloomTonemap.render(sceneTex, W, H);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] ueBloomTonemap pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] ueBloomTonemap pass error:', e); }
       this.perf.passEnd('ueBloomTonemap', t);
     }
 
@@ -857,7 +856,7 @@ export class GPURenderLoop {
           this._edgesDirty = false;
         }
         this.edge.render(time);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('edge', t);
     }
 
@@ -878,7 +877,7 @@ export class GPURenderLoop {
           species: species as any, instances,
         }));
         this.sdfIcon.render(batches, dt);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('sdf', t);
     }
 
@@ -887,7 +886,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('particle');
       try {
         this.particle.render(W, H);
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('particle', t);
     }
 
@@ -896,7 +895,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('msdf');
       try {
         this.msdf.drawAllCellLabels();
-      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('msdf', t);
     }
 
@@ -908,6 +907,7 @@ export class GPURenderLoop {
     drainErrors(gl);
 
     this.perf.frameEnd();
+    this.frameCount++;
 
     // ── Log perf stats once (frame 60 — after init settles) ──
     if (this.frameCount === 60) {
