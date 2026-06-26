@@ -115,7 +115,9 @@ void main() {
 
     // ── 3. Z-order 合成 ──────────────────────────────────────────────────────
     // 底层: cell 乘以 shadow 遮罩
-    vec3 composite = cellColor.rgb * shadowMask;
+    // max(shadowMask, 0.15): 保留最低 15% 环境光, 防止 shadow 纹理全零导致全黑
+    float ambientShadow = max(shadowMask, 0.15);
+    vec3 composite = cellColor.rgb * ambientShadow;
 
     // 边层: alpha-over 混合
     composite = mix(composite, edgeColor.rgb, edgeColor.a);
@@ -264,6 +266,15 @@ export class CompositeGPU {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvasWidth, canvasHeight);
 
+    // ── Blend 状态: composite pass 直接覆写 canvas, 必须关闭 blend ────────────
+    // 若前序 pass (particle/fluid) 开启了 additive blend 而未还原,
+    // 输出会被错误叠加导致全白或全黑 (M1217 核心 bug).
+    gl.disable(gl.BLEND);
+
+    // 清除上一帧残留 (防止脏帧缓冲)
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
     gl.useProgram(this.prog);
 
     // ── 上传 6 个 sampler2D (texture units 0-5) ───────────────────────────────
@@ -317,6 +328,9 @@ export class CompositeGPU {
     gl.enableVertexAttribArray(this.aPosition);
     gl.vertexAttribPointer(this.aPosition, 2, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // ── 还原 GL 状态 (不污染后续 pass) ──────────────────────────────────────
+    gl.disableVertexAttribArray(this.aPosition);
   }
 
   // ─── 运行时更新后处理参数 ──────────────────────────────────────────────────
