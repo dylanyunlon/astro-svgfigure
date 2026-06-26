@@ -455,7 +455,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('fluid');
       try {
         this.fluid.step(this.mouseX, this.mouseY, this.prevMouseX, this.prevMouseY, dt);
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('fluid', t);
     }
 
@@ -473,7 +473,7 @@ export class GPURenderLoop {
           posArr[i * 4 + 3] = c.h;
         }
         this.shadow.step(posArr, this.cells.length);
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('shadow', t);
     }
 
@@ -503,6 +503,7 @@ export class GPURenderLoop {
           cellTex = this._renderCellsFallback();
         }
       } catch (e) {
+        if (this.frameCount <= 3) console.warn('[GPURenderLoop] PBR pass error:', e);
         cellTex = this._renderCellsFallback();
       }
       this.perf.passEnd('pbr', t);
@@ -513,7 +514,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('bloom');
       try {
         this.bloom.step(cellTex);
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('bloom', t);
     }
 
@@ -524,7 +525,7 @@ export class GPURenderLoop {
     //   const t = this.perf.passStart('glass');
     //   try {
     //     this.glass.render(cellTex, this.bloom.outputTexture, time);
-    //   } catch (e) { /* non-fatal */ }
+    //   } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
     //   this.perf.passEnd('glass', t);
     // }
 
@@ -547,7 +548,7 @@ export class GPURenderLoop {
           shadow:   this.shadow.shadowFactorTexture,
           fluid:    this.fluid.dyeTexture,
         }, W, H, time);
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('composite', t);
     }
 
@@ -576,7 +577,7 @@ export class GPURenderLoop {
           this._edgesDirty = false;
         }
         this.edge.render(time);
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('edge', t);
     }
 
@@ -597,7 +598,7 @@ export class GPURenderLoop {
           species: species as any, instances,
         }));
         this.sdfIcon.render(batches, dt);
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('sdf', t);
     }
 
@@ -606,7 +607,7 @@ export class GPURenderLoop {
       const t = this.perf.passStart('particle');
       try {
         this.particle.render(W, H);
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('particle', t);
     }
 
@@ -615,34 +616,13 @@ export class GPURenderLoop {
       const t = this.perf.passStart('msdf');
       try {
         this.msdf.drawAllCellLabels();
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { if (this.frameCount <= 3) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('msdf', t);
     }
 
-    // ── Direct cell rendering to screen (bypass failed passes) ──
-    {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, W, H);
-
-      // Dark background
-      gl.clearColor(0.04, 0.04, 0.06, 1.0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-
-      // Draw each cell as a colored rectangle
-      gl.enable(gl.SCISSOR_TEST);
-      for (const cell of this.cells) {
-        const a = cell.albedo ?? [0.3, 0.5, 1.0];
-        const px = Math.floor(cell.x);
-        const py = Math.floor(H - cell.y - cell.h); // flip Y
-        const pw = Math.floor(cell.w);
-        const ph = Math.floor(cell.h);
-        if (pw <= 0 || ph <= 0 || px + pw < 0 || py + ph < 0 || px > W || py > H) continue;
-        gl.scissor(px, py, pw, ph);
-        gl.clearColor(a[0], a[1], a[2], 1.0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-      }
-      gl.disable(gl.SCISSOR_TEST);
-    }
+    // M1211: removed M1210 direct-cell-rendering — it was clearing the entire
+    // framebuffer AFTER composite output, destroying all PBR/bloom/shadow work.
+    // The GPU passes are not silently failing; M1210 was overwriting them.
 
     // ── Drain accumulated GL errors ──
     drainErrors(gl);
