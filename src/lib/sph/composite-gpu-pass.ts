@@ -63,6 +63,14 @@ uniform sampler2D uBloom;
 uniform sampler2D uShadow;
 uniform sampler2D uFluid;
 
+// Optional extended layers (M1250)
+uniform sampler2D uGI;          // Lumen GI indirect lighting
+uniform sampler2D uVolumetric;  // Volumetric light rays
+uniform sampler2D uGeometry;    // AT 3D geometry preview
+uniform float     uHasGI;       // 1.0 if GI texture is bound
+uniform float     uHasVolumetric;
+uniform float     uHasGeometry;
+
 // 后处理参数
 uniform float uTime;
 uniform float uGrainStrength;    // 胶片颗粒强度 (default 0.03)
@@ -130,6 +138,24 @@ void main() {
     // bloom: screen blend
     composite = blendScreen(composite, bloomColor.rgb * bloomColor.a);
 
+    // GI: additive indirect lighting from Lumen radiance cache (M1250)
+    if (uHasGI > 0.5) {
+      vec3 giColor = texture(uGI, distortedUv).rgb;
+      composite += giColor * 0.3;  // subtle indirect fill
+    }
+
+    // Volumetric: additive light rays (M1250)
+    if (uHasVolumetric > 0.5) {
+      vec3 volColor = texture(uVolumetric, distortedUv).rgb;
+      composite = blendScreen(composite, volColor * 0.5);
+    }
+
+    // Geometry: alpha-over 3D mesh preview (M1250)
+    if (uHasGeometry > 0.5) {
+      vec4 geoColor = texture(uGeometry, distortedUv);
+      composite = mix(composite, geoColor.rgb, geoColor.a * 0.6);
+    }
+
     // ── 4. 后处理 ────────────────────────────────────────────────────────────
 
     // vignette: 1 - distance_from_center^2, 由 uVignetteStrength 控制强度
@@ -152,12 +178,18 @@ void main() {
 // ─── CompositeInputs: 每帧传入的 6 个纹理 ────────────────────────────────────
 
 export interface CompositeInputs {
-  cell:     WebGLTexture;
-  edge:     WebGLTexture;
-  particle: WebGLTexture;
-  bloom:    WebGLTexture;
-  shadow:   WebGLTexture;
-  fluid:    WebGLTexture;
+  cell:       WebGLTexture;
+  edge:       WebGLTexture;
+  particle:   WebGLTexture;
+  bloom:      WebGLTexture;
+  shadow:     WebGLTexture;
+  fluid:      WebGLTexture;
+  /** Optional: Lumen GI output (indirect lighting) */
+  gi?:        WebGLTexture;
+  /** Optional: Volumetric light rays */
+  volumetric?: WebGLTexture;
+  /** Optional: AT Geometry preview */
+  geometry?:  WebGLTexture;
 }
 
 // ─── CompositeConfig: 后处理参数 ─────────────────────────────────────────────
@@ -193,6 +225,12 @@ export class CompositeGPU {
   private uBloom!:            WebGLUniformLocation;
   private uShadow!:           WebGLUniformLocation;
   private uFluid!:            WebGLUniformLocation;
+  private uGI!:               WebGLUniformLocation | null;
+  private uVolumetric!:       WebGLUniformLocation | null;
+  private uGeometry!:         WebGLUniformLocation | null;
+  private uHasGI!:            WebGLUniformLocation | null;
+  private uHasVolumetric!:    WebGLUniformLocation | null;
+  private uHasGeometry!:      WebGLUniformLocation | null;
   private uTime!:             WebGLUniformLocation;
   private uGrainStrength!:    WebGLUniformLocation;
   private uVignetteStrength!: WebGLUniformLocation;
@@ -237,6 +275,12 @@ export class CompositeGPU {
     this.uBloom            = gl.getUniformLocation(this.prog, 'uBloom')!;
     this.uShadow           = gl.getUniformLocation(this.prog, 'uShadow')!;
     this.uFluid            = gl.getUniformLocation(this.prog, 'uFluid')!;
+    this.uGI               = gl.getUniformLocation(this.prog, 'uGI');
+    this.uVolumetric       = gl.getUniformLocation(this.prog, 'uVolumetric');
+    this.uGeometry         = gl.getUniformLocation(this.prog, 'uGeometry');
+    this.uHasGI            = gl.getUniformLocation(this.prog, 'uHasGI');
+    this.uHasVolumetric    = gl.getUniformLocation(this.prog, 'uHasVolumetric');
+    this.uHasGeometry      = gl.getUniformLocation(this.prog, 'uHasGeometry');
     this.uTime             = gl.getUniformLocation(this.prog, 'uTime')!;
     this.uGrainStrength    = gl.getUniformLocation(this.prog, 'uGrainStrength')!;
     this.uVignetteStrength = gl.getUniformLocation(this.prog, 'uVignetteStrength')!;
@@ -310,6 +354,33 @@ export class CompositeGPU {
     gl.activeTexture(gl.TEXTURE5);
     gl.bindTexture(gl.TEXTURE_2D, inputs.fluid);
     gl.uniform1i(this.uFluid, 5);
+
+    // unit 6 — GI (optional, M1250)
+    const hasGI = !!inputs.gi;
+    if (hasGI && this.uGI) {
+      gl.activeTexture(gl.TEXTURE6);
+      gl.bindTexture(gl.TEXTURE_2D, inputs.gi!);
+      gl.uniform1i(this.uGI, 6);
+    }
+    if (this.uHasGI) gl.uniform1f(this.uHasGI, hasGI ? 1.0 : 0.0);
+
+    // unit 7 — Volumetric (optional, M1250)
+    const hasVol = !!inputs.volumetric;
+    if (hasVol && this.uVolumetric) {
+      gl.activeTexture(gl.TEXTURE7);
+      gl.bindTexture(gl.TEXTURE_2D, inputs.volumetric!);
+      gl.uniform1i(this.uVolumetric, 7);
+    }
+    if (this.uHasVolumetric) gl.uniform1f(this.uHasVolumetric, hasVol ? 1.0 : 0.0);
+
+    // unit 8 — Geometry (optional, M1250)
+    const hasGeo = !!inputs.geometry;
+    if (hasGeo && this.uGeometry) {
+      gl.activeTexture(gl.TEXTURE8);
+      gl.bindTexture(gl.TEXTURE_2D, inputs.geometry!);
+      gl.uniform1i(this.uGeometry, 8);
+    }
+    if (this.uHasGeometry) gl.uniform1f(this.uHasGeometry, hasGeo ? 1.0 : 0.0);
 
     // ── 上传后处理 uniforms ───────────────────────────────────────────────────
     gl.uniform1f(this.uTime,             time);

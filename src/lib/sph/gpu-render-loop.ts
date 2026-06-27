@@ -278,9 +278,14 @@ export class GPURenderLoop {
     const GEOMETRY_BASE = '/assets/geometry/';
     const TEXTURE_BASE = '/assets/textures/';
 
-    // M1240: ATGeometryLoader disabled — AT PhysicalShader requires WebGL1 + 3D camera pipeline
-    // (cameraPosition, dFdx vec3 overloads, #drawbuffer preprocessor) incompatible with our WebGL2 quad arch.
-    // TODO: port AT mesh pipeline to WebGL2 with proper camera uniforms
+    // M1250: ATGeometryLoader re-enabled (M1247 fixed shader compile errors)
+    try {
+      this.geometryLoader = new ATGeometryLoader({ gl });
+      // Load all AT production 3D assets in parallel
+      this.geometryLoader.loadAll()
+        .then((loaded) => console.log(`[GPURenderLoop] AT geometry loaded: ${loaded.size} meshes`))
+        .catch((e) => console.warn('[GPURenderLoop] AT geometry load partial fail (non-fatal):', e));
+    } catch (e) { console.warn('[GPURenderLoop] ATGeometryLoader init failed (non-fatal):', e); }
 
     // Textures: KTX2 → GPU Texture2D (PBR albedo/normal/MRO)
     try {
@@ -684,6 +689,22 @@ export class GPURenderLoop {
       this.perf.passEnd('atJellyfish', t);
     }
 
+    // ── Pass 3b2: AT Geometry Loader — Draco 3D meshes (M1250) ──
+    if (this.geometryLoader) {
+      const t = this.perf.passStart('atGeometry');
+      try {
+        const geoCache = (this.geometryLoader as any).geometryCache as Map<string, any> | undefined;
+        if (geoCache && geoCache.size > 0) {
+          // Render first loaded geometry (jellyfish preferred)
+          const jellyGeo = geoCache.get('jellyfish') || geoCache.values().next().value;
+          if (jellyGeo) {
+            this.geometryLoader.render(jellyGeo, time, 0);
+          }
+        }
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] ATGeometry pass error:', e); }
+      this.perf.passEnd('atGeometry', t);
+    }
+
     // ── Pass 3c: AT Flower particle renderer (M1225) ──
     // Runs Life TF → Pos FBO → Render passes for GPU spline particles.
     // Placed after PBR so particles layer over cell surfaces.
@@ -782,12 +803,15 @@ export class GPURenderLoop {
         const placeholder = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
         if (this.composite) {
           this.composite.render({
-            cell:     cellTex ?? placeholder,
-            edge:     placeholder,
-            particle: placeholder,
-            bloom:    this.bloom?.outputTexture ?? placeholder,
-            shadow:   this.shadow?.shadowFactorTexture ?? placeholder,
-            fluid:    this.mouseFluid?.dyeTexture ?? this.fluid?.dyeTexture ?? placeholder,
+            cell:       cellTex ?? placeholder,
+            edge:       placeholder,
+            particle:   placeholder,
+            bloom:      this.bloom?.outputTexture ?? placeholder,
+            shadow:     this.shadow?.shadowFactorTexture ?? placeholder,
+            fluid:      this.mouseFluid?.dyeTexture ?? this.fluid?.dyeTexture ?? placeholder,
+            gi:         this.lumenGI?.outputTexture ?? undefined,
+            volumetric: this.volumetricLight?.raysTexture ?? undefined,
+            geometry:   this.geometryLoader?.getPreviewTexture?.() ?? undefined,
           }, W, H, time);
         } else {
           // No composite — draw PBR directly to screen as fullscreen blit
