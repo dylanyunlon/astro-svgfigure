@@ -224,6 +224,9 @@ function stripAT(src: string): string {
     .replace(/#endtest\b[^\n]*/g, '')
     .replace(/#require\([^)]*\)/g, '')
     .replace(/^varying\s+\w+\s+\w+;\s*$/gm, '// (varying moved to outer)')
+    .replace(/\btexture2D\s*\(/g, 'texture(')
+    .replace(/\btextureCube\s*\(/g, 'texture(')
+    .replace(/\bgl_FragColor\b/g, 'fragColor')
     .trim();
 }
 
@@ -235,7 +238,7 @@ function buildGeometryVertGLSL(): string {
   const simpleNoise  = stripAT(getShader('simplenoise.glsl'));
   const lightsVS     = stripAT(getShader('lights.vs'));
 
-  return /* glsl */ `
+  return /* glsl */ `#version 300 es
 precision highp float;
 
 /* ── Attributes (interleaved VBO: stride 32, pos@0 norm@12 uv@24) ─── */
@@ -345,7 +348,7 @@ function buildGeometryFragGLSL(): string {
     }).join('\n');
   };
 
-  const raw = /* glsl */ `
+  const raw = /* glsl */ `#version 300 es
 precision highp float;
 out vec4 fragColor;
 
