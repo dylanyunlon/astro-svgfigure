@@ -333,20 +333,23 @@ const DEFAULTS: Required<ATVolumetricLightConfig> = {
   width:              1280,
   height:             720,
   fboScale:           0.5,
-  exposure:           0.86,
-  density:            0.22,
-  decay:              0.97,
-  weight:             0.40,
-  clamp:              1.0,
+  // AT uil-params.json production values (VolumetricLight_home_*):
+  //   fExposure = 0.86, fDensity = 0.22, fDecay = 0.80, fWeight = 0.34, fClamp = 1.0
+  // HomeCompositeuVolumetricStrength = 1.1
+  exposure:           0.86,   // AT: VolumetricLight_home_fExposure
+  density:            0.22,   // AT: VolumetricLight_home_fDensity
+  decay:              0.80,   // AT: VolumetricLight_home_fDecay (was 0.97 — too slow falloff)
+  weight:             0.34,   // AT: VolumetricLight_home_fWeight (was 0.40 — too bright per tap)
+  clamp:              1.0,    // AT: VolumetricLight_home_fClamp
   occlusionThreshold: 0.60,
   lightPos:           [0.5, 0.05],
-  raysScale:          1.0,
+  raysScale:          1.1,    // AT: HomeCompositeuVolumetricStrength = 1.1
   vignetteStrength:   0.4,
   mieG:               0.25,
   marchSteps:         16,
   marchStepSize:      0.05,
   scatterDecay:       0.96,
-  enableNoise:        false,
+  enableNoise:        true,   // AT enables noise for organic shaft variation
   noiseScale:         1.5,
   noiseRange:         0.30,
 };
@@ -553,6 +556,11 @@ export class ATVolumetricLight {
 
   /** Get the radial-blur rays texture (AT VolumetricLight.fs output). */
   get raysTexture(): WebGLTexture { return this.raysFBO.tex; }
+
+  /** Runtime parameter update — AT UIL hot-reload */
+  updateConfig(partial: Partial<ATVolumetricLightConfig>): void {
+    Object.assign(this.cfg, partial);
+  }
 
   // ─── Private: init ────────────────────────────────────────────────────────
 

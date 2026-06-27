@@ -330,8 +330,13 @@ export class FluidGPU {
   get velocityTexture(): WebGLTexture { return this.velocity.readTex; }
   get dyeTexture(): WebGLTexture { return this.dye.readTex; }
 
-  /** Expose primary WebGLProgram for UIL uniform injection. */
+  /** Expose primary WebGLProgram for external uniform injection. */
   get program(): WebGLProgram { return this.splatProg; }
+
+  /** Runtime parameter update — curl strength, dissipation, etc. */
+  updateConfig(partial: Partial<FluidConfig>): void {
+    Object.assign(this.config, partial);
+  }
 
   // ─── 内部方法: 真正的 WebGL 调用 ──────────────────────────────
 

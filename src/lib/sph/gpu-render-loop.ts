@@ -115,6 +115,11 @@ export class GPURenderLoop {
   // UIL-driven shadow state
   private shadowLightDir: [number, number, number] = [-0.5, -1.0, -0.3];
 
+  // UIL-driven DOF + fog state (AT: HomeSceneVFX_home_uDOF / uFog / uFogColor)
+  private dofParams: [number,number,number,number] = [0.72, 0.8, 0.3, 1.0];
+  private fogParams: [number,number,number,number] = [0, 1.24, 1.0, 0.89];
+  private fogColor: [number,number,number] = [0.102, 0.565, 0.678]; // #1a90ad
+
   // M1219: auto-fit camera state (updated each frame)
   private _camScale = 1;
   private _camOffX = 0;
@@ -399,13 +404,8 @@ export class GPURenderLoop {
     // Home scene bloom:
     //   "UnrealBloomComposite/UnrealBloomComposite/home/bloomStrength"        = 3.82
     //   "UnrealBloomComposite/UnrealBloomComposite/home/bloomRadius"          = 1.0
-    if (this.bloom?.program) {
-      const globalStrength = getNum(
-        'UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomStrength', 0.3,
-      );
-      const globalRadius = getNum(
-        'UnrealBloomComposite/UnrealBloomComposite/globalbloom/bloomRadius', 0.2,
-      );
+    if (this.bloom) {
+      // AT scene variant blending: home (hero) values take priority, global is base layer
       const homeStrength = getNum(
         'UnrealBloomComposite/UnrealBloomComposite/home/bloomStrength', 3.82,
       );
@@ -413,43 +413,52 @@ export class GPURenderLoop {
         'UnrealBloomComposite/UnrealBloomComposite/home/bloomRadius', 1.0,
       );
       const lumThreshold = getNum(
-        'UnrealBloomLuminosity/UnrealBloomLuminosity/globalbloom/luminosityThreshold', 0.0,
+        'UnrealBloomLuminosity/UnrealBloomLuminosity/home/luminosityThreshold', 0.0,
       );
-      setUniform1f(this.bloom.program, 'globalBloom',        globalStrength);
-      setUniform1f(this.bloom.program, 'globalBloomRadius',  globalRadius);
-      setUniform1f(this.bloom.program, 'homeBloomStrength',  homeStrength);
-      setUniform1f(this.bloom.program, 'homeBloomRadius',    homeRadius);
-      setUniform1f(this.bloom.program, 'luminosityThreshold', lumThreshold);
+      // AT variant blending: homebloom has separate overrides
+      const homebloomStrength = getNum(
+        'UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength', 1.2,
+      );
+      // Final blend: hero bloom + accent layer
+      const finalStrength = homeStrength * 0.7 + homebloomStrength * 0.3;
+      this.bloom.updateConfig({
+        strength:  finalStrength,
+        radius:    homeRadius,
+        threshold: lumThreshold,
+      });
     }
 
     // ── 2. Shadow pass ────────────────────────────────────────────────────────
     // UIL shadow light position comes from SHADOW_Element_9_home_scene
     //   "SHADOW_Element_9_home_sceneposition": [0, 6.51, 0]
     // We derive a light direction vector from that position.
-    if (this.shadow?.program) {
+    if (this.shadow) {
       const shadowPos = getVec3('SHADOW_Element_9_home_sceneposition', [0, 6.51, 0]);
-      // normalise position → direction (pointing from pos toward origin)
       const len = Math.sqrt(shadowPos[0]**2 + shadowPos[1]**2 + shadowPos[2]**2) || 1;
       this.shadowLightDir = [
         -shadowPos[0] / len,
         -shadowPos[1] / len,
         -shadowPos[2] / len,
       ];
-      setUniform3f(this.shadow.program, 'uLightDir', this.shadowLightDir);
-
-      // Shadow far plane from UIL
-      const shadowFar = getNum('SHADOW_Element_9_home_scenefar', 40);
-      setUniform1f(this.shadow.program, 'uShadowFar', shadowFar);
+      this.shadow.setLightDir(this.shadowLightDir);
     }
 
     // ── 3. Fluid pass ─────────────────────────────────────────────────────────
-    // UIL: "VolumetricLight_home_fDensity" = 0.22  → drives fluid curl strength
-    //      "VolumetricLight_home_fDecay"   = 0.80  → fluid dissipation
-    if (this.fluid?.program) {
+    // UIL: "VolumetricLight_home_fDensity" = 0.22  → curl intensity scale
+    //      "VolumetricLight_home_fDecay"   = 0.80  → dissipation rate
+    // AT CloudFog params drive additional fluid behaviour:
+    //      "INPUT_CloudFoghome_speed" = 0.7
+    if (this.fluid) {
       const fluidDensity = getNum('VolumetricLight_home_fDensity', 0.22);
       const fluidDecay   = getNum('VolumetricLight_home_fDecay',   0.80);
-      setUniform1f(this.fluid.program, 'uCurlStrength',  fluidDensity);
-      setUniform1f(this.fluid.program, 'uDissipation',   fluidDecay);
+      const fogSpeed     = getNum('INPUT_CloudFoghome_speed',      0.7);
+      // Map AT density to curl strength: AT 0.22 ≈ curl 30 (our scale)
+      // fogSpeed modulates responsiveness
+      this.fluid.updateConfig({
+        curl:          Math.round(fluidDensity * 136 * fogSpeed),  // 0.22 * 136 * 0.7 ≈ 21
+        dissipation:   0.90 + fluidDecay * 0.08,                   // 0.80 → 0.964
+        dyeDissipation: 0.88 + fluidDecay * 0.08,                  // slightly faster dye fade
+      });
     }
 
     // ── 4. PBR pass ───────────────────────────────────────────────────────────
@@ -494,35 +503,80 @@ export class GPURenderLoop {
 
     // ── 5. Camera wobble → particle emitter strength ──────────────────────────
     // UIL: "CAMERA_Element_3_home_scenewobbleStrength" = 0.1
-    // We expose this as cameraWobbleStrength and forward it to the particle pass
-    // as a velocity/turbulence scale.
     const wobble = getNum('CAMERA_Element_3_home_scenewobbleStrength', 0.1);
     this.cameraWobbleStrength = wobble;
-    if (this.particle?.program) {
-      setUniform1f(this.particle.program, 'uTurbulence', this.cameraWobbleStrength);
-    }
 
     // ── 6. Glass pass ─────────────────────────────────────────────────────────
     // UIL: "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uDistortStrength" = 8.06
     //      "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uFresnelPow"      = 1.5
-    //      "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uRefractionRatio" = 1.0
-    if (this.glass?.program) {
-      const distort   = getNum('GlassCubeShader/GlassCubeShader/Element_0_home_scene/uDistortStrength', 8.06);
+    //      "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uAttenuation"     = 0.5
+    //      "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uFresnelColor"    = #b4e0e3
+    //      "GlassCubeShader/GlassCubeShader/Element_0_home_scene/uSpecAdd"         = [4.48, 0]
+    if (this.glass) {
+      const distort    = getNum('GlassCubeShader/GlassCubeShader/Element_0_home_scene/uDistortStrength', 8.06);
       const fresnelPow = getNum('GlassCubeShader/GlassCubeShader/Element_0_home_scene/uFresnelPow', 1.5);
-      const refracRatio = getNum('GlassCubeShader/GlassCubeShader/Element_0_home_scene/uRefractionRatio', 1.0);
-      setUniform1f(this.glass.program, 'uDistortStrength', distort);
-      setUniform1f(this.glass.program, 'uFresnelPow',      fresnelPow);
-      setUniform1f(this.glass.program, 'uRefractionRatio', refracRatio);
-
-      // Fresnel tint color
+      const atten      = getNum('GlassCubeShader/GlassCubeShader/Element_0_home_scene/uAttenuation', 0.5);
+      // uFresnelColor → tintColor
+      let tintR = 0.706, tintG = 0.878, tintB = 0.890; // #b4e0e3
       const fresnelColor = uil['GlassCubeShader/GlassCubeShader/Element_0_home_scene/uFresnelColor'];
       if (typeof fresnelColor === 'string' && fresnelColor.startsWith('#')) {
         const hex = fresnelColor.slice(1);
-        const r = parseInt(hex.slice(0,2), 16) / 255;
-        const g = parseInt(hex.slice(2,4), 16) / 255;
-        const b = parseInt(hex.slice(4,6), 16) / 255;
-        setUniform3f(this.glass.program, 'uFresnelColor', [r, g, b]);
+        tintR = parseInt(hex.slice(0,2), 16) / 255;
+        tintG = parseInt(hex.slice(2,4), 16) / 255;
+        tintB = parseInt(hex.slice(4,6), 16) / 255;
       }
+      // uSpecAdd[0] → specStrength
+      const specAdd = uil['GlassCubeShader/GlassCubeShader/Element_0_home_scene/uSpecAdd'];
+      const specStr = Array.isArray(specAdd) ? Number(specAdd[0]) : 4.48;
+
+      this.glass.updateConfig({
+        distortStrength: distort,
+        fresnelPow:      fresnelPow,
+        tintStrength:    atten,
+        tintColor:       [tintR, tintG, tintB],
+        specStrength:    specStr,
+      });
+    }
+
+    // ── 7. Volumetric Light ───────────────────────────────────────────────────
+    // AT: VolumetricLight_home_* values drive god-ray quality
+    if (this.volumetricLight) {
+      const volExposure = getNum('VolumetricLight_home_fExposure', 0.86);
+      const volDensity  = getNum('VolumetricLight_home_fDensity',  0.22);
+      const volDecay    = getNum('VolumetricLight_home_fDecay',    0.80);
+      const volWeight   = getNum('VolumetricLight_home_fWeight',   0.34);
+      const volStrength = getNum('HomeCompositeuVolumetricStrength', 1.1);
+      this.volumetricLight.updateConfig({
+        exposure:  volExposure,
+        density:   volDensity,
+        decay:     volDecay,
+        weight:    volWeight,
+        raysScale: volStrength,
+      });
+    }
+
+    // ── 8. DOF + Fog (scene VFX) ──────────────────────────────────────────────
+    // AT: HomeSceneVFX_home_uDOF = [0.72, 0.8, 0.3, 1]  → focus/range/blur/strength
+    //     HomeSceneVFX_home_uFog = [0, 1.24, 1, 0.89]     → start/end/density/alpha
+    //     HomeSceneVFX_home_uFogColor = #1a90ad             → teal fog
+    //     INPUT_CloudFoghome_alpha = 1.8, planes = 20, scale = 6
+    // These are stored for composite pass / cloud fog background to consume.
+    const dofRaw = uil['HomeSceneVFX_home_uDOF'];
+    if (Array.isArray(dofRaw) && dofRaw.length >= 4) {
+      this.dofParams = dofRaw.map(Number) as [number,number,number,number];
+    }
+    const fogRaw = uil['HomeSceneVFX_home_uFog'];
+    if (Array.isArray(fogRaw) && fogRaw.length >= 4) {
+      this.fogParams = fogRaw.map(Number) as [number,number,number,number];
+    }
+    const fogColor = uil['HomeSceneVFX_home_uFogColor'];
+    if (typeof fogColor === 'string' && fogColor.startsWith('#')) {
+      const hex = fogColor.slice(1);
+      this.fogColor = [
+        parseInt(hex.slice(0,2), 16) / 255,
+        parseInt(hex.slice(2,4), 16) / 255,
+        parseInt(hex.slice(4,6), 16) / 255,
+      ];
     }
   }
 

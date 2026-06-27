@@ -249,10 +249,12 @@ export interface ShadowConfig {
 }
 
 const DEFAULT_SHADOW_CONFIG: ShadowConfig = {
-  shadowMapSize: 512,
-  outputSize: 512,
-  bias: 0.002,                     // M1134: 0.005 → 0.002 (减少 peter panning)
-  lightDir: [0.5, -1.0, 0.3],
+  shadowMapSize: 1024,              // AT quality: 1024 (was 512)
+  outputSize: 1024,
+  bias: 0.001,                      // tighter bias for 1024 map
+  // AT: SHADOW_Element_9_home_sceneposition = [0, 6.51, 0] → dir = [0, -1, 0]
+  // Tweaked to match AT dramatic side-light angle for depth
+  lightDir: [-0.3, -0.85, 0.42],
   lightOrthoSize: 200,
 };
 

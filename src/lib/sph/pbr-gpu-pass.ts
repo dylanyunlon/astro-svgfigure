@@ -421,9 +421,13 @@ export class PBRCellGPU {
     gl.vertexAttribPointer(this.aCorner, 2, gl.FLOAT, false, 0, 0);
 
     // ── Scene-level uniforms (light + ambient) ────────────────────────────────
-    gl.uniform3f(this.uLightDir,   0.577, 0.577, 0.577);
-    gl.uniform3f(this.uLightColor, 1.2,   1.15,  1.10);
-    gl.uniform3f(this.uAmbient,    0.08,  0.09,  0.12);
+    // AT uil-params.json: GlassCubeShader/Element_0_home_scene/uLightDir = [-15.7, 0.28, 4.5]
+    // Normalised: [-0.961, 0.017, 0.275] — dramatic side light from far left
+    // AT: uEnv = [1.5, 1] → specular 1.5×, diffuse 1.0×
+    // AT: uTint = #e5f1ff → cool blue ambient
+    gl.uniform3f(this.uLightDir,  -0.961, 0.017, 0.275);
+    gl.uniform3f(this.uLightColor, 1.5,   1.44,  1.35);    // warm key light, AT-level intensity
+    gl.uniform3f(this.uAmbient,    0.133, 0.161, 0.212);   // AT: uTint #e5f1ff scaled to ambient
 
     // ── Per-cell draw loop ────────────────────────────────────────────────────
     for (const cell of cells) {

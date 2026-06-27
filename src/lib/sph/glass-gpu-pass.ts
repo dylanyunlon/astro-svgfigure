@@ -222,16 +222,20 @@ export interface GlassConfig {
 const DEFAULT_GLASS_CONFIG: GlassConfig = {
   width: 1024,
   height: 1024,
+  // AT uil-params.json production values (GlassCubeShader/Element_0_home_scene):
+  //   uFresnelPow = 1.5, uDistortStrength = 8.06, uRefractionRatio = 1.0
+  //   uFresnelColor = #b4e0e3, uAttenuation = 0.5, uAlpha = 1
+  //   uSpecAdd = [4.48, 0], uLightDir = [-15.7, 0.28, 4.5]
   ior: 1.5,
-  refrStrength: 0.025,
-  fresnelPow: 5.0,
+  refrStrength: 0.04,             // refraction displacement scale
+  fresnelPow: 1.5,                // AT: GlassCubeShader uFresnelPow = 1.5
   fresnelBias: 0.04,
   shininess: 256.0,
-  specStrength: 0.8,
+  specStrength: 4.48,             // AT: uSpecAdd[0] = 4.48
   glassOpacity: 0.15,
-  tintColor: [0.82, 0.93, 1.0],  // 淡蓝色玻璃
-  tintStrength: 0.25,
-  distortStrength: 0.04,
+  tintColor: [0.706, 0.878, 0.89],  // AT: uFresnelColor #b4e0e3
+  tintStrength: 0.50,             // AT: uAttenuation = 0.5
+  distortStrength: 8.06,          // AT: uDistortStrength = 8.06 (not 0.04!)
 };
 
 /** Cell 矩形描述 — 像素坐标 (x, y 左上角, w, h) */

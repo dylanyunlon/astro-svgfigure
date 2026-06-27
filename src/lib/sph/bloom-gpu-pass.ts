@@ -137,12 +137,16 @@ interface BloomConfig {
 const DEFAULT_BLOOM: BloomConfig = {
   width: 1024,
   height: 1024,
-  threshold: 0.4,       // M1131: 过滤暗区域 (原 0.8)
+  // AT uil-params.json production values (home scene):
+  //   UnrealBloomComposite/home/bloomStrength = 3.82
+  //   UnrealBloomComposite/home/bloomRadius   = 1.0
+  //   UnrealBloomLuminosity/home/luminosityThreshold = 0
+  threshold: 0.0,       // AT: luminosityThreshold = 0 (all pixels contribute)
   knee: 0.1,
-  strength: 1.5,        // M1131: 增大强度 (原 1.2)
+  strength: 3.82,       // AT home/bloomStrength — dramatic glow
   levels: 4,
-  radius: 0.6,          // M1131: 扩散半径 (新增)
-  tintColor: [1.0, 0.95, 0.85],  // M1131: 暖色色调 (新增)
+  radius: 1.0,          // AT home/bloomRadius — full diffusion
+  tintColor: [1.0, 0.95, 0.85],  // warm tint
 };
 
 // 单层 FBO + 纹理
@@ -343,8 +347,13 @@ export class BloomGPU {
   /** 获取最终合成纹理供下游消费 */
   get outputTexture(): WebGLTexture { return this.lumRT.tex; }
 
-  /** Expose primary WebGLProgram for UIL uniform injection. */
+  /** Expose primary WebGLProgram for external uniform injection. */
   get program(): WebGLProgram { return this.lumProg; }
+
+  /** Runtime parameter update — called by gpu-render-loop._pushUILUniforms() */
+  updateConfig(partial: Partial<BloomConfig>): void {
+    Object.assign(this.cfg, partial);
+  }
 
   // ─── 内部方法: 真正的 WebGL 调用 ─────────────────────────────────────────────
 
