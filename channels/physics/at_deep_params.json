@@ -1,0 +1,138 @@
+{
+  "camera.CAMERA_Element_3_home_scenegroupPos": [
+    0,
+    1.95,
+    8.020000000000001
+  ],
+  "camera.CAMERA_Element_3_home_scenedeltaRotate": 3,
+  "camera.CAMERA_Element_3_home_scenefov": 30,
+  "camera.CAMERA_Element_3_home_scenemoveXY": [
+    0.4,
+    0.2
+  ],
+  "camera.CAMERA_Element_3_home_sceneposition": [
+    0,
+    0,
+    8
+  ],
+  "camera.CAMERA_Element_3_home_scenerotation": [
+    0,
+    0,
+    0
+  ],
+  "camera.CAMERA_Element_3_home_scenewobbleStrength": 0.1,
+  "camera.CAMERA_Element_1_HomegroupPos": [
+    0,
+    0,
+    0
+  ],
+  "camera.CAMERA_Element_1_Homefov": 30,
+  "camera.CAMERA_Element_1_HomelookAt": [
+    0,
+    4.59,
+    0
+  ],
+  "camera.CAMERA_Element_1_HomelerpSpeed": 0.1,
+  "camera.CAMERA_Element_1_HomelerpSpeed2": 1,
+  "camera.CAMERA_Element_1_HomemoveXY": [
+    0,
+    0
+  ],
+  "camera.CAMERA_Element_1_Homeposition": [
+    0,
+    2,
+    40
+  ],
+  "camera.CAMERA_Element_1_homeScenefar": 100,
+  "camera.CAMERA_Element_1_homeScenefov": 20,
+  "camera.CAMERA_Element_1_homeScenelookAt": [
+    0,
+    3,
+    0
+  ],
+  "camera.CAMERA_Element_1_homeSceneposition": [
+    0,
+    3,
+    15
+  ],
+  "bloom.luminosityThreshold": 0,
+  "vfx.HomeSceneVFX_home_uNoDOFContrast": [
+    1.3299999999999998,
+    1.8599999999999999
+  ],
+  "dof.HomeSceneVFX_home_uNoDOFContrast": [
+    1.3299999999999998,
+    1.8599999999999999
+  ],
+  "vfx.HomeSceneVFX_home_uAtmosphere": [
+    0.13,
+    2.1300000000000003,
+    1,
+    0.4099999999999999
+  ],
+  "vfx.HomeSceneVFX_home_uDOF": [
+    0.72,
+    0.8,
+    0.3,
+    1
+  ],
+  "dof.HomeSceneVFX_home_uDOF": [
+    0.72,
+    0.8,
+    0.3,
+    1
+  ],
+  "vfx.HomeSceneVFX_home_uDOFContrast": [
+    1.28,
+    2.41
+  ],
+  "dof.HomeSceneVFX_home_uDOFContrast": [
+    1.28,
+    2.41
+  ],
+  "vfx.HomeSceneVFX_home_uFogColor": "#1a90ad",
+  "vfx.HomeSceneVFX_home_uFog": [
+    0,
+    1.24,
+    1,
+    0.89
+  ],
+  "fog.INPUT_CloudFoghome_noise": "1",
+  "fog.INPUT_CloudFoghome_alpha": "1.8",
+  "fog.INPUT_CloudFoghome_cullDistance": "999",
+  "fog.INPUT_CloudFoghome_depth": "[-2,-2]",
+  "fog.INPUT_CloudFoghome_fadeDist": "[2,4]",
+  "fog.INPUT_CloudFoghome_height": "[-1,4]",
+  "fog.INPUT_CloudFoghome_planes": "20",
+  "fog.INPUT_CloudFoghome_scale": "6",
+  "fog.INPUT_CloudFoghome_speed": "0.7",
+  "fog.INPUT_CloudFoghome_width": "[-4,4]",
+  "dof.uDOFContrast": [
+    1,
+    1.3
+  ],
+  "dof.WorkPageCompositeuDOF": [
+    0.1,
+    0.4099999999999999,
+    0.25,
+    0
+  ],
+  "dof.WorkPageCompositeuDOFContrast": [
+    1,
+    1.1400000000000001
+  ],
+  "bloom.bloomStrength": 1,
+  "bloom.bloomRadius": 1,
+  "bloom.UnrealBloomComposite_shaderVariants_contactbloomStrength": 0.8,
+  "bloom.UnrealBloomComposite_shaderVariants_contactbloomRadius": 0.5,
+  "bloom.UnrealBloomComposite_shaderVariants_aboutbloomRadius": 1,
+  "bloom.UnrealBloomComposite_shaderVariants_aboutbloomStrength": 1,
+  "bloom.UnrealBloomComposite_shaderVariants_footerbloomRadius": 0.5,
+  "bloom.UnrealBloomComposite_shaderVariants_footerbloomStrength": 0.7,
+  "bloom.UnrealBloomComposite_shaderVariants_homebloomStrength": 0.6,
+  "bloom.UnrealBloomComposite_shaderVariants_homebloomRadius": 0.8,
+  "bloom.UnrealBloomComposite_shaderVariants_workbloomStrength": 0.5,
+  "bloom.UnrealBloomComposite_shaderVariants_workbloomRadius": 0.5,
+  "bloom.UnrealBloomComposite_shaderVariants_treebloomStrength": 0.8,
+  "bloom.UnrealBloomComposite_shaderVariants_treebloomRadius": 0.7
+}

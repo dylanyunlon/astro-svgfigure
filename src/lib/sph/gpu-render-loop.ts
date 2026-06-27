@@ -1002,7 +1002,40 @@ export class GPURenderLoop {
     // ── Camera: AT home scene camera ──
     this._camScale = 1.0;
 
-    console.log('[GPURenderLoop] AT production params injected');
+    // ── Composite post-process: AT HomeSceneVFX values ──
+    if (this.composite) {
+      try {
+        const cfg = (this.composite as any).config;
+        if (cfg) {
+          cfg.grainStrength    = 0.03;                   // AT film grain
+          cfg.vignetteStrength = 0.6;                    // AT vignette
+          cfg.shadowColor      = [0.02, 0.01, 0.04];    // AT dark cool purple
+          cfg.highlightColor   = [1.0, 0.98, 0.95];     // AT warm highlight
+        }
+      } catch (_) { /* safe access */ }
+    }
+
+    // ── Atmosphere: AT fog color ──
+    if (this.atmosphereSky) {
+      try {
+        // AT: HomeSceneVFX_home_uFogColor = #1a90ad (teal)
+        // AT: uAtmosphere = [0.13, 2.13, 1, 0.41]
+        const sky = this.atmosphereSky as any;
+        if (sky.fogColor) sky.fogColor = [0.10, 0.56, 0.68];  // #1a90ad
+      } catch (_) { /* safe access */ }
+    }
+
+    // ── Bloom: AT home scene bloom (not max, tuned down) ──
+    if (this.bloom) {
+      try {
+        const b = this.bloom as any;
+        // AT: homebloomStrength=0.6, homebloomRadius=0.8
+        if (b.strength !== undefined) b.strength = 0.6;
+        if (b.radius !== undefined)   b.radius   = 0.8;
+      } catch (_) { /* safe access */ }
+    }
+
+    console.log('[GPURenderLoop] AT production params injected (deep)');
   }
 
   /** 1×1 transparent placeholder texture for composite inputs that have no FBO */
