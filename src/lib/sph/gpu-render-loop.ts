@@ -23,6 +23,7 @@ import { UEAtmosphereSky } from './ue-atmosphere-sky';
 import { UEBloomTonemap } from './ue-bloom-tonemap';
 import { ATJellyfishCell, type JellyfishInstance } from './at-jellyfish-cell';
 import { ATFlowerParticleRenderer, type FlowerEdgeSpline } from './at-flower-particle';
+import { ATMouseFluid } from './at-mousefluid-import';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -99,6 +100,7 @@ export class GPURenderLoop {
   private atJellyfish: ATJellyfishCell | null = null;
   private atJellyfishInstances: JellyfishInstance[] = [];
   private atFlower: ATFlowerParticleRenderer | null = null;
+  private mouseFluid: ATMouseFluid | null = null;
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -250,6 +252,24 @@ export class GPURenderLoop {
 
     // SDF species icon pass
     try { this.sdfIcon = createSDFIconGPU(gl); } catch (e) { console.warn('[GPURenderLoop] SDF init failed:', e); }
+
+    // ── AT MouseFluid — real GPU interactive mouse fluid (M1246) ──
+    try {
+      this.mouseFluid = ATMouseFluid.create(gl, canvas, {
+        // AT production params from uil-params.json
+        velocityDissipation: 0.98,     // AT: fluid_velocity
+        curl: 30,                       // AT: fluid_curl
+        densityDissipation: 0.97,       // AT: fluid_density
+        splatRadius: 0.25,              // AT: defaultRadius mapped
+        simWidth: 128,
+        simHeight: 128,
+        dyeWidth: canvas.width,
+        dyeHeight: canvas.height,
+      });
+    } catch (e) { console.warn('[GPURenderLoop] ATMouseFluid init failed (non-fatal):', e); }
+
+    // ── Inject AT production tuned params (from uil-params.json) ──
+    this._applyATTunedParams();
 
     // ── M1120: Load AT assets — Draco geometry + KTX2 textures ──
     // These are the actual 3D models and PBR textures from AT's production site.
@@ -737,6 +757,15 @@ export class GPURenderLoop {
       this.perf.passEnd('waterSurface', t);
     }
 
+    // ── AT MouseFluid pass (鼠标交互流体) ──
+    if (this.mouseFluid) {
+      const t = this.perf.passStart('mouseFluid');
+      try {
+        this.mouseFluid.tick(dt);
+      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] mouseFluid pass error:', e); }
+      this.perf.passEnd('mouseFluid', t);
+    }
+
     // ── AT Volumetric Light pass (光照叠加层) ──
     if (this.volumetricLight) {
       const t = this.perf.passStart('volumetricLight');
@@ -878,6 +907,78 @@ export class GPURenderLoop {
     if (this.frameCount === 60) {
       console.log('[GPURenderLoop] perf:', this.perf.stats);
     }
+  }
+
+  /**
+   * Apply AT production-tuned parameters from uil-params.json.
+   * These are the ACTUAL values Active Theory ships — not defaults.
+   */
+  private _applyATTunedParams(): void {
+    // ── Bloom: AT BloomLuminosityPass + HydraBloom ──
+    if (this.bloom) {
+      try {
+        // AT: luminosityThreshold=0, bloomStrength=1.0, bloomRadius=1.0
+        (this.bloom as any).strength  = 1.0;
+        (this.bloom as any).radius    = 1.0;
+        (this.bloom as any).threshold = 0.0;
+      } catch (_) { /* safe access */ }
+    }
+
+    // ── Volumetric Light: AT VolumetricLight_home ──
+    if (this.volumetricLight) {
+      try {
+        const vl = this.volumetricLight as any;
+        if (vl.cfg) {
+          vl.cfg.fExposure = 0.86;   // AT: VolumetricLight_home_fExposure
+          vl.cfg.fDecay    = 0.80;   // AT: VolumetricLight_home_fDecay
+          vl.cfg.fDensity  = 0.22;   // AT: VolumetricLight_home_fDensity
+          vl.cfg.fWeight   = 0.34;   // AT: VolumetricLight_home_fWeight
+          vl.cfg.fClamp    = 1.0;    // AT: VolumetricLight_home_fClamp
+          vl.cfg.raysScale = 1.1;    // AT: HomeCompositeuVolumetricStrength
+        }
+      } catch (_) { /* safe access */ }
+    }
+
+    // ── Water Surface: AT TreeScene water params ──
+    if (this.waterSurface) {
+      try {
+        const ws = this.waterSurface as any;
+        if (ws.cfg) {
+          ws.cfg.damping = 0.98;     // AT: water_viscosity
+        }
+      } catch (_) { /* safe access */ }
+    }
+
+    // ── PBR: AT uMRON + uEnv + uTint ──
+    if (this.pbr) {
+      try {
+        const pbr = this.pbr as any;
+        // AT typical: metallic=1, roughness=0.3, occlusion=1, normalStrength=1
+        if (pbr.defaultMetallic !== undefined)  pbr.defaultMetallic  = 1.0;
+        if (pbr.defaultRoughness !== undefined) pbr.defaultRoughness = 0.3;
+        // AT uEnv: [envDiffuse=1.5, envSpecular=1.0]
+        if (pbr.envDiffuseScale !== undefined)  pbr.envDiffuseScale  = 1.5;
+        if (pbr.envSpecularScale !== undefined) pbr.envSpecularScale = 1.0;
+      } catch (_) { /* safe access */ }
+    }
+
+    // ── Glass Fresnel: AT fresnel params ──
+    if (this.glass) {
+      try {
+        const g = this.glass as any;
+        if (g.fresnelPow !== undefined)      g.fresnelPow      = 0.3;   // AT typical
+        if (g.fresnelStrength !== undefined)  g.fresnelStrength  = 0.73;  // AT: uFresnelStrength
+        if (g.opacity !== undefined)          g.opacity          = 0.15;  // subtle sheen
+      } catch (_) { /* safe access */ }
+    }
+
+    // ── Shadow: AT-inspired light direction ──
+    this.shadowLightDir = [-0.5, -1.0, -0.3];
+
+    // ── Camera: AT home scene camera ──
+    this._camScale = 1.0;
+
+    console.log('[GPURenderLoop] AT production params injected');
   }
 
   /** 1×1 transparent placeholder texture for composite inputs that have no FBO */

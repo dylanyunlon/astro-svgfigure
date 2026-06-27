@@ -1,0 +1,94 @@
+{
+  "bloom": {
+    "strength": 1.0,
+    "radius": 1.0,
+    "luminosityThreshold": 0.0,
+    "tint": "#ffffff"
+  },
+  "volumetricLight": {
+    "home": {
+      "fExposure": 0.86,
+      "fDecay": 0.8,
+      "fDensity": 0.22,
+      "fWeight": 0.34,
+      "fClamp": 1,
+      "volumetricStrength": 1.1
+    }
+  },
+  "fog": {
+    "color": "#1a90ad",
+    "params": [
+      0,
+      1.24,
+      1,
+      0.89
+    ],
+    "cloudAlpha": "1.8"
+  },
+  "dof": {
+    "params": [
+      0.72,
+      0.8,
+      0.3,
+      1
+    ],
+    "contrast": [
+      1.28,
+      2.41
+    ]
+  },
+  "camera": {
+    "home": {
+      "position": [
+        0,
+        3,
+        15
+      ],
+      "lookAt": [
+        0,
+        3,
+        0
+      ],
+      "fov": 20
+    }
+  },
+  "mouseFluid": {
+    "velocity": "0.98",
+    "curl": "30",
+    "density": "0.97",
+    "defaultRadius": "5"
+  },
+  "water": {
+    "heightScale": "0.05",
+    "subdivide": "128",
+    "size": null,
+    "viscosity": "0.98"
+  },
+  "pbr": {
+    "uMRON_typical": [
+      1,
+      1.3,
+      1,
+      1
+    ],
+    "uEnv": [
+      1.5,
+      1
+    ],
+    "tint": "#e5f1ff"
+  },
+  "fresnel": {
+    "pow_range": [
+      -0.03,
+      1.5,
+      0.29999999999999993,
+      0.1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "strength": 0.73,
+    "color": "#e9f9ff"
+  }
+}
