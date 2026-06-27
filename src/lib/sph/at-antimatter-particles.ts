@@ -1124,15 +1124,39 @@ export class ATAntimatterParticles {
   private _compile(vert: string, frag: string, label: string): WebGLProgram {
     const gl = this.gl;
 
+    // ── WebGL1 → WebGL2 (GLSL 300 es) auto-upgrade ──
+    const upgradeVert = (src: string): string => {
+      let s = src;
+      if (!s.includes('#version')) s = '#version 300 es\n' + s;
+      s = s.replace(/\battribute\s+/g, 'in ');
+      s = s.replace(/\bvarying\s+/g, 'out ');
+      return s;
+    };
+    const upgradeFrag = (src: string): string => {
+      let s = src;
+      if (!s.includes('#version')) s = '#version 300 es\nprecision highp float;\n' + s;
+      s = s.replace(/\bvarying\s+/g, 'in ');
+      s = s.replace(/\btexture2D\s*\(/g, 'texture(');
+      s = s.replace(/\btextureCube\s*\(/g, 'texture(');
+      s = s.replace(/\bgl_FragColor\b/g, 'fragColor');
+      // Ensure out vec4 fragColor is declared (after precision)
+      if (!s.includes('out vec4 fragColor')) {
+        s = s.replace(/(precision\s+highp\s+float\s*;)/, '$1\nout vec4 fragColor;');
+      }
+      // Remove redundant precision if already present from template
+      s = s.replace(/(precision\s+highp\s+float\s*;\n?){2,}/g, 'precision highp float;\n');
+      return s;
+    };
+
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, vert);
+    gl.shaderSource(vs, upgradeVert(vert));
     gl.compileShader(vs);
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
       throw new Error(`[ATAntimatter] vertex compile error (${label}): ${gl.getShaderInfoLog(vs)}`);
     }
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    gl.shaderSource(fs, 'precision highp float;\n' + frag);
+    gl.shaderSource(fs, upgradeFrag(frag));
     gl.compileShader(fs);
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
       throw new Error(`[ATAntimatter] fragment compile error (${label}): ${gl.getShaderInfoLog(fs)}`);
