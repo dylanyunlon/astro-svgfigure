@@ -462,4 +462,7 @@ export class CompositeGPU {
 
     return prog;
   }
+
+  /** Expose primary WebGLProgram for UIL uniform injection. */
+  get program(): WebGLProgram { return this.prog; }
 }

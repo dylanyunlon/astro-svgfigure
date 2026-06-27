@@ -330,6 +330,9 @@ export class FluidGPU {
   get velocityTexture(): WebGLTexture { return this.velocity.readTex; }
   get dyeTexture(): WebGLTexture { return this.dye.readTex; }
 
+  /** Expose primary WebGLProgram for UIL uniform injection. */
+  get program(): WebGLProgram { return this.splatProg; }
+
   // ─── 内部方法: 真正的 WebGL 调用 ──────────────────────────────
 
   private _splat(x: number, y: number, dx: number, dy: number, color: number[]): void {

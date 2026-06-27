@@ -343,6 +343,9 @@ export class BloomGPU {
   /** 获取最终合成纹理供下游消费 */
   get outputTexture(): WebGLTexture { return this.lumRT.tex; }
 
+  /** Expose primary WebGLProgram for UIL uniform injection. */
+  get program(): WebGLProgram { return this.lumProg; }
+
   // ─── 内部方法: 真正的 WebGL 调用 ─────────────────────────────────────────────
 
   /**

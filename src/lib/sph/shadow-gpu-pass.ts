@@ -619,6 +619,9 @@ export class ShadowGPU {
     return this.shadowDepthTex;
   }
 
+  /** Expose primary WebGLProgram for UIL uniform injection. */
+  get program(): WebGLProgram { return this.shadowDepthProg; }
+
   /** 更新光源方向并重建 light matrix */
   setLightDir(dir: [number, number, number]): void {
     this.cfg.lightDir = dir;
