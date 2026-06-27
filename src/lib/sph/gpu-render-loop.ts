@@ -787,7 +787,7 @@ export class GPURenderLoop {
             particle: placeholder,
             bloom:    this.bloom?.outputTexture ?? placeholder,
             shadow:   this.shadow?.shadowFactorTexture ?? placeholder,
-            fluid:    this.fluid?.dyeTexture ?? placeholder,
+            fluid:    this.mouseFluid?.dyeTexture ?? this.fluid?.dyeTexture ?? placeholder,
           }, W, H, time);
         } else {
           // No composite — draw PBR directly to screen as fullscreen blit
