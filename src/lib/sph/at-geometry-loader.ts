@@ -332,9 +332,25 @@ function buildGeometryFragGLSL(): string {
   const matcapVS    = stripAT(getShader('matcap.vs'));
   const transformUV = stripAT(getShader('transformUV.glsl'));
 
-  return /* glsl */ `
+  // Dedup: AT shader snippets may redeclare uniforms already in our preamble
+  const dedup = (glsl: string): string => {
+    const seen = new Set<string>();
+    return glsl.split('\n').filter(line => {
+      const m = line.match(/^\s*uniform\s+\w+\s+(\w+)/);
+      if (m) {
+        if (seen.has(m[1])) return false;
+        seen.add(m[1]);
+      }
+      return true;
+    }).join('\n');
+  };
+
+  const raw = /* glsl */ `
 precision highp float;
 out vec4 fragColor;
+
+/* AT uses global cameraPosition — map to our uCameraPos uniform */
+#define cameraPosition uCameraPos
 
 /* ── Varyings ─────────────────────────────────────────────────────── */
 in vec3 vNormal;
@@ -452,6 +468,7 @@ void main() {
     fragColor = vec4(color, 1.0);
 }
 `;
+  return dedup(raw);
 }
 
 // ── ATGeometryLoader ─────────────────────────────────────────────────────────

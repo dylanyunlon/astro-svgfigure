@@ -717,19 +717,14 @@ export class ATWaterSurface {
     const gl = this.gl;
 
     // Runtime sanitise WebGL1→WebGL2
-    const sanitise = (s: string) => s
+    const sanitiseBase = (s: string) => s
       .replace(/\bgl_FragColor\b/g, 'fragColor')
       .replace(/\btexture2D\s*\(/g, 'texture(')
       .replace(/\btextureCube\s*\(/g, 'texture(')
-      .replace(/\battribute\s+/g, 'in ')
-      .replace(/\bvarying\s+/g, (_, offset: number, full: string) => {
-        // In vert shaders varying = out, in frag shaders varying = in
-        // Heuristic: if 'void main' hasn't appeared yet before this varying, treat as preamble
-        return label.includes('vert') || label.includes('Vert') || label.includes('vs') ? 'out ' : 'in ';
-      });
+      .replace(/\battribute\s+/g, 'in ');
 
-    const vertSrc = sanitise(vert);
-    const fragSrc = sanitise(frag);
+    const vertSrc = sanitiseBase(vert).replace(/\bvarying\s+/g, 'out ');
+    const fragSrc = sanitiseBase(frag).replace(/\bvarying\s+/g, 'in ');
 
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
     gl.shaderSource(vs, vertSrc);

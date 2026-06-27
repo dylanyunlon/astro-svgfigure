@@ -519,6 +519,10 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string, la
   glsl = glsl.replace(/\bgl_FragColor\b/g, 'fragColor');
   glsl = glsl.replace(/\btexture2D\s*\(/g, 'texture(');
   glsl = glsl.replace(/\btextureCube\s*\(/g, 'texture(');
+  // Ensure fragColor is declared in frag shaders
+  if (type === gl.FRAGMENT_SHADER && !glsl.includes('out vec4 fragColor')) {
+    glsl = glsl.replace(/(precision\s+highp\s+float\s*;)/, '$1\nout vec4 fragColor;');
+  }
 
   const sh = gl.createShader(type)!;
   gl.shaderSource(sh, glsl);

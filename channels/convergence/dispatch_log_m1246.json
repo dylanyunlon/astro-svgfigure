@@ -1,0 +1,21 @@
+{
+  "round": "M1246",
+  "tasks": [
+    {
+      "name": "\u5c0f\u5f1fA",
+      "label": "M1246a: fix LumenGI + AtmosphereSky shader compile",
+      "conv_id": "3257c838-6b14-48a1-99ac-88bbd2362d13"
+    },
+    {
+      "name": "\u5c0f\u5f1fB",
+      "label": "M1246b: fix VolumetricLight + WaterSurface shader compile",
+      "conv_id": "2f3a6681-2a73-43fc-9782-8134f9c1e758"
+    },
+    {
+      "name": "\u5c0f\u5f1fC",
+      "label": "M1246c: fix FlowerParticle + GeometryLoader shader compile",
+      "conv_id": "2292a579-d7da-49ac-8717-fd21d5bd6a00"
+    }
+  ],
+  "timestamp": "2026-06-27T03:30:23Z"
+}

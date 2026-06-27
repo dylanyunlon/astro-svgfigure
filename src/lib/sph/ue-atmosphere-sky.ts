@@ -1065,7 +1065,11 @@ export class UEAtmosphereSky {
       .replace(/\btextureCube\s*\(/g, 'texture(');
 
     const vertSrc = sanitise(vert);
-    const fragSrc = sanitise(frag);
+    let fragSrc = sanitise(frag);
+    // Ensure fragColor is declared — guard against ATM_COMMON being stripped
+    if (!fragSrc.includes('out vec4 fragColor')) {
+      fragSrc = fragSrc.replace(/(precision\s+highp\s+float\s*;)/, '$1\nout vec4 fragColor;');
+    }
 
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
     gl.shaderSource(vs, vertSrc);
