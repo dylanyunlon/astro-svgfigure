@@ -134,6 +134,8 @@ uniform vec3  u_targetColor;
 uniform float u_flowSpeed;
 uniform float u_thickness;
 uniform float u_time;
+// M1286: source cell energy [0, 1] — drives edge brightness & flow speed
+uniform float u_sourceEnergy;
 
 // ── perpendicular SDF to curve centreline ──
 float distToCurve() {
@@ -147,7 +149,9 @@ float dashMask(float t) {
     if (uDashLength < 0.5) return 1.0;
     float t_px   = t * uArcLength;
     float period = uDashLength + uGapLength;
-    float phase  = mod(t_px - uTime * 50.0, period);
+    // M1286: flow speed scaled by source cell energy
+    float energySpeed = u_flowSpeed * max(u_sourceEnergy, 0.01);
+    float phase  = mod(t_px - uTime * 50.0 * energySpeed / u_flowSpeed, period);
     float on     = smoothstep(0.0, 1.0, phase)
                  * (1.0 - smoothstep(uDashLength - 1.0, uDashLength, phase));
     return clamp(on, 0.0, 1.0);
@@ -173,13 +177,24 @@ void main() {
 
     // species colour gradient + flow pulse
     vec3 speciesColor = mix(u_sourceColor, u_targetColor, v_t);
-    float pulse       = fract(v_t - u_time * u_flowSpeed);
+    // M1286: flow pulse speed also scaled by source energy
+    float energyFlowSpeed = u_flowSpeed * max(u_sourceEnergy, 0.01);
+    float pulse       = fract(v_t - u_time * energyFlowSpeed);
     float pulseI      = smoothstep(0.0, 0.15, pulse)
                       * (1.0 - smoothstep(0.15, 0.45, pulse));
     vec3 baseColor    = speciesColor * (1.0 + 0.6 * pulseI);
 
     vec3  col   = mix(uGlowColor, baseColor, strokeAlpha);
-    float alpha = max(strokeAlpha, glowAlpha) * uAlpha;
+
+    // M1286: energy-modulated alpha  →  alpha = 0.3 + 0.7 * sourceEnergy
+    //   energy = 1.0 → energyAlpha = 1.0  (maximum brightness)
+    //   energy = 0.5 → energyAlpha = 0.65
+    //   energy = 0.1 → energyAlpha = 0.37 (edge dimming — near-apoptosis)
+    //   energy = 0.0 → energyAlpha = 0.30 (very faint; discard removes sub-threshold)
+    //   The per-edge uAlpha (0.75–0.85) further scales the result; combined with
+    //   low strokeAlpha from thin edges, effective pixel alpha < 0.05 at energy < 0.1.
+    float energyAlpha = clamp(0.3 + 0.7 * u_sourceEnergy, 0.0, 1.0);
+    float alpha = max(strokeAlpha, glowAlpha) * uAlpha * energyAlpha;
 
     if (alpha < 0.004) discard;
 
@@ -199,6 +214,8 @@ export interface EdgeControlPoints {
   p3: [number, number];
   sourceColor?: [number, number, number];
   targetColor?: [number, number, number];
+  /** M1286: energy of the source cell [0, 1]; drives edge brightness & flow speed */
+  sourceEnergy?: number;
 }
 
 export interface EdgeGPUConfig {
@@ -316,6 +333,8 @@ export class EdgeGPU {
   private loc_u_flowSpeed!:   WebGLUniformLocation | null;
   private loc_u_thickness!:   WebGLUniformLocation | null;
   private loc_u_time!:        WebGLUniformLocation | null;
+  // M1286: source cell energy uniform location
+  private loc_u_sourceEnergy!: WebGLUniformLocation | null;
 
   constructor(
     gl: WebGL2RenderingContext,
@@ -378,6 +397,36 @@ export class EdgeGPU {
    */
   setEdges(edges: EdgeControlPoints[]): void {
     this.edges = edges;
+  }
+
+  /**
+   * M1286: 更新 edge 的 source cell energy.
+   * 由外部系统 (如 CellInteractionPhysics) 每帧调用, 传入最新 energy 值.
+   * energy [0, 1]:
+   *   - 1.0 → full brightness, full flow speed
+   *   - < 0.1 → alpha < 0.05, edge nearly invisible (apoptosis fade-out)
+   *
+   * @param edgeId       edge 的 id (匹配 EdgeControlPoints.id)
+   * @param sourceEnergy source cell energy [0, 1], from CellInteractionPhysics.getEnergy()
+   */
+  updateEdgeEnergy(edgeId: string, sourceEnergy: number): void {
+    const edge = this.edges.find(e => e.id === edgeId);
+    if (edge) {
+      edge.sourceEnergy = Math.max(0, Math.min(1, sourceEnergy));
+    }
+  }
+
+  /**
+   * M1286: 批量更新所有 edge 的 source energy.
+   * 传入 Map<edgeId, energy> 供每帧同步调用.
+   */
+  updateAllEdgeEnergies(energyMap: Map<string, number>): void {
+    for (const edge of this.edges) {
+      const e = energyMap.get(edge.id);
+      if (e !== undefined) {
+        edge.sourceEnergy = Math.max(0, Math.min(1, e));
+      }
+    }
   }
 
   /** Update canvas dimensions (call on resize or each frame) */
@@ -452,6 +501,8 @@ export class EdgeGPU {
     this.loc_u_flowSpeed   = gl.getUniformLocation(this.edgeProg, 'u_flowSpeed');
     this.loc_u_thickness   = gl.getUniformLocation(this.edgeProg, 'u_thickness');
     this.loc_u_time        = gl.getUniformLocation(this.edgeProg, 'u_time');
+    // M1286: source cell energy uniform
+    this.loc_u_sourceEnergy = gl.getUniformLocation(this.edgeProg, 'u_sourceEnergy');
 
     // ── 创建 TRIANGLE_STRIP geometry ──
     // 每段 2 顶点 (左侧 a_side=-1, 右侧 a_side=+1), N 段 → 2*(N+1) 顶点
@@ -535,6 +586,12 @@ export class EdgeGPU {
     // animation
     gl.uniform1f(this.loc_u_flowSpeed, cfg.flowSpeed);
     gl.uniform1f(this.loc_u_thickness, 0.0);
+
+    // M1286: source cell energy → brightness & flow speed modulation
+    // Defaults to 1.0 (full brightness) if not provided.
+    // energy < 0.1 → alpha < 0.05 → edge nearly invisible (cell apoptosis fade-out).
+    const srcEnergy = edge.sourceEnergy ?? 1.0;
+    gl.uniform1f(this.loc_u_sourceEnergy, srcEnergy);
 
     // ── 上传控制点 + 画 TRIANGLE_STRIP ──
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, this.stripCount);
