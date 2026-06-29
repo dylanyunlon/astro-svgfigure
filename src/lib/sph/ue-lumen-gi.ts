@@ -155,6 +155,7 @@ vec2 reflectMatcap(vec3 worldPos, mat4 mMatrix, vec3 worldNormal) {
 // refl.fs (compiled.vs line 2166) — reflection utilities
 // AT uses global `cameraPosition`; our shader declares it as `uCameraPos`
 const REFL_GLSL = /* glsl */`
+uniform vec3 uCameraPos;
 #define cameraPosition uCameraPos
 ${MATCAP_GLSL}
 vec2 sampleEqui(vec3 dir) {
@@ -369,8 +370,7 @@ uniform sampler2D tSceneColor;
 // Radiance cache (low-res FBO from Pass 1)
 uniform sampler2D tRadianceCache;
 
-// Camera
-uniform vec3  uCameraPos;
+// Camera (uCameraPos declared in REFL_GLSL above)
 uniform mat4  uInvViewProj;
 uniform float uNear;
 uniform float uFar;
