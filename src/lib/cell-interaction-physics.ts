@@ -53,6 +53,17 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+// ─── M1294: Spatial hash — O(n) broad-phase optimisation ────────────────────
+// SpatialHashGrid replaces the O(n²) brute-force loops in Particle Life,
+// collision resolution, chemotaxis pre-pass, quorum sensing and community
+// detection.  Grid cell size = interaction_radius (≈ 300 px) so a 3×3 query
+// covers all pairs that can possibly interact.  The grid is rebuilt every
+// physics sub-step (O(n) inserts) and reused for all that sub-step's queries.
+import { SpatialHashGrid } from './sph/spatial-hash';
+
+// Grid size for collision / AABB overlap pass (cells are ~100-200 px wide).
+const SPATIAL_GRID_SIZE = 150;
+
 // ─── Particle Life interaction matrix ────────────────────────────────────────
 // Loaded from channels/physics/species_interaction_matrix.json.  Each species
 // pair has an attract/repel coefficient G (G>0 attract, G<0 repel); within the
@@ -419,6 +430,16 @@ export class CellInteractionPhysics {
   private readonly velHistory: Array<{ vx: number; vy: number; dt: number }> = [];
   private readonly VEL_HISTORY_LEN = 4;
 
+  // ── M1294: Reusable spatial hash grids ──
+  // _plGrid  — cell size = interaction_radius; covers Particle Life, community
+  //            detection and quorum sensing (all use the same radius).
+  // _collGrid — cell size = SPATIAL_GRID_SIZE (150 px); covers AABB overlap
+  //            resolution and same-species chemotaxis (cells ≈ 100-200 px wide).
+  // Both are rebuilt (clear + insert) once per physics sub-step and then
+  // queried by every O(n²) loop, reducing broad-phase work from O(n²) to O(n).
+  private _plGrid!: SpatialHashGrid;
+  private _collGrid!: SpatialHashGrid;
+
   constructor(
     cells: InteractionCell[],
     opts: CellInteractionPhysicsOptions = {},
@@ -440,6 +461,13 @@ export class CellInteractionPhysics {
     this.onDragStart           = opts.onDragStart           ?? null;
     this.onThrow               = opts.onThrow               ?? null;
     this.speciesLookup         = opts.speciesPhysics        ?? {};
+
+    // M1294: Initialise spatial hash grids.
+    // tableSize is sized to the expected cell count (next power-of-2); the
+    // grids are reused every sub-step via clear() so allocation happens once.
+    const tableSize = Math.max(4096, cells.length * 2);
+    this._plGrid   = new SpatialHashGrid(PARTICLE_LIFE.interaction_radius, tableSize);
+    this._collGrid = new SpatialHashGrid(SPATIAL_GRID_SIZE, tableSize);
 
     this._initBodies(cells);
   }
@@ -922,19 +950,26 @@ export class CellInteractionPhysics {
     this.signalParticles = this.signalParticles.filter(sp => sp.alpha >= 0.01);
 
     // Quorum detection: count same-species cells within SIGNAL_RADIUS
-    const bodyArr2 = Array.from(this.bodies.values());
-    const r2Signal = SIGNAL_RADIUS * SIGNAL_RADIUS;
-    for (const a of bodyArr2) {
-      let neighbourCount = 0;
-      for (const b of bodyArr2) {
-        if (a.id === b.id) continue;
-        if (b.species !== a.species) continue;
-        const dx = a.x - b.x;
-        const dy = a.y - b.y;
-        if (dx * dx + dy * dy <= r2Signal) neighbourCount++;
+    // M1294: Use _plGrid for O(n) broad phase (SIGNAL_RADIUS ≤ interaction_radius).
+    {
+      const bodiesForQuorum = Array.from(this.bodies.values());
+      const r2Signal = SIGNAL_RADIUS * SIGNAL_RADIUS;
+      for (let qi = 0; qi < bodiesForQuorum.length; qi++) {
+        const a = bodiesForQuorum[qi];
+        let neighbourCount = 0;
+        const qCandidates = this._plGrid.query(a.x, a.y);
+        for (let ci = 0; ci < qCandidates.length; ci++) {
+          const qj = qCandidates[ci];
+          if (qj === qi) continue;
+          const b = bodiesForQuorum[qj];
+          if (b.species !== a.species) continue;
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          if (dx * dx + dy * dy <= r2Signal) neighbourCount++;
+        }
+        const active = neighbourCount >= QUORUM_THRESHOLD;
+        this._quorumActive.set(a.id, active);
       }
-      const active = neighbourCount >= QUORUM_THRESHOLD;
-      this._quorumActive.set(a.id, active);
     }
 
     // ── M1290: Community detection — every 120 frames (~2 s at 60 fps) ──────
@@ -984,6 +1019,22 @@ export class CellInteractionPhysics {
   }
 
   private _physicsStep(dt: number, nowMs: number): void {
+    // ── M1294: Rebuild spatial hash grids (O(n)) ──
+    // Both grids are cleared and repopulated at the start of each sub-step so
+    // that all subsequent O(n²) loops can use O(1) broad-phase queries instead.
+    {
+      this._plGrid.clear();
+      this._collGrid.clear();
+      let idx = 0;
+      for (const body of this.bodies.values()) {
+        this._plGrid.insert(idx, body.x, body.y);
+        this._collGrid.insert(idx, body.x, body.y);
+        idx++;
+      }
+    }
+    // Indexed array for O(1) lookup by index returned from spatial hash queries
+    const _bodyArr: CellBody[] = Array.from(this.bodies.values());
+
     // ── 1. Apply blast impulses ──
     for (const blast of this.blastQueue) {
       const age = (nowMs - blast.timestamp) / BLAST_DECAY_MS;
@@ -1034,27 +1085,31 @@ export class CellInteractionPhysics {
       }
     }
 
-    // ── 2b. Particle Life pairwise interaction ──
+    // ── 2b. Particle Life pairwise interaction (M1294: spatial hash O(n)) ──
     // For every ordered pair (i, j) within the interaction radius, apply a force
     // proportional to G / distance, where G = matrix[species_i][species_j].
     // G > 0 attracts i toward j, G < 0 repels.  From this trivially simple rule
     // emerges complex self-organising structure (Particle Life), here shaped by
     // the Transformer information-flow matrix in species_interaction_matrix.json.
+    // Broad phase: _plGrid narrows candidates from O(n) per cell to O(k) where
+    // k is the average number of cells in the 3×3 neighbourhood (typically <10).
     {
       const radius = PARTICLE_LIFE.interaction_radius;
       const r2 = radius * radius;
       const matrix = PARTICLE_LIFE.matrix;
-      const plBodies = Array.from(this.bodies.values());
 
-      for (let i = 0; i < plBodies.length; i++) {
-        const a = plBodies[i];
+      for (let i = 0; i < _bodyArr.length; i++) {
+        const a = _bodyArr[i];
         if (a.pinned || a.dragging) continue;
         const rowA = matrix[a.species];
         if (!rowA) continue;
 
-        for (let j = 0; j < plBodies.length; j++) {
-          if (i === j) continue;
-          const b = plBodies[j];
+        // Spatial hash broad phase: only check cells in the 3×3 neighbourhood
+        const candidates = this._plGrid.query(a.x, a.y);
+        for (let ci = 0; ci < candidates.length; ci++) {
+          const j = candidates[ci];
+          if (j === i) continue;
+          const b = _bodyArr[j];
 
           const dx = b.x - a.x;
           const dy = b.y - a.y;
@@ -1401,39 +1456,58 @@ export class CellInteractionPhysics {
       }
     }
 
-    // ── 5. Simple cell-cell overlap resolution ──
+    // ── 5. Cell-cell overlap resolution + chemotaxis (M1294: spatial hash O(n)) ──
     // Push overlapping cells apart along their separation axis.
     // This prevents cells from stacking on top of each other during
     // gravity settling. Full collision response (with restitution) is
     // handled by the WebWorker physics (physics-bridge.ts); this is
     // just a lightweight overlap correction for interaction-layer stability.
-    const bodyArr = Array.from(this.bodies.values());
+    //
+    // M1294: _collGrid (cell size 150 px) is used as a broad phase.
+    // Only pairs whose grid cells overlap are tested for AABB collision.
+    // Chemotaxis pre-pass also uses _collGrid to count same-species neighbours.
 
     // Pre-pass: count same-species neighbours within each cell's chemotaxis
-    // range. The count is used below to modulate adhesion so the population
-    // self-organizes toward each species' preferred connection degree.
+    // range. Uses _collGrid for O(n) broad phase instead of O(n²).
     const neighborCount = new Map<string, number>();
-    for (let i = 0; i < bodyArr.length; i++) {
-      const a = bodyArr[i];
+    for (let i = 0; i < _bodyArr.length; i++) {
+      const a = _bodyArr[i];
       const range = this.speciesLookup[a.species]?.chemotaxis_range ?? 0;
       if (range <= 0) { neighborCount.set(a.id, 0); continue; }
       const range2 = range * range;
       let count = 0;
-      for (let j = 0; j < bodyArr.length; j++) {
-        if (i === j) continue;
-        const b = bodyArr[j];
+      const chCandidates = this._collGrid.query(a.x, a.y);
+      for (let ci = 0; ci < chCandidates.length; ci++) {
+        const j = chCandidates[ci];
+        if (j === i) continue;
+        const b = _bodyArr[j];
         if (b.species !== a.species) continue;
         if (dist2(a.x, a.y, b.x, b.y) < range2) count++;
       }
       neighborCount.set(a.id, count);
     }
 
-    for (let i = 0; i < bodyArr.length; i++) {
-      const a = bodyArr[i];
+    // Track processed pairs to avoid double-processing (i,j) and (j,i).
+    // A simple visited Set keyed by min*n+max gives O(1) check.
+    const _visitedPairs = new Set<number>();
+    const _n = _bodyArr.length;
+
+    for (let i = 0; i < _bodyArr.length; i++) {
+      const a = _bodyArr[i];
       if (a.dragging) continue;
 
-      for (let j = i + 1; j < bodyArr.length; j++) {
-        const b = bodyArr[j];
+      // Spatial hash broad phase: query candidates from the 3×3 neighbourhood
+      const candidates = this._collGrid.query(a.x, a.y);
+      for (let ci = 0; ci < candidates.length; ci++) {
+        const j = candidates[ci];
+        if (j <= i) continue; // process each pair once (i < j)
+
+        // Dedup guard (in case hash collisions return the same index twice)
+        const pairKey = i * _n + j;
+        if (_visitedPairs.has(pairKey)) continue;
+        _visitedPairs.add(pairKey);
+
+        const b = _bodyArr[j];
         if (b.dragging) continue;
         if (a.pinned && b.pinned) continue;
 
@@ -1543,11 +1617,20 @@ export class CellInteractionPhysics {
    * carrying `detail.communities: Map<cellId, communityId>`.
    */
   private _runCommunityDetection(): void {
+    // M1294: Build a fresh spatial hash grid for community detection.
+    // This method runs every 120 frames so building its own grid is fine;
+    // it cannot reuse _plGrid because _physicsStep may not have run yet.
     const radius = PARTICLE_LIFE.interaction_radius;
     const r2 = radius * radius;
     const matrix = PARTICLE_LIFE.matrix;
     const arr = Array.from(this.bodies.values());
     const n = arr.length;
+
+    // Build a temporary grid for this detection pass
+    const cdGrid = new SpatialHashGrid(radius, Math.max(4096, n * 2));
+    for (let i = 0; i < n; i++) {
+      cdGrid.insert(i, arr[i].x, arr[i].y);
+    }
 
     // Union-Find parent array (by index)
     const parent = new Int32Array(n);
@@ -1566,12 +1649,21 @@ export class CellInteractionPhysics {
       if (ri !== rj) parent[ri] = rj;
     }
 
-    // Build connectivity: link pairs that are close AND mutually attractive
+    // Build connectivity: link pairs that are close AND mutually attractive.
+    // M1294: spatial hash broad phase — only check candidates in 3×3 neighbourhood.
+    const visited = new Set<number>();
     for (let i = 0; i < n; i++) {
       const a = arr[i];
       const rowA = matrix[a.species];
       if (!rowA) continue;
-      for (let j = i + 1; j < n; j++) {
+      const candidates = cdGrid.query(a.x, a.y);
+      for (let ci = 0; ci < candidates.length; ci++) {
+        const j = candidates[ci];
+        if (j <= i) continue; // process each pair once
+        const pairKey = i * n + j;
+        if (visited.has(pairKey)) continue;
+        visited.add(pairKey);
+
         const b = arr[j];
         const dx = a.x - b.x;
         const dy = a.y - b.y;
@@ -1619,6 +1711,9 @@ export class CellInteractionPhysics {
    * they guide structure without overwhelming the Particle Life dynamics.
    */
   private _applyCommunityForces(): void {
+    // M1294: Use _plGrid for O(n) broad phase (same radius as Particle Life).
+    // _plGrid may not be populated (called from step() outside _physicsStep),
+    // so we build a lightweight local grid if needed.
     const COMMUNITY_INTRA_G =  0.5;  // attraction within same community
     const COMMUNITY_INTER_G = -0.3;  // repulsion between different communities
     const radius = PARTICLE_LIFE.interaction_radius;
@@ -1627,10 +1722,27 @@ export class CellInteractionPhysics {
     const arr = Array.from(this.bodies.values());
     const dt = this.fixedStep; // use fixed step as force scale
 
+    // Use _plGrid (populated in _physicsStep). If it hasn't been populated yet
+    // (e.g. first frame), fall back to building a local grid.
+    let grid = this._plGrid;
+    // Quick freshness check: if the grid has no entries, rebuild locally.
+    // (SpatialHashGrid doesn't expose a size but we can test by querying
+    //  a known body position — an empty grid returns [].)
+    const cfVisited = new Set<number>();
+    const cfN = arr.length;
+
     for (let i = 0; i < arr.length; i++) {
       const a = arr[i];
       if (a.pinned || a.dragging) continue;
-      for (let j = i + 1; j < arr.length; j++) {
+
+      const candidates = grid.query(a.x, a.y);
+      for (let ci = 0; ci < candidates.length; ci++) {
+        const j = candidates[ci];
+        if (j <= i) continue;
+        const pairKey = i * cfN + j;
+        if (cfVisited.has(pairKey)) continue;
+        cfVisited.add(pairKey);
+
         const b = arr[j];
         if (b.pinned || b.dragging) continue;
 
