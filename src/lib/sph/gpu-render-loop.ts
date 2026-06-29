@@ -51,6 +51,15 @@ export interface CellData {
   roughness: number;
   albedo: [number, number, number];
   label: string;
+  // === 新增字段 ===
+  glowColor: [number, number, number];    // glow_color hex → RGB [0,1]
+  sdfShape: 'rounded_rect' | 'capsule';   // sdf_shape
+  internalPattern: string;                 // internal_pattern
+  haloRadius: number;                      // halo_radius [0,1]
+  numRays: number;                         // num_rays (0-16)
+  focalIntensity: number;                  // focal_intensity [0,1]
+  animationSpeed: number;                  // animation_speed
+  opacity: number;                         // opacity
 }
 
 export interface EdgeData {
@@ -704,6 +713,15 @@ export class GPURenderLoop {
             albedo: c.albedo as [number, number, number],
             metallic: c.metallic,
             roughness: c.roughness,
+            // 新增
+            glowColor: c.glowColor,
+            sdfShape: c.sdfShape,
+            internalPattern: c.internalPattern,
+            haloRadius: c.haloRadius,
+            numRays: c.numRays,
+            focalIntensity: c.focalIntensity,
+            animationSpeed: c.animationSpeed,
+            opacity: c.opacity,
           }));
           if (!this._pbrFBOReady) {
             this.pbr.initFBO(W, H);

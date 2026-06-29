@@ -70,6 +70,15 @@ export interface CellPBRDescriptor {
   metallic?: number;
   /** 0 = mirror, 1 = diffuse */
   roughness?: number;
+  // 新增
+  glowColor?: [number, number, number];
+  sdfShape?: 'rounded_rect' | 'capsule';
+  internalPattern?: string;
+  haloRadius?: number;
+  numRays?: number;
+  focalIntensity?: number;
+  animationSpeed?: number;
+  opacity?: number;
 }
 
 // ─── Per-species material defaults ──────────────────────────────────────────

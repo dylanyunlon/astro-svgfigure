@@ -1098,6 +1098,14 @@ export const prerender = true;
           cell_id:id, species: SPECIES_ALIAS[sp.species] ?? 'cil-eye',
           x:bbox.x, y:bbox.y, w:bbox.w, h:bbox.h, z:bbox.z??1,
           metallic:0.1, roughness:0.55, albedo:color, label:id,
+          glowColor: hexToRGB(sp.glow_color ?? sp.primary_color ?? '#4488ff'),
+          sdfShape: (sp.sdf_shape === 'capsule' ? 'capsule' : 'rounded_rect') as any,
+          internalPattern: sp.internal_pattern ?? 'none',
+          haloRadius: sp.halo_radius ?? 0.15,
+          numRays: sp.num_rays ?? 0,
+          focalIntensity: sp.focal_intensity ?? 0.0,
+          animationSpeed: sp.animation_speed ?? 1.0,
+          opacity: cv?.agent_params?.opacity ?? 0.9,
         } satisfies CellData;
       });
 
@@ -1619,6 +1627,14 @@ export const prerender = true;
           roughness: 0.55,
           albedo:    color,
           label:     cellId,
+          glowColor: hexToRGB(sp.glow_color ?? sp.primary_color ?? '#4488ff'),
+          sdfShape: (sp.sdf_shape === 'capsule' ? 'capsule' : 'rounded_rect') as any,
+          internalPattern: sp.internal_pattern ?? 'none',
+          haloRadius: sp.halo_radius ?? 0.15,
+          numRays: sp.num_rays ?? 0,
+          focalIntensity: sp.focal_intensity ?? 0.0,
+          animationSpeed: sp.animation_speed ?? 1.0,
+          opacity: cv?.agent_params?.opacity ?? 0.9,
         } satisfies CellData;
       });
 
