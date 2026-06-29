@@ -863,6 +863,26 @@ export class CellInteractionPhysics {
     // handled by the WebWorker physics (physics-bridge.ts); this is
     // just a lightweight overlap correction for interaction-layer stability.
     const bodyArr = Array.from(this.bodies.values());
+
+    // Pre-pass: count same-species neighbours within each cell's chemotaxis
+    // range. The count is used below to modulate adhesion so the population
+    // self-organizes toward each species' preferred connection degree.
+    const neighborCount = new Map<string, number>();
+    for (let i = 0; i < bodyArr.length; i++) {
+      const a = bodyArr[i];
+      const range = this.speciesLookup[a.species]?.chemotaxis_range ?? 0;
+      if (range <= 0) { neighborCount.set(a.id, 0); continue; }
+      const range2 = range * range;
+      let count = 0;
+      for (let j = 0; j < bodyArr.length; j++) {
+        if (i === j) continue;
+        const b = bodyArr[j];
+        if (b.species !== a.species) continue;
+        if (dist2(a.x, a.y, b.x, b.y) < range2) count++;
+      }
+      neighborCount.set(a.id, count);
+    }
+
     for (let i = 0; i < bodyArr.length; i++) {
       const a = bodyArr[i];
       if (a.dragging) continue;
@@ -873,7 +893,10 @@ export class CellInteractionPhysics {
         if (a.pinned && b.pinned) continue;
 
         // Same-species chemotactic adhesion: cells of the same species are
-        // attracted to one another within a configurable range.
+        // attracted to one another within a configurable range. The strength
+        // is modulated by preferred_neighbors so cells self-organize toward a
+        // target connection degree: an under-connected cell pulls harder, an
+        // over-connected cell flips to repulsion to shed excess neighbours.
         if (a.species === b.species) {
           const sp = this.speciesLookup[a.species];
           const range = sp?.chemotaxis_range ?? 0;
@@ -882,7 +905,16 @@ export class CellInteractionPhysics {
             const d2 = dist2(a.x, a.y, b.x, b.y);
             if (d2 > 0 && d2 < range * range) {
               const dist = Math.sqrt(d2);
-              const force = adhesion * (1 - dist / range) * 10 * dt;
+
+              // Neighbour-count balance: >0 when under-connected (attract),
+              // <0 when over-connected (repel). Averaged over the pair so the
+              // pairwise force stays symmetric. Clamped to [-1, 1].
+              const pref = sp?.preferred_neighbors ?? 4;
+              const balA = pref > 0 ? (pref - (neighborCount.get(a.id) ?? 0)) / pref : 0;
+              const balB = pref > 0 ? (pref - (neighborCount.get(b.id) ?? 0)) / pref : 0;
+              const balance = Math.max(-1, Math.min(1, (balA + balB) / 2));
+
+              const force = adhesion * (1 - dist / range) * 10 * balance * dt;
               const nx = (b.x - a.x) / dist;
               const ny = (b.y - a.y) / dist;
               if (!a.pinned) {
