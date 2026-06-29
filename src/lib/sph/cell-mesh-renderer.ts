@@ -290,6 +290,7 @@ export class CellMeshRenderer {
    * Non-blocking — cells render with procedural geometry until GLB loads.
    */
   async loadAllSpeciesGLB(): Promise<void> {
+    console.info('[CellMeshRenderer] loadAllSpeciesGLB starting...');
     const species = ['cil-eye', 'cil-bolt', 'cil-vector', 'cil-plus', 'cil-arrow-right'];
     const results = await Promise.allSettled(
       species.map(s => this.loadSpeciesMesh(s, `/models/${s}.glb`))
@@ -421,26 +422,35 @@ export class CellMeshRenderer {
    * Until called, the placeholder cube is used.
    */
   async loadSpeciesMesh(species: string, glbUrl: string): Promise<void> {
-    const { GLTFLoader } = await import('../threed-pipeline');
-    const loader = new GLTFLoader();
-    const scene = await loader.load(glbUrl);
+    try {
+      const { GLTFLoader } = await import('../threed-pipeline');
+      // Standard GLBs (no KHR_draco_mesh_compression) — do NOT pass a
+      // dracoThread. With no options the loader sets this.draco = null and
+      // parses POSITION/NORMAL/TEXCOORD/indices directly from the bin chunk,
+      // so no Web Worker / blob-URL importScripts path is ever touched.
+      const loader = new GLTFLoader();
+      const scene = await loader.load(glbUrl);
 
-    // Use the first mesh found
-    const firstMesh = scene.meshes.values().next().value;
-    if (!firstMesh) {
-      console.warn(`[CellMeshRenderer] No mesh found in ${glbUrl}`);
-      return;
+      // Use the first mesh found
+      const firstMesh = scene.meshes.values().next().value;
+      if (!firstMesh) {
+        console.error(`[CellMeshRenderer] No mesh found in ${glbUrl}`);
+        return;
+      }
+
+      const mesh = this._uploadGeometry(
+        firstMesh.positions,
+        firstMesh.normals ?? new Float32Array(firstMesh.positions.length),
+        firstMesh.uvs ?? new Float32Array(firstMesh.vertexCount * 2),
+        firstMesh.indices ?? null,
+        firstMesh.vertexCount,
+      );
+      this.meshes.set(species, mesh);
+      console.info(`[CellMeshRenderer] Loaded ${species} from ${glbUrl}: ${firstMesh.vertexCount} verts`);
+    } catch (e) {
+      console.error(`[CellMeshRenderer] Failed to load ${species} from ${glbUrl}:`, e);
+      throw e;
     }
-
-    const mesh = this._uploadGeometry(
-      firstMesh.positions,
-      firstMesh.normals ?? new Float32Array(firstMesh.positions.length),
-      firstMesh.uvs ?? new Float32Array(firstMesh.vertexCount * 2),
-      firstMesh.indices ?? null,
-      firstMesh.vertexCount,
-    );
-    this.meshes.set(species, mesh);
-    console.info(`[CellMeshRenderer] Loaded ${species} from ${glbUrl}: ${firstMesh.vertexCount} verts`);
   }
 
   // ── Internal ────────────────────────────────────────────────────────────
