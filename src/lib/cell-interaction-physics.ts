@@ -155,6 +155,11 @@ interface CellBody {
   // Species tag
   species: string;
   z: number;
+  // M1282: Energy metabolism [0, 1]
+  energy: number;
+  // M1282: lifecycle flags derived from energy
+  divisionReady: boolean;
+  collisionCount: number;
   // Quorum-sensing cluster factor: scales collision separation/bounce.
   // 1 = normal repulsion, <1 = reduced repulsion (cells pack tighter when
   // quorum is reached). Default 1. Set via setClusterFactor().
@@ -179,6 +184,9 @@ export interface CellInteractionState {
   vy: number;
   pinned: boolean;
   dragging: boolean;
+  // M1282: energy metabolism
+  energy: number;
+  divisionReady: boolean;
 }
 
 /** Force delta produced by interaction physics for a single cell. */
@@ -240,6 +248,16 @@ const DEFAULT_DRAG_REPULSION_RADIUS   = 180;
 const DEFAULT_DRAG_REPULSION_STRENGTH = 400;
 const DEFAULT_RESTORE_STIFFNESS       = 0;
 const BLAST_DECAY_MS                  = 300;
+
+// M1282: Energy metabolism constants (sourced from channels/physics/cell_lifecycle.json)
+const ENERGY_BASE_CONSUMPTION         = 0.01;   // per frame base drain
+const ENERGY_MOVEMENT_COST            = 0.001;  // * |velocity| per frame
+const ENERGY_COLLISION_COST           = 0.005;  // per collision event
+const ENERGY_REGENERATION_RATE        = 0.008;  // per frame recovery
+const ENERGY_MAX                      = 1.0;
+const ENERGY_INITIAL                  = 1.0;
+const ENERGY_APOPTOSIS_THRESHOLD      = 0.05;   // below this → opacity fade
+const ENERGY_DIVISION_THRESHOLD       = 0.90;   // above this → divisionReady
 
 const DEFAULT_SPECIES_PHYSICS: SpeciesPhysics = {
   mass: 75,
@@ -380,6 +398,9 @@ export class CellInteractionPhysics {
         restY: cy,
         species: cell.species,
         z: cell.z,
+        energy: ENERGY_INITIAL,
+        divisionReady: false,
+        collisionCount: 0,
       };
 
       this.bodies.set(cell.cell_id, body);
@@ -410,6 +431,9 @@ export class CellInteractionPhysics {
       restX: cx, restY: cy,
       species: cell.species,
       z: cell.z,
+      energy: ENERGY_INITIAL,
+      divisionReady: false,
+      collisionCount: 0,
     });
   }
 
@@ -946,6 +970,54 @@ export class CellInteractionPhysics {
       }
     }
 
+    // ── 2d. Energy metabolism (M1282) ──
+    // Per-frame energy cost: base consumption + movement + regeneration.
+    // Collision cost is applied per-collision in the overlap resolution loop
+    // below using body.collisionCount accumulated in the previous sub-step.
+    for (const body of this.bodies.values()) {
+      if (body.pinned) continue;
+
+      // Movement cost: proportional to speed
+      const speed = Math.sqrt(body.vx * body.vx + body.vy * body.vy);
+      const movementDrain = ENERGY_MOVEMENT_COST * speed;
+
+      // Collision drain accumulated from previous overlap resolution pass
+      const collisionDrain = ENERGY_COLLISION_COST * body.collisionCount;
+      body.collisionCount = 0; // reset for this sub-step
+
+      // Net energy delta: regeneration minus all consumption terms
+      const delta = ENERGY_REGENERATION_RATE
+        - ENERGY_BASE_CONSUMPTION
+        - movementDrain
+        - collisionDrain;
+
+      body.energy = Math.max(0, Math.min(ENERGY_MAX, body.energy + delta * dt));
+
+      // Lifecycle state transitions derived from energy level
+      // Division readiness: sufficient energy to support cell division
+      body.divisionReady = body.energy > ENERGY_DIVISION_THRESHOLD;
+
+      // Apoptosis fade: opacity linearly decreases as energy approaches 0
+      // The visual opacity value is read out via getState() / CellPBRDescriptor.opacity
+      if (body.energy < ENERGY_APOPTOSIS_THRESHOLD) {
+        // Normalized fade: 1.0 at threshold, 0.0 at energy=0
+        const fadeOpacity = body.energy / ENERGY_APOPTOSIS_THRESHOLD;
+        // Store in clusterFactor channel is not appropriate; we use a dedicated
+        // field. CellPBRDescriptor consumers should call getEnergyOpacity().
+        // We dispatch an event so the render layer can update opacity.
+        window.dispatchEvent(new CustomEvent('cell-apoptosis-fade', {
+          detail: { cellId: body.id, opacity: fadeOpacity, energy: body.energy },
+        }));
+      }
+
+      // Division pulse event: fire once per frame while ready
+      if (body.divisionReady) {
+        window.dispatchEvent(new CustomEvent('cell-division-ready', {
+          detail: { cellId: body.id, energy: body.energy },
+        }));
+      }
+    }
+
     // ── 3. Integrate velocities (semi-implicit Euler) ──
     for (const body of this.bodies.values()) {
       if (body.pinned || body.dragging) {
@@ -1119,6 +1191,10 @@ export class CellInteractionPhysics {
           const cf = ((a.clusterFactor ?? 1) + (b.clusterFactor ?? 1)) / 2;
           const sep = 0.5 * cf;
 
+          // M1282: charge collision cost to both cells
+          a.collisionCount++;
+          b.collisionCount++;
+
           if (overlapX < overlapY) {
             // Separate along X
             const totalMass = (a.pinned ? 1e10 : a.mass) + (b.pinned ? 1e10 : b.mass);
@@ -1166,6 +1242,8 @@ export class CellInteractionPhysics {
       vy: body.vy,
       pinned: body.pinned,
       dragging: body.dragging,
+      energy: body.energy,
+      divisionReady: body.divisionReady,
     };
   }
 
@@ -1181,9 +1259,29 @@ export class CellInteractionPhysics {
         vy: body.vy,
         pinned: body.pinned,
         dragging: body.dragging,
+        energy: body.energy,
+        divisionReady: body.divisionReady,
       });
     }
     return states;
+  }
+
+  /**
+   * M1282: Compute the visual opacity for a cell based on its energy level.
+   * Returns 1.0 normally; linearly fades toward 0 when energy drops below
+   * ENERGY_APOPTOSIS_THRESHOLD (apoptosis phase). Use this value as
+   * CellPBRDescriptor.opacity when building the render descriptor.
+   */
+  getEnergyOpacity(cellId: string): number {
+    const body = this.bodies.get(cellId);
+    if (!body) return 1.0;
+    if (body.energy >= ENERGY_APOPTOSIS_THRESHOLD) return 1.0;
+    return body.energy / ENERGY_APOPTOSIS_THRESHOLD;
+  }
+
+  /** M1282: Return the raw energy value [0, 1] for a cell. */
+  getEnergy(cellId: string): number {
+    return this.bodies.get(cellId)?.energy ?? 1.0;
   }
 
   /** Get the current bbox (derived from body position + dimensions). */
@@ -1305,6 +1403,9 @@ export class CellInteractionPhysics {
       body.impulseX = 0;
       body.impulseY = 0;
       body.dragging = false;
+      body.energy = ENERGY_INITIAL;
+      body.divisionReady = false;
+      body.collisionCount = 0;
       // Preserve pin state — reset doesn't unpin
     }
   }

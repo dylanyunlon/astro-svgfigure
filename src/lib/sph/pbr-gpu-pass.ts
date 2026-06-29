@@ -79,6 +79,8 @@ export interface CellPBRDescriptor {
   focalIntensity?: number;
   animationSpeed?: number;
   opacity?: number;
+  // M1282: energy metabolism — cell energy [0, 1] passed to u_energy uniform
+  energy?: number;
 }
 
 // ─── Per-species material defaults ──────────────────────────────────────────
@@ -189,6 +191,9 @@ uniform int   uInternalPattern; // 0=none,1=grid,2=bars,3=sine,4=bottleneck,5=pl
 uniform float uAnimSpeed;
 uniform float uOpacity;
 uniform float uTime;
+
+// ── M1282: energy metabolism ────────────────────────────────────────────────
+uniform float u_energy;         // cell energy [0, 1] from CellInteractionPhysics
 
 // ── MRT outputs ─────────────────────────────────────────────────────────────
 layout(location = 0) out vec4 gAlbedo;
@@ -382,6 +387,8 @@ export class PBRCellGPU {
   private uAnimSpeed!:       WebGLUniformLocation;
   private uOpacity!:         WebGLUniformLocation;
   private uTime!:            WebGLUniformLocation;
+  // M1282: energy metabolism
+  private uEnergy!:          WebGLUniformLocation;
   private _time = 0;
 
   // Attribute location — resolved name may differ when AT shader uses 'aPosition', 'position', etc.
@@ -545,6 +552,8 @@ export class PBRCellGPU {
       gl.uniform1i(this.uInternalPattern, PATTERN_INT[cell.internalPattern ?? 'none'] ?? 0);
       gl.uniform1f(this.uAnimSpeed,      cell.animationSpeed ?? 1.0);
       gl.uniform1f(this.uOpacity,        cell.opacity ?? 0.9);
+      // M1282: energy metabolism — pass cell.energy to u_energy uniform
+      gl.uniform1f(this.uEnergy,         cell.energy ?? 1.0);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -742,5 +751,7 @@ export class PBRCellGPU {
     this.uAnimSpeed       = gl.getUniformLocation(prog, 'uAnimSpeed')!;
     this.uOpacity         = gl.getUniformLocation(prog, 'uOpacity')!;
     this.uTime            = gl.getUniformLocation(prog, 'uTime')!;
+    // M1282: energy metabolism
+    this.uEnergy          = gl.getUniformLocation(prog, 'u_energy')!;
   }
 }
