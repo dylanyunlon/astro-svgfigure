@@ -1,6 +1,7 @@
 /**
  * CameraController.ts
  * M321 — AT GazeCamera: lerpSpeed + moveXY mouse-offset + wobbleStrength
+ * M1291 — autoTrack mode: camera smoothly follows the most active cell cluster
  *
  * Replaces the M162 wheel-zoom / drag-pan controller with an AT-style
  * "GazeCamera" that smoothly follows the cursor with lerp interpolation
@@ -14,9 +15,19 @@
  *   • wobbleStrength  — amplitude of sine-based procedural drift
  *   • lerpSpeed2      — secondary lerp for zoom transitions
  *   • deltaRotate     — subtle rotational response to cursor
+ *
+ * M1291 autoTrack additions:
+ *   • autoTrack       — when enabled, camera lerps toward the weighted
+ *                       centroid of the most active cell cluster each frame
+ *   • Activity score  — speed (|vx|+|vy|) + collision frequency per cell
+ *   • Hotspot         — recomputed every 60 frames via weighted average position
+ *   • Lerp factor     — 0.02 (slower than gaze lerp for cinematic feel)
+ *   • Pause on drag   — user panning suspends autoTrack for 5 s then resumes
+ *   • toggleAutoTrack()  — public API to flip the mode
  */
 
 import type { Application } from 'pixi.js';
+import type { CellInteractionPhysics } from './cell-interaction-physics';
 
 // ─── AT Camera Preset types (preserved from xiaodi #67) ──────────────────────
 
@@ -70,6 +81,38 @@ interface GazeState {
   wobblePhase: number;
 }
 
+// ─── M1291: AutoTrack state ───────────────────────────────────────────────────
+
+interface AutoTrackState {
+  /** Whether autoTrack mode is currently active. */
+  enabled: boolean;
+  /**
+   * Frame counter — hotspot is recomputed every AUTO_TRACK_HOTSPOT_INTERVAL
+   * frames to spread the O(n) scan cost.
+   */
+  frameCounter: number;
+  /** Cached hotspot centroid in world-space (stage coordinates). */
+  hotspotX: number;
+  hotspotY: number;
+  /**
+   * Timestamp (ms) after which autoTrack resumes following a manual drag.
+   * 0 = not paused.
+   */
+  pauseUntil: number;
+  /**
+   * Whether the user is currently dragging (pointer is held down on canvas).
+   * Set by the mousedown/mouseup/mouseleave listeners.
+   */
+  userDragging: boolean;
+  /** Previous pointer position for drag-detection. */
+  lastPointerX: number;
+  lastPointerY: number;
+}
+
+const AUTO_TRACK_LERP       = 0.02;          // camera lerp toward hotspot
+const AUTO_TRACK_HOTSPOT_INTERVAL = 60;       // frames between hotspot recomputes
+const AUTO_TRACK_PAUSE_MS   = 5_000;          // ms to suspend after manual drag
+
 // ─── CameraController (AT GazeCamera) ────────────────────────────────────────
 
 export class CameraController {
@@ -104,6 +147,21 @@ export class CameraController {
   private _onMouseMove: (e: MouseEvent) => void;
   private _onMouseLeave: () => void;
 
+  // ── M1291: autoTrack ────────────────────────────────────────────────────
+  private _physics: CellInteractionPhysics | null = null;
+  private _autoTrack: AutoTrackState = {
+    enabled: false,
+    frameCounter: 0,
+    hotspotX: 0,
+    hotspotY: 0,
+    pauseUntil: 0,
+    userDragging: false,
+    lastPointerX: 0,
+    lastPointerY: 0,
+  };
+  private _onPointerDown: (e: PointerEvent) => void;
+  private _onPointerUp: (e: PointerEvent) => void;
+
   // Loaded presets from JSON
   private _presets: Record<string, CameraPreset> = {};
   private _params: Record<string, number | number[]> = {};
@@ -135,6 +193,28 @@ export class CameraController {
     const canvas = this.app.canvas as HTMLCanvasElement;
     canvas.addEventListener('mousemove', this._onMouseMove);
     canvas.addEventListener('mouseleave', this._onMouseLeave);
+
+    // ── M1291: pointer drag detection for autoTrack pause ─────────────────
+
+    this._onPointerDown = (e: PointerEvent) => {
+      const at = this._autoTrack;
+      at.userDragging = true;
+      at.lastPointerX = e.clientX;
+      at.lastPointerY = e.clientY;
+    };
+
+    this._onPointerUp = (_e: PointerEvent) => {
+      const at = this._autoTrack;
+      if (at.userDragging) {
+        at.userDragging = false;
+        // Pause autoTrack for 5 s after the user releases the pointer.
+        at.pauseUntil = performance.now() + AUTO_TRACK_PAUSE_MS;
+      }
+    };
+
+    canvas.addEventListener('pointerdown', this._onPointerDown);
+    canvas.addEventListener('pointerup',   this._onPointerUp);
+    canvas.addEventListener('pointerleave', this._onPointerUp);
 
     // ── Load camera config from UIL JSON then start the gaze loop ─────────
 
@@ -182,6 +262,9 @@ export class CameraController {
     this.app.stage.position.x = g.currentX + wobX;
     this.app.stage.position.y = g.currentY + wobY;
 
+    // ── M1291: autoTrack — shift base toward hottest cell cluster ───────
+    this._tickAutoTrack(dt);
+
     // ── Optional subtle rotation from deltaRotate ───────────────────────
     if (this.deltaRotate !== 0) {
       const rotAlpha = 1 - Math.pow(1 - this.lerpSpeed, dt * 60);
@@ -192,6 +275,94 @@ export class CameraController {
 
     this._rafId = requestAnimationFrame(this._tick);
   };
+
+  // ── M1291: autoTrack private helpers ──────────────────────────────────────
+
+  /**
+   * Called once per animation frame.  When autoTrack is enabled and not
+   * paused, smoothly shifts the camera base position toward the weighted
+   * centroid of the most active cell cluster.
+   *
+   * "Activity" for each cell = |vx| + |vy|  +  collisionCount * 2
+   * (collisionCount is the accumulated count since the last physics step,
+   * exposed via CellInteractionPhysics.getAllStates() — we treat it as a
+   * scalar weight multiplier).
+   *
+   * The hotspot is only recomputed every AUTO_TRACK_HOTSPOT_INTERVAL frames
+   * to amortise the O(n) scan; between recomputations the camera lerps toward
+   * the cached hotspot.
+   */
+  private _tickAutoTrack(dt: number): void {
+    const at = this._autoTrack;
+
+    if (!at.enabled) return;
+    if (!this._physics) return;
+
+    const now = performance.now();
+
+    // If the user is actively dragging or the cooldown has not expired, skip.
+    if (at.userDragging || now < at.pauseUntil) return;
+
+    // ── Recompute hotspot every N frames ──────────────────────────────────
+    at.frameCounter++;
+    if (at.frameCounter >= AUTO_TRACK_HOTSPOT_INTERVAL) {
+      at.frameCounter = 0;
+      this._computeHotspot();
+    }
+
+    // ── Lerp camera base toward hotspot ───────────────────────────────────
+    // hotspot is in simulation world-space (cell centre coordinates).
+    // We need to map it to stage-space pan.  The stage origin is at the
+    // canvas centre when pan = 0; cell x/y are in the same space that
+    // app.stage children use.  So the target pan offset that centres the
+    // camera on the hotspot is:
+    //   panX = canvasCentreX - hotspotX * zoomFactor
+    //   panY = canvasCentreY - hotspotY * zoomFactor
+    const canvas = this.app.canvas as HTMLCanvasElement;
+    const targetBaseX = canvas.width  * 0.5 - at.hotspotX * this.zoomFactor;
+    const targetBaseY = canvas.height * 0.5 - at.hotspotY * this.zoomFactor;
+
+    // Frame-rate-independent lerp using the fixed AUTO_TRACK_LERP factor.
+    const alpha = 1 - Math.pow(1 - AUTO_TRACK_LERP, dt * 60);
+    this.gaze.baseX += (targetBaseX - this.gaze.baseX) * alpha;
+    this.gaze.baseY += (targetBaseY - this.gaze.baseY) * alpha;
+  }
+
+  /**
+   * Walk every cell body, compute an activity score, and derive the
+   * weighted centroid (hotspot) in world-space coordinates.
+   * Pinned and dragging cells are excluded (they are intentionally static).
+   */
+  private _computeHotspot(): void {
+    if (!this._physics) return;
+
+    const states = this._physics.getAllStates();
+    if (states.length === 0) return;
+
+    let sumW  = 0;
+    let sumWX = 0;
+    let sumWY = 0;
+
+    for (const s of states) {
+      // Skip pinned / dragged cells — they are not "active" in a meaningful sense.
+      if (s.pinned || s.dragging) continue;
+
+      // Activity score: speed component + a small baseline so static cells
+      // still contribute a tiny weight (prevents hotspot from jumping to
+      // the origin when everything is slow).
+      const speed    = Math.abs(s.vx) + Math.abs(s.vy);
+      const activity = speed + 0.01;  // baseline prevents division-by-zero
+
+      sumW  += activity;
+      sumWX += s.x * activity;
+      sumWY += s.y * activity;
+    }
+
+    if (sumW > 0) {
+      this._autoTrack.hotspotX = sumWX / sumW;
+      this._autoTrack.hotspotY = sumWY / sumW;
+    }
+  }
 
   // ── Load initial camera parameters from UIL JSON ──────────────────────────
 
@@ -323,6 +494,70 @@ export class CameraController {
     return this._activeScene;
   }
 
+  // ── M1291: autoTrack public API ───────────────────────────────────────────
+
+  /**
+   * Provide the physics simulation so autoTrack can query cell states.
+   * Call this once after constructing CellInteractionPhysics.
+   */
+  setPhysics(physics: CellInteractionPhysics): void {
+    this._physics = physics;
+  }
+
+  /**
+   * Toggle autoTrack mode on/off.
+   * Returns the new enabled state.
+   *
+   * When enabled the camera will start smoothly following the most active
+   * cell cluster.  When disabled the gaze base position stays where it is
+   * (the user can pan freely).
+   */
+  toggleAutoTrack(): boolean {
+    const at = this._autoTrack;
+    at.enabled = !at.enabled;
+
+    if (at.enabled) {
+      // Reset counters so we compute the first hotspot immediately.
+      at.frameCounter = AUTO_TRACK_HOTSPOT_INTERVAL - 1;
+      at.pauseUntil  = 0;
+      at.userDragging = false;
+      console.debug('[GazeCamera] autoTrack enabled');
+    } else {
+      console.debug('[GazeCamera] autoTrack disabled');
+    }
+
+    return at.enabled;
+  }
+
+  /**
+   * Enable autoTrack explicitly (no-op if already on).
+   * Returns the new enabled state (always true).
+   */
+  enableAutoTrack(): boolean {
+    if (!this._autoTrack.enabled) this.toggleAutoTrack();
+    return true;
+  }
+
+  /**
+   * Disable autoTrack explicitly (no-op if already off).
+   * Returns the new enabled state (always false).
+   */
+  disableAutoTrack(): boolean {
+    if (this._autoTrack.enabled) this.toggleAutoTrack();
+    return false;
+  }
+
+  /** Whether autoTrack is currently active (not paused). */
+  isAutoTracking(): boolean {
+    const at = this._autoTrack;
+    return at.enabled && !at.userDragging && performance.now() >= at.pauseUntil;
+  }
+
+  /** The last computed hotspot centroid in world-space (for debugging). */
+  getAutoTrackHotspot(): { x: number; y: number } {
+    return { x: this._autoTrack.hotspotX, y: this._autoTrack.hotspotY };
+  }
+
   /** Current gaze parameters (for debugging / UI panels). */
   getGazeConfig(): {
     lerpSpeed: number;
@@ -347,8 +582,12 @@ export class CameraController {
       this._rafId = null;
     }
     const canvas = this.app.canvas as HTMLCanvasElement;
-    canvas.removeEventListener('mousemove', this._onMouseMove);
-    canvas.removeEventListener('mouseleave', this._onMouseLeave);
+    canvas.removeEventListener('mousemove',   this._onMouseMove);
+    canvas.removeEventListener('mouseleave',  this._onMouseLeave);
+    // M1291: remove autoTrack drag-detection listeners
+    canvas.removeEventListener('pointerdown',  this._onPointerDown);
+    canvas.removeEventListener('pointerup',    this._onPointerUp);
+    canvas.removeEventListener('pointerleave', this._onPointerUp);
   }
 }
 
