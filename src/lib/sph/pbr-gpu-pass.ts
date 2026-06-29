@@ -239,15 +239,18 @@ void main() {
         sdf = length(max(d, 0.0)) - cornerR;
     }
 
-    // ── Halo glow (extends beyond cell body) ─────────────────────────────────
+    // Discard pixels outside body
+    if (sdf > 0.02) discard;
+    float edgeAlpha = 1.0 - smoothstep(-0.01, 0.02, sdf);
+
+    // ── Halo glow (inner glow near SDF edge) ───────────────────────────────
     float haloGlow = 0.0;
     if (uHaloRadius > 0.01) {
-        haloGlow = exp(-max(sdf, 0.0) / uHaloRadius * 2.5) * uHaloRadius * 1.5;
+        // Glow strongest at edge, fading inward
+        float edgeDist = abs(sdf);
+        haloGlow = exp(-edgeDist / uHaloRadius * 3.0) * uHaloRadius * 2.0;
+        haloGlow *= edgeAlpha; // contain within body
     }
-
-    // Discard pixels outside body + halo
-    if (sdf > uHaloRadius + 0.05) discard;
-    float edgeAlpha = 1.0 - smoothstep(-0.01, 0.02, sdf);
 
     // ── PBR Cook-Torrance ────────────────────────────────────────────────────
     vec3  N    = normalize(vNormal);
@@ -326,7 +329,7 @@ void main() {
     tonemapped = pow(tonemapped, vec3(1.0 / 2.2));
 
     // ── Final alpha: body + halo ─────────────────────────────────────────────
-    float finalAlpha = max(edgeAlpha * uOpacity, haloGlow * 0.5);
+    float finalAlpha = edgeAlpha * uOpacity;
 
     // ── MRT writes ───────────────────────────────────────────────────────────
     gAlbedo   = vec4(tonemapped, uMetallic) * finalAlpha;
