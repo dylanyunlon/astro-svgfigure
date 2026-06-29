@@ -27,6 +27,8 @@ import { ATJellyfishCell, type JellyfishInstance } from './at-jellyfish-cell';
 import { ATFlowerParticleRenderer, type FlowerEdgeSpline } from './at-flower-particle';
 import { ATMouseFluid } from './at-mousefluid-import';
 import { CellMeshRenderer } from './cell-mesh-renderer';
+import { CellInteractionPhysics } from '../cell-interaction-physics';
+import speciesPhysicsJson from '../../../channels/physics/species_physics.json';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -114,6 +116,8 @@ export class GPURenderLoop {
   private atJellyfishInstances: JellyfishInstance[] = [];
   private atFlower: ATFlowerParticleRenderer | null = null;
   private mouseFluid: ATMouseFluid | null = null;
+
+  private physics: CellInteractionPhysics | null = null;
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -351,6 +355,12 @@ export class GPURenderLoop {
     this.cells = cells;
     this.edges = edges;
     this._edgesDirty = true;
+
+    // Init physics engine
+    try {
+      const interactionCells = cells.map(c => ({cell_id: c.cell_id, bbox: {x: c.x, y: c.y, w: c.w, h: c.h}, z: c.z, species: c.species}));
+      this.physics = new CellInteractionPhysics(interactionCells, {gravity: {x: 0, y: 0}, damping: 0.92, speciesPhysics: speciesPhysicsJson as any});
+    } catch(e) { console.warn('[GPURenderLoop] physics init failed:', e); }
 
     // M1268: accept an optional force-field override (else keep the bundled default)
     if (forceField) this.forceField = forceField;
@@ -669,6 +679,15 @@ export class GPURenderLoop {
     const time = performance.now() / 1000;
 
     this.perf.frameStart();
+
+    // Physics step — update cell positions from physics engine
+    if (this.physics) {
+      this.physics.step(performance.now());
+      for (const c of this.cells) {
+        const st = this.physics.getState(c.cell_id);
+        if (st) { c.x = st.x - c.w/2; c.y = st.y - c.h/2; }
+      }
+    }
 
     // ── M1268: Force-field driven cell motion ───────────────────────────────
     // Advance each cell's pixel-space position by its force vector before the
