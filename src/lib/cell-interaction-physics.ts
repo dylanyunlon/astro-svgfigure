@@ -165,6 +165,8 @@ interface CellBody {
   // M1289: Apoptosis — triggered when energy reaches 0
   apoptosisActive: boolean;
   apoptosisStartTime: number; // ms timestamp when apoptosis began
+  // M1290: Community detection — assigned community ID (connected component)
+  communityId: number;
   // Quorum-sensing cluster factor: scales collision separation/bounce.
   // 1 = normal repulsion, <1 = reduced repulsion (cells pack tighter when
   // quorum is reached). Default 1. Set via setClusterFactor().
@@ -381,6 +383,12 @@ export class CellInteractionPhysics {
   // so we can shrink linearly from original size to 0.
   private _apoptosisOrigSize: Map<string, { w: number; h: number }> = new Map();
 
+  // ── M1290: Community detection state ──
+  /** Frame counter — community detection runs every 120 frames (~2 s at 60 fps). */
+  private _communityFrameCount = 0;
+  /** Per-cell assigned community ID (connected component index, 0-based). */
+  private _communityMap: Map<string, number> = new Map();
+
   // ── Velocity history for smooth throw (ring buffer, last 4 frames) ──
   private readonly velHistory: Array<{ vx: number; vy: number; dt: number }> = [];
   private readonly VEL_HISTORY_LEN = 4;
@@ -449,6 +457,7 @@ export class CellInteractionPhysics {
         divisionCooldownEnd: 0,
         apoptosisActive: false,
         apoptosisStartTime: 0,
+        communityId: 0,
       };
 
       this.bodies.set(cell.cell_id, body);
@@ -485,6 +494,7 @@ export class CellInteractionPhysics {
       divisionCooldownEnd: 0,
       apoptosisActive: false,
       apoptosisStartTime: 0,
+      communityId: 0,
     });
   }
 
@@ -892,6 +902,22 @@ export class CellInteractionPhysics {
       this._quorumActive.set(a.id, active);
     }
 
+    // ── M1290: Community detection — every 120 frames (~2 s at 60 fps) ──────
+    // Uses a simple Union-Find connected-component algorithm: two cells belong
+    // to the same community when their distance is below interaction_radius AND
+    // the Particle Life G coefficient between their species is > 0 (attractive).
+    // After labelling, same-community pairs receive a weak intra-community
+    // attraction, and cross-community pairs receive a weak inter-community
+    // repulsion, so communities cohere and separate over time.
+    this._communityFrameCount++;
+    if (this._communityFrameCount >= 120) {
+      this._communityFrameCount = 0;
+      this._runCommunityDetection();
+    }
+
+    // ── M1290: Apply community gravity / repulsion every frame ───────────────
+    this._applyCommunityForces();
+
     // Compute force deltas
     const forces: InteractionForce[] = [];
     for (const [id, body] of this.bodies) {
@@ -1222,9 +1248,8 @@ export class CellInteractionPhysics {
           divisionCooldownEnd: nowMs + DIVISION_COOLDOWN_MS,
           apoptosisActive: false,
           apoptosisStartTime: 0,
+          communityId: parent.communityId,
         };
-
-        this.bodies.set(childId, child);
 
         // Reset parent division state + start cooldown
         parent.divisionReady = false;
@@ -1457,6 +1482,139 @@ export class CellInteractionPhysics {
     }
   }
 
+  // ─── M1290: Community detection ─────────────────────────────────────────
+
+  /**
+   * _runCommunityDetection — Union-Find connected-component labelling.
+   *
+   * Two cells are in the same community when ALL of the following hold:
+   *   1. Their Euclidean distance < interaction_radius (300 px by default).
+   *   2. The Particle Life G coefficient matrix[species_i][species_j] > 0
+   *      (they attract each other, i.e. they are genuinely linked).
+   *
+   * After labelling, assigns `body.communityId` for every body and stores the
+   * result in `_communityMap`.  Dispatches a `community-update` CustomEvent
+   * carrying `detail.communities: Map<cellId, communityId>`.
+   */
+  private _runCommunityDetection(): void {
+    const radius = PARTICLE_LIFE.interaction_radius;
+    const r2 = radius * radius;
+    const matrix = PARTICLE_LIFE.matrix;
+    const arr = Array.from(this.bodies.values());
+    const n = arr.length;
+
+    // Union-Find parent array (by index)
+    const parent = new Int32Array(n);
+    for (let i = 0; i < n; i++) parent[i] = i;
+
+    function find(i: number): number {
+      while (parent[i] !== i) {
+        parent[i] = parent[parent[i]]; // path compression
+        i = parent[i];
+      }
+      return i;
+    }
+    function union(i: number, j: number): void {
+      const ri = find(i);
+      const rj = find(j);
+      if (ri !== rj) parent[ri] = rj;
+    }
+
+    // Build connectivity: link pairs that are close AND mutually attractive
+    for (let i = 0; i < n; i++) {
+      const a = arr[i];
+      const rowA = matrix[a.species];
+      if (!rowA) continue;
+      for (let j = i + 1; j < n; j++) {
+        const b = arr[j];
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        if (dx * dx + dy * dy >= r2) continue;
+        // Check G > 0 in at least one direction (symmetric: use average)
+        const Gab = rowA[b.species] ?? 0;
+        const Gba = (matrix[b.species]?.[a.species]) ?? 0;
+        if ((Gab + Gba) / 2 > 0) {
+          union(i, j);
+        }
+      }
+    }
+
+    // Canonicalise root labels → compact community IDs starting at 0
+    const rootToId = new Map<number, number>();
+    let nextId = 0;
+    const newMap = new Map<string, number>();
+
+    for (let i = 0; i < n; i++) {
+      const root = find(i);
+      if (!rootToId.has(root)) rootToId.set(root, nextId++);
+      const cid = rootToId.get(root)!;
+      arr[i].communityId = cid;
+      newMap.set(arr[i].id, cid);
+    }
+
+    this._communityMap = newMap;
+
+    // Dispatch community-update event
+    window.dispatchEvent(new CustomEvent('community-update', {
+      detail: { communities: new Map(newMap) },
+    }));
+  }
+
+  /**
+   * _applyCommunityForces — per-frame micro-forces that make communities
+   * cohere and separate.
+   *
+   * • Same community  → weak attraction (gravity): pulls cells together so the
+   *   cluster stays compact.  Magnitude: COMMUNITY_INTRA_G / distance.
+   * • Different community → weak repulsion: pushes communities apart so they
+   *   form visually distinct groups.  Magnitude: COMMUNITY_INTER_G / distance.
+   *
+   * Forces are intentionally very small (1-2 orders below Particle Life G) so
+   * they guide structure without overwhelming the Particle Life dynamics.
+   */
+  private _applyCommunityForces(): void {
+    const COMMUNITY_INTRA_G =  0.5;  // attraction within same community
+    const COMMUNITY_INTER_G = -0.3;  // repulsion between different communities
+    const radius = PARTICLE_LIFE.interaction_radius;
+    const r2 = radius * radius;
+
+    const arr = Array.from(this.bodies.values());
+    const dt = this.fixedStep; // use fixed step as force scale
+
+    for (let i = 0; i < arr.length; i++) {
+      const a = arr[i];
+      if (a.pinned || a.dragging) continue;
+      for (let j = i + 1; j < arr.length; j++) {
+        const b = arr[j];
+        if (b.pinned || b.dragging) continue;
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= r2 || d2 === 0) continue;
+
+        const dist = Math.sqrt(d2);
+        const G = a.communityId === b.communityId
+          ? COMMUNITY_INTRA_G
+          : COMMUNITY_INTER_G;
+
+        const force = G / Math.max(dist, 10); // prevent divide-by-zero
+        const fx = dx * force * dt * 0.5;
+        const fy = dy * force * dt * 0.5;
+
+        a.vx += fx;
+        a.vy += fy;
+        b.vx -= fx;
+        b.vy -= fy;
+      }
+    }
+  }
+
+  /** M1290: Return the community ID assigned to a cell. -1 if not found. */
+  getCommunityId(cellId: string): number {
+    return this._communityMap.get(cellId) ?? -1;
+  }
+
   // ─── Queries ────────────────────────────────────────────────────────────
 
   /** Get the current interaction state for a cell. */
@@ -1650,6 +1808,8 @@ export class CellInteractionPhysics {
     this._quorumActive.clear();
     this._signalFrameCount = 0;
     this._apoptosisOrigSize.clear();
+    this._communityMap.clear();
+    this._communityFrameCount = 0;
 
     for (const body of this.bodies.values()) {
       body.x = body.restX;
@@ -1678,6 +1838,7 @@ export class CellInteractionPhysics {
     this.signalParticles.length = 0;
     this._quorumActive.clear();
     this._apoptosisOrigSize.clear();
+    this._communityMap.clear();
   }
 }
 

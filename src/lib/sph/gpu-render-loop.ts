@@ -194,6 +194,13 @@ export class GPURenderLoop {
   private running = false;
   private lastTime = 0;
 
+  // ── M1290: Community detection render state ──────────────────────────────
+  /** Most-recent community assignment from 'community-update' event. */
+  private _communityMap: Map<string, number> = new Map();
+  /** Overlay canvas for community background circles (Canvas 2D). */
+  private _communityCanvas: HTMLCanvasElement | null = null;
+  private _communityCtx: CanvasRenderingContext2D | null = null;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
 
@@ -232,6 +239,14 @@ export class GPURenderLoop {
       this.prevMouseY = this.mouseY;
       this.mouseX = (e.clientX - rect.left) / rect.width;
       this.mouseY = 1.0 - (e.clientY - rect.top) / rect.height;
+    });
+
+    // ── M1290: Community overlay — listen for community-update events ────────
+    // When the physics engine fires 'community-update', store the Map<cellId,
+    // communityId> so the next frame's _renderCommunityOverlay() can use it.
+    window.addEventListener('community-update', (e: Event) => {
+      const ce = e as CustomEvent<{ communities: Map<string, number> }>;
+      this._communityMap = ce.detail.communities;
     });
 
     // 异步加载 AT compiled.vs shader bundle
@@ -946,6 +961,108 @@ export class GPURenderLoop {
     }
   }
 
+  // ── M1290: Community background-circle overlay ───────────────────────────
+
+  /**
+   * _renderCommunityOverlay — draws translucent filled circles grouped by
+   * community behind all other overlays, using a sibling Canvas 2D element.
+   *
+   * Algorithm:
+   *   1. Group cells by communityId using the most-recent _communityMap.
+   *   2. For each community compute the centroid and the maximum half-diagonal
+   *      of its member cells.
+   *   3. Draw a single semi-transparent radial-gradient circle centred on the
+   *      centroid with radius = max half-diagonal + padding (30 px).
+   *
+   * The hue for each community is derived deterministically from the community
+   * ID so communities keep a stable colour between frames.
+   *
+   * @param W Canvas width in pixels
+   * @param H Canvas height in pixels
+   * @param fitX Function that maps cell-space X → canvas-pixel X
+   * @param fitY Function that maps cell-space Y → canvas-pixel Y
+   * @param fitD Function that scales a dimension by camScale
+   */
+  private _renderCommunityOverlay(
+    W: number, H: number,
+    fitX: (x: number) => number,
+    fitY: (y: number) => number,
+    fitD: (d: number) => number,
+  ): void {
+    // Lazy-init overlay canvas
+    if (!this._communityCanvas) {
+      this._communityCanvas = document.createElement('canvas');
+      this._communityCanvas.style.cssText = [
+        'position:absolute', 'top:0', 'left:0',
+        'width:100%', 'height:100%',
+        'pointer-events:none',
+        'z-index:1',  // below SDF icons (z-index 9999) but above WebGL
+      ].join(';');
+      this.canvas.parentElement?.appendChild(this._communityCanvas)
+        ?? document.body.appendChild(this._communityCanvas);
+      this._communityCtx = this._communityCanvas.getContext('2d');
+    }
+
+    const ctx = this._communityCtx;
+    if (!ctx || !this._communityCanvas) return;
+
+    // Sync size
+    if (this._communityCanvas.width !== W || this._communityCanvas.height !== H) {
+      this._communityCanvas.width  = W;
+      this._communityCanvas.height = H;
+    }
+
+    ctx.clearRect(0, 0, W, H);
+
+    if (this._communityMap.size === 0) return;
+
+    // Group cells by communityId
+    const groups = new Map<number, { sumX: number; sumY: number; count: number; maxR: number }>();
+
+    for (const c of this.cells) {
+      const cid = this._communityMap.get(c.cell_id);
+      if (cid === undefined) continue;
+
+      const cx = fitX(c.x + c.w / 2);
+      const cy = fitY(c.y + c.h / 2);
+      const halfDiag = Math.sqrt(
+        (fitD(c.w) / 2) ** 2 + (fitD(c.h) / 2) ** 2,
+      );
+
+      const g = groups.get(cid);
+      if (g) {
+        g.sumX += cx;
+        g.sumY += cy;
+        g.count++;
+        if (halfDiag > g.maxR) g.maxR = halfDiag;
+      } else {
+        groups.set(cid, { sumX: cx, sumY: cy, count: 1, maxR: halfDiag });
+      }
+    }
+
+    // Draw one soft circle per community
+    const PADDING = 30; // extra px around the outermost cell
+    for (const [cid, g] of groups) {
+      if (g.count < 1) continue;
+
+      const centX = g.sumX / g.count;
+      const centY = g.sumY / g.count;
+      const radius = g.maxR + PADDING;
+
+      // Deterministic hue from cid (golden-angle spacing)
+      const hue = (cid * 137.508) % 360;
+      const gradient = ctx.createRadialGradient(centX, centY, 0, centX, centY, radius);
+      gradient.addColorStop(0,   `hsla(${hue}, 70%, 60%, 0.18)`);
+      gradient.addColorStop(0.6, `hsla(${hue}, 70%, 55%, 0.10)`);
+      gradient.addColorStop(1,   `hsla(${hue}, 70%, 50%, 0.00)`);
+
+      ctx.beginPath();
+      ctx.arc(centX, centY, radius, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+    }
+  }
+
   /** 单帧渲染 — 执行全部 GPU pass，每 pass 带 error guard + perf 计时 */
   frame(dt: number): void {
     const gl = this.gl;
@@ -1455,6 +1572,16 @@ export class GPURenderLoop {
         this.msdf.drawAllCellLabels();
       } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('msdf', t);
+    }
+
+    // ── M1290: Community background circles overlay ──────────────────────────
+    // Draw semi-transparent radial gradients behind cells to show community
+    // membership. Rendered on a sibling Canvas 2D element so it doesn't disturb
+    // the WebGL framebuffer.
+    try {
+      this._renderCommunityOverlay(W, H, fitX, fitY, fitD);
+    } catch (e) {
+      if (this.frameCount <= 10) console.warn('[GPURenderLoop] community overlay error:', e);
     }
 
     // ── M1287: Species interaction matrix debug overlay (Canvas 2D) ─────────
