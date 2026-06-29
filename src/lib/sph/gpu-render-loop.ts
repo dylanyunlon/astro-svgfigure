@@ -29,6 +29,10 @@ import { CellInteractionPhysics } from '../cell-interaction-physics';
 import speciesPhysicsJson from '../../../channels/physics/species_physics.json';
 import cellLifecycleJson from '../../../channels/physics/cell_lifecycle.json';
 import environmentJson from '../../../channels/physics/environment.json';
+// M1287: species interaction matrix debug overlay
+import { toggleInteractionDebug, isInteractionDebugEnabled, type DebugCell } from './debug-renderer';
+// Re-export for callers who import only from gpu-render-loop
+export { toggleInteractionDebug, isInteractionDebugEnabled } from './debug-renderer';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -1446,12 +1450,103 @@ export class GPURenderLoop {
     }
 
     // MSDF text labels
-    {
-      const t = this.perf.passStart('msdf');
+    {\n      const t = this.perf.passStart('msdf');
       try {
         this.msdf.drawAllCellLabels();
       } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('msdf', t);
+    }
+
+    // ── M1287: Species interaction matrix debug overlay (Canvas 2D) ─────────
+    // Draws attract (green) / repel (red) lines between cells within
+    // interaction_radius.  Runs in the debug branch: only when the overlay is
+    // toggled on via toggleInteractionDebug() or an explicit debug flag.
+    if (isInteractionDebugEnabled()) {
+      const t = this.perf.passStart('interactionDebug');
+      try {
+        // Obtain a Canvas2D context layered on top of the WebGL canvas.
+        // We use the same canvas element; Canvas2D and WebGL share it via
+        // willReadFrequently=false (read-only overlay, no pixel readback).
+        const ctx2d = (this.canvas as any).__debugCtx2d as CanvasRenderingContext2D | undefined
+          ?? (() => {
+            // Create a sibling overlay <canvas> on first use so we don't
+            // interfere with the WebGL context on the primary canvas.
+            const overlay = document.createElement('canvas');
+            overlay.width = this.canvas.width;
+            overlay.height = this.canvas.height;
+            overlay.style.cssText = [
+              'position:absolute',
+              'top:0', 'left:0',
+              'width:100%', 'height:100%',
+              'pointer-events:none',
+              'z-index:9999',
+            ].join(';');
+            this.canvas.parentElement?.appendChild(overlay) ?? document.body.appendChild(overlay);
+            const c = overlay.getContext('2d')!;
+            // Cache on the WebGL canvas element for reuse across frames
+            (this.canvas as any).__debugCtx2d = c;
+            (this.canvas as any).__debugOverlay = overlay;
+            return c;
+          })();
+
+        // Sync overlay canvas size if main canvas resized
+        const ov = (this.canvas as any).__debugOverlay as HTMLCanvasElement;
+        if (ov && (ov.width !== W || ov.height !== H)) {
+          ov.width = W; ov.height = H;
+        }
+
+        ctx2d.clearRect(0, 0, W, H);
+
+        // Build DebugCell list from current physics-updated cell positions
+        const debugCells: DebugCell[] = this.cells.map(c => ({
+          id: c.cell_id,
+          species: c.species,
+          // Use auto-fit camera transform to map cell centres into canvas pixels
+          cx: (c.x + c.w / 2) * this._camScale + this._camOffX,
+          cy: (c.y + c.h / 2) * this._camScale + this._camOffY,
+        }));
+
+        // Import drawInteractionLines via the already-imported module members.
+        // We call renderDebugOverlay with a minimal world so only the
+        // interaction overlay fires.
+        const { renderDebugOverlay } = await import('./debug-renderer');
+        renderDebugOverlay(
+          ctx2d,
+          {
+            bodies: new Map(),
+            debugCells,
+          },
+          [],   // no manifolds
+          [],   // no AABBs
+          [],   // no BVH
+          {
+            showAABBs: false,
+            showContacts: false,
+            showContactNormals: false,
+            showPenetration: false,
+            showBVH: false,
+            showEmitters: false,
+            showStats: false,
+            showVelocityArrows: false,
+            showDensityHeatmap: false,
+            showInteractionMatrix: true,
+            animatePanels: false,
+          },
+        );
+      } catch (e) {
+        if (this.frameCount <= 10) console.warn('[GPURenderLoop] interactionDebug pass error:', e);
+      }
+      this.perf.passEnd('interactionDebug', t);
+    } else {
+      // Hide overlay canvas when debug is off
+      const ov = (this.canvas as any).__debugOverlay as HTMLCanvasElement | undefined;
+      if (ov) ov.style.display = 'none';
+    }
+
+    // Re-show overlay when debug is on (toggle may have just enabled it)
+    if (isInteractionDebugEnabled()) {
+      const ov = (this.canvas as any).__debugOverlay as HTMLCanvasElement | undefined;
+      if (ov) ov.style.display = '';
     }
 
     // M1211: removed M1210 direct-cell-rendering — it was clearing the entire

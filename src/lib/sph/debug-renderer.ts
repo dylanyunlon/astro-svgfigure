@@ -1,11 +1,72 @@
 // debug-renderer.ts
 // Collision debug overlay for physics engine visualization
 // M569: force field arrows + easing animations (lygia import)
+// M1287: species interaction matrix debug overlay — attract/repel lines
 //
 // Lygia GLSL references ported to TypeScript:
 //   upstream/lygia/draw/arrows.glsl     — arrowsTileCenterCoord, arrows()
 //   upstream/lygia/draw/circle.glsl     — circle SDF fill
 //   upstream/lygia/animation/easing.glsl — cubicOut, backOut, elasticOut
+
+// ---------------------------------------------------------------------------
+// M1287: Species interaction matrix (loaded from channels/physics/species_interaction_matrix.json)
+// ---------------------------------------------------------------------------
+
+interface SpeciesInteractionMatrix {
+  interaction_radius: number;
+  matrix: Record<string, Record<string, number>>;
+  description?: Record<string, string>;
+}
+
+// Loaded lazily; null until first use or explicit preload.
+let _speciesMatrix: SpeciesInteractionMatrix | null = null;
+
+/**
+ * Load the species interaction matrix from the JSON channel.
+ * Safe to call multiple times — loads only once.
+ */
+async function loadSpeciesMatrix(): Promise<SpeciesInteractionMatrix> {
+  if (_speciesMatrix) return _speciesMatrix;
+  try {
+    // Dynamic import so the JSON is available in both Node (tests) and browser builds.
+    const mod = await import('../../../channels/physics/species_interaction_matrix.json');
+    _speciesMatrix = (mod.default ?? mod) as SpeciesInteractionMatrix;
+  } catch {
+    // Fallback: empty matrix with default radius so the overlay degrades silently.
+    _speciesMatrix = { interaction_radius: 300, matrix: {} };
+  }
+  return _speciesMatrix;
+}
+
+/** Pre-load the matrix eagerly on module init (fire-and-forget). */
+loadSpeciesMatrix();
+
+// ---------------------------------------------------------------------------
+// M1287: Interaction debug overlay state
+// ---------------------------------------------------------------------------
+
+/** Whether the interaction-matrix debug overlay is currently enabled. */
+let _interactionDebugEnabled = false;
+
+/**
+ * toggleInteractionDebug — toggle the species interaction matrix overlay.
+ *
+ * When enabled, renderDebugOverlay() draws a line between every pair of cells
+ * that are within interaction_radius (300 px) of each other:
+ *   • green line for attraction (G > 0), lineWidth = G * 2
+ *   • red   line for repulsion  (G < 0), lineWidth = |G| * 2
+ *
+ * Returns the new enabled state.
+ */
+export function toggleInteractionDebug(): boolean {
+  _interactionDebugEnabled = !_interactionDebugEnabled;
+  return _interactionDebugEnabled;
+}
+
+/** Read the current enabled state without toggling. */
+export function isInteractionDebugEnabled(): boolean {
+  return _interactionDebugEnabled;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +96,27 @@ export interface DebugRenderOptions {
   showForceField?: boolean;
   /** Animate stats-panel slide-in/out (easing) */
   animatePanels?: boolean;
+  /**
+   * M1287: Draw species interaction lines between nearby cells.
+   * Green = attraction (G>0), red = repulsion (G<0).
+   * Controlled via toggleInteractionDebug() or by setting this flag.
+   */
+  showInteractionMatrix?: boolean;
+}
+
+/**
+ * M1287: A positioned, species-tagged cell for the interaction debug overlay.
+ * Pass an array of these to renderDebugOverlay() via PhysicsWorld.debugCells.
+ */
+export interface DebugCell {
+  /** Unique cell identifier */
+  id: string;
+  /** Species key matching species_interaction_matrix.json (e.g. "cil-eye") */
+  species: string;
+  /** World-space centre X in canvas pixels */
+  cx: number;
+  /** World-space centre Y in canvas pixels */
+  cy: number;
 }
 
 export interface Vec2 {
@@ -101,6 +183,12 @@ export interface PhysicsWorld {
   particles?: DebugParticle[];
   /** Optional force-field samples for the arrow grid overlay */
   forceField?: ForceFieldSample[];
+  /**
+   * M1287: Optional positioned + species-tagged cells for the interaction
+   * matrix debug overlay. When provided and showInteractionMatrix is true,
+   * attraction/repulsion lines are drawn between pairs within interaction_radius.
+   */
+  debugCells?: DebugCell[];
   stats?: {
     bodyCount: number;
     activeContacts: number;
@@ -738,6 +826,71 @@ function drawForceFieldLegend(
 }
 
 // ---------------------------------------------------------------------------
+// M1287: Species interaction matrix overlay
+//
+// For each ordered pair (A, B) of cells within interaction_radius we look up
+// G = matrix[A.species][B.species].  To avoid drawing the same line twice we
+// only draw when A.id < B.id (lexicographic) and use the average of the two
+// directional G values as the displayed strength.
+//
+//   G > 0 → attraction → green  line, lineWidth = G  * 2
+//   G < 0 → repulsion  → red    line, lineWidth = |G| * 2
+// ---------------------------------------------------------------------------
+
+function drawInteractionLines(
+  ctx: CanvasRenderingContext2D,
+  cells: DebugCell[],
+  matrix: SpeciesInteractionMatrix,
+): void {
+  if (!cells.length) return;
+
+  const radiusSq = matrix.interaction_radius * matrix.interaction_radius;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+
+  for (let i = 0; i < cells.length; i++) {
+    const a = cells[i];
+    for (let j = i + 1; j < cells.length; j++) {
+      const b = cells[j];
+
+      // Distance check — only draw pairs within interaction_radius
+      const dx = b.cx - a.cx;
+      const dy = b.cy - a.cy;
+      if (dx * dx + dy * dy > radiusSq) continue;
+
+      // Look up G for both directions; average for display
+      const gAB = matrix.matrix[a.species]?.[b.species] ?? 0;
+      const gBA = matrix.matrix[b.species]?.[a.species] ?? 0;
+      const g = (gAB + gBA) / 2;
+
+      if (Math.abs(g) < 1e-6) continue; // neutral — skip
+
+      const lineWidth = Math.abs(g) * 2;
+      // Fade line with distance: alpha 0.8 at touching → 0.2 at radius edge
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const alpha = 0.2 + 0.6 * (1 - dist / matrix.interaction_radius);
+
+      if (g > 0) {
+        // Attraction — green
+        ctx.strokeStyle = `rgba(0, 220, 60, ${alpha.toFixed(3)})`;
+      } else {
+        // Repulsion — red
+        ctx.strokeStyle = `rgba(220, 40, 40, ${alpha.toFixed(3)})`;
+      }
+
+      ctx.lineWidth = Math.max(0.5, lineWidth);
+      ctx.beginPath();
+      ctx.moveTo(a.cx, a.cy);
+      ctx.lineTo(b.cx, b.cy);
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // Public entry-point
 // ---------------------------------------------------------------------------
 
@@ -755,6 +908,14 @@ export function renderDebugOverlay(
   const animate = options.animatePanels !== false;
 
   ctx.save();
+
+  // ── M1287: Species interaction matrix overlay (lowest layer — under BVH) ─
+  // Enabled when: toggleInteractionDebug() is active OR options.showInteractionMatrix.
+  if ((_interactionDebugEnabled || options.showInteractionMatrix) &&
+      world.debugCells?.length &&
+      _speciesMatrix) {
+    drawInteractionLines(ctx, world.debugCells, _speciesMatrix);
+  }
 
   // ── Density heatmap (lowest layer) ──────────────────────────────────────
   if (options.showDensityHeatmap && world.particles?.length) {
