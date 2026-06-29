@@ -420,11 +420,13 @@ export class GPURenderLoop {
         'UnrealBloomComposite/UnrealBloomComposite/homebloom/bloomStrength', 1.2,
       );
       // Final blend: hero bloom + accent layer
-      const finalStrength = homeStrength * 0.7 + homebloomStrength * 0.3;
+      // Clamp to safe range for our non-HDR composite (AT uses ACES tonemap)
+      const finalStrength = Math.min((homeStrength * 0.7 + homebloomStrength * 0.3) * 0.35, 2.0);
+      const finalThreshold = Math.max(lumThreshold, 0.25); // never let threshold go to 0
       this.bloom.updateConfig({
         strength:  finalStrength,
         radius:    homeRadius,
-        threshold: lumThreshold,
+        threshold: finalThreshold,
       });
     }
 

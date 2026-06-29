@@ -235,7 +235,7 @@ const DEFAULT_GLASS_CONFIG: GlassConfig = {
   glassOpacity: 0.15,
   tintColor: [0.706, 0.878, 0.89],  // AT: uFresnelColor #b4e0e3
   tintStrength: 0.50,             // AT: uAttenuation = 0.5
-  distortStrength: 8.06,          // AT: uDistortStrength = 8.06 (not 0.04!)
+  distortStrength: 0.08,           // AT raw=8.06, scaled down for our UV space
 };
 
 /** Cell 矩形描述 — 像素坐标 (x, y 左上角, w, h) */

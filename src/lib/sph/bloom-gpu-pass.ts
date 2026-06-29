@@ -137,13 +137,12 @@ interface BloomConfig {
 const DEFAULT_BLOOM: BloomConfig = {
   width: 1024,
   height: 1024,
-  // AT uil-params.json production values (home scene):
-  //   UnrealBloomComposite/home/bloomStrength = 3.82
-  //   UnrealBloomComposite/home/bloomRadius   = 1.0
-  //   UnrealBloomLuminosity/home/luminosityThreshold = 0
-  threshold: 0.0,       // AT: luminosityThreshold = 0 (all pixels contribute)
-  knee: 0.1,
-  strength: 3.82,       // AT home/bloomStrength — dramatic glow
+  // AT luminosityThreshold=0 works in AT's HDR pipeline with ACES tonemap.
+  // Our composite uses screen blend without HDR clamp, so threshold=0 + strength=3.82
+  // washes out the entire image. Use moderate values instead.
+  threshold: 0.35,      // only bloom bright areas (specular highlights, edges)
+  knee: 0.15,
+  strength: 1.2,        // visible glow without washing out
   levels: 4,
   radius: 1.0,          // AT home/bloomRadius — full diffusion
   tintColor: [1.0, 0.95, 0.85],  // warm tint

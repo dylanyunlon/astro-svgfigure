@@ -421,13 +421,12 @@ export class PBRCellGPU {
     gl.vertexAttribPointer(this.aCorner, 2, gl.FLOAT, false, 0, 0);
 
     // ── Scene-level uniforms (light + ambient) ────────────────────────────────
-    // AT uil-params.json: GlassCubeShader/Element_0_home_scene/uLightDir = [-15.7, 0.28, 4.5]
-    // Normalised: [-0.961, 0.017, 0.275] — dramatic side light from far left
-    // AT: uEnv = [1.5, 1] → specular 1.5×, diffuse 1.0×
-    // AT: uTint = #e5f1ff → cool blue ambient
-    gl.uniform3f(this.uLightDir,  -0.961, 0.017, 0.275);
-    gl.uniform3f(this.uLightColor, 1.5,   1.44,  1.35);    // warm key light, AT-level intensity
-    gl.uniform3f(this.uAmbient,    0.133, 0.161, 0.212);   // AT: uTint #e5f1ff scaled to ambient
+    // AT-inspired lighting: dramatic side-key + strong fill
+    // Key light from upper-left-front: strong enough to reveal PBR detail
+    // AT home scene has very bright overall illumination despite side light
+    gl.uniform3f(this.uLightDir,  -0.4, 0.3, 0.86);       // upper-left-front (NdotL ≈ 0.86 for flat surfaces)
+    gl.uniform3f(this.uLightColor, 2.2,  2.1,  1.95);      // bright warm key (AT-level HDR)
+    gl.uniform3f(this.uAmbient,    0.35, 0.38, 0.45);      // strong cool ambient fill
 
     // ── Per-cell draw loop ────────────────────────────────────────────────────
     for (const cell of cells) {
