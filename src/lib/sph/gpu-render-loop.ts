@@ -17,8 +17,6 @@ import { UELumenGI } from './ue-lumen-gi';
 import { GPUPerfMonitor } from './gpu-perf-monitor';
 import { parseUILParams, type UILParamsJson } from '../renderers/at-uil-bridge';
 import uilParamsJson from '../../../upstream/activetheory-assets/uil-params.json';
-// M1268: per-cell force field (keyed by cell_id) → {dx, dy, dz}
-import forceFieldJson from '../../../channels/physics/force_field.json';
 import { ATVolumetricLight } from './at-volumetric-light';
 import { ATWaterSurface } from './at-water-surface';
 import { UEAtmosphereSky } from './ue-atmosphere-sky';
@@ -141,15 +139,6 @@ export class GPURenderLoop {
   private _camScale = 1;
   private _camOffX = 0;
   private _camOffY = 0;
-
-  // M1268: force-field driven cell animation
-  // Force vectors keyed by cell_id → { dx, dy, dz } (pixels/sec-ish push)
-  private forceField: Record<string, { dx: number; dy: number; dz?: number }> =
-    forceFieldJson as Record<string, { dx: number; dy: number; dz?: number }>;
-  // Per-cell velocity accumulator (pixel-space) for damping + smooth motion
-  private _cellVel: Record<string, { vx: number; vy: number }> = {};
-  private static readonly FORCE_DAMPING = 0.95;      // velocity decay per frame → convergence
-  private static readonly BREATHING_AMPLITUDE = 0.1; // ±0.1px per-frame random perturbation
 
   // 状态
   private cells: CellData[] = [];
@@ -350,7 +339,6 @@ export class GPURenderLoop {
   setScene(
     cells: CellData[],
     edges: EdgeData[],
-    forceField?: Record<string, { dx: number; dy: number; dz?: number }>,
   ): void {
     this.cells = cells;
     this.edges = edges;
@@ -361,11 +349,6 @@ export class GPURenderLoop {
       const interactionCells = cells.map(c => ({cell_id: c.cell_id, bbox: {x: c.x, y: c.y, w: c.w, h: c.h}, z: c.z, species: c.species}));
       this.physics = new CellInteractionPhysics(interactionCells, {gravity: {x: 0, y: 0}, damping: 0.92, speciesPhysics: speciesPhysicsJson as any});
     } catch(e) { console.warn('[GPURenderLoop] physics init failed:', e); }
-
-    // M1268: accept an optional force-field override (else keep the bundled default)
-    if (forceField) this.forceField = forceField;
-    // Reset per-cell velocity accumulators for the new scene
-    this._cellVel = {};
 
     // ── Rebuild AT jellyfish instances from current cell list ──
     if (this.atJellyfish) {
@@ -629,48 +612,6 @@ export class GPURenderLoop {
     }
   }
 
-  /**
-   * M1268: Apply the per-cell force field to each cell's pixel-space position.
-   *
-   * For every cell we look up its force vector (keyed by cell_id) in
-   * `this.forceField`, integrate it into a per-cell velocity (× dt), apply a
-   * damping coefficient (0.95) so the motion converges instead of drifting
-   * forever, and add a tiny ±0.1px random perturbation each frame so idle
-   * cells gently "breathe". The resulting velocity is added to the cell's x/y.
-   *
-   * Called at the top of frame(), before the auto-fit camera measures the
-   * bounding box, so the camera tracks the animated positions.
-   */
-  applyForceField(dt: number): void {
-    // Guard against absurd dt spikes (tab refocus etc.) — clamp to ~2 frames
-    const step = Math.min(Math.max(dt, 0), 1 / 30);
-    const damping = GPURenderLoop.FORCE_DAMPING;
-    const breath = GPURenderLoop.BREATHING_AMPLITUDE;
-
-    for (const c of this.cells) {
-      // Look up / init this cell's velocity accumulator
-      let vel = this._cellVel[c.cell_id];
-      if (!vel) { vel = { vx: 0, vy: 0 }; this._cellVel[c.cell_id] = vel; }
-
-      // Force vector for this cell (zero if not present in the field)
-      const f = this.forceField[c.cell_id];
-      const fx = f ? f.dx : 0;
-      const fy = f ? f.dy : 0;
-
-      // Integrate force × dt into velocity, then damp toward rest
-      vel.vx = (vel.vx + fx * step) * damping;
-      vel.vy = (vel.vy + fy * step) * damping;
-
-      // Tiny per-frame random perturbation for a "breathing" feel (±breath px)
-      const jitterX = (Math.random() * 2 - 1) * breath;
-      const jitterY = (Math.random() * 2 - 1) * breath;
-
-      // Accumulate force-driven velocity (× dt) + breathing into pixel position
-      c.x += vel.vx * step + jitterX;
-      c.y += vel.vy * step + jitterY;
-    }
-  }
-
   /** 单帧渲染 — 执行全部 GPU pass，每 pass 带 error guard + perf 计时 */
   frame(dt: number): void {
     const gl = this.gl;
@@ -687,12 +628,40 @@ export class GPURenderLoop {
         const st = this.physics.getState(c.cell_id);
         if (st) { c.x = st.x - c.w/2; c.y = st.y - c.h/2; }
       }
-    }
 
-    // ── M1268: Force-field driven cell motion ───────────────────────────────
-    // Advance each cell's pixel-space position by its force vector before the
-    // auto-fit camera measures the bounding box, so the camera tracks motion.
-    this.applyForceField(dt);
+      // ── M1271: Edge topology spring forces ──────────────────────────────────
+      // Each edge is a chemical bond between its source/target cell. Bonded cells
+      // should attract each other: when they drift farther apart than the ideal
+      // bond length, apply a weak Hooke's-law spring impulse (k=0.01) pulling them
+      // back together. This keeps connected sub-graphs cohesive without collapsing
+      // them (the spring only pulls when distance > REST_LEN).
+      const SPRING_K = 0.01;   // spring stiffness (weak)
+      const REST_LEN = 200;    // ideal bond length in pixels
+      const centers = new Map<string, { cx: number; cy: number }>();
+      for (const c of this.cells) {
+        centers.set(c.cell_id, { cx: c.x + c.w / 2, cy: c.y + c.h / 2 });
+      }
+      for (const e of this.edges) {
+        const a = centers.get(e.source);
+        const b = centers.get(e.target);
+        if (!a || !b) continue;
+
+        const dx = b.cx - a.cx;
+        const dy = b.cy - a.cy;
+        const dist = Math.hypot(dx, dy);
+        if (dist <= REST_LEN || dist === 0) continue; // only pull when stretched
+
+        // Hooke's law: force magnitude ∝ stretch beyond rest length
+        const stretch = dist - REST_LEN;
+        const f = SPRING_K * stretch;
+        const ux = dx / dist;
+        const uy = dy / dist;
+
+        // Pull both endpoints toward each other (equal & opposite impulses)
+        this.physics.throwCell(e.source,  ux * f,  uy * f);
+        this.physics.throwCell(e.target, -ux * f, -uy * f);
+      }
+    }
 
     // ── M1219: Auto-fit camera — scale all cells into the viewport ──────────
     // Cells live in a 0-2052 × 0-3965 pixel space but the canvas is ~1920×1080.
