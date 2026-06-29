@@ -1,0 +1,36 @@
+{
+  "medium": {
+    "type": "cytoplasm",
+    "viscosity": 0.3,
+    "density": 1050,
+    "temperature": 310,
+    "pH": 7.2
+  },
+  "flow_field": {
+    "type": "laminar",
+    "direction": [0.1, -0.02],
+    "speed": 15,
+    "turbulence": 0.05
+  },
+  "light": {
+    "direction": [-0.4, 0.3, 0.86],
+    "intensity": 1.8,
+    "color": [1.0, 0.98, 0.92],
+    "ambient": 0.35
+  },
+  "gradients": {
+    "temperature": {"center": [1000, 2000], "radius": 800, "delta": 5},
+    "nutrient": {"center": [500, 1000], "radius": 1200, "concentration": 0.8},
+    "signal_molecule": {"sources": [], "decay_rate": 0.02, "diffusion": 50}
+  },
+  "boundaries": {
+    "type": "soft_wall",
+    "repel_force": 100,
+    "margin": 50,
+    "width": 2052,
+    "height": 3965
+  },
+  "gravity": {"x": 0, "y": 0.5, "note": "slight downward drift simulating sedimentation"},
+  "brownian_noise": 0.3,
+  "surface_tension_at_boundary": 0.1
+}

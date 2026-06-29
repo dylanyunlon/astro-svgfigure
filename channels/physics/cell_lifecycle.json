@@ -1,0 +1,28 @@
+{
+  "energy_system": {
+    "base_consumption": 0.01,
+    "movement_cost": 0.001,
+    "collision_cost": 0.005,
+    "regeneration_rate": 0.008,
+    "max_energy": 1.0
+  },
+  "lifecycle": {
+    "division_energy_threshold": 0.9,
+    "division_cooldown_ms": 5000,
+    "apoptosis_energy_threshold": 0.05,
+    "apoptosis_delay_ms": 3000,
+    "max_age_ms": 120000
+  },
+  "signaling": {
+    "signal_radius": 200,
+    "signal_decay": 0.95,
+    "quorum_threshold": 4,
+    "quorum_response": "cluster"
+  },
+  "membrane": {
+    "permeability": 0.5,
+    "elasticity": 0.7,
+    "repair_rate": 0.02,
+    "rupture_threshold": 0.8
+  }
+}
