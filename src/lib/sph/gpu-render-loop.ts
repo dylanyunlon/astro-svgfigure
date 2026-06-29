@@ -1072,6 +1072,48 @@ export class GPURenderLoop {
       this.perf.passEnd('atmosphereSky', t);
     }
 
+    // ── Pass 0b: M1285 — Nutrient + Temperature gradient background ──────────
+    // Drawn onto the canvas (default FBO) right after the sky background and
+    // before any cell geometry, using additive blending so the glows layer
+    // on top of the sky without darkening it.
+    {
+      const t = this.perf.passStart('gradients');
+      try {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, W, H);
+        gl.enable(gl.BLEND);
+        // Additive blend: dst = src*ONE + dst*ONE
+        gl.blendFunc(gl.ONE, gl.ONE);
+
+        const ng = this.env.gradients.nutrient;
+        // nutrient: center=[500,1000], radius=1200, concentration=0.8
+        // colour: rgba(100,200,100, concentration*0.15) → normalised
+        this._renderGradient(
+          ng.center[0], ng.center[1], ng.radius,
+          100 / 255, 200 / 255, 100 / 255,
+          ng.concentration * 0.15,
+          W, H, camScale, camOffX, camOffY,
+        );
+
+        const tg = this.env.gradients.temperature;
+        // temperature: center=[1000,2000], radius=800
+        // colour: rgba(255,100,50, 0.1) → normalised
+        this._renderGradient(
+          tg.center[0], tg.center[1], tg.radius,
+          255 / 255, 100 / 255, 50 / 255,
+          0.1,
+          W, H, camScale, camOffX, camOffY,
+        );
+
+        // Restore normal alpha blend for subsequent passes
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      } catch (e) {
+        if (this.frameCount <= 10) console.warn('[GPURenderLoop] gradient pass error:', e);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      }
+      this.perf.passEnd('gradients', t);
+    }
+
     // ── Pass 1: Fluid (鼠标流体 → FBO) ──
     {
       const t = this.perf.passStart('fluid');
@@ -1590,9 +1632,118 @@ export class GPURenderLoop {
     return tex;
   }
 
-  /** Blit a texture to current framebuffer (fullscreen quad) */
-  private _blitProg: WebGLProgram | null = null;
-  private _blitVBO: WebGLBuffer | null = null;
+  // ── M1285: nutrient + temperature gradient background ──────────────────
+  /** Shared fullscreen quad VBO for gradient passes */
+  private _gradVBO: WebGLBuffer | null = null;
+  /** Radial-gradient shader program (lazy-compiled on first use) */
+  private _gradProg: WebGLProgram | null = null;
+
+  /**
+   * Renders a single radial gradient as a fullscreen additive-blend quad
+   * directly onto the default (canvas) framebuffer.
+   *
+   * The gradient centre is given in cell-space pixels; it is mapped through
+   * the auto-fit camera transform (camScale / camOffX / camOffY) to canvas
+   * pixel space, then compared against each fragment's gl_FragCoord so no
+   * NDC arithmetic is needed in JS.
+   *
+   * Caller is responsible for setting additive blend mode before the call.
+   *
+   * @param centerCellX  Gradient centre X in cell-space pixels
+   * @param centerCellY  Gradient centre Y in cell-space pixels (top-down)
+   * @param radiusCells  Gradient radius in cell-space pixels
+   * @param r g b        Peak colour components [0..1]
+   * @param a            Peak alpha at centre [0..1]
+   * @param W H          Canvas width / height in pixels
+   * @param camScale     Auto-fit uniform scale factor
+   * @param camOffX      Auto-fit X offset in canvas pixels
+   * @param camOffY      Auto-fit Y offset in canvas pixels (top-down)
+   */
+  private _renderGradient(
+    centerCellX: number, centerCellY: number, radiusCells: number,
+    r: number, g: number, b: number, a: number,
+    W: number, H: number,
+    camScale: number, camOffX: number, camOffY: number,
+  ): void {
+    const gl = this.gl;
+
+    // ── Lazy-init gradient shader ──────────────────────────────────────────
+    if (!this._gradProg) {
+      const vs = gl.createShader(gl.VERTEX_SHADER)!;
+      gl.shaderSource(vs, [
+        '#version 300 es',
+        'in vec2 aPos;',
+        'void main() { gl_Position = vec4(aPos, 0.0, 1.0); }',
+      ].join('\n'));
+      gl.compileShader(vs);
+
+      const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+      gl.shaderSource(fs, [
+        '#version 300 es',
+        'precision highp float;',
+        '// centre in canvas-pixel (fragCoord) space',
+        'uniform vec2  uCenter;',
+        '// radius in canvas pixels',
+        'uniform float uRadius;',
+        '// peak colour + alpha',
+        'uniform vec4  uColor;',
+        'out vec4 fragColor;',
+        'void main() {',
+        '  float dx   = gl_FragCoord.x - uCenter.x;',
+        '  float dy   = gl_FragCoord.y - uCenter.y;',
+        '  float dist = sqrt(dx*dx + dy*dy) / uRadius;',
+        '  float t    = max(0.0, 1.0 - dist);',
+        '  float alpha = t * t;  // quadratic falloff — soft edge',
+        '  fragColor = vec4(uColor.rgb, uColor.a * alpha);',
+        '}',
+      ].join('\n'));
+      gl.compileShader(fs);
+
+      const prog = gl.createProgram()!;
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.warn('[GPURenderLoop] gradient shader link failed:',
+          gl.getProgramInfoLog(prog));
+        return;
+      }
+      this._gradProg = prog;
+    }
+
+    // ── Lazy-init fullscreen quad VBO ──────────────────────────────────────
+    if (!this._gradVBO) {
+      this._gradVBO = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._gradVBO);
+      gl.bufferData(gl.ARRAY_BUFFER,
+        new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),
+        gl.STATIC_DRAW);
+    }
+
+    // ── Transform cell-space centre → canvas-pixel fragCoord space ────────
+    // camOffY uses top-down convention; gl_FragCoord.y is bottom-up.
+    const cpx     = centerCellX * camScale + camOffX;          // canvas px X
+    const cpyTD   = centerCellY * camScale + camOffY;          // canvas px Y (top-down)
+    const cpyGL   = H - cpyTD;                                 // flip to bottom-up
+    const radiusPx = radiusCells * camScale;
+
+    // ── Draw fullscreen quad with uniforms ──────────────────────────────────
+    gl.useProgram(this._gradProg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._gradVBO);
+    const posLoc = gl.getAttribLocation(this._gradProg, 'aPos');
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+    gl.uniform2f(gl.getUniformLocation(this._gradProg, 'uCenter'), cpx, cpyGL);
+    gl.uniform1f(gl.getUniformLocation(this._gradProg, 'uRadius'), radiusPx);
+    gl.uniform4f(gl.getUniformLocation(this._gradProg, 'uColor'), r, g, b, a);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
   private _blitTexture(tex: WebGLTexture, w: number, h: number): void {
     const gl = this.gl;
     if (!this._blitProg) {
