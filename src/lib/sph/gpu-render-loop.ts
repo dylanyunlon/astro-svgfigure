@@ -648,7 +648,7 @@ export class GPURenderLoop {
       const c0 = this.cells[0];
       if (c0) {
         console.log('[GPURenderLoop] cell[0] NDC:', {
-          name: c0.id,
+          name: c0.cell_id,
           x: toNdcX(c0.x + c0.w/2).toFixed(3),
           y: toNdcY(c0.y + c0.h/2).toFixed(3),
           sizeX: (fitD(c0.w) / W).toFixed(4),
@@ -727,6 +727,7 @@ export class GPURenderLoop {
             this.pbr.initFBO(W, H);
             this._pbrFBOReady = true;
           }
+          this.pbr.setTime(time);
           this.pbr.renderCells(descs);
           cellTex = this.pbr.pbrTexture;
         } else {
@@ -998,6 +999,18 @@ export class GPURenderLoop {
       while (gl.getError() !== gl.NO_ERROR) { /* drain */ }
     }
 
+    // ── Estimate draw calls from active passes + cells ──
+    let dc = this.cells.length + this.edges.length; // PBR + edge
+    dc += this.cells.length; // SDF icons
+    dc += 2; // MSDF shadow+main
+    if (this.bloom) dc += 3;
+    if (this.composite) dc += 1;
+    if (this.shadow) dc += 2;
+    if (this.fluid) dc += 1;
+    if (this.particle) dc += 2;
+    if (this.glass) dc += 1;
+    for (let i = 0; i < dc; i++) this.perf.countDraw();
+
     this.perf.frameEnd();
     this.frameCount++;
 
@@ -1005,6 +1018,12 @@ export class GPURenderLoop {
     if (this.frameCount === 60) {
       console.log('[GPURenderLoop] perf:', this.perf.stats);
     }
+  }
+
+  /** Expose perf stats for HUD */
+  get stats(): { fps: number; frameMs: number; drawCalls: number; cellCount: number; edgeCount: number; passes: Record<string, number> } {
+    const s = this.perf.stats;
+    return { ...s, cellCount: this.cells.length, edgeCount: this.edges.length };
   }
 
   /**

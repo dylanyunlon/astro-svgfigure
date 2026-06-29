@@ -1123,6 +1123,10 @@ export const prerender = true;
         loop.setScene(cells, edges);
         loop.start();
         console.info(`[gpu-world] GPURenderLoop started — ${cells.length} cells, ${edges.length} edges`);
+        // M1259: wire HUD
+        hudBackend.textContent = 'WEBGL2';
+        hudRenderMode.textContent = 'PBR+SDF';
+        setInterval(() => { try { const s = loop.stats; hudFps.textContent = String(s.fps); hudParticles.textContent = String(s.cellCount); } catch(_){} }, 250);
         // 隐藏 overlay
         const overlay = document.getElementById('init-overlay');
         if (overlay) overlay.classList.add('hidden');
@@ -1137,7 +1141,7 @@ export const prerender = true;
 
     const gpu = await initWebGPU(canvas);
     if (!gpu) {
-      hudBackend.textContent = 'NONE';
+      hudBackend.textContent = 'WEBGL2';
       fallbackBanner.classList.add('visible');
       // WebGPU 不可用 → 用 GPURenderLoop (WebGL2) 作为主渲染路径
       console.info('[world] WebGPU unavailable — falling back to GPURenderLoop (WebGL2)');
@@ -1711,6 +1715,11 @@ export const prerender = true;
         // Seed all 7 passes with 58 cells + 57 edges
         gpuRenderLoop.setScene(cells, edges);
         gpuRenderLoop.start();
+
+        // M1259: wire HUD
+        hudBackend.textContent = 'WEBGL2';
+        hudRenderMode.textContent = 'PBR+SDF';
+        setInterval(() => { try { if (!gpuRenderLoop) return; const s = gpuRenderLoop.stats; hudFps.textContent = String(s.fps); hudParticles.textContent = String(s.cellCount); } catch(_){} }, 250);
 
         // 隐藏 init overlay — GPURenderLoop 是主渲染路径，不需要等 WebGPU
         const overlay = document.getElementById('init-overlay');

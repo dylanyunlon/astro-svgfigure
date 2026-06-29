@@ -175,22 +175,31 @@ in vec3  vViewDir;
 uniform vec3  uAlbedo;
 uniform float uMetallic;
 uniform float uRoughness;
-uniform vec3  uLightDir;    // normalised world-space light direction
-uniform vec3  uLightColor;  // HDR light RGB
-uniform vec3  uAmbient;     // ambient / sky colour
+uniform vec3  uLightDir;
+uniform vec3  uLightColor;
+uniform vec3  uAmbient;
+
+// ── M1259: visual params ────────────────────────────────────────────────────
+uniform vec3  uGlowColor;
+uniform float uHaloRadius;
+uniform int   uNumRays;
+uniform float uFocalIntensity;
+uniform int   uSdfShape;        // 0=rounded_rect, 1=capsule
+uniform int   uInternalPattern; // 0=none,1=grid,2=bars,3=sine,4=bottleneck,5=plus
+uniform float uAnimSpeed;
+uniform float uOpacity;
+uniform float uTime;
 
 // ── MRT outputs ─────────────────────────────────────────────────────────────
-layout(location = 0) out vec4 gAlbedo;    // rgb=albedo,       a=metallic
-layout(location = 1) out vec4 gNormal;    // rgb=view-space N, a=1
-layout(location = 2) out vec4 gRoughAO;  // r=roughness,      g=AO
-layout(location = 3) out vec4 gDepthOut; // r=linear depth
+layout(location = 0) out vec4 gAlbedo;
+layout(location = 1) out vec4 gNormal;
+layout(location = 2) out vec4 gRoughAO;
+layout(location = 3) out vec4 gDepthOut;
 
-// ── Schlick Fresnel ──────────────────────────────────────────────────────────
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(max(1.0 - cosTheta, 0.0), 5.0);
 }
 
-// ── GGX NDF (Trowbridge-Reitz) ───────────────────────────────────────────────
 float distributionGGX(vec3 N, vec3 H, float roughness) {
     float a     = roughness * roughness;
     float a2    = a * a;
@@ -200,14 +209,12 @@ float distributionGGX(vec3 N, vec3 H, float roughness) {
     return a2 / (PI * denom * denom);
 }
 
-// ── Smith G sub-term (GGX-Schlick) ──────────────────────────────────────────
 float geometrySchlickGGX(float NdotV, float roughness) {
     float r = roughness + 1.0;
     float k = (r * r) / 8.0;
     return NdotV / (NdotV * (1.0 - k) + k);
 }
 
-// ── Smith masking-shadowing ──────────────────────────────────────────────────
 float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
     float NdotV = max(dot(N, V), 0.0);
     float NdotL = max(dot(N, L), 0.0);
@@ -216,60 +223,116 @@ float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
 }
 
 void main() {
-    // Rounded rectangle — soft edge with small corner radius
-    vec2  d    = abs(vUv * 2.0 - 1.0);
-    float cornerR = 0.08;
-    vec2  q    = d - vec2(1.0 - cornerR);
-    float sdf  = length(max(q, 0.0)) - cornerR;
-    if (sdf > 0.02) discard;
-    float edgeAlpha = 1.0 - smoothstep(0.0, 0.02, sdf);
+    // ── SDF shape ────────────────────────────────────────────────────────────
+    vec2  p = vUv * 2.0 - 1.0;
+    float sdf;
 
+    if (uSdfShape == 1) {
+        // Capsule: horizontal pill shape
+        float capR = 0.85;
+        vec2 q = abs(p) - vec2(max(1.0 - capR, 0.0), 0.0);
+        sdf = length(max(q, 0.0)) - capR;
+    } else {
+        // Rounded rect with generous corner radius
+        float cornerR = 0.14;
+        vec2 d = abs(p) - vec2(1.0 - cornerR);
+        sdf = length(max(d, 0.0)) - cornerR;
+    }
+
+    // ── Halo glow (extends beyond cell body) ─────────────────────────────────
+    float haloGlow = 0.0;
+    if (uHaloRadius > 0.01) {
+        haloGlow = exp(-max(sdf, 0.0) / uHaloRadius * 2.5) * uHaloRadius * 1.5;
+    }
+
+    // Discard pixels outside body + halo
+    if (sdf > uHaloRadius + 0.05) discard;
+    float edgeAlpha = 1.0 - smoothstep(-0.01, 0.02, sdf);
+
+    // ── PBR Cook-Torrance ────────────────────────────────────────────────────
     vec3  N    = normalize(vNormal);
     vec3  V    = normalize(vViewDir);
     vec3  L    = normalize(uLightDir);
     vec3  H    = normalize(V + L);
-
     float NdotL = max(dot(N, L), 0.0);
 
-    // ── F0: dielectric = 0.04, metal = albedo ────────────────────────────────
     vec3  F0   = mix(vec3(0.04), uAlbedo, uMetallic);
     vec3  F    = fresnelSchlick(max(dot(H, V), 0.0), F0);
-
-    // ── Cook-Torrance specular ────────────────────────────────────────────────
     float NDF  = distributionGGX(N, H, uRoughness);
     float G    = geometrySmith(N, V, L, uRoughness);
     const float EPS = 0.001;
-    vec3  numerator   = NDF * G * F;
-    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + EPS;
-    vec3  specular    = numerator / denominator;
-
-    // ── Lambert diffuse (metals have no diffuse) ──────────────────────────────
+    const float PI  = 3.14159265358979;
+    vec3  specular = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * NdotL + EPS);
     vec3  kS   = F;
     vec3  kD   = (1.0 - kS) * (1.0 - uMetallic);
-    const float PI = 3.14159265358979;
     vec3  diffuse = kD * uAlbedo / PI;
-
-    // ── Combine ───────────────────────────────────────────────────────────────
     vec3  Lo   = (diffuse + specular) * uLightColor * NdotL;
     vec3  ambient = uAmbient * uAlbedo * (1.0 - uMetallic * 0.5);
     vec3  color   = ambient + Lo;
 
-    // Approximate AO from hemisphere curvature (centre = 1, edge = 0.5)
-    float ao   = mix(0.5, 1.0, max(0.0, dot(N, V)));
+    // ── Internal pattern ─────────────────────────────────────────────────────
+    float pattern = 0.0;
+    float t = uTime * uAnimSpeed;
+    if (uInternalPattern == 1) {
+        // multi_head_attention_grid
+        vec2 grid = fract(vUv * 4.0);
+        pattern = step(0.06, grid.x) * step(0.06, grid.y) * 0.18;
+        pattern *= 0.8 + 0.2 * sin(t * 2.0);
+    } else if (uInternalPattern == 2) {
+        // bars (heatmap / probability)
+        pattern = (sin(vUv.x * 14.0 + t * 0.8) * 0.5 + 0.5) * 0.15;
+        pattern *= smoothstep(0.1, 0.3, vUv.y) * smoothstep(0.1, 0.3, 1.0 - vUv.y);
+    } else if (uInternalPattern == 3) {
+        // sine_cosine_alternating_bands
+        pattern = sin(vUv.y * 10.0 + t) * 0.12;
+        pattern += cos(vUv.x * 8.0 - t * 0.7) * 0.06;
+    } else if (uInternalPattern == 4) {
+        // expand_contract_bottleneck
+        float squeeze = sin(vUv.y * PI) * 0.35;
+        float neck = smoothstep(0.5 - squeeze, 0.5 + squeeze, vUv.x);
+        pattern = neck * 0.12 * (0.8 + 0.2 * sin(t));
+    } else if (uInternalPattern == 5) {
+        // plus_sign_merge_indicator
+        vec2 c = abs(vUv - 0.5);
+        float cross = min(step(c.x, 0.09), 1.0) + min(step(c.y, 0.09), 1.0);
+        pattern = min(cross, 1.0) * 0.22;
+    }
+    color += uAlbedo * pattern;
 
-    // Linear depth — z in NDC is 0 (we use orthographic flat scene)
-    // Encode sphere depth: centre=0 (closest), silhouette=1 (furthest)
-    float depth = 1.0 - N.z;  // 0 at front, ~1 at silhouette
+    // ── Rays (radial light beams from center) ────────────────────────────────
+    if (uNumRays > 0) {
+        vec2 center = vUv - 0.5;
+        float angle = atan(center.y, center.x);
+        float rayFreq = float(uNumRays);
+        float rays = pow(abs(sin(angle * rayFreq * 0.5 + t * 0.5)), 6.0) * uFocalIntensity;
+        rays *= smoothstep(0.08, 0.35, length(center));
+        rays *= edgeAlpha;
+        color += uGlowColor * rays;
+    }
 
-    // ── Reinhard tone-map + gamma (for the albedo output only) ───────────────
-    vec3  tonemapped = color / (color + vec3(1.0));
+    // ── Edge glow emission ───────────────────────────────────────────────────
+    float edgeEmission = smoothstep(0.3, 0.0, sdf + 0.15) * 0.3;
+    color += uGlowColor * edgeEmission;
+
+    // ── Halo contribution ────────────────────────────────────────────────────
+    color += uGlowColor * haloGlow * 1.8;
+
+    // ── AO + depth ───────────────────────────────────────────────────────────
+    float ao = mix(0.5, 1.0, max(0.0, dot(N, V)));
+    float depth = 1.0 - N.z;
+
+    // ── Reinhard tone-map + gamma ────────────────────────────────────────────
+    vec3 tonemapped = color / (color + vec3(1.0));
     tonemapped = pow(tonemapped, vec3(1.0 / 2.2));
 
+    // ── Final alpha: body + halo ─────────────────────────────────────────────
+    float finalAlpha = max(edgeAlpha * uOpacity, haloGlow * 0.5);
+
     // ── MRT writes ───────────────────────────────────────────────────────────
-    gAlbedo   = vec4(tonemapped, uMetallic) * edgeAlpha;        // attachment 0
-    gNormal   = vec4(N * 0.5 + 0.5, edgeAlpha);                // attachment 1
-    gRoughAO  = vec4(uRoughness, ao, 0.0, 0.0) * edgeAlpha;    // attachment 2
-    gDepthOut = vec4(depth, 0.0, 0.0, edgeAlpha);               // attachment 3
+    gAlbedo   = vec4(tonemapped, uMetallic) * finalAlpha;
+    gNormal   = vec4(N * 0.5 + 0.5, finalAlpha);
+    gRoughAO  = vec4(uRoughness, ao, 0.0, 0.0) * finalAlpha;
+    gDepthOut = vec4(depth, 0.0, 0.0, finalAlpha);
 }
 `;
 
@@ -306,6 +369,17 @@ export class PBRCellGPU {
   private uLightDir!:   WebGLUniformLocation;
   private uLightColor!: WebGLUniformLocation;
   private uAmbient!:    WebGLUniformLocation;
+  // M1259: visual params
+  private uGlowColor!:       WebGLUniformLocation;
+  private uHaloRadius!:      WebGLUniformLocation;
+  private uNumRays!:         WebGLUniformLocation;
+  private uFocalIntensity!:  WebGLUniformLocation;
+  private uSdfShape!:        WebGLUniformLocation;
+  private uInternalPattern!: WebGLUniformLocation;
+  private uAnimSpeed!:       WebGLUniformLocation;
+  private uOpacity!:         WebGLUniformLocation;
+  private uTime!:            WebGLUniformLocation;
+  private _time = 0;
 
   // Attribute location — resolved name may differ when AT shader uses 'aPosition', 'position', etc.
   private aCorner!: number;
@@ -430,12 +504,21 @@ export class PBRCellGPU {
     gl.vertexAttribPointer(this.aCorner, 2, gl.FLOAT, false, 0, 0);
 
     // ── Scene-level uniforms (light + ambient) ────────────────────────────────
-    // AT-inspired lighting: dramatic side-key + strong fill
-    // Key light from upper-left-front: strong enough to reveal PBR detail
-    // AT home scene has very bright overall illumination despite side light
-    gl.uniform3f(this.uLightDir,  -0.4, 0.3, 0.86);       // upper-left-front (NdotL ≈ 0.86 for flat surfaces)
-    gl.uniform3f(this.uLightColor, 2.2,  2.1,  1.95);      // bright warm key (AT-level HDR)
-    gl.uniform3f(this.uAmbient,    0.35, 0.38, 0.45);      // strong cool ambient fill
+    gl.uniform3f(this.uLightDir,  -0.4, 0.3, 0.86);
+    gl.uniform3f(this.uLightColor, 2.2,  2.1,  1.95);
+    gl.uniform3f(this.uAmbient,    0.35, 0.38, 0.45);
+    gl.uniform1f(this.uTime, this._time);
+
+    // ── Pattern string → int mapping ─────────────────────────────────────────
+    const PATTERN_INT: Record<string, number> = {
+      'none': 0,
+      'multi_head_attention_grid': 1,
+      'one_dimensional_heatmap_bars': 2,
+      'sine_cosine_alternating_bands': 3,
+      'expand_contract_bottleneck': 4,
+      'plus_sign_merge_indicator': 5,
+      'probability_distribution_bars': 2,
+    };
 
     // ── Per-cell draw loop ────────────────────────────────────────────────────
     for (const cell of cells) {
@@ -449,6 +532,17 @@ export class PBRCellGPU {
       gl.uniform1f(this.uMetallic,  metallic);
       gl.uniform1f(this.uRoughness, roughness);
 
+      // M1259: visual params
+      const glow = cell.glowColor ?? albedo;
+      gl.uniform3f(this.uGlowColor, glow[0], glow[1], glow[2]);
+      gl.uniform1f(this.uHaloRadius,     cell.haloRadius ?? 0.15);
+      gl.uniform1i(this.uNumRays,        cell.numRays ?? 0);
+      gl.uniform1f(this.uFocalIntensity, cell.focalIntensity ?? 0.0);
+      gl.uniform1i(this.uSdfShape,       cell.sdfShape === 'capsule' ? 1 : 0);
+      gl.uniform1i(this.uInternalPattern, PATTERN_INT[cell.internalPattern ?? 'none'] ?? 0);
+      gl.uniform1f(this.uAnimSpeed,      cell.animationSpeed ?? 1.0);
+      gl.uniform1f(this.uOpacity,        cell.opacity ?? 0.9);
+
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
@@ -459,6 +553,9 @@ export class PBRCellGPU {
   // ── G-Buffer texture getters (for SSGI / downstream passes) ──────────────
 
   /** Albedo (rgb) + metallic (a) — COLOR_ATTACHMENT0 */
+  /** Set current time for animated patterns */
+  setTime(t: number): void { this._time = t; }
+
   get albedoTexture(): WebGLTexture {
     return this.mrtTarget.albedoTex;
   }
@@ -632,5 +729,15 @@ export class PBRCellGPU {
     this.uLightDir   = gl.getUniformLocation(prog, 'uLightDir')!;
     this.uLightColor = gl.getUniformLocation(prog, 'uLightColor')!;
     this.uAmbient    = gl.getUniformLocation(prog, 'uAmbient')!;
+    // M1259: visual params
+    this.uGlowColor       = gl.getUniformLocation(prog, 'uGlowColor')!;
+    this.uHaloRadius      = gl.getUniformLocation(prog, 'uHaloRadius')!;
+    this.uNumRays         = gl.getUniformLocation(prog, 'uNumRays')!;
+    this.uFocalIntensity  = gl.getUniformLocation(prog, 'uFocalIntensity')!;
+    this.uSdfShape        = gl.getUniformLocation(prog, 'uSdfShape')!;
+    this.uInternalPattern = gl.getUniformLocation(prog, 'uInternalPattern')!;
+    this.uAnimSpeed       = gl.getUniformLocation(prog, 'uAnimSpeed')!;
+    this.uOpacity         = gl.getUniformLocation(prog, 'uOpacity')!;
+    this.uTime            = gl.getUniformLocation(prog, 'uTime')!;
   }
 }
