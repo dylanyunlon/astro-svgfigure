@@ -81,6 +81,8 @@ export interface CellPBRDescriptor {
   opacity?: number;
   // M1282: energy metabolism — cell energy [0, 1] passed to u_energy uniform
   energy?: number;
+  // M1284: membrane dynamics — number of active collisions for elastic deformation
+  collisionCount?: number;
 }
 
 // ─── Per-species material defaults ──────────────────────────────────────────
@@ -195,6 +197,9 @@ uniform float uTime;
 // ── M1282: energy metabolism ────────────────────────────────────────────────
 uniform float u_energy;         // cell energy [0, 1] from CellInteractionPhysics
 
+// ── M1284: membrane dynamics ─────────────────────────────────────────────────
+uniform int   u_collisionCount; // number of active collisions → membrane deformation
+
 // ── MRT outputs ─────────────────────────────────────────────────────────────
 layout(location = 0) out vec4 gAlbedo;
 layout(location = 1) out vec4 gNormal;
@@ -242,6 +247,13 @@ void main() {
         float cornerR = 0.14;
         vec2 d = abs(p) - vec2(1.0 - cornerR);
         sdf = length(max(d, 0.0)) - cornerR;
+    }
+
+    // ── M1284: membrane dynamics — elastic deformation on collision ───────────
+    if (u_collisionCount > 0) {
+        float angle  = atan(p.y, p.x);
+        float deform = sin(angle * float(u_collisionCount) * 2.0 + uTime) * 0.03 * float(u_collisionCount);
+        sdf += deform;
     }
 
     // Discard pixels outside body
@@ -389,6 +401,8 @@ export class PBRCellGPU {
   private uTime!:            WebGLUniformLocation;
   // M1282: energy metabolism
   private uEnergy!:          WebGLUniformLocation;
+  // M1284: membrane dynamics
+  private uCollisionCount!:  WebGLUniformLocation;
   private _time = 0;
 
   // Attribute location — resolved name may differ when AT shader uses 'aPosition', 'position', etc.
@@ -554,6 +568,8 @@ export class PBRCellGPU {
       gl.uniform1f(this.uOpacity,        cell.opacity ?? 0.9);
       // M1282: energy metabolism — pass cell.energy to u_energy uniform
       gl.uniform1f(this.uEnergy,         cell.energy ?? 1.0);
+      // M1284: membrane dynamics — pass collisionCount to u_collisionCount uniform
+      gl.uniform1i(this.uCollisionCount, cell.collisionCount ?? 0);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -753,5 +769,7 @@ export class PBRCellGPU {
     this.uTime            = gl.getUniformLocation(prog, 'uTime')!;
     // M1282: energy metabolism
     this.uEnergy          = gl.getUniformLocation(prog, 'u_energy')!;
+    // M1284: membrane dynamics
+    this.uCollisionCount  = gl.getUniformLocation(prog, 'u_collisionCount')!;
   }
 }
