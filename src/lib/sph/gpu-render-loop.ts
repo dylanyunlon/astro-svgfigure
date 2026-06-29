@@ -29,6 +29,8 @@ import { CellInteractionPhysics } from '../cell-interaction-physics';
 import speciesPhysicsJson from '../../../channels/physics/species_physics.json';
 import cellLifecycleJson from '../../../channels/physics/cell_lifecycle.json';
 import environmentJson from '../../../channels/physics/environment.json';
+// M1292: wind field particle streamlines
+import windFieldJson from '../../../channels/physics/wind_field.json';
 // M1287: species interaction matrix debug overlay
 import { toggleInteractionDebug, isInteractionDebugEnabled, type DebugCell } from './debug-renderer';
 // Re-export for callers who import only from gpu-render-loop
@@ -1235,6 +1237,22 @@ export class GPURenderLoop {
       this.perf.passEnd('gradients', t);
     }
 
+    // ── Pass 0c: M1292 — Wind field background particle streamlines ──────────
+    // 60 micro-particles flowing along the wind_field.json velocity grid.
+    // Semi-transparent white GL_POINTS rendered on the default FBO background
+    // layer, before any cell geometry or fluid.
+    {
+      const t = this.perf.passStart('windParticles');
+      try {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, W, H);
+        this._renderWindParticles(W, H, dt);
+      } catch (e) {
+        if (this.frameCount <= 10) console.warn('[GPURenderLoop] windParticles pass error:', e);
+      }
+      this.perf.passEnd('windParticles', t);
+    }
+
     // ── Pass 1: Fluid (鼠标流体 → FBO) ──
     {
       const t = this.perf.passStart('fluid');
@@ -1567,7 +1585,8 @@ export class GPURenderLoop {
     }
 
     // MSDF text labels
-    {\n      const t = this.perf.passStart('msdf');
+    {
+      const t = this.perf.passStart('msdf');
       try {
         this.msdf.drawAllCellLabels();
       } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
@@ -1859,6 +1878,219 @@ export class GPURenderLoop {
   private _gradVBO: WebGLBuffer | null = null;
   /** Radial-gradient shader program (lazy-compiled on first use) */
   private _gradProg: WebGLProgram | null = null;
+
+  // ── M1292: wind field particle streamlines ────────────────────────────────
+  /** GL_POINTS VBO holding [x, y] positions of each wind particle (NDC). */
+  private _windVBO: WebGLBuffer | null = null;
+  /** Wind particle shader program (lazy-compiled). */
+  private _windProg: WebGLProgram | null = null;
+  /** Particle state: Float32Array[N * 4] — [x, y, vx, vy] per particle (canvas-pixel space). */
+  private _windParticles: Float32Array | null = null;
+  /** Number of wind particles (60 — within the 50-100 spec). */
+  private static readonly WIND_COUNT = 60;
+  /** Pixel radius of each wind particle point sprite. */
+  private static readonly WIND_POINT_SIZE = 2.0;
+
+  /**
+   * M1292 — Initialise wind particles once.
+   * Particles are seeded at random canvas-pixel positions and assigned a
+   * velocity sampled from the nearest wind_field.json grid sample.
+   */
+  private _initWindParticles(W: number, H: number): void {
+    const N = GPURenderLoop.WIND_COUNT;
+    this._windParticles = new Float32Array(N * 4); // [x, y, vx, vy]
+
+    // Pre-compute normalised grid velocity samples from wind_field.json
+    const grid = (windFieldJson as any).grid as {
+      x0: number; y0: number; x1: number; y1: number;
+      cols: number; rows: number;
+      samples: Array<{ vx: number; vy: number }>;
+    };
+    const config = (windFieldJson as any).config as {
+      global_angle: number; global_strength: number; noise_scale: number;
+    };
+
+    // Speed normalisation: scale max speed to ~30 px/s for pleasing animation
+    const SPEED_SCALE = 1.5;
+
+    for (let i = 0; i < N; i++) {
+      const x = Math.random() * W;
+      const y = Math.random() * H;
+
+      // Map canvas pixel → wind grid cell to pick the nearest sample velocity
+      const gx = (x / W) * (grid.cols - 1);
+      const gy = (y / H) * (grid.rows - 1);
+      const col = Math.min(Math.floor(gx), grid.cols - 1);
+      const row = Math.min(Math.floor(gy), grid.rows - 1);
+      const si  = Math.min(row * grid.cols + col, grid.samples.length - 1);
+      const s   = grid.samples[si];
+
+      // Add global wind direction influence
+      const gangle = config.global_angle;
+      const gstr   = config.global_strength;
+      const gvx    = Math.cos(gangle) * gstr * 0.2;
+      const gvy    = Math.sin(gangle) * gstr * 0.2;
+
+      const vx = (s.vx + gvx) * SPEED_SCALE;
+      const vy = (s.vy + gvy) * SPEED_SCALE;
+
+      this._windParticles[i * 4 + 0] = x;
+      this._windParticles[i * 4 + 1] = y;
+      this._windParticles[i * 4 + 2] = vx;
+      this._windParticles[i * 4 + 3] = vy;
+    }
+  }
+
+  /**
+   * M1292 — Update wind particle positions by dt seconds, wrapping at boundaries.
+   */
+  private _stepWindParticles(dt: number, W: number, H: number): void {
+    if (!this._windParticles) this._initWindParticles(W, H);
+    const p = this._windParticles!;
+    const N = GPURenderLoop.WIND_COUNT;
+
+    const grid = (windFieldJson as any).grid as {
+      x0: number; y0: number; x1: number; y1: number;
+      cols: number; rows: number;
+      samples: Array<{ vx: number; vy: number }>;
+    };
+    const config = (windFieldJson as any).config as {
+      global_angle: number; global_strength: number;
+    };
+    const SPEED_SCALE = 1.5;
+    const gangle = config.global_angle;
+    const gstr   = config.global_strength;
+    const gvx    = Math.cos(gangle) * gstr * 0.2;
+    const gvy    = Math.sin(gangle) * gstr * 0.2;
+
+    for (let i = 0; i < N; i++) {
+      let x  = p[i * 4 + 0];
+      let y  = p[i * 4 + 1];
+
+      // Resample velocity from grid at current position each frame (tracks field)
+      const gx  = (x / W) * (grid.cols - 1);
+      const gy  = (y / H) * (grid.rows - 1);
+      const col = Math.min(Math.floor(gx), grid.cols - 1);
+      const row = Math.min(Math.floor(gy), grid.rows - 1);
+      const si  = Math.min(row * grid.cols + col, grid.samples.length - 1);
+      const s   = grid.samples[si];
+
+      const vx = (s.vx + gvx) * SPEED_SCALE;
+      const vy = (s.vy + gvy) * SPEED_SCALE;
+
+      p[i * 4 + 2] = vx;
+      p[i * 4 + 3] = vy;
+
+      // Advance position
+      x += vx * dt;
+      y += vy * dt;
+
+      // Wrap at boundaries (appear from opposite edge)
+      if (x < 0)  x += W;
+      if (x >= W) x -= W;
+      if (y < 0)  y += H;
+      if (y >= H) y -= H;
+
+      p[i * 4 + 0] = x;
+      p[i * 4 + 1] = y;
+    }
+  }
+
+  /**
+   * M1292 — Render wind particles as GL_POINTS with semi-transparent white
+   * colour (rgba 255,255,255,0.1) onto the default framebuffer.
+   *
+   * @param W Canvas width  (pixels)
+   * @param H Canvas height (pixels)
+   * @param dt Frame delta-time (seconds)
+   */
+  private _renderWindParticles(W: number, H: number, dt: number): void {
+    const gl = this.gl;
+
+    // ── Lazy-compile shader ───────────────────────────────────────────────────
+    if (!this._windProg) {
+      const vs = gl.createShader(gl.VERTEX_SHADER)!;
+      gl.shaderSource(vs, `#version 300 es
+uniform vec2 uResolution;
+uniform float uPointSize;
+in vec2 aPos;
+void main() {
+  // canvas-pixel → NDC  (Y flipped: canvas top-down, NDC bottom-up)
+  vec2 ndc = (aPos / uResolution) * 2.0 - 1.0;
+  ndc.y = -ndc.y;
+  gl_Position  = vec4(ndc, 0.0, 1.0);
+  gl_PointSize = uPointSize;
+}`);
+      gl.compileShader(vs);
+
+      const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+      gl.shaderSource(fs, `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  // Circular point: discard corners of the GL_POINTS square
+  vec2 c = gl_PointCoord - 0.5;
+  if (dot(c, c) > 0.25) discard;
+  fragColor = vec4(1.0, 1.0, 1.0, 0.1);
+}`);
+      gl.compileShader(fs);
+
+      const prog = gl.createProgram()!;
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.warn('[GPURenderLoop] wind particle shader link failed:',
+          gl.getProgramInfoLog(prog));
+        return;
+      }
+      this._windProg = prog;
+    }
+
+    // ── Lazy-create VBO ───────────────────────────────────────────────────────
+    if (!this._windVBO) {
+      this._windVBO = gl.createBuffer();
+    }
+
+    // ── Step particle simulation ──────────────────────────────────────────────
+    this._stepWindParticles(dt, W, H);
+
+    // ── Pack xy positions into upload buffer ──────────────────────────────────
+    const N = GPURenderLoop.WIND_COUNT;
+    const p = this._windParticles!;
+    const xy = new Float32Array(N * 2);
+    for (let i = 0; i < N; i++) {
+      xy[i * 2 + 0] = p[i * 4 + 0];
+      xy[i * 2 + 1] = p[i * 4 + 1];
+    }
+
+    // ── Upload to VBO ─────────────────────────────────────────────────────────
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._windVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, xy, gl.DYNAMIC_DRAW);
+
+    // ── Draw ──────────────────────────────────────────────────────────────────
+    gl.useProgram(this._windProg);
+
+    const posLoc = gl.getAttribLocation(this._windProg, 'aPos');
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+    gl.uniform2f(gl.getUniformLocation(this._windProg, 'uResolution'), W, H);
+    gl.uniform1f(gl.getUniformLocation(this._windProg, 'uPointSize'), GPURenderLoop.WIND_POINT_SIZE);
+
+    // Alpha blend: src_alpha / one_minus_src_alpha  (standard transparent)
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.drawArrays(gl.POINTS, 0, N);
+
+    // ── Cleanup ───────────────────────────────────────────────────────────────
+    gl.disableVertexAttribArray(posLoc);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
 
   /**
    * Renders a single radial gradient as a fullscreen additive-blend quad
