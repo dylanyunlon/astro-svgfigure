@@ -623,6 +623,86 @@ export const prerender = true;
 
   type QoSLevel = keyof typeof QOS_PROFILES;
 
+  // ── M1272: Mouse interaction → physics bridge ───────────────────────────────
+  // Wires pointer events on the #gpu-world canvas into the GPURenderLoop's
+  // CellInteractionPhysics engine:
+  //   • mousedown  → hit-test cell, dragStart
+  //   • mousemove  → dragMove (while dragging)
+  //   • mouseup    → dragEnd (releases with throw velocity)
+  //   • dblclick   → inject (radial blast / shockwave)
+  // Canvas-pixel coords are inverted into cell-pixel space via the loop's
+  // auto-fit camera transform (scale/offX/offY) — the inverse of the
+  // toNdc/fit transform used during rendering.
+  function wireMouseInteraction(loop: GPURenderLoop, cvs: HTMLCanvasElement): () => void {
+    // The render canvas is normally pointer-events:none (overlay); enable it so
+    // it can receive pointer events for interaction.
+    cvs.style.pointerEvents = 'auto';
+
+    let dragging = false;
+
+    // canvas client coords → cell-pixel space (inverse of auto-fit camera)
+    function toCell(clientX: number, clientY: number): { x: number; y: number } {
+      const rect = cvs.getBoundingClientRect();
+      const canvasX = (clientX - rect.left) * (cvs.width / rect.width);
+      const canvasY = (clientY - rect.top) * (cvs.height / rect.height);
+      const { scale, offX, offY } = loop.cameraTransform;
+      return {
+        x: (canvasX - offX) / scale,
+        y: (canvasY - offY) / scale,
+      };
+    }
+
+    function onMouseDown(e: MouseEvent) {
+      const physics = loop.interactionPhysics;
+      if (!physics) return;
+      const { x, y } = toCell(e.clientX, e.clientY);
+      const hitId = physics.hitTest(x, y);
+      if (hitId) {
+        dragging = true;
+        physics.dragStart(hitId, x, y);
+        cvs.style.cursor = 'grabbing';
+      }
+    }
+
+    function onMouseMove(e: MouseEvent) {
+      if (!dragging) return;
+      const physics = loop.interactionPhysics;
+      if (!physics) return;
+      const { x, y } = toCell(e.clientX, e.clientY);
+      physics.dragMove(x, y);
+    }
+
+    function onMouseUp() {
+      if (!dragging) return;
+      dragging = false;
+      cvs.style.cursor = 'default';
+      loop.interactionPhysics?.dragEnd();
+    }
+
+    function onDblClick(e: MouseEvent) {
+      const physics = loop.interactionPhysics;
+      if (!physics) return;
+      const { x, y } = toCell(e.clientX, e.clientY);
+      physics.inject(x, y); // radial blast → explosion shockwave
+    }
+
+    cvs.addEventListener('mousedown', onMouseDown);
+    // move/up bound on window so a drag continues even if the pointer leaves the canvas
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    cvs.addEventListener('dblclick', onDblClick);
+
+    console.info('[gpu-world] mouse interaction wired (drag / throw / inject)');
+
+    return () => {
+      cvs.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      cvs.removeEventListener('dblclick', onDblClick);
+      cvs.style.pointerEvents = 'none';
+    };
+  }
+
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const canvas            = document.getElementById('sph-canvas')          as HTMLCanvasElement;
   const hudParticles      = document.getElementById('hud-particles')       as HTMLElement;
@@ -1122,6 +1202,7 @@ export const prerender = true;
         console.info('[gpu-world] loop created, calling setScene with', cells.length, 'cells', edges.length, 'edges');
         loop.setScene(cells, edges);
         loop.start();
+        wireMouseInteraction(loop, gpuWorldCanvas);
         console.info(`[gpu-world] GPURenderLoop started — ${cells.length} cells, ${edges.length} edges`);
         // M1259: wire HUD
         hudBackend.textContent = 'WEBGL2';
@@ -1715,6 +1796,7 @@ export const prerender = true;
         // Seed all 7 passes with 58 cells + 57 edges
         gpuRenderLoop.setScene(cells, edges);
         gpuRenderLoop.start();
+        wireMouseInteraction(gpuRenderLoop, gpuWorldCanvas);
 
         // M1259: wire HUD
         hudBackend.textContent = 'WEBGL2';

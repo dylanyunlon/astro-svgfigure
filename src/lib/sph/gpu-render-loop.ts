@@ -1115,6 +1115,24 @@ export class GPURenderLoop {
   }
 
   /**
+   * M1272: Expose the auto-fit camera transform so external code (e.g. pointer
+   * interaction) can invert canvas-pixel coords back into cell-pixel space:
+   *
+   *   cellX = (canvasX - offX) / scale
+   *   cellY = (canvasY - offY) / scale
+   *
+   * Values are updated every frame() before rendering.
+   */
+  get cameraTransform(): { scale: number; offX: number; offY: number } {
+    return { scale: this._camScale, offX: this._camOffX, offY: this._camOffY };
+  }
+
+  /** M1272: Expose the physics engine so pointer events can drive drag/throw/inject. */
+  get interactionPhysics(): CellInteractionPhysics | null {
+    return this.physics;
+  }
+
+  /**
    * Apply AT production-tuned parameters from uil-params.json.
    * These are the ACTUAL values Active Theory ships — not defaults.
    */
