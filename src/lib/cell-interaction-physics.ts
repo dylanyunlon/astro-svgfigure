@@ -53,6 +53,22 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+// ─── Particle Life interaction matrix ────────────────────────────────────────
+// Loaded from channels/physics/species_interaction_matrix.json.  Each species
+// pair has an attract/repel coefficient G (G>0 attract, G<0 repel); within the
+// interaction radius the pairwise force is G / distance, à la
+// https://github.com/hunar4321/particle-life.  Complex self-organising structure
+// emerges from this single simple rule, mapped onto the Transformer data flow.
+import speciesInteractionMatrix from '../../channels/physics/species_interaction_matrix.json';
+
+interface SpeciesInteractionMatrix {
+  interaction_radius: number;
+  matrix: Record<string, Record<string, number>>;
+  description?: Record<string, string>;
+}
+
+const PARTICLE_LIFE = speciesInteractionMatrix as SpeciesInteractionMatrix;
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface Vec2 {
@@ -769,6 +785,44 @@ export class CellInteractionPhysics {
 
           body.impulseX += nx * force * invMass;
           body.impulseY += ny * force * invMass;
+        }
+      }
+    }
+
+    // ── 2b. Particle Life pairwise interaction ──
+    // For every ordered pair (i, j) within the interaction radius, apply a force
+    // proportional to G / distance, where G = matrix[species_i][species_j].
+    // G > 0 attracts i toward j, G < 0 repels.  From this trivially simple rule
+    // emerges complex self-organising structure (Particle Life), here shaped by
+    // the Transformer information-flow matrix in species_interaction_matrix.json.
+    {
+      const radius = PARTICLE_LIFE.interaction_radius;
+      const r2 = radius * radius;
+      const matrix = PARTICLE_LIFE.matrix;
+      const plBodies = Array.from(this.bodies.values());
+
+      for (let i = 0; i < plBodies.length; i++) {
+        const a = plBodies[i];
+        if (a.pinned || a.dragging) continue;
+        const rowA = matrix[a.species];
+        if (!rowA) continue;
+
+        for (let j = 0; j < plBodies.length; j++) {
+          if (i === j) continue;
+          const b = plBodies[j];
+
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 >= r2 || d2 === 0) continue;
+
+          const G = rowA[b.species];
+          if (G === undefined || G === 0) continue;
+
+          const dist = Math.sqrt(d2);
+          const force = G / Math.max(dist, 10); // prevent divide-by-zero
+          a.vx += dx * force * dt * 0.5;
+          a.vy += dy * force * dt * 0.5;
         }
       }
     }

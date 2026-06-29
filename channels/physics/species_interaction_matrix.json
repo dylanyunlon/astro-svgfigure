@@ -1,0 +1,53 @@
+{
+  "interaction_radius": 300,
+  "matrix": {
+    "cil-eye": {
+      "cil-eye": -0.5,
+      "cil-bolt": 0.8,
+      "cil-vector": 0.3,
+      "cil-plus": 0.2,
+      "cil-arrow-right": -0.1
+    },
+    "cil-bolt": {
+      "cil-eye": 0.2,
+      "cil-bolt": -0.3,
+      "cil-vector": 0.1,
+      "cil-plus": 0.7,
+      "cil-arrow-right": -0.1
+    },
+    "cil-vector": {
+      "cil-eye": 0.3,
+      "cil-bolt": 0.2,
+      "cil-vector": 0.25,
+      "cil-plus": 0.4,
+      "cil-arrow-right": -0.2
+    },
+    "cil-plus": {
+      "cil-eye": 0.5,
+      "cil-bolt": 0.5,
+      "cil-vector": 0.5,
+      "cil-plus": 0.3,
+      "cil-arrow-right": 0.5
+    },
+    "cil-arrow-right": {
+      "cil-eye": -0.3,
+      "cil-bolt": -0.3,
+      "cil-vector": -0.2,
+      "cil-plus": 0.4,
+      "cil-arrow-right": -0.4
+    }
+  },
+  "description": {
+    "cil-eye→cil-bolt": "注意力观察FFN输出，强吸引",
+    "cil-eye→cil-eye": "多头注意力分散观察，同种排斥不聚团",
+    "cil-eye→cil-vector": "注意力关注嵌入向量，弱吸引",
+    "cil-bolt→cil-plus": "FFN输出需要合并到残差，强吸引",
+    "cil-bolt→cil-bolt": "FFN之间各自计算，同种弱排斥",
+    "cil-vector→cil-vector": "嵌入向量形成数据流，同种弱吸引",
+    "cil-vector→cil-plus": "嵌入信号汇入残差通路",
+    "cil-plus→*": "残差连接汇聚所有信号，吸引所有类型",
+    "cil-plus→cil-plus": "残差节点保持结构间距，同种弱吸引",
+    "cil-arrow-right→*": "输出独立向外，排斥大部分类型",
+    "cil-arrow-right→cil-plus": "输出仍需读取残差流，唯一吸引项"
+  }
+}
