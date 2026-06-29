@@ -257,7 +257,9 @@ function getDracoModule(): Promise<DracoDecoderModule> {
     // Fall through to the npm package dynamic import (bundled via Vite).
     const draco3dPkg = await import('draco3d');
     return (draco3dPkg as unknown as { createDecoderModule: (opts: object) => Promise<DracoDecoderModule> })
-      .createDecoderModule({});
+      .createDecoderModule({
+        locateFile: (filename: string) => `/draco/${filename}`,
+      });
   })();
 
   return _dracoModulePromise;

@@ -330,14 +330,24 @@ export class DracoThread {
 
   constructor(decoderUrl = '/draco/draco_decoder.wasm') {
     this._defaultDecoderUrl = decoderUrl;
+
+    // blob: Workers have null origin, so importScripts needs absolute URLs.
+    // We resolve the base URL on the main thread and embed it into the worker.
+    const baseOrigin = typeof globalThis.location !== 'undefined'
+      ? globalThis.location.origin
+      : '';
+
     const workerSrc = /* js */ `
       let decoderModule = null;
+      const BASE = "${baseOrigin}";
 
       async function ensureDecoder(url) {
         if (decoderModule) return;
-        const jsUrl = url.replace('.wasm', '.js');
+        // Resolve to absolute URL for importScripts in blob: worker
+        const absUrl = url.startsWith('http') ? url : BASE + url;
+        const jsUrl  = absUrl.replace('.wasm', '.js');
         importScripts(jsUrl);
-        decoderModule = await DracoDecoderModule({ wasmBinaryFile: url });
+        decoderModule = await DracoDecoderModule({ locateFile: (f) => BASE + '/draco/' + f });
       }
 
       self.onmessage = async function(e) {
