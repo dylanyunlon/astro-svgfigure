@@ -69,6 +69,36 @@ interface SpeciesInteractionMatrix {
 
 const PARTICLE_LIFE = speciesInteractionMatrix as SpeciesInteractionMatrix;
 
+// ─── Environment parameters ──────────────────────────────────────────────────
+// M1279: ambient medium physics loaded from channels/physics/environment.json.
+// Drives brownian motion, a global laminar flow field, sedimentation gravity,
+// soft-wall boundary repulsion, and a temperature gradient that locally lowers
+// viscosity (cells nearer the warm centre move more freely).
+import environmentParams from '../../channels/physics/environment.json';
+
+interface EnvironmentParams {
+  medium: { type: string; viscosity: number; density: number; temperature: number; pH: number };
+  flow_field: { type: string; direction: [number, number]; speed: number; turbulence: number };
+  light: { direction: number[]; intensity: number; color: number[]; ambient: number };
+  gradients: {
+    temperature: { center: [number, number]; radius: number; delta: number };
+    nutrient: { center: [number, number]; radius: number; concentration: number };
+    signal_molecule: { sources: unknown[]; decay_rate: number; diffusion: number };
+  };
+  boundaries: {
+    type: string;
+    repel_force: number;
+    margin: number;
+    width: number;
+    height: number;
+  };
+  gravity: { x: number; y: number; note?: string };
+  brownian_noise: number;
+  surface_tension_at_boundary: number;
+}
+
+const ENVIRONMENT = environmentParams as EnvironmentParams;
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface Vec2 {
@@ -824,6 +854,79 @@ export class CellInteractionPhysics {
           a.vx += dx * force * dt * 0.5;
           a.vy += dy * force * dt * 0.5;
         }
+      }
+    }
+
+    // ── 2c. Environment physics (M1279) ──
+    // Ambient medium forces sourced from channels/physics/environment.json:
+    // brownian jitter, a global laminar flow drift, sedimentation gravity, soft
+    // boundary repulsion, and a temperature gradient that modulates viscosity.
+    {
+      const env = ENVIRONMENT;
+      const flowDx = env.flow_field.direction[0] * env.flow_field.speed;
+      const flowDy = env.flow_field.direction[1] * env.flow_field.speed;
+      const [tempCx, tempCy] = env.gradients.temperature.center;
+      const tempR = env.gradients.temperature.radius;
+      const margin = env.boundaries.margin;
+      const repel = env.boundaries.repel_force;
+      // Soft-wall extents: prefer the live boundary if present, else env dims.
+      const wMinX = this.boundary ? this.boundary.x : 0;
+      const wMinY = this.boundary ? this.boundary.y : 0;
+      const wMaxX = this.boundary ? this.boundary.x + this.boundary.w : env.boundaries.width;
+      const wMaxY = this.boundary ? this.boundary.y + this.boundary.h : env.boundaries.height;
+
+      for (const body of this.bodies.values()) {
+        if (body.pinned || body.dragging) continue;
+        const invMass = 1 / body.mass;
+
+        // (a) Brownian motion — per-frame random jitter ±brownian_noise.
+        const bn = env.brownian_noise;
+        body.vx += (Math.random() * 2 - 1) * bn * dt;
+        body.vy += (Math.random() * 2 - 1) * bn * dt;
+
+        // (b) Flow field — global laminar drift direction*speed*dt.
+        body.vx += flowDx * dt;
+        body.vy += flowDy * dt;
+
+        // (c) Gravity — ambient sedimentation drift (mass-independent accel).
+        body.vx += env.gravity.x * dt;
+        body.vy += env.gravity.y * dt;
+
+        // (d) Soft walls — when within `margin` of a wall, push back with a
+        //     force that ramps from 0 at the margin edge to repel at the wall.
+        const distL = body.x - wMinX;
+        if (distL < margin) {
+          const f = repel * (1 - distL / margin);
+          body.vx += f * invMass * dt;
+        }
+        const distR = wMaxX - body.x;
+        if (distR < margin) {
+          const f = repel * (1 - distR / margin);
+          body.vx -= f * invMass * dt;
+        }
+        const distT = body.y - wMinY;
+        if (distT < margin) {
+          const f = repel * (1 - distT / margin);
+          body.vy += f * invMass * dt;
+        }
+        const distB = wMaxY - body.y;
+        if (distB < margin) {
+          const f = repel * (1 - distB / margin);
+          body.vy -= f * invMass * dt;
+        }
+
+        // (e) Temperature gradient — nearer the warm centre, viscosity drops so
+        //     the cell moves more freely (less drag); farther out it cools and
+        //     thickens. warmth ∈ [0,1]; viscosity scales from medium.viscosity
+        //     (at the rim/outside) down toward ~0 at the centre.
+        const tdx = body.x - tempCx;
+        const tdy = body.y - tempCy;
+        const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
+        const warmth = Math.max(0, 1 - tdist / tempR);
+        const localVisc = env.medium.viscosity * (1 - warmth);
+        const viscFactor = Math.max(0, 1 - localVisc * dt);
+        body.vx *= viscFactor;
+        body.vy *= viscFactor;
       }
     }
 
