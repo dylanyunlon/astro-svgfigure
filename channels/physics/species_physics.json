@@ -1,12 +1,62 @@
 {
-  "cil-eye":         { "mass": 120, "friction": 0.7, "restitution": 0.2, "buoyancy": 0.3 },
-  "cil-bolt":        { "mass": 60,  "friction": 0.3, "restitution": 0.5, "buoyancy": 0.8 },
-  "cil-vector":      { "mass": 80,  "friction": 0.5, "restitution": 0.3, "buoyancy": 0.5 },
-  "cil-plus":        { "mass": 100, "friction": 0.8, "restitution": 0.1, "buoyancy": 0.2 },
-  "cil-arrow-right": { "mass": 50,  "friction": 0.4, "restitution": 0.4, "buoyancy": 0.7 },
-  "cil-filter":      { "mass": 90,  "friction": 0.6, "restitution": 0.2, "buoyancy": 0.4 },
-  "cil-layers":      { "mass": 110, "friction": 0.7, "restitution": 0.15, "buoyancy": 0.25 },
-  "cil-loop":        { "mass": 70,  "friction": 0.4, "restitution": 0.6, "buoyancy": 0.6 },
-  "cil-code":        { "mass": 75,  "friction": 0.5, "restitution": 0.3, "buoyancy": 0.5 },
-  "cil-graph":       { "mass": 95,  "friction": 0.6, "restitution": 0.2, "buoyancy": 0.35 }
+  "cil-eye": {
+    "mass": 120, "friction": 0.7, "restitution": 0.2, "buoyancy": 0.3,
+    "viscosity": 0.6, "membrane_elasticity": 0.5, "adhesion": 0.1,
+    "chemotaxis_range": 480, "division_threshold": 0.85, "metabolism_rate": 0.6,
+    "signal_strength": 0.95, "preferred_neighbors": 2
+  },
+  "cil-bolt": {
+    "mass": 60, "friction": 0.3, "restitution": 0.5, "buoyancy": 0.8,
+    "viscosity": 0.08, "membrane_elasticity": 0.9, "adhesion": 0.2,
+    "chemotaxis_range": 180, "division_threshold": 0.6, "metabolism_rate": 1.9,
+    "signal_strength": 0.4, "preferred_neighbors": 3
+  },
+  "cil-vector": {
+    "mass": 80, "friction": 0.5, "restitution": 0.3, "buoyancy": 0.5,
+    "viscosity": 0.35, "membrane_elasticity": 0.55, "adhesion": 0.55,
+    "chemotaxis_range": 240, "division_threshold": 0.35, "metabolism_rate": 1.0,
+    "signal_strength": 0.55, "preferred_neighbors": 7
+  },
+  "cil-plus": {
+    "mass": 100, "friction": 0.8, "restitution": 0.1, "buoyancy": 0.2,
+    "viscosity": 0.8, "membrane_elasticity": 0.95, "adhesion": 0.95,
+    "chemotaxis_range": 150, "division_threshold": 0.9, "metabolism_rate": 0.2,
+    "signal_strength": 0.3, "preferred_neighbors": 4
+  },
+  "cil-arrow-right": {
+    "mass": 50, "friction": 0.4, "restitution": 0.4, "buoyancy": 0.7,
+    "viscosity": 0.04, "membrane_elasticity": 0.6, "adhesion": 0.1,
+    "chemotaxis_range": 220, "division_threshold": 0.7, "metabolism_rate": 1.2,
+    "signal_strength": 0.9, "preferred_neighbors": 1
+  },
+  "cil-filter": {
+    "mass": 90, "friction": 0.6, "restitution": 0.2, "buoyancy": 0.4,
+    "viscosity": 0.5, "membrane_elasticity": 0.45, "adhesion": 0.4,
+    "chemotaxis_range": 260, "division_threshold": 0.5, "metabolism_rate": 0.9,
+    "signal_strength": 0.5, "preferred_neighbors": 4
+  },
+  "cil-layers": {
+    "mass": 110, "friction": 0.7, "restitution": 0.15, "buoyancy": 0.25,
+    "viscosity": 0.7, "membrane_elasticity": 0.4, "adhesion": 0.7,
+    "chemotaxis_range": 200, "division_threshold": 0.65, "metabolism_rate": 0.5,
+    "signal_strength": 0.45, "preferred_neighbors": 6
+  },
+  "cil-loop": {
+    "mass": 70, "friction": 0.4, "restitution": 0.6, "buoyancy": 0.6,
+    "viscosity": 0.25, "membrane_elasticity": 0.75, "adhesion": 0.5,
+    "chemotaxis_range": 300, "division_threshold": 0.45, "metabolism_rate": 1.3,
+    "signal_strength": 0.6, "preferred_neighbors": 3
+  },
+  "cil-code": {
+    "mass": 75, "friction": 0.5, "restitution": 0.3, "buoyancy": 0.5,
+    "viscosity": 0.4, "membrane_elasticity": 0.55, "adhesion": 0.45,
+    "chemotaxis_range": 250, "division_threshold": 0.55, "metabolism_rate": 1.0,
+    "signal_strength": 0.55, "preferred_neighbors": 4
+  },
+  "cil-graph": {
+    "mass": 95, "friction": 0.6, "restitution": 0.2, "buoyancy": 0.35,
+    "viscosity": 0.55, "membrane_elasticity": 0.5, "adhesion": 0.6,
+    "chemotaxis_range": 360, "division_threshold": 0.6, "metabolism_rate": 0.8,
+    "signal_strength": 0.7, "preferred_neighbors": 5
+  }
 }
