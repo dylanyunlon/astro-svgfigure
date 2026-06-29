@@ -160,6 +160,8 @@ interface CellBody {
   // M1282: lifecycle flags derived from energy
   divisionReady: boolean;
   collisionCount: number;
+  // M1288: Division cooldown — timestamp (ms) after which division is allowed again
+  divisionCooldownEnd: number;
   // Quorum-sensing cluster factor: scales collision separation/bounce.
   // 1 = normal repulsion, <1 = reduced repulsion (cells pack tighter when
   // quorum is reached). Default 1. Set via setClusterFactor().
@@ -272,6 +274,12 @@ const ENERGY_INITIAL                  = 1.0;
 const ENERGY_APOPTOSIS_THRESHOLD      = 0.05;   // below this → opacity fade
 const ENERGY_DIVISION_THRESHOLD       = 0.90;   // above this → divisionReady
 
+// M1288: Cell division constants
+const DIVISION_ENERGY_TRIGGER         = 0.95;   // energy must exceed this to actually divide
+const DIVISION_ENERGY_SPLIT           = 0.5;    // each daughter receives this fraction of parent energy
+const DIVISION_POSITION_OFFSET        = 30;     // random spawn offset in px
+const DIVISION_COOLDOWN_MS            = 5000;   // minimum ms between divisions for a given cell
+
 const DEFAULT_SPECIES_PHYSICS: SpeciesPhysics = {
   mass: 75,
   friction: 0.5,
@@ -359,6 +367,9 @@ export class CellInteractionPhysics {
   /** Per-cell quorum active state (true when ≥ quorum_threshold neighbours in range). */
   private _quorumActive: Map<string, boolean> = new Map();
 
+  // ── M1288: Cell division counter — suffix appended to child IDs ──
+  private _divisionCounter = 0;
+
   // ── Velocity history for smooth throw (ring buffer, last 4 frames) ──
   private readonly velHistory: Array<{ vx: number; vy: number; dt: number }> = [];
   private readonly VEL_HISTORY_LEN = 4;
@@ -424,6 +435,7 @@ export class CellInteractionPhysics {
         energy: ENERGY_INITIAL,
         divisionReady: false,
         collisionCount: 0,
+        divisionCooldownEnd: 0,
       };
 
       this.bodies.set(cell.cell_id, body);
@@ -457,6 +469,7 @@ export class CellInteractionPhysics {
       energy: ENERGY_INITIAL,
       divisionReady: false,
       collisionCount: 0,
+      divisionCooldownEnd: 0,
     });
   }
 
@@ -1093,6 +1106,84 @@ export class CellInteractionPhysics {
       }
     }
 
+    // ── 2e. Cell division (M1288) ──
+    // When a cell has divisionReady == true AND energy > DIVISION_ENERGY_TRIGGER
+    // AND its cooldown has expired, it divides: a child CellBody is spawned
+    // inheriting the parent's species, each daughter receives half the parent
+    // energy, divisionReady is reset, and a cooldown is started.
+    // Collect pending divisions first (avoid mutating bodies map mid-iteration).
+    {
+      const divisionQueue: Array<{ parent: CellBody; childId: string }> = [];
+
+      for (const body of this.bodies.values()) {
+        if (!body.divisionReady) continue;
+        if (body.energy <= DIVISION_ENERGY_TRIGGER) continue;
+        if (nowMs < body.divisionCooldownEnd) continue;
+
+        const childId = `${body.id}_child_${++this._divisionCounter}`;
+        divisionQueue.push({ parent: body, childId });
+      }
+
+      for (const { parent, childId } of divisionQueue) {
+        // Random offset in a circle of radius DIVISION_POSITION_OFFSET
+        const angle = Math.random() * Math.PI * 2;
+        const childX = parent.x + Math.cos(angle) * DIVISION_POSITION_OFFSET;
+        const childY = parent.y + Math.sin(angle) * DIVISION_POSITION_OFFSET;
+
+        // Split energy equally
+        const halfEnergy = parent.energy * DIVISION_ENERGY_SPLIT;
+        parent.energy = halfEnergy;
+
+        // Create child body inheriting species + dimensions from parent
+        const child: CellBody = {
+          id: childId,
+          x: childX,
+          y: childY,
+          vx: 0,
+          vy: 0,
+          w: parent.w,
+          h: parent.h,
+          mass: parent.mass,
+          friction: parent.friction,
+          restitution: parent.restitution,
+          buoyancy: parent.buoyancy,
+          pinned: false,
+          dragging: false,
+          impulseX: 0,
+          impulseY: 0,
+          restX: childX,
+          restY: childY,
+          species: parent.species,
+          z: parent.z,
+          energy: halfEnergy,
+          divisionReady: false,
+          collisionCount: 0,
+          divisionCooldownEnd: nowMs + DIVISION_COOLDOWN_MS,
+        };
+
+        this.bodies.set(childId, child);
+
+        // Reset parent division state + start cooldown
+        parent.divisionReady = false;
+        parent.divisionCooldownEnd = nowMs + DIVISION_COOLDOWN_MS;
+
+        // Dispatch 'cell-division' CustomEvent
+        window.dispatchEvent(new CustomEvent('cell-division', {
+          detail: {
+            parentId: parent.id,
+            childId,
+            species: parent.species,
+            parentEnergy: parent.energy,
+            childEnergy: halfEnergy,
+            parentX: parent.x,
+            parentY: parent.y,
+            childX,
+            childY,
+          },
+        }));
+      }
+    }
+
     // ── 3. Integrate velocities (semi-implicit Euler) ──
     for (const body of this.bodies.values()) {
       if (body.pinned || body.dragging) {
@@ -1507,6 +1598,7 @@ export class CellInteractionPhysics {
       body.energy = ENERGY_INITIAL;
       body.divisionReady = false;
       body.collisionCount = 0;
+      body.divisionCooldownEnd = 0;
       // Preserve pin state — reset doesn't unpin
     }
   }
