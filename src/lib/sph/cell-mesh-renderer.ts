@@ -200,6 +200,7 @@ function modelMatrix(
 // ─── CellMeshRenderer ────────────────────────────────────────────────────────
 
 import type { CellData } from './gpu-render-loop';
+import { SPECIES_GEOMETRY } from './procedural-cell-geometries';
 
 /** Per-species GPU mesh (VBO + IBO + VAO) */
 interface SpeciesMesh {
@@ -369,15 +370,29 @@ export class CellMeshRenderer {
   // ── Internal ────────────────────────────────────────────────────────────
 
   private _uploadPlaceholder(): void {
+    // Upload per-species procedural geometries
+    for (const [species, createFn] of Object.entries(SPECIES_GEOMETRY)) {
+      const geo = createFn();
+      const mesh = this._uploadGeometry(
+        geo.positions,
+        geo.normals,
+        geo.uvs,
+        geo.indices,
+        geo.positions.length / 3,
+      );
+      this.meshes.set(species, mesh);
+    }
+
+    // Fallback: use cube for unknown species
     const cube = createPlaceholderCube();
-    const mesh = this._uploadGeometry(
+    const fallback = this._uploadGeometry(
       cube.positions,
       cube.normals,
       cube.uvs,
       cube.indices,
       24,
     );
-    this.meshes.set('_placeholder', mesh);
+    this.meshes.set('_placeholder', fallback);
   }
 
   private _uploadGeometry(
