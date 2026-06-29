@@ -175,6 +175,19 @@ interface BlastImpulse {
   timestamp: number;
 }
 
+
+// ─── M1283: Quorum Sensing — Signal Particles ────────────────────────────────
+
+/** A diffusing signal molecule emitted by a cell for quorum sensing. */
+export interface SignalParticle {
+  x: number;
+  y: number;
+  alpha: number;
+  species: string;
+  vx: number;
+  vy: number;
+}
+
 /** Snapshot of a cell's interaction state — emitted via events. */
 export interface CellInteractionState {
   cell_id: string;
@@ -335,6 +348,16 @@ export class CellInteractionPhysics {
   private dragVelX = 0;
   private dragVelY = 0;
   private disposed = false;
+
+  // ── M1283: Quorum Sensing — Signal Particles ──
+  /** Diffusing signal molecules for quorum-sensing detection. */
+  signalParticles: SignalParticle[] = [];
+
+  /** Frame counter for throttling signal emission (emit every 60 frames). */
+  private _signalFrameCount = 0;
+
+  /** Per-cell quorum active state (true when ≥ quorum_threshold neighbours in range). */
+  private _quorumActive: Map<string, boolean> = new Map();
 
   // ── Velocity history for smooth throw (ring buffer, last 4 frames) ──
   private readonly velHistory: Array<{ vx: number; vy: number; dt: number }> = [];
@@ -788,6 +811,58 @@ export class CellInteractionPhysics {
     this.blastQueue = this.blastQueue.filter(
       b => (nowMs - b.timestamp) < BLAST_DECAY_MS,
     );
+
+    // ── M1283: Quorum sensing — signal particle emission & diffusion ──────
+    this._signalFrameCount++;
+    const SIGNAL_RADIUS = 200;          // sensing range (cell-space units)
+    const QUORUM_THRESHOLD = 4;         // minimum neighbours to activate quorum
+    const SIGNAL_DIFFUSION_SPEED = 50;  // px/s
+    const SIGNAL_DECAY_RATE = 0.02;     // alpha *= (1 - decay_rate) per frame
+    const SIGNAL_EMIT_INTERVAL = 60;    // frames between emissions per cell
+
+    // Emit new signal particles every 60 frames
+    if (this._signalFrameCount >= SIGNAL_EMIT_INTERVAL) {
+      this._signalFrameCount = 0;
+      for (const body of this.bodies.values()) {
+        const count = 1 + Math.floor(Math.random() * 3); // 1-3 particles
+        for (let si = 0; si < count; si++) {
+          const angle = Math.random() * Math.PI * 2;
+          this.signalParticles.push({
+            x: body.x,
+            y: body.y,
+            alpha: 1.0,
+            species: body.species,
+            vx: Math.cos(angle) * SIGNAL_DIFFUSION_SPEED,
+            vy: Math.sin(angle) * SIGNAL_DIFFUSION_SPEED,
+          });
+        }
+      }
+    }
+
+    // Update existing signal particles: diffuse + decay, remove dead ones
+    const frameS = this.fixedStep;
+    for (const sp of this.signalParticles) {
+      sp.x += sp.vx * frameS;
+      sp.y += sp.vy * frameS;
+      sp.alpha *= (1 - SIGNAL_DECAY_RATE);
+    }
+    this.signalParticles = this.signalParticles.filter(sp => sp.alpha >= 0.01);
+
+    // Quorum detection: count same-species cells within SIGNAL_RADIUS
+    const bodyArr2 = Array.from(this.bodies.values());
+    const r2Signal = SIGNAL_RADIUS * SIGNAL_RADIUS;
+    for (const a of bodyArr2) {
+      let neighbourCount = 0;
+      for (const b of bodyArr2) {
+        if (a.id === b.id) continue;
+        if (b.species !== a.species) continue;
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        if (dx * dx + dy * dy <= r2Signal) neighbourCount++;
+      }
+      const active = neighbourCount >= QUORUM_THRESHOLD;
+      this._quorumActive.set(a.id, active);
+    }
 
     // Compute force deltas
     const forces: InteractionForce[] = [];
@@ -1284,6 +1359,28 @@ export class CellInteractionPhysics {
     return this.bodies.get(cellId)?.energy ?? 1.0;
   }
 
+  /**
+   * M1283: Return whether a cell has quorum active (≥ quorum_threshold
+   * same-species neighbours within signal_radius). When active, the render
+   * layer should apply the synchronised flicker opacity:
+   *   opacity = 0.7 + 0.3 * Math.sin(time * 3)
+   */
+  isQuorumActive(cellId: string): boolean {
+    return this._quorumActive.get(cellId) ?? false;
+  }
+
+  /**
+   * M1283: Compute the quorum-sensing visual opacity for a cell.
+   * When quorum is inactive returns 1.0.
+   * When active, returns a pulsing value in [0.7, 1.0] driven by time (seconds).
+   * @param cellId  The cell to query.
+   * @param timeSec Current time in seconds (e.g. performance.now() / 1000).
+   */
+  getQuorumOpacity(cellId: string, timeSec: number): number {
+    if (!this._quorumActive.get(cellId)) return 1.0;
+    return 0.7 + 0.3 * Math.sin(timeSec * 3);
+  }
+
   /** Get the current bbox (derived from body position + dimensions). */
   getBBox(cellId: string): { x: number; y: number; w: number; h: number } | null {
     const body = this.bodies.get(cellId);
@@ -1395,6 +1492,10 @@ export class CellInteractionPhysics {
     this.accumulator = 0;
     this.lastTime = 0;
 
+    this.signalParticles.length = 0;
+    this._quorumActive.clear();
+    this._signalFrameCount = 0;
+
     for (const body of this.bodies.values()) {
       body.x = body.restX;
       body.y = body.restY;
@@ -1416,6 +1517,8 @@ export class CellInteractionPhysics {
     this.dragCancel();
     this.bodies.clear();
     this.blastQueue.length = 0;
+    this.signalParticles.length = 0;
+    this._quorumActive.clear();
   }
 }
 

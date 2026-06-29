@@ -42,6 +42,7 @@
  */
 
 import { getShader } from '../shaders/ShaderLoader';
+import type { SignalParticle } from '../cell-interaction-physics';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,27 @@ const SPECIES_COLORS_RGB: Record<number, [number, number, number]> = {
 
 function speciesRGB(species: number): [number, number, number] {
   return SPECIES_COLORS_RGB[species % 7] ?? [0.5, 0.5, 0.5];
+}
+
+/** Species color as CSS rgba string for Canvas 2D overlay rendering. */
+function speciesRGBToCSS(r: number, g: number, b: number, alpha: number): string {
+  return `rgba(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)},${alpha.toFixed(3)})`;
+}
+
+/** Species name → index lookup for signal molecule rendering. */
+const SPECIES_INDEX: Record<string, number> = {
+  'q':          0,
+  'k':          1,
+  'v':          2,
+  'attn':       3,
+  'mlp':        4,
+  'add_norm':   5,
+  'embed':      6,
+  // fallback handled by modulo in speciesRGB
+};
+
+function speciesNameToIndex(species: string): number {
+  return SPECIES_INDEX[species] ?? (species.charCodeAt(0) % 7);
 }
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -466,6 +488,11 @@ export class ParticleGPU {
   // Elapsed time
   private elapsed = 0;
 
+  // ── M1283: Signal particle overlay (Canvas 2D drawn on top of WebGL) ──
+  /** 2D overlay canvas layered above the WebGL canvas for signal molecule dots. */
+  private _signalOverlay: HTMLCanvasElement | null = null;
+  private _signalCtx: CanvasRenderingContext2D | null = null;
+
   // Optional fluid velocity texture
   private velocityTex:    WebGLTexture | null = null;
   private velocityTexW    = 0;
@@ -651,6 +678,90 @@ export class ParticleGPU {
     gl.disable(gl.BLEND);
   }
 
+  /**
+   * M1283: Render quorum-sensing signal molecules as small circles on a 2D canvas
+   * overlay positioned on top of the WebGL canvas.
+   *
+   * Call this AFTER render() each frame, passing the signalParticles array from
+   * CellInteractionPhysics and the NDC→pixel transform used by the main render.
+   *
+   * @param particles   The signalParticles array from CellInteractionPhysics.
+   * @param canvasW     WebGL canvas width in pixels.
+   * @param canvasH     WebGL canvas height in pixels.
+   * @param ndcToPixel  Optional transform: {offX, offY, scale} mapping cell-space → NDC → pixel.
+   *                    If omitted, particles are treated as already in pixel space.
+   */
+  renderSignalParticles(
+    particles: SignalParticle[],
+    canvasW: number,
+    canvasH: number,
+    ndcToPixel?: { offX: number; offY: number; scale: number },
+  ): void {
+    // Lazy-create the overlay canvas
+    if (!this._signalOverlay) {
+      const overlay = document.createElement('canvas');
+      overlay.style.position = 'absolute';
+      overlay.style.top      = '0';
+      overlay.style.left     = '0';
+      overlay.style.pointerEvents = 'none';
+      overlay.style.zIndex   = '1';
+      this.canvas.parentElement?.appendChild(overlay);
+      this._signalOverlay = overlay;
+      this._signalCtx     = overlay.getContext('2d');
+    }
+
+    // Sync overlay size
+    if (
+      this._signalOverlay.width  !== canvasW ||
+      this._signalOverlay.height !== canvasH
+    ) {
+      this._signalOverlay.width  = canvasW;
+      this._signalOverlay.height = canvasH;
+      this._signalOverlay.style.width  = `${canvasW}px`;
+      this._signalOverlay.style.height = `${canvasH}px`;
+    }
+
+    const ctx = this._signalCtx;
+    if (!ctx) return;
+
+    // Clear previous frame
+    ctx.clearRect(0, 0, canvasW, canvasH);
+
+    if (particles.length === 0) return;
+
+    const SIGNAL_RADIUS_PX = 3; // visual dot radius in pixels
+
+    for (const sp of particles) {
+      if (sp.alpha < 0.01) continue;
+
+      // Coordinate mapping: cell-space → pixel space
+      let px: number;
+      let py: number;
+      if (ndcToPixel) {
+        px = sp.x * ndcToPixel.scale + ndcToPixel.offX;
+        py = sp.y * ndcToPixel.scale + ndcToPixel.offY;
+      } else {
+        px = sp.x;
+        py = sp.y;
+      }
+
+      const speciesIdx = speciesNameToIndex(sp.species);
+      const [r, g, b]  = speciesRGB(speciesIdx);
+      const fillColor  = speciesRGBToCSS(r, g, b, sp.alpha);
+
+      ctx.beginPath();
+      ctx.arc(px, py, SIGNAL_RADIUS_PX, 0, Math.PI * 2);
+      ctx.fillStyle   = fillColor;
+      ctx.shadowColor = fillColor;
+      ctx.shadowBlur  = 4;
+      ctx.fill();
+    }
+
+    // Reset shadow to avoid bleeding onto other draws
+    ctx.shadowBlur  = 0;
+    ctx.shadowColor = 'transparent';
+  }
+
   /** Free all GPU resources. */
   destroy(): void {
     const gl = this.gl;
@@ -666,6 +777,13 @@ export class ParticleGPU {
     gl.deleteBuffer(this.trailSegVBO);
     gl.deleteTransformFeedback(this.tfA);
     gl.deleteTransformFeedback(this.tfB);
+
+    // M1283: Remove 2D signal overlay canvas
+    if (this._signalOverlay) {
+      this._signalOverlay.parentElement?.removeChild(this._signalOverlay);
+      this._signalOverlay = null;
+      this._signalCtx     = null;
+    }
   }
 
   // ─── Private: initialisation ──────────────────────────────────────────────
