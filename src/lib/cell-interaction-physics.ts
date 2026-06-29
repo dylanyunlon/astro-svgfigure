@@ -295,6 +295,22 @@ const DEFAULT_SPECIES_PHYSICS: SpeciesPhysics = {
   buoyancy: 0.5,
 };
 
+// M1293: Default glow colors per species — mirrors gpu-render-loop SPECIES_MATERIAL albedos.
+// Used as the starting point for color evolution and as the "species identity color"
+// that dominance pressure will lerp a cell's glow toward.
+const SPECIES_DEFAULT_GLOW: Record<string, [number, number, number]> = {
+  'cil-eye':         [0.247, 0.318, 0.71],
+  'cil-bolt':        [1.0,   0.435, 0.0],
+  'cil-vector':      [0.18,  0.49,  0.196],
+  'cil-plus':        [0.776, 0.157, 0.157],
+  'cil-arrow-right': [0.271, 0.353, 0.392],
+  'cil-filter':      [0.4,   0.3,   0.6],
+  'cil-layers':      [0.1,   0.6,   0.7],
+  'cil-loop':        [0.8,   0.6,   0.1],
+  'cil-code':        [0.3,   0.7,   0.5],
+  'cil-graph':       [0.6,   0.2,   0.7],
+};
+
 // ─── Utility ────────────────────────────────────────────────────────────────
 
 function clampMag(vx: number, vy: number, maxMag: number): Vec2 {
@@ -389,6 +405,16 @@ export class CellInteractionPhysics {
   /** Per-cell assigned community ID (connected component index, 0-based). */
   private _communityMap: Map<string, number> = new Map();
 
+  // ── M1293: Species color evolution ──
+  /**
+   * Per-cell current glow color [r, g, b] in [0, 1].  Initialised from the
+   * species default palette and gradually drifts toward the dominant neighbour
+   * species color every COLOR_EVOLVE_INTERVAL frames.
+   */
+  private _cellGlowColor: Map<string, [number, number, number]> = new Map();
+  /** Frame counter — color evolution runs every 180 frames (~3 s at 60 fps). */
+  private _colorEvolveFrameCount = 0;
+
   // ── Velocity history for smooth throw (ring buffer, last 4 frames) ──
   private readonly velHistory: Array<{ vx: number; vy: number; dt: number }> = [];
   private readonly VEL_HISTORY_LEN = 4;
@@ -461,6 +487,10 @@ export class CellInteractionPhysics {
       };
 
       this.bodies.set(cell.cell_id, body);
+
+      // M1293: Seed the cell's glow color from its species default palette.
+      const defaultGlow = SPECIES_DEFAULT_GLOW[cell.species] ?? [0.5, 0.5, 0.5];
+      this._cellGlowColor.set(cell.cell_id, [...defaultGlow] as [number, number, number]);
     }
   }
 
@@ -496,12 +526,17 @@ export class CellInteractionPhysics {
       apoptosisStartTime: 0,
       communityId: 0,
     });
+
+    // M1293: Seed glow color for the new cell.
+    const defaultGlow = SPECIES_DEFAULT_GLOW[cell.species] ?? [0.5, 0.5, 0.5];
+    this._cellGlowColor.set(cell.cell_id, [...defaultGlow] as [number, number, number]);
   }
 
   /** Remove a cell body. If it's currently dragged, the drag is cancelled. */
   removeCell(cellId: string): void {
     if (this.draggedId === cellId) this.dragCancel();
     this.bodies.delete(cellId);
+    this._cellGlowColor.delete(cellId);
   }
 
   /** Update a cell's rest position (e.g. after ELK re-layout). */
@@ -917,6 +952,17 @@ export class CellInteractionPhysics {
 
     // ── M1290: Apply community gravity / repulsion every frame ───────────────
     this._applyCommunityForces();
+
+    // ── M1293: Species color evolution — every 180 frames (~3 s at 60 fps) ──
+    // Each cell inspects same-species-radius neighbours, finds the dominant
+    // neighbour species, and lerps its glow color 5% toward that species's
+    // canonical color.  Dispatches 'species-color-evolve' so the render layer
+    // (gpu-render-loop.ts) can update the PBR descriptor.
+    this._colorEvolveFrameCount++;
+    if (this._colorEvolveFrameCount >= 180) {
+      this._colorEvolveFrameCount = 0;
+      this._runSpeciesColorEvolution();
+    }
 
     // Compute force deltas
     const forces: InteractionForce[] = [];
@@ -1615,6 +1661,101 @@ export class CellInteractionPhysics {
     return this._communityMap.get(cellId) ?? -1;
   }
 
+  // ─── M1293: Species color evolution ─────────────────────────────────────
+
+  /**
+   * _runSpeciesColorEvolution — epigenetic "color infection".
+   *
+   * For every cell, we look at all neighbours within signal_radius (200 px).
+   * We tally the species of those neighbours.  If one species constitutes > 50%
+   * of the neighbourhood we call it the dominant species.  The cell's glow color
+   * is then lerped 5% toward that species's canonical color:
+   *
+   *   newColor = lerp(myColor, dominantColor, 0.05)
+   *
+   * A 'species-color-evolve' CustomEvent is dispatched for each cell that
+   * changes, carrying { cellId, newGlowColor: [r, g, b] }.  The render loop
+   * (gpu-render-loop.ts) listens for this event and patches the CellData so
+   * the PBR pass picks it up next frame.
+   *
+   * Signal radius is taken from cell_lifecycle.json signaling.signal_radius
+   * (200 px default).  Cells with no neighbours are left unchanged.
+   */
+  private _runSpeciesColorEvolution(): void {
+    const SIGNAL_RADIUS = 200;   // px — must match signaling.signal_radius
+    const LERP_ALPHA    = 0.05;  // per-tick drift: 5% toward dominant color
+
+    const r2 = SIGNAL_RADIUS * SIGNAL_RADIUS;
+    const arr = Array.from(this.bodies.values());
+
+    for (const body of arr) {
+      // Count neighbour species within signal_radius
+      const speciesCounts: Record<string, number> = {};
+      let total = 0;
+
+      for (const other of arr) {
+        if (other.id === body.id) continue;
+        const dx = body.x - other.x;
+        const dy = body.y - other.y;
+        if (dx * dx + dy * dy <= r2) {
+          speciesCounts[other.species] = (speciesCounts[other.species] ?? 0) + 1;
+          total++;
+        }
+      }
+
+      if (total === 0) continue; // isolated cell — no pressure
+
+      // Find dominant neighbour species (must exceed 50% of neighbours)
+      let dominantSpecies: string | null = null;
+      let dominantCount = 0;
+      for (const [sp, count] of Object.entries(speciesCounts)) {
+        if (count > dominantCount) {
+          dominantCount = count;
+          dominantSpecies = sp;
+        }
+      }
+
+      // Only drift when one species holds clear majority
+      if (dominantSpecies === null || dominantCount / total <= 0.5) continue;
+
+      // Skip drift if dominant species is the same as this cell's own species
+      // (the cell is already "at home" — no epigenetic pressure)
+      if (dominantSpecies === body.species) continue;
+
+      const targetColor = SPECIES_DEFAULT_GLOW[dominantSpecies] ?? [0.5, 0.5, 0.5];
+      const current = this._cellGlowColor.get(body.id)
+        ?? (SPECIES_DEFAULT_GLOW[body.species] ?? [0.5, 0.5, 0.5]);
+
+      // Linear interpolation: color = lerp(myColor, neighborDominantColor, 0.05)
+      const newColor: [number, number, number] = [
+        current[0] + (targetColor[0] - current[0]) * LERP_ALPHA,
+        current[1] + (targetColor[1] - current[1]) * LERP_ALPHA,
+        current[2] + (targetColor[2] - current[2]) * LERP_ALPHA,
+      ];
+
+      this._cellGlowColor.set(body.id, newColor);
+
+      // Dispatch event so the render layer can react immediately
+      window.dispatchEvent(new CustomEvent('species-color-evolve', {
+        detail: { cellId: body.id, newGlowColor: newColor },
+      }));
+    }
+  }
+
+  /**
+   * M1293: Return the current evolved glow color for a cell.
+   * Falls back to the species default if the cell has no entry yet.
+   */
+  getGlowColor(cellId: string): [number, number, number] {
+    const body = this.bodies.get(cellId);
+    if (!body) return [0.5, 0.5, 0.5];
+    return (
+      this._cellGlowColor.get(cellId) ??
+      SPECIES_DEFAULT_GLOW[body.species] ??
+      [0.5, 0.5, 0.5]
+    );
+  }
+
   // ─── Queries ────────────────────────────────────────────────────────────
 
   /** Get the current interaction state for a cell. */
@@ -1810,6 +1951,7 @@ export class CellInteractionPhysics {
     this._apoptosisOrigSize.clear();
     this._communityMap.clear();
     this._communityFrameCount = 0;
+    this._colorEvolveFrameCount = 0;
 
     for (const body of this.bodies.values()) {
       body.x = body.restX;
@@ -1839,6 +1981,7 @@ export class CellInteractionPhysics {
     this._quorumActive.clear();
     this._apoptosisOrigSize.clear();
     this._communityMap.clear();
+    this._cellGlowColor.clear();
   }
 }
 

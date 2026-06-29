@@ -251,6 +251,19 @@ export class GPURenderLoop {
       this._communityMap = ce.detail.communities;
     });
 
+    // ── M1293: Species color evolution — listen for glow drift events ─────────
+    // When the physics engine fires 'species-color-evolve' (every ~180 frames),
+    // patch the affected CellData.glowColor so the next PBR render pass picks
+    // up the updated glow without requiring a full scene reload.
+    window.addEventListener('species-color-evolve', (e: Event) => {
+      const ce = e as CustomEvent<{ cellId: string; newGlowColor: [number, number, number] }>;
+      const { cellId, newGlowColor } = ce.detail;
+      const cell = this.cells.find(c => c.cell_id === cellId);
+      if (cell) {
+        cell.glowColor = newGlowColor;
+      }
+    });
+
     // 异步加载 AT compiled.vs shader bundle
     // 加载完成后 172 个 shader 的 #require 依赖全部递归解析
     initATShaderPipeline('/activetheory/compiled.vs')
