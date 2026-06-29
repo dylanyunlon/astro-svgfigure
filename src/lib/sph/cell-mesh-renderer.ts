@@ -197,6 +197,39 @@ function modelMatrix(
   ]);
 }
 
+/**
+ * Apply a rotation about the Z axis to a column-major 4x4 matrix in place.
+ * Multiplies model = model * Rz(angle), so it rotates in the model's local frame
+ * before the existing translation/scale takes effect.
+ */
+function rotateZ(mat: Float32Array, angle: number): void {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  // Columns 0 and 1 are affected (X and Y basis vectors).
+  for (let i = 0; i < 3; i++) {
+    const a = mat[i];       // column 0, row i
+    const b = mat[4 + i];   // column 1, row i
+    mat[i]     = a * c + b * s;
+    mat[4 + i] = -a * s + b * c;
+  }
+}
+
+/**
+ * Apply a rotation about the Y axis to a column-major 4x4 matrix in place.
+ * Multiplies model = model * Ry(angle).
+ */
+function rotateY(mat: Float32Array, angle: number): void {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  // Columns 0 and 2 are affected (X and Z basis vectors).
+  for (let i = 0; i < 3; i++) {
+    const a = mat[i];       // column 0, row i
+    const b = mat[8 + i];   // column 2, row i
+    mat[i]     = a * c - b * s;
+    mat[8 + i] = a * s + b * c;
+  }
+}
+
 // ─── CellMeshRenderer ────────────────────────────────────────────────────────
 
 import type { CellData } from './gpu-render-loop';
@@ -335,6 +368,32 @@ export class CellMeshRenderer {
       const sz = Math.min(sw, sh) * 0.5;
 
       const model = modelMatrix(cx, cy, cz, sw, sh, sz);
+
+      // ── Species-specific 3D motion ──────────────────────────────────────
+      const t = this._time;
+      switch (cell.species) {
+        case 'cil-eye':
+          // Slow continuous spin about Z.
+          rotateZ(model, t * 0.3);
+          break;
+        case 'cil-bolt':
+          // Pulsing rotation about Y.
+          rotateY(model, Math.sin(t * 3.0) * 0.5);
+          break;
+        case 'cil-vector':
+          // Small X-axis translation pulse, no rotation.
+          model[12] += Math.sin(t * 2) * 2;
+          break;
+        case 'cil-plus':
+          // Back-and-forth wobble about Z.
+          rotateZ(model, Math.sin(t * 1.5) * 0.8);
+          break;
+        case 'cil-arrow-right':
+        default:
+          // Static.
+          break;
+      }
+
       gl.uniformMatrix4fv(this.uModelMatrix, false, model);
 
       gl.uniform3f(this.uAlbedo, cell.albedo[0], cell.albedo[1], cell.albedo[2]);
