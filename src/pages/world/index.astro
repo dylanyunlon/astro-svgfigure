@@ -1803,6 +1803,71 @@ export const prerender = true;
         hudRenderMode.textContent = 'PBR+SDF';
         setInterval(() => { try { if (!gpuRenderLoop) return; const s = gpuRenderLoop.stats; hudFps.textContent = String(s.fps); hudParticles.textContent = String(s.cellCount); } catch(_){} }, 250);
 
+        // ── M1272: mouse interaction → GPU physics (drag/throw/inject) ──────
+        // Map canvas pixel coords → cell-space via camera params exposed by
+        // the render loop, then drive the physics engine directly.
+        {
+          // The gpu-world canvas has pointer-events:none; capture on the
+          // base SPH canvas which sits behind it and spans the viewport.
+          const interactEl: HTMLElement = canvas ?? gpuWorldCanvas;
+          interactEl.style.cursor = 'grab';
+
+          // CSS px → canvas device px → cell px (inverse of fitX/fitY)
+          const toCellCoords = (clientX: number, clientY: number) => {
+            const rect = gpuWorldCanvas.getBoundingClientRect();
+            const cam = gpuRenderLoop!.camera;
+            // CSS → canvas device pixels
+            const canvasX = (clientX - rect.left) * (gpuWorldCanvas.width  / rect.width);
+            const canvasY = (clientY - rect.top)  * (gpuWorldCanvas.height / rect.height);
+            // canvas px → cell px (reverse of px*scale + off)
+            const cellX = (canvasX - cam.offX) / cam.scale;
+            const cellY = (canvasY - cam.offY) / cam.scale;
+            return { cellX, cellY };
+          };
+
+          let dragging = false;
+
+          interactEl.addEventListener('mousedown', (e: MouseEvent) => {
+            const physics = gpuRenderLoop?.physicsEngine;
+            if (!physics) return;
+            const { cellX, cellY } = toCellCoords(e.clientX, e.clientY);
+            // Find the cell under the pointer (topmost hit / nearest).
+            const hitId = physics.hitTest(cellX, cellY);
+            if (!hitId) return;
+            physics.dragStart(hitId, cellX, cellY);
+            dragging = true;
+            interactEl.style.cursor = 'grabbing';
+          });
+
+          interactEl.addEventListener('mousemove', (e: MouseEvent) => {
+            if (!dragging) return;
+            const physics = gpuRenderLoop?.physicsEngine;
+            if (!physics) return;
+            const { cellX, cellY } = toCellCoords(e.clientX, e.clientY);
+            physics.dragMove(cellX, cellY);
+          });
+
+          const endDrag = () => {
+            if (!dragging) return;
+            const physics = gpuRenderLoop?.physicsEngine;
+            physics?.dragEnd();   // applies throw velocity from pointer history
+            dragging = false;
+            interactEl.style.cursor = 'grab';
+          };
+          interactEl.addEventListener('mouseup', endDrag);
+          interactEl.addEventListener('mouseleave', endDrag);
+
+          // Double-click → radial blast shockwave at pointer.
+          interactEl.addEventListener('dblclick', (e: MouseEvent) => {
+            const physics = gpuRenderLoop?.physicsEngine;
+            if (!physics) return;
+            const { cellX, cellY } = toCellCoords(e.clientX, e.clientY);
+            physics.inject(cellX, cellY);
+          });
+
+          console.info('[gpu-world] M1272 mouse interaction wired — drag/throw/inject active');
+        }
+
         // 隐藏 init overlay — GPURenderLoop 是主渲染路径，不需要等 WebGPU
         const overlay = document.getElementById('init-overlay');
         if (overlay) overlay.classList.add('hidden');

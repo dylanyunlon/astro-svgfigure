@@ -140,6 +140,10 @@ export class GPURenderLoop {
   private _camOffX = 0;
   private _camOffY = 0;
 
+  // M1272: expose camera + physics for mouse interaction
+  get camera() { return { scale: this._camScale, offX: this._camOffX, offY: this._camOffY }; }
+  get physicsEngine() { return this.physics; }
+
   // 状态
   private cells: CellData[] = [];
   private edges: EdgeData[] = [];
