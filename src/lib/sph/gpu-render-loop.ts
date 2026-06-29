@@ -705,8 +705,10 @@ export class GPURenderLoop {
     }
 
     // ── Pass 3: PBR cell surface → FBO ──
+    // Skip when CellMeshRenderer is active (3D meshes replace 2D quads)
     let cellTex: WebGLTexture = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
-    {
+    const use3DMesh = this.cellMesh != null; // cellMesh exists → use it, PBR is fallback
+    if (!use3DMesh) {
       const t = this.perf.passStart('pbr');
       try {
         if (this.pbr) {
