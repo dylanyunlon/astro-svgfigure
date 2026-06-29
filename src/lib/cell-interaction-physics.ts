@@ -70,11 +70,11 @@ interface SpeciesInteractionMatrix {
 const PARTICLE_LIFE = speciesInteractionMatrix as SpeciesInteractionMatrix;
 
 // ─── Environment parameters ──────────────────────────────────────────────────
-// M1279: ambient medium physics loaded from channels/physics/environment.json.
+// M1281: ambient medium physics loaded from channels/physics/environment.json.
 // Drives brownian motion, a global laminar flow field, sedimentation gravity,
 // soft-wall boundary repulsion, and a temperature gradient that locally lowers
 // viscosity (cells nearer the warm centre move more freely).
-import environmentParams from '../../channels/physics/environment.json';
+import environmentJson from '../../channels/physics/environment.json';
 
 interface EnvironmentParams {
   medium: { type: string; viscosity: number; density: number; temperature: number; pH: number };
@@ -97,7 +97,7 @@ interface EnvironmentParams {
   surface_tension_at_boundary: number;
 }
 
-const ENVIRONMENT = environmentParams as EnvironmentParams;
+const ENVIRONMENT = environmentJson as EnvironmentParams;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
