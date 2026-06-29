@@ -155,6 +155,10 @@ interface CellBody {
   // Species tag
   species: string;
   z: number;
+  // Quorum-sensing cluster factor: scales collision separation/bounce.
+  // 1 = normal repulsion, <1 = reduced repulsion (cells pack tighter when
+  // quorum is reached). Default 1. Set via setClusterFactor().
+  clusterFactor?: number;
 }
 
 /** Radial blast impulse queued by inject(). */
@@ -419,6 +423,18 @@ export class CellInteractionPhysics {
   setRestPosition(cellId: string, x: number, y: number): void {
     const b = this.bodies.get(cellId);
     if (b) { b.restX = x; b.restY = y; }
+  }
+
+  /**
+   * Set a cell's quorum-sensing cluster factor. Scales how strongly the cell
+   * is pushed apart during collision resolution: 1 = normal repulsion, values
+   * <1 reduce repulsion so cells pack tighter (cluster). Clamped to [0, 1].
+   * Used by the quorum-sensing response — when a cell has enough same-species
+   * neighbours it lowers its repulsion and aggregates.
+   */
+  setClusterFactor(cellId: string, factor: number): void {
+    const b = this.bodies.get(cellId);
+    if (b) b.clusterFactor = Math.max(0, Math.min(1, factor));
   }
 
   // ─── 1. Drag ────────────────────────────────────────────────────────────
@@ -1097,33 +1113,39 @@ export class CellInteractionPhysics {
           const nx = a.x < b.x ? -1 : 1;
           const ny = a.y < b.y ? -1 : 1;
 
+          // Quorum-sensing cluster factor: when both cells are in a quorum
+          // they lower their mutual repulsion so they pack tighter. Use the
+          // average of the pair's cluster factors (default 1 = full repulsion).
+          const cf = ((a.clusterFactor ?? 1) + (b.clusterFactor ?? 1)) / 2;
+          const sep = 0.5 * cf;
+
           if (overlapX < overlapY) {
             // Separate along X
             const totalMass = (a.pinned ? 1e10 : a.mass) + (b.pinned ? 1e10 : b.mass);
             const ratioA = a.pinned ? 0 : (b.pinned ? 1 : b.mass / totalMass);
             const ratioB = b.pinned ? 0 : (a.pinned ? 1 : a.mass / totalMass);
 
-            a.x += nx * overlapX * ratioA * -0.5;
-            b.x += nx * overlapX * ratioB * 0.5;
+            a.x += nx * overlapX * ratioA * -sep;
+            b.x += nx * overlapX * ratioB * sep;
 
             // Bounce velocities
             const relVx = a.vx - b.vx;
             const restitution = Math.min(a.restitution, b.restitution);
-            if (!a.pinned) a.vx -= relVx * (1 + restitution) * ratioA * 0.5;
-            if (!b.pinned) b.vx += relVx * (1 + restitution) * ratioB * 0.5;
+            if (!a.pinned) a.vx -= relVx * (1 + restitution) * ratioA * sep;
+            if (!b.pinned) b.vx += relVx * (1 + restitution) * ratioB * sep;
           } else {
             // Separate along Y
             const totalMass = (a.pinned ? 1e10 : a.mass) + (b.pinned ? 1e10 : b.mass);
             const ratioA = a.pinned ? 0 : (b.pinned ? 1 : b.mass / totalMass);
             const ratioB = b.pinned ? 0 : (a.pinned ? 1 : a.mass / totalMass);
 
-            a.y += ny * overlapY * ratioA * -0.5;
-            b.y += ny * overlapY * ratioB * 0.5;
+            a.y += ny * overlapY * ratioA * -sep;
+            b.y += ny * overlapY * ratioB * sep;
 
             const relVy = a.vy - b.vy;
             const restitution = Math.min(a.restitution, b.restitution);
-            if (!a.pinned) a.vy -= relVy * (1 + restitution) * ratioA * 0.5;
-            if (!b.pinned) b.vy += relVy * (1 + restitution) * ratioB * 0.5;
+            if (!a.pinned) a.vy -= relVy * (1 + restitution) * ratioA * sep;
+            if (!b.pinned) b.vy += relVy * (1 + restitution) * ratioB * sep;
           }
         }
       }

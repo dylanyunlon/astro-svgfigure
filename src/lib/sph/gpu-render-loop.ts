@@ -27,6 +27,7 @@ import { ATMouseFluid } from './at-mousefluid-import';
 import { CellMeshRenderer } from './cell-mesh-renderer';
 import { CellInteractionPhysics } from '../cell-interaction-physics';
 import speciesPhysicsJson from '../../../channels/physics/species_physics.json';
+import cellLifecycleJson from '../../../channels/physics/cell_lifecycle.json';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -63,6 +64,8 @@ export interface CellData {
   focalIntensity: number;                  // focal_intensity [0,1]
   animationSpeed: number;                  // animation_speed
   opacity: number;                         // opacity
+  // === M1280: cell lifecycle ===
+  energy?: number;                         // metabolic energy [0, max_energy], initial 1.0
 }
 
 export interface EdgeData {
@@ -147,6 +150,23 @@ export class GPURenderLoop {
   // 状态
   private cells: CellData[] = [];
   private edges: EdgeData[] = [];
+
+  // ── M1280: cell lifecycle state ──────────────────────────────────────────
+  /** Parsed channels/physics/cell_lifecycle.json parameters. */
+  private lifecycle = cellLifecycleJson as {
+    energy_system: { base_consumption: number; movement_cost: number; collision_cost: number; regeneration_rate: number; max_energy: number };
+    lifecycle: { division_energy_threshold: number; division_cooldown_ms: number; apoptosis_energy_threshold: number; apoptosis_delay_ms: number; max_age_ms: number };
+    signaling: { signal_radius: number; signal_decay: number; quorum_threshold: number; quorum_response: string };
+    membrane: { permeability: number; elasticity: number; repair_rate: number; rupture_threshold: number };
+  };
+  /** Hard cap on cell count to prevent unbounded division. */
+  private readonly MAX_CELLS = 200;
+  /** Per-cell timestamp (ms) of last division — enforces division cooldown. */
+  private divisionCooldownUntil: Map<string, number> = new Map();
+  /** Per-cell timestamp (ms) when apoptosis countdown finishes; cell removed after. */
+  private apoptosisDeadline: Map<string, number> = new Map();
+  /** Monotonic counter for unique IDs of daughter cells. */
+  private divisionCounter = 0;
   private _edgesDirty = true;
   private _placeholderTex: WebGLTexture | null = null;
   private _pbrFBOReady = false;
@@ -348,6 +368,16 @@ export class GPURenderLoop {
     this.edges = edges;
     this._edgesDirty = true;
 
+    // ── M1280: initialise lifecycle state ──────────────────────────────────
+    // Every cell starts with full energy (1.0). Reset all per-cell lifecycle
+    // bookkeeping so a fresh scene doesn't inherit stale cooldowns/deadlines.
+    const maxE = this.lifecycle.energy_system.max_energy;
+    for (const c of this.cells) {
+      if (c.energy === undefined) c.energy = maxE;
+    }
+    this.divisionCooldownUntil.clear();
+    this.apoptosisDeadline.clear();
+
     // Init physics engine
     try {
       const interactionCells = cells.map(c => ({cell_id: c.cell_id, bbox: {x: c.x, y: c.y, w: c.w, h: c.h}, z: c.z, species: c.species}));
@@ -386,6 +416,160 @@ export class GPURenderLoop {
    */
   setUILParams(params: UILParamsJson): void {
     this.uil = params;
+  }
+
+  /**
+   * M1280 — Cell lifecycle step. Called once per frame from frame() after the
+   * physics step. Implements four coupled biological subsystems:
+   *
+   *   1. Energy metabolism — each cell spends energy on basal upkeep and on
+   *      movement, and slowly regenerates back toward max_energy.
+   *   2. Division — well-fed cells (energy > division threshold) split into two
+   *      daughters, each inheriting half the parent's energy, subject to a
+   *      cooldown and the global MAX_CELLS cap.
+   *   3. Apoptosis — starved cells (energy < apoptosis threshold) begin a death
+   *      countdown; if they don't recover before the delay elapses they are
+   *      removed from the simulation.
+   *   4. Quorum sensing — cells count same-species neighbours within
+   *      signal_radius; once the count reaches quorum_threshold they trigger the
+   *      quorum response (clustering: lowered repulsion via setClusterFactor).
+   *
+   * @param dt Frame delta time in seconds.
+   */
+  private _stepLifecycle(dt: number): void {
+    const physics = this.physics;
+    if (!physics) return;
+    // Guard against pathological dt (tab refocus etc.) so energy book-keeping
+    // stays stable. Clamp to a single 1/30s frame max.
+    const step = Math.max(0, Math.min(dt, 1 / 30));
+    const now = performance.now();
+
+    const E = this.lifecycle.energy_system;
+    const L = this.lifecycle.lifecycle;
+    const S = this.lifecycle.signaling;
+
+    // ── 1. Energy metabolism ────────────────────────────────────────────────
+    for (const c of this.cells) {
+      if (c.energy === undefined) c.energy = E.max_energy;
+      const st = physics.getState(c.cell_id);
+      const speed = st ? Math.sqrt(st.vx * st.vx + st.vy * st.vy) : 0;
+
+      // Basal consumption + movement cost.
+      c.energy -= E.base_consumption * step;
+      c.energy -= speed * E.movement_cost * step;
+      // Regeneration (capped at max_energy).
+      c.energy += E.regeneration_rate * step;
+      if (c.energy > E.max_energy) c.energy = E.max_energy;
+      if (c.energy < 0) c.energy = 0;
+    }
+
+    // ── 2. Division ─────────────────────────────────────────────────────────
+    // Collect new cells first, then append, so we don't mutate this.cells while
+    // iterating it.
+    const newCells: CellData[] = [];
+    for (const c of this.cells) {
+      if (this.cells.length + newCells.length >= this.MAX_CELLS) break;
+      if ((c.energy ?? 0) <= L.division_energy_threshold) continue;
+
+      const cooldownUntil = this.divisionCooldownUntil.get(c.cell_id) ?? 0;
+      if (now < cooldownUntil) continue;
+
+      // Split energy in half between parent and daughter.
+      const half = (c.energy ?? E.max_energy) / 2;
+      c.energy = half;
+
+      // Random position offset ±20px so the daughter doesn't spawn exactly on
+      // top of the parent.
+      const offX = (Math.random() * 2 - 1) * 20;
+      const offY = (Math.random() * 2 - 1) * 20;
+
+      const daughterId = `${c.cell_id}__d${++this.divisionCounter}`;
+      const daughter: CellData = {
+        ...c,
+        cell_id: daughterId,
+        x: c.x + offX,
+        y: c.y + offY,
+        energy: half,
+      };
+      newCells.push(daughter);
+
+      // Notify the physics engine of the new body.
+      physics.addCell({
+        cell_id: daughterId,
+        bbox: { x: daughter.x, y: daughter.y, w: daughter.w, h: daughter.h },
+        z: daughter.z,
+        species: daughter.species,
+      });
+
+      // Cooldown for BOTH parent and daughter to prevent runaway division.
+      this.divisionCooldownUntil.set(c.cell_id, now + L.division_cooldown_ms);
+      this.divisionCooldownUntil.set(daughterId, now + L.division_cooldown_ms);
+    }
+    if (newCells.length) {
+      for (const d of newCells) this.cells.push(d);
+    }
+
+    // ── 3. Apoptosis ────────────────────────────────────────────────────────
+    // Cells below the apoptosis threshold start (or continue) a death countdown.
+    // Cells that recover above the threshold cancel any pending countdown.
+    const toRemove: string[] = [];
+    for (const c of this.cells) {
+      const e = c.energy ?? E.max_energy;
+      if (e < L.apoptosis_energy_threshold) {
+        const deadline = this.apoptosisDeadline.get(c.cell_id);
+        if (deadline === undefined) {
+          // Begin countdown.
+          this.apoptosisDeadline.set(c.cell_id, now + L.apoptosis_delay_ms);
+        } else if (now >= deadline) {
+          toRemove.push(c.cell_id);
+        }
+      } else if (this.apoptosisDeadline.has(c.cell_id)) {
+        // Recovered — cancel the death countdown.
+        this.apoptosisDeadline.delete(c.cell_id);
+      }
+    }
+    if (toRemove.length) {
+      const removeSet = new Set(toRemove);
+      this.cells = this.cells.filter(c => !removeSet.has(c.cell_id));
+      for (const id of toRemove) {
+        physics.removeCell(id);                 // remove physics body
+        this.apoptosisDeadline.delete(id);
+        this.divisionCooldownUntil.delete(id);
+      }
+    }
+
+    // ── 4. Quorum sensing ───────────────────────────────────────────────────
+    // For each cell, count same-species neighbours within signal_radius. When
+    // the count reaches quorum_threshold, trigger the quorum response: cluster
+    // by lowering the cell's collision repulsion (setClusterFactor < 1). Cells
+    // below quorum return to full repulsion (factor 1).
+    const radius2 = S.signal_radius * S.signal_radius;
+    // Snapshot positions once for O(n²) neighbour search.
+    const pos: Array<{ id: string; x: number; y: number; species: string }> = [];
+    for (const c of this.cells) {
+      const st = physics.getState(c.cell_id);
+      if (st) pos.push({ id: c.cell_id, x: st.x, y: st.y, species: c.species });
+    }
+    for (let i = 0; i < pos.length; i++) {
+      const a = pos[i];
+      let count = 0;
+      for (let j = 0; j < pos.length; j++) {
+        if (i === j) continue;
+        const b = pos[j];
+        if (b.species !== a.species) continue;
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        if (dx * dx + dy * dy <= radius2) count++;
+      }
+      if (count >= S.quorum_threshold) {
+        // Quorum reached → cluster: reduce repulsion. The more crowded, the
+        // tighter the packing, down to a floor of 0.2.
+        const factor = Math.max(0.2, 1 - count * 0.1);
+        physics.setClusterFactor(a.id, factor);
+      } else {
+        physics.setClusterFactor(a.id, 1);
+      }
+    }
   }
 
   /**
@@ -665,6 +849,11 @@ export class GPURenderLoop {
         this.physics.throwCell(e.source,  ux * f,  uy * f);
         this.physics.throwCell(e.target, -ux * f, -uy * f);
       }
+
+      // ── M1280: cell lifecycle — energy metabolism, division, apoptosis,
+      // quorum sensing. Runs after the physics step so it reads up-to-date
+      // velocities and positions for energy/movement cost and neighbour counts.
+      this._stepLifecycle(dt);
     }
 
     // ── M1219: Auto-fit camera — scale all cells into the viewport ──────────
