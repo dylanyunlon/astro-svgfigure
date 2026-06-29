@@ -763,6 +763,8 @@ export class GPURenderLoop {
         if (meshTex) cellTex = meshTex;
       } catch (e) {
         if (this.frameCount <= 10) console.warn('[GPURenderLoop] CellMesh pass error:', e);
+        // Fallback: run PBR if 3D mesh fails
+        cellTex = this._renderCellsFallback();
       }
       this.perf.passEnd('cellMesh', t);
     }
@@ -821,7 +823,10 @@ export class GPURenderLoop {
     {
       const t = this.perf.passStart('bloom');
       try {
-        this.bloom.step(cellTex);
+        // Only bloom if we have real cell content (not 1×1 placeholder)
+        if (cellTex !== this._placeholderTex) {
+          this.bloom.step(cellTex);
+        }
       } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('bloom', t);
     }
