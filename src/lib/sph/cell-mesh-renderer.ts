@@ -515,7 +515,7 @@ export class CellMeshRenderer {
 
     // Index buffer
     let indexCount = vertexCount;
-    let indexType = gl.UNSIGNED_SHORT;
+    let indexType: number = gl.UNSIGNED_SHORT;
     if (indices) {
       const idxBuf = gl.createBuffer()!;
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);

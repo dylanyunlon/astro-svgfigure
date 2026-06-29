@@ -598,9 +598,9 @@ export class GeomThread {
   }
 
   private _post(req: GeomThreadRequest): Promise<GeometryDescriptor> {
-    const transfers: ArrayBuffer[] = [req.geometry.positions.buffer];
-    if (req.geometry.indices) transfers.push(req.geometry.indices.buffer);
-    if (req.geometry.normals) transfers.push(req.geometry.normals.buffer);
+    const transfers: ArrayBuffer[] = [req.geometry.positions.buffer as ArrayBuffer];
+    if (req.geometry.indices) transfers.push(req.geometry.indices.buffer as ArrayBuffer);
+    if (req.geometry.normals) transfers.push(req.geometry.normals.buffer as ArrayBuffer);
     return new Promise((resolve) => {
       this.pending.set(req.id, resolve);
       this.worker.postMessage(req, transfers);

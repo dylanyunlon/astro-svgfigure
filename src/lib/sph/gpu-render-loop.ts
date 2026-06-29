@@ -90,12 +90,12 @@ export class GPURenderLoop {
   private canvas: HTMLCanvasElement;
 
   // GPU passes — 每个都有真实 gl 调用
-  private fluid: FluidGPU;
-  private bloom: BloomGPU;
-  private shadow: ShadowGPU;
-  private edge: EdgeGPU;
-  private msdf: MSDFTextGPU;
-  private composite: CompositeGPU;
+  private fluid!: FluidGPU;
+  private bloom!: BloomGPU;
+  private shadow!: ShadowGPU;
+  private edge!: EdgeGPU;
+  private msdf!: MSDFTextGPU;
+  private composite!: CompositeGPU;
   private particle: ParticleGPU | null = null; // WebGL2 only
   private pbr: PBRCellGPU | null = null;
   private glass: GlassGPU | null = null;
@@ -977,7 +977,7 @@ export class GPURenderLoop {
             fluid:      this.mouseFluid?.dyeTexture ?? this.fluid?.dyeTexture ?? placeholder,
             gi:         this.lumenGI?.outputTexture ?? undefined,
             volumetric: this.volumetricLight?.raysTexture ?? undefined,
-            geometry:   this.geometryLoader?.getPreviewTexture?.() ?? undefined,
+            geometry:   this.geometryLoader?.previewTexture ?? undefined,
           }, W, H, time);
         } else {
           // No composite — draw PBR directly to screen as fullscreen blit
