@@ -24,6 +24,7 @@ import { UEBloomTonemap } from './ue-bloom-tonemap';
 import { ATJellyfishCell, type JellyfishInstance } from './at-jellyfish-cell';
 import { ATFlowerParticleRenderer, type FlowerEdgeSpline } from './at-flower-particle';
 import { ATMouseFluid } from './at-mousefluid-import';
+import { CellMeshRenderer } from './cell-mesh-renderer';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -97,6 +98,7 @@ export class GPURenderLoop {
   private pbr: PBRCellGPU | null = null;
   private glass: GlassGPU | null = null;
   private sdfIcon: SDFIconGPU | null = null;
+  private cellMesh: CellMeshRenderer | null = null;
   // AT asset loaders — Draco geometry + KTX2 textures
   private geometryLoader: ATGeometryLoader | null = null;
   private textureLoader: KTX2TextureLoader | null = null;
@@ -221,6 +223,12 @@ export class GPURenderLoop {
 
     // PBR cell surface pass
     try { this.pbr = new PBRCellGPU(gl); } catch (e) { console.warn('[GPURenderLoop] PBR init failed, using fallback:', e); }
+
+    // ── M1261: 3D mesh renderer (replaces 2D quad PBR when GLBs are loaded) ──
+    try {
+      this.cellMesh = new CellMeshRenderer(gl);
+      console.info('[GPURenderLoop] CellMeshRenderer ready (placeholder cubes)');
+    } catch (e) { console.warn('[GPURenderLoop] CellMeshRenderer init failed:', e); }
 
     // Glass Fresnel pass
     try { this.glass = new GlassGPU(gl); } catch (e) { console.warn('[GPURenderLoop] Glass init failed:', e); }
@@ -738,6 +746,23 @@ export class GPURenderLoop {
         cellTex = this._renderCellsFallback();
       }
       this.perf.passEnd('pbr', t);
+    }
+
+    // ── Pass 3a: 3D mesh cells (M1261) ──
+    // Renders actual 3D geometry for each cell (placeholder cubes until GLBs loaded).
+    // Output goes to its own FBO; we use it as cellTex when available.
+    if (this.cellMesh) {
+      const t = this.perf.passStart('cellMesh');
+      try {
+        this.cellMesh.setTime(time);
+        this.cellMesh.render(this.cells, camScale, camOffX, camOffY, W, H);
+        // Use 3D mesh output as cellTex (replaces PBR quad output)
+        const meshTex = this.cellMesh.outputTexture;
+        if (meshTex) cellTex = meshTex;
+      } catch (e) {
+        if (this.frameCount <= 10) console.warn('[GPURenderLoop] CellMesh pass error:', e);
+      }
+      this.perf.passEnd('cellMesh', t);
     }
 
     // ── Pass 3b: AT Jellyfish cell renderer (M1225) ──
