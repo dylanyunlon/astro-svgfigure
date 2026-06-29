@@ -246,6 +246,23 @@ export class CellMeshRenderer {
     this.prog = this._compileProgram();
     this._resolveLocations();
     this._uploadPlaceholder();
+    // Auto-load GLB files (async, falls back to placeholder until loaded)
+    this.loadAllSpeciesGLB().catch(e =>
+      console.warn('[CellMeshRenderer] GLB auto-load failed, using procedural fallback:', e)
+    );
+  }
+
+  /**
+   * Load GLB files for all 5 species from /models/{species}.glb.
+   * Non-blocking — cells render with procedural geometry until GLB loads.
+   */
+  async loadAllSpeciesGLB(): Promise<void> {
+    const species = ['cil-eye', 'cil-bolt', 'cil-vector', 'cil-plus', 'cil-arrow-right'];
+    const results = await Promise.allSettled(
+      species.map(s => this.loadSpeciesMesh(s, `/models/${s}.glb`))
+    );
+    const loaded = results.filter(r => r.status === 'fulfilled').length;
+    console.info(`[CellMeshRenderer] GLB load: ${loaded}/${species.length} species`);
   }
 
   // ── Public API ──────────────────────────────────────────────────────────
