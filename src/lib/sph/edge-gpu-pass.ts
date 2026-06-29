@@ -214,12 +214,12 @@ export interface EdgeGPUConfig {
 }
 
 const DEFAULT_CONFIG: EdgeGPUConfig = {
-  lineWidth:    3.5,
-  glowRadius:   8.0,
-  glowAlpha:    0.55,
-  dashLength:   0,       // solid by default
-  gapLength:    0,
-  flowSpeed:    0.18,
+  lineWidth:    2.5,
+  glowRadius:   6.0,
+  glowAlpha:    0.45,
+  dashLength:   14,       // dash on-length px — visible data flow
+  gapLength:    10,       // dash gap px
+  flowSpeed:    0.25,     // flow pulse scroll speed
   segments:     32,
   canvasWidth:  800,
   canvasHeight: 600,
@@ -378,6 +378,12 @@ export class EdgeGPU {
    */
   setEdges(edges: EdgeControlPoints[]): void {
     this.edges = edges;
+  }
+
+  /** Update canvas dimensions (call on resize or each frame) */
+  setCanvasSize(w: number, h: number): void {
+    this.config.canvasWidth = w;
+    this.config.canvasHeight = h;
   }
 
   /**

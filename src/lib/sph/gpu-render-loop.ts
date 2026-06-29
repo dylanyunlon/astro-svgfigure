@@ -217,7 +217,7 @@ export class GPURenderLoop {
 
     try { this.bloom = new BloomGPU(gl, canvas.width, canvas.height); } catch (e) { console.warn('[GPURenderLoop] Bloom init failed:', e); }
     try { this.shadow = new ShadowGPU(gl, 1024); } catch (e) { console.warn('[GPURenderLoop] Shadow init failed:', e); }
-    try { this.edge = new EdgeGPU(gl); } catch (e) { console.warn('[GPURenderLoop] Edge init failed:', e); }
+    try { this.edge = new EdgeGPU(gl, { canvasWidth: canvas.width, canvasHeight: canvas.height }); } catch (e) { console.warn('[GPURenderLoop] Edge init failed:', e); }
     try { this.msdf = new MSDFTextGPU(gl); } catch (e) { console.warn('[GPURenderLoop] MSDF init failed:', e); }
     try { this.composite = new CompositeGPU(gl, canvas.width, canvas.height); } catch (e) { console.warn('[GPURenderLoop] Composite init failed:', e); }
 
@@ -967,6 +967,7 @@ export class GPURenderLoop {
           this.edge.setEdges(ecp);
           this._edgesDirty = false;
         }
+        this.edge.setCanvasSize(W, H);
         this.edge.render(time);
       } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] pass error:', e); }
       this.perf.passEnd('edge', t);

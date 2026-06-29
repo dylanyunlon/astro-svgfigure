@@ -109,66 +109,85 @@ vec3 colorGrade(vec3 col) {
 
 void main() {
     vec2 uv = vUv;
+    vec2 centeredUv = uv * 2.0 - 1.0;
 
-    // ── 1. fluid UV distortion (subtle, 扭曲后续所有采样) ────────────────────
-    vec2 fluidVel = texture(uFluid, uv).rg;           // velocity in [0,1]
-    fluidVel = (fluidVel - 0.5) * 2.0;                  // remap → [-1, 1]
-    vec2 distortedUv = uv + fluidVel * 0.004;           // 0.4% 最大偏移
+    // ── 0. Cyber background ──────────────────────────────────────────────────
+    // Deep blue radial gradient + subtle grid + slow noise
+    float dist = length(centeredUv);
+    vec3 bgCenter = vec3(0.04, 0.07, 0.14);  // dark navy
+    vec3 bgEdge   = vec3(0.01, 0.02, 0.06);  // near black
+    vec3 bg = mix(bgCenter, bgEdge, smoothstep(0.0, 1.4, dist));
+
+    // Grid lines (subtle)
+    float gridX = smoothstep(0.985, 1.0, fract(uv.x * 25.0));
+    float gridY = smoothstep(0.985, 1.0, fract(uv.y * 25.0));
+    float grid = max(gridX, gridY) * 0.035;
+    bg += vec3(0.15, 0.3, 0.5) * grid;
+
+    // Slow moving noise (fake with sin)
+    float noise = sin(uv.x * 40.0 + uTime * 0.3) * sin(uv.y * 30.0 - uTime * 0.2) * 0.008;
+    bg += noise;
+
+    // ── 1. fluid UV distortion ───────────────────────────────────────────────
+    vec2 fluidVel = texture(uFluid, uv).rg;
+    fluidVel = (fluidVel - 0.5) * 2.0;
+    vec2 distortedUv = uv + fluidVel * 0.004;
     distortedUv = clamp(distortedUv, 0.0, 1.0);
 
-    // ── 2. 采样所有层 (全部用 distortedUv 保持一致扭曲) ──────────────────────
+    // ── 2. 采样所有层 ────────────────────────────────────────────────────────
     vec4 cellColor     = texture(uCell,     distortedUv);
     vec4 edgeColor     = texture(uEdge,     distortedUv);
     vec4 particleColor = texture(uParticle, distortedUv);
     vec4 bloomColor    = texture(uBloom,    distortedUv);
-    float shadowMask   = texture(uShadow,   distortedUv).r; // 0=dark, 1=lit
+    float shadowMask   = texture(uShadow,   distortedUv).r;
 
-    // ── 3. Z-order 合成 ──────────────────────────────────────────────────────
-    // 底层: cell 乘以 shadow 遮罩
-    // max(shadowMask, 0.15): 保留最低 15% 环境光, 防止 shadow 纹理全零导致全黑
-    float ambientShadow = max(shadowMask, 0.15);
-    vec3 composite = cellColor.rgb * ambientShadow;
+    // ── 3. Z-order composite ─────────────────────────────────────────────────
+    // Start with background, alpha-over cell on top
+    float ambientShadow = max(shadowMask, 0.25);
+    vec3 composite = bg;
 
-    // 边层: alpha-over 混合
-    composite = mix(composite, edgeColor.rgb, edgeColor.a);
+    // Cell layer: alpha-over (cell FBO has transparent background)
+    composite = mix(composite, cellColor.rgb * ambientShadow, cellColor.a);
 
-    // 粒子层: additive (premultiplied alpha)
+    // Edge layer: alpha-over
+    composite = mix(composite, edgeColor.rgb, edgeColor.a * 0.85);
+
+    // Particle layer: additive
     composite += particleColor.rgb * particleColor.a;
 
-    // bloom: screen blend
-    composite = blendScreen(composite, bloomColor.rgb * bloomColor.a);
+    // Bloom: screen blend (only where bloom has content)
+    vec3 bloomContrib = bloomColor.rgb * bloomColor.a;
+    composite = blendScreen(composite, bloomContrib * 0.8);
 
-    // GI: additive indirect lighting from Lumen radiance cache (M1250)
-    if (uHasGI > 0.5) {
-      vec3 giColor = texture(uGI, distortedUv).rgb;
-      composite += giColor * 0.3;  // subtle indirect fill
-    }
-
-    // Volumetric: additive light rays (M1250)
-    if (uHasVolumetric > 0.5) {
-      vec3 volColor = texture(uVolumetric, distortedUv).rgb;
-      composite = blendScreen(composite, volColor * 0.5);
-    }
-
-    // Geometry: alpha-over 3D mesh preview (M1250)
+    // Geometry (3D mesh): alpha-over on top of everything
     if (uHasGeometry > 0.5) {
       vec4 geoColor = texture(uGeometry, distortedUv);
-      composite = mix(composite, geoColor.rgb, geoColor.a * 0.6);
+      composite = mix(composite, geoColor.rgb, geoColor.a);
     }
 
-    // ── 4. 后处理 ────────────────────────────────────────────────────────────
+    // GI: subtle indirect fill
+    if (uHasGI > 0.5) {
+      vec3 giColor = texture(uGI, distortedUv).rgb;
+      composite += giColor * 0.2;
+    }
 
-    // vignette: 1 - distance_from_center^2, 由 uVignetteStrength 控制强度
-    vec2 centeredUv = uv * 2.0 - 1.0;
-    float vignette  = 1.0 - dot(centeredUv, centeredUv) * uVignetteStrength;
-    vignette        = clamp(vignette, 0.0, 1.0);
-    composite      *= vignette;
+    // Volumetric: light rays
+    if (uHasVolumetric > 0.5) {
+      vec3 volColor = texture(uVolumetric, distortedUv).rgb;
+      composite = blendScreen(composite, volColor * 0.4);
+    }
 
-    // film grain
+    // ── 4. Post-processing ───────────────────────────────────────────────────
+    // Vignette (gentle)
+    float vignette = 1.0 - dot(centeredUv, centeredUv) * uVignetteStrength;
+    vignette = clamp(vignette, 0.0, 1.0);
+    composite *= vignette;
+
+    // Film grain (subtle)
     float grain = filmGrain(uv, uTime);
-    composite  += grain * uGrainStrength;
+    composite += grain * uGrainStrength;
 
-    // color grading
+    // Color grading
     composite = colorGrade(composite);
 
     fragColor = vec4(clamp(composite, 0.0, 1.0), 1.0);
@@ -202,8 +221,8 @@ export interface CompositeConfig {
 }
 
 const DEFAULT_CONFIG: CompositeConfig = {
-  grainStrength:    0.03,
-  vignetteStrength: 0.6,
+  grainStrength:    0.02,
+  vignetteStrength: 0.3,
   shadowColor:      [0.05, 0.02, 0.08],
   highlightColor:   [1.0,  0.98, 0.95],
 };
