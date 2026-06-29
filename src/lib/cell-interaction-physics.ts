@@ -74,6 +74,10 @@ export interface SpeciesPhysics {
   friction: number;
   restitution: number;
   buoyancy: number;
+  viscosity?: number;
+  adhesion?: number;
+  chemotaxis_range?: number;
+  preferred_neighbors?: number;
 }
 
 /** Internal physics body for a single cell. */
@@ -803,6 +807,11 @@ export class CellInteractionPhysics {
       body.vx *= clampedDamp;
       body.vy *= clampedDamp;
 
+      // Species viscosity drag (medium thickness slows the cell over time)
+      const visc = this.speciesLookup[body.species]?.viscosity ?? 0.3;
+      body.vx *= (1 - visc * dt);
+      body.vy *= (1 - visc * dt);
+
       // Integrate position
       body.x += body.vx * dt;
       body.y += body.vy * dt;
@@ -862,6 +871,33 @@ export class CellInteractionPhysics {
         const b = bodyArr[j];
         if (b.dragging) continue;
         if (a.pinned && b.pinned) continue;
+
+        // Same-species chemotactic adhesion: cells of the same species are
+        // attracted to one another within a configurable range.
+        if (a.species === b.species) {
+          const sp = this.speciesLookup[a.species];
+          const range = sp?.chemotaxis_range ?? 0;
+          const adhesion = sp?.adhesion ?? 0;
+          if (range > 0 && adhesion > 0) {
+            const d2 = dist2(a.x, a.y, b.x, b.y);
+            if (d2 > 0 && d2 < range * range) {
+              const dist = Math.sqrt(d2);
+              const force = adhesion * (1 - dist / range) * 10 * dt;
+              const nx = (b.x - a.x) / dist;
+              const ny = (b.y - a.y) / dist;
+              if (!a.pinned) {
+                const invA = 1 / a.mass;
+                a.vx += nx * force * invA;
+                a.vy += ny * force * invA;
+              }
+              if (!b.pinned) {
+                const invB = 1 / b.mass;
+                b.vx -= nx * force * invB;
+                b.vy -= ny * force * invB;
+              }
+            }
+          }
+        }
 
         // AABB overlap test
         const overlapX = (a.w / 2 + b.w / 2) - Math.abs(a.x - b.x);
