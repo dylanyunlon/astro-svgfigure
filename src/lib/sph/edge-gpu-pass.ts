@@ -175,10 +175,11 @@ void main() {
                      * dash;
     }
 
+    // M1286: energy-driven flow speed — low-energy sources pulse slowly (min 0.01 avoids full stop)
+    float energyFlowSpeed = u_flowSpeed * max(u_sourceEnergy, 0.01);
+
     // species colour gradient + flow pulse
     vec3 speciesColor = mix(u_sourceColor, u_targetColor, v_t);
-    // M1286: flow pulse speed also scaled by source energy
-    float energyFlowSpeed = u_flowSpeed * max(u_sourceEnergy, 0.01);
     float pulse       = fract(v_t - u_time * energyFlowSpeed);
     float pulseI      = smoothstep(0.0, 0.15, pulse)
                       * (1.0 - smoothstep(0.15, 0.45, pulse));
