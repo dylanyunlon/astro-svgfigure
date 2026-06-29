@@ -28,6 +28,7 @@ import { CellMeshRenderer } from './cell-mesh-renderer';
 import { CellInteractionPhysics } from '../cell-interaction-physics';
 import speciesPhysicsJson from '../../../channels/physics/species_physics.json';
 import cellLifecycleJson from '../../../channels/physics/cell_lifecycle.json';
+import environmentJson from '../../../channels/physics/environment.json';
 
 /**
  * gpu-render-loop.ts — M966: 真正的 GPU 渲染主循环
@@ -158,6 +159,18 @@ export class GPURenderLoop {
     lifecycle: { division_energy_threshold: number; division_cooldown_ms: number; apoptosis_energy_threshold: number; apoptosis_delay_ms: number; max_age_ms: number };
     signaling: { signal_radius: number; signal_decay: number; quorum_threshold: number; quorum_response: string };
     membrane: { permeability: number; elasticity: number; repair_rate: number; rupture_threshold: number };
+  };
+
+  /** Parsed channels/physics/environment.json — flow field, brownian, gravity, boundaries, gradients. */
+  private env = environmentJson as {
+    flow_field: { type: string; direction: [number, number]; speed: number; turbulence: number };
+    brownian_noise: number;
+    gravity: { x: number; y: number };
+    boundaries: { type: string; repel_force: number; margin: number; width: number; height: number };
+    gradients: {
+      temperature: { center: [number, number]; radius: number; delta: number };
+      nutrient: { center: [number, number]; radius: number; concentration: number };
+    };
   };
   /** Hard cap on cell count to prevent unbounded division. */
   private readonly MAX_CELLS = 200;
@@ -416,6 +429,135 @@ export class GPURenderLoop {
    */
   setUILParams(params: UILParamsJson): void {
     this.uil = params;
+  }
+
+  /**
+   * M1281 — Environment physics step. Called once per frame after the main
+   * physics step. Applies five environmental forces from environment.json to
+   * every live cell via the throwCell (velocity impulse) API:
+   *
+   *   1. Flow field   — laminar directional flow nudges all cells downstream.
+   *   2. Brownian     — random micro-perturbation simulates thermal jitter.
+   *   3. Gravity      — steady downward (sedimentation) drift.
+   *   4. Soft walls   — exponential repulsion from canvas boundaries.
+   *   5. Temperature  — cells near the heat source receive an outward speed boost.
+   *
+   * All impulses are scaled by `dt` so behaviour is frame-rate independent.
+   *
+   * @param dt Frame delta time in seconds.
+   */
+  private _stepEnvironmentPhysics(dt: number): void {
+    const physics = this.physics;
+    if (!physics) return;
+
+    // Guard pathological dt (tab backgrounding etc.)
+    const step = Math.max(0, Math.min(dt, 1 / 30));
+
+    const env = this.env;
+    const ff  = env.flow_field;
+    const bnd = env.boundaries;
+    const grd = env.gradients;
+
+    // Normalise flow direction vector (json: [0.1, -0.02])
+    const [fdx, fdy] = ff.direction;
+    const fMag = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
+    const fnx = fdx / fMag;
+    const fny = fdy / fMag;
+
+    // Flow speed in px/s (json: 15)
+    const flowSpeed = ff.speed;
+
+    // Brownian amplitude in px/s (json: 0.3 — very subtle)
+    const brownAmp = env.brownian_noise;
+
+    // Gravity in px/s² (json: { x:0, y:0.5 })
+    const gx = env.gravity.x;
+    const gy = env.gravity.y;
+
+    // Soft-wall margin + repel force (json: margin:50, repel_force:100)
+    const margin      = bnd.margin;
+    const repelForce  = bnd.repel_force;
+    const bndW        = bnd.width;
+    const bndH        = bnd.height;
+
+    // Temperature gradient (json: center:[1000,2000], radius:800, delta:5)
+    const tCenter = grd.temperature.center;
+    const tRadius = grd.temperature.radius;
+    const tDelta  = grd.temperature.delta; // extra speed multiplier near source
+
+    for (const c of this.cells) {
+      // Retrieve current position from physics body (centre of cell)
+      const st = physics.getState(c.cell_id);
+      const cx = st ? st.x : c.x + c.w / 2;
+      const cy = st ? st.y : c.y + c.h / 2;
+
+      let impulseX = 0;
+      let impulseY = 0;
+
+      // ── 1. Laminar flow field ───────────────────────────────────────────
+      // Turbulence adds a tiny per-cell random variation to the flow direction
+      // so cells don't move in perfect lock-step.
+      const turbX = (Math.random() * 2 - 1) * ff.turbulence;
+      const turbY = (Math.random() * 2 - 1) * ff.turbulence;
+      impulseX += (fnx + turbX) * flowSpeed * step;
+      impulseY += (fny + turbY) * flowSpeed * step;
+
+      // ── 2. Brownian noise ───────────────────────────────────────────────
+      impulseX += (Math.random() * 2 - 1) * brownAmp * step;
+      impulseY += (Math.random() * 2 - 1) * brownAmp * step;
+
+      // ── 3. Gravity ──────────────────────────────────────────────────────
+      impulseX += gx * step;
+      impulseY += gy * step;
+
+      // ── 4. Soft-wall boundary repulsion ─────────────────────────────────
+      // For each of the four walls, compute a repulsion that grows
+      // exponentially as the cell enters the margin zone.
+      // Left wall
+      if (cx < margin) {
+        const depth = (margin - cx) / margin; // 0→1 as cell reaches wall
+        impulseX += repelForce * depth * depth * step;
+      }
+      // Right wall
+      if (cx > bndW - margin) {
+        const depth = (cx - (bndW - margin)) / margin;
+        impulseX -= repelForce * depth * depth * step;
+      }
+      // Top wall (y=0)
+      if (cy < margin) {
+        const depth = (margin - cy) / margin;
+        impulseY += repelForce * depth * depth * step;
+      }
+      // Bottom wall
+      if (cy > bndH - margin) {
+        const depth = (cy - (bndH - margin)) / margin;
+        impulseY -= repelForce * depth * depth * step;
+      }
+
+      // ── 5. Temperature gradient ─────────────────────────────────────────
+      // Cells within the heat source radius receive an outward radial boost
+      // proportional to how close they are (stronger at centre).
+      const tdx = cx - tCenter[0];
+      const tdy = cy - tCenter[1];
+      const tDist2 = tdx * tdx + tdy * tdy;
+      if (tDist2 < tRadius * tRadius && tDist2 > 0) {
+        const tDist  = Math.sqrt(tDist2);
+        // Normalised proximity 1 at centre, 0 at radius edge
+        const tProx  = 1 - tDist / tRadius;
+        // Outward direction
+        const tx = tdx / tDist;
+        const ty = tdy / tDist;
+        // Boost scales with delta (px/s) * proximity
+        const boost = tDelta * tProx * step;
+        impulseX += tx * boost;
+        impulseY += ty * boost;
+      }
+
+      // ── Commit accumulated impulse ───────────────────────────────────────
+      if (impulseX !== 0 || impulseY !== 0) {
+        physics.throwCell(c.cell_id, impulseX, impulseY);
+      }
+    }
   }
 
   /**
@@ -849,6 +991,11 @@ export class GPURenderLoop {
         this.physics.throwCell(e.source,  ux * f,  uy * f);
         this.physics.throwCell(e.target, -ux * f, -uy * f);
       }
+
+      // ── M1281: environment physics — flow field, brownian noise, gravity,
+      // soft-wall boundaries, temperature gradient. Runs after spring forces
+      // so environmental impulses accumulate on top of structural bonding.
+      this._stepEnvironmentPhysics(dt);
 
       // ── M1280: cell lifecycle — energy metabolism, division, apoptosis,
       // quorum sensing. Runs after the physics step so it reads up-to-date
