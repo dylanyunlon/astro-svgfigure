@@ -493,6 +493,18 @@ export class ParticleGPU {
   private _signalOverlay: HTMLCanvasElement | null = null;
   private _signalCtx: CanvasRenderingContext2D | null = null;
 
+  // ── M1289: Apoptosis burst particle system ──
+  /** A single burst particle spawned on cell apoptosis. */
+  private _apoptosisBursts: Array<{
+    x: number; y: number;
+    vx: number; vy: number;
+    alpha: number;
+    r: number; g: number; b: number;
+    radius: number;
+  }> = [];
+  /** Bound event listener handle for cleanup. */
+  private _onApoptosisEvent: ((e: Event) => void) | null = null;
+
   // Optional fluid velocity texture
   private velocityTex:    WebGLTexture | null = null;
   private velocityTexW    = 0;
@@ -762,6 +774,93 @@ export class ParticleGPU {
     ctx.shadowColor = 'transparent';
   }
 
+  /**
+   * M1289: Render and update apoptosis burst particles on the 2D canvas overlay.
+   *
+   * Each burst particle moves outward from its spawn position, fading in alpha.
+   * Call this AFTER render() each frame, using the same canvas dimensions and
+   * coordinate mapping as renderSignalParticles().
+   *
+   * @param dt          Frame delta time in seconds.
+   * @param canvasW     WebGL canvas width in pixels.
+   * @param canvasH     WebGL canvas height in pixels.
+   * @param ndcToPixel  Optional coordinate transform {offX, offY, scale} mapping
+   *                    cell-space → pixel. If omitted, coordinates are pixel space.
+   */
+  renderApoptosisBursts(
+    dt: number,
+    canvasW: number,
+    canvasH: number,
+    ndcToPixel?: { offX: number; offY: number; scale: number },
+  ): void {
+    // Ensure the 2D overlay exists (shared with signal particles)
+    if (!this._signalOverlay) {
+      const overlay = document.createElement('canvas');
+      overlay.style.position    = 'absolute';
+      overlay.style.top         = '0';
+      overlay.style.left        = '0';
+      overlay.style.pointerEvents = 'none';
+      overlay.style.zIndex      = '2';
+      this.canvas.parentElement?.appendChild(overlay);
+      this._signalOverlay = overlay;
+      this._signalCtx     = overlay.getContext('2d');
+    }
+
+    if (
+      this._signalOverlay.width  !== canvasW ||
+      this._signalOverlay.height !== canvasH
+    ) {
+      this._signalOverlay.width  = canvasW;
+      this._signalOverlay.height = canvasH;
+      this._signalOverlay.style.width  = `${canvasW}px`;
+      this._signalOverlay.style.height = `${canvasH}px`;
+    }
+
+    const ctx = this._signalCtx;
+    if (!ctx) return;
+
+    // Advance and draw burst particles
+    const ALPHA_DECAY = 0.85; // per-second multiplicative decay
+    const alive: typeof this._apoptosisBursts = [];
+
+    for (const p of this._apoptosisBursts) {
+      // Integrate position
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      // Alpha decay
+      p.alpha *= Math.pow(ALPHA_DECAY, dt);
+
+      if (p.alpha < 0.02) continue; // particle dead — don't keep it
+      alive.push(p);
+
+      let px: number;
+      let py: number;
+      if (ndcToPixel) {
+        px = p.x * ndcToPixel.scale + ndcToPixel.offX;
+        py = p.y * ndcToPixel.scale + ndcToPixel.offY;
+      } else {
+        px = p.x;
+        py = p.y;
+      }
+
+      const fillColor = speciesRGBToCSS(p.r, p.g, p.b, p.alpha);
+      ctx.beginPath();
+      ctx.arc(px, py, p.radius, 0, Math.PI * 2);
+      ctx.fillStyle   = fillColor;
+      ctx.shadowColor = fillColor;
+      ctx.shadowBlur  = 6;
+      ctx.fill();
+    }
+
+    // Keep only living particles
+    this._apoptosisBursts.length = 0;
+    for (const p of alive) this._apoptosisBursts.push(p);
+
+    // Reset shadow
+    ctx.shadowBlur  = 0;
+    ctx.shadowColor = 'transparent';
+  }
+
   /** Free all GPU resources. */
   destroy(): void {
     const gl = this.gl;
@@ -778,6 +877,13 @@ export class ParticleGPU {
     gl.deleteTransformFeedback(this.tfA);
     gl.deleteTransformFeedback(this.tfB);
 
+    // M1289: Remove apoptosis event listener
+    if (this._onApoptosisEvent) {
+      window.removeEventListener('cell-apoptosis', this._onApoptosisEvent);
+      this._onApoptosisEvent = null;
+    }
+    this._apoptosisBursts.length = 0;
+
     // M1283: Remove 2D signal overlay canvas
     if (this._signalOverlay) {
       this._signalOverlay.parentElement?.removeChild(this._signalOverlay);
@@ -792,6 +898,58 @@ export class ParticleGPU {
     this._compilePrograms();
     this._createBuffers();
     this._cacheUniformLocations();
+    this._registerApoptosisListener();
+  }
+
+  /**
+   * M1289: Listen for 'cell-apoptosis' events and spawn 20-30 outward-burst
+   * particles in the species color at the cell's position on the 2D overlay.
+   * Particles spread radially and fade in alpha over ~1 second.
+   */
+  private _registerApoptosisListener(): void {
+    // Track which cells we've already spawned a burst for
+    const spawnedCells = new Set<string>();
+
+    this._onApoptosisEvent = (e: Event) => {
+      const ev = e as CustomEvent<{
+        cellId: string;
+        progress: number;
+        x: number;
+        y: number;
+        species: string;
+      }>;
+      const { cellId, progress, x, y, species } = ev.detail;
+
+      // Spawn burst only once, near the start of apoptosis (progress ≈ 0–0.05)
+      if (progress < 0.05 && !spawnedCells.has(cellId)) {
+        spawnedCells.add(cellId);
+
+        const speciesIdx = speciesNameToIndex(species);
+        const [r, g, b]  = speciesRGB(speciesIdx);
+        const count = 20 + Math.floor(Math.random() * 11); // 20-30
+
+        for (let i = 0; i < count; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 40 + Math.random() * 80; // px/s
+          this._apoptosisBursts.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            alpha: 0.8 + Math.random() * 0.2,
+            r, g, b,
+            radius: 2 + Math.random() * 3,
+          });
+        }
+      }
+
+      // Clean up tracking set when apoptosis completes
+      if (progress >= 1) {
+        spawnedCells.delete(cellId);
+      }
+    };
+
+    window.addEventListener('cell-apoptosis', this._onApoptosisEvent);
   }
 
   private _compilePrograms(): void {

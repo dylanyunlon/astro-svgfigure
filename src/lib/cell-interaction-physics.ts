@@ -162,6 +162,9 @@ interface CellBody {
   collisionCount: number;
   // M1288: Division cooldown — timestamp (ms) after which division is allowed again
   divisionCooldownEnd: number;
+  // M1289: Apoptosis — triggered when energy reaches 0
+  apoptosisActive: boolean;
+  apoptosisStartTime: number; // ms timestamp when apoptosis began
   // Quorum-sensing cluster factor: scales collision separation/bounce.
   // 1 = normal repulsion, <1 = reduced repulsion (cells pack tighter when
   // quorum is reached). Default 1. Set via setClusterFactor().
@@ -280,6 +283,9 @@ const DIVISION_ENERGY_SPLIT           = 0.5;    // each daughter receives this f
 const DIVISION_POSITION_OFFSET        = 30;     // random spawn offset in px
 const DIVISION_COOLDOWN_MS            = 5000;   // minimum ms between divisions for a given cell
 
+// M1289: Apoptosis constants
+const APOPTOSIS_DELAY_MS              = 3000;   // duration of apoptosis phase (ms)
+
 const DEFAULT_SPECIES_PHYSICS: SpeciesPhysics = {
   mass: 75,
   friction: 0.5,
@@ -370,6 +376,11 @@ export class CellInteractionPhysics {
   // ── M1288: Cell division counter — suffix appended to child IDs ──
   private _divisionCounter = 0;
 
+  // ── M1289: Apoptosis original size registry ──
+  // Stores original {w, h} per cell at the moment apoptosis activates,
+  // so we can shrink linearly from original size to 0.
+  private _apoptosisOrigSize: Map<string, { w: number; h: number }> = new Map();
+
   // ── Velocity history for smooth throw (ring buffer, last 4 frames) ──
   private readonly velHistory: Array<{ vx: number; vy: number; dt: number }> = [];
   private readonly VEL_HISTORY_LEN = 4;
@@ -436,6 +447,8 @@ export class CellInteractionPhysics {
         divisionReady: false,
         collisionCount: 0,
         divisionCooldownEnd: 0,
+        apoptosisActive: false,
+        apoptosisStartTime: 0,
       };
 
       this.bodies.set(cell.cell_id, body);
@@ -470,6 +483,8 @@ export class CellInteractionPhysics {
       divisionReady: false,
       collisionCount: 0,
       divisionCooldownEnd: 0,
+      apoptosisActive: false,
+      apoptosisStartTime: 0,
     });
   }
 
@@ -1081,6 +1096,12 @@ export class CellInteractionPhysics {
 
       body.energy = Math.max(0, Math.min(ENERGY_MAX, body.energy + delta * dt));
 
+      // M1289: Trigger apoptosis when energy reaches 0
+      if (body.energy <= 0 && !body.apoptosisActive) {
+        body.apoptosisActive = true;
+        body.apoptosisStartTime = nowMs;
+      }
+
       // Lifecycle state transitions derived from energy level
       // Division readiness: sufficient energy to support cell division
       body.divisionReady = body.energy > ENERGY_DIVISION_THRESHOLD;
@@ -1103,6 +1124,46 @@ export class CellInteractionPhysics {
         window.dispatchEvent(new CustomEvent('cell-division-ready', {
           detail: { cellId: body.id, energy: body.energy },
         }));
+      }
+    }
+
+    // ── 2f. Apoptosis progression (M1289) ──
+    // Cells with apoptosisActive shrink radius over APOPTOSIS_DELAY_MS,
+    // dispatch 'cell-apoptosis' events with progress 0→1,
+    // and are removed from bodies at progress=1.
+    {
+      const apoptosisRemove: string[] = [];
+
+      for (const body of this.bodies.values()) {
+        if (!body.apoptosisActive) continue;
+
+        // Snapshot original dimensions on first apoptosis frame
+        if (!this._apoptosisOrigSize.has(body.id)) {
+          this._apoptosisOrigSize.set(body.id, { w: body.w, h: body.h });
+        }
+
+        const elapsed = nowMs - body.apoptosisStartTime;
+        const progress = Math.min(1, elapsed / APOPTOSIS_DELAY_MS);
+
+        // Shrink cell radius linearly to 0
+        const orig = this._apoptosisOrigSize.get(body.id)!;
+        const scale = 1 - progress;
+        body.w = orig.w * scale;
+        body.h = orig.h * scale;
+
+        // Dispatch progress event
+        window.dispatchEvent(new CustomEvent('cell-apoptosis', {
+          detail: { cellId: body.id, progress, x: body.x, y: body.y, species: body.species },
+        }));
+
+        if (progress >= 1) {
+          apoptosisRemove.push(body.id);
+        }
+      }
+
+      for (const id of apoptosisRemove) {
+        this._apoptosisOrigSize.delete(id);
+        this.removeCell(id);
       }
     }
 
@@ -1159,6 +1220,8 @@ export class CellInteractionPhysics {
           divisionReady: false,
           collisionCount: 0,
           divisionCooldownEnd: nowMs + DIVISION_COOLDOWN_MS,
+          apoptosisActive: false,
+          apoptosisStartTime: 0,
         };
 
         this.bodies.set(childId, child);
@@ -1586,6 +1649,7 @@ export class CellInteractionPhysics {
     this.signalParticles.length = 0;
     this._quorumActive.clear();
     this._signalFrameCount = 0;
+    this._apoptosisOrigSize.clear();
 
     for (const body of this.bodies.values()) {
       body.x = body.restX;
@@ -1599,6 +1663,8 @@ export class CellInteractionPhysics {
       body.divisionReady = false;
       body.collisionCount = 0;
       body.divisionCooldownEnd = 0;
+      body.apoptosisActive = false;
+      body.apoptosisStartTime = 0;
       // Preserve pin state — reset doesn't unpin
     }
   }
@@ -1611,6 +1677,7 @@ export class CellInteractionPhysics {
     this.blastQueue.length = 0;
     this.signalParticles.length = 0;
     this._quorumActive.clear();
+    this._apoptosisOrigSize.clear();
   }
 }
 
