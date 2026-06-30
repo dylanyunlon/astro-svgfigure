@@ -194,6 +194,15 @@ uniform float uAnimSpeed;
 uniform float uOpacity;
 uniform float uTime;
 
+// ── M1299: metaball lobe data from geometry.json ──────────────────────────────
+// Each cell's geometry.json defines up to 8 lobes (angle, distance, radius).
+// GPU render loop uploads these per cell before each drawcall.
+uniform int   uLobeCount;          // number of active lobes [0, 8]
+uniform float uBaseRadius;         // base metaball radius in normalized coords
+uniform float uNoiseAmp;           // surface noise amplitude [0, 0.1]
+uniform float uNoiseFreq;          // surface noise frequency [1, 10]
+uniform vec3  uLobes[8];           // per-lobe: (angle, distance, radius)
+
 // ── M1282: energy metabolism ────────────────────────────────────────────────
 uniform float u_energy;         // cell energy [0, 1] from CellInteractionPhysics
 
@@ -287,8 +296,28 @@ float smoothMin(float a, float b, float k) {
 }
 
 // ── Scene SDF: organic cell shapes selected by uSdfShape (0-4) ───────────────
+// M1299: when uLobeCount > 0, use dynamic metaball from geometry.json lobes
+// instead of hardcoded species shapes. This is the cell agent's morphology.
 float mapScene(vec3 p) {
     float d;
+
+    // If cell agent has written geometry.json with lobes, use dynamic metaball
+    if (uLobeCount > 0) {
+        d = sdSphere(p, uBaseRadius);
+        for (int i = 0; i < 8; i++) {
+            if (i >= uLobeCount) break;
+            float angle = uLobes[i].x;
+            float dist  = uLobes[i].y;
+            float rad   = uLobes[i].z;
+            vec3 lobeCenter = vec3(cos(angle) * dist, sin(angle) * dist, 0.0);
+            d = smoothMin(d, sdSphere(p - lobeCenter, rad), 0.3);
+        }
+        // Surface noise from geometry.json
+        d += sin(p.x * uNoiseFreq + uTime) * sin(p.y * uNoiseFreq * 1.3) * uNoiseAmp;
+        return d;
+    }
+
+    // Fallback: hardcoded species shapes (no geometry.json yet)
     if (uSdfShape == 0) {
         // cil-eye: membrane with multiple convex lenses (metaball fusion)
         d = sdSphere(p, 0.8);
@@ -507,6 +536,12 @@ export class PBRCellGPU {
   private uEnergy!:          WebGLUniformLocation;
   // M1284: membrane dynamics
   private uCollisionCount!:  WebGLUniformLocation;
+  // M1299: metaball lobe uniforms
+  private uLobeCount!:       WebGLUniformLocation;
+  private uBaseRadius!:      WebGLUniformLocation;
+  private uNoiseAmp!:        WebGLUniformLocation;
+  private uNoiseFreq!:       WebGLUniformLocation;
+  private uLobes: WebGLUniformLocation[] = [];
   private _time = 0;
 
   // Attribute location — resolved name may differ when AT shader uses 'aPosition', 'position', etc.
@@ -693,6 +728,25 @@ export class PBRCellGPU {
       gl.uniform1f(this.uEnergy,         cell.energy ?? 1.0);
       // M1284: membrane dynamics — pass collisionCount to u_collisionCount uniform
       gl.uniform1i(this.uCollisionCount, cell.collisionCount ?? 0);
+
+      // ── M1299: metaball lobe data from geometry.json ────────────────────────
+      // If lobeData is present, upload dynamic metaball params.
+      // Otherwise uLobeCount=0 → shader falls back to hardcoded species SDF.
+      const lobes = (cell as any).lobeData as Array<{angle:number,distance:number,radius:number}> | undefined;
+      if (lobes && lobes.length > 0) {
+        const count = Math.min(lobes.length, 8);
+        gl.uniform1i(this.uLobeCount, count);
+        gl.uniform1f(this.uBaseRadius, (cell as any).baseRadius ?? 0.8);
+        gl.uniform1f(this.uNoiseAmp, (cell as any).noiseAmp ?? 0.02);
+        gl.uniform1f(this.uNoiseFreq, (cell as any).noiseFreq ?? 4.0);
+        for (let li = 0; li < count; li++) {
+          const l = lobes[li];
+          // Normalize distance to SDF space (~0-1 range)
+          gl.uniform3f(this.uLobes[li], l.angle, l.distance / 100, l.radius / 100);
+        }
+      } else {
+        gl.uniform1i(this.uLobeCount, 0);
+      }
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -894,5 +948,14 @@ export class PBRCellGPU {
     this.uEnergy          = gl.getUniformLocation(prog, 'u_energy')!;
     // M1284: membrane dynamics
     this.uCollisionCount  = gl.getUniformLocation(prog, 'u_collisionCount')!;
+    // M1299: metaball lobe uniforms
+    this.uLobeCount  = gl.getUniformLocation(prog, 'uLobeCount')!;
+    this.uBaseRadius = gl.getUniformLocation(prog, 'uBaseRadius')!;
+    this.uNoiseAmp   = gl.getUniformLocation(prog, 'uNoiseAmp')!;
+    this.uNoiseFreq  = gl.getUniformLocation(prog, 'uNoiseFreq')!;
+    this.uLobes = [];
+    for (let i = 0; i < 8; i++) {
+      this.uLobes.push(gl.getUniformLocation(prog, `uLobes[${i}]`)!);
+    }
   }
 }

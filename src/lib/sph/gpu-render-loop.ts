@@ -1336,6 +1336,11 @@ export class GPURenderLoop {
                 focalIntensity: geom.surface.glow_intensity,
                 animationSpeed: c.animationSpeed,
                 opacity: geom.surface.opacity,
+                // M1299: pass metaball lobe data to PBR shader
+                lobeData: geom.sdf.lobes,
+                baseRadius: geom.sdf.base_radius / 100,
+                noiseAmp: geom.sdf.noise_amplitude,
+                noiseFreq: geom.sdf.noise_frequency,
               };
             }
             // Fallback: use static CellData from composite_params
