@@ -368,6 +368,8 @@ interface PBRMRTTarget {
   roughnessTex:    WebGLTexture;
   // attachment 3 — linear depth (r)
   depthTex:        WebGLTexture;
+  // depth attachment — renderbuffer for the FBO's DEPTH_ATTACHMENT
+  depthRbo:        WebGLRenderbuffer;
   width:           number;
   height:          number;
 }
@@ -414,6 +416,11 @@ export class PBRCellGPU {
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
+    // MRT float/half-float color targets require this extension; check before
+    // compiling shaders so failures surface early with a clear message.
+    if (!gl.getExtension('EXT_color_buffer_float')) {
+      console.error('[PBRCellGPU] EXT_color_buffer_float not supported — MRT float render targets unavailable');
+    }
     this._compileProgram();
     this._createQuad();
     this._cacheLocations();
@@ -443,16 +450,18 @@ export class PBRCellGPU {
       gl.deleteTexture(this.mrtTarget.normalTex);
       gl.deleteTexture(this.mrtTarget.roughnessTex);
       gl.deleteTexture(this.mrtTarget.depthTex);
+      gl.deleteRenderbuffer(this.mrtTarget.depthRbo);
     }
 
-    // Helper: create + configure a RGBA8 texture for one G-Buffer attachment
+    // Helper: create + configure an RGBA8 texture for one G-Buffer attachment.
+    // Use texStorage2D (immutable storage) per tsherif/webgl2examples, and
+    // NEAREST filtering — MRT G-Buffer textures must not be interpolated.
     const makeTex = (): WebGLTexture => {
       const tex = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0,
-                    gl.RGBA, gl.UNSIGNED_BYTE, null);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, width, height);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
       gl.bindTexture(gl.TEXTURE_2D, null);
@@ -474,6 +483,13 @@ export class PBRCellGPU {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, roughnessTex, 0);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, depthTex,     0);
 
+    // Depth attachment — a depth renderbuffer so the geometry pass can depth-test.
+    const depthRbo = gl.createRenderbuffer()!;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depthRbo);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthRbo);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+
     // Tell the driver we write to all 4 attachments
     gl.drawBuffers([
       gl.COLOR_ATTACHMENT0,
@@ -485,12 +501,12 @@ export class PBRCellGPU {
     // Validate FBO completeness
     const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
     if (status !== gl.FRAMEBUFFER_COMPLETE) {
-      console.warn(`[PBRCellGPU] MRT FBO incomplete: 0x${status.toString(16)}`);
+      console.error(`[PBRCellGPU] MRT FBO incomplete: 0x${status.toString(16)}`);
     }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-    this.mrtTarget = { fbo, albedoTex, normalTex, roughnessTex, depthTex, width, height };
+    this.mrtTarget = { fbo, albedoTex, normalTex, roughnessTex, depthTex, depthRbo, width, height };
   }
 
   /**
