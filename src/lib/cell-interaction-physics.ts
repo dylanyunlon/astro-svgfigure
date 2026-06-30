@@ -1752,7 +1752,7 @@ export class CellInteractionPhysics {
       const candidates = grid.query(a.x, a.y);
       for (let ci = 0; ci < candidates.length; ci++) {
         const j = candidates[ci];
-        if (j <= i) continue;
+        if (j <= i || j >= arr.length) continue;
         const pairKey = i * cfN + j;
         if (cfVisited.has(pairKey)) continue;
         cfVisited.add(pairKey);
