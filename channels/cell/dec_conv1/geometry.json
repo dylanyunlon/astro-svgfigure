@@ -1,40 +1,25 @@
 {
   "cell_id": "dec_conv1",
-  "tick": 0,
-  "timestamp_ms": 0,
+  "tick": 5,
+  "timestamp_ms": 1782802152560,
   "transform": {
-    "x": 285.0,
-    "y": 490.0,
-    "scale": 1.07,
-    "rotation": 0.002
+    "x": 285.192,
+    "y": 490.202,
+    "scale": 1.03,
+    "rotation": -0.0125
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 15.8,
+    "base_radius": 15.91,
     "lobes": [
       {
-        "angle": 0.161,
-        "distance": 12.8,
-        "radius": 8.6
-      },
-      {
-        "angle": 1.366,
-        "distance": 8.0,
-        "radius": 12.5
-      },
-      {
-        "angle": 3.273,
-        "distance": 21.6,
-        "radius": 12.9
-      },
-      {
-        "angle": 4.717,
-        "distance": 9.5,
-        "radius": 11.6
+        "angle": -0.2752,
+        "distance": 11.866,
+        "radius": 10.275
       }
     ],
-    "noise_amplitude": 0.0169,
-    "noise_frequency": 3.0
+    "noise_amplitude": 0.0511,
+    "noise_frequency": 4.056
   },
   "surface": {
     "albedo": [
@@ -42,26 +27,33 @@
       0.446,
       0.045
     ],
-    "roughness": 0.68,
+    "roughness": 0.507,
     "metallic": 0.139,
-    "opacity": 0.92,
+    "opacity": 0.8438,
     "glow_color": [
       1.0,
       0.72,
       0.3
     ],
-    "glow_intensity": 0.43
+    "glow_intensity": 0.783
   },
   "membrane": {
-    "thickness": 2.4,
-    "wobble_amplitude": 0.0198,
-    "wobble_frequency": 2.3,
-    "permeability_visual": 0.45
+    "thickness": 2.486,
+    "wobble_amplitude": 0.0151,
+    "wobble_frequency": 1.5,
+    "permeability_visual": 0.5
   },
-  "pseudopods": [],
+  "pseudopods": [
+    {
+      "target_cell": "enc_conv2",
+      "length": 28.638720000000003,
+      "width": 4.7731200000000005,
+      "curl": -0.2701013395106517
+    }
+  ],
   "internal_motion": {
-    "cytoplasm_flow_angle": 6.19,
-    "cytoplasm_flow_speed": 0.34,
-    "organelle_drift": 0.011
+    "cytoplasm_flow_angle": -0.1974,
+    "cytoplasm_flow_speed": 0.3,
+    "organelle_drift": 0.0203
   }
 }

@@ -1,35 +1,25 @@
 {
   "cell_id": "noise_types",
-  "tick": 0,
-  "timestamp_ms": 0,
+  "tick": 5,
+  "timestamp_ms": 1782802152584,
   "transform": {
-    "x": 610.0,
-    "y": 666.0,
-    "scale": 1.01,
-    "rotation": -0.025
+    "x": 610.091,
+    "y": 666.34,
+    "scale": 1.03,
+    "rotation": -0.0235
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 56.0,
+    "base_radius": 59.664,
     "lobes": [
       {
-        "angle": -0.1,
-        "distance": 16.2,
-        "radius": 7.3
-      },
-      {
-        "angle": 2.004,
-        "distance": 21.5,
-        "radius": 12.3
-      },
-      {
-        "angle": 4.124,
-        "distance": 16.3,
-        "radius": 14.4
+        "angle": -0.0497,
+        "distance": 44.497,
+        "radius": 38.531
       }
     ],
-    "noise_amplitude": 0.0315,
-    "noise_frequency": 4.5
+    "noise_amplitude": 0.0511,
+    "noise_frequency": 4.056
   },
   "surface": {
     "albedo": [
@@ -37,26 +27,33 @@
       0.597,
       0.853
     ],
-    "roughness": 0.62,
+    "roughness": 0.507,
     "metallic": 0.109,
-    "opacity": 0.86,
+    "opacity": 0.8438,
     "glow_color": [
       0.2,
       0.7,
       1.0
     ],
-    "glow_intensity": 0.29
+    "glow_intensity": 0.783
   },
   "membrane": {
-    "thickness": 2.3,
-    "wobble_amplitude": 0.0229,
-    "wobble_frequency": 3.3,
-    "permeability_visual": 0.44
+    "thickness": 2.486,
+    "wobble_amplitude": 0.0151,
+    "wobble_frequency": 1.5,
+    "permeability_visual": 0.5
   },
-  "pseudopods": [],
+  "pseudopods": [
+    {
+      "target_cell": "hidden_elements",
+      "length": 60.0,
+      "width": 12.0,
+      "curl": -0.03253625544108934
+    }
+  ],
   "internal_motion": {
-    "cytoplasm_flow_angle": 2.28,
-    "cytoplasm_flow_speed": 0.15,
-    "organelle_drift": 0.0104
+    "cytoplasm_flow_angle": -0.1974,
+    "cytoplasm_flow_speed": 0.3,
+    "organelle_drift": 0.0203
   }
 }

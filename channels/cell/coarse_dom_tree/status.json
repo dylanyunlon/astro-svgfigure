@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "coarse_dom_tree",
   "species": "cil-graph",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 718,
     "y": 1927,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 808.05,
+    "y": 1989.86
+  },
+  "velocity": {
+    "vx": 0.0702,
+    "vy": 0.5738
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "idle_metabolism",
+  "community_id": 0
 }

@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "ram_resource",
   "species": "cil-code",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 1912,
     "y": 30,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 1981.948,
+    "y": 80.32
+  },
+  "velocity": {
+    "vx": -0.1279,
+    "vy": 0.4873
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "idle_metabolism",
+  "community_id": 0
 }

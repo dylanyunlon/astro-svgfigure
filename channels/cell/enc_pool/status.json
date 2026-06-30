@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "enc_pool",
   "species": "cil-layers",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 220,
     "y": 355,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 285.203,
+    "y": 375.558
+  },
+  "velocity": {
+    "vx": 0.2403,
+    "vy": 0.8844
+  },
+  "quorum_active": true,
+  "division_ready": false,
+  "last_action": "quorum_sync",
+  "community_id": 0
 }

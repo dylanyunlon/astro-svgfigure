@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "dec_conv1",
   "species": "cil-filter",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 220,
     "y": 470,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 285.192,
+    "y": 490.202
+  },
+  "velocity": {
+    "vx": 0.3217,
+    "vy": 0.3327
+  },
+  "quorum_active": true,
+  "division_ready": false,
+  "last_action": "quorum_sync",
+  "community_id": 0
 }

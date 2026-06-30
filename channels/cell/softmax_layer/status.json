@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "softmax_layer",
   "species": "cil-code",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 771.0,
     "y": 1530.75,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 846.037,
+    "y": 1583.54
+  },
+  "velocity": {
+    "vx": 0.0472,
+    "vy": 0.4808
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "extend_pseudopod_toward_weight_matrix",
+  "community_id": 0
 }

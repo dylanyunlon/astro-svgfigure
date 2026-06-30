@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "hidden_states",
   "species": "cil-bolt",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 936.0,
     "y": 1383,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 1020.904,
+    "y": 1442.337
+  },
+  "velocity": {
+    "vx": -0.0983,
+    "vy": 0.5095
+  },
+  "quorum_active": true,
+  "division_ready": false,
+  "last_action": "quorum_sync",
+  "community_id": 0
 }

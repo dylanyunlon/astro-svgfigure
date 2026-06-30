@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "mllm_code_agent",
   "species": "cil-code",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 670,
     "y": 2473,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 760.108,
+    "y": 2535.798
+  },
+  "velocity": {
+    "vx": 0.1864,
+    "vy": 0.4764
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "extend_pseudopod_toward_local_images",
+  "community_id": 0
 }

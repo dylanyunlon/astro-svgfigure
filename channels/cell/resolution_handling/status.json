@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "resolution_handling",
   "species": "cil-code",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 852,
     "y": 12,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 937.005,
+    "y": 71.351
+  },
+  "velocity": {
+    "vx": 0.034,
+    "vy": 0.5455
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "idle_metabolism",
+  "community_id": 0
 }

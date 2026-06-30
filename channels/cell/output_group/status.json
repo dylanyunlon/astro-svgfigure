@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "output_group",
   "species": "cil-arrow-right",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 645,
     "y": 3427,
@@ -11,5 +11,19 @@
     "z": 5
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 815.198,
+    "y": 3571.414
+  },
+  "velocity": {
+    "vx": 0.2599,
+    "vy": 0.6624
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "extend_pseudopod_toward_rendered_webpage",
+  "community_id": 0
 }

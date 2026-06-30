@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "stage2_group",
   "species": "cil-code",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 655,
     "y": 2157,
@@ -11,5 +11,19 @@
     "z": 5
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 771.674,
+    "y": 2737.317
+  },
+  "velocity": {
+    "vx": 0.0425,
+    "vy": 0.4725
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "extend_pseudopod_toward_local_code_gen",
+  "community_id": 0
 }

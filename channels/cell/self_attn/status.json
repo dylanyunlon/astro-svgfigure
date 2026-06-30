@@ -1,6 +1,20 @@
 {
-  "status": "converged",
+  "status": "alive",
   "cell_id": "self_attn",
   "species": "cil-eye",
-  "epoch": 0
+  "epoch": 5,
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 50.106,
+    "y": 50.366
+  },
+  "velocity": {
+    "vx": 0.2164,
+    "vy": 0.6525
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "idle_metabolism",
+  "community_id": 0
 }

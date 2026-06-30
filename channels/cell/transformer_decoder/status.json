@@ -1,8 +1,8 @@
 {
-  "status": "agent_dispatched",
+  "status": "alive",
   "cell_id": "transformer_decoder",
   "species": "cil-eye",
-  "epoch": 0,
+  "epoch": 5,
   "bbox": {
     "x": 964.3333333333333,
     "y": 1521,
@@ -11,5 +11,19 @@
     "z": 3
   },
   "opacity": 0.8,
-  "species_params": {}
+  "species_params": {},
+  "energy": 0.485,
+  "age_ms": 1000,
+  "position": {
+    "x": 1049.205,
+    "y": 1580.063
+  },
+  "velocity": {
+    "vx": -0.1809,
+    "vy": 0.0801
+  },
+  "quorum_active": false,
+  "division_ready": false,
+  "last_action": "idle_metabolism",
+  "community_id": 0
 }
