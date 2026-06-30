@@ -1093,6 +1093,16 @@ export class GPURenderLoop {
     const H = this.canvas.height;
     const time = performance.now() / 1000;
 
+    // ── M1306: unified texture unit allocation ──────────────────────────────
+    // Composite pass binds up to 8 input textures per frame. Without a single
+    // source of truth for unit assignment, callers re-derive the same magic
+    // numbers (gl.TEXTURE0..7) independently, which silently breaks the moment
+    // a new input is inserted out of order. Learned from PixiJS's
+    // GlTextureSystem (src/rendering/renderers/gl/texture/GlTextureSystem.ts),
+    // which centralizes active-unit bookkeeping behind named slot indices
+    // rather than scattering gl.TEXTURE0+N calls across call sites.
+    const TEX = { CELL: 0, FLUID: 1, SHADOW: 2, BLOOM: 3, EDGE: 4, PARTICLE: 5, GRADIENT: 6, SIGNAL: 7 };
+
     this.perf.frameStart();
 
     // Physics step — update cell positions from physics engine
@@ -1588,8 +1598,10 @@ export class GPURenderLoop {
           gl.clearColor(0.03, 0.03, 0.05, 1.0);
           gl.clear(gl.COLOR_BUFFER_BIT);
           if (cellTex) {
-            // Simple blit using the PBR output texture
-            this._blitTexture(cellTex, W, H);
+            // Simple blit using the PBR output texture, bound to the
+            // composite pass's CELL unit so the fallback path stays
+            // consistent with the real composite-gpu-pass.ts allocation.
+            this._blitTexture(cellTex, W, H, TEX.CELL);
           }
         }
       } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] composite pass error:', e); }
@@ -2282,7 +2294,7 @@ void main() {
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
-  private _blitTexture(tex: WebGLTexture, w: number, h: number): void {
+  private _blitTexture(tex: WebGLTexture, w: number, h: number, unit: number = 0): void {
     const gl = this.gl;
     if (!this._blitProg) {
       const vs = gl.createShader(gl.VERTEX_SHADER)!;
@@ -2310,9 +2322,9 @@ void main() { o = texture(t, uv); }`);
     const loc = gl.getAttribLocation(this._blitProg, 'p');
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    gl.activeTexture(gl.TEXTURE0);
+    gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.uniform1i(gl.getUniformLocation(this._blitProg, 't'), 0);
+    gl.uniform1i(gl.getUniformLocation(this._blitProg, 't'), unit);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
