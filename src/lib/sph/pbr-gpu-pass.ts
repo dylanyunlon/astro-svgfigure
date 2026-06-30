@@ -72,7 +72,7 @@ export interface CellPBRDescriptor {
   roughness?: number;
   // 新增
   glowColor?: [number, number, number];
-  sdfShape?: 'rounded_rect' | 'capsule';
+  sdfShape?: 'cil-eye' | 'cil-bolt' | 'cil-vector' | 'cil-plus' | 'cil-arrow-right' | 'rounded_rect' | 'capsule';
   internalPattern?: string;
   haloRadius?: number;
   numRays?: number;
@@ -188,7 +188,7 @@ uniform vec3  uGlowColor;
 uniform float uHaloRadius;
 uniform int   uNumRays;
 uniform float uFocalIntensity;
-uniform int   uSdfShape;        // 0=rounded_rect, 1=capsule
+uniform int   uSdfShape;        // 0=cil-eye,1=cil-bolt,2=cil-vector,3=cil-plus,4=cil-arrow-right
 uniform int   uInternalPattern; // 0=none,1=grid,2=bars,3=sine,4=bottleneck,5=plus
 uniform float uAnimSpeed;
 uniform float uOpacity;
@@ -232,32 +232,131 @@ float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
          * geometrySchlickGGX(NdotL, roughness);
 }
 
-void main() {
-    // ── SDF shape ────────────────────────────────────────────────────────────
-    vec2  p = vUv * 2.0 - 1.0;
-    float sdf;
+// ── SDF primitives (ref: sjpt/metaballsWebgl metaball smoothMin) ─────────────
+float sdSphere(vec3 p, float r) {
+    return length(p) - r;
+}
 
-    if (uSdfShape == 1) {
-        // Capsule: horizontal pill shape
-        float capR = 0.85;
-        vec2 q = abs(p) - vec2(max(1.0 - capR, 0.0), 0.0);
-        sdf = length(max(q, 0.0)) - capR;
+float sdBox(vec3 p, vec3 b) {
+    vec3 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);
+}
+
+float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
+    vec3 pa = p - a;
+    vec3 ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
+float sdOctahedron(vec3 p, float s) {
+    p = abs(p);
+    float m = p.x + p.y + p.z - s;
+    vec3 q;
+    if (3.0 * p.x < m)      q = p.xyz;
+    else if (3.0 * p.y < m) q = p.yzx;
+    else if (3.0 * p.z < m) q = p.zxy;
+    else return m * 0.57735027;
+    float k = clamp(0.5 * (q.z - q.y + s), 0.0, s);
+    return length(vec3(q.x, q.y - s + k, q.z - k));
+}
+
+// cone with base radius r and half-height h, apex at +y
+float sdCone(vec3 p, float r, float h) {
+    vec2 q = vec2(length(p.xz), p.y);
+    vec2 tip = vec2(0.0, h);
+    vec2 base = vec2(r, -h);
+    vec2 e = base - tip;
+    vec2 w = q - tip;
+    vec2 proj = tip + e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+    float d = length(q - proj);
+    // sign: inside if below apex-line and above base
+    float inside = (q.y < h && q.y > -h && q.x < r * (h - q.y) / (2.0 * h)) ? -1.0 : 1.0;
+    return d * inside;
+}
+
+float sdCylinder(vec3 p, float r, float h) {
+    vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h);
+    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
+}
+
+// polynomial smooth min (k = blend radius)
+float smoothMin(float a, float b, float k) {
+    float hh = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, hh) - k * hh * (1.0 - hh);
+}
+
+// ── Scene SDF: organic cell shapes selected by uSdfShape (0-4) ───────────────
+float mapScene(vec3 p) {
+    float d;
+    if (uSdfShape == 0) {
+        // cil-eye: membrane with multiple convex lenses (metaball fusion)
+        d = sdSphere(p, 0.8);
+        d = smoothMin(d, sdSphere(p - vec3( 0.3, 0.0,  0.2), 0.15), 0.3);
+        d = smoothMin(d, sdSphere(p - vec3(-0.25, 0.2, 0.25), 0.14), 0.3);
+        d = smoothMin(d, sdSphere(p - vec3( 0.1, -0.3, 0.2), 0.13), 0.3);
+        d = smoothMin(d, sdSphere(p - vec3(-0.2, -0.15, 0.3), 0.12), 0.3);
+    } else if (uSdfShape == 1) {
+        // cil-bolt: pulsing energy crystal (octahedron + sin surface ripple)
+        d = sdOctahedron(p, 0.6);
+        d += sin(p.x * 10.0 + uTime) * sin(p.y * 10.0) * 0.03;
+    } else if (uSdfShape == 2) {
+        // cil-vector: data-stream pipeline (capsule + axial sin wave)
+        d = sdCapsule(p, vec3(-0.4, 0.0, 0.0), vec3(0.4, 0.0, 0.0), 0.15);
+        d += sin(p.x * 15.0 + uTime * 2.0) * 0.02;
+    } else if (uSdfShape == 3) {
+        // cil-plus: organic cross (three boxes fused with smoothMin)
+        d = sdBox(p, vec3(0.4, 0.08, 0.08));
+        d = smoothMin(d, sdBox(p, vec3(0.08, 0.4, 0.08)), 0.1);
+        d = smoothMin(d, sdBox(p, vec3(0.08, 0.08, 0.4)), 0.1);
     } else {
-        // Rounded rect with generous corner radius
-        float cornerR = 0.14;
-        vec2 d = abs(p) - vec2(1.0 - cornerR);
-        sdf = length(max(d, 0.0)) - cornerR;
+        // cil-arrow-right: cone + cylinder fused (uSdfShape == 4)
+        float c = sdCone(p - vec3(0.2, 0.0, 0.0), 0.15, 0.25);
+        float y = sdCylinder(p - vec3(-0.1, 0.0, 0.0), 0.06, 0.3);
+        d = smoothMin(c, y, 0.08);
+    }
+    return d;
+}
+
+vec3 mapNormal(vec3 p) {
+    vec2 e = vec2(0.0015, 0.0);
+    return normalize(vec3(
+        mapScene(p + e.xyy) - mapScene(p - e.xyy),
+        mapScene(p + e.yxy) - mapScene(p - e.yxy),
+        mapScene(p + e.yyx) - mapScene(p - e.yyx)
+    ));
+}
+
+void main() {
+    // ── SDF ray marching — organic cell shapes ───────────────────────────────
+    // Map the quad UV into a [-1,1] view plane; march an orthographic ray along -Z.
+    vec2  p = vUv * 2.0 - 1.0;
+    vec3  ro = vec3(p * 1.1, 1.6);          // ray origin on the near plane
+    vec3  rd = vec3(0.0, 0.0, -1.0);        // orthographic ray direction
+
+    float tHit  = 0.0;
+    float sdf   = 1.0;                       // last evaluated distance
+    bool  hit   = false;
+    vec3  hitPos = vec3(0.0);
+    for (int i = 0; i < 96; i++) {
+        hitPos = ro + rd * tHit;
+        // M1284: membrane dynamics — radial elastic deformation on collision
+        vec3 dp = hitPos;
+        if (u_collisionCount > 0) {
+            float angle  = atan(dp.y, dp.x);
+            float deform = sin(angle * float(u_collisionCount) * 2.0 + uTime)
+                         * 0.03 * float(u_collisionCount);
+            sdf = mapScene(dp) + deform;
+        } else {
+            sdf = mapScene(dp);
+        }
+        if (sdf < 0.001) { hit = true; break; }
+        tHit += sdf;
+        if (tHit > 4.0) break;
     }
 
-    // ── M1284: membrane dynamics — elastic deformation on collision ───────────
-    if (u_collisionCount > 0) {
-        float angle  = atan(p.y, p.x);
-        float deform = sin(angle * float(u_collisionCount) * 2.0 + uTime) * 0.03 * float(u_collisionCount);
-        sdf += deform;
-    }
-
-    // Discard pixels outside body
-    if (sdf > 0.02) discard;
+    // Discard pixels that miss the body
+    if (!hit) discard;
     float edgeAlpha = 1.0 - smoothstep(-0.01, 0.02, sdf);
 
     // ── Halo glow (inner glow near SDF edge) ───────────────────────────────
@@ -270,7 +369,10 @@ void main() {
     }
 
     // ── PBR Cook-Torrance ────────────────────────────────────────────────────
-    vec3  N    = normalize(vNormal);
+    // Surface normal from the ray-marched SDF (organic detail), blended with the
+    // mesh normal so shading stays consistent in view space.
+    vec3  sdfN = mapNormal(hitPos);
+    vec3  N    = normalize(mix(normalize(vNormal), sdfN, 0.85));
     vec3  V    = normalize(vViewDir);
     vec3  L    = normalize(uLightDir);
     vec3  H    = normalize(V + L);
@@ -578,7 +680,12 @@ export class PBRCellGPU {
       gl.uniform1f(this.uHaloRadius,     cell.haloRadius ?? 0.15);
       gl.uniform1i(this.uNumRays,        cell.numRays ?? 0);
       gl.uniform1f(this.uFocalIntensity, cell.focalIntensity ?? 0.0);
-      gl.uniform1i(this.uSdfShape,       cell.sdfShape === 'capsule' ? 1 : 0);
+      const SDF_SHAPE_INT: Record<string, number> = {
+        'cil-eye': 0, 'cil-bolt': 1, 'cil-vector': 2, 'cil-plus': 3, 'cil-arrow-right': 4,
+        // legacy aliases
+        'rounded_rect': 0, 'capsule': 2,
+      };
+      gl.uniform1i(this.uSdfShape, SDF_SHAPE_INT[cell.sdfShape ?? 'cil-eye'] ?? 0);
       gl.uniform1i(this.uInternalPattern, PATTERN_INT[cell.internalPattern ?? 'none'] ?? 0);
       gl.uniform1f(this.uAnimSpeed,      cell.animationSpeed ?? 1.0);
       gl.uniform1f(this.uOpacity,        cell.opacity ?? 0.9);
