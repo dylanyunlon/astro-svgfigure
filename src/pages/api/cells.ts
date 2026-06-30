@@ -71,12 +71,27 @@ function readFromCompositeParams(): { cells: unknown[]; edges: unknown[] } | nul
     return null
   }
 
-  if (!composite.cells || composite.cells.length === 0) return null
+  // composite.cells may be an array or a dict {cell_id: {...}}.
+  // Normalize to array.
+  let cellsArr: CompositeCell[]
+  if (Array.isArray(composite.cells)) {
+    cellsArr = composite.cells
+  } else if (composite.cells && typeof composite.cells === 'object') {
+    cellsArr = Object.entries(composite.cells as Record<string, any>).map(
+      ([id, v]) => ({ cell_id: id, ...v } as CompositeCell)
+    )
+  } else {
+    return null
+  }
+  if (cellsArr.length === 0) return null
+
+  // Stash back as array for downstream code
+  composite.cells = cellsArr as any
 
   // Build a lookup: cell_id --- list of incoming source IDs (derived from edges)
   const incomingMap: Record<string, string[]> = {}
   const outgoingMap: Record<string, string[]> = {}
-  for (const cell of composite.cells) {
+  for (const cell of cellsArr) {
     incomingMap[cell.cell_id] = []
     outgoingMap[cell.cell_id] = []
   }
@@ -94,29 +109,36 @@ function readFromCompositeParams(): { cells: unknown[]; edges: unknown[] } | nul
   }
 
   // Map composite cells --- CellDescriptor
-  const cells: unknown[] = composite.cells.map((c) => ({
-    cell_id: c.cell_id,
-    label:   c.label   ?? c.cell_id,
-    species: c.species ?? 'cil-code',
-    bbox: c.bbox
-      ? { x: c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h }
-      : { x: 0, y: 0, w: 120, h: 40 },
-    z: c.z ?? c.bbox?.z ?? 1,
-    topology: {
-      incoming_edges: incomingMap[c.cell_id] ?? [],
-      outgoing_edges: outgoingMap[c.cell_id] ?? [],
-    },
-    // Pass through extra fields (fill_color, stroke_color, opacity, etc.)
-    ...(c.fill_color   !== undefined && { fill_color:   c.fill_color }),
-    ...(c.stroke_color !== undefined && { stroke_color: c.stroke_color }),
-    ...(c.opacity      !== undefined && { opacity:      c.opacity }),
-    ...(c.shadow       !== undefined && { shadow:       c.shadow }),
-    ...(c.species_params !== undefined && { species_params: c.species_params }),
-    ...(c.epoch        !== undefined && { epoch:        c.epoch }),
-    ...(c.render_order !== undefined && { render_order: c.render_order }),
-    ...(c.z_layer      !== undefined && { z_layer:      c.z_layer }),
-    ...(c.is_translucent !== undefined && { is_translucent: c.is_translucent }),
-  }))
+  // bbox may live at c.bbox OR c.agent_params.bbox
+  // species may live at c.species OR derived from c.agent_params.species_params
+  const cells: unknown[] = composite.cells.map((c) => {
+    const ap = (c as any).agent_params ?? {}
+    const rawBbox = c.bbox ?? ap.bbox
+    const sp = c.species_params ?? ap.species_params ?? {}
+    return {
+      cell_id: c.cell_id,
+      label:   c.label ?? (c as any).name ?? c.cell_id,
+      species: c.species ?? (sp as any).species ?? 'cil-eye',
+      bbox: rawBbox
+        ? { x: rawBbox.x, y: rawBbox.y, w: rawBbox.w, h: rawBbox.h }
+        : { x: 0, y: 0, w: 120, h: 40 },
+      z: c.z ?? rawBbox?.z ?? 1,
+      topology: {
+        incoming_edges: incomingMap[c.cell_id] ?? [],
+        outgoing_edges: outgoingMap[c.cell_id] ?? [],
+      },
+      // Pass through extra fields
+      ...(c.fill_color   !== undefined && { fill_color:   c.fill_color }),
+      ...(c.stroke_color !== undefined && { stroke_color: c.stroke_color }),
+      ...(c.opacity      !== undefined ? { opacity: c.opacity } : ap.opacity !== undefined ? { opacity: ap.opacity } : {}),
+      ...(c.shadow       !== undefined && { shadow:       c.shadow }),
+      species_params: sp,
+      ...(c.epoch        !== undefined && { epoch:        c.epoch }),
+      ...(c.render_order !== undefined && { render_order: c.render_order }),
+      ...(c.z_layer      !== undefined && { z_layer:      c.z_layer }),
+      ...(c.is_translucent !== undefined && { is_translucent: c.is_translucent }),
+    }
+  })
 
   // Sort by bbox.y (top---bottom visual order)
   cells.sort((a: any, b: any) => (a.bbox?.y ?? 0) - (b.bbox?.y ?? 0))
