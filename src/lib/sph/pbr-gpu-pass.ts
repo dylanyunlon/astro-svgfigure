@@ -505,6 +505,74 @@ interface PBRMRTTarget {
   height:          number;
 }
 
+// ─── Shader error reporting (Three.js WebGLProgram.js style) ─────────────────
+//
+// Mirrors three.js's `handleSource()` / `getShaderErrors()` helpers
+// (src/renderers/webgl/WebGLProgram.js): on a compile failure we don't just
+// dump the raw info log — we splice the offending line number out of the
+// driver's "ERROR: 0:<line>" message and print a small annotated window of
+// source around it, with a leading `>` marker on the bad line.
+
+/**
+ * Returns the lines of `source` from `errorLine - 6` to `errorLine + 6`
+ * (clamped to the source bounds), each prefixed with its 1-based line
+ * number. The line matching `errorLine` is marked with a leading `>`.
+ */
+function annotateSourceAroundLine(source: string, errorLine: number): string {
+  const lines = source.split('\n');
+  const from = Math.max(errorLine - 6, 0);
+  const to = Math.min(errorLine + 6, lines.length);
+
+  const out: string[] = [];
+  for (let i = from; i < to; i++) {
+    const lineNo = i + 1;
+    const marker = lineNo === errorLine ? '>' : ' ';
+    out.push(`${marker} ${lineNo}: ${lines[i]}`);
+  }
+  return out.join('\n');
+}
+
+/**
+ * Returns every line of `source` with a 1-based line-number prefix —
+ * used when the driver's info log doesn't give us a specific error line
+ * to zoom in on, so we fall back to printing the whole shader.
+ */
+function numberAllLines(source: string): string {
+  return source
+    .split('\n')
+    .map((line, i) => `${i + 1}: ${line}`)
+    .join('\n');
+}
+
+/**
+ * Builds a human-readable compile-error report for a single shader stage.
+ * Returns '' if the shader compiled cleanly (status ok + empty info log).
+ */
+function getShaderCompileReport(
+  gl: WebGL2RenderingContext,
+  shader: WebGLShader,
+  type: 'VERTEX' | 'FRAGMENT',
+): string {
+  const status = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+  const infoLog = (gl.getShaderInfoLog(shader) || '').trim();
+
+  if (status && infoLog === '') return '';
+
+  const source = gl.getShaderSource(shader) || '';
+  // Desktop/ANGLE drivers report "ERROR: 0:<line>: ...". When present,
+  // zoom in on that line; otherwise fall back to the full numbered source.
+  const match = /ERROR:\s*\d+:(\d+)/.exec(infoLog);
+  const annotatedSource = match
+    ? annotateSourceAroundLine(source, parseInt(match[1], 10))
+    : numberAllLines(source);
+
+  return (
+    `[PBR] ${type} shader compile error:\n\n` +
+    `${infoLog}\n\n` +
+    `${annotatedSource}`
+  );
+}
+
 // ─── PBRCellGPU ─────────────────────────────────────────────────────────────
 
 export class PBRCellGPU {
@@ -872,14 +940,18 @@ export class PBRCellGPU {
     gl.shaderSource(vs, PBR_VERT);
     gl.compileShader(vs);
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
-      throw new Error(`[PBRCellGPU] vert compile: ${gl.getShaderInfoLog(vs)}`);
+      const report = getShaderCompileReport(gl, vs, 'VERTEX');
+      console.error(report);
+      throw new Error('[PBRCellGPU] vertex shader compile failed — see console for annotated source');
     }
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
     gl.shaderSource(fs, PBR_FRAG);
     gl.compileShader(fs);
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
-      throw new Error(`[PBRCellGPU] frag compile: ${gl.getShaderInfoLog(fs)}`);
+      const report = getShaderCompileReport(gl, fs, 'FRAGMENT');
+      console.error(report);
+      throw new Error('[PBRCellGPU] fragment shader compile failed — see console for annotated source');
     }
 
     const prog = gl.createProgram()!;
