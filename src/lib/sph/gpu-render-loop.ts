@@ -297,7 +297,7 @@ export class GPURenderLoop {
     try { this.composite = new CompositeGPU(gl, canvas.width, canvas.height); } catch (e) { console.warn('[GPURenderLoop] Composite init failed:', e); }
 
     // PBR cell surface pass
-    try { this.pbr = new PBRCellGPU(gl); } catch (e) { console.warn('[GPURenderLoop] PBR init failed, using fallback:', e); }
+    try { this.pbr = new PBRCellGPU(gl); } catch (e) { console.error('[GPURenderLoop] PBR init/shader compile failed, using fallback:', e); }
 
     // ── M1261: 3D mesh renderer (replaces 2D quad PBR when GLBs are loaded) ──
     try {
@@ -1294,10 +1294,10 @@ export class GPURenderLoop {
     }
 
     // ── Pass 3: PBR cell surface → FBO ──
-    // Skip when CellMeshRenderer is active (3D meshes replace 2D quads)
+    // PBR pass 始终运行 — 作为保底渲染。CellMesh（Pass 3a）若成功会覆盖 cellTex，
+    // 否则 PBR 画好的 cellTex 直接使用，避免两个渲染器都画不出东西。
     let cellTex: WebGLTexture = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
-    const use3DMesh = this.cellMesh != null; // cellMesh exists → use it, PBR is fallback
-    if (!use3DMesh) {
+    {
       const t = this.perf.passStart('pbr');
       try {
         if (this.pbr) {
@@ -1333,27 +1333,27 @@ export class GPURenderLoop {
           cellTex = this._renderCellsFallback();
         }
       } catch (e) {
-        if (this.frameCount <= 10) console.warn('[GPURenderLoop] PBR pass error:', e);
+        console.error('[GPURenderLoop] PBR pass error:', e);
         cellTex = this._renderCellsFallback();
       }
       this.perf.passEnd('pbr', t);
     }
 
     // ── Pass 3a: 3D mesh cells (M1261) ──
-    // Renders actual 3D geometry for each cell (placeholder cubes until GLBs loaded).
-    // Output goes to its own FBO; we use it as cellTex when available.
+    // Overlay, not replacement: if CellMesh renders successfully, its output
+    // overrides the PBR cellTex. If it fails, PBR's cellTex is already painted
+    // and is used as-is (no fallback needed — PBR always ran above).
     if (this.cellMesh) {
       const t = this.perf.passStart('cellMesh');
       try {
         this.cellMesh.setTime(time);
         this.cellMesh.render(this.cells, camScale, camOffX, camOffY, W, H);
-        // Use 3D mesh output as cellTex (replaces PBR quad output)
+        // Use 3D mesh output to override cellTex when available
         const meshTex = this.cellMesh.outputTexture;
         if (meshTex) cellTex = meshTex;
       } catch (e) {
-        if (this.frameCount <= 10) console.warn('[GPURenderLoop] CellMesh pass error:', e);
-        // Fallback: run PBR if 3D mesh fails
-        cellTex = this._renderCellsFallback();
+        console.error('[GPURenderLoop] CellMesh pass error:', e);
+        // PBR cellTex already painted above — keep it, no fallback needed.
       }
       this.perf.passEnd('cellMesh', t);
     }
