@@ -81,6 +81,9 @@ export interface CellPBRDescriptor {
   opacity?: number;
   // M1282: energy metabolism — cell energy [0, 1] passed to u_energy uniform
   energy?: number;
+  // M1307: cytoplasm flow texture — internal cell motion direction/speed
+  cytoFlowAngle?: number;
+  cytoFlowSpeed?: number;
   // M1284: membrane dynamics — number of active collisions for elastic deformation
   collisionCount?: number;
   // M1304: pseudopod rendering — organic extensions toward neighbor cells.
@@ -218,6 +221,10 @@ uniform vec4  uPseudopods[4];      // per-pseudopod: (targetX, targetY, length, 
 
 // ── M1282: energy metabolism ────────────────────────────────────────────────
 uniform float u_energy;         // cell energy [0, 1] from CellInteractionPhysics
+
+// ── M1307: cytoplasm flow texture — internal cell motion (ref: Active Theory) ─
+uniform float uCytoFlowAngle;   // flow direction in radians
+uniform float uCytoFlowSpeed;   // flow scroll speed
 
 // ── M1284: membrane dynamics ─────────────────────────────────────────────────
 uniform int   u_collisionCount; // number of active collisions → membrane deformation
@@ -504,6 +511,12 @@ void main() {
     // ── Halo contribution ────────────────────────────────────────────────────
     color += uGlowColor * haloGlow * 1.8;
 
+    // ── M1307: cytoplasm flow texture — internal cell motion (ref: Active Theory) ─
+    vec2 flowDir = vec2(cos(uCytoFlowAngle), sin(uCytoFlowAngle));
+    vec2 flowUv = vUv + flowDir * uTime * uCytoFlowSpeed;
+    float cyto = sin(flowUv.x * 8.0) * sin(flowUv.y * 6.0) * 0.03;
+    color += cyto * uGlowColor;
+
     // ── AO + depth ───────────────────────────────────────────────────────────
     float ao = mix(0.5, 1.0, max(0.0, dot(N, V)));
     float depth = 1.0 - N.z;
@@ -638,6 +651,9 @@ export class PBRCellGPU {
   private uTime!:            WebGLUniformLocation;
   // M1282: energy metabolism
   private uEnergy!:          WebGLUniformLocation;
+  // M1307: cytoplasm flow texture
+  private uCytoFlowAngle!:   WebGLUniformLocation;
+  private uCytoFlowSpeed!:   WebGLUniformLocation;
   // M1284: membrane dynamics
   private uCollisionCount!:  WebGLUniformLocation;
   // M1299: metaball lobe uniforms
@@ -833,6 +849,9 @@ export class PBRCellGPU {
       gl.uniform1f(this.uOpacity,        cell.opacity ?? 0.9);
       // M1282: energy metabolism — pass cell.energy to u_energy uniform
       gl.uniform1f(this.uEnergy,         cell.energy ?? 1.0);
+      // M1307: cytoplasm flow texture — internal cell motion (ref: Active Theory)
+      gl.uniform1f(this.uCytoFlowAngle,  cell.cytoFlowAngle ?? 0.0);
+      gl.uniform1f(this.uCytoFlowSpeed,  cell.cytoFlowSpeed ?? 0.05);
       // M1284: membrane dynamics — pass collisionCount to u_collisionCount uniform
       gl.uniform1i(this.uCollisionCount, cell.collisionCount ?? 0);
 
@@ -1072,6 +1091,9 @@ export class PBRCellGPU {
     this.uTime            = gl.getUniformLocation(prog, 'uTime')!;
     // M1282: energy metabolism
     this.uEnergy          = gl.getUniformLocation(prog, 'u_energy')!;
+
+    this.uCytoFlowAngle   = gl.getUniformLocation(prog, 'uCytoFlowAngle')!;
+    this.uCytoFlowSpeed   = gl.getUniformLocation(prog, 'uCytoFlowSpeed')!;
     // M1284: membrane dynamics
     this.uCollisionCount  = gl.getUniformLocation(prog, 'u_collisionCount')!;
     // M1299: metaball lobe uniforms
