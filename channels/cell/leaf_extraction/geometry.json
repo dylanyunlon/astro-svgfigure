@@ -1,0 +1,57 @@
+{
+  "cell_id": "leaf_extraction",
+  "tick": 0,
+  "timestamp_ms": 0,
+  "transform": {
+    "x": 788.3,
+    "y": 2256.0,
+    "scale": 1.04,
+    "rotation": 0.03
+  },
+  "sdf": {
+    "type": "metaball",
+    "base_radius": 44.5,
+    "lobes": [
+      {
+        "angle": -0.04,
+        "distance": 13.1,
+        "radius": 14.0
+      },
+      {
+        "angle": 3.117,
+        "distance": 10.1,
+        "radius": 7.6
+      }
+    ],
+    "noise_amplitude": 0.0257,
+    "noise_frequency": 4.0
+  },
+  "surface": {
+    "albedo": [
+      0.342,
+      0.717,
+      0.306
+    ],
+    "roughness": 0.65,
+    "metallic": 0.097,
+    "opacity": 0.89,
+    "glow_color": [
+      0.4,
+      0.85,
+      0.4
+    ],
+    "glow_intensity": 0.34
+  },
+  "membrane": {
+    "thickness": 2.0,
+    "wobble_amplitude": 0.0149,
+    "wobble_frequency": 4.8,
+    "permeability_visual": 0.41
+  },
+  "pseudopods": [],
+  "internal_motion": {
+    "cytoplasm_flow_angle": 2.83,
+    "cytoplasm_flow_speed": 0.33,
+    "organelle_drift": 0.0192
+  }
+}

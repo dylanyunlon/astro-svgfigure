@@ -1,0 +1,67 @@
+{
+  "cell_id": "code_linking",
+  "tick": 0,
+  "timestamp_ms": 0,
+  "transform": {
+    "x": 760.0,
+    "y": 2815.0,
+    "scale": 1.06,
+    "rotation": -0.056
+  },
+  "sdf": {
+    "type": "metaball",
+    "base_radius": 42.7,
+    "lobes": [
+      {
+        "angle": -0.202,
+        "distance": 13.0,
+        "radius": 12.0
+      },
+      {
+        "angle": 1.692,
+        "distance": 17.6,
+        "radius": 6.6
+      },
+      {
+        "angle": 3.223,
+        "distance": 15.5,
+        "radius": 8.2
+      },
+      {
+        "angle": 4.69,
+        "distance": 11.8,
+        "radius": 14.3
+      }
+    ],
+    "noise_amplitude": 0.0211,
+    "noise_frequency": 3.3
+  },
+  "surface": {
+    "albedo": [
+      0.637,
+      0.106,
+      0.722
+    ],
+    "roughness": 0.64,
+    "metallic": 0.072,
+    "opacity": 0.91,
+    "glow_color": [
+      0.75,
+      0.3,
+      0.85
+    ],
+    "glow_intensity": 0.39
+  },
+  "membrane": {
+    "thickness": 1.6,
+    "wobble_amplitude": 0.0283,
+    "wobble_frequency": 3.7,
+    "permeability_visual": 0.59
+  },
+  "pseudopods": [],
+  "internal_motion": {
+    "cytoplasm_flow_angle": 1.34,
+    "cytoplasm_flow_speed": 0.25,
+    "organelle_drift": 0.0271
+  }
+}

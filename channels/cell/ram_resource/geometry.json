@@ -1,0 +1,62 @@
+{
+  "cell_id": "ram_resource",
+  "tick": 0,
+  "timestamp_ms": 0,
+  "transform": {
+    "x": 1982.0,
+    "y": 80.0,
+    "scale": 1.08,
+    "rotation": 0.098
+  },
+  "sdf": {
+    "type": "metaball",
+    "base_radius": 35.0,
+    "lobes": [
+      {
+        "angle": -0.161,
+        "distance": 16.9,
+        "radius": 10.1
+      },
+      {
+        "angle": 2.194,
+        "distance": 20.6,
+        "radius": 10.2
+      },
+      {
+        "angle": 4.061,
+        "distance": 15.7,
+        "radius": 6.7
+      }
+    ],
+    "noise_amplitude": 0.014,
+    "noise_frequency": 3.2
+  },
+  "surface": {
+    "albedo": [
+      1.006,
+      0.499,
+      -0.004
+    ],
+    "roughness": 0.49,
+    "metallic": 0.15,
+    "opacity": 0.93,
+    "glow_color": [
+      1.0,
+      0.72,
+      0.3
+    ],
+    "glow_intensity": 0.46
+  },
+  "membrane": {
+    "thickness": 2.8,
+    "wobble_amplitude": 0.0121,
+    "wobble_frequency": 3.1,
+    "permeability_visual": 0.44
+  },
+  "pseudopods": [],
+  "internal_motion": {
+    "cytoplasm_flow_angle": 1.86,
+    "cytoplasm_flow_speed": 0.31,
+    "organelle_drift": 0.0055
+  }
+}
