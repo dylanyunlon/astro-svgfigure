@@ -238,6 +238,7 @@ import { SPECIES_GEOMETRY } from './procedural-cell-geometries';
 /** Per-species GPU mesh (VBO + IBO + VAO) */
 interface SpeciesMesh {
   vao: WebGLVertexArrayObject;
+  ebo: WebGLBuffer; // ELEMENT_ARRAY_BUFFER, kept so render() can rebind defensively
   indexCount: number;
   indexType: number; // gl.UNSIGNED_SHORT or gl.UNSIGNED_INT
 }
@@ -408,6 +409,14 @@ export class CellMeshRenderer {
       // Get species mesh (placeholder cube for now)
       const mesh = this.meshes.get(cell.species) ?? this.meshes.get('_placeholder')!;
       gl.bindVertexArray(mesh.vao);
+      // Defensive rebind: although the EBO is recorded in the VAO at upload
+      // time, some drivers / context-state edge cases (e.g. a VAO whose EBO
+      // association was lost after a context-state churn) can leave no
+      // ELEMENT_ARRAY_BUFFER bound, which makes drawElements throw
+      //   GL_INVALID_OPERATION: glDrawElements: Must have element array buffer bound
+      // Explicitly binding the EBO inside the bound VAO guarantees a valid
+      // element array buffer for the draw call.
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ebo);
       gl.drawElements(gl.TRIANGLES, mesh.indexCount, mesh.indexType, 0);
     }
 
@@ -545,7 +554,7 @@ export class CellMeshRenderer {
     // VAO. Unbinding the VAO below preserves the EBO association automatically.
     gl.bindVertexArray(null);
 
-    return { vao, indexCount, indexType };
+    return { vao, ebo: idxBuf, indexCount, indexType };
   }
 
   private _initFBO(W: number, H: number): void {

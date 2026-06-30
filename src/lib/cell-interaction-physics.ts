@@ -1116,6 +1116,11 @@ export class CellInteractionPhysics {
           const j = candidates[ci];
           if (j === i) continue;
           const b = _bodyArr[j];
+          // M1284: a stale grid index (e.g. an M1280 division child not yet
+          // registered in the body array) yields an undefined body. Skip it
+          // instead of dereferencing, which would throw:
+          //   TypeError: Cannot read properties of undefined (reading 'species')
+          if (!b) continue;
 
           const dx = b.x - a.x;
           const dy = b.y - a.y;
@@ -1487,6 +1492,7 @@ export class CellInteractionPhysics {
         const j = chCandidates[ci];
         if (j === i) continue;
         const b = _bodyArr[j];
+        if (!b) continue; // M1284: skip stale grid index (unregistered child cell)
         if (b.species !== a.species) continue;
         if (dist2(a.x, a.y, b.x, b.y) < range2) count++;
       }
@@ -1514,6 +1520,7 @@ export class CellInteractionPhysics {
         _visitedPairs.add(pairKey);
 
         const b = _bodyArr[j];
+        if (!b) continue; // M1284: skip stale grid index (unregistered child cell)
         if (b.dragging) continue;
         if (a.pinned && b.pinned) continue;
 
@@ -1671,6 +1678,7 @@ export class CellInteractionPhysics {
         visited.add(pairKey);
 
         const b = arr[j];
+        if (!b) continue; // M1284: skip stale grid index (unregistered child cell)
         const dx = a.x - b.x;
         const dy = a.y - b.y;
         if (dx * dx + dy * dy >= r2) continue;
