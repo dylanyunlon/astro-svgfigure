@@ -301,8 +301,8 @@ export class GPURenderLoop {
     try { this.msdf = new MSDFTextGPU(gl); } catch (e) { console.warn('[GPURenderLoop] MSDF init failed:', e); }
     try { this.composite = new CompositeGPU(gl, canvas.width, canvas.height); } catch (e) { console.warn('[GPURenderLoop] Composite init failed:', e); }
 
-    // PBR cell surface pass
-    try { this.pbr = new PBRCellGPU(gl); } catch (e) { console.error('[GPURenderLoop] PBR init/shader compile failed, using fallback:', e); }
+    // PBR cell surface pass — no try/catch, crash if shader fails
+    this.pbr = new PBRCellGPU(gl);
 
     // ── M1261: 3D mesh renderer (replaces 2D quad PBR when GLBs are loaded) ──
     try {
@@ -1320,8 +1320,8 @@ export class GPURenderLoop {
     let cellTex: WebGLTexture = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
     {
       const t = this.perf.passStart('pbr');
-      try {
-        if (this.pbr) {
+      // PBR must succeed — no try/catch, no fallback. If it crashes, the site crashes.
+      {
           // Convert CellData → CellPBRDescriptor
           // M1296: override with geometry.json data if cell agent has written it
           // M1304: resolve pseudopod target_cell → (x, y) so the PBR shader can
@@ -1411,12 +1411,6 @@ export class GPURenderLoop {
           this.pbr.setTime(time);
           this.pbr.renderCells(descs);
           cellTex = this.pbr.pbrTexture;
-        } else {
-          cellTex = this._renderCellsFallback();
-        }
-      } catch (e) {
-        console.error('[GPURenderLoop] PBR pass error:', e);
-        cellTex = this._renderCellsFallback();
       }
       this.perf.passEnd('pbr', t);
     }
@@ -2326,180 +2320,6 @@ void main() { o = texture(t, uv); }`);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.uniform1i(gl.getUniformLocation(this._blitProg, 't'), unit);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
-  }
-
-  /** 简单 fallback: 用纯色 quad 画 cell (pbr-gpu-pass 未到时) */
-  private _fallbackTex: WebGLTexture | null = null;
-  private _fallbackFBO: WebGLFramebuffer | null = null;
-  // ── M1311: SDF fallback shader (replaces grey scissor rectangles) ────────
-  private _fallbackProg: WebGLProgram | null = null;
-  private _fallbackQuad: WebGLBuffer | null = null;
-
-  private _ensureFallbackShader(): void {
-    if (this._fallbackProg) return;
-    const gl = this.gl;
-
-    const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, /* glsl */ `#version 300 es
-precision highp float;
-in vec2 aPos;
-uniform vec2 uOffset;   // cell center in NDC
-uniform vec2 uSize;     // cell half-extent in NDC
-out vec2 vUv;
-void main() {
-  vUv = aPos * 0.5 + 0.5;
-  gl_Position = vec4(aPos * uSize + uOffset, 0.0, 1.0);
-}
-`);
-    gl.compileShader(vs);
-
-    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    gl.shaderSource(fs, /* glsl */ `#version 300 es
-precision highp float;
-in vec2 vUv;
-uniform vec3 uColor;
-uniform float uTime;
-out vec4 fragColor;
-
-float sdRoundBox(vec2 p, vec2 b, float r) {
-  vec2 q = abs(p) - b + r;
-  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-}
-
-void main() {
-  vec2 p = vUv * 2.0 - 1.0;
-  float d = sdRoundBox(p, vec2(0.85, 0.75), 0.18);
-  // Body alpha with anti-aliasing
-  float aa = fwidth(d);
-  float bodyAlpha = 1.0 - smoothstep(-aa, aa, d);
-  // Glow halo around the body
-  float glow = exp(-max(d, 0.0) * 4.0) * 0.6;
-  // Subtle internal pattern
-  float pattern = sin(vUv.x * 8.0 + uTime) * sin(vUv.y * 6.0) * 0.08;
-  // Edge highlight (Fresnel-like)
-  float edgeHighlight = smoothstep(0.15, 0.0, abs(d)) * 0.4;
-  vec3 col = uColor * (1.0 + pattern) + uColor * edgeHighlight;
-  // Tone map
-  col = col / (col + 1.0);
-  col = pow(col, vec3(1.0 / 2.2));
-  float alpha = bodyAlpha * 0.92 + glow;
-  fragColor = vec4(col, alpha);
-}
-`);
-    gl.compileShader(fs);
-
-    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS) || !gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
-      console.error('[GPURenderLoop] fallback SDF shader compile failed');
-      return;
-    }
-
-    const prog = gl.createProgram()!;
-    gl.attachShader(prog, vs);
-    gl.attachShader(prog, fs);
-    gl.linkProgram(prog);
-    gl.deleteShader(vs);
-    gl.deleteShader(fs);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      console.error('[GPURenderLoop] fallback SDF shader link failed');
-      return;
-    }
-    this._fallbackProg = prog;
-
-    this._fallbackQuad = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, this._fallbackQuad);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-      -1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1
-    ]), gl.STATIC_DRAW);
-  }
-
-  private _renderCellsFallback(): WebGLTexture {
-    const gl = this.gl;
-    const W = this.canvas.width;
-    const H = this.canvas.height;
-
-    // Create FBO + texture on first call
-    if (!this._fallbackTex) {
-      this._fallbackTex = gl.createTexture()!;
-      gl.bindTexture(gl.TEXTURE_2D, this._fallbackTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-      this._fallbackFBO = gl.createFramebuffer()!;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this._fallbackFBO);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._fallbackTex, 0);
-    }
-
-    // Try SDF shader path
-    this._ensureFallbackShader();
-    const prog = this._fallbackProg;
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this._fallbackFBO);
-    gl.viewport(0, 0, W, H);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-    if (prog && this._fallbackQuad) {
-      gl.useProgram(prog);
-      const uOffset = gl.getUniformLocation(prog, 'uOffset');
-      const uSize   = gl.getUniformLocation(prog, 'uSize');
-      const uColor  = gl.getUniformLocation(prog, 'uColor');
-      const uTime   = gl.getUniformLocation(prog, 'uTime');
-      const aPos    = gl.getAttribLocation(prog, 'aPos');
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, this._fallbackQuad);
-      gl.enableVertexAttribArray(aPos);
-      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-      const time = performance.now() / 1000;
-      if (uTime !== null) gl.uniform1f(uTime, time);
-
-      for (const cell of this.cells) {
-        const mat = SPECIES_MATERIAL[cell.species] ?? SPECIES_MATERIAL['cil-eye'];
-
-        // Cell center in NDC (camera-fitted)
-        const cx = (cell.x + cell.w / 2) * this._camScale + this._camOffX;
-        const cy = (cell.y + cell.h / 2) * this._camScale + this._camOffY;
-        const ndcX = (cx / W) * 2.0 - 1.0;
-        const ndcY = 1.0 - (cy / H) * 2.0; // flip Y
-
-        // Cell half-extent in NDC (with 20% padding for glow)
-        const hw = (cell.w * this._camScale * 1.2) / W;
-        const hh = (cell.h * this._camScale * 1.2) / H;
-
-        if (uOffset !== null) gl.uniform2f(uOffset, ndcX, ndcY);
-        if (uSize !== null)   gl.uniform2f(uSize, hw, hh);
-        if (uColor !== null)  gl.uniform3f(uColor, mat.albedo[0], mat.albedo[1], mat.albedo[2]);
-
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
-      }
-      gl.disableVertexAttribArray(aPos);
-    } else {
-      // Ultra-fallback: scissor rectangles (should never reach here)
-      for (const cell of this.cells) {
-        const mat = SPECIES_MATERIAL[cell.species] ?? SPECIES_MATERIAL['cil-eye'];
-        const fx = cell.x * this._camScale + this._camOffX;
-        const fy = cell.y * this._camScale + this._camOffY;
-        const fw = cell.w * this._camScale;
-        const fh = cell.h * this._camScale;
-        const px = Math.floor(fx);
-        const py = Math.floor(H - fy - fh);
-        const pw = Math.floor(fw);
-        const ph = Math.floor(fh);
-        if (pw <= 0 || ph <= 0) continue;
-        gl.enable(gl.SCISSOR_TEST);
-        gl.scissor(px, py, pw, ph);
-        gl.clearColor(mat.albedo[0], mat.albedo[1], mat.albedo[2], 1.0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-      }
-      gl.disable(gl.SCISSOR_TEST);
-    }
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return this._fallbackTex;
   }
 
   /** 启动 requestAnimationFrame 循环 */
