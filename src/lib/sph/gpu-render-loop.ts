@@ -34,6 +34,7 @@ import windFieldJson from '../../../channels/physics/wind_field.json';
 // M1287: species interaction matrix debug overlay
 import { toggleInteractionDebug, isInteractionDebugEnabled, renderDebugOverlay, type DebugCell } from './debug-renderer';
 import { CellGeometryChannel } from "./cell-geometry-channel";
+import { GLStateCache } from "./gl-state-cache";
 // Re-export for callers who import only from gpu-render-loop
 export { toggleInteractionDebug, isInteractionDebugEnabled } from './debug-renderer';
 
@@ -128,6 +129,7 @@ export class GPURenderLoop {
 
   private physics: CellInteractionPhysics | null = null;
   private geometryChannel: CellGeometryChannel = new CellGeometryChannel();
+  private glState!: GLStateCache;
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -229,6 +231,7 @@ export class GPURenderLoop {
     });
     if (!gl) throw new Error('[GPURenderLoop] WebGL2 not available');
     this.gl = gl;
+    this.glState = new GLStateCache(gl);
 
     // WebGL1 扩展在 WebGL2 中已内置，无需手动启用
     gl.getExtension('EXT_color_buffer_float');
@@ -1272,6 +1275,7 @@ export class GPURenderLoop {
     }
 
     // ── Pass 1: Fluid (鼠标流体 → FBO) ──
+    this.glState.resetForPass();
     {
       const t = this.perf.passStart('fluid');
       try {
@@ -1281,6 +1285,7 @@ export class GPURenderLoop {
     }
 
     // ── Pass 2: Shadow map → FBO ──
+    this.glState.resetForPass();
     {
       const t = this.perf.passStart('shadow');
       try {
@@ -1299,6 +1304,7 @@ export class GPURenderLoop {
     }
 
     // ── Pass 3: PBR cell surface → FBO ──
+    this.glState.resetForPass();
     // PBR pass 始终运行 — 作为保底渲染。CellMesh（Pass 3a）若成功会覆盖 cellTex，
     // 否则 PBR 画好的 cellTex 直接使用，避免两个渲染器都画不出东西。
     let cellTex: WebGLTexture = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
