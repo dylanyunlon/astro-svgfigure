@@ -33,6 +33,7 @@ import environmentJson from '../../../channels/physics/environment.json';
 import windFieldJson from '../../../channels/physics/wind_field.json';
 // M1287: species interaction matrix debug overlay
 import { toggleInteractionDebug, isInteractionDebugEnabled, renderDebugOverlay, type DebugCell } from './debug-renderer';
+import { CellGeometryChannel } from "./cell-geometry-channel";
 // Re-export for callers who import only from gpu-render-loop
 export { toggleInteractionDebug, isInteractionDebugEnabled } from './debug-renderer';
 
@@ -126,6 +127,7 @@ export class GPURenderLoop {
   private mouseFluid: ATMouseFluid | null = null;
 
   private physics: CellInteractionPhysics | null = null;
+  private geometryChannel: CellGeometryChannel = new CellGeometryChannel();
 
   // Perf + error monitoring
   private perf: GPUPerfMonitor;
@@ -414,6 +416,9 @@ export class GPURenderLoop {
     this.cells = cells;
     this.edges = edges;
     this._edgesDirty = true;
+
+    // ── M1296: init geometry channel — poll/SSE for cell geometry.json ────
+    this.geometryChannel.init(cells.map(c => c.cell_id));
 
     // ── M1280: initialise lifecycle state ──────────────────────────────────
     // Every cell starts with full energy (1.0). Reset all per-cell lifecycle
@@ -1302,26 +1307,52 @@ export class GPURenderLoop {
       try {
         if (this.pbr) {
           // Convert CellData → CellPBRDescriptor
-          const descs = this.cells.map(c => ({
-            species: c.species as any,
-            x: toNdcX(c.x + c.w / 2),
-            y: toNdcY(c.y + c.h / 2),
-            size: Math.max(fitD(c.w), fitD(c.h)) / Math.max(W, H),
-            sizeX: fitD(c.w) / W,
-            sizeY: fitD(c.h) / H,
-            albedo: c.albedo as [number, number, number],
-            metallic: c.metallic,
-            roughness: c.roughness,
-            // 新增
-            glowColor: c.glowColor,
-            sdfShape: c.sdfShape,
-            internalPattern: c.internalPattern,
-            haloRadius: c.haloRadius,
-            numRays: c.numRays,
-            focalIntensity: c.focalIntensity,
-            animationSpeed: c.animationSpeed,
-            opacity: c.opacity,
-          }));
+          // M1296: override with geometry.json data if cell agent has written it
+          const descs = this.cells.map(c => {
+            const geom = this.geometryChannel.get(c.cell_id);
+            if (geom) {
+              // Cell agent has written geometry.json — use its surface params
+              return {
+                species: c.species as any,
+                x: toNdcX(geom.transform.x),
+                y: toNdcY(geom.transform.y),
+                size: Math.max(fitD(c.w), fitD(c.h)) / Math.max(W, H) * geom.transform.scale,
+                sizeX: fitD(c.w) / W * geom.transform.scale,
+                sizeY: fitD(c.h) / H * geom.transform.scale,
+                albedo: geom.surface.albedo as [number, number, number],
+                metallic: geom.surface.metallic,
+                roughness: geom.surface.roughness,
+                glowColor: geom.surface.glow_color as [number, number, number],
+                sdfShape: c.sdfShape,
+                internalPattern: c.internalPattern,
+                haloRadius: geom.sdf.base_radius / 100,
+                numRays: geom.sdf.lobes.length,
+                focalIntensity: geom.surface.glow_intensity,
+                animationSpeed: c.animationSpeed,
+                opacity: geom.surface.opacity,
+              };
+            }
+            // Fallback: use static CellData from composite_params
+            return {
+              species: c.species as any,
+              x: toNdcX(c.x + c.w / 2),
+              y: toNdcY(c.y + c.h / 2),
+              size: Math.max(fitD(c.w), fitD(c.h)) / Math.max(W, H),
+              sizeX: fitD(c.w) / W,
+              sizeY: fitD(c.h) / H,
+              albedo: c.albedo as [number, number, number],
+              metallic: c.metallic,
+              roughness: c.roughness,
+              glowColor: c.glowColor,
+              sdfShape: c.sdfShape,
+              internalPattern: c.internalPattern,
+              haloRadius: c.haloRadius,
+              numRays: c.numRays,
+              focalIntensity: c.focalIntensity,
+              animationSpeed: c.animationSpeed,
+              opacity: c.opacity,
+            };
+          });
           if (!this._pbrFBOReady) {
             this.pbr.initFBO(W, H);
             this._pbrFBOReady = true;
