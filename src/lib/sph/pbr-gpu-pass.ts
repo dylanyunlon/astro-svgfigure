@@ -322,8 +322,8 @@ float mapScene(vec3 p) {
             float angle = uLobes[i].x;
             float dist  = uLobes[i].y;
             float rad   = uLobes[i].z;
-            vec3 lobeCenter = vec3(cos(angle) * dist, sin(angle) * dist, 0.0);
-            d = smoothMin(d, sdSphere(p - lobeCenter, rad), 0.3);
+            vec3 lobeCenter = vec3(cos(angle)*dist, sin(angle)*dist, sin(uTime*0.5+angle)*0.05);
+            d = smoothMin(d, sdSphere(p - lobeCenter, rad), 0.15);
         }
         // Surface noise from geometry.json
         d += sin(p.x * uNoiseFreq + uTime) * sin(p.y * uNoiseFreq * 1.3) * uNoiseAmp;
@@ -421,7 +421,8 @@ void main() {
 
     // Discard pixels that miss the body
     if (!hit) discard;
-    float edgeAlpha = 1.0 - smoothstep(-0.01, 0.02, sdf);
+    float aa = fwidth(sdf);
+    float edgeAlpha = 1.0 - smoothstep(-aa, aa, sdf);
 
     // ── Halo glow (inner glow near SDF edge) ───────────────────────────────
     float haloGlow = 0.0;
