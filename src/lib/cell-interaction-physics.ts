@@ -1758,7 +1758,7 @@ export class CellInteractionPhysics {
         cfVisited.add(pairKey);
 
         const b = arr[j];
-        if (b.pinned || b.dragging) continue;
+        if (!b || b.pinned || b.dragging) continue;
 
         const dx = b.x - a.x;
         const dy = b.y - a.y;

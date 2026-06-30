@@ -1182,8 +1182,8 @@ export class GPURenderLoop {
 
     /** Transform a cell's pixel-space x → NDC (−1 … 1) using auto-fit camera */
     const toNdcX = (px: number): number => ((px * camScale + camOffX) / W) * 2 - 1;
-    /** Transform a cell's pixel-space y → NDC (−1 … 1) using auto-fit camera */
-    const toNdcY = (py: number): number => ((py * camScale + camOffY) / H) * 2 - 1;
+    /** Transform a cell's pixel-space y → NDC (−1 … 1) using auto-fit camera. Flip Y: DOM top→NDC top (+1) */
+    const toNdcY = (py: number): number => 1 - ((py * camScale + camOffY) / H) * 2;
     /** Transform a cell's pixel-space x → fitted canvas pixel */
     const fitX = (px: number): number => px * camScale + camOffX;
     /** Transform a cell's pixel-space y → fitted canvas pixel */
