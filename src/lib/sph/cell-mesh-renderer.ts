@@ -513,17 +513,36 @@ export class CellMeshRenderer {
     gl.enableVertexAttribArray(this.aUV);
     gl.vertexAttribPointer(this.aUV, 2, gl.FLOAT, false, 0, 0);
 
-    // Index buffer
-    let indexCount = vertexCount;
-    let indexType: number = gl.UNSIGNED_SHORT;
+    // Index buffer — must always be bound inside the VAO because render()
+    // unconditionally uses drawElements. A GLB mesh can arrive without an
+    // index buffer (non-indexed geometry); in that case synthesize a
+    // sequential index array so an ELEMENT_ARRAY_BUFFER is always present.
+    // Without this, drawElements throws:
+    //   GL_INVALID_OPERATION: glDrawElements: Must have element array buffer bound
+    let indexBuffer: Uint16Array | Uint32Array;
     if (indices) {
-      const idxBuf = gl.createBuffer()!;
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
-      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-      indexCount = indices.length;
-      indexType = indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+      indexBuffer = indices;
+    } else {
+      // Generate [0, 1, 2, ... vertexCount-1]
+      if (vertexCount > 65535) {
+        const seq = new Uint32Array(vertexCount);
+        for (let i = 0; i < vertexCount; i++) seq[i] = i;
+        indexBuffer = seq;
+      } else {
+        const seq = new Uint16Array(vertexCount);
+        for (let i = 0; i < vertexCount; i++) seq[i] = i;
+        indexBuffer = seq;
+      }
     }
 
+    const idxBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexBuffer, gl.STATIC_DRAW);
+    const indexCount = indexBuffer.length;
+    const indexType = indexBuffer instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+
+    // Do NOT unbind ELEMENT_ARRAY_BUFFER here — it must stay recorded in the
+    // VAO. Unbinding the VAO below preserves the EBO association automatically.
     gl.bindVertexArray(null);
 
     return { vao, indexCount, indexType };

@@ -962,6 +962,12 @@ export class CellInteractionPhysics {
           const qj = qCandidates[ci];
           if (qj === qi) continue;
           const b = bodiesForQuorum[qj];
+          // M1284: a stale/out-of-range grid index (e.g. a child cell from an
+          // M1280 division that is not yet registered in the species lookup /
+          // body array) can yield an undefined body. Skip it instead of
+          // dereferencing, which would throw:
+          //   TypeError: Cannot read properties of undefined (reading 'species')
+          if (!b) continue;
           if (b.species !== a.species) continue;
           const dx = a.x - b.x;
           const dy = a.y - b.y;
