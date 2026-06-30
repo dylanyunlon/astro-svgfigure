@@ -32,7 +32,7 @@ import environmentJson from '../../../channels/physics/environment.json';
 // M1292: wind field particle streamlines
 import windFieldJson from '../../../channels/physics/wind_field.json';
 // M1287: species interaction matrix debug overlay
-import { toggleInteractionDebug, isInteractionDebugEnabled, type DebugCell } from './debug-renderer';
+import { toggleInteractionDebug, isInteractionDebugEnabled, renderDebugOverlay, type DebugCell } from './debug-renderer';
 // Re-export for callers who import only from gpu-render-loop
 export { toggleInteractionDebug, isInteractionDebugEnabled } from './debug-renderer';
 
@@ -1668,7 +1668,6 @@ export class GPURenderLoop {
         // Import drawInteractionLines via the already-imported module members.
         // We call renderDebugOverlay with a minimal world so only the
         // interaction overlay fires.
-        const { renderDebugOverlay } = await import('./debug-renderer');
         renderDebugOverlay(
           ctx2d,
           {
