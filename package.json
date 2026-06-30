@@ -7,7 +7,7 @@
   "version": "4.1.2",
   "scripts": {
     "dev": "astro dev",
-    "dev:all": "npx concurrently -n astro,python -c blue,green \"astro dev\" \"python server.py\"",
+    "dev:all": "npx concurrently -n astro,python,cells -c blue,green,yellow \"astro dev\" \"python server.py\" \"sleep 3 && python3 channels/cell/tick-runner.py --live --interval-ms 500\"",
     "dev:backend": "python server.py",
     "dev:check": "astro check --watch & astro dev",
     "build": "astro-pure check && astro check && astro build",
@@ -21,7 +21,8 @@
     "lint": "eslint --fix 'src/**/*.{js,ts,jsx,tsx,astro}'",
     "yijiansilian": "bun lint && bun sync && bun check && bun format",
     "clean": "rm -rf .astro .vercel dist",
-    "cache:avatars": "tsx preset/scripts/cacheAvatars.ts"
+    "cache:avatars": "tsx preset/scripts/cacheAvatars.ts",
+    "dev:cells": "python3 channels/cell/tick-runner.py --live --interval-ms 500"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.6",

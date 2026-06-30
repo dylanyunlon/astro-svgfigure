@@ -1,25 +1,25 @@
 {
   "cell_id": "add_norm1",
-  "tick": 5,
-  "timestamp_ms": 1782802152554,
+  "tick": 6,
+  "timestamp_ms": 1782810400381,
   "transform": {
-    "x": 289.95,
-    "y": 389.878,
+    "x": 289.934,
+    "y": 389.852,
     "scale": 1.03,
-    "rotation": -0.0313
+    "rotation": -0.0118
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 15.91,
+    "base_radius": 15.891,
     "lobes": [
       {
-        "angle": -0.392,
-        "distance": 11.866,
-        "radius": 10.275
+        "angle": 0.2229,
+        "distance": 11.837,
+        "radius": 10.248
       }
     ],
-    "noise_amplitude": 0.0511,
-    "noise_frequency": 4.056
+    "noise_amplitude": 0.0514,
+    "noise_frequency": 4.068
   },
   "surface": {
     "albedo": [
@@ -27,19 +27,19 @@
       0.539,
       0.867
     ],
-    "roughness": 0.507,
+    "roughness": 0.508,
     "metallic": 0.088,
-    "opacity": 0.8438,
+    "opacity": 0.8694,
     "glow_color": [
       0.2,
       0.7,
       1.0
     ],
-    "glow_intensity": 0.783
+    "glow_intensity": 0.78
   },
   "membrane": {
-    "thickness": 2.486,
-    "wobble_amplitude": 0.0151,
+    "thickness": 2.483,
+    "wobble_amplitude": 0.0152,
     "wobble_frequency": 1.5,
     "permeability_visual": 0.5
   },

@@ -20,7 +20,8 @@
           "focal_intensity": 0.0,
           "halo_radius": 0.22,
           "internal_pattern": "expand_contract_bottleneck",
-          "academic_source": "InTraVisTo: pink=FF layers; standard: wide\u2192narrow\u2192wide MLP bottleneck shape"
+          "academic_source": "InTraVisTo: pink=FF layers; standard: wide\u2192narrow\u2192wide MLP bottleneck shape",
+          "species": "cil-bolt"
         }
       }
     },
@@ -1052,7 +1053,8 @@
           "focal_intensity": 0.0,
           "halo_radius": 0.18,
           "internal_pattern": "probability_distribution_bars",
-          "academic_source": "Transformer Explainer: output probabilities as bar chart; green for output/result"
+          "academic_source": "Transformer Explainer: output probabilities as bar chart; green for output/result",
+          "species": "cil-arrow-right"
         }
       }
     },
@@ -1436,7 +1438,8 @@
           "focal_intensity": 0.75,
           "halo_radius": 0.35,
           "internal_pattern": "multi_head_attention_grid",
-          "academic_source": "InTraVisTo: green=attention flow; Transformer Explainer: QKV branching Sankey"
+          "academic_source": "InTraVisTo: green=attention flow; Transformer Explainer: QKV branching Sankey",
+          "species": "cil-eye"
         }
       }
     },
@@ -1568,7 +1571,8 @@
           "focal_intensity": 0.0,
           "halo_radius": 0.2,
           "internal_pattern": "sine_cosine_alternating_bands",
-          "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies"
+          "academic_source": "Vaswani2017 Fig1: positional encoding as sinusoidal waves at different frequencies",
+          "species": "cil-vector"
         }
       }
     },
@@ -1592,7 +1596,8 @@
           "focal_intensity": 0.0,
           "halo_radius": 0.15,
           "internal_pattern": "one_dimensional_heatmap_bars",
-          "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks"
+          "academic_source": "Transformer Explainer CHI2026: grayscale embedding vectors as colored stacks",
+          "species": "cil-vector"
         }
       }
     },
@@ -1940,7 +1945,8 @@
           "focal_intensity": 0.0,
           "halo_radius": 0.12,
           "internal_pattern": "plus_sign_merge_indicator",
-          "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol"
+          "academic_source": "InTraVisTo: blue=residual connection flow; standard skip arrow + add symbol",
+          "species": "cil-plus"
         }
       }
     },
@@ -1964,7 +1970,8 @@
           "focal_intensity": 0.0,
           "halo_radius": 0.12,
           "internal_pattern": "plus_sign_merge_indicator",
-          "academic_source": "Same residual convention as add_norm1; paired visually"
+          "academic_source": "Same residual convention as add_norm1; paired visually",
+          "species": "cil-plus"
         }
       }
     },

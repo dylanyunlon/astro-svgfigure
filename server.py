@@ -153,6 +153,19 @@ def _broadcast_physics_collision(collisions: list, count: int) -> None:
     })
 
 
+def _broadcast_geometry_update(cell_id: str, geometry: dict) -> None:
+    """
+    Broadcast geometry_update — fired when a cell's geometry.json is updated
+    by tick-runner or a live cell agent.  The front-end CellGeometryChannel
+    ingests this to update the metaball SDF in real time.
+    """
+    _sse_broadcast("geometry_update", {
+        "cell_id": cell_id,
+        "geometry": geometry,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
 def _register_cell_sse_notifier() -> None:
     """
     Register DataNotifier callbacks so that pipeline writes to channel files
@@ -619,6 +632,72 @@ async def api_cell_publish(request_data: dict) -> JSONResponse:
 
     except Exception as e:
         logger.exception("api_cell_publish error")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ============================================================================
+# Cell Geometry Endpoint — tick-runner POSTs geometry.json updates here
+# Writes to channels/cell/{id}/geometry.json and SSE-broadcasts to browser
+# ============================================================================
+
+@app.post("/api/cell/geometry")
+async def api_cell_geometry(request_data: dict) -> JSONResponse:
+    """
+    POST /api/cell/geometry — tick-runner pushes geometry.json for a cell.
+
+    Request body:
+      {
+        "cell_id": "input",
+        "geometry": { ...full geometry.json contents... }
+      }
+
+    Or batch mode:
+      {
+        "cells": [
+          {"cell_id": "input", "geometry": {...}},
+          {"cell_id": "ffn", "geometry": {...}}
+        ]
+      }
+    """
+    try:
+        channels_dir = os.path.join(os.path.dirname(__file__), "channels")
+        batch = request_data.get("cells", [])
+        if not batch:
+            # single-cell mode
+            cell_id = request_data.get("cell_id", "").strip()
+            geometry = request_data.get("geometry", {})
+            if not cell_id or not geometry:
+                return JSONResponse({"error": "cell_id and geometry required"}, status_code=400)
+            batch = [{"cell_id": cell_id, "geometry": geometry}]
+
+        updated = []
+        for item in batch:
+            cid = item.get("cell_id", "").strip()
+            geom = item.get("geometry", {})
+            if not cid or not geom:
+                continue
+
+            # Write geometry.json to channel filesystem
+            cell_dir = os.path.join(channels_dir, "cell", cid)
+            if not os.path.isdir(cell_dir):
+                continue
+            geom_path = os.path.join(cell_dir, "geometry.json")
+            with open(geom_path, "w") as f:
+                json.dump(geom, f, separators=(",", ":"))
+
+            # SSE broadcast to all connected browsers
+            _broadcast_geometry_update(cid, geom)
+            updated.append(cid)
+
+        return JSONResponse({
+            "success": True,
+            "updated": updated,
+            "count": len(updated),
+            "sse_clients": len(_cell_event_queues),
+        })
+
+    except Exception as e:
+        logger.exception("api_cell_geometry error")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

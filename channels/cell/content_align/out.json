@@ -1,5 +1,9 @@
 {
   "cell_id": "content_align",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 6,
+  "action": "extend_pseudopod_toward_structure_align",
+  "target": "structure_align",
+  "reason": "neighbors=2 within signal_radius, energy=0.482, species=cil-code",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

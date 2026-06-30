@@ -1,5 +1,9 @@
 {
   "cell_id": "dec_conv2",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 6,
+  "action": "quorum_sync",
+  "target": "dec_conv1",
+  "reason": "neighbors=6 within signal_radius, energy=0.482, species=cil-filter",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

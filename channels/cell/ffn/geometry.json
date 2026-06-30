@@ -1,25 +1,25 @@
 {
   "cell_id": "ffn",
-  "tick": 5,
-  "timestamp_ms": 1782802152568,
+  "tick": 6,
+  "timestamp_ms": 1782810400404,
   "transform": {
-    "x": 289.821,
-    "y": 492.702,
+    "x": 289.749,
+    "y": 492.791,
     "scale": 1.03,
-    "rotation": -0.0031
+    "rotation": -0.0207
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 17.899,
+    "base_radius": 17.878,
     "lobes": [
       {
-        "angle": -0.405,
-        "distance": 13.349,
-        "radius": 11.559
+        "angle": 0.1859,
+        "distance": 13.317,
+        "radius": 11.529
       }
     ],
-    "noise_amplitude": 0.0511,
-    "noise_frequency": 4.056
+    "noise_amplitude": 0.0514,
+    "noise_frequency": 4.068
   },
   "surface": {
     "albedo": [
@@ -27,19 +27,19 @@
       0.59,
       0.826
     ],
-    "roughness": 0.507,
+    "roughness": 0.508,
     "metallic": 0.111,
-    "opacity": 0.8438,
+    "opacity": 0.8694,
     "glow_color": [
       0.2,
       0.7,
       1.0
     ],
-    "glow_intensity": 0.783
+    "glow_intensity": 0.78
   },
   "membrane": {
-    "thickness": 2.486,
-    "wobble_amplitude": 0.0151,
+    "thickness": 2.483,
+    "wobble_amplitude": 0.0152,
     "wobble_frequency": 1.5,
     "permeability_visual": 0.5
   },

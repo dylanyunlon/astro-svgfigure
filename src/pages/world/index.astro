@@ -1211,25 +1211,60 @@ export const prerender = true;
 
         // ── Live Cell Agents SSE — Claude Code cells push decisions ──────
         try {
-          const liveCellES = new EventSource('/api/cell/live');
-          liveCellES.addEventListener('cell_decision', (ev: MessageEvent) => {
+          const liveCellES = new EventSource('/api/cell-events');
+
+          // M1308: wire real SSE events from server.py DataNotifier
+          liveCellES.addEventListener('cell_update', (ev: MessageEvent) => {
             try {
               const d = JSON.parse(ev.data);
               const cell = cells.find((c: any) => c.cell_id === d.cell_id);
-              if (!cell) return;
-              if (d.action === 'move' && d.params) {
-                cell.x += (d.params.dx ?? 0);
-                cell.y += (d.params.dy ?? 0);
+              if (!cell || !d.params) return;
+              const bbox = d.params.bbox ?? d.params.agent_params?.bbox;
+              if (bbox) {
+                cell.x = bbox.x ?? cell.x;
+                cell.y = bbox.y ?? cell.y;
+                if (bbox.w) cell.w = bbox.w;
+                if (bbox.h) cell.h = bbox.h;
               }
-              console.debug(`[live-cell] ${d.cell_id}: ${d.action} — ${d.reasoning ?? ''}`);
+              console.debug(`[sse] cell_update: ${d.cell_id}`);
             } catch {}
           });
-          liveCellES.addEventListener('init', (ev: MessageEvent) => {
-            const d = JSON.parse(ev.data);
-            console.info(`[live-cell] Connected — ${d.cells} cell agents active`);
+          liveCellES.addEventListener('cell_params_updated', (ev: MessageEvent) => {
+            try {
+              const d = JSON.parse(ev.data);
+              const cell = cells.find((c: any) => c.cell_id === d.cell_id);
+              if (!cell || !d.params) return;
+              const bbox = d.params.bbox ?? d.params.agent_params?.bbox;
+              if (bbox) {
+                cell.x = bbox.x ?? cell.x;
+                cell.y = bbox.y ?? cell.y;
+              }
+              console.debug(`[sse] cell_params_updated: ${d.cell_id}`);
+            } catch {}
           });
-          console.info('[gpu-world] Live cell agent SSE connected');
-        } catch(e) { console.warn('[gpu-world] Live cell SSE failed:', e); }
+          liveCellES.addEventListener('physics_step', (ev: MessageEvent) => {
+            try {
+              const d = JSON.parse(ev.data);
+              console.debug(`[sse] physics_step epoch=${d.epoch} converged=${d.converged}`);
+            } catch {}
+          });
+          // M1305: geometry.json live updates from tick-runner
+          liveCellES.addEventListener('geometry_update', (ev: MessageEvent) => {
+            try {
+              const d = JSON.parse(ev.data);
+              if (d.cell_id && d.geometry && loop) {
+                (loop as any).geometryChannel?.set(d.cell_id, d.geometry);
+              }
+              console.debug(`[sse] geometry_update: ${d.cell_id} tick=${d.geometry?.tick}`);
+            } catch {}
+          });
+          liveCellES.addEventListener('open', () => {
+            console.info('[gpu-world] SSE connected to /api/cell-events');
+          });
+          liveCellES.onerror = () => {
+            console.warn('[gpu-world] SSE connection lost, will auto-reconnect');
+          };
+        } catch(e) { console.warn('[gpu-world] SSE setup failed:', e); }
 
         // 隐藏 overlay
         const overlay = document.getElementById('init-overlay');

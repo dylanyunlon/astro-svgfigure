@@ -95,6 +95,14 @@ export class CellGeometryChannel {
     return this.geometries.get(cellId) ?? null;
   }
 
+  /** Set geometry for a cell directly (from external SSE handler). */
+  set(cellId: string, geom: CellGeometry): void {
+    if (geom && geom.sdf) {
+      this._validate(geom);
+      this.geometries.set(cellId, geom);
+    }
+  }
+
   /** All geometries that have been written by cell agents. */
   getAll(): Map<string, CellGeometry> {
     return this.geometries;
@@ -180,9 +188,10 @@ export class CellGeometryChannel {
   private _connectSSE(): void {
     try {
       this.eventSource = new EventSource('/api/cell-events');
-      this.eventSource.addEventListener('geometry_updated', (e: MessageEvent) => {
+      this.eventSource.addEventListener('geometry_update', (e: MessageEvent) => {
         try {
-          const geom: CellGeometry = JSON.parse(e.data);
+          const payload = JSON.parse(e.data);
+          const geom: CellGeometry = payload.geometry ?? payload;
           if (geom.cell_id && geom.sdf) {
             this._validate(geom);
             this.geometries.set(geom.cell_id, geom);

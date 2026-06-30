@@ -35,9 +35,42 @@ import os
 import random
 import sys
 import time
+import urllib.request
+import urllib.error
 
 CELL_DIR = os.path.dirname(os.path.abspath(__file__))
 PHYSICS_DIR = os.path.normpath(os.path.join(CELL_DIR, "..", "physics"))
+
+# Server URL for SSE broadcast of geometry updates.
+# tick-runner POSTs here so the browser gets real-time updates.
+_SERVER_URL = os.environ.get("ASTRO_SERVER_URL", "http://127.0.0.1:8000")
+_GEOMETRY_BATCH: list = []  # accumulate per tick, flush once
+
+
+def _post_geometry_to_server(cell_id: str, geometry: dict) -> None:
+    """Accumulate geometry for batch POST at end of tick."""
+    _GEOMETRY_BATCH.append({"cell_id": cell_id, "geometry": geometry})
+
+
+def _flush_geometry_batch() -> None:
+    """POST all accumulated geometry updates to the server in one request."""
+    global _GEOMETRY_BATCH
+    if not _GEOMETRY_BATCH:
+        return
+    batch = _GEOMETRY_BATCH
+    _GEOMETRY_BATCH = []
+    try:
+        payload = json.dumps({"cells": batch}).encode()
+        req = urllib.request.Request(
+            f"{_SERVER_URL}/api/cell/geometry",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            pass  # fire and forget
+    except (urllib.error.URLError, OSError):
+        pass  # server not running, skip silently
 
 DEFAULT_ENERGY = 0.5
 DEFAULT_DT_MS = 200
@@ -462,6 +495,9 @@ def run_tick(cell_ids, environment, lifecycle, interaction, tick, dt_ms, verbose
         # 4f. write geometry.json (full overwrite)
         save_json(geometry_path, geometry)
 
+        # 4f-sse. POST geometry to server for real-time SSE broadcast to browser
+        _post_geometry_to_server(cell_id, geometry)
+
         # 4f. write status.json (full overwrite, preserving identity fields)
         new_status = dict(status)
         new_status["status"] = "alive" if energy >= lifecycle.get("lifecycle", {}).get(
@@ -505,6 +541,9 @@ def run_tick(cell_ids, environment, lifecycle, interaction, tick, dt_ms, verbose
                 f"action={last_action} neighbors={neighbor_count}"
             )
 
+    # Flush all geometry updates to server for SSE broadcast
+    _flush_geometry_batch()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run the cell-pubsub tick loop for N ticks.")
@@ -512,6 +551,10 @@ def main():
     parser.add_argument("--dt-ms", type=int, default=DEFAULT_DT_MS, help="simulated ms per tick")
     parser.add_argument("--seed", type=int, default=None, help="random seed for brownian motion")
     parser.add_argument("--verbose", action="store_true", help="print per-cell per-tick summary")
+    parser.add_argument("--live", action="store_true",
+                        help="run forever at --interval-ms pace, POSTing geometry to server")
+    parser.add_argument("--interval-ms", type=int, default=500,
+                        help="sleep between ticks in --live mode (ms)")
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -532,6 +575,23 @@ def main():
         start_epochs[cell_id] = status.get("epoch", 0)
 
     base_epoch = max(start_epochs.values()) if start_epochs else 0
+
+    if args.live:
+        # Live mode: run ticks forever, POSTing geometry to server each tick
+        print(f"tick-runner: LIVE MODE — {len(cell_ids)} cells, interval={args.interval_ms}ms")
+        print(f"  server: {_SERVER_URL}")
+        tick = base_epoch
+        try:
+            while True:
+                tick += 1
+                run_tick(cell_ids, environment, lifecycle, interaction,
+                         tick, args.dt_ms, verbose=args.verbose)
+                if tick % 10 == 0:
+                    print(f"tick-runner: tick {tick} done")
+                time.sleep(args.interval_ms / 1000.0)
+        except KeyboardInterrupt:
+            print(f"\ntick-runner: stopped at tick {tick}")
+        return
 
     for i in range(args.ticks):
         tick = base_epoch + i + 1

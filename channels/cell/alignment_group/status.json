@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "alignment_group",
   "species": "cil-layers",
-  "epoch": 5,
+  "epoch": 6,
   "bbox": {
     "x": 533,
     "y": 3820,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.482,
+  "age_ms": 1200,
   "position": {
-    "x": 758.096,
-    "y": 3892.932
+    "x": 758.12,
+    "y": 3893.09
   },
   "velocity": {
-    "vx": 0.1381,
-    "vy": 0.6855
+    "vx": 0.12,
+    "vy": 0.7892
   },
   "quorum_active": false,
   "division_ready": false,

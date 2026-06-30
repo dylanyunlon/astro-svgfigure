@@ -1,25 +1,25 @@
 {
   "cell_id": "dec_conv2",
-  "tick": 5,
-  "timestamp_ms": 1782802152561,
+  "tick": 6,
+  "timestamp_ms": 1782810400392,
   "transform": {
-    "x": 285.107,
-    "y": 690.229,
+    "x": 285.147,
+    "y": 690.314,
     "scale": 1.03,
-    "rotation": -0.02
+    "rotation": -0.0295
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 15.91,
+    "base_radius": 15.891,
     "lobes": [
       {
-        "angle": -0.4311,
-        "distance": 11.866,
-        "radius": 10.275
+        "angle": -0.2049,
+        "distance": 11.837,
+        "radius": 10.248
       }
     ],
-    "noise_amplitude": 0.0511,
-    "noise_frequency": 4.056
+    "noise_amplitude": 0.0514,
+    "noise_frequency": 4.068
   },
   "surface": {
     "albedo": [
@@ -27,28 +27,28 @@
       0.472,
       -0.029
     ],
-    "roughness": 0.507,
+    "roughness": 0.508,
     "metallic": 0.115,
-    "opacity": 0.8438,
+    "opacity": 0.8694,
     "glow_color": [
       1.0,
       0.72,
       0.3
     ],
-    "glow_intensity": 0.783
+    "glow_intensity": 0.78
   },
   "membrane": {
-    "thickness": 2.486,
-    "wobble_amplitude": 0.0151,
+    "thickness": 2.483,
+    "wobble_amplitude": 0.0152,
     "wobble_frequency": 1.5,
     "permeability_visual": 0.5
   },
   "pseudopods": [
     {
       "target_cell": "dec_conv1",
-      "length": 28.638720000000003,
-      "width": 4.7731200000000005,
-      "curl": -0.19903043802807094
+      "length": 28.604160000000004,
+      "width": 4.76736,
+      "curl": -0.07741672197137257
     }
   ],
   "internal_motion": {

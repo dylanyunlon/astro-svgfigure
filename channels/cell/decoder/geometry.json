@@ -1,25 +1,25 @@
 {
   "cell_id": "decoder",
-  "tick": 5,
-  "timestamp_ms": 1782802152562,
+  "tick": 6,
+  "timestamp_ms": 1782810400394,
   "transform": {
-    "x": 290.017,
-    "y": 385.461,
+    "x": 290.025,
+    "y": 385.665,
     "scale": 1.03,
-    "rotation": -0.0084
+    "rotation": -0.0198
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 19.888,
+    "base_radius": 19.864,
     "lobes": [
       {
-        "angle": -0.1984,
-        "distance": 14.832,
-        "radius": 12.844
+        "angle": -0.4988,
+        "distance": 14.797,
+        "radius": 12.81
       }
     ],
-    "noise_amplitude": 0.0511,
-    "noise_frequency": 4.056
+    "noise_amplitude": 0.0514,
+    "noise_frequency": 4.068
   },
   "surface": {
     "albedo": [
@@ -27,19 +27,19 @@
       0.192,
       0.679
     ],
-    "roughness": 0.507,
+    "roughness": 0.508,
     "metallic": 0.108,
-    "opacity": 0.8438,
+    "opacity": 0.8694,
     "glow_color": [
       0.75,
       0.3,
       0.85
     ],
-    "glow_intensity": 0.783
+    "glow_intensity": 0.78
   },
   "membrane": {
-    "thickness": 2.486,
-    "wobble_amplitude": 0.0151,
+    "thickness": 2.483,
+    "wobble_amplitude": 0.0152,
     "wobble_frequency": 1.5,
     "permeability_visual": 0.5
   },

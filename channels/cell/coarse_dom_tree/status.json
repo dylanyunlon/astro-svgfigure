@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "coarse_dom_tree",
   "species": "cil-graph",
-  "epoch": 5,
+  "epoch": 6,
   "bbox": {
     "x": 718,
     "y": 1927,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.482,
+  "age_ms": 1200,
   "position": {
-    "x": 808.05,
-    "y": 1989.86
+    "x": 808.054,
+    "y": 1990.0
   },
   "velocity": {
-    "vx": 0.0702,
-    "vy": 0.5738
+    "vx": 0.0187,
+    "vy": 0.699
   },
   "quorum_active": false,
   "division_ready": false,
