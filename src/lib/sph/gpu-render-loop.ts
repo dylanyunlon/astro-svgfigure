@@ -1160,15 +1160,21 @@ export class GPURenderLoop {
     // ── M1219: Auto-fit camera — scale all cells into the viewport ──────────
     // Cells live in a 0-2052 × 0-3965 pixel space but the canvas is ~1920×1080.
     // Compute a uniform scale + offset so every cell is visible.
+    // M1312: skip oversized group containers (stage1_group h=1587, stage2_group
+    // h=1160, etc) from bounds — they crush normal cells to a few pixels.
     const PADDING = 40; // pixels of breathing room around bounding box
+    const MAX_CELL_DIM = 400; // cells larger than this are group containers, skip from camera fit
     let camMinX = Infinity, camMinY = Infinity, camMaxX = -Infinity, camMaxY = -Infinity;
     for (const c of this.cells) {
+      // Skip group containers: their bbox encompasses child cells and would
+      // inflate the bounding box beyond useful camera range
+      if (c.w > MAX_CELL_DIM || c.h > MAX_CELL_DIM) continue;
       if (c.x < camMinX) camMinX = c.x;
       if (c.y < camMinY) camMinY = c.y;
       if (c.x + c.w > camMaxX) camMaxX = c.x + c.w;
       if (c.y + c.h > camMaxY) camMaxY = c.y + c.h;
     }
-    // Fallback when no cells are loaded yet
+    // Fallback when no cells are loaded yet (or all were skipped)
     if (!isFinite(camMinX)) { camMinX = 0; camMinY = 0; camMaxX = W; camMaxY = H; }
     const bbW = camMaxX - camMinX;
     const bbH = camMaxY - camMinY;
