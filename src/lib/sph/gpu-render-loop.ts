@@ -1314,10 +1314,38 @@ export class GPURenderLoop {
         if (this.pbr) {
           // Convert CellData → CellPBRDescriptor
           // M1296: override with geometry.json data if cell agent has written it
+          // M1304: resolve pseudopod target_cell → (x, y) so the PBR shader can
+          // grow a capsule from this cell's center toward its neighbor. Target
+          // position prefers the neighbor's own geometry.json transform (organic,
+          // tick-accurate) and falls back to the static CellData bbox center.
+          const resolveCellCenter = (cellId: string): { x: number; y: number } | null => {
+            const targetGeom = this.geometryChannel.get(cellId);
+            if (targetGeom) return { x: targetGeom.transform.x, y: targetGeom.transform.y };
+            const targetCell = this.cells.find(cc => cc.cell_id === cellId);
+            if (targetCell) return { x: targetCell.x + targetCell.w / 2, y: targetCell.y + targetCell.h / 2 };
+            return null;
+          };
+
           const descs = this.cells.map(c => {
             const geom = this.geometryChannel.get(c.cell_id);
             if (geom) {
               // Cell agent has written geometry.json — use its surface params
+
+              // M1304: resolve each pseudopod's target_cell into a local-space
+              // (targetX, targetY) offset relative to this cell's own center,
+              // normalized into the same SDF-local units as lobes (px / 100).
+              const pseudopodData = (geom.pseudopods ?? []).slice(0, 4).map(pp => {
+                const targetCenter = resolveCellCenter(pp.target_cell);
+                const offsetX = targetCenter ? (targetCenter.x - geom.transform.x) / 100 : 0;
+                const offsetY = targetCenter ? (targetCenter.y - geom.transform.y) / 100 : 0;
+                return {
+                  targetX: offsetX,
+                  targetY: offsetY,
+                  length: pp.length / 100,
+                  width: pp.width,
+                };
+              });
+
               return {
                 species: c.species as any,
                 x: toNdcX(geom.transform.x),
@@ -1341,6 +1369,8 @@ export class GPURenderLoop {
                 baseRadius: geom.sdf.base_radius / 100,
                 noiseAmp: geom.sdf.noise_amplitude,
                 noiseFreq: geom.sdf.noise_frequency,
+                // M1304: pass resolved pseudopod data to PBR shader
+                pseudopodData,
               };
             }
             // Fallback: use static CellData from composite_params

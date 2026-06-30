@@ -83,6 +83,11 @@ export interface CellPBRDescriptor {
   energy?: number;
   // M1284: membrane dynamics — number of active collisions for elastic deformation
   collisionCount?: number;
+  // M1304: pseudopod rendering — organic extensions toward neighbor cells.
+  // Each entry: (targetX, targetY) local-space offset toward the target cell
+  // (already resolved from target_cell → position by gpu-render-loop), plus
+  // length and width in local SDF units. Max 4 active pseudopods.
+  pseudopodData?: Array<{ targetX: number; targetY: number; length: number; width: number }>;
 }
 
 // ─── Per-species material defaults ──────────────────────────────────────────
@@ -203,6 +208,14 @@ uniform float uNoiseAmp;           // surface noise amplitude [0, 0.1]
 uniform float uNoiseFreq;          // surface noise frequency [1, 10]
 uniform vec3  uLobes[8];           // per-lobe: (angle, distance, radius)
 
+// ── M1304: pseudopod rendering — organic extensions toward neighbor cells ────
+// Each cell's geometry.json may define up to 4 pseudopods reaching toward a
+// target cell (resolved to a local-space offset by gpu-render-loop). The
+// pseudopod is rendered as a capsule SDF from the cell center out along the
+// direction to the target, then fused into the body with smoothMin.
+uniform int   uPseudopodCount;     // number of active pseudopods [0, 4]
+uniform vec4  uPseudopods[4];      // per-pseudopod: (targetX, targetY, length, width) in local SDF units
+
 // ── M1282: energy metabolism ────────────────────────────────────────────────
 uniform float u_energy;         // cell energy [0, 1] from CellInteractionPhysics
 
@@ -314,6 +327,28 @@ float mapScene(vec3 p) {
         }
         // Surface noise from geometry.json
         d += sin(p.x * uNoiseFreq + uTime) * sin(p.y * uNoiseFreq * 1.3) * uNoiseAmp;
+
+        // ── M1304: pseudopod rendering — organic extensions toward neighbor cells ──
+        // Each pseudopod is a capsule reaching from the cell center toward a
+        // (pre-resolved) target direction, fused into the body via smoothMin.
+        for (int i = 0; i < 4; i++) {
+            if (i >= uPseudopodCount) break;
+            float targetX         = uPseudopods[i].x;
+            float targetY         = uPseudopods[i].y;
+            float pseudopodLength = uPseudopods[i].z;
+            float pseudopodWidth  = uPseudopods[i].w;
+            float cellX = 0.0;
+            float cellY = 0.0;
+            vec3 toTarget = vec3(targetX - cellX, targetY - cellY, 0.0);
+            if (length(toTarget) > 0.0001) {
+                vec3 dir   = normalize(toTarget);
+                vec3 start = vec3(0.0);
+                vec3 end   = dir * pseudopodLength;
+                float pd   = sdCapsule(p, start, end, pseudopodWidth * 0.01);
+                d = smoothMin(d, pd, 0.1);
+            }
+        }
+
         return d;
     }
 
@@ -610,6 +645,9 @@ export class PBRCellGPU {
   private uNoiseAmp!:        WebGLUniformLocation;
   private uNoiseFreq!:       WebGLUniformLocation;
   private uLobes: WebGLUniformLocation[] = [];
+  // M1304: pseudopod uniforms
+  private uPseudopodCount!:  WebGLUniformLocation;
+  private uPseudopods: WebGLUniformLocation[] = [];
   private _time = 0;
 
   // Attribute location — resolved name may differ when AT shader uses 'aPosition', 'position', etc.
@@ -814,6 +852,21 @@ export class PBRCellGPU {
         }
       } else {
         gl.uniform1i(this.uLobeCount, 0);
+      }
+
+      // ── M1304: pseudopod rendering — organic extensions toward neighbor cells ──
+      // pseudopodData carries pre-resolved local-space target offsets (computed
+      // by gpu-render-loop from geometry.json's pseudopods[].target_cell lookup).
+      const pseudopods = cell.pseudopodData;
+      if (pseudopods && pseudopods.length > 0) {
+        const ppCount = Math.min(pseudopods.length, 4);
+        gl.uniform1i(this.uPseudopodCount, ppCount);
+        for (let pi = 0; pi < ppCount; pi++) {
+          const pp = pseudopods[pi];
+          gl.uniform4f(this.uPseudopods[pi], pp.targetX, pp.targetY, pp.length, pp.width);
+        }
+      } else {
+        gl.uniform1i(this.uPseudopodCount, 0);
       }
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1028,6 +1081,12 @@ export class PBRCellGPU {
     this.uLobes = [];
     for (let i = 0; i < 8; i++) {
       this.uLobes.push(gl.getUniformLocation(prog, `uLobes[${i}]`)!);
+    }
+    // M1304: pseudopod uniforms
+    this.uPseudopodCount = gl.getUniformLocation(prog, 'uPseudopodCount')!;
+    this.uPseudopods = [];
+    for (let i = 0; i < 4; i++) {
+      this.uPseudopods.push(gl.getUniformLocation(prog, `uPseudopods[${i}]`)!);
     }
   }
 }
