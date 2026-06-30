@@ -1208,6 +1208,29 @@ export const prerender = true;
         hudBackend.textContent = 'WEBGL2';
         hudRenderMode.textContent = 'PBR+SDF';
         setInterval(() => { try { const s = loop.stats; hudFps.textContent = String(s.fps); hudParticles.textContent = String(s.cellCount); } catch(_){} }, 250);
+
+        // ── Live Cell Agents SSE — Claude Code cells push decisions ──────
+        try {
+          const liveCellES = new EventSource('/api/cell/live');
+          liveCellES.addEventListener('cell_decision', (ev: MessageEvent) => {
+            try {
+              const d = JSON.parse(ev.data);
+              const cell = cells.find((c: any) => c.cell_id === d.cell_id);
+              if (!cell) return;
+              if (d.action === 'move' && d.params) {
+                cell.x += (d.params.dx ?? 0);
+                cell.y += (d.params.dy ?? 0);
+              }
+              console.debug(`[live-cell] ${d.cell_id}: ${d.action} — ${d.reasoning ?? ''}`);
+            } catch {}
+          });
+          liveCellES.addEventListener('init', (ev: MessageEvent) => {
+            const d = JSON.parse(ev.data);
+            console.info(`[live-cell] Connected — ${d.cells} cell agents active`);
+          });
+          console.info('[gpu-world] Live cell agent SSE connected');
+        } catch(e) { console.warn('[gpu-world] Live cell SSE failed:', e); }
+
         // 隐藏 overlay
         const overlay = document.getElementById('init-overlay');
         if (overlay) overlay.classList.add('hidden');
