@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "noise_detection",
   "species": "cil-filter",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 525,
     "y": 453,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 610.041,
-    "y": 512.358
+    "x": 610.142,
+    "y": 514.818
   },
   "velocity": {
-    "vx": 0.0205,
-    "vy": 0.6164
+    "vx": 0.1128,
+    "vy": 1.6925
   },
   "quorum_active": true,
   "division_ready": false,

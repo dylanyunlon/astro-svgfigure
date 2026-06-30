@@ -1,9 +1,9 @@
 {
   "cell_id": "add_norm2",
-  "tick": 6,
+  "tick": 16,
   "action": "quorum_sync",
   "target": null,
-  "reason": "neighbors=7 within signal_radius, energy=0.482, species=cil-plus",
+  "reason": "neighbors=7 within signal_radius, energy=0.452, species=cil-plus",
   "energy_cost": 0.01,
   "geometry_changed": true
 }

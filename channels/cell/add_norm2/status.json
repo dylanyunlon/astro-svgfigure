@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "add_norm2",
   "species": "cil-plus",
-  "epoch": 6,
+  "epoch": 16,
   "bbox": {
     "x": 220,
     "y": 575,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.482,
-  "age_ms": 1200,
+  "energy": 0.452,
+  "age_ms": 3200,
   "position": {
-    "x": 290.023,
-    "y": 595.209
+    "x": 290.221,
+    "y": 596.619
   },
   "velocity": {
-    "vx": 0.0247,
-    "vy": 0.2828
+    "vx": 0.2145,
+    "vy": 1.0662
   },
   "quorum_active": true,
   "division_ready": false,

@@ -1,5 +1,9 @@
 {
   "cell_id": "leaf_extraction",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 16,
+  "action": "extend_pseudopod_toward_local_images",
+  "target": "local_images",
+  "reason": "neighbors=1 within signal_radius, energy=0.455, species=cil-code",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

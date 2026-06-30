@@ -1,5 +1,9 @@
 {
   "cell_id": "hidden_elements",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 16,
+  "action": "extend_pseudopod_toward_noise_types",
+  "target": "noise_types",
+  "reason": "neighbors=3 within signal_radius, energy=0.455, species=cil-bolt",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

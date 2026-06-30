@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "pos_encode",
   "species": "cil-vector",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 220,
     "y": 150,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 299.756,
-    "y": 175.047
+    "x": 298.239,
+    "y": 175.375
   },
   "velocity": {
-    "vx": -0.3964,
-    "vy": 0.1229
+    "vx": -1.0949,
+    "vy": 0.1943
   },
   "quorum_active": true,
   "division_ready": false,

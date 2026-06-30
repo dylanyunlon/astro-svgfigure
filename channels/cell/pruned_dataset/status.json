@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "pruned_dataset",
   "species": "cil-vector",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 525,
     "y": 899,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 610.089,
-    "y": 958.287
+    "x": 610.469,
+    "y": 960.126
   },
   "velocity": {
-    "vx": 0.136,
-    "vy": 0.4441
+    "vx": 0.2976,
+    "vy": 1.3288
   },
   "quorum_active": false,
   "division_ready": false,

@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "hidden_states",
   "species": "cil-bolt",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 936.0,
     "y": 1383,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 1020.904,
-    "y": 1442.337
+    "x": 1020.328,
+    "y": 1444.452
   },
   "velocity": {
-    "vx": -0.0983,
-    "vy": 0.5095
+    "vx": -0.4233,
+    "vy": 1.5478
   },
   "quorum_active": true,
   "division_ready": false,

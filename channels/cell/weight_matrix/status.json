@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "weight_matrix",
   "species": "cil-code",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 776.0,
     "y": 1401,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 846.064,
-    "y": 1451.355
+    "x": 846.521,
+    "y": 1453.589
   },
   "velocity": {
-    "vx": 0.1011,
-    "vy": 0.6046
+    "vx": 0.4284,
+    "vy": 1.5309
   },
   "quorum_active": false,
   "division_ready": false,

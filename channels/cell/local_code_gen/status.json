@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "local_code_gen",
   "species": "cil-code",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 675,
     "y": 2618,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 760.06,
-    "y": 2677.411
+    "x": 760.173,
+    "y": 2680.172
   },
   "velocity": {
-    "vx": 0.1331,
-    "vy": 0.6257
+    "vx": 0.0221,
+    "vy": 1.9221
   },
   "quorum_active": false,
   "division_ready": false,

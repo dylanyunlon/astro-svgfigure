@@ -1,5 +1,9 @@
 {
   "cell_id": "noise_types",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 16,
+  "action": "quorum_sync",
+  "target": "hidden_elements",
+  "reason": "neighbors=6 within signal_radius, energy=0.455, species=cil-bolt",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

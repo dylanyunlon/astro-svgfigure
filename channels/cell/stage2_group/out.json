@@ -1,5 +1,9 @@
 {
   "cell_id": "stage2_group",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 16,
+  "action": "extend_pseudopod_toward_local_code_gen",
+  "target": "local_code_gen",
+  "reason": "neighbors=2 within signal_radius, energy=0.455, species=cil-code",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

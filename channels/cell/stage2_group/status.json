@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "stage2_group",
   "species": "cil-code",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 655,
     "y": 2157,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 771.674,
-    "y": 2737.317
+    "x": 771.95,
+    "y": 2739.267
   },
   "velocity": {
-    "vx": 0.0425,
-    "vy": 0.4725
+    "vx": 0.2298,
+    "vy": 1.3349
   },
   "quorum_active": false,
   "division_ready": false,

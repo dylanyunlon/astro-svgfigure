@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "dec_upsamp",
   "species": "cil-loop",
-  "epoch": 6,
+  "epoch": 16,
   "bbox": {
     "x": 220,
     "y": 570,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.482,
-  "age_ms": 1200,
+  "energy": 0.452,
+  "age_ms": 3200,
   "position": {
-    "x": 285.12,
-    "y": 590.419
+    "x": 285.812,
+    "y": 592.927
   },
   "velocity": {
-    "vx": 0.1944,
-    "vy": 0.6276
+    "vx": 0.4504,
+    "vy": 1.7136
   },
   "quorum_active": true,
   "division_ready": false,

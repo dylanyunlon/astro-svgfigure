@@ -1,5 +1,9 @@
 {
   "cell_id": "heuristic_rules",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 16,
+  "action": "quorum_sync",
+  "target": null,
+  "reason": "neighbors=4 within signal_radius, energy=0.455, species=cil-filter",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "display_errors",
   "species": "cil-bolt",
-  "epoch": 6,
+  "epoch": 16,
   "bbox": {
     "x": 370,
     "y": 626,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.482,
-  "age_ms": 1200,
+  "energy": 0.452,
+  "age_ms": 3200,
   "position": {
-    "x": 444.824,
-    "y": 678.892
+    "x": 443.852,
+    "y": 681.07
   },
   "velocity": {
-    "vx": -0.2678,
-    "vy": 0.6038
+    "vx": -0.6532,
+    "vy": 1.47
   },
   "quorum_active": true,
   "division_ready": false,

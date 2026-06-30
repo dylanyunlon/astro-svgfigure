@@ -1,5 +1,9 @@
 {
   "cell_id": "softmax_layer",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 16,
+  "action": "extend_pseudopod_toward_weight_matrix",
+  "target": "weight_matrix",
+  "reason": "neighbors=3 within signal_radius, energy=0.455, species=cil-code",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

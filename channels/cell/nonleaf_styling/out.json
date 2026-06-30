@@ -1,5 +1,9 @@
 {
   "cell_id": "nonleaf_styling",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 16,
+  "action": "idle_metabolism",
+  "target": null,
+  "reason": "neighbors=1 within signal_radius, energy=0.455, species=cil-layers",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

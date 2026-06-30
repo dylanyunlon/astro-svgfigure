@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "loss_training",
   "species": "cil-plus",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 1082,
     "y": 25,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 1156.981,
-    "y": 77.832
+    "x": 1156.875,
+    "y": 79.93
   },
   "velocity": {
-    "vx": -0.0833,
-    "vy": 0.509
+    "vx": 0.0187,
+    "vy": 1.4966
   },
   "quorum_active": false,
   "division_ready": false,

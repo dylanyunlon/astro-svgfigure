@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "structure_model",
   "species": "cil-eye",
-  "epoch": 5,
+  "epoch": 16,
   "bbox": {
     "x": 592.6666666666666,
     "y": 1067,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.485,
-  "age_ms": 1000,
+  "energy": 0.455,
+  "age_ms": 3000,
   "position": {
-    "x": 871.107,
-    "y": 1434.837
+    "x": 872.243,
+    "y": 1437.609
   },
   "velocity": {
-    "vx": 0.1642,
-    "vy": 0.6631
+    "vx": 0.8795,
+    "vy": 1.9858
   },
   "quorum_active": true,
   "division_ready": false,

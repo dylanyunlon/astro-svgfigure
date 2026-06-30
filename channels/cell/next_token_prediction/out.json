@@ -1,5 +1,9 @@
 {
   "cell_id": "next_token_prediction",
-  "msdf_generated": true,
-  "epoch": 3
+  "tick": 16,
+  "action": "idle_metabolism",
+  "target": null,
+  "reason": "neighbors=2 within signal_radius, energy=0.455, species=cil-loop",
+  "energy_cost": 0.01,
+  "geometry_changed": true
 }

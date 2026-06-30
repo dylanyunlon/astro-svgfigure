@@ -1,9 +1,9 @@
 {
   "cell_id": "display_errors",
-  "tick": 6,
+  "tick": 16,
   "action": "quorum_sync",
   "target": "noise_types",
-  "reason": "neighbors=7 within signal_radius, energy=0.482, species=cil-bolt",
+  "reason": "neighbors=7 within signal_radius, energy=0.452, species=cil-bolt",
   "energy_cost": 0.01,
   "geometry_changed": true
 }
