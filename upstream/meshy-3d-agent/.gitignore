@@ -1,0 +1,13 @@
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude-plugin/
+config.json
+views.json
+events.jsonl
+labels/
+statuses/
+sessions/
+sources/
