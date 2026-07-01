@@ -572,9 +572,11 @@ void main() {
     float finalAlpha = edgeAlpha * uOpacity;
 
     // ── MRT writes ───────────────────────────────────────────────────────────
-    gAlbedo   = vec4(tonemapped, uMetallic) * finalAlpha;
+    // M1315: gAlbedo.a must be finalAlpha for compositing — NOT uMetallic!
+    // uMetallic (0.05-0.1) was making cells nearly invisible in composite mix().
+    gAlbedo   = vec4(tonemapped, finalAlpha);
     gNormal   = vec4(N * 0.5 + 0.5, finalAlpha);
-    gRoughAO  = vec4(uRoughness, ao, 0.0, 0.0) * finalAlpha;
+    gRoughAO  = vec4(uRoughness, ao, uMetallic, finalAlpha);
     gDepthOut = vec4(depth, 0.0, 0.0, finalAlpha);
 }
 `;

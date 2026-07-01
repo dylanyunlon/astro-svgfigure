@@ -1460,11 +1460,11 @@ export class GPURenderLoop {
       this.perf.passEnd('pbr', t);
     }
 
-    // ── Pass 3a: 3D mesh cells (M1261) ──
-    // Overlay, not replacement: if CellMesh renders successfully, its output
-    // overrides the PBR cellTex. If it fails, PBR's cellTex is already painted
-    // and is used as-is (no fallback needed — PBR always ran above).
-    if (this.cellMesh) {
+    // ── Pass 3a: 3D mesh cells (M1261) — DISABLED M1315 ──
+    // GLB meshes render as incorrect sword/pillar shapes and override PBR's
+    // organic metaball output. Disabled until mesh geometry is fixed.
+    // PBR cellTex from Pass 3 above is used directly.
+    if (false && this.cellMesh) {
       const t = this.perf.passStart('cellMesh');
       try {
         this.cellMesh.setTime(time);
