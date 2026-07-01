@@ -907,13 +907,17 @@ export class PBRCellGPU {
       if (lobes && lobes.length > 0) {
         const count = Math.min(lobes.length, 8);
         gl.uniform1i(this.uLobeCount, count);
-        gl.uniform1f(this.uBaseRadius, (cell as any).sdfBaseRadius ?? (cell as any).baseRadius ?? 0.8);
+        // Normalize base_radius: geometry.json gives pixels (~15-25), SDF space needs ~0.3-0.9
+        const rawBaseR = (cell as any).sdfBaseRadius ?? (cell as any).baseRadius ?? 30;
+        const cellSize = Math.max(cell.w, cell.h, 1);
+        const normBaseR = Math.min(rawBaseR / (cellSize * 0.5), 1.2);
+        gl.uniform1f(this.uBaseRadius, normBaseR > 0.05 ? normBaseR : 0.8);
         gl.uniform1f(this.uNoiseAmp, (cell as any).sdfNoiseAmp ?? (cell as any).noiseAmp ?? 0.02);
         gl.uniform1f(this.uNoiseFreq, (cell as any).sdfNoiseFreq ?? (cell as any).noiseFreq ?? 4.0);
         for (let li = 0; li < count; li++) {
           const l = lobes[li];
           // Normalize distance/radius from pixel units to SDF space (~0-1 range)
-          gl.uniform3f(this.uLobes[li], l.angle, l.distance / 100, l.radius / 100);
+          gl.uniform3f(this.uLobes[li], l.angle, l.distance / (cellSize * 0.5), l.radius / (cellSize * 0.5));
         }
       } else {
         gl.uniform1i(this.uLobeCount, 0);
