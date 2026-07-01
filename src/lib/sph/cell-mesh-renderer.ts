@@ -44,6 +44,8 @@ uniform float uNoiseFreq;
 uniform float uRoughness;
 uniform float uMetallic;
 
+uniform float uAspect;     // w/h ratio for correcting ray march in non-square quads
+
 out vec4 fragColor;
 
 float hash12(vec2 p) {
@@ -88,7 +90,8 @@ vec3 calcNormal(vec3 p) {
 
 void main() {
     vec2 uv = vUV * 2.0 - 1.0;
-    vec3 ro = vec3(uv * 1.2, 2.0);
+    // Correct for non-square quad: stretch UV so SDF stays circular
+    vec3 ro = vec3(uv.x * max(uAspect, 1.0) * 1.2, uv.y * max(1.0/uAspect, 1.0) * 1.2, 2.0);
     vec3 rd = vec3(0.0, 0.0, -1.0);
 
     float t = 0.0;
@@ -146,7 +149,7 @@ export class CellMeshRenderer {
 
     // Resolve uniforms
     const names = ['uCellPos','uCellSize','uAlbedo','uOpacity','uGlowColor',
-      'uTime','uBaseRadius','uLobeCount','uNoiseAmp','uNoiseFreq','uRoughness','uMetallic'];
+      'uTime','uBaseRadius','uLobeCount','uNoiseAmp','uNoiseFreq','uRoughness','uMetallic','uAspect'];
     for (const n of names) this.loc[n] = gl.getUniformLocation(this.prog, n)!;
     for (let i = 0; i < 8; i++) this.lobesLoc.push(gl.getUniformLocation(this.prog, `uLobes[${i}]`)!);
 
@@ -190,6 +193,7 @@ export class CellMeshRenderer {
 
       gl.uniform2f(this.loc.uCellPos, cx, cy);
       gl.uniform2f(this.loc.uCellSize, hw * 1.3, hh * 1.3);
+      gl.uniform1f(this.loc.uAspect, cell.w / (cell.h || 1));
       gl.uniform3f(this.loc.uAlbedo, cell.albedo[0], cell.albedo[1], cell.albedo[2]);
       gl.uniform1f(this.loc.uOpacity, cell.opacity ?? 0.9);
       gl.uniform3f(this.loc.uGlowColor,
