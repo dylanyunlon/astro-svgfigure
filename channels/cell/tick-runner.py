@@ -248,7 +248,7 @@ def compute_interaction_force(cell_id, species, center, all_statuses, interactio
 
 
 def compute_geometry(cell_id, tick, status, energy, lifecycle, environment,
-                      neighbor_count, nearest_same_species, prev_geometry):
+                      neighbor_count, nearest_same_species, prev_geometry, species="unknown"):
     """Step 4c/d/e — build a fresh geometry.json payload for this tick."""
     es = lifecycle.get("energy_system", {})
     max_energy = es.get("max_energy", 1.0)
@@ -264,7 +264,7 @@ def compute_geometry(cell_id, tick, status, energy, lifecycle, environment,
     bbox = status.get("bbox", {})
     base_w = float(bbox.get("w", 40))
     base_h = float(bbox.get("h", 40))
-    nominal_radius = max(4.0, min(base_w, base_h) / 2.5)
+    nominal_radius = max(4.0, min(base_w, base_h) / 2.0)
 
     # ── energy → size / surface smoothness ─────────────────────────────
     # high energy -> inflate + smooth, low energy -> shrink + rough
@@ -275,7 +275,7 @@ def compute_geometry(cell_id, tick, status, energy, lifecycle, environment,
     noise_frequency = clamp(2.0 + 4.0 * (1.0 - energy_norm), 1.0, 10.0)
 
     roughness = clamp(0.75 - 0.5 * energy_norm, 0.05, 0.9)
-    glow_intensity = clamp(0.2 + 1.2 * energy_norm, 0.0, 2.0)
+    glow_intensity = clamp(0.8 + 0.7 * energy_norm, 0.0, 1.5)
     opacity = clamp(0.4 + 0.55 * energy_norm, 0.0, 1.0)
 
     lobes = []
@@ -305,16 +305,53 @@ def compute_geometry(cell_id, tick, status, energy, lifecycle, environment,
         opacity = clamp(opacity * (1.0 - scatter_progress), 0.0, 1.0)
 
     else:
-        # ── normal range — 1-2 lobes, possibly a pseudopod toward the
-        # nearest same-species neighbor (per SKILL.md: "近处有同 species →
-        # 伸出伪足朝向邻居").
-        n_lobes = 1 if energy_norm < 0.65 else 2
-        for i in range(n_lobes):
-            angle = (2 * math.pi * i / max(n_lobes, 1)) + deterministic_jitter(cell_id, tick, f"lobe{i}") * 0.5
-            dist = base_radius * (0.6 + 0.3 * energy_norm)
-            radius = base_radius * (0.5 + 0.3 * energy_norm)
-            lobes.append({"angle": angle, "distance": dist, "radius": radius})
+        # ── normal range — species-specific lobe counts and patterns ────
         last_action = "idle_metabolism"
+        if species == "cil-eye":
+            # 4-6 radial lobes, like pupil rays
+            n_lobes = 4 + int(energy_norm * 2.0 + 0.5)  # 4-6
+            for i in range(n_lobes):
+                angle = (2 * math.pi * i / n_lobes) + deterministic_jitter(cell_id, tick, f"lobe{i}") * 0.15
+                dist = base_radius * (0.7 + 0.25 * energy_norm)
+                radius = base_radius * (0.45 + 0.2 * energy_norm)
+                lobes.append({"angle": angle, "distance": dist, "radius": radius})
+        elif species == "cil-bolt":
+            # 2-3 lobes in zigzag pattern
+            n_lobes = 2 if energy_norm < 0.6 else 3
+            for i in range(n_lobes):
+                angle = (math.pi * i / max(n_lobes - 1, 1)) + (0.4 if i % 2 else -0.4) + deterministic_jitter(cell_id, tick, f"lobe{i}") * 0.2
+                dist = base_radius * (0.65 + 0.3 * energy_norm)
+                radius = base_radius * (0.5 + 0.25 * energy_norm)
+                lobes.append({"angle": angle, "distance": dist, "radius": radius})
+        elif species == "cil-vector":
+            # 1-2 directional lobes
+            n_lobes = 1 if energy_norm < 0.7 else 2
+            for i in range(n_lobes):
+                angle = deterministic_jitter(cell_id, tick, f"lobe{i}") * 0.3 + math.pi * i
+                dist = base_radius * (0.75 + 0.3 * energy_norm)
+                radius = base_radius * (0.55 + 0.25 * energy_norm)
+                lobes.append({"angle": angle, "distance": dist, "radius": radius})
+        elif species == "cil-plus":
+            # 4 lobes at 90-degree intervals (cross shape)
+            for i in range(4):
+                angle = math.pi / 2 * i + deterministic_jitter(cell_id, tick, f"lobe{i}") * 0.08
+                dist = base_radius * (0.7 + 0.25 * energy_norm)
+                radius = base_radius * (0.45 + 0.2 * energy_norm)
+                lobes.append({"angle": angle, "distance": dist, "radius": radius})
+        elif species == "cil-arrow-right":
+            # 1 forward-pointing lobe
+            angle = deterministic_jitter(cell_id, tick, "lobe0") * 0.15
+            dist = base_radius * (0.8 + 0.3 * energy_norm)
+            radius = base_radius * (0.6 + 0.25 * energy_norm)
+            lobes.append({"angle": angle, "distance": dist, "radius": radius})
+        else:
+            # fallback: 1-2 lobes
+            n_lobes = 1 if energy_norm < 0.65 else 2
+            for i in range(n_lobes):
+                angle = (2 * math.pi * i / max(n_lobes, 1)) + deterministic_jitter(cell_id, tick, f"lobe{i}") * 0.5
+                dist = base_radius * (0.6 + 0.3 * energy_norm)
+                radius = base_radius * (0.5 + 0.3 * energy_norm)
+                lobes.append({"angle": angle, "distance": dist, "radius": radius})
 
     pseudopods = []
     if nearest_same_species is not None and energy_norm >= apoptosis_threshold:
@@ -339,10 +376,20 @@ def compute_geometry(cell_id, tick, status, energy, lifecycle, environment,
     wobble_frequency = clamp((temperature - 280) / 20.0, 0.5, 8.0)
     wobble_amplitude = clamp(0.01 + 0.01 * (1.0 - energy_norm), 0.0, 0.05)
 
-    # ── color: keep prior albedo/glow hue if present, else derive from
-    # energy (cool/blue when low energy, warm/gold when high energy).
+    # ── color: species-specific saturated albedo + bright glow ─────────
     prev_surface = (prev_geometry or {}).get("surface", {})
-    if "albedo" in prev_surface:
+    _species_albedo = {
+        "cil-eye":         [0.2, 0.3, 0.8],
+        "cil-bolt":        [0.9, 0.6, 0.1],
+        "cil-vector":      [0.1, 0.7, 0.6],
+        "cil-plus":        [0.3, 0.8, 0.3],
+        "cil-arrow-right": [0.8, 0.2, 0.2],
+    }
+    base_albedo = _species_albedo.get(species, None)
+    if base_albedo is not None:
+        albedo = [round(c, 3) for c in base_albedo]
+        glow_color = [round(min(c * 1.5, 1.0), 3) for c in base_albedo]
+    elif "albedo" in prev_surface:
         albedo = prev_surface["albedo"]
         glow_color = prev_surface.get("glow_color", [1.0, 0.8, 0.4])
     else:
@@ -480,7 +527,7 @@ def run_tick(cell_ids, environment, lifecycle, interaction, tick, dt_ms, verbose
 
         geometry, last_action, division_ready, quorum_active = compute_geometry(
             cell_id, tick, status, energy, lifecycle, environment,
-            neighbor_count, nearest_same_species, prev_geometry,
+            neighbor_count, nearest_same_species, prev_geometry, species,
         )
 
         # position update (movement has an energy cost)

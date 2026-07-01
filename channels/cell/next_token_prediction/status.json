@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "next_token_prediction",
   "species": "cil-loop",
-  "epoch": 19,
+  "epoch": 21,
   "bbox": {
     "x": 913.5,
     "y": 1669,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.446,
-  "age_ms": 3600,
+  "energy": 0.443,
+  "age_ms": 3800,
   "position": {
-    "x": 998.731,
-    "y": 1731.054
+    "x": 998.751,
+    "y": 1731.379
   },
   "velocity": {
-    "vx": 0.1381,
-    "vy": 1.5793
+    "vx": 0.0979,
+    "vy": 1.6248
   },
   "quorum_active": false,
   "division_ready": false,

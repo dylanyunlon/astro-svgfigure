@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "enc_conv2",
   "species": "cil-filter",
-  "epoch": 19,
+  "epoch": 21,
   "bbox": {
     "x": 220,
     "y": 455,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.443,
-  "age_ms": 3800,
+  "energy": 0.437,
+  "age_ms": 4200,
   "position": {
-    "x": 285.5,
-    "y": 480.444
+    "x": 285.593,
+    "y": 481.641
   },
   "velocity": {
-    "vx": 0.2438,
-    "vy": 2.7627
+    "vx": 0.2532,
+    "vy": 3.0522
   },
   "quorum_active": true,
   "division_ready": false,

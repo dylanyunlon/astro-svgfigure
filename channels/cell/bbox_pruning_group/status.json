@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "bbox_pruning_group",
   "species": "cil-vector",
-  "epoch": 19,
+  "epoch": 21,
   "bbox": {
     "x": 350,
     "y": 275,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.443,
-  "age_ms": 3800,
+  "energy": 0.437,
+  "age_ms": 4200,
   "position": {
-    "x": 610.311,
-    "y": 659.254
+    "x": 610.387,
+    "y": 661.017
   },
   "velocity": {
-    "vx": 0.2043,
-    "vy": 4.1498
+    "vx": 0.2204,
+    "vy": 4.4857
   },
   "quorum_active": true,
   "division_ready": false,

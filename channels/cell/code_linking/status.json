@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "code_linking",
   "species": "cil-code",
-  "epoch": 19,
+  "epoch": 21,
   "bbox": {
     "x": 675,
     "y": 2756,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.443,
-  "age_ms": 3800,
+  "energy": 0.437,
+  "age_ms": 4200,
   "position": {
-    "x": 760.353,
-    "y": 2817.858
+    "x": 760.455,
+    "y": 2818.513
   },
   "velocity": {
-    "vx": 0.1909,
-    "vy": 1.5153
+    "vx": 0.2486,
+    "vy": 1.6572
   },
   "quorum_active": false,
   "division_ready": false,

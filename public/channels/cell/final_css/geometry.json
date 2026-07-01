@@ -1,45 +1,45 @@
 {
   "cell_id": "final_css",
-  "tick": 16,
-  "timestamp_ms": 1782813397276,
+  "tick": 21,
+  "timestamp_ms": 1782887397376,
   "transform": {
-    "x": 902.828,
-    "y": 3515.496,
+    "x": 904.799,
+    "y": 3516.43,
     "scale": 1.03,
-    "rotation": -0.0299
+    "rotation": -0.0387
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 41.21,
+    "base_radius": 51.198,
     "lobes": [
       {
-        "angle": -0.1227,
-        "distance": 30.327,
-        "radius": 26.206
+        "angle": 0.0334,
+        "distance": 47.686,
+        "radius": 36.325
       }
     ],
-    "noise_amplitude": 0.0538,
-    "noise_frequency": 4.188
+    "noise_amplitude": 0.055,
+    "noise_frequency": 4.248
   },
   "surface": {
     "albedo": [
-      0.929,
-      0.463,
-      0.036
+      0.8,
+      0.2,
+      0.2
     ],
-    "roughness": 0.523,
+    "roughness": 0.531,
     "metallic": 0.056,
-    "opacity": 0.6492,
+    "opacity": 0.6409,
     "glow_color": [
       1.0,
-      0.72,
+      0.3,
       0.3
     ],
-    "glow_intensity": 0.744
+    "glow_intensity": 1.107
   },
   "membrane": {
-    "thickness": 2.453,
-    "wobble_amplitude": 0.0155,
+    "thickness": 2.438,
+    "wobble_amplitude": 0.0156,
     "wobble_frequency": 1.5,
     "permeability_visual": 0.5
   },
@@ -48,12 +48,12 @@
       "target_cell": "output_group",
       "length": 60.0,
       "width": 12.0,
-      "curl": 0.381490891279031
+      "curl": -0.14729821518476668
     }
   ],
   "internal_motion": {
     "cytoplasm_flow_angle": -0.1974,
     "cytoplasm_flow_speed": 0.3,
-    "organelle_drift": 0.0209
+    "organelle_drift": 0.0212
   }
 }

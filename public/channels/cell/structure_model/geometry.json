@@ -1,45 +1,65 @@
 {
   "cell_id": "structure_model",
-  "tick": 16,
-  "timestamp_ms": 1782813397304,
+  "tick": 21,
+  "timestamp_ms": 1782887397396,
   "transform": {
-    "x": 872.243,
-    "y": 1437.609,
+    "x": 872.849,
+    "y": 1438.939,
     "scale": 1.03,
-    "rotation": -0.0016
+    "rotation": -0.0015
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 218.748,
+    "base_radius": 272.433,
     "lobes": [
       {
-        "angle": 0.3503,
-        "distance": 161.173,
-        "radius": 139.299
+        "angle": 0.003,
+        "distance": 221.147,
+        "radius": 146.95
+      },
+      {
+        "angle": 1.248,
+        "distance": 221.147,
+        "radius": 146.95
+      },
+      {
+        "angle": 2.6385,
+        "distance": 221.147,
+        "radius": 146.95
+      },
+      {
+        "angle": 3.8717,
+        "distance": 221.147,
+        "radius": 146.95
+      },
+      {
+        "angle": 4.9313,
+        "distance": 221.147,
+        "radius": 146.95
       }
     ],
-    "noise_amplitude": 0.0535,
-    "noise_frequency": 4.176
+    "noise_amplitude": 0.0542,
+    "noise_frequency": 4.212
   },
   "surface": {
     "albedo": [
-      0.335,
-      0.506,
-      0.527
+      0.2,
+      0.3,
+      0.8
     ],
-    "roughness": 0.522,
+    "roughness": 0.526,
     "metallic": 0.077,
-    "opacity": 0.9999,
+    "opacity": 0.959,
     "glow_color": [
-      0.55,
-      0.65,
-      0.72
+      0.3,
+      0.45,
+      1.0
     ],
-    "glow_intensity": 0.747
+    "glow_intensity": 1.113
   },
   "membrane": {
-    "thickness": 2.456,
-    "wobble_amplitude": 0.0154,
+    "thickness": 2.447,
+    "wobble_amplitude": 0.0155,
     "wobble_frequency": 1.5,
     "permeability_visual": 0.5
   },
@@ -48,12 +68,12 @@
       "target_cell": "vit_encoder",
       "length": 60.0,
       "width": 12.0,
-      "curl": -0.05838974566165929
+      "curl": 0.3674590187094661
     }
   ],
   "internal_motion": {
     "cytoplasm_flow_angle": -0.1974,
     "cytoplasm_flow_speed": 0.3,
-    "organelle_drift": 0.0209
+    "organelle_drift": 0.0211
   }
 }

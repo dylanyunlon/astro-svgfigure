@@ -1,9 +1,9 @@
 {
   "cell_id": "dec_conv1",
-  "tick": 19,
+  "tick": 21,
   "action": "quorum_sync",
   "target": "enc_conv2",
-  "reason": "neighbors=7 within signal_radius, energy=0.443, species=cil-filter",
+  "reason": "neighbors=7 within signal_radius, energy=0.437, species=cil-filter",
   "energy_cost": 0.01,
   "geometry_changed": true
 }

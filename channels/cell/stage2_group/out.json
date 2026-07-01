@@ -1,9 +1,9 @@
 {
   "cell_id": "stage2_group",
-  "tick": 19,
+  "tick": 21,
   "action": "extend_pseudopod_toward_local_code_gen",
   "target": "local_code_gen",
-  "reason": "neighbors=2 within signal_radius, energy=0.449, species=cil-code",
+  "reason": "neighbors=2 within signal_radius, energy=0.446, species=cil-code",
   "energy_cost": 0.01,
   "geometry_changed": true
 }

@@ -1,25 +1,25 @@
 {
   "cell_id": "next_token_prediction",
-  "tick": 19,
-  "timestamp_ms": 1782869805119,
+  "tick": 21,
+  "timestamp_ms": 1782887397386,
   "transform": {
-    "x": 998.731,
-    "y": 1731.054,
+    "x": 998.751,
+    "y": 1731.379,
     "scale": 1.03,
-    "rotation": -0.0073
+    "rotation": -0.0303
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 46.199,
+    "base_radius": 57.678,
     "lobes": [
       {
-        "angle": 0.084,
-        "distance": 33.915,
-        "radius": 29.295
+        "angle": -0.0194,
+        "distance": 42.29,
+        "radius": 36.522
       }
     ],
-    "noise_amplitude": 0.0542,
-    "noise_frequency": 4.212
+    "noise_amplitude": 0.0545,
+    "noise_frequency": 4.224
   },
   "surface": {
     "albedo": [
@@ -27,19 +27,19 @@
       0.149,
       0.648
     ],
-    "roughness": 0.526,
+    "roughness": 0.528,
     "metallic": 0.076,
-    "opacity": 0.6459,
+    "opacity": 0.6442,
     "glow_color": [
       0.75,
       0.3,
       0.85
     ],
-    "glow_intensity": 0.736
+    "glow_intensity": 1.111
   },
   "membrane": {
-    "thickness": 2.447,
-    "wobble_amplitude": 0.0155,
+    "thickness": 2.444,
+    "wobble_amplitude": 0.0156,
     "wobble_frequency": 1.5,
     "permeability_visual": 0.5
   },

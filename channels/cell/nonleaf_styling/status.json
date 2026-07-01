@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "nonleaf_styling",
   "species": "cil-layers",
-  "epoch": 19,
+  "epoch": 21,
   "bbox": {
     "x": 670,
     "y": 3177,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.446,
-  "age_ms": 3600,
+  "energy": 0.443,
+  "age_ms": 3800,
   "position": {
-    "x": 760.043,
-    "y": 3242.59
+    "x": 760.051,
+    "y": 3242.927
   },
   "velocity": {
-    "vx": 0.0701,
-    "vy": 1.5483
+    "vx": 0.0408,
+    "vy": 1.6851
   },
   "quorum_active": false,
   "division_ready": false,

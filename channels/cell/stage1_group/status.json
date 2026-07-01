@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "stage1_group",
   "species": "cil-graph",
-  "epoch": 19,
+  "epoch": 21,
   "bbox": {
     "x": 335,
     "y": 235,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.449,
-  "age_ms": 3400,
+  "energy": 0.446,
+  "age_ms": 3600,
   "position": {
-    "x": 749.96,
-    "y": 1031.228
+    "x": 749.977,
+    "y": 1031.577
   },
   "velocity": {
-    "vx": 0.0505,
-    "vy": 1.6511
+    "vx": 0.0829,
+    "vy": 1.743
   },
   "quorum_active": false,
   "division_ready": false,

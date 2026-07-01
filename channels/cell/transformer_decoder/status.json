@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "transformer_decoder",
   "species": "cil-eye",
-  "epoch": 19,
+  "epoch": 21,
   "bbox": {
     "x": 964.3333333333333,
     "y": 1521,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.449,
-  "age_ms": 3400,
+  "energy": 0.446,
+  "age_ms": 3600,
   "position": {
-    "x": 1048.372,
-    "y": 1580.496
+    "x": 1048.268,
+    "y": 1580.525
   },
   "velocity": {
-    "vx": -0.4529,
-    "vy": 0.1673
+    "vx": -0.521,
+    "vy": 0.1429
   },
   "quorum_active": false,
   "division_ready": false,

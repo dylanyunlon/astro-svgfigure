@@ -1,45 +1,50 @@
 {
   "cell_id": "noise_types",
-  "tick": 19,
-  "timestamp_ms": 1782869805122,
+  "tick": 21,
+  "timestamp_ms": 1782887397387,
   "transform": {
-    "x": 610.208,
-    "y": 669.469,
+    "x": 610.211,
+    "y": 669.833,
     "scale": 1.03,
-    "rotation": -0.0068
+    "rotation": -0.0258
   },
   "sdf": {
     "type": "metaball",
-    "base_radius": 58.728,
+    "base_radius": 73.32,
     "lobes": [
       {
-        "angle": -0.2041,
-        "distance": 43.112,
-        "radius": 37.239
+        "angle": -0.5539,
+        "distance": 57.424,
+        "radius": 44.799
+      },
+      {
+        "angle": 3.5641,
+        "distance": 57.424,
+        "radius": 44.799
       }
     ],
-    "noise_amplitude": 0.0542,
-    "noise_frequency": 4.212
+    "noise_amplitude": 0.0545,
+    "noise_frequency": 4.224
   },
   "surface": {
     "albedo": [
-      0.151,
-      0.597,
-      0.853
+      0.9,
+      0.6,
+      0.1
     ],
-    "roughness": 0.526,
+    "roughness": 0.528,
     "metallic": 0.109,
-    "opacity": 0.9839,
+    "opacity": 0.959,
     "glow_color": [
-      0.2,
-      0.7,
-      1.0
+      1.0,
+      0.9,
+      0.15
     ],
-    "glow_intensity": 0.736
+    "glow_intensity": 1.111
   },
   "membrane": {
-    "thickness": 2.447,
-    "wobble_amplitude": 0.0155,
+    "thickness": 2.444,
+    "wobble_amplitude": 0.0156,
     "wobble_frequency": 1.5,
     "permeability_visual": 0.5
   },
@@ -48,7 +53,7 @@
       "target_cell": "hidden_elements",
       "length": 60.0,
       "width": 12.0,
-      "curl": 0.2616281416284089
+      "curl": 0.3353746472014293
     }
   ],
   "internal_motion": {
