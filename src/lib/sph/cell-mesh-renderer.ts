@@ -108,16 +108,17 @@ void main() {
     vec3 H = normalize(L + vec3(0,0,1));
     float spec = pow(max(dot(N, H), 0.0), mix(8.0, 64.0, 1.0 - uRoughness));
 
-    vec3 diffuse  = uAlbedo * NdotL;
-    vec3 ambient  = uAlbedo * 0.25;
-    vec3 specular = vec3(spec * mix(0.04, 0.8, uMetallic));
+    vec3 diffuse  = uAlbedo * NdotL * 0.7;
+    vec3 ambient  = uAlbedo * 0.35;
+    vec3 specular = vec3(spec * mix(0.02, 0.4, uMetallic));
     float fresnel = pow(1.0 - max(dot(N, vec3(0,0,1)), 0.0), 3.0);
-    vec3 rim      = uGlowColor * fresnel * 0.5;
-    vec3 scatter  = uAlbedo * max(dot(-N, L), 0.0) * 0.15;
+    vec3 rim      = uGlowColor * fresnel * 0.3;
+    vec3 scatter  = uAlbedo * max(dot(-N, L), 0.0) * 0.1;
 
     vec3 color = ambient + diffuse + specular + rim + scatter;
-    color = color / (color + 1.0);
-    color = pow(color, vec3(1.0/2.2));
+    // Filmic tone map — preserves saturation better than Reinhard
+    color = color * (2.51 * color + 0.03) / (color * (2.43 * color + 0.59) + 0.14);
+    color = pow(clamp(color, 0.0, 1.0), vec3(1.0/2.2));
 
     fragColor = vec4(color, uOpacity);
 }
