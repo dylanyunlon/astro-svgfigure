@@ -70,6 +70,8 @@ uniform sampler2D uGeometry;    // AT 3D geometry preview
 uniform float     uHasGI;       // 1.0 if GI texture is bound
 uniform float     uHasVolumetric;
 uniform float     uHasGeometry;
+// M1314b: 1.0 when cell texture is real PBR output (not 1×1 placeholder)
+uniform float     uHasCellContent;
 
 // 后处理参数
 uniform float uTime;
@@ -147,7 +149,11 @@ void main() {
     vec3 composite = bg;
 
     // Cell layer: alpha-over (cell FBO has transparent background)
-    composite = mix(composite, cellColor.rgb * ambientShadow, cellColor.a);
+    // M1314b: only apply shadow multiply when real PBR content exists.
+    // If cell is a 1x1 placeholder, ambientShadow would darken the background
+    // and produce a near-black frame even though PBR rendered successfully.
+    float shadowApply = uHasCellContent > 0.5 ? ambientShadow : 1.0;
+    composite = mix(composite, cellColor.rgb * shadowApply, cellColor.a);
 
     // Edge layer: alpha-over
     composite = mix(composite, edgeColor.rgb, edgeColor.a * 0.85);
@@ -250,6 +256,8 @@ export class CompositeGPU {
   private uHasGI!:            WebGLUniformLocation | null;
   private uHasVolumetric!:    WebGLUniformLocation | null;
   private uHasGeometry!:      WebGLUniformLocation | null;
+  // M1314b: signals whether cell texture is real PBR output vs 1×1 placeholder
+  private uHasCellContent!:   WebGLUniformLocation | null;
   private uTime!:             WebGLUniformLocation;
   private uGrainStrength!:    WebGLUniformLocation;
   private uVignetteStrength!: WebGLUniformLocation;
@@ -300,6 +308,8 @@ export class CompositeGPU {
     this.uHasGI            = gl.getUniformLocation(this.prog, 'uHasGI');
     this.uHasVolumetric    = gl.getUniformLocation(this.prog, 'uHasVolumetric');
     this.uHasGeometry      = gl.getUniformLocation(this.prog, 'uHasGeometry');
+    // M1314b: cell content flag
+    this.uHasCellContent   = gl.getUniformLocation(this.prog, 'uHasCellContent');
     this.uTime             = gl.getUniformLocation(this.prog, 'uTime')!;
     this.uGrainStrength    = gl.getUniformLocation(this.prog, 'uGrainStrength')!;
     this.uVignetteStrength = gl.getUniformLocation(this.prog, 'uVignetteStrength')!;
@@ -324,6 +334,8 @@ export class CompositeGPU {
     canvasWidth: number,
     canvasHeight: number,
     time: number,
+    /** M1314b: true when cell texture is real PBR output (not 1×1 placeholder) */
+    hasCellContent = true,
   ): void {
     const gl = this.gl;
 
@@ -400,6 +412,9 @@ export class CompositeGPU {
       gl.uniform1i(this.uGeometry, 8);
     }
     if (this.uHasGeometry) gl.uniform1f(this.uHasGeometry, hasGeo ? 1.0 : 0.0);
+
+    // M1314b: tell shader whether cell tex is real content
+    if (this.uHasCellContent) gl.uniform1f(this.uHasCellContent, hasCellContent ? 1.0 : 0.0);
 
     // ── 上传后处理 uniforms ───────────────────────────────────────────────────
     gl.uniform1f(this.uTime,             time);

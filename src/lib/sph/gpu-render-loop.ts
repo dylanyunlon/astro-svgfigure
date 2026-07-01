@@ -202,6 +202,8 @@ export class GPURenderLoop {
   private _edgesDirty = true;
   private _placeholderTex: WebGLTexture | null = null;
   private _pbrFBOReady = false;
+  // M1314b: tracks whether PBR rendered successfully this frame (false → composite gets placeholder)
+  private _pbrSucceeded = false;
   private mouseX = 0;
   private mouseY = 0;
   private prevMouseX = 0;
@@ -418,6 +420,22 @@ export class GPURenderLoop {
 
     // WebGL2 particle — 直接复用同一个 gl2 context
     this.particle = new ParticleGPU(gl, []);
+
+    // ── M1314b: Pass status log — 诊断哪些 pass 成功初始化 ──────────────────
+    // 每次 _initPasses() 结束时输出，便于在浏览器 console 确认管线状态。
+    console.log('[GPURenderLoop] pass init status:', {
+      pbr:            !!this.pbr,
+      composite:      !!this.composite,
+      bloom:          !!this.bloom,
+      shadow:         !!this.shadow,
+      edge:           !!this.edge,
+      fluid:          !!this.fluid,
+      particle:       !!this.particle,
+      glass:          !!this.glass,
+      cellMesh:       !!this.cellMesh,
+      lumenGI:        !!this.lumenGI,
+      nukePass:       !!this.nukePass,
+    });
   }
 
   /** 设置 cell 和 edge 数据 */
@@ -1333,10 +1351,15 @@ export class GPURenderLoop {
     // PBR pass 始终运行 — 作为保底渲染。CellMesh（Pass 3a）若成功会覆盖 cellTex，
     // 否则 PBR 画好的 cellTex 直接使用，避免两个渲染器都画不出东西。
     let cellTex: WebGLTexture = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
+    // M1314b: track whether we got real PBR content this frame
+    this._pbrSucceeded = false;
     {
       const t = this.perf.passStart('pbr');
-      // PBR must succeed — no try/catch, no fallback. If it crashes, the site crashes.
-      {
+      // M1314b: PBR is critical — wrap in try/catch so a shader error doesn't
+      // silently abort the frame. On error we fall back to the placeholder and
+      // log clearly. The composite pass will then blit the background grid so
+      // at least the page is not blank.
+      try {
           // Convert CellData → CellPBRDescriptor
           // M1296: override with geometry.json data if cell agent has written it
           // M1304: resolve pseudopod target_cell → (x, y) so the PBR shader can
@@ -1426,6 +1449,13 @@ export class GPURenderLoop {
           this.pbr.setTime(time);
           this.pbr.renderCells(descs);
           cellTex = this.pbr.pbrTexture;
+          this._pbrSucceeded = true;
+      } catch (pbrErr) {
+        // M1314b: PBR failed — log clearly on early frames, keep placeholder cellTex.
+        // Composite will still render the background grid (better than blank screen).
+        if (this.frameCount <= 5) {
+          console.error('[GPURenderLoop] PBR pass FAILED — cells will not appear:', pbrErr);
+        }
       }
       this.perf.passEnd('pbr', t);
     }
@@ -1441,7 +1471,7 @@ export class GPURenderLoop {
         this.cellMesh.render(this.cells, camScale, camOffX, camOffY, W, H);
         // Use 3D mesh output to override cellTex when available
         const meshTex = this.cellMesh.outputTexture;
-        if (meshTex) cellTex = meshTex;
+        if (meshTex) { cellTex = meshTex; this._pbrSucceeded = true; }
       } catch (e) {
         console.error('[GPURenderLoop] CellMesh pass error:', e);
         // PBR cellTex already painted above — keep it, no fallback needed.
@@ -1549,7 +1579,11 @@ export class GPURenderLoop {
     }
 
     // ── NukePass (HDR tonemap + LUT) ──
-    if (this.nukePass) {
+    // M1314b: NukePass renders to the default framebuffer and can overwrite
+    // PBR cell content. Only run it when PBR has NOT produced real content,
+    // or when NukePass has an explicit scene texture input to work with.
+    // If PBR succeeded, skip NukePass to avoid a blank blit covering cell output.
+    if (this.nukePass && !this._pbrSucceeded) {
       try { this.nukePass.render(gl); } catch (_) { /* non-fatal */ }
     }
 
@@ -1599,21 +1633,35 @@ export class GPURenderLoop {
             gi:         this.lumenGI?.outputTexture ?? undefined,
             volumetric: this.volumetricLight?.raysTexture ?? undefined,
             geometry:   this.geometryLoader?.previewTexture ?? undefined,
-          }, W, H, time);
+          }, W, H, time,
+          // M1314b: tell composite shader whether cell tex has real content so
+          // shadow multiply doesn't darken a placeholder to near-black.
+          this._pbrSucceeded);
         } else {
-          // No composite — draw PBR directly to screen as fullscreen blit
+          // M1314b: No composite pass — blit PBR FBO directly to screen.
+          // This is the minimum-viable path: background + cell quads visible.
           gl.bindFramebuffer(gl.FRAMEBUFFER, null);
           gl.viewport(0, 0, W, H);
           gl.clearColor(0.03, 0.03, 0.05, 1.0);
           gl.clear(gl.COLOR_BUFFER_BIT);
-          if (cellTex) {
-            // Simple blit using the PBR output texture, bound to the
-            // composite pass's CELL unit so the fallback path stays
-            // consistent with the real composite-gpu-pass.ts allocation.
+          if (this._pbrSucceeded && cellTex) {
+            // Blit real PBR output; skip if PBR failed (avoids drawing placeholder)
             this._blitTexture(cellTex, W, H, TEX.CELL);
           }
         }
-      } catch (e) { if (this.frameCount <= 10) console.warn('[GPURenderLoop] composite pass error:', e); }
+      } catch (e) {
+        // M1314b: composite failed — emergency blit: draw PBR directly if available
+        if (this.frameCount <= 10) console.warn('[GPURenderLoop] composite pass error:', e);
+        if (this._pbrSucceeded && cellTex) {
+          try {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.viewport(0, 0, W, H);
+            gl.clearColor(0.03, 0.03, 0.05, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            this._blitTexture(cellTex, W, H, TEX.CELL);
+          } catch (_) { /* even blit failed — nothing we can do */ }
+        }
+      }
       this.perf.passEnd('composite', t);
     }
 
