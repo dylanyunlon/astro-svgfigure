@@ -1196,6 +1196,40 @@ export const prerender = true;
         color: [0.2, 0.8, 0.6] as [number,number,number],
       }));
 
+      // ── M1315: fetch geometry.json SDF data (same as loadGPUScene path) ──
+      {
+        const cellIds = cells.map(c => c.cell_id);
+        const geoPromises = cellIds.map(id =>
+          fetch('/channels/cell/' + id + '/geometry.json')
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null)
+        );
+        const geos = await Promise.all(geoPromises);
+        let geoHit = 0;
+        for (let i = 0; i < cells.length; i++) {
+          const geo = geos[i];
+          if (!geo) continue;
+          geoHit++;
+          const sdf = geo.sdf ?? {};
+          const surf = geo.surface ?? {};
+          const geoAlbedo = Array.isArray(surf.albedo) && surf.albedo.length === 3
+            ? surf.albedo as [number,number,number] : undefined;
+          cells[i] = {
+            ...cells[i],
+            ...(geoAlbedo ? { albedo: geoAlbedo } : {}),
+            ...(Array.isArray(surf.glow_color) ? { glowColor: surf.glow_color as [number,number,number] } : {}),
+            ...(typeof surf.opacity === 'number' ? { opacity: surf.opacity } : {}),
+            ...(typeof surf.roughness === 'number' ? { roughness: surf.roughness } : {}),
+            ...(typeof surf.metallic === 'number' ? { metallic: surf.metallic } : {}),
+            sdfBaseRadius: typeof sdf.base_radius === 'number' ? sdf.base_radius : undefined,
+            sdfLobes: Array.isArray(sdf.lobes) ? sdf.lobes : undefined,
+            sdfNoiseAmp: typeof sdf.noise_amplitude === 'number' ? sdf.noise_amplitude : undefined,
+            sdfNoiseFreq: typeof sdf.noise_frequency === 'number' ? sdf.noise_frequency : undefined,
+          } as any;
+        }
+        console.info(`[gpu-world] geometry.json SDF merged: ${geoHit}/${cells.length} cells`);
+      }
+
       try {
         console.info('[gpu-world] creating GPURenderLoop...');
         const loop = new GPURenderLoop(gpuWorldCanvas);
