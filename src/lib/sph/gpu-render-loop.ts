@@ -163,6 +163,27 @@ export class GPURenderLoop {
   private _camOffX = 0;
   private _camOffY = 0;
 
+  // M1316: user camera zoom/pan override
+  private _userZoom = 1.0;
+  private _userPanX = 0;
+  private _userPanY = 0;
+
+  /** Apply wheel zoom */
+  applyZoom(delta: number, centerX: number, centerY: number): void {
+    const factor = delta > 0 ? 0.9 : 1.1;
+    this._userZoom *= factor;
+    this._userZoom = Math.max(0.3, Math.min(5.0, this._userZoom));
+    // Pan toward cursor
+    this._userPanX += (centerX - this._userPanX) * (1 - factor);
+    this._userPanY += (centerY - this._userPanY) * (1 - factor);
+  }
+
+  /** Apply pan offset */
+  applyPan(dx: number, dy: number): void {
+    this._userPanX += dx;
+    this._userPanY += dy;
+  }
+
   // M1272: expose camera + physics for mouse interaction
   get camera() { return { scale: this._camScale, offX: this._camOffX, offY: this._camOffY }; }
   get physicsEngine() { return this.physics; }
@@ -1208,10 +1229,10 @@ export class GPURenderLoop {
     const camScale = Math.min(
       W / (bbW + PADDING * 2),
       H / (bbH + PADDING * 2),
-    );
+    ) * this._userZoom;
     // After scaling, centre the bounding box inside the canvas
-    const camOffX = (W - bbW * camScale) / 2 - camMinX * camScale;
-    const camOffY = (H - bbH * camScale) / 2 - camMinY * camScale;
+    const camOffX = (W - bbW * camScale) / 2 - camMinX * camScale + this._userPanX;
+    const camOffY = (H - bbH * camScale) / 2 - camMinY * camScale + this._userPanY;
 
     /** Transform a cell's pixel-space x → NDC (−1 … 1) using auto-fit camera */
     const toNdcX = (px: number): number => ((px * camScale + camOffX) / W) * 2 - 1;

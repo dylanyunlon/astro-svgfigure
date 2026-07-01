@@ -692,6 +692,36 @@ export const prerender = true;
     window.addEventListener('mouseup', onMouseUp);
     cvs.addEventListener('dblclick', onDblClick);
 
+    // M1316: wheel zoom + right-click pan
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      loop.applyZoom(e.deltaY, e.offsetX, e.offsetY);
+    }
+    let panning = false;
+    let panLastX = 0, panLastY = 0;
+    function onPanDown(e: MouseEvent) {
+      if (e.button === 2 || e.button === 1) { // right or middle click
+        panning = true;
+        panLastX = e.clientX;
+        panLastY = e.clientY;
+        e.preventDefault();
+      }
+    }
+    function onPanMove(e: MouseEvent) {
+      if (!panning) return;
+      loop.applyPan(e.clientX - panLastX, e.clientY - panLastY);
+      panLastX = e.clientX;
+      panLastY = e.clientY;
+    }
+    function onPanUp(e: MouseEvent) {
+      if (e.button === 2 || e.button === 1) panning = false;
+    }
+    cvs.addEventListener('wheel', onWheel, { passive: false });
+    cvs.addEventListener('mousedown', onPanDown);
+    window.addEventListener('mousemove', onPanMove);
+    window.addEventListener('mouseup', onPanUp);
+    cvs.addEventListener('contextmenu', (e: Event) => e.preventDefault());
+
     console.info('[gpu-world] mouse interaction wired (drag / throw / inject)');
 
     return () => {
