@@ -21,8 +21,9 @@ import uuid
 import urllib.request
 import urllib.error
 
-CHANNELS = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(os.path.dirname(CHANNELS))
+CELL_DIR = os.path.dirname(os.path.abspath(__file__))  # channels/cell/
+CHANNELS = os.path.dirname(CELL_DIR)                   # channels/
+ROOT = os.path.dirname(CHANNELS)                       # project root
 CONFIG = os.path.join(ROOT, ".claude-hk-config", "raw_curl.txt")
 
 def load_hk_config():
@@ -100,16 +101,16 @@ def send_msg(origin, org_id, headers, conv_id, prompt, model="claude-sonnet-4-6"
 
 def build_birth_prompt(cell_id):
     """第一条消息: 让 cell 读 SKILL.md 并准备好 tick loop"""
-    skill = open(os.path.join(CHANNELS, "cell", "SKILL.md")).read()
-    geo_format = open(os.path.join(CHANNELS, "cell", "GEOMETRY_FORMAT.md")).read()
+    skill = open(os.path.join(CELL_DIR, "SKILL.md")).read()
+    geo_format = open(os.path.join(CELL_DIR, "GEOMETRY_FORMAT.md")).read()
     
     params = {}
-    params_path = os.path.join(CHANNELS, "cell", cell_id, "params.json")
+    params_path = os.path.join(CELL_DIR, cell_id, "params.json")
     if os.path.exists(params_path):
         params = json.load(open(params_path))
     
     status = {}
-    status_path = os.path.join(CHANNELS, "cell", cell_id, "status.json")
+    status_path = os.path.join(CELL_DIR, cell_id, "status.json")
     if os.path.exists(status_path):
         status = json.load(open(status_path))
 
