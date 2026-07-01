@@ -491,15 +491,16 @@ export class CellMeshRenderer {
   }
 
   private _uploadGeometry(
-    positions: Float32Array,
+    rawPositions: Float32Array,
     normals: Float32Array,
     uvs: Float32Array,
     indices: Uint16Array | Uint32Array | null,
     vertexCount: number,
   ): SpeciesMesh {
-    // M1315: Normalize mesh vertices to [-0.5, 0.5]³ so model matrix scale
-    // maps uniformly to cell pixel size. Without this, thin/flat GLBs
-    // (cil-plus y=[-0.05,0.05]) render as distorted lines/pillars.
+    // M1315: Copy and normalize mesh vertices to [-0.5, 0.5]³ so model matrix
+    // scale maps uniformly to cell pixel size. Must copy first because GLB
+    // parser may return a read-only view into the ArrayBuffer.
+    const positions = new Float32Array(rawPositions);
     {
       let minX = Infinity, minY = Infinity, minZ = Infinity;
       let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
