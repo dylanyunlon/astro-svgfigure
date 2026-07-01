@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "enc_pool",
   "species": "cil-layers",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 220,
     "y": 355,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.452,
-  "age_ms": 3200,
+  "energy": 0.443,
+  "age_ms": 3800,
   "position": {
-    "x": 286.057,
-    "y": 380.005
+    "x": 286.412,
+    "y": 381.973
   },
   "velocity": {
-    "vx": 0.5312,
-    "vy": 2.9073
+    "vx": 0.5835,
+    "vy": 3.5063
   },
   "quorum_active": true,
   "division_ready": false,

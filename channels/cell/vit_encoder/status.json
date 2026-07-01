@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "vit_encoder",
   "species": "cil-eye",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 936.0,
     "y": 1245,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.455,
-  "age_ms": 3000,
+  "energy": 0.449,
+  "age_ms": 3400,
   "position": {
-    "x": 1021.454,
-    "y": 1308.923
+    "x": 1021.565,
+    "y": 1310.26
   },
   "velocity": {
-    "vx": 0.2294,
-    "vy": 3.0948
+    "vx": 0.2628,
+    "vy": 3.4337
   },
   "quorum_active": false,
   "division_ready": false,

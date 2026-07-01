@@ -1,9 +1,9 @@
 {
   "cell_id": "style_align",
-  "tick": 16,
+  "tick": 19,
   "action": "extend_pseudopod_toward_alignment_group",
   "target": "alignment_group",
-  "reason": "neighbors=2 within signal_radius, energy=0.455, species=cil-layers",
+  "reason": "neighbors=2 within signal_radius, energy=0.449, species=cil-layers",
   "energy_cost": 0.01,
   "geometry_changed": true
 }

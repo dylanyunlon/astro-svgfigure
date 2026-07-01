@@ -1,9 +1,9 @@
 {
   "cell_id": "resolution_handling",
-  "tick": 16,
+  "tick": 19,
   "action": "idle_metabolism",
   "target": null,
-  "reason": "neighbors=0 within signal_radius, energy=0.455, species=cil-code",
+  "reason": "neighbors=0 within signal_radius, energy=0.449, species=cil-code",
   "energy_cost": 0.01,
   "geometry_changed": true
 }

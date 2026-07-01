@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "softmax_layer",
   "species": "cil-code",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 771.0,
     "y": 1530.75,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.455,
-  "age_ms": 3000,
+  "energy": 0.449,
+  "age_ms": 3400,
   "position": {
-    "x": 846.218,
-    "y": 1585.707
+    "x": 846.256,
+    "y": 1586.412
   },
   "velocity": {
-    "vx": 0.1029,
-    "vy": 1.5627
+    "vx": 0.0698,
+    "vy": 1.8268
   },
   "quorum_active": false,
   "division_ready": false,

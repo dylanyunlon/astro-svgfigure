@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "leaf_extraction",
   "species": "cil-code",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 703.3333333333334,
     "y": 2197,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.455,
-  "age_ms": 3000,
+  "energy": 0.446,
+  "age_ms": 3600,
   "position": {
-    "x": 788.507,
-    "y": 2259.201
+    "x": 788.618,
+    "y": 2260.465
   },
   "velocity": {
-    "vx": 0.1642,
-    "vy": 1.8658
+    "vx": 0.158,
+    "vy": 2.188
   },
   "quorum_active": false,
   "division_ready": false,

@@ -1,9 +1,9 @@
 {
   "cell_id": "local_images",
-  "tick": 16,
+  "tick": 19,
   "action": "extend_pseudopod_toward_leaf_extraction",
   "target": "leaf_extraction",
-  "reason": "neighbors=2 within signal_radius, energy=0.455, species=cil-code",
+  "reason": "neighbors=2 within signal_radius, energy=0.446, species=cil-code",
   "energy_cost": 0.01,
   "geometry_changed": true
 }

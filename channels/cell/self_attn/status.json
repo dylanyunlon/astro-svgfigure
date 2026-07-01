@@ -2,16 +2,16 @@
   "status": "alive",
   "cell_id": "self_attn",
   "species": "cil-eye",
-  "epoch": 16,
-  "energy": 0.455,
-  "age_ms": 3000,
+  "epoch": 19,
+  "energy": 0.449,
+  "age_ms": 3400,
   "position": {
-    "x": 50.901,
-    "y": 52.93
+    "x": 51.184,
+    "y": 53.726
   },
   "velocity": {
-    "vx": 0.5878,
-    "vy": 1.8715
+    "vx": 0.7531,
+    "vy": 2.0539
   },
   "quorum_active": false,
   "division_ready": false,

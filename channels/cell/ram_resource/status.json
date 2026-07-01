@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "ram_resource",
   "species": "cil-code",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 1912,
     "y": 30,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.455,
-  "age_ms": 3000,
+  "energy": 0.449,
+  "age_ms": 3400,
   "position": {
-    "x": 1981.848,
-    "y": 82.216
+    "x": 1981.846,
+    "y": 82.828
   },
   "velocity": {
-    "vx": 0.0095,
-    "vy": 1.4133
+    "vx": 0.001,
+    "vy": 1.5977
   },
   "quorum_active": false,
   "division_ready": false,

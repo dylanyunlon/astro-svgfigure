@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "vision2ui_dataset",
   "species": "cil-vector",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 525,
     "y": 315,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.455,
-  "age_ms": 3000,
+  "energy": 0.449,
+  "age_ms": 3400,
   "position": {
-    "x": 610.191,
-    "y": 376.701
+    "x": 610.242,
+    "y": 377.465
   },
   "velocity": {
-    "vx": 0.1759,
-    "vy": 1.7394
+    "vx": 0.1331,
+    "vy": 1.9808
   },
   "quorum_active": false,
   "division_ready": false,

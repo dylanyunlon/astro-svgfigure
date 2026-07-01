@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "patch_division",
   "species": "cil-code",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 907.6666666666665,
     "y": 1107,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.455,
-  "age_ms": 3000,
+  "energy": 0.449,
+  "age_ms": 3400,
   "position": {
-    "x": 992.706,
-    "y": 1168.413
+    "x": 992.727,
+    "y": 1169.088
   },
   "velocity": {
-    "vx": 0.0718,
-    "vy": 1.4584
+    "vx": 0.0648,
+    "vy": 1.7685
   },
   "quorum_active": false,
   "division_ready": false,

@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "rendered_webpage",
   "species": "cil-arrow-right",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 673.3333333333334,
     "y": 3587,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.455,
-  "age_ms": 3000,
+  "energy": 0.449,
+  "age_ms": 3400,
   "position": {
-    "x": 757.059,
-    "y": 3651.341
+    "x": 756.737,
+    "y": 3652.825
   },
   "velocity": {
-    "vx": -0.7288,
-    "vy": 3.4424
+    "vx": -0.8338,
+    "vy": 3.7944
   },
   "quorum_active": false,
   "division_ready": false,

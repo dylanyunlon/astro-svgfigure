@@ -1,9 +1,9 @@
 {
   "cell_id": "final_css",
-  "tick": 16,
+  "tick": 19,
   "action": "extend_pseudopod_toward_output_group",
   "target": "output_group",
-  "reason": "neighbors=3 within signal_radius, energy=0.452, species=cil-arrow-right",
+  "reason": "neighbors=2 within signal_radius, energy=0.443, species=cil-arrow-right",
   "energy_cost": 0.01,
   "geometry_changed": true
 }

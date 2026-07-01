@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "ffn",
   "species": "cil-bolt",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 220,
     "y": 470,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.452,
-  "age_ms": 3200,
+  "energy": 0.443,
+  "age_ms": 3800,
   "position": {
-    "x": 288.492,
-    "y": 494.442
+    "x": 287.939,
+    "y": 495.262
   },
   "velocity": {
-    "vx": -0.9055,
-    "vy": 1.2014
+    "vx": -0.9415,
+    "vy": 1.4594
   },
   "quorum_active": true,
   "division_ready": false,

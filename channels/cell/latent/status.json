@@ -2,7 +2,7 @@
   "status": "alive",
   "cell_id": "latent",
   "species": "cil-code",
-  "epoch": 16,
+  "epoch": 19,
   "bbox": {
     "x": 220,
     "y": 255,
@@ -12,15 +12,15 @@
   },
   "opacity": 0.8,
   "species_params": {},
-  "energy": 0.455,
-  "age_ms": 3000,
+  "energy": 0.446,
+  "age_ms": 3600,
   "position": {
-    "x": 289.821,
-    "y": 280.208
+    "x": 289.688,
+    "y": 281.423
   },
   "velocity": {
-    "vx": -0.1473,
-    "vy": 1.7798
+    "vx": -0.2415,
+    "vy": 2.0975
   },
   "quorum_active": true,
   "division_ready": false,
