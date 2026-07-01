@@ -280,10 +280,14 @@ export class CellMeshRenderer {
     this.prog = this._compileProgram();
     this._resolveLocations();
     this._uploadPlaceholder();
-    // Auto-load GLB files (async, falls back to placeholder until loaded)
-    this.loadAllSpeciesGLB().catch(e =>
-      console.warn('[CellMeshRenderer] GLB auto-load failed, using procedural fallback:', e)
-    );
+    // M1315: GLB files contain wrong geometry (thin pillars/swords from M1264).
+    // Procedural geometries in SPECIES_GEOMETRY are semantically meaningful:
+    // cil-eye=attention rays, cil-bolt=ReLU zigzag, cil-vector=direction arrows,
+    // cil-plus=residual cross, cil-arrow-right=dataflow arrow.
+    // Use procedural until proper organic GLBs are generated.
+    // this.loadAllSpeciesGLB().catch(e =>
+    //   console.warn('[CellMeshRenderer] GLB auto-load failed, using procedural fallback:', e)
+    // );
   }
 
   /**

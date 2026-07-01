@@ -1468,13 +1468,10 @@ export class GPURenderLoop {
       try {
         this.cellMesh.setTime(time);
         this.cellMesh.render(this.cells, camScale, camOffX, camOffY, W, H);
-        // M1315: CellMesh is fallback only — PBR has metaball SDF + colors.
-        // Only use mesh output if PBR failed to produce content.
+        // M1315: CellMesh IS the cyber world — 3D mesh is the real renderer.
+        // PBR is the fallback (2D SDF ray march on quads).
         const meshTex = this.cellMesh.outputTexture;
-        if (meshTex && !this._pbrSucceeded) {
-          cellTex = meshTex;
-          this._pbrSucceeded = true;
-        }
+        if (meshTex) { cellTex = meshTex; this._pbrSucceeded = true; }
       } catch (e) {
         console.error('[GPURenderLoop] CellMesh pass error:', e);
         // PBR cellTex already painted above — keep it, no fallback needed.
