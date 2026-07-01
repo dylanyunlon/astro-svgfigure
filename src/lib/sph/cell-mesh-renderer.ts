@@ -497,6 +497,33 @@ export class CellMeshRenderer {
     indices: Uint16Array | Uint32Array | null,
     vertexCount: number,
   ): SpeciesMesh {
+    // M1315: Normalize mesh vertices to [-0.5, 0.5]³ so model matrix scale
+    // maps uniformly to cell pixel size. Without this, thin/flat GLBs
+    // (cil-plus y=[-0.05,0.05]) render as distorted lines/pillars.
+    {
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (let i = 0; i < positions.length; i += 3) {
+        minX = Math.min(minX, positions[i]);
+        maxX = Math.max(maxX, positions[i]);
+        minY = Math.min(minY, positions[i+1]);
+        maxY = Math.max(maxY, positions[i+1]);
+        minZ = Math.min(minZ, positions[i+2]);
+        maxZ = Math.max(maxZ, positions[i+2]);
+      }
+      const rangeX = maxX - minX || 1;
+      const rangeY = maxY - minY || 1;
+      const rangeZ = maxZ - minZ || 1;
+      const maxRange = Math.max(rangeX, rangeY, rangeZ);
+      const cx = (minX + maxX) * 0.5;
+      const cy = (minY + maxY) * 0.5;
+      const cz = (minZ + maxZ) * 0.5;
+      for (let i = 0; i < positions.length; i += 3) {
+        positions[i]   = (positions[i]   - cx) / maxRange;
+        positions[i+1] = (positions[i+1] - cy) / maxRange;
+        positions[i+2] = (positions[i+2] - cz) / maxRange;
+      }
+    }
     const gl = this.gl;
     const vao = gl.createVertexArray()!;
     gl.bindVertexArray(vao);

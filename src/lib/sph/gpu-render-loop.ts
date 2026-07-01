@@ -1460,11 +1460,10 @@ export class GPURenderLoop {
       this.perf.passEnd('pbr', t);
     }
 
-    // ── Pass 3a: 3D mesh cells (M1261) — DISABLED M1315 ──
-    // GLB meshes render as incorrect sword/pillar shapes and override PBR's
-    // organic metaball output. Disabled until mesh geometry is fixed.
-    // PBR cellTex from Pass 3 above is used directly.
-    if (false && this.cellMesh) {
+    // ── Pass 3a: 3D mesh cells (M1261) ──
+    // M1315: GLB vertices now normalized to [-0.5,0.5]³ in _uploadGeometry.
+    // Mesh should render correctly with model matrix scale = cell pixel size.
+    if (this.cellMesh) {
       const t = this.perf.passStart('cellMesh');
       try {
         this.cellMesh.setTime(time);
