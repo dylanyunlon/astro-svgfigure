@@ -202,14 +202,15 @@ uniform float uAnimSpeed;
 uniform float uOpacity;
 uniform float uTime;
 
-// ── M1299: metaball lobe data from geometry.json ──────────────────────────────
+// ── M1314d: metaball lobe data from geometry.json ─────────────────────────────
 // Each cell's geometry.json defines up to 8 lobes (angle, distance, radius).
 // GPU render loop uploads these per cell before each drawcall.
-uniform int   uLobeCount;          // number of active lobes [0, 8]
-uniform float uBaseRadius;         // base metaball radius in normalized coords
-uniform float uNoiseAmp;           // surface noise amplitude [0, 0.1]
-uniform float uNoiseFreq;          // surface noise frequency [1, 10]
-uniform vec3  uLobes[8];           // per-lobe: (angle, distance, radius)
+// MAX_LOBES = 8 (fixed array size for WebGL2 uniform arrays)
+uniform float u_baseRadius;        // base metaball radius in normalized coords
+uniform int   u_lobeCount;         // number of active lobes [0, 8]
+uniform vec3  u_lobes[8];          // per-lobe: x=angle, y=distance, z=radius
+uniform float u_noiseAmp;          // surface noise amplitude [0, 0.1]
+uniform float u_noiseFreq;         // surface noise frequency [1, 10]
 
 // ── M1304: pseudopod rendering — organic extensions toward neighbor cells ────
 // Each cell's geometry.json may define up to 4 pseudopods reaching toward a
@@ -234,6 +235,26 @@ layout(location = 0) out vec4 gAlbedo;
 layout(location = 1) out vec4 gNormal;
 layout(location = 2) out vec4 gRoughAO;
 layout(location = 3) out vec4 gDepthOut;
+
+// ── Hash-based noise (no texture needed, #version 300 es compatible) ─────────
+// Simple hash from IQ / David Hoskins — returns [0,1]
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// Smooth value noise: bilinear interpolation of 4 hash values on integer grid
+float valueNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f); // smoothstep
+    float a = hash12(i);
+    float b = hash12(i + vec2(1.0, 0.0));
+    float c = hash12(i + vec2(0.0, 1.0));
+    float d = hash12(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
 
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(max(1.0 - cosTheta, 0.0), 5.0);
@@ -309,31 +330,55 @@ float sdCylinder(vec3 p, float r, float h) {
     return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
 }
 
-// polynomial smooth min (k = blend radius)
+// polynomial smooth min (k = blend radius, matches GEOMETRY_FORMAT.md spec k=0.3)
 float smoothMin(float a, float b, float k) {
     float hh = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
     return mix(b, a, hh) - k * hh * (1.0 - hh);
 }
 
+// ── M1314d: cellSDF — metaball SDF from geometry.json lobes ───────────────────
+// Implements GEOMETRY_FORMAT.md spec:
+//   base sphere + lobes via smooth union (k=0.3) + hash-based surface noise.
+// p.xy is the 2D position in SDF space; p.z carries view-depth for 3D normals.
+// MAX_LOBES = 8 (compile-time constant for the loop bound).
+float cellSDF(vec3 p) {
+    // Base sphere
+    float d = sdSphere(p, u_baseRadius);
+
+    // Smooth-union each lobe (metaball blend, k=0.3 per spec)
+    for (int i = 0; i < 8; i++) {
+        if (i >= u_lobeCount) break;
+        float angle  = u_lobes[i].x;
+        float dist   = u_lobes[i].y;
+        float rad    = u_lobes[i].z;
+        // Z-oscillation gives organic depth for normal computation
+        vec3 lobeCenter = vec3(
+            cos(angle) * dist,
+            sin(angle) * dist,
+            sin(uTime * 0.5 + angle) * 0.05
+        );
+        float lobeDist = sdSphere(p - lobeCenter, rad);
+        // smooth union with k=0.3 as specified in GEOMETRY_FORMAT.md
+        d = smoothMin(d, lobeDist, 0.3);
+    }
+
+    // Surface noise: hash valueNoise on the 2D slice, animated with uTime
+    // noiseAmp and noiseFreq come from geometry.json sdf.noise_* fields
+    vec2 noiseUv = p.xy * u_noiseFreq + vec2(uTime * 0.15);
+    d += (valueNoise(noiseUv) * 2.0 - 1.0) * u_noiseAmp;
+
+    return d;
+}
+
 // ── Scene SDF: organic cell shapes selected by uSdfShape (0-4) ───────────────
-// M1299: when uLobeCount > 0, use dynamic metaball from geometry.json lobes
+// M1314d: when u_lobeCount > 0, use dynamic metaball cellSDF() from geometry.json
 // instead of hardcoded species shapes. This is the cell agent's morphology.
 float mapScene(vec3 p) {
     float d;
 
     // If cell agent has written geometry.json with lobes, use dynamic metaball
-    if (uLobeCount > 0) {
-        d = sdSphere(p, uBaseRadius);
-        for (int i = 0; i < 8; i++) {
-            if (i >= uLobeCount) break;
-            float angle = uLobes[i].x;
-            float dist  = uLobes[i].y;
-            float rad   = uLobes[i].z;
-            vec3 lobeCenter = vec3(cos(angle)*dist, sin(angle)*dist, sin(uTime*0.5+angle)*0.05);
-            d = smoothMin(d, sdSphere(p - lobeCenter, rad), 0.15);
-        }
-        // Surface noise from geometry.json
-        d += sin(p.x * uNoiseFreq + uTime) * sin(p.y * uNoiseFreq * 1.3) * uNoiseAmp;
+    if (u_lobeCount > 0) {
+        d = cellSDF(p);
 
         // ── M1304: pseudopod rendering — organic extensions toward neighbor cells ──
         // Each pseudopod is a capsule reaching from the cell center toward a
@@ -344,9 +389,7 @@ float mapScene(vec3 p) {
             float targetY         = uPseudopods[i].y;
             float pseudopodLength = uPseudopods[i].z;
             float pseudopodWidth  = uPseudopods[i].w;
-            float cellX = 0.0;
-            float cellY = 0.0;
-            vec3 toTarget = vec3(targetX - cellX, targetY - cellY, 0.0);
+            vec3 toTarget = vec3(targetX, targetY, 0.0);
             if (length(toTarget) > 0.0001) {
                 vec3 dir   = normalize(toTarget);
                 vec3 start = vec3(0.0);
@@ -656,7 +699,7 @@ export class PBRCellGPU {
   private uCytoFlowSpeed!:   WebGLUniformLocation;
   // M1284: membrane dynamics
   private uCollisionCount!:  WebGLUniformLocation;
-  // M1299: metaball lobe uniforms
+  // M1314d: metaball lobe uniforms (u_ prefix, matches FRAG shader)
   private uLobeCount!:       WebGLUniformLocation;
   private uBaseRadius!:      WebGLUniformLocation;
   private uNoiseAmp!:        WebGLUniformLocation;
@@ -855,19 +898,21 @@ export class PBRCellGPU {
       // M1284: membrane dynamics — pass collisionCount to u_collisionCount uniform
       gl.uniform1i(this.uCollisionCount, cell.collisionCount ?? 0);
 
-      // ── M1299: metaball lobe data from geometry.json ────────────────────────
+      // ── M1314d: metaball lobe data from geometry.json ──────────────────────────
+      // Read sdfBaseRadius/sdfLobes from CellData (set by gpu-render-loop from geometry.json).
       // If lobeData is present, upload dynamic metaball params.
-      // Otherwise uLobeCount=0 → shader falls back to hardcoded species SDF.
-      const lobes = (cell as any).lobeData as Array<{angle:number,distance:number,radius:number}> | undefined;
+      // Otherwise u_lobeCount=0 → shader falls back to hardcoded species SDF.
+      const lobes = (cell as any).sdfLobes as Array<{angle:number,distance:number,radius:number}> | undefined
+               ?? (cell as any).lobeData as Array<{angle:number,distance:number,radius:number}> | undefined;
       if (lobes && lobes.length > 0) {
         const count = Math.min(lobes.length, 8);
         gl.uniform1i(this.uLobeCount, count);
-        gl.uniform1f(this.uBaseRadius, (cell as any).baseRadius ?? 0.8);
+        gl.uniform1f(this.uBaseRadius, (cell as any).sdfBaseRadius ?? (cell as any).baseRadius ?? 0.8);
         gl.uniform1f(this.uNoiseAmp, (cell as any).noiseAmp ?? 0.02);
         gl.uniform1f(this.uNoiseFreq, (cell as any).noiseFreq ?? 4.0);
         for (let li = 0; li < count; li++) {
           const l = lobes[li];
-          // Normalize distance to SDF space (~0-1 range)
+          // Normalize distance/radius from pixel units to SDF space (~0-1 range)
           gl.uniform3f(this.uLobes[li], l.angle, l.distance / 100, l.radius / 100);
         }
       } else {
@@ -1096,14 +1141,14 @@ export class PBRCellGPU {
     this.uCytoFlowSpeed   = gl.getUniformLocation(prog, 'uCytoFlowSpeed')!;
     // M1284: membrane dynamics
     this.uCollisionCount  = gl.getUniformLocation(prog, 'u_collisionCount')!;
-    // M1299: metaball lobe uniforms
-    this.uLobeCount  = gl.getUniformLocation(prog, 'uLobeCount')!;
-    this.uBaseRadius = gl.getUniformLocation(prog, 'uBaseRadius')!;
-    this.uNoiseAmp   = gl.getUniformLocation(prog, 'uNoiseAmp')!;
-    this.uNoiseFreq  = gl.getUniformLocation(prog, 'uNoiseFreq')!;
+    // M1314d: metaball lobe uniforms (u_ prefix matches FRAG shader declarations)
+    this.uLobeCount  = gl.getUniformLocation(prog, 'u_lobeCount')!;
+    this.uBaseRadius = gl.getUniformLocation(prog, 'u_baseRadius')!;
+    this.uNoiseAmp   = gl.getUniformLocation(prog, 'u_noiseAmp')!;
+    this.uNoiseFreq  = gl.getUniformLocation(prog, 'u_noiseFreq')!;
     this.uLobes = [];
     for (let i = 0; i < 8; i++) {
-      this.uLobes.push(gl.getUniformLocation(prog, `uLobes[${i}]`)!);
+      this.uLobes.push(gl.getUniformLocation(prog, `u_lobes[${i}]`)!);
     }
     // M1304: pseudopod uniforms
     this.uPseudopodCount = gl.getUniformLocation(prog, 'uPseudopodCount')!;
