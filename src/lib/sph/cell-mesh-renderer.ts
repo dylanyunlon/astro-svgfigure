@@ -185,6 +185,12 @@ export class CellMeshRenderer {
     gl.uniform1f(this.loc.uTime, this._time);
     gl.bindVertexArray(this.quadVAO);
 
+    // M1318: debug log first frame
+    if (this._time < 0.1 && cells.length > 0) {
+      const c0 = cells[0];
+      console.info(`[CellMeshRenderer] cell[0] ${c0.cell_id}: albedo=[${c0.albedo}] lobes=${(c0 as any).sdfLobes?.length ?? 0} baseR=${(c0 as any).sdfBaseRadius ?? 'none'} w=${c0.w} h=${c0.h}`);
+    }
+
     for (const cell of cells) {
       const cx = ((cell.x * camScale + camOffX + cell.w * camScale * 0.5) / W) * 2 - 1;
       const cy = 1 - ((cell.y * camScale + camOffY + cell.h * camScale * 0.5) / H) * 2;

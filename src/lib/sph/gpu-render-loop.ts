@@ -1369,10 +1369,12 @@ export class GPURenderLoop {
 
     // ── Pass 3: PBR cell surface → FBO ──
     this.glState.resetForPass();
-    // PBR pass 始终运行 — 作为保底渲染。CellMesh（Pass 3a）若成功会覆盖 cellTex，
-    // 否则 PBR 画好的 cellTex 直接使用，避免两个渲染器都画不出东西。
     let cellTex: WebGLTexture = this._placeholderTex ?? (this._placeholderTex = this._create1x1Tex());
-    // M1314b: track whether we got real PBR content this frame
+    // M1318: If CellMesh (3D SDF ray march) is available, skip PBR entirely.
+    // PBR is the fallback — CellMesh is the real renderer.
+    const skipPBR = !!this.cellMesh;
+    if (!skipPBR) {
+    // PBR pass — only runs when CellMesh is not available
     this._pbrSucceeded = false;
     {
       const t = this.perf.passStart('pbr');
@@ -1480,6 +1482,7 @@ export class GPURenderLoop {
       }
       this.perf.passEnd('pbr', t);
     }
+    } // end if (!skipPBR)
 
     // ── Pass 3a: 3D mesh cells (M1261) ──
     // M1315: GLB vertices now normalized to [-0.5,0.5]³ in _uploadGeometry.
