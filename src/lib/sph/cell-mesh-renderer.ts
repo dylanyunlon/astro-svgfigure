@@ -201,7 +201,7 @@ export class CellMeshRenderer {
 
       // SDF data from geometry.json
       const lobes = (cell as any).sdfLobes as Array<{angle:number,distance:number,radius:number}> | undefined;
-      const sz = Math.max(cell.w, cell.h, 1);
+      const sz = Math.min(cell.w, cell.h) || 1;  // normalize by short axis — cells are often wide+short
       if (lobes && lobes.length > 0) {
         const rawR = (cell as any).sdfBaseRadius ?? 20;
         gl.uniform1f(this.loc.uBaseRadius, Math.min(rawR / (sz * 0.5), 1.2));

@@ -911,7 +911,7 @@ export class PBRCellGPU {
         gl.uniform1i(this.uLobeCount, count);
         // Normalize base_radius: geometry.json gives pixels (~15-25), SDF space needs ~0.3-0.9
         const rawBaseR = (cell as any).sdfBaseRadius ?? (cell as any).baseRadius ?? 30;
-        const cellSize = Math.max(cell.w, cell.h, 1);
+        const cellSize = Math.min(cell.w, cell.h) || 1;
         const normBaseR = Math.min(rawBaseR / (cellSize * 0.5), 1.2);
         gl.uniform1f(this.uBaseRadius, normBaseR > 0.05 ? normBaseR : 0.8);
         gl.uniform1f(this.uNoiseAmp, (cell as any).sdfNoiseAmp ?? (cell as any).noiseAmp ?? 0.02);
