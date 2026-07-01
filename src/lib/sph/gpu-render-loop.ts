@@ -75,6 +75,15 @@ export interface CellData {
   opacity: number;                         // opacity
   // === M1280: cell lifecycle ===
   energy?: number;                         // metabolic energy [0, max_energy], initial 1.0
+  // === M1314c: geometry.json SDF bridge ===
+  sdfBaseRadius?: number;                  // sdf.base_radius — metaball core radius
+  sdfLobes?: Array<{ angle: number; distance: number; radius: number }>; // sdf.lobes
+  sdfNoiseAmp?: number;                    // sdf.noise_amplitude
+  sdfNoiseFreq?: number;                   // sdf.noise_frequency
+  surfaceGlowIntensity?: number;           // surface.glow_intensity
+  membraneThickness?: number;              // membrane.thickness
+  membraneWobbleAmp?: number;              // membrane.wobble_amplitude
+  cytplasmFlowSpeed?: number;              // internal_motion.cytoplasm_flow_speed
 }
 
 export interface EdgeData {

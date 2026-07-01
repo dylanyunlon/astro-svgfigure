@@ -1787,6 +1787,39 @@ export const prerender = true;
         console.info(`[gpu-world] ✓ all 58 cells loaded from composite_params`);
       }
 
+      // ── 2b. Concurrently fetch geometry.json SDF data for each cell ──
+      const cellIds = cells.map(c => c.cell_id);
+      const geoPromises = cellIds.map(id =>
+        fetch('/channels/cell/' + id + '/geometry.json')
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null)
+      );
+      const geos = await Promise.all(geoPromises);
+
+      // Merge SDF fields from geometry.json into each CellData
+      let geoHitCount = 0;
+      for (let i = 0; i < cells.length; i++) {
+        const geo = geos[i];
+        if (!geo) continue;
+        geoHitCount++;
+        const sdf  = geo.sdf     ?? {};
+        const surf = geo.surface ?? {};
+        const mem  = geo.membrane ?? {};
+        const mot  = geo.internal_motion ?? {};
+        cells[i] = {
+          ...cells[i],
+          sdfBaseRadius:       typeof sdf.base_radius      === 'number' ? sdf.base_radius      : undefined,
+          sdfLobes:            Array.isArray(sdf.lobes)                 ? sdf.lobes             : undefined,
+          sdfNoiseAmp:         typeof sdf.noise_amplitude  === 'number' ? sdf.noise_amplitude   : undefined,
+          sdfNoiseFreq:        typeof sdf.noise_frequency  === 'number' ? sdf.noise_frequency   : undefined,
+          surfaceGlowIntensity:typeof surf.glow_intensity  === 'number' ? surf.glow_intensity   : undefined,
+          membraneThickness:   typeof mem.thickness        === 'number' ? mem.thickness         : undefined,
+          membraneWobbleAmp:   typeof mem.wobble_amplitude === 'number' ? mem.wobble_amplitude  : undefined,
+          cytplasmFlowSpeed:   typeof mot.cytoplasm_flow_speed === 'number' ? mot.cytoplasm_flow_speed : undefined,
+        };
+      }
+      console.info(`[gpu-world] geometry.json SDF merged: ${geoHitCount}/${cells.length} cells`);
+
       // ── 3. Parse edge_routes ─────────────────────────────────────────
       const rawEdges = (raw.edge_routes ?? {}) as Record<string, any>;
       const edges: EdgeData[] = Object.entries(rawEdges).map(([edgeId, ev]: [string, any]) => {
