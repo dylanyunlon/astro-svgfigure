@@ -122,16 +122,16 @@ const SPECIES_ROUGHNESS: Record<CellSpecies, number> = {
 };
 
 const SPECIES_ALBEDO: Record<CellSpecies, [number, number, number]> = {
-  'cil-eye':         [0.90, 0.88, 0.85],
-  'cil-bolt':        [0.82, 1.00, 0.96],   // #d1fff4 normalised
-  'cil-vector':      [0.70, 0.75, 0.95],
-  'cil-plus':        [0.95, 0.90, 0.80],
-  'cil-arrow-right': [0.60, 0.90, 0.70],
-  'cil-filter':      [0.85, 0.85, 0.90],
-  'cil-code':        [0.75, 0.80, 1.00],
-  'cil-layers':      [0.90, 0.90, 0.90],
-  'cil-loop':        [0.88, 0.92, 0.98],
-  'cil-graph':       [0.80, 0.85, 0.75],
+  'cil-eye':         [0.25, 0.31, 0.71],   // indigo — attention mechanism
+  'cil-bolt':        [0.96, 0.65, 0.14],   // amber — FFN activation
+  'cil-vector':      [0.18, 0.62, 0.78],   // teal — embedding
+  'cil-plus':        [0.40, 0.73, 0.42],   // green — residual add
+  'cil-arrow-right': [0.85, 0.33, 0.31],   // red — forward dataflow
+  'cil-filter':      [0.56, 0.27, 0.68],   // purple — filter/pruning
+  'cil-code':        [0.20, 0.68, 0.55],   // emerald — code gen
+  'cil-layers':      [0.93, 0.46, 0.14],   // orange — layered structure
+  'cil-loop':        [0.30, 0.50, 0.85],   // blue — loop/recurrence
+  'cil-graph':       [0.70, 0.30, 0.50],   // rose — graph structure
 };
 
 // ─── Vertex shader ───────────────────────────────────────────────────────────
