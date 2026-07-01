@@ -502,12 +502,26 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
     origin = re.search(r"-H 'origin: ([^']+)'", raw).group(1)
     ua = re.search(r"-H 'user-agent: ([^']+)'", raw).group(1)
 
+    # Extract all headers from raw_curl for full browser fingerprint
+    def _extract_header(name: str, default: str = "") -> str:
+        m = re.search(rf"-H '{re.escape(name)}: ([^']+)'", raw)
+        return m.group(1) if m else default
+
     headers = {
         "Content-Type": "application/json",
-        "origin": origin, "user-agent": ua,
-        "referer": f"{origin}/",
-        "accept-language": "zh-CN,zh;q=0.9",
+        "accept": "text/event-stream",
+        "accept-language": _extract_header("accept-language", "zh-CN,zh;q=0.9"),
         "anthropic-client-platform": "web_claude_ai",
+        "origin": origin,
+        "user-agent": ua,
+        "referer": _extract_header("referer", f"{origin}/new"),
+        "sec-ch-ua": _extract_header("sec-ch-ua", '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"'),
+        "sec-ch-ua-mobile": _extract_header("sec-ch-ua-mobile", "?0"),
+        "sec-ch-ua-platform": _extract_header("sec-ch-ua-platform", '"Windows"'),
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "priority": _extract_header("priority", "u=1, i"),
         "Cookie": cookie,
     }
 
@@ -534,14 +548,18 @@ def _dispatch_via_hk(system_prompt: str, user_message: str,
 
     # ── Step 1: Create conversation (with 429 retry) ───────────────────────
     create_data = json.dumps({
-        "name": "", "model": model, "is_temporary": False
+        "name": "", "model": model, "is_temporary": False,
+        "include_conversation_preferences": True,
+        "paprika_mode": None, "compass_mode": None,
+        "tool_search_mode": "auto",
+        "enabled_imagine": True,
     }).encode()
     conv_id = ""
     for _retry in range(3):
         try:
             req = urllib.request.Request(
                 f"{origin}/api/organizations/{org_id}/chat_conversations",
-                data=create_data, headers=headers, method="POST")
+                data=create_data, headers={**headers, "accept": "application/json"}, method="POST")
             resp = urllib.request.urlopen(req, timeout=30)
             conv_id = json.loads(resp.read()).get("uuid", "")
             break
@@ -691,19 +709,32 @@ print(resp.read().decode())
 - 若 collision_pairs 不为空，必须向远离碰撞对象的方向偏移你的位置"""
 
     # ── Step 3: Fire the request (fire and forget) ─────────────────────────
+    # Match raw_curl.txt format exactly — full tools list, locale, sync_sources
     payload = json.dumps({
         "prompt": prompt, "timezone": "Asia/Shanghai",
+        "locale": "en-US",
         "model": model, "effort": "medium",
         "thinking_mode": "off",
         "tools": [
             {"type": "web_search_v0", "name": "web_search"},
             {"type": "repl_v0", "name": "repl"},
+            {"type": "artifacts_v0", "name": "artifacts"},
         ],
         "turn_message_uuids": {
             "human_message_uuid": str(uuid.uuid4()),
             "assistant_message_uuid": str(uuid.uuid4()),
         },
-        "attachments": [], "files": [], "rendering_mode": "messages"
+        "attachments": [], "files": [],
+        "sync_sources": [],
+        "rendering_mode": "messages",
+        "create_conversation_params": {
+            "name": "", "model": model,
+            "include_conversation_preferences": True,
+            "paprika_mode": None, "compass_mode": None,
+            "tool_search_mode": "auto",
+            "is_temporary": False,
+            "enabled_imagine": True,
+        },
     }).encode()
 
     req2 = urllib.request.Request(
