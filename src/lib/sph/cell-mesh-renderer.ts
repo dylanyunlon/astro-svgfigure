@@ -1,676 +1,275 @@
 /**
- * cell-mesh-renderer.ts — M1261: 3D mesh renderer for cells
+ * cell-mesh-renderer.ts — M1315: 3D SDF Ray March Runtime Mesh Generator
  *
- * Replaces 2D quad PBR with actual 3D GLB meshes (from Rodin or any source).
- * Each species maps to a GLB file in public/models/.
- * Uses orthographic projection matching the auto-fit camera in gpu-render-loop.
+ * Each cell is rendered as a per-cell quad. The fragment shader ray-marches
+ * a 3D metaball SDF (base sphere + lobes from geometry.json) in the cell's
+ * local [-1,1]³ space. Produces correct 3D normals, depth, lighting, and
+ * subsurface scattering — all driven by geometry.json tick-runner output.
  *
- * Architecture:
- *   1. Load GLB per species via threed-pipeline.ts GLTFLoader
- *   2. Build instanced draw data from CellData[]
- *   3. Render with correct ortho projection: cell pixel space → NDC
- *
- * Coordinate spaces:
- *   Cell pixel space:  x ∈ [0, 2052], y ∈ [0, 3965]
- *   Canvas pixel:      x ∈ [0, W],    y ∈ [0, H]
- *   NDC:               x ∈ [-1, 1],   y ∈ [-1, 1]
- *
- *   The auto-fit camera in gpu-render-loop computes camScale/camOffX/camOffY
- *   to map cell space → canvas space. This renderer builds an ortho matrix
- *   that does cell space → NDC directly, matching that same mapping.
+ * No pre-built GLB, no procedural geometry, no mesh vertices.
+ * The GPU IS the runtime mesh generator.
  */
 
-// ─── Shader sources ──────────────────────────────────────────────────────────
+import type { CellData } from './gpu-render-loop';
 
-const MESH_VERT = /* glsl */ `#version 300 es
+// ─── Vertex shader: per-cell positioned quad ─────────────────────────────────
+
+const VERT = /* glsl */ `#version 300 es
 precision highp float;
-
-// Per-vertex
-in vec3 aPosition;
-in vec3 aNormal;
-in vec2 aUV;
-
-// Per-instance (set via uniform for now; instanced attrs later)
-uniform mat4 uModelMatrix;
-uniform mat4 uViewProjMatrix;
-
-uniform vec3 uAlbedo;
-
-out vec3 vNormal;
-out vec3 vWorldPos;
+in vec2 aCorner;
+uniform vec2 uCellPos;
+uniform vec2 uCellSize;
 out vec2 vUV;
-out vec3 vAlbedo;
-
 void main() {
-    vec4 worldPos = uModelMatrix * vec4(aPosition, 1.0);
-    vWorldPos = worldPos.xyz;
-    vNormal   = mat3(uModelMatrix) * aNormal;
-    vUV       = aUV;
-    vAlbedo   = uAlbedo;
-    gl_Position = uViewProjMatrix * worldPos;
+    vUV = aCorner * 0.5 + 0.5;
+    gl_Position = vec4(uCellPos + aCorner * uCellSize, 0.0, 1.0);
 }
 `;
 
-const MESH_FRAG = /* glsl */ `#version 300 es
+// ─── Fragment shader: 3D SDF ray march ───────────────────────────────────────
+
+const FRAG = /* glsl */ `#version 300 es
 precision highp float;
-
-in vec3 vNormal;
-in vec3 vWorldPos;
 in vec2 vUV;
-in vec3 vAlbedo;
 
-uniform vec3  uLightDir;
-uniform vec3  uLightColor;
-uniform vec3  uAmbient;
+uniform vec3  uAlbedo;
 uniform float uOpacity;
 uniform vec3  uGlowColor;
 uniform float uTime;
+uniform float uBaseRadius;
+uniform int   uLobeCount;
+uniform vec3  uLobes[8];
+uniform float uNoiseAmp;
+uniform float uNoiseFreq;
+uniform float uRoughness;
+uniform float uMetallic;
 
 out vec4 fragColor;
 
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash12(i), hash12(i+vec2(1,0)), u.x),
+               mix(hash12(i+vec2(0,1)), hash12(i+vec2(1,1)), u.x), u.y);
+}
+float smin(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
+    return mix(b, a, h) - k*h*(1.0-h);
+}
+
+float cellSDF(vec3 p) {
+    float d = length(p) - uBaseRadius;
+    for (int i = 0; i < 8; i++) {
+        if (i >= uLobeCount) break;
+        vec3 lc = vec3(
+            cos(uLobes[i].x) * uLobes[i].y,
+            sin(uLobes[i].x) * uLobes[i].y,
+            sin(uTime * 0.5 + uLobes[i].x) * 0.08
+        );
+        d = smin(d, length(p - lc) - uLobes[i].z, 0.3);
+    }
+    d += (vnoise(p.xy * uNoiseFreq + uTime * 0.15) * 2.0 - 1.0) * uNoiseAmp;
+    return d;
+}
+
+vec3 calcNormal(vec3 p) {
+    vec2 e = vec2(0.005, 0.0);
+    return normalize(vec3(
+        cellSDF(p+e.xyy) - cellSDF(p-e.xyy),
+        cellSDF(p+e.yxy) - cellSDF(p-e.yxy),
+        cellSDF(p+e.yyx) - cellSDF(p-e.yyx)
+    ));
+}
+
 void main() {
-    vec3 N = normalize(vNormal);
-    vec3 L = normalize(uLightDir);
+    vec2 uv = vUV * 2.0 - 1.0;
+    vec3 ro = vec3(uv * 1.2, 2.0);
+    vec3 rd = vec3(0.0, 0.0, -1.0);
+
+    float t = 0.0;
+    bool hit = false;
+    for (int i = 0; i < 64; i++) {
+        float d = cellSDF(ro + rd * t);
+        if (d < 0.002) { hit = true; break; }
+        if (t > 5.0) break;
+        t += d;
+    }
+    if (!hit) discard;
+
+    vec3 p = ro + rd * t;
+    vec3 N = calcNormal(p);
+    vec3 L = normalize(vec3(-0.4, 0.6, 0.8));
     float NdotL = max(dot(N, L), 0.0);
+    vec3 H = normalize(L + vec3(0,0,1));
+    float spec = pow(max(dot(N, H), 0.0), mix(8.0, 64.0, 1.0 - uRoughness));
 
-    // Simple PBR-ish lighting
-    vec3 diffuse = vAlbedo * uLightColor * NdotL;
-    vec3 ambient = uAmbient * vAlbedo;
+    vec3 diffuse  = uAlbedo * NdotL;
+    vec3 ambient  = uAlbedo * 0.25;
+    vec3 specular = vec3(spec * mix(0.04, 0.8, uMetallic));
+    float fresnel = pow(1.0 - max(dot(N, vec3(0,0,1)), 0.0), 3.0);
+    vec3 rim      = uGlowColor * fresnel * 0.5;
+    vec3 scatter  = uAlbedo * max(dot(-N, L), 0.0) * 0.15;
 
-    // Fresnel rim glow
-    vec3 V = vec3(0.0, 0.0, 1.0); // ortho camera
-    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    vec3 rim = uGlowColor * fresnel * 0.4;
-
-    vec3 color = ambient + diffuse + rim;
-
-    // Tone map
-    color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0 / 2.2));
+    vec3 color = ambient + diffuse + specular + rim + scatter;
+    color = color / (color + 1.0);
+    color = pow(color, vec3(1.0/2.2));
 
     fragColor = vec4(color, uOpacity);
 }
 `;
 
-// ─── Placeholder cube geometry ───────────────────────────────────────────────
-
-function createPlaceholderCube(): {
-  positions: Float32Array;
-  normals: Float32Array;
-  uvs: Float32Array;
-  indices: Uint16Array;
-} {
-  // Unit cube centered at origin, [-0.5, 0.5]
-  // 24 vertices (4 per face, unique normals)
-  const p = 0.5;
-  // prettier-ignore
-  const positions = new Float32Array([
-    // Front face
-    -p, -p,  p,   p, -p,  p,   p,  p,  p,  -p,  p,  p,
-    // Back face
-    -p, -p, -p,  -p,  p, -p,   p,  p, -p,   p, -p, -p,
-    // Top face
-    -p,  p, -p,  -p,  p,  p,   p,  p,  p,   p,  p, -p,
-    // Bottom face
-    -p, -p, -p,   p, -p, -p,   p, -p,  p,  -p, -p,  p,
-    // Right face
-     p, -p, -p,   p,  p, -p,   p,  p,  p,   p, -p,  p,
-    // Left face
-    -p, -p, -p,  -p, -p,  p,  -p,  p,  p,  -p,  p, -p,
-  ]);
-
-  // prettier-ignore
-  const normals = new Float32Array([
-    // Front
-    0,0,1, 0,0,1, 0,0,1, 0,0,1,
-    // Back
-    0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1,
-    // Top
-    0,1,0, 0,1,0, 0,1,0, 0,1,0,
-    // Bottom
-    0,-1,0, 0,-1,0, 0,-1,0, 0,-1,0,
-    // Right
-    1,0,0, 1,0,0, 1,0,0, 1,0,0,
-    // Left
-    -1,0,0, -1,0,0, -1,0,0, -1,0,0,
-  ]);
-
-  // prettier-ignore
-  const uvs = new Float32Array([
-    0,0, 1,0, 1,1, 0,1,
-    0,0, 1,0, 1,1, 0,1,
-    0,0, 1,0, 1,1, 0,1,
-    0,0, 1,0, 1,1, 0,1,
-    0,0, 1,0, 1,1, 0,1,
-    0,0, 1,0, 1,1, 0,1,
-  ]);
-
-  // prettier-ignore
-  const indices = new Uint16Array([
-    0,1,2,  0,2,3,     // front
-    4,5,6,  4,6,7,     // back
-    8,9,10, 8,10,11,   // top
-    12,13,14, 12,14,15, // bottom
-    16,17,18, 16,18,19, // right
-    20,21,22, 20,22,23, // left
-  ]);
-
-  return { positions, normals, uvs, indices };
-}
-
-// ─── Orthographic projection matrix ──────────────────────────────────────────
-
-/**
- * Build a column-major 4x4 orthographic projection matrix.
- * Maps [left, right] × [bottom, top] × [near, far] → NDC [-1,1]³
- */
-function ortho(
-  left: number, right: number,
-  bottom: number, top: number,
-  near: number, far: number,
-): Float32Array {
-  const lr = 1 / (right - left);
-  const bt = 1 / (top - bottom);
-  const nf = 1 / (far - near);
-  // Column-major
-  return new Float32Array([
-    2 * lr,        0,             0,             0,
-    0,             2 * bt,        0,             0,
-    0,             0,            -2 * nf,        0,
-    -(right+left)*lr, -(top+bottom)*bt, -(far+near)*nf, 1,
-  ]);
-}
-
-/**
- * Build a model matrix: translate to (cx, cy, 0) and scale to (sx, sy, sz).
- * Column-major 4x4.
- */
-function modelMatrix(
-  cx: number, cy: number, cz: number,
-  sx: number, sy: number, sz: number,
-): Float32Array {
-  return new Float32Array([
-    sx, 0,  0,  0,
-    0,  sy, 0,  0,
-    0,  0,  sz, 0,
-    cx, cy, cz, 1,
-  ]);
-}
-
-/**
- * Apply a rotation about the Z axis to a column-major 4x4 matrix in place.
- * Multiplies model = model * Rz(angle), so it rotates in the model's local frame
- * before the existing translation/scale takes effect.
- */
-function rotateZ(mat: Float32Array, angle: number): void {
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-  // Columns 0 and 1 are affected (X and Y basis vectors).
-  for (let i = 0; i < 3; i++) {
-    const a = mat[i];       // column 0, row i
-    const b = mat[4 + i];   // column 1, row i
-    mat[i]     = a * c + b * s;
-    mat[4 + i] = -a * s + b * c;
-  }
-}
-
-/**
- * Apply a rotation about the Y axis to a column-major 4x4 matrix in place.
- * Multiplies model = model * Ry(angle).
- */
-function rotateY(mat: Float32Array, angle: number): void {
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-  // Columns 0 and 2 are affected (X and Z basis vectors).
-  for (let i = 0; i < 3; i++) {
-    const a = mat[i];       // column 0, row i
-    const b = mat[8 + i];   // column 2, row i
-    mat[i]     = a * c - b * s;
-    mat[8 + i] = a * s + b * c;
-  }
-}
-
-// ─── CellMeshRenderer ────────────────────────────────────────────────────────
-
-import type { CellData } from './gpu-render-loop';
-import { SPECIES_GEOMETRY } from './procedural-cell-geometries';
-
-/** Per-species GPU mesh (VBO + IBO + VAO) */
-interface SpeciesMesh {
-  vao: WebGLVertexArrayObject;
-  ebo: WebGLBuffer; // ELEMENT_ARRAY_BUFFER, kept so render() can rebind defensively
-  indexCount: number;
-  indexType: number; // gl.UNSIGNED_SHORT or gl.UNSIGNED_INT
-}
+// ─── Renderer class ──────────────────────────────────────────────────────────
 
 export class CellMeshRenderer {
   private gl: WebGL2RenderingContext;
   private prog: WebGLProgram;
-
-  // Uniform locations
-  private uModelMatrix!:    WebGLUniformLocation;
-  private uViewProjMatrix!: WebGLUniformLocation;
-  private uAlbedo!:         WebGLUniformLocation;
-  private uLightDir!:       WebGLUniformLocation;
-  private uLightColor!:     WebGLUniformLocation;
-  private uAmbient!:        WebGLUniformLocation;
-  private uOpacity!:        WebGLUniformLocation;
-  private uGlowColor!:      WebGLUniformLocation;
-  private uTime!:           WebGLUniformLocation;
-
-  // Attribute locations
-  private aPosition!: number;
-  private aNormal!:   number;
-  private aUV!:       number;
-
-  // Per-species mesh cache
-  private meshes = new Map<string, SpeciesMesh>();
-
-  // FBO for rendering to texture (so composite can consume it)
+  private quadVAO: WebGLVertexArrayObject;
   private fbo: WebGLFramebuffer | null = null;
   private colorTex: WebGLTexture | null = null;
-  private depthRB: WebGLRenderbuffer | null = null;
   private fboW = 0;
   private fboH = 0;
-
   private _time = 0;
+
+  // Uniforms
+  private loc: Record<string, WebGLUniformLocation> = {};
+  private lobesLoc: WebGLUniformLocation[] = [];
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
-    this.prog = this._compileProgram();
-    this._resolveLocations();
-    this._uploadPlaceholder();
-    // M1315: GLB files contain wrong geometry (thin pillars/swords from M1264).
-    // Procedural geometries in SPECIES_GEOMETRY are semantically meaningful:
-    // cil-eye=attention rays, cil-bolt=ReLU zigzag, cil-vector=direction arrows,
-    // cil-plus=residual cross, cil-arrow-right=dataflow arrow.
-    // Use procedural until proper organic GLBs are generated.
-    // this.loadAllSpeciesGLB().catch(e =>
-    //   console.warn('[CellMeshRenderer] GLB auto-load failed, using procedural fallback:', e)
-    // );
+    this.prog = this._compile();
+
+    // Resolve uniforms
+    const names = ['uCellPos','uCellSize','uAlbedo','uOpacity','uGlowColor',
+      'uTime','uBaseRadius','uLobeCount','uNoiseAmp','uNoiseFreq','uRoughness','uMetallic'];
+    for (const n of names) this.loc[n] = gl.getUniformLocation(this.prog, n)!;
+    for (let i = 0; i < 8; i++) this.lobesLoc.push(gl.getUniformLocation(this.prog, `uLobes[${i}]`)!);
+
+    // Quad VAO
+    this.quadVAO = gl.createVertexArray()!;
+    gl.bindVertexArray(this.quadVAO);
+    const buf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+    const aCorner = gl.getAttribLocation(this.prog, 'aCorner');
+    gl.enableVertexAttribArray(aCorner);
+    gl.vertexAttribPointer(aCorner, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+
+    console.info('[CellMeshRenderer] 3D SDF ray march ready');
   }
 
-  /**
-   * Load GLB files for all 5 species from /models/{species}.glb.
-   * Non-blocking — cells render with procedural geometry until GLB loads.
-   */
-  async loadAllSpeciesGLB(): Promise<void> {
-    console.info('[CellMeshRenderer] loadAllSpeciesGLB starting...');
-    const species = ['cil-eye', 'cil-bolt', 'cil-vector', 'cil-plus', 'cil-arrow-right'];
-    const results = await Promise.allSettled(
-      species.map(s => this.loadSpeciesMesh(s, `/models/${s}.glb`))
-    );
-    const loaded = results.filter(r => r.status === 'fulfilled').length;
-    console.info(`[CellMeshRenderer] GLB load: ${loaded}/${species.length} species`);
-  }
-
-  // ── Public API ──────────────────────────────────────────────────────────
-
-  /** Set current time (seconds) for animation */
-  setTime(t: number): void { this._time = t; }
-
-  /** Output texture for composite pass */
+  setTime(t: number) { this._time = t; }
   get outputTexture(): WebGLTexture | null { return this.colorTex; }
 
-  /**
-   * Render all cells as 3D meshes.
-   *
-   * Camera params come from gpu-render-loop's auto-fit camera:
-   *   camScale, camOffX, camOffY map cell pixel space → canvas pixel space.
-   *   W, H are canvas dimensions.
-   *
-   * We build an ortho projection that maps canvas pixel space → NDC.
-   * Model matrix per cell: translate to fitted position, scale to fitted size.
-   */
-  render(
-    cells: CellData[],
-    camScale: number,
-    camOffX: number,
-    camOffY: number,
-    W: number,
-    H: number,
-  ): void {
+  render(cells: CellData[], camScale: number, camOffX: number, camOffY: number, W: number, H: number): void {
     const gl = this.gl;
-
-    // ── Ensure FBO ────────────────────────────────────────────────────────
-    if (!this.fbo || this.fboW !== W || this.fboH !== H) {
-      this._initFBO(W, H);
-    }
+    if (!this.fbo || this.fboW !== W || this.fboH !== H) this._initFBO(W, H);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.viewport(0, 0, W, H);
     gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.enable(gl.DEPTH_TEST);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
     gl.useProgram(this.prog);
+    gl.uniform1f(this.loc.uTime, this._time);
+    gl.bindVertexArray(this.quadVAO);
 
-    // ── Orthographic view-projection: canvas pixel → NDC ────────────────
-    // Canvas pixel (0,0) is top-left, but NDC (-1,-1) is bottom-left.
-    // ortho(left=0, right=W, bottom=H, top=0, near=-100, far=100)
-    // This flips Y so that pixel Y-down matches cell Y-down.
-    const vpMatrix = ortho(0, W, H, 0, -100, 100);
-    gl.uniformMatrix4fv(this.uViewProjMatrix, false, vpMatrix);
-
-    // ── Scene-level uniforms ──────────────────────────────────────────────
-    gl.uniform3f(this.uLightDir, -0.4, 0.3, 0.86);
-    gl.uniform3f(this.uLightColor, 2.0, 1.95, 1.85);
-    gl.uniform3f(this.uAmbient, 0.35, 0.38, 0.45);
-    gl.uniform1f(this.uTime, this._time);
-
-    // ── Per-cell rendering ────────────────────────────────────────────────
     for (const cell of cells) {
-      // Cell centre in canvas pixel space
-      const cx = cell.x * camScale + camOffX + cell.w * camScale * 0.5;
-      const cy = cell.y * camScale + camOffY + cell.h * camScale * 0.5;
-      const cz = cell.z ?? 0;
+      const cx = ((cell.x * camScale + camOffX + cell.w * camScale * 0.5) / W) * 2 - 1;
+      const cy = 1 - ((cell.y * camScale + camOffY + cell.h * camScale * 0.5) / H) * 2;
+      const hw = cell.w * camScale / W;
+      const hh = cell.h * camScale / H;
 
-      // Cell size in canvas pixels
-      const sw = cell.w * camScale;
-      const sh = cell.h * camScale;
-      // Z scale: average of w/h to keep proportional
-      const sz = Math.min(sw, sh) * 0.5;
-
-      const model = modelMatrix(cx, cy, cz, sw, sh, sz);
-
-      // ── Species-specific 3D motion ──────────────────────────────────────
-      const t = this._time;
-      switch (cell.species) {
-        case 'cil-eye':
-          // Slow continuous spin about Z.
-          rotateZ(model, t * 0.3);
-          break;
-        case 'cil-bolt':
-          // Pulsing rotation about Y.
-          rotateY(model, Math.sin(t * 3.0) * 0.5);
-          break;
-        case 'cil-vector':
-          // Small X-axis translation pulse, no rotation.
-          model[12] += Math.sin(t * 2) * 2;
-          break;
-        case 'cil-plus':
-          // Back-and-forth wobble about Z.
-          rotateZ(model, Math.sin(t * 1.5) * 0.8);
-          break;
-        case 'cil-arrow-right':
-        default:
-          // Static.
-          break;
-      }
-
-      gl.uniformMatrix4fv(this.uModelMatrix, false, model);
-
-      gl.uniform3f(this.uAlbedo, cell.albedo[0], cell.albedo[1], cell.albedo[2]);
-      gl.uniform1f(this.uOpacity, cell.opacity ?? 0.9);
-      gl.uniform3f(this.uGlowColor,
+      gl.uniform2f(this.loc.uCellPos, cx, cy);
+      gl.uniform2f(this.loc.uCellSize, hw * 1.3, hh * 1.3);
+      gl.uniform3f(this.loc.uAlbedo, cell.albedo[0], cell.albedo[1], cell.albedo[2]);
+      gl.uniform1f(this.loc.uOpacity, cell.opacity ?? 0.9);
+      gl.uniform3f(this.loc.uGlowColor,
         cell.glowColor?.[0] ?? cell.albedo[0],
         cell.glowColor?.[1] ?? cell.albedo[1],
-        cell.glowColor?.[2] ?? cell.albedo[2],
-      );
+        cell.glowColor?.[2] ?? cell.albedo[2]);
+      gl.uniform1f(this.loc.uRoughness, cell.roughness ?? 0.5);
+      gl.uniform1f(this.loc.uMetallic, cell.metallic ?? 0.1);
 
-      // Get species mesh (placeholder cube for now)
-      const mesh = this.meshes.get(cell.species) ?? this.meshes.get('_placeholder')!;
-      gl.bindVertexArray(mesh.vao);
-      // Defensive rebind: although the EBO is recorded in the VAO at upload
-      // time, some drivers / context-state edge cases (e.g. a VAO whose EBO
-      // association was lost after a context-state churn) can leave no
-      // ELEMENT_ARRAY_BUFFER bound, which makes drawElements throw
-      //   GL_INVALID_OPERATION: glDrawElements: Must have element array buffer bound
-      // Explicitly binding the EBO inside the bound VAO guarantees a valid
-      // element array buffer for the draw call.
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ebo);
-      gl.drawElements(gl.TRIANGLES, mesh.indexCount, mesh.indexType, 0);
-    }
-
-    gl.bindVertexArray(null);
-    gl.disable(gl.DEPTH_TEST);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  }
-
-  /**
-   * Load a GLB model for a specific species.
-   * Call this when Rodin GLBs are ready: renderer.loadSpeciesMesh('cil-eye', '/models/cil-eye.glb')
-   * Until called, the placeholder cube is used.
-   */
-  async loadSpeciesMesh(species: string, glbUrl: string): Promise<void> {
-    try {
-      const { GLTFLoader } = await import('../threed-pipeline');
-      // Standard GLBs (no KHR_draco_mesh_compression) — do NOT pass a
-      // dracoThread. With no options the loader sets this.draco = null and
-      // parses POSITION/NORMAL/TEXCOORD/indices directly from the bin chunk,
-      // so no Web Worker / blob-URL importScripts path is ever touched.
-      const loader = new GLTFLoader();
-      const scene = await loader.load(glbUrl);
-
-      // Use the first mesh found
-      const firstMesh = scene.meshes.values().next().value;
-      if (!firstMesh) {
-        console.error(`[CellMeshRenderer] No mesh found in ${glbUrl}`);
-        return;
-      }
-
-      const mesh = this._uploadGeometry(
-        firstMesh.positions,
-        firstMesh.normals ?? new Float32Array(firstMesh.positions.length),
-        firstMesh.uvs ?? new Float32Array(firstMesh.vertexCount * 2),
-        firstMesh.indices ?? null,
-        firstMesh.vertexCount,
-      );
-      this.meshes.set(species, mesh);
-      console.info(`[CellMeshRenderer] Loaded ${species} from ${glbUrl}: ${firstMesh.vertexCount} verts`);
-    } catch (e) {
-      console.error(`[CellMeshRenderer] Failed to load ${species} from ${glbUrl}:`, e);
-      throw e;
-    }
-  }
-
-  // ── Internal ────────────────────────────────────────────────────────────
-
-  private _uploadPlaceholder(): void {
-    // Upload per-species procedural geometries
-    for (const [species, createFn] of Object.entries(SPECIES_GEOMETRY)) {
-      const geo = createFn();
-      const mesh = this._uploadGeometry(
-        geo.positions,
-        geo.normals,
-        geo.uvs,
-        geo.indices,
-        geo.positions.length / 3,
-      );
-      this.meshes.set(species, mesh);
-    }
-
-    // Fallback: use cube for unknown species
-    const cube = createPlaceholderCube();
-    const fallback = this._uploadGeometry(
-      cube.positions,
-      cube.normals,
-      cube.uvs,
-      cube.indices,
-      24,
-    );
-    this.meshes.set('_placeholder', fallback);
-  }
-
-  private _uploadGeometry(
-    rawPositions: Float32Array,
-    normals: Float32Array,
-    uvs: Float32Array,
-    indices: Uint16Array | Uint32Array | null,
-    vertexCount: number,
-  ): SpeciesMesh {
-    // M1315: Copy and normalize mesh vertices to [-0.5, 0.5]³ so model matrix
-    // scale maps uniformly to cell pixel size. Must copy first because GLB
-    // parser may return a read-only view into the ArrayBuffer.
-    const positions = new Float32Array(rawPositions);
-    {
-      let minX = Infinity, minY = Infinity, minZ = Infinity;
-      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-      for (let i = 0; i < positions.length; i += 3) {
-        minX = Math.min(minX, positions[i]);
-        maxX = Math.max(maxX, positions[i]);
-        minY = Math.min(minY, positions[i+1]);
-        maxY = Math.max(maxY, positions[i+1]);
-        minZ = Math.min(minZ, positions[i+2]);
-        maxZ = Math.max(maxZ, positions[i+2]);
-      }
-      const rangeX = maxX - minX || 1;
-      const rangeY = maxY - minY || 1;
-      const rangeZ = maxZ - minZ || 1;
-      const maxRange = Math.max(rangeX, rangeY, rangeZ);
-      const cx = (minX + maxX) * 0.5;
-      const cy = (minY + maxY) * 0.5;
-      const cz = (minZ + maxZ) * 0.5;
-      for (let i = 0; i < positions.length; i += 3) {
-        positions[i]   = (positions[i]   - cx) / maxRange;
-        positions[i+1] = (positions[i+1] - cy) / maxRange;
-        positions[i+2] = (positions[i+2] - cz) / maxRange;
-      }
-    }
-    const gl = this.gl;
-    const vao = gl.createVertexArray()!;
-    gl.bindVertexArray(vao);
-
-    // Position
-    const posBuf = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(this.aPosition);
-    gl.vertexAttribPointer(this.aPosition, 3, gl.FLOAT, false, 0, 0);
-
-    // Normal
-    const normBuf = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, normBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(this.aNormal);
-    gl.vertexAttribPointer(this.aNormal, 3, gl.FLOAT, false, 0, 0);
-
-    // UV
-    const uvBuf = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(this.aUV);
-    gl.vertexAttribPointer(this.aUV, 2, gl.FLOAT, false, 0, 0);
-
-    // Index buffer — must always be bound inside the VAO because render()
-    // unconditionally uses drawElements. A GLB mesh can arrive without an
-    // index buffer (non-indexed geometry); in that case synthesize a
-    // sequential index array so an ELEMENT_ARRAY_BUFFER is always present.
-    // Without this, drawElements throws:
-    //   GL_INVALID_OPERATION: glDrawElements: Must have element array buffer bound
-    let indexBuffer: Uint16Array | Uint32Array;
-    if (indices) {
-      indexBuffer = indices;
-    } else {
-      // Generate [0, 1, 2, ... vertexCount-1]
-      if (vertexCount > 65535) {
-        const seq = new Uint32Array(vertexCount);
-        for (let i = 0; i < vertexCount; i++) seq[i] = i;
-        indexBuffer = seq;
+      // SDF data from geometry.json
+      const lobes = (cell as any).sdfLobes as Array<{angle:number,distance:number,radius:number}> | undefined;
+      const sz = Math.max(cell.w, cell.h, 1);
+      if (lobes && lobes.length > 0) {
+        const rawR = (cell as any).sdfBaseRadius ?? 20;
+        gl.uniform1f(this.loc.uBaseRadius, Math.min(rawR / (sz * 0.5), 1.2));
+        gl.uniform1i(this.loc.uLobeCount, Math.min(lobes.length, 8));
+        for (let i = 0; i < Math.min(lobes.length, 8); i++)
+          gl.uniform3f(this.lobesLoc[i], lobes[i].angle, lobes[i].distance/(sz*0.5), lobes[i].radius/(sz*0.5));
+        gl.uniform1f(this.loc.uNoiseAmp, (cell as any).sdfNoiseAmp ?? 0.02);
+        gl.uniform1f(this.loc.uNoiseFreq, (cell as any).sdfNoiseFreq ?? 4.0);
       } else {
-        const seq = new Uint16Array(vertexCount);
-        for (let i = 0; i < vertexCount; i++) seq[i] = i;
-        indexBuffer = seq;
+        gl.uniform1f(this.loc.uBaseRadius, 0.7);
+        gl.uniform1i(this.loc.uLobeCount, 0);
+        gl.uniform1f(this.loc.uNoiseAmp, 0.015);
+        gl.uniform1f(this.loc.uNoiseFreq, 3.0);
       }
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
-    const idxBuf = gl.createBuffer()!;
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexBuffer, gl.STATIC_DRAW);
-    const indexCount = indexBuffer.length;
-    const indexType = indexBuffer instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
-
-    // Do NOT unbind ELEMENT_ARRAY_BUFFER here — it must stay recorded in the
-    // VAO. Unbinding the VAO below preserves the EBO association automatically.
     gl.bindVertexArray(null);
-
-    return { vao, ebo: idxBuf, indexCount, indexType };
+    gl.disable(gl.BLEND);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   private _initFBO(W: number, H: number): void {
     const gl = this.gl;
-
-    // Clean up old
     if (this.fbo) gl.deleteFramebuffer(this.fbo);
     if (this.colorTex) gl.deleteTexture(this.colorTex);
-    if (this.depthRB) gl.deleteRenderbuffer(this.depthRB);
 
     this.colorTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.colorTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-    this.depthRB = gl.createRenderbuffer()!;
-    gl.bindRenderbuffer(gl.RENDERBUFFER, this.depthRB);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, W, H);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
     this.fbo = gl.createFramebuffer()!;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.colorTex, 0);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.depthRB);
 
-    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-    if (status !== gl.FRAMEBUFFER_COMPLETE) {
-      console.error('[CellMeshRenderer] FBO incomplete:', status);
-    }
+    const rb = gl.createRenderbuffer()!;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, W, H);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.fboW = W;
     this.fboH = H;
   }
 
-  private _compileProgram(): WebGLProgram {
+  private _compile(): WebGLProgram {
     const gl = this.gl;
     const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, MESH_VERT);
+    gl.shaderSource(vs, VERT);
     gl.compileShader(vs);
-    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
-      const log = gl.getShaderInfoLog(vs);
-      throw new Error(`[CellMeshRenderer] vertex shader error:\n${log}`);
-    }
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS))
+      throw new Error('[CellMesh] vert: ' + gl.getShaderInfoLog(vs));
 
     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    gl.shaderSource(fs, MESH_FRAG);
+    gl.shaderSource(fs, FRAG);
     gl.compileShader(fs);
-    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
-      const log = gl.getShaderInfoLog(fs);
-      throw new Error(`[CellMeshRenderer] fragment shader error:\n${log}`);
-    }
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS))
+      throw new Error('[CellMesh] frag: ' + gl.getShaderInfoLog(fs));
 
     const prog = gl.createProgram()!;
     gl.attachShader(prog, vs);
     gl.attachShader(prog, fs);
     gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      const log = gl.getProgramInfoLog(prog);
-      throw new Error(`[CellMeshRenderer] link error:\n${log}`);
-    }
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+      throw new Error('[CellMesh] link: ' + gl.getProgramInfoLog(prog));
 
-    gl.deleteShader(vs);
-    gl.deleteShader(fs);
     return prog;
-  }
-
-  private _resolveLocations(): void {
-    const gl = this.gl;
-    const prog = this.prog;
-
-    this.aPosition = gl.getAttribLocation(prog, 'aPosition');
-    this.aNormal   = gl.getAttribLocation(prog, 'aNormal');
-    this.aUV       = gl.getAttribLocation(prog, 'aUV');
-
-    this.uModelMatrix    = gl.getUniformLocation(prog, 'uModelMatrix')!;
-    this.uViewProjMatrix = gl.getUniformLocation(prog, 'uViewProjMatrix')!;
-    this.uAlbedo         = gl.getUniformLocation(prog, 'uAlbedo')!;
-    this.uLightDir       = gl.getUniformLocation(prog, 'uLightDir')!;
-    this.uLightColor     = gl.getUniformLocation(prog, 'uLightColor')!;
-    this.uAmbient        = gl.getUniformLocation(prog, 'uAmbient')!;
-    this.uOpacity        = gl.getUniformLocation(prog, 'uOpacity')!;
-    this.uGlowColor      = gl.getUniformLocation(prog, 'uGlowColor')!;
-    this.uTime           = gl.getUniformLocation(prog, 'uTime')!;
   }
 }
