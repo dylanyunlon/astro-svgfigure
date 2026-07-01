@@ -592,6 +592,7 @@ export const prerender = true;
     type CellData,
     type EdgeData,
   } from '@/lib/sph/gpu-render-loop';
+  import { WorldRenderer } from '@/lib/sph/world-renderer';
 
   // ── QoS profiles ──────────────────────────────────────────────────────────
   const QOS_PROFILES = {
@@ -1260,6 +1261,41 @@ export const prerender = true;
         console.info(`[gpu-world] geometry.json SDF merged: ${geoHit}/${cells.length} cells`);
       }
 
+      // ── M1317l: WorldRenderer — clean 500-line render entry ──────────────
+      try {
+        console.info('[gpu-world] creating WorldRenderer...');
+        const wr = new WorldRenderer(gpuWorldCanvas);
+        wr.setScene(cells, edges);
+        wr.start();
+        hudBackend.textContent = 'WEBGL2';
+        hudRenderMode.textContent = 'SDF-RAY';
+        setInterval(() => { try { hudFps.textContent = String(wr.stats.fps); hudParticles.textContent = String(wr.stats.cellCount); } catch(_){} }, 250);
+        console.info(`[gpu-world] WorldRenderer started — ${cells.length} cells, ${edges.length} edges`);
+        // Live geometry SSE
+        try {
+          const liveES = new EventSource('/api/cell-events');
+          liveES.addEventListener('geometry_update', (ev: MessageEvent) => {
+            try { const d = JSON.parse(ev.data); if (d.cell_id && d.geometry) wr.updateCellGeometry(d.cell_id, d.geometry); } catch {}
+          });
+          liveES.addEventListener('cell_update', (ev: MessageEvent) => {
+            try {
+              const d = JSON.parse(ev.data);
+              const cell = cells.find((c: CellData) => c.cell_id === d.cell_id);
+              if (!cell || !d.params) return;
+              const bbox = d.params.bbox ?? d.params.agent_params?.bbox;
+              if (bbox) { cell.x = bbox.x ?? cell.x; cell.y = bbox.y ?? cell.y; if (bbox.w) cell.w = bbox.w; if (bbox.h) cell.h = bbox.h; wr.setScene(cells, edges); }
+            } catch {}
+          });
+          liveES.onerror = () => console.warn('[gpu-world] SSE connection lost');
+        } catch(e) { console.warn('[gpu-world] SSE setup failed:', e); }
+        const overlay = document.getElementById('init-overlay');
+        if (overlay) overlay.classList.add('hidden');
+        return; // WorldRenderer running — skip GPURenderLoop below
+      } catch(wrErr) {
+        console.warn('[gpu-world] WorldRenderer failed, falling back to GPURenderLoop:', wrErr);
+      }
+
+      // ── GPURenderLoop (kept as reference / fallback) ──────────────────────
       try {
         console.info('[gpu-world] creating GPURenderLoop...');
         const loop = new GPURenderLoop(gpuWorldCanvas);
